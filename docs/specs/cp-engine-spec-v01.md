@@ -7,7 +7,7 @@ Author: T.Welch + Claude
 
 # Context Protocol Engine — Architecture Spec v01
 
-> A company-wide "memory engine" for First Person and Canonic. Lifts the working `ggl-repos` pattern (multi-level Context Protocol with a master CP indexing per-workstream CPs) to the whole company: every active client engagement at First Person plus Canonic's sprint cadence. Lives in a new GitHub repo, kept in sync with Mission Control 2 by automation, driven from a Monday meeting workflow.
+> A company-wide "memory engine" for First Person and Canonic. Master CP indexes every active client engagement at First Person plus Canonic's current sprint, with per-project / per-sprint CPs underneath. Lives in a new GitHub repo, kept in sync with Mission Control 2 by automation, driven from a Monday meeting workflow. Pattern-inspired by the working multi-level CP at `_claude/1P/ggl-repos/` but operates at a higher altitude (founder-meeting summary level) and is functionally independent from it.
 
 ---
 
@@ -21,22 +21,37 @@ Author: T.Welch + Claude
 
 ---
 
-## Pre-Flight Questions
+## Pre-Flight Questions (Resolved 2026-05-05)
 
-Per the spec-writing guide and Tony's question-discipline directive (Bucket 2 only — genuinely product-shaping; ≤4). Three surfaced. Each has a recommended answer; confirm or redirect before drafting v02.
+All three resolved in conversation; resolutions are encoded directly in the spec body. Audit trail kept here.
 
-1. **MC-2 status enumeration & "active" subset.** The sync from MC-2 to `master-cp.md` filters projects by status. We need (a) the enumerated set of statuses MC-2 supports today, and (b) which of them count as "active" for the purposes of the Monday review.
-   **Recommended default (pending Drew's confirmation of MC-2's actual enum):** `Open`, `In Progress`, `On Hold`, `Closed`, `Archived`. **Active subset:** `Open` ∪ `In Progress`. `On Hold` projects appear in a separate "On Hold" subtable in the master CP — visible but not walked through in the Monday review unless someone calls them out.
-   *Why this matters:* defines the filter at the heart of the system. Drives §3 (master CP schema), §5 (sync rules), §7 (Monday workflow scope).
+### Q1 — MC-2 status enumeration & "active" subset
 
-2. **`ggl-repos` coexistence vs. migration.** Tony's existing Google CP system at `/_claude/1P/ggl-repos/` is in active daily use and contains symlinks to Dropbox-synced workstream folders. The new repo can't easily replicate those symlinks. Two paths:
-   - **(a) Coexist (recommended).** `ggl-repos/` stays canonical for Google in v1. The new repo's `1P/google/` folder holds *summary-level* project CPs (≤500 words each) that point at the corresponding `ggl-repos/ggl-XXXX/workstream-cp.md` for full detail. Master CP indexes Google projects normally. No migration risk; ggl-repos discipline keeps working unchanged.
-   - **(b) Migrate.** Move all ggl-repos content into the new repo's `1P/google/` and retire ggl-repos. Cleaner long-term but high-risk for the Q2 ramp-up Tony is in the middle of.
-   *Why this matters:* shapes whether v1 includes a migration plan or defers it to v2+.
+**Question:** the sync from MC-2 to `master-cp.md` filters projects by status. We need (a) the enumerated set of statuses MC-2 supports, and (b) which count as "active" for the Monday review.
 
-3. **Initial seeding scope.** v1 launch can populate the repo with (a) Google only — exercise the workflow on the highest-activity client first; or (b) all six active clients (Google, SentinelOne, Infoblox, Hexagon, SalesLoft, Teleflex) — full coverage from day one.
-   **Recommended default:** Google only for the first one or two Mondays. Add the other five clients incrementally as they come up in the meeting (the workflow is designed to handle "this client doesn't have a CP yet — set one up?" inline). Reduces the first-Monday cognitive load and surfaces friction on the most active client first.
-   *Why this matters:* affects the day-one Mike Drop and how heavy the first commit is.
+**Resolution:** MC-2's status vocabulary is being renamed (PR `FirstPersonSF/mc-2#17`) to align with the cp-engine sync's filter:
+
+| Status | Active subset? |
+|---|---|
+| `Potential` | yes |
+| `Open` (renamed from `Active`) | yes |
+| `Closed` (renamed from `Complete`) | no |
+| `Archived` | no |
+| `Internal` | no (system-seeded only — Canonic / 1P-internal projects route through `canonic/sprint-cp.md`, not the master CP) |
+
+**Active subset = `Potential ∪ Open`.** Drives §3 (master CP schema), §5 (sync rules), §7 (Monday workflow scope). The pre-rename "On Hold" subtable proposed in early drafts is removed — there is no `On Hold` status in MC-2.
+
+### Q2 — `ggl-repos` coexistence vs. migration
+
+**Question:** how does the new repo relate to Tony's existing `ggl-repos/` Google CP system?
+
+**Resolution: independent systems.** `ggl-repos/` continues unchanged as Tony's day-to-day Google work surface (deep workstream-level detail, Dropbox symlinks). The new repo's `1P/google/` folder holds founder-meeting-level summary CPs that **do not** point at, link to, or reference `ggl-repos/`. Different altitudes, different audiences. No migration is planned.
+
+### Q3 — Initial seeding scope
+
+**Question:** which clients are populated in the repo at v1 launch?
+
+**Resolution: all six active clients seeded by Monday.** Google, SentinelOne, Infoblox, Hexagon, SalesLoft, Teleflex. v1 launches with full master CP backfill — no incremental onboarding.
 
 (Bucket 1 decisions made silently, documented in Appendix A: branching workflow, project-name display strategy, MC-2 events that fire sync, per-CP template defaults, repo permissions model.)
 
@@ -60,7 +75,7 @@ Per the spec-writing guide and Tony's question-discipline directive (Bucket 2 on
 - **GitHub auth model.** GitHub App is recommended over fine-grained PAT (per-repo install scoping, no user-attribution drift, easier secret rotation). Drew's call. (See §5.5.)
 - **Diff-presentation UI for the deepening pass.** Recommended: Claude emits a structured diff in chat (per-CP, per-section), human approves before commit. Alternative: Claude commits to a `deepening-WW##` branch and the driver reviews via GitHub's PR diff UI. Driver chooses based on meeting cadence. (See §7.3.)
 - **Branching strategy.** Recommended: push directly to `main` with a "one driver at a time" convention during the Monday meeting; branch + PR only for structural repo changes (new client folder, schema change, automation tweak). Four-person team, low-stakes file repo — branch-and-PR for every edit creates more friction than it prevents. (See §8.3.)
-- **Master CP active-subset display.** Recommended: a single Active table at the top, an On Hold table below it, a collapsed/linked Closed list at the bottom. Builder may rearrange if a different layout proves easier to scan during the meeting. (See §3.)
+- **Master CP active-subset display.** Recommended: a single Active table at the top, a collapsed Closed-recent list (last 30 days) below it. Builder may rearrange if a different layout proves easier to scan during the meeting. (See §3.)
 - **Per-CP "Active research" section.** Recommended for any project that's commissioned Perplexity / Claude Research artifacts (per bootstrap v2 §Research Outputs). Optional for projects without active research workstreams. (See §4.4.)
 
 ---
@@ -220,21 +235,15 @@ Author: T.Welch + Claude (and MC-2 automation)
 ## Quick Resume
 **Last Monday review:** <date>
 **Active projects:** <count>
-**On Hold:** <count>
 **This week's themes:** <one-line meeting takeaway>
 
 ## Active — First Person
 
 | Client | Code | Project | Status | Owner | Last touched | CP |
 |---|---|---|---|---|---|---|
-| Google | ggl-5176 | London Safety Video Phase I | In Progress | Tony | 2026-05-04 | [→](1P/google/ggl-5176-cp.md) |
-| Google | ggl-5168 | Playbooks (Activation) | In Progress | Tony | 2026-05-03 | [→](1P/google/ggl-5168-cp.md) |
-| ... | | | | | | |
-
-## On Hold — First Person
-
-| Client | Code | Project | Status | Owner | Reason | CP |
-|---|---|---|---|---|---|---|
+| Google | ggl-5176 | London Safety Video Phase I | Open | Tony | 2026-05-04 | [→](1P/google/ggl-5176-cp.md) |
+| Google | ggl-5168 | Playbooks (Activation) | Open | Tony | 2026-05-03 | [→](1P/google/ggl-5168-cp.md) |
+| Google | ggl-5180 | (new opportunity) | Potential | Tony | 2026-05-02 | [→](1P/google/ggl-5180-cp.md) |
 | ... | | | | | | |
 
 ## Active — Canonic
@@ -276,10 +285,10 @@ Author: T.Welch + Claude (and MC-2 automation)
 
 ### 3.3 Active subset rule
 
-`Active — First Person` table contains only rows where `mc_status ∈ Active subset` (per pre-flight Q1 default: `Open` ∪ `In Progress`).
-`On Hold — First Person` contains only `On Hold`.
-`Closed — recent` contains rows with `Closed` status touched in the last 30 days.
-Anything older than 30 days closed → archived to `archive/master-cp-NNN.md`.
+`Active — First Person` contains only rows where `mc_status ∈ {Potential, Open}` (the active subset per resolved Q1).
+`Closed — recent` contains rows where `mc_status = Closed` and `Last touched` is within 30 days.
+Rows with `mc_status = Archived` or `Closed` older than 30 days → archived to `archive/master-cp-NNN.md` and removed from the live file.
+Rows with `mc_status = Internal` are skipped entirely (Canonic and 1P-internal work route through `canonic/sprint-cp.md`).
 
 ---
 
@@ -403,7 +412,7 @@ It also fires on:
 
 | Trigger | What sync does |
 |---|---|
-| `mc_status` change | Update Status column in master CP. If the new status moves the row across subtables (Active ↔ On Hold ↔ Closed), move it. Update `Last touched` timestamp. |
+| `mc_status` change | Update Status column in master CP. If the new status moves the row across subtables (Active ↔ Closed-recent ↔ Archived), move it. Update `Last touched` timestamp. |
 | `name` change | Update Project column in master CP. Update H1 title and anchor `Project:` field in the per-project CP file. |
 | `account_manager` change | Update Owner column in master CP. |
 | New project, status ∈ Active subset | Append row to Active table. Create `1P/<client>/<code>-cp.md` from the empty template (anchor + H1 + skeletal sections). |
@@ -421,7 +430,7 @@ MC-2 user: <auth.users.email>
 Timestamp: <ISO>
 ```
 
-Example: `[mc-2 sync] ggl ggl-5176 — status: In Progress → On Hold`
+Example: `[mc-2 sync] ggl ggl-5176 — status: Open → Closed`
 
 The "MC-2 user" line records who made the change in MC-2 — preserves attribution even though the commit author is the GitHub App.
 
@@ -483,7 +492,7 @@ The driver (typically Tony or Drew) opens Claude Code in the repo and types `run
 1. Reads `master-cp.md`. Lists every active project, grouped by client, in a fixed scan order (alphabetical by client, then by code within client).
 2. For each project in turn:
    a. Reads `1P/<client>/<code>-cp.md`.
-   b. Announces in chat: *"**GGL-5176 London Safety Video Phase I**. Status: In Progress. Last touched 2026-05-04 (Tony). Quick Resume: [the Quick Resume from the CP, ≤2 sentences]."*
+   b. Announces in chat: *"**GGL-5176 London Safety Video Phase I**. Status: Open. Last touched 2026-05-04 (Tony). Quick Resume: [the Quick Resume from the CP, ≤2 sentences]."*
    c. Asks: *"Updates? Decisions? Status thoughts? (type or say)."*
    d. Driver types light tags: `update`, `decision: <text>`, `blocker: <text>`, `next: <text>`, `skip` (no change), or free text. Verbal discussion happens in parallel — Claude doesn't need to capture it now.
 3. After all active projects are walked: Claude asks the same for `canonic/sprint-cp.md`.
@@ -665,8 +674,8 @@ Driver types `approve all`, `approve quick resume`, `reject decision 1`, etc. �
 | Bootstrap v2 (operational discipline) | Exists at `/_claude/bootstraps/context-protocol-bootstrap-v02.md` | Repo's `CLAUDE.md` references it |
 | Spec-writing guide | Exists at `/_claude/personal/tasker/docs/bootstraps/spec-writing-guide.md` | This spec follows it |
 | `context-protocol` GitHub repo | **Does not exist** | Created on v1 launch; this spec is the inaugural commit |
-| MC-2 status enumeration | Field exists, **enum values not documented in MC-2 CP** | Pre-flight Q1 — Drew confirms |
-| `1P/ggl-repos/` (existing precursor) | Active and in daily use | Pre-flight Q2 — coexist (recommended) or migrate |
+| MC-2 status enumeration | Vocabulary `Potential / Open / Closed / Archived / Internal` per `FirstPersonSF/mc-2#17` (centralized in `frontend/src/lib/status.ts`). Active subset = `Potential ∪ Open`. | PR open; merge before cp-engine v1 launch |
+| `1P/ggl-repos/` (existing precursor) | Active and in daily use | Independent of this system — no relationship; ggl-repos continues unchanged |
 
 ### Gaps / prerequisites
 
@@ -681,8 +690,9 @@ Driver types `approve all`, `approve quick resume`, `reject decision 1`, etc. �
 ### v1 Must-Have (target: launch before next Monday review where the team is colocated)
 
 - New `context-protocol` GitHub repo created, all four founders added as collaborators
-- Repo seeded with `CLAUDE.md`, `master-cp.md`, `README.md`, `docs/specs/cp-engine-spec-v01.md` (this file), `1P/google/` initial content (per Pre-flight Q3 default), `canonic/sprint-cp.md` for current sprint
-- `master-cp.md` populated by MC-2 backfill (all active projects across all 6 clients per Pre-flight Q1's Active subset)
+- Repo seeded with `CLAUDE.md`, `master-cp.md`, `README.md`, `docs/specs/cp-engine-spec-v01.md` (this file), per-project CPs for **all active projects across all six active clients** (Google, SentinelOne, Infoblox, Hexagon, SalesLoft, Teleflex), `canonic/sprint-cp.md` for current sprint
+- `master-cp.md` populated by MC-2 backfill (all projects in active subset = `Potential ∪ Open`, across all six clients)
+- `FirstPersonSF/mc-2#17` (status vocabulary rename) merged before cp-engine v1 launch
 - `github_client.py` module + GitHub App installed; sync fires on `mc_status`, `name`, `account_manager` changes
 - Trigger phrases (`run weekly review`, `deepen from transcript`, `wrap up`, `check status`) implemented via `CLAUDE.md` instructions
 - Marcello + Brandon onboarded to Claude Desktop with required MCPs
@@ -698,7 +708,6 @@ Driver types `approve all`, `approve quick resume`, `reject decision 1`, etc. �
 
 ### v2+
 
-- Migration of `ggl-repos/` content into `1P/google/` (after one full quarter of v1 stability)
 - ClickUp → `canonic/sprint-cp.md` automation (auto-populate "Shipped This Sprint" from Done tasks)
 - Cross-CP search ("which projects mentioned this client contact?") via embeddings
 - Read-only web view of the repo for stakeholders who don't use AI tools
@@ -741,6 +750,6 @@ None surfaced during v01 drafting. (Empty by intent; fill on v02+ if revisions s
 | **Live pass** | Monday meeting's first phase: driver types light tags during discussion. |
 | **Deepening pass** | Monday meeting's second phase: transcript-driven richer extraction with diff review. |
 | **Sync** | One-way MC-2 → GitHub propagation of status / name / owner changes. |
-| **Active subset** | The set of `mc_status` values that count as "active" (default: Open ∪ In Progress). |
+| **Active subset** | The set of `mc_status` values that count as "active" — `Potential ∪ Open` per resolved Q1. |
 | **Driver** | The founder running the AI session during the Monday meeting (Tony or Drew in v1). |
 | **Verbal anchor** | One of two natural phrases ("Next, [code-name]" / "Decision:") that aid transcript parsing. |
