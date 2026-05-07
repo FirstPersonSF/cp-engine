@@ -36,7 +36,7 @@ Three on day one:
 |---|---|---|
 | `cp-1p` | First Person *jobs* (client engagements). Project codes like `ggl-5168`, `ibx-5153`, `pph-5182`. | Drew, Tony, Brandon, Marcello |
 | `cp-firstpersonsf` | First Person *internal* tooling and components. Includes `mc-2` itself as a tracked project. | Drew, Tony |
-| `cp-canonic` | Canonic / personal repos (`storyos`, `hex-brand-zoner`, etc.). | Drew, Tony, Brandon, Marcello |
+| `cp-canonic` | Canonic / personal repos (`storyos`, `unf-forge`, `canonic-website`, etc.). | Drew, Tony, Brandon, Marcello |
 
 `mc-2` lives inside `cp-firstpersonsf` as a normal project (one CP file). It is a bigger initiative than most FPSF tools, but we're not introducing an `initiative/` concept on day one — promote it later if a second one appears. (YAGNI applied here deliberately.)
 
