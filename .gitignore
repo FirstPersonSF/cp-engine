@@ -10,3 +10,22 @@
 # Secrets
 .env
 .env.local
+
+# Per-tenant local config (template lives in cp-1p / cp-firstpersonsf / cp-canonic)
+.cp-engine.local.toml
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/
+.venv/
+.uv-cache/
+
+# Tooling
+.ruff_cache/
+.mypy_cache/

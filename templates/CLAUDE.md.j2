@@ -1,0 +1,136 @@
+---
+Project: {{ tenant.display }}
+Provenance: cp-engine v{{ engine_version }} | {{ today }}
+Filename: CLAUDE.md
+Author: cp-engine (generated)
+---
+
+# {{ tenant.display }} — Session Protocol
+
+> **GENERATED FILE.** Do not hand-edit. A `CLAUDE.md` change is a
+> `cp-engine` template change. Open an issue against `cp-engine` if you
+> need a behavior tweak.
+
+## Status vocabulary (read side)
+
+Projects in this tenant carry one of: `Deal`, `Open`, `Holding`, `Closed`, `Archived`.
+
+The **active subset** = `Deal ∪ Open` (combined with `is_internal=false` where the
+backend tracks it). Active projects appear in `master-cp.md`'s Active table; Holding
+and Closed-recent are collapsed `<details>` blocks below.
+
+`Internal` is **not** a status value — it's an orthogonal `is_internal` boolean on
+the source-of-truth side, used to filter out internal pseudo-projects from the
+master CP.
+
+## Reading modes
+
+This session is in exactly one mode at any moment. Modes can change mid-session
+(see "Mode-switching" below).
+
+### Mode 1 — Index-only (default)
+Loaded: `master-cp.md`
+NOT loaded: `projects/`, `weekly-cp.md`{% if has_sprint %}, `canonic/`{% endif %}
+Triggered by: any session opened in this tenant without a scoping phrase.
+
+### Mode 2 — Single-project
+Loaded: `master-cp.md` + `projects/<code>.md`
+NOT loaded: other project CPs, `weekly-cp.md`
+Triggered by: `update <code>`, `check status <code>`, `switch to <code>`, or
+opening a session in a tracked project repo (auto-loads its CP).
+{% if has_sprint %}
+### Mode 3 — Sprint
+Loaded: `master-cp.md` + `canonic/sprint-cp.md`
+NOT loaded: `projects/`, `weekly-cp.md`
+Triggered by: `update sprint`, `check status sprint`.
+{% endif %}
+### Mode {{ 4 if has_sprint else 3 }} — Weekly review
+Loaded: `master-cp.md` + `weekly-cp.md` + every active project CP{% if has_sprint %} + `canonic/sprint-cp.md`{% endif %}
+NOT loaded: (none — this is the heavyweight mode)
+Triggered by: `run weekly review`.
+
+## Mode-switching
+
+**Replace.** These phrases switch the active mode entirely:
+- `switch to <code>` → mode 2 with `<code>`
+{%- if has_sprint %}
+- `switch to sprint` → mode 3
+{%- endif %}
+- `run weekly review` → mode 4
+
+**Additive.** These phrases layer context onto the current mode:
+- `also load <code>` → adds `projects/<code>.md`
+{%- if has_sprint %}
+- `also load sprint` → adds `canonic/sprint-cp.md`
+{%- endif %}
+
+`run weekly review` mid-session loads on top of the current mode rather than
+discarding it. Use `wrap up` to close the weekly-review block; the prior mode
+persists if the session continues.
+
+## Gatekeeper rule (enforced)
+
+Do NOT auto-glob, read, or search any path outside the connected tenant
+repositories unless the user explicitly references it by path or by repo
+name. Project source repos (those configured in `.cp-engine.toml [[projects]]`)
+are opt-in: the user must say "also load <code>" or "switch to <code>",
+or open a session inside that repo's directory.
+
+This rule is relative to the *set of currently connected tenant repositories*,
+not a single repo. A user with `cp-1p` and `cp-canonic` connected via Claude
+Desktop's GitHub MCP has both in scope; Claude reads from whichever the
+conversation is about.
+
+## Trigger phrases
+
+| Phrase | Mode | Action |
+|---|---|---|
+| (no phrase) | 1 | Default. Read `master-cp.md` only. |
+| `update <code>` | 2 | Open `projects/<code>.md` for editing. |
+| `check status <code>` | 2 | Read `projects/<code>.md`; summarize without editing. |
+{%- if has_sprint %}
+| `update sprint` | 3 | Open `canonic/sprint-cp.md` for editing. |
+| `check status sprint` | 3 | Read `canonic/sprint-cp.md`; summarize without editing. |
+{%- endif %}
+| `run weekly review` | {{ 4 if has_sprint else 3 }} | Begin live pass of partners'-review workflow. |
+| `also load <code>` | additive | Layer `projects/<code>.md` onto current mode. |
+| `switch to <code>` | replace → 2 | Discard previous mode; load `projects/<code>.md`. |
+| `deepen from transcript` | (during weekly review) | Begin deepening pass. |
+| `wrap up` | (during weekly review) | Finalize: word-count checks, master-CP roll-up, commit, push. |
+| `rotate the CP` | any | Manually trigger archive rotation on the focused CP. |
+
+## Reference style
+
+When announcing a project to a human, **always** use code + name:
+"Updates on **{{ example_code }} {{ example_name }}**?" — never just the code alone.
+
+Anchor blocks at the top of every `.md` file follow this format:
+
+```markdown
+---
+Project: <code+name OR tenant name>
+Provenance: Version <NN> | <YYYY-MM-DD>
+Filename: <filename>.md
+Author: <person | "Claude" | "cp-engine">
+---
+```
+
+## Hand-written vs. engine-managed
+
+Sections marked with HTML comments like `<!-- cp-engine:start <name> -->` /
+`<!-- cp-engine:end <name> -->` are written by cp-engine sync. Outside those
+markers is human territory. Sync never touches `weekly-cp.md` at all.
+
+## Word-count discipline
+
+Per bootstrap v2:
+- >2,500 words on a CP file → duplication audit on next wrap-up
+- >3,500 words → archive rotation forced before commit
+
+The engine enforces both checks during `cp render` and `wrap up`.
+
+## Spec
+
+Tenant config: `.cp-engine.toml` (committed) + `.cp-engine.local.toml` (gitignored).
+Engine version: `{{ engine_version }}`.
+Canonical spec: see `cp-engine/docs/specs/cp-engine-spec-v02.md`.

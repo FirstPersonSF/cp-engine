@@ -1,0 +1,55 @@
+---
+Project: {{ project.code | upper }} {{ project.name }}
+Provenance: Version {{ engine_version }} | {{ today }}
+Filename: {{ project.code }}.md
+Author: cp-engine (initial scaffold)
+---
+
+# {{ project.code | upper }} {{ project.name }} — Project CP
+
+> _<one-line description of what this project is and who it's for>_
+
+<!-- cp-engine:start tracked-issues -->
+## Tracked issues
+
+| # | Title | Status | Owner | Updated |
+|---|---|---|---|---|
+{%- for issue in tracked_issues %}
+| #{{ issue.number }} | {{ issue.title }} | {{ issue.status }} | {{ issue.owner or "—" }} | {{ issue.updated_short or "—" }} |
+{%- endfor %}
+<!-- cp-engine:end tracked-issues -->
+
+## Quick Resume
+
+**Last session:** _<date>_
+**Current work:** _<what's in flight right now>_
+**Next up:** _<next 1-3 concrete actions, dated where possible>_
+**Blockers:** _<or "None">_
+
+## Current Work
+
+_<2-10 paragraphs of substantive notes on the active workstream.>_
+
+## Decisions
+
+1. _<decision>_ (_<date>_)
+
+## Done
+
+_<recent completions, grouped by date or session>_
+
+## Active research
+
+_<per bootstrap v2 — pointers only, never raw research dumps>_
+
+## Project Notes
+
+_<durable conventions specific to this project that any AI assistant should know>_
+
+## Stakeholders
+
+_<key contacts on the client side and internal owners>_
+
+## Archive Index
+
+_<links to archived content, if any>_

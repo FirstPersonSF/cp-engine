@@ -1,0 +1,50 @@
+---
+Project: {{ tenant.display }}
+Provenance: Version {{ engine_version }} | {{ today }}
+Filename: master-cp.md
+Author: cp-engine (sync)
+---
+
+# {{ tenant.display }} — Master CP
+
+> Index of every active project tracked by this tenant.
+> Status, name, owner, and last-touched are automation-managed by cp-engine; do not hand-edit
+> inside engine-managed regions (marked by `cp-engine:start` / `cp-engine:end` HTML comments).
+
+<!-- cp-engine:start last-sync-timestamp -->
+**Last sync:** {{ last_sync_iso }}
+<!-- cp-engine:end last-sync-timestamp -->
+
+<!-- cp-engine:start active-table -->
+## Active
+
+| Code | Project | Status | Owner | Last touched | One-line summary | CP |
+|---|---|---|---|---|---|---|
+{%- for p in active_projects %}
+| `{{ p.code }}` | {{ p.name }} | {{ p.status }} | {{ p.owner or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [→](projects/{{ p.code }}.md) |
+{%- endfor %}
+<!-- cp-engine:end active-table -->
+
+<!-- cp-engine:start holding-subtable -->
+<details>
+<summary><strong>Holding</strong> ({{ holding_projects | length }})</summary>
+
+| Code | Project | Owner | Last touched | CP |
+|---|---|---|---|---|
+{%- for p in holding_projects %}
+| `{{ p.code }}` | {{ p.name }} | {{ p.owner or "—" }} | {{ p.last_touched_short or "—" }} | [→](projects/{{ p.code }}.md) |
+{%- endfor %}
+
+</details>
+<!-- cp-engine:end holding-subtable -->
+
+<!-- cp-engine:start closed-recent -->
+<details>
+<summary><strong>Closed (last 30 days)</strong> ({{ closed_recent | length }})</summary>
+
+{% for p in closed_recent -%}
+- `{{ p.code }}` — {{ p.name }} — closed {{ p.last_touched_short }}
+{% endfor %}
+
+</details>
+<!-- cp-engine:end closed-recent -->
