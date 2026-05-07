@@ -18,7 +18,11 @@ This is the canonical spec. v01 + amendments + the v02 architecture-change propo
 - **Bootstrap (v2):** `/_claude/bootstraps/context-protocol-bootstrap-v02.md` — the operational discipline this spec inherits (word-count thresholds, archive rotation, research-output discipline, three-tier memory model).
 - **Spec-writing guide:** `/_claude/personal/tasker/docs/bootstraps/spec-writing-guide.md`.
 - **Working precursor:** `/_claude/1P/ggl-repos/` — the proof-of-concept that demonstrates the multi-level CP pattern in practice.
-- **Sprint protocol:** `/_claude/bootstraps/clickup-sprint-protocol-bootstrap-v01.md` — Canonic's sprint-tracking mechanism, which this spec sits *above* as a summary layer.
+- **Sprint protocol:** Tony+Drew's weekly sprint coordination protocol used in StoryOS and Mission Control. Lives in two places today, with a third in progress:
+  - `Canonic-OS/storyos` → `docs/sprint-protocol.md` — current canonical
+  - `FirstPersonSF/mc-2` → `docs/sprint-protocol.md` v03 — bootstrapped from StoryOS with MC-specific parameters (sprint list, repo, Supabase project)
+  - `Canonic-OS/sprint-bootstrap` (Phase 1, in progress) — project-agnostic extraction; will become the canonical source once it stabilizes
+  - cp-engine sits above this protocol — see §1.4 for the boundary
 - **Historical specs:** `docs/specs/history/cp-engine-spec-v01.md`, `cp-engine-spec-v01-amendments.md`, `cp-engine-spec-v02-architecture-change.md` — superseded by this file.
 
 ---
@@ -175,7 +179,11 @@ Next review              →  Cycle repeats. Diff against last review's commit s
 
 **Cadence over date discipline.** The partners' review is *weekly* — the rhythm matters, not the exact day. Tony's update from v01 carries forward.
 
-**Distinct from the StoryOS / Mission Control sprint protocol.** Drew operates a separate sprint protocol (`Canonic-OS/storyos` v03+) on a Tuesday-open / Monday-close cadence. That ritual is distinct from the partners' review — different audience, different altitude, different artifacts. The two systems coexist on different rhythms.
+**Distinct from the StoryOS / Mission Control sprint protocol.** Tony and Drew operate a weekly sprint protocol in StoryOS and Mission Control (Tuesday-open / Monday-close, run via `/sprint-open` and `/sprint-close`, tracked in ClickUp). The sprint protocol draws the boundary itself in its §2 ("What it does NOT replace"):
+
+> **Context Protocol.** `project-cp.md` tells Claude what context to load; the sprint tells Claude what to work on.
+
+cp-engine reciprocates that boundary. **Sprint = what to work on. CP = what context to load.** The two systems are orthogonal: `/sprint-close` writes into ClickUp, into `docs/sprint-protocol/closes/<sprint>-close.md`, and into a per-sprint GitHub ops issue — not into any file cp-engine manages. cp-engine never reads or writes sprint-tracking state. They coexist on different rhythms (sprint = weekly task coordination; partners' review = weekly project-level summary) without integration handoff.
 
 ---
 
