@@ -1,23 +1,108 @@
 """Tenant configuration — merges committed `.cp-engine.toml` with the
 gitignored `.cp-engine.local.toml`.
 
-See spec v02 §5 for the schema. Implementation lands in v0.1; this module
-is the contract.
+See spec v02 §5 for the schema. The committed file is the source of truth
+for *which projects exist* (project list, GitHub coordinates, sync backend);
+the local file is the source of truth for *where they live on this machine*.
+
+Fail-loud semantics: silent skipping is a primary failure mode this module
+prevents. A project listed in the committed file but missing from local
+config raises `ProjectsMissingFromLocal`; a configured local path that
+doesn't exist on disk raises `LocalPathNotFound`.
 """
 
 from __future__ import annotations
 
+import logging
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from packaging.version import InvalidVersion, Version
+
+from cp_engine import __version__ as ENGINE_VERSION
+
+logger = logging.getLogger(__name__)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Errors
+# ──────────────────────────────────────────────────────────────────────
+
+
+class ConfigError(Exception):
+    """Base class for all configuration errors."""
+
+
+class CommittedConfigMissing(ConfigError):
+    """`.cp-engine.toml` doesn't exist at the tenant root."""
+
+
+class LocalConfigMissing(ConfigError):
+    """`.cp-engine.local.toml` doesn't exist; user needs to run `cp init`."""
+
+
+class CommittedConfigInvalid(ConfigError):
+    """`.cp-engine.toml` is missing a required section or field."""
+
+
+class LocalConfigInvalid(ConfigError):
+    """`.cp-engine.local.toml` is malformed."""
+
+
+class ProjectsMissingFromLocal(ConfigError):
+    """One or more committed projects have no entry in local config."""
+
+    def __init__(self, missing: tuple[str, ...]) -> None:
+        self.missing = missing
+        super().__init__(
+            "Missing local repo paths for: "
+            + ", ".join(missing)
+            + ". Run `cp init` to configure, or edit .cp-engine.local.toml directly."
+        )
+
+
+class LocalPathNotFound(ConfigError):
+    """A configured local path doesn't exist on disk."""
+
+    def __init__(self, code: str, path: Path) -> None:
+        self.code = code
+        self.path = path
+        super().__init__(f"Local path for project '{code}' does not exist: {path}")
+
+
+class EngineVersionMismatch(ConfigError):
+    """Installed cp-engine version doesn't satisfy the tenant's pin."""
+
+    def __init__(self, installed: str, required: str) -> None:
+        self.installed = installed
+        self.required = required
+        super().__init__(
+            f"Installed cp-engine {installed} does not satisfy the tenant's "
+            f"engine pin '{required}'. Upgrade or downgrade cp-engine "
+            "(or update the pin in .cp-engine.toml)."
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Data shapes
+# ──────────────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class ProjectConfig:
-    """One project tracked by a tenant."""
+    """One project tracked by a tenant.
+
+    `local_path` is None when the user *intentionally skipped* the project
+    in their local config (`code = ""`). Brandon doesn't have access to
+    `mc-2`, for instance — he should be able to skip it cleanly without
+    breaking the engine.
+    """
 
     code: str
     github: str  # "owner/repo"
-    local_path: Path | None  # from .cp-engine.local.toml; None means user skipped
+    local_path: Path | None
 
 
 @dataclass(frozen=True)
@@ -35,15 +120,228 @@ class TenantConfig:
 
     name: str
     display: str
-    engine_version: str
+    engine_version_constraint: str
     sync: SyncConfig
     projects: tuple[ProjectConfig, ...]
+    root: Path  # absolute path to the tenant repo
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Public API
+# ──────────────────────────────────────────────────────────────────────
+
+
+COMMITTED_FILENAME = ".cp-engine.toml"
+LOCAL_FILENAME = ".cp-engine.local.toml"
 
 
 def load(tenant_root: Path) -> TenantConfig:
     """Load and merge `.cp-engine.toml` (committed) with `.cp-engine.local.toml`.
 
-    Fails loudly if a project is in the committed file but missing from
-    local (per spec §5.4).
+    Raises one of the `ConfigError` subclasses on any failure. Never returns
+    a partial config — silent skipping would defeat the file split's purpose.
     """
-    raise NotImplementedError("config.load lands in v0.1")
+    tenant_root = tenant_root.resolve()
+    committed = _load_committed(tenant_root)
+    local = _load_local(tenant_root)
+
+    _enforce_engine_version(committed["engine_version_constraint"])
+
+    projects = _merge_projects(committed["projects"], local["repos"])
+
+    return TenantConfig(
+        name=committed["name"],
+        display=committed["display"],
+        engine_version_constraint=committed["engine_version_constraint"],
+        sync=committed["sync"],
+        projects=projects,
+        root=tenant_root,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Internals
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _load_committed(tenant_root: Path) -> dict:
+    path = tenant_root / COMMITTED_FILENAME
+    if not path.exists():
+        raise CommittedConfigMissing(
+            f"No {COMMITTED_FILENAME} at {tenant_root}. Not a tenant repo?"
+        )
+
+    with path.open("rb") as fh:
+        try:
+            data = tomllib.load(fh)
+        except tomllib.TOMLDecodeError as exc:
+            raise CommittedConfigInvalid(f"Failed to parse {path}: {exc}") from exc
+
+    return _normalize_committed(data, path)
+
+
+def _normalize_committed(data: dict, source: Path) -> dict:
+    tenant = data.get("tenant")
+    if tenant is None or not isinstance(tenant, dict):
+        raise CommittedConfigInvalid(f"{source}: missing [tenant] section")
+
+    name = tenant.get("name")
+    if not isinstance(name, str) or not name:
+        raise CommittedConfigInvalid(f"{source}: [tenant].name is required (non-empty string)")
+
+    # display is optional — fall back to a title-cased name. Worst case is a
+    # slightly ugly heading in master-cp.md, trivially overridable.
+    display = tenant.get("display") or name.replace("-", " ").title()
+
+    engine = data.get("engine")
+    if engine is None or not isinstance(engine, dict):
+        raise CommittedConfigInvalid(f"{source}: missing [engine] section")
+    engine_version = engine.get("version")
+    if not isinstance(engine_version, str) or not engine_version:
+        raise CommittedConfigInvalid(
+            f"{source}: [engine].version is required (e.g. \"~= 0.1\")"
+        )
+
+    sync_raw = data.get("sync")
+    if sync_raw is None or not isinstance(sync_raw, dict):
+        raise CommittedConfigInvalid(f"{source}: missing [sync] section")
+    backend = sync_raw.get("backend")
+    if backend not in ("mc-2", "github-issues"):
+        raise CommittedConfigInvalid(
+            f"{source}: [sync].backend must be one of: 'mc-2', 'github-issues' "
+            f"(got: {backend!r})"
+        )
+    cron = sync_raw.get("cron", "0 * * * *")
+    mc_2_ref: str | None = None
+    if backend == "mc-2":
+        mc_2_block = sync_raw.get("mc_2") or {}
+        mc_2_ref = mc_2_block.get("supabase_project_ref")
+        if not mc_2_ref:
+            raise CommittedConfigInvalid(
+                f"{source}: [sync.mc_2].supabase_project_ref is required when backend = 'mc-2'"
+            )
+
+    sync = SyncConfig(
+        backend=backend,
+        cron=cron,
+        mc_2_supabase_project_ref=mc_2_ref,
+    )
+
+    projects_raw = data.get("projects") or []
+    if not isinstance(projects_raw, list):
+        raise CommittedConfigInvalid(f"{source}: [[projects]] must be a list of tables")
+
+    projects: list[dict] = []
+    seen_codes: set[str] = set()
+    for i, p in enumerate(projects_raw):
+        if not isinstance(p, dict):
+            raise CommittedConfigInvalid(f"{source}: [[projects]][{i}] must be a table")
+        code = p.get("code")
+        github = p.get("github")
+        if not isinstance(code, str) or not code:
+            raise CommittedConfigInvalid(
+                f"{source}: [[projects]][{i}].code is required (non-empty string)"
+            )
+        if not isinstance(github, str) or "/" not in github:
+            raise CommittedConfigInvalid(
+                f"{source}: [[projects]][{i}].github must be 'owner/repo' (got: {github!r})"
+            )
+        if code in seen_codes:
+            raise CommittedConfigInvalid(f"{source}: duplicate project code '{code}'")
+        seen_codes.add(code)
+        projects.append({"code": code, "github": github})
+
+    return {
+        "name": name,
+        "display": display,
+        "engine_version_constraint": engine_version,
+        "sync": sync,
+        "projects": projects,
+    }
+
+
+def _load_local(tenant_root: Path) -> dict:
+    path = tenant_root / LOCAL_FILENAME
+    if not path.exists():
+        raise LocalConfigMissing(
+            f"No {LOCAL_FILENAME} at {tenant_root}. Run `cp init` to configure."
+        )
+
+    with path.open("rb") as fh:
+        try:
+            data = tomllib.load(fh)
+        except tomllib.TOMLDecodeError as exc:
+            raise LocalConfigInvalid(f"Failed to parse {path}: {exc}") from exc
+
+    repos = data.get("repos") or {}
+    if not isinstance(repos, dict):
+        raise LocalConfigInvalid(f"{path}: [repos] must be a table")
+    for code, raw_path in repos.items():
+        if not isinstance(raw_path, str):
+            raise LocalConfigInvalid(
+                f"{path}: [repos].{code} must be a string path or empty string for skip"
+            )
+
+    return {"repos": repos}
+
+
+def _merge_projects(
+    committed: list[dict],
+    local_repos: dict[str, str],
+) -> tuple[ProjectConfig, ...]:
+    committed_codes = {p["code"] for p in committed}
+    local_codes = set(local_repos.keys())
+
+    # Drift: paths in local for projects not in committed. Warn (project may
+    # have been removed from the tenant); don't fail.
+    for orphan in sorted(local_codes - committed_codes):
+        logger.warning(
+            "Local config has path for unknown project %r (not in %s); ignoring.",
+            orphan,
+            COMMITTED_FILENAME,
+        )
+
+    # Hard fail: projects in committed missing from local entirely.
+    missing = tuple(sorted(committed_codes - local_codes))
+    if missing:
+        raise ProjectsMissingFromLocal(missing)
+
+    merged: list[ProjectConfig] = []
+    for p in committed:
+        code = p["code"]
+        raw_path = local_repos[code]  # guaranteed present after the check above
+
+        if raw_path == "":
+            # Intentionally skipped (e.g. Brandon doesn't have access to mc-2).
+            local_path: Path | None = None
+        else:
+            expanded = Path(raw_path).expanduser()
+            try:
+                resolved = expanded.resolve(strict=True)
+            except FileNotFoundError as exc:
+                raise LocalPathNotFound(code=code, path=expanded) from exc
+            local_path = resolved
+
+        merged.append(
+            ProjectConfig(code=code, github=p["github"], local_path=local_path)
+        )
+
+    return tuple(merged)
+
+
+def _enforce_engine_version(constraint: str) -> None:
+    try:
+        spec = SpecifierSet(constraint)
+    except InvalidSpecifier as exc:
+        raise CommittedConfigInvalid(
+            f"Invalid [engine].version constraint {constraint!r}: {exc}"
+        ) from exc
+
+    try:
+        installed = Version(ENGINE_VERSION)
+    except InvalidVersion as exc:
+        # Defensive: should never happen because we control __version__.
+        raise ConfigError(f"cp-engine reports invalid version {ENGINE_VERSION!r}") from exc
+
+    if installed not in spec:
+        raise EngineVersionMismatch(installed=ENGINE_VERSION, required=constraint)
