@@ -13,8 +13,8 @@ Author: Drew + Claude (for Tony's review)
 
 v01 (and the three accepted amendments) describe a single `context-protocol` repo holding one master CP, one weekly CP, and a `projects/` directory. That works for MC-2's project list. It does not work for the rest of Drew's working surface:
 
-- **First Person internal tooling** — `mc-2` itself, plus `1p-webflow-builder`, `1p-component-library`, `1p-dashboard`, `1p-project-utilities`, `1p-code-agent`, `fathom-meeting-sync`, etc. ~10 repos that *run* FPSF, distinct from the client jobs the engine was first scoped for.
-- **Canonic / personal work** — `storyos` (and variants), `hex-brand-zoner`, `unf-forge`, `canonic-website`, etc. ~20 repos that aren't FPSF concerns at all.
+- **First Person internal tooling** — `mc-2` itself, plus `1p-webflow-builder`, `1p-component-library`, `1p-dashboard`, `1p-project-utilities`, `1p-code-agent`, `fathom-meeting-sync`, `hex-brand-zoner`, etc. ~10 repos that *run* FPSF, distinct from the client jobs the engine was first scoped for.
+- **Canonic / personal work** — `storyos` (and variants), `unf-forge`, `canonic-website`, etc. ~20 repos that aren't FPSF concerns at all.
 
 Three options were considered:
 
@@ -120,6 +120,17 @@ Outside the markers is sacred. This is the same pattern used by codegen tools an
 **Claude desktop app:** session connects to a tenant repo via the official GitHub MCP (or `gh` — the engine doesn't care which). Reads CP files directly from GitHub. **Cannot read project source code** unless those repos are also GitHub-MCP-connected. **Cannot run sync** — that's why sync is automated.
 
 Bottom line: the corpus is the same across both surfaces; only the loading mechanics differ. The cases that require local source (e.g. "look at `storyos/api/auth.py`") naturally belong in Claude Code anyway.
+
+### Co-loaded tenants in a single session
+
+A given user often spans more than one tenant in their daily flow. Brandon and Marcello, for example, work across both `cp-1p` (client engagements they staff) and `cp-canonic` (Canonic internal). Their normal pattern is connecting both tenant repos to the desktop app's GitHub MCP and letting the conversation determine which one Claude reads.
+
+This co-loading is supported, with one rule: the **gatekeeper rule from v01 Amendment 2** ("no auto-globbing outside this repo") must be phrased relative to the *set of currently connected tenant repos*, not the single repo the session was opened in. The generated `CLAUDE.md` will read approximately:
+
+> Do NOT auto-glob, read, or search any path outside the connected tenant
+> repositories unless the user explicitly references it by path or name.
+
+Project repos remain opt-in regardless of how many tenants are connected. Connecting two tenants does not implicitly load 70 project repos.
 
 ## What this doesn't change
 
