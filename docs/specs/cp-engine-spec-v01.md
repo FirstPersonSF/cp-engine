@@ -7,7 +7,7 @@ Author: T.Welch + Claude
 
 # Context Protocol Engine — Architecture Spec v01
 
-> A company-wide "memory engine" for First Person and Canonic. Master CP indexes every active client engagement at First Person plus Canonic's current sprint, with per-project / per-sprint CPs underneath. Lives in a new GitHub repo, kept in sync with Mission Control 2 by automation, driven from a Monday meeting workflow. Pattern-inspired by the working multi-level CP at `_claude/1P/ggl-repos/` but operates at a higher altitude (founder-meeting summary level) and is functionally independent from it.
+> A company-wide "memory engine" for First Person and Canonic. Master CP indexes every active client engagement at First Person plus Canonic's current sprint, with per-project / per-sprint CPs underneath. Lives in a new GitHub repo, kept in sync with Mission Control 2 by automation, driven from a partners' review workflow. Pattern-inspired by the working multi-level CP at `_claude/1P/ggl-repos/` but operates at a higher altitude (founder-meeting summary level) and is functionally independent from it.
 
 ---
 
@@ -27,7 +27,7 @@ All three resolved in conversation; resolutions are encoded directly in the spec
 
 ### Q1 — MC-2 status enumeration & "active" subset
 
-**Question:** the sync from MC-2 to `master-cp.md` filters projects by status. We need (a) the enumerated set of statuses MC-2 supports, and (b) which count as "active" for the Monday review.
+**Question:** the sync from MC-2 to `master-cp.md` filters projects by status. We need (a) the enumerated set of statuses MC-2 supports, and (b) which count as "active" for the partners' review.
 
 **Resolution:** MC-2's status vocabulary is being renamed (PR `FirstPersonSF/mc-2#17`) to align with the cp-engine sync's filter:
 
@@ -39,7 +39,7 @@ All three resolved in conversation; resolutions are encoded directly in the spec
 | `Archived` | no |
 | `Internal` | no (system-seeded only — Canonic / 1P-internal projects route through `canonic/sprint-cp.md`, not the master CP) |
 
-**Active subset = `Potential ∪ Open`.** Drives §3 (master CP schema), §5 (sync rules), §7 (Monday workflow scope). The pre-rename "On Hold" subtable proposed in early drafts is removed — there is no `On Hold` status in MC-2.
+**Active subset = `Potential ∪ Open`.** Drives §3 (master CP schema), §5 (sync rules), §7 (partners'-review workflow scope). The pre-rename "On Hold" subtable proposed in early drafts is removed — there is no `On Hold` status in MC-2.
 
 ### Q2 — `ggl-repos` coexistence vs. migration
 
@@ -51,7 +51,7 @@ All three resolved in conversation; resolutions are encoded directly in the spec
 
 **Question:** which clients are populated in the repo at v1 launch?
 
-**Resolution: all six active clients seeded by Monday.** Google, SentinelOne, Infoblox, Hexagon, SalesLoft, Teleflex. v1 launches with full master CP backfill — no incremental onboarding.
+**Resolution: all six active clients seeded before the next partners' review.** Google, SentinelOne, Infoblox, Hexagon, SalesLoft, Teleflex. v1 launches with full master CP backfill — no incremental onboarding.
 
 (Bucket 1 decisions made silently, documented in Appendix A: branching workflow, project-name display strategy, MC-2 events that fire sync, per-CP template defaults, repo permissions model.)
 
@@ -67,14 +67,14 @@ All three resolved in conversation; resolutions are encoded directly in the spec
 - **Zoom transcripts are never committed.** Transcripts pasted into the deepening pass are ephemeral session input only. Only the *extracted CP edits* are committed. (See §7.3.)
 - **Word-count discipline per bootstrap v2.** Every CP file is checked on wrap-up: >2,500 words triggers a duplication audit; >3,500 words forces archive rotation before commit. (See §4.5.)
 - **File anchors required on every `.md` file.** Per global `CLAUDE.md`. (See §2.5.)
-- **Two-pass Monday flow is mandatory, not optional.** Live pass (lightweight tags during the meeting) → deepening pass (post-meeting transcript ingestion) → wrap-up commit. Skipping the deepening pass is forbidden because it's the step that captures the discussion's substance. (See §7.)
+- **Two-pass partners'-review flow is mandatory, not optional.** Live pass (lightweight tags during the meeting) → deepening pass (post-meeting transcript ingestion) → wrap-up commit. Skipping the deepening pass is forbidden because it's the step that captures the discussion's substance. (See §7.)
 - **No status field cross-write.** MC-2 writes status to GitHub; nothing in this system writes status back to MC-2. The repo is a downstream consumer, not a peer. (See §5.4.)
 
 ### Builder's Implementation Decisions (guidance, not mandates)
 
 - **GitHub auth model.** GitHub App is recommended over fine-grained PAT (per-repo install scoping, no user-attribution drift, easier secret rotation). Drew's call. (See §5.5.)
 - **Diff-presentation UI for the deepening pass.** Recommended: Claude emits a structured diff in chat (per-CP, per-section), human approves before commit. Alternative: Claude commits to a `deepening-WW##` branch and the driver reviews via GitHub's PR diff UI. Driver chooses based on meeting cadence. (See §7.3.)
-- **Branching strategy.** Recommended: push directly to `main` with a "one driver at a time" convention during the Monday meeting; branch + PR only for structural repo changes (new client folder, schema change, automation tweak). Four-person team, low-stakes file repo — branch-and-PR for every edit creates more friction than it prevents. (See §8.3.)
+- **Branching strategy.** Recommended: push directly to `main` with a "one driver at a time" convention during the partners' review; branch + PR only for structural repo changes (new client folder, schema change, automation tweak). Four-person team, low-stakes file repo — branch-and-PR for every edit creates more friction than it prevents. (See §8.3.)
 - **Master CP active-subset display.** Recommended: a single Active table at the top, a collapsed Closed-recent list (last 30 days) below it. Builder may rearrange if a different layout proves easier to scan during the meeting. (See §3.)
 - **Per-CP "Active research" section.** Recommended for any project that's commissioned Perplexity / Claude Research artifacts (per bootstrap v2 §Research Outputs). Optional for projects without active research workstreams. (See §4.4.)
 
@@ -110,28 +110,32 @@ Per the bootstrap v2 three-tier model:
 | Tier | What lives here | Update cadence |
 |------|-----------------|----------------|
 | **Hot** | `CLAUDE.md` at the repo root (routing, trigger phrases, status enum, key conventions). Always loaded. | Edited rarely (architectural changes only). |
-| **Warm** | `master-cp.md` + each per-project / per-sprint CP. Loaded per session as needed. | Updated every Monday meeting + ad-hoc during the week. Word-count gated. |
+| **Warm** | `master-cp.md` + each per-project / per-sprint CP. Loaded per session as needed. | Updated every partners' review + ad-hoc during the week. Word-count gated. |
 | **Cold** | `archive/` directories. Loaded on demand only. | Created by archive rotation when a CP exceeds 3,500 words. |
 
 ### 1.3 The week's rhythm
 
 ```
-Mon 10am-11am  →  All four meet on Zoom.
-                  Driver opens Claude Code in repo.
-                  "run weekly review"  → live pass (light tags).
-                  Meeting ends.
-                  Transcript posted.
-                  "deepen from transcript"  → richer captures, diff for review.
-                  "wrap up"  → word-count checks, master-CP roll-up, push.
+Weekly partners' review  →  All four meet on Zoom (cadence: weekly,
+(typically Monday;          ~60 min). Driver opens Claude Code in repo.
+shifts with conflicts)      "run weekly review"  → live pass (light tags).
+                            Meeting ends.
+                            Transcript posted.
+                            "deepen from transcript"  → diff for review.
+                            "wrap up"  → word-count checks, push.
 
-Tue–Sun        →  Anyone can update any project's CP at any time.
-                  Mid-week edits don't trigger automation.
-                  MC-2 status changes during the week auto-sync to master-cp.md
-                  in near-real-time (commit-on-change).
+Between reviews          →  Anyone can update any project's CP at any time.
+                            Mid-cycle edits don't trigger automation.
+                            MC-2 status changes auto-sync to master-cp.md
+                            in near-real-time (commit-on-change).
 
-Next Mon       →  Cycle repeats. Diff against last Monday's commit shows
-                  what shifted (and what was silent).
+Next review              →  Cycle repeats. Diff against last review's commit
+                            shows what shifted (and what was silent).
 ```
+
+**Cadence over date discipline.** The partners' review is a *weekly* ritual that typically happens on Monday but shifts day-of-week to accommodate calendar conflicts — the rhythm matters, not the exact day. References below to "Monday" in older drafts have been generalized to "partners' review" or "weekly review."
+
+**Distinct from the StoryOS / Mission Control sprint protocol.** Drew operates a separate sprint protocol (`Canonic-OS/storyos` v03+) on a Tuesday-open / Monday-close cadence covering Canonic and Mission Control work at the task level. That ritual is distinct from this one — different audience (Drew + Tony, not all four founders), different altitude (sprint tasks, not project-level summaries), different artifacts (sprint close reports, not master CP). The two systems coexist on different rhythms; cp-engine's `master-cp.md` summarizes Canonic at sprint level, while the sprint protocol governs day-to-day Canonic work.
 
 ---
 
@@ -214,7 +218,7 @@ For per-project CPs, `Project` is the full code+name (e.g., `Project: GGL-5176 L
 
 ## §3 Master CP — `master-cp.md`
 
-The master CP is the single document every Monday meeting starts from. It must be scannable in <30 seconds.
+The master CP is the single document every partners' review starts from. It must be scannable in <30 seconds.
 
 ### 3.1 Schema
 
@@ -233,7 +237,7 @@ Author: T.Welch + Claude (and MC-2 automation)
 > Last automation sync: <ISO timestamp>
 
 ## Quick Resume
-**Last Monday review:** <date>
+**Last partners' review:** <date>
 **Active projects:** <count>
 **This week's themes:** <one-line meeting takeaway>
 
@@ -253,7 +257,7 @@ Author: T.Welch + Claude (and MC-2 automation)
 | W19 | <theme> | In Progress | [→](canonic/sprint-cp.md) |
 
 ## Decisions (cross-cutting, last 4 weeks)
-1. <decision> (<date>, source: <project code or "Monday review">)
+1. <decision> (<date>, source: <project code or "partners' review">)
 2. ...
 
 ## Active research
@@ -276,10 +280,10 @@ Author: T.Welch + Claude (and MC-2 automation)
 | Project (name) column | MC-2 | sync (from `projects.name` / `full_job_name`) |
 | Status column | **MC-2** | **sync (from `projects.mc_status`) — never hand-edited** |
 | Owner column | MC-2 | sync (from `projects.account_manager`) |
-| Last touched | sync OR Monday review | sync writes ISO date on any field change; Monday review can override with the meeting date |
+| Last touched | sync OR partners' review | sync writes ISO date on any field change; partners' review can override with the meeting date |
 | CP link | computed | always `1P/{client}/{code}-cp.md` |
-| Quick Resume | humans | every Monday review |
-| Decisions | humans | accumulated during Monday reviews |
+| Quick Resume | humans | every partners' review |
+| Decisions | humans | accumulated during partners' reviews |
 | Active research | humans | per bootstrap v2 |
 | Closed list | sync | sync moves rows here on `Closed` status |
 
@@ -436,7 +440,7 @@ The "MC-2 user" line records who made the change in MC-2 — preserves attributi
 
 ### 5.4 No write-back
 
-The sync is strictly one-way: MC-2 → GitHub. Nothing in this system writes status back to MC-2. If a Monday discussion concludes "let's pause GGL-5176," the action item is *go to MC-2 and change the status there* — not edit the markdown.
+The sync is strictly one-way: MC-2 → GitHub. Nothing in this system writes status back to MC-2. If a partners'-review discussion concludes "let's pause GGL-5176," the action item is *go to MC-2 and change the status there* — not edit the markdown.
 
 If a human accidentally edits the Status column directly, the next sync overwrites it. (No auto-revert on detection — git diff makes it visible if someone wants to investigate.)
 
@@ -459,13 +463,13 @@ These phrases are documented in the repo's `CLAUDE.md`. Any AI session that read
 
 | Phrase | Action |
 |---|---|
-| `run weekly review` | Begin the live pass of the Monday workflow (§7.1). |
+| `run weekly review` | Begin the live pass of the partners'-review workflow (§7.1). |
 | `deepen from transcript` | Begin the deepening pass with the pasted-in transcript (§7.3). |
 | `wrap up` | Finalize: word-count checks across touched CPs, master-CP roll-up, commit, push (§7.4). |
 | `check status` | Read master CP + named project's CP if specified; summarize without editing. |
 | `update <client> <code>` | Open that project's CP in edit mode for ad-hoc mid-week updates. |
 | `rotate the CP` | Manually trigger archive rotation on whichever CP is in focus (per bootstrap v2 §Archive Rotation). |
-| `start a new client <name>` | Scaffold `1P/<code>/` directory + first project CP. (Used when MC-2 hasn't yet seeded the client and a Monday discussion needs to capture pre-seed work.) |
+| `start a new client <name>` | Scaffold `1P/<code>/` directory + first project CP. (Used when MC-2 hasn't yet seeded the client and a partners'-review discussion needs to capture pre-seed work.) |
 
 ### 6.1 On-session-start protocol
 
@@ -483,7 +487,7 @@ Encoded in `CLAUDE.md`:
 
 ---
 
-## §7 The Monday Meeting Workflow
+## §7 The Weekly Partners' Review Workflow
 
 ### 7.1 Live pass — "run weekly review"
 
@@ -529,7 +533,7 @@ After the meeting ends, the driver downloads the Zoom transcript (or pastes it f
 After the deepening pass, the driver types `wrap up`. Claude:
 
 1. Runs `wc -w` on every CP touched this session. Triggers archive rotation per bootstrap v2 if any exceeds 3,500 words. Audits for duplication if any exceeds 2,500 words.
-2. Updates `master-cp.md`'s Quick Resume (`Last Monday review`, `This week's themes`).
+2. Updates `master-cp.md`'s Quick Resume (`Last partners' review`, `This week's themes`).
 3. Promotes any cross-cutting decisions surfaced in the deepening pass to the master CP's Decisions section (with source attribution: `(2026-05-05, source: ggl-5176 deepening)`).
 4. Commits all changes. Single commit message:
    ```
@@ -567,9 +571,9 @@ The repo has one `CLAUDE.md`. It encodes the team's protocol, not any individual
 
 ### 8.3 Branching & coordination
 
-- **Push directly to `main`** for all routine CP edits (Monday review commits, mid-week per-project updates, MC-2 sync commits).
+- **Push directly to `main`** for all routine CP edits (partners' review commits, mid-week per-project updates, MC-2 sync commits).
 - **Branch + PR** for: structural repo changes (new client folder, schema changes to templates, automation tweaks, spec edits).
-- **Monday meeting rule:** only one driver edits during the meeting. The other three contribute verbally and don't push concurrently to avoid merge churn.
+- **partners' review rule:** only one driver edits during the meeting. The other three contribute verbally and don't push concurrently to avoid merge churn.
 
 ### 8.4 Conflict resolution
 
@@ -587,22 +591,22 @@ ClickUp stays canonical for sprint task tracking — backlog, planned, in-progre
 
 ### 9.2 Update cadence
 
-- **Monday review** is the primary touchpoint. After First Person projects are walked, Claude does the same for `canonic/sprint-cp.md`: announces sprint frame, reads what's in flight, asks for updates / decisions / blockers.
+- **partners' review** is the primary touchpoint. After First Person projects are walked, Claude does the same for `canonic/sprint-cp.md`: announces sprint frame, reads what's in flight, asks for updates / decisions / blockers.
 - **End of sprint** (when ClickUp sprint closes per the sprint protocol's W## rotation): driver runs `rotate the CP` on `canonic/sprint-cp.md`. The rotation moves the closed sprint's content to `canonic/archive/sprint-W##-cp.md` and resets the live file with the new sprint's frame.
 
 ### 9.3 No automation between ClickUp and the CP
 
-ClickUp tasks do not auto-write to `sprint-cp.md`. Sprint summaries are produced by humans + Claude during the Monday review. (If a future iteration wants ClickUp → CP automation, design it then; v1 keeps it manual.)
+ClickUp tasks do not auto-write to `sprint-cp.md`. Sprint summaries are produced by humans + Claude during the partners' review. (If a future iteration wants ClickUp → CP automation, design it then; v1 keeps it manual.)
 
 ---
 
 ## UX & Interaction Design
 
-This is an internal tool with two surfaces: (1) the Monday meeting in Claude Code / Claude Desktop, and (2) MC-2's existing project edit page (where status changes happen). MC-2's UX is unchanged by this spec — adding GitHub sync is invisible to the user except for the new "Sync failed" badge described in §5.5. The interesting UX is the meeting flow.
+This is an internal tool with two surfaces: (1) the partners' review in Claude Code / Claude Desktop, and (2) MC-2's existing project edit page (where status changes happen). MC-2's UX is unchanged by this spec — adding GitHub sync is invisible to the user except for the new "Sync failed" badge described in §5.5. The interesting UX is the meeting flow.
 
 ### Click paths
 
-**Monday review (driver, Tony or Drew):**
+**partners' review (driver, Tony or Drew):**
 1. Open terminal → `cd ~/repos/context-protocol` → `claude` (Claude Code session).
 2. Type `run weekly review`. Claude reads master CP, begins per-project walkthrough.
 3. For each project: read Claude's announcement → discuss verbally → type light tag (`decision: ...`, `blocker: ...`, `next: ...`, `skip`).
@@ -687,7 +691,7 @@ Driver types `approve all`, `approve quick resume`, `reject decision 1`, etc. �
 
 ## Phasing
 
-### v1 Must-Have (target: launch before next Monday review where the team is colocated)
+### v1 Must-Have (target: launch before next partners' review where the team is colocated)
 
 - New `context-protocol` GitHub repo created, all four founders added as collaborators
 - Repo seeded with `CLAUDE.md`, `master-cp.md`, `README.md`, `docs/specs/cp-engine-spec-v01.md` (this file), per-project CPs for **all active projects across all six active clients** (Google, SentinelOne, Infoblox, Hexagon, SalesLoft, Teleflex), `canonic/sprint-cp.md` for current sprint
@@ -696,7 +700,7 @@ Driver types `approve all`, `approve quick resume`, `reject decision 1`, etc. �
 - `github_client.py` module + GitHub App installed; sync fires on `mc_status`, `name`, `account_manager` changes
 - Trigger phrases (`run weekly review`, `deepen from transcript`, `wrap up`, `check status`) implemented via `CLAUDE.md` instructions
 - Marcello + Brandon onboarded to Claude Desktop with required MCPs
-- One full Monday review run end-to-end, including transcript deepening
+- One full partners' review run end-to-end, including transcript deepening
 
 ### v1 Stretch
 
@@ -719,7 +723,7 @@ Driver types `approve all`, `approve quick resume`, `reject decision 1`, etc. �
 
 These were decided per the spec's defaults without surfacing as pre-flight questions. Documented for traceability.
 
-1. **Branching strategy: push-to-main with serial-driver Monday rule.** Branch + PR only for structural changes. Four-person team; PR-per-edit creates more friction than it prevents.
+1. **Branching strategy: push-to-main with serial-driver partners'-review rule.** Branch + PR only for structural changes. Four-person team; PR-per-edit creates more friction than it prevents.
 2. **Project name display: denormalized into `master-cp.md` and per-CP H1.** Avoids round-tripping to MC-2 for every read; survives MC-2 outages.
 3. **MC-2 sync events: status, name, account_manager changes only (in v1).** Other field changes don't surface in the master CP, so no sync needed.
 4. **Per-CP "Active research" section is recommended, not required.** Optional unless the project has commissioned research artifacts.
@@ -747,9 +751,9 @@ None surfaced during v01 drafting. (Empty by intent; fill on v02+ if revisions s
 | **Master CP** | `master-cp.md` — the index of all projects + sprints. |
 | **Per-project CP** | One file per First Person job: `1P/<client>/<code>-cp.md`. |
 | **Sprint CP** | `canonic/sprint-cp.md` — the rolling current-sprint summary. |
-| **Live pass** | Monday meeting's first phase: driver types light tags during discussion. |
-| **Deepening pass** | Monday meeting's second phase: transcript-driven richer extraction with diff review. |
+| **Live pass** | partners' review's first phase: driver types light tags during discussion. |
+| **Deepening pass** | partners' review's second phase: transcript-driven richer extraction with diff review. |
 | **Sync** | One-way MC-2 → GitHub propagation of status / name / owner changes. |
 | **Active subset** | The set of `mc_status` values that count as "active" — `Potential ∪ Open` per resolved Q1. |
-| **Driver** | The founder running the AI session during the Monday meeting (Tony or Drew in v1). |
+| **Driver** | The founder running the AI session during the partners' review (Tony or Drew in v1). |
 | **Verbal anchor** | One of two natural phrases ("Next, [code-name]" / "Decision:") that aid transcript parsing. |
