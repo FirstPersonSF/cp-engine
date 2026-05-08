@@ -217,6 +217,36 @@ def _write_if_changed(
     if path.exists() and splice_regions:
         existing = path.read_text()
 
+        # Schema-evolution detection: if ANY required splice region is
+        # missing from the existing file, this is a migration boundary
+        # (e.g. v0.1 master-cp.md upgrading to v0.2's three sections).
+        # Log + full-rewrite. The previous in-place splice would raise
+        # MarkerMissing — we trade that for a deterministic recovery.
+        #
+        # Tradeoff: hand-written content that lived OUTSIDE the old
+        # engine-managed regions is also preserved only if `new_full_body`
+        # happens to include it. For master-cp.md the file is mostly
+        # generated, so this is acceptable. Per-project CPs go through
+        # a different code path (scaffold-once-then-leave-alone) so this
+        # branch shouldn't fire for them.
+        missing = [
+            r for r in splice_regions
+            if f"<!-- cp-engine:start {r} -->" not in existing
+        ]
+        if missing:
+            logger.warning(
+                "%s is missing engine-managed regions (%s). Treating as a "
+                "schema-evolution boundary and rewriting from scratch. "
+                "Back up any hand-written content outside the engine regions "
+                "before re-running sync if that's a concern.",
+                path,
+                ", ".join(missing),
+            )
+            if existing == new_full_body:
+                return False
+            path.write_text(new_full_body)
+            return True
+
         # The "actual" merged content we'd write — splices in every region
         # using the freshly-rendered body.
         merged = existing
