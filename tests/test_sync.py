@@ -225,6 +225,130 @@ def test_sync_with_mixed_statuses_renders_correct_subtables(tmp_path: Path) -> N
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  Archive sweep — projects that drop out of sync's view
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_archived_project_cp_moves_to_archived_dir(tmp_path: Path) -> None:
+    """A project that disappears from sync output (archived in MC-2)
+    has its CP moved to projects/archived/, not deleted."""
+    config = make_config(tmp_path)
+
+    # First sync: project exists
+    fake1 = FakeBackend((make_state(code="going-away"),))
+    sync_tenant(config, backend_factory=lambda _: fake1)
+    assert (tmp_path / "projects" / "going-away.md").exists()
+
+    # Second sync: project is gone (e.g. archived in MC-2)
+    fake2 = FakeBackend(())
+    result = sync_tenant(config, backend_factory=lambda _: fake2)
+
+    assert not (tmp_path / "projects" / "going-away.md").exists()
+    archived_path = tmp_path / "projects" / "archived" / "going-away.md"
+    assert archived_path.exists()
+    assert archived_path in result.files_archived
+    assert not result.no_op
+
+
+def test_archive_preserves_hand_edited_content(tmp_path: Path) -> None:
+    """Hand-edited content survives the move because we rename, not regenerate."""
+    config = make_config(tmp_path)
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend((make_state(code="my-project"),)),
+    )
+
+    # User adds notes to the project CP
+    project_path = tmp_path / "projects" / "my-project.md"
+    edited = project_path.read_text() + "\n## My notes\n\nImportant stuff.\n"
+    project_path.write_text(edited)
+
+    # Project disappears from MC-2
+    sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
+
+    archived = tmp_path / "projects" / "archived" / "my-project.md"
+    assert archived.exists()
+    assert "Important stuff." in archived.read_text()
+
+
+def test_resync_after_archive_is_a_noop_for_that_project(tmp_path: Path) -> None:
+    """Once archived, the project's CP stays in archived/ on subsequent syncs."""
+    config = make_config(tmp_path)
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend((make_state(code="dead-project"),)),
+    )
+
+    # Archive
+    sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
+    archived = tmp_path / "projects" / "archived" / "dead-project.md"
+    mtime_after_archive = archived.stat().st_mtime_ns
+
+    # Second post-archive sync — should leave the archived file alone.
+    result = sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
+    assert archived.exists()
+    assert archived.stat().st_mtime_ns == mtime_after_archive
+    assert result.files_archived == ()
+
+
+def test_archive_collision_logs_and_skips(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """If projects/archived/<code>.md already exists (e.g. unarchive-then-
+    re-archive cycle), the engine logs a warning and leaves both files in
+    place rather than silently overwriting."""
+    import logging
+
+    config = make_config(tmp_path)
+    # Pre-populate an existing archived CP
+    archive_dir = tmp_path / "projects" / "archived"
+    archive_dir.mkdir(parents=True)
+    existing_archived = archive_dir / "ghost.md"
+    existing_archived.write_text("# Old archive\n\nFrom an earlier life.\n")
+
+    # And a current live CP for the same code
+    (tmp_path / "projects").mkdir(exist_ok=True)
+    (tmp_path / "projects" / "ghost.md").write_text("# Current\n\nIn flight.\n")
+
+    # Sync with no projects — engine wants to archive ghost.md but the
+    # collision blocks it.
+    with caplog.at_level(logging.WARNING, logger="cp_engine.sync"):
+        result = sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
+
+    # Both files survive
+    assert (tmp_path / "projects" / "ghost.md").exists()
+    assert existing_archived.read_text() == "# Old archive\n\nFrom an earlier life.\n"
+    # Warning logged
+    assert any("ghost.md" in m and "already exists" in m for m in caplog.messages)
+    # No file actually moved
+    assert result.files_archived == ()
+
+
+def test_archive_dir_itself_not_archived(tmp_path: Path) -> None:
+    """projects/archived/ is a directory, not a CP file. The sweep must not
+    confuse it for a stale project."""
+    config = make_config(tmp_path)
+
+    # First sync creates projects/keep.md
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend((make_state(code="keep"),)),
+    )
+    # Manually create projects/archived/ with an unrelated file
+    (tmp_path / "projects" / "archived").mkdir(exist_ok=True)
+    (tmp_path / "projects" / "archived" / "previous.md").write_text("# Old\n")
+
+    # Re-sync with `keep` still alive — archived/ should not be touched
+    result = sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend((make_state(code="keep"),)),
+    )
+    assert (tmp_path / "projects" / "keep.md").exists()
+    assert (tmp_path / "projects" / "archived" / "previous.md").exists()
+    assert result.files_archived == ()
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Backend resolution
 # ──────────────────────────────────────────────────────────────────────
 

@@ -20,10 +20,13 @@ isn't populated until v0.2's github-issues backend lands.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
+
+logger = logging.getLogger(__name__)
 
 from cp_engine.config import TenantConfig
 from cp_engine.render import (
@@ -83,8 +86,9 @@ class SyncResult:
     """Outcome of one sync cycle for a tenant."""
 
     projects_seen: int
-    files_written: tuple[Path, ...]  # what changed on disk
-    no_op: bool                       # True iff files_written is empty
+    files_written: tuple[Path, ...]   # generated/scaffolded files
+    files_archived: tuple[Path, ...]  # moved from projects/ → projects/archived/
+    no_op: bool                       # True iff nothing changed on disk
 
 
 def sync_tenant(
@@ -136,6 +140,12 @@ def sync_tenant(
     # rendered master CP.
     projects_dir = config.root / "projects"
     projects_dir.mkdir(exist_ok=True)
+
+    # Compute the set of "live" project codes — what should exist as a
+    # CP file in projects/ after this sync. Internal projects don't get
+    # CPs in this tenant.
+    live_codes = {p.code for p in projects if not p.is_internal}
+
     for project in projects:
         if project.is_internal:
             continue
@@ -145,10 +155,16 @@ def sync_tenant(
             project_path.write_text(body)
             files_written.append(project_path)
 
+    # Archive sweep — any file in projects/<code>.md whose <code> is no
+    # longer in `live_codes` represents a project that was archived in
+    # MC-2, deleted, or flipped to is_internal. Move it to projects/archived/.
+    files_archived = _archive_stale_cps(projects_dir, live_codes)
+
     return SyncResult(
         projects_seen=len(projects),
         files_written=tuple(files_written),
-        no_op=not files_written,
+        files_archived=tuple(files_archived),
+        no_op=not (files_written or files_archived),
     )
 
 
@@ -195,6 +211,51 @@ def _write_if_changed(
         return False
     path.write_text(new_full_body)
     return True
+
+
+def _archive_stale_cps(projects_dir: Path, live_codes: set[str]) -> list[Path]:
+    """Move CPs for projects no longer surfaced by sync into projects/archived/.
+
+    Triggered when a project is archived in MC-2, deleted, or flipped to
+    is_internal=true. Hand-edited content survives because we move (rename)
+    rather than overwrite.
+
+    Files already in projects/archived/ are left alone — they're already
+    archived. Only top-level projects/<code>.md files are candidates.
+
+    Returns the list of paths that were moved (the new archived location).
+    """
+    archive_dir = projects_dir / "archived"
+    moved: list[Path] = []
+
+    for path in projects_dir.iterdir():
+        if path.is_dir():
+            continue  # skip projects/archived/ subdir itself
+        if path.suffix != ".md":
+            continue
+        code = path.stem
+        if code in live_codes:
+            continue
+
+        # Stale. Move it.
+        archive_dir.mkdir(exist_ok=True)
+        target = archive_dir / path.name
+        if target.exists():
+            # Conservative: never silently overwrite existing archived
+            # content. v0.1.2 logs and skips; a future version may add
+            # counter-suffix collision handling.
+            logger.warning(
+                "Skipping archive of %s: %s already exists. "
+                "Resolve the conflict by hand (rename or merge).",
+                path,
+                target,
+            )
+            continue
+
+        path.rename(target)
+        moved.append(target)
+
+    return moved
 
 
 def _extract_region(full_body: str, region: str) -> str:
