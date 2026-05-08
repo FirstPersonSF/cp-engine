@@ -3,7 +3,7 @@
 See `docs/specs/cp-engine-spec-v02.md` for the canonical spec.
 """
 
-__version__ = "0.1.3"
+__version__ = "0.1.4"
 
 from cp_engine.config import (
     CommittedConfigInvalid,

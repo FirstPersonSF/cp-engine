@@ -121,10 +121,16 @@ def sync_tenant(
 
     files_written: list[Path] = []
 
-    # Master CP — splice if exists, full-write if not.
+    # Master CP — splice if exists, full-write if not. Timestamp-only diffs
+    # don't trigger a write (would otherwise produce hourly noise commits).
     master_path = config.root / "master-cp.md"
     new_master = render_master_cp(config, projects, last_sync=sync_clock)
-    if _write_if_changed(master_path, new_master, splice_regions=_MASTER_REGIONS):
+    if _write_if_changed(
+        master_path,
+        new_master,
+        splice_regions=_MASTER_REGIONS,
+        cosmetic_regions=_MASTER_COSMETIC_REGIONS,
+    ):
         files_written.append(master_path)
 
     # CLAUDE.md — fully generated; overwrite if changed.
@@ -182,27 +188,58 @@ _MASTER_REGIONS = (
     "closed-recent",
 )
 
+# Regions whose contents change every sync by definition (timestamps, run IDs).
+# A change isolated to these regions doesn't justify a write — otherwise every
+# hourly cron would commit a one-line timestamp tick. The comparison ignores
+# them; if anything else differs, we write (and the timestamp refreshes as a
+# side effect).
+_MASTER_COSMETIC_REGIONS = ("last-sync-timestamp",)
+
 
 def _write_if_changed(
     path: Path,
     new_full_body: str,
     *,
     splice_regions: tuple[str, ...],
+    cosmetic_regions: tuple[str, ...] = (),
 ) -> bool:
     """Write `new_full_body` to `path`, splicing region-by-region if the file
     already exists and `splice_regions` is non-empty. Otherwise overwrite.
 
-    Returns True iff the file changed on disk (skip writes when current
-    contents already match what we'd produce).
+    Regions listed in `cosmetic_regions` (e.g. last-sync-timestamp) are
+    ignored when deciding whether the file changed: if every other region
+    matches, the write is skipped even though the cosmetic region differs.
+
+    Returns True iff the file changed on disk.
     """
     if path.exists() and splice_regions:
         existing = path.read_text()
+
+        # The "actual" merged content we'd write — splices in every region
+        # using the freshly-rendered body.
         merged = existing
         for region in splice_regions:
-            new_region_body = _extract_region(new_full_body, region)
-            merged = splice_managed_region(merged, region, new_region_body)
+            merged = splice_managed_region(
+                merged, region, _extract_region(new_full_body, region)
+            )
         if merged == existing:
             return False
+
+        # Did anything *non-cosmetic* change? Build a comparison candidate
+        # that splices the new content for non-cosmetic regions only,
+        # leaving cosmetic regions matching `existing`. If that equals
+        # existing, the only diff is in cosmetic regions → skip write.
+        if cosmetic_regions:
+            comparison = existing
+            for region in splice_regions:
+                if region in cosmetic_regions:
+                    continue
+                comparison = splice_managed_region(
+                    comparison, region, _extract_region(new_full_body, region)
+                )
+            if comparison == existing:
+                return False
+
         path.write_text(merged)
         return True
 

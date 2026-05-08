@@ -127,6 +127,64 @@ def test_resync_with_unchanged_state_is_a_noop(tmp_path: Path) -> None:
     assert mtimes_after_first == mtimes_after_second
 
 
+def test_resync_with_only_timestamp_difference_is_a_noop(tmp_path: Path) -> None:
+    """The hourly cron's most common case: nothing in MC-2 changed since the
+    last sync, but the wall clock advanced. master-cp.md should NOT be
+    rewritten just because the timestamp would change."""
+    config = make_config(tmp_path)
+    fake = FakeBackend((make_state(),))
+
+    sync_tenant(
+        config,
+        backend_factory=lambda _: fake,
+        now=datetime(2026, 5, 7, 12, 0, 0, tzinfo=timezone.utc),
+    )
+    master_mtime_before = (tmp_path / "master-cp.md").stat().st_mtime_ns
+    master_text_before = (tmp_path / "master-cp.md").read_text()
+
+    # Same state, but the wall clock ticked an hour. The only meaningful
+    # diff would be the last-sync-timestamp region. Engine should skip.
+    result = sync_tenant(
+        config,
+        backend_factory=lambda _: fake,
+        now=datetime(2026, 5, 7, 13, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert result.no_op
+    assert (tmp_path / "master-cp.md") not in result.files_written
+    assert (tmp_path / "master-cp.md").stat().st_mtime_ns == master_mtime_before
+    # Timestamp on disk reflects the FIRST sync — not refreshed.
+    assert (tmp_path / "master-cp.md").read_text() == master_text_before
+    assert "12:00:00" in master_text_before
+
+
+def test_resync_with_real_change_refreshes_timestamp_too(tmp_path: Path) -> None:
+    """When a real change forces a write, the timestamp gets refreshed in
+    the same write — never stale alongside refreshed content."""
+    config = make_config(tmp_path)
+    fake1 = FakeBackend((make_state(status="Open"),))
+    sync_tenant(
+        config,
+        backend_factory=lambda _: fake1,
+        now=datetime(2026, 5, 7, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+    fake2 = FakeBackend((make_state(status="Holding"),))
+    result = sync_tenant(
+        config,
+        backend_factory=lambda _: fake2,
+        now=datetime(2026, 5, 7, 13, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert (tmp_path / "master-cp.md") in result.files_written
+    master_text = (tmp_path / "master-cp.md").read_text()
+    # Content reflects the new state
+    assert "Holding" in master_text
+    # Timestamp reflects the new sync clock, not the old one
+    assert "13:00:00" in master_text
+    assert "12:00:00" not in master_text
+
+
 def test_resync_with_changed_status_updates_master_only(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     fake1 = FakeBackend((make_state(status="Open"),))
