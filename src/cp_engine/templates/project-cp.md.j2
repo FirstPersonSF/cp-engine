@@ -1,13 +1,39 @@
 ---
-Project: {{ project.code | upper }} {{ project.name }}
+Project: {{ project.name }}
 Provenance: Version {{ engine_version }} | {{ today }}
 Filename: {{ project.code }}.md
 Author: cp-engine (initial scaffold)
 ---
 
-# {{ project.code | upper }} {{ project.name }} — Project CP
+# {{ project.name }} — Project CP
 
 > _<one-line description of what this project is and who it's for>_
+
+<!-- cp-engine:start project-facts -->
+## Facts
+
+| | |
+|---|---|
+| **Code** | `{{ project.code }}` |
+| **Status** | {{ project.status }} |
+{%- if project.source == "engagement" %}
+| **Stage** | {{ project.deal_stage or "—" }} |
+| **Budget** | {{ project.budget_short or "—" }} |
+| **Owner** | {{ project.owner or "—" }} |
+{%- if project.company_name %}
+| **Client** | {{ project.company_name }}{% if project.company_code %} ({{ project.company_code }}){% endif %} |
+{%- endif %}
+{%- else %}
+| **Owner** | {{ project.owner or "—" }} |
+{%- if project.github_org and project.repo_name %}
+| **GitHub** | [{{ project.github_org }}/{{ project.repo_name }}](https://github.com/{{ project.github_org }}/{{ project.repo_name }}) |
+{%- endif %}
+{%- if project.description %}
+| **Description** | {{ project.description }} |
+{%- endif %}
+{%- endif %}
+| **Last touched** | {{ project.last_touched_short or "—" }} |
+<!-- cp-engine:end project-facts -->
 
 <!-- cp-engine:start tracked-issues -->
 ## Tracked issues
@@ -46,9 +72,15 @@ _<per bootstrap v2 — pointers only, never raw research dumps>_
 
 _<durable conventions specific to this project that any AI assistant should know>_
 
+{% if project.source == "engagement" -%}
 ## Stakeholders
 
 _<key contacts on the client side and internal owners>_
+{%- else -%}
+## Committers
+
+_<who's pushing on this repo, plus internal stakeholders if any>_
+{%- endif %}
 
 ## Archive Index
 
