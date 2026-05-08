@@ -272,6 +272,31 @@ def render_dropbox_md(project: ProjectState) -> str | None:
     )
 
 
+def render_repo_md(project: ProjectState) -> str | None:
+    """Render `_repo.md` for a repo-source project working directory.
+
+    Mirrors `_dropbox.md`'s role for engagements: a discoverable link
+    from inside the working dir to the canonical artifact store. For
+    engagements that's Dropbox (binary media); for repos that's GitHub
+    (source code).
+
+    Returns None for engagement-source projects (they get _dropbox.md
+    instead) and for repos missing the github_org/repo_name fields
+    (defensive — sync_mc2's _repo_row_is_valid blocks these, but we
+    double-check at render time).
+    """
+    if project.source != "repo":
+        return None
+    if not project.github_org or not project.repo_name:
+        return None
+    template = _env().get_template("repo.md.j2")
+    return template.render(
+        project=_project_view(project),
+        engine_version=ENGINE_VERSION,
+        today=_today_iso(),
+    )
+
+
 def render_claude_md(config: TenantConfig) -> str:
     """Render CLAUDE.md from the tenant config.
 

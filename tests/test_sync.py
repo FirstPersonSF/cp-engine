@@ -682,6 +682,46 @@ def test_name_drift_renames_existing_dir(tmp_path: Path) -> None:
     assert not old_dir.exists()
 
 
+def test_repo_md_scaffolded_for_repo_source_projects(tmp_path: Path) -> None:
+    """A repo-source project gets `_repo.md` with the GitHub URL."""
+    config = make_config(tmp_path)
+    state = ProjectState(
+        code="mc-2",
+        name="mc-2",
+        source="repo",  # type: ignore[arg-type]
+        company_kind="self-fpsf",  # type: ignore[arg-type]
+        company_code="1P",
+        company_name="First Person",
+        status="Active",
+        is_internal=False,
+        owner="drew",
+        last_touched=datetime(2026, 5, 7, tzinfo=timezone.utc),
+        deadline=None,
+        github_org="FirstPersonSF",
+        repo_name="mc-2",
+    )
+
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+
+    repo_path = tmp_path / "firstpersonsf" / "projects" / "mc-2" / "_repo.md"
+    assert repo_path.exists()
+    body = repo_path.read_text()
+    assert "https://github.com/FirstPersonSF/mc-2" in body
+    assert "FirstPersonSF/mc-2" in body
+
+
+def test_repo_md_omitted_for_engagement_source_projects(tmp_path: Path) -> None:
+    """Engagements get `_dropbox.md` (when they have a URL), not `_repo.md`."""
+    config = make_config(tmp_path)
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend((make_state(code="ggl-5168"),)),
+    )
+
+    repo_path = tmp_path / "1p" / "projects" / "ggl-5168" / "_repo.md"
+    assert not repo_path.exists()
+
+
 def test_legacy_bare_code_dir_renamed_to_slug(tmp_path: Path) -> None:
     """A working dir created at the bare code (legacy v0.3.0/v0.3.1 format)
     gets renamed to the slugged form on the next sync."""

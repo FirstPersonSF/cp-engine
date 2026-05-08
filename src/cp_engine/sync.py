@@ -35,6 +35,7 @@ from cp_engine.render import (
     render_gitignore,
     render_master_cp,
     render_project_cp,
+    render_repo_md,
     splice_managed_region,
 )
 # Re-exported here so existing `from cp_engine.sync import ProjectState, Issue`
@@ -262,6 +263,16 @@ def sync_tenant(
             pass
         elif _write_if_changed(dropbox_path, dropbox_body, splice_regions=()):
             files_written.append(dropbox_path)
+
+        # _repo.md — repo-source projects get a link to their GitHub repo,
+        # mirroring _dropbox.md's role for engagements. Engagements get None
+        # back from the renderer and skip this entirely.
+        repo_body = render_repo_md(project)
+        repo_path = project_dir / "_repo.md"
+        if repo_body is None:
+            pass
+        elif _write_if_changed(repo_path, repo_body, splice_regions=()):
+            files_written.append(repo_path)
 
     # Archive sweep — any live working dir whose code isn't in `live_dirs`
     # represents a project that was archived in MC-2, deleted, or flipped
