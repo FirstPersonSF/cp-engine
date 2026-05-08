@@ -19,6 +19,7 @@ from cp_engine.config import (
     TenantConfig,
     load,
 )
+from cp_engine.init import InitAborted, run_init
 from cp_engine.render import (
     MarkerDuplicated,
     MarkerInverted,
@@ -71,4 +72,7 @@ __all__ = [
     "MarkerMissing",
     "MarkerDuplicated",
     "MarkerInverted",
+    # init
+    "run_init",
+    "InitAborted",
 ]

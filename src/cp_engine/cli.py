@@ -10,8 +10,12 @@ Subcommands per spec v02 §2.1:
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
 import click
+
+from cp_engine.config import CommittedConfigMissing
+from cp_engine.init import InitAborted, run_init
 
 
 @click.group()
@@ -21,10 +25,24 @@ def main() -> None:
 
 
 @main.command()
-def init() -> None:
+@click.option(
+    "--non-interactive",
+    is_flag=True,
+    help="Don't prompt; mark every committed project as skipped (useful in CI).",
+)
+def init(non_interactive: bool) -> None:
     """Walk through populating .cp-engine.local.toml interactively."""
-    click.echo("cp init — not implemented yet (lands in v0.1)")
-    sys.exit(1)
+    try:
+        run_init(Path.cwd(), interactive=not non_interactive)
+    except CommittedConfigMissing as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+    except InitAborted as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        click.echo("\nAborted. Partial progress (if any) has been saved.", err=True)
+        sys.exit(130)
 
 
 @main.command()
