@@ -5,6 +5,7 @@ Lives in its own module to break the sync↔render circular import.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
@@ -41,6 +42,47 @@ def scope_for(company_kind: str) -> str:
             f"Unknown company_kind {company_kind!r}; expected one of "
             f"{sorted(_SCOPE_BY_KIND)}"
         ) from None
+
+
+_SLUG_NON_ALPHANUM = re.compile(r"[^a-z0-9]+")
+
+
+def dir_slug(code: str, name: str | None) -> str:
+    """Build a working-directory name from a project's code and full name.
+
+    Returns `<code>-<name-tail-slugified>` so working dirs are readable in
+    a directory listing (`ggl-5177-event-safety-playbook` rather than
+    `ggl-5177`). When the name doesn't add information beyond the code
+    (empty, or just the code itself), returns the bare code.
+
+    Slugification:
+      - lowercase
+      - strip a leading occurrence of the code (in any case, with spaces
+        for hyphens) so "GGL 5177 Event Safety Playbook" doesn't become
+        "ggl-5177-ggl-5177-event-safety-playbook"
+      - collapse non-alphanumeric runs to single hyphens
+      - trim leading/trailing hyphens
+    """
+    code_lc = code.lower().strip()
+    if not name:
+        return code_lc
+
+    # Normalize spaces/hyphens so "GGL 5177" and "ggl-5177" both match.
+    work = name.lower().strip()
+
+    # Strip a leading code occurrence so the tail is just the human name.
+    # Try the hyphenated form first ("ggl-5177"), then the spaced form
+    # ("ggl 5177"). The replacement happens in lowercase space.
+    code_with_spaces = code_lc.replace("-", " ")
+    for prefix in (code_lc, code_with_spaces):
+        if work.startswith(prefix):
+            work = work[len(prefix) :].lstrip(" -")
+            break
+
+    tail = _SLUG_NON_ALPHANUM.sub("-", work).strip("-")
+    if not tail:
+        return code_lc
+    return f"{code_lc}-{tail}"
 
 
 @dataclass(frozen=True)

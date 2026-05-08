@@ -27,7 +27,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from cp_engine import __version__ as ENGINE_VERSION
 from cp_engine.config import TenantConfig
 from cp_engine.status import is_active_status
-from cp_engine.state import Issue, ProjectState, scope_for
+from cp_engine.state import Issue, ProjectState, dir_slug, scope_for
 
 # ──────────────────────────────────────────────────────────────────────
 #  Errors
@@ -383,6 +383,7 @@ def _project_view(p: ProjectState) -> dict:
         "source": p.source,
         "company_kind": p.company_kind,
         "scope": scope_for(p.company_kind),
+        "dir_slug": dir_slug(p.code, p.name),
         "company_code": p.company_code,
         "company_name": p.company_name,
         "status": p.status,

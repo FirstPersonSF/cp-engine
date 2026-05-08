@@ -40,7 +40,7 @@ from cp_engine.render import (
 # Re-exported here so existing `from cp_engine.sync import ProjectState, Issue`
 # imports keep working — the data shapes live in cp_engine.state to break
 # the sync ↔ render circular dependency.
-from cp_engine.state import Issue, ProjectState, scope_for  # noqa: F401
+from cp_engine.state import Issue, ProjectState, dir_slug, scope_for  # noqa: F401
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -184,13 +184,16 @@ def sync_tenant(
         files_written.append(gitignore_path)
 
     # Project CPs — v0.3 layout: each project gets a working directory at
-    # <scope>/projects/<code>/ with cp.md plus optional _dropbox.md. Filter
-    # internal projects to match what the master CP surfaces: is_internal=true
-    # projects belong in their own tenant, not in client/public tenants. This
-    # keeps file-on-disk state consistent with the rendered master CP.
+    # <scope>/projects/<dir_slug>/ where dir_slug encodes both the code and
+    # a slugified name for human readability (e.g.
+    # `ggl-5177-event-safety-playbook`). The slug is recomputed every sync,
+    # so a name change in MC-2 prompts a `git mv` of the dir on next sync.
+    # Filter internal projects to match what the master CP surfaces.
 
     # Compute the set of (scope, code) pairs that should exist as live
     # working dirs after this sync. Internal projects don't get dirs.
+    # Tracked by code (not slug) because the archive sweep needs to match
+    # against project identity, which is invariant under name changes.
     live_dirs: set[tuple[str, str]] = {
         (scope_for(p.company_kind), p.code)
         for p in projects
@@ -201,31 +204,48 @@ def sync_tenant(
         if project.is_internal:
             continue
         scope = scope_for(project.company_kind)
-        project_dir = config.root / scope / "projects" / project.code
-        archived_dir = config.root / scope / "projects" / "archived" / project.code
-        cp_path = project_dir / "cp.md"
+        scope_projects = config.root / scope / "projects"
+        target_slug = dir_slug(project.code, project.name)
+        project_dir = scope_projects / target_slug
 
-        if not project_dir.exists():
-            # Two cases: the project is brand new, or it was previously
-            # archived and is coming back to life. The un-archive path
-            # restores hand-written content (transcripts, syntheses, etc.)
-            # rather than scaffolding a fresh empty CP.
-            if archived_dir.exists():
+        # Find an existing dir for this project, even if its slug has drifted
+        # from the current name (or hasn't been slugged yet — legacy
+        # bare-code dirs from v0.3.0/v0.3.1).
+        existing_live = _find_project_dir(scope_projects, project.code)
+        existing_archived = _find_project_dir(
+            scope_projects / "archived", project.code
+        )
+
+        if existing_live is not None and existing_live != project_dir:
+            # Slug drift: rename live dir to current slug.
+            project_dir.parent.mkdir(parents=True, exist_ok=True)
+            existing_live.rename(project_dir)
+            logger.info(
+                "Renamed working dir %s → %s (name drift in MC-2).",
+                existing_live.relative_to(config.root),
+                project_dir.relative_to(config.root),
+            )
+            for path in sorted(project_dir.rglob("*")):
+                if path.is_file():
+                    files_written.append(path)
+        elif existing_live is None:
+            if existing_archived is not None:
+                # Un-archive: project came back to life. Restore the dir
+                # (and apply any slug drift while we're at it).
                 project_dir.parent.mkdir(parents=True, exist_ok=True)
-                archived_dir.rename(project_dir)
+                existing_archived.rename(project_dir)
                 logger.info(
                     "Restored archived project %s back to live (%s).",
                     project.code,
                     project_dir.relative_to(config.root),
                 )
-                # Track every file in the restored dir as "written" so the
-                # caller's commit picks them all up in the same commit.
                 for path in sorted(project_dir.rglob("*")):
                     if path.is_file():
                         files_written.append(path)
             else:
                 project_dir.mkdir(parents=True, exist_ok=True)
 
+        cp_path = project_dir / "cp.md"
         if not cp_path.exists():
             body = render_project_cp(config, project, tracked_issues=())
             cp_path.write_text(body)
@@ -243,10 +263,10 @@ def sync_tenant(
         elif _write_if_changed(dropbox_path, dropbox_body, splice_regions=()):
             files_written.append(dropbox_path)
 
-    # Archive sweep — any working dir on disk whose (scope, code) is no
-    # longer in `live_dirs` represents a project that was archived in MC-2,
-    # deleted, or flipped to is_internal. Move the whole working dir to
-    # <scope>/projects/archived/<code>/.
+    # Archive sweep — any live working dir whose code isn't in `live_dirs`
+    # represents a project that was archived in MC-2, deleted, or flipped
+    # to is_internal. Move the whole working dir to
+    # <scope>/projects/archived/<dir_slug>/.
     files_archived = _archive_stale_cps(config.root, live_dirs)
 
     return SyncResult(
@@ -386,18 +406,70 @@ def _write_if_changed(
 def _derive_summary(config: TenantConfig, project: ProjectState) -> str | None:
     """Read project CP from disk; return its one-line summary or None.
 
-    The CP may not exist yet (new project). When it doesn't, return
-    None; the renderer shows an empty summary cell. The cell activates
-    once a human writes content into Quick Resume / Current Work.
+    The CP may not exist yet (new project), or may live under a different
+    slug than the freshly-computed one (name drift in MC-2 not yet
+    reconciled by the rename in sync_tenant). Locate it by code via
+    `_find_project_dir`. Returns None when the CP doesn't exist or has
+    no human-written content yet.
     """
     from cp_engine.summary import derive_from_project_cp
 
     scope = scope_for(project.company_kind)
-    cp_path = config.root / scope / "projects" / project.code / "cp.md"
-    return derive_from_project_cp(cp_path)
+    scope_projects = config.root / scope / "projects"
+    existing = _find_project_dir(scope_projects, project.code)
+    if existing is None:
+        return None
+    return derive_from_project_cp(existing / "cp.md")
 
 
 _SCOPE_DIRS: tuple[str, ...] = ("1p", "firstpersonsf", "canonic")
+
+
+def _dir_code(name: str) -> str:
+    """Extract the project code from a working-dir name.
+
+    Working dirs follow the `<code>` or `<code>-<slug>` pattern. The code
+    itself can contain hyphens (`ggl-5177`, `mc-2`), so a simple split on
+    the first hyphen would mangle them. Heuristic: project codes from
+    engagements look like `<prefix>-<digits>` (e.g. `ggl-5177`); from
+    repos they're a freeform slug (`mc-2`, `storyos`, `unf-forge`). The
+    sync compares against the actual project list rather than parsing —
+    this helper is only used by `_archive_stale_cps` to surface dirs
+    whose code isn't in `live_dirs`. To make that work, we accept either
+    of two forms:
+
+      - bare code: dir name == project code (`ggl-5177`)
+      - slugged: dir name starts with `<project code>-` (`ggl-5177-...`)
+
+    The caller iterates known live codes and matches; a dir that doesn't
+    match any known code is treated as stale.
+    """
+    return name
+
+
+def _find_project_dir(scope_projects: Path, code: str) -> Path | None:
+    """Locate the working dir for a given project code.
+
+    Matches any of:
+      - <scope>/projects/<code>            (legacy v0.3.0/v0.3.1, bare code)
+      - <scope>/projects/<code>-<slug>     (current, slugged)
+
+    Returns the first match found, or None. If multiple matches exist
+    (shouldn't happen but defensive), prefers the bare-code form so the
+    rename logic in sync_tenant moves it to the slugged form.
+    """
+    if not scope_projects.exists():
+        return None
+
+    bare = scope_projects / code
+    if bare.is_dir():
+        return bare
+
+    prefix = f"{code}-"
+    for path in scope_projects.iterdir():
+        if path.is_dir() and path.name != "archived" and path.name.startswith(prefix):
+            return path
+    return None
 
 
 def _archive_stale_cps(
@@ -410,35 +482,46 @@ def _archive_stale_cps(
     is_internal=true. Hand-edited content survives because we move (rename)
     the whole directory rather than overwrite anything.
 
-    Walks each `<scope>/projects/` for top-level subdirs that look like
-    project codes (skipping the `archived/` subdir itself). If the (scope,
-    code) pair isn't in `live_dirs`, the directory is moved to
-    `<scope>/projects/archived/<code>/`.
+    Walks each `<scope>/projects/` for top-level subdirs (skipping the
+    `archived/` subdir itself). A dir whose embedded code isn't in
+    `live_dirs[scope]` is moved to `<scope>/projects/archived/<dir_name>/`,
+    preserving the slug suffix.
 
-    Returns the list of new archived directory paths. Each archived dir
-    surfaces once even though it may contain many files — callers are
-    expected to `git add -A` the whole tree to capture the move.
+    Working-dir naming is `<code>` (legacy) or `<code>-<slug>` (current);
+    we extract the code by checking each known-live code against the dir
+    name. Anything that doesn't match a live code is treated as stale.
+
+    Returns the list of new archived directory paths.
     """
     moved: list[Path] = []
+    live_codes_by_scope: dict[str, set[str]] = {}
+    for scope, code in live_dirs:
+        live_codes_by_scope.setdefault(scope, set()).add(code)
 
     for scope in _SCOPE_DIRS:
         projects_dir = tenant_root / scope / "projects"
         if not projects_dir.exists():
             continue
         archive_dir = projects_dir / "archived"
+        live_codes = live_codes_by_scope.get(scope, set())
 
         for path in projects_dir.iterdir():
             if not path.is_dir():
                 continue
             if path.name == "archived":
                 continue
-            code = path.name
-            if (scope, code) in live_dirs:
+
+            # A dir is "live" if its name matches a known live project code
+            # in either form (bare or `<code>-<slug>`). Scan known codes.
+            if any(
+                path.name == code or path.name.startswith(f"{code}-")
+                for code in live_codes
+            ):
                 continue
 
             # Stale. Move the whole dir.
             archive_dir.mkdir(exist_ok=True)
-            target = archive_dir / code
+            target = archive_dir / path.name
             if target.exists():
                 # v0.1.2 collision rule: never silently overwrite. Skip
                 # and warn — a human can resolve by renaming or merging

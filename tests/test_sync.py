@@ -53,16 +53,19 @@ def make_config(tenant_root: Path, backend: str = "mc-2") -> TenantConfig:
 
 def make_state(
     code: str = "mc-2",
-    name: str = "Mission Control v2",
+    name: str | None = None,
     status: str = "Open",
     is_internal: bool = False,
     summary: str | None = None,
     source: str = "engagement",
     company_kind: str = "client",
 ) -> ProjectState:
+    """Default name == code so the working-dir slug equals the bare code,
+    keeping path assertions in older tests simple. Tests that need to
+    exercise the name-slug path pass `name="Some Real Name"` explicitly."""
     return ProjectState(
         code=code,
-        name=name,
+        name=name if name is not None else code,
         source=source,  # type: ignore[arg-type]
         company_kind=company_kind,  # type: ignore[arg-type]
         company_code="GGL",
@@ -83,15 +86,16 @@ def make_state(
 
 def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None:
     config = make_config(tmp_path)
-    fake = FakeBackend((make_state(),))
+    fake = FakeBackend((make_state(name="Mission Control v2"),))
 
     result = sync_tenant(config, backend_factory=lambda _: fake)
 
     assert result.projects_seen == 1
     assert not result.no_op
     written_names = {p.name for p in result.files_written}
-    # v0.3 layout: project working dir at <scope>/projects/<code>/cp.md.
-    # Default make_state has company_kind="client" → scope "1p".
+    # v0.3 layout: project working dir at <scope>/projects/<dir_slug>/cp.md.
+    # Default make_state has company_kind="client" → scope "1p". With name
+    # set, the slug is `mc-2-mission-control-v2`.
     assert written_names == {"master-cp.md", "CLAUDE.md", ".gitignore", "cp.md"}
 
     # Files actually exist + reference the project
@@ -99,7 +103,8 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     assert "mc-2" in master
     assert "Mission Control v2" in master
 
-    project_cp = (tmp_path / "1p" / "projects" / "mc-2" / "cp.md").read_text()
+    cp_path = tmp_path / "1p" / "projects" / "mc-2-mission-control-v2" / "cp.md"
+    project_cp = cp_path.read_text()
     assert "Mission Control v2" in project_cp
     assert "<!-- cp-engine:start tracked-issues -->" in project_cp
 
@@ -285,10 +290,10 @@ def test_sync_with_mixed_statuses_renders_correct_subtables(tmp_path: Path) -> N
     # Project CP scaffolding matches master-CP visibility: internal projects
     # are NOT scaffolded into client/public tenants. They belong in their
     # own (cp-firstpersonsf) tenant. v0.3: each project is a working dir
-    # under <scope>/projects/<code>/.
+    # under <scope>/projects/<code>-<slugified-name>/.
     projects_dir = tmp_path / "1p" / "projects"
     dirs = sorted(p.name for p in projects_dir.iterdir() if p.is_dir())
-    assert dirs == ["closed-1", "hold-1", "open-1"]
+    assert dirs == ["closed-1-closed-one", "hold-1-held-one", "open-1-open-one"]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -486,13 +491,14 @@ def test_mixed_scopes_land_under_correct_dirs(tmp_path: Path) -> None:
 
     sync_tenant(config, backend_factory=lambda _: fake)
 
-    assert (tmp_path / "1p" / "projects" / "ggl-5168" / "cp.md").exists()
+    # Working dirs use slugged names (code + slugified project name).
+    assert (tmp_path / "1p" / "projects" / "ggl-5168-playbooks" / "cp.md").exists()
     assert (tmp_path / "firstpersonsf" / "projects" / "mc-2" / "cp.md").exists()
     assert (tmp_path / "canonic" / "projects" / "storyos" / "cp.md").exists()
 
-    # Master CP links use the new scope-aware paths
+    # Master CP links use the slugged paths
     master = (tmp_path / "master-cp.md").read_text()
-    assert "1p/projects/ggl-5168/cp.md" in master
+    assert "1p/projects/ggl-5168-playbooks/cp.md" in master
     assert "firstpersonsf/projects/mc-2/cp.md" in master
     assert "canonic/projects/storyos/cp.md" in master
 
@@ -550,7 +556,7 @@ def test_dropbox_md_scaffolded_when_url_present(tmp_path: Path) -> None:
 
     sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
 
-    dropbox_path = tmp_path / "1p" / "projects" / "ggl-5168" / "_dropbox.md"
+    dropbox_path = tmp_path / "1p" / "projects" / "ggl-5168-playbooks" / "_dropbox.md"
     assert dropbox_path.exists()
     body = dropbox_path.read_text()
     assert "https://www.dropbox.com/scl/fo/abc123/h?dl=0" in body
@@ -615,3 +621,86 @@ def test_gitignore_written_at_root(tmp_path: Path) -> None:
     assert "*.pdf" in gitignore
     assert ".DS_Store" in gitignore
     assert ".cp-engine.local.toml" in gitignore
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Working-dir slugs (v0.3.2+)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_working_dir_uses_slugged_name(tmp_path: Path) -> None:
+    """Engagement with a multi-word name lands at <code>-<slugified-name>/."""
+    config = make_config(tmp_path)
+    state = make_state(code="ggl-5177", name="GGL 5177 Event Safety Playbook")
+
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+
+    expected_dir = tmp_path / "1p" / "projects" / "ggl-5177-event-safety-playbook"
+    assert (expected_dir / "cp.md").exists()
+
+
+def test_working_dir_falls_back_to_bare_code(tmp_path: Path) -> None:
+    """When name == code (typical for repos), the slug is just the code."""
+    config = make_config(tmp_path)
+    state = make_state(code="mc-2", name="mc-2", source="repo", status="Active",
+                        company_kind="self-fpsf")
+
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+
+    assert (tmp_path / "firstpersonsf" / "projects" / "mc-2" / "cp.md").exists()
+
+
+def test_name_drift_renames_existing_dir(tmp_path: Path) -> None:
+    """When MC-2's name changes, next sync renames the working dir to the
+    new slug. Hand-written content survives the move."""
+    config = make_config(tmp_path)
+
+    # First sync: scaffold at ggl-5177-event-safety-playbook/
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend(
+            (make_state(code="ggl-5177", name="GGL 5177 Event Safety Playbook"),)
+        ),
+    )
+    old_dir = tmp_path / "1p" / "projects" / "ggl-5177-event-safety-playbook"
+    assert old_dir.exists()
+
+    # Hand-add a transcript so we can verify content survives the rename
+    (old_dir / "transcript.md").write_text("# call notes\n")
+
+    # Sync again with a renamed project
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend(
+            (make_state(code="ggl-5177", name="GGL 5177 Activation Playbook"),)
+        ),
+    )
+
+    new_dir = tmp_path / "1p" / "projects" / "ggl-5177-activation-playbook"
+    assert new_dir.exists()
+    assert (new_dir / "transcript.md").read_text() == "# call notes\n"
+    assert not old_dir.exists()
+
+
+def test_legacy_bare_code_dir_renamed_to_slug(tmp_path: Path) -> None:
+    """A working dir created at the bare code (legacy v0.3.0/v0.3.1 format)
+    gets renamed to the slugged form on the next sync."""
+    config = make_config(tmp_path)
+
+    # Pre-create a legacy bare-code dir with hand content
+    legacy_dir = tmp_path / "1p" / "projects" / "ggl-5177"
+    legacy_dir.mkdir(parents=True)
+    (legacy_dir / "cp.md").write_text("# legacy content\n")
+    (legacy_dir / "notes.md").write_text("# preserved\n")
+
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend(
+            (make_state(code="ggl-5177", name="GGL 5177 Event Safety Playbook"),)
+        ),
+    )
+
+    new_dir = tmp_path / "1p" / "projects" / "ggl-5177-event-safety-playbook"
+    assert (new_dir / "cp.md").read_text() == "# legacy content\n"
+    assert (new_dir / "notes.md").read_text() == "# preserved\n"
+    assert not legacy_dir.exists()
