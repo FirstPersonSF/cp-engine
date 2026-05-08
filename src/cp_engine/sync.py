@@ -183,7 +183,9 @@ def sync_tenant(
 # but listing them here keeps the contract explicit.
 _MASTER_REGIONS = (
     "last-sync-timestamp",
-    "active-table",
+    "active-1p",
+    "active-fpsf",
+    "active-canonic",
     "holding-subtable",
     "closed-recent",
 )

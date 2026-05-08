@@ -58,6 +58,8 @@ def make_state(
     is_internal: bool = False,
     days_ago: int | None = 1,
     summary: str | None = "Storyboards in flight; client review Wed.",
+    source: str = "engagement",
+    company_kind: str = "client",
 ) -> ProjectState:
     last_touched = (
         datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
@@ -69,6 +71,10 @@ def make_state(
     return ProjectState(
         code=code,
         name=name,
+        source=source,  # type: ignore[arg-type]
+        company_kind=company_kind,  # type: ignore[arg-type]
+        company_code="GGL",
+        company_name="Google",
         status=status,
         is_internal=is_internal,
         owner="drew",
@@ -101,9 +107,11 @@ def test_master_cp_includes_only_active_projects() -> None:
     assert "ggl-2222" not in out  # Archived not surfaced
     assert "ggl-3333" not in out  # is_internal filtered
 
-    # Engine-managed regions are present
-    assert "<!-- cp-engine:start active-table -->" in out
-    assert "<!-- cp-engine:end active-table -->" in out
+    # Engine-managed regions are present (v0.2: three sections per kind)
+    assert "<!-- cp-engine:start active-1p -->" in out
+    assert "<!-- cp-engine:end active-1p -->" in out
+    assert "<!-- cp-engine:start active-fpsf -->" in out
+    assert "<!-- cp-engine:start active-canonic -->" in out
     assert "<!-- cp-engine:start holding-subtable -->" in out
     assert "<!-- cp-engine:start closed-recent -->" in out
     assert "<!-- cp-engine:start last-sync-timestamp -->" in out
@@ -119,9 +127,10 @@ def test_master_cp_one_line_summary_appears() -> None:
 def test_master_cp_handles_no_projects() -> None:
     tenant = make_tenant(with_project=False)
     out = render_master_cp(tenant, (), last_sync=datetime.now(timezone.utc))
-    # The skeleton renders even with zero projects
-    assert "<!-- cp-engine:start active-table -->" in out
-    assert "## Active" in out
+    # All three section regions render even with zero projects
+    assert "<!-- cp-engine:start active-1p -->" in out
+    assert "<!-- cp-engine:start active-fpsf -->" in out
+    assert "<!-- cp-engine:start active-canonic -->" in out
 
 
 # ──────────────────────────────────────────────────────────────────────

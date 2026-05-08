@@ -89,17 +89,55 @@ def render_master_cp(
     projects: tuple[ProjectState, ...],
     last_sync: datetime,
 ) -> str:
-    """Render the full master-cp.md body."""
-    active = [p for p in projects if is_active_status(p.status) and not p.is_internal]
-    holding = [p for p in projects if p.status == "Holding" and not p.is_internal]
-    closed_recent = [
-        p
-        for p in projects
-        if p.status == "Closed"
-        and not p.is_internal
-        and p.last_touched is not None
-        and (datetime.now(p.last_touched.tzinfo) - p.last_touched).days <= 30
-    ]
+    """Render the full master-cp.md body.
+
+    v0.2: groups entries by `companies.kind` into three sections:
+    - 1P (client engagements + repos owned by client companies)
+    - First Person (self-fpsf repos)
+    - Canonic (self-canonic repos)
+
+    Engagement and repo entries use different table schemas (per spec
+    discussion 2026-05-08). The 1P section is engagement-shaped with
+    Stage / Budget; FPSF and Canonic sections are repo-shaped with
+    Description / GitHub.
+    """
+    # Active filter: engagement is active per is_active_status + not internal;
+    # repo is active per repos.status == 'Active'.
+    def is_active(p: ProjectState) -> bool:
+        if p.source == "engagement":
+            return is_active_status(p.status) and not p.is_internal
+        return p.status == "Active"
+
+    def is_holding(p: ProjectState) -> bool:
+        # Both engagement and repo use literal "Holding"
+        if p.source == "engagement":
+            return p.status == "Holding" and not p.is_internal
+        return p.status == "Holding"
+
+    def is_closed_recent(p: ProjectState) -> bool:
+        if p.last_touched is None:
+            return False
+        if (datetime.now(p.last_touched.tzinfo) - p.last_touched).days > 30:
+            return False
+        if p.source == "engagement":
+            return p.status == "Closed" and not p.is_internal
+        # Repos don't have a "Closed" lifecycle; Inactive doesn't get
+        # surfaced in closed-recent (no notion of recency for inactive).
+        return False
+
+    active = [p for p in projects if is_active(p)]
+    holding = [p for p in projects if is_holding(p)]
+    closed_recent = [p for p in projects if is_closed_recent(p)]
+
+    # Group active entries by company_kind. 1P bucket also includes
+    # any repos whose company.kind == "client" (rare today, but keeps
+    # the model sound).
+    def group(active_list: list[ProjectState]) -> dict:
+        return {
+            "client": [_project_view(p) for p in active_list if p.company_kind == "client"],
+            "self_fpsf": [_project_view(p) for p in active_list if p.company_kind == "self-fpsf"],
+            "self_canonic": [_project_view(p) for p in active_list if p.company_kind == "self-canonic"],
+        }
 
     template = _env().get_template("master-cp.md.j2")
     return template.render(
@@ -107,7 +145,7 @@ def render_master_cp(
         engine_version=ENGINE_VERSION,
         today=_today_iso(),
         last_sync_iso=last_sync.isoformat(),
-        active_projects=[_project_view(p) for p in active],
+        active_groups=group(active),
         holding_projects=[_project_view(p) for p in holding],
         closed_recent=[_project_view(p) for p in closed_recent],
     )
@@ -242,15 +280,40 @@ def splice_managed_region(file_contents: str, region: str, new_body: str) -> str
 
 
 def _project_view(p: ProjectState) -> dict:
-    """Flatten a ProjectState into the keys the templates expect."""
+    """Flatten a ProjectState into the keys the templates expect.
+
+    Includes both engagement-shape and repo-shape fields. Templates
+    branch on `source` to choose which to render.
+    """
     return {
         "code": p.code,
         "name": p.name,
+        "source": p.source,
+        "company_kind": p.company_kind,
+        "company_code": p.company_code,
+        "company_name": p.company_name,
         "status": p.status,
         "owner": p.owner,
         "last_touched_short": _short(p.last_touched),
         "one_line_summary": p.one_line_summary,
+        # Engagement-only
+        "deal_stage": p.deal_stage,
+        "budget": p.budget,
+        "budget_short": _format_budget(p.budget),
+        # Repo-only
+        "github_org": p.github_org,
+        "repo_name": p.repo_name,
+        "description": p.description,
     }
+
+
+def _format_budget(b: float | None) -> str | None:
+    """Compact budget for table rendering. None → None (template renders —)."""
+    if b is None:
+        return None
+    if b >= 1000:
+        return f"${b / 1000:.0f}k"
+    return f"${b:.0f}"
 
 
 def _issue_view(i: Issue) -> dict:

@@ -57,10 +57,16 @@ def make_state(
     status: str = "Open",
     is_internal: bool = False,
     summary: str | None = None,
+    source: str = "engagement",
+    company_kind: str = "client",
 ) -> ProjectState:
     return ProjectState(
         code=code,
         name=name,
+        source=source,  # type: ignore[arg-type]
+        company_kind=company_kind,  # type: ignore[arg-type]
+        company_code="GGL",
+        company_name="Google",
         status=status,
         is_internal=is_internal,
         owner="drew",

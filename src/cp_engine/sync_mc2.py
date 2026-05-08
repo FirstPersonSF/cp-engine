@@ -1,31 +1,29 @@
-"""MC-2 sync backend — reads project state from MC-2's Postgres via Supabase.
+"""MC-2 sync backend — reads project + repo state from MC-2's Postgres.
 
-Used by `cp-1p` and `cp-firstpersonsf` (the FPSF tenants whose source of
-truth is MC-2's `projects` table).
+Two source streams unified into a single tuple of ProjectStates:
+
+1. **Engagements** — `public.projects WHERE mc_status != 'Archived'`,
+   joined to `companies` for the kind/code/name. These are client work
+   tracked through MC-2's engagement lifecycle (Deal → Open → Closed).
+
+2. **Standalone repos** — `public.repos WHERE project_id IS NULL`, joined
+   to `companies` and `github_orgs`. These are code repos NOT linked to
+   a specific engagement (mc-2, storyos, unf-forge, etc.). Repos that
+   ARE linked to an engagement are intentionally excluded here — their
+   info enriches the parent engagement's project CP, not the master
+   index.
 
 Auth: reads `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` from the environment.
 The service key is required (not the anon key) because the engine reads
 across all rows for the master CP — RLS would otherwise filter the result.
 
-This backend reads project-level state for the master CP only. Project
-CPs' engine-managed regions are not populated by this backend in v0.1
-(see spec v02 §4.2 / Decision A: defer to v0.2 when github-issues backend
-adds per-issue tracking).
-
 # Project identity
 
-The canonical project identifier in cp-engine is the **company-prefixed
-project number**, e.g. `ggl-5188`. Format: `<companies.code lowercased>-<projects.number>`.
-Per spec v02 §3.3.
+Engagements: `<companies.code lowercased>-<projects.number>`. Legacy rows
+without `company_id` fall back to just the number.
 
-When a project has no `company_id` (legacy data, ~30/57 rows in May 2026)
-the prefix is omitted and the ID is just the lowercased number — `5026`.
-This is honest about the data state; once `company_id` is backfilled in
-MC-2, those projects will pick up their prefix on next sync.
-
-`projects.code` is NOT used as the identifier. The legacy `code` column
-holds inconsistent display slugs (mix of casing, underscores, number-only
-rows, even duplicates) and is not load-bearing for the engine.
+Repos: `<repos.repo_name>` directly. GitHub slugs are already lowercase
+hyphenated; no transformation needed.
 """
 
 from __future__ import annotations
@@ -41,43 +39,68 @@ from cp_engine.state import ProjectState
 from cp_engine.sync import BackendUnavailable
 
 
-# Columns we read. Explicit list (never `*`) per Drew's global rule about
-# Supabase performance. `cached_messages` and `cached_analysis` on the
-# projects table can be megabytes per row — never select them.
-#
-# `companies(code)` is a PostgREST embed: pulls the related companies row's
-# `code` field via the `company_id` foreign key.
-_PROJECT_COLUMNS = (
+# Columns we read for engagement projects. Explicit list (never `*`) per
+# Drew's global rule about Supabase performance. `cached_messages` and
+# `cached_analysis` on the projects table can be megabytes per row.
+_ENGAGEMENT_COLUMNS = (
     "number, full_job_name, name, mc_status, account_manager, "
-    "is_internal, updated_at, companies(code)"
+    "is_internal, deal_stage, budget, updated_at, "
+    "companies(code, name, kind)"
 )
+
+# Columns for standalone repo rows.
+_REPO_COLUMNS = (
+    "id, repo_name, status, description, owner, updated_at, "
+    "github_orgs!inner(name), "
+    "companies!inner(code, name, kind)"
+)
+
+_VALID_REPO_STATUSES = {"Active", "Holding", "Inactive"}
 
 
 class MC2Backend:
-    """Reads project state from MC-2's Postgres.
-
-    Stateless aside from the lazily-constructed Supabase client.
-    """
+    """Reads project + repo state from MC-2's Postgres."""
 
     _client: Client | None = None
 
     def read_projects(self, config: TenantConfig) -> tuple[ProjectState, ...]:
         client = self._get_client()
 
-        # Filter at SQL: skip Archived (master CP doesn't surface them at
-        # all). is_internal filtering happens in the renderer based on what
-        # each tenant wants displayed — keep the filter close to display.
-        resp = (
+        # Stream A: engagement projects
+        engagement_rows = (
             client.schema("public")
             .table("projects")
-            .select(_PROJECT_COLUMNS)
+            .select(_ENGAGEMENT_COLUMNS)
             .neq("mc_status", "Archived")
             .order("updated_at", desc=True)
             .execute()
+            .data
+            or []
+        )
+        engagements = tuple(
+            _engagement_row_to_state(row)
+            for row in engagement_rows
+            if _engagement_row_is_valid(row)
         )
 
-        rows = resp.data or []
-        return tuple(_row_to_state(row) for row in rows if _row_is_valid(row))
+        # Stream B: standalone repos (no engagement link)
+        # PostgREST: `is.null` for "project_id IS NULL"
+        repo_rows = (
+            client.schema("public")
+            .table("repos")
+            .select(_REPO_COLUMNS)
+            .is_("project_id", "null")
+            .neq("status", "Inactive")
+            .order("updated_at", desc=True)
+            .execute()
+            .data
+            or []
+        )
+        repos = tuple(
+            _repo_row_to_state(row) for row in repo_rows if _repo_row_is_valid(row)
+        )
+
+        return engagements + repos
 
     def _get_client(self) -> Client:
         if self._client is not None:
@@ -97,71 +120,113 @@ class MC2Backend:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Row → ProjectState transformation (pure; unit-testable)
+#  Engagement row → ProjectState
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _row_is_valid(row: dict) -> bool:
-    """Defensive: skip rows MC-2 should never produce but technically could.
-
-    `number` is NOT NULL on the schema and unique in practice — but defend
-    anyway. Skipped rows are dropped silently (no exception); better to
-    surface 99 of 100 projects than 0.
-    """
+def _engagement_row_is_valid(row: dict) -> bool:
+    """Defensive: skip rows MC-2 should never produce but technically could."""
     if row.get("number") is None:
         return False
     if row.get("mc_status") not in MC_STATUSES:
-        # Includes the case where the post-migration code is in place but
-        # this row somehow still has the old vocab. Skip; it'd render wrong.
         return False
     return True
 
 
-def _row_to_state(row: dict) -> ProjectState:
-    """Transform one DB row into a ProjectState.
+def _engagement_row_to_state(row: dict) -> ProjectState:
+    """Transform an engagement-projects row into a ProjectState."""
+    company = row.get("companies") or {}
+    if not isinstance(company, dict):
+        company = {}
+    kind = company.get("kind") or "client"
 
-    The canonical project ID is derived from `number` (always present) and
-    `companies.code` (often present, sometimes NULL for legacy rows).
-    """
     return ProjectState(
-        code=_canonical_id(row),
-        # Prefer full_job_name (the trigger-maintained one), fall back to
-        # name. Both can be None; we settle on "" if absolutely nothing.
+        code=_engagement_canonical_id(row),
         name=row.get("full_job_name") or row.get("name") or "",
+        source="engagement",
+        company_kind=kind,  # type: ignore[arg-type]
+        company_code=company.get("code"),
+        company_name=company.get("name"),
         status=row["mc_status"],
         is_internal=bool(row.get("is_internal", False)),
         owner=row.get("account_manager") or None,
         last_touched=_parse_iso(row.get("updated_at")),
-        deadline=None,  # MC-2 doesn't track deadlines on projects
-        one_line_summary=None,  # set by the deepening pass, not by sync
+        deadline=None,
+        deal_stage=row.get("deal_stage"),
+        budget=_parse_numeric(row.get("budget")),
     )
 
 
-def _canonical_id(row: dict) -> str:
-    """Build `<prefix>-<number>` (or just `<number>` when prefix unavailable).
-
-    Examples:
-        {number: 5188, companies: {code: "GGL"}}  -> "ggl-5188"
-        {number: 5026, companies: None}           -> "5026"
-        {number: 5026, companies: {code: ""}}     -> "5026"
-    """
+def _engagement_canonical_id(row: dict) -> str:
+    """`<prefix>-<number>` or just `<number>` if no company_id."""
     number = row["number"]
     company = row.get("companies") or {}
     prefix = (company.get("code") or "").strip().lower() if isinstance(company, dict) else ""
     return f"{prefix}-{number}" if prefix else str(number)
 
 
-def _parse_iso(s: str | None) -> datetime | None:
-    """Parse a Supabase ISO-8601 timestamp string to datetime.
+# ──────────────────────────────────────────────────────────────────────
+#  Repo row → ProjectState
+# ──────────────────────────────────────────────────────────────────────
 
-    Supabase returns timestamps like `2026-05-07T16:14:34.123456+00:00`.
-    `datetime.fromisoformat` handles those directly on Python 3.11+.
-    """
+
+def _repo_row_is_valid(row: dict) -> bool:
+    """Defensive: skip rows where the embedded joins came back empty."""
+    if not row.get("repo_name"):
+        return False
+    if row.get("status") not in _VALID_REPO_STATUSES:
+        return False
+    if not row.get("github_orgs") or not row.get("companies"):
+        # Inner joins in the SELECT should make this impossible, but
+        # PostgREST occasionally returns empty objects; defend.
+        return False
+    return True
+
+
+def _repo_row_to_state(row: dict) -> ProjectState:
+    """Transform a repos row into a ProjectState."""
+    org = row.get("github_orgs") or {}
+    company = row.get("companies") or {}
+    kind = company.get("kind") or "client"
+
+    return ProjectState(
+        code=row["repo_name"],
+        name=row["repo_name"],
+        source="repo",
+        company_kind=kind,  # type: ignore[arg-type]
+        company_code=company.get("code"),
+        company_name=company.get("name"),
+        status=row["status"],
+        is_internal=False,  # repos don't carry this flag
+        owner=row.get("owner") or None,
+        last_touched=_parse_iso(row.get("updated_at")),
+        deadline=None,
+        github_org=org.get("name"),
+        repo_name=row["repo_name"],
+        description=row.get("description"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Shared helpers
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _parse_iso(s: str | None) -> datetime | None:
     if not s:
         return None
     parsed = datetime.fromisoformat(s)
-    # Supabase always returns tz-aware timestamps for `timestamp with time zone`
-    # columns. Defensive: if it ever returned naive, treat as UTC.
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _parse_numeric(v) -> float | None:
+    """Parse Supabase numeric fields. Comes back as str or float; either way
+    yields a float, or None if absent/unparseable."""
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
