@@ -23,6 +23,32 @@ and Closed-recent are collapsed `<details>` blocks below.
 the source-of-truth side, used to filter out internal pseudo-projects from the
 master CP.
 
+## Working tree layout (v0.3)
+
+Project state lives in per-project working directories:
+
+```
+<tenant root>/
+├── master-cp.md
+├── weekly-cp.md
+├── 1p/projects/<code>/cp.md          ← client engagements
+├── firstpersonsf/projects/<code>/cp.md  ← First Person internal tooling
+└── canonic/projects/<code>/cp.md      ← Canonic
+```
+
+Each working directory is a place for everything related to one project:
+the `cp.md` itself, optional `_dropbox.md` link to media, plus any
+hand-added text artifacts (transcripts, syntheses, action items). Binary
+content lives in Dropbox per `.gitignore`.
+
+**Auto-load:** if this session's working directory matches `**/projects/<code>/`,
+treat `cp.md` in that directory as the primary context for this session
+(equivalent to `switch to <code>` mode). The per-project `_dropbox.md`,
+if present, is the canonical link to that project's binary artifacts.
+
+When the cwd is the tenant root or any non-project subdir, behave as
+described in "Reading modes" below.
+
 ## Reading modes
 
 This session is in exactly one mode at any moment. Modes can change mid-session

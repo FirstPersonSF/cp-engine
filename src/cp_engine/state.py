@@ -19,6 +19,29 @@ EntrySource = Literal["engagement", "repo"]
 # Renderers group by this to produce the three master-CP sections.
 CompanyKind = Literal["client", "self-fpsf", "self-canonic"]
 
+# Maps company_kind to the v0.3 working-tree scope directory name. This is
+# the contract between MC-2's data model and cp's filesystem layout.
+_SCOPE_BY_KIND: dict[str, str] = {
+    "client": "1p",
+    "self-fpsf": "firstpersonsf",
+    "self-canonic": "canonic",
+}
+
+
+def scope_for(company_kind: str) -> str:
+    """Return the working-tree scope directory for a company kind.
+
+    Raises ValueError on unknown kinds rather than silently misplacing a
+    project — better to fail loud than scaffold under the wrong scope.
+    """
+    try:
+        return _SCOPE_BY_KIND[company_kind]
+    except KeyError:
+        raise ValueError(
+            f"Unknown company_kind {company_kind!r}; expected one of "
+            f"{sorted(_SCOPE_BY_KIND)}"
+        ) from None
+
 
 @dataclass(frozen=True)
 class ProjectState:
@@ -59,6 +82,7 @@ class ProjectState:
     # Engagement-only fields
     deal_stage: str | None = None
     budget: float | None = None
+    dropbox_folder_url: str | None = None
 
     # Repo-only fields
     github_org: str | None = None

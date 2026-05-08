@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 from cp_engine.config import TenantConfig
 from cp_engine.render import (
     render_claude_md,
+    render_dropbox_md,
+    render_gitignore,
     render_master_cp,
     render_project_cp,
     splice_managed_region,
@@ -38,7 +40,7 @@ from cp_engine.render import (
 # Re-exported here so existing `from cp_engine.sync import ProjectState, Issue`
 # imports keep working — the data shapes live in cp_engine.state to break
 # the sync ↔ render circular dependency.
-from cp_engine.state import Issue, ProjectState  # noqa: F401
+from cp_engine.state import Issue, ProjectState, scope_for  # noqa: F401
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -99,7 +101,7 @@ class SyncResult:
 
     projects_seen: int
     files_written: tuple[Path, ...]   # generated/scaffolded files
-    files_archived: tuple[Path, ...]  # moved from projects/ → projects/archived/
+    files_archived: tuple[Path, ...]  # working dirs moved to <scope>/projects/archived/<code>/
     no_op: bool                       # True iff nothing changed on disk
 
 
@@ -174,32 +176,78 @@ def sync_tenant(
     if _write_if_changed(claude_path, new_claude, splice_regions=()):
         files_written.append(claude_path)
 
-    # Project CPs — scaffold the missing ones; leave existing alone.
-    # Filter internal projects to match what the master CP surfaces:
-    # is_internal=true projects belong in their own tenant, not in client/
-    # public tenants. This keeps file-on-disk state consistent with the
-    # rendered master CP.
-    projects_dir = config.root / "projects"
-    projects_dir.mkdir(exist_ok=True)
+    # .gitignore — generated, idempotent. Tenants shouldn't hand-edit;
+    # exceptions can layer in per-scope or per-project .gitignore files
+    # if real cases emerge (see v0.3 design doc).
+    gitignore_path = config.root / ".gitignore"
+    if _write_if_changed(gitignore_path, render_gitignore(), splice_regions=()):
+        files_written.append(gitignore_path)
 
-    # Compute the set of "live" project codes — what should exist as a
-    # CP file in projects/ after this sync. Internal projects don't get
-    # CPs in this tenant.
-    live_codes = {p.code for p in projects if not p.is_internal}
+    # Project CPs — v0.3 layout: each project gets a working directory at
+    # <scope>/projects/<code>/ with cp.md plus optional _dropbox.md. Filter
+    # internal projects to match what the master CP surfaces: is_internal=true
+    # projects belong in their own tenant, not in client/public tenants. This
+    # keeps file-on-disk state consistent with the rendered master CP.
+
+    # Compute the set of (scope, code) pairs that should exist as live
+    # working dirs after this sync. Internal projects don't get dirs.
+    live_dirs: set[tuple[str, str]] = {
+        (scope_for(p.company_kind), p.code)
+        for p in projects
+        if not p.is_internal
+    }
 
     for project in projects:
         if project.is_internal:
             continue
-        project_path = projects_dir / f"{project.code}.md"
-        if not project_path.exists():
-            body = render_project_cp(config, project, tracked_issues=())
-            project_path.write_text(body)
-            files_written.append(project_path)
+        scope = scope_for(project.company_kind)
+        project_dir = config.root / scope / "projects" / project.code
+        archived_dir = config.root / scope / "projects" / "archived" / project.code
+        cp_path = project_dir / "cp.md"
 
-    # Archive sweep — any file in projects/<code>.md whose <code> is no
-    # longer in `live_codes` represents a project that was archived in
-    # MC-2, deleted, or flipped to is_internal. Move it to projects/archived/.
-    files_archived = _archive_stale_cps(projects_dir, live_codes)
+        if not project_dir.exists():
+            # Two cases: the project is brand new, or it was previously
+            # archived and is coming back to life. The un-archive path
+            # restores hand-written content (transcripts, syntheses, etc.)
+            # rather than scaffolding a fresh empty CP.
+            if archived_dir.exists():
+                project_dir.parent.mkdir(parents=True, exist_ok=True)
+                archived_dir.rename(project_dir)
+                logger.info(
+                    "Restored archived project %s back to live (%s).",
+                    project.code,
+                    project_dir.relative_to(config.root),
+                )
+                # Track every file in the restored dir as "written" so the
+                # caller's commit picks them all up in the same commit.
+                for path in sorted(project_dir.rglob("*")):
+                    if path.is_file():
+                        files_written.append(path)
+            else:
+                project_dir.mkdir(parents=True, exist_ok=True)
+
+        if not cp_path.exists():
+            body = render_project_cp(config, project, tracked_issues=())
+            cp_path.write_text(body)
+            files_written.append(cp_path)
+
+        # _dropbox.md — re-render on every sync so a URL change in MC-2
+        # propagates without manual intervention. The renderer returns
+        # None for projects without a Dropbox URL (most repos); skip those.
+        dropbox_body = render_dropbox_md(project)
+        dropbox_path = project_dir / "_dropbox.md"
+        if dropbox_body is None:
+            # Project shouldn't have _dropbox.md (no URL). If a stale one
+            # exists from a prior URL, leave it — humans may have hand-edited.
+            pass
+        elif _write_if_changed(dropbox_path, dropbox_body, splice_regions=()):
+            files_written.append(dropbox_path)
+
+    # Archive sweep — any working dir on disk whose (scope, code) is no
+    # longer in `live_dirs` represents a project that was archived in MC-2,
+    # deleted, or flipped to is_internal. Move the whole working dir to
+    # <scope>/projects/archived/<code>/.
+    files_archived = _archive_stale_cps(config.root, live_dirs)
 
     return SyncResult(
         projects_seen=len(projects),
@@ -344,51 +392,67 @@ def _derive_summary(config: TenantConfig, project: ProjectState) -> str | None:
     """
     from cp_engine.summary import derive_from_project_cp
 
-    cp_path = config.root / "projects" / f"{project.code}.md"
+    scope = scope_for(project.company_kind)
+    cp_path = config.root / scope / "projects" / project.code / "cp.md"
     return derive_from_project_cp(cp_path)
 
 
-def _archive_stale_cps(projects_dir: Path, live_codes: set[str]) -> list[Path]:
-    """Move CPs for projects no longer surfaced by sync into projects/archived/.
+_SCOPE_DIRS: tuple[str, ...] = ("1p", "firstpersonsf", "canonic")
+
+
+def _archive_stale_cps(
+    tenant_root: Path,
+    live_dirs: set[tuple[str, str]],
+) -> list[Path]:
+    """Move whole working dirs for stale projects into <scope>/projects/archived/.
 
     Triggered when a project is archived in MC-2, deleted, or flipped to
     is_internal=true. Hand-edited content survives because we move (rename)
-    rather than overwrite.
+    the whole directory rather than overwrite anything.
 
-    Files already in projects/archived/ are left alone — they're already
-    archived. Only top-level projects/<code>.md files are candidates.
+    Walks each `<scope>/projects/` for top-level subdirs that look like
+    project codes (skipping the `archived/` subdir itself). If the (scope,
+    code) pair isn't in `live_dirs`, the directory is moved to
+    `<scope>/projects/archived/<code>/`.
 
-    Returns the list of paths that were moved (the new archived location).
+    Returns the list of new archived directory paths. Each archived dir
+    surfaces once even though it may contain many files — callers are
+    expected to `git add -A` the whole tree to capture the move.
     """
-    archive_dir = projects_dir / "archived"
     moved: list[Path] = []
 
-    for path in projects_dir.iterdir():
-        if path.is_dir():
-            continue  # skip projects/archived/ subdir itself
-        if path.suffix != ".md":
+    for scope in _SCOPE_DIRS:
+        projects_dir = tenant_root / scope / "projects"
+        if not projects_dir.exists():
             continue
-        code = path.stem
-        if code in live_codes:
-            continue
+        archive_dir = projects_dir / "archived"
 
-        # Stale. Move it.
-        archive_dir.mkdir(exist_ok=True)
-        target = archive_dir / path.name
-        if target.exists():
-            # Conservative: never silently overwrite existing archived
-            # content. v0.1.2 logs and skips; a future version may add
-            # counter-suffix collision handling.
-            logger.warning(
-                "Skipping archive of %s: %s already exists. "
-                "Resolve the conflict by hand (rename or merge).",
-                path,
-                target,
-            )
-            continue
+        for path in projects_dir.iterdir():
+            if not path.is_dir():
+                continue
+            if path.name == "archived":
+                continue
+            code = path.name
+            if (scope, code) in live_dirs:
+                continue
 
-        path.rename(target)
-        moved.append(target)
+            # Stale. Move the whole dir.
+            archive_dir.mkdir(exist_ok=True)
+            target = archive_dir / code
+            if target.exists():
+                # v0.1.2 collision rule: never silently overwrite. Skip
+                # and warn — a human can resolve by renaming or merging
+                # the duplicate.
+                logger.warning(
+                    "Skipping archive of %s: %s already exists. "
+                    "Resolve the conflict by hand (rename or merge).",
+                    path,
+                    target,
+                )
+                continue
+
+            path.rename(target)
+            moved.append(target)
 
     return moved
 

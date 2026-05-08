@@ -136,10 +136,61 @@ def refresh_pristine(dry_run: bool) -> None:
         click.echo(f"\nSkipped {len(result.skipped_files)} edited CP(s) (hand-written content preserved).")
 
 
+@main.command(name="migrate-to-v03")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show what would move without touching the disk.",
+)
+def migrate_to_v03(dry_run: bool) -> None:
+    """One-shot move of v0.2's flat `projects/<code>.md` layout to v0.3's
+    per-project working dirs at `<scope>/projects/<code>/cp.md`.
+
+    Uses `git mv` to preserve rename detection. Refuses to run on a dirty
+    working tree — commit or stash first. After this runs cleanly, regular
+    `cp sync` keeps using the new layout."""
+    try:
+        config = load(Path.cwd())
+    except ConfigError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+
+    from cp_engine.migrate import MigrationError, migrate_to_v03 as _run
+
+    try:
+        result = _run(config, dry_run=dry_run)
+    except MigrationError as exc:
+        click.echo(f"Migration aborted: {exc}", err=True)
+        sys.exit(1)
+    except SyncError as exc:
+        click.echo(f"Migration aborted: {exc}", err=True)
+        sys.exit(1)
+
+    label = "Would move" if dry_run else "Moved"
+    if not result.moved and not result.skipped:
+        click.echo("Nothing to migrate — no v0.2 layout files found.")
+        return
+
+    click.echo(f"{label} {len(result.moved)} file(s):")
+    for src, dst in result.moved:
+        click.echo(f"  {src.relative_to(config.root)} → {dst.relative_to(config.root)}")
+    if result.skipped:
+        click.echo(f"\nSkipped {len(result.skipped)} file(s) — resolve by hand:")
+        for src, reason in result.skipped:
+            click.echo(f"  {src.relative_to(config.root)}: {reason}")
+
+    if not dry_run:
+        click.echo(
+            "\nReview the changes, then commit:\n"
+            "  git status\n"
+            '  git commit -m "cp-engine v0.3: restructure to per-project working directories"'
+        )
+
+
 @main.command()
 def status() -> None:
     """Show what would change on next sync (no writes — read-only)."""
-    click.echo("cp status — not implemented yet (lands in v0.3)")
+    click.echo("cp status — not implemented yet (lands in v0.4)")
     sys.exit(1)
 
 

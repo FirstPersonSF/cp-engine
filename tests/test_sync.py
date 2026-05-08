@@ -90,14 +90,16 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     assert result.projects_seen == 1
     assert not result.no_op
     written_names = {p.name for p in result.files_written}
-    assert written_names == {"master-cp.md", "CLAUDE.md", "mc-2.md"}
+    # v0.3 layout: project working dir at <scope>/projects/<code>/cp.md.
+    # Default make_state has company_kind="client" → scope "1p".
+    assert written_names == {"master-cp.md", "CLAUDE.md", ".gitignore", "cp.md"}
 
     # Files actually exist + reference the project
     master = (tmp_path / "master-cp.md").read_text()
     assert "mc-2" in master
     assert "Mission Control v2" in master
 
-    project_cp = (tmp_path / "projects" / "mc-2.md").read_text()
+    project_cp = (tmp_path / "1p" / "projects" / "mc-2" / "cp.md").read_text()
     assert "Mission Control v2" in project_cp
     assert "<!-- cp-engine:start tracked-issues -->" in project_cp
 
@@ -122,7 +124,7 @@ def test_resync_with_unchanged_state_is_a_noop(tmp_path: Path) -> None:
     # Two syncs with the same state and same `now` — the first creates files,
     # the second should be a no-op.
     first = sync_tenant(config, backend_factory=lambda _: fake, now=fixed_now)
-    files = ["master-cp.md", "CLAUDE.md", "projects/mc-2.md"]
+    files = ["master-cp.md", "CLAUDE.md", "1p/projects/mc-2/cp.md"]
     mtimes_after_first = {f: (tmp_path / f).stat().st_mtime_ns for f in files}
 
     second = sync_tenant(config, backend_factory=lambda _: fake, now=fixed_now)
@@ -196,19 +198,19 @@ def test_resync_with_changed_status_updates_master_only(tmp_path: Path) -> None:
     fake1 = FakeBackend((make_state(status="Open"),))
     sync_tenant(config, backend_factory=lambda _: fake1)
 
-    project_cp_before = (tmp_path / "projects" / "mc-2.md").read_text()
-    project_cp_mtime_before = (tmp_path / "projects" / "mc-2.md").stat().st_mtime_ns
+    project_cp_before = (tmp_path / "1p" / "projects" / "mc-2" / "cp.md").read_text()
+    project_cp_mtime_before = (tmp_path / "1p" / "projects" / "mc-2" / "cp.md").stat().st_mtime_ns
 
     fake2 = FakeBackend((make_state(status="Holding"),))
     result = sync_tenant(config, backend_factory=lambda _: fake2)
 
     # master-cp.md changed; the project CP did NOT (still scaffolded, untouched)
     assert (tmp_path / "master-cp.md") in result.files_written
-    assert (tmp_path / "projects" / "mc-2.md") not in result.files_written
+    assert (tmp_path / "1p" / "projects" / "mc-2" / "cp.md") not in result.files_written
 
-    project_cp_after = (tmp_path / "projects" / "mc-2.md").read_text()
+    project_cp_after = (tmp_path / "1p" / "projects" / "mc-2" / "cp.md").read_text()
     assert project_cp_before == project_cp_after
-    assert (tmp_path / "projects" / "mc-2.md").stat().st_mtime_ns == project_cp_mtime_before
+    assert (tmp_path / "1p" / "projects" / "mc-2" / "cp.md").stat().st_mtime_ns == project_cp_mtime_before
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -244,7 +246,7 @@ def test_resync_does_not_overwrite_existing_project_cp(tmp_path: Path) -> None:
     sync_tenant(config, backend_factory=lambda _: fake)
 
     # User edits the project CP heavily — adds notes, removes default sections
-    project_path = tmp_path / "projects" / "mc-2.md"
+    project_path = tmp_path / "1p" / "projects" / "mc-2" / "cp.md"
     custom_body = "# Hand-rewritten\n\nNothing else.\n"
     project_path.write_text(custom_body)
 
@@ -282,10 +284,11 @@ def test_sync_with_mixed_statuses_renders_correct_subtables(tmp_path: Path) -> N
 
     # Project CP scaffolding matches master-CP visibility: internal projects
     # are NOT scaffolded into client/public tenants. They belong in their
-    # own (cp-firstpersonsf) tenant.
-    projects_dir = tmp_path / "projects"
-    files = sorted(p.name for p in projects_dir.iterdir())
-    assert files == ["closed-1.md", "hold-1.md", "open-1.md"]
+    # own (cp-firstpersonsf) tenant. v0.3: each project is a working dir
+    # under <scope>/projects/<code>/.
+    projects_dir = tmp_path / "1p" / "projects"
+    dirs = sorted(p.name for p in projects_dir.iterdir() if p.is_dir())
+    assert dirs == ["closed-1", "hold-1", "open-1"]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -295,48 +298,55 @@ def test_sync_with_mixed_statuses_renders_correct_subtables(tmp_path: Path) -> N
 
 def test_archived_project_cp_moves_to_archived_dir(tmp_path: Path) -> None:
     """A project that disappears from sync output (archived in MC-2)
-    has its CP moved to projects/archived/, not deleted."""
+    has its working dir moved to <scope>/projects/archived/<code>/, not deleted."""
     config = make_config(tmp_path)
 
     # First sync: project exists
     fake1 = FakeBackend((make_state(code="going-away"),))
     sync_tenant(config, backend_factory=lambda _: fake1)
-    assert (tmp_path / "projects" / "going-away.md").exists()
+    live_dir = tmp_path / "1p" / "projects" / "going-away"
+    assert (live_dir / "cp.md").exists()
 
     # Second sync: project is gone (e.g. archived in MC-2)
     fake2 = FakeBackend(())
     result = sync_tenant(config, backend_factory=lambda _: fake2)
 
-    assert not (tmp_path / "projects" / "going-away.md").exists()
-    archived_path = tmp_path / "projects" / "archived" / "going-away.md"
-    assert archived_path.exists()
-    assert archived_path in result.files_archived
+    assert not live_dir.exists()
+    archived_dir = tmp_path / "1p" / "projects" / "archived" / "going-away"
+    assert (archived_dir / "cp.md").exists()
+    assert archived_dir in result.files_archived
     assert not result.no_op
 
 
 def test_archive_preserves_hand_edited_content(tmp_path: Path) -> None:
-    """Hand-edited content survives the move because we rename, not regenerate."""
+    """Hand-edited content survives the move because we rename, not regenerate.
+    v0.3: the whole working dir moves, so transcripts and other hand-added
+    files travel with the cp.md."""
     config = make_config(tmp_path)
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend((make_state(code="my-project"),)),
     )
 
-    # User adds notes to the project CP
-    project_path = tmp_path / "projects" / "my-project.md"
-    edited = project_path.read_text() + "\n## My notes\n\nImportant stuff.\n"
-    project_path.write_text(edited)
+    # User adds notes to the project CP and drops a transcript file alongside
+    work_dir = tmp_path / "1p" / "projects" / "my-project"
+    cp_path = work_dir / "cp.md"
+    edited = cp_path.read_text() + "\n## My notes\n\nImportant stuff.\n"
+    cp_path.write_text(edited)
+    (work_dir / "transcript.md").write_text("# 2026-05-08 call\n\n…\n")
 
     # Project disappears from MC-2
     sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
 
-    archived = tmp_path / "projects" / "archived" / "my-project.md"
-    assert archived.exists()
-    assert "Important stuff." in archived.read_text()
+    archived = tmp_path / "1p" / "projects" / "archived" / "my-project"
+    assert (archived / "cp.md").exists()
+    assert "Important stuff." in (archived / "cp.md").read_text()
+    # Transcript travelled with the dir
+    assert (archived / "transcript.md").exists()
 
 
 def test_resync_after_archive_is_a_noop_for_that_project(tmp_path: Path) -> None:
-    """Once archived, the project's CP stays in archived/ on subsequent syncs."""
+    """Once archived, the project's working dir stays in archived/ on subsequent syncs."""
     config = make_config(tmp_path)
     sync_tenant(
         config,
@@ -345,10 +355,10 @@ def test_resync_after_archive_is_a_noop_for_that_project(tmp_path: Path) -> None
 
     # Archive
     sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
-    archived = tmp_path / "projects" / "archived" / "dead-project.md"
+    archived = tmp_path / "1p" / "projects" / "archived" / "dead-project" / "cp.md"
     mtime_after_archive = archived.stat().st_mtime_ns
 
-    # Second post-archive sync — should leave the archived file alone.
+    # Second post-archive sync — should leave the archived dir alone.
     result = sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
     assert archived.exists()
     assert archived.stat().st_mtime_ns == mtime_after_archive
@@ -358,57 +368,59 @@ def test_resync_after_archive_is_a_noop_for_that_project(tmp_path: Path) -> None
 def test_archive_collision_logs_and_skips(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """If projects/archived/<code>.md already exists (e.g. unarchive-then-
-    re-archive cycle), the engine logs a warning and leaves both files in
+    """If <scope>/projects/archived/<code>/ already exists (e.g. unarchive-then-
+    re-archive cycle), the engine logs a warning and leaves both dirs in
     place rather than silently overwriting."""
     import logging
 
     config = make_config(tmp_path)
-    # Pre-populate an existing archived CP
-    archive_dir = tmp_path / "projects" / "archived"
-    archive_dir.mkdir(parents=True)
-    existing_archived = archive_dir / "ghost.md"
-    existing_archived.write_text("# Old archive\n\nFrom an earlier life.\n")
+    # Pre-populate an existing archived working dir
+    archived_old = tmp_path / "1p" / "projects" / "archived" / "ghost"
+    archived_old.mkdir(parents=True)
+    (archived_old / "cp.md").write_text("# Old archive\n\nFrom an earlier life.\n")
 
-    # And a current live CP for the same code
-    (tmp_path / "projects").mkdir(exist_ok=True)
-    (tmp_path / "projects" / "ghost.md").write_text("# Current\n\nIn flight.\n")
+    # And a current live working dir for the same code
+    live_dir = tmp_path / "1p" / "projects" / "ghost"
+    live_dir.mkdir(parents=True)
+    (live_dir / "cp.md").write_text("# Current\n\nIn flight.\n")
 
-    # Sync with no projects — engine wants to archive ghost.md but the
+    # Sync with no projects — engine wants to archive ghost/ but the
     # collision blocks it.
     with caplog.at_level(logging.WARNING, logger="cp_engine.sync"):
         result = sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
 
-    # Both files survive
-    assert (tmp_path / "projects" / "ghost.md").exists()
-    assert existing_archived.read_text() == "# Old archive\n\nFrom an earlier life.\n"
+    # Both dirs survive
+    assert (live_dir / "cp.md").exists()
+    assert (archived_old / "cp.md").read_text() == "# Old archive\n\nFrom an earlier life.\n"
     # Warning logged
-    assert any("ghost.md" in m and "already exists" in m for m in caplog.messages)
-    # No file actually moved
+    assert any("ghost" in m and "already exists" in m for m in caplog.messages)
+    # No dir actually moved
     assert result.files_archived == ()
 
 
 def test_archive_dir_itself_not_archived(tmp_path: Path) -> None:
-    """projects/archived/ is a directory, not a CP file. The sweep must not
-    confuse it for a stale project."""
+    """<scope>/projects/archived/ is the archive subdir, not a project. The
+    sweep must not treat it as a stale project."""
     config = make_config(tmp_path)
 
-    # First sync creates projects/keep.md
+    # First sync creates 1p/projects/keep/
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend((make_state(code="keep"),)),
     )
-    # Manually create projects/archived/ with an unrelated file
-    (tmp_path / "projects" / "archived").mkdir(exist_ok=True)
-    (tmp_path / "projects" / "archived" / "previous.md").write_text("# Old\n")
+    # Manually create archived/ with an unrelated entry
+    archived_root = tmp_path / "1p" / "projects" / "archived"
+    archived_root.mkdir(parents=True, exist_ok=True)
+    (archived_root / "previous").mkdir(exist_ok=True)
+    (archived_root / "previous" / "cp.md").write_text("# Old\n")
 
     # Re-sync with `keep` still alive — archived/ should not be touched
     result = sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend((make_state(code="keep"),)),
     )
-    assert (tmp_path / "projects" / "keep.md").exists()
-    assert (tmp_path / "projects" / "archived" / "previous.md").exists()
+    assert (tmp_path / "1p" / "projects" / "keep" / "cp.md").exists()
+    assert (archived_root / "previous" / "cp.md").exists()
     assert result.files_archived == ()
 
 
@@ -442,3 +454,164 @@ def test_github_issues_backend_not_implemented_yet(tmp_path: Path) -> None:
     )
     with pytest.raises(UnknownBackend, match="v0.2"):
         sync_tenant(config)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  v0.3 — scope-aware tree, un-archive, _dropbox.md
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_mixed_scopes_land_under_correct_dirs(tmp_path: Path) -> None:
+    """Three projects with three different company_kinds → three different scopes."""
+    config = make_config(tmp_path)
+    fake = FakeBackend(
+        (
+            make_state(code="ggl-5168", name="Playbooks", company_kind="client"),
+            make_state(
+                code="mc-2",
+                name="MC-2",
+                company_kind="self-fpsf",
+                source="repo",
+                status="Active",
+            ),
+            make_state(
+                code="storyos",
+                name="StoryOS",
+                company_kind="self-canonic",
+                source="repo",
+                status="Active",
+            ),
+        )
+    )
+
+    sync_tenant(config, backend_factory=lambda _: fake)
+
+    assert (tmp_path / "1p" / "projects" / "ggl-5168" / "cp.md").exists()
+    assert (tmp_path / "firstpersonsf" / "projects" / "mc-2" / "cp.md").exists()
+    assert (tmp_path / "canonic" / "projects" / "storyos" / "cp.md").exists()
+
+    # Master CP links use the new scope-aware paths
+    master = (tmp_path / "master-cp.md").read_text()
+    assert "1p/projects/ggl-5168/cp.md" in master
+    assert "firstpersonsf/projects/mc-2/cp.md" in master
+    assert "canonic/projects/storyos/cp.md" in master
+
+
+def test_un_archive_restores_working_dir_with_hand_content(tmp_path: Path) -> None:
+    """A project that's archived, then re-enters the live set, comes back
+    with all its hand-written content (not a fresh scaffold)."""
+    config = make_config(tmp_path)
+    state = make_state(code="resurrected", name="Resurrected")
+
+    # First sync: live
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+    work_dir = tmp_path / "1p" / "projects" / "resurrected"
+
+    # Hand-add a transcript and edit cp.md
+    (work_dir / "transcript-2026-05-08.md").write_text("# Call notes\n\nSecret sauce.\n")
+    cp_path = work_dir / "cp.md"
+    cp_path.write_text(cp_path.read_text() + "\n## Hand notes\n\nKeep me.\n")
+
+    # Project drops out — gets archived
+    sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
+    assert not work_dir.exists()
+    archived_dir = tmp_path / "1p" / "projects" / "archived" / "resurrected"
+    assert (archived_dir / "transcript-2026-05-08.md").exists()
+
+    # Project comes back — un-archive should restore (not re-scaffold)
+    result = sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+
+    assert (work_dir / "transcript-2026-05-08.md").read_text() == "# Call notes\n\nSecret sauce.\n"
+    assert "Keep me." in (work_dir / "cp.md").read_text()
+    assert not archived_dir.exists()  # archive slot is now empty
+    # The restored files appear in files_written so the caller's commit picks
+    # them up.
+    restored_paths = {p.name for p in result.files_written}
+    assert "transcript-2026-05-08.md" in restored_paths
+
+
+def test_dropbox_md_scaffolded_when_url_present(tmp_path: Path) -> None:
+    """Engagements with a dropbox_folder_url get a _dropbox.md file."""
+    config = make_config(tmp_path)
+    state = ProjectState(
+        code="ggl-5168",
+        name="Playbooks",
+        source="engagement",  # type: ignore[arg-type]
+        company_kind="client",  # type: ignore[arg-type]
+        company_code="GGL",
+        company_name="Google",
+        status="Open",
+        is_internal=False,
+        owner="drew",
+        last_touched=datetime(2026, 5, 7, tzinfo=timezone.utc),
+        deadline=None,
+        dropbox_folder_url="https://www.dropbox.com/scl/fo/abc123/h?dl=0",
+    )
+
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+
+    dropbox_path = tmp_path / "1p" / "projects" / "ggl-5168" / "_dropbox.md"
+    assert dropbox_path.exists()
+    body = dropbox_path.read_text()
+    assert "https://www.dropbox.com/scl/fo/abc123/h?dl=0" in body
+    assert "Playbooks" in body
+
+
+def test_dropbox_md_omitted_when_no_url(tmp_path: Path) -> None:
+    """Projects without a dropbox_folder_url (most repos, some engagements)
+    get no _dropbox.md."""
+    config = make_config(tmp_path)
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend((make_state(code="no-dropbox"),)),
+    )
+
+    dropbox_path = tmp_path / "1p" / "projects" / "no-dropbox" / "_dropbox.md"
+    assert not dropbox_path.exists()
+
+
+def test_dropbox_md_re_renders_on_url_change(tmp_path: Path) -> None:
+    """When MC-2's dropbox_folder_url changes, _dropbox.md updates on next sync."""
+    config = make_config(tmp_path)
+
+    def state_with(url: str) -> ProjectState:
+        return ProjectState(
+            code="mover",
+            name="Mover",
+            source="engagement",  # type: ignore[arg-type]
+            company_kind="client",  # type: ignore[arg-type]
+            company_code=None,
+            company_name=None,
+            status="Open",
+            is_internal=False,
+            owner=None,
+            last_touched=datetime(2026, 5, 7, tzinfo=timezone.utc),
+            deadline=None,
+            dropbox_folder_url=url,
+        )
+
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend((state_with("https://dropbox.com/old"),)),
+    )
+    dropbox_path = tmp_path / "1p" / "projects" / "mover" / "_dropbox.md"
+    assert "old" in dropbox_path.read_text()
+
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend((state_with("https://dropbox.com/new"),)),
+    )
+    assert "new" in dropbox_path.read_text()
+
+
+def test_gitignore_written_at_root(tmp_path: Path) -> None:
+    """v0.3 tenants get a .gitignore that blocks binary content."""
+    config = make_config(tmp_path)
+    sync_tenant(
+        config, backend_factory=lambda _: FakeBackend((make_state(),))
+    )
+    gitignore = (tmp_path / ".gitignore").read_text()
+    assert "*.mp4" in gitignore
+    assert "*.pdf" in gitignore
+    assert ".DS_Store" in gitignore
+    assert ".cp-engine.local.toml" in gitignore

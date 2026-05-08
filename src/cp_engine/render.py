@@ -27,7 +27,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from cp_engine import __version__ as ENGINE_VERSION
 from cp_engine.config import TenantConfig
 from cp_engine.status import is_active_status
-from cp_engine.state import Issue, ProjectState
+from cp_engine.state import Issue, ProjectState, scope_for
 
 # ──────────────────────────────────────────────────────────────────────
 #  Errors
@@ -205,6 +205,67 @@ def render_project_cp(
     )
 
 
+_GITIGNORE_BODY = """\
+# Media — Dropbox is the convention for these
+*.mp4
+*.m4a
+*.mov
+*.wav
+*.mp3
+*.jpg
+*.jpeg
+*.png
+*.gif
+*.heic
+*.tiff
+*.pdf
+*.pptx
+*.ppt
+*.docx
+*.doc
+*.xlsx
+*.xls
+*.zip
+*.tar
+*.tar.gz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Engine config
+.cp-engine.local.toml
+"""
+
+
+def render_gitignore() -> str:
+    """Return the static `.gitignore` body for a v0.3 tenant.
+
+    Pure static content — no template variables. Lives next to the other
+    renderers so all generated files are reachable from one module.
+    """
+    return _GITIGNORE_BODY
+
+
+def render_dropbox_md(project: ProjectState) -> str | None:
+    """Render `_dropbox.md` for a project working directory.
+
+    Returns None when the project has no Dropbox URL — the caller skips
+    writing the file. Repos don't carry `dropbox_folder_url`; only
+    engagements do, so this returns None for repo-source projects.
+    """
+    url = project.dropbox_folder_url
+    if not url:
+        return None
+    template = _env().get_template("dropbox.md.j2")
+    return template.render(
+        project=_project_view(project),
+        dropbox_url=url,
+        engine_version=ENGINE_VERSION,
+        today=_today_iso(),
+    )
+
+
 def render_claude_md(config: TenantConfig) -> str:
     """Render CLAUDE.md from the tenant config.
 
@@ -315,6 +376,7 @@ def _project_view(p: ProjectState) -> dict:
         "name": p.name,
         "source": p.source,
         "company_kind": p.company_kind,
+        "scope": scope_for(p.company_kind),
         "company_code": p.company_code,
         "company_name": p.company_name,
         "status": p.status,
@@ -325,6 +387,7 @@ def _project_view(p: ProjectState) -> dict:
         "deal_stage": p.deal_stage,
         "budget": p.budget,
         "budget_short": _format_budget(p.budget),
+        "dropbox_folder_url": p.dropbox_folder_url,
         # Repo-only
         "github_org": p.github_org,
         "repo_name": p.repo_name,

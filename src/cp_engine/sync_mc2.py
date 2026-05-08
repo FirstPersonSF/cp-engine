@@ -50,7 +50,7 @@ from cp_engine.sync import BackendUnavailable
 # `cached_analysis` on the projects table can be megabytes per row.
 _ENGAGEMENT_COLUMNS = (
     "number, full_job_name, name, mc_status, account_manager, "
-    "is_internal, deal_stage, budget, updated_at, "
+    "is_internal, deal_stage, budget, dropbox_folder_url, updated_at, "
     "companies(code, name, kind)"
 )
 
@@ -264,6 +264,7 @@ def _engagement_row_to_state(row: dict) -> ProjectState:
         deadline=None,
         deal_stage=row.get("deal_stage"),
         budget=_parse_numeric(row.get("budget")),
+        dropbox_folder_url=row.get("dropbox_folder_url") or None,
     )
 
 
