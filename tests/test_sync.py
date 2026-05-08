@@ -216,12 +216,12 @@ def test_sync_with_mixed_statuses_renders_correct_subtables(tmp_path: Path) -> N
     assert "closed-1" in master  # closed-recent subtable
     assert "internal-1" not in master  # is_internal filtered
 
-    # Each project (except the filtered internal one) gets a scaffolded CP
+    # Project CP scaffolding matches master-CP visibility: internal projects
+    # are NOT scaffolded into client/public tenants. They belong in their
+    # own (cp-firstpersonsf) tenant.
     projects_dir = tmp_path / "projects"
     files = sorted(p.name for p in projects_dir.iterdir())
-    assert files == ["closed-1.md", "hold-1.md", "internal-1.md", "open-1.md"]
-    # Internal projects DO get a scaffold — they exist, they just don't show
-    # in the master CP. (Future: revisit if this proves wrong.)
+    assert files == ["closed-1.md", "hold-1.md", "open-1.md"]
 
 
 # ──────────────────────────────────────────────────────────────────────

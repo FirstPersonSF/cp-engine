@@ -130,9 +130,15 @@ def sync_tenant(
         files_written.append(claude_path)
 
     # Project CPs — scaffold the missing ones; leave existing alone.
+    # Filter internal projects to match what the master CP surfaces:
+    # is_internal=true projects belong in their own tenant, not in client/
+    # public tenants. This keeps file-on-disk state consistent with the
+    # rendered master CP.
     projects_dir = config.root / "projects"
     projects_dir.mkdir(exist_ok=True)
     for project in projects:
+        if project.is_internal:
+            continue
         project_path = projects_dir / f"{project.code}.md"
         if not project_path.exists():
             body = render_project_cp(config, project, tracked_issues=())
