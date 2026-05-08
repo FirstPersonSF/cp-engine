@@ -27,7 +27,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 from cp_engine import __version__ as ENGINE_VERSION
 from cp_engine.config import TenantConfig
 from cp_engine.status import is_active_status
-from cp_engine.sync import Issue, ProjectState
+from cp_engine.state import Issue, ProjectState
 
 # ──────────────────────────────────────────────────────────────────────
 #  Errors

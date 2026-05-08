@@ -37,7 +37,15 @@ from cp_engine.status import (
     MC_STATUSES,
     is_active_status,
 )
-from cp_engine.sync import Issue, ProjectState
+from cp_engine.sync import (
+    BackendUnavailable,
+    Issue,
+    ProjectState,
+    SyncError,
+    SyncResult,
+    UnknownBackend,
+    sync_tenant,
+)
 
 __all__ = [
     "__version__",
@@ -59,9 +67,14 @@ __all__ = [
     "ProjectsMissingFromLocal",
     "LocalPathNotFound",
     "EngineVersionMismatch",
-    # sync (data shapes only; sync_tenant still stub)
+    # sync
     "ProjectState",
     "Issue",
+    "sync_tenant",
+    "SyncResult",
+    "SyncError",
+    "UnknownBackend",
+    "BackendUnavailable",
     # render
     "render_master_cp",
     "render_weekly_cp",

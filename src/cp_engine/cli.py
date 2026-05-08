@@ -14,8 +14,10 @@ from pathlib import Path
 
 import click
 
+from cp_engine.config import ConfigError, load
 from cp_engine.config import CommittedConfigMissing
 from cp_engine.init import InitAborted, run_init
+from cp_engine.sync import SyncError, sync_tenant
 
 
 @click.group()
@@ -46,25 +48,45 @@ def init(non_interactive: bool) -> None:
 
 
 @main.command()
-@click.option("--dry-run", is_flag=True, help="Show diff without writing")
-def sync(dry_run: bool) -> None:
+def sync() -> None:
     """Run one sync cycle for the current tenant."""
-    click.echo(f"cp sync (dry-run={dry_run}) — not implemented yet (lands in v0.1)")
-    sys.exit(1)
+    try:
+        config = load(Path.cwd())
+    except ConfigError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+
+    try:
+        result = sync_tenant(config)
+    except SyncError as exc:
+        click.echo(f"Sync failed: {exc}", err=True)
+        sys.exit(1)
+
+    if result.no_op:
+        click.echo(f"No changes ({result.projects_seen} projects checked).")
+        return
+
+    click.echo(f"Synced {result.projects_seen} projects.")
+    for path in result.files_written:
+        click.echo(f"  wrote {path.relative_to(config.root)}")
 
 
 @main.command()
-@click.option("--force-weekly", is_flag=True, help="Re-render weekly-cp.md from template")
-def render(force_weekly: bool) -> None:
-    """Re-render generated files (master-cp.md, CLAUDE.md)."""
-    click.echo(f"cp render (force-weekly={force_weekly}) — not implemented yet (lands in v0.1)")
-    sys.exit(1)
+def render() -> None:
+    """Re-render generated files (alias for `cp sync` in v0.1)."""
+    # In v0.1 there's no separate render-only path — sync already writes
+    # only when content changed and never reaches out to the database
+    # for unchanged regions. Future: a true `--no-network` render that
+    # uses cached project state.
+    click.echo("`cp render` is currently an alias for `cp sync`. Running sync…")
+    ctx = click.get_current_context()
+    ctx.invoke(sync)
 
 
 @main.command()
 def status() -> None:
-    """Show what would change on next sync (no writes)."""
-    click.echo("cp status — not implemented yet (lands in v0.1)")
+    """Show what would change on next sync (no writes — read-only)."""
+    click.echo("cp status — not implemented yet (lands in v0.2)")
     sys.exit(1)
 
 
