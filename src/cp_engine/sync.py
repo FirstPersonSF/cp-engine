@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Protocol
 
@@ -68,6 +68,18 @@ class Backend(Protocol):
 
     def read_projects(self, config: TenantConfig) -> tuple[ProjectState, ...]:
         """Return current state for every tracked project in the tenant."""
+        ...
+
+    def read_allocations(
+        self,
+        config: TenantConfig,
+        week_start: str,
+    ):
+        """Return WeeklyAllocations for the given Monday week_start.
+
+        Optional — backends may return an empty WeeklyAllocations if they
+        don't track per-week per-person allocations.
+        """
         ...
 
 
@@ -129,12 +141,25 @@ def sync_tenant(
         for p in projects
     )
 
+    # Read sprint allocations for last week (Monday-starting). v0.2.4 only
+    # surfaces last week; "this week" is entered live during the partners'
+    # review session, so it's incomplete at sync time and not useful here.
+    last_week_start = _last_week_monday(sync_clock)
+    try:
+        allocations = backend.read_allocations(config, last_week_start.isoformat())
+    except (AttributeError, NotImplementedError):
+        # Backend doesn't implement allocations — that's fine. Render
+        # without them.
+        allocations = None
+
     files_written: list[Path] = []
 
     # Master CP — splice if exists, full-write if not. Timestamp-only diffs
     # don't trigger a write (would otherwise produce hourly noise commits).
     master_path = config.root / "master-cp.md"
-    new_master = render_master_cp(config, projects, last_sync=sync_clock)
+    new_master = render_master_cp(
+        config, projects, last_sync=sync_clock, allocations=allocations
+    )
     if _write_if_changed(
         master_path,
         new_master,
@@ -197,9 +222,26 @@ _MASTER_REGIONS = (
     "active-1p",
     "active-fpsf",
     "active-canonic",
+    "last-week-workload",
     "holding-subtable",
     "closed-recent",
 )
+
+
+def _last_week_monday(now: datetime) -> date:
+    """Return the Monday of the calendar week BEFORE now's calendar week.
+
+    Examples:
+        Thursday May 8 2026 → Monday April 27 2026 (this week is May 4-10,
+        last week is Apr 27 - May 3)
+        Monday May 5 2026 → Monday April 28 2026
+        Sunday May 11 2026 → Monday April 27 2026 (still in May 4-10 week)
+
+    weekday(): Mon=0, Tue=1, ..., Sun=6
+    """
+    today = now.date() if isinstance(now, datetime) else now
+    this_week_monday = today - timedelta(days=today.weekday())
+    return this_week_monday - timedelta(days=7)
 
 # Regions whose contents change every sync by definition (timestamps, run IDs).
 # A change isolated to these regions doesn't justify a write — otherwise every

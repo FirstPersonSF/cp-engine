@@ -35,7 +35,13 @@ from supabase import Client, create_client
 
 from cp_engine.config import TenantConfig
 from cp_engine.status import MC_STATUSES
-from cp_engine.state import ProjectState
+from cp_engine.state import (
+    PersonHours,
+    PersonRollup,
+    ProjectAllocation,
+    ProjectState,
+    WeeklyAllocations,
+)
 from cp_engine.sync import BackendUnavailable
 
 
@@ -102,6 +108,110 @@ class MC2Backend:
 
         return engagements + repos
 
+    def read_allocations(
+        self,
+        config: TenantConfig,
+        week_start: str,
+    ) -> WeeklyAllocations:
+        """Read sprint_allocations for one week, indexed two ways.
+
+        Returns:
+            WeeklyAllocations with `by_project` (canonical_id -> ProjectAllocation)
+            and `rollup` (per-person totals split engagement vs internal admin).
+
+        Args:
+            week_start: ISO date string (YYYY-MM-DD), expected to be a Monday.
+        """
+        client = self._get_client()
+        rows = (
+            client.schema("public")
+            .table("sprint_allocations")
+            .select(
+                "hours, "
+                "entities!inner(name), "
+                "projects!inner(number, is_internal, companies(code))"
+            )
+            .eq("week_start", week_start)
+            .execute()
+            .data
+            or []
+        )
+
+        # Group by project (canonical id) and by person.
+        by_project_raw: dict[str, dict[str, float]] = {}  # code -> {person -> hours}
+        is_internal_by_project: dict[str, bool] = {}
+        person_engagement: dict[str, float] = {}
+        person_engagement_projects: dict[str, set[str]] = {}
+        person_internal: dict[str, float] = {}
+
+        for row in rows:
+            project = row.get("projects") or {}
+            entity = row.get("entities") or {}
+            if not isinstance(project, dict) or not isinstance(entity, dict):
+                continue
+            person = entity.get("name")
+            number = project.get("number")
+            if not person or number is None:
+                continue
+            code = _canonical_id_from_project_join(project)
+            is_internal = bool(project.get("is_internal", False))
+            try:
+                hours = float(row["hours"])
+            except (TypeError, ValueError, KeyError):
+                continue
+
+            # Per-project (skip internal — they don't render per-row, but we
+            # still feed them into per-person rollup below).
+            if not is_internal:
+                by_project_raw.setdefault(code, {})
+                by_project_raw[code][person] = by_project_raw[code].get(person, 0.0) + hours
+                is_internal_by_project[code] = False
+            else:
+                # Per-project entries for internal projects are not surfaced
+                # in by_project (they're rolled into the per-person summary).
+                pass
+
+            # Per-person rollup: split engagement vs internal.
+            if is_internal:
+                person_internal[person] = person_internal.get(person, 0.0) + hours
+            else:
+                person_engagement[person] = person_engagement.get(person, 0.0) + hours
+                person_engagement_projects.setdefault(person, set()).add(code)
+
+        # Build ProjectAllocation entries (sorted by hours desc, then name).
+        by_project: dict[str, ProjectAllocation] = {}
+        for code, person_hours in by_project_raw.items():
+            entries = tuple(
+                sorted(
+                    (PersonHours(person_name=name, hours=hrs) for name, hrs in person_hours.items()),
+                    key=lambda e: (-e.hours, e.person_name),
+                )
+            )
+            by_project[code] = ProjectAllocation(
+                project_code=code,
+                is_internal=is_internal_by_project.get(code, False),
+                entries=entries,
+            )
+
+        # Build PersonRollup list (sorted by total hours desc).
+        all_people = set(person_engagement.keys()) | set(person_internal.keys())
+        rollup_list = [
+            PersonRollup(
+                person_name=p,
+                engagement_hours=person_engagement.get(p, 0.0),
+                engagement_project_count=len(person_engagement_projects.get(p, set())),
+                internal_hours=person_internal.get(p, 0.0),
+            )
+            for p in all_people
+        ]
+        rollup_list.sort(key=lambda r: (-r.total_hours, r.person_name))
+
+        return WeeklyAllocations(
+            week_start=week_start,
+            by_project=by_project,
+            rollup=tuple(rollup_list),
+        )
+
     def _get_client(self) -> Client:
         if self._client is not None:
             return self._client
@@ -163,6 +273,12 @@ def _engagement_canonical_id(row: dict) -> str:
     company = row.get("companies") or {}
     prefix = (company.get("code") or "").strip().lower() if isinstance(company, dict) else ""
     return f"{prefix}-{number}" if prefix else str(number)
+
+
+def _canonical_id_from_project_join(project: dict) -> str:
+    """Same shape as _engagement_canonical_id but reads from a project sub-object
+    in a join result (e.g. sprint_allocations → projects → companies)."""
+    return _engagement_canonical_id(project)
 
 
 # ──────────────────────────────────────────────────────────────────────

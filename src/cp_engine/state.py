@@ -75,3 +75,47 @@ class Issue:
     status: str
     owner: str | None
     updated: datetime | None
+
+
+@dataclass(frozen=True)
+class PersonHours:
+    """One person's hours on one project for one week."""
+
+    person_name: str
+    hours: float
+
+
+@dataclass(frozen=True)
+class ProjectAllocation:
+    """All allocations for one project in one week, sorted by hours desc."""
+
+    project_code: str  # canonical id (matches ProjectState.code)
+    is_internal: bool  # excludes from per-row rendering, included in per-person rollup
+    entries: tuple[PersonHours, ...]
+
+    @property
+    def total_hours(self) -> float:
+        return sum(e.hours for e in self.entries)
+
+
+@dataclass(frozen=True)
+class PersonRollup:
+    """One person's total hours for the week, split engagement vs internal admin."""
+
+    person_name: str
+    engagement_hours: float
+    engagement_project_count: int
+    internal_hours: float
+
+    @property
+    def total_hours(self) -> float:
+        return self.engagement_hours + self.internal_hours
+
+
+@dataclass(frozen=True)
+class WeeklyAllocations:
+    """All allocations for one week, indexed two ways."""
+
+    week_start: str  # ISO date (YYYY-MM-DD)
+    by_project: dict[str, ProjectAllocation]
+    rollup: tuple[PersonRollup, ...]  # sorted by total_hours desc

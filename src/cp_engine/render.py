@@ -88,6 +88,7 @@ def render_master_cp(
     config: TenantConfig,
     projects: tuple[ProjectState, ...],
     last_sync: datetime,
+    allocations=None,  # WeeklyAllocations | None
 ) -> str:
     """Render the full master-cp.md body.
 
@@ -134,6 +135,14 @@ def render_master_cp(
     # with Pipeline sorted by stage progression.
     _STAGE_ORDER = {"Inquiry": 0, "Negotiation": 1, "Contract": 2, "Won": 3, "Lost": 4}
 
+    def to_view(p: ProjectState) -> dict:
+        """Build view dict and attach allocation_line if allocations exist
+        for this project. Per spec: skip the line entirely when total hours
+        is zero (no allocations === no row)."""
+        view = _project_view(p)
+        view["allocation_line"] = _allocation_line_for(p.code, allocations)
+        return view
+
     def group(active_list: list[ProjectState]) -> dict:
         client_entries = [p for p in active_list if p.company_kind == "client"]
         pipeline = sorted(
@@ -142,10 +151,10 @@ def render_master_cp(
         )
         client_active = [p for p in client_entries if p.status == "Open"]
         return {
-            "pipeline": [_project_view(p) for p in pipeline],
-            "client": [_project_view(p) for p in client_active],
-            "self_fpsf": [_project_view(p) for p in active_list if p.company_kind == "self-fpsf"],
-            "self_canonic": [_project_view(p) for p in active_list if p.company_kind == "self-canonic"],
+            "pipeline": [to_view(p) for p in pipeline],
+            "client": [to_view(p) for p in client_active],
+            "self_fpsf": [to_view(p) for p in active_list if p.company_kind == "self-fpsf"],
+            "self_canonic": [to_view(p) for p in active_list if p.company_kind == "self-canonic"],
         }
 
     template = _env().get_template("master-cp.md.j2")
@@ -155,6 +164,8 @@ def render_master_cp(
         today=_today_iso(),
         last_sync_iso=last_sync.isoformat(),
         active_groups=group(active),
+        workload_rollup=_rollup_view(allocations),
+        workload_week=allocations.week_start if allocations else None,
         holding_projects=[_project_view(p) for p in holding],
         closed_recent=[_project_view(p) for p in closed_recent],
     )
@@ -278,9 +289,14 @@ def splice_managed_region(file_contents: str, region: str, new_body: str) -> str
     after = file_contents[end_pos:]
 
     # Normalize: ensure exactly one newline between start_marker and new_body,
-    # and exactly one newline between new_body and end_marker.
+    # and exactly one newline between new_body and end_marker. When body is
+    # empty after stripping, just emit a single newline between markers
+    # (matches what a Jinja template with an empty `{% if %}` block produces
+    # on full-write, so splice and full-write agree byte-for-byte).
     body = new_body.strip("\n")
-    return f"{before}\n{body}\n{after}"
+    if body:
+        return f"{before}\n{body}\n{after}"
+    return f"{before}\n{after}"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -323,6 +339,53 @@ def _format_budget(b: float | None) -> str | None:
     if b >= 1000:
         return f"${b / 1000:.0f}k"
     return f"${b:.0f}"
+
+
+def _format_hours(h: float) -> str:
+    """Render hours compactly. 8.0 → '8h'; 7.5 → '7.5h'."""
+    if h == int(h):
+        return f"{int(h)}h"
+    return f"{h:g}h"
+
+
+def _allocation_line_for(code: str, allocations) -> str | None:
+    """Build the per-project allocation line, or None to suppress the row.
+
+    Returns format: "Last week: Tony 4h, Marcello 8h (12h total)."
+    Skips entirely (returns None) when:
+    - allocations is None (no data fetched)
+    - project has no allocation entry
+    - total hours is zero
+    """
+    if allocations is None:
+        return None
+    alloc = allocations.by_project.get(code)
+    if alloc is None or alloc.total_hours == 0:
+        return None
+    parts = ", ".join(
+        f"{e.person_name.split()[0]} {_format_hours(e.hours)}" for e in alloc.entries
+    )
+    return f"Last week: {parts} ({_format_hours(alloc.total_hours)} total)."
+
+
+def _rollup_view(allocations) -> list[dict]:
+    """Per-person workload rollup as a list of dicts for the template."""
+    if allocations is None:
+        return []
+    return [
+        {
+            "person_name": r.person_name,
+            "total_hours_short": _format_hours(r.total_hours),
+            "engagement_hours_short": _format_hours(r.engagement_hours)
+                if r.engagement_hours
+                else "—",
+            "engagement_project_count": r.engagement_project_count,
+            "internal_hours_short": _format_hours(r.internal_hours)
+                if r.internal_hours
+                else "—",
+        }
+        for r in allocations.rollup
+    ]
 
 
 def _issue_view(i: Issue) -> dict:
