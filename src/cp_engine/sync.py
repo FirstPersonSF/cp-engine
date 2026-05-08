@@ -27,6 +27,18 @@ class ProjectState:
     owner: str | None
     last_touched: datetime | None
     deadline: datetime | None
+    one_line_summary: str | None = None  # regenerated during deepening pass
+
+
+@dataclass(frozen=True)
+class Issue:
+    """One tracked GitHub Issue, surfaced in a project CP's tracked-issues table."""
+
+    number: int
+    title: str
+    status: str
+    owner: str | None
+    updated: datetime | None
 
 
 @dataclass(frozen=True)

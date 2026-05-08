@@ -19,12 +19,24 @@ from cp_engine.config import (
     TenantConfig,
     load,
 )
+from cp_engine.render import (
+    MarkerDuplicated,
+    MarkerInverted,
+    MarkerMissing,
+    RenderError,
+    render_claude_md,
+    render_master_cp,
+    render_project_cp,
+    render_weekly_cp,
+    splice_managed_region,
+)
 from cp_engine.status import (
     ACTIVE_STATUSES,
     MC_STATUS_ACTIVE,
     MC_STATUSES,
     is_active_status,
 )
+from cp_engine.sync import Issue, ProjectState
 
 __all__ = [
     "__version__",
@@ -46,4 +58,17 @@ __all__ = [
     "ProjectsMissingFromLocal",
     "LocalPathNotFound",
     "EngineVersionMismatch",
+    # sync (data shapes only; sync_tenant still stub)
+    "ProjectState",
+    "Issue",
+    # render
+    "render_master_cp",
+    "render_weekly_cp",
+    "render_project_cp",
+    "render_claude_md",
+    "splice_managed_region",
+    "RenderError",
+    "MarkerMissing",
+    "MarkerDuplicated",
+    "MarkerInverted",
 ]
