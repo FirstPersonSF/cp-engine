@@ -21,7 +21,7 @@ isn't populated until v0.2's github-issues backend lands.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Protocol
@@ -119,6 +119,16 @@ def sync_tenant(
     backend = factory(config.sync.backend)
     projects = backend.read_projects(config)
 
+    # Derive each project's one-line summary from the existing project CP
+    # file's hand-written content (Quick Resume's "Current work:" line, or
+    # the first non-placeholder paragraph in Current Work). Returns None
+    # when the CP doesn't exist or has no human-written content yet — in
+    # that case the master-CP renders an empty summary cell.
+    projects = tuple(
+        replace(p, one_line_summary=_derive_summary(config, p))
+        for p in projects
+    )
+
     files_written: list[Path] = []
 
     # Master CP — splice if exists, full-write if not. Timestamp-only diffs
@@ -183,6 +193,7 @@ def sync_tenant(
 # but listing them here keeps the contract explicit.
 _MASTER_REGIONS = (
     "last-sync-timestamp",
+    "active-pipeline",
     "active-1p",
     "active-fpsf",
     "active-canonic",
@@ -280,6 +291,19 @@ def _write_if_changed(
         return False
     path.write_text(new_full_body)
     return True
+
+
+def _derive_summary(config: TenantConfig, project: ProjectState) -> str | None:
+    """Read project CP from disk; return its one-line summary or None.
+
+    The CP may not exist yet (new project). When it doesn't, return
+    None; the renderer shows an empty summary cell. The cell activates
+    once a human writes content into Quick Resume / Current Work.
+    """
+    from cp_engine.summary import derive_from_project_cp
+
+    cp_path = config.root / "projects" / f"{project.code}.md"
+    return derive_from_project_cp(cp_path)
 
 
 def _archive_stale_cps(projects_dir: Path, live_codes: set[str]) -> list[Path]:

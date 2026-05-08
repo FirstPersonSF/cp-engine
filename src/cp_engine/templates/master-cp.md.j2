@@ -15,13 +15,25 @@ Author: cp-engine (sync)
 **Last sync:** {{ last_sync_iso }}
 <!-- cp-engine:end last-sync-timestamp -->
 
-<!-- cp-engine:start active-1p -->
-## 1P — Client Engagements ({{ active_groups.client | length }})
+<!-- cp-engine:start active-pipeline -->
+## 1P — Pipeline ({{ active_groups.pipeline | length }})
 
-| Code | Project | Status | Stage | Owner | Budget | Last touched | One-line summary | CP |
-|---|---|---|---|---|---|---|---|---|
+Sales-stage progression: Inquiry → Negotiation → Contract.
+
+| Code | Project | Stage | Owner | Budget | Last touched | One-line summary | CP |
+|---|---|---|---|---|---|---|---|
+{%- for p in active_groups.pipeline %}
+| `{{ p.code }}` | {{ p.name }} | {{ p.deal_stage or "—" }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [→](projects/{{ p.code }}.md) |
+{%- endfor %}
+<!-- cp-engine:end active-pipeline -->
+
+<!-- cp-engine:start active-1p -->
+## 1P — Active Engagements ({{ active_groups.client | length }})
+
+| Code | Project | Owner | Budget | Last touched | One-line summary | CP |
+|---|---|---|---|---|---|---|
 {%- for p in active_groups.client %}
-| `{{ p.code }}` | {{ p.name }} | {{ p.status }} | {{ p.deal_stage or "—" }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [→](projects/{{ p.code }}.md) |
+| `{{ p.code }}` | {{ p.name }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [→](projects/{{ p.code }}.md) |
 {%- endfor %}
 <!-- cp-engine:end active-1p -->
 

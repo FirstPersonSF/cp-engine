@@ -129,12 +129,21 @@ def render_master_cp(
     holding = [p for p in projects if is_holding(p)]
     closed_recent = [p for p in projects if is_closed_recent(p)]
 
-    # Group active entries by company_kind. 1P bucket also includes
-    # any repos whose company.kind == "client" (rare today, but keeps
-    # the model sound).
+    # Group active entries by company_kind. 1P bucket gets a sub-split
+    # into Pipeline (Deal status) and Active Engagements (Open status),
+    # with Pipeline sorted by stage progression.
+    _STAGE_ORDER = {"Inquiry": 0, "Negotiation": 1, "Contract": 2, "Won": 3, "Lost": 4}
+
     def group(active_list: list[ProjectState]) -> dict:
+        client_entries = [p for p in active_list if p.company_kind == "client"]
+        pipeline = sorted(
+            (p for p in client_entries if p.status == "Deal"),
+            key=lambda p: (_STAGE_ORDER.get(p.deal_stage or "", 99), p.code),
+        )
+        client_active = [p for p in client_entries if p.status == "Open"]
         return {
-            "client": [_project_view(p) for p in active_list if p.company_kind == "client"],
+            "pipeline": [_project_view(p) for p in pipeline],
+            "client": [_project_view(p) for p in client_active],
             "self_fpsf": [_project_view(p) for p in active_list if p.company_kind == "self-fpsf"],
             "self_canonic": [_project_view(p) for p in active_list if p.company_kind == "self-canonic"],
         }
