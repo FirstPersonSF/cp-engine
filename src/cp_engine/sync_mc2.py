@@ -11,6 +11,21 @@ This backend reads project-level state for the master CP only. Project
 CPs' engine-managed regions are not populated by this backend in v0.1
 (see spec v02 §4.2 / Decision A: defer to v0.2 when github-issues backend
 adds per-issue tracking).
+
+# Project identity
+
+The canonical project identifier in cp-engine is the **company-prefixed
+project number**, e.g. `ggl-5188`. Format: `<companies.code lowercased>-<projects.number>`.
+Per spec v02 §3.3.
+
+When a project has no `company_id` (legacy data, ~30/57 rows in May 2026)
+the prefix is omitted and the ID is just the lowercased number — `5026`.
+This is honest about the data state; once `company_id` is backfilled in
+MC-2, those projects will pick up their prefix on next sync.
+
+`projects.code` is NOT used as the identifier. The legacy `code` column
+holds inconsistent display slugs (mix of casing, underscores, number-only
+rows, even duplicates) and is not load-bearing for the engine.
 """
 
 from __future__ import annotations
@@ -27,11 +42,14 @@ from cp_engine.sync import BackendUnavailable
 
 
 # Columns we read. Explicit list (never `*`) per Drew's global rule about
-# Supabase performance. `cached_messages` and `cached_analysis` on this table
-# can be megabytes per row — never select them.
+# Supabase performance. `cached_messages` and `cached_analysis` on the
+# projects table can be megabytes per row — never select them.
+#
+# `companies(code)` is a PostgREST embed: pulls the related companies row's
+# `code` field via the `company_id` foreign key.
 _PROJECT_COLUMNS = (
-    "code, full_job_name, name, mc_status, account_manager, "
-    "is_internal, updated_at"
+    "number, full_job_name, name, mc_status, account_manager, "
+    "is_internal, updated_at, companies(code)"
 )
 
 
@@ -84,21 +102,29 @@ class MC2Backend:
 
 
 def _row_is_valid(row: dict) -> bool:
-    """Defensive: skip rows MC-2 should never produce but technically could
-    (NULL code, NULL is_internal). Logged as no-op rather than failing the
-    whole sync — better to surface 99 of 100 projects than 0."""
-    if not row.get("code"):
+    """Defensive: skip rows MC-2 should never produce but technically could.
+
+    `number` is NOT NULL on the schema and unique in practice — but defend
+    anyway. Skipped rows are dropped silently (no exception); better to
+    surface 99 of 100 projects than 0.
+    """
+    if row.get("number") is None:
         return False
     if row.get("mc_status") not in MC_STATUSES:
-        # Includes the case where post-migration code shows up but the row
-        # somehow still has the old vocab. Skip; it'd render wrong anyway.
+        # Includes the case where the post-migration code is in place but
+        # this row somehow still has the old vocab. Skip; it'd render wrong.
         return False
     return True
 
 
 def _row_to_state(row: dict) -> ProjectState:
+    """Transform one DB row into a ProjectState.
+
+    The canonical project ID is derived from `number` (always present) and
+    `companies.code` (often present, sometimes NULL for legacy rows).
+    """
     return ProjectState(
-        code=row["code"],
+        code=_canonical_id(row),
         # Prefer full_job_name (the trigger-maintained one), fall back to
         # name. Both can be None; we settle on "" if absolutely nothing.
         name=row.get("full_job_name") or row.get("name") or "",
@@ -109,6 +135,20 @@ def _row_to_state(row: dict) -> ProjectState:
         deadline=None,  # MC-2 doesn't track deadlines on projects
         one_line_summary=None,  # set by the deepening pass, not by sync
     )
+
+
+def _canonical_id(row: dict) -> str:
+    """Build `<prefix>-<number>` (or just `<number>` when prefix unavailable).
+
+    Examples:
+        {number: 5188, companies: {code: "GGL"}}  -> "ggl-5188"
+        {number: 5026, companies: None}           -> "5026"
+        {number: 5026, companies: {code: ""}}     -> "5026"
+    """
+    number = row["number"]
+    company = row.get("companies") or {}
+    prefix = (company.get("code") or "").strip().lower() if isinstance(company, dict) else ""
+    return f"{prefix}-{number}" if prefix else str(number)
 
 
 def _parse_iso(s: str | None) -> datetime | None:
