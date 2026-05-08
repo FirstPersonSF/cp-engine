@@ -277,6 +277,20 @@ def test_local_missing(tmp_path: Path) -> None:
         load(tmp_path)
 
 
+def test_local_missing_is_ok_when_committed_has_no_projects(tmp_path: Path) -> None:
+    """When .cp-engine.toml has no [[projects]] entries, .cp-engine.local.toml
+    has nothing to map — missing local file should NOT raise.
+
+    Common case: CI runners (gitignored local file) plus mc-2-backend tenants
+    that read the project list from MC-2 directly rather than from committed
+    config.
+    """
+    write_committed(tmp_path, projects=[])
+    # No write_local — local file does not exist
+    cfg = load(tmp_path)
+    assert cfg.projects == ()
+
+
 def test_local_invalid_toml(tmp_path: Path) -> None:
     write_committed(tmp_path)
     (tmp_path / ".cp-engine.local.toml").write_text("[[broken\n")

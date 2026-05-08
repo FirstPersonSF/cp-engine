@@ -143,7 +143,7 @@ def load(tenant_root: Path) -> TenantConfig:
     """
     tenant_root = tenant_root.resolve()
     committed = _load_committed(tenant_root)
-    local = _load_local(tenant_root)
+    local = _load_local(tenant_root, committed_has_projects=bool(committed["projects"]))
 
     _enforce_engine_version(committed["engine_version_constraint"])
 
@@ -260,9 +260,22 @@ def _normalize_committed(data: dict, source: Path) -> dict:
     }
 
 
-def _load_local(tenant_root: Path) -> dict:
+def _load_local(tenant_root: Path, *, committed_has_projects: bool) -> dict:
+    """Load `.cp-engine.local.toml`.
+
+    If the committed config lists no projects, the local file has nothing
+    to map and is treated as optional — missing local file → empty repos.
+    This is the common case in CI runners (gitignored local file plus a
+    tenant whose mc-2 backend reads its project list from MC-2 directly).
+
+    If the committed config DOES list projects, the local file is required
+    so we can fail loudly when a path is missing — silent skipping is the
+    failure mode the file split exists to prevent.
+    """
     path = tenant_root / LOCAL_FILENAME
     if not path.exists():
+        if not committed_has_projects:
+            return {"repos": {}}
         raise LocalConfigMissing(
             f"No {LOCAL_FILENAME} at {tenant_root}. Run `cp init` to configure."
         )
