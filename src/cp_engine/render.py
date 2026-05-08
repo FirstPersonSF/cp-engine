@@ -233,6 +233,12 @@ _GITIGNORE_BODY = """\
 .DS_Store
 Thumbs.db
 
+# Editors
+*.swp
+*.swo
+.vscode/
+.idea/
+
 # Engine config
 .cp-engine.local.toml
 """
