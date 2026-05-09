@@ -527,6 +527,59 @@ def test_stale_engine_install_aborts_on_exceptions_path_too(tmp_path: Path) -> N
     assert not (tenant / "exceptions").exists()
 
 
+def test_session_commit_does_not_include_unrelated_uncommitted_state(
+    tmp_path: Path,
+) -> None:
+    """A [session] commit must contain only files this capture wrote, even
+    when the cp tenant has pre-existing uncommitted state from elsewhere
+    (e.g. a half-finished hand-edit, sync output not yet committed).
+
+    Regression for v0.4.0/v0.4.1/v0.4.2 where _commit_and_push ran
+    `git add .` from the tenant root, opportunistically sweeping up
+    unrelated work into the [session] commit."""
+    tenant = make_cp_tenant(tmp_path, working_dirs=[("firstpersonsf", "mc-2", "mc-2")])
+    wd = tenant / "firstpersonsf" / "projects" / "mc-2"
+    repo = make_source_repo(tmp_path, "mc-2", cp_link_target=wd)
+
+    # Create a pre-existing dirty file elsewhere in the tenant.
+    (tenant / "master-cp.md").write_text(
+        "# unrelated hand-edit\nshould NOT land in the session commit\n",
+        encoding="utf-8",
+    )
+
+    result = capture_session(
+        source_repo=repo,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=True,
+        push=False,
+    )
+    assert result.commit_sha is not None
+
+    # Inspect what landed in HEAD
+    out = subprocess.run(
+        ["git", "-C", str(tenant), "show", "--name-only", "--pretty=", "HEAD"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    files = set(out.stdout.strip().splitlines())
+    assert "firstpersonsf/projects/mc-2/sessions/2026-05-09-1430-drew.md" in files
+    assert "firstpersonsf/projects/mc-2/cp.md" in files
+    assert "master-cp.md" not in files
+
+    # And the unrelated hand-edit is still uncommitted (preserved for the
+    # human to commit themselves).
+    status = subprocess.run(
+        ["git", "-C", str(tenant), "status", "--porcelain"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "master-cp.md" in status.stdout
+
+
 def test_engine_version_check_passes_for_compatible_install(tmp_path: Path) -> None:
     """The check should be invisible when the install satisfies the pin —
     and explicit pinning to the running version still works."""

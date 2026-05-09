@@ -135,7 +135,13 @@ def capture_session(
             when=when,
         )
         commit_sha, pushed = _commit_and_push(
-            cp_tenant, summary_path, source_repo.name, when, user, commit, push
+            cp_tenant,
+            [summary_path],
+            source_repo.name,
+            when,
+            user,
+            commit,
+            push,
         )
         return CaptureResult(
             summary_path=summary_path,
@@ -160,9 +166,17 @@ def capture_session(
         # We rewrote .cp-link — the change lives in the source repo's tree
         # (.git/info/exclude already has it). It's not part of the cp commit.
         pass
+    # Stage only the files this capture wrote: the new session file, and
+    # the cp.md if its Last session line was rewritten. Pre-existing
+    # uncommitted state in the tenant (e.g. a half-finished hand-edit on
+    # another project's cp.md) stays out of the [session] commit.
+    paths_to_commit: list[Path] = [summary_path]
+    if cp_md_updated:
+        paths_to_commit.append(working_dir / "cp.md")
+
     commit_sha, pushed = _commit_and_push(
         cp_tenant_root,
-        summary_path,
+        paths_to_commit,
         f"{working_dir.name}",
         when,
         user,
@@ -444,14 +458,18 @@ def _truncate(s: str, limit: int = 120) -> str:
 
 def _commit_and_push(
     cp_tenant: Path,
-    summary_path: Path,
+    paths: list[Path],
     label: str,
     when: datetime,
     user: str,
     commit: bool,
     push: bool,
 ) -> tuple[str | None, bool]:
-    """Stage everything in the cp tenant, commit, optionally push.
+    """Stage the given paths in the cp tenant, commit, optionally push.
+
+    `paths` must be a list of files this capture wrote or modified — and
+    only those. Pre-existing uncommitted state in the tenant is left
+    alone; a `[session]` commit must contain only session-driven changes.
 
     Returns (commit_sha, pushed). commit_sha is None when commit=False or
     when there was nothing to commit (idempotent re-run).
@@ -459,20 +477,38 @@ def _commit_and_push(
     if not commit:
         return None, False
 
-    # Stage everything — sessions/, exceptions/, cp.md edits, .cp-link
-    # repairs are scoped to the source repo (outside cp_tenant) so they
-    # won't be included.
-    subprocess.run(["git", "-C", str(cp_tenant), "add", "."], check=True)
+    if not paths:
+        return None, False
 
-    # Detect "nothing to commit" before invoking git commit (which would
-    # exit non-zero).
-    status = subprocess.run(
-        ["git", "-C", str(cp_tenant), "status", "--porcelain"],
+    # Stage just our paths. Filter to ones that exist on disk (an updated
+    # cp.md may not have been written if the regex didn't match).
+    rel_paths = [str(p.relative_to(cp_tenant)) for p in paths if p.exists()]
+    if not rel_paths:
+        return None, False
+    subprocess.run(
+        ["git", "-C", str(cp_tenant), "add", "--", *rel_paths], check=True
+    )
+
+    # Detect "nothing to commit" via diff --cached restricted to our
+    # paths. We can't use plain `git status --porcelain` here because
+    # pre-existing uncommitted state in the tenant would falsely signal
+    # "yes, commit" — that's exactly the bug we're fixing.
+    diff = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(cp_tenant),
+            "diff",
+            "--cached",
+            "--name-only",
+            "--",
+            *rel_paths,
+        ],
         capture_output=True,
         text=True,
         check=True,
     )
-    if not status.stdout.strip():
+    if not diff.stdout.strip():
         return None, False
 
     timestamp = when.strftime("%Y-%m-%d %H:%M")
