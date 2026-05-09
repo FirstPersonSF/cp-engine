@@ -119,21 +119,26 @@ def test_moves_across_multiple_scopes(tmp_path: Path) -> None:
     assert len(result.moved_dirs) == 4
 
 
-def test_moves_archived_subdir_to_scope_root(tmp_path: Path) -> None:
+def test_moves_legacy_archived_subdir_to_inactive(tmp_path: Path) -> None:
+    """Pre-v0.7 layouts called the dropped-out-of-sync bin `archived/`. v0.7.1
+    renamed it to `inactive/`. The migration reads the legacy `archived/`
+    name as input and writes the new `inactive/` name as output."""
     root = _init_tenant(tmp_path)
     _scaffold_old_layout(root, "1p", ["alive"])
-    archived_old = root / "1p" / "projects" / "archived" / "dead-project"
-    archived_old.mkdir(parents=True)
-    (archived_old / "cp.md").write_text("# dead")
+    legacy_archived = root / "1p" / "projects" / "archived" / "dead-project"
+    legacy_archived.mkdir(parents=True)
+    (legacy_archived / "cp.md").write_text("# dead")
     _git(["add", "-A"], cwd=root)
-    _git(["commit", "-m", "add archived"], cwd=root)
+    _git(["commit", "-m", "add legacy archived"], cwd=root)
 
     result = migrate_projects_flat(root)
 
     assert (root / "1p" / "alive" / "cp.md").exists()
-    assert (root / "1p" / "archived" / "dead-project" / "cp.md").exists()
+    # Old `archived/` becomes new `inactive/`.
+    assert (root / "1p" / "inactive" / "dead-project" / "cp.md").exists()
+    assert not (root / "1p" / "archived").exists()
     assert not (root / "1p" / "projects").exists()
-    assert len(result.moved_dirs) == 2  # alive + archived
+    assert len(result.moved_dirs) == 2  # alive + inactive bin
 
 
 def test_skips_scope_with_no_old_projects_dir(tmp_path: Path) -> None:
@@ -174,15 +179,16 @@ def test_collision_with_existing_destination_aborts(tmp_path: Path) -> None:
         migrate_projects_flat(root)
 
 
-def test_archived_collision_aborts(tmp_path: Path) -> None:
-    """If `<scope>/archived/` already exists alongside `<scope>/projects/archived/`, fail."""
+def test_inactive_collision_aborts(tmp_path: Path) -> None:
+    """If `<scope>/inactive/` already exists alongside `<scope>/projects/archived/`
+    (the legacy name), the migration must fail loudly rather than silently merge."""
     root = _init_tenant(tmp_path)
     (root / "1p" / "projects" / "archived" / "dead").mkdir(parents=True)
     (root / "1p" / "projects" / "archived" / "dead" / "cp.md").write_text("# dead")
-    (root / "1p" / "archived" / "other").mkdir(parents=True)
-    (root / "1p" / "archived" / "other" / "cp.md").write_text("# other")
+    (root / "1p" / "inactive" / "other").mkdir(parents=True)
+    (root / "1p" / "inactive" / "other" / "cp.md").write_text("# other")
     _git(["add", "-A"], cwd=root)
-    _git(["commit", "-m", "two archives"], cwd=root)
+    _git(["commit", "-m", "two inactive bins"], cwd=root)
 
     with pytest.raises(MigrateFlatError, match="destination already exists"):
         migrate_projects_flat(root)

@@ -1,53 +1,100 @@
 name: cp-engine sync
-description: Run one cp-engine sync cycle for a tenant repo
+description: |
+  Resolve the tenant's [engine].version pin to a concrete git tag, install
+  cp-engine at that tag, run `cp sync`, and commit + push any changes.
+
+  Mirrors what FirstPersonSF/cp's workflow does inline; consolidated here
+  so additional tenants can `uses: FirstPersonSF/cp-engine/actions/sync@vX.Y.Z`
+  without re-implementing pin resolution.
 inputs:
-  engine-version:
-    description: cp-engine version constraint (semver)
-    required: false
-    default: ""
   python-version:
     description: Python version
     required: false
     default: "3.11"
+  commit-message:
+    description: Commit message used when sync produces changes
+    required: false
+    default: "[cp-sync] auto-sync"
+  bot-name:
+    description: Git author name for the sync commit
+    required: false
+    default: "cp-engine-bot"
+  bot-email:
+    description: Git author email for the sync commit
+    required: false
+    default: "cp-engine-bot@users.noreply.github.com"
 runs:
   using: composite
   steps:
-    - name: Checkout tenant repo
-      uses: actions/checkout@v6
-      with:
-        fetch-depth: 0
-        ref: cp-sync
-        token: ${{ env.GITHUB_TOKEN }}
-
     - name: Set up Python
       uses: actions/setup-python@v6
       with:
         python-version: ${{ inputs.python-version }}
 
+    - name: Resolve engine pin
+      id: pin
+      shell: bash
+      # Reads [engine].version from .cp-engine.toml, lists v* tags on the
+      # engine repo, picks the highest tag that satisfies the constraint.
+      # Bumping the tenant pin is sufficient — no workflow file edit
+      # per release. Inline Python (not `cp resolve-engine-pin`) because
+      # cp-engine isn't installed yet.
+      run: |
+        pip install --quiet 'packaging>=24.0'
+        python - <<'PY' >> "$GITHUB_OUTPUT"
+        import subprocess, sys, tomllib
+        from packaging.specifiers import SpecifierSet
+        from packaging.version import InvalidVersion, Version
+
+        REPO = "https://github.com/FirstPersonSF/cp-engine.git"
+        with open(".cp-engine.toml", "rb") as fh:
+            constraint = tomllib.load(fh)["engine"]["version"]
+        spec = SpecifierSet(constraint)
+
+        out = subprocess.check_output(
+            ["git", "ls-remote", "--tags", "--refs", REPO], text=True
+        )
+        tags = []
+        for line in out.splitlines():
+            ref = line.split("\t", 1)[-1]
+            if not ref.startswith("refs/tags/v"):
+                continue
+            tag = ref[len("refs/tags/"):]
+            try:
+                v = Version(tag.lstrip("v"))
+            except InvalidVersion:
+                continue
+            tags.append((v, tag))
+        tags.sort(reverse=True)
+
+        for v, tag in tags:
+            if v in spec:
+                print(f"tag={tag}")
+                print(f"version={v}")
+                sys.exit(0)
+        print(f"::error::No tag matches {constraint!r} on {REPO}", file=sys.stderr)
+        sys.exit(1)
+        PY
+
     - name: Install cp-engine
       shell: bash
       run: |
-        # Install from the engine repo. Pin per inputs.engine-version, or
-        # honor the tenant's pyproject pin if input is empty.
-        if [ -n "${{ inputs.engine-version }}" ]; then
-          pip install "cp-engine${{ inputs.engine-version }}"
-        else
-          pip install cp-engine
-        fi
+        pip install "cp-engine @ git+https://github.com/FirstPersonSF/cp-engine.git@${{ steps.pin.outputs.tag }}"
+        echo "Installed cp-engine ${{ steps.pin.outputs.version }} (constraint resolved at runtime)."
 
     - name: Run sync
       shell: bash
       run: cp sync
 
-    - name: Open PR if there are changes
+    - name: Commit and push if changed
       shell: bash
       run: |
-        if [ -n "$(git status --porcelain)" ]; then
-          # cp sync produces an in-tree diff; the harness commits and
-          # pushes to cp-sync. Auto-merge handled by the tenant's
-          # branch-protection rules if configured.
-          echo "TODO: implement commit + push to cp-sync branch"
-          exit 1
-        else
-          echo "No changes — sync no-op."
+        if [ -z "$(git status --porcelain)" ]; then
+          echo "No changes."
+          exit 0
         fi
+        git config user.name "${{ inputs.bot-name }}"
+        git config user.email "${{ inputs.bot-email }}"
+        git add -A
+        git commit -m "${{ inputs.commit-message }} $(date -u +%Y-%m-%dT%H:%MZ)"
+        git push origin HEAD

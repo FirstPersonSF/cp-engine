@@ -46,10 +46,15 @@ def scope_for(company_kind: str) -> str:
 
 
 # v0.7 working-tree layout: working dirs live directly under their scope
-# (`<tenant>/<scope>/<dir_slug>/`), with archived dirs under
-# `<tenant>/<scope>/archived/<dir_slug>/`. Pre-v0.7 layouts (which had
+# (`<tenant>/<scope>/<dir_slug>/`), with inactive dirs under
+# `<tenant>/<scope>/inactive/<dir_slug>/`. Pre-v0.7 layouts (which had
 # an extra `projects/` segment) are migrated by `cp migrate-projects-flat`.
-ARCHIVED_DIR_NAME = "archived"
+#
+# v0.7.1 renamed `archived/` → `inactive/`: projects often flip back to
+# active (engagements paused and resumed, internal flag toggled, etc.),
+# so "inactive" captures the actual semantics better than "archived"
+# (which suggests a one-way trip).
+INACTIVE_DIR_NAME = "inactive"
 
 
 def scope_root(tenant_root: Path, scope: str) -> Path:
@@ -62,14 +67,14 @@ def working_dir(tenant_root: Path, scope: str, dir_slug: str) -> Path:
     return tenant_root / scope / dir_slug
 
 
-def archived_dir(tenant_root: Path, scope: str, dir_slug: str) -> Path:
-    """Return the archive location for a stale project."""
-    return tenant_root / scope / ARCHIVED_DIR_NAME / dir_slug
+def inactive_dir(tenant_root: Path, scope: str, dir_slug: str) -> Path:
+    """Return the inactive location for a project that's dropped out of sync's view."""
+    return tenant_root / scope / INACTIVE_DIR_NAME / dir_slug
 
 
-def archived_root(tenant_root: Path, scope: str) -> Path:
-    """Return `<tenant_root>/<scope>/archived` — the parent of archived dirs."""
-    return tenant_root / scope / ARCHIVED_DIR_NAME
+def inactive_root(tenant_root: Path, scope: str) -> Path:
+    """Return `<tenant_root>/<scope>/inactive` — the parent of inactive dirs."""
+    return tenant_root / scope / INACTIVE_DIR_NAME
 
 
 _SLUG_NON_ALPHANUM = re.compile(r"[^a-z0-9]+")

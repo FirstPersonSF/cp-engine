@@ -29,15 +29,15 @@ MODE_1_INDEX_ONLY = Mode(
     number=1,
     name="index-only",
     loads=("master-cp.md",),
-    excludes=("projects/", "weekly-cp.md", "canonic/"),
+    excludes=("<scope>/<code>/cp.md", "weekly-cp.md", "canonic/"),
     triggers=("(default — any session without a scoping phrase)",),
 )
 
 MODE_2_SINGLE_PROJECT = Mode(
     number=2,
     name="single-project",
-    loads=("master-cp.md", "projects/<code>.md"),
-    excludes=("projects/<other>.md", "weekly-cp.md"),
+    loads=("master-cp.md", "<scope>/<dir_slug>/cp.md"),
+    excludes=("<scope>/<other>/cp.md", "weekly-cp.md"),
     triggers=("update <code>", "check status <code>", "switch to <code>"),
 )
 
@@ -45,7 +45,7 @@ MODE_3_SPRINT = Mode(
     number=3,
     name="sprint",
     loads=("master-cp.md", "canonic/sprint-cp.md"),
-    excludes=("projects/", "weekly-cp.md"),
+    excludes=("<scope>/<code>/cp.md", "weekly-cp.md"),
     triggers=("update sprint", "check status sprint"),
 )
 
@@ -55,7 +55,7 @@ MODE_4_WEEKLY_REVIEW = Mode(
     loads=(
         "master-cp.md",
         "weekly-cp.md",
-        "projects/*.md",  # active projects only
+        "<scope>/*/cp.md",  # active projects only (excludes inactive/)
         "canonic/sprint-cp.md",  # if present
     ),
     excludes=(),

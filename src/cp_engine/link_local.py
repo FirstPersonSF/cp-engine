@@ -77,14 +77,15 @@ class CpWorkingDir:
 def discover_cp_working_dirs(tenant_root: Path) -> tuple[CpWorkingDir, ...]:
     """Walk the cp tenant for working dirs that have a `_repo.md`.
 
-    Skips `archived/` subdirs — those are not link targets. The first
-    GitHub URL in each `_repo.md` is treated as canonical.
+    Skips `inactive/` subdirs (and pre-v0.7.1 `archived/` for tenants
+    not yet migrated) — those are not link targets. The first GitHub URL
+    in each `_repo.md` is treated as canonical.
 
     Returns a tuple sorted by repo_name for deterministic ordering.
     """
     found: list[CpWorkingDir] = []
     for repo_md in tenant_root.rglob("_repo.md"):
-        if "archived" in repo_md.parts:
+        if "inactive" in repo_md.parts or "archived" in repo_md.parts:
             continue
         text = repo_md.read_text(encoding="utf-8")
         match = _REPO_URL_RE.search(text)

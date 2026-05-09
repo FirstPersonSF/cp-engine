@@ -44,11 +44,11 @@ from cp_engine.render import (
 # imports keep working — the data shapes live in cp_engine.state to break
 # the sync ↔ render circular dependency.
 from cp_engine.state import (  # noqa: F401
-    ARCHIVED_DIR_NAME,
+    INACTIVE_DIR_NAME,
     Issue,
     ProjectState,
-    archived_root,
     dir_slug,
+    inactive_root,
     scope_for,
     scope_root,
     working_dir,
@@ -113,7 +113,7 @@ class SyncResult:
 
     projects_seen: int
     files_written: tuple[Path, ...]   # generated/scaffolded files
-    files_archived: tuple[Path, ...]  # working dirs moved to <scope>/archived/<code>/
+    files_deactivated: tuple[Path, ...]  # working dirs moved to <scope>/inactive/<code>/
     no_op: bool                       # True iff nothing changed on disk
 
 
@@ -211,7 +211,7 @@ def sync_tenant(
 
     # Compute the set of (scope, code) pairs that should exist as live
     # working dirs after this sync. Internal projects don't get dirs.
-    # Tracked by code (not slug) because the archive sweep needs to match
+    # Tracked by code (not slug) because the deactivation sweep needs to match
     # against project identity, which is invariant under name changes.
     live_dirs: set[tuple[str, str]] = {
         (scope_for(p.company_kind), p.code)
@@ -231,8 +231,8 @@ def sync_tenant(
         # from the current name (or hasn't been slugged yet — legacy
         # bare-code dirs from v0.3.0/v0.3.1).
         existing_live = _find_project_dir(scope_dir, project.code)
-        existing_archived = _find_project_dir(
-            archived_root(config.root, scope), project.code
+        existing_inactive = _find_project_dir(
+            inactive_root(config.root, scope), project.code
         )
 
         if existing_live is not None and existing_live != project_dir:
@@ -248,13 +248,13 @@ def sync_tenant(
                 if path.is_file():
                     files_written.append(path)
         elif existing_live is None:
-            if existing_archived is not None:
-                # Un-archive: project came back to life. Restore the dir
+            if existing_inactive is not None:
+                # Reactivate: project came back to live. Restore the dir
                 # (and apply any slug drift while we're at it).
                 project_dir.parent.mkdir(parents=True, exist_ok=True)
-                existing_archived.rename(project_dir)
+                existing_inactive.rename(project_dir)
                 logger.info(
-                    "Restored archived project %s back to live (%s).",
+                    "Reactivated inactive project %s (%s).",
                     project.code,
                     project_dir.relative_to(config.root),
                 )
@@ -318,17 +318,18 @@ def sync_tenant(
         ):
             files_written.append(readme_path)
 
-    # Archive sweep — any live working dir whose code isn't in `live_dirs`
-    # represents a project that was archived in MC-2, deleted, or flipped
-    # to is_internal. Move the whole working dir to
-    # <scope>/archived/<dir_slug>/.
-    files_archived = _archive_stale_cps(config.root, live_dirs)
+    # Deactivation sweep — any live working dir whose code isn't in
+    # `live_dirs` represents a project that fell out of sync's view (MC-2
+    # status flipped, deleted, or is_internal=true). Move the whole
+    # working dir to <scope>/inactive/<dir_slug>/. Reactivation is
+    # symmetric: a live dir matching an inactive one gets restored.
+    files_deactivated = _deactivate_stale_cps(config.root, live_dirs)
 
     return SyncResult(
         projects_seen=len(projects),
         files_written=tuple(files_written),
-        files_archived=tuple(files_archived),
-        no_op=not (files_written or files_archived),
+        files_deactivated=tuple(files_deactivated),
+        no_op=not (files_written or files_deactivated),
     )
 
 
@@ -489,7 +490,7 @@ def _dir_code(name: str) -> str:
     engagements look like `<prefix>-<digits>` (e.g. `ggl-5177`); from
     repos they're a freeform slug (`mc-2`, `storyos`, `unf-forge`). The
     sync compares against the actual project list rather than parsing —
-    this helper is only used by `_archive_stale_cps` to surface dirs
+    this helper is only used by `_deactivate_stale_cps` to surface dirs
     whose code isn't in `live_dirs`. To make that work, we accept either
     of two forms:
 
@@ -506,7 +507,7 @@ def _find_project_dir(parent: Path, code: str) -> Path | None:
     """Locate the working dir for a given project code under `parent`.
 
     `parent` is either a scope root (`<tenant>/<scope>/`) for live dirs
-    or an archive root (`<tenant>/<scope>/archived/`) for archived dirs.
+    or an inactive root (`<tenant>/<scope>/inactive/`) for inactive dirs.
 
     Matches any of:
       - <parent>/<code>            (legacy v0.3.0/v0.3.1, bare code)
@@ -516,8 +517,8 @@ def _find_project_dir(parent: Path, code: str) -> Path | None:
     (shouldn't happen but defensive), prefers the bare-code form so the
     rename logic in sync_tenant moves it to the slugged form.
 
-    Skips `archived/` (when scanning a scope root) so that scope is
-    never confused with a project named "archived".
+    Skips `inactive/` (when scanning a scope root) so that bin is
+    never confused with a project named "inactive".
     """
     if not parent.exists():
         return None
@@ -528,31 +529,33 @@ def _find_project_dir(parent: Path, code: str) -> Path | None:
 
     prefix = f"{code}-"
     for path in parent.iterdir():
-        if path.is_dir() and path.name != ARCHIVED_DIR_NAME and path.name.startswith(prefix):
+        if path.is_dir() and path.name != INACTIVE_DIR_NAME and path.name.startswith(prefix):
             return path
     return None
 
 
-def _archive_stale_cps(
+def _deactivate_stale_cps(
     tenant_root: Path,
     live_dirs: set[tuple[str, str]],
 ) -> list[Path]:
-    """Move whole working dirs for stale projects into <scope>/archived/.
+    """Move whole working dirs for stale projects into <scope>/inactive/.
 
-    Triggered when a project is archived in MC-2, deleted, or flipped to
-    is_internal=true. Hand-edited content survives because we move (rename)
-    the whole directory rather than overwrite anything.
+    Triggered when a project drops out of sync's view (MC-2 status
+    changed, deleted, or is_internal=true). Hand-edited content survives
+    because we move (rename) the whole directory rather than overwrite
+    anything. Reactivation is symmetric: a project that comes back to
+    live state has its dir restored from inactive/ on the next sync.
 
-    Walks each `<scope>/` for top-level subdirs (skipping the `archived/`
+    Walks each `<scope>/` for top-level subdirs (skipping the `inactive/`
     subdir itself). A dir whose embedded code isn't in `live_dirs[scope]`
-    is moved to `<scope>/archived/<dir_name>/`, preserving the slug
+    is moved to `<scope>/inactive/<dir_name>/`, preserving the slug
     suffix.
 
     Working-dir naming is `<code>` (legacy) or `<code>-<slug>` (current);
     we extract the code by checking each known-live code against the dir
     name. Anything that doesn't match a live code is treated as stale.
 
-    Returns the list of new archived directory paths.
+    Returns the list of new inactive directory paths.
     """
     moved: list[Path] = []
     live_codes_by_scope: dict[str, set[str]] = {}
@@ -563,13 +566,13 @@ def _archive_stale_cps(
         scope_dir = scope_root(tenant_root, scope)
         if not scope_dir.exists():
             continue
-        archive_dir = archived_root(tenant_root, scope)
+        inactive_bin = inactive_root(tenant_root, scope)
         live_codes = live_codes_by_scope.get(scope, set())
 
         for path in scope_dir.iterdir():
             if not path.is_dir():
                 continue
-            if path.name == ARCHIVED_DIR_NAME:
+            if path.name == INACTIVE_DIR_NAME:
                 continue
 
             # A dir is "live" if its name matches a known live project code
@@ -581,14 +584,14 @@ def _archive_stale_cps(
                 continue
 
             # Stale. Move the whole dir.
-            archive_dir.mkdir(exist_ok=True)
-            target = archive_dir / path.name
+            inactive_bin.mkdir(exist_ok=True)
+            target = inactive_bin / path.name
             if target.exists():
                 # v0.1.2 collision rule: never silently overwrite. Skip
                 # and warn — a human can resolve by renaming or merging
                 # the duplicate.
                 logger.warning(
-                    "Skipping archive of %s: %s already exists. "
+                    "Skipping deactivation of %s: %s already exists. "
                     "Resolve the conflict by hand (rename or merge).",
                     path,
                     target,

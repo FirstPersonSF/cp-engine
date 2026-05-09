@@ -301,9 +301,9 @@ def test_sync_with_mixed_statuses_renders_correct_subtables(tmp_path: Path) -> N
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_archived_project_cp_moves_to_archived_dir(tmp_path: Path) -> None:
+def test_archived_project_cp_moves_to_inactive_dir(tmp_path: Path) -> None:
     """A project that disappears from sync output (archived in MC-2)
-    has its working dir moved to <scope>/archived/<code>/, not deleted."""
+    has its working dir moved to <scope>/inactive/<code>/, not deleted."""
     config = make_config(tmp_path)
 
     # First sync: project exists
@@ -317,9 +317,9 @@ def test_archived_project_cp_moves_to_archived_dir(tmp_path: Path) -> None:
     result = sync_tenant(config, backend_factory=lambda _: fake2)
 
     assert not live_dir.exists()
-    archived_dir = tmp_path / "1p" / "archived" / "going-away"
-    assert (archived_dir / "cp.md").exists()
-    assert archived_dir in result.files_archived
+    inactive_dir = tmp_path / "1p" / "inactive" / "going-away"
+    assert (inactive_dir / "cp.md").exists()
+    assert inactive_dir in result.files_deactivated
     assert not result.no_op
 
 
@@ -343,7 +343,7 @@ def test_archive_preserves_hand_edited_content(tmp_path: Path) -> None:
     # Project disappears from MC-2
     sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
 
-    archived = tmp_path / "1p" / "archived" / "my-project"
+    archived = tmp_path / "1p" / "inactive" / "my-project"
     assert (archived / "cp.md").exists()
     assert "Important stuff." in (archived / "cp.md").read_text()
     # Transcript travelled with the dir
@@ -351,7 +351,7 @@ def test_archive_preserves_hand_edited_content(tmp_path: Path) -> None:
 
 
 def test_resync_after_archive_is_a_noop_for_that_project(tmp_path: Path) -> None:
-    """Once archived, the project's working dir stays in archived/ on subsequent syncs."""
+    """Once archived, the project's working dir stays in inactive/ on subsequent syncs."""
     config = make_config(tmp_path)
     sync_tenant(
         config,
@@ -360,27 +360,27 @@ def test_resync_after_archive_is_a_noop_for_that_project(tmp_path: Path) -> None
 
     # Archive
     sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
-    archived = tmp_path / "1p" / "archived" / "dead-project" / "cp.md"
+    archived = tmp_path / "1p" / "inactive" / "dead-project" / "cp.md"
     mtime_after_archive = archived.stat().st_mtime_ns
 
     # Second post-archive sync — should leave the archived dir alone.
     result = sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
     assert archived.exists()
     assert archived.stat().st_mtime_ns == mtime_after_archive
-    assert result.files_archived == ()
+    assert result.files_deactivated == ()
 
 
 def test_archive_collision_logs_and_skips(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """If <scope>/archived/<code>/ already exists (e.g. unarchive-then-
+    """If <scope>/inactive/<code>/ already exists (e.g. unarchive-then-
     re-archive cycle), the engine logs a warning and leaves both dirs in
     place rather than silently overwriting."""
     import logging
 
     config = make_config(tmp_path)
     # Pre-populate an existing archived working dir
-    archived_old = tmp_path / "1p" / "archived" / "ghost"
+    archived_old = tmp_path / "1p" / "inactive" / "ghost"
     archived_old.mkdir(parents=True)
     (archived_old / "cp.md").write_text("# Old archive\n\nFrom an earlier life.\n")
 
@@ -400,11 +400,11 @@ def test_archive_collision_logs_and_skips(
     # Warning logged
     assert any("ghost" in m and "already exists" in m for m in caplog.messages)
     # No dir actually moved
-    assert result.files_archived == ()
+    assert result.files_deactivated == ()
 
 
 def test_archive_dir_itself_not_archived(tmp_path: Path) -> None:
-    """<scope>/archived/ is the archive subdir, not a project. The
+    """<scope>/inactive/ is the archive subdir, not a project. The
     sweep must not treat it as a stale project."""
     config = make_config(tmp_path)
 
@@ -413,20 +413,20 @@ def test_archive_dir_itself_not_archived(tmp_path: Path) -> None:
         config,
         backend_factory=lambda _: FakeBackend((make_state(code="keep"),)),
     )
-    # Manually create archived/ with an unrelated entry
-    archived_root = tmp_path / "1p" / "archived"
-    archived_root.mkdir(parents=True, exist_ok=True)
-    (archived_root / "previous").mkdir(exist_ok=True)
-    (archived_root / "previous" / "cp.md").write_text("# Old\n")
+    # Manually create inactive/ with an unrelated entry
+    inactive_root = tmp_path / "1p" / "inactive"
+    inactive_root.mkdir(parents=True, exist_ok=True)
+    (inactive_root / "previous").mkdir(exist_ok=True)
+    (inactive_root / "previous" / "cp.md").write_text("# Old\n")
 
-    # Re-sync with `keep` still alive — archived/ should not be touched
+    # Re-sync with `keep` still alive — inactive/ should not be touched
     result = sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend((make_state(code="keep"),)),
     )
     assert (tmp_path / "1p" / "keep" / "cp.md").exists()
-    assert (archived_root / "previous" / "cp.md").exists()
-    assert result.files_archived == ()
+    assert (inactive_root / "previous" / "cp.md").exists()
+    assert result.files_deactivated == ()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -521,15 +521,15 @@ def test_un_archive_restores_working_dir_with_hand_content(tmp_path: Path) -> No
     # Project drops out — gets archived
     sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
     assert not work_dir.exists()
-    archived_dir = tmp_path / "1p" / "archived" / "resurrected"
-    assert (archived_dir / "transcript-2026-05-08.md").exists()
+    inactive_dir = tmp_path / "1p" / "inactive" / "resurrected"
+    assert (inactive_dir / "transcript-2026-05-08.md").exists()
 
     # Project comes back — un-archive should restore (not re-scaffold)
     result = sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
 
     assert (work_dir / "transcript-2026-05-08.md").read_text() == "# Call notes\n\nSecret sauce.\n"
     assert "Keep me." in (work_dir / "cp.md").read_text()
-    assert not archived_dir.exists()  # archive slot is now empty
+    assert not inactive_dir.exists()  # archive slot is now empty
     # The restored files appear in files_written so the caller's commit picks
     # them up.
     restored_paths = {p.name for p in result.files_written}

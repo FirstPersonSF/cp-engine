@@ -4,7 +4,8 @@ v0.7's `<scope>/<dir>` layout.
 What this does:
   - For each scope (`1p`, `firstpersonsf`, `canonic`):
     - Move every `<scope>/projects/<dir>/` to `<scope>/<dir>/` via `git mv`.
-    - Move `<scope>/projects/archived/<dir>/` to `<scope>/archived/<dir>/`.
+    - Move `<scope>/projects/archived/<dir>/` to `<scope>/inactive/<dir>/`
+      (dir rename inherited from v0.7.1 — see state.INACTIVE_DIR_NAME).
     - Remove the now-empty `<scope>/projects/` directory.
   - For each linked source repo's `.cp-link` file (paths read from
     discover_cp_working_dirs against the *post-migration* tree):
@@ -22,7 +23,11 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
-from cp_engine.state import ARCHIVED_DIR_NAME
+from cp_engine.state import INACTIVE_DIR_NAME
+
+# Pre-v0.7 layouts named the inactive bin "archived". This module reads
+# those *as input* and writes them out under the v0.7.1 name.
+_LEGACY_ARCHIVED_NAME = "archived"
 
 # v0.7 working-tree layout uses these three scopes; mirrors sync._SCOPE_DIRS.
 _SCOPES: tuple[str, ...] = ("1p", "firstpersonsf", "canonic")
@@ -153,17 +158,17 @@ def migrate_projects_flat(tenant_root: Path) -> MigrateFlatResult:
                 moved.append((child, new))
                 continue
 
-            if child.name == ARCHIVED_DIR_NAME:
-                # <scope>/projects/archived/ becomes <scope>/archived/.
-                new_archive = tenant_root / scope / ARCHIVED_DIR_NAME
-                if new_archive.exists():
+            if child.name == _LEGACY_ARCHIVED_NAME:
+                # <scope>/projects/archived/ becomes <scope>/inactive/.
+                new_inactive = tenant_root / scope / INACTIVE_DIR_NAME
+                if new_inactive.exists():
                     raise MigrateFlatError(
-                        f"Cannot migrate {child} to {new_archive}: destination already "
+                        f"Cannot migrate {child} to {new_inactive}: destination already "
                         f"exists. Inspect manually and resolve before "
                         f"re-running."
                     )
-                _git_mv(child, new_archive, cwd=tenant_root)
-                moved.append((child, new_archive))
+                _git_mv(child, new_inactive, cwd=tenant_root)
+                moved.append((child, new_inactive))
             else:
                 # <scope>/projects/<dir>/ becomes <scope>/<dir>/.
                 new_dir = tenant_root / scope / child.name

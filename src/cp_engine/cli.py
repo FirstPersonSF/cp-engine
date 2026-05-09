@@ -70,8 +70,8 @@ def sync() -> None:
     click.echo(f"Synced {result.projects_seen} projects.")
     for path in result.files_written:
         click.echo(f"  wrote    {path.relative_to(config.root)}")
-    for path in result.files_archived:
-        click.echo(f"  archived {path.relative_to(config.root)}")
+    for path in result.files_deactivated:
+        click.echo(f"  deactivated {path.relative_to(config.root)}")
 
 
 @main.command()

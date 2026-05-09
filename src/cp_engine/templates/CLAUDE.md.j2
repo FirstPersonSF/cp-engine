@@ -36,7 +36,7 @@ Project state lives in per-project working directories, one per scope:
 └── canonic/<code>/cp.md        ← Canonic
 ```
 
-Archived projects live alongside live ones at `<scope>/archived/<code>/`.
+Inactive projects (status changed, deleted, or marked internal in MC-2) live alongside live ones at `<scope>/inactive/<code>/`. They flip back to live automatically if the project re-enters sync's view (no manual restore needed).
 Pre-v0.7 layouts had an extra `projects/` segment (`<scope>/projects/<code>/`);
 `cp migrate-projects-flat` moves them to the v0.7 shape in place.
 
@@ -88,22 +88,22 @@ This session is in exactly one mode at any moment. Modes can change mid-session
 
 ### Mode 1 — Index-only (default)
 Loaded: `master-cp.md`
-NOT loaded: `projects/`, `weekly-cp.md`{% if has_sprint %}, `canonic/`{% endif %}
+NOT loaded: `<scope>/<code>/cp.md` files, `weekly-cp.md`{% if has_sprint %}, `canonic/`{% endif %}
 Triggered by: any session opened in this tenant without a scoping phrase.
 
 ### Mode 2 — Single-project
-Loaded: `master-cp.md` + `projects/<code>.md`
-NOT loaded: other project CPs, `weekly-cp.md`
+Loaded: `master-cp.md` + the `cp.md` for one project (at `<scope>/<dir_slug>/cp.md`)
+NOT loaded: other projects' `cp.md` files, `weekly-cp.md`
 Triggered by: `update <code>`, `check status <code>`, `switch to <code>`, or
 opening a session in a tracked project repo (auto-loads its CP).
 {% if has_sprint %}
 ### Mode 3 — Sprint
 Loaded: `master-cp.md` + `canonic/sprint-cp.md`
-NOT loaded: `projects/`, `weekly-cp.md`
+NOT loaded: `<scope>/<code>/cp.md` files, `weekly-cp.md`
 Triggered by: `update sprint`, `check status sprint`.
 {% endif %}
 ### Mode {{ 4 if has_sprint else 3 }} — Weekly review
-Loaded: `master-cp.md` + `weekly-cp.md` + every active project CP{% if has_sprint %} + `canonic/sprint-cp.md`{% endif %}
+Loaded: `master-cp.md` + `weekly-cp.md` + every active project's `cp.md`{% if has_sprint %} + `canonic/sprint-cp.md`{% endif %}
 NOT loaded: (none — this is the heavyweight mode)
 Triggered by: `run weekly review`.
 
@@ -117,7 +117,7 @@ Triggered by: `run weekly review`.
 - `run weekly review` → mode 4
 
 **Additive.** These phrases layer context onto the current mode:
-- `also load <code>` → adds `projects/<code>.md`
+- `also load <code>` → adds that project's `cp.md`
 {%- if has_sprint %}
 - `also load sprint` → adds `canonic/sprint-cp.md`
 {%- endif %}
@@ -144,15 +144,15 @@ conversation is about.
 | Phrase | Mode | Action |
 |---|---|---|
 | (no phrase) | 1 | Default. Read `master-cp.md` only. |
-| `update <code>` | 2 | Open `projects/<code>.md` for editing. |
-| `check status <code>` | 2 | Read `projects/<code>.md`; summarize without editing. |
+| `update <code>` | 2 | Open the project's `cp.md` (at `<scope>/<dir_slug>/cp.md`) for editing. |
+| `check status <code>` | 2 | Read the project's `cp.md`; summarize without editing. |
 {%- if has_sprint %}
 | `update sprint` | 3 | Open `canonic/sprint-cp.md` for editing. |
 | `check status sprint` | 3 | Read `canonic/sprint-cp.md`; summarize without editing. |
 {%- endif %}
 | `run weekly review` | {{ 4 if has_sprint else 3 }} | Begin live pass of partners'-review workflow. |
-| `also load <code>` | additive | Layer `projects/<code>.md` onto current mode. |
-| `switch to <code>` | replace → 2 | Discard previous mode; load `projects/<code>.md`. |
+| `also load <code>` | additive | Layer that project's `cp.md` onto the current mode. |
+| `switch to <code>` | replace → 2 | Discard previous mode; load that project's `cp.md`. |
 | `deepen from transcript` | (during weekly review) | Begin deepening pass. |
 | `wrap up` | (during weekly review) | Finalize: word-count checks, master-CP roll-up, commit, push. |
 | `rotate the CP` | any | Manually trigger archive rotation on the focused CP. |
