@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from cp_engine.config import enforce_engine_version_for_tenant
 from cp_engine.link_local import find_cp_working_dir_for_remote
 
 
@@ -110,6 +111,19 @@ def capture_session(
 
     when = (when or datetime.now()).replace(microsecond=0)
     working_dir, is_exception, healed = _resolve_destination(source_repo, cp_tenant)
+
+    # Enforce the cp tenant's engine pin BEFORE writing anything. A stale
+    # cp-engine binary running against a newer-pinned tenant would silently
+    # produce wrong-format output (e.g. cp.md updates that don't match the
+    # current template shape, missing splice regions, etc.) — fail loud
+    # instead. The error message tells the user how to upgrade.
+    tenant_root = (
+        cp_tenant
+        if working_dir is None
+        else _walk_to_cp_tenant_root(working_dir)
+    )
+    enforce_engine_version_for_tenant(tenant_root)
+
     if working_dir is None:
         # Exception path: write to <cp_tenant>/exceptions/.
         assert cp_tenant is not None  # _resolve_destination guarantees this

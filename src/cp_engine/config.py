@@ -82,8 +82,13 @@ class EngineVersionMismatch(ConfigError):
         self.required = required
         super().__init__(
             f"Installed cp-engine {installed} does not satisfy the tenant's "
-            f"engine pin '{required}'. Upgrade or downgrade cp-engine "
-            "(or update the pin in .cp-engine.toml)."
+            f"engine pin '{required}'.\n\n"
+            "Fix:\n"
+            "  - System-wide install (recommended for daily use across repos):\n"
+            "      uv tool install --force --from <path-to-cp-engine-repo> cp-engine\n"
+            "  - Project-local install (cp-engine repo dev):\n"
+            "      uv pip install -e <path-to-cp-engine-repo>\n\n"
+            "Or update the engine pin in .cp-engine.toml if intentional."
         )
 
 
@@ -385,6 +390,35 @@ def _merge_projects(
         )
 
     return tuple(merged)
+
+
+def enforce_engine_version_for_tenant(tenant_root: Path) -> None:
+    """Read `<tenant_root>/.cp-engine.toml`'s engine pin and verify the
+    installed cp-engine version satisfies it. Raises `EngineVersionMismatch`
+    on stale installs.
+
+    Lighter-weight than `load()` — used by commands (capture-session) that
+    don't need the full merged config but still must fail loudly on a
+    stale cp-engine binary, which would otherwise produce wrong output
+    against a newer-pinned tenant.
+    """
+    path = tenant_root / COMMITTED_FILENAME
+    if not path.exists():
+        raise CommittedConfigMissing(
+            f"No {COMMITTED_FILENAME} at {tenant_root}. Not a tenant repo?"
+        )
+    with path.open("rb") as fh:
+        try:
+            data = tomllib.load(fh)
+        except tomllib.TOMLDecodeError as exc:
+            raise CommittedConfigInvalid(f"Failed to parse {path}: {exc}") from exc
+    engine = data.get("engine") or {}
+    constraint = engine.get("version")
+    if not isinstance(constraint, str) or not constraint:
+        raise CommittedConfigInvalid(
+            f"{path}: [engine].version is required (e.g. \"~= 0.1\")"
+        )
+    _enforce_engine_version(constraint)
 
 
 def _enforce_engine_version(constraint: str) -> None:

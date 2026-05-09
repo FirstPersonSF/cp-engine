@@ -12,12 +12,14 @@ from pathlib import Path
 
 import pytest
 
+from cp_engine import __version__ as ENGINE_VERSION
 from cp_engine.capture_session import (
     CpLinkUnresolvable,
     CpTenantInvalid,
     SourceRepoNotAGitRepo,
     capture_session,
 )
+from cp_engine.config import EngineVersionMismatch
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -31,14 +33,15 @@ def make_cp_tenant(
     name: str = "cp-tenant",
     working_dirs: list[tuple[str, str, str]],  # (scope, dir_slug, repo_name)
     org: str = "FirstPersonSF",
+    engine_pin: str = "~= 0.1",
 ) -> Path:
     """Build a cp tenant clone (initialized git repo with .cp-engine.toml
     and the requested working dirs)."""
     tenant = tmp_path / name
     tenant.mkdir()
     (tenant / ".cp-engine.toml").write_text(
-        '[tenant]\nname = "test"\n'
-        '[engine]\nversion = "~= 0.1"\n'
+        f'[tenant]\nname = "test"\n'
+        f'[engine]\nversion = "{engine_pin}"\n'
         '[sync]\nbackend = "github-issues"\n',
         encoding="utf-8",
     )
@@ -467,3 +470,80 @@ def test_one_liner_truncates_long_lines(tmp_path: Path) -> None:
     )
     # The em-dash plus 120-or-less of body content.
     assert "…" in last_session_line
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Engine version enforcement (v0.4.1)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_stale_engine_install_aborts_before_writing(tmp_path: Path) -> None:
+    """A tenant pinned to a higher version than the installed cp-engine
+    fails loud — and crucially, fails BEFORE writing any session file."""
+    tenant = make_cp_tenant(
+        tmp_path,
+        working_dirs=[("firstpersonsf", "mc-2", "mc-2")],
+        engine_pin=">= 99.0",  # impossible; installed is 0.4.x
+    )
+    wd = tenant / "firstpersonsf" / "projects" / "mc-2"
+    repo = make_source_repo(tmp_path, "mc-2", cp_link_target=wd)
+
+    with pytest.raises(EngineVersionMismatch):
+        capture_session(
+            source_repo=repo,
+            summary_text=SAMPLE_SUMMARY,
+            user="Drew",
+            when=datetime(2026, 5, 9, 14, 30),
+            commit=False,
+            push=False,
+        )
+
+    # Critical: no file leaked into sessions/ before the version check
+    # fired. Stale binaries shouldn't write half-formed output.
+    assert not (wd / "sessions").exists()
+
+
+def test_stale_engine_install_aborts_on_exceptions_path_too(tmp_path: Path) -> None:
+    """The check fires for the unlinked-repo (exceptions) path as well —
+    we walk the cp tenant root regardless of which destination resolves."""
+    tenant = make_cp_tenant(
+        tmp_path,
+        working_dirs=[("firstpersonsf", "mc-2", "mc-2")],
+        engine_pin=">= 99.0",
+    )
+    repo = make_source_repo(tmp_path, "1p-component-library")  # no .cp-link
+
+    with pytest.raises(EngineVersionMismatch):
+        capture_session(
+            source_repo=repo,
+            summary_text=SAMPLE_SUMMARY,
+            user="Drew",
+            cp_tenant=tenant,
+            when=datetime(2026, 5, 9, 14, 30),
+            commit=False,
+            push=False,
+        )
+
+    assert not (tenant / "exceptions").exists()
+
+
+def test_engine_version_check_passes_for_compatible_install(tmp_path: Path) -> None:
+    """The check should be invisible when the install satisfies the pin —
+    and explicit pinning to the running version still works."""
+    tenant = make_cp_tenant(
+        tmp_path,
+        working_dirs=[("firstpersonsf", "mc-2", "mc-2")],
+        engine_pin=f"== {ENGINE_VERSION}",
+    )
+    wd = tenant / "firstpersonsf" / "projects" / "mc-2"
+    repo = make_source_repo(tmp_path, "mc-2", cp_link_target=wd)
+
+    result = capture_session(
+        source_repo=repo,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=False,
+        push=False,
+    )
+    assert result.summary_path.exists()
