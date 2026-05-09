@@ -10,6 +10,7 @@ Subcommands per spec v02 §2.1:
 from __future__ import annotations
 
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import click
@@ -273,6 +274,69 @@ def capture_session_cmd(
             click.echo(f"Committed {result.commit_sha} and pushed.")
         else:
             click.echo(f"Committed {result.commit_sha} (push skipped).")
+
+
+@main.command(name="project-context")
+@click.option(
+    "--working-dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="cp working dir. Defaults to cwd.",
+)
+@click.option("--user", help="Which `[local-repos.<user>]` entry to use.")
+@click.option("--days", type=int, default=7, help="Lookback window. Default 7.")
+def project_context_cmd(
+    working_dir: Path | None,
+    user: str | None,
+    days: int,
+) -> None:
+    """Print recent activity for a project: git log + session captures.
+
+    Run from inside a cp working dir. Reads the linked source repo's
+    local clone path from `<tenant>/.cp-engine.toml [local-repos.<user>]`,
+    runs `git log --since=<days> ago` there, lists session files in the
+    working dir's `sessions/` directory from the same window, and prints
+    one chronological timeline.
+    """
+    from cp_engine.project_context import ProjectContextError, project_context
+
+    wd = (working_dir or Path.cwd()).resolve()
+    try:
+        result = project_context(working_dir=wd, user=user, days=days)
+    except ProjectContextError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo(f"# {result.repo_name} — last {result.window_days} days")
+    if result.github_url:
+        click.echo(f"GitHub: {result.github_url}")
+    click.echo(f"Local clone: {result.local_clone or '(not on this machine)'}")
+    click.echo()
+
+    if not result.commits and not result.sessions:
+        click.echo("(no activity in window)")
+        return
+
+    # Merge commits + sessions on one timeline. Each entry has a `.when`
+    # attribute; sort newest first.
+    timeline: list[tuple[datetime, str]] = []
+    for c in result.commits:
+        line = (
+            f"  {c.when.strftime('%Y-%m-%d %H:%M')}  commit {c.sha}  "
+            f"({c.author}) {c.subject}"
+        )
+        timeline.append((c.when, line))
+    for s in result.sessions:
+        one = s.one_liner or "(no summary)"
+        line = (
+            f"  {s.when.strftime('%Y-%m-%d %H:%M')}  session         "
+            f"({s.user}) {one}"
+        )
+        timeline.append((s.when, line))
+    timeline.sort(key=lambda t: t[0], reverse=True)
+    for _when, line in timeline:
+        click.echo(line)
+    click.echo()
+    click.echo(f"({len(result.commits)} commits, {len(result.sessions)} sessions)")
 
 
 @main.command(name="link-local")
