@@ -49,18 +49,23 @@ if present, is the canonical link to that project's binary artifacts.
 When the cwd is the tenant root or any non-project subdir, behave as
 described in "Reading modes" below.
 
-## Local-link traversal (v0.4)
+## Local-link traversal (v0.5)
 
 Each repo-source project working directory has a `_repo.md`. When that
-file lists a `**Local clone:**` line, the source repo is checked out on
-this machine. To answer "what shipped in this repo recently?" or "what's
-the current state of `<feature>`?" without network calls, navigate to
-that local clone and read `git log`, recent diffs, file contents, etc.
+file lists one or more `**Local clone (<User>):**` lines, the source
+repo is checked out on at least one teammate's machine. To answer
+"what shipped in this repo recently?" or "what's the current state
+of `<feature>`?" without network calls, navigate to whichever clone
+matches the current user (or any clone if running as a fresh agent)
+and read `git log`, recent diffs, file contents, etc.
 
-The mapping `repo-name → local-clone-path` lives in
-`<tenant-root>/.cp-engine.local.toml` under `[local-repos]`. That file
-is the source of truth on this machine — `_repo.md`'s line is rendered
-from it.
+The mappings come from `<tenant-root>/.cp-engine.toml` under
+`[local-repos.<user>]` sections — committed, multi-user, visible to
+everyone on the team. Each user declares their own clone paths once.
+
+A separate per-machine map at `<tenant-root>/.cp-engine.local.toml`
+under `[local-repos]` (gitignored) drives `cp link-local` and
+`cp capture-session` self-healing. That one is local-only.
 
 Conversely, when the working directory is a tracked source repo
 (`mc-2`, `cp-engine`, etc.) rather than a cp working dir, look for

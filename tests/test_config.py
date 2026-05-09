@@ -441,6 +441,65 @@ def test_local_repos_empty_value_rejected(tmp_path: Path) -> None:
         load(tmp_path)
 
 
+def test_local_repos_by_user_absent_yields_empty(tmp_path: Path) -> None:
+    """No [local-repos.<user>] sections in committed config → empty mapping."""
+    write_committed(tmp_path, projects=[])
+    write_local(tmp_path, {})
+
+    cfg = load(tmp_path)
+    assert dict(cfg.local_repos_by_user) == {}
+
+
+def test_local_repos_by_user_parsed_from_committed(tmp_path: Path) -> None:
+    """[local-repos.drew] and [local-repos.tony] both parse correctly. Paths
+    are NOT validated for existence — they're for display, and the runner
+    won't have them on disk."""
+    write_committed(
+        tmp_path,
+        projects=[],
+        extra=(
+            "[local-repos.drew]\n"
+            '"mc-2" = "/Users/drew/Documents/Python/mc-2"\n'
+            '"cp-engine" = "/Users/drew/Documents/Python/context-protocol"\n'
+            "\n"
+            "[local-repos.tony]\n"
+            '"mc-2" = "/Users/tony/code/mc-2"\n'
+        ),
+    )
+    write_local(tmp_path, {})
+
+    cfg = load(tmp_path)
+    assert set(cfg.local_repos_by_user.keys()) == {"drew", "tony"}
+    assert cfg.local_repos_by_user["drew"]["mc-2"] == "/Users/drew/Documents/Python/mc-2"
+    assert cfg.local_repos_by_user["drew"]["cp-engine"] == "/Users/drew/Documents/Python/context-protocol"
+    assert cfg.local_repos_by_user["tony"]["mc-2"] == "/Users/tony/code/mc-2"
+
+
+def test_local_repos_by_user_rejects_empty_path(tmp_path: Path) -> None:
+    write_committed(
+        tmp_path,
+        projects=[],
+        extra='[local-repos.drew]\n"mc-2" = ""\n',
+    )
+    write_local(tmp_path, {})
+
+    with pytest.raises(CommittedConfigInvalid, match="local-repos.drew"):
+        load(tmp_path)
+
+
+def test_local_repos_by_user_rejects_non_table_value(tmp_path: Path) -> None:
+    """[local-repos] must be a table of [local-repos.<user>] sub-tables."""
+    write_committed(
+        tmp_path,
+        projects=[],
+        extra='[local-repos]\ndrew = "not a table"\n',
+    )
+    write_local(tmp_path, {})
+
+    with pytest.raises(CommittedConfigInvalid, match="local-repos.drew"):
+        load(tmp_path)
+
+
 def test_local_repos_with_tilde(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("HOME", str(tmp_path))
     repo_dir = tmp_path / "mc-2"

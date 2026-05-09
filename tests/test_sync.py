@@ -710,13 +710,11 @@ def test_repo_md_scaffolded_for_repo_source_projects(tmp_path: Path) -> None:
     assert "FirstPersonSF/mc-2" in body
 
 
-def test_repo_md_includes_local_clone_path_when_configured(tmp_path: Path) -> None:
-    """When [local-repos] has an entry for a project's repo_name, the
-    rendered `_repo.md` surfaces the local clone path."""
-    # Set up a config whose local_repos has an entry for `mc-2`.
-    clone_path = tmp_path / "fake-mc-2-clone"
-    clone_path.mkdir()
-
+def test_repo_md_includes_local_clone_paths_per_user_when_configured(tmp_path: Path) -> None:
+    """When [local-repos.<user>] has an entry for a project's repo_name,
+    the rendered `_repo.md` surfaces one **Local clone (User):** line per
+    user. Multi-user shape lets the file show everyone's paths so any
+    teammate's Claude session can find the right clone."""
     config = TenantConfig(
         name="firstpersonsf",
         display="First Person Internal",
@@ -728,7 +726,10 @@ def test_repo_md_includes_local_clone_path_when_configured(tmp_path: Path) -> No
             ProjectConfig(code="mc-2", github="FirstPersonSF/mc-2", local_path=None),
         ),
         root=tmp_path,
-        local_repos={"mc-2": clone_path.resolve()},
+        local_repos_by_user={
+            "drew": {"mc-2": "/Users/drew/Documents/Python/mc-2"},
+            "tony": {"mc-2": "/Users/tony/code/mc-2"},
+        },
     )
 
     state = ProjectState(
@@ -750,13 +751,58 @@ def test_repo_md_includes_local_clone_path_when_configured(tmp_path: Path) -> No
     sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
 
     body = (tmp_path / "firstpersonsf" / "projects" / "mc-2" / "_repo.md").read_text()
-    assert "**Local clone:**" in body
-    assert str(clone_path.resolve()) in body
+    assert "**Local clone (Drew):** `/Users/drew/Documents/Python/mc-2`" in body
+    assert "**Local clone (Tony):** `/Users/tony/code/mc-2`" in body
+
+
+def test_repo_md_omits_a_users_path_when_they_dont_have_the_repo(
+    tmp_path: Path,
+) -> None:
+    """A user with [local-repos.<user>] entries for OTHER repos but not
+    this one shouldn't appear in this _repo.md."""
+    config = TenantConfig(
+        name="firstpersonsf",
+        display="First Person Internal",
+        engine_version_constraint="~= 0.1",
+        sync=SyncConfig(
+            backend="mc-2", cron="0 * * * *", mc_2_supabase_project_ref="ref"
+        ),
+        projects=(
+            ProjectConfig(code="mc-2", github="FirstPersonSF/mc-2", local_path=None),
+        ),
+        root=tmp_path,
+        local_repos_by_user={
+            "drew": {"mc-2": "/Users/drew/code/mc-2"},
+            "tony": {"storyos": "/Users/tony/code/storyos"},  # no mc-2
+        },
+    )
+
+    state = ProjectState(
+        code="mc-2",
+        name="mc-2",
+        source="repo",  # type: ignore[arg-type]
+        company_kind="self-fpsf",  # type: ignore[arg-type]
+        company_code="1P",
+        company_name="First Person",
+        status="Active",
+        is_internal=False,
+        owner="drew",
+        last_touched=datetime(2026, 5, 7, tzinfo=timezone.utc),
+        deadline=None,
+        github_org="FirstPersonSF",
+        repo_name="mc-2",
+    )
+
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+
+    body = (tmp_path / "firstpersonsf" / "projects" / "mc-2" / "_repo.md").read_text()
+    assert "Drew" in body
+    assert "Tony" not in body
 
 
 def test_repo_md_omits_local_clone_path_when_not_configured(tmp_path: Path) -> None:
-    """Without a [local-repos] entry, _repo.md keeps the v0.3.3 shape (no
-    local clone surfaced)."""
+    """Without a [local-repos.<user>] entry, _repo.md keeps the v0.3.3 shape
+    (no local clone surfaced)."""
     config = make_config(tmp_path)
     state = ProjectState(
         code="mc-2",

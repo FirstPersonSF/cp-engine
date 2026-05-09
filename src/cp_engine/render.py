@@ -279,7 +279,7 @@ def render_dropbox_md(project: ProjectState) -> str | None:
 def render_repo_md(
     project: ProjectState,
     *,
-    local_clone_path: Path | None = None,
+    local_clones_by_user: dict[str, str] | None = None,
 ) -> str | None:
     """Render `_repo.md` for a repo-source project working directory.
 
@@ -288,10 +288,11 @@ def render_repo_md(
     engagements that's Dropbox (binary media); for repos that's GitHub
     (source code).
 
-    When `local_clone_path` is provided (looked up from
-    `.cp-engine.local.toml` `[local-repos]`), the rendered output also
-    surfaces the absolute path to the local clone. Without it, only the
-    GitHub link appears (v0.3.3 behavior).
+    When `local_clones_by_user` is non-empty (looked up from
+    `.cp-engine.toml` `[local-repos.<user>]`), the rendered output
+    surfaces one `**Local clone (User):** <path>` line per user who
+    has the repo. Without it, only the GitHub link appears (v0.3.3
+    behavior).
 
     Returns None for engagement-source projects (they get _dropbox.md
     instead) and for repos missing the github_org/repo_name fields
@@ -307,7 +308,7 @@ def render_repo_md(
         project=_project_view(project),
         engine_version=ENGINE_VERSION,
         today=_today_iso(),
-        local_clone_path=str(local_clone_path) if local_clone_path else None,
+        local_clones_by_user=local_clones_by_user or None,
     )
 
 

@@ -274,12 +274,18 @@ def sync_tenant(
         # _repo.md — repo-source projects get a link to their GitHub repo,
         # mirroring _dropbox.md's role for engagements. Engagements get None
         # back from the renderer and skip this entirely.
-        local_clone = (
-            config.local_repos.get(project.repo_name)
-            if project.repo_name
-            else None
+        #
+        # Build a flat user → path map for THIS repo from the committed
+        # multi-user table. Empty dict (no users have it) renders as v0.3.3
+        # shape; populated dict renders one **Local clone (User):** line each.
+        clones_for_this_repo: dict[str, str] = {}
+        if project.repo_name:
+            for user, paths in config.local_repos_by_user.items():
+                if project.repo_name in paths:
+                    clones_for_this_repo[user] = paths[project.repo_name]
+        repo_body = render_repo_md(
+            project, local_clones_by_user=clones_for_this_repo or None
         )
-        repo_body = render_repo_md(project, local_clone_path=local_clone)
         repo_path = project_dir / "_repo.md"
         if repo_body is None:
             pass

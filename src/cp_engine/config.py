@@ -138,7 +138,16 @@ class TenantConfig:
     sync: SyncConfig
     projects: tuple[ProjectConfig, ...]
     root: Path  # absolute path to the tenant repo
+    # Per-machine: gitignored, drives `cp link-local` and capture-session
+    # self-healing. Empty by default.
     local_repos: Mapping[str, Path] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
+    # Multi-user committed: surfaces in rendered `_repo.md`. Outer key is
+    # user (free-form, e.g. "drew"); inner is repo-name → path string.
+    # Paths are NOT resolved (the runner doesn't have these on disk; they're
+    # purely for display). Empty by default.
+    local_repos_by_user: Mapping[str, Mapping[str, str]] = field(
         default_factory=lambda: MappingProxyType({})
     )
 
@@ -174,6 +183,12 @@ def load(tenant_root: Path) -> TenantConfig:
         projects=projects,
         root=tenant_root,
         local_repos=MappingProxyType(dict(local["local_repos"])),
+        local_repos_by_user=MappingProxyType(
+            {
+                user: MappingProxyType(dict(paths))
+                for user, paths in committed["local_repos_by_user"].items()
+            }
+        ),
     )
 
 
@@ -269,12 +284,39 @@ def _normalize_committed(data: dict, source: Path) -> dict:
         seen_codes.add(code)
         projects.append({"code": code, "github": github})
 
+    # [local-repos.<user>] — committed, multi-user map of repo name → local
+    # clone path. Read by render_repo_md to surface "**Local clone (User):**"
+    # lines on each repo's _repo.md. The runner sees these (the per-machine
+    # [local-repos] in .cp-engine.local.toml does not survive the round-trip).
+    # Free-form user keys; no validation against a known users list.
+    local_repos_raw = data.get("local-repos") or {}
+    local_repos_by_user: dict[str, dict[str, str]] = {}
+    if not isinstance(local_repos_raw, dict):
+        raise CommittedConfigInvalid(
+            f"{source}: [local-repos] must be a table of [local-repos.<user>] sections"
+        )
+    for user, user_block in local_repos_raw.items():
+        if not isinstance(user_block, dict):
+            raise CommittedConfigInvalid(
+                f"{source}: [local-repos.{user}] must be a table of repo-name → path"
+            )
+        user_paths: dict[str, str] = {}
+        for repo_name, raw_path in user_block.items():
+            if not isinstance(raw_path, str) or not raw_path:
+                raise CommittedConfigInvalid(
+                    f"{source}: [local-repos.{user}].{repo_name!r} must be a "
+                    "non-empty string path"
+                )
+            user_paths[repo_name] = raw_path
+        local_repos_by_user[user] = user_paths
+
     return {
         "name": name,
         "display": display,
         "engine_version_constraint": engine_version,
         "sync": sync,
         "projects": projects,
+        "local_repos_by_user": local_repos_by_user,
     }
 
 
