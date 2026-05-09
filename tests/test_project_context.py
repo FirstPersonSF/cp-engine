@@ -59,7 +59,7 @@ def make_tenant_with_project(
     # _load_local() requires .cp-engine.local.toml when committed has projects
     # but here we have no projects → file is optional.
 
-    wd = tenant / "firstpersonsf" / "projects" / repo_name
+    wd = tenant / "firstpersonsf" / repo_name
     wd.mkdir(parents=True)
     (wd / "_repo.md").write_text(
         f"# Source repository\n\n"

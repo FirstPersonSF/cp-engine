@@ -23,25 +23,29 @@ and Closed-recent are collapsed `<details>` blocks below.
 the source-of-truth side, used to filter out internal pseudo-projects from the
 master CP.
 
-## Working tree layout (v0.3)
+## Working tree layout (v0.7)
 
-Project state lives in per-project working directories:
+Project state lives in per-project working directories, one per scope:
 
 ```
 <tenant root>/
 ├── master-cp.md
 ├── weekly-cp.md
-├── 1p/projects/<code>/cp.md          ← client engagements
-├── firstpersonsf/projects/<code>/cp.md  ← First Person internal tooling
-└── canonic/projects/<code>/cp.md      ← Canonic
+├── 1p/<code>/cp.md             ← client engagements
+├── firstpersonsf/<code>/cp.md  ← First Person internal tooling
+└── canonic/<code>/cp.md        ← Canonic
 ```
+
+Archived projects live alongside live ones at `<scope>/archived/<code>/`.
+Pre-v0.7 layouts had an extra `projects/` segment (`<scope>/projects/<code>/`);
+`cp migrate-projects-flat` moves them to the v0.7 shape in place.
 
 Each working directory is a place for everything related to one project:
 the `cp.md` itself, optional `_dropbox.md` link to media, plus any
 hand-added text artifacts (transcripts, syntheses, action items). Binary
 content lives in Dropbox per `.gitignore`.
 
-**Auto-load:** if this session's working directory matches `**/projects/<code>/`,
+**Auto-load:** if this session's working directory matches `<scope>/<code>/`,
 treat `cp.md` in that directory as the primary context for this session
 (equivalent to `switch to <code>` mode). The per-project `_dropbox.md`,
 if present, is the canonical link to that project's binary artifacts.

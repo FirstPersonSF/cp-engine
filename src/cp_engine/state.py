@@ -8,6 +8,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 # Whether a ProjectState came from MC-2's `projects` table (a client
@@ -42,6 +43,33 @@ def scope_for(company_kind: str) -> str:
             f"Unknown company_kind {company_kind!r}; expected one of "
             f"{sorted(_SCOPE_BY_KIND)}"
         ) from None
+
+
+# v0.7 working-tree layout: working dirs live directly under their scope
+# (`<tenant>/<scope>/<dir_slug>/`), with archived dirs under
+# `<tenant>/<scope>/archived/<dir_slug>/`. Pre-v0.7 layouts (which had
+# an extra `projects/` segment) are migrated by `cp migrate-projects-flat`.
+ARCHIVED_DIR_NAME = "archived"
+
+
+def scope_root(tenant_root: Path, scope: str) -> Path:
+    """Return `<tenant_root>/<scope>` — the parent of a scope's working dirs."""
+    return tenant_root / scope
+
+
+def working_dir(tenant_root: Path, scope: str, dir_slug: str) -> Path:
+    """Return the working directory for a project at `<tenant_root>/<scope>/<dir_slug>/`."""
+    return tenant_root / scope / dir_slug
+
+
+def archived_dir(tenant_root: Path, scope: str, dir_slug: str) -> Path:
+    """Return the archive location for a stale project."""
+    return tenant_root / scope / ARCHIVED_DIR_NAME / dir_slug
+
+
+def archived_root(tenant_root: Path, scope: str) -> Path:
+    """Return `<tenant_root>/<scope>/archived` — the parent of archived dirs."""
+    return tenant_root / scope / ARCHIVED_DIR_NAME
 
 
 _SLUG_NON_ALPHANUM = re.compile(r"[^a-z0-9]+")

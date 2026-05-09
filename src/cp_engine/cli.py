@@ -395,6 +395,50 @@ def status() -> None:
     sys.exit(1)
 
 
+@main.command(name="migrate-projects-flat")
+@click.option(
+    "--tenant-root",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Tenant root (default: current directory).",
+)
+def migrate_projects_flat_cmd(tenant_root: Path | None) -> None:
+    """One-shot move of pre-v0.7's `<scope>/projects/<dir>` layout to v0.7's
+    `<scope>/<dir>` layout.
+
+    Uses `git mv` to preserve rename detection. Refuses to run on a dirty
+    working tree — commit or stash first. Idempotent: re-running on an
+    already-migrated tree is a no-op. After this runs cleanly, regular
+    `cp sync` keeps using the new layout.
+
+    Also rewrites `.cp-link` files in linked source repos so they point
+    at the new working-dir paths."""
+    from cp_engine.migrate_flat import MigrateFlatError, migrate_projects_flat
+
+    root = tenant_root or Path.cwd()
+    try:
+        result = migrate_projects_flat(root)
+    except MigrateFlatError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+
+    if result.no_op:
+        click.echo("Nothing to migrate (tree already matches v0.7 layout).")
+        return
+
+    for src, dst in result.moved_dirs:
+        click.echo(f"  moved: {src.relative_to(root)} → {dst.relative_to(root)}")
+    for path in result.removed_projects_dirs:
+        click.echo(f"  removed empty: {path.relative_to(root)}")
+    for path in result.rewrote_cp_links:
+        click.echo(f"  rewrote .cp-link: {path}")
+    click.echo(
+        f"\nDone. Review the staged changes (`git status`) and commit when "
+        f"satisfied. Source-repo .cp-link files are not under git control "
+        f"so they were updated in place."
+    )
+
+
 @main.command(name="resolve-engine-pin")
 @click.option(
     "--tenant-root",

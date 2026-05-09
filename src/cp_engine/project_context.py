@@ -94,7 +94,7 @@ def project_context(
     working dir's sessions/ for recent captures. Merge on one timeline.
 
     Args:
-        working_dir: a cp working dir (e.g. `cp-1p/firstpersonsf/projects/mc-2/`).
+        working_dir: a cp working dir (e.g. `cp/firstpersonsf/mc-2/`).
         user: which `[local-repos.<user>]` entry to use for the clone path.
             If None, picks the first user whose configured path exists on
             this machine. Raises `NoLocalCloneAvailable` if nothing matches.

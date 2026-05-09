@@ -93,7 +93,7 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     assert result.projects_seen == 1
     assert not result.no_op
     written_names = {p.name for p in result.files_written}
-    # v0.3 layout: project working dir at <scope>/projects/<dir_slug>/cp.md.
+    # v0.3 layout: project working dir at <scope>/<dir_slug>/cp.md.
     # Default make_state has company_kind="client" → scope "1p". With name
     # set, the slug is `mc-2-mission-control-v2`.
     assert written_names == {"master-cp.md", "CLAUDE.md", ".gitignore", "cp.md"}
@@ -103,7 +103,7 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     assert "mc-2" in master
     assert "Mission Control v2" in master
 
-    cp_path = tmp_path / "1p" / "projects" / "mc-2-mission-control-v2" / "cp.md"
+    cp_path = tmp_path / "1p" / "mc-2-mission-control-v2" / "cp.md"
     project_cp = cp_path.read_text()
     assert "Mission Control v2" in project_cp
     assert "<!-- cp-engine:start tracked-issues -->" in project_cp
@@ -129,7 +129,7 @@ def test_resync_with_unchanged_state_is_a_noop(tmp_path: Path) -> None:
     # Two syncs with the same state and same `now` — the first creates files,
     # the second should be a no-op.
     first = sync_tenant(config, backend_factory=lambda _: fake, now=fixed_now)
-    files = ["master-cp.md", "CLAUDE.md", "1p/projects/mc-2/cp.md"]
+    files = ["master-cp.md", "CLAUDE.md", "1p/mc-2/cp.md"]
     mtimes_after_first = {f: (tmp_path / f).stat().st_mtime_ns for f in files}
 
     second = sync_tenant(config, backend_factory=lambda _: fake, now=fixed_now)
@@ -203,19 +203,19 @@ def test_resync_with_changed_status_updates_master_only(tmp_path: Path) -> None:
     fake1 = FakeBackend((make_state(status="Open"),))
     sync_tenant(config, backend_factory=lambda _: fake1)
 
-    project_cp_before = (tmp_path / "1p" / "projects" / "mc-2" / "cp.md").read_text()
-    project_cp_mtime_before = (tmp_path / "1p" / "projects" / "mc-2" / "cp.md").stat().st_mtime_ns
+    project_cp_before = (tmp_path / "1p" / "mc-2" / "cp.md").read_text()
+    project_cp_mtime_before = (tmp_path / "1p" / "mc-2" / "cp.md").stat().st_mtime_ns
 
     fake2 = FakeBackend((make_state(status="Holding"),))
     result = sync_tenant(config, backend_factory=lambda _: fake2)
 
     # master-cp.md changed; the project CP did NOT (still scaffolded, untouched)
     assert (tmp_path / "master-cp.md") in result.files_written
-    assert (tmp_path / "1p" / "projects" / "mc-2" / "cp.md") not in result.files_written
+    assert (tmp_path / "1p" / "mc-2" / "cp.md") not in result.files_written
 
-    project_cp_after = (tmp_path / "1p" / "projects" / "mc-2" / "cp.md").read_text()
+    project_cp_after = (tmp_path / "1p" / "mc-2" / "cp.md").read_text()
     assert project_cp_before == project_cp_after
-    assert (tmp_path / "1p" / "projects" / "mc-2" / "cp.md").stat().st_mtime_ns == project_cp_mtime_before
+    assert (tmp_path / "1p" / "mc-2" / "cp.md").stat().st_mtime_ns == project_cp_mtime_before
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -251,7 +251,7 @@ def test_resync_does_not_overwrite_existing_project_cp(tmp_path: Path) -> None:
     sync_tenant(config, backend_factory=lambda _: fake)
 
     # User edits the project CP heavily — adds notes, removes default sections
-    project_path = tmp_path / "1p" / "projects" / "mc-2" / "cp.md"
+    project_path = tmp_path / "1p" / "mc-2" / "cp.md"
     custom_body = "# Hand-rewritten\n\nNothing else.\n"
     project_path.write_text(custom_body)
 
@@ -290,9 +290,9 @@ def test_sync_with_mixed_statuses_renders_correct_subtables(tmp_path: Path) -> N
     # Project CP scaffolding matches master-CP visibility: internal projects
     # are NOT scaffolded into client/public tenants. They belong in their
     # own (cp-firstpersonsf) tenant. v0.3: each project is a working dir
-    # under <scope>/projects/<code>-<slugified-name>/.
-    projects_dir = tmp_path / "1p" / "projects"
-    dirs = sorted(p.name for p in projects_dir.iterdir() if p.is_dir())
+    # under <scope>/<code>-<slugified-name>/.
+    scope_dir = tmp_path / "1p"
+    dirs = sorted(p.name for p in scope_dir.iterdir() if p.is_dir())
     assert dirs == ["closed-1-closed-one", "hold-1-held-one", "open-1-open-one"]
 
 
@@ -303,13 +303,13 @@ def test_sync_with_mixed_statuses_renders_correct_subtables(tmp_path: Path) -> N
 
 def test_archived_project_cp_moves_to_archived_dir(tmp_path: Path) -> None:
     """A project that disappears from sync output (archived in MC-2)
-    has its working dir moved to <scope>/projects/archived/<code>/, not deleted."""
+    has its working dir moved to <scope>/archived/<code>/, not deleted."""
     config = make_config(tmp_path)
 
     # First sync: project exists
     fake1 = FakeBackend((make_state(code="going-away"),))
     sync_tenant(config, backend_factory=lambda _: fake1)
-    live_dir = tmp_path / "1p" / "projects" / "going-away"
+    live_dir = tmp_path / "1p" / "going-away"
     assert (live_dir / "cp.md").exists()
 
     # Second sync: project is gone (e.g. archived in MC-2)
@@ -317,7 +317,7 @@ def test_archived_project_cp_moves_to_archived_dir(tmp_path: Path) -> None:
     result = sync_tenant(config, backend_factory=lambda _: fake2)
 
     assert not live_dir.exists()
-    archived_dir = tmp_path / "1p" / "projects" / "archived" / "going-away"
+    archived_dir = tmp_path / "1p" / "archived" / "going-away"
     assert (archived_dir / "cp.md").exists()
     assert archived_dir in result.files_archived
     assert not result.no_op
@@ -334,7 +334,7 @@ def test_archive_preserves_hand_edited_content(tmp_path: Path) -> None:
     )
 
     # User adds notes to the project CP and drops a transcript file alongside
-    work_dir = tmp_path / "1p" / "projects" / "my-project"
+    work_dir = tmp_path / "1p" / "my-project"
     cp_path = work_dir / "cp.md"
     edited = cp_path.read_text() + "\n## My notes\n\nImportant stuff.\n"
     cp_path.write_text(edited)
@@ -343,7 +343,7 @@ def test_archive_preserves_hand_edited_content(tmp_path: Path) -> None:
     # Project disappears from MC-2
     sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
 
-    archived = tmp_path / "1p" / "projects" / "archived" / "my-project"
+    archived = tmp_path / "1p" / "archived" / "my-project"
     assert (archived / "cp.md").exists()
     assert "Important stuff." in (archived / "cp.md").read_text()
     # Transcript travelled with the dir
@@ -360,7 +360,7 @@ def test_resync_after_archive_is_a_noop_for_that_project(tmp_path: Path) -> None
 
     # Archive
     sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
-    archived = tmp_path / "1p" / "projects" / "archived" / "dead-project" / "cp.md"
+    archived = tmp_path / "1p" / "archived" / "dead-project" / "cp.md"
     mtime_after_archive = archived.stat().st_mtime_ns
 
     # Second post-archive sync — should leave the archived dir alone.
@@ -373,19 +373,19 @@ def test_resync_after_archive_is_a_noop_for_that_project(tmp_path: Path) -> None
 def test_archive_collision_logs_and_skips(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """If <scope>/projects/archived/<code>/ already exists (e.g. unarchive-then-
+    """If <scope>/archived/<code>/ already exists (e.g. unarchive-then-
     re-archive cycle), the engine logs a warning and leaves both dirs in
     place rather than silently overwriting."""
     import logging
 
     config = make_config(tmp_path)
     # Pre-populate an existing archived working dir
-    archived_old = tmp_path / "1p" / "projects" / "archived" / "ghost"
+    archived_old = tmp_path / "1p" / "archived" / "ghost"
     archived_old.mkdir(parents=True)
     (archived_old / "cp.md").write_text("# Old archive\n\nFrom an earlier life.\n")
 
     # And a current live working dir for the same code
-    live_dir = tmp_path / "1p" / "projects" / "ghost"
+    live_dir = tmp_path / "1p" / "ghost"
     live_dir.mkdir(parents=True)
     (live_dir / "cp.md").write_text("# Current\n\nIn flight.\n")
 
@@ -404,17 +404,17 @@ def test_archive_collision_logs_and_skips(
 
 
 def test_archive_dir_itself_not_archived(tmp_path: Path) -> None:
-    """<scope>/projects/archived/ is the archive subdir, not a project. The
+    """<scope>/archived/ is the archive subdir, not a project. The
     sweep must not treat it as a stale project."""
     config = make_config(tmp_path)
 
-    # First sync creates 1p/projects/keep/
+    # First sync creates 1p/keep/
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend((make_state(code="keep"),)),
     )
     # Manually create archived/ with an unrelated entry
-    archived_root = tmp_path / "1p" / "projects" / "archived"
+    archived_root = tmp_path / "1p" / "archived"
     archived_root.mkdir(parents=True, exist_ok=True)
     (archived_root / "previous").mkdir(exist_ok=True)
     (archived_root / "previous" / "cp.md").write_text("# Old\n")
@@ -424,7 +424,7 @@ def test_archive_dir_itself_not_archived(tmp_path: Path) -> None:
         config,
         backend_factory=lambda _: FakeBackend((make_state(code="keep"),)),
     )
-    assert (tmp_path / "1p" / "projects" / "keep" / "cp.md").exists()
+    assert (tmp_path / "1p" / "keep" / "cp.md").exists()
     assert (archived_root / "previous" / "cp.md").exists()
     assert result.files_archived == ()
 
@@ -492,15 +492,15 @@ def test_mixed_scopes_land_under_correct_dirs(tmp_path: Path) -> None:
     sync_tenant(config, backend_factory=lambda _: fake)
 
     # Working dirs use slugged names (code + slugified project name).
-    assert (tmp_path / "1p" / "projects" / "ggl-5168-playbooks" / "cp.md").exists()
-    assert (tmp_path / "firstpersonsf" / "projects" / "mc-2" / "cp.md").exists()
-    assert (tmp_path / "canonic" / "projects" / "storyos" / "cp.md").exists()
+    assert (tmp_path / "1p" / "ggl-5168-playbooks" / "cp.md").exists()
+    assert (tmp_path / "firstpersonsf" / "mc-2" / "cp.md").exists()
+    assert (tmp_path / "canonic" / "storyos" / "cp.md").exists()
 
     # Master CP links use the slugged paths
     master = (tmp_path / "master-cp.md").read_text()
-    assert "1p/projects/ggl-5168-playbooks/cp.md" in master
-    assert "firstpersonsf/projects/mc-2/cp.md" in master
-    assert "canonic/projects/storyos/cp.md" in master
+    assert "1p/ggl-5168-playbooks/cp.md" in master
+    assert "firstpersonsf/mc-2/cp.md" in master
+    assert "canonic/storyos/cp.md" in master
 
 
 def test_un_archive_restores_working_dir_with_hand_content(tmp_path: Path) -> None:
@@ -511,7 +511,7 @@ def test_un_archive_restores_working_dir_with_hand_content(tmp_path: Path) -> No
 
     # First sync: live
     sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
-    work_dir = tmp_path / "1p" / "projects" / "resurrected"
+    work_dir = tmp_path / "1p" / "resurrected"
 
     # Hand-add a transcript and edit cp.md
     (work_dir / "transcript-2026-05-08.md").write_text("# Call notes\n\nSecret sauce.\n")
@@ -521,7 +521,7 @@ def test_un_archive_restores_working_dir_with_hand_content(tmp_path: Path) -> No
     # Project drops out — gets archived
     sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
     assert not work_dir.exists()
-    archived_dir = tmp_path / "1p" / "projects" / "archived" / "resurrected"
+    archived_dir = tmp_path / "1p" / "archived" / "resurrected"
     assert (archived_dir / "transcript-2026-05-08.md").exists()
 
     # Project comes back — un-archive should restore (not re-scaffold)
@@ -556,7 +556,7 @@ def test_dropbox_md_scaffolded_when_url_present(tmp_path: Path) -> None:
 
     sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
 
-    dropbox_path = tmp_path / "1p" / "projects" / "ggl-5168-playbooks" / "_dropbox.md"
+    dropbox_path = tmp_path / "1p" / "ggl-5168-playbooks" / "_dropbox.md"
     assert dropbox_path.exists()
     body = dropbox_path.read_text()
     assert "https://www.dropbox.com/scl/fo/abc123/h?dl=0" in body
@@ -572,7 +572,7 @@ def test_dropbox_md_omitted_when_no_url(tmp_path: Path) -> None:
         backend_factory=lambda _: FakeBackend((make_state(code="no-dropbox"),)),
     )
 
-    dropbox_path = tmp_path / "1p" / "projects" / "no-dropbox" / "_dropbox.md"
+    dropbox_path = tmp_path / "1p" / "no-dropbox" / "_dropbox.md"
     assert not dropbox_path.exists()
 
 
@@ -600,7 +600,7 @@ def test_dropbox_md_re_renders_on_url_change(tmp_path: Path) -> None:
         config,
         backend_factory=lambda _: FakeBackend((state_with("https://dropbox.com/old"),)),
     )
-    dropbox_path = tmp_path / "1p" / "projects" / "mover" / "_dropbox.md"
+    dropbox_path = tmp_path / "1p" / "mover" / "_dropbox.md"
     assert "old" in dropbox_path.read_text()
 
     sync_tenant(
@@ -635,7 +635,7 @@ def test_working_dir_uses_slugged_name(tmp_path: Path) -> None:
 
     sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
 
-    expected_dir = tmp_path / "1p" / "projects" / "ggl-5177-event-safety-playbook"
+    expected_dir = tmp_path / "1p" / "ggl-5177-event-safety-playbook"
     assert (expected_dir / "cp.md").exists()
 
 
@@ -647,7 +647,7 @@ def test_working_dir_falls_back_to_bare_code(tmp_path: Path) -> None:
 
     sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
 
-    assert (tmp_path / "firstpersonsf" / "projects" / "mc-2" / "cp.md").exists()
+    assert (tmp_path / "firstpersonsf" / "mc-2" / "cp.md").exists()
 
 
 def test_name_drift_renames_existing_dir(tmp_path: Path) -> None:
@@ -662,7 +662,7 @@ def test_name_drift_renames_existing_dir(tmp_path: Path) -> None:
             (make_state(code="ggl-5177", name="GGL 5177 Event Safety Playbook"),)
         ),
     )
-    old_dir = tmp_path / "1p" / "projects" / "ggl-5177-event-safety-playbook"
+    old_dir = tmp_path / "1p" / "ggl-5177-event-safety-playbook"
     assert old_dir.exists()
 
     # Hand-add a transcript so we can verify content survives the rename
@@ -676,7 +676,7 @@ def test_name_drift_renames_existing_dir(tmp_path: Path) -> None:
         ),
     )
 
-    new_dir = tmp_path / "1p" / "projects" / "ggl-5177-activation-playbook"
+    new_dir = tmp_path / "1p" / "ggl-5177-activation-playbook"
     assert new_dir.exists()
     assert (new_dir / "transcript.md").read_text() == "# call notes\n"
     assert not old_dir.exists()
@@ -703,7 +703,7 @@ def test_repo_md_scaffolded_for_repo_source_projects(tmp_path: Path) -> None:
 
     sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
 
-    repo_path = tmp_path / "firstpersonsf" / "projects" / "mc-2" / "_repo.md"
+    repo_path = tmp_path / "firstpersonsf" / "mc-2" / "_repo.md"
     assert repo_path.exists()
     body = repo_path.read_text()
     assert "https://github.com/FirstPersonSF/mc-2" in body
@@ -750,7 +750,7 @@ def test_repo_md_includes_local_clone_paths_per_user_when_configured(tmp_path: P
 
     sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
 
-    body = (tmp_path / "firstpersonsf" / "projects" / "mc-2" / "_repo.md").read_text()
+    body = (tmp_path / "firstpersonsf" / "mc-2" / "_repo.md").read_text()
     assert "**Local clone (Drew):** `/Users/drew/Documents/Python/mc-2`" in body
     assert "**Local clone (Tony):** `/Users/tony/code/mc-2`" in body
 
@@ -795,7 +795,7 @@ def test_repo_md_omits_a_users_path_when_they_dont_have_the_repo(
 
     sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
 
-    body = (tmp_path / "firstpersonsf" / "projects" / "mc-2" / "_repo.md").read_text()
+    body = (tmp_path / "firstpersonsf" / "mc-2" / "_repo.md").read_text()
     assert "Drew" in body
     assert "Tony" not in body
 
@@ -822,7 +822,7 @@ def test_repo_md_omits_local_clone_path_when_not_configured(tmp_path: Path) -> N
 
     sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
 
-    body = (tmp_path / "firstpersonsf" / "projects" / "mc-2" / "_repo.md").read_text()
+    body = (tmp_path / "firstpersonsf" / "mc-2" / "_repo.md").read_text()
     assert "**Local clone:**" not in body
 
 
@@ -834,7 +834,7 @@ def test_repo_md_omitted_for_engagement_source_projects(tmp_path: Path) -> None:
         backend_factory=lambda _: FakeBackend((make_state(code="ggl-5168"),)),
     )
 
-    repo_path = tmp_path / "1p" / "projects" / "ggl-5168" / "_repo.md"
+    repo_path = tmp_path / "1p" / "ggl-5168" / "_repo.md"
     assert not repo_path.exists()
 
 
@@ -881,7 +881,7 @@ def test_legacy_bare_code_dir_renamed_to_slug(tmp_path: Path) -> None:
     config = make_config(tmp_path)
 
     # Pre-create a legacy bare-code dir with hand content
-    legacy_dir = tmp_path / "1p" / "projects" / "ggl-5177"
+    legacy_dir = tmp_path / "1p" / "ggl-5177"
     legacy_dir.mkdir(parents=True)
     (legacy_dir / "cp.md").write_text("# legacy content\n")
     (legacy_dir / "notes.md").write_text("# preserved\n")
@@ -893,7 +893,7 @@ def test_legacy_bare_code_dir_renamed_to_slug(tmp_path: Path) -> None:
         ),
     )
 
-    new_dir = tmp_path / "1p" / "projects" / "ggl-5177-event-safety-playbook"
+    new_dir = tmp_path / "1p" / "ggl-5177-event-safety-playbook"
     assert (new_dir / "cp.md").read_text() == "# legacy content\n"
     assert (new_dir / "notes.md").read_text() == "# preserved\n"
     assert not legacy_dir.exists()

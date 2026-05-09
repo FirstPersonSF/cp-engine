@@ -2,7 +2,7 @@
 
 Two responsibilities:
 
-1. **Discovery.** Given a cp tenant on disk, walk `<scope>/projects/*/`
+1. **Discovery.** Given a cp tenant on disk, walk `<scope>/*/`
    looking for `_repo.md` files and extract the GitHub repo coordinate
    from each. Returns a map of `repo-name → cp-working-dir-path`. This
    is the source of truth for "which cp working dir corresponds to
