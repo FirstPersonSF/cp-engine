@@ -1,13 +1,13 @@
 ---
 Project: Context Protocol Engine
-Provenance: Version 02 | 2026-05-07
+Provenance: Spec v02 + v03 (version distribution) | 2026-05-09
 Filename: README.md
 Author: Drew + Tony + Claude
 ---
 
 # Context Protocol Engine (`cp-engine`)
 
-A versioned framework for First Person and Canonic CP corpora. The engine is one installable Python package — spec, sync logic, renderers, CLI, GitHub Action. Each tenant (`cp-1p`, `cp-firstpersonsf`, `cp-canonic`) is a thin GitHub repo that depends on this package and holds its own master CP, weekly CP, project CPs, and tenant config.
+A versioned framework for First Person and Canonic CP corpora. The engine is one installable Python package — spec, sync logic, renderers, CLI, GitHub Action. Each tenant (currently just `cp`; the spec leaves room for `cp-firstpersonsf` and `cp-canonic` to split out later) is a thin GitHub repo that depends on this package and holds its own master CP, weekly CP, project CPs, and tenant config.
 
 Framework updates flow one direction: cut a release here, bump the pin in each tenant, every tenant gets the change. Tenants never fork engine code.
 
@@ -25,13 +25,13 @@ cp-engine ships a Claude Code plugin at `/plugin/` so a developer can wrap a ses
 
 ### One-time per-machine setup
 
-1. Clone the cp tenant (e.g. `cp-1p`) and run `cp init` to populate `.cp-engine.local.toml`.
+1. Clone the cp tenant (e.g. `cp`) and run `cp init` to populate `.cp-engine.local.toml`.
 2. Add a `[local-repos]` table to that file, mapping each source repo's GitHub name to its local clone path:
 
    ```toml
    [local-repos]
    "mc-2"      = "/Users/you/Documents/Python/mc-2"
-   "cp-engine" = "/Users/you/Documents/Python/context-protocol"
+   "cp-engine" = "/Users/you/Documents/Python/cp-engine"
    "storyos"   = "/Users/you/Documents/Python/storyos"
    ```
 
@@ -45,6 +45,13 @@ cp-engine ships a Claude Code plugin at `/plugin/` so a developer can wrap a ses
 
    (The marketplace and the plugin both happen to be named `cp-engine` —
    that's the marketplace name from `.claude-plugin/marketplace.json`.)
+
+   Since v0.6, the plugin ships a `SessionStart` hook that auto-installs
+   the matching `cp` CLI via `uv tool install` when versions drift. So a
+   first-time install pulls both the slash commands and the CLI in one
+   step; subsequent `/plugin update cp-engine` runs propagate to the
+   CLI automatically. (If `uv` isn't on your PATH, the hook prints a
+   one-line install command instead of failing the session.)
 
 ### Daily use
 
@@ -60,28 +67,61 @@ If the current repo isn't tracked in the cp tenant, the summary lands in `<cp-te
 
 ## Layout
 
+### This repo (the engine)
+
 ```
 cp-engine/
-├── pyproject.toml                 ← installable package
-├── src/cp_engine/                 ← Python module
-│   ├── status.py                  ← canonical vocab + active subset (REAL)
-│   ├── config.py                  ← .cp-engine.toml + .local.toml merger (stub)
-│   ├── modes.py                   ← mode 1-4 contracts (REAL — used by render.py)
-│   ├── sync.py                    ← MC-2 + GitHub-Issues backends (stub)
-│   ├── render.py                  ← Jinja renderers (stub)
-│   ├── summary.py                 ← one-line regen with ≤120-char cap (REAL helpers)
-│   └── cli.py                     ← `cp` entry point (stub subcommands)
-├── templates/                     ← Jinja2
-│   ├── master-cp.md.j2
-│   ├── weekly-cp.md.j2
-│   ├── project-cp.md.j2
-│   └── CLAUDE.md.j2
-├── actions/sync/                  ← reusable GitHub Action (stub)
-├── tests/                         ← pytest
+├── pyproject.toml                ← installable package
+├── scripts/
+│   └── release.py                ← canonical release flow (v0.6)
+├── src/cp_engine/
+│   ├── status.py                 ← status vocab + active-subset flags
+│   ├── state.py                  ← shared dataclasses + path helpers
+│   ├── modes.py                  ← reading-mode contracts
+│   ├── config.py                 ← .cp-engine.toml + .local.toml loader
+│   ├── sync.py                   ← MC-2 + GitHub-Issues backends, archive sweep
+│   ├── sync_mc2.py               ← MC-2-specific backend implementation
+│   ├── render.py                 ← Jinja renderers + managed-region splicer
+│   ├── summary.py                ← one-line summary regeneration
+│   ├── init.py                   ← interactive `.cp-engine.local.toml` writer
+│   ├── refresh.py                ← refresh-pristine project CPs
+│   ├── migrate.py                ← v0.2 → v0.3 migration (legacy)
+│   ├── migrate_flat.py           ← v0.6 → v0.7 layout migration (drops projects/)
+│   ├── link_local.py             ← write .cp-link files into source repos
+│   ├── capture_session.py        ← /cp-summarize backend
+│   ├── project_context.py        ← /cp-context backend (commits + sessions timeline)
+│   ├── pin_resolver.py           ← resolve [engine].version → highest matching git tag (v0.6)
+│   ├── cli.py                    ← `cp` entry point
+│   └── templates/                ← Jinja2 (master-cp, weekly-cp, project-cp,
+│                                   CLAUDE.md, _repo.md, _dropbox.md)
+├── plugin/                       ← Claude Code plugin
+│   ├── plugin.json
+│   ├── commands/                 ← /cp-summarize, /cp-context
+│   └── hooks/                    ← SessionStart auto-install hook (v0.6)
+├── actions/sync/                 ← reusable GitHub Action
+├── tests/                        ← pytest (228 tests as of v0.7)
 └── docs/specs/
-    ├── cp-engine-spec-v02.md
-    └── history/
+    ├── cp-engine-spec-v02.md     ← canonical spec
+    ├── cp-engine-spec-v03-version-distribution.md  ← v0.6 release-flow design
+    └── history/                  ← v01 + amendments + v02 architecture proposal
 ```
+
+### Tenant working tree (post-v0.7)
+
+```
+<tenant root>/                    ← e.g. ~/Documents/Python/cp
+├── .cp-engine.toml               ← committed config (engine pin, project list)
+├── .cp-engine.local.toml         ← gitignored, per-machine
+├── master-cp.md
+├── weekly-cp.md
+├── CLAUDE.md
+├── 1p/<dir_slug>/cp.md           ← client engagements
+├── firstpersonsf/<dir_slug>/cp.md  ← First Person internal tooling
+├── canonic/<dir_slug>/cp.md      ← Canonic
+└── exceptions/                   ← summaries from untracked source repos
+```
+
+Pre-v0.7 layouts had an extra `projects/` segment under each scope; `cp migrate-projects-flat` moves them to the v0.7 shape in place.
 
 ## Local development
 
@@ -98,7 +138,7 @@ The status enum (`Deal | Open | Holding | Closed | Archived`) and the active-sub
 - `mc-2/backend/src/status.py` (MC-2 backend, `active_jobs_sync.py`)
 - `cp-engine/src/cp_engine/status.py` (this repo — used by `cp-canonic` whose sync backend is GitHub Issues, not MC-2)
 
-Drift detection is a CI check (planned for v0.2).
+Drift detection is a CI check (still planned; not yet wired up).
 
 ## Versioning
 
