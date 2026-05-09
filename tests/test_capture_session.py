@@ -16,6 +16,7 @@ from cp_engine import __version__ as ENGINE_VERSION
 from cp_engine.capture_session import (
     CpLinkUnresolvable,
     CpTenantInvalid,
+    PushFailed,
     SourceRepoNotAGitRepo,
     capture_session,
 )
@@ -578,6 +579,150 @@ def test_session_commit_does_not_include_unrelated_uncommitted_state(
         check=True,
     )
     assert "master-cp.md" in status.stdout
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Push retry on non-fast-forward (v0.5.1)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _wire_bare_remote(tenant: Path, tmp_path: Path) -> Path:
+    """Create a bare repo at tmp_path/cp-remote.git, set it as origin on
+    `tenant`, push tenant's main to it, then set upstream tracking. Returns
+    the bare repo path.
+    """
+    bare = tmp_path / "cp-remote.git"
+    subprocess.run(
+        ["git", "init", "-q", "--bare", "-b", "main", str(bare)], check=True
+    )
+    subprocess.run(
+        ["git", "-C", str(tenant), "remote", "add", "origin", str(bare)],
+        check=True,
+    )
+    subprocess.run(
+        ["git", "-C", str(tenant), "push", "-q", "-u", "origin", "main"],
+        check=True,
+    )
+    return bare
+
+
+def _land_divergent_commit_on_remote(bare: Path, tmp_path: Path) -> str:
+    """Clone the bare repo elsewhere, make + push a fake `[cp-sync]` commit
+    so origin/main is now ahead of the tenant's local main. Returns the
+    SHA of the divergent commit.
+    """
+    cloner = tmp_path / "cron-runner"
+    subprocess.run(
+        ["git", "clone", "-q", str(bare), str(cloner)], check=True
+    )
+    subprocess.run(["git", "config", "user.email", "cron@test"], cwd=cloner, check=True)
+    subprocess.run(["git", "config", "user.name", "Cron"], cwd=cloner, check=True)
+    (cloner / "master-cp.md").write_text("simulated cron sync\n", encoding="utf-8")
+    subprocess.run(["git", "add", "master-cp.md"], cwd=cloner, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "[cp-sync] simulated"], cwd=cloner, check=True
+    )
+    subprocess.run(["git", "push", "-q", "origin", "main"], cwd=cloner, check=True)
+    sha = subprocess.run(
+        ["git", "rev-parse", "--short", "HEAD"],
+        cwd=cloner,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.strip()
+    return sha
+
+
+def test_push_rejected_then_rebased_and_retried(tmp_path: Path) -> None:
+    """The exact scenario from real use: a [cp-sync] cron commit lands
+    on origin between captures. capture-session detects the rejection,
+    pulls --rebase, and pushes again."""
+    tenant = make_cp_tenant(tmp_path, working_dirs=[("firstpersonsf", "mc-2", "mc-2")])
+    wd = tenant / "firstpersonsf" / "projects" / "mc-2"
+    repo = make_source_repo(tmp_path, "mc-2", cp_link_target=wd)
+
+    bare = _wire_bare_remote(tenant, tmp_path)
+    cron_sha = _land_divergent_commit_on_remote(bare, tmp_path)
+
+    result = capture_session(
+        source_repo=repo,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=True,
+        push=True,
+    )
+
+    assert result.commit_sha is not None
+    assert result.pushed is True
+    assert result.push_rebased is True
+
+    # The remote now has BOTH the cron commit and our session commit.
+    log = subprocess.run(
+        ["git", "-C", str(tenant), "log", "--oneline", "origin/main"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert cron_sha in log
+    assert "[session]" in log
+
+
+def test_push_succeeds_first_try_when_remote_unchanged(tmp_path: Path) -> None:
+    """Sanity: when there's nothing to rebase, push_rebased stays False."""
+    tenant = make_cp_tenant(tmp_path, working_dirs=[("firstpersonsf", "mc-2", "mc-2")])
+    wd = tenant / "firstpersonsf" / "projects" / "mc-2"
+    repo = make_source_repo(tmp_path, "mc-2", cp_link_target=wd)
+
+    _wire_bare_remote(tenant, tmp_path)
+
+    result = capture_session(
+        source_repo=repo,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=True,
+        push=True,
+    )
+    assert result.pushed is True
+    assert result.push_rebased is False
+
+
+def test_push_failure_other_than_non_fast_forward_raises(tmp_path: Path) -> None:
+    """Non-recoverable push failure (here: bare remote deleted between
+    setup and push) raises PushFailed rather than silently returning
+    pushed=False. The session commit DID land locally — only the push
+    is the failure."""
+    tenant = make_cp_tenant(tmp_path, working_dirs=[("firstpersonsf", "mc-2", "mc-2")])
+    wd = tenant / "firstpersonsf" / "projects" / "mc-2"
+    repo = make_source_repo(tmp_path, "mc-2", cp_link_target=wd)
+
+    bare = _wire_bare_remote(tenant, tmp_path)
+    # Break the remote: point origin at a non-existent path
+    subprocess.run(
+        ["git", "-C", str(tenant), "remote", "set-url", "origin", str(bare) + "-broken"],
+        check=True,
+    )
+
+    with pytest.raises(PushFailed):
+        capture_session(
+            source_repo=repo,
+            summary_text=SAMPLE_SUMMARY,
+            user="Drew",
+            when=datetime(2026, 5, 9, 14, 30),
+            commit=True,
+            push=True,
+        )
+
+    # Session file + commit DID land locally even though push failed.
+    assert (wd / "sessions" / "2026-05-09-1430-drew.md").exists()
+    log = subprocess.run(
+        ["git", "-C", str(tenant), "log", "--oneline", "-1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout
+    assert "[session]" in log
 
 
 def test_engine_version_check_passes_for_compatible_install(tmp_path: Path) -> None:

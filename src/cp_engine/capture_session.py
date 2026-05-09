@@ -49,6 +49,22 @@ class CpLinkUnresolvable(CaptureSessionError):
     where to write."""
 
 
+class PushFailed(CaptureSessionError):
+    """`git push` failed for a reason auto-rebase couldn't recover from
+    (network, auth, hook rejection, etc.). The session file and the
+    [session] commit DID land locally; the user just needs to resolve
+    whatever's blocking the push and rerun `git push` from the cp tenant."""
+
+    def __init__(self, stderr: str) -> None:
+        self.stderr = stderr
+        super().__init__(
+            "git push failed and auto-rebase didn't recover. The session "
+            "file and commit are locally on the cp tenant; rerun "
+            "`git push` from the cp tenant clone after resolving the "
+            f"underlying issue:\n\n{stderr.strip()}"
+        )
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Result type
 # ──────────────────────────────────────────────────────────────────────
@@ -64,6 +80,7 @@ class CaptureResult:
     cp_md_updated: bool  # True if a cp.md Last session line was rewritten
     commit_sha: str | None  # None when --no-commit, or when nothing to commit
     pushed: bool
+    push_rebased: bool = False  # True when first push was rejected and we rebased+retried
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -134,7 +151,7 @@ def capture_session(
             user=user,
             when=when,
         )
-        commit_sha, pushed = _commit_and_push(
+        commit_sha, pushed, push_rebased = _commit_and_push(
             cp_tenant,
             [summary_path],
             source_repo.name,
@@ -150,6 +167,7 @@ def capture_session(
             cp_md_updated=False,
             commit_sha=commit_sha,
             pushed=pushed,
+            push_rebased=push_rebased,
         )
 
     # Linked path: write into <working_dir>/sessions/.
@@ -174,7 +192,7 @@ def capture_session(
     if cp_md_updated:
         paths_to_commit.append(working_dir / "cp.md")
 
-    commit_sha, pushed = _commit_and_push(
+    commit_sha, pushed, push_rebased = _commit_and_push(
         cp_tenant_root,
         paths_to_commit,
         f"{working_dir.name}",
@@ -190,6 +208,7 @@ def capture_session(
         cp_md_updated=cp_md_updated,
         commit_sha=commit_sha,
         pushed=pushed,
+        push_rebased=push_rebased,
     )
 
 
@@ -464,27 +483,35 @@ def _commit_and_push(
     user: str,
     commit: bool,
     push: bool,
-) -> tuple[str | None, bool]:
+) -> tuple[str | None, bool, bool]:
     """Stage the given paths in the cp tenant, commit, optionally push.
 
     `paths` must be a list of files this capture wrote or modified — and
     only those. Pre-existing uncommitted state in the tenant is left
     alone; a `[session]` commit must contain only session-driven changes.
 
-    Returns (commit_sha, pushed). commit_sha is None when commit=False or
-    when there was nothing to commit (idempotent re-run).
+    On push rejection due to non-fast-forward (a `[cp-sync]` cron commit
+    landed since we last pulled, which is the common case), this auto-
+    rebases the local session commit onto the upstream tip and retries
+    the push once. Other push failures (network, auth, hook rejection)
+    raise `PushFailed`.
+
+    Returns (commit_sha, pushed, push_rebased). commit_sha is None when
+    commit=False or when there was nothing to commit (idempotent re-run).
+    push_rebased is True when the first push was rejected and the retry
+    after rebase succeeded.
     """
     if not commit:
-        return None, False
+        return None, False, False
 
     if not paths:
-        return None, False
+        return None, False, False
 
     # Stage just our paths. Filter to ones that exist on disk (an updated
     # cp.md may not have been written if the regex didn't match).
     rel_paths = [str(p.relative_to(cp_tenant)) for p in paths if p.exists()]
     if not rel_paths:
-        return None, False
+        return None, False, False
     subprocess.run(
         ["git", "-C", str(cp_tenant), "add", "--", *rel_paths], check=True
     )
@@ -509,7 +536,7 @@ def _commit_and_push(
         check=True,
     )
     if not diff.stdout.strip():
-        return None, False
+        return None, False, False
 
     timestamp = when.strftime("%Y-%m-%d %H:%M")
     message = f"[session] {label}: {user} {timestamp}"
@@ -527,12 +554,78 @@ def _commit_and_push(
     )
     sha = sha_proc.stdout.strip()
 
-    pushed = False
-    if push:
-        result = subprocess.run(
-            ["git", "-C", str(cp_tenant), "push"],
+    if not push:
+        return sha, False, False
+
+    pushed, rebased = _push_with_retry(cp_tenant)
+    return sha, pushed, rebased
+
+
+# Patterns in `git push` stderr that indicate the push was rejected because
+# the remote moved ahead of our local branch — recoverable via pull --rebase.
+_NON_FAST_FORWARD_MARKERS = (
+    "non-fast-forward",
+    "(fetch first)",
+    "Updates were rejected because the remote contains work",
+    "Updates were rejected because the tip of your current branch is behind",
+)
+
+
+def _push_with_retry(cp_tenant: Path) -> tuple[bool, bool]:
+    """Try `git push`. On non-fast-forward rejection, run `git pull
+    --rebase` and try one more time. Returns (pushed, rebased).
+
+    Raises `PushFailed` for any push failure not caught by the rebase
+    recovery (network, auth, hook rejection, conflict during rebase).
+    Doesn't raise for "no remote configured" — that's a legitimate
+    --no-push-equivalent state for tests, and the caller already
+    distinguishes pushed=False from pushed=True via the return value.
+    """
+    first = subprocess.run(
+        ["git", "-C", str(cp_tenant), "push"],
+        capture_output=True,
+        text=True,
+    )
+    if first.returncode == 0:
+        return True, False
+
+    # No remote configured at all? Not a hard failure — the caller can
+    # see pushed=False and decide what to surface. Older capture-session
+    # tests rely on this (they don't wire up a remote).
+    if "No configured push destination" in first.stderr or (
+        "no upstream branch" in first.stderr
+    ):
+        return False, False
+
+    if not any(marker in first.stderr for marker in _NON_FAST_FORWARD_MARKERS):
+        # Different class of failure — auth, hook reject, network, etc.
+        raise PushFailed(first.stderr)
+
+    # Non-fast-forward: pull --rebase then push again.
+    rebase = subprocess.run(
+        ["git", "-C", str(cp_tenant), "pull", "--rebase"],
+        capture_output=True,
+        text=True,
+    )
+    if rebase.returncode != 0:
+        # Rebase failed (likely a conflict on the same lines). Don't
+        # leave the tenant in mid-rebase state — abort and surface the
+        # original push failure.
+        subprocess.run(
+            ["git", "-C", str(cp_tenant), "rebase", "--abort"],
             capture_output=True,
             text=True,
         )
-        pushed = result.returncode == 0
-    return sha, pushed
+        raise PushFailed(
+            f"Push rejected (non-fast-forward), and auto-rebase failed:\n"
+            f"{rebase.stderr.strip()}"
+        )
+
+    second = subprocess.run(
+        ["git", "-C", str(cp_tenant), "push"],
+        capture_output=True,
+        text=True,
+    )
+    if second.returncode != 0:
+        raise PushFailed(second.stderr)
+    return True, True

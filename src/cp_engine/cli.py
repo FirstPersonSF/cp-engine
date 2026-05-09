@@ -259,10 +259,20 @@ def capture_session_cmd(
         if result.cp_md_updated:
             click.echo("Updated cp.md Last session line.")
     if result.commit_sha:
-        click.echo(
-            f"Committed {result.commit_sha}"
-            + (" and pushed." if result.pushed else " (push skipped or failed).")
-        )
+        # Distinguish actually-skipped (--no-push or --no-commit) from
+        # actually-pushed from rebased-then-pushed. Push *failures* now
+        # raise PushFailed and are surfaced via the CaptureSessionError
+        # branch above, so reaching here with pushed=False means the
+        # caller asked us not to push.
+        if result.push_rebased:
+            click.echo(
+                f"Committed {result.commit_sha}, rebased on top of upstream, "
+                "and pushed."
+            )
+        elif result.pushed:
+            click.echo(f"Committed {result.commit_sha} and pushed.")
+        else:
+            click.echo(f"Committed {result.commit_sha} (push skipped).")
 
 
 @main.command(name="link-local")
