@@ -17,7 +17,7 @@ The canonical spec is at [`docs/specs/cp-engine-spec-v02.md`](docs/specs/cp-engi
 
 ## Status
 
-**v0.7.2.** Sync, renderers, working-tree layout (flat in v0.7; `archived/` renamed to `inactive/` in v0.7.1), sprint allocations, session capture for both source-code and content-only projects (`/cp-summarize`, with content-only mode added in v0.7.2), project-context timeline (`/cp-context`), and the v0.6 release-distribution overhaul (scripted releases, plugin-owned CLI auto-install, tenant-pin-driven runner) are all live. See `CHANGELOG.md` for the version history and `docs/specs/cp-engine-spec-v03-version-distribution.md` for the v0.6 design.
+**v0.7.3.** Sync, renderers, working-tree layout (flat in v0.7; `archived/` renamed to `inactive/` in v0.7.1), sprint allocations, session capture for both source-code and content-only projects (`/cp-summarize`; content-only mode added in v0.7.2 and made friction-free in v0.7.3 by auto-sweeping all text content), project-context timeline (`/cp-context`), and the v0.6 release-distribution overhaul (scripted releases, plugin-owned CLI auto-install, tenant-pin-driven runner) are all live. See `CHANGELOG.md` for the version history and `docs/specs/cp-engine-spec-v03-version-distribution.md` for the v0.6 design.
 
 ## Capturing sessions back to cp
 

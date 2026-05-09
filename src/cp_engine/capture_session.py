@@ -87,6 +87,7 @@ class CaptureResult:
     commit_sha: str | None  # None when --no-commit, or when nothing to commit
     pushed: bool
     push_rebased: bool = False  # True when first push was rejected and we rebased+retried
+    extra_files_committed: tuple[Path, ...] = ()  # content-only mode: files beyond session+cp.md
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -176,7 +177,10 @@ def capture_session(
             push_rebased=push_rebased,
         )
 
-    # Linked path: write into <working_dir>/sessions/.
+    # Linked path: write into <working_dir>/sessions/. Source-repo mode —
+    # the working dir's other contents (if any) are derived/managed by
+    # the engine, not hand-written, so the [session] commit stays narrow
+    # (just the session file + cp.md).
     return _write_to_working_dir(
         working_dir=working_dir,
         summary_text=summary_text,
@@ -185,6 +189,7 @@ def capture_session(
         commit=commit,
         push=push,
         is_exception=is_exception,
+        include_working_dir_contents=False,
     )
 
 
@@ -227,6 +232,10 @@ def capture_session_in_working_dir(
     when = (when or datetime.now()).replace(microsecond=0)
     enforce_engine_version_for_tenant(cp_tenant_root)
 
+    # Content-only mode — the working dir IS where the project's
+    # hand-written content lives (synthesis docs, transcripts, notes).
+    # Sweep up everything trackable inside it (filtered by .gitignore,
+    # so binaries/media are excluded automatically).
     return _write_to_working_dir(
         working_dir=working_dir,
         summary_text=summary_text,
@@ -235,6 +244,7 @@ def capture_session_in_working_dir(
         commit=commit,
         push=push,
         is_exception=False,
+        include_working_dir_contents=True,
     )
 
 
@@ -247,11 +257,17 @@ def _write_to_working_dir(
     commit: bool,
     push: bool,
     is_exception: bool,
+    include_working_dir_contents: bool,
 ) -> CaptureResult:
     """Shared tail used by both `capture_session()` (after .cp-link
     resolution) and `capture_session_in_working_dir()` (skipping it).
     Writes the session file, updates cp.md, commits + pushes the
     tenant root.
+
+    `include_working_dir_contents` controls commit scope:
+      - False (source-repo mode): only the session file + cp.md.
+      - True (content-only mode): everything tracked-or-trackable inside
+        `working_dir/`. Binaries are auto-excluded by `.gitignore`.
     """
     summary_path = _write_session_file(
         working_dir=working_dir,
@@ -262,13 +278,24 @@ def _write_to_working_dir(
     cp_md_updated = _update_last_session_line(working_dir, when, user, summary_text)
 
     cp_tenant_root = _walk_to_cp_tenant_root(working_dir)
-    # Stage only the files this capture wrote: the new session file, and
-    # the cp.md if its Last session line was rewritten. Pre-existing
-    # uncommitted state in the tenant (e.g. a half-finished hand-edit on
-    # another project's cp.md) stays out of the [session] commit.
+    # Stage just the files this capture wrote: the new session file, and
+    # (if content-only mode) any other text content the user added during
+    # the session. Pre-existing uncommitted state OUTSIDE the working dir
+    # is left alone — a `[session]` commit must contain only one project's
+    # changes.
     paths_to_commit: list[Path] = [summary_path]
     if cp_md_updated:
         paths_to_commit.append(working_dir / "cp.md")
+
+    extras: list[Path] = []
+    if include_working_dir_contents:
+        all_extras = _trackable_paths_under(working_dir, cp_tenant_root)
+        # De-dupe vs the session file + cp.md already in the list.
+        already = {p.resolve() for p in paths_to_commit}
+        for p in all_extras:
+            if p.resolve() not in already:
+                paths_to_commit.append(p)
+                extras.append(p)
 
     commit_sha, pushed, push_rebased = _commit_and_push(
         cp_tenant_root,
@@ -287,7 +314,44 @@ def _write_to_working_dir(
         commit_sha=commit_sha,
         pushed=pushed,
         push_rebased=push_rebased,
+        extra_files_committed=tuple(extras),
     )
+
+
+def _trackable_paths_under(working_dir: Path, tenant_root: Path) -> list[Path]:
+    """Enumerate every file under `working_dir` that git would track if
+    it were `git add`-ed (respecting `.gitignore`).
+
+    Uses `git ls-files --others --exclude-standard --modified --cached`
+    scoped to the working dir. Returns absolute paths.
+
+    Skipping rationale per category:
+      - cached: already tracked, not changed → already in the index, no-op
+        but harmless to re-add.
+      - modified: tracked + changed → must be staged.
+      - others (excluded-standard): untracked + not gitignored → new
+        text content the user added during the session.
+      - ignored (NOT --ignored): binaries, .DS_Store, .cp-engine.local.toml
+        → never staged.
+    """
+    rel_wd = str(working_dir.relative_to(tenant_root))
+    result = subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tenant_root),
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "--modified",
+            "--",
+            rel_wd,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return [tenant_root / line for line in result.stdout.splitlines() if line]
 
 
 # ──────────────────────────────────────────────────────────────────────

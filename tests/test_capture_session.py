@@ -862,3 +862,152 @@ def test_working_dir_mode_commits_with_correct_paths(tmp_path: Path) -> None:
     assert any("cp.md" in c and "sessions" not in c for c in committed)
     # The unrelated dirty master-cp.md was NOT committed.
     assert "master-cp.md" not in committed
+
+
+def test_working_dir_mode_sweeps_text_content_in_working_dir(tmp_path: Path) -> None:
+    """Content-only mode commits everything text-y inside the working dir
+    (synthesis docs, transcripts, hand-written notes), not just the
+    session file. Friction goal: stop asking 'should I commit X?'"""
+    tenant = make_cp_tenant(
+        tmp_path, working_dirs=[("1p", "ibx-5153-ai-campaign", "noop")]
+    )
+    wd = tenant / "1p" / "projects" / "ibx-5153-ai-campaign"
+
+    # User-added text content during the session.
+    (wd / "synthesis-docs").mkdir()
+    (wd / "synthesis-docs" / "concept.md").write_text("# Concept\n")
+    (wd / "synthesis-docs" / "next-steps.md").write_text("# Next steps\n")
+    (wd / "meeting-transcripts").mkdir()
+    (wd / "meeting-transcripts" / "kickoff.txt").write_text("Kickoff transcript\n")
+
+    result = capture_session_in_working_dir(
+        working_dir=wd,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=True,
+        push=False,
+    )
+
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", result.commit_sha],
+        cwd=tenant, check=True, capture_output=True, text=True,
+    ).stdout.strip().splitlines()
+    # All text content swept up.
+    assert any("concept.md" in c for c in committed)
+    assert any("next-steps.md" in c for c in committed)
+    assert any("kickoff.txt" in c for c in committed)
+    # Session file + cp.md too.
+    assert any("sessions/" in c for c in committed)
+    assert any(c.endswith("cp.md") and "sessions" not in c for c in committed)
+    # Surfaced via extra_files_committed for the CLI to print.
+    extra_names = {p.name for p in result.extra_files_committed}
+    assert {"concept.md", "next-steps.md", "kickoff.txt"}.issubset(extra_names)
+
+
+def test_working_dir_mode_respects_gitignore_for_binaries(tmp_path: Path) -> None:
+    """Content-only sweep MUST NOT commit binaries — that's what .gitignore
+    enforces. Test by writing a .pptx (matched by tenant .gitignore) alongside
+    a .md and confirming only the .md is committed."""
+    tenant = make_cp_tenant(
+        tmp_path, working_dirs=[("1p", "ibx-5153-ai-campaign", "noop")]
+    )
+    # The default tenant fixture doesn't write .gitignore. Add one matching
+    # what cp-engine's render_gitignore() produces in real use.
+    (tenant / ".gitignore").write_text(
+        "*.pptx\n*.docx\n*.pdf\n.DS_Store\n"
+    )
+    subprocess.run(["git", "add", ".gitignore"], cwd=tenant, check=True)
+    subprocess.run(
+        ["git", "commit", "-q", "-m", "gitignore"], cwd=tenant, check=True
+    )
+
+    wd = tenant / "1p" / "projects" / "ibx-5153-ai-campaign"
+    (wd / "synthesis-docs").mkdir()
+    (wd / "synthesis-docs" / "notes.md").write_text("# Notes\n")
+    (wd / "synthesis-docs" / "deck.pptx").write_bytes(b"PK\x03\x04 fake pptx")
+    (wd / "Reference Materials").mkdir()
+    (wd / "Reference Materials" / "client-brief.docx").write_bytes(b"PK\x03\x04 fake docx")
+    (wd / "Reference Materials" / ".DS_Store").write_bytes(b"\x00\x01\x02")
+
+    result = capture_session_in_working_dir(
+        working_dir=wd,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=True,
+        push=False,
+    )
+
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", result.commit_sha],
+        cwd=tenant, check=True, capture_output=True, text=True,
+    ).stdout.strip().splitlines()
+    assert any("notes.md" in c for c in committed)
+    assert not any(".pptx" in c for c in committed)
+    assert not any(".docx" in c for c in committed)
+    assert not any(".DS_Store" in c for c in committed)
+
+
+def test_working_dir_mode_does_not_sweep_other_projects(tmp_path: Path) -> None:
+    """Sweep is scoped to the working dir; dirty state in OTHER projects
+    must not get pulled in."""
+    tenant = make_cp_tenant(
+        tmp_path,
+        working_dirs=[
+            ("1p", "ibx-5153-ai-campaign", "noop"),
+            ("1p", "other-project", "noop2"),
+        ],
+    )
+    wd = tenant / "1p" / "projects" / "ibx-5153-ai-campaign"
+    other_wd = tenant / "1p" / "projects" / "other-project"
+
+    # Dirty state in the OTHER project.
+    (other_wd / "wip-notes.md").write_text("# half-written\n")
+
+    result = capture_session_in_working_dir(
+        working_dir=wd,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=True,
+        push=False,
+    )
+
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", result.commit_sha],
+        cwd=tenant, check=True, capture_output=True, text=True,
+    ).stdout.strip().splitlines()
+    # Other project's wip-notes.md must NOT be in the commit.
+    assert not any("other-project" in c for c in committed)
+
+
+def test_source_repo_mode_keeps_narrow_scope(tmp_path: Path) -> None:
+    """Source-code projects should NOT sweep the working dir's contents.
+    The working dir is engine-managed (cp.md, _repo.md, sessions/);
+    hand-written content lives in the source repo, not the cp working dir.
+    Regression guard against accidentally broadening source-repo mode."""
+    tenant = make_cp_tenant(tmp_path, working_dirs=[("firstpersonsf", "mc-2", "mc-2")])
+    wd = tenant / "firstpersonsf" / "projects" / "mc-2"
+
+    # Simulate stale extra files in the working dir (e.g. an old session
+    # file that wasn't part of THIS capture, or a hand-edited synthesis
+    # doc that pre-existed). They must NOT be swept.
+    (wd / "stale-extra.md").write_text("# stale\n")
+
+    repo = make_source_repo(tmp_path, "mc-2", cp_link_target=wd)
+    result = capture_session(
+        source_repo=repo,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=True,
+        push=False,
+    )
+
+    assert result.extra_files_committed == ()
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", result.commit_sha],
+        cwd=tenant, check=True, capture_output=True, text=True,
+    ).stdout.strip().splitlines()
+    assert not any("stale-extra.md" in c for c in committed)

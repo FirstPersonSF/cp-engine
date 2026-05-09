@@ -297,6 +297,15 @@ def capture_session_cmd(
         click.echo(f"Wrote session summary: {result.summary_path}")
         if result.cp_md_updated:
             click.echo("Updated cp.md Last session line.")
+        if result.extra_files_committed:
+            click.echo(
+                f"Also committed {len(result.extra_files_committed)} other file(s) "
+                f"in the working dir (binaries excluded by .gitignore):"
+            )
+            wd = result.cp_working_dir
+            for p in result.extra_files_committed:
+                rel = p.relative_to(wd) if wd else p
+                click.echo(f"  {rel}")
     if result.commit_sha:
         # Distinguish actually-skipped (--no-push or --no-commit) from
         # actually-pushed from rebased-then-pushed. Push *failures* now

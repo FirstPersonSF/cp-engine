@@ -167,6 +167,14 @@ cp capture-session \
     --user "Drew"
 ```
 
+In Mode B, `cp capture-session` automatically commits **everything text-y
+inside the working directory** — synthesis docs, transcripts, hand-written
+notes, the new session file, the `cp.md` update. Binaries (`.docx`,
+`.pptx`, `.pdf`, etc.) are excluded by the tenant `.gitignore`. **Do
+not ask the user "should I commit X?"** — the engine has already decided.
+The CLI prints the full list of files committed; just relay that to the
+user as part of step 9.
+
 The command writes the file, updates `cp.md`'s Last session line, commits,
 and pushes. Print its full stdout output.
 
