@@ -192,7 +192,18 @@ def migrate_to_v03(dry_run: bool) -> None:
 @click.option(
     "--source-repo",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
-    help="Source repo path. Defaults to cwd.",
+    help="Source repo path (a code repo with a .cp-link). Mutually exclusive with --working-dir.",
+)
+@click.option(
+    "--working-dir",
+    "working_dir",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help=(
+        "cp working-dir path (for content-only projects with no separate "
+        "source repo). Mutually exclusive with --source-repo. The cp tenant "
+        "root is found by walking up for .cp-engine.toml, so --cp-tenant "
+        "isn't needed."
+    ),
 )
 @click.option(
     "--summary-file",
@@ -215,6 +226,7 @@ def migrate_to_v03(dry_run: bool) -> None:
 @click.option("--no-push", is_flag=True, help="Commit but don't push.")
 def capture_session_cmd(
     source_repo: Path | None,
+    working_dir: Path | None,
     summary_file: Path,
     user: str,
     cp_tenant: Path | None,
@@ -223,29 +235,55 @@ def capture_session_cmd(
 ) -> None:
     """Write a session summary back to the cp tree.
 
-    Reads the summary from `--summary-file`, resolves the destination
-    cp working dir via `<source-repo>/.cp-link` (self-healing if stale),
-    writes `<wd>/sessions/<YYYY-MM-DD>-<HHMM>-<user>.md`, updates the
-    project's `cp.md` Last session line, and commits + pushes the change.
+    Two modes:
 
-    For unlinked source repos (no `.cp-link`), falls back to writing
-    `<cp-tenant>/exceptions/<filename>.md`. `--cp-tenant` is required in
-    that case.
+    \b
+    --source-repo <path>  (default: cwd)
+        For source-code repos with a .cp-link. Resolves destination via
+        the link (self-healing if stale), or falls back to
+        <cp-tenant>/exceptions/ for untracked repos.
+
+    --working-dir <path>
+        For content-only projects (1P engagements without a code repo).
+        Skips source-repo resolution; writes directly to <path>/sessions/.
+        The cp tenant root is found by walking up for .cp-engine.toml.
+
+    Both modes write `<wd>/sessions/<YYYY-MM-DD>-<HHMM>-<user>.md`,
+    update the project's `cp.md` Last session line, and commit + push.
     """
-    from cp_engine.capture_session import CaptureSessionError, capture_session
+    from cp_engine.capture_session import (
+        CaptureSessionError,
+        capture_session,
+        capture_session_in_working_dir,
+    )
 
-    repo = (source_repo or Path.cwd()).resolve()
+    if source_repo is not None and working_dir is not None:
+        click.echo(
+            "Error: pass --source-repo or --working-dir, not both.", err=True
+        )
+        sys.exit(2)
+
     summary_text = summary_file.read_text(encoding="utf-8")
 
     try:
-        result = capture_session(
-            source_repo=repo,
-            summary_text=summary_text,
-            user=user,
-            cp_tenant=cp_tenant,
-            commit=not no_commit,
-            push=not (no_commit or no_push),
-        )
+        if working_dir is not None:
+            result = capture_session_in_working_dir(
+                working_dir=working_dir,
+                summary_text=summary_text,
+                user=user,
+                commit=not no_commit,
+                push=not (no_commit or no_push),
+            )
+        else:
+            repo = (source_repo or Path.cwd()).resolve()
+            result = capture_session(
+                source_repo=repo,
+                summary_text=summary_text,
+                user=user,
+                cp_tenant=cp_tenant,
+                commit=not no_commit,
+                push=not (no_commit or no_push),
+            )
     except CaptureSessionError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)

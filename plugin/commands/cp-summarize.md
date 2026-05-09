@@ -16,26 +16,47 @@ plumbing (path resolution, file naming, cp.md edits, git commits) lives
 in the `cp capture-session` Python command — your job is to draft a
 **good** summary and hand it off.
 
-### 1. Locate the source repo's git root
+### 1. Detect the mode
+
+Three real-world cases. Detect which one applies before doing anything else:
 
 ```bash
-git rev-parse --show-toplevel
+GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+PWD_NOW=$(pwd)
 ```
 
-If this fails (not in a git repo): stop and tell the user `/cp-summarize`
-must be run from inside a git working tree.
+If `git rev-parse` fails (not in a git tree at all): stop and tell the user
+`/cp-summarize` must be run from inside a git working tree.
 
-### 2. Determine whether this repo is linked to a cp working dir
+Otherwise:
 
-Check for `.cp-link` at the git root. If present, this is a linked repo.
-If absent, this is potentially an unlinked repo (will write to
-`<cp-tenant>/exceptions/`).
+- **Mode A — Source-code repo** (the common case): `pwd` is at or under a
+  source repo's git root, AND that root is NOT inside a cp tenant. Detected
+  by `test "$GIT_ROOT" = "$PWD_NOW"` OR `test ! -f "$GIT_ROOT/.cp-engine.toml"`.
+  Continue to step 2.
+
+- **Mode B — Content-only working dir** (1P engagements without a code repo):
+  `pwd` is *inside* a cp tenant (so `git rev-parse --show-toplevel` returns
+  the tenant root) AND `pwd != $GIT_ROOT`. Detected by
+  `test -f "$GIT_ROOT/.cp-engine.toml" && test "$GIT_ROOT" != "$PWD_NOW"`.
+  Skip steps 2–3; go straight to step 4 with `WORKING_DIR="$PWD_NOW"`.
+
+- **Mode C — Inside the cp tenant root itself** (rare): `pwd` IS the
+  tenant root. There's no project context. Tell the user "you're at the
+  cp tenant root, not inside a project working dir — `cd` into a project
+  dir first."
+
+### 2. (Mode A only) Determine whether this repo is linked
+
+Check for `.cp-link` at the source-repo's git root. If present, this is a
+linked repo. If absent, this is potentially an unlinked repo (will write
+to `<cp-tenant>/exceptions/`).
 
 ```bash
-test -f "$(git rev-parse --show-toplevel)/.cp-link"
+test -f "$GIT_ROOT/.cp-link"
 ```
 
-### 3. Resolve the cp tenant root (only needed for unlinked path)
+### 3. (Mode A only) Resolve the cp tenant root (unlinked sub-case)
 
 The `cp capture-session` command needs `--cp-tenant` for unlinked repos.
 Walk up from `.cp-link`'s target (when present) to find an ancestor
@@ -114,27 +135,40 @@ TMP=$(mktemp -t cp-summarize.XXXXXX.md)
 
 ### 7. Invoke `cp capture-session`
 
-For a **linked** source repo (`.cp-link` exists at git root):
+Pick the invocation that matches the mode you detected in step 1.
+
+**Mode A, linked source repo** (`.cp-link` exists at git root):
 
 ```bash
 cp capture-session \
-    --source-repo "$(git rev-parse --show-toplevel)" \
+    --source-repo "$GIT_ROOT" \
     --summary-file "$TMP" \
     --user "Drew"
 ```
 
-For an **unlinked** source repo, add `--cp-tenant`:
+**Mode A, unlinked source repo** — add `--cp-tenant`:
 
 ```bash
 cp capture-session \
-    --source-repo "$(git rev-parse --show-toplevel)" \
+    --source-repo "$GIT_ROOT" \
     --summary-file "$TMP" \
     --user "Drew" \
     --cp-tenant "$CP_TENANT_ROOT"
 ```
 
-The command writes the file, updates `cp.md`'s Last session line (linked
-case), commits, and pushes. Print its full stdout output.
+**Mode B, content-only working dir** — pass `--working-dir` instead of
+`--source-repo` (the cp tenant root is inferred from the working dir's
+ancestors, so `--cp-tenant` isn't needed):
+
+```bash
+cp capture-session \
+    --working-dir "$PWD_NOW" \
+    --summary-file "$TMP" \
+    --user "Drew"
+```
+
+The command writes the file, updates `cp.md`'s Last session line, commits,
+and pushes. Print its full stdout output.
 
 ### 8. Clean up the temp file
 

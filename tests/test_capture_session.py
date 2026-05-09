@@ -18,7 +18,9 @@ from cp_engine.capture_session import (
     CpTenantInvalid,
     PushFailed,
     SourceRepoNotAGitRepo,
+    WorkingDirNotInTenant,
     capture_session,
+    capture_session_in_working_dir,
 )
 from cp_engine.config import EngineVersionMismatch
 
@@ -745,3 +747,118 @@ def test_engine_version_check_passes_for_compatible_install(tmp_path: Path) -> N
         push=False,
     )
     assert result.summary_path.exists()
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  capture_session_in_working_dir — content-only projects
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_working_dir_mode_writes_session_file(tmp_path: Path) -> None:
+    """Content-only project: no source repo, just a working dir under cp."""
+    tenant = make_cp_tenant(
+        tmp_path, working_dirs=[("1p", "ibx-5153-ai-campaign", "noop")]
+    )
+    wd = tenant / "1p" / "projects" / "ibx-5153-ai-campaign"
+
+    result = capture_session_in_working_dir(
+        working_dir=wd,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=False,
+        push=False,
+    )
+
+    assert result.summary_path.exists()
+    assert result.summary_path.parent == wd / "sessions"
+    assert result.cp_working_dir == wd.resolve()
+    assert not result.is_exception
+
+
+def test_working_dir_mode_updates_cp_md(tmp_path: Path) -> None:
+    """Same Last-session-line update behavior as the source-repo path."""
+    tenant = make_cp_tenant(
+        tmp_path, working_dirs=[("1p", "ibx-5153-ai-campaign", "noop")]
+    )
+    wd = tenant / "1p" / "projects" / "ibx-5153-ai-campaign"
+
+    result = capture_session_in_working_dir(
+        working_dir=wd,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=False,
+        push=False,
+    )
+
+    assert result.cp_md_updated
+    cp_md = (wd / "cp.md").read_text(encoding="utf-8")
+    assert "Drew" in cp_md
+    assert "2026-05-09" in cp_md
+
+
+def test_working_dir_outside_tenant_raises(tmp_path: Path) -> None:
+    """A working dir that has no .cp-engine.toml ancestor must fail loud
+    rather than silently writing somewhere weird."""
+    rogue = tmp_path / "not-a-cp-tenant" / "wd"
+    rogue.mkdir(parents=True)
+
+    with pytest.raises(WorkingDirNotInTenant, match="not inside a cp tenant"):
+        capture_session_in_working_dir(
+            working_dir=rogue,
+            summary_text=SAMPLE_SUMMARY,
+            user="Drew",
+            commit=False,
+            push=False,
+        )
+
+
+def test_working_dir_must_exist(tmp_path: Path) -> None:
+    """Pointing at a non-existent path is a hard error, not a silent mkdir."""
+    nope = tmp_path / "does-not-exist"
+
+    with pytest.raises(WorkingDirNotInTenant, match="not a directory"):
+        capture_session_in_working_dir(
+            working_dir=nope,
+            summary_text=SAMPLE_SUMMARY,
+            user="Drew",
+            commit=False,
+            push=False,
+        )
+
+
+def test_working_dir_mode_commits_with_correct_paths(tmp_path: Path) -> None:
+    """End-to-end: content-only capture commits exactly the session file +
+    cp.md (if updated), nothing else from the tenant tree."""
+    tenant = make_cp_tenant(
+        tmp_path, working_dirs=[("1p", "ibx-5153-ai-campaign", "noop")]
+    )
+    wd = tenant / "1p" / "projects" / "ibx-5153-ai-campaign"
+
+    # Pre-existing dirty state on a different file — must NOT get swept
+    # into the [session] commit.
+    (tenant / "master-cp.md").write_text("# stale draft\n")
+
+    result = capture_session_in_working_dir(
+        working_dir=wd,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=True,
+        push=False,
+    )
+
+    assert result.commit_sha is not None
+    committed = subprocess.run(
+        ["git", "show", "--name-only", "--format=", result.commit_sha],
+        cwd=tenant,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip().splitlines()
+    # Session file + cp.md were committed.
+    assert any("sessions/" in c for c in committed)
+    assert any("cp.md" in c and "sessions" not in c for c in committed)
+    # The unrelated dirty master-cp.md was NOT committed.
+    assert "master-cp.md" not in committed

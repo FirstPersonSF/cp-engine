@@ -49,6 +49,12 @@ class CpLinkUnresolvable(CaptureSessionError):
     where to write."""
 
 
+class WorkingDirNotInTenant(CaptureSessionError):
+    """The supplied --working-dir path isn't inside any cp tenant clone (no
+    `.cp-engine.toml` in any ancestor). content-only captures need to know
+    which tenant repo to commit into."""
+
+
 class PushFailed(CaptureSessionError):
     """`git push` failed for a reason auto-rebase couldn't recover from
     (network, auth, hook rejection, etc.). The session file and the
@@ -171,6 +177,82 @@ def capture_session(
         )
 
     # Linked path: write into <working_dir>/sessions/.
+    return _write_to_working_dir(
+        working_dir=working_dir,
+        summary_text=summary_text,
+        user=user,
+        when=when,
+        commit=commit,
+        push=push,
+        is_exception=is_exception,
+    )
+
+
+def capture_session_in_working_dir(
+    *,
+    working_dir: Path,
+    summary_text: str,
+    user: str,
+    when: datetime | None = None,
+    commit: bool = True,
+    push: bool = True,
+) -> CaptureResult:
+    """Capture a session summary directly into a known cp working dir.
+
+    Use this for content-only projects where there is no separate source
+    repo — the working dir IS the place all the work lives. The cp tenant
+    repo is found by walking up from `working_dir` for `.cp-engine.toml`.
+
+    Differences from `capture_session()`:
+      - No `.cp-link` resolution, no git-remote matching, no exceptions
+        fallback. The caller already knows where to write.
+      - No source-repo concept at all. Callers don't need to fabricate
+        a fake source repo to satisfy the API.
+      - Tenant root is derived from `working_dir`'s ancestors, not from
+        a separate `--cp-tenant` arg.
+    """
+    working_dir = working_dir.resolve()
+    if not working_dir.is_dir():
+        raise WorkingDirNotInTenant(
+            f"{working_dir} is not a directory."
+        )
+    try:
+        cp_tenant_root = _walk_to_cp_tenant_root(working_dir)
+    except CaptureSessionError:
+        raise WorkingDirNotInTenant(
+            f"{working_dir} is not inside a cp tenant clone "
+            f"(no .cp-engine.toml in any ancestor)."
+        ) from None
+
+    when = (when or datetime.now()).replace(microsecond=0)
+    enforce_engine_version_for_tenant(cp_tenant_root)
+
+    return _write_to_working_dir(
+        working_dir=working_dir,
+        summary_text=summary_text,
+        user=user,
+        when=when,
+        commit=commit,
+        push=push,
+        is_exception=False,
+    )
+
+
+def _write_to_working_dir(
+    *,
+    working_dir: Path,
+    summary_text: str,
+    user: str,
+    when: datetime,
+    commit: bool,
+    push: bool,
+    is_exception: bool,
+) -> CaptureResult:
+    """Shared tail used by both `capture_session()` (after .cp-link
+    resolution) and `capture_session_in_working_dir()` (skipping it).
+    Writes the session file, updates cp.md, commits + pushes the
+    tenant root.
+    """
     summary_path = _write_session_file(
         working_dir=working_dir,
         summary_text=summary_text,
@@ -180,10 +262,6 @@ def capture_session(
     cp_md_updated = _update_last_session_line(working_dir, when, user, summary_text)
 
     cp_tenant_root = _walk_to_cp_tenant_root(working_dir)
-    if healed:
-        # We rewrote .cp-link — the change lives in the source repo's tree
-        # (.git/info/exclude already has it). It's not part of the cp commit.
-        pass
     # Stage only the files this capture wrote: the new session file, and
     # the cp.md if its Last session line was rewritten. Pre-existing
     # uncommitted state in the tenant (e.g. a half-finished hand-edit on
