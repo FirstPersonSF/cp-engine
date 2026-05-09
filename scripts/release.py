@@ -1,4 +1,8 @@
-#!/usr/bin/env python3
+#!/usr/bin/env -S uv run --script
+# /// script
+# requires-python = ">=3.11"
+# dependencies = ["packaging>=24.0", "tomlkit>=0.13", "build>=1.0"]
+# ///
 """Release a new cp-engine version.
 
 Bumps the version in `pyproject.toml`, `plugin/plugin.json`,
