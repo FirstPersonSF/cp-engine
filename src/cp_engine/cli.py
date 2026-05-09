@@ -395,5 +395,52 @@ def status() -> None:
     sys.exit(1)
 
 
+@main.command(name="resolve-engine-pin")
+@click.option(
+    "--tenant-root",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    default=None,
+    help="Tenant root (default: current directory).",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["tag", "pip-spec", "json"]),
+    default="tag",
+    help="Output format. tag=v0.6.0; pip-spec=full git+url@tag; json=structured.",
+)
+def resolve_engine_pin_cmd(tenant_root: Path | None, output_format: str) -> None:
+    """Resolve [engine].version constraint to the highest matching git tag.
+
+    Used by the GitHub Actions runner so bumping the tenant pin is
+    sufficient to pick up a new engine release — no workflow edit needed.
+    """
+    from cp_engine.pin_resolver import ENGINE_REPO_URL, PinResolutionError, resolve_for_tenant
+
+    root = tenant_root or Path.cwd()
+    try:
+        resolution = resolve_for_tenant(root)
+    except PinResolutionError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+
+    if output_format == "tag":
+        click.echo(resolution.tag)
+    elif output_format == "pip-spec":
+        click.echo(f"cp-engine @ git+{ENGINE_REPO_URL}@{resolution.tag}")
+    else:
+        import json
+
+        click.echo(
+            json.dumps(
+                {
+                    "constraint": resolution.constraint,
+                    "tag": resolution.tag,
+                    "version": str(resolution.version),
+                }
+            )
+        )
+
+
 if __name__ == "__main__":
     main()
