@@ -19,8 +19,10 @@ See spec v02 §4.3.
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from importlib import resources
+from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -89,6 +91,7 @@ def render_master_cp(
     projects: tuple[ProjectState, ...],
     last_sync: datetime,
     allocations=None,  # WeeklyAllocations | None
+    exceptions_count: int = 0,
 ) -> str:
     """Render the full master-cp.md body.
 
@@ -168,6 +171,7 @@ def render_master_cp(
         workload_week=allocations.week_start if allocations else None,
         holding_projects=[_project_view(p) for p in holding],
         closed_recent=[_project_view(p) for p in closed_recent],
+        exceptions_count=exceptions_count,
     )
 
 
@@ -272,13 +276,22 @@ def render_dropbox_md(project: ProjectState) -> str | None:
     )
 
 
-def render_repo_md(project: ProjectState) -> str | None:
+def render_repo_md(
+    project: ProjectState,
+    *,
+    local_clone_path: Path | None = None,
+) -> str | None:
     """Render `_repo.md` for a repo-source project working directory.
 
     Mirrors `_dropbox.md`'s role for engagements: a discoverable link
     from inside the working dir to the canonical artifact store. For
     engagements that's Dropbox (binary media); for repos that's GitHub
     (source code).
+
+    When `local_clone_path` is provided (looked up from
+    `.cp-engine.local.toml` `[local-repos]`), the rendered output also
+    surfaces the absolute path to the local clone. Without it, only the
+    GitHub link appears (v0.3.3 behavior).
 
     Returns None for engagement-source projects (they get _dropbox.md
     instead) and for repos missing the github_org/repo_name fields
@@ -294,7 +307,134 @@ def render_repo_md(project: ProjectState) -> str | None:
         project=_project_view(project),
         engine_version=ENGINE_VERSION,
         today=_today_iso(),
+        local_clone_path=str(local_clone_path) if local_clone_path else None,
     )
+
+
+def render_exceptions_readme(
+    tenant_root: Path,
+    *,
+    now: datetime | None = None,
+    days: int = 30,
+) -> str:
+    """Render the engine-managed `<tenant>/exceptions/README.md` body.
+
+    The exceptions/ directory accumulates session captures from source repos
+    that aren't tracked in this cp tenant. Most of the README is hand-written
+    standing prose ("here's what this directory is for, register repos in
+    MC-2 to graduate them out of here"). The splice region inside it lists
+    the last `days` worth of exception files, newest first.
+
+    Filename format expected: `<YYYY-MM-DD>-<repo-name>-<HHMM>-<user>.md`.
+    Files that don't match are still listed but with a fallback rendering.
+
+    The full README body is regenerated each call. The splicer is applied
+    by sync.py to preserve any out-of-region hand-edits.
+    """
+    when = now or datetime.now()
+    cutoff = when - timedelta(days=days)
+
+    exceptions_dir = tenant_root / "exceptions"
+    entries = _collect_exception_entries(exceptions_dir, cutoff)
+
+    list_body = _format_exceptions_list(entries) if entries else "_(none yet)_"
+
+    return (
+        "# Unregistered repo activity\n\n"
+        "Session captures from source repos that aren't tracked in this cp\n"
+        "tenant. Activity here is real work that's worth noticing — consider\n"
+        "registering the repo in MC-2's `/repos` page so it gets a proper\n"
+        "working directory next sync, or delete entries that aren't worth\n"
+        "tracking long-term.\n\n"
+        "## Recent\n\n"
+        "<!-- cp-engine:start exceptions-list -->\n"
+        f"{list_body}\n"
+        "<!-- cp-engine:end exceptions-list -->\n"
+    )
+
+
+# Filename regex: <YYYY-MM-DD>-<repo>-<HHMM>-<user>(-N)?.md
+_EXC_FILENAME_RE = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})-"
+    r"(?P<repo>[^/]+?)-"
+    r"(?P<hhmm>\d{4})-"
+    r"(?P<user>[^/]+?)"
+    r"(?:-\d+)?\.md$"
+)
+
+
+@dataclass(frozen=True)
+class _ExceptionEntry:
+    path: Path
+    when: datetime
+    repo: str
+    user: str
+
+
+def _collect_exception_entries(
+    exceptions_dir: Path, cutoff: datetime
+) -> list[_ExceptionEntry]:
+    """Return entries in exceptions_dir newer than `cutoff`, newest first.
+
+    Falls back to file mtime if the filename doesn't match the expected
+    `<YYYY-MM-DD>-<repo>-<HHMM>-<user>.md` shape; that's defensive
+    handling for hand-renamed files.
+    """
+    if not exceptions_dir.exists():
+        return []
+
+    entries: list[_ExceptionEntry] = []
+    for path in exceptions_dir.iterdir():
+        if path.is_dir() or not path.name.endswith(".md"):
+            continue
+        if path.name == "README.md":
+            continue
+        match = _EXC_FILENAME_RE.match(path.name)
+        if match:
+            try:
+                when = datetime.strptime(
+                    f"{match['date']} {match['hhmm']}", "%Y-%m-%d %H%M"
+                )
+            except ValueError:
+                when = datetime.fromtimestamp(path.stat().st_mtime)
+            repo = match["repo"]
+            user = match["user"]
+        else:
+            when = datetime.fromtimestamp(path.stat().st_mtime)
+            repo = "?"
+            user = "?"
+        if when < cutoff:
+            continue
+        entries.append(_ExceptionEntry(path=path, when=when, repo=repo, user=user))
+
+    entries.sort(key=lambda e: e.when, reverse=True)
+    return entries
+
+
+def _format_exceptions_list(entries: list[_ExceptionEntry]) -> str:
+    """One-line markdown bullets per entry, newest first."""
+    lines = []
+    for e in entries:
+        timestamp = e.when.strftime("%Y-%m-%d %H:%M")
+        # Capitalize user for display: "drew" → "Drew"
+        user_display = e.user.replace("-", " ").title()
+        lines.append(
+            f"- {timestamp} ({user_display}) — `{e.repo}` — "
+            f"[`{e.path.name}`]({e.path.name})"
+        )
+    return "\n".join(lines)
+
+
+def count_exceptions_in_window(
+    tenant_root: Path, *, now: datetime | None = None, days: int = 7
+) -> int:
+    """Return the number of exceptions in the last `days` days. Used by
+    master-cp.md to surface a small "Exceptions ({N} this week)" line.
+    """
+    when = now or datetime.now()
+    cutoff = when - timedelta(days=days)
+    entries = _collect_exception_entries(tenant_root / "exceptions", cutoff)
+    return len(entries)
 
 
 def render_claude_md(config: TenantConfig) -> str:

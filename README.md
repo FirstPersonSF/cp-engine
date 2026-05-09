@@ -17,7 +17,46 @@ The canonical spec is at [`docs/specs/cp-engine-spec-v02.md`](docs/specs/cp-engi
 
 ## Status
 
-**v0.1.0 — pre-release.** Package skeleton, CLI stubs, templates, and the canonical status module are in place. Sync logic, renderers, and the `cp init` interactive flow land in v0.1.
+**v0.4.0.** Sync, renderers, working-tree layout, sprint allocations, and session capture are all live. See `CHANGELOG.md` for the version history.
+
+## Capturing sessions back to cp
+
+cp-engine ships a Claude Code plugin at `/plugin/` so a developer can wrap a session in a source repo (e.g. `mc-2`, `cp-engine`, `storyos`) and have a summary land in the corresponding cp working directory automatically.
+
+### One-time per-machine setup
+
+1. Clone the cp tenant (e.g. `cp-1p`) and run `cp init` to populate `.cp-engine.local.toml`.
+2. Add a `[local-repos]` table to that file, mapping each source repo's GitHub name to its local clone path:
+
+   ```toml
+   [local-repos]
+   "mc-2"      = "/Users/you/Documents/Python/mc-2"
+   "cp-engine" = "/Users/you/Documents/Python/context-protocol"
+   "storyos"   = "/Users/you/Documents/Python/storyos"
+   ```
+
+3. From inside the cp tenant clone, run `cp link-local`. This writes a `.cp-link` file into each configured source repo (containing the absolute path of its cp working dir) and adds `.cp-link` to that repo's `.git/info/exclude`.
+4. Install the slash command plugin via the cp-engine marketplace:
+
+   ```
+   /plugin marketplace add FirstPersonSF/cp-engine
+   /plugin install cp-engine@cp-engine
+   ```
+
+   (The marketplace and the plugin both happen to be named `cp-engine` —
+   that's the marketplace name from `.claude-plugin/marketplace.json`.)
+
+### Daily use
+
+Inside any tracked source repo, finish your session with:
+
+```
+/cp-summarize
+```
+
+The command drafts a session summary, writes it to `<cp-working-dir>/sessions/<YYYY-MM-DD>-<HHMM>-<user>.md`, updates that project's `cp.md` "Last session:" line, then commits and pushes the cp clone.
+
+If the current repo isn't tracked in the cp tenant, the summary lands in `<cp-tenant>/exceptions/` and gets surfaced on the next `cp sync` via the engine-managed `exceptions/README.md` plus a one-line "Exceptions ({N} this week)" pointer in `master-cp.md`.
 
 ## Layout
 

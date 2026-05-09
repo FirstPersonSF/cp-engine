@@ -49,6 +49,29 @@ if present, is the canonical link to that project's binary artifacts.
 When the cwd is the tenant root or any non-project subdir, behave as
 described in "Reading modes" below.
 
+## Local-link traversal (v0.4)
+
+Each repo-source project working directory has a `_repo.md`. When that
+file lists a `**Local clone:**` line, the source repo is checked out on
+this machine. To answer "what shipped in this repo recently?" or "what's
+the current state of `<feature>`?" without network calls, navigate to
+that local clone and read `git log`, recent diffs, file contents, etc.
+
+The mapping `repo-name → local-clone-path` lives in
+`<tenant-root>/.cp-engine.local.toml` under `[local-repos]`. That file
+is the source of truth on this machine — `_repo.md`'s line is rendered
+from it.
+
+Conversely, when the working directory is a tracked source repo
+(`mc-2`, `cp-engine`, etc.) rather than a cp working dir, look for
+`.cp-link` at the repo root. It contains the absolute path of the
+corresponding cp working dir — `cd` there to read the project's `cp.md`,
+session history, and decisions.
+
+The `/cp-summarize` slash command (from the cp-engine plugin) writes a
+session summary back to the cp working dir at the end of a development
+session. Use it to keep the cp tree current without manual file edits.
+
 ## Reading modes
 
 This session is in exactly one mode at any moment. Modes can change mid-session

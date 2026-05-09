@@ -710,6 +710,76 @@ def test_repo_md_scaffolded_for_repo_source_projects(tmp_path: Path) -> None:
     assert "FirstPersonSF/mc-2" in body
 
 
+def test_repo_md_includes_local_clone_path_when_configured(tmp_path: Path) -> None:
+    """When [local-repos] has an entry for a project's repo_name, the
+    rendered `_repo.md` surfaces the local clone path."""
+    # Set up a config whose local_repos has an entry for `mc-2`.
+    clone_path = tmp_path / "fake-mc-2-clone"
+    clone_path.mkdir()
+
+    config = TenantConfig(
+        name="firstpersonsf",
+        display="First Person Internal",
+        engine_version_constraint="~= 0.1",
+        sync=SyncConfig(
+            backend="mc-2", cron="0 * * * *", mc_2_supabase_project_ref="ref"
+        ),
+        projects=(
+            ProjectConfig(code="mc-2", github="FirstPersonSF/mc-2", local_path=None),
+        ),
+        root=tmp_path,
+        local_repos={"mc-2": clone_path.resolve()},
+    )
+
+    state = ProjectState(
+        code="mc-2",
+        name="mc-2",
+        source="repo",  # type: ignore[arg-type]
+        company_kind="self-fpsf",  # type: ignore[arg-type]
+        company_code="1P",
+        company_name="First Person",
+        status="Active",
+        is_internal=False,
+        owner="drew",
+        last_touched=datetime(2026, 5, 7, tzinfo=timezone.utc),
+        deadline=None,
+        github_org="FirstPersonSF",
+        repo_name="mc-2",
+    )
+
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+
+    body = (tmp_path / "firstpersonsf" / "projects" / "mc-2" / "_repo.md").read_text()
+    assert "**Local clone:**" in body
+    assert str(clone_path.resolve()) in body
+
+
+def test_repo_md_omits_local_clone_path_when_not_configured(tmp_path: Path) -> None:
+    """Without a [local-repos] entry, _repo.md keeps the v0.3.3 shape (no
+    local clone surfaced)."""
+    config = make_config(tmp_path)
+    state = ProjectState(
+        code="mc-2",
+        name="mc-2",
+        source="repo",  # type: ignore[arg-type]
+        company_kind="self-fpsf",  # type: ignore[arg-type]
+        company_code="1P",
+        company_name="First Person",
+        status="Active",
+        is_internal=False,
+        owner="drew",
+        last_touched=datetime(2026, 5, 7, tzinfo=timezone.utc),
+        deadline=None,
+        github_org="FirstPersonSF",
+        repo_name="mc-2",
+    )
+
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+
+    body = (tmp_path / "firstpersonsf" / "projects" / "mc-2" / "_repo.md").read_text()
+    assert "**Local clone:**" not in body
+
+
 def test_repo_md_omitted_for_engagement_source_projects(tmp_path: Path) -> None:
     """Engagements get `_dropbox.md` (when they have a URL), not `_repo.md`."""
     config = make_config(tmp_path)
@@ -720,6 +790,43 @@ def test_repo_md_omitted_for_engagement_source_projects(tmp_path: Path) -> None:
 
     repo_path = tmp_path / "1p" / "projects" / "ggl-5168" / "_repo.md"
     assert not repo_path.exists()
+
+
+def test_exceptions_readme_regenerated_when_dir_exists(tmp_path: Path) -> None:
+    """When `<tenant>/exceptions/` exists, sync writes/refreshes its README
+    with a splice region listing the recent exception files."""
+    config = make_config(tmp_path)
+
+    # Pre-create the exceptions dir with one exception file.
+    exceptions = tmp_path / "exceptions"
+    exceptions.mkdir()
+    (exceptions / "2026-05-09-1p-component-library-1430-drew.md").write_text(
+        "## Session\nbody\n", encoding="utf-8"
+    )
+
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend(()),
+    )
+
+    readme = exceptions / "README.md"
+    assert readme.exists()
+    text = readme.read_text(encoding="utf-8")
+    assert "<!-- cp-engine:start exceptions-list -->" in text
+    assert "1p-component-library" in text
+
+
+def test_exceptions_readme_not_created_when_no_exceptions_dir(tmp_path: Path) -> None:
+    """If no exceptions/ dir, sync doesn't conjure one. The README appears
+    only after a real exception lands."""
+    config = make_config(tmp_path)
+
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend(()),
+    )
+
+    assert not (tmp_path / "exceptions").exists()
 
 
 def test_legacy_bare_code_dir_renamed_to_slug(tmp_path: Path) -> None:

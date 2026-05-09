@@ -74,11 +74,21 @@ def write_committed(
     (tenant_root / ".cp-engine.toml").write_text("\n".join(lines) + "\n")
 
 
-def write_local(tenant_root: Path, repos: dict[str, str]) -> None:
+def write_local(
+    tenant_root: Path,
+    repos: dict[str, str],
+    *,
+    local_repos: dict[str, str] | None = None,
+) -> None:
     lines = ["[repos]"]
     for code, path in repos.items():
         # Use double-quoted strings; paths may contain ~ which is fine.
         lines.append(f'"{code}" = "{path}"')
+    if local_repos is not None:
+        lines.append("")
+        lines.append("[local-repos]")
+        for name, path in local_repos.items():
+            lines.append(f'"{name}" = "{path}"')
     (tenant_root / ".cp-engine.local.toml").write_text("\n".join(lines) + "\n")
 
 
@@ -370,3 +380,73 @@ def test_engine_version_invalid_specifier(tmp_path: Path) -> None:
 
     with pytest.raises(CommittedConfigInvalid, match="constraint"):
         load(tmp_path)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  [local-repos] (v0.4)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_local_repos_section_absent_yields_empty_mapping(tmp_path: Path) -> None:
+    """Existing tenants without [local-repos] continue to work."""
+    p_dir = tmp_path / "ggl"
+    p_dir.mkdir()
+    write_committed(tmp_path, projects=[("ggl", "FirstPersonSF/ggl")])
+    write_local(tmp_path, {"ggl": str(p_dir)})
+
+    cfg = load(tmp_path)
+    assert dict(cfg.local_repos) == {}
+
+
+def test_local_repos_section_resolves_paths(tmp_path: Path) -> None:
+    mc2 = tmp_path / "mc-2"
+    mc2.mkdir()
+    cpeng = tmp_path / "context-protocol"
+    cpeng.mkdir()
+
+    write_committed(tmp_path, projects=[])
+    write_local(
+        tmp_path,
+        {},
+        local_repos={"mc-2": str(mc2), "cp-engine": str(cpeng)},
+    )
+
+    cfg = load(tmp_path)
+    assert dict(cfg.local_repos) == {
+        "mc-2": mc2.resolve(),
+        "cp-engine": cpeng.resolve(),
+    }
+
+
+def test_local_repos_path_not_found(tmp_path: Path) -> None:
+    write_committed(tmp_path, projects=[])
+    write_local(
+        tmp_path,
+        {},
+        local_repos={"missing": str(tmp_path / "no-such-dir")},
+    )
+
+    with pytest.raises(LocalPathNotFound) as info:
+        load(tmp_path)
+    assert info.value.code == "missing"
+
+
+def test_local_repos_empty_value_rejected(tmp_path: Path) -> None:
+    """Unlike [repos], empty string is not a valid value for [local-repos] —
+    the only callers need it to resolve, so omit the entry instead."""
+    write_committed(tmp_path, projects=[])
+    write_local(tmp_path, {}, local_repos={"ghost": ""})
+
+    with pytest.raises(LocalConfigInvalid, match="local-repos"):
+        load(tmp_path)
+
+
+def test_local_repos_with_tilde(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    repo_dir = tmp_path / "mc-2"
+    repo_dir.mkdir()
+    write_committed(tmp_path, projects=[])
+    write_local(tmp_path, {}, local_repos={"mc-2": "~/mc-2"})
+
+    cfg = load(tmp_path)
+    assert cfg.local_repos["mc-2"] == repo_dir.resolve()

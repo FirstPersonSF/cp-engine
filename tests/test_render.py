@@ -133,6 +133,33 @@ def test_master_cp_handles_no_projects() -> None:
     assert "<!-- cp-engine:start active-canonic -->" in out
 
 
+def test_master_cp_exceptions_summary_line_when_count_positive() -> None:
+    tenant = make_tenant()
+    out = render_master_cp(
+        tenant,
+        (),
+        last_sync=datetime.now(timezone.utc),
+        exceptions_count=3,
+    )
+    assert "<!-- cp-engine:start exceptions-summary -->" in out
+    assert "**Exceptions:** 3 this week" in out
+
+
+def test_master_cp_exceptions_summary_omits_line_when_zero() -> None:
+    tenant = make_tenant()
+    out = render_master_cp(
+        tenant,
+        (),
+        last_sync=datetime.now(timezone.utc),
+        exceptions_count=0,
+    )
+    # The region is always present (so splicer can find it next sync) but
+    # the body line is omitted when there's nothing to surface.
+    assert "<!-- cp-engine:start exceptions-summary -->" in out
+    assert "<!-- cp-engine:end exceptions-summary -->" in out
+    assert "**Exceptions:**" not in out
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Renderer tests — weekly-cp
 # ──────────────────────────────────────────────────────────────────────

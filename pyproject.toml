@@ -1,6 +1,6 @@
 [project]
 name = "cp-engine"
-version = "0.3.3"
+version = "0.4.0"
 description = "Context Protocol Engine — framework for First Person and Canonic CP corpora"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -35,6 +35,12 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/cp_engine"]
+
+# The Claude Code plugin lives at /plugin/. It's distributed via
+# `/plugin add github:FirstPersonSF/cp-engine?path=plugin`, not via PyPI,
+# so it's excluded from the source distribution too.
+[tool.hatch.build.targets.sdist]
+exclude = ["/plugin"]
 
 [tool.ruff]
 line-length = 100

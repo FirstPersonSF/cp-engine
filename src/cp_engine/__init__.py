@@ -3,7 +3,7 @@
 See `docs/specs/cp-engine-spec-v02.md` for the canonical spec.
 """
 
-__version__ = "0.3.3"
+__version__ = "0.4.0"
 
 from cp_engine.config import (
     CommittedConfigInvalid,
@@ -25,7 +25,9 @@ from cp_engine.render import (
     MarkerInverted,
     MarkerMissing,
     RenderError,
+    count_exceptions_in_window,
     render_claude_md,
+    render_exceptions_readme,
     render_master_cp,
     render_project_cp,
     render_weekly_cp,
@@ -80,6 +82,8 @@ __all__ = [
     "render_weekly_cp",
     "render_project_cp",
     "render_claude_md",
+    "render_exceptions_readme",
+    "count_exceptions_in_window",
     "splice_managed_region",
     "RenderError",
     "MarkerMissing",

@@ -30,8 +30,10 @@ logger = logging.getLogger(__name__)
 
 from cp_engine.config import TenantConfig
 from cp_engine.render import (
+    count_exceptions_in_window,
     render_claude_md,
     render_dropbox_md,
+    render_exceptions_readme,
     render_gitignore,
     render_master_cp,
     render_project_cp,
@@ -160,8 +162,13 @@ def sync_tenant(
     # Master CP — splice if exists, full-write if not. Timestamp-only diffs
     # don't trigger a write (would otherwise produce hourly noise commits).
     master_path = config.root / "master-cp.md"
+    exceptions_count = count_exceptions_in_window(config.root, days=7)
     new_master = render_master_cp(
-        config, projects, last_sync=sync_clock, allocations=allocations
+        config,
+        projects,
+        last_sync=sync_clock,
+        allocations=allocations,
+        exceptions_count=exceptions_count,
     )
     if _write_if_changed(
         master_path,
@@ -267,12 +274,32 @@ def sync_tenant(
         # _repo.md — repo-source projects get a link to their GitHub repo,
         # mirroring _dropbox.md's role for engagements. Engagements get None
         # back from the renderer and skip this entirely.
-        repo_body = render_repo_md(project)
+        local_clone = (
+            config.local_repos.get(project.repo_name)
+            if project.repo_name
+            else None
+        )
+        repo_body = render_repo_md(project, local_clone_path=local_clone)
         repo_path = project_dir / "_repo.md"
         if repo_body is None:
             pass
         elif _write_if_changed(repo_path, repo_body, splice_regions=()):
             files_written.append(repo_path)
+
+    # Exceptions README — engine-managed listing of session captures from
+    # unregistered repos. Only render when the directory exists (creating it
+    # would commit an empty README into every tenant; we want the file to
+    # appear only after a real exception lands).
+    exceptions_dir = config.root / "exceptions"
+    if exceptions_dir.exists():
+        readme_path = exceptions_dir / "README.md"
+        new_readme = render_exceptions_readme(config.root)
+        if _write_if_changed(
+            readme_path,
+            new_readme,
+            splice_regions=("exceptions-list",),
+        ):
+            files_written.append(readme_path)
 
     # Archive sweep — any live working dir whose code isn't in `live_dirs`
     # represents a project that was archived in MC-2, deleted, or flipped
@@ -297,6 +324,7 @@ def sync_tenant(
 # but listing them here keeps the contract explicit.
 _MASTER_REGIONS = (
     "last-sync-timestamp",
+    "exceptions-summary",
     "active-pipeline",
     "active-1p",
     "active-fpsf",

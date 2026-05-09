@@ -8,13 +8,24 @@ Author: cp-engine (generated)
 # Source repository
 
 [{{ project.github_org }}/{{ project.repo_name }}](https://github.com/{{ project.github_org }}/{{ project.repo_name }})
+{%- if local_clone_path %}
+
+**Local clone:** `{{ local_clone_path }}`
+(per `.cp-engine.local.toml` `[local-repos]`)
+{%- endif %}
 
 This directory holds the collaboration layer for this project —
 context document (`cp.md`), session transcripts, AI-generated
 syntheses, planning notes. The actual source code lives in the
 linked GitHub repo.
 
+{% if local_clone_path -%}
+The repo is cloned locally at the path above; cd there to work on
+the code. Claude can read git history and recent diffs from that
+clone without network calls — see CLAUDE.md for the convention.
+{%- else -%}
 If you have the repo cloned locally, work on the code there
 (`cd ~/path/to/{{ project.repo_name }}`). If not, GitHub is the
 canonical source. Either way, this directory is where the team
 thinks together about the project.
+{%- endif %}

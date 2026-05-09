@@ -15,6 +15,12 @@ Author: cp-engine (sync)
 **Last sync:** {{ last_sync_iso }}
 <!-- cp-engine:end last-sync-timestamp -->
 
+<!-- cp-engine:start exceptions-summary -->
+{%- if exceptions_count and exceptions_count > 0 %}
+**Exceptions:** {{ exceptions_count }} this week — see [`exceptions/`](exceptions/README.md) for unregistered repo activity.
+{%- endif %}
+<!-- cp-engine:end exceptions-summary -->
+
 <!-- cp-engine:start active-pipeline -->
 ## 1P — Pipeline ({{ active_groups.pipeline | length }})
 

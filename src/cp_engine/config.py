@@ -15,8 +15,10 @@ from __future__ import annotations
 
 import logging
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
+from typing import Mapping
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
@@ -116,7 +118,14 @@ class SyncConfig:
 
 @dataclass(frozen=True)
 class TenantConfig:
-    """Merged view of a tenant's committed + local configuration."""
+    """Merged view of a tenant's committed + local configuration.
+
+    `local_repos` (v0.4+) maps repo name → absolute local clone path. It's
+    a per-machine extension of the local file with NO required overlap with
+    `[[projects]]` — it can name `cp-engine` itself, `1p-component-library`,
+    or any repo the user wants Claude to be able to traverse without
+    network calls. Empty when the section is absent.
+    """
 
     name: str
     display: str
@@ -124,6 +133,9 @@ class TenantConfig:
     sync: SyncConfig
     projects: tuple[ProjectConfig, ...]
     root: Path  # absolute path to the tenant repo
+    local_repos: Mapping[str, Path] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -156,6 +168,7 @@ def load(tenant_root: Path) -> TenantConfig:
         sync=committed["sync"],
         projects=projects,
         root=tenant_root,
+        local_repos=MappingProxyType(dict(local["local_repos"])),
     )
 
 
@@ -275,7 +288,7 @@ def _load_local(tenant_root: Path, *, committed_has_projects: bool) -> dict:
     path = tenant_root / LOCAL_FILENAME
     if not path.exists():
         if not committed_has_projects:
-            return {"repos": {}}
+            return {"repos": {}, "local_repos": {}}
         raise LocalConfigMissing(
             f"No {LOCAL_FILENAME} at {tenant_root}. Run `cp init` to configure."
         )
@@ -295,7 +308,39 @@ def _load_local(tenant_root: Path, *, committed_has_projects: bool) -> dict:
                 f"{path}: [repos].{code} must be a string path or empty string for skip"
             )
 
-    return {"repos": repos}
+    local_repos = _parse_local_repos(data, path)
+
+    return {"repos": repos, "local_repos": local_repos}
+
+
+def _parse_local_repos(data: dict, source: Path) -> dict[str, Path]:
+    """Parse the optional `[local-repos]` table into repo-name → resolved Path.
+
+    The section is keyed by GitHub repo name (e.g. "mc-2", "cp-engine") rather
+    than project code, so it can name repos that aren't tracked as committed
+    projects. Empty string is not a valid value here — if you don't have the
+    repo locally, omit the entry. Bad paths fail loudly because the only
+    callers (cp link-local, /cp-summarize self-heal) need them to resolve.
+    """
+    raw = data.get("local-repos")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise LocalConfigInvalid(f"{source}: [local-repos] must be a table")
+
+    resolved: dict[str, Path] = {}
+    for repo_name, raw_path in raw.items():
+        if not isinstance(raw_path, str) or not raw_path:
+            raise LocalConfigInvalid(
+                f"{source}: [local-repos].{repo_name!r} must be a non-empty string path"
+            )
+        expanded = Path(raw_path).expanduser()
+        try:
+            resolved_path = expanded.resolve(strict=True)
+        except FileNotFoundError as exc:
+            raise LocalPathNotFound(code=repo_name, path=expanded) from exc
+        resolved[repo_name] = resolved_path
+    return resolved
 
 
 def _merge_projects(

@@ -187,6 +187,133 @@ def migrate_to_v03(dry_run: bool) -> None:
         )
 
 
+@main.command(name="capture-session")
+@click.option(
+    "--source-repo",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Source repo path. Defaults to cwd.",
+)
+@click.option(
+    "--summary-file",
+    "summary_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+    help="Path to a file containing the session summary (Claude writes this).",
+)
+@click.option(
+    "--user",
+    required=True,
+    help="Display name for the session author (e.g. \"Drew\").",
+)
+@click.option(
+    "--cp-tenant",
+    type=click.Path(exists=True, file_okay=False, path_type=Path),
+    help="Path to the cp tenant clone. Required for unlinked source repos.",
+)
+@click.option("--no-commit", is_flag=True, help="Don't run git add/commit/push.")
+@click.option("--no-push", is_flag=True, help="Commit but don't push.")
+def capture_session_cmd(
+    source_repo: Path | None,
+    summary_file: Path,
+    user: str,
+    cp_tenant: Path | None,
+    no_commit: bool,
+    no_push: bool,
+) -> None:
+    """Write a session summary back to the cp tree.
+
+    Reads the summary from `--summary-file`, resolves the destination
+    cp working dir via `<source-repo>/.cp-link` (self-healing if stale),
+    writes `<wd>/sessions/<YYYY-MM-DD>-<HHMM>-<user>.md`, updates the
+    project's `cp.md` Last session line, and commits + pushes the change.
+
+    For unlinked source repos (no `.cp-link`), falls back to writing
+    `<cp-tenant>/exceptions/<filename>.md`. `--cp-tenant` is required in
+    that case.
+    """
+    from cp_engine.capture_session import CaptureSessionError, capture_session
+
+    repo = (source_repo or Path.cwd()).resolve()
+    summary_text = summary_file.read_text(encoding="utf-8")
+
+    try:
+        result = capture_session(
+            source_repo=repo,
+            summary_text=summary_text,
+            user=user,
+            cp_tenant=cp_tenant,
+            commit=not no_commit,
+            push=not (no_commit or no_push),
+        )
+    except CaptureSessionError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    if result.is_exception:
+        click.echo(
+            f"Logged exception (repo not tracked in this cp tenant): "
+            f"{result.summary_path}"
+        )
+    else:
+        click.echo(f"Wrote session summary: {result.summary_path}")
+        if result.cp_md_updated:
+            click.echo("Updated cp.md Last session line.")
+    if result.commit_sha:
+        click.echo(
+            f"Committed {result.commit_sha}"
+            + (" and pushed." if result.pushed else " (push skipped or failed).")
+        )
+
+
+@main.command(name="link-local")
+def link_local_cmd() -> None:
+    """Wire `.cp-link` files into each source repo named in `[local-repos]`.
+
+    Reads `.cp-engine.local.toml`'s `[local-repos]` table, validates each
+    path is a git repo whose remote matches the entry, finds the
+    corresponding cp working dir by walking the cp tenant tree, and writes
+    `<source-repo>/.cp-link` containing the absolute path of that working
+    dir. Also adds `.cp-link` to `.git/info/exclude` so the source repo
+    won't accidentally commit it.
+
+    Idempotent — re-running with no changes is a no-op.
+    """
+    try:
+        config = load(Path.cwd())
+    except ConfigError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+
+    from cp_engine.link_local import LinkLocalError, link_local as _run
+
+    if not config.local_repos:
+        click.echo(
+            "No [local-repos] entries in .cp-engine.local.toml. Add one per "
+            "repo you want linked, e.g.:\n\n"
+            "  [local-repos]\n"
+            '  "mc-2"      = "/Users/you/Documents/Python/mc-2"\n'
+            '  "cp-engine" = "/Users/you/Documents/Python/context-protocol"\n'
+        )
+        return
+
+    try:
+        results = _run(config)
+    except LinkLocalError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    wrote = sum(1 for r in results if r.wrote_link)
+    excluded = sum(1 for r in results if r.excluded)
+    for r in results:
+        action = "wrote" if r.wrote_link else "ok   "
+        click.echo(f"  {action} {r.source_repo_path}/.cp-link → {r.cp_working_dir}")
+    click.echo(
+        f"\n{len(results)} repo(s) linked. "
+        f"{wrote} new/updated link file(s); "
+        f"{excluded} .git/info/exclude update(s)."
+    )
+
+
 @main.command()
 def status() -> None:
     """Show what would change on next sync (no writes — read-only)."""
