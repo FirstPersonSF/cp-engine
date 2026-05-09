@@ -6,7 +6,7 @@ description: Show recent activity (commits + session captures) for the current c
 # /cp-context
 
 Run from inside a cp working directory (e.g.
-`cp-1p/firstpersonsf/projects/mc-2/`). Reads the linked source repo's
+`cp/firstpersonsf/mc-2/`). Reads the linked source repo's
 local clone path from `<tenant>/.cp-engine.toml` `[local-repos.<user>]`,
 runs `git log --since='7 days ago'` there, lists session captures from
 the working dir's `sessions/` directory in the same window, and prints
@@ -25,7 +25,7 @@ test -f "$(pwd)/_repo.md" || test -f "$(pwd)/cp.md"
 ```
 
 If neither exists, stop and tell the user `/cp-context` must be run
-from inside a cp working directory (`<scope>/projects/<dir-slug>/`).
+from inside a cp working directory (`<scope>/<dir-slug>/`).
 
 ### 2. Run `cp project-context`
 
@@ -85,8 +85,10 @@ project in the last 7 days." Don't manufacture insight.
 
 - **`cp` command not found.** Tell the user to install cp-engine
   system-wide: `uv tool install --force --from <path-to-cp-engine-repo> cp-engine`.
-- **`Error: ... is not a cp working dir`.** They're in the wrong
-  directory. Tell them to `cd` into a project working dir first.
 - **`Error: No \`[local-repos.<user>].<repo>\` entry`.** They passed
   `--user` for a user who doesn't have this repo configured. Re-run
   without `--user` to let the command pick whichever path exists.
+- **No `_repo.md` or `cp.md` in cwd.** They ran from outside a working
+  dir. Tell them to `cd` into a project working dir
+  (`<tenant>/<scope>/<dir-slug>/`) first; the step-1 check above
+  catches this before invoking `cp project-context`.

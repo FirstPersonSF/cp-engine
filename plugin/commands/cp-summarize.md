@@ -63,7 +63,7 @@ done
 
 If neither `.cp-link` nor a buddy is found, ask the user: "I can't find
 your cp tenant on this machine. What's the absolute path to your cp
-clone (e.g. `~/Documents/Python/cp-1p`)?" — and use that.
+clone (e.g. `~/Documents/Python/cp`)?" — and use that.
 
 ### 4. Draft the session summary
 
