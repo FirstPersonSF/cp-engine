@@ -52,7 +52,10 @@ MARKETPLACE_JSON = REPO_ROOT / ".claude-plugin" / "marketplace.json"
 INIT_PY = REPO_ROOT / "src" / "cp_engine" / "__init__.py"
 CHANGELOG = REPO_ROOT / "CHANGELOG.md"
 
-VERSION_LINE_RE = re.compile(r'^__version__ = "[^"]+"\s*$', re.MULTILINE)
+# Match only the version literal, not trailing whitespace — `\s*$` in
+# MULTILINE mode consumes the newline character, which would collapse
+# the blank line that follows __version__ into the import block.
+VERSION_LINE_RE = re.compile(r'^__version__ = "[^"]+"', re.MULTILINE)
 
 
 class ReleaseError(RuntimeError):
@@ -145,22 +148,20 @@ def bump_init_py(new: str) -> None:
     INIT_PY.write_text(new_text)
 
 
-def bump_json(path: Path, new: str, *, nested_keys: list[list[str]] | None = None) -> None:
-    """Bump top-level "version" plus any nested version fields.
+def bump_json(path: Path, new: str) -> None:
+    """Bump the top-level `"version"` field in a JSON file.
 
-    `nested_keys` is a list of key-paths into the JSON, e.g.
-    `[["plugins", 0, "version"]]`. Marketplace.json doesn't actually
-    have nested version keys today, but the parameter is here so we
-    can extend without rewriting.
+    Uses a regex on the raw text rather than parse-then-serialize so
+    that file formatting (key order, compact vs. expanded arrays,
+    trailing newlines) is preserved byte-for-byte. Both plugin.json
+    and marketplace.json have a single top-level version field.
     """
-    doc = json.loads(path.read_text())
-    doc["version"] = new
-    for path_keys in nested_keys or []:
-        cur = doc
-        for k in path_keys[:-1]:
-            cur = cur[k]
-        cur[path_keys[-1]] = new
-    path.write_text(json.dumps(doc, indent=2) + "\n")
+    text = path.read_text()
+    pattern = re.compile(r'("version"\s*:\s*)"[^"]+"')
+    if not pattern.search(text):
+        raise ReleaseError(f"{path} has no top-level `\"version\": \"...\"` to update.")
+    new_text = pattern.sub(rf'\1"{new}"', text, count=1)
+    path.write_text(new_text)
 
 
 def _first_sentence(text: str, max_len: int = 80) -> str:
@@ -221,15 +222,19 @@ def main() -> int:
 
     if not args.skip_tests:
         print("[release] running pytest...")
+        # Use uv to materialize pytest in an ephemeral env that also
+        # rebuilds the editable cp-engine install — same invocation
+        # that works in development. Avoids "pytest not found" when the
+        # release script's own env doesn't have pytest.
         try:
-            run(["pytest"])
+            run(["uv", "run", "--with", "pytest", "python", "-m", "pytest", "-q"])
         except subprocess.CalledProcessError:
             raise SystemExit("[release] tests failed; aborting before commit.")
 
     if not args.skip_build:
         print("[release] building distribution...")
         try:
-            run(["python", "-m", "build"])
+            run(["uv", "run", "--with", "build", "python", "-m", "build"])
         except subprocess.CalledProcessError:
             raise SystemExit("[release] build failed; aborting before commit.")
 
