@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from cp_engine.state import dir_slug, scope_for
-
+from cp_engine.state import ClientAsk, HorizonItem, Risk, dir_slug, scope_for
 
 # ──────────────────────────────────────────────────────────────────────
 #  scope_for
@@ -71,3 +70,27 @@ def test_dir_slug_ascii_only() -> None:
     # and starts with the code prefix.
     assert result.startswith("xyz-1-")
     assert all(c.isascii() for c in result)
+
+
+def test_client_ask_constructs_with_defaults() -> None:
+    a = ClientAsk(text="Volume forecast", asked_date="2026-05-04", status="open", who="Maria")
+    assert a.status == "open"
+    assert a.who == "Maria"
+
+
+def test_risk_includes_category_and_severity() -> None:
+    r = Risk(
+        text="Legal slip",
+        severity="escalated",
+        category="contract",
+        raised_date="2026-05-04",
+        why_it_matters="Pushes contract into next sprint.",
+    )
+    assert r.severity == "escalated"
+    assert r.category == "contract"
+
+
+def test_horizon_item_bucket_required() -> None:
+    h = HorizonItem(text="Open beta launch", bucket="decision", target_date="2026-W22")
+    assert h.bucket == "decision"
+    assert h.target_date == "2026-W22"

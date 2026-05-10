@@ -218,3 +218,34 @@ class WeeklyAllocations:
     week_start: str  # ISO date (YYYY-MM-DD)
     by_project: dict[str, ProjectAllocation]
     rollup: tuple[PersonRollup, ...]  # sorted by total_hours desc
+
+
+@dataclass(frozen=True)
+class ClientAsk:
+    """One open question to the client, captured during sprint planning or via deepening."""
+
+    text: str
+    asked_date: str  # ISO date
+    status: str      # "open" | "answered" | "dropped"
+    who: str | None = None
+
+
+@dataclass(frozen=True)
+class Risk:
+    """One dependency or risk on a project's sprint plan."""
+
+    text: str
+    severity: str    # "escalated" | "watching" | "dependency"
+    category: str    # value from tenant config risk_categories
+    raised_date: str
+    why_it_matters: str | None = None
+
+
+@dataclass(frozen=True)
+class HorizonItem:
+    """One forward-looking item (milestone, decision, opportunity) on a project's horizon."""
+
+    text: str
+    bucket: str      # "milestone" | "decision" | "opportunity"
+    target_date: str | None = None
+    note: str | None = None
