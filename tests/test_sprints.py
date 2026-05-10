@@ -9,7 +9,16 @@ from cp_engine.sprints import (
     parse_sprint_file,
     render_sprint_scaffold,
 )
-from cp_engine.state import CarryForward, ClientAsk, PersonHours, ProjectState
+from cp_engine.state import (
+    CarryForward,
+    ClientAsk,
+    PersonHours,
+    ProjectState,
+    Risk,
+    SprintFacts,
+    SprintFile,
+    WhereItStands,
+)
 
 
 def _fixture_project(*, code: str = "peb", status: str = "Open") -> ProjectState:
@@ -38,6 +47,67 @@ def _fixture_project(*, code: str = "peb", status: str = "Open") -> ProjectState
         deadline=None,
         deal_stage="Negotiation",
         budget=45000.0,
+    )
+
+
+def _fixture_sprint_file(
+    *,
+    asks: tuple[str, ...] = (),
+    risks: tuple[str, ...] = (),
+    allocation_line: str = "Drew 6h · Tony 2h",
+    link: str = "../../sprints/2026-W19/peb.md",
+    week_label: str = "W19",
+    dates: str = "May 11 – May 17",
+) -> SprintFile:
+    """Build a minimal SprintFile for renderer tests.
+
+    `asks` are plain strings turned into ClientAsk(open). `risks` entries
+    are "<severity>:<text>" pairs. `allocation_line` is a "Name Nh · …"
+    string parsed into PersonHours tuples. The unused `link`, `week_label`,
+    and `dates` knobs exist so callers can document intent — the renderer
+    derives display values from `week_iso`/`week_start`/`week_end` directly.
+    """
+    parsed_risks: list[Risk] = []
+    for entry in risks:
+        sev, _, text = entry.partition(":")
+        parsed_risks.append(
+            Risk(
+                text=text,
+                severity=sev,
+                category="",
+                raised_date="2026-05-04",
+            )
+        )
+    parsed_alloc: list[PersonHours] = []
+    for chunk in allocation_line.split(" · "):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        name, _, hrs = chunk.rpartition(" ")
+        parsed_alloc.append(
+            PersonHours(person_name=name.strip(), hours=float(hrs.rstrip("h")))
+        )
+    week_num = week_label.lstrip("W")
+    return SprintFile(
+        project_code="peb",
+        week_iso=f"2026-W{week_num}",
+        week_start="2026-05-11",
+        week_end="2026-05-17",
+        prior_sprint=None,
+        facts=SprintFacts(None, None, None, None, None, 0, 0),
+        where_it_stands=WhereItStands(None, None, None, (), ()),
+        carry_forward=CarryForward(asks=(), risks=(), horizon=()),
+        client_outbound=(),
+        client_open_asks=tuple(
+            ClientAsk(text=a, asked_date="2026-05-04", status="open") for a in asks
+        ),
+        client_inbound=(),
+        risks=tuple(parsed_risks),
+        allocation=tuple(parsed_alloc),
+        deliverables=(),
+        definition_of_done="",
+        horizon=(),
+        meeting_notes=None,
     )
 
 
@@ -381,3 +451,19 @@ def test_ensure_sprint_files_for_active_projects_writes_one_per_active(tmp_path)
     )
     assert any(p.name == "peb.md" for p in paths)
     assert not any(p.name == "apx.md" for p in paths)
+
+
+def test_render_current_sprint_block_emits_top_3_asks_and_risks() -> None:
+    from cp_engine.sprints import render_current_sprint_block
+    sf = _fixture_sprint_file(  # 4 asks, 2 risks
+        asks=("a1", "a2", "a3", "a4"),
+        risks=("escalated:r1", "watching:r2"),
+        allocation_line="Drew 6h · Tony 2h",
+        link="../../sprints/2026-W19/peb.md",
+        week_label="W19", dates="May 11 – May 17",
+    )
+    block = render_current_sprint_block(sf, link_path="../../sprints/2026-W19/peb.md")
+    assert "## Current sprint" in block
+    assert "[W19 (May 11 – May 17)]" in block
+    assert block.count("\n- ") >= 5  # 3 asks + 2 risks
+    assert "a4" not in block  # truncated to top 3

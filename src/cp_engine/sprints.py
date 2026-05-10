@@ -484,6 +484,65 @@ def render_sprint_scaffold(
     )
 
 
+def _short_md_date_no_year(iso: str) -> str:
+    """Short month-day with no year ('May 11'). Empty input → empty string.
+
+    Distinct from `_short_md_date` only in intent — both produce the same
+    "Mon D" format. Aliased here so the current-sprint block renderer's
+    Mon-D – Mon-D range reads obviously without commenting at every call
+    site that the year is intentionally elided.
+    """
+    return _short_md_date(iso)
+
+
+def render_current_sprint_block(sf: SprintFile, link_path: str) -> str:
+    """Render the dashboard's "Current sprint" block for one project.
+
+    Top-3 truncation is intentional: this block is meant to be a glanceable
+    pointer back into the full sprint file, not a re-statement of it. Open
+    asks fall back to carry-forward asks when there are fewer than 3 active
+    asks this week. Risks are filtered to escalated + watching (dependency
+    risks are excluded — they're informational, not dashboard-worthy).
+
+    `link_path` is passed in by the caller (rather than derived from
+    `sf.project_code` + `sf.week_iso`) so the dashboard can compute it
+    relative to its own location once and pass it through here.
+    """
+    asks = list(sf.client_open_asks[:3])
+    if len(asks) < 3:
+        asks.extend(sf.carry_forward.asks[: 3 - len(asks)])
+    asks = asks[:3]
+    active = [r for r in sf.risks if r.severity in ("escalated", "watching")]
+    risks = active[:3]
+
+    def _hours(h: float) -> str:
+        return f"{int(h)}" if h.is_integer() else f"{h}"
+
+    alloc = " · ".join(f"{p.person_name} {_hours(p.hours)}h" for p in sf.allocation)
+    week_label = sf.week_iso.split("-W")[-1]
+    dates = (
+        f"{_short_md_date_no_year(sf.week_start)} – "
+        f"{_short_md_date_no_year(sf.week_end)}"
+    )
+    lines = [
+        f"## Current sprint — [W{week_label} ({dates})]({link_path})",
+        "",
+        f"**Allocation:** {alloc or '—'}",
+        f"**Open client asks** ({len(sf.client_open_asks)}):",
+    ]
+    for a in asks:
+        lines.append(f"- {a.text} (asked {a.asked_date})")
+    lines.append("")
+    lines.append(f"**Active risks** ({len(active)}):")
+    for r in risks:
+        lines.append(f"- {r.text}")
+    lines.append("")
+    lines.append(
+        f"_See [sprint file]({link_path}) for full plan, horizon, and meeting notes._"
+    )
+    return "\n".join(lines)
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Idempotent sprint-file writer
 # ──────────────────────────────────────────────────────────────────────
