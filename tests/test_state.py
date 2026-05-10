@@ -5,13 +5,18 @@ from __future__ import annotations
 import pytest
 
 from cp_engine.state import (
+    CarryForward,
     ClientAsk,
     Deliverable,
     HorizonItem,
     InboundUpdate,
     MeetingNotes,
     Outbound,
+    PersonHours,
     Risk,
+    SprintFacts,
+    SprintFile,
+    WhereItStands,
     dir_slug,
     scope_for,
 )
@@ -131,3 +136,46 @@ def test_meeting_notes_holds_decisions_and_prose() -> None:
         discussion_prose="Spent most of the time on…",
     )
     assert len(m.decisions) == 1
+
+
+def test_sprint_file_aggregates_all_sections_and_computes_total() -> None:
+    sf = SprintFile(
+        project_code="peb",
+        week_iso="2026-W19",
+        week_start="2026-05-11",
+        week_end="2026-05-17",
+        prior_sprint="2026-W18",
+        facts=SprintFacts(
+            stage="Negotiation", owner="Drew", budget_short="$45,000",
+            last_touched_short="2 days ago",
+            last_sprint_hours_line="Drew 6.5h · Tony 2h",
+            sessions_this_week=3, open_issues=3,
+        ),
+        where_it_stands=WhereItStands(
+            last_session_date="2026-05-09",
+            last_session_who="Drew",
+            last_session_summary="Reviewed pricing v3.",
+            recent_commits=(),
+            open_tracked_issues=(),
+        ),
+        carry_forward=CarryForward(asks=(), risks=(), horizon=()),
+        client_outbound=(),
+        client_open_asks=(),
+        client_inbound=(),
+        risks=(
+            Risk(
+                text="Legal slip", severity="escalated",
+                category="contract", raised_date="2026-05-04",
+            ),
+        ),
+        allocation=(
+            PersonHours(person_name="Drew", hours=6.0),
+            PersonHours(person_name="Tony", hours=2.0),
+        ),
+        deliverables=(),
+        definition_of_done="",
+        horizon=(),
+        meeting_notes=None,
+    )
+    assert sf.total_allocation_hours == 8.0
+    assert sf.escalated_risk_count == 1
