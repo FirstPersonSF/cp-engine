@@ -93,3 +93,32 @@ def test_parse_client_section_extracts_outbound_asks_inbound(tmp_path) -> None:
     assert sf.client_open_asks[0].who == "Maria"
     assert sf.client_open_asks[0].asked_date == "2026-05-04"
     assert sf.client_inbound[0].who == "Maria"
+
+
+def test_parse_risks_and_horizon(tmp_path) -> None:
+    f = tmp_path / "peb.md"
+    f.write_text(
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W19\n---\n"
+        "# peb — Pebble Foods · Sprint W19 (May 11 – May 17, 2026)\n"
+        "## Dependencies & risks\n"
+        "- [escalated · contract · 2026-05-04] Legal turnaround may slip past May 22.\n"
+        "  Why it matters: pushes contract into next sprint.\n"
+        "- [watching · pricing · 2026-05-09] Tier-2 pushback may force rebuild.\n"
+        "\n## Horizon\n"
+        "### Milestones\n"
+        "- [2026-05-22] Contract target sign date\n"
+        "### Decisions due\n"
+        "- [by W21] Whether to staff a third on Pebble for Q3\n"
+        "### Opportunities\n"
+        "- Stage discovery for Pebble's sister brand\n"
+    )
+    sf = parse_sprint_file(f)
+    assert len(sf.risks) == 2
+    assert sf.risks[0].severity == "escalated"
+    assert sf.risks[0].category == "contract"
+    assert sf.risks[0].why_it_matters and "next sprint" in sf.risks[0].why_it_matters
+    assert len(sf.horizon) == 3
+    assert sf.horizon[0].bucket == "milestone"
+    assert sf.horizon[1].bucket == "decision"
+    assert sf.horizon[2].bucket == "opportunity"
+    assert sf.horizon[2].target_date is None

@@ -15,8 +15,10 @@ from pathlib import Path
 from .state import (
     CarryForward,
     ClientAsk,
+    HorizonItem,
     InboundUpdate,
     Outbound,
+    Risk,
     SprintFacts,
     SprintFile,
     WhereItStands,
@@ -51,11 +53,11 @@ def parse_sprint_file(path: Path) -> SprintFile:
         client_outbound=client_outbound,
         client_open_asks=client_open_asks,
         client_inbound=client_inbound,
-        risks=(),
+        risks=_parse_risks(body),
         allocation=(),
         deliverables=(),
         definition_of_done="",
-        horizon=(),
+        horizon=_parse_horizon(body),
         meeting_notes=None,
     )
 
@@ -210,3 +212,63 @@ def _parse_client_section(
                 )
             )
     return tuple(out), tuple(asks), tuple(inbound)
+
+
+def _parse_risks(body: str) -> tuple[Risk, ...]:
+    section = _section_body(body, "Dependencies & risks")
+    out: list[Risk] = []
+    for first, cont in _bullets(section):
+        parsed = _parse_bracketed_bullet(first)
+        if not parsed:
+            continue
+        parts, text = parsed
+        severity = parts[0] if parts else "watching"
+        category = parts[1] if len(parts) > 1 else ""
+        raised = parts[2] if len(parts) > 2 else ""
+        why = None
+        if cont.lower().startswith("why it matters:"):
+            why = cont.split(":", 1)[1].strip()
+        out.append(
+            Risk(
+                text=text,
+                severity=severity,
+                category=category,
+                raised_date=raised,
+                why_it_matters=why,
+            )
+        )
+    return tuple(out)
+
+
+def _parse_horizon(body: str) -> tuple[HorizonItem, ...]:
+    section = _section_body(body, "Horizon")
+    out: list[HorizonItem] = []
+    for bucket, sub in (
+        ("milestone", "Milestones"),
+        ("decision", "Decisions due"),
+        ("opportunity", "Opportunities"),
+    ):
+        for first, cont in _bullets(_subsection(section, sub)):
+            parsed = _parse_bracketed_bullet(first)
+            if parsed:
+                parts, text = parsed
+                target = parts[0] if parts else None
+                out.append(
+                    HorizonItem(
+                        text=text,
+                        bucket=bucket,
+                        target_date=target,
+                        note=cont or None,
+                    )
+                )
+            else:
+                text = first.lstrip("- ").strip()
+                out.append(
+                    HorizonItem(
+                        text=text,
+                        bucket=bucket,
+                        target_date=None,
+                        note=cont or None,
+                    )
+                )
+    return tuple(out)
