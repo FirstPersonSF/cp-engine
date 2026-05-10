@@ -401,3 +401,16 @@ def test_splice_doesnt_match_partial_region_names() -> None:
     )
     with pytest.raises(MarkerMissing):
         splice_managed_region(file, "active", "x")
+
+
+def test_master_cp_includes_sprint_link_per_active_row() -> None:
+    tenant = make_tenant()
+    projects = (make_state("peb-1234", "PEB Project", "Open"),)
+    body = render_master_cp(
+        tenant,
+        projects,
+        last_sync=datetime.now(timezone.utc),
+        current_sprint_iso="2026-W19",
+    )
+    assert "sprints/2026-W19/peb-1234.md" in body
+    assert "[W19 →]" in body

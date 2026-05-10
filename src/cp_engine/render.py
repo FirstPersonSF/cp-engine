@@ -92,6 +92,7 @@ def render_master_cp(
     last_sync: datetime,
     allocations=None,  # WeeklyAllocations | None
     exceptions_count: int = 0,
+    current_sprint_iso: str | None = None,
 ) -> str:
     """Render the full master-cp.md body.
 
@@ -104,6 +105,12 @@ def render_master_cp(
     discussion 2026-05-08). The 1P section is engagement-shaped with
     Stage / Budget; FPSF and Canonic sections are repo-shaped with
     Description / GitHub.
+
+    When `current_sprint_iso` is provided (e.g. "2026-W19"), each active
+    project view dict gets a `sprint_link` pointing at the per-project
+    sprint file under `sprints/<iso>/<code>.md`, and the active tables
+    render an extra `[W## →]` cell next to the existing CP link. When
+    None, no sprint link is rendered.
     """
     # Active filter: engagement is active per is_active_status + not internal;
     # repo is active per repos.status == 'Active'.
@@ -141,9 +148,19 @@ def render_master_cp(
     def to_view(p: ProjectState) -> dict:
         """Build view dict and attach allocation_line if allocations exist
         for this project. Per spec: skip the line entirely when total hours
-        is zero (no allocations === no row)."""
+        is zero (no allocations === no row).
+
+        When `current_sprint_iso` is set, also attaches `sprint_link`
+        pointing at `sprints/<iso>/<code>.md` for the per-project sprint
+        file. None when no current sprint is in scope.
+        """
         view = _project_view(p)
         view["allocation_line"] = _allocation_line_for(p.code, allocations)
+        view["sprint_link"] = (
+            f"sprints/{current_sprint_iso}/{p.code}.md"
+            if current_sprint_iso
+            else None
+        )
         return view
 
     def group(active_list: list[ProjectState]) -> dict:
@@ -160,6 +177,17 @@ def render_master_cp(
             "self_canonic": [to_view(p) for p in active_list if p.company_kind == "self-canonic"],
         }
 
+    # Derive the short week label ("W19") from the ISO week ("2026-W19")
+    # so the template doesn't have to do string ops. Drops zero-padding
+    # so week 1 reads "W1" rather than "W01".
+    current_week_label: str | None = None
+    if current_sprint_iso and "-W" in current_sprint_iso:
+        try:
+            week_num = int(current_sprint_iso.split("-W", 1)[1])
+            current_week_label = f"W{week_num}"
+        except ValueError:
+            current_week_label = None
+
     template = _env().get_template("master-cp.md.j2")
     return template.render(
         tenant=config,
@@ -172,6 +200,7 @@ def render_master_cp(
         holding_projects=[_project_view(p) for p in holding],
         closed_recent=[_project_view(p) for p in closed_recent],
         exceptions_count=exceptions_count,
+        current_week_label=current_week_label,
     )
 
 

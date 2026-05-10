@@ -29,7 +29,7 @@ Sales-stage progression: Inquiry → Negotiation → Contract.
 | Code | Project | Stage | Owner | Budget | Last touched | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
 {%- for p in active_groups.pipeline %}
-| `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.deal_stage or "—" }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [→]({{ p.scope }}/{{ p.dir_slug }}/cp.md) |
+| `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.deal_stage or "—" }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-pipeline -->
 
@@ -39,7 +39,7 @@ Sales-stage progression: Inquiry → Negotiation → Contract.
 | Code | Project | Owner | Budget | Last touched | One-line summary | CP |
 |---|---|---|---|---|---|---|
 {%- for p in active_groups.client %}
-| `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [→]({{ p.scope }}/{{ p.dir_slug }}/cp.md) |
+| `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-1p -->
 
@@ -49,7 +49,7 @@ Sales-stage progression: Inquiry → Negotiation → Contract.
 | Repo | Status | Owner | Description | Last touched | GitHub | CP |
 |---|---|---|---|---|---|---|
 {%- for p in active_groups.self_fpsf %}
-| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.status }} | {{ p.owner or "—" }} | {{ p.description or "" }} | {{ p.last_touched_short or "—" }} | {% if p.github_org and p.repo_name %}[{{ p.github_org }}/{{ p.repo_name }}](https://github.com/{{ p.github_org }}/{{ p.repo_name }}){% else %}—{% endif %} | [→]({{ p.scope }}/{{ p.dir_slug }}/cp.md) |
+| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.status }} | {{ p.owner or "—" }} | {{ p.description or "" }} | {{ p.last_touched_short or "—" }} | {% if p.github_org and p.repo_name %}[{{ p.github_org }}/{{ p.repo_name }}](https://github.com/{{ p.github_org }}/{{ p.repo_name }}){% else %}—{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-fpsf -->
 
@@ -59,7 +59,7 @@ Sales-stage progression: Inquiry → Negotiation → Contract.
 | Repo | Status | Owner | Description | Last touched | GitHub | CP |
 |---|---|---|---|---|---|---|
 {%- for p in active_groups.self_canonic %}
-| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.status }} | {{ p.owner or "—" }} | {{ p.description or "" }} | {{ p.last_touched_short or "—" }} | {% if p.github_org and p.repo_name %}[{{ p.github_org }}/{{ p.repo_name }}](https://github.com/{{ p.github_org }}/{{ p.repo_name }}){% else %}—{% endif %} | [→]({{ p.scope }}/{{ p.dir_slug }}/cp.md) |
+| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.status }} | {{ p.owner or "—" }} | {{ p.description or "" }} | {{ p.last_touched_short or "—" }} | {% if p.github_org and p.repo_name %}[{{ p.github_org }}/{{ p.repo_name }}](https://github.com/{{ p.github_org }}/{{ p.repo_name }}){% else %}—{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-canonic -->
 
