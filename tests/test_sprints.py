@@ -12,22 +12,26 @@ from cp_engine.sprints import (
 from cp_engine.state import CarryForward, ClientAsk, PersonHours, ProjectState
 
 
-def _fixture_project() -> ProjectState:
+def _fixture_project(*, code: str = "peb", status: str = "active") -> ProjectState:
     """Reusable ProjectState for sprint-file tests.
 
     Mirrors the inline shape used in the round-trip test below: a Pebble
     Foods engagement in Negotiation. ensure_sprint_file tests assert that
     this project's `deal_stage` ("Negotiation") shows up in the rendered
     sprint-facts region — keep that field stable.
+
+    `code` and `status` are overridable so tests that exercise the
+    orchestrator can build distinguishable projects (e.g. an active "peb"
+    vs. a holding "apx") without spelling out the full ProjectState shape.
     """
     return ProjectState(
-        code="peb",
+        code=code,
         name="Pebble Foods",
         source="engagement",
         company_kind="client",
         company_code="PEB",
         company_name="Pebble Foods",
-        status="Deal",
+        status=status,
         is_internal=False,
         owner="Drew",
         last_touched=None,
@@ -363,3 +367,17 @@ def test_is_in_sprint_window(dt: datetime, expected: bool) -> None:
 
 def test_current_sprint_week_iso() -> None:
     assert current_sprint_week_iso(datetime(2026, 5, 13)) == "2026-W19"
+
+
+def test_ensure_sprint_files_for_active_projects_writes_one_per_active(tmp_path) -> None:
+    from cp_engine.sprints import ensure_sprint_files_for_active_projects
+    proj_active = _fixture_project(code="peb", status="active")
+    proj_holding = _fixture_project(code="apx", status="holding")
+    paths = ensure_sprint_files_for_active_projects(
+        active_projects=(proj_active, proj_holding),
+        sprint_root=tmp_path / "sprints",
+        now=datetime(2026, 5, 13, 8, 0),
+        per_project_data={},
+    )
+    assert any(p.name == "peb.md" for p in paths)
+    assert not any(p.name == "apx.md" for p in paths)

@@ -604,3 +604,47 @@ def sprint_week_dates(now: datetime) -> tuple[str, str]:
     monday = _monday_of(now)
     sunday = monday + timedelta(days=6)
     return monday.isoformat(), sunday.isoformat()
+
+
+def ensure_sprint_files_for_active_projects(
+    *,
+    active_projects,
+    sprint_root: Path,
+    now: datetime,
+    per_project_data: dict,
+) -> list[Path]:
+    """Write a sprint file for each active project in the iterable.
+
+    `active_projects` is a candidate list — projects with `status != "active"`
+    are filtered out here rather than upstream, so callers can pass any
+    iterable of ProjectState. Returns the list of paths actually written
+    (one per active project).
+    """
+    week_iso = current_sprint_week_iso(now)
+    prior = prior_sprint_week_iso(now)
+    week_start, week_end = sprint_week_dates(now)
+    week_label = f"W{int(week_iso.split('-W')[1])}"
+    out: list[Path] = []
+    for project in active_projects:
+        if project.status != "active":
+            continue
+        data = per_project_data.get(project.code, {})
+        out.append(
+            ensure_sprint_file(
+                project=project,
+                sprint_root=sprint_root,
+                week_iso=week_iso,
+                week_label=week_label,
+                week_start=week_start,
+                week_end=week_end,
+                prior_sprint=prior,
+                last_sprint_hours_line=data.get("last_sprint_hours_line"),
+                sessions_this_week=data.get("sessions_this_week", 0),
+                last_session_date=data.get("last_session_date"),
+                last_session_who=data.get("last_session_who"),
+                last_session_summary=data.get("last_session_summary"),
+                recent_commits=data.get("recent_commits", ()),
+                open_issues=data.get("open_issues", ()),
+            )
+        )
+    return out
