@@ -147,3 +147,33 @@ def test_parse_this_sprint_section(tmp_path) -> None:
     assert len(sf.deliverables) == 3
     assert sf.deliverables[0].position == 1
     assert "Pricing accepted" in sf.definition_of_done
+
+
+def test_parse_carry_forward_and_meeting_notes(tmp_path) -> None:
+    f = tmp_path / "peb.md"
+    f.write_text(
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W19\nPriorSprint: 2026-W18\n---\n"
+        "# peb — Pebble Foods · Sprint W19 (May 11 – May 17, 2026)\n"
+        "<!-- cp-engine:start carry-forward -->\n"
+        "## Carried over from W18\n"
+        "- [ask · 2026-05-04 · Maria] Volume forecast still open\n"
+        "- [risk · escalated · contract · 2026-05-04] Legal turnaround\n"
+        "<!-- cp-engine:end carry-forward -->\n"
+        "## Meeting notes & decisions\n"
+        "_From sprint planning · May 11 · Drew + Tony · 22 min_\n\n"
+        "### Decisions\n"
+        "1. Hold tier-2 cap firm; widen tier-3 ramp.\n"
+        "2. Drew owns reconciling §4.2 directly with Sam.\n\n"
+        "### Discussion notes\n"
+        "Spent most of the time on the volume-forecast pushback.\n"
+    )
+    sf = parse_sprint_file(f)
+    assert len(sf.carry_forward.asks) == 1
+    assert sf.carry_forward.asks[0].who == "Maria"
+    assert len(sf.carry_forward.risks) == 1
+    assert sf.carry_forward.risks[0].category == "contract"
+    assert sf.meeting_notes is not None
+    assert sf.meeting_notes.attendees == "Drew + Tony"
+    assert sf.meeting_notes.duration == "22 min"
+    assert len(sf.meeting_notes.decisions) == 2
+    assert "volume-forecast" in sf.meeting_notes.discussion_prose

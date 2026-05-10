@@ -18,6 +18,7 @@ from .state import (
     Deliverable,
     HorizonItem,
     InboundUpdate,
+    MeetingNotes,
     Outbound,
     PersonHours,
     Risk,
@@ -52,7 +53,7 @@ def parse_sprint_file(path: Path) -> SprintFile:
         prior_sprint=prior,
         facts=_parse_facts_region(body),
         where_it_stands=_empty_where(),
-        carry_forward=CarryForward(asks=(), risks=(), horizon=()),
+        carry_forward=_parse_carry_forward(body),
         client_outbound=client_outbound,
         client_open_asks=client_open_asks,
         client_inbound=client_inbound,
@@ -61,7 +62,7 @@ def parse_sprint_file(path: Path) -> SprintFile:
         deliverables=deliverables,
         definition_of_done=definition_of_done,
         horizon=_parse_horizon(body),
-        meeting_notes=None,
+        meeting_notes=_parse_meeting_notes(body),
     )
 
 
@@ -271,6 +272,84 @@ def _parse_this_sprint(
         deliverables.append(Deliverable(text=text, position=i))
     dod = _subsection(section, "Definition of done").strip()
     return tuple(alloc), tuple(deliverables), dod
+
+
+def _parse_carry_forward(body: str) -> CarryForward:
+    try:
+        region = _extract_region(body, "carry-forward")
+    except ValueError:
+        return CarryForward(asks=(), risks=(), horizon=())
+    asks: list[ClientAsk] = []
+    risks: list[Risk] = []
+    horizon: list[HorizonItem] = []
+    for first, _ in _bullets(region):
+        parsed = _parse_bracketed_bullet(first)
+        if not parsed:
+            continue
+        parts, text = parsed
+        kind = parts[0] if parts else ""
+        if kind == "ask":
+            asks.append(
+                ClientAsk(
+                    text=text,
+                    asked_date=parts[1] if len(parts) > 1 else "",
+                    status="open",
+                    who=parts[2] if len(parts) > 2 else None,
+                )
+            )
+        elif kind == "risk":
+            risks.append(
+                Risk(
+                    text=text,
+                    severity=parts[1] if len(parts) > 1 else "watching",
+                    category=parts[2] if len(parts) > 2 else "",
+                    raised_date=parts[3] if len(parts) > 3 else "",
+                )
+            )
+        elif kind in ("milestone", "decision", "opportunity"):
+            horizon.append(
+                HorizonItem(
+                    text=text,
+                    bucket=kind,
+                    target_date=parts[1] if len(parts) > 1 else None,
+                )
+            )
+    return CarryForward(asks=tuple(asks), risks=tuple(risks), horizon=tuple(horizon))
+
+
+# Meeting-meta line is `_From <source> · <attendees> · <duration>_` where
+# <source> may itself contain `·` separators (e.g. "sprint planning · May 11").
+# Anchor attendees/duration to the LAST two `·`-delimited chunks by making the
+# source group non-greedy; this absorbs any extra middle chunks (like a date)
+# into source rather than mis-binding them to attendees.
+_MEETING_META_RE = re.compile(
+    r"_(?:From\s+)?(?P<source>.+?)\s*·\s*(?P<attendees>[^·]+?)\s*·\s*(?P<duration>[^·_]+?)_"
+)
+
+
+def _parse_meeting_notes(body: str) -> MeetingNotes | None:
+    section = _section_body(body, "Meeting notes & decisions")
+    if not section.strip():
+        return None
+    src = att = dur = None
+    m = _MEETING_META_RE.search(section)
+    if m:
+        src = m.group("source").strip()
+        att = m.group("attendees").strip()
+        dur = m.group("duration").strip()
+    decisions = tuple(
+        re.sub(r"^\d+\.\s+", "", ln).strip()
+        for ln in _subsection(section, "Decisions").splitlines()
+        if re.match(r"^\d+\.\s+", ln)
+    )
+    discussion = _subsection(section, "Discussion notes").strip()
+    return MeetingNotes(
+        source=src,
+        attendees=att,
+        duration=dur,
+        decisions=decisions,
+        discussion_prose=discussion,
+    )
 
 
 def _parse_horizon(body: str) -> tuple[HorizonItem, ...]:
