@@ -170,6 +170,11 @@ def sync_tenant(
 
     # Master CP — splice if exists, full-write if not. Timestamp-only diffs
     # don't trigger a write (would otherwise produce hourly noise commits).
+    # `agenda` and `sprint-facts-strip` are owned by the post-sprint-files
+    # second-pass below (they need parsed sprint files to compute their
+    # content), so we skip them here to avoid wiping populated content
+    # with an empty render. Step 2 (below) splices them with the parsed
+    # sprint files in hand.
     master_path = config.root / "master-cp.md"
     exceptions_count = count_exceptions_in_window(config.root, days=7)
     new_master = render_master_cp(
@@ -179,10 +184,13 @@ def sync_tenant(
         allocations=allocations,
         exceptions_count=exceptions_count,
     )
+    first_pass_regions = tuple(
+        r for r in _MASTER_REGIONS if r not in ("agenda", "sprint-facts-strip")
+    )
     if _write_if_changed(
         master_path,
         new_master,
-        splice_regions=_MASTER_REGIONS,
+        splice_regions=first_pass_regions,
         cosmetic_regions=_MASTER_COSMETIC_REGIONS,
     ):
         files_written.append(master_path)
@@ -313,6 +321,7 @@ def sync_tenant(
         ensure_sprint_files_for_active_projects,
         is_in_sprint_window,
         parse_sprint_file,
+        prior_sprint_week_iso,
         render_current_sprint_block,
     )
     from cp_engine.status import is_active_status
@@ -371,12 +380,12 @@ def sync_tenant(
                     files_written.append(cp_path)
 
         # Re-render the master CP with the parsed sprint files so its
-        # `agenda` region picks up cross-project escalated risks, stale
-        # asks, and maturing horizon decisions. This is a second pass
-        # over master-cp.md (the first happened at top-of-sync, before
-        # sprint files were generated). We splice ONLY the `agenda`
-        # region so the no-op-resync semantics for unchanged regions
-        # stay intact.
+        # `agenda` and `sprint-facts-strip` regions pick up cross-project
+        # escalated risks, stale asks, maturing horizon decisions, and
+        # the aggregate sprint-totals strip. This is a second pass over
+        # master-cp.md (the first happened at top-of-sync, before sprint
+        # files were generated). We splice ONLY those two regions so the
+        # no-op-resync semantics for unchanged regions stay intact.
         if parsed_files:
             new_master_with_agenda = render_master_cp(
                 config,
@@ -385,6 +394,7 @@ def sync_tenant(
                 allocations=allocations,
                 exceptions_count=exceptions_count,
                 current_sprint_iso=week_iso,
+                prior_sprint_iso=prior_sprint_week_iso(sync_clock),
                 parsed_sprint_files=tuple(parsed_files),
                 today=sync_clock.date(),
             )
@@ -392,7 +402,7 @@ def sync_tenant(
                 _write_if_changed(
                     master_path,
                     new_master_with_agenda,
-                    splice_regions=("agenda",),
+                    splice_regions=("agenda", "sprint-facts-strip"),
                 )
                 and master_path not in files_written
             ):
@@ -437,6 +447,7 @@ def sync_tenant(
 # but listing them here keeps the contract explicit.
 _MASTER_REGIONS = (
     "last-sync-timestamp",
+    "sprint-facts-strip",
     "agenda",
     "exceptions-summary",
     "active-pipeline",

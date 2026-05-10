@@ -32,6 +32,7 @@ from cp_engine.state import (
     CarryForward,
     ClientAsk,
     HorizonItem,
+    PersonHours,
     Risk,
     SprintFacts,
     SprintFile,
@@ -435,14 +436,17 @@ def _fixture_sprint_file_for_render(
     risks_with_severity: tuple[tuple[str, str], ...] = (),
     open_asks: tuple[tuple[str, str], ...] = (),
     horizon_decisions: tuple[tuple[str, str], ...] = (),
+    allocation: tuple[tuple[str, float], ...] = (),
 ) -> SprintFile:
     """Minimal SprintFile populated only with the fields the agenda
-    rollup reads (risks, client_open_asks, horizon).
+    rollup and sprint-facts strip read (risks, client_open_asks, horizon,
+    allocation).
 
     `risks_with_severity` is a tuple of (severity, text); `open_asks` is
-    (text, asked_date_iso); `horizon_decisions` is (text, target_date).
-    Everything else defaults to empty so we don't have to spell out the
-    full sprint shape just to exercise the rollup.
+    (text, asked_date_iso); `horizon_decisions` is (text, target_date);
+    `allocation` is (person_name, hours). Everything else defaults to
+    empty so we don't have to spell out the full sprint shape just to
+    exercise the rollup.
     """
     risks = tuple(
         Risk(
@@ -461,6 +465,10 @@ def _fixture_sprint_file_for_render(
         HorizonItem(text=text, bucket="decision", target_date=target)
         for text, target in horizon_decisions
     )
+    alloc = tuple(
+        PersonHours(person_name=name, hours=hours)
+        for name, hours in allocation
+    )
     return SprintFile(
         project_code=project_code,
         week_iso="2026-W19",
@@ -474,7 +482,7 @@ def _fixture_sprint_file_for_render(
         client_open_asks=asks,
         client_inbound=(),
         risks=risks,
-        allocation=(),
+        allocation=alloc,
         deliverables=(),
         definition_of_done="",
         horizon=horizon,
@@ -579,3 +587,41 @@ def test_master_cp_agenda_skips_unparseable_ask_dates() -> None:
     )
     # Stale-asks list filtered the bad date out → no agenda surfaces.
     assert "## Agenda — what needs attention this week" not in body
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Renderer tests — sprint-facts strip
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_master_cp_includes_sprint_facts_strip_when_sprint_files_provided() -> None:
+    tenant = make_tenant()
+    projects = (make_state("peb-1234", "PEB Project", "Open"),)
+    sf_peb = _fixture_sprint_file_for_render(
+        project_code="peb",
+        allocation=(("Drew", 6.0), ("Tony", 2.0)),
+        risks_with_severity=(("escalated", "Legal turnaround risk"),),
+        open_asks=(("Volume forecast", "2026-05-01"),),  # 12d old, stale
+        horizon_decisions=(("Whether to renew", "by W21"),),  # within 2 sprints
+    )
+    sf_orb = _fixture_sprint_file_for_render(
+        project_code="orb",
+        allocation=(("Drew", 4.0), ("Tony", 8.0)),
+    )
+    body = render_master_cp(
+        tenant,
+        projects,
+        last_sync=datetime.now(timezone.utc),
+        current_sprint_iso="2026-W19",
+        prior_sprint_iso="2026-W18",
+        parsed_sprint_files=(sf_peb, sf_orb),
+        today=date(2026, 5, 13),
+    )
+    assert "**Total hours** 20" in body  # 6+2+4+8
+    assert "**Drew** 10" in body          # 6+4
+    assert "**Tony** 10" in body          # 2+8
+    assert "**Active** 2" in body
+    assert "**Stale asks** 1" in body
+    assert "**Escalated** 1" in body
+    assert "**Decisions due** 1" in body
+    assert "**Prior sprint** 2026-W18" in body

@@ -93,6 +93,7 @@ def render_master_cp(
     allocations=None,  # WeeklyAllocations | None
     exceptions_count: int = 0,
     current_sprint_iso: str | None = None,
+    prior_sprint_iso: str | None = None,
     parsed_sprint_files: tuple[SprintFile, ...] | None = None,
     today: date | None = None,
 ) -> str:
@@ -190,8 +191,16 @@ def render_master_cp(
         except ValueError:
             current_week_label = None
 
+    today_or_now = today or date.today()
     agenda = (
-        _compute_agenda_rollup(parsed_sprint_files, today or date.today())
+        _compute_agenda_rollup(parsed_sprint_files, today_or_now)
+        if parsed_sprint_files
+        else None
+    )
+    sprint_facts = (
+        _compute_sprint_facts_strip(
+            parsed_sprint_files, today_or_now, prior_sprint_iso
+        )
         if parsed_sprint_files
         else None
     )
@@ -210,6 +219,7 @@ def render_master_cp(
         exceptions_count=exceptions_count,
         current_week_label=current_week_label,
         agenda=agenda,
+        sprint_facts=sprint_facts,
     )
 
 
@@ -697,6 +707,72 @@ def _compute_agenda_rollup(
         "escalated_risks": escalated_risks,
         "stale_asks": stale_asks,
         "decisions_due": decisions_due,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Sprint facts strip
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _compute_sprint_facts_strip(
+    parsed_sprint_files: tuple[SprintFile, ...],
+    today: date,
+    prior_sprint_iso: str | None,
+) -> dict | None:
+    """Aggregate sprint-wide facts across all parsed sprint files.
+
+    Eight fields surfaced at the top of master-cp.md as a one-line strip:
+    total hours summed across all sprint files, per-person totals (sorted
+    by hours desc), count of active sprint files this week, stale-asks
+    count (>7d old), escalated risks count, decisions-due count (matching
+    the agenda rollup's filter — next 2 sprints), and the prior sprint
+    ISO week (rendered as plain text in v0.8.0; no master archive to link
+    to yet).
+
+    Returns `None` when `parsed_sprint_files` is empty so the template
+    can hide the strip. The stale/escalated/decisions filters reuse
+    `_compute_agenda_rollup` to keep the two surfaces in lockstep.
+    """
+    if not parsed_sprint_files:
+        return None
+
+    # Per-person totals across all sprint files. dict preserves insertion
+    # order; we re-sort at the end by hours desc for stable rendering.
+    by_person: dict[str, float] = {}
+    for sf in parsed_sprint_files:
+        for ph in sf.allocation:
+            by_person[ph.person_name] = by_person.get(ph.person_name, 0.0) + ph.hours
+    per_person = sorted(by_person.items(), key=lambda kv: (-kv[1], kv[0]))
+    # Render hours as ints when whole — matches the test's "**Drew** 10" shape.
+    per_person_view = [
+        (name, int(hours) if hours == int(hours) else hours)
+        for name, hours in per_person
+    ]
+    total = sum(by_person.values())
+    total_view = int(total) if total == int(total) else total
+
+    # Reuse the agenda rollup to count escalated risks, stale asks, and
+    # decisions due. When the rollup returns None (all three lists
+    # empty), the counts are all zero.
+    rollup = _compute_agenda_rollup(parsed_sprint_files, today)
+    if rollup is None:
+        escalated_count = 0
+        stale_asks_count = 0
+        decisions_due_count = 0
+    else:
+        escalated_count = len(rollup["escalated_risks"])
+        stale_asks_count = len(rollup["stale_asks"])
+        decisions_due_count = len(rollup["decisions_due"])
+
+    return {
+        "total_hours": total_view,
+        "per_person": per_person_view,
+        "active_count": len(parsed_sprint_files),
+        "stale_asks_count": stale_asks_count,
+        "escalated_count": escalated_count,
+        "decisions_due_count": decisions_due_count,
+        "prior_sprint": prior_sprint_iso,
     }
 
 
