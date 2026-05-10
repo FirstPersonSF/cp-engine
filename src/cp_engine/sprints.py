@@ -13,6 +13,7 @@ from datetime import date, datetime
 from pathlib import Path
 
 from . import render as _render
+from .render import MarkerMissing, splice_managed_region
 from .state import (
     CarryForward,
     ClientAsk,
@@ -480,3 +481,93 @@ def render_sprint_scaffold(
         open_issues=open_issues,
         carry_forward=carry_forward,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Idempotent sprint-file writer
+# ──────────────────────────────────────────────────────────────────────
+
+
+def ensure_sprint_file(
+    *,
+    project: ProjectState,
+    sprint_root: Path,
+    week_iso: str,
+    week_label: str,
+    week_start: str,
+    week_end: str,
+    prior_sprint: str | None,
+    last_sprint_hours_line: str | None,
+    sessions_this_week: int,
+    last_session_date: str | None,
+    last_session_who: str | None,
+    last_session_summary: str | None,
+    recent_commits: tuple[SprintCommit, ...],
+    open_issues: tuple,
+) -> Path:
+    """Create the sprint file if missing, or refresh just its engine regions.
+
+    First-write path: no file at `<sprint_root>/<week_iso>/<project.code>.md`
+    yet, so we render the full scaffold and write it. This is the only point
+    at which hand-written placeholder text (the empty bullet stubs) lands
+    on disk.
+
+    Refresh path: file exists. We re-render the scaffold to derive fresh
+    engine-region bodies, then splice ONLY those regions (`sprint-facts`,
+    `where-it-stands`, `carry-forward`) into the existing file. Everything
+    else — including any hand-written outbound bullets, notes, or status
+    flips — is preserved byte-for-byte.
+
+    Carry-forward derivation pulls from the prior sprint when one is named.
+    """
+    week_dir = sprint_root / week_iso
+    week_dir.mkdir(parents=True, exist_ok=True)
+    out = week_dir / f"{project.code}.md"
+
+    prior_path = (
+        sprint_root / prior_sprint / f"{project.code}.md"
+        if prior_sprint
+        else None
+    )
+    cf = (
+        compute_carry_forward(prior_path)
+        if prior_path is not None
+        else CarryForward(asks=(), risks=(), horizon=())
+    )
+
+    new_body = render_sprint_scaffold(
+        project=project,
+        week_iso=week_iso,
+        week_label=week_label,
+        week_start=week_start,
+        week_end=week_end,
+        prior_sprint=prior_sprint,
+        last_sprint_hours_line=last_sprint_hours_line,
+        sessions_this_week=sessions_this_week,
+        last_session_date=last_session_date,
+        last_session_who=last_session_who,
+        last_session_summary=last_session_summary,
+        recent_commits=recent_commits,
+        open_issues=open_issues,
+        carry_forward=cf,
+    )
+
+    if not out.exists():
+        out.write_text(new_body)
+        return out
+
+    # Preserve hand-written regions: re-splice engine regions only.
+    # Existing files may pre-date a region (e.g. `where-it-stands` was added
+    # later); skip those gracefully rather than mangle hand-written content.
+    existing = out.read_text()
+    for region in ("sprint-facts", "where-it-stands", "carry-forward"):
+        try:
+            new_inner = _extract_region(new_body, region).strip()
+        except ValueError:
+            continue
+        try:
+            existing = splice_managed_region(existing, region, new_inner)
+        except MarkerMissing:
+            continue
+    out.write_text(existing)
+    return out

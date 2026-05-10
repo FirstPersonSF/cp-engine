@@ -6,6 +6,31 @@ from cp_engine.sprints import parse_sprint_file, render_sprint_scaffold
 from cp_engine.state import CarryForward, ClientAsk, PersonHours, ProjectState
 
 
+def _fixture_project() -> ProjectState:
+    """Reusable ProjectState for sprint-file tests.
+
+    Mirrors the inline shape used in the round-trip test below: a Pebble
+    Foods engagement in Negotiation. ensure_sprint_file tests assert that
+    this project's `deal_stage` ("Negotiation") shows up in the rendered
+    sprint-facts region — keep that field stable.
+    """
+    return ProjectState(
+        code="peb",
+        name="Pebble Foods",
+        source="engagement",
+        company_kind="client",
+        company_code="PEB",
+        company_name="Pebble Foods",
+        status="Deal",
+        is_internal=False,
+        owner="Drew",
+        last_touched=None,
+        deadline=None,
+        deal_stage="Negotiation",
+        budget=45000.0,
+    )
+
+
 def test_parse_sprint_file_raises_on_missing_file(tmp_path: Path) -> None:
     with pytest.raises(FileNotFoundError):
         parse_sprint_file(tmp_path / "missing.md")
@@ -253,3 +278,51 @@ def test_compute_carry_forward_from_prior_sprint_file(tmp_path) -> None:
     assert cf.asks[0].who == "Maria"
     assert len(cf.risks) == 1  # only `escalated`/`watching`
     assert len(cf.horizon) == 1
+
+
+def test_ensure_sprint_file_creates_new(tmp_path) -> None:
+    from cp_engine.sprints import ensure_sprint_file
+    out = ensure_sprint_file(
+        project=_fixture_project(),
+        sprint_root=tmp_path / "sprints",
+        week_iso="2026-W19",
+        week_label="W19",
+        week_start="2026-05-11",
+        week_end="2026-05-17",
+        prior_sprint=None,
+        last_sprint_hours_line=None,
+        sessions_this_week=0,
+        last_session_date=None, last_session_who=None, last_session_summary=None,
+        recent_commits=(), open_issues=(),
+    )
+    assert out.exists()
+    assert "<!-- cp-engine:start sprint-facts -->" in out.read_text()
+
+
+def test_ensure_sprint_file_preserves_handwritten_when_present(tmp_path) -> None:
+    from cp_engine.sprints import ensure_sprint_file
+    out_dir = tmp_path / "sprints" / "2026-W19"
+    out_dir.mkdir(parents=True)
+    existing = out_dir / "peb.md"
+    existing.write_text(
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W19\n---\n"
+        "# peb — Pebble Foods · Sprint W19 (May 11 – May 17, 2026)\n"
+        "<!-- cp-engine:start sprint-facts -->\n"
+        "| | |\n|---|---|\n| Stage | Stale |\n"
+        "<!-- cp-engine:end sprint-facts -->\n"
+        "## Client communication\n### Outbound\n"
+        "- [sent · 2026-05-11] Custom hand-written note\n"
+    )
+    ensure_sprint_file(
+        project=_fixture_project(),
+        sprint_root=tmp_path / "sprints",
+        week_iso="2026-W19",
+        week_label="W19", week_start="2026-05-11", week_end="2026-05-17",
+        prior_sprint=None, last_sprint_hours_line=None, sessions_this_week=0,
+        last_session_date=None, last_session_who=None, last_session_summary=None,
+        recent_commits=(), open_issues=(),
+    )
+    body = existing.read_text()
+    assert "Custom hand-written note" in body  # preserved
+    assert "Stage | Negotiation" in body  # engine region refreshed
+    assert "Stage | Stale" not in body
