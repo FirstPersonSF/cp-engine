@@ -193,11 +193,20 @@ def render_project_cp(
     config: TenantConfig,
     project: ProjectState,
     tracked_issues: tuple[Issue, ...] = (),
+    current_sprint_block: str | None = None,
 ) -> str:
     """Render a project CP from the empty template.
 
     Only used on first creation. Subsequent updates touch only the
     engine-managed regions via splice_managed_region.
+
+    `current_sprint_block` is the rendered "Current sprint" section
+    (from `cp_engine.sprints.render_current_sprint_block`) for projects
+    that have an active sprint file. Passed through to the template so
+    the engine-managed `current-sprint` region is populated on first
+    scaffold; on subsequent syncs the splicer rewrites it in place.
+    Pass None when no sprint file exists yet — template emits a
+    placeholder line.
     """
     template = _env().get_template("project-cp.md.j2")
     return template.render(
@@ -206,6 +215,7 @@ def render_project_cp(
         engine_version=ENGINE_VERSION,
         today=_today_iso(),
         tracked_issues=[_issue_view(i) for i in tracked_issues],
+        current_sprint_block=current_sprint_block,
     )
 
 
