@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from cp_engine.sprints import parse_sprint_file
-from cp_engine.state import PersonHours
+from cp_engine.sprints import parse_sprint_file, render_sprint_scaffold
+from cp_engine.state import CarryForward, ClientAsk, PersonHours, ProjectState
 
 
 def test_parse_sprint_file_raises_on_missing_file(tmp_path: Path) -> None:
@@ -177,3 +177,56 @@ def test_parse_carry_forward_and_meeting_notes(tmp_path) -> None:
     assert sf.meeting_notes.duration == "22 min"
     assert len(sf.meeting_notes.decisions) == 2
     assert "volume-forecast" in sf.meeting_notes.discussion_prose
+
+
+def test_render_sprint_scaffold_round_trips_through_parser(tmp_path: Path) -> None:
+    project = ProjectState(
+        code="peb",
+        name="Pebble Foods",
+        source="engagement",
+        company_kind="client",
+        company_code="PEB",
+        company_name="Pebble Foods",
+        status="Deal",
+        is_internal=False,
+        owner="Drew",
+        last_touched=None,
+        deadline=None,
+        deal_stage="Negotiation",
+        budget=45000.0,
+    )
+    body = render_sprint_scaffold(
+        project=project,
+        week_iso="2026-W19",
+        week_label="W19",
+        week_start="2026-05-11",
+        week_end="2026-05-17",
+        prior_sprint="2026-W18",
+        last_sprint_hours_line="Drew 6.5h · Tony 2h",
+        sessions_this_week=3,
+        last_session_date=None,
+        last_session_who=None,
+        last_session_summary=None,
+        recent_commits=(),
+        open_issues=(),
+        carry_forward=CarryForward(
+            asks=(
+                ClientAsk(
+                    text="Volume forecast",
+                    asked_date="2026-05-04",
+                    status="open",
+                    who="Maria",
+                ),
+            ),
+            risks=(),
+            horizon=(),
+        ),
+    )
+    f = tmp_path / "peb.md"
+    f.write_text(body)
+    sf = parse_sprint_file(f)
+    assert sf.project_code == "peb"
+    assert sf.facts.stage == "Negotiation"
+    assert sf.facts.owner == "Drew"
+    assert len(sf.carry_forward.asks) == 1
+    assert sf.carry_forward.asks[0].who == "Maria"

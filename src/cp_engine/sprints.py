@@ -9,22 +9,28 @@ and re-render every sync. Hand-written regions are preserved verbatim.
 from __future__ import annotations
 
 import re
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
+from . import render as _render
 from .state import (
     CarryForward,
     ClientAsk,
     Deliverable,
     HorizonItem,
     InboundUpdate,
+    Issue,
     MeetingNotes,
     Outbound,
     PersonHours,
+    ProjectState,
     Risk,
+    SprintCommit,
     SprintFacts,
     SprintFile,
     WhereItStands,
+    dir_slug,
+    scope_for,
 )
 from .sync import _extract_region
 
@@ -384,3 +390,77 @@ def _parse_horizon(body: str) -> tuple[HorizonItem, ...]:
                     )
                 )
     return tuple(out)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Scaffold renderer
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _short_md_date(iso: str) -> str:
+    """Short month-day with no year ('May 11'). Empty input → empty string."""
+    return datetime.strptime(iso, "%Y-%m-%d").strftime("%b %-d") if iso else ""
+
+
+def _long_md_date(iso: str) -> str:
+    """Month-day-year ('May 17, 2026'). Empty input → empty string."""
+    return datetime.strptime(iso, "%Y-%m-%d").strftime("%b %-d, %Y") if iso else ""
+
+
+def render_sprint_scaffold(
+    *,
+    project: ProjectState,
+    week_iso: str,
+    week_label: str,
+    week_start: str,
+    week_end: str,
+    prior_sprint: str | None,
+    last_sprint_hours_line: str | None,
+    sessions_this_week: int,
+    last_session_date: str | None,
+    last_session_who: str | None,
+    last_session_summary: str | None,
+    recent_commits: tuple[SprintCommit, ...],
+    open_issues: tuple[Issue, ...],
+    carry_forward: CarryForward,
+) -> str:
+    """Render a sprint file scaffold from the Jinja template.
+
+    The output round-trips through `parse_sprint_file` — the H1 date format
+    ("Mon D – Mon D, YYYY") and the carry-forward bracket prefixes are
+    contract surfaces between this renderer and the parser. Tests in
+    `test_sprints.py` assert that contract end-to-end.
+    """
+    env = _render._env()
+    template = env.get_template("sprint-cp.md.j2")
+    week_dates = f"{_short_md_date(week_start)} – {_long_md_date(week_end)}"
+    return template.render(
+        project={
+            "code": project.code,
+            "name": project.name,
+            "scope": scope_for(project.company_kind),
+            "dir_slug": dir_slug(project.code, project.name),
+            "deal_stage": project.deal_stage,
+            "owner": project.owner,
+            "budget_short": _render._format_budget(project.budget),
+            "last_touched_short": _render._short(project.last_touched),
+            "contacts": getattr(project, "contacts", ()) or (),
+        },
+        engine_version=_render.ENGINE_VERSION,
+        today=date.today().isoformat(),
+        week_iso=week_iso,
+        week_label=week_label,
+        week_dates=week_dates,
+        prior_sprint=prior_sprint,
+        last_sprint_hours_line=last_sprint_hours_line,
+        sessions_this_week=sessions_this_week,
+        open_issues_count=len(open_issues),
+        last_session={
+            "date": last_session_date,
+            "who": last_session_who,
+            "summary": last_session_summary,
+        },
+        recent_commits=recent_commits,
+        open_issues=open_issues,
+        carry_forward=carry_forward,
+    )
