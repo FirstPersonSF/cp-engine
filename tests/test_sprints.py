@@ -326,3 +326,21 @@ def test_ensure_sprint_file_preserves_handwritten_when_present(tmp_path) -> None
     assert "Custom hand-written note" in body  # preserved
     assert "Stage | Negotiation" in body  # engine region refreshed
     assert "Stage | Stale" not in body
+
+
+def test_ensure_sprint_file_is_idempotent(tmp_path) -> None:
+    from cp_engine.sprints import ensure_sprint_file
+    kwargs = dict(
+        project=_fixture_project(),
+        sprint_root=tmp_path / "sprints",
+        week_iso="2026-W19", week_label="W19",
+        week_start="2026-05-11", week_end="2026-05-17",
+        prior_sprint=None, last_sprint_hours_line=None, sessions_this_week=0,
+        last_session_date=None, last_session_who=None, last_session_summary=None,
+        recent_commits=(), open_issues=(),
+    )
+    p1 = ensure_sprint_file(**kwargs)
+    body1 = p1.read_text()
+    p2 = ensure_sprint_file(**kwargs)
+    body2 = p2.read_text()
+    assert body1 == body2
