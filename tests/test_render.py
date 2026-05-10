@@ -266,6 +266,14 @@ def test_claude_md_includes_status_vocabulary() -> None:
     assert "`Complete`" not in out
 
 
+def test_claude_md_documents_sprint_file_deepening_path() -> None:
+    body = render_claude_md(make_tenant())
+    assert "sprints/" in body
+    assert "deepen from transcript" in body
+    assert "sprint file" in body.lower()
+    assert "wrap up" in body
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Splice tests — happy path
 # ──────────────────────────────────────────────────────────────────────
