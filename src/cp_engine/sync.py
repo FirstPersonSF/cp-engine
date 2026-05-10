@@ -338,6 +338,10 @@ def sync_tenant(
         # files are skipped silently — this region is best-effort and
         # shouldn't break sync.
         week_iso = current_sprint_week_iso(sync_clock)
+        # Collect parsed sprint files as we walk them so the post-loop
+        # master-cp re-render (for the agenda rollup) doesn't have to
+        # re-parse every file.
+        parsed_files: list = []
         for project in active_for_sprints:
             sprint_path = config.root / "sprints" / week_iso / f"{project.code}.md"
             if not sprint_path.exists():
@@ -355,6 +359,7 @@ def sync_tenant(
                     project.code, exc,
                 )
                 continue
+            parsed_files.append(sf)
             link_path = f"../../sprints/{week_iso}/{project.code}.md"
             block = render_current_sprint_block(sf, link_path=link_path)
             existing = cp_path.read_text()
@@ -364,6 +369,34 @@ def sync_tenant(
                 cp_path.write_text(new_body)
                 if cp_path not in files_written:
                     files_written.append(cp_path)
+
+        # Re-render the master CP with the parsed sprint files so its
+        # `agenda` region picks up cross-project escalated risks, stale
+        # asks, and maturing horizon decisions. This is a second pass
+        # over master-cp.md (the first happened at top-of-sync, before
+        # sprint files were generated). We splice ONLY the `agenda`
+        # region so the no-op-resync semantics for unchanged regions
+        # stay intact.
+        if parsed_files:
+            new_master_with_agenda = render_master_cp(
+                config,
+                projects,
+                last_sync=sync_clock,
+                allocations=allocations,
+                exceptions_count=exceptions_count,
+                current_sprint_iso=week_iso,
+                parsed_sprint_files=tuple(parsed_files),
+                today=sync_clock.date(),
+            )
+            if (
+                _write_if_changed(
+                    master_path,
+                    new_master_with_agenda,
+                    splice_regions=("agenda",),
+                )
+                and master_path not in files_written
+            ):
+                files_written.append(master_path)
 
     # Exceptions README — engine-managed listing of session captures from
     # unregistered repos. Only render when the directory exists (creating it
@@ -404,6 +437,7 @@ def sync_tenant(
 # but listing them here keeps the contract explicit.
 _MASTER_REGIONS = (
     "last-sync-timestamp",
+    "agenda",
     "exceptions-summary",
     "active-pipeline",
     "active-1p",

@@ -28,8 +28,8 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from cp_engine import __version__ as ENGINE_VERSION
 from cp_engine.config import TenantConfig
+from cp_engine.state import Issue, ProjectState, SprintFile, dir_slug, scope_for
 from cp_engine.status import is_active_status
-from cp_engine.state import Issue, ProjectState, dir_slug, scope_for
 
 # ──────────────────────────────────────────────────────────────────────
 #  Errors
@@ -93,6 +93,8 @@ def render_master_cp(
     allocations=None,  # WeeklyAllocations | None
     exceptions_count: int = 0,
     current_sprint_iso: str | None = None,
+    parsed_sprint_files: tuple[SprintFile, ...] | None = None,
+    today: date | None = None,
 ) -> str:
     """Render the full master-cp.md body.
 
@@ -188,6 +190,12 @@ def render_master_cp(
         except ValueError:
             current_week_label = None
 
+    agenda = (
+        _compute_agenda_rollup(parsed_sprint_files, today or date.today())
+        if parsed_sprint_files
+        else None
+    )
+
     template = _env().get_template("master-cp.md.j2")
     return template.render(
         tenant=config,
@@ -201,6 +209,7 @@ def render_master_cp(
         closed_recent=[_project_view(p) for p in closed_recent],
         exceptions_count=exceptions_count,
         current_week_label=current_week_label,
+        agenda=agenda,
     )
 
 
@@ -569,6 +578,126 @@ def splice_managed_region(file_contents: str, region: str, new_body: str) -> str
     if body:
         return f"{before}\n{body}\n{after}"
     return f"{before}\n{after}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Agenda rollup
+# ──────────────────────────────────────────────────────────────────────
+
+
+# Match either "by W##" or bare "W##" (case-insensitive on the leading
+# `by`). Used to detect horizon target_dates that we can compare against
+# the current sprint week numerically.
+_AGENDA_WEEK_RE = re.compile(r"^(?:by\s+)?W(\d+)$", re.IGNORECASE)
+
+
+def _compute_agenda_rollup(
+    parsed_sprint_files: tuple[SprintFile, ...] | None,
+    today: date,
+) -> dict | None:
+    """Aggregate cross-project agenda items from parsed sprint files.
+
+    Three lists, each filtered + tagged with `project_code` so the master
+    CP can render them in one block:
+
+    - `escalated_risks`: every risk with `severity == "escalated"`. Order:
+      preserved within each sprint file; sprint files iterated in source
+      order.
+    - `stale_asks`: every open client ask whose `asked_date` is more than
+      7 days before `today`. Each entry includes `aged_days` for display.
+      Asks with unparseable date strings are skipped (they'd produce
+      misleading age values).
+    - `decisions_due`: every horizon item with `bucket == "decision"`
+      whose `target_date` parses as a `W##` (or `by W##`) week within +2
+      sprints of `today`'s sprint week. Items whose target_date doesn't
+      match the week pattern (e.g. "TBD", a literal date) pass through
+      unconditionally — better to over-surface than to silently drop.
+
+    Returns a dict with the three lists, OR `None` when all three are
+    empty (so the template's `{%- if agenda %}` guard hides the section).
+    """
+    if not parsed_sprint_files:
+        return None
+
+    escalated_risks: list[dict] = []
+    stale_asks: list[dict] = []
+    decisions_due: list[dict] = []
+
+    # Compute current sprint week number once. The %W convention matches
+    # cp_engine.sprints.current_sprint_week_iso. We pad to two digits to
+    # match how week numbers are emitted, but parse as int for comparison.
+    monday = today - timedelta(days=today.weekday())
+    current_week_num = int(monday.strftime("%W"))
+
+    for sf in parsed_sprint_files:
+        for risk in sf.risks:
+            if risk.severity == "escalated":
+                escalated_risks.append(
+                    {"project_code": sf.project_code, "text": risk.text}
+                )
+
+        for ask in sf.client_open_asks:
+            if ask.status != "open":
+                continue
+            try:
+                asked = date.fromisoformat(ask.asked_date)
+            except (ValueError, TypeError):
+                # Unparseable date string — skip rather than guess the age.
+                continue
+            aged_days = (today - asked).days
+            if aged_days > 7:
+                stale_asks.append(
+                    {
+                        "project_code": sf.project_code,
+                        "text": ask.text,
+                        "aged_days": aged_days,
+                    }
+                )
+
+        for h in sf.horizon:
+            if h.bucket != "decision":
+                continue
+            target = (h.target_date or "").strip()
+            if not target:
+                # No target date at all — pass it through (over-surface).
+                decisions_due.append(
+                    {
+                        "project_code": sf.project_code,
+                        "text": h.text,
+                        "target_date": target,
+                    }
+                )
+                continue
+            m = _AGENDA_WEEK_RE.match(target)
+            if m:
+                week_num = int(m.group(1))
+                # Within +2 sprints means current_week + 1 or current_week + 2.
+                if week_num - current_week_num in (1, 2):
+                    decisions_due.append(
+                        {
+                            "project_code": sf.project_code,
+                            "text": h.text,
+                            "target_date": target,
+                        }
+                    )
+                # Else: filtered out (already past, or further than +2 sprints).
+                continue
+            # Non-week target (e.g. "TBD", "2026-06-01") → pass through.
+            decisions_due.append(
+                {
+                    "project_code": sf.project_code,
+                    "text": h.text,
+                    "target_date": target,
+                }
+            )
+
+    if not (escalated_risks or stale_asks or decisions_due):
+        return None
+    return {
+        "escalated_risks": escalated_risks,
+        "stale_asks": stale_asks,
+        "decisions_due": decisions_due,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -15,6 +15,26 @@ Author: cp-engine (sync)
 **Last sync:** {{ last_sync_iso }}
 <!-- cp-engine:end last-sync-timestamp -->
 
+<!-- cp-engine:start agenda -->
+{%- if agenda %}
+## Agenda — what needs attention this week
+**Risks needing decision** ({{ agenda.escalated_risks | length }})
+{%- for r in agenda.escalated_risks %}
+- `{{ r.project_code }}` {{ r.text }}
+{%- endfor %}
+
+**Stale client asks** ({{ agenda.stale_asks | length }})
+{%- for a in agenda.stale_asks %}
+- `{{ a.project_code }}` {{ a.text }} — {{ a.aged_days }}d
+{%- endfor %}
+
+**Horizon items maturing** ({{ agenda.decisions_due | length }})
+{%- for d in agenda.decisions_due %}
+- `{{ d.project_code }}` {{ d.text }} — {{ d.target_date }}
+{%- endfor %}
+{%- endif %}
+<!-- cp-engine:end agenda -->
+
 <!-- cp-engine:start exceptions-summary -->
 {%- if exceptions_count and exceptions_count > 0 %}
 **Exceptions:** {{ exceptions_count }} this week — see [`exceptions/`](exceptions/README.md) for unregistered repo activity.
