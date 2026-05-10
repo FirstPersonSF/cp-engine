@@ -707,6 +707,20 @@ def sprint_week_dates(now: datetime) -> tuple[str, str]:
     return monday.isoformat(), sunday.isoformat()
 
 
+def sprint_file_to_dict(sf: SprintFile) -> dict:
+    """Recursively serialize a SprintFile to a plain dict.
+
+    `dataclasses.asdict` walks every nested dataclass (Risk, ClientAsk,
+    SprintFacts, …) and turns tuples into lists, which is what we want
+    for JSON output. Callers should pass the result through
+    `json.dumps(..., default=str)` to coerce any stray date/datetime
+    values into ISO strings.
+    """
+    from dataclasses import asdict
+
+    return asdict(sf)
+
+
 def ensure_sprint_files_for_active_projects(
     *,
     active_projects,
