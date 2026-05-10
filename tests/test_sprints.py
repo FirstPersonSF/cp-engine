@@ -12,7 +12,7 @@ from cp_engine.sprints import (
 from cp_engine.state import CarryForward, ClientAsk, PersonHours, ProjectState
 
 
-def _fixture_project(*, code: str = "peb", status: str = "active") -> ProjectState:
+def _fixture_project(*, code: str = "peb", status: str = "Open") -> ProjectState:
     """Reusable ProjectState for sprint-file tests.
 
     Mirrors the inline shape used in the round-trip test below: a Pebble
@@ -371,8 +371,8 @@ def test_current_sprint_week_iso() -> None:
 
 def test_ensure_sprint_files_for_active_projects_writes_one_per_active(tmp_path) -> None:
     from cp_engine.sprints import ensure_sprint_files_for_active_projects
-    proj_active = _fixture_project(code="peb", status="active")
-    proj_holding = _fixture_project(code="apx", status="holding")
+    proj_active = _fixture_project(code="peb", status="Open")
+    proj_holding = _fixture_project(code="apx", status="Holding")
     paths = ensure_sprint_files_for_active_projects(
         active_projects=(proj_active, proj_holding),
         sprint_root=tmp_path / "sprints",

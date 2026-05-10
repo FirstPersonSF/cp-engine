@@ -95,8 +95,10 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     written_names = {p.name for p in result.files_written}
     # v0.3 layout: project working dir at <scope>/<dir_slug>/cp.md.
     # Default make_state has company_kind="client" → scope "1p". With name
-    # set, the slug is `mc-2-mission-control-v2`.
-    assert written_names == {"master-cp.md", "CLAUDE.md", ".gitignore", "cp.md"}
+    # set, the slug is `mc-2-mission-control-v2`. Sprint file is `mc-2.md`
+    # under sprints/<YYYY-W##>/ since make_state defaults to status="Open"
+    # (active subset).
+    assert written_names == {"master-cp.md", "CLAUDE.md", ".gitignore", "cp.md", "mc-2.md"}
 
     # Files actually exist + reference the project
     master = (tmp_path / "master-cp.md").read_text()
@@ -907,20 +909,20 @@ def test_legacy_bare_code_dir_renamed_to_slug(tmp_path: Path) -> None:
 def test_sync_tenant_writes_sprint_files_for_active_projects(tmp_path: Path) -> None:
     """sync_tenant should call into the sprint-file orchestrator for every
     active, non-internal project, dropping a `<code>.md` file under
-    `<tenant_root>/sprints/<YYYY-W##>/`. The orchestrator filters by
-    `status == "active"` (lowercase), so the fixture uses that explicitly
-    rather than the MC-2 capitalized statuses elsewhere in this file."""
+    `<tenant_root>/sprints/<YYYY-W##>/`. The orchestrator filters by the
+    canonical active subset (Deal/Open per `is_active_status`), matching
+    MC-2's capitalized status vocabulary."""
     config = make_config(tmp_path)
     fake = FakeBackend(
         (
-            make_state(code="peb", name="Pebble Foods", status="active"),
+            make_state(code="peb", name="Pebble Foods", status="Open"),
             make_state(
-                code="apx", name="Apex Holding", status="holding"
+                code="apx", name="Apex Holding", status="Holding"
             ),  # not active → no sprint file
             make_state(
                 code="internal-1",
                 name="Internal one",
-                status="active",
+                status="Open",
                 is_internal=True,
             ),  # internal → no sprint file
         )

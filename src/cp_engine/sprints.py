@@ -33,6 +33,7 @@ from .state import (
     dir_slug,
     scope_for,
 )
+from .status import is_active_status
 from .sync import _extract_region
 
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
@@ -560,16 +561,20 @@ def ensure_sprint_file(
     # Existing files may pre-date a region (e.g. `where-it-stands` was added
     # later); skip those gracefully rather than mangle hand-written content.
     existing = out.read_text()
+    spliced = existing
     for region in ("sprint-facts", "where-it-stands", "carry-forward"):
         try:
             new_inner = _extract_region(new_body, region).strip()
         except ValueError:
             continue
         try:
-            existing = splice_managed_region(existing, region, new_inner)
+            spliced = splice_managed_region(spliced, region, new_inner)
         except MarkerMissing:
             continue
-    out.write_text(existing)
+    # Only write when the spliced result differs from what's on disk —
+    # keeps resync a true no-op (no mtime churn) for unchanged projects.
+    if spliced != existing:
+        out.write_text(spliced)
     return out
 
 
@@ -615,10 +620,12 @@ def ensure_sprint_files_for_active_projects(
 ) -> list[Path]:
     """Write a sprint file for each active project in the iterable.
 
-    `active_projects` is a candidate list — projects with `status != "active"`
-    are filtered out here rather than upstream, so callers can pass any
+    `active_projects` is a candidate list — projects outside the canonical
+    active subset (Deal/Open, per `is_active_status` in `status.py`) are
+    filtered out here rather than upstream, so callers can pass any
     iterable of ProjectState. Returns the list of paths actually written
-    (one per active project).
+    on disk this call (skipping idempotent no-ops — see
+    `ensure_sprint_file`).
     """
     week_iso = current_sprint_week_iso(now)
     prior = prior_sprint_week_iso(now)
@@ -626,25 +633,33 @@ def ensure_sprint_files_for_active_projects(
     week_label = f"W{int(week_iso.split('-W')[1])}"
     out: list[Path] = []
     for project in active_projects:
-        if project.status != "active":
+        if not is_active_status(project.status):
             continue
         data = per_project_data.get(project.code, {})
-        out.append(
-            ensure_sprint_file(
-                project=project,
-                sprint_root=sprint_root,
-                week_iso=week_iso,
-                week_label=week_label,
-                week_start=week_start,
-                week_end=week_end,
-                prior_sprint=prior,
-                last_sprint_hours_line=data.get("last_sprint_hours_line"),
-                sessions_this_week=data.get("sessions_this_week", 0),
-                last_session_date=data.get("last_session_date"),
-                last_session_who=data.get("last_session_who"),
-                last_session_summary=data.get("last_session_summary"),
-                recent_commits=data.get("recent_commits", ()),
-                open_issues=data.get("open_issues", ()),
-            )
+        # Track the mtime before so we only report paths where the call
+        # actually wrote (ensure_sprint_file is idempotent — refreshing an
+        # unchanged file is a no-op on disk). Without this, every resync
+        # would mark sprint files as "written" and break sync_tenant's
+        # no-op detection.
+        sprint_path = sprint_root / week_iso / f"{project.code}.md"
+        before = sprint_path.stat().st_mtime_ns if sprint_path.exists() else None
+        ensure_sprint_file(
+            project=project,
+            sprint_root=sprint_root,
+            week_iso=week_iso,
+            week_label=week_label,
+            week_start=week_start,
+            week_end=week_end,
+            prior_sprint=prior,
+            last_sprint_hours_line=data.get("last_sprint_hours_line"),
+            sessions_this_week=data.get("sessions_this_week", 0),
+            last_session_date=data.get("last_session_date"),
+            last_session_who=data.get("last_session_who"),
+            last_session_summary=data.get("last_session_summary"),
+            recent_commits=data.get("recent_commits", ()),
+            open_issues=data.get("open_issues", ()),
         )
+        after = sprint_path.stat().st_mtime_ns if sprint_path.exists() else None
+        if after is not None and after != before:
+            out.append(sprint_path)
     return out
