@@ -280,6 +280,22 @@ def _parse_this_sprint(
     return tuple(alloc), tuple(deliverables), dod
 
 
+def compute_carry_forward(prior_path: Path) -> CarryForward:
+    """Derive the carry-forward block for a new sprint from the prior file.
+
+    Asks roll forward only when still `open`; risks only when `escalated` or
+    `watching`; all horizon items roll forward (they remain unresolved by
+    nature). Missing prior file → empty carry-forward.
+    """
+    if not prior_path.exists():
+        return CarryForward(asks=(), risks=(), horizon=())
+    prior = parse_sprint_file(prior_path)
+    asks = tuple(a for a in prior.client_open_asks if a.status == "open")
+    risks = tuple(r for r in prior.risks if r.severity in ("escalated", "watching"))
+    horizon = tuple(prior.horizon)
+    return CarryForward(asks=asks, risks=risks, horizon=horizon)
+
+
 def _parse_carry_forward(body: str) -> CarryForward:
     try:
         region = _extract_region(body, "carry-forward")

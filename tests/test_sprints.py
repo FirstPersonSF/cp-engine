@@ -230,3 +230,26 @@ def test_render_sprint_scaffold_round_trips_through_parser(tmp_path: Path) -> No
     assert sf.facts.owner == "Drew"
     assert len(sf.carry_forward.asks) == 1
     assert sf.carry_forward.asks[0].who == "Maria"
+
+
+def test_compute_carry_forward_from_prior_sprint_file(tmp_path) -> None:
+    from cp_engine.sprints import compute_carry_forward
+    prior = tmp_path / "2026-W18" / "peb.md"
+    prior.parent.mkdir(parents=True)
+    prior.write_text(
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W18\n---\n"
+        "# peb — Pebble Foods · Sprint W18 (May 4 – May 10, 2026)\n"
+        "## Client communication\n### Open asks\n"
+        "- [open · 2026-05-04 · Maria] Volume forecast\n"
+        "- [answered · 2026-05-06 · Sam] Contract sign-off\n"
+        "## Dependencies & risks\n"
+        "- [escalated · contract · 2026-05-04] Legal slip risk\n"
+        "- [resolved · pricing · 2026-05-02] Tier discussion\n"
+        "## Horizon\n### Decisions due\n"
+        "- [by W21] Staff a third on Pebble for Q3\n"
+    )
+    cf = compute_carry_forward(prior)
+    assert len(cf.asks) == 1  # only `open`
+    assert cf.asks[0].who == "Maria"
+    assert len(cf.risks) == 1  # only `escalated`/`watching`
+    assert len(cf.horizon) == 1
