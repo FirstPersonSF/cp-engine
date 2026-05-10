@@ -28,8 +28,8 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from cp_engine import __version__ as ENGINE_VERSION
 from cp_engine.config import TenantConfig
+from cp_engine.state import Issue, ProjectState, SprintFile, dir_slug, scope_for
 from cp_engine.status import is_active_status
-from cp_engine.state import Issue, ProjectState, dir_slug, scope_for
 
 # ──────────────────────────────────────────────────────────────────────
 #  Errors
@@ -50,6 +50,41 @@ class MarkerDuplicated(RenderError):
 
 class MarkerInverted(RenderError):
     """The end marker appears before the start marker."""
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Section summaries (auto-generated one-liner under each active h2)
+# ──────────────────────────────────────────────────────────────────────
+
+# Per-section noun-phrase fragment. The summary helper prefixes a
+# spelled-out count: f"{Count} {state_phrase}".
+_SECTION_STATE_PHRASES: dict[str, str] = {
+    "pipeline": "deals in flight",
+    "client": "engagements in delivery",
+    "self_fpsf": "tools in active build",
+    "self_canonic": "projects in flight",
+}
+
+# Spell out small counts; digits otherwise. Index 0 is intentionally
+# lowercase "zero" since count==0 suppresses the line (the helper
+# returns None), so it should never be rendered.
+_SPELLED_COUNTS = (
+    "zero", "One", "Two", "Three", "Four", "Five",
+    "Six", "Seven", "Eight", "Nine", "Ten",
+)
+
+
+def _section_summary(count: int, state_phrase: str) -> str | None:
+    """Format the auto-generated section summary, e.g. "Three deals in flight".
+
+    Returns None when `count == 0` so the template can suppress the
+    summary line entirely (a "Zero X in Y" sentence reads awkwardly,
+    and the heading already shows "(0)").
+    """
+    if count <= 0:
+        return None
+    word = _SPELLED_COUNTS[count] if 1 <= count <= 10 else str(count)
+    return f"{word} {state_phrase}"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -92,6 +127,10 @@ def render_master_cp(
     last_sync: datetime,
     allocations=None,  # WeeklyAllocations | None
     exceptions_count: int = 0,
+    current_sprint_iso: str | None = None,
+    prior_sprint_iso: str | None = None,
+    parsed_sprint_files: tuple[SprintFile, ...] | None = None,
+    today: date | None = None,
 ) -> str:
     """Render the full master-cp.md body.
 
@@ -104,6 +143,12 @@ def render_master_cp(
     discussion 2026-05-08). The 1P section is engagement-shaped with
     Stage / Budget; FPSF and Canonic sections are repo-shaped with
     Description / GitHub.
+
+    When `current_sprint_iso` is provided (e.g. "2026-W19"), each active
+    project view dict gets a `sprint_link` pointing at the per-project
+    sprint file under `sprints/<iso>/<code>.md`, and the active tables
+    render an extra `[W## →]` cell next to the existing CP link. When
+    None, no sprint link is rendered.
     """
     # Active filter: engagement is active per is_active_status + not internal;
     # repo is active per repos.status == 'Active'.
@@ -141,9 +186,19 @@ def render_master_cp(
     def to_view(p: ProjectState) -> dict:
         """Build view dict and attach allocation_line if allocations exist
         for this project. Per spec: skip the line entirely when total hours
-        is zero (no allocations === no row)."""
+        is zero (no allocations === no row).
+
+        When `current_sprint_iso` is set, also attaches `sprint_link`
+        pointing at `sprints/<iso>/<code>.md` for the per-project sprint
+        file. None when no current sprint is in scope.
+        """
         view = _project_view(p)
         view["allocation_line"] = _allocation_line_for(p.code, allocations)
+        view["sprint_link"] = (
+            f"sprints/{current_sprint_iso}/{p.code}.md"
+            if current_sprint_iso
+            else None
+        )
         return view
 
     def group(active_list: list[ProjectState]) -> dict:
@@ -160,18 +215,53 @@ def render_master_cp(
             "self_canonic": [to_view(p) for p in active_list if p.company_kind == "self-canonic"],
         }
 
+    # Derive the short week label ("W19") from the ISO week ("2026-W19")
+    # so the template doesn't have to do string ops. Drops zero-padding
+    # so week 1 reads "W1" rather than "W01".
+    current_week_label: str | None = None
+    if current_sprint_iso and "-W" in current_sprint_iso:
+        try:
+            week_num = int(current_sprint_iso.split("-W", 1)[1])
+            current_week_label = f"W{week_num}"
+        except ValueError:
+            current_week_label = None
+
+    today_or_now = today or date.today()
+    agenda = (
+        _compute_agenda_rollup(parsed_sprint_files, today_or_now)
+        if parsed_sprint_files
+        else None
+    )
+    sprint_facts = (
+        _compute_sprint_facts_strip(
+            parsed_sprint_files, today_or_now, prior_sprint_iso
+        )
+        if parsed_sprint_files
+        else None
+    )
+
+    grouped = group(active)
+    section_summaries = {
+        key: _section_summary(len(grouped[key]), phrase)
+        for key, phrase in _SECTION_STATE_PHRASES.items()
+    }
+
     template = _env().get_template("master-cp.md.j2")
     return template.render(
         tenant=config,
         engine_version=ENGINE_VERSION,
         today=_today_iso(),
         last_sync_iso=last_sync.isoformat(),
-        active_groups=group(active),
+        active_groups=grouped,
+        section_summaries=section_summaries,
         workload_rollup=_rollup_view(allocations),
         workload_week=allocations.week_start if allocations else None,
         holding_projects=[_project_view(p) for p in holding],
         closed_recent=[_project_view(p) for p in closed_recent],
         exceptions_count=exceptions_count,
+        current_week_label=current_week_label,
+        agenda=agenda,
+        sprint_facts=sprint_facts,
     )
 
 
@@ -193,11 +283,20 @@ def render_project_cp(
     config: TenantConfig,
     project: ProjectState,
     tracked_issues: tuple[Issue, ...] = (),
+    current_sprint_block: str | None = None,
 ) -> str:
     """Render a project CP from the empty template.
 
     Only used on first creation. Subsequent updates touch only the
     engine-managed regions via splice_managed_region.
+
+    `current_sprint_block` is the rendered "Current sprint" section
+    (from `cp_engine.sprints.render_current_sprint_block`) for projects
+    that have an active sprint file. Passed through to the template so
+    the engine-managed `current-sprint` region is populated on first
+    scaffold; on subsequent syncs the splicer rewrites it in place.
+    Pass None when no sprint file exists yet — template emits a
+    placeholder line.
     """
     template = _env().get_template("project-cp.md.j2")
     return template.render(
@@ -206,6 +305,7 @@ def render_project_cp(
         engine_version=ENGINE_VERSION,
         today=_today_iso(),
         tracked_issues=[_issue_view(i) for i in tracked_issues],
+        current_sprint_block=current_sprint_block,
     )
 
 
@@ -530,6 +630,192 @@ def splice_managed_region(file_contents: str, region: str, new_body: str) -> str
     if body:
         return f"{before}\n{body}\n{after}"
     return f"{before}\n{after}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Agenda rollup
+# ──────────────────────────────────────────────────────────────────────
+
+
+# Match either "by W##" or bare "W##" (case-insensitive on the leading
+# `by`). Used to detect horizon target_dates that we can compare against
+# the current sprint week numerically.
+_AGENDA_WEEK_RE = re.compile(r"^(?:by\s+)?W(\d+)$", re.IGNORECASE)
+
+
+def _compute_agenda_rollup(
+    parsed_sprint_files: tuple[SprintFile, ...] | None,
+    today: date,
+) -> dict | None:
+    """Aggregate cross-project agenda items from parsed sprint files.
+
+    Three lists, each filtered + tagged with `project_code` so the master
+    CP can render them in one block:
+
+    - `escalated_risks`: every risk with `severity == "escalated"`. Order:
+      preserved within each sprint file; sprint files iterated in source
+      order.
+    - `stale_asks`: every open client ask whose `asked_date` is more than
+      7 days before `today`. Each entry includes `aged_days` for display.
+      Asks with unparseable date strings are skipped (they'd produce
+      misleading age values).
+    - `decisions_due`: every horizon item with `bucket == "decision"`
+      whose `target_date` parses as a `W##` (or `by W##`) week within +2
+      sprints of `today`'s sprint week. Items whose target_date doesn't
+      match the week pattern (e.g. "TBD", a literal date) pass through
+      unconditionally — better to over-surface than to silently drop.
+
+    Returns a dict with the three lists, OR `None` when all three are
+    empty (so the template's `{%- if agenda %}` guard hides the section).
+    """
+    if not parsed_sprint_files:
+        return None
+
+    escalated_risks: list[dict] = []
+    stale_asks: list[dict] = []
+    decisions_due: list[dict] = []
+
+    # Compute current sprint week number once. The %W convention matches
+    # cp_engine.sprints.current_sprint_week_iso. We pad to two digits to
+    # match how week numbers are emitted, but parse as int for comparison.
+    monday = today - timedelta(days=today.weekday())
+    current_week_num = int(monday.strftime("%W"))
+
+    for sf in parsed_sprint_files:
+        for risk in sf.risks:
+            if risk.severity == "escalated":
+                escalated_risks.append(
+                    {"project_code": sf.project_code, "text": risk.text}
+                )
+
+        for ask in sf.client_open_asks:
+            if ask.status != "open":
+                continue
+            try:
+                asked = date.fromisoformat(ask.asked_date)
+            except (ValueError, TypeError):
+                # Unparseable date string — skip rather than guess the age.
+                continue
+            aged_days = (today - asked).days
+            if aged_days > 7:
+                stale_asks.append(
+                    {
+                        "project_code": sf.project_code,
+                        "text": ask.text,
+                        "aged_days": aged_days,
+                    }
+                )
+
+        for h in sf.horizon:
+            if h.bucket != "decision":
+                continue
+            target = (h.target_date or "").strip()
+            if not target:
+                # No target date at all — pass it through (over-surface).
+                decisions_due.append(
+                    {
+                        "project_code": sf.project_code,
+                        "text": h.text,
+                        "target_date": target,
+                    }
+                )
+                continue
+            m = _AGENDA_WEEK_RE.match(target)
+            if m:
+                week_num = int(m.group(1))
+                # Within +2 sprints means current_week + 1 or current_week + 2.
+                if week_num - current_week_num in (1, 2):
+                    decisions_due.append(
+                        {
+                            "project_code": sf.project_code,
+                            "text": h.text,
+                            "target_date": target,
+                        }
+                    )
+                # Else: filtered out (already past, or further than +2 sprints).
+                continue
+            # Non-week target (e.g. "TBD", "2026-06-01") → pass through.
+            decisions_due.append(
+                {
+                    "project_code": sf.project_code,
+                    "text": h.text,
+                    "target_date": target,
+                }
+            )
+
+    if not (escalated_risks or stale_asks or decisions_due):
+        return None
+    return {
+        "escalated_risks": escalated_risks,
+        "stale_asks": stale_asks,
+        "decisions_due": decisions_due,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Sprint facts strip
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _compute_sprint_facts_strip(
+    parsed_sprint_files: tuple[SprintFile, ...],
+    today: date,
+    prior_sprint_iso: str | None,
+) -> dict | None:
+    """Aggregate sprint-wide facts across all parsed sprint files.
+
+    Eight fields surfaced at the top of master-cp.md as a one-line strip:
+    total hours summed across all sprint files, per-person totals (sorted
+    by hours desc), count of active sprint files this week, stale-asks
+    count (>7d old), escalated risks count, decisions-due count (matching
+    the agenda rollup's filter — next 2 sprints), and the prior sprint
+    ISO week (rendered as plain text in v0.8.0; no master archive to link
+    to yet).
+
+    Returns `None` when `parsed_sprint_files` is empty so the template
+    can hide the strip. The stale/escalated/decisions filters reuse
+    `_compute_agenda_rollup` to keep the two surfaces in lockstep.
+    """
+    if not parsed_sprint_files:
+        return None
+
+    # Per-person totals across all sprint files. dict preserves insertion
+    # order; we re-sort at the end by hours desc for stable rendering.
+    by_person: dict[str, float] = {}
+    for sf in parsed_sprint_files:
+        for ph in sf.allocation:
+            by_person[ph.person_name] = by_person.get(ph.person_name, 0.0) + ph.hours
+    per_person = sorted(by_person.items(), key=lambda kv: (-kv[1], kv[0]))
+    # Render hours as ints when whole — matches the test's "**Drew** 10" shape.
+    per_person_view = [
+        (name, int(hours) if hours == int(hours) else hours)
+        for name, hours in per_person
+    ]
+    total = sum(by_person.values())
+    total_view = int(total) if total == int(total) else total
+
+    # Reuse the agenda rollup to count escalated risks, stale asks, and
+    # decisions due. When the rollup returns None (all three lists
+    # empty), the counts are all zero.
+    rollup = _compute_agenda_rollup(parsed_sprint_files, today)
+    if rollup is None:
+        escalated_count = 0
+        stale_asks_count = 0
+        decisions_due_count = 0
+    else:
+        escalated_count = len(rollup["escalated_risks"])
+        stale_asks_count = len(rollup["stale_asks"])
+        decisions_due_count = len(rollup["decisions_due"])
+
+    return {
+        "total_hours": total_view,
+        "per_person": per_person_view,
+        "active_count": len(parsed_sprint_files),
+        "stale_asks_count": stale_asks_count,
+        "escalated_count": escalated_count,
+        "decisions_due_count": decisions_due_count,
+        "prior_sprint": prior_sprint_iso,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────

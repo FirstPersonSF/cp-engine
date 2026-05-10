@@ -179,6 +179,22 @@ Sections marked with HTML comments like `<!-- cp-engine:start <name> -->` /
 `<!-- cp-engine:end <name> -->` are written by cp-engine sync. Outside those
 markers is human territory. Sync never touches `weekly-cp.md` at all.
 
+## Sprint files
+
+Each active project has a per-sprint working file at
+`sprints/<YYYY-W##>/<code>.md`. During `deepen from transcript`, write
+meeting notes, decisions, new client asks, outbound drafts, and risk
+updates into *that* sprint file's hand-written sections. Engine-managed
+regions inside the sprint file (`sprint-facts`, `where-it-stands`,
+`carry-forward`) MUST NOT be edited — sync owns them. Project `cp.md`
+still receives durable updates (Quick Resume, Project Notes,
+Stakeholders); transient weekly material belongs in the sprint file, not
+in `cp.md`.
+
+`wrap up` extends to commit the entire `sprints/<YYYY-W##>/` directory
+alongside the master roll-up and to run word-count discipline on each
+sprint file.
+
 ## Word-count discipline
 
 Per bootstrap v2:

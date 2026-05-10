@@ -29,3 +29,6 @@ build/
 # Tooling
 .ruff_cache/
 .mypy_cache/
+
+# Local git worktrees
+.worktrees/

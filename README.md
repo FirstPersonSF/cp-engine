@@ -17,7 +17,7 @@ The canonical spec is at [`docs/specs/cp-engine-spec-v02.md`](docs/specs/cp-engi
 
 ## Status
 
-**v0.7.3.** Sync, renderers, working-tree layout (flat in v0.7; `archived/` renamed to `inactive/` in v0.7.1), sprint allocations, session capture for both source-code and content-only projects (`/cp-summarize`; content-only mode added in v0.7.2 and made friction-free in v0.7.3 by auto-sweeping all text content), project-context timeline (`/cp-context`), and the v0.6 release-distribution overhaul (scripted releases, plugin-owned CLI auto-install, tenant-pin-driven runner) are all live. See `CHANGELOG.md` for the version history and `docs/specs/cp-engine-spec-v03-version-distribution.md` for the v0.6 design.
+**v0.8.0 (sprint files).** Sync, renderers, working-tree layout (flat in v0.7; `archived/` renamed to `inactive/` in v0.7.1), sprint allocations (window anchored on the upcoming sprint-planning Monday since v0.7.4), session capture for both source-code and content-only projects (`/cp-summarize`; content-only mode added in v0.7.2 and made friction-free in v0.7.3 by auto-sweeping all text content), project-context timeline (`/cp-context`), and the v0.6 release-distribution overhaul (scripted releases, plugin-owned CLI auto-install, tenant-pin-driven runner) are all live. v0.8.0 ships per-project sprint files written by `cp sync` inside the sprint window (see "Sprint files" below). See `CHANGELOG.md` for the version history and `docs/specs/cp-engine-spec-v03-version-distribution.md` for the v0.6 design.
 
 ## Capturing sessions back to cp
 
@@ -64,6 +64,18 @@ Inside any tracked source repo, finish your session with:
 The command drafts a session summary, writes it to `<cp-working-dir>/sessions/<YYYY-MM-DD>-<HHMM>-<user>.md`, updates that project's `cp.md` "Last session:" line, then commits and pushes the cp clone.
 
 If the current repo isn't tracked in the cp tenant, the summary lands in `<cp-tenant>/exceptions/` and gets surfaced on the next `cp sync` via the engine-managed `exceptions/README.md` plus a one-line "Exceptions ({N} this week)" pointer in `master-cp.md`.
+
+## Sprint files
+
+Each Monday inside the sprint window, `cp sync` writes a per-project sprint file at `sprints/<YYYY-W##>/<project-code>.md` for every active project. The file scaffolds the partners' weekly review across six surfaces — where it stands, client communication (outbound · open asks · inbound), dependencies & risks, this sprint's plan (allocation · deliverables · DoD), 4–8 week horizon (milestones · decisions · opportunities), and meeting notes & decisions — plus an engine-managed sprint-facts block and a carry-forward list rolled from the prior sprint.
+
+The master CP gains an Agenda rollup (escalated risks, stale asks, horizon decisions maturing) and a sprint-totals facts strip; each project CP gains a "Current sprint" block linking back to its active sprint file.
+
+Mode 4's `deepen from transcript` writes meeting notes, decisions, new client asks, outbound drafts, and risk updates into the sprint file rather than the project's `cp.md`. `wrap up` commits the whole `sprints/<YYYY-W##>/` directory alongside the master roll-up.
+
+`cp parse-sprint <path>` parses a sprint file and emits a one-line summary; pass `--json` for a complete JSON serialization aimed at downstream consumers (mc-2 integration, debugging, future tooling). The JSON is generated via `dataclasses.asdict` on the parsed `SprintFile`, so its shape matches the public dataclasses in `cp_engine.state`.
+
+See `docs/plans/2026-05-10-sprint-files-design.md` for design rationale and `docs/plans/2026-05-10-sprint-files-plan.md` for the implementation plan.
 
 ## Layout
 

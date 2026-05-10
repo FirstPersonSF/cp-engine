@@ -8,7 +8,7 @@ Two halves:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -28,7 +28,16 @@ from cp_engine import (
     render_weekly_cp,
     splice_managed_region,
 )
-
+from cp_engine.state import (
+    CarryForward,
+    ClientAsk,
+    HorizonItem,
+    PersonHours,
+    Risk,
+    SprintFacts,
+    SprintFile,
+    WhereItStands,
+)
 
 # ──────────────────────────────────────────────────────────────────────
 #  Fixtures
@@ -257,6 +266,14 @@ def test_claude_md_includes_status_vocabulary() -> None:
     assert "`Complete`" not in out
 
 
+def test_claude_md_documents_sprint_file_deepening_path() -> None:
+    body = render_claude_md(make_tenant())
+    assert "sprints/" in body
+    assert "deepen from transcript" in body
+    assert "sprint file" in body.lower()
+    assert "wrap up" in body
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Splice tests — happy path
 # ──────────────────────────────────────────────────────────────────────
@@ -401,3 +418,257 @@ def test_splice_doesnt_match_partial_region_names() -> None:
     )
     with pytest.raises(MarkerMissing):
         splice_managed_region(file, "active", "x")
+
+
+def test_master_cp_includes_sprint_link_per_active_row() -> None:
+    tenant = make_tenant()
+    projects = (make_state("peb-1234", "PEB Project", "Open"),)
+    body = render_master_cp(
+        tenant,
+        projects,
+        last_sync=datetime.now(timezone.utc),
+        current_sprint_iso="2026-W19",
+    )
+    assert "sprints/2026-W19/peb-1234.md" in body
+    assert "[W19 →]" in body
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Renderer tests — agenda rollup
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _fixture_sprint_file_for_render(
+    *,
+    project_code: str = "peb",
+    risks_with_severity: tuple[tuple[str, str], ...] = (),
+    open_asks: tuple[tuple[str, str], ...] = (),
+    horizon_decisions: tuple[tuple[str, str], ...] = (),
+    allocation: tuple[tuple[str, float], ...] = (),
+) -> SprintFile:
+    """Minimal SprintFile populated only with the fields the agenda
+    rollup and sprint-facts strip read (risks, client_open_asks, horizon,
+    allocation).
+
+    `risks_with_severity` is a tuple of (severity, text); `open_asks` is
+    (text, asked_date_iso); `horizon_decisions` is (text, target_date);
+    `allocation` is (person_name, hours). Everything else defaults to
+    empty so we don't have to spell out the full sprint shape just to
+    exercise the rollup.
+    """
+    risks = tuple(
+        Risk(
+            text=text,
+            severity=sev,
+            category="",
+            raised_date="2026-05-04",
+        )
+        for sev, text in risks_with_severity
+    )
+    asks = tuple(
+        ClientAsk(text=text, asked_date=asked, status="open")
+        for text, asked in open_asks
+    )
+    horizon = tuple(
+        HorizonItem(text=text, bucket="decision", target_date=target)
+        for text, target in horizon_decisions
+    )
+    alloc = tuple(
+        PersonHours(person_name=name, hours=hours)
+        for name, hours in allocation
+    )
+    return SprintFile(
+        project_code=project_code,
+        week_iso="2026-W19",
+        week_start="2026-05-11",
+        week_end="2026-05-17",
+        prior_sprint=None,
+        facts=SprintFacts(None, None, None, None, None, 0, 0),
+        where_it_stands=WhereItStands(None, None, None, (), ()),
+        carry_forward=CarryForward(asks=(), risks=(), horizon=()),
+        client_outbound=(),
+        client_open_asks=asks,
+        client_inbound=(),
+        risks=risks,
+        allocation=alloc,
+        deliverables=(),
+        definition_of_done="",
+        horizon=horizon,
+        meeting_notes=None,
+    )
+
+
+def test_master_cp_includes_agenda_rollup_when_sprint_files_provided() -> None:
+    tenant = make_tenant()
+    projects = (make_state("peb-1234", "PEB Project", "Open"),)
+    sf_peb = _fixture_sprint_file_for_render(
+        project_code="peb",
+        risks_with_severity=(("escalated", "Legal turnaround risk"),),
+        # asked 2026-05-01, today 2026-05-13 → 12 days old (>7)
+        open_asks=(("Volume forecast", "2026-05-01"),),
+    )
+    sf_orb = _fixture_sprint_file_for_render(
+        project_code="orb",
+        # current sprint is W19; W21 is within +2 sprints
+        horizon_decisions=(("Whether to renew", "by W21"),),
+    )
+
+    body = render_master_cp(
+        tenant,
+        projects,
+        last_sync=datetime.now(timezone.utc),
+        current_sprint_iso="2026-W19",
+        parsed_sprint_files=(sf_peb, sf_orb),
+        today=date(2026, 5, 13),
+    )
+
+    assert "## Agenda — what needs attention this week" in body
+    assert "**Risks needing decision**" in body
+    assert "Legal turnaround risk" in body
+    assert "**Stale client asks**" in body
+    assert "Volume forecast" in body
+    assert "12d" in body
+    assert "**Horizon items maturing**" in body
+    assert "Whether to renew" in body
+
+
+def test_master_cp_omits_agenda_section_when_no_sprint_files() -> None:
+    tenant = make_tenant()
+    body = render_master_cp(
+        tenant,
+        (),
+        last_sync=datetime.now(timezone.utc),
+    )
+    # The region markers exist (so splicer can find them next sync) but
+    # the section heading is absent when there's nothing to surface.
+    assert "<!-- cp-engine:start agenda -->" in body
+    assert "<!-- cp-engine:end agenda -->" in body
+    assert "## Agenda — what needs attention this week" not in body
+
+
+def test_master_cp_agenda_omits_when_all_lists_empty() -> None:
+    tenant = make_tenant()
+    # Sprint file with no escalated risks, no stale asks, no decisions due.
+    sf = _fixture_sprint_file_for_render(project_code="peb")
+    body = render_master_cp(
+        tenant,
+        (),
+        last_sync=datetime.now(timezone.utc),
+        parsed_sprint_files=(sf,),
+        today=date(2026, 5, 13),
+    )
+    assert "## Agenda — what needs attention this week" not in body
+
+
+def test_master_cp_agenda_passes_through_unparseable_target_date() -> None:
+    """Decisions with target_dates that don't match the W## pattern get
+    surfaced unconditionally — better to over-include than to silently drop.
+    """
+    tenant = make_tenant()
+    sf = _fixture_sprint_file_for_render(
+        project_code="peb",
+        horizon_decisions=(("Pick a launch date", "TBD"),),
+    )
+    body = render_master_cp(
+        tenant,
+        (),
+        last_sync=datetime.now(timezone.utc),
+        parsed_sprint_files=(sf,),
+        today=date(2026, 5, 13),
+    )
+    assert "Pick a launch date" in body
+
+
+def test_master_cp_agenda_skips_unparseable_ask_dates() -> None:
+    """Asks with malformed asked_date strings shouldn't crash the rollup."""
+    tenant = make_tenant()
+    sf = _fixture_sprint_file_for_render(
+        project_code="peb",
+        open_asks=(("Bad-date ask", "not-a-date"),),
+    )
+    body = render_master_cp(
+        tenant,
+        (),
+        last_sync=datetime.now(timezone.utc),
+        parsed_sprint_files=(sf,),
+        today=date(2026, 5, 13),
+    )
+    # Stale-asks list filtered the bad date out → no agenda surfaces.
+    assert "## Agenda — what needs attention this week" not in body
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Renderer tests — sprint-facts strip
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_master_cp_includes_sprint_facts_strip_when_sprint_files_provided() -> None:
+    tenant = make_tenant()
+    projects = (make_state("peb-1234", "PEB Project", "Open"),)
+    sf_peb = _fixture_sprint_file_for_render(
+        project_code="peb",
+        allocation=(("Drew", 6.0), ("Tony", 2.0)),
+        risks_with_severity=(("escalated", "Legal turnaround risk"),),
+        open_asks=(("Volume forecast", "2026-05-01"),),  # 12d old, stale
+        horizon_decisions=(("Whether to renew", "by W21"),),  # within 2 sprints
+    )
+    sf_orb = _fixture_sprint_file_for_render(
+        project_code="orb",
+        allocation=(("Drew", 4.0), ("Tony", 8.0)),
+    )
+    body = render_master_cp(
+        tenant,
+        projects,
+        last_sync=datetime.now(timezone.utc),
+        current_sprint_iso="2026-W19",
+        prior_sprint_iso="2026-W18",
+        parsed_sprint_files=(sf_peb, sf_orb),
+        today=date(2026, 5, 13),
+    )
+    assert "**Total hours** 20" in body  # 6+2+4+8
+    assert "**Drew** 10" in body          # 6+4
+    assert "**Tony** 10" in body          # 2+8
+    assert "**Active** 2" in body
+    assert "**Stale asks** 1" in body
+    assert "**Escalated** 1" in body
+    assert "**Decisions due** 1" in body
+    assert "**Prior sprint** 2026-W18" in body
+
+
+def test_master_cp_section_summary_uses_count_and_state_phrase() -> None:
+    """Each active-section h2 gets an auto-generated one-line summary
+    sentence under the heading, like "Three deals in flight" or
+    "Four engagements in delivery". Spelled-out numbers up to ten.
+    """
+    tenant = make_tenant()
+    # 3 pipeline (client + Deal status), 4 active client engagements
+    # (client + Open status). Construct ProjectState directly so we can
+    # set deal_stage; make_state doesn't expose it.
+    pipeline_projects = tuple(
+        ProjectState(
+            code=f"ggl-pipe{i}",
+            name=f"Pipeline {i}",
+            source="engagement",
+            company_kind="client",
+            company_code="GGL",
+            company_name="Google",
+            status="Deal",
+            is_internal=False,
+            owner="drew",
+            last_touched=None,
+            deadline=None,
+            one_line_summary=None,
+            deal_stage="Inquiry",
+        )
+        for i in range(3)
+    )
+    active_clients = tuple(
+        make_state(code=f"ggl-act{i}", name=f"Active {i}", status="Open")
+        for i in range(4)
+    )
+    projects = pipeline_projects + active_clients
+
+    body = render_master_cp(tenant, projects, last_sync=datetime.now(timezone.utc))
+
+    assert "Three deals in flight" in body
+    assert "Four engagements in delivery" in body

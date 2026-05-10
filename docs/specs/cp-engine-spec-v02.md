@@ -796,6 +796,10 @@ v02 starts fresh. No attempt to retro-fit ggl-repos or other historical artifact
 - All four collaborators onboarded
 - One full quarterly cycle of partners' reviews completed without engine bugs
 
+### v0.8 — sprint files (shipped)
+
+`cp sync` writes per-project sprint files at `sprints/<YYYY-W##>/<project-code>.md` inside the sprint window. Mode-4 `deepen from transcript` writes meeting notes, decisions, asks, outbound drafts, and risk updates into the sprint file rather than `cp.md`. Master CP gains an Agenda rollup and sprint-totals facts strip. See `docs/plans/2026-05-10-sprint-files-design.md` for full design rationale.
+
 ### v1+ Stretch
 
 - Per-bullet diff granularity in deepening pass

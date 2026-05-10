@@ -170,6 +170,11 @@ def sync_tenant(
 
     # Master CP — splice if exists, full-write if not. Timestamp-only diffs
     # don't trigger a write (would otherwise produce hourly noise commits).
+    # `agenda` and `sprint-facts-strip` are owned by the post-sprint-files
+    # second-pass below (they need parsed sprint files to compute their
+    # content), so we skip them here to avoid wiping populated content
+    # with an empty render. Step 2 (below) splices them with the parsed
+    # sprint files in hand.
     master_path = config.root / "master-cp.md"
     exceptions_count = count_exceptions_in_window(config.root, days=7)
     new_master = render_master_cp(
@@ -179,10 +184,13 @@ def sync_tenant(
         allocations=allocations,
         exceptions_count=exceptions_count,
     )
+    first_pass_regions = tuple(
+        r for r in _MASTER_REGIONS if r not in ("agenda", "sprint-facts-strip")
+    )
     if _write_if_changed(
         master_path,
         new_master,
-        splice_regions=_MASTER_REGIONS,
+        splice_regions=first_pass_regions,
         cosmetic_regions=_MASTER_COSMETIC_REGIONS,
     ):
         files_written.append(master_path)
@@ -303,6 +311,125 @@ def sync_tenant(
         elif _write_if_changed(repo_path, repo_body, splice_regions=()):
             files_written.append(repo_path)
 
+    # Sprint files — per-project per-sprint markdown for the partners' weekly
+    # review. Generated for every active project that the master CP also
+    # surfaces. Engine-managed regions are refreshed every sync; hand-written
+    # regions are preserved. Lazy-imported to break the sync ↔ sprints
+    # circular dependency (sprints.py imports `_extract_region` from here).
+    from cp_engine.sprints import (
+        _short_md_date,
+        current_sprint_week_iso,
+        ensure_sprint_files_for_active_projects,
+        is_in_sprint_window,
+        parse_sprint_file,
+        prior_sprint_week_iso,
+        render_current_sprint_block,
+        render_sprint_index,
+        sprint_week_dates,
+    )
+    from cp_engine.status import is_active_status
+    if is_in_sprint_window(sync_clock):
+        active_for_sprints = tuple(
+            p for p in projects
+            if not p.is_internal and is_active_status(p.status)
+        )
+        sprint_paths = ensure_sprint_files_for_active_projects(
+            active_projects=active_for_sprints,
+            sprint_root=config.root / "sprints",
+            now=sync_clock,
+            per_project_data=_collect_sprint_per_project_data(projects, allocations),
+        )
+        files_written.extend(sprint_paths)
+
+        # Splice the rendered "Current sprint" block into each project's
+        # cp.md. New scaffolds already carry the `current-sprint` markers
+        # from the template (see render_project_cp); legacy cp.md files
+        # written before this region existed get the markers + body
+        # injected via `_ensure_current_sprint_markers` so the splicer
+        # has something to write into. Missing or unparseable sprint
+        # files are skipped silently — this region is best-effort and
+        # shouldn't break sync.
+        week_iso = current_sprint_week_iso(sync_clock)
+        # Collect parsed sprint files as we walk them so the post-loop
+        # master-cp re-render (for the agenda rollup) doesn't have to
+        # re-parse every file.
+        parsed_files: list = []
+        for project in active_for_sprints:
+            sprint_path = config.root / "sprints" / week_iso / f"{project.code}.md"
+            if not sprint_path.exists():
+                continue
+            scope = scope_for(project.company_kind)
+            slug = dir_slug(project.code, project.name)
+            cp_path = config.root / scope / slug / "cp.md"
+            if not cp_path.exists():
+                continue
+            try:
+                sf = parse_sprint_file(sprint_path)
+            except (ValueError, OSError) as exc:
+                logger.warning(
+                    "Skipping current-sprint splice for %s: %s",
+                    project.code, exc,
+                )
+                continue
+            parsed_files.append(sf)
+            link_path = f"../../sprints/{week_iso}/{project.code}.md"
+            block = render_current_sprint_block(sf, link_path=link_path)
+            existing = cp_path.read_text()
+            seeded = _ensure_current_sprint_markers(existing)
+            new_body = splice_managed_region(seeded, "current-sprint", block)
+            if new_body != existing:
+                cp_path.write_text(new_body)
+                if cp_path not in files_written:
+                    files_written.append(cp_path)
+
+        # Per-week sprint-index README — one row per active project,
+        # written only when we actually generated sprint files this run
+        # (avoids a stub README in tenants with no active work). The
+        # README sits alongside the per-project sprint files at
+        # `sprints/<week_iso>/README.md`.
+        if parsed_files:
+            week_start_iso, week_end_iso = sprint_week_dates(sync_clock)
+            week_dates_str = (
+                f"{_short_md_date(week_start_iso)} – {_short_md_date(week_end_iso)}"
+            )
+            index_body = render_sprint_index(
+                week_iso=week_iso,
+                week_dates=week_dates_str,
+                sprint_files=parsed_files,
+            )
+            index_path = config.root / "sprints" / week_iso / "README.md"
+            if _write_if_changed(index_path, index_body, splice_regions=()):
+                files_written.append(index_path)
+
+        # Re-render the master CP with the parsed sprint files so its
+        # `agenda` and `sprint-facts-strip` regions pick up cross-project
+        # escalated risks, stale asks, maturing horizon decisions, and
+        # the aggregate sprint-totals strip. This is a second pass over
+        # master-cp.md (the first happened at top-of-sync, before sprint
+        # files were generated). We splice ONLY those two regions so the
+        # no-op-resync semantics for unchanged regions stay intact.
+        if parsed_files:
+            new_master_with_agenda = render_master_cp(
+                config,
+                projects,
+                last_sync=sync_clock,
+                allocations=allocations,
+                exceptions_count=exceptions_count,
+                current_sprint_iso=week_iso,
+                prior_sprint_iso=prior_sprint_week_iso(sync_clock),
+                parsed_sprint_files=tuple(parsed_files),
+                today=sync_clock.date(),
+            )
+            if (
+                _write_if_changed(
+                    master_path,
+                    new_master_with_agenda,
+                    splice_regions=("agenda", "sprint-facts-strip"),
+                )
+                and master_path not in files_written
+            ):
+                files_written.append(master_path)
+
     # Exceptions README — engine-managed listing of session captures from
     # unregistered repos. Only render when the directory exists (creating it
     # would commit an empty README into every tenant; we want the file to
@@ -342,6 +469,8 @@ def sync_tenant(
 # but listing them here keeps the contract explicit.
 _MASTER_REGIONS = (
     "last-sync-timestamp",
+    "sprint-facts-strip",
+    "agenda",
     "exceptions-summary",
     "active-pipeline",
     "active-1p",
@@ -471,6 +600,48 @@ def _write_if_changed(
         return False
     path.write_text(new_full_body)
     return True
+
+
+_CURRENT_SPRINT_START = "<!-- cp-engine:start current-sprint -->"
+_CURRENT_SPRINT_END = "<!-- cp-engine:end current-sprint -->"
+
+
+def _ensure_current_sprint_markers(body: str) -> str:
+    """Inject empty `current-sprint` markers if the cp.md body lacks them.
+
+    The project-CP template (post-Task 19) emits these markers on first
+    scaffold, but cp.md files that were created before the region
+    existed don't have them — and `splice_managed_region` requires both
+    markers to be present. This helper adds them as a no-content block
+    immediately before the `tracked-issues` start marker (the natural
+    insertion point per the template), or appends them at end-of-file
+    as a last resort. Idempotent: a body that already carries the
+    start marker is returned unchanged.
+    """
+    if _CURRENT_SPRINT_START in body:
+        return body
+    region_block = f"{_CURRENT_SPRINT_START}\n{_CURRENT_SPRINT_END}\n\n"
+    anchor = "<!-- cp-engine:start tracked-issues -->"
+    if anchor in body:
+        return body.replace(anchor, region_block + anchor, 1)
+    # No tracked-issues marker either — fall back to appending. The
+    # splicer's only contract is that BOTH markers exist; it doesn't
+    # care where in the file they sit.
+    if not body.endswith("\n"):
+        body += "\n"
+    return body + "\n" + region_block
+
+
+def _collect_sprint_per_project_data(projects, allocations) -> dict:
+    """Per-project context fed into sprint-file scaffolding.
+
+    v0.8.0 stub: returns empty dict, so all sprint files render with the
+    renderer's default fallbacks (sessions_this_week=0, no commits, no
+    recent-session paragraph). Later tasks will expand this to aggregate
+    session metadata, recent commits, open issues, and last-sprint-hours
+    from the existing data sources.
+    """
+    return {}
 
 
 def _derive_summary(config: TenantConfig, project: ProjectState) -> str | None:

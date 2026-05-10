@@ -1,0 +1,711 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sprint W19 — Master · Mission Control</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    html, body { font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; }
+    body { color-scheme: light; background: #f9fafb; }
+    .eyebrow { font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: #6b7280; }
+    .eyebrow-card { font-size: 13px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: #6b7280; }
+    .body-15 { font-size: 15px; line-height: 1.65; }
+    .engine-tint { background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%); }
+    [data-section]:target { scroll-margin-top: 110px; }
+  </style>
+</head>
+<body class="text-gray-800">
+
+  <!-- ============== TOP NAV ============== -->
+  <header class="border-b border-gray-200 bg-white sticky top-0 z-50">
+    <div class="mx-auto flex h-14 max-w-[1400px] items-center justify-between px-6">
+      <div class="flex items-center gap-8">
+        <div class="flex items-center gap-2">
+          <div class="grid h-6 w-6 place-items-center rounded-full bg-violet-600 text-[10px] font-bold text-white">M</div>
+          <span class="text-sm font-semibold text-gray-900">Mission Control</span>
+        </div>
+        <nav class="flex items-center gap-1">
+          <button class="flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900">
+            Home
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="none" class="opacity-60"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="rounded-md px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900">Jobs</button>
+          <button class="rounded-md px-3 py-1.5 text-sm font-medium text-violet-600">Sprint</button>
+          <button class="flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900">
+            Financials
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="none" class="opacity-60"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900">
+            Library
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="none" class="opacity-60"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </nav>
+      </div>
+      <div class="flex items-center gap-3">
+        <div class="grid h-7 w-7 place-items-center rounded-full bg-gray-200 text-xs font-medium text-gray-600">D</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============== HEADER ROW ============== -->
+  <div class="border-b border-gray-100 bg-white">
+    <div class="mx-auto max-w-[1400px] px-6 pb-4 pt-6">
+      <div class="flex items-start justify-between gap-6">
+        <div class="min-w-0 flex-1">
+          <nav class="mb-2 flex items-center gap-1.5 text-xs text-gray-500">
+            <span class="hover:text-gray-700 cursor-pointer">Sprint</span>
+            <span class="text-gray-300">/</span>
+            <span class="font-medium text-gray-900">W19</span>
+            <span class="ml-2 inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">
+              <span class="h-1.5 w-1.5 rounded-full bg-emerald-500"></span>
+              Active
+            </span>
+          </nav>
+          <div class="flex items-baseline gap-3">
+            <h1 class="text-xl font-semibold text-gray-900">Sprint W19 · Partners' review</h1>
+            <span class="text-sm text-gray-500">May 11 – May 17, 2026</span>
+          </div>
+        </div>
+        <div class="flex shrink-0 items-center gap-2">
+          <button class="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">
+            ← W18
+          </button>
+          <button class="inline-flex items-center gap-2 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">
+            <span class="font-medium">W19</span>
+            <span class="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">current</span>
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="inline-flex items-center gap-1.5 rounded-md bg-gray-900 px-3 py-1.5 text-sm font-medium text-white hover:bg-gray-800">
+            Run weekly review
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============== STICKY SECTION NAV ============== -->
+  <div class="sticky top-14 z-40 border-b border-slate-100 bg-white/80 backdrop-blur-sm">
+    <div class="mx-auto max-w-[1400px] px-6">
+      <div class="flex items-center gap-6 overflow-x-auto py-2.5 text-sm">
+        <a href="#agenda" class="text-gray-900 font-medium whitespace-nowrap relative">
+          Agenda
+          <span class="absolute -bottom-2.5 left-0 right-0 h-0.5 bg-gray-900"></span>
+        </a>
+        <a href="#pipeline" class="text-gray-500 hover:text-gray-900 whitespace-nowrap">1P Pipeline (3)</a>
+        <a href="#engagements" class="text-gray-500 hover:text-gray-900 whitespace-nowrap">1P Engagements (4)</a>
+        <a href="#fpsf" class="text-gray-500 hover:text-gray-900 whitespace-nowrap">FPSF (2)</a>
+        <a href="#canonic" class="text-gray-500 hover:text-gray-900 whitespace-nowrap">Canonic (3)</a>
+        <a href="#workload" class="text-gray-500 hover:text-gray-900 whitespace-nowrap">Workload</a>
+        <a href="#holding" class="text-gray-500 hover:text-gray-900 whitespace-nowrap">Holding</a>
+        <span class="ml-auto text-[11px] text-gray-400 whitespace-nowrap">12 active · 8 carried-forward asks · 4 escalated risks</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============== MAIN ============== -->
+  <main class="mx-auto max-w-[1400px] px-6 py-6 pb-32 space-y-6">
+
+    <!-- ===== AGENDA ROLLUP ===== -->
+    <section id="agenda" data-section class="rounded-xl border border-gray-200 engine-tint">
+      <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+        <div class="flex items-center gap-3">
+          <h2 class="text-lg font-semibold text-gray-900">Agenda — what needs attention this week</h2>
+        </div>
+        <span class="text-[11px] text-gray-400">Auto-generated · ranked by urgency</span>
+      </div>
+      <div class="px-6 py-5 grid md:grid-cols-3 gap-4">
+
+        <div class="rounded-lg border border-red-200 bg-white p-4">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700">escalated</span>
+            <span class="text-[11px] text-gray-500 ml-auto">3 projects</span>
+          </div>
+          <div class="eyebrow-card mb-2">Risks needing decision</div>
+          <ul class="space-y-1.5 text-sm text-gray-800">
+            <li class="flex items-start gap-2"><span class="text-gray-400 mt-1 shrink-0">•</span><span><code class="text-xs font-mono text-gray-600">peb</code> Legal turnaround may slip past contract target</span></li>
+            <li class="flex items-start gap-2"><span class="text-gray-400 mt-1 shrink-0">•</span><span><code class="text-xs font-mono text-gray-600">orb</code> Renewal conversation stalled 2 weeks</span></li>
+            <li class="flex items-start gap-2"><span class="text-gray-400 mt-1 shrink-0">•</span><span><code class="text-xs font-mono text-gray-600">sos</code> Storyboard tooling outage blocking client demo</span></li>
+          </ul>
+        </div>
+
+        <div class="rounded-lg border border-amber-200 bg-white p-4">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">stale &gt; 7d</span>
+            <span class="text-[11px] text-gray-500 ml-auto">5 projects</span>
+          </div>
+          <div class="eyebrow-card mb-2">Stale client asks</div>
+          <ul class="space-y-1.5 text-sm text-gray-800">
+            <li class="flex items-start gap-2"><span class="text-gray-400 mt-1 shrink-0">•</span><span><code class="text-xs font-mono text-gray-600">peb</code> Volume forecast from Maria — 6d</span></li>
+            <li class="flex items-start gap-2"><span class="text-gray-400 mt-1 shrink-0">•</span><span><code class="text-xs font-mono text-gray-600">orb</code> Renewal terms confirmation — 14d</span></li>
+            <li class="flex items-start gap-2"><span class="text-gray-400 mt-1 shrink-0">•</span><span><code class="text-xs font-mono text-gray-600">cnv</code> Revised brief from Jenna — 9d</span></li>
+            <li class="flex items-start gap-2"><span class="text-gray-400 mt-1 shrink-0">•</span><span><code class="text-xs font-mono text-gray-600">mc2</code> Pilot success criteria — 8d</span></li>
+            <li class="flex items-start gap-2"><span class="text-gray-400 mt-1 shrink-0">•</span><span><code class="text-xs font-mono text-gray-600">arc</code> Statement of work — 11d</span></li>
+          </ul>
+        </div>
+
+        <div class="rounded-lg border border-violet-200 bg-white p-4">
+          <div class="flex items-center gap-2 mb-2">
+            <span class="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">decisions due</span>
+            <span class="text-[11px] text-gray-500 ml-auto">4 projects</span>
+          </div>
+          <div class="eyebrow-card mb-2">Horizon items maturing</div>
+          <ul class="space-y-1.5 text-sm text-gray-800">
+            <li class="flex items-start gap-2"><span class="text-gray-400 mt-1 shrink-0">•</span><span><code class="text-xs font-mono text-gray-600">peb</code> Staff a third for Q3 implementation? — by W21</span></li>
+            <li class="flex items-start gap-2"><span class="text-gray-400 mt-1 shrink-0">•</span><span><code class="text-xs font-mono text-gray-600">cnv</code> Continue past pilot or wind down? — by W20</span></li>
+            <li class="flex items-start gap-2"><span class="text-gray-400 mt-1 shrink-0">•</span><span><code class="text-xs font-mono text-gray-600">mc2</code> Open beta launch window — by W22</span></li>
+            <li class="flex items-start gap-2"><span class="text-gray-400 mt-1 shrink-0">•</span><span><code class="text-xs font-mono text-gray-600">cpe</code> v0.8 release date — by W20</span></li>
+          </ul>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===== 1P PIPELINE ===== -->
+    <section id="pipeline" data-section class="rounded-xl border border-gray-200 bg-white">
+      <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+        <div class="flex items-center gap-3">
+          <h2 class="text-lg font-semibold text-gray-900">1P — Pipeline</h2>
+          <span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">3</span>
+        </div>
+        <span class="text-[11px] text-gray-400">Inquiry → Negotiation → Contract</span>
+      </div>
+
+      <div class="divide-y divide-gray-100">
+
+        <!-- peb row -->
+        <div class="px-6 py-4 hover:bg-gray-50/50 transition-colors">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0 w-32">
+              <div class="flex items-center gap-2">
+                <code class="text-xs font-mono font-semibold text-gray-900">peb</code>
+                <span class="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">Negotiation</span>
+              </div>
+              <div class="text-xs text-gray-500 mt-1">Drew · $45k</div>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-baseline gap-2">
+                <h3 class="text-[15px] font-semibold text-gray-900">Pebble Foods</h3>
+                <span class="text-xs text-gray-500">2 days ago</span>
+              </div>
+              <p class="text-sm text-gray-700 mt-1 max-w-[66ch]">
+                Counter-proposal pricing draft going back this week; contract sign target May 22.
+              </p>
+              <div class="flex items-center gap-1.5 flex-wrap mt-2.5">
+                <span class="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700">⚠ 1 risk</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">2 open asks</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">3 deliverables</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">8h · Drew 6 · Tony 2</span>
+              </div>
+            </div>
+            <div class="shrink-0 flex items-center gap-1.5">
+              <a href="2026-05-10-sprint-view-peb-w19.html" class="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">
+                W19 →
+              </a>
+              <button class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">CP</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- cnv row -->
+        <div class="px-6 py-4 hover:bg-gray-50/50 transition-colors">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0 w-32">
+              <div class="flex items-center gap-2">
+                <code class="text-xs font-mono font-semibold text-gray-900">cnv</code>
+                <span class="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">Inquiry</span>
+              </div>
+              <div class="text-xs text-gray-500 mt-1">Tony · TBD</div>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-baseline gap-2">
+                <h3 class="text-[15px] font-semibold text-gray-900">Convex Studios</h3>
+                <span class="text-xs text-gray-500">9 days ago</span>
+              </div>
+              <p class="text-sm text-gray-700 mt-1 max-w-[66ch]">
+                Pilot brief in flight; awaiting revised scope from Jenna. Decision needed on whether to continue past pilot.
+              </p>
+              <div class="flex items-center gap-1.5 flex-wrap mt-2.5">
+                <span class="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">1 stale ask · 9d</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">decision by W20</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">2h · Tony 2</span>
+              </div>
+            </div>
+            <div class="shrink-0 flex items-center gap-1.5">
+              <a href="#" class="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">W19 →</a>
+              <button class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">CP</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- arc row -->
+        <div class="px-6 py-4 hover:bg-gray-50/50 transition-colors">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0 w-32">
+              <div class="flex items-center gap-2">
+                <code class="text-xs font-mono font-semibold text-gray-900">arc</code>
+                <span class="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">Contract</span>
+              </div>
+              <div class="text-xs text-gray-500 mt-1">Drew · $80k</div>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-baseline gap-2">
+                <h3 class="text-[15px] font-semibold text-gray-900">Arcadia Brands</h3>
+                <span class="text-xs text-gray-500">11 days ago</span>
+              </div>
+              <p class="text-sm text-gray-700 mt-1 max-w-[66ch]">
+                SOW v3 with their procurement team since end of April; light touch this sprint.
+              </p>
+              <div class="flex items-center gap-1.5 flex-wrap mt-2.5">
+                <span class="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">1 stale ask · 11d</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">1h · Drew 1</span>
+              </div>
+            </div>
+            <div class="shrink-0 flex items-center gap-1.5">
+              <a href="#" class="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">W19 →</a>
+              <button class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">CP</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===== 1P ENGAGEMENTS ===== -->
+    <section id="engagements" data-section class="rounded-xl border border-gray-200 bg-white">
+      <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+        <div class="flex items-center gap-3">
+          <h2 class="text-lg font-semibold text-gray-900">1P — Active Engagements</h2>
+          <span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">4</span>
+        </div>
+      </div>
+
+      <div class="divide-y divide-gray-100">
+
+        <div class="px-6 py-4 hover:bg-gray-50/50 transition-colors">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0 w-32">
+              <div class="flex items-center gap-2">
+                <code class="text-xs font-mono font-semibold text-gray-900">orb</code>
+                <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">Active</span>
+              </div>
+              <div class="text-xs text-gray-500 mt-1">Tony · $60k</div>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-baseline gap-2">
+                <h3 class="text-[15px] font-semibold text-gray-900">Orbit Health</h3>
+                <span class="text-xs text-gray-500">3 days ago</span>
+              </div>
+              <p class="text-sm text-gray-700 mt-1 max-w-[66ch]">
+                Renewal conversation stalled — no response in 2 weeks. Q2 deliverable on track.
+              </p>
+              <div class="flex items-center gap-1.5 flex-wrap mt-2.5">
+                <span class="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700">⚠ 1 risk</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">1 stale ask · 14d</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">10h · Tony 8 · Drew 2</span>
+              </div>
+            </div>
+            <div class="shrink-0 flex items-center gap-1.5">
+              <a href="#" class="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">W19 →</a>
+              <button class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">CP</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="px-6 py-4 hover:bg-gray-50/50 transition-colors">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0 w-32">
+              <div class="flex items-center gap-2">
+                <code class="text-xs font-mono font-semibold text-gray-900">slv</code>
+                <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">Active</span>
+              </div>
+              <div class="text-xs text-gray-500 mt-1">Drew · $35k</div>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-baseline gap-2">
+                <h3 class="text-[15px] font-semibold text-gray-900">Silvergate Bank</h3>
+                <span class="text-xs text-gray-500">1 day ago</span>
+              </div>
+              <p class="text-sm text-gray-700 mt-1 max-w-[66ch]">
+                Phase 2 underway; smooth.
+              </p>
+              <div class="flex items-center gap-1.5 flex-wrap mt-2.5">
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">2 deliverables</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">12h · Drew 8 · Tony 4</span>
+              </div>
+            </div>
+            <div class="shrink-0 flex items-center gap-1.5">
+              <a href="#" class="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">W19 →</a>
+              <button class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">CP</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="px-6 py-4 hover:bg-gray-50/50 transition-colors">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0 w-32">
+              <div class="flex items-center gap-2">
+                <code class="text-xs font-mono font-semibold text-gray-900">hlx</code>
+                <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">Active</span>
+              </div>
+              <div class="text-xs text-gray-500 mt-1">Drew · $20k</div>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-baseline gap-2">
+                <h3 class="text-[15px] font-semibold text-gray-900">Helix Labs</h3>
+                <span class="text-xs text-gray-500">5 days ago</span>
+              </div>
+              <p class="text-sm text-gray-700 mt-1 max-w-[66ch]">
+                Final deliverable in review; closeout expected end of W19.
+              </p>
+              <div class="flex items-center gap-1.5 flex-wrap mt-2.5">
+                <span class="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">closeout</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">3h · Drew 3</span>
+              </div>
+            </div>
+            <div class="shrink-0 flex items-center gap-1.5">
+              <a href="#" class="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">W19 →</a>
+              <button class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">CP</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="px-6 py-4 hover:bg-gray-50/50 transition-colors">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0 w-32">
+              <div class="flex items-center gap-2">
+                <code class="text-xs font-mono font-semibold text-gray-900">nrt</code>
+                <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">Active</span>
+              </div>
+              <div class="text-xs text-gray-500 mt-1">Tony · $50k</div>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-baseline gap-2">
+                <h3 class="text-[15px] font-semibold text-gray-900">Northstar Co.</h3>
+                <span class="text-xs text-gray-500">7 days ago</span>
+              </div>
+              <p class="text-sm text-gray-700 mt-1 max-w-[66ch]">
+                Quiet sprint — research synthesis owned by Tony.
+              </p>
+              <div class="flex items-center gap-1.5 flex-wrap mt-2.5">
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">1 deliverable</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">4h · Tony 4</span>
+              </div>
+            </div>
+            <div class="shrink-0 flex items-center gap-1.5">
+              <a href="#" class="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">W19 →</a>
+              <button class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">CP</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===== FPSF ===== -->
+    <section id="fpsf" data-section class="rounded-xl border border-gray-200 bg-white">
+      <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+        <div class="flex items-center gap-3">
+          <h2 class="text-lg font-semibold text-gray-900">First Person — Internal Tooling</h2>
+          <span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">2</span>
+        </div>
+      </div>
+
+      <div class="divide-y divide-gray-100">
+
+        <div class="px-6 py-4 hover:bg-gray-50/50 transition-colors">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0 w-32">
+              <div class="flex items-center gap-2">
+                <code class="text-xs font-mono font-semibold text-gray-900">mc2</code>
+                <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">Active</span>
+              </div>
+              <div class="text-xs text-gray-500 mt-1">Drew</div>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-baseline gap-2">
+                <h3 class="text-[15px] font-semibold text-gray-900">Mission Control</h3>
+                <span class="text-xs text-gray-500">today</span>
+              </div>
+              <p class="text-sm text-gray-700 mt-1 max-w-[66ch]">
+                Sprint view shipping this week; pilot success criteria still open.
+              </p>
+              <div class="flex items-center gap-1.5 flex-wrap mt-2.5">
+                <span class="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">1 stale ask · 8d</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">decision by W22</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">6h · Drew 6</span>
+              </div>
+            </div>
+            <div class="shrink-0 flex items-center gap-1.5">
+              <a href="#" class="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">W19 →</a>
+              <button class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">CP</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="px-6 py-4 hover:bg-gray-50/50 transition-colors">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0 w-32">
+              <div class="flex items-center gap-2">
+                <code class="text-xs font-mono font-semibold text-gray-900">cpe</code>
+                <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">Active</span>
+              </div>
+              <div class="text-xs text-gray-500 mt-1">Drew</div>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-baseline gap-2">
+                <h3 class="text-[15px] font-semibold text-gray-900">cp-engine</h3>
+                <span class="text-xs text-gray-500">today</span>
+              </div>
+              <p class="text-sm text-gray-700 mt-1 max-w-[66ch]">
+                Sprint-files feature in design. v0.8 cut targeted.
+              </p>
+              <div class="flex items-center gap-1.5 flex-wrap mt-2.5">
+                <span class="inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">decision by W20</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">3h · Drew 3</span>
+              </div>
+            </div>
+            <div class="shrink-0 flex items-center gap-1.5">
+              <a href="#" class="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">W19 →</a>
+              <button class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">CP</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===== CANONIC ===== -->
+    <section id="canonic" data-section class="rounded-xl border border-gray-200 bg-white">
+      <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+        <div class="flex items-center gap-3">
+          <h2 class="text-lg font-semibold text-gray-900">Canonic</h2>
+          <span class="rounded-full bg-gray-100 px-2 py-0.5 text-xs font-medium text-gray-700">3</span>
+        </div>
+      </div>
+
+      <div class="divide-y divide-gray-100">
+
+        <div class="px-6 py-4 hover:bg-gray-50/50 transition-colors">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0 w-32">
+              <div class="flex items-center gap-2">
+                <code class="text-xs font-mono font-semibold text-gray-900">sos</code>
+                <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">Active</span>
+              </div>
+              <div class="text-xs text-gray-500 mt-1">Tony</div>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-baseline gap-2">
+                <h3 class="text-[15px] font-semibold text-gray-900">storyos</h3>
+                <span class="text-xs text-gray-500">2 days ago</span>
+              </div>
+              <p class="text-sm text-gray-700 mt-1 max-w-[66ch]">
+                Storyboard tooling outage hit at end of last week — needs triage owner this sprint.
+              </p>
+              <div class="flex items-center gap-1.5 flex-wrap mt-2.5">
+                <span class="inline-flex items-center gap-1 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700">⚠ 1 risk</span>
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">5h · Tony 5</span>
+              </div>
+            </div>
+            <div class="shrink-0 flex items-center gap-1.5">
+              <a href="#" class="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">W19 →</a>
+              <button class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">CP</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="px-6 py-4 hover:bg-gray-50/50 transition-colors">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0 w-32">
+              <div class="flex items-center gap-2">
+                <code class="text-xs font-mono font-semibold text-gray-900">cpc</code>
+                <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">Active</span>
+              </div>
+              <div class="text-xs text-gray-500 mt-1">Drew</div>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-baseline gap-2">
+                <h3 class="text-[15px] font-semibold text-gray-900">cp-canonic</h3>
+                <span class="text-xs text-gray-500">4 days ago</span>
+              </div>
+              <p class="text-sm text-gray-700 mt-1 max-w-[66ch]">
+                Spec finalization wrapping up.
+              </p>
+              <div class="flex items-center gap-1.5 flex-wrap mt-2.5">
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">2h · Drew 2</span>
+              </div>
+            </div>
+            <div class="shrink-0 flex items-center gap-1.5">
+              <a href="#" class="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">W19 →</a>
+              <button class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">CP</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="px-6 py-4 hover:bg-gray-50/50 transition-colors">
+          <div class="flex items-start gap-4">
+            <div class="shrink-0 w-32">
+              <div class="flex items-center gap-2">
+                <code class="text-xs font-mono font-semibold text-gray-900">cnv2</code>
+                <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">Active</span>
+              </div>
+              <div class="text-xs text-gray-500 mt-1">Tony</div>
+            </div>
+            <div class="flex-1 min-w-0">
+              <div class="flex items-baseline gap-2">
+                <h3 class="text-[15px] font-semibold text-gray-900">canvas-2</h3>
+                <span class="text-xs text-gray-500">today</span>
+              </div>
+              <p class="text-sm text-gray-700 mt-1 max-w-[66ch]">
+                Internal storage migration; quiet sprint.
+              </p>
+              <div class="flex items-center gap-1.5 flex-wrap mt-2.5">
+                <span class="inline-flex items-center gap-1 rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">3h · Tony 3</span>
+              </div>
+            </div>
+            <div class="shrink-0 flex items-center gap-1.5">
+              <a href="#" class="inline-flex items-center gap-1 rounded-md bg-gray-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-gray-800">W19 →</a>
+              <button class="inline-flex items-center gap-1 rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-600 hover:bg-gray-50">CP</button>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===== WORKLOAD ROLLUP ===== -->
+    <section id="workload" data-section class="rounded-xl border border-gray-200 engine-tint">
+      <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+        <h2 class="text-lg font-semibold text-gray-900">Workload — last week (W18) vs. planned W19</h2>
+        <span class="text-[11px] text-gray-400">Auto-generated</span>
+      </div>
+      <div class="px-6 py-5">
+        <div class="grid md:grid-cols-2 gap-6">
+
+          <div class="rounded-lg border border-gray-200 bg-white p-4">
+            <div class="flex items-baseline justify-between mb-3">
+              <div class="flex items-center gap-2">
+                <div class="grid h-7 w-7 place-items-center rounded-full bg-violet-100 text-xs font-semibold text-violet-700">D</div>
+                <div>
+                  <div class="text-[15px] font-semibold text-gray-900">Drew</div>
+                  <div class="text-xs text-gray-500">W18 actual · W19 planned</div>
+                </div>
+              </div>
+              <div class="text-right">
+                <div class="text-2xl font-bold text-gray-900">29h</div>
+                <div class="text-xs text-gray-500">planned this sprint</div>
+              </div>
+            </div>
+            <div class="space-y-1.5 text-sm">
+              <div class="flex items-center justify-between">
+                <span class="text-gray-700">Engagements</span>
+                <span class="font-medium text-gray-900">26h <span class="text-xs text-gray-400">(W18: 24h)</span></span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-gray-700">Internal admin</span>
+                <span class="font-medium text-gray-900">3h <span class="text-xs text-gray-400">(W18: 4h)</span></span>
+              </div>
+              <div class="pt-2 border-t border-gray-100 flex items-center justify-between">
+                <span class="text-xs text-gray-500">Distinct projects</span>
+                <span class="text-xs font-medium text-gray-700">7</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="rounded-lg border border-gray-200 bg-white p-4">
+            <div class="flex items-baseline justify-between mb-3">
+              <div class="flex items-center gap-2">
+                <div class="grid h-7 w-7 place-items-center rounded-full bg-emerald-100 text-xs font-semibold text-emerald-700">T</div>
+                <div>
+                  <div class="text-[15px] font-semibold text-gray-900">Tony</div>
+                  <div class="text-xs text-gray-500">W18 actual · W19 planned</div>
+                </div>
+              </div>
+              <div class="text-right">
+                <div class="text-2xl font-bold text-gray-900">22h</div>
+                <div class="text-xs text-gray-500">planned this sprint</div>
+              </div>
+            </div>
+            <div class="space-y-1.5 text-sm">
+              <div class="flex items-center justify-between">
+                <span class="text-gray-700">Engagements</span>
+                <span class="font-medium text-gray-900">21h <span class="text-xs text-gray-400">(W18: 19h)</span></span>
+              </div>
+              <div class="flex items-center justify-between">
+                <span class="text-gray-700">Internal admin</span>
+                <span class="font-medium text-gray-900">1h <span class="text-xs text-gray-400">(W18: 2h)</span></span>
+              </div>
+              <div class="pt-2 border-t border-gray-100 flex items-center justify-between">
+                <span class="text-xs text-gray-500">Distinct projects</span>
+                <span class="text-xs font-medium text-gray-700">6</span>
+                <span class="text-[11px] text-amber-700 ml-auto">⚠ out Thu–Fri</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== HOLDING ===== -->
+    <section id="holding" data-section class="rounded-xl border border-slate-200 bg-slate-50">
+      <details>
+        <summary class="cursor-pointer flex items-center justify-between px-6 py-3 hover:bg-slate-100 rounded-xl">
+          <div class="flex items-center gap-2">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" class="text-slate-500"><path d="M5 6L8 9L11 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <h2 class="text-sm font-semibold text-slate-700">Holding</h2>
+            <span class="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-medium text-slate-700">5</span>
+          </div>
+          <span class="text-[11px] text-slate-500">Not in this sprint — for awareness</span>
+        </summary>
+        <div class="px-6 pb-4 pt-1 grid grid-cols-2 md:grid-cols-3 gap-2 text-sm">
+          <div class="text-slate-700"><code class="text-xs font-mono text-slate-600">apx</code> Apex Studios — paused 21d</div>
+          <div class="text-slate-700"><code class="text-xs font-mono text-slate-600">vrt</code> Vertex Co. — paused 35d</div>
+          <div class="text-slate-700"><code class="text-xs font-mono text-slate-600">brk</code> Brookline — paused 14d</div>
+          <div class="text-slate-700"><code class="text-xs font-mono text-slate-600">lns</code> Lensman — paused 60d</div>
+          <div class="text-slate-700"><code class="text-xs font-mono text-slate-600">cbn</code> Carbon Health — paused 9d</div>
+        </div>
+      </details>
+    </section>
+
+  </main>
+
+  <!-- ============== STICKY BOTTOM TOTALS BAR ============== -->
+  <div class="sticky bottom-0 border-t border-gray-200 bg-white/95 backdrop-blur-sm z-30">
+    <div class="mx-auto max-w-[1400px] px-6 py-3 flex items-center gap-6">
+      <div class="flex items-center gap-4 text-sm">
+        <div class="flex items-baseline gap-2">
+          <span class="eyebrow">W19 total</span>
+          <span class="font-semibold text-gray-900">51h</span>
+        </div>
+        <div class="flex items-baseline gap-2 text-gray-500">
+          <span class="text-[11px] uppercase tracking-wide">Drew</span>
+          <span class="font-medium">29h</span>
+        </div>
+        <div class="flex items-baseline gap-2 text-gray-500">
+          <span class="text-[11px] uppercase tracking-wide">Tony</span>
+          <span class="font-medium">22h</span>
+        </div>
+        <div class="flex items-baseline gap-2 text-gray-500 ml-4 border-l border-gray-200 pl-4">
+          <span class="text-[11px] uppercase tracking-wide">12 active</span>
+          <span class="text-[11px] uppercase tracking-wide text-amber-700">8 stale asks</span>
+          <span class="text-[11px] uppercase tracking-wide text-red-700">4 escalated</span>
+        </div>
+      </div>
+      <div class="ml-auto flex items-center gap-2">
+        <button class="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-slate-200 text-xs font-medium text-gray-700 hover:bg-gray-50">
+          ← W18
+        </button>
+        <button class="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-gray-900 text-xs font-medium text-white hover:bg-gray-800">
+          Run weekly review
+        </button>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>

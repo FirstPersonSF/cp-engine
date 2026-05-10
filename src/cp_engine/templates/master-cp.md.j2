@@ -15,6 +15,38 @@ Author: cp-engine (sync)
 **Last sync:** {{ last_sync_iso }}
 <!-- cp-engine:end last-sync-timestamp -->
 
+<!-- cp-engine:start sprint-facts-strip -->
+{%- if sprint_facts %}
+**Total hours** {{ sprint_facts.total_hours }} ·
+{%- for name, hrs in sprint_facts.per_person %} **{{ name }}** {{ hrs }} ·{% endfor %}
+**Active** {{ sprint_facts.active_count }} ·
+**Stale asks** {{ sprint_facts.stale_asks_count }} ·
+**Escalated** {{ sprint_facts.escalated_count }} ·
+**Decisions due** {{ sprint_facts.decisions_due_count }}{% if sprint_facts.prior_sprint %} ·
+**Prior sprint** {{ sprint_facts.prior_sprint }}{% endif %}
+{%- endif %}
+<!-- cp-engine:end sprint-facts-strip -->
+
+<!-- cp-engine:start agenda -->
+{%- if agenda %}
+## Agenda — what needs attention this week
+**Risks needing decision** ({{ agenda.escalated_risks | length }})
+{%- for r in agenda.escalated_risks %}
+- `{{ r.project_code }}` {{ r.text }}
+{%- endfor %}
+
+**Stale client asks** ({{ agenda.stale_asks | length }})
+{%- for a in agenda.stale_asks %}
+- `{{ a.project_code }}` {{ a.text }} — {{ a.aged_days }}d
+{%- endfor %}
+
+**Horizon items maturing** ({{ agenda.decisions_due | length }})
+{%- for d in agenda.decisions_due %}
+- `{{ d.project_code }}` {{ d.text }} — {{ d.target_date }}
+{%- endfor %}
+{%- endif %}
+<!-- cp-engine:end agenda -->
+
 <!-- cp-engine:start exceptions-summary -->
 {%- if exceptions_count and exceptions_count > 0 %}
 **Exceptions:** {{ exceptions_count }} this week — see [`exceptions/`](exceptions/README.md) for unregistered repo activity.
@@ -23,43 +55,55 @@ Author: cp-engine (sync)
 
 <!-- cp-engine:start active-pipeline -->
 ## 1P — Pipeline ({{ active_groups.pipeline | length }})
+{%- if section_summaries.pipeline %}
+_{{ section_summaries.pipeline }}_
+{%- endif %}
 
 Sales-stage progression: Inquiry → Negotiation → Contract.
 
 | Code | Project | Stage | Owner | Budget | Last touched | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
 {%- for p in active_groups.pipeline %}
-| `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.deal_stage or "—" }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [→]({{ p.scope }}/{{ p.dir_slug }}/cp.md) |
+| `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.deal_stage or "—" }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-pipeline -->
 
 <!-- cp-engine:start active-1p -->
 ## 1P — Active Engagements ({{ active_groups.client | length }})
+{%- if section_summaries.client %}
+_{{ section_summaries.client }}_
+{%- endif %}
 
 | Code | Project | Owner | Budget | Last touched | One-line summary | CP |
 |---|---|---|---|---|---|---|
 {%- for p in active_groups.client %}
-| `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [→]({{ p.scope }}/{{ p.dir_slug }}/cp.md) |
+| `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-1p -->
 
 <!-- cp-engine:start active-fpsf -->
 ## First Person — Internal Tooling ({{ active_groups.self_fpsf | length }})
+{%- if section_summaries.self_fpsf %}
+_{{ section_summaries.self_fpsf }}_
+{%- endif %}
 
 | Repo | Status | Owner | Description | Last touched | GitHub | CP |
 |---|---|---|---|---|---|---|
 {%- for p in active_groups.self_fpsf %}
-| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.status }} | {{ p.owner or "—" }} | {{ p.description or "" }} | {{ p.last_touched_short or "—" }} | {% if p.github_org and p.repo_name %}[{{ p.github_org }}/{{ p.repo_name }}](https://github.com/{{ p.github_org }}/{{ p.repo_name }}){% else %}—{% endif %} | [→]({{ p.scope }}/{{ p.dir_slug }}/cp.md) |
+| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.status }} | {{ p.owner or "—" }} | {{ p.description or "" }} | {{ p.last_touched_short or "—" }} | {% if p.github_org and p.repo_name %}[{{ p.github_org }}/{{ p.repo_name }}](https://github.com/{{ p.github_org }}/{{ p.repo_name }}){% else %}—{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-fpsf -->
 
 <!-- cp-engine:start active-canonic -->
 ## Canonic ({{ active_groups.self_canonic | length }})
+{%- if section_summaries.self_canonic %}
+_{{ section_summaries.self_canonic }}_
+{%- endif %}
 
 | Repo | Status | Owner | Description | Last touched | GitHub | CP |
 |---|---|---|---|---|---|---|
 {%- for p in active_groups.self_canonic %}
-| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.status }} | {{ p.owner or "—" }} | {{ p.description or "" }} | {{ p.last_touched_short or "—" }} | {% if p.github_org and p.repo_name %}[{{ p.github_org }}/{{ p.repo_name }}](https://github.com/{{ p.github_org }}/{{ p.repo_name }}){% else %}—{% endif %} | [→]({{ p.scope }}/{{ p.dir_slug }}/cp.md) |
+| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.status }} | {{ p.owner or "—" }} | {{ p.description or "" }} | {{ p.last_touched_short or "—" }} | {% if p.github_org and p.repo_name %}[{{ p.github_org }}/{{ p.repo_name }}](https://github.com/{{ p.github_org }}/{{ p.repo_name }}){% else %}—{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-canonic -->
 

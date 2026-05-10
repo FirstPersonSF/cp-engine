@@ -164,6 +164,11 @@ class ProjectState:
     repo_name: str | None = None  # raw GitHub slug, distinct from `code`
     description: str | None = None  # ≤120 char one-liner from repos.description
 
+    # Engagement-only — populated from tenant config's per-project `contacts`
+    # array. Plain dicts (typically `{"name": "...", "role": "..."}`) keep the
+    # shape flexible without forcing a contact schema on every consumer.
+    contacts: tuple[dict, ...] = ()
+
 
 @dataclass(frozen=True)
 class Issue:
@@ -218,3 +223,146 @@ class WeeklyAllocations:
     week_start: str  # ISO date (YYYY-MM-DD)
     by_project: dict[str, ProjectAllocation]
     rollup: tuple[PersonRollup, ...]  # sorted by total_hours desc
+
+
+@dataclass(frozen=True)
+class ClientAsk:
+    """One open question to the client, captured during sprint planning or via deepening."""
+
+    text: str
+    asked_date: str  # ISO date
+    status: str      # "open" | "answered" | "dropped"
+    who: str | None = None
+
+
+@dataclass(frozen=True)
+class Risk:
+    """One dependency or risk on a project's sprint plan."""
+
+    text: str
+    severity: str    # "escalated" | "watching" | "dependency"
+    category: str    # value from tenant config risk_categories
+    raised_date: str
+    why_it_matters: str | None = None
+
+
+@dataclass(frozen=True)
+class HorizonItem:
+    """One forward-looking item (milestone, decision, opportunity) on a project's horizon."""
+
+    text: str
+    bucket: str      # "milestone" | "decision" | "opportunity"
+    target_date: str | None = None
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class Outbound:
+    """One outbound client message: sent, drafted, or queued."""
+
+    text: str
+    status: str      # "sent" | "draft" | "queued"
+    date: str
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class InboundUpdate:
+    """One inbound update from the client, captured in a sprint file."""
+
+    date: str
+    who: str
+    text: str
+
+
+@dataclass(frozen=True)
+class Deliverable:
+    """One deliverable in a sprint plan; position drives priority."""
+
+    text: str
+    position: int    # 1-indexed priority
+
+
+@dataclass(frozen=True)
+class MeetingNotes:
+    """Decisions plus prose discussion from a partners' weekly review."""
+
+    source: str | None = None
+    attendees: str | None = None
+    duration: str | None = None
+    decisions: tuple[str, ...] = ()
+    discussion_prose: str = ""
+
+
+@dataclass(frozen=True)
+class SprintFacts:
+    """Engine-managed facts strip at the top of a sprint file."""
+
+    stage: str | None
+    owner: str | None
+    budget_short: str | None
+    last_touched_short: str | None
+    last_sprint_hours_line: str | None
+    sessions_this_week: int
+    open_issues: int
+
+
+@dataclass(frozen=True)
+class SprintCommit:
+    """One commit referenced in a sprint file's recent-activity block."""
+
+    sha_short: str
+    subject: str
+    author: str
+    when_short: str
+
+
+@dataclass(frozen=True)
+class WhereItStands:
+    """Engine-managed snapshot of recent activity for one project's sprint."""
+
+    last_session_date: str | None
+    last_session_who: str | None
+    last_session_summary: str | None
+    recent_commits: tuple[SprintCommit, ...]
+    open_tracked_issues: tuple[Issue, ...]
+
+
+@dataclass(frozen=True)
+class CarryForward:
+    """Open items rolled forward from the prior sprint."""
+
+    asks: tuple[ClientAsk, ...]
+    risks: tuple[Risk, ...]
+    horizon: tuple[HorizonItem, ...]
+
+
+@dataclass(frozen=True)
+class SprintFile:
+    """All parsed content of one project's sprint file for one week."""
+
+    project_code: str
+    week_iso: str
+    week_start: str
+    week_end: str
+    prior_sprint: str | None
+    facts: SprintFacts
+    where_it_stands: WhereItStands
+    carry_forward: CarryForward
+    client_outbound: tuple[Outbound, ...]
+    client_open_asks: tuple[ClientAsk, ...]
+    client_inbound: tuple[InboundUpdate, ...]
+    risks: tuple[Risk, ...]
+    allocation: tuple[PersonHours, ...]
+    deliverables: tuple[Deliverable, ...]
+    definition_of_done: str
+    horizon: tuple[HorizonItem, ...]
+    meeting_notes: MeetingNotes | None
+
+    @property
+    def total_allocation_hours(self) -> float:
+        return sum(p.hours for p in self.allocation)
+
+    @property
+    def escalated_risk_count(self) -> int:
+        return sum(1 for r in self.risks if r.severity == "escalated")

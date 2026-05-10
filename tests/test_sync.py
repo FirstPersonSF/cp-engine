@@ -95,8 +95,13 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     written_names = {p.name for p in result.files_written}
     # v0.3 layout: project working dir at <scope>/<dir_slug>/cp.md.
     # Default make_state has company_kind="client" → scope "1p". With name
-    # set, the slug is `mc-2-mission-control-v2`.
-    assert written_names == {"master-cp.md", "CLAUDE.md", ".gitignore", "cp.md"}
+    # set, the slug is `mc-2-mission-control-v2`. Sprint file is `mc-2.md`
+    # under sprints/<YYYY-W##>/ since make_state defaults to status="Open"
+    # (active subset). The per-week sprint-index README.md is generated
+    # alongside the sprint file.
+    assert written_names == {
+        "master-cp.md", "CLAUDE.md", ".gitignore", "cp.md", "mc-2.md", "README.md",
+    }
 
     # Files actually exist + reference the project
     master = (tmp_path / "master-cp.md").read_text()
@@ -244,21 +249,28 @@ def test_resync_preserves_hand_written_master_cp_content(tmp_path: Path) -> None
     assert "Mission Control RENAMED" in final
 
 
-def test_resync_does_not_overwrite_existing_project_cp(tmp_path: Path) -> None:
-    """v0.1 decision A: the mc-2 backend never touches existing project CPs."""
+def test_resync_preserves_hand_edits_outside_engine_regions(tmp_path: Path) -> None:
+    """Hand-written content outside engine-managed regions survives every
+    sync. v0.8 added the `current-sprint` engine region that gets spliced
+    into project cp.md on every sync — but anything outside that region
+    (and the `project-facts` / `tracked-issues` regions) is byte-stable."""
     config = make_config(tmp_path)
     fake = FakeBackend((make_state(),))
     sync_tenant(config, backend_factory=lambda _: fake)
 
-    # User edits the project CP heavily — adds notes, removes default sections
+    # User adds a hand-written tail to the project CP. The engine regions
+    # remain in place (so the splice has somewhere to land); the tail is
+    # outside them and must survive.
     project_path = tmp_path / "1p" / "mc-2" / "cp.md"
-    custom_body = "# Hand-rewritten\n\nNothing else.\n"
-    project_path.write_text(custom_body)
+    original = project_path.read_text()
+    edited = original + "\n## My hand notes\n\nShould survive.\n"
+    project_path.write_text(edited)
 
-    # Re-sync; project CP must remain exactly as the user wrote it
     sync_tenant(config, backend_factory=lambda _: fake)
 
-    assert project_path.read_text() == custom_body
+    final = project_path.read_text()
+    assert "## My hand notes" in final
+    assert "Should survive." in final
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -894,9 +906,125 @@ def test_legacy_bare_code_dir_renamed_to_slug(tmp_path: Path) -> None:
     )
 
     new_dir = tmp_path / "1p" / "ggl-5177-event-safety-playbook"
-    assert (new_dir / "cp.md").read_text() == "# legacy content\n"
+    # Legacy hand-written content outside engine-managed regions survives the
+    # rename. The active sync may splice in a `current-sprint` block (active
+    # status + sprint window), so we assert the original line is still
+    # present rather than full-body equality.
+    cp_body = (new_dir / "cp.md").read_text()
+    assert "# legacy content" in cp_body
     assert (new_dir / "notes.md").read_text() == "# preserved\n"
     assert not legacy_dir.exists()
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Sprint files — per-project per-sprint markdown wired into sync_tenant
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_sync_writes_current_sprint_block_into_project_cp(tmp_path: Path) -> None:
+    """When a sprint file exists for an active project, sync_tenant splices
+    the rendered `## Current sprint` block into the project's cp.md inside
+    the engine-managed `current-sprint` region."""
+    from cp_engine.state import dir_slug, scope_for
+
+    config = make_config(tmp_path)
+    project = make_state(code="peb", name="Pebble Foods", status="Open")
+    fake = FakeBackend((project,))
+
+    sync_tenant(
+        config,
+        backend_factory=lambda _: fake,
+        now=datetime(2026, 5, 13, 8, 0),
+    )
+
+    week_iso = "2026-W19"
+    slug = dir_slug(project.code, project.name)
+    scope = scope_for(project.company_kind)
+    cp_path = tmp_path / scope / slug / "cp.md"
+    body = cp_path.read_text()
+
+    assert "<!-- cp-engine:start current-sprint -->" in body
+    assert "<!-- cp-engine:end current-sprint -->" in body
+    assert "## Current sprint" in body
+    assert f"sprints/{week_iso}/peb.md" in body
+
+
+def test_sync_splices_current_sprint_into_existing_project_cp(tmp_path: Path) -> None:
+    """When a project's cp.md was scaffolded BEFORE the current-sprint marker
+    existed (legacy file on disk), the next sync still inserts the markers +
+    rendered block. Hand-written content outside the engine regions survives."""
+    from cp_engine.state import dir_slug, scope_for
+
+    config = make_config(tmp_path)
+    project = make_state(code="peb", name="Pebble Foods", status="Open")
+    slug = dir_slug(project.code, project.name)
+    scope = scope_for(project.company_kind)
+    project_dir = tmp_path / scope / slug
+    project_dir.mkdir(parents=True)
+    cp_path = project_dir / "cp.md"
+    # Pre-populate a legacy cp.md missing the current-sprint marker but
+    # carrying the project-facts and tracked-issues markers + a hand-edit.
+    legacy = (
+        "# Pebble Foods — Project CP\n\n"
+        "<!-- cp-engine:start project-facts -->\n"
+        "## Facts\n"
+        "<!-- cp-engine:end project-facts -->\n\n"
+        "<!-- cp-engine:start tracked-issues -->\n"
+        "## Tracked issues\n"
+        "<!-- cp-engine:end tracked-issues -->\n\n"
+        "## My hand-written notes\n\nMust survive.\n"
+    )
+    cp_path.write_text(legacy)
+
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend((project,)),
+        now=datetime(2026, 5, 13, 8, 0),
+    )
+
+    body = cp_path.read_text()
+    assert "<!-- cp-engine:start current-sprint -->" in body
+    assert "<!-- cp-engine:end current-sprint -->" in body
+    assert "## Current sprint" in body
+    assert "sprints/2026-W19/peb.md" in body
+    # Hand-written content must survive the marker injection.
+    assert "Must survive." in body
+    assert "## My hand-written notes" in body
+
+
+def test_sync_tenant_writes_sprint_files_for_active_projects(tmp_path: Path) -> None:
+    """sync_tenant should call into the sprint-file orchestrator for every
+    active, non-internal project, dropping a `<code>.md` file under
+    `<tenant_root>/sprints/<YYYY-W##>/`. The orchestrator filters by the
+    canonical active subset (Deal/Open per `is_active_status`), matching
+    MC-2's capitalized status vocabulary."""
+    config = make_config(tmp_path)
+    fake = FakeBackend(
+        (
+            make_state(code="peb", name="Pebble Foods", status="Open"),
+            make_state(
+                code="apx", name="Apex Holding", status="Holding"
+            ),  # not active → no sprint file
+            make_state(
+                code="internal-1",
+                name="Internal one",
+                status="Open",
+                is_internal=True,
+            ),  # internal → no sprint file
+        )
+    )
+
+    sync_tenant(
+        config,
+        backend_factory=lambda _: fake,
+        now=datetime(2026, 5, 13, 8, 0),
+    )
+
+    sprint_dir = tmp_path / "sprints" / "2026-W19"
+    assert sprint_dir.is_dir()
+    assert (sprint_dir / "peb.md").exists()
+    assert not (sprint_dir / "apx.md").exists()
+    assert not (sprint_dir / "internal-1.md").exists()
 
 
 # ──────────────────────────────────────────────────────────────────────

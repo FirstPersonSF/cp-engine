@@ -1,6 +1,6 @@
 [project]
 name = "cp-engine"
-version = "0.7.4"
+version = "0.8.0"
 description = "Context Protocol Engine — framework for First Person and Canonic CP corpora"
 readme = "README.md"
 requires-python = ">=3.11"

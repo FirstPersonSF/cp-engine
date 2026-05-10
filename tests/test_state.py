@@ -4,8 +4,22 @@ from __future__ import annotations
 
 import pytest
 
-from cp_engine.state import dir_slug, scope_for
-
+from cp_engine.state import (
+    CarryForward,
+    ClientAsk,
+    Deliverable,
+    HorizonItem,
+    InboundUpdate,
+    MeetingNotes,
+    Outbound,
+    PersonHours,
+    Risk,
+    SprintFacts,
+    SprintFile,
+    WhereItStands,
+    dir_slug,
+    scope_for,
+)
 
 # ──────────────────────────────────────────────────────────────────────
 #  scope_for
@@ -71,3 +85,97 @@ def test_dir_slug_ascii_only() -> None:
     # and starts with the code prefix.
     assert result.startswith("xyz-1-")
     assert all(c.isascii() for c in result)
+
+
+def test_client_ask_constructs_with_defaults() -> None:
+    a = ClientAsk(text="Volume forecast", asked_date="2026-05-04", status="open", who="Maria")
+    assert a.status == "open"
+    assert a.who == "Maria"
+
+
+def test_risk_includes_category_and_severity() -> None:
+    r = Risk(
+        text="Legal slip",
+        severity="escalated",
+        category="contract",
+        raised_date="2026-05-04",
+        why_it_matters="Pushes contract into next sprint.",
+    )
+    assert r.severity == "escalated"
+    assert r.category == "contract"
+
+
+def test_horizon_item_bucket_required() -> None:
+    h = HorizonItem(text="Open beta launch", bucket="decision", target_date="2026-W22")
+    assert h.bucket == "decision"
+    assert h.target_date == "2026-W22"
+
+
+def test_outbound_status_field() -> None:
+    o = Outbound(text="Counter-proposal", status="sent", date="2026-05-09")
+    assert o.status == "sent"
+
+
+def test_inbound_update_holds_who_and_quote() -> None:
+    u = InboundUpdate(date="2026-05-09", who="Maria", text="Tier-2 doesn't match")
+    assert u.who == "Maria"
+
+
+def test_deliverable_position_drives_priority() -> None:
+    d1 = Deliverable(text="Pricing finalized", position=1)
+    d2 = Deliverable(text="Deck reviewed", position=2)
+    assert d1.position < d2.position
+
+
+def test_meeting_notes_holds_decisions_and_prose() -> None:
+    m = MeetingNotes(
+        source="From sprint planning · May 11",
+        attendees="Drew + Tony",
+        duration="22 min",
+        decisions=("Hold tier-2 cap firm.",),
+        discussion_prose="Spent most of the time on…",
+    )
+    assert len(m.decisions) == 1
+
+
+def test_sprint_file_aggregates_all_sections_and_computes_total() -> None:
+    sf = SprintFile(
+        project_code="peb",
+        week_iso="2026-W19",
+        week_start="2026-05-11",
+        week_end="2026-05-17",
+        prior_sprint="2026-W18",
+        facts=SprintFacts(
+            stage="Negotiation", owner="Drew", budget_short="$45,000",
+            last_touched_short="2 days ago",
+            last_sprint_hours_line="Drew 6.5h · Tony 2h",
+            sessions_this_week=3, open_issues=3,
+        ),
+        where_it_stands=WhereItStands(
+            last_session_date="2026-05-09",
+            last_session_who="Drew",
+            last_session_summary="Reviewed pricing v3.",
+            recent_commits=(),
+            open_tracked_issues=(),
+        ),
+        carry_forward=CarryForward(asks=(), risks=(), horizon=()),
+        client_outbound=(),
+        client_open_asks=(),
+        client_inbound=(),
+        risks=(
+            Risk(
+                text="Legal slip", severity="escalated",
+                category="contract", raised_date="2026-05-04",
+            ),
+        ),
+        allocation=(
+            PersonHours(person_name="Drew", hours=6.0),
+            PersonHours(person_name="Tony", hours=2.0),
+        ),
+        deliverables=(),
+        definition_of_done="",
+        horizon=(),
+        meeting_notes=None,
+    )
+    assert sf.total_allocation_hours == 8.0
+    assert sf.escalated_risk_count == 1

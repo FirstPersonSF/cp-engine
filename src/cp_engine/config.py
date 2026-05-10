@@ -105,11 +105,17 @@ class ProjectConfig:
     in their local config (`code = ""`). Brandon doesn't have access to
     `mc-2`, for instance — he should be able to skip it cleanly without
     breaking the engine.
+
+    `contacts` is an optional per-project list of free-form contact records
+    (typically `{"name": "...", "role": "..."}`) declared in `.cp-engine.toml`.
+    Surfaces on sprint scaffolds so the tenant doesn't have to retype them
+    each week. Empty tuple when the block is absent.
     """
 
     code: str
     github: str  # "owner/repo"
     local_path: Path | None
+    contacts: tuple[dict, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -150,6 +156,18 @@ class TenantConfig:
     local_repos_by_user: Mapping[str, Mapping[str, str]] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    # Categories used to classify Risks parsed out of sprint files. Tenants
+    # can override via `[risk_categories]\nvalues = [...]` in `.cp-engine.toml`.
+    # The default covers the most common axes; bespoke tenants (e.g. ops-heavy
+    # engagements) may want a narrower or wider set.
+    risk_categories: tuple[str, ...] = (
+        "contract",
+        "pricing",
+        "people",
+        "technical",
+        "scope",
+        "timeline",
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -175,21 +193,26 @@ def load(tenant_root: Path) -> TenantConfig:
 
     projects = _merge_projects(committed["projects"], local["repos"])
 
-    return TenantConfig(
-        name=committed["name"],
-        display=committed["display"],
-        engine_version_constraint=committed["engine_version_constraint"],
-        sync=committed["sync"],
-        projects=projects,
-        root=tenant_root,
-        local_repos=MappingProxyType(dict(local["local_repos"])),
-        local_repos_by_user=MappingProxyType(
+    kwargs: dict = {
+        "name": committed["name"],
+        "display": committed["display"],
+        "engine_version_constraint": committed["engine_version_constraint"],
+        "sync": committed["sync"],
+        "projects": projects,
+        "root": tenant_root,
+        "local_repos": MappingProxyType(dict(local["local_repos"])),
+        "local_repos_by_user": MappingProxyType(
             {
                 user: MappingProxyType(dict(paths))
                 for user, paths in committed["local_repos_by_user"].items()
             }
         ),
-    )
+    }
+    # Only override the dataclass default when the tenant explicitly declared
+    # [risk_categories]; otherwise rely on the canonical six-axis default.
+    if committed["risk_categories"] is not None:
+        kwargs["risk_categories"] = committed["risk_categories"]
+    return TenantConfig(**kwargs)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -282,7 +305,21 @@ def _normalize_committed(data: dict, source: Path) -> dict:
         if code in seen_codes:
             raise CommittedConfigInvalid(f"{source}: duplicate project code '{code}'")
         seen_codes.add(code)
-        projects.append({"code": code, "github": github})
+
+        contacts_raw = p.get("contacts") or []
+        if not isinstance(contacts_raw, list):
+            raise CommittedConfigInvalid(
+                f"{source}: [[projects]][{i}].contacts must be a list of tables"
+            )
+        contacts: list[dict] = []
+        for j, c in enumerate(contacts_raw):
+            if not isinstance(c, dict):
+                raise CommittedConfigInvalid(
+                    f"{source}: [[projects]][{i}].contacts[{j}] must be a table"
+                )
+            contacts.append(dict(c))
+
+        projects.append({"code": code, "github": github, "contacts": tuple(contacts)})
 
     # [local-repos.<user>] — committed, multi-user map of repo name → local
     # clone path. Read by render_repo_md to surface "**Local clone (User):**"
@@ -310,6 +347,24 @@ def _normalize_committed(data: dict, source: Path) -> dict:
             user_paths[repo_name] = raw_path
         local_repos_by_user[user] = user_paths
 
+    # Optional [risk_categories] table: a `values` array overrides the default
+    # tuple on TenantConfig. Absent block → fall back to the dataclass default.
+    risk_categories: tuple[str, ...] | None = None
+    risk_raw = data.get("risk_categories")
+    if risk_raw is not None:
+        if not isinstance(risk_raw, dict):
+            raise CommittedConfigInvalid(
+                f"{source}: [risk_categories] must be a table with a `values` array"
+            )
+        values = risk_raw.get("values")
+        if not isinstance(values, list) or not all(
+            isinstance(v, str) and v for v in values
+        ):
+            raise CommittedConfigInvalid(
+                f"{source}: [risk_categories].values must be a non-empty list of strings"
+            )
+        risk_categories = tuple(values)
+
     return {
         "name": name,
         "display": display,
@@ -317,6 +372,7 @@ def _normalize_committed(data: dict, source: Path) -> dict:
         "sync": sync,
         "projects": projects,
         "local_repos_by_user": local_repos_by_user,
+        "risk_categories": risk_categories,
     }
 
 
@@ -428,7 +484,12 @@ def _merge_projects(
             local_path = resolved
 
         merged.append(
-            ProjectConfig(code=code, github=p["github"], local_path=local_path)
+            ProjectConfig(
+                code=code,
+                github=p["github"],
+                local_path=local_path,
+                contacts=p.get("contacts", ()),
+            )
         )
 
     return tuple(merged)

@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sprint W19 · Pebble Foods — Mission Control</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --mc-bg:#f7f7f8; --mc-surface:#fff; --mc-border:#e5e7eb; --mc-border-soft:#eef0f3;
+      --mc-text:#111827; --mc-text-2:#4b5563; --mc-text-3:#6b7280; --mc-text-4:#9ca3af;
+      --mc-violet:#7c3aed; --mc-radius:12px; --mc-radius-sm:8px; --mc-page-max:1480px;
+    }
+    html, body { font-family:'Inter', system-ui, -apple-system, sans-serif; background:var(--mc-bg); color:var(--mc-text); font-feature-settings:"cv11","ss01"; }
+
+    .h-section { font-size:18px; font-weight:600; letter-spacing:-0.008em; color:var(--mc-text); line-height:1.2; }
+    .eyebrow-strong { font-size:11px; font-weight:700; letter-spacing:0.07em; text-transform:uppercase; color:var(--mc-text-3); }
+    .eyebrow-sub { font-size:11px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; color:var(--mc-text-4); }
+    .body-15 { font-size:13.5px; line-height:1.6; color:#374151; }
+    .body-14 { font-size:13px; line-height:1.55; color:#374151; }
+    .mono { font-family:ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace; font-feature-settings:"zero","ss01"; }
+
+    .section { background:var(--mc-surface); border:1px solid var(--mc-border); border-radius:var(--mc-radius); overflow:hidden; }
+    .section-head { display:flex; align-items:center; gap:12px; padding:14px 22px; border-bottom:1px solid var(--mc-border-soft); }
+    .section-head .meta { margin-left:auto; font-size:11px; color:var(--mc-text-4); }
+    .section-body { padding:18px 22px; }
+
+    .tag { display:inline-flex; align-items:center; gap:6px; height:20px; padding:0 8px; border-radius:999px; font-size:10.5px; font-weight:600; white-space:nowrap; }
+    .tag-amber { background:#fef3c7; color:#92400e; }
+    .tag-red { background:#fee2e2; color:#991b1b; }
+    .tag-emerald { background:#d1fae5; color:#065f46; }
+    .tag-blue { background:#dbeafe; color:#1e40af; }
+    .tag-violet { background:#ede9fe; color:#5b21b6; }
+    .tag-slate { background:#e2e8f0; color:#334155; }
+    .tag-cyan { background:#cffafe; color:#155e75; }
+
+    .row { display:grid; grid-template-columns:88px 1fr auto; align-items:start; column-gap:16px; padding:10px 0; border-top:1px solid var(--mc-border-soft); }
+    .row:first-child { border-top:0; padding-top:4px; }
+    .row .row-tag { display:flex; align-items:flex-start; }
+    .row .row-meta { font-size:11.5px; color:var(--mc-text-4); white-space:nowrap; }
+    .row .row-title { font-size:13px; color:#1f2937; line-height:1.5; }
+    .row .row-sub { font-size:12px; color:var(--mc-text-3); margin-top:2px; line-height:1.45; }
+    .row-wide { grid-template-columns:120px 1fr auto; }
+    .row-tag-stack { display:flex; flex-direction:column; align-items:flex-start; gap:4px; }
+    .row-tag-cat { font-size:10.5px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; color:var(--mc-text-4); }
+
+    .facts { display:grid; grid-template-columns:repeat(8, minmax(0, 1fr)); border-radius:var(--mc-radius); background:var(--mc-surface); border:1px solid var(--mc-border); overflow:hidden; }
+    .fact { padding:14px 18px; border-right:1px solid var(--mc-border-soft); }
+    .fact:last-child { border-right:0; }
+    .fact .l { font-size:10.5px; font-weight:600; letter-spacing:0.06em; text-transform:uppercase; color:var(--mc-text-3); margin-bottom:6px; }
+    .fact .v { font-size:14px; font-weight:600; color:var(--mc-text); }
+    .fact .v.link { color:var(--mc-violet); }
+    @media (max-width:1180px) { .facts { grid-template-columns:repeat(4, minmax(0, 1fr)); } .fact:nth-child(4) { border-right:0; } .fact:nth-child(-n+4) { border-bottom:1px solid var(--mc-border-soft); } }
+
+    .subcard { border:1px solid var(--mc-border); border-radius:var(--mc-radius-sm); background:var(--mc-surface); padding:12px; }
+
+    .col2 { display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:18px; }
+    .col3 { display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:18px; }
+
+    .topnav { position:sticky; top:0; z-index:50; background:#fff; border-bottom:1px solid var(--mc-border); }
+    .subnav { position:sticky; top:56px; z-index:40; background:rgba(255,255,255,0.92); backdrop-filter:blur(8px); border-bottom:1px solid var(--mc-border-soft); }
+    .subnav a { font-size:13px; color:var(--mc-text-3); padding:10px 0; white-space:nowrap; border-bottom:2px solid transparent; }
+    .subnav a:hover { color:var(--mc-text); }
+    .subnav a.active { color:var(--mc-text); border-bottom-color:var(--mc-text); font-weight:600; }
+
+    .btn { display:inline-flex; align-items:center; gap:6px; height:30px; padding:0 12px; border-radius:8px; border:1px solid var(--mc-border); background:#fff; color:#374151; font-size:13px; font-weight:500; }
+    .btn:hover { background:#f9fafb; }
+  </style>
+</head>
+<body>
+
+  <header class="topnav">
+    <div class="mx-auto flex h-14 items-center justify-between px-7" style="max-width:var(--mc-page-max)">
+      <div class="flex items-center gap-8">
+        <div class="flex items-center gap-2">
+          <div class="grid h-6 w-6 place-items-center rounded-full bg-violet-600 text-[10px] font-bold text-white">M</div>
+          <span class="text-sm font-semibold text-gray-900">Mission Control</span>
+        </div>
+        <nav class="flex items-center gap-1 text-sm">
+          <button class="rounded-md px-3 py-1.5 text-gray-600 hover:text-gray-900">Home</button>
+          <button class="rounded-md px-3 py-1.5 text-gray-600 hover:text-gray-900">Jobs</button>
+          <button class="rounded-md px-3 py-1.5 font-medium text-violet-600">Sprint</button>
+          <button class="rounded-md px-3 py-1.5 text-gray-600 hover:text-gray-900">Financials</button>
+          <button class="rounded-md px-3 py-1.5 text-gray-600 hover:text-gray-900">Library</button>
+        </nav>
+      </div>
+      <div class="grid h-7 w-7 place-items-center rounded-full bg-gray-200 text-xs font-medium text-gray-600">D</div>
+    </div>
+  </header>
+
+  <div class="border-b border-gray-100 bg-white">
+    <div class="mx-auto px-7 pb-5 pt-7" style="max-width:var(--mc-page-max)">
+      <div class="flex items-start justify-between gap-6">
+        <div class="min-w-0 flex-1">
+          <nav class="mb-3 flex items-center gap-1.5 text-xs text-gray-500">
+            <span class="hover:text-gray-700 cursor-pointer">Sprint</span>
+            <span class="text-gray-300">/</span>
+            <span class="hover:text-gray-700 cursor-pointer">W19</span>
+            <span class="text-gray-300">/</span>
+            <span class="font-medium text-gray-900">peb · Pebble Foods</span>
+            <span class="ml-1 inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">
+              <span class="h-1.5 w-1.5 rounded-full bg-violet-500"></span>
+              Negotiation
+            </span>
+          </nav>
+          <div class="flex items-baseline gap-4 flex-wrap">
+            <h1 class="text-[28px] font-semibold tracking-tight text-gray-900" style="letter-spacing:-0.018em">Sprint W19 · Pebble Foods</h1>
+            <span class="text-sm text-gray-500">May 11 – May 17, 2026</span>
+          </div>
+        </div>
+        <div class="flex shrink-0 items-center gap-2">
+          <button class="btn">+ Project CP</button>
+          <button class="btn"><span class="font-medium">W19</span><span class="rounded bg-gray-100 px-1.5 text-[10px] font-medium text-gray-600">current</span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="subnav">
+    <div class="mx-auto px-7" style="max-width:var(--mc-page-max)">
+      <div class="flex items-center gap-7 overflow-x-auto">
+        <a href="#stands" class="active">Where it stands</a>
+        <a href="#carry">Carried over</a>
+        <a href="#client">Client</a>
+        <a href="#risks">Dependencies &amp; risks</a>
+        <a href="#plan">This sprint</a>
+        <a href="#horizon">Horizon</a>
+        <a href="#notes">Meeting notes</a>
+        <span class="ml-auto text-[11px] text-gray-400 whitespace-nowrap pl-6">Auto-saves · Last sync 8:01 AM</span>
+      </div>
+    </div>
+  </div>
+
+  <main class="mx-auto px-7 py-8 space-y-7" style="max-width:var(--mc-page-max)">
+
+    <!-- FACTS STRIP -->
+    <div class="facts">
+      <div class="fact"><div class="l">Stage</div><div class="v">Negotiation</div></div>
+      <div class="fact"><div class="l">Owner</div><div class="v">Drew</div></div>
+      <div class="fact"><div class="l">Budget</div><div class="v">$45,000</div></div>
+      <div class="fact"><div class="l">Last touched</div><div class="v">2 days ago</div></div>
+      <div class="fact"><div class="l">Last sprint hours</div><div class="v">Drew 6.5h · Tony 2h</div></div>
+      <div class="fact"><div class="l">Sessions this week</div><div class="v">3</div></div>
+      <div class="fact"><div class="l">Open issues</div><div class="v">3</div></div>
+      <div class="fact"><div class="l">Prior sprint</div><div class="v link">W18 →</div></div>
+    </div>
+
+    <!-- STANDS -->
+    <section id="stands" class="section">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow-strong" style="margin-bottom:4px">Where it stands</div>
+          <h2 class="h-section">What's true coming into this week</h2>
+        </div>
+        <span class="meta">Auto-summarized · auto-saved 2m ago</span>
+      </div>
+      <div class="section-body">
+        <div class="col2">
+
+          <div>
+            <div class="eyebrow-sub" style="margin-bottom:10px">Last stand-up</div>
+            <div class="subcard">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="tag tag-violet">Drew</span>
+                <span class="text-gray-500">May 9</span>
+              </div>
+              <p class="body-14 mt-3 text-gray-700">Reviewed pricing model v3 with the Pebble team; they pushed back on the tier-2 cap, citing volume projections that don't match our elasticity curve. Drafted a counter-proposal that holds tier-2 but widens the tier-3 ramp. Maria wanted to take the volume model back to her ops team before responding.</p>
+            </div>
+          </div>
+
+          <div>
+            <div class="eyebrow-sub" style="margin-bottom:10px">Recent activity</div>
+            <div class="subcard" style="padding:0">
+              <div class="px-4 pt-3 pb-2 text-[10.5px] font-semibold uppercase tracking-wider text-gray-400">Commits</div>
+              <div class="px-4">
+                <div class="row" style="grid-template-columns:72px 1fr auto"><div class="row-tag"><span class="mono text-[11px] text-gray-500">a3f1c2</span></div><div><div class="row-title">pricing-model v3: tier-2 elasticity</div><div class="row-sub">Drew</div></div><div class="row-meta">2 days ago</div></div>
+                <div class="row" style="grid-template-columns:72px 1fr auto"><div class="row-tag"><span class="mono text-[11px] text-gray-500">9b80fd</span></div><div><div class="row-title">deck: replace Q2 mockup with locked layout</div><div class="row-sub">Drew</div></div><div class="row-meta">4 days ago</div></div>
+                <div class="row" style="grid-template-columns:72px 1fr auto"><div class="row-tag"><span class="mono text-[11px] text-gray-500">5d22a1</span></div><div><div class="row-title">discovery: capture call notes from Maria</div><div class="row-sub">Tony</div></div><div class="row-meta">6 days ago</div></div>
+              </div>
+              <div class="border-t border-gray-100 mt-3 px-4 pt-3 pb-2 text-[10.5px] font-semibold uppercase tracking-wider text-gray-400">Issues</div>
+              <div class="px-4 pb-3">
+                <div class="row" style="grid-template-columns:72px 1fr auto"><div class="row-tag"><span class="tag tag-amber">open</span></div><div><div class="row-title"><span class="mono text-gray-400 mr-2">#14</span>Counter-proposal pricing draft</div></div><div class="row-meta">2d</div></div>
+                <div class="row" style="grid-template-columns:72px 1fr auto"><div class="row-tag"><span class="tag tag-amber">open</span></div><div><div class="row-title"><span class="mono text-gray-400 mr-2">#11</span>Legal review on data-use clause</div></div><div class="row-meta">8d</div></div>
+                <div class="row" style="grid-template-columns:72px 1fr auto"><div class="row-tag"><span class="tag tag-blue">review</span></div><div><div class="row-title"><span class="mono text-gray-400 mr-2">#7</span>Discovery deck v2</div></div><div class="row-meta">5d</div></div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- CARRY -->
+    <section id="carry" class="section">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow-strong" style="margin-bottom:4px">Carried over</div>
+          <h2 class="h-section">Still hanging from last sprint</h2>
+        </div>
+        <span class="meta">2 items</span>
+      </div>
+      <div class="section-body">
+        <div class="row"><div class="row-tag"><span class="tag tag-amber">ask · 6d</span></div><div><div class="row-title">Waiting on Maria for revised volume forecast</div><div class="row-sub">Asked May 4 · still open</div></div><div class="row-meta"></div></div>
+        <div class="row"><div class="row-tag"><span class="tag tag-red">risk</span></div><div><div class="row-title">Legal turnaround on data-use clause may slip past contract target</div><div class="row-sub">Raised May 4 · still active</div></div><div class="row-meta"></div></div>
+      </div>
+    </section>
+
+    <!-- CLIENT -->
+    <section id="client" class="section">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow-strong" style="margin-bottom:4px">Client</div>
+          <h2 class="h-section">Pebble · Maria &amp; Sam</h2>
+        </div>
+        <span class="meta">2 outbound · 2 open asks · 2 inbound</span>
+      </div>
+      <div class="section-body">
+        <div class="col3">
+
+          <div>
+            <div class="eyebrow-sub" style="margin-bottom:10px">Outbound</div>
+            <div class="row"><div class="row-tag"><span class="tag tag-emerald">sent</span></div><div><div class="row-title">Counter-proposal pricing draft sent to Maria + Sam</div></div><div class="row-meta">May 9</div></div>
+            <div class="row"><div class="row-tag"><span class="tag tag-violet">draft</span></div><div><div class="row-title">Schedule contracting call for week of May 18</div><div class="row-sub">Send after their pricing response lands</div></div><div class="row-meta">queued</div></div>
+          </div>
+
+          <div>
+            <div class="eyebrow-sub" style="margin-bottom:10px">Open asks</div>
+            <div class="row"><div class="row-tag"><span class="tag tag-amber">6d open</span></div><div><div class="row-title">Revised volume forecast from ops team</div><div class="row-sub">Asked May 4 · blocking pricing finalization</div></div><div class="row-meta">Maria</div></div>
+            <div class="row"><div class="row-tag"><span class="tag tag-amber">1d open</span></div><div><div class="row-title">Redline on data-use clause §4.2</div><div class="row-sub">Asked May 9 · contract dependency</div></div><div class="row-meta">Sam (legal)</div></div>
+          </div>
+
+          <div>
+            <div class="eyebrow-sub" style="margin-bottom:10px">Inbound</div>
+            <div class="row"><div class="row-tag"><span class="tag tag-blue">May 9</span></div><div><div class="row-title">"Tier-2 cap doesn't match our 2H projections — need ops review."</div></div><div class="row-meta">Maria</div></div>
+            <div class="row"><div class="row-tag"><span class="tag tag-blue">May 7</span></div><div><div class="row-title">Confirmed contract sign-off can route through DocuSign once redline lands.</div></div><div class="row-meta">Sam</div></div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- RISKS -->
+    <section id="risks" class="section">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow-strong" style="margin-bottom:4px">Dependencies &amp; risks</div>
+          <h2 class="h-section">What could move the sprint</h2>
+        </div>
+        <span class="meta">3 active</span>
+      </div>
+      <div class="section-body">
+        <div class="row row-wide">
+          <div class="row-tag row-tag-stack">
+            <span class="tag tag-red">escalated</span>
+            <span class="row-tag-cat">contract</span>
+          </div>
+          <div>
+            <div class="row-title">Legal turnaround on data-use clause may slip past May 22 contract target.</div>
+            <div class="row-sub">Why it matters: pushes contract into the next sprint and shifts cash recognition into Q3.</div>
+          </div>
+          <div class="row-meta">raised May 4</div>
+        </div>
+        <div class="row row-wide">
+          <div class="row-tag row-tag-stack">
+            <span class="tag tag-amber">watching</span>
+            <span class="row-tag-cat">pricing</span>
+          </div>
+          <div>
+            <div class="row-title">Tier-2 cap pushback may require a third pricing model rebuild.</div>
+            <div class="row-sub">Why it matters: 2–3 days of Drew's time if it lands; absorbable but trades against Canonic work.</div>
+          </div>
+          <div class="row-meta">raised May 9</div>
+        </div>
+        <div class="row row-wide">
+          <div class="row-tag row-tag-stack">
+            <span class="tag tag-slate">dependency</span>
+            <span class="row-tag-cat">people</span>
+          </div>
+          <div>
+            <div class="row-title">Tony out Thurs–Fri (May 14–15) — discovery deck review must wrap by Wed.</div>
+          </div>
+          <div class="row-meta">raised May 6</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- PLAN -->
+    <section id="plan" class="section">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow-strong" style="margin-bottom:4px">This sprint</div>
+          <h2 class="h-section">Plan &amp; definition of done</h2>
+        </div>
+      </div>
+      <div class="section-body">
+        <div class="col2" style="grid-template-columns:1fr 1.4fr">
+          <div>
+            <div class="eyebrow-sub" style="margin-bottom:10px">Allocation</div>
+            <div class="subcard">
+              <div class="flex items-center justify-between py-1.5 text-[13px]"><span class="text-gray-700">Drew</span><span class="font-medium text-gray-900">6h <span class="text-gray-400 font-normal">planned</span></span></div>
+              <div class="flex items-center justify-between py-1.5 text-[13px]"><span class="text-gray-700">Tony</span><span class="font-medium text-gray-900">2h <span class="text-gray-400 font-normal">planned</span></span></div>
+              <div class="mt-3 pt-3 border-t border-gray-100 text-[11.5px] text-gray-500">Total 8h · against 10h capacity</div>
+            </div>
+            <div class="eyebrow-sub" style="margin-top:18px; margin-bottom:10px">Definition of done</div>
+            <div class="subcard">
+              <p class="body-14 text-gray-700">Pricing counter-proposal accepted in principle and contract draft v2 with reconciled §4.2 ready for DocuSign. Discovery deck v2 signed off by Pebble. If both land, contract is on track to sign before May 22.</p>
+            </div>
+          </div>
+          <div>
+            <div class="eyebrow-sub" style="margin-bottom:10px">Deliverables</div>
+            <ol class="space-y-2">
+              <li class="subcard flex gap-3 items-start"><span class="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-violet-100 text-[11px] font-semibold text-violet-700 mt-0.5">1</span><span class="body-14 text-gray-700 leading-relaxed">Counter-proposal pricing model finalized and walked through with Maria's ops team</span></li>
+              <li class="subcard flex gap-3 items-start"><span class="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-violet-100 text-[11px] font-semibold text-violet-700 mt-0.5">2</span><span class="body-14 text-gray-700 leading-relaxed">Discovery deck v2 reviewed by Tony, sent to Pebble for sign-off</span></li>
+              <li class="subcard flex gap-3 items-start"><span class="grid h-5 w-5 shrink-0 place-items-center rounded-full bg-violet-100 text-[11px] font-semibold text-violet-700 mt-0.5">3</span><span class="body-14 text-gray-700 leading-relaxed">Legal redline on §4.2 reconciled with Sam, contract draft updated</span></li>
+            </ol>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- HORIZON -->
+    <section id="horizon" class="section">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow-strong" style="margin-bottom:4px">Beyond this sprint</div>
+          <h2 class="h-section">Horizon</h2>
+        </div>
+        <span class="meta">next 2–6 weeks</span>
+      </div>
+      <div class="section-body">
+        <div class="col3">
+
+          <div>
+            <div class="eyebrow-sub" style="margin-bottom:10px">Milestones</div>
+            <div class="row"><div class="row-tag"><span class="tag tag-violet">May 22</span></div><div><div class="row-title">Contract target sign date</div></div><div class="row-meta">12d</div></div>
+            <div class="row"><div class="row-tag"><span class="tag tag-violet">Jun 15</span></div><div><div class="row-title">Pebble Q3 board meeting — first results readout</div></div><div class="row-meta">5w</div></div>
+          </div>
+
+          <div>
+            <div class="eyebrow-sub" style="margin-bottom:10px">Decisions due</div>
+            <div class="row"><div class="row-tag"><span class="tag tag-amber">by W21</span></div><div><div class="row-title">Whether to staff a third on Pebble for Q3 implementation</div></div><div class="row-meta"></div></div>
+            <div class="row"><div class="row-tag"><span class="tag tag-amber">by W22</span></div><div><div class="row-title">Pricing-model open-source vs. proprietary path</div></div><div class="row-meta"></div></div>
+          </div>
+
+          <div>
+            <div class="eyebrow-sub" style="margin-bottom:10px">Opportunities</div>
+            <div class="py-3 border-t border-gray-100 first:border-0 first:pt-1">
+              <div class="row-title">Stage discovery for Pebble's sister brand (Maria mentioned in passing on May 7)</div>
+              <div class="row-sub">No active work this sprint, but worth a Tony intro before mid-June</div>
+            </div>
+            <div class="py-3 border-t border-gray-100">
+              <div class="row-title">Pre-draft case-study writeup while material is fresh</div>
+              <div class="row-sub">Easier in W20–W21 than after sign + handoff</div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </section>
+
+    <!-- NOTES -->
+    <section id="notes" class="section">
+      <div class="section-head">
+        <div>
+          <div class="eyebrow-strong" style="margin-bottom:4px">Meeting notes</div>
+          <h2 class="h-section">From sprint planning · May 11</h2>
+        </div>
+        <span class="meta">Drew + Tony · 22 min</span>
+      </div>
+      <div class="section-body">
+        <div class="col2" style="grid-template-columns:1fr 1.6fr">
+          <div>
+            <div class="eyebrow-sub" style="margin-bottom:10px">Decisions</div>
+            <div class="row" style="grid-template-columns:1fr auto"><div class="row-title">Hold tier-2 cap firm; widen tier-3 ramp to absorb volume risk.</div><div class="row-meta">May 11</div></div>
+            <div class="row" style="grid-template-columns:1fr auto"><div class="row-title">Drew owns reconciling §4.2 directly with Sam; bypass internal legal queue this sprint.</div><div class="row-meta">May 11</div></div>
+          </div>
+          <div>
+            <div class="eyebrow-sub" style="margin-bottom:10px">Discussion</div>
+            <p class="body-15 text-gray-700">Spent most of the time on the volume-forecast pushback. Tony argued the elasticity curve is defensible — the issue is that Maria's ops team hasn't seen it presented in the same units they use internally. Decided to re-cut the model output as monthly run-rate before sending the next response. Brief detour on whether to bundle the deck v2 sign-off into the contracting call; concluded it's cleaner to keep them separate so the deck doesn't become a contract dependency.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+</body>
+</html>

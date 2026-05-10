@@ -1,0 +1,587 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Sprint W19 — Pebble Foods · Mission Control</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    html, body { font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif; }
+    body { color-scheme: light; background: #f9fafb; }
+    .eyebrow { font-size: 11px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; color: #6b7280; }
+    .eyebrow-card { font-size: 13px; font-weight: 500; letter-spacing: 0.04em; text-transform: uppercase; color: #6b7280; }
+    .body-15 { font-size: 15px; line-height: 1.65; }
+    .engine-tint { background: linear-gradient(180deg, #f8fafc 0%, #ffffff 100%); }
+    [data-section]:target { scroll-margin-top: 110px; }
+  </style>
+</head>
+<body class="text-gray-800">
+
+  <!-- ============== TOP NAV ============== -->
+  <header class="border-b border-gray-200 bg-white sticky top-0 z-50">
+    <div class="mx-auto flex h-14 max-w-[1400px] items-center justify-between px-6">
+      <div class="flex items-center gap-8">
+        <div class="flex items-center gap-2">
+          <div class="grid h-6 w-6 place-items-center rounded-full bg-violet-600 text-[10px] font-bold text-white">M</div>
+          <span class="text-sm font-semibold text-gray-900">Mission Control</span>
+        </div>
+        <nav class="flex items-center gap-1">
+          <button class="flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900">
+            Home
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="none" class="opacity-60"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="rounded-md px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900">Jobs</button>
+          <button class="rounded-md px-3 py-1.5 text-sm font-medium text-violet-600">Sprint</button>
+          <button class="flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900">
+            Financials
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="none" class="opacity-60"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button class="flex items-center gap-1 rounded-md px-3 py-1.5 text-sm text-gray-600 hover:text-gray-900">
+            Library
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="none" class="opacity-60"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </nav>
+      </div>
+      <div class="flex items-center gap-3">
+        <div class="grid h-7 w-7 place-items-center rounded-full bg-gray-200 text-xs font-medium text-gray-600">D</div>
+      </div>
+    </div>
+  </header>
+
+  <!-- ============== HEADER ROW ============== -->
+  <div class="border-b border-gray-100 bg-white">
+    <div class="mx-auto max-w-[1400px] px-6 pb-4 pt-6">
+      <div class="flex items-start justify-between gap-6">
+        <div class="min-w-0 flex-1">
+          <nav class="mb-2 flex items-center gap-1.5 text-xs text-gray-500">
+            <span class="hover:text-gray-700 cursor-pointer">Sprint</span>
+            <span class="text-gray-300">/</span>
+            <span class="hover:text-gray-700 cursor-pointer">W19</span>
+            <span class="text-gray-300">/</span>
+            <span class="font-medium text-gray-900">peb · Pebble Foods</span>
+            <span class="ml-2 inline-flex items-center gap-1 rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">
+              <span class="h-1.5 w-1.5 rounded-full bg-violet-500"></span>
+              Negotiation
+            </span>
+          </nav>
+          <div class="flex items-baseline gap-3">
+            <h1 class="text-xl font-semibold text-gray-900">Sprint W19 · Pebble Foods</h1>
+            <span class="text-sm text-gray-500">May 11 – May 17, 2026</span>
+          </div>
+        </div>
+        <div class="flex shrink-0 items-center gap-2">
+          <button class="inline-flex items-center gap-1.5 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 8H13M8 3V13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            Project CP
+          </button>
+          <button class="inline-flex items-center gap-2 rounded-md border border-gray-200 bg-white px-3 py-1.5 text-sm text-gray-700 hover:bg-gray-50">
+            <span class="font-medium">W19</span>
+            <span class="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-600">current</span>
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M3 4.5L6 7.5L9 4.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============== STICKY SECTION NAV ============== -->
+  <div class="sticky top-14 z-40 border-b border-slate-100 bg-white/80 backdrop-blur-sm">
+    <div class="mx-auto max-w-[1400px] px-6">
+      <div class="flex items-center gap-6 overflow-x-auto py-2.5 text-sm">
+        <a href="#stands" class="text-gray-500 hover:text-gray-900 whitespace-nowrap">Where it stands</a>
+        <a href="#carry" class="text-gray-500 hover:text-gray-900 whitespace-nowrap">Carried over</a>
+        <a href="#client" class="text-gray-500 hover:text-gray-900 whitespace-nowrap">Client</a>
+        <a href="#risks" class="text-gray-500 hover:text-gray-900 whitespace-nowrap">Dependencies &amp; risks</a>
+        <a href="#plan" class="text-gray-500 hover:text-gray-900 whitespace-nowrap">This sprint</a>
+        <a href="#horizon" class="text-gray-500 hover:text-gray-900 whitespace-nowrap">Horizon</a>
+        <a href="#notes" class="text-gray-500 hover:text-gray-900 whitespace-nowrap">Meeting notes</a>
+        <span class="ml-auto text-[11px] text-gray-400 whitespace-nowrap">Auto-saves · Last sync 8:01 AM</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============== MAIN ============== -->
+  <main class="mx-auto max-w-[1100px] px-6 py-6 pb-32 space-y-6">
+
+    <!-- ===== FACTS STRIP ===== -->
+    <section class="rounded-xl border border-gray-200 engine-tint">
+      <div class="px-6 py-5">
+        <div class="flex items-center justify-between mb-4">
+          <span class="eyebrow">Sprint facts</span>
+          <span class="text-[11px] text-gray-400">Auto-generated from cp-engine</span>
+        </div>
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-x-6 gap-y-4">
+          <div>
+            <div class="text-xs text-gray-500 mb-1">Stage</div>
+            <div class="text-[15px] font-medium text-gray-900">Negotiation</div>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 mb-1">Owner</div>
+            <div class="text-[15px] font-medium text-gray-900">Drew</div>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 mb-1">Budget</div>
+            <div class="text-[15px] font-medium text-gray-900">$45,000</div>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 mb-1">Last touched</div>
+            <div class="text-[15px] font-medium text-gray-900">2 days ago</div>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 mb-1">Last sprint hours</div>
+            <div class="text-[15px] font-medium text-gray-900">Drew 6.5h · Tony 2h</div>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 mb-1">Sessions this week</div>
+            <div class="text-[15px] font-medium text-gray-900">3</div>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 mb-1">Open issues</div>
+            <div class="text-[15px] font-medium text-gray-900">3</div>
+          </div>
+          <div>
+            <div class="text-xs text-gray-500 mb-1">Prior sprint</div>
+            <a href="#" class="text-[15px] font-medium text-violet-600 hover:underline">W18 →</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== WHERE IT STANDS ===== -->
+    <section id="stands" data-section class="rounded-xl border border-gray-200 engine-tint">
+      <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+        <h2 class="text-lg font-semibold text-gray-900">Where it stands</h2>
+        <span class="text-[11px] text-gray-400">Auto-generated</span>
+      </div>
+      <div class="px-6 py-5 space-y-5">
+
+        <div>
+          <div class="eyebrow-card mb-3">Last session — May 9, Drew</div>
+          <p class="body-15 text-gray-700 max-w-[66ch]">
+            Reviewed pricing model v3 with the Pebble team; they pushed back on the
+            tier-2 cap, citing volume projections that don't match our elasticity
+            curve. Drafted a counter-proposal that holds tier-2 but widens the
+            tier-3 ramp. Maria wanted to take the volume model back to her ops
+            team before responding.
+          </p>
+        </div>
+
+        <div class="grid md:grid-cols-2 gap-5 pt-4 border-t border-gray-100">
+          <div>
+            <div class="eyebrow-card mb-3">Recent commits (7 days)</div>
+            <div class="space-y-2">
+              <div class="flex items-start gap-3 text-sm">
+                <code class="text-xs font-mono text-gray-500 mt-0.5 shrink-0">a3f1c2</code>
+                <div class="min-w-0">
+                  <div class="text-gray-800">pricing-model v3: tier-2 elasticity</div>
+                  <div class="text-xs text-gray-500">Drew · 2 days ago</div>
+                </div>
+              </div>
+              <div class="flex items-start gap-3 text-sm">
+                <code class="text-xs font-mono text-gray-500 mt-0.5 shrink-0">9b80fd</code>
+                <div class="min-w-0">
+                  <div class="text-gray-800">deck: replace Q2 mockup with locked layout</div>
+                  <div class="text-xs text-gray-500">Drew · 4 days ago</div>
+                </div>
+              </div>
+              <div class="flex items-start gap-3 text-sm">
+                <code class="text-xs font-mono text-gray-500 mt-0.5 shrink-0">5d22a1</code>
+                <div class="min-w-0">
+                  <div class="text-gray-800">discovery: capture call notes from Maria</div>
+                  <div class="text-xs text-gray-500">Tony · 6 days ago</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="eyebrow-card mb-3">Open tracked issues</div>
+            <div class="space-y-2">
+              <div class="rounded-lg border border-gray-200 p-3">
+                <div class="flex items-center gap-2 text-sm">
+                  <span class="text-xs font-mono text-gray-500">#14</span>
+                  <span class="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">open</span>
+                  <span class="ml-auto text-xs text-gray-500">2d</span>
+                </div>
+                <div class="mt-1.5 text-sm text-gray-800">Counter-proposal pricing draft</div>
+              </div>
+              <div class="rounded-lg border border-gray-200 p-3">
+                <div class="flex items-center gap-2 text-sm">
+                  <span class="text-xs font-mono text-gray-500">#11</span>
+                  <span class="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">open</span>
+                  <span class="ml-auto text-xs text-gray-500">8d</span>
+                </div>
+                <div class="mt-1.5 text-sm text-gray-800">Legal review on data-use clause</div>
+              </div>
+              <div class="rounded-lg border border-gray-200 p-3">
+                <div class="flex items-center gap-2 text-sm">
+                  <span class="text-xs font-mono text-gray-500">#7</span>
+                  <span class="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">review</span>
+                  <span class="ml-auto text-xs text-gray-500">5d</span>
+                </div>
+                <div class="mt-1.5 text-sm text-gray-800">Discovery deck v2</div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===== CARRY-FORWARD ===== -->
+    <section id="carry" data-section class="rounded-xl border border-slate-200 bg-slate-50">
+      <div class="flex items-center justify-between border-b border-slate-200 px-6 py-3">
+        <div class="flex items-center gap-2">
+          <svg width="14" height="14" viewBox="0 0 16 16" fill="none" class="text-slate-500"><path d="M3 8L8 3M3 8L8 13M3 8H13" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          <h2 class="text-sm font-semibold text-slate-700">Carried over from W18</h2>
+        </div>
+        <span class="text-[11px] text-slate-500">2 items still open</span>
+      </div>
+      <div class="px-6 py-4 space-y-2">
+        <div class="flex items-start gap-3 text-sm">
+          <span class="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 mt-0.5 shrink-0">ask · 6d</span>
+          <div class="min-w-0">
+            <div class="text-slate-800">Waiting on Maria for revised volume forecast</div>
+            <div class="text-xs text-slate-500 mt-0.5">Asked 2026-05-04 · still open</div>
+          </div>
+        </div>
+        <div class="flex items-start gap-3 text-sm">
+          <span class="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700 mt-0.5 shrink-0">risk</span>
+          <div class="min-w-0">
+            <div class="text-slate-800">Legal turnaround on data-use clause may slip past contract target</div>
+            <div class="text-xs text-slate-500 mt-0.5">Raised 2026-05-04 · still active</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== CLIENT COMMUNICATION ===== -->
+    <section id="client" data-section class="rounded-xl border border-gray-200 bg-white">
+      <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+        <h2 class="text-lg font-semibold text-gray-900">Client communication</h2>
+        <span class="text-[11px] text-gray-400">Hand-written · deepened from transcript</span>
+      </div>
+
+      <div class="px-6 py-5 grid md:grid-cols-3 gap-6">
+
+        <!-- Outbound -->
+        <div>
+          <div class="eyebrow-card mb-3">Outbound</div>
+          <div class="space-y-2">
+            <div class="rounded-lg border border-gray-200 p-3 relative group">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700">sent</span>
+                <span class="text-gray-500 ml-auto">May 9</span>
+              </div>
+              <div class="mt-2 text-[14px] text-gray-800">Counter-proposal pricing draft sent to Maria + Sam</div>
+            </div>
+            <div class="rounded-lg border border-gray-200 p-3 relative group">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">draft</span>
+                <span class="text-gray-500 ml-auto">queued</span>
+              </div>
+              <div class="mt-2 text-[14px] text-gray-800">Schedule contracting call for week of May 18</div>
+              <div class="mt-1.5 text-xs text-gray-500">Send after their pricing response lands</div>
+            </div>
+            <button class="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 mt-1">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2V10M2 6H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              Add outbound
+            </button>
+          </div>
+        </div>
+
+        <!-- Open asks -->
+        <div>
+          <div class="eyebrow-card mb-3">Open asks from client</div>
+          <div class="space-y-2">
+            <div class="rounded-lg border border-gray-200 p-3 relative group">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">6d open</span>
+                <span class="text-gray-500 ml-auto">Maria</span>
+              </div>
+              <div class="mt-2 text-[14px] text-gray-800">Revised volume forecast from ops team</div>
+              <div class="mt-1.5 text-xs text-gray-500">Asked May 4 · blocking pricing finalization</div>
+            </div>
+            <div class="rounded-lg border border-gray-200 p-3 relative group">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">1d open</span>
+                <span class="text-gray-500 ml-auto">Sam (legal)</span>
+              </div>
+              <div class="mt-2 text-[14px] text-gray-800">Redline on data-use clause §4.2</div>
+              <div class="mt-1.5 text-xs text-gray-500">Asked May 9 · contract dependency</div>
+            </div>
+            <button class="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 mt-1">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2V10M2 6H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              Add ask
+            </button>
+          </div>
+        </div>
+
+        <!-- Inbound updates -->
+        <div>
+          <div class="eyebrow-card mb-3">Inbound updates</div>
+          <div class="space-y-2">
+            <div class="rounded-lg border border-gray-200 p-3 relative group">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">May 9</span>
+                <span class="text-gray-500 ml-auto">Maria</span>
+              </div>
+              <div class="mt-2 text-[14px] text-gray-800">"Tier-2 cap doesn't match our 2H projections — need ops review."</div>
+            </div>
+            <div class="rounded-lg border border-gray-200 p-3 relative group">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700">May 7</span>
+                <span class="text-gray-500 ml-auto">Sam</span>
+              </div>
+              <div class="mt-2 text-[14px] text-gray-800">Confirmed contract sign-off can route through DocuSign once redline lands.</div>
+            </div>
+            <button class="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 mt-1">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2V10M2 6H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              Add update
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===== DEPENDENCIES & RISKS ===== -->
+    <section id="risks" data-section class="rounded-xl border border-gray-200 bg-white">
+      <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+        <h2 class="text-lg font-semibold text-gray-900">Dependencies &amp; risks</h2>
+        <span class="text-[11px] text-gray-400">Hand-written</span>
+      </div>
+      <div class="px-6 py-5 space-y-2">
+        <div class="rounded-lg border border-gray-200 p-3 relative group">
+          <div class="flex items-center gap-2 text-xs">
+            <span class="rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700">escalated</span>
+            <span class="text-gray-500">contract</span>
+            <span class="text-gray-400 ml-auto">raised May 4</span>
+          </div>
+          <div class="mt-2 text-[14px] text-gray-800">Legal turnaround on data-use clause may slip past May 22 contract target.</div>
+          <div class="mt-1.5 text-xs text-gray-500">Why it matters: pushes contract into the next sprint and shifts cash recognition into Q3.</div>
+        </div>
+        <div class="rounded-lg border border-gray-200 p-3 relative group">
+          <div class="flex items-center gap-2 text-xs">
+            <span class="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">watching</span>
+            <span class="text-gray-500">pricing</span>
+            <span class="text-gray-400 ml-auto">raised May 9</span>
+          </div>
+          <div class="mt-2 text-[14px] text-gray-800">Tier-2 cap pushback may require a third pricing model rebuild.</div>
+          <div class="mt-1.5 text-xs text-gray-500">Why it matters: 2–3 days of Drew's time if it lands; absorbable but trades against Canonic work.</div>
+        </div>
+        <div class="rounded-lg border border-gray-200 p-3 relative group">
+          <div class="flex items-center gap-2 text-xs">
+            <span class="rounded-full bg-gray-100 px-2 py-0.5 text-[11px] font-medium text-gray-700">dependency</span>
+            <span class="text-gray-500">people</span>
+            <span class="text-gray-400 ml-auto">raised May 6</span>
+          </div>
+          <div class="mt-2 text-[14px] text-gray-800">Tony out Thurs–Fri (May 14–15) — discovery deck review must wrap by Wed.</div>
+        </div>
+        <button class="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 mt-1">
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2V10M2 6H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+          Add risk or dependency
+        </button>
+      </div>
+    </section>
+
+    <!-- ===== THIS SPRINT'S PLAN ===== -->
+    <section id="plan" data-section class="rounded-xl border border-gray-200 bg-white">
+      <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+        <h2 class="text-lg font-semibold text-gray-900">This sprint</h2>
+        <span class="text-[11px] text-gray-400">Hand-written · edited Monday</span>
+      </div>
+      <div class="px-6 py-5 space-y-5">
+
+        <div>
+          <div class="eyebrow-card mb-3">Allocation</div>
+          <div class="flex items-center gap-2 flex-wrap">
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700">Drew · 6h</span>
+            <span class="inline-flex items-center gap-1.5 rounded-full bg-violet-50 px-2.5 py-1 text-xs font-medium text-violet-700">Tony · 2h</span>
+            <span class="inline-flex items-center gap-1.5 rounded-full border border-dashed border-gray-300 bg-white px-2.5 py-1 text-xs font-medium text-gray-400 hover:bg-gray-50 cursor-pointer">+ person</span>
+            <span class="ml-auto text-sm text-gray-500">Total <span class="font-semibold text-gray-900">8h</span></span>
+          </div>
+        </div>
+
+        <div class="pt-4 border-t border-gray-100">
+          <div class="eyebrow-card mb-3">Deliverables</div>
+          <div class="space-y-2">
+            <label class="flex items-start gap-3 text-[14px] cursor-pointer">
+              <input type="checkbox" class="mt-1 rounded border-gray-300" />
+              <span class="text-gray-800">Counter-proposal pricing model finalized and walked through with Maria's ops team</span>
+            </label>
+            <label class="flex items-start gap-3 text-[14px] cursor-pointer">
+              <input type="checkbox" class="mt-1 rounded border-gray-300" />
+              <span class="text-gray-800">Discovery deck v2 reviewed by Tony, sent to Pebble for sign-off</span>
+            </label>
+            <label class="flex items-start gap-3 text-[14px] cursor-pointer">
+              <input type="checkbox" class="mt-1 rounded border-gray-300" />
+              <span class="text-gray-800">Legal redline on §4.2 reconciled with Sam, contract draft updated</span>
+            </label>
+            <button class="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 mt-1">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2V10M2 6H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              Add deliverable
+            </button>
+          </div>
+        </div>
+
+        <div class="pt-4 border-t border-gray-100">
+          <div class="eyebrow-card mb-3">Definition of done</div>
+          <p class="body-15 text-gray-700 max-w-[66ch]">
+            Pricing counter-proposal accepted in principle and contract draft v2
+            with reconciled §4.2 ready for DocuSign. Discovery deck v2 signed off
+            by Pebble. If both land, contract is on track to sign before May 22.
+          </p>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===== HORIZON ===== -->
+    <section id="horizon" data-section class="rounded-xl border border-gray-200 bg-white">
+      <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+        <div class="flex items-center gap-3">
+          <h2 class="text-lg font-semibold text-gray-900">Horizon</h2>
+          <span class="text-xs text-gray-500">4 – 8 weeks out</span>
+        </div>
+        <span class="text-[11px] text-gray-400">Hand-written · anti-myopia prompt</span>
+      </div>
+      <div class="px-6 py-5 grid md:grid-cols-3 gap-6">
+
+        <div>
+          <div class="eyebrow-card mb-3">Milestones</div>
+          <div class="space-y-2">
+            <div class="rounded-lg border border-gray-200 p-3">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">May 22</span>
+                <span class="text-gray-500 ml-auto">12d</span>
+              </div>
+              <div class="mt-2 text-[14px] text-gray-800">Contract target sign date</div>
+            </div>
+            <div class="rounded-lg border border-gray-200 p-3">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="rounded-full bg-violet-50 px-2 py-0.5 text-[11px] font-medium text-violet-700">Jun 15</span>
+                <span class="text-gray-500 ml-auto">5w</span>
+              </div>
+              <div class="mt-2 text-[14px] text-gray-800">Pebble Q3 board meeting — first results readout</div>
+            </div>
+            <button class="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 mt-1">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2V10M2 6H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              Add milestone
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <div class="eyebrow-card mb-3">Decisions we'll need</div>
+          <div class="space-y-2">
+            <div class="rounded-lg border border-gray-200 p-3">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">by W21</span>
+              </div>
+              <div class="mt-2 text-[14px] text-gray-800">Whether to staff a third on Pebble for Q3 implementation</div>
+            </div>
+            <div class="rounded-lg border border-gray-200 p-3">
+              <div class="flex items-center gap-2 text-xs">
+                <span class="rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700">by W22</span>
+              </div>
+              <div class="mt-2 text-[14px] text-gray-800">Pricing-model open-source vs. proprietary path</div>
+            </div>
+            <button class="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 mt-1">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2V10M2 6H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              Add decision
+            </button>
+          </div>
+        </div>
+
+        <div>
+          <div class="eyebrow-card mb-3">Early-planning opportunities</div>
+          <div class="space-y-2">
+            <div class="rounded-lg border border-gray-200 p-3">
+              <div class="text-[14px] text-gray-800">Stage discovery for Pebble's sister brand (Maria mentioned in passing on May 7)</div>
+              <div class="mt-1.5 text-xs text-gray-500">No active work this sprint, but worth a Tony intro before mid-June</div>
+            </div>
+            <div class="rounded-lg border border-gray-200 p-3">
+              <div class="text-[14px] text-gray-800">Pre-draft case-study writeup while material is fresh</div>
+              <div class="mt-1.5 text-xs text-gray-500">Easier in W20–W21 than after sign + handoff</div>
+            </div>
+            <button class="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-800 mt-1">
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M6 2V10M2 6H10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+              Add opportunity
+            </button>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+    <!-- ===== MEETING NOTES & DECISIONS ===== -->
+    <section id="notes" data-section class="rounded-xl border border-gray-200 bg-white">
+      <div class="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+        <h2 class="text-lg font-semibold text-gray-900">Meeting notes &amp; decisions</h2>
+        <span class="text-[11px] text-gray-400">Filled by <code class="bg-gray-50 px-1 rounded">deepen from transcript</code></span>
+      </div>
+      <div class="px-6 py-5 space-y-5">
+
+        <div>
+          <div class="eyebrow-card mb-3">Decisions (W19 partners' review)</div>
+          <ol class="space-y-2 text-[14px] text-gray-800 list-decimal list-outside ml-5">
+            <li>Hold tier-2 cap firm; widen tier-3 ramp to absorb volume risk. <span class="text-xs text-gray-500">(May 11)</span></li>
+            <li>Drew owns reconciling §4.2 directly with Sam; bypass internal legal queue this sprint. <span class="text-xs text-gray-500">(May 11)</span></li>
+          </ol>
+        </div>
+
+        <div class="pt-4 border-t border-gray-100">
+          <div class="eyebrow-card mb-3">Discussion notes</div>
+          <p class="body-15 text-gray-700 max-w-[66ch]">
+            Spent most of the time on the volume-forecast pushback. Tony argued
+            the elasticity curve is defensible — the issue is that Maria's ops
+            team hasn't seen it presented in the same units they use internally.
+            Decided to re-cut the model output as monthly run-rate before sending
+            the next response. Brief detour on whether to bundle the deck v2
+            sign-off into the contracting call; concluded it's cleaner to keep
+            them separate so the deck doesn't become a contract dependency.
+          </p>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ============== STICKY BOTTOM TOTALS BAR ============== -->
+  <div class="sticky bottom-0 border-t border-gray-200 bg-white/95 backdrop-blur-sm z-30">
+    <div class="mx-auto max-w-[1100px] px-6 py-3 flex items-center gap-6">
+      <div class="flex items-center gap-4 text-sm">
+        <div class="flex items-baseline gap-2">
+          <span class="eyebrow">This sprint</span>
+          <span class="font-semibold text-gray-900">8h</span>
+        </div>
+        <div class="flex items-baseline gap-2 text-gray-500">
+          <span class="text-[11px] uppercase tracking-wide">Drew</span>
+          <span class="font-medium">6h</span>
+        </div>
+        <div class="flex items-baseline gap-2 text-gray-500">
+          <span class="text-[11px] uppercase tracking-wide">Tony</span>
+          <span class="font-medium">2h</span>
+        </div>
+      </div>
+      <div class="ml-auto flex items-center gap-2">
+        <button class="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-slate-200 text-xs font-medium text-gray-700 hover:bg-gray-50">
+          ← W18
+        </button>
+        <button class="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md border border-slate-200 text-xs font-medium text-gray-700 hover:bg-gray-50">
+          Sprint index
+        </button>
+        <button class="inline-flex items-center gap-1.5 h-7 px-2.5 rounded-md bg-gray-900 text-xs font-medium text-white hover:bg-gray-800">
+          Deepen from transcript
+        </button>
+      </div>
+    </div>
+  </div>
+
+</body>
+</html>
