@@ -9,7 +9,7 @@ and re-render every sync. Hand-written regions are preserved verbatim.
 from __future__ import annotations
 
 import re
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from . import render as _render
@@ -571,3 +571,36 @@ def ensure_sprint_file(
             continue
     out.write_text(existing)
     return out
+
+
+# Sprint-window helpers
+#
+# Week numbering follows %W (Monday-anchored) to match the existing codebase
+# convention where May 11 2026 is W19, not the ISO-8601 W20 that
+# ``datetime.isocalendar`` would yield. The week_iso string is built from the
+# Monday-of-week so labels stay stable across the Mon–Sun span.
+def is_in_sprint_window(now: datetime) -> bool:
+    # Phase 4 keeps every sync inside the window. Refine via existing v0.7.4
+    # anchor logic in a later task if needed.
+    return True
+
+
+def _monday_of(now: datetime) -> date:
+    today = now.date() if isinstance(now, datetime) else now
+    return today - timedelta(days=today.weekday())
+
+
+def current_sprint_week_iso(now: datetime) -> str:
+    monday = _monday_of(now)
+    return f"{monday.year}-W{monday.strftime('%W')}"
+
+
+def prior_sprint_week_iso(now: datetime) -> str:
+    monday = _monday_of(now) - timedelta(days=7)
+    return f"{monday.year}-W{monday.strftime('%W')}"
+
+
+def sprint_week_dates(now: datetime) -> tuple[str, str]:
+    monday = _monday_of(now)
+    sunday = monday + timedelta(days=6)
+    return monday.isoformat(), sunday.isoformat()

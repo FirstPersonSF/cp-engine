@@ -1,8 +1,14 @@
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
-from cp_engine.sprints import parse_sprint_file, render_sprint_scaffold
+from cp_engine.sprints import (
+    current_sprint_week_iso,
+    is_in_sprint_window,
+    parse_sprint_file,
+    render_sprint_scaffold,
+)
 from cp_engine.state import CarryForward, ClientAsk, PersonHours, ProjectState
 
 
@@ -344,3 +350,16 @@ def test_ensure_sprint_file_is_idempotent(tmp_path) -> None:
     p2 = ensure_sprint_file(**kwargs)
     body2 = p2.read_text()
     assert body1 == body2
+
+
+@pytest.mark.parametrize("dt,expected", [
+    (datetime(2026, 5, 11, 8, 0), True),  # Monday
+    (datetime(2026, 5, 13, 8, 0), True),  # mid-week
+    (datetime(2026, 5, 17, 23, 0), True),  # Sunday end
+])
+def test_is_in_sprint_window(dt: datetime, expected: bool) -> None:
+    assert is_in_sprint_window(dt) is expected
+
+
+def test_current_sprint_week_iso() -> None:
+    assert current_sprint_week_iso(datetime(2026, 5, 13)) == "2026-W19"
