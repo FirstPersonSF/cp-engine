@@ -14,6 +14,9 @@ from pathlib import Path
 
 from .state import (
     CarryForward,
+    ClientAsk,
+    InboundUpdate,
+    Outbound,
     SprintFacts,
     SprintFile,
     WhereItStands,
@@ -35,6 +38,7 @@ def parse_sprint_file(path: Path) -> SprintFile:
     week_iso = fm["Sprint"]
     prior = fm.get("PriorSprint")
     start, end = _parse_heading_dates(body)
+    client_outbound, client_open_asks, client_inbound = _parse_client_section(body)
     return SprintFile(
         project_code=project_code,
         week_iso=week_iso,
@@ -44,9 +48,9 @@ def parse_sprint_file(path: Path) -> SprintFile:
         facts=_parse_facts_region(body),
         where_it_stands=_empty_where(),
         carry_forward=CarryForward(asks=(), risks=(), horizon=()),
-        client_outbound=(),
-        client_open_asks=(),
-        client_inbound=(),
+        client_outbound=client_outbound,
+        client_open_asks=client_open_asks,
+        client_inbound=client_inbound,
         risks=(),
         allocation=(),
         deliverables=(),
@@ -113,3 +117,96 @@ def _parse_facts_region(body: str) -> SprintFacts:
 
 def _empty_where() -> WhereItStands:
     return WhereItStands(None, None, None, (), ())
+
+
+_BRACKET_RE = re.compile(r"^\s*-\s*\[(?P<meta>[^\]]+)\]\s*(?P<text>.*)$")
+
+
+def _parse_bracketed_bullet(line: str) -> tuple[list[str], str] | None:
+    m = _BRACKET_RE.match(line)
+    if not m:
+        return None
+    parts = [p.strip() for p in m.group("meta").split("·")]
+    return parts, m.group("text").strip()
+
+
+def _section_body(body: str, heading: str) -> str:
+    """Slice out a `## heading` section up to next `## ` or EOF."""
+    pattern = re.compile(
+        rf"^## {re.escape(heading)}\s*$(.*?)(?=^## |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    m = pattern.search(body)
+    return m.group(1) if m else ""
+
+
+def _subsection(section_body: str, sub: str) -> str:
+    pattern = re.compile(
+        rf"^### {re.escape(sub)}\s*$(.*?)(?=^### |\Z)",
+        re.MULTILINE | re.DOTALL,
+    )
+    m = pattern.search(section_body)
+    return m.group(1) if m else ""
+
+
+def _bullets(section_body: str) -> list[tuple[str, str]]:
+    """Return [(first_line, indented_continuation)] pairs."""
+    out: list[tuple[str, str]] = []
+    cur_first: str | None = None
+    cur_cont: list[str] = []
+    for line in section_body.splitlines():
+        if line.startswith("- ") or line.startswith("-\t"):
+            if cur_first is not None:
+                out.append((cur_first, "\n".join(cur_cont).strip()))
+            cur_first = line
+            cur_cont = []
+        elif line.startswith("  ") and cur_first is not None:
+            cur_cont.append(line.strip())
+    if cur_first is not None:
+        out.append((cur_first, "\n".join(cur_cont).strip()))
+    return out
+
+
+def _parse_client_section(
+    body: str,
+) -> tuple[tuple[Outbound, ...], tuple[ClientAsk, ...], tuple[InboundUpdate, ...]]:
+    section = _section_body(body, "Client communication")
+    out: list[Outbound] = []
+    for first, cont in _bullets(_subsection(section, "Outbound")):
+        parsed = _parse_bracketed_bullet(first)
+        if parsed:
+            parts, text = parsed
+            status = parts[0] if parts else "draft"
+            date_s = parts[1] if len(parts) > 1 else ""
+            out.append(
+                Outbound(text=text, status=status, date=date_s, note=cont or None)
+            )
+        else:
+            text = first.lstrip("- ").strip()
+            out.append(
+                Outbound(text=text, status="draft", date="", note=cont or None)
+            )
+    asks: list[ClientAsk] = []
+    for first, _cont in _bullets(_subsection(section, "Open asks")):
+        parsed = _parse_bracketed_bullet(first)
+        if parsed:
+            parts, text = parsed
+            status = parts[0] if parts else "open"
+            asked_date = parts[1] if len(parts) > 1 else ""
+            who = parts[2] if len(parts) > 2 else None
+            asks.append(
+                ClientAsk(text=text, asked_date=asked_date, status=status, who=who)
+            )
+    inbound: list[InboundUpdate] = []
+    for first, _ in _bullets(_subsection(section, "Inbound")):
+        parsed = _parse_bracketed_bullet(first)
+        if parsed:
+            parts, text = parsed
+            inbound.append(
+                InboundUpdate(
+                    date=parts[0] if parts else "",
+                    who=parts[1] if len(parts) > 1 else "",
+                    text=text,
+                )
+            )
+    return tuple(out), tuple(asks), tuple(inbound)

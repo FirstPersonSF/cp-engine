@@ -68,3 +68,28 @@ def test_parse_sprint_facts_region(tmp_path) -> None:
     assert sf.facts.budget_short == "$45,000"
     assert sf.facts.sessions_this_week == 3
     assert sf.facts.open_issues == 3
+
+
+def test_parse_client_section_extracts_outbound_asks_inbound(tmp_path) -> None:
+    f = tmp_path / "peb.md"
+    f.write_text(
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W19\n---\n"
+        "# peb — Pebble Foods · Sprint W19 (May 11 – May 17, 2026)\n"
+        "## Client communication\n\n"
+        "### Outbound\n"
+        "- [sent · 2026-05-09] Counter-proposal pricing draft sent to Maria + Sam\n"
+        "- [draft · queued] Schedule contracting call for week of May 18\n"
+        "  Send after their pricing response lands\n"
+        "\n### Open asks\n"
+        "- [open · 2026-05-04 · Maria] Revised volume forecast from ops team\n"
+        "  Asked May 4 · blocking pricing finalization\n"
+        "\n### Inbound\n"
+        "- [2026-05-09 · Maria] \"Tier-2 cap doesn't match our 2H projections.\"\n"
+    )
+    sf = parse_sprint_file(f)
+    assert len(sf.client_outbound) == 2
+    assert sf.client_outbound[0].status == "sent"
+    assert sf.client_outbound[0].date == "2026-05-09"
+    assert sf.client_open_asks[0].who == "Maria"
+    assert sf.client_open_asks[0].asked_date == "2026-05-04"
+    assert sf.client_inbound[0].who == "Maria"
