@@ -164,6 +164,11 @@ class ProjectState:
     repo_name: str | None = None  # raw GitHub slug, distinct from `code`
     description: str | None = None  # ≤120 char one-liner from repos.description
 
+    # Engagement-only — populated from tenant config's per-project `contacts`
+    # array. Plain dicts (typically `{"name": "...", "role": "..."}`) keep the
+    # shape flexible without forcing a contact schema on every consumer.
+    contacts: tuple[dict, ...] = ()
+
 
 @dataclass(frozen=True)
 class Issue:

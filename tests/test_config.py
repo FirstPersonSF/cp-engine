@@ -509,3 +509,38 @@ def test_local_repos_with_tilde(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
 
     cfg = load(tmp_path)
     assert cfg.local_repos["mc-2"] == repo_dir.resolve()
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  risk_categories + per-project contacts
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_config_loads_risk_categories(tmp_path: Path) -> None:
+    """`[risk_categories].values` in committed config overrides the default tuple."""
+    write_committed(
+        tmp_path,
+        projects=[],
+        extra='[risk_categories]\nvalues = ["contract", "people"]\n',
+    )
+    write_local(tmp_path, {})
+
+    cfg = load(tmp_path)
+    assert cfg.risk_categories == ("contract", "people")
+
+
+def test_project_loads_contacts(tmp_path: Path) -> None:
+    """A `[[projects]]` block with a `contacts` array surfaces on ProjectConfig.contacts."""
+    p_dir = tmp_path / "peb"
+    p_dir.mkdir()
+    extra = (
+        "[[projects]]\n"
+        'code = "peb"\n'
+        'github = "FirstPersonSF/peb"\n'
+        'contacts = [{ name = "Maria", role = "Ops" }]\n'
+    )
+    write_committed(tmp_path, projects=[], extra=extra)
+    write_local(tmp_path, {"peb": str(p_dir)})
+
+    cfg = load(tmp_path)
+    assert cfg.projects[0].contacts == ({"name": "Maria", "role": "Ops"},)
