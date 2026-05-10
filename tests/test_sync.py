@@ -7,7 +7,7 @@ backend.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -21,7 +21,7 @@ from cp_engine import (
     UnknownBackend,
     sync_tenant,
 )
-from cp_engine.sync import Backend
+from cp_engine.sync import Backend, _last_week_monday
 
 
 class FakeBackend(Backend):
@@ -897,3 +897,73 @@ def test_legacy_bare_code_dir_renamed_to_slug(tmp_path: Path) -> None:
     assert (new_dir / "cp.md").read_text() == "# legacy content\n"
     assert (new_dir / "notes.md").read_text() == "# preserved\n"
     assert not legacy_dir.exists()
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Sprint-window anchor logic — _last_week_monday
+# ──────────────────────────────────────────────────────────────────────
+
+
+# Rule: anchor on the upcoming sprint-planning Monday — that's "next
+# Monday, unless today IS Monday, in which case today." The 7-day
+# allocation window is the week ending the day before that anchor.
+
+
+def test_last_week_monday_on_monday_uses_today() -> None:
+    """If today is Monday, anchor IS today — show the week just ended."""
+    monday = datetime(2026, 5, 11, 9, 0)  # Mon May 11 (sprint planning day)
+    # Anchor = today (May 11) → window starts 7 days before = May 4
+    assert _last_week_monday(monday) == date(2026, 5, 4)
+
+
+def test_last_week_monday_on_tuesday_anchors_on_next_monday() -> None:
+    """Day after sprint planning: window flips forward to the new week."""
+    tuesday = datetime(2026, 5, 12, 9, 0)
+    # Next Monday is May 18 → window starts May 11
+    assert _last_week_monday(tuesday) == date(2026, 5, 11)
+
+
+def test_last_week_monday_on_saturday_anchors_on_upcoming_monday() -> None:
+    """Weekend prep for Monday's planning: show the week the meeting will plan."""
+    saturday = datetime(2026, 5, 9, 9, 0)
+    # Next Monday is May 11 → window starts May 4
+    assert _last_week_monday(saturday) == date(2026, 5, 4)
+
+
+def test_last_week_monday_on_sunday_anchors_on_upcoming_monday() -> None:
+    """Sunday before sprint planning: same window as Monday will see."""
+    sunday = datetime(2026, 5, 10, 9, 0)
+    assert _last_week_monday(sunday) == date(2026, 5, 4)
+
+
+def test_last_week_monday_consistent_across_meeting_week() -> None:
+    """Saturday → Sunday → Monday morning all show the same week
+    (May 4 - May 10), so the picture during meeting prep matches the
+    picture at the meeting itself."""
+    sat = _last_week_monday(datetime(2026, 5, 9))
+    sun = _last_week_monday(datetime(2026, 5, 10))
+    mon = _last_week_monday(datetime(2026, 5, 11))
+    assert sat == sun == mon == date(2026, 5, 4)
+
+
+def test_last_week_monday_flips_after_meeting_day() -> None:
+    """Monday → Tuesday: window must move forward by one week so the
+    next sprint planning operates on fresh data."""
+    mon = _last_week_monday(datetime(2026, 5, 11))
+    tue = _last_week_monday(datetime(2026, 5, 12))
+    # One week's difference
+    assert (tue - mon).days == 7
+
+
+def test_last_week_monday_friday_during_week() -> None:
+    """Friday May 8: still in 'planning for next Monday' mode."""
+    friday = datetime(2026, 5, 8, 9, 0)
+    # Next Monday is May 11 → window starts May 4
+    assert _last_week_monday(friday) == date(2026, 5, 4)
+
+
+def test_last_week_monday_accepts_date_or_datetime() -> None:
+    """Helper handles both date and datetime inputs."""
+    as_datetime = _last_week_monday(datetime(2026, 5, 9, 12, 0, tzinfo=timezone.utc))
+    as_date = _last_week_monday(date(2026, 5, 9))
+    assert as_datetime == as_date == date(2026, 5, 4)

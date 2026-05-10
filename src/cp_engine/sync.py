@@ -354,19 +354,32 @@ _MASTER_REGIONS = (
 
 
 def _last_week_monday(now: datetime) -> date:
-    """Return the Monday of the calendar week BEFORE now's calendar week.
+    """Return the Monday that starts the 7-day window ending the day
+    before the upcoming sprint-planning Monday.
 
-    Examples:
-        Thursday May 8 2026 → Monday April 27 2026 (this week is May 4-10,
-        last week is Apr 27 - May 3)
-        Monday May 5 2026 → Monday April 28 2026
-        Sunday May 11 2026 → Monday April 27 2026 (still in May 4-10 week)
+    The rule is **"next Monday, unless today is Monday, in which case
+    today"** — that's the upcoming sprint-planning meeting day. The
+    7-day window before that Monday is what gets surfaced as last
+    week's allocations.
+
+    Examples (Window = May 4 - May 10, anchor = Monday May 11):
+        Saturday May 9 2026   → Mon=May 11, anchor=May 11
+        Sunday May 10 2026    → Mon=May 11, anchor=May 11
+        Monday May 11 2026    → today IS Monday, anchor=May 11
+
+    Examples after Monday's meeting (Window = May 11 - May 17, anchor = May 18):
+        Tuesday May 12 2026   → Mon=May 18, anchor=May 18
+        Friday May 15 2026    → Mon=May 18, anchor=May 18
 
     weekday(): Mon=0, Tue=1, ..., Sun=6
     """
     today = now.date() if isinstance(now, datetime) else now
-    this_week_monday = today - timedelta(days=today.weekday())
-    return this_week_monday - timedelta(days=7)
+    if today.weekday() == 0:
+        anchor = today
+    else:
+        days_until_next_monday = (7 - today.weekday()) % 7
+        anchor = today + timedelta(days=days_until_next_monday)
+    return anchor - timedelta(days=7)
 
 # Regions whose contents change every sync by definition (timestamps, run IDs).
 # A change isolated to these regions doesn't justify a write — otherwise every
