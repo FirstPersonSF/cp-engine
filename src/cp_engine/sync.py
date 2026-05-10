@@ -317,12 +317,15 @@ def sync_tenant(
     # regions are preserved. Lazy-imported to break the sync ↔ sprints
     # circular dependency (sprints.py imports `_extract_region` from here).
     from cp_engine.sprints import (
+        _short_md_date,
         current_sprint_week_iso,
         ensure_sprint_files_for_active_projects,
         is_in_sprint_window,
         parse_sprint_file,
         prior_sprint_week_iso,
         render_current_sprint_block,
+        render_sprint_index,
+        sprint_week_dates,
     )
     from cp_engine.status import is_active_status
     if is_in_sprint_window(sync_clock):
@@ -378,6 +381,25 @@ def sync_tenant(
                 cp_path.write_text(new_body)
                 if cp_path not in files_written:
                     files_written.append(cp_path)
+
+        # Per-week sprint-index README — one row per active project,
+        # written only when we actually generated sprint files this run
+        # (avoids a stub README in tenants with no active work). The
+        # README sits alongside the per-project sprint files at
+        # `sprints/<week_iso>/README.md`.
+        if parsed_files:
+            week_start_iso, week_end_iso = sprint_week_dates(sync_clock)
+            week_dates_str = (
+                f"{_short_md_date(week_start_iso)} – {_short_md_date(week_end_iso)}"
+            )
+            index_body = render_sprint_index(
+                week_iso=week_iso,
+                week_dates=week_dates_str,
+                sprint_files=parsed_files,
+            )
+            index_path = config.root / "sprints" / week_iso / "README.md"
+            if _write_if_changed(index_path, index_body, splice_regions=()):
+                files_written.append(index_path)
 
         # Re-render the master CP with the parsed sprint files so its
         # `agenda` and `sprint-facts-strip` regions pick up cross-project

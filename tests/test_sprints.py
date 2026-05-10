@@ -52,6 +52,7 @@ def _fixture_project(*, code: str = "peb", status: str = "Open") -> ProjectState
 
 def _fixture_sprint_file(
     *,
+    project_code: str = "peb",
     asks: tuple[str, ...] = (),
     risks: tuple[str, ...] = (),
     allocation_line: str = "Drew 6h · Tony 2h",
@@ -89,7 +90,7 @@ def _fixture_sprint_file(
         )
     week_num = week_label.lstrip("W")
     return SprintFile(
-        project_code="peb",
+        project_code=project_code,
         week_iso=f"2026-W{week_num}",
         week_start="2026-05-11",
         week_end="2026-05-17",
@@ -467,3 +468,25 @@ def test_render_current_sprint_block_emits_top_3_asks_and_risks() -> None:
     assert "[W19 (May 11 – May 17)]" in block
     assert block.count("\n- ") >= 5  # 3 asks + 2 risks
     assert "a4" not in block  # truncated to top 3
+
+
+def test_render_sprint_index_lists_each_active_project_with_counts() -> None:
+    from cp_engine.sprints import render_sprint_index
+    sf_peb = _fixture_sprint_file(
+        project_code="peb",
+        asks=("a1", "a2"),
+        risks=("escalated:r1",),
+    )
+    sf_orb = _fixture_sprint_file(
+        project_code="orb",
+        asks=("a1",),
+        risks=("watching:r1",),
+    )
+    body = render_sprint_index(
+        week_iso="2026-W19",
+        week_dates="May 11 – May 17",
+        sprint_files=[sf_peb, sf_orb],
+    )
+    assert "# Sprint W19 (May 11 – May 17)" in body
+    assert "| `peb` |" in body
+    assert "| `orb` |" in body

@@ -97,8 +97,11 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     # Default make_state has company_kind="client" → scope "1p". With name
     # set, the slug is `mc-2-mission-control-v2`. Sprint file is `mc-2.md`
     # under sprints/<YYYY-W##>/ since make_state defaults to status="Open"
-    # (active subset).
-    assert written_names == {"master-cp.md", "CLAUDE.md", ".gitignore", "cp.md", "mc-2.md"}
+    # (active subset). The per-week sprint-index README.md is generated
+    # alongside the sprint file.
+    assert written_names == {
+        "master-cp.md", "CLAUDE.md", ".gitignore", "cp.md", "mc-2.md", "README.md",
+    }
 
     # Files actually exist + reference the project
     master = (tmp_path / "master-cp.md").read_text()

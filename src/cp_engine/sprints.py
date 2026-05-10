@@ -543,6 +543,43 @@ def render_current_sprint_block(sf: SprintFile, link_path: str) -> str:
     return "\n".join(lines)
 
 
+def render_sprint_index(
+    *,
+    week_iso: str,
+    week_dates: str,
+    sprint_files: list[SprintFile],
+) -> str:
+    """Render the per-week sprint-index README listing every active project.
+
+    The Risks column counts active risks (severity in ``escalated`` or
+    ``watching``) — same definition used by the master-CP agenda's risk
+    rollup, so the two surfaces stay consistent. Decisions due counts
+    horizon items with bucket ``decision``.
+    """
+    week_label = week_iso.split("-")[1] if "-" in week_iso else week_iso
+    lines = [
+        f"# Sprint {week_label} ({week_dates})",
+        "",
+        "| Project | Allocation | Asks | Risks | Decisions due | Sprint file |",
+        "|---|---|---|---|---|---|",
+    ]
+    for sf in sprint_files:
+        alloc = (
+            " · ".join(f"{p.person_name} {int(p.hours)}h" for p in sf.allocation)
+            or "—"
+        )
+        decisions = sum(1 for h in sf.horizon if h.bucket == "decision")
+        active_risks = sum(
+            1 for r in sf.risks if r.severity in ("escalated", "watching")
+        )
+        lines.append(
+            f"| `{sf.project_code}` | {alloc} | "
+            f"{len(sf.client_open_asks)} | {active_risks} | "
+            f"{decisions} | [→]({sf.project_code}.md) |"
+        )
+    return "\n".join(lines)
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Idempotent sprint-file writer
 # ──────────────────────────────────────────────────────────────────────
