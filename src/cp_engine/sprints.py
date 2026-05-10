@@ -18,6 +18,7 @@ from .state import (
     SprintFile,
     WhereItStands,
 )
+from .sync import _extract_region
 
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 _HEADING_RE = re.compile(
@@ -40,7 +41,7 @@ def parse_sprint_file(path: Path) -> SprintFile:
         week_start=start,
         week_end=end,
         prior_sprint=prior,
-        facts=_empty_facts(),
+        facts=_parse_facts_region(body),
         where_it_stands=_empty_where(),
         carry_forward=CarryForward(asks=(), risks=(), horizon=()),
         client_outbound=(),
@@ -79,6 +80,35 @@ def _parse_heading_dates(body: str) -> tuple[str, str]:
 
 def _empty_facts() -> SprintFacts:
     return SprintFacts(None, None, None, None, None, 0, 0)
+
+
+def _parse_facts_region(body: str) -> SprintFacts:
+    try:
+        region = _extract_region(body, "sprint-facts")
+    except ValueError:
+        return _empty_facts()
+    rows: dict[str, str] = {}
+    for line in region.splitlines():
+        if line.startswith("|") and "|" in line[1:] and "---" not in line:
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if len(cells) == 2 and cells[0] and cells[1]:
+                rows[cells[0]] = cells[1]
+
+    def _int(key: str) -> int:
+        try:
+            return int(rows.get(key, "0"))
+        except ValueError:
+            return 0
+
+    return SprintFacts(
+        stage=rows.get("Stage") or None,
+        owner=rows.get("Owner") or None,
+        budget_short=rows.get("Budget") or None,
+        last_touched_short=rows.get("Last touched") or None,
+        last_sprint_hours_line=rows.get("Last sprint hours") or None,
+        sessions_this_week=_int("Sessions this week"),
+        open_issues=_int("Open issues"),
+    )
 
 
 def _empty_where() -> WhereItStands:

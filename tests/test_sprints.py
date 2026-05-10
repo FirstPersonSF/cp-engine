@@ -44,3 +44,27 @@ def test_parse_sprint_file_handles_year_boundary_dates(tmp_path: Path) -> None:
     # the current year rather than the heading's year (2027).
     assert sf.week_start == "2027-12-28"
     assert sf.week_end == "2027-01-03"
+
+
+def test_parse_sprint_facts_region(tmp_path) -> None:
+    f = tmp_path / "peb.md"
+    f.write_text(
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W19\n---\n"
+        "# peb — Pebble Foods · Sprint W19 (May 11 – May 17, 2026)\n\n"
+        "<!-- cp-engine:start sprint-facts -->\n"
+        "| | |\n|---|---|\n"
+        "| Stage | Negotiation |\n"
+        "| Owner | Drew |\n"
+        "| Budget | $45,000 |\n"
+        "| Last touched | 2 days ago |\n"
+        "| Last sprint hours | Drew 6.5h · Tony 2h |\n"
+        "| Sessions this week | 3 |\n"
+        "| Open issues | 3 |\n"
+        "<!-- cp-engine:end sprint-facts -->\n"
+    )
+    sf = parse_sprint_file(f)
+    assert sf.facts.stage == "Negotiation"
+    assert sf.facts.owner == "Drew"
+    assert sf.facts.budget_short == "$45,000"
+    assert sf.facts.sessions_this_week == 3
+    assert sf.facts.open_issues == 3
