@@ -900,6 +900,46 @@ def test_legacy_bare_code_dir_renamed_to_slug(tmp_path: Path) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  Sprint files — per-project per-sprint markdown wired into sync_tenant
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_sync_tenant_writes_sprint_files_for_active_projects(tmp_path: Path) -> None:
+    """sync_tenant should call into the sprint-file orchestrator for every
+    active, non-internal project, dropping a `<code>.md` file under
+    `<tenant_root>/sprints/<YYYY-W##>/`. The orchestrator filters by
+    `status == "active"` (lowercase), so the fixture uses that explicitly
+    rather than the MC-2 capitalized statuses elsewhere in this file."""
+    config = make_config(tmp_path)
+    fake = FakeBackend(
+        (
+            make_state(code="peb", name="Pebble Foods", status="active"),
+            make_state(
+                code="apx", name="Apex Holding", status="holding"
+            ),  # not active → no sprint file
+            make_state(
+                code="internal-1",
+                name="Internal one",
+                status="active",
+                is_internal=True,
+            ),  # internal → no sprint file
+        )
+    )
+
+    sync_tenant(
+        config,
+        backend_factory=lambda _: fake,
+        now=datetime(2026, 5, 13, 8, 0),
+    )
+
+    sprint_dir = tmp_path / "sprints" / "2026-W19"
+    assert sprint_dir.is_dir()
+    assert (sprint_dir / "peb.md").exists()
+    assert not (sprint_dir / "apx.md").exists()
+    assert not (sprint_dir / "internal-1.md").exists()
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Sprint-window anchor logic — _last_week_monday
 # ──────────────────────────────────────────────────────────────────────
 

@@ -303,6 +303,24 @@ def sync_tenant(
         elif _write_if_changed(repo_path, repo_body, splice_regions=()):
             files_written.append(repo_path)
 
+    # Sprint files — per-project per-sprint markdown for the partners' weekly
+    # review. Generated for every active project that the master CP also
+    # surfaces. Engine-managed regions are refreshed every sync; hand-written
+    # regions are preserved. Lazy-imported to break the sync ↔ sprints
+    # circular dependency (sprints.py imports `_extract_region` from here).
+    from cp_engine.sprints import (
+        ensure_sprint_files_for_active_projects,
+        is_in_sprint_window,
+    )
+    if is_in_sprint_window(sync_clock):
+        sprint_paths = ensure_sprint_files_for_active_projects(
+            active_projects=tuple(p for p in projects if not p.is_internal),
+            sprint_root=config.root / "sprints",
+            now=sync_clock,
+            per_project_data=_collect_sprint_per_project_data(projects, allocations),
+        )
+        files_written.extend(sprint_paths)
+
     # Exceptions README — engine-managed listing of session captures from
     # unregistered repos. Only render when the directory exists (creating it
     # would commit an empty README into every tenant; we want the file to
@@ -471,6 +489,18 @@ def _write_if_changed(
         return False
     path.write_text(new_full_body)
     return True
+
+
+def _collect_sprint_per_project_data(projects, allocations) -> dict:
+    """Per-project context fed into sprint-file scaffolding.
+
+    v0.8.0 stub: returns empty dict, so all sprint files render with the
+    renderer's default fallbacks (sessions_this_week=0, no commits, no
+    recent-session paragraph). Later tasks will expand this to aggregate
+    session metadata, recent commits, open issues, and last-sprint-hours
+    from the existing data sources.
+    """
+    return {}
 
 
 def _derive_summary(config: TenantConfig, project: ProjectState) -> str | None:
