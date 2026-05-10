@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 
 from cp_engine.sprints import parse_sprint_file
+from cp_engine.state import PersonHours
 
 
 def test_parse_sprint_file_raises_on_missing_file(tmp_path: Path) -> None:
@@ -122,3 +123,27 @@ def test_parse_risks_and_horizon(tmp_path) -> None:
     assert sf.horizon[1].bucket == "decision"
     assert sf.horizon[2].bucket == "opportunity"
     assert sf.horizon[2].target_date is None
+
+
+def test_parse_this_sprint_section(tmp_path) -> None:
+    f = tmp_path / "peb.md"
+    f.write_text(
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W19\n---\n"
+        "# peb — Pebble Foods · Sprint W19 (May 11 – May 17, 2026)\n"
+        "## This sprint\n"
+        "**Allocation:** Drew · 6h · Tony · 2h\n\n"
+        "### Deliverables\n"
+        "1. Pricing model finalized\n"
+        "2. Discovery deck reviewed\n"
+        "3. Legal redline reconciled\n\n"
+        "### Definition of done\n"
+        "Pricing accepted in principle and contract draft v2 ready for signature.\n"
+    )
+    sf = parse_sprint_file(f)
+    assert sf.allocation == (
+        PersonHours(person_name="Drew", hours=6.0),
+        PersonHours(person_name="Tony", hours=2.0),
+    )
+    assert len(sf.deliverables) == 3
+    assert sf.deliverables[0].position == 1
+    assert "Pricing accepted" in sf.definition_of_done

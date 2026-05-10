@@ -15,9 +15,11 @@ from pathlib import Path
 from .state import (
     CarryForward,
     ClientAsk,
+    Deliverable,
     HorizonItem,
     InboundUpdate,
     Outbound,
+    PersonHours,
     Risk,
     SprintFacts,
     SprintFile,
@@ -41,6 +43,7 @@ def parse_sprint_file(path: Path) -> SprintFile:
     prior = fm.get("PriorSprint")
     start, end = _parse_heading_dates(body)
     client_outbound, client_open_asks, client_inbound = _parse_client_section(body)
+    allocation, deliverables, definition_of_done = _parse_this_sprint(body)
     return SprintFile(
         project_code=project_code,
         week_iso=week_iso,
@@ -54,9 +57,9 @@ def parse_sprint_file(path: Path) -> SprintFile:
         client_open_asks=client_open_asks,
         client_inbound=client_inbound,
         risks=_parse_risks(body),
-        allocation=(),
-        deliverables=(),
-        definition_of_done="",
+        allocation=allocation,
+        deliverables=deliverables,
+        definition_of_done=definition_of_done,
         horizon=_parse_horizon(body),
         meeting_notes=None,
     )
@@ -238,6 +241,36 @@ def _parse_risks(body: str) -> tuple[Risk, ...]:
             )
         )
     return tuple(out)
+
+
+_ALLOCATION_RE = re.compile(r"\*\*Allocation:\*\*\s*(.+)")
+_PERSON_HOURS_RE = re.compile(r"(?P<name>[A-Za-z][\w\s]*?)\s*·\s*(?P<hours>[\d.]+)h")
+
+
+def _parse_this_sprint(
+    body: str,
+) -> tuple[tuple[PersonHours, ...], tuple[Deliverable, ...], str]:
+    section = _section_body(body, "This sprint")
+    alloc: list[PersonHours] = []
+    m = _ALLOCATION_RE.search(section)
+    if m:
+        for pm in _PERSON_HOURS_RE.finditer(m.group(1)):
+            alloc.append(
+                PersonHours(
+                    person_name=pm.group("name").strip(),
+                    hours=float(pm.group("hours")),
+                )
+            )
+    deliverables: list[Deliverable] = []
+    deliv_section = _subsection(section, "Deliverables")
+    for i, line in enumerate(
+        [ln for ln in deliv_section.splitlines() if re.match(r"^\d+\.\s+", ln)],
+        start=1,
+    ):
+        text = re.sub(r"^\d+\.\s+", "", line).strip()
+        deliverables.append(Deliverable(text=text, position=i))
+    dod = _subsection(section, "Definition of done").strip()
+    return tuple(alloc), tuple(deliverables), dod
 
 
 def _parse_horizon(body: str) -> tuple[HorizonItem, ...]:
