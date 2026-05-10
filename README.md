@@ -73,6 +73,8 @@ The master CP gains an Agenda rollup (escalated risks, stale asks, horizon decis
 
 Mode 4's `deepen from transcript` writes meeting notes, decisions, new client asks, outbound drafts, and risk updates into the sprint file rather than the project's `cp.md`. `wrap up` commits the whole `sprints/<YYYY-W##>/` directory alongside the master roll-up.
 
+`cp parse-sprint <path>` parses a sprint file and emits a one-line summary; pass `--json` for a complete JSON serialization aimed at downstream consumers (mc-2 integration, debugging, future tooling). The JSON is generated via `dataclasses.asdict` on the parsed `SprintFile`, so its shape matches the public dataclasses in `cp_engine.state`.
+
 See `docs/plans/2026-05-10-sprint-files-design.md` for design rationale and `docs/plans/2026-05-10-sprint-files-plan.md` for the implementation plan.
 
 ## Layout
