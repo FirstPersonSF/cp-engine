@@ -53,6 +53,41 @@ class MarkerInverted(RenderError):
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  Section summaries (auto-generated one-liner under each active h2)
+# ──────────────────────────────────────────────────────────────────────
+
+# Per-section noun-phrase fragment. The summary helper prefixes a
+# spelled-out count: f"{Count} {state_phrase}".
+_SECTION_STATE_PHRASES: dict[str, str] = {
+    "pipeline": "deals in flight",
+    "client": "engagements in delivery",
+    "self_fpsf": "tools in active build",
+    "self_canonic": "projects in flight",
+}
+
+# Spell out small counts; digits otherwise. Index 0 is intentionally
+# lowercase "zero" since count==0 suppresses the line (the helper
+# returns None), so it should never be rendered.
+_SPELLED_COUNTS = (
+    "zero", "One", "Two", "Three", "Four", "Five",
+    "Six", "Seven", "Eight", "Nine", "Ten",
+)
+
+
+def _section_summary(count: int, state_phrase: str) -> str | None:
+    """Format the auto-generated section summary, e.g. "Three deals in flight".
+
+    Returns None when `count == 0` so the template can suppress the
+    summary line entirely (a "Zero X in Y" sentence reads awkwardly,
+    and the heading already shows "(0)").
+    """
+    if count <= 0:
+        return None
+    word = _SPELLED_COUNTS[count] if 1 <= count <= 10 else str(count)
+    return f"{word} {state_phrase}"
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Jinja environment
 # ──────────────────────────────────────────────────────────────────────
 
@@ -205,13 +240,20 @@ def render_master_cp(
         else None
     )
 
+    grouped = group(active)
+    section_summaries = {
+        key: _section_summary(len(grouped[key]), phrase)
+        for key, phrase in _SECTION_STATE_PHRASES.items()
+    }
+
     template = _env().get_template("master-cp.md.j2")
     return template.render(
         tenant=config,
         engine_version=ENGINE_VERSION,
         today=_today_iso(),
         last_sync_iso=last_sync.isoformat(),
-        active_groups=group(active),
+        active_groups=grouped,
+        section_summaries=section_summaries,
         workload_rollup=_rollup_view(allocations),
         workload_week=allocations.week_start if allocations else None,
         holding_projects=[_project_view(p) for p in holding],

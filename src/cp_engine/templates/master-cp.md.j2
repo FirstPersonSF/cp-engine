@@ -55,6 +55,9 @@ Author: cp-engine (sync)
 
 <!-- cp-engine:start active-pipeline -->
 ## 1P — Pipeline ({{ active_groups.pipeline | length }})
+{%- if section_summaries.pipeline %}
+_{{ section_summaries.pipeline }}_
+{%- endif %}
 
 Sales-stage progression: Inquiry → Negotiation → Contract.
 
@@ -67,6 +70,9 @@ Sales-stage progression: Inquiry → Negotiation → Contract.
 
 <!-- cp-engine:start active-1p -->
 ## 1P — Active Engagements ({{ active_groups.client | length }})
+{%- if section_summaries.client %}
+_{{ section_summaries.client }}_
+{%- endif %}
 
 | Code | Project | Owner | Budget | Last touched | One-line summary | CP |
 |---|---|---|---|---|---|---|
@@ -77,6 +83,9 @@ Sales-stage progression: Inquiry → Negotiation → Contract.
 
 <!-- cp-engine:start active-fpsf -->
 ## First Person — Internal Tooling ({{ active_groups.self_fpsf | length }})
+{%- if section_summaries.self_fpsf %}
+_{{ section_summaries.self_fpsf }}_
+{%- endif %}
 
 | Repo | Status | Owner | Description | Last touched | GitHub | CP |
 |---|---|---|---|---|---|---|
@@ -87,6 +96,9 @@ Sales-stage progression: Inquiry → Negotiation → Contract.
 
 <!-- cp-engine:start active-canonic -->
 ## Canonic ({{ active_groups.self_canonic | length }})
+{%- if section_summaries.self_canonic %}
+_{{ section_summaries.self_canonic }}_
+{%- endif %}
 
 | Repo | Status | Owner | Description | Last touched | GitHub | CP |
 |---|---|---|---|---|---|---|

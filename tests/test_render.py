@@ -625,3 +625,42 @@ def test_master_cp_includes_sprint_facts_strip_when_sprint_files_provided() -> N
     assert "**Escalated** 1" in body
     assert "**Decisions due** 1" in body
     assert "**Prior sprint** 2026-W18" in body
+
+
+def test_master_cp_section_summary_uses_count_and_state_phrase() -> None:
+    """Each active-section h2 gets an auto-generated one-line summary
+    sentence under the heading, like "Three deals in flight" or
+    "Four engagements in delivery". Spelled-out numbers up to ten.
+    """
+    tenant = make_tenant()
+    # 3 pipeline (client + Deal status), 4 active client engagements
+    # (client + Open status). Construct ProjectState directly so we can
+    # set deal_stage; make_state doesn't expose it.
+    pipeline_projects = tuple(
+        ProjectState(
+            code=f"ggl-pipe{i}",
+            name=f"Pipeline {i}",
+            source="engagement",
+            company_kind="client",
+            company_code="GGL",
+            company_name="Google",
+            status="Deal",
+            is_internal=False,
+            owner="drew",
+            last_touched=None,
+            deadline=None,
+            one_line_summary=None,
+            deal_stage="Inquiry",
+        )
+        for i in range(3)
+    )
+    active_clients = tuple(
+        make_state(code=f"ggl-act{i}", name=f"Active {i}", status="Open")
+        for i in range(4)
+    )
+    projects = pipeline_projects + active_clients
+
+    body = render_master_cp(tenant, projects, last_sync=datetime.now(timezone.utc))
+
+    assert "Three deals in flight" in body
+    assert "Four engagements in delivery" in body
