@@ -249,3 +249,41 @@ class HorizonItem:
     bucket: str      # "milestone" | "decision" | "opportunity"
     target_date: str | None = None
     note: str | None = None
+
+
+@dataclass(frozen=True)
+class Outbound:
+    """One outbound client message: sent, drafted, or queued."""
+
+    text: str
+    status: str      # "sent" | "draft" | "queued"
+    date: str
+    note: str | None = None
+
+
+@dataclass(frozen=True)
+class InboundUpdate:
+    """One inbound update from the client, captured in a sprint file."""
+
+    date: str
+    who: str
+    text: str
+
+
+@dataclass(frozen=True)
+class Deliverable:
+    """One deliverable in a sprint plan; position drives priority."""
+
+    text: str
+    position: int    # 1-indexed priority
+
+
+@dataclass(frozen=True)
+class MeetingNotes:
+    """Decisions plus prose discussion from a partners' weekly review."""
+
+    source: str | None = None
+    attendees: str | None = None
+    duration: str | None = None
+    decisions: tuple[str, ...] = ()
+    discussion_prose: str = ""

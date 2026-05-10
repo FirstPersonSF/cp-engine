@@ -4,7 +4,17 @@ from __future__ import annotations
 
 import pytest
 
-from cp_engine.state import ClientAsk, HorizonItem, Risk, dir_slug, scope_for
+from cp_engine.state import (
+    ClientAsk,
+    Deliverable,
+    HorizonItem,
+    InboundUpdate,
+    MeetingNotes,
+    Outbound,
+    Risk,
+    dir_slug,
+    scope_for,
+)
 
 # ──────────────────────────────────────────────────────────────────────
 #  scope_for
@@ -94,3 +104,30 @@ def test_horizon_item_bucket_required() -> None:
     h = HorizonItem(text="Open beta launch", bucket="decision", target_date="2026-W22")
     assert h.bucket == "decision"
     assert h.target_date == "2026-W22"
+
+
+def test_outbound_status_field() -> None:
+    o = Outbound(text="Counter-proposal", status="sent", date="2026-05-09")
+    assert o.status == "sent"
+
+
+def test_inbound_update_holds_who_and_quote() -> None:
+    u = InboundUpdate(date="2026-05-09", who="Maria", text="Tier-2 doesn't match")
+    assert u.who == "Maria"
+
+
+def test_deliverable_position_drives_priority() -> None:
+    d1 = Deliverable(text="Pricing finalized", position=1)
+    d2 = Deliverable(text="Deck reviewed", position=2)
+    assert d1.position < d2.position
+
+
+def test_meeting_notes_holds_decisions_and_prose() -> None:
+    m = MeetingNotes(
+        source="From sprint planning · May 11",
+        attendees="Drew + Tony",
+        duration="22 min",
+        decisions=("Hold tier-2 cap firm.",),
+        discussion_prose="Spent most of the time on…",
+    )
+    assert len(m.decisions) == 1
