@@ -721,6 +721,25 @@ def sprint_file_to_dict(sf: SprintFile) -> dict:
     return asdict(sf)
 
 
+def _is_active_for_sprint(project) -> bool:
+    """Mirror the master-CP `is_active` rule from render.py.
+
+    Engagement projects (source="engagement") use the MC-2 status vocabulary
+    (`is_active_status`: Deal or Open) AND must not be internal.
+
+    Repo projects (source="repo") — FPSF internal tooling and Canonic
+    repos — use the literal "Active" status from the repos table.
+
+    Before this v0.8.1 fix the orchestrator only used `is_active_status`,
+    which meant FPSF/Canonic projects (status="Active", not in
+    MC_STATUSES) were silently filtered out and never got sprint files.
+    """
+    source = getattr(project, "source", None)
+    if source == "engagement":
+        return is_active_status(project.status) and not getattr(project, "is_internal", False)
+    return project.status == "Active"
+
+
 def ensure_sprint_files_for_active_projects(
     *,
     active_projects,
@@ -743,7 +762,7 @@ def ensure_sprint_files_for_active_projects(
     week_label = f"W{int(week_iso.split('-W')[1])}"
     out: list[Path] = []
     for project in active_projects:
-        if not is_active_status(project.status):
+        if not _is_active_for_sprint(project):
             continue
         data = per_project_data.get(project.code, {})
         # Track the mtime before so we only report paths where the call

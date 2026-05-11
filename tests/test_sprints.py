@@ -21,7 +21,14 @@ from cp_engine.state import (
 )
 
 
-def _fixture_project(*, code: str = "peb", status: str = "Open") -> ProjectState:
+def _fixture_project(
+    *,
+    code: str = "peb",
+    status: str = "Open",
+    source: str = "engagement",
+    is_internal: bool = False,
+    company_kind: str = "client",
+) -> ProjectState:
     """Reusable ProjectState for sprint-file tests.
 
     Mirrors the inline shape used in the round-trip test below: a Pebble
@@ -29,19 +36,20 @@ def _fixture_project(*, code: str = "peb", status: str = "Open") -> ProjectState
     this project's `deal_stage` ("Negotiation") shows up in the rendered
     sprint-facts region — keep that field stable.
 
-    `code` and `status` are overridable so tests that exercise the
-    orchestrator can build distinguishable projects (e.g. an active "peb"
-    vs. a holding "apx") without spelling out the full ProjectState shape.
+    Overridable kwargs let tests build distinguishable projects: an
+    active "peb" engagement (defaults), a holding engagement (status=
+    "Holding"), or an FPSF/Canonic repo (source="repo", status="Active",
+    company_kind="self-fpsf" / "self-canonic").
     """
     return ProjectState(
         code=code,
         name="Pebble Foods",
-        source="engagement",
-        company_kind="client",
+        source=source,
+        company_kind=company_kind,
         company_code="PEB",
         company_name="Pebble Foods",
         status=status,
-        is_internal=False,
+        is_internal=is_internal,
         owner="Drew",
         last_touched=None,
         deadline=None,
@@ -452,6 +460,41 @@ def test_ensure_sprint_files_for_active_projects_writes_one_per_active(tmp_path)
     )
     assert any(p.name == "peb.md" for p in paths)
     assert not any(p.name == "apx.md" for p in paths)
+
+
+def test_ensure_sprint_files_includes_repo_source_active_projects(tmp_path) -> None:
+    """Regression test for v0.8.1: FPSF/Canonic projects (source="repo",
+    status="Active") were silently filtered out in v0.8.0 because the
+    orchestrator only checked `is_active_status` (MC-2 Deal/Open vocab),
+    which doesn't recognize the literal "Active" used for repos. The fix
+    mirrors render.py's `is_active` rule: engagement → is_active_status
+    + not internal; repo → status == "Active".
+    """
+    from cp_engine.sprints import ensure_sprint_files_for_active_projects
+    engagement = _fixture_project(code="peb", status="Open")
+    fpsf_repo = _fixture_project(
+        code="mc-2", status="Active", source="repo",
+        is_internal=True, company_kind="self-fpsf",
+    )
+    canonic_repo = _fixture_project(
+        code="storyos", status="Active", source="repo",
+        is_internal=True, company_kind="self-canonic",
+    )
+    inactive_repo = _fixture_project(
+        code="lns", status="Inactive", source="repo",
+        is_internal=True, company_kind="self-fpsf",
+    )
+    paths = ensure_sprint_files_for_active_projects(
+        active_projects=(engagement, fpsf_repo, canonic_repo, inactive_repo),
+        sprint_root=tmp_path / "sprints",
+        now=datetime(2026, 5, 13, 8, 0),
+        per_project_data={},
+    )
+    written = {p.name for p in paths}
+    assert "peb.md" in written
+    assert "mc-2.md" in written
+    assert "storyos.md" in written
+    assert "lns.md" not in written
 
 
 def test_render_current_sprint_block_emits_top_3_asks_and_risks() -> None:

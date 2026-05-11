@@ -4,6 +4,21 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.1 — 2026-05-11
+
+### Fixed
+
+- **Sprint files are now generated for FPSF and Canonic projects.** The v0.8.0 orchestrator filtered the active set with `is_active_status` only, which understands MC-2's `Deal`/`Open` vocabulary but not the literal `Active` status used by repo-source projects (FPSF internal tooling, Canonic projects). The result on real tenant data: only client engagements got sprint files; internal projects were silently skipped. Fix mirrors `render.py`'s `is_active` rule — engagement → `is_active_status` + `not is_internal`; repo → `status == "Active"` — so the sprints directory now contains a file for every project the master CP also surfaces.
+
+### Tenant impact
+
+- Tenants pinned at `engine = "~= 0.8"` pick this up on next sync. No config changes needed.
+- The next sync after upgrading will write sprint files for FPSF/Canonic projects that were previously missing. Expected to add ~5–7 new files per tenant on the next sync.
+
+### Verification
+
+- New regression test `test_ensure_sprint_files_includes_repo_source_active_projects` locks in the four cases: engagement (Open) → included; FPSF repo (Active) → included; Canonic repo (Active) → included; inactive repo → excluded. Full suite: 287 passing.
+
 ## v0.8.0 — 2026-05-10
 
 ### Added
