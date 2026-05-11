@@ -327,12 +327,12 @@ def sync_tenant(
         render_sprint_index,
         sprint_week_dates,
     )
-    from cp_engine.status import is_active_status
     if is_in_sprint_window(sync_clock):
-        active_for_sprints = tuple(
-            p for p in projects
-            if not p.is_internal and is_active_status(p.status)
-        )
+        # Pass the full project list; the orchestrator owns the active-filter
+        # rule (engagement → is_active_status + not internal; repo → status ==
+        # "Active"). Pre-filtering here would strip FPSF + Canonic repos,
+        # which is what v0.8.0 did wrong — see _is_active_for_sprint.
+        active_for_sprints = tuple(projects)
         sprint_paths = ensure_sprint_files_for_active_projects(
             active_projects=active_for_sprints,
             sprint_root=config.root / "sprints",

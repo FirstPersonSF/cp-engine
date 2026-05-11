@@ -4,6 +4,16 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.2 — 2026-05-11
+
+### Fixed
+
+- **Completes the v0.8.1 fix at the right layer.** v0.8.1 patched the orchestrator (`_is_active_for_sprint`) but `sync.py` was already pre-filtering the project list with `not is_internal and is_active_status(status)` before passing it down. That stripped FPSF/Canonic repos before the orchestrator could include them. v0.8.2 removes the upstream pre-filter and lets the orchestrator own the rule end-to-end. Verified on real tenant data: the next sync writes `mc-2.md`, `cp-engine.md`, `storyos.md`, etc. alongside the client engagement files.
+
+### Verification
+
+- Updated `test_sync_tenant_writes_sprint_files_for_active_projects` to cover six cases: active engagement (included), holding engagement (excluded), internal engagement (excluded), FPSF repo with status=Active (included), Canonic repo with status=Active (included), inactive repo (excluded). 287 tests passing.
+
 ## v0.8.1 — 2026-05-11
 
 ### Fixed

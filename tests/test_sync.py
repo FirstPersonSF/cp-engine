@@ -994,23 +994,60 @@ def test_sync_splices_current_sprint_into_existing_project_cp(tmp_path: Path) ->
 
 def test_sync_tenant_writes_sprint_files_for_active_projects(tmp_path: Path) -> None:
     """sync_tenant should call into the sprint-file orchestrator for every
-    active, non-internal project, dropping a `<code>.md` file under
-    `<tenant_root>/sprints/<YYYY-W##>/`. The orchestrator filters by the
-    canonical active subset (Deal/Open per `is_active_status`), matching
-    MC-2's capitalized status vocabulary."""
+    active project — engagement (Open/Deal, not is_internal) OR repo-source
+    (status="Active"), dropping a `<code>.md` file under
+    `<tenant_root>/sprints/<YYYY-W##>/`. The orchestrator (via
+    _is_active_for_sprint) mirrors render.py's `is_active` rule.
+
+    v0.8.2 regression: previously sync.py pre-filtered with
+    `not is_internal and is_active_status(status)`, which stripped FPSF/
+    Canonic repos (status="Active", is_internal=True) before the
+    orchestrator could consider them — even after v0.8.1 tried to fix
+    this at the orchestrator level. The fix now hands the full project
+    list down and lets the orchestrator own the rule.
+    """
     config = make_config(tmp_path)
     fake = FakeBackend(
         (
+            # Active client engagement → sprint file written
             make_state(code="peb", name="Pebble Foods", status="Open"),
-            make_state(
-                code="apx", name="Apex Holding", status="Holding"
-            ),  # not active → no sprint file
+            # Holding engagement → no sprint file
+            make_state(code="apx", name="Apex Holding", status="Holding"),
+            # Internal engagement (rare, but is_internal=True wins) → no sprint file
             make_state(
                 code="internal-1",
                 name="Internal one",
                 status="Open",
                 is_internal=True,
-            ),  # internal → no sprint file
+            ),
+            # FPSF internal tooling: source="repo", status="Active",
+            # is_internal=True → SPRINT FILE WRITTEN per v0.8.2
+            make_state(
+                code="mc-2-tooling",
+                name="MC-2 tooling",
+                source="repo",
+                company_kind="self-fpsf",
+                status="Active",
+                is_internal=True,
+            ),
+            # Canonic project: same shape, different company_kind → SPRINT FILE WRITTEN
+            make_state(
+                code="storyos",
+                name="storyos",
+                source="repo",
+                company_kind="self-canonic",
+                status="Active",
+                is_internal=True,
+            ),
+            # Inactive repo → no sprint file
+            make_state(
+                code="lns",
+                name="Lensman",
+                source="repo",
+                company_kind="self-fpsf",
+                status="Inactive",
+                is_internal=True,
+            ),
         )
     )
 
@@ -1022,9 +1059,14 @@ def test_sync_tenant_writes_sprint_files_for_active_projects(tmp_path: Path) -> 
 
     sprint_dir = tmp_path / "sprints" / "2026-W19"
     assert sprint_dir.is_dir()
+    # Active engagements + repo-source projects with status=Active are included.
     assert (sprint_dir / "peb.md").exists()
+    assert (sprint_dir / "mc-2-tooling.md").exists()
+    assert (sprint_dir / "storyos.md").exists()
+    # Holding, internal-engagement, and inactive-repo are excluded.
     assert not (sprint_dir / "apx.md").exists()
     assert not (sprint_dir / "internal-1.md").exists()
+    assert not (sprint_dir / "lns.md").exists()
 
 
 # ──────────────────────────────────────────────────────────────────────
