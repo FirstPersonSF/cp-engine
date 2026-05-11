@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.3 — 2026-05-11
+
+### Fixed
+
+- **`cp sync` now auto-loads `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` from `<mc-2 clone>/backend/.env`** when they're absent from the environment. Previously every fresh shell hit `Sync failed: MC-2 backend requires SUPABASE_URL and SUPABASE_SERVICE_KEY in the environment.` and required `set -a; source .../mc-2/backend/.env; set +a` before each session. The clone path is read from `TenantConfig.local_repos["mc-2"]` (per-machine, gitignored — already required for `cp link-local` and `cp capture-session`), so no new config is needed. Env vars still take precedence, preserving the CI/GitHub Actions path. When the file fallback is used, `cp sync` prints a one-line note to stderr (`Loaded SUPABASE_* from /path/to/mc-2/backend/.env`) so the implicit dependency stays visible. Closes #2.
+
+### Tenant impact
+
+- Tenants pinned at `engine = "~= 0.8"` pick this up on next sync. No config changes needed, provided `[local-repos]."mc-2"` is set in `.cp-engine.local.toml` (it already is for anyone who's run `cp init` since v0.4).
+
+### Verification
+
+- New tests in `test_sync_mc2.py` cover the four cases: env present (no file read), env absent + .env present (loads from file, prints stderr note), neither source has the keys (raises `BackendUnavailable` with both paths named), and "no MC-2 clone configured" message variant. Full suite passing.
+
 ## v0.8.2 — 2026-05-11
 
 ### Fixed

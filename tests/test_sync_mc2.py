@@ -9,11 +9,18 @@ v0.2 covers two source streams: engagement projects and standalone repos.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
+from types import MappingProxyType
 
+import pytest
+
+from cp_engine.config import SyncConfig, TenantConfig
+from cp_engine.sync import BackendUnavailable
 from cp_engine.sync_mc2 import (
     _engagement_canonical_id,
     _engagement_row_is_valid,
     _engagement_row_to_state,
+    _load_supabase_creds,
     _parse_iso,
     _parse_numeric,
     _repo_row_is_valid,
@@ -322,3 +329,76 @@ def test_parse_iso_assumes_utc_for_naive() -> None:
     dt = _parse_iso("2026-05-07T16:14:34")
     assert dt is not None
     assert dt.tzinfo is timezone.utc
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Supabase credential loading
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_config(tmp_path: Path, mc2_clone: Path | None = None) -> TenantConfig:
+    local_repos: dict[str, Path] = {}
+    if mc2_clone is not None:
+        local_repos["mc-2"] = mc2_clone
+    return TenantConfig(
+        name="test",
+        display="Test",
+        engine_version_constraint="~= 0.1",
+        sync=SyncConfig(backend="mc-2", cron="0 * * * *", mc_2_supabase_project_ref="ref"),
+        projects=(),
+        root=tmp_path,
+        local_repos=MappingProxyType(local_repos),
+    )
+
+
+def test_load_supabase_creds_uses_environment_when_present(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("SUPABASE_URL", "https://env.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "env-key")
+    config = _make_config(tmp_path)
+    assert _load_supabase_creds(config) == ("https://env.supabase.co", "env-key")
+
+
+def test_load_supabase_creds_falls_back_to_mc2_dotenv(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    clone = tmp_path / "mc-2"
+    (clone / "backend").mkdir(parents=True)
+    (clone / "backend" / ".env").write_text(
+        '# leading comment\n'
+        'SUPABASE_URL="https://file.supabase.co"\n'
+        "SUPABASE_SERVICE_KEY=file-key\n"
+        "OTHER_VAR=ignored\n"
+    )
+    config = _make_config(tmp_path, mc2_clone=clone)
+    assert _load_supabase_creds(config) == ("https://file.supabase.co", "file-key")
+    assert "Loaded SUPABASE_* from" in capsys.readouterr().err
+
+
+def test_load_supabase_creds_raises_with_paths_when_neither_source_has_keys(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    clone = tmp_path / "mc-2"
+    (clone / "backend").mkdir(parents=True)
+    config = _make_config(tmp_path, mc2_clone=clone)
+    with pytest.raises(BackendUnavailable) as exc:
+        _load_supabase_creds(config)
+    msg = str(exc.value)
+    assert "environment" in msg
+    assert str(clone / "backend" / ".env") in msg
+
+
+def test_load_supabase_creds_message_notes_missing_clone_config(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    config = _make_config(tmp_path)  # no mc-2 in local_repos
+    with pytest.raises(BackendUnavailable) as exc:
+        _load_supabase_creds(config)
+    assert "no MC-2 clone configured" in str(exc.value)

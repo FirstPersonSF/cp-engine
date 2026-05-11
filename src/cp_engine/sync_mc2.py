@@ -13,9 +13,11 @@ Two source streams unified into a single tuple of ProjectStates:
    info enriches the parent engagement's project CP, not the master
    index.
 
-Auth: reads `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` from the environment.
-The service key is required (not the anon key) because the engine reads
-across all rows for the master CP — RLS would otherwise filter the result.
+Auth: reads `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` from the environment,
+falling back to `<mc-2 clone>/backend/.env` (clone path from
+`TenantConfig.local_repos["mc-2"]`) when env vars are missing. The service
+key is required (not the anon key) because the engine reads across all
+rows for the master CP — RLS would otherwise filter the result.
 
 # Project identity
 
@@ -29,7 +31,9 @@ hyphenated; no transformation needed.
 from __future__ import annotations
 
 import os
+import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 from supabase import Client, create_client
 
@@ -70,7 +74,7 @@ class MC2Backend:
     _client: Client | None = None
 
     def read_projects(self, config: TenantConfig) -> tuple[ProjectState, ...]:
-        client = self._get_client()
+        client = self._get_client(config)
 
         # Stream A: engagement projects
         engagement_rows = (
@@ -122,7 +126,7 @@ class MC2Backend:
         Args:
             week_start: ISO date string (YYYY-MM-DD), expected to be a Monday.
         """
-        client = self._get_client()
+        client = self._get_client(config)
         rows = (
             client.schema("public")
             .table("sprint_allocations")
@@ -212,21 +216,94 @@ class MC2Backend:
             rollup=tuple(rollup_list),
         )
 
-    def _get_client(self) -> Client:
+    def _get_client(self, config: TenantConfig) -> Client:
         if self._client is not None:
             return self._client
 
-        url = os.environ.get("SUPABASE_URL")
-        key = os.environ.get("SUPABASE_SERVICE_KEY")
-        if not url or not key:
-            raise BackendUnavailable(
-                "MC-2 backend requires SUPABASE_URL and SUPABASE_SERVICE_KEY in the "
-                "environment. For local dev, copy mc-2/backend/.env.example. For the "
-                "GitHub Action, configure repo secrets."
-            )
-
+        url, key = _load_supabase_creds(config)
         self._client = create_client(url, key)
         return self._client
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Supabase credential loading
+# ──────────────────────────────────────────────────────────────────────
+
+
+_SUPABASE_KEYS = ("SUPABASE_URL", "SUPABASE_SERVICE_KEY")
+
+
+def _load_supabase_creds(config: TenantConfig) -> tuple[str, str]:
+    """Resolve `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` for the MC-2 client.
+
+    Order of preference:
+      1. `os.environ` — preserves CI/GitHub Actions and explicit shell exports.
+      2. `<mc-2 clone>/backend/.env` — the canonical local-dev location.
+         The clone path comes from `TenantConfig.local_repos["mc-2"]`
+         (per-machine, gitignored).
+
+    On fallback, prints a one-line note to stderr so the implicit dependency
+    stays visible. Raises `BackendUnavailable` if both sources lack the keys,
+    naming both paths it tried.
+    """
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if url and key:
+        return url, key
+
+    env_file = _mc2_env_file(config)
+    file_creds = _read_dotenv(env_file, _SUPABASE_KEYS) if env_file else {}
+    url = url or file_creds.get("SUPABASE_URL")
+    key = key or file_creds.get("SUPABASE_SERVICE_KEY")
+    if url and key:
+        print(f"Loaded SUPABASE_* from {env_file}", file=sys.stderr)
+        return url, key
+
+    tried = "environment"
+    if env_file:
+        tried += f" and {env_file}"
+    else:
+        tried += " (no MC-2 clone configured in [local-repos] of .cp-engine.local.toml)"
+    raise BackendUnavailable(
+        "MC-2 backend requires SUPABASE_URL and SUPABASE_SERVICE_KEY. "
+        f"Tried: {tried}. For local dev, copy mc-2/backend/.env.example "
+        "and ensure [local-repos].\"mc-2\" points to your clone. For the "
+        "GitHub Action, configure repo secrets."
+    )
+
+
+def _mc2_env_file(config: TenantConfig) -> Path | None:
+    """Return `<mc-2 clone>/backend/.env` if the clone is configured, else None."""
+    clone = config.local_repos.get("mc-2")
+    if clone is None:
+        return None
+    return Path(clone) / "backend" / ".env"
+
+
+def _read_dotenv(path: Path, keys: tuple[str, ...]) -> dict[str, str]:
+    """Parse a dotenv file, returning only the requested keys.
+
+    Trivial parser: `KEY=value` per line, skips comments and blanks, strips
+    surrounding single or double quotes. Doesn't handle multi-line values or
+    `export` prefixes — MC-2's .env doesn't use them.
+    """
+    if not path.is_file():
+        return {}
+    wanted = set(keys)
+    out: dict[str, str] = {}
+    for raw in path.read_text().splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        k, _, v = line.partition("=")
+        k = k.strip()
+        if k not in wanted:
+            continue
+        v = v.strip()
+        if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+            v = v[1:-1]
+        out[k] = v
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────
