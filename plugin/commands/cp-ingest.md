@@ -178,7 +178,7 @@ WEEK=$(cp parse-sprint --json sprints/2026-W19/cp.md 2>/dev/null | jq -r .week_i
 LOG_DIR="sprints/$WEEK/_ingest-log"
 mkdir -p "$LOG_DIR"
 TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
-cp "$PLAN" "$LOG_DIR/$TS.yaml"
+/bin/cp "$PLAN" "$LOG_DIR/$TS.yaml"  # /bin/cp avoids shadowing by the cp-engine CLI
 ```
 
 The plan stays as the audit artifact: "what did Claude actually do
