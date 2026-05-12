@@ -28,7 +28,7 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from cp_engine import __version__ as ENGINE_VERSION
 from cp_engine.config import TenantConfig
-from cp_engine.state import Issue, ProjectState, SprintFile, dir_slug, scope_for
+from cp_engine.state import Issue, LinkedRepo, ProjectState, SprintFile, dir_slug, scope_for
 from cp_engine.status import is_active_status
 
 # ──────────────────────────────────────────────────────────────────────
@@ -406,6 +406,31 @@ def render_repo_md(
     template = _env().get_template("repo.md.j2")
     return template.render(
         project=_project_view(project),
+        engine_version=ENGINE_VERSION,
+        today=_today_iso(),
+        local_clones_by_user=local_clones_by_user or None,
+    )
+
+
+def render_linked_repo_md(
+    project_name: str,
+    repo: LinkedRepo,
+    *,
+    local_clones_by_user: dict[str, str] | None = None,
+) -> str:
+    """Render `_repo-<repo-name>.md` for a repo linked to an engagement.
+
+    Engagement-source projects can have multiple linked repos in MC-2
+    (`repos.project_id` pointing at the engagement). Each gets its own
+    file in the engagement's working dir, mirroring the standalone-repo
+    `_repo.md` pattern. The template makes the *linked* relationship
+    explicit so a reader doesn't confuse the file with a primary
+    standalone-repo working-dir record.
+    """
+    template = _env().get_template("linked-repo.md.j2")
+    return template.render(
+        project_name=project_name,
+        repo=repo,
         engine_version=ENGINE_VERSION,
         today=_today_iso(),
         local_clones_by_user=local_clones_by_user or None,

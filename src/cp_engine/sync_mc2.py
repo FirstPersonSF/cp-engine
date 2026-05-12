@@ -40,6 +40,7 @@ from supabase import Client, create_client
 from cp_engine.config import TenantConfig
 from cp_engine.status import MC_STATUSES
 from cp_engine.state import (
+    LinkedRepo,
     PersonHours,
     PersonRollup,
     ProjectAllocation,
@@ -52,10 +53,18 @@ from cp_engine.sync import BackendUnavailable
 # Columns we read for engagement projects. Explicit list (never `*`) per
 # Drew's global rule about Supabase performance. `cached_messages` and
 # `cached_analysis` on the projects table can be megabytes per row.
+#
+# `repos!project_id(...)` pulls the set of repos linked to this engagement
+# (those with `repos.project_id` pointing at this project). We surface them
+# via per-repo `_repo-<repo-name>.md` files in the engagement's working dir,
+# mirroring the standalone-repo `_repo.md` layout. Inactive repos are filtered
+# downstream in `_engagement_row_to_state` (PostgREST nested filters are
+# awkward; cleaner to filter in Python given the small row count).
 _ENGAGEMENT_COLUMNS = (
     "number, full_job_name, name, mc_status, account_manager, "
     "is_internal, deal_stage, budget, dropbox_folder_url, updated_at, "
-    "companies(code, name, kind)"
+    "companies(code, name, kind), "
+    "repos!project_id(repo_name, status, description, github_orgs!inner(name))"
 )
 
 # Columns for standalone repo rows.
@@ -342,7 +351,47 @@ def _engagement_row_to_state(row: dict) -> ProjectState:
         deal_stage=row.get("deal_stage"),
         budget=_parse_numeric(row.get("budget")),
         dropbox_folder_url=row.get("dropbox_folder_url") or None,
+        linked_repos=_parse_linked_repos(row.get("repos")),
     )
+
+
+def _parse_linked_repos(repos_payload: object) -> tuple[LinkedRepo, ...]:
+    """Build LinkedRepos from the embedded `repos!project_id(...)` payload.
+
+    Filters out Inactive repos (PostgREST nested filtering is awkward; we
+    keep the query simple and prune in Python given the tiny row count
+    per engagement). Skips rows missing a github_org or repo_name — defensive
+    against data-quality issues in MC-2.
+    """
+    if not isinstance(repos_payload, list):
+        return ()
+    out: list[LinkedRepo] = []
+    for r in repos_payload:
+        if not isinstance(r, dict):
+            continue
+        status = r.get("status") or "Active"
+        if status == "Inactive":
+            continue
+        repo_name = (r.get("repo_name") or "").strip()
+        if not repo_name:
+            continue
+        org = r.get("github_orgs") or {}
+        if not isinstance(org, dict):
+            continue
+        org_name = (org.get("name") or "").strip()
+        if not org_name:
+            continue
+        desc = r.get("description") or None
+        out.append(
+            LinkedRepo(
+                repo_name=repo_name,
+                github_org=org_name,
+                status=status,
+                description=desc,
+            )
+        )
+    out.sort(key=lambda r: r.repo_name)
+    return tuple(out)
 
 
 def _engagement_canonical_id(row: dict) -> str:

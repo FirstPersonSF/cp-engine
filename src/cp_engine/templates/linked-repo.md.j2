@@ -1,0 +1,37 @@
+---
+Project: {{ project_name }}
+LinkedRepo: {{ repo.github_org }}/{{ repo.repo_name }}
+Provenance: cp-engine v{{ engine_version }} | {{ today }}
+Filename: _repo-{{ repo.repo_name }}.md
+Author: cp-engine (generated)
+---
+
+# Linked source repository
+
+[{{ repo.github_org }}/{{ repo.repo_name }}](https://github.com/{{ repo.github_org }}/{{ repo.repo_name }})
+{%- if repo.description %}
+
+> {{ repo.description }}
+{%- endif %}
+{%- if local_clones_by_user %}
+
+{% for user, path in local_clones_by_user | dictsort -%}
+**Local clone ({{ user|title }}):** `{{ path }}`
+{% endfor -%}
+(per `.cp-engine.toml` `[local-repos.<user>]`)
+{%- endif %}
+
+This repo is **linked to the engagement** ({{ project_name }}) in MC-2 —
+it backs some piece of the engagement's deliverable. The collaboration
+layer (cp.md, sprint files, session captures) lives in this directory;
+the actual source code lives in the linked GitHub repo above.
+
+{% if local_clones_by_user -%}
+For each user listed above, the repo is cloned at that path. Claude
+can read git history and recent diffs from any of those clones
+without network calls — see CLAUDE.md for the convention.
+{%- else -%}
+If you have the repo cloned locally, work on the code there
+(`cd ~/path/to/{{ repo.repo_name }}`). If not, GitHub is the
+canonical source.
+{%- endif %}

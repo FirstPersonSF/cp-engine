@@ -4,6 +4,23 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.4 — 2026-05-11
+
+### Added
+
+- **Linked repos in engagement project working dirs.** When an MC-2 `repos` row points at an engagement project (`repos.project_id` is non-null), `cp sync` now writes a `_repo-<repo-name>.md` file into the engagement's working dir for each linked repo. Previously this design promise (called out in `state.py:134` and `sync_mc2.py:12`) had no implementation — the data sat in MC-2 but never surfaced anywhere. **Concrete win:** `cp/1p/ggl-5136-go-safety-website/` now picks up `_repo-ggl-5136-events-calendar.md` on next sync, surfacing Tony's OnFire calendar app with its GitHub URL and any matching `[local-repos.<user>]` clone paths. Closes [#3](https://github.com/FirstPersonSF/cp-engine/issues/3).
+- New `LinkedRepo` dataclass on `cp_engine.state` (also re-exported from `cp_engine` and `cp_engine.sync`). New `render_linked_repo_md()` renderer. New `linked-repo.md.j2` template — distinct from `repo.md.j2` so the file's framing makes the *linked* relationship explicit ("Linked source repository" header + named parent engagement) rather than treating it as a primary working-dir record.
+- `_engagement_row_to_state` now populates `ProjectState.linked_repos` from the new PostgREST embed (`repos!project_id(...)`). `_parse_linked_repos` filters Inactive repos and skips rows missing org/name.
+
+### Tenant impact
+
+- Tenants pinned at `engine = "~= 0.8"` pick this up on next sync. No config changes needed.
+- Engagement working dirs that have linked repos in MC-2 will gain new `_repo-<name>.md` files. Engagement working dirs without linked repos are unchanged.
+
+### Verification
+
+- 12 new tests in `test_sync_mc2.py` (linked-repo parsing: happy path, Inactive filter, missing org/name, sort order, empty/invalid payload, default status, end-to-end via `_engagement_row_to_state`) and `test_render.py` (linked-repo template: GitHub link + engagement context, local-clone lines, no-clones fallback, no-description fallback). Full suite: 303 passing.
+
 ## v0.8.3 — 2026-05-11
 
 ### Fixed

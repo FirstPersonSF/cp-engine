@@ -169,6 +169,30 @@ class ProjectState:
     # shape flexible without forcing a contact schema on every consumer.
     contacts: tuple[dict, ...] = ()
 
+    # Engagement-only — repos in MC-2 with `project_id` linked to this engagement.
+    # Each linked repo gets its own `_repo-<repo-name>.md` written into the
+    # engagement's working dir, mirroring the standalone-repo `_repo.md` shape.
+    # Standalone repos (no project_id) populate this on the engagement-side
+    # ProjectState; this field stays empty on standalone-repo ProjectStates.
+    linked_repos: tuple[LinkedRepo, ...] = ()
+
+
+@dataclass(frozen=True)
+class LinkedRepo:
+    """A repo in MC-2 linked to an engagement project via `repos.project_id`.
+
+    Carries just enough to render `_repo-<repo-name>.md` under the parent
+    engagement's working dir: the GitHub coordinate, status, and a short
+    description. Mirrors the repo-side fields of ProjectState but stays
+    intentionally minimal — engagement-linked repos don't need the full
+    project lifecycle tracking that standalone repos do.
+    """
+
+    repo_name: str
+    github_org: str
+    status: str  # one of REPO_STATUSES (Active | Holding | Inactive); we filter Inactive at the query layer
+    description: str | None = None
+
 
 @dataclass(frozen=True)
 class Issue:

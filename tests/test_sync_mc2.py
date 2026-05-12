@@ -22,6 +22,7 @@ from cp_engine.sync_mc2 import (
     _engagement_row_to_state,
     _load_supabase_creds,
     _parse_iso,
+    _parse_linked_repos,
     _parse_numeric,
     _repo_row_is_valid,
     _repo_row_to_state,
@@ -402,3 +403,112 @@ def test_load_supabase_creds_message_notes_missing_clone_config(
     with pytest.raises(BackendUnavailable) as exc:
         _load_supabase_creds(config)
     assert "no MC-2 clone configured" in str(exc.value)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Linked repos (engagement → repos.project_id join)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_parse_linked_repos_happy_path() -> None:
+    payload = [
+        {
+            "repo_name": "ggl-5136-events-calendar",
+            "status": "Active",
+            "description": "Firebase calendar app for the EHS team",
+            "github_orgs": {"name": "FirstPersonSF"},
+        }
+    ]
+    repos = _parse_linked_repos(payload)
+    assert len(repos) == 1
+    assert repos[0].repo_name == "ggl-5136-events-calendar"
+    assert repos[0].github_org == "FirstPersonSF"
+    assert repos[0].status == "Active"
+    assert repos[0].description == "Firebase calendar app for the EHS team"
+
+
+def test_parse_linked_repos_filters_inactive() -> None:
+    payload = [
+        {"repo_name": "live", "status": "Active", "github_orgs": {"name": "Org"}},
+        {"repo_name": "old", "status": "Inactive", "github_orgs": {"name": "Org"}},
+    ]
+    repos = _parse_linked_repos(payload)
+    assert [r.repo_name for r in repos] == ["live"]
+
+
+def test_parse_linked_repos_skips_rows_missing_org_or_name() -> None:
+    payload = [
+        {"repo_name": "good", "status": "Active", "github_orgs": {"name": "Org"}},
+        {"repo_name": "", "status": "Active", "github_orgs": {"name": "Org"}},  # blank name
+        {"repo_name": "no-org", "status": "Active", "github_orgs": {"name": ""}},  # blank org
+        {"repo_name": "no-org-key", "status": "Active"},  # missing github_orgs
+    ]
+    repos = _parse_linked_repos(payload)
+    assert [r.repo_name for r in repos] == ["good"]
+
+
+def test_parse_linked_repos_sorts_by_name() -> None:
+    payload = [
+        {"repo_name": "zebra", "status": "Active", "github_orgs": {"name": "Org"}},
+        {"repo_name": "apple", "status": "Active", "github_orgs": {"name": "Org"}},
+        {"repo_name": "mango", "status": "Active", "github_orgs": {"name": "Org"}},
+    ]
+    repos = _parse_linked_repos(payload)
+    assert [r.repo_name for r in repos] == ["apple", "mango", "zebra"]
+
+
+def test_parse_linked_repos_empty_or_invalid_payload() -> None:
+    assert _parse_linked_repos(None) == ()
+    assert _parse_linked_repos([]) == ()
+    assert _parse_linked_repos("not a list") == ()
+    assert _parse_linked_repos([None, "garbage", 42]) == ()
+
+
+def test_parse_linked_repos_defaults_status_to_active_when_missing() -> None:
+    # MC-2 should always send status, but be defensive — assume Active rather than drop.
+    payload = [{"repo_name": "x", "github_orgs": {"name": "Org"}}]
+    repos = _parse_linked_repos(payload)
+    assert len(repos) == 1
+    assert repos[0].status == "Active"
+
+
+def test_engagement_row_to_state_populates_linked_repos() -> None:
+    row = {
+        "number": 5136,
+        "companies": {"code": "GGL", "name": "Google", "kind": "client"},
+        "full_job_name": "GGL 5136 go/safety website",
+        "name": "go/safety",
+        "mc_status": "Open",
+        "account_manager": "Brandon Grande",
+        "is_internal": False,
+        "deal_stage": "Won",
+        "budget": "0",
+        "updated_at": "2026-05-07T16:14:34+00:00",
+        "repos": [
+            {
+                "repo_name": "ggl-5136-events-calendar",
+                "status": "Active",
+                "description": "Firebase calendar app",
+                "github_orgs": {"name": "FirstPersonSF"},
+            }
+        ],
+    }
+    state = _engagement_row_to_state(row)
+    assert state.code == "ggl-5136"
+    assert len(state.linked_repos) == 1
+    assert state.linked_repos[0].repo_name == "ggl-5136-events-calendar"
+
+
+def test_engagement_row_to_state_empty_linked_repos_when_no_join() -> None:
+    row = {
+        "number": 5188,
+        "companies": {"code": "GGL", "name": "Google", "kind": "client"},
+        "full_job_name": "GGL 5188 Calendar",
+        "name": "Calendar",
+        "mc_status": "Open",
+        "is_internal": False,
+        "updated_at": "2026-05-07T16:14:34+00:00",
+        # no `repos` key — tests that absent join doesn't crash
+    }
+    state = _engagement_row_to_state(row)
+    assert state.linked_repos == ()

@@ -37,6 +37,7 @@ from cp_engine.render import (
     render_gitignore,
     render_master_cp,
     render_project_cp,
+    render_linked_repo_md,
     render_repo_md,
     splice_managed_region,
 )
@@ -46,6 +47,7 @@ from cp_engine.render import (
 from cp_engine.state import (  # noqa: F401
     INACTIVE_DIR_NAME,
     Issue,
+    LinkedRepo,
     ProjectState,
     dir_slug,
     inactive_root,
@@ -310,6 +312,25 @@ def sync_tenant(
             pass
         elif _write_if_changed(repo_path, repo_body, splice_regions=()):
             files_written.append(repo_path)
+
+        # _repo-<repo-name>.md per linked repo — engagements with repos in
+        # MC-2 (repos.project_id pointing at the engagement) get one file
+        # per linked repo, mirroring the standalone-repo _repo.md pattern.
+        # Only meaningful for engagements; standalone-repo ProjectStates
+        # have project.linked_repos == ().
+        for linked in project.linked_repos:
+            clones_for_linked: dict[str, str] = {}
+            for user, paths in config.local_repos_by_user.items():
+                if linked.repo_name in paths:
+                    clones_for_linked[user] = paths[linked.repo_name]
+            linked_body = render_linked_repo_md(
+                project.name,
+                linked,
+                local_clones_by_user=clones_for_linked or None,
+            )
+            linked_path = project_dir / f"_repo-{linked.repo_name}.md"
+            if _write_if_changed(linked_path, linked_body, splice_regions=()):
+                files_written.append(linked_path)
 
     # Sprint files — per-project per-sprint markdown for the partners' weekly
     # review. Generated for every active project that the master CP also

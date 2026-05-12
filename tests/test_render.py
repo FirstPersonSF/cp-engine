@@ -15,6 +15,7 @@ import pytest
 
 from cp_engine import (
     Issue,
+    LinkedRepo,
     MarkerDuplicated,
     MarkerInverted,
     MarkerMissing,
@@ -23,6 +24,7 @@ from cp_engine import (
     SyncConfig,
     TenantConfig,
     render_claude_md,
+    render_linked_repo_md,
     render_master_cp,
     render_project_cp,
     render_weekly_cp,
@@ -672,3 +674,64 @@ def test_master_cp_section_summary_uses_count_and_state_phrase() -> None:
 
     assert "Three deals in flight" in body
     assert "Four engagements in delivery" in body
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  render_linked_repo_md
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_linked_repo_md_includes_github_link_and_engagement_context() -> None:
+    repo = LinkedRepo(
+        repo_name="ggl-5136-events-calendar",
+        github_org="FirstPersonSF",
+        status="Active",
+        description="Firebase calendar app for the EHS team",
+    )
+    body = render_linked_repo_md("GGL 5136 go/safety website", repo)
+
+    # GitHub link
+    assert "[FirstPersonSF/ggl-5136-events-calendar]" in body
+    assert "https://github.com/FirstPersonSF/ggl-5136-events-calendar" in body
+    # Linked-relationship framing (vs. standalone repo's "Source repository" header)
+    assert "Linked source repository" in body
+    # Engagement name surfaced for context
+    assert "GGL 5136 go/safety website" in body
+    # Description rendered as a blockquote
+    assert "> Firebase calendar app for the EHS team" in body
+    # Frontmatter names the file correctly
+    assert "Filename: _repo-ggl-5136-events-calendar.md" in body
+
+
+def test_linked_repo_md_renders_local_clone_lines_when_provided() -> None:
+    repo = LinkedRepo(
+        repo_name="ggl-5136-events-calendar",
+        github_org="FirstPersonSF",
+        status="Active",
+    )
+    body = render_linked_repo_md(
+        "GGL 5136 go/safety website",
+        repo,
+        local_clones_by_user={"drew": "/Users/drewf/Documents/Python/ggl-5136-events-calendar"},
+    )
+    assert "**Local clone (Drew):**" in body
+    assert "/Users/drewf/Documents/Python/ggl-5136-events-calendar" in body
+    # Phrase wraps across a line in the template; collapse whitespace to assert.
+    assert "read git history" in " ".join(body.split())
+
+
+def test_linked_repo_md_omits_local_clones_section_when_none() -> None:
+    repo = LinkedRepo(
+        repo_name="x",
+        github_org="Org",
+        status="Active",
+    )
+    body = render_linked_repo_md("Project Name", repo)
+    assert "**Local clone" not in body
+    assert "If you have the repo cloned locally" in body
+
+
+def test_linked_repo_md_omits_description_blockquote_when_missing() -> None:
+    repo = LinkedRepo(repo_name="x", github_org="Org", status="Active")
+    body = render_linked_repo_md("Project Name", repo)
+    assert "> " not in body  # no blockquote when description is None

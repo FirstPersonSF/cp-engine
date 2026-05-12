@@ -30,8 +30,10 @@ from cp_engine.render import (
     count_exceptions_in_window,
     render_claude_md,
     render_exceptions_readme,
+    render_linked_repo_md,
     render_master_cp,
     render_project_cp,
+    render_repo_md,
     render_weekly_cp,
     splice_managed_region,
 )
@@ -44,6 +46,7 @@ from cp_engine.status import (
 from cp_engine.sync import (
     BackendUnavailable,
     Issue,
+    LinkedRepo,
     ProjectState,
     SyncError,
     SyncResult,
@@ -73,6 +76,7 @@ __all__ = [
     "EngineVersionMismatch",
     # sync
     "ProjectState",
+    "LinkedRepo",
     "Issue",
     "sync_tenant",
     "SyncResult",
@@ -83,6 +87,8 @@ __all__ = [
     "render_master_cp",
     "render_weekly_cp",
     "render_project_cp",
+    "render_repo_md",
+    "render_linked_repo_md",
     "render_claude_md",
     "render_exceptions_readme",
     "count_exceptions_in_window",
