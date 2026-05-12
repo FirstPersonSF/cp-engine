@@ -279,11 +279,194 @@ def render_weekly_cp(config: TenantConfig) -> str:
     )
 
 
+def render_project_strip_bodies(project_strips: object | None) -> dict[str, str]:
+    """Render the four project cp.md strip-region bodies as a dict.
+
+    Returns ``{"inbound-strip": <body>, "recent-decisions-strip": <body>,
+    "open-asks-strip": <body>, "stakeholders-strip": <body>}``. Each body is
+    the *contents* between the engine markers (not including the markers
+    themselves). Used by sync's splicer on every sync after the project
+    cp.md is first scaffolded.
+
+    Empty/None ``project_strips`` produces the same placeholder bodies the
+    template emits on first scaffold — keeps the rendered output stable
+    across "first sync with strips" vs. "subsequent sync with strips."
+    """
+    # Re-use the project-cp template's region blocks by rendering a tiny
+    # ad-hoc template that mirrors the same markup. Simpler than parsing
+    # the rendered project-cp.md to extract regions, and keeps the source
+    # of truth singular: change the strip rendering in one place.
+    env = _env()
+    template = env.from_string(_PROJECT_STRIPS_TEMPLATE)
+    rendered = template.render(project_strips=project_strips)
+    # Split the rendered output into the four region bodies. The template
+    # emits them separated by sentinel markers so we can split deterministically.
+    bodies: dict[str, str] = {}
+    for chunk in rendered.split("===END==="):
+        chunk = chunk.strip()
+        if not chunk or "===START===" not in chunk:
+            continue
+        header, body = chunk.split("===START===", 1)
+        region = header.strip()
+        bodies[region] = body.strip()
+    return bodies
+
+
+# Ad-hoc template for the four project-cp strip bodies. Mirrors the markup
+# in project-cp.md.j2's region bodies. Each region is delimited by
+# `===START===` / `===END===` so render_project_strip_bodies can split.
+_PROJECT_STRIPS_TEMPLATE = """\
+inbound-strip===START===
+## Recent inbound (auto-aggregated from sprint files, last 4 weeks)
+{% if project_strips and project_strips.inbound %}
+{% for ib in project_strips.inbound %}
+- [{{ ib.date }} · {{ ib.who }}] {{ ib.text }}
+{%- endfor %}
+{%- else %}
+- _No inbound captured in the last 4 weeks._
+{%- endif %}
+===END===
+recent-decisions-strip===START===
+## Recent decisions (auto-aggregated from sprint files, last 4 weeks)
+{% if project_strips and project_strips.recent_decisions %}
+{% for dec in project_strips.recent_decisions %}
+- [{{ dec.date }}{% if dec.cross_cutting %} · cross-cutting{% endif %}] {{ dec.text }}
+{%- endfor %}
+{%- else %}
+- _No structured decisions captured in the last 4 weeks._
+{%- endif %}
+===END===
+open-asks-strip===START===
+## Open client asks (auto-aggregated from sprint files)
+{% if project_strips and project_strips.open_asks %}
+{% for ask in project_strips.open_asks %}
+- [{{ ask.asked_date }}{% if ask.who %} · {{ ask.who }}{% endif %}{% if ask.aged_days is not none and ask.aged_days > 7 %} · **{{ ask.aged_days }}d stale**{% endif %}] {{ ask.text }}
+{%- endfor %}
+{%- else %}
+- _No open asks._
+{%- endif %}
+===END===
+stakeholders-strip===START===
+## Stakeholders (auto-aggregated from sprint files)
+{% if project_strips and project_strips.stakeholders %}
+{% for sh in project_strips.stakeholders %}
+- **{{ sh.name }}**{% if sh.role %} — {{ sh.role }}{% endif %}{% if sh.context %} · _{{ sh.context }}_{% endif %}
+{%- endfor %}
+{%- else %}
+- _No stakeholders captured yet._
+{%- endif %}
+===END===
+"""
+
+
+def render_weekly_strip_bodies(tenant_strips: object | None) -> dict[str, str]:
+    """Render the three weekly-cp.md strip-region bodies as a dict.
+
+    Returns ``{"themes-strip": <body>, "decisions-strip": <body>,
+    "carry-forward-strip": <body>}``. Used by sync to splice these
+    regions into weekly-cp.md on every sync after the file is first
+    scaffolded.
+
+    Pass None / empty TenantStrips → renders placeholder bodies matching
+    the first-scaffold template (keeps "first sync" vs. "subsequent sync"
+    output stable).
+    """
+    env = _env()
+    template = env.from_string(_WEEKLY_STRIPS_TEMPLATE)
+    rendered = template.render(tenant_strips=tenant_strips)
+    bodies: dict[str, str] = {}
+    for chunk in rendered.split("===END==="):
+        chunk = chunk.strip()
+        if not chunk or "===START===" not in chunk:
+            continue
+        header, body = chunk.split("===START===", 1)
+        region = header.strip()
+        bodies[region] = body.strip()
+    return bodies
+
+
+_WEEKLY_STRIPS_TEMPLATE = """\
+themes-strip===START===
+## Themes (auto-aggregated from sprints/<W##>/_week.md, last 2 weeks)
+{% if tenant_strips and tenant_strips.themes %}
+{% for t in tenant_strips.themes %}
+- [{{ t.date }}] {{ t.text }}
+{%- endfor %}
+{%- else %}
+- _No themes captured in the last 2 weeks._
+{%- endif %}
+===END===
+decisions-strip===START===
+## Decisions (cross-cutting, auto-aggregated from sprint files, last 4 weeks)
+{% if tenant_strips and tenant_strips.cross_cutting_decisions %}
+{% for d in tenant_strips.cross_cutting_decisions %}
+- [{{ d.date }} · `{{ d.project_code }}`] {{ d.text }}
+{%- endfor %}
+{%- else %}
+- _No cross-cutting decisions captured in the last 4 weeks._
+{%- endif %}
+===END===
+carry-forward-strip===START===
+## Carry-forward across the tenant (auto-aggregated)
+{% if tenant_strips and (tenant_strips.carry_forward.escalated_risks or tenant_strips.carry_forward.stale_asks or tenant_strips.carry_forward.decisions_due) %}
+{% if tenant_strips.carry_forward.escalated_risks %}
+**Escalated risks**
+{% for r in tenant_strips.carry_forward.escalated_risks %}
+- `{{ r.project_code }}`: {{ r.text }}
+{%- endfor %}
+{% endif %}
+{% if tenant_strips.carry_forward.stale_asks %}
+**Open asks aged > 7 days**
+{% for a in tenant_strips.carry_forward.stale_asks %}
+- `{{ a.project_code }}` ({{ a.aged_days }}d): {{ a.text }}
+{%- endfor %}
+{% endif %}
+{% if tenant_strips.carry_forward.decisions_due %}
+**Decisions due (next +2 sprints)**
+{% for d in tenant_strips.carry_forward.decisions_due %}
+- `{{ d.project_code }}`{% if d.target_date %} ({{ d.target_date }}){% endif %}: {{ d.text }}
+{%- endfor %}
+{% endif %}
+{%- else %}
+- _Nothing to carry forward._
+{%- endif %}
+===END===
+"""
+
+
+def render_sprint_week(
+    *,
+    week_iso: str,
+    week_label: str,
+    week_dates: str,
+) -> str:
+    """Render `sprints/<week>/_week.md` — week-scope handwritten notes.
+
+    Holds tenant-wide content for the sprint week (themes, attendance,
+    meta) that doesn't belong to any single project. Per-project sprint
+    files hold project-specific content.
+
+    Like `weekly-cp.md`, this file is created once and never touched by
+    sync afterward — handwritten content is sacred. The `weekly-cp.md`
+    `themes-strip` engine-managed region reads from this file's
+    `## Themes` section to surface week themes at the tenant level.
+    """
+    template = _env().get_template("sprint-week.md.j2")
+    return template.render(
+        week_iso=week_iso,
+        week_label=week_label,
+        week_dates=week_dates,
+        engine_version=ENGINE_VERSION,
+        today=_today_iso(),
+    )
+
+
 def render_project_cp(
     config: TenantConfig,
     project: ProjectState,
     tracked_issues: tuple[Issue, ...] = (),
     current_sprint_block: str | None = None,
+    project_strips: object | None = None,
 ) -> str:
     """Render a project CP from the empty template.
 
@@ -297,6 +480,14 @@ def render_project_cp(
     scaffold; on subsequent syncs the splicer rewrites it in place.
     Pass None when no sprint file exists yet — template emits a
     placeholder line.
+
+    `project_strips` (Phase 1.2 / v0.8.5) is the aggregated content for
+    the four new engine-managed regions (inbound, recent-decisions,
+    open-asks, stakeholders). Type-as-object for late-binding to avoid
+    a cp_engine.aggregators import cycle here; the template accesses
+    attributes directly. Pass None on first scaffold (regions render
+    empty placeholders); pass a ProjectStrips instance on subsequent
+    syncs.
     """
     template = _env().get_template("project-cp.md.j2")
     return template.render(
@@ -306,6 +497,7 @@ def render_project_cp(
         today=_today_iso(),
         tracked_issues=[_issue_view(i) for i in tracked_issues],
         current_sprint_block=current_sprint_block,
+        project_strips=project_strips,
     )
 
 
@@ -665,7 +857,9 @@ def splice_managed_region(file_contents: str, region: str, new_body: str) -> str
 # Match either "by W##" or bare "W##" (case-insensitive on the leading
 # `by`). Used to detect horizon target_dates that we can compare against
 # the current sprint week numerically.
-_AGENDA_WEEK_RE = re.compile(r"^(?:by\s+)?W(\d+)$", re.IGNORECASE)
+# NB: The agenda week-target regex moved to cp_engine.aggregators in v0.8.5
+# (shared between master-cp.md's `agenda` region and weekly-cp.md's
+# `carry-forward-strip`). This file no longer needs it directly.
 
 
 def _compute_agenda_rollup(
@@ -693,88 +887,18 @@ def _compute_agenda_rollup(
     Returns a dict with the three lists, OR `None` when all three are
     empty (so the template's `{%- if agenda %}` guard hides the section).
     """
+    # Delegate the core rollup to cp_engine.aggregators so weekly-cp.md's
+    # `carry-forward-strip` (Phase 1.2 / v0.8.5) can reuse the same parser.
+    # This function keeps the master-cp-specific behavior of returning None
+    # when all three lists are empty (so the template's `{%- if agenda %}`
+    # guard hides the section).
     if not parsed_sprint_files:
         return None
-
-    escalated_risks: list[dict] = []
-    stale_asks: list[dict] = []
-    decisions_due: list[dict] = []
-
-    # Compute current sprint week number once. The %W convention matches
-    # cp_engine.sprints.current_sprint_week_iso. We pad to two digits to
-    # match how week numbers are emitted, but parse as int for comparison.
-    monday = today - timedelta(days=today.weekday())
-    current_week_num = int(monday.strftime("%W"))
-
-    for sf in parsed_sprint_files:
-        for risk in sf.risks:
-            if risk.severity == "escalated":
-                escalated_risks.append(
-                    {"project_code": sf.project_code, "text": risk.text}
-                )
-
-        for ask in sf.client_open_asks:
-            if ask.status != "open":
-                continue
-            try:
-                asked = date.fromisoformat(ask.asked_date)
-            except (ValueError, TypeError):
-                # Unparseable date string — skip rather than guess the age.
-                continue
-            aged_days = (today - asked).days
-            if aged_days > 7:
-                stale_asks.append(
-                    {
-                        "project_code": sf.project_code,
-                        "text": ask.text,
-                        "aged_days": aged_days,
-                    }
-                )
-
-        for h in sf.horizon:
-            if h.bucket != "decision":
-                continue
-            target = (h.target_date or "").strip()
-            if not target:
-                # No target date at all — pass it through (over-surface).
-                decisions_due.append(
-                    {
-                        "project_code": sf.project_code,
-                        "text": h.text,
-                        "target_date": target,
-                    }
-                )
-                continue
-            m = _AGENDA_WEEK_RE.match(target)
-            if m:
-                week_num = int(m.group(1))
-                # Within +2 sprints means current_week + 1 or current_week + 2.
-                if week_num - current_week_num in (1, 2):
-                    decisions_due.append(
-                        {
-                            "project_code": sf.project_code,
-                            "text": h.text,
-                            "target_date": target,
-                        }
-                    )
-                # Else: filtered out (already past, or further than +2 sprints).
-                continue
-            # Non-week target (e.g. "TBD", "2026-06-01") → pass through.
-            decisions_due.append(
-                {
-                    "project_code": sf.project_code,
-                    "text": h.text,
-                    "target_date": target,
-                }
-            )
-
-    if not (escalated_risks or stale_asks or decisions_due):
+    from cp_engine.aggregators import carry_forward_rollup
+    rollup = carry_forward_rollup(parsed_sprint_files, today)
+    if not (rollup["escalated_risks"] or rollup["stale_asks"] or rollup["decisions_due"]):
         return None
-    return {
-        "escalated_risks": escalated_risks,
-        "stale_asks": stale_asks,
-        "decisions_due": decisions_due,
-    }
+    return rollup
 
 
 # ──────────────────────────────────────────────────────────────────────

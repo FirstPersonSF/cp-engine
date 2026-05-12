@@ -362,6 +362,51 @@ class CarryForward:
 
 
 @dataclass(frozen=True)
+class Stakeholder:
+    """One person on the client side, with their role and context.
+
+    Parsed from the `### Stakeholders` subsection inside `## Client communication`
+    in a sprint file. Bracket convention: `[name · role · context]`.
+    """
+
+    name: str
+    role: str | None = None
+    context: str | None = None
+
+
+@dataclass(frozen=True)
+class Theme:
+    """One key thread of discussion for a sprint week.
+
+    Parsed from `## Themes` in `sprints/<W##>/_week.md` (week-scope, not
+    per-project). Bracket convention: `[theme · YYYY-MM-DD] text`.
+    """
+
+    text: str
+    date: str  # ISO date
+
+
+@dataclass(frozen=True)
+class DecisionEntry:
+    """One structured decision recorded during a sprint deepening.
+
+    Distinct from `MeetingNotes.decisions` (which is a plain tuple of
+    strings for backward compatibility with the freeform partners-review
+    surface). DecisionEntry carries the metadata needed for projection
+    into project cp.md `recent-decisions-strip` and weekly-cp.md
+    `decisions-strip` (the latter only when `cross_cutting=True`).
+
+    Bracket convention in the sprint file's `### Decisions` block:
+    `[decision · YYYY-MM-DD][cross-cutting] text` (the `[cross-cutting]`
+    flag is optional and absent when False).
+    """
+
+    text: str
+    date: str  # ISO date
+    cross_cutting: bool = False
+
+
+@dataclass(frozen=True)
 class SprintFile:
     """All parsed content of one project's sprint file for one week."""
 
@@ -382,6 +427,12 @@ class SprintFile:
     definition_of_done: str
     horizon: tuple[HorizonItem, ...]
     meeting_notes: MeetingNotes | None
+    # Phase 1.2 (v0.8.5) additions — projected up into project cp.md
+    # and weekly-cp.md engine-managed regions during sync. Empty when
+    # the sprint file pre-dates v0.8.5 (no `### Stakeholders` subsection
+    # or no bracket-formatted decisions).
+    stakeholders: tuple[Stakeholder, ...] = ()
+    decisions: tuple[DecisionEntry, ...] = ()
 
     @property
     def total_allocation_hours(self) -> float:

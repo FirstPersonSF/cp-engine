@@ -533,3 +533,83 @@ def test_render_sprint_index_lists_each_active_project_with_counts() -> None:
     assert "# Sprint W19 (May 11 – May 17)" in body
     assert "| `peb` |" in body
     assert "| `orb` |" in body
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  v0.8.5 — new parsers (stakeholders, structured decisions, themes)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_parse_stakeholders_happy_path() -> None:
+    from cp_engine.sprints import _parse_stakeholders
+    body = """
+## Client communication
+
+### Inbound
+- _none_
+
+### Stakeholders
+- [Rena Ramos · Director · primary client decision-maker]
+- [Carla Smith · PM · day-to-day coordination]
+- malformed-line-no-brackets
+- [Maria Mraz] (just a name, no role/context)
+"""
+    out = _parse_stakeholders(body)
+    assert len(out) == 3
+    assert out[0].name == "Rena Ramos"
+    assert out[0].role == "Director"
+    assert out[0].context == "primary client decision-maker"
+    assert out[1].name == "Carla Smith"
+    assert out[2].name == "Maria Mraz"
+    assert out[2].role is None
+    assert out[2].context is None
+
+
+def test_parse_stakeholders_no_section_returns_empty() -> None:
+    from cp_engine.sprints import _parse_stakeholders
+    body = "## Client communication\n\n### Outbound\n- foo"
+    assert _parse_stakeholders(body) == ()
+
+
+def test_parse_decisions_handles_bracketed_format_and_cross_cutting_flag() -> None:
+    from cp_engine.sprints import _parse_decisions
+    body = """
+## Meeting notes & decisions
+
+### Decisions
+
+- [decision · 2026-05-12] Marcello drafts 5 decks Tuesday
+- [decision · 2026-05-12][cross-cutting] Drop Claude team plan; move to individual Max plans
+- [decision · 2026-05-12][cross-cutting]Marcello hours triage: drop website work this sprint
+- 1. Legacy freeform decision (gets ignored by this parser)
+"""
+    out = _parse_decisions(body)
+    assert len(out) == 3
+    assert out[0].text == "Marcello drafts 5 decks Tuesday"
+    assert out[0].cross_cutting is False
+    assert out[1].cross_cutting is True
+    assert out[1].text.startswith("Drop Claude team plan")
+    assert out[2].cross_cutting is True
+
+
+def test_parse_themes_from_week_file_happy_path(tmp_path: Path) -> None:
+    from cp_engine.sprints import parse_themes_from_week_file
+    p = tmp_path / "_week.md"
+    p.write_text("""
+## Themes
+
+- [theme · 2026-05-12] Maria transition; activation pop-up Round 3
+- [theme · 2026-05-13] Infoblox AI workshop downsized
+- malformed line
+- [theme · 2026-05-14]
+""")
+    out = parse_themes_from_week_file(p)
+    assert len(out) == 2
+    assert out[0].text.startswith("Maria transition")
+    assert out[0].date == "2026-05-12"
+
+
+def test_parse_themes_from_week_file_returns_empty_when_missing(tmp_path: Path) -> None:
+    from cp_engine.sprints import parse_themes_from_week_file
+    out = parse_themes_from_week_file(tmp_path / "missing.md")
+    assert out == ()

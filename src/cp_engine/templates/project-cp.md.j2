@@ -49,6 +49,54 @@ Author: cp-engine (initial scaffold)
 {%- endfor %}
 <!-- cp-engine:end tracked-issues -->
 
+<!-- cp-engine:start inbound-strip -->
+## Recent inbound (auto-aggregated from sprint files, last 4 weeks)
+
+{%- if project_strips and project_strips.inbound %}
+{% for ib in project_strips.inbound %}
+- [{{ ib.date }} · {{ ib.who }}] {{ ib.text }}
+{%- endfor %}
+{%- else %}
+- _No inbound captured in the last 4 weeks._
+{%- endif %}
+<!-- cp-engine:end inbound-strip -->
+
+<!-- cp-engine:start recent-decisions-strip -->
+## Recent decisions (auto-aggregated from sprint files, last 4 weeks)
+
+{%- if project_strips and project_strips.recent_decisions %}
+{% for dec in project_strips.recent_decisions %}
+- [{{ dec.date }}{% if dec.cross_cutting %} · cross-cutting{% endif %}] {{ dec.text }}
+{%- endfor %}
+{%- else %}
+- _No structured decisions captured in the last 4 weeks._
+{%- endif %}
+<!-- cp-engine:end recent-decisions-strip -->
+
+<!-- cp-engine:start open-asks-strip -->
+## Open client asks (auto-aggregated from sprint files)
+
+{%- if project_strips and project_strips.open_asks %}
+{% for ask in project_strips.open_asks %}
+- [{{ ask.asked_date }}{% if ask.who %} · {{ ask.who }}{% endif %}{% if ask.aged_days is not none and ask.aged_days > 7 %} · **{{ ask.aged_days }}d stale**{% endif %}] {{ ask.text }}
+{%- endfor %}
+{%- else %}
+- _No open asks._
+{%- endif %}
+<!-- cp-engine:end open-asks-strip -->
+
+<!-- cp-engine:start stakeholders-strip -->
+## Stakeholders (auto-aggregated from sprint files)
+
+{%- if project_strips and project_strips.stakeholders %}
+{% for sh in project_strips.stakeholders %}
+- **{{ sh.name }}**{% if sh.role %} — {{ sh.role }}{% endif %}{% if sh.context %} · _{{ sh.context }}_{% endif %}
+{%- endfor %}
+{%- else %}
+- _No stakeholders captured yet._
+{%- endif %}
+<!-- cp-engine:end stakeholders-strip -->
+
 ## Quick Resume
 
 **Last session:** _<date>_

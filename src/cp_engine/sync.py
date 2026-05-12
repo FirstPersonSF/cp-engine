@@ -38,7 +38,9 @@ from cp_engine.render import (
     render_master_cp,
     render_project_cp,
     render_linked_repo_md,
+    render_project_strip_bodies,
     render_repo_md,
+    render_sprint_week,
     splice_managed_region,
 )
 # Re-exported here so existing `from cp_engine.sync import ProjectState, Issue`
@@ -422,6 +424,65 @@ def sync_tenant(
             if _write_if_changed(index_path, index_body, splice_regions=()):
                 files_written.append(index_path)
 
+            # `_week.md` — week-scope handwritten notes (themes, attendance,
+            # meta). Created on first sync of a new week and never touched
+            # again — handwritten content is sacred, like weekly-cp.md. The
+            # weekly-cp.md `themes-strip` engine-managed region reads from
+            # this file's `## Themes` section.
+            week_path = config.root / "sprints" / week_iso / "_week.md"
+            if not week_path.exists():
+                week_label = week_iso.split("-W", 1)[-1] if "-W" in week_iso else week_iso
+                week_body = render_sprint_week(
+                    week_iso=week_iso,
+                    week_label=f"W{week_label}",
+                    week_dates=week_dates_str,
+                )
+                week_path.write_text(week_body)
+                files_written.append(week_path)
+
+        # Phase 1.2 (v0.8.5) — project cp.md strip regions. For each active
+        # project, aggregate its sprint-file content into the four engine-
+        # managed regions (inbound, recent-decisions, open-asks, stakeholders)
+        # and splice them in. Runs once with the full parsed_files context
+        # so a project's strips can pull from all of its sprint history
+        # represented in the current sync.
+        if parsed_files:
+            from cp_engine.aggregators import aggregate_project_strips
+            from cp_engine.sprints import _is_active_for_sprint
+            today_for_strips = sync_clock.date()
+            parsed_tuple = tuple(parsed_files)
+            for project in projects:
+                if not _is_active_for_sprint(project):
+                    continue
+                scope = scope_for(project.company_kind)
+                slug = dir_slug(project.code, project.name)
+                cp_path = config.root / scope / slug / "cp.md"
+                if not cp_path.exists():
+                    continue
+                strips = aggregate_project_strips(
+                    project.code, parsed_tuple, today_for_strips
+                )
+                bodies = render_project_strip_bodies(strips)
+                existing = cp_path.read_text()
+                # Seed markers for tenants whose cp.md was scaffolded before
+                # v0.8.5 (they have current-sprint markers but no strip
+                # markers). Append the four strip regions in-place after
+                # tracked-issues if missing.
+                seeded = _ensure_strip_markers(existing)
+                new_body = seeded
+                for region, body in bodies.items():
+                    try:
+                        new_body = splice_managed_region(new_body, region, body)
+                    except Exception as exc:
+                        logger.warning(
+                            "Skipping %s splice for %s: %s",
+                            region, project.code, exc,
+                        )
+                if new_body != existing:
+                    cp_path.write_text(new_body)
+                    if cp_path not in files_written:
+                        files_written.append(cp_path)
+
         # Re-render the master CP with the parsed sprint files so its
         # `agenda` and `sprint-facts-strip` regions pick up cross-project
         # escalated risks, stale asks, maturing horizon decisions, and
@@ -450,6 +511,44 @@ def sync_tenant(
                 and master_path not in files_written
             ):
                 files_written.append(master_path)
+
+        # Phase 1.2 (v0.8.5) — weekly-cp.md strip regions. Only fires when
+        # weekly-cp.md exists (it's scaffolded once per tenant; sync no
+        # longer "never touches it" — it now maintains the three engine-
+        # managed regions inside while preserving handwritten content).
+        weekly_path = config.root / "weekly-cp.md"
+        if parsed_files and weekly_path.exists():
+            from cp_engine.aggregators import aggregate_tenant_strips
+            from cp_engine.render import render_weekly_strip_bodies
+            from cp_engine.sprints import (
+                parse_themes_from_week_file,
+                prior_sprint_week_iso as _prior_iso,
+            )
+            # Collect themes from current + prior week's _week.md (covers
+            # the 2-week tenant_themes window without scanning the whole
+            # sprints/ tree).
+            themes: list = []
+            for w in (week_iso, _prior_iso(sync_clock)):
+                wpath = config.root / "sprints" / w / "_week.md"
+                themes.extend(parse_themes_from_week_file(wpath))
+            tenant_strips = aggregate_tenant_strips(
+                tuple(parsed_files), tuple(themes), sync_clock.date()
+            )
+            bodies = render_weekly_strip_bodies(tenant_strips)
+            existing_weekly = weekly_path.read_text()
+            seeded_weekly = _ensure_weekly_strip_markers(existing_weekly)
+            new_weekly = seeded_weekly
+            for region, body in bodies.items():
+                try:
+                    new_weekly = splice_managed_region(new_weekly, region, body)
+                except Exception as exc:
+                    logger.warning(
+                        "Skipping %s splice on weekly-cp.md: %s", region, exc,
+                    )
+            if new_weekly != existing_weekly:
+                weekly_path.write_text(new_weekly)
+                if weekly_path not in files_written:
+                    files_written.append(weekly_path)
 
     # Exceptions README — engine-managed listing of session captures from
     # unregistered repos. Only render when the directory exists (creating it
@@ -651,6 +750,88 @@ def _ensure_current_sprint_markers(body: str) -> str:
     if not body.endswith("\n"):
         body += "\n"
     return body + "\n" + region_block
+
+
+_STRIP_REGIONS = (
+    "inbound-strip",
+    "recent-decisions-strip",
+    "open-asks-strip",
+    "stakeholders-strip",
+)
+
+
+def _ensure_strip_markers(body: str) -> str:
+    """Inject empty markers for the four v0.8.5 project cp.md strip regions.
+
+    Mirrors `_ensure_current_sprint_markers` but for the inbound-strip,
+    recent-decisions-strip, open-asks-strip, and stakeholders-strip
+    regions added in Phase 1.2. cp.md files scaffolded before v0.8.5
+    don't have these markers; the splicer requires both start + end to
+    exist, so we seed empty blocks first.
+
+    Insertion anchor: immediately after the `tracked-issues` end marker
+    (matches the template ordering — strips come after tracked-issues
+    and before the handwritten Quick Resume). Falls back to end-of-file
+    if no anchor found.
+
+    Idempotent: regions already present are skipped.
+    """
+    anchor = "<!-- cp-engine:end tracked-issues -->"
+    new_blocks = []
+    for region in _STRIP_REGIONS:
+        start = f"<!-- cp-engine:start {region} -->"
+        if start in body:
+            continue
+        end = f"<!-- cp-engine:end {region} -->"
+        new_blocks.append(f"{start}\n{end}\n")
+    if not new_blocks:
+        return body
+    block = "\n".join(new_blocks) + "\n"
+    if anchor in body:
+        # Insert *after* the tracked-issues end marker so strips line up
+        # with the template ordering.
+        return body.replace(anchor, anchor + "\n\n" + block.rstrip("\n"), 1)
+    if not body.endswith("\n"):
+        body += "\n"
+    return body + "\n" + block
+
+
+_WEEKLY_STRIP_REGIONS = (
+    "themes-strip",
+    "decisions-strip",
+    "carry-forward-strip",
+)
+
+
+def _ensure_weekly_strip_markers(body: str) -> str:
+    """Inject empty markers for the three weekly-cp.md strip regions.
+
+    Existing tenants have weekly-cp.md without these markers. Sync needs
+    to add them on first v0.8.5 sync without touching handwritten content.
+
+    Insertion anchor: immediately before `## Active research` (the natural
+    position per the new template — strips between the handwritten Quick
+    Resume / Decisions and the handwritten Active research). Falls back
+    to end-of-file if no anchor.
+
+    Idempotent: regions already present are skipped.
+    """
+    new_blocks = []
+    for region in _WEEKLY_STRIP_REGIONS:
+        start = f"<!-- cp-engine:start {region} -->"
+        if start in body:
+            continue
+        end = f"<!-- cp-engine:end {region} -->"
+        new_blocks.append(f"{start}\n{end}\n")
+    if not new_blocks:
+        return body
+    block = "\n".join(new_blocks) + "\n"
+    anchor = "## Active research"
+    if anchor in body:
+        return body.replace(anchor, block + "\n" + anchor, 1)
+    if not body.endswith("\n"):
+        body += "\n"
+    return body + "\n" + block
 
 
 def _collect_sprint_per_project_data(projects, allocations) -> dict:

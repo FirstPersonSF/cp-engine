@@ -17,6 +17,7 @@ from .render import MarkerMissing, splice_managed_region
 from .state import (
     CarryForward,
     ClientAsk,
+    DecisionEntry,
     Deliverable,
     HorizonItem,
     InboundUpdate,
@@ -29,6 +30,8 @@ from .state import (
     SprintCommit,
     SprintFacts,
     SprintFile,
+    Stakeholder,
+    Theme,
     WhereItStands,
     dir_slug,
     scope_for,
@@ -71,6 +74,8 @@ def parse_sprint_file(path: Path) -> SprintFile:
         definition_of_done=definition_of_done,
         horizon=_parse_horizon(body),
         meeting_notes=_parse_meeting_notes(body),
+        stakeholders=_parse_stakeholders(body),
+        decisions=_parse_decisions(body),
     )
 
 
@@ -374,6 +379,95 @@ def _parse_meeting_notes(body: str) -> MeetingNotes | None:
         decisions=decisions,
         discussion_prose=discussion,
     )
+
+
+def _parse_stakeholders(body: str) -> tuple[Stakeholder, ...]:
+    """Parse the `### Stakeholders` subsection inside `## Client communication`.
+
+    Bracket convention: `[name · role · context]`. Lenient — emits warnings
+    via the markdown content but never fails (per v0.8.5 design: aggregators
+    log on bad format, don't crash).
+    """
+    section = _section_body(body, "Client communication")
+    out: list[Stakeholder] = []
+    for first, _cont in _bullets(_subsection(section, "Stakeholders")):
+        parsed = _parse_bracketed_bullet(first)
+        if not parsed:
+            continue
+        parts, _text = parsed
+        if not parts or not parts[0].strip():
+            continue
+        name = parts[0].strip()
+        role = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
+        context = parts[2].strip() if len(parts) > 2 and parts[2].strip() else None
+        out.append(Stakeholder(name=name, role=role, context=context))
+    return tuple(out)
+
+
+def _parse_decisions(body: str) -> tuple[DecisionEntry, ...]:
+    """Parse bracket-formatted decisions from `### Decisions` (v0.8.5 format).
+
+    Coexists with `MeetingNotes.decisions` (which captures the legacy
+    numbered-list freeform decisions). This parser handles the structured
+    bullet format produced by `cp add-decision`:
+
+        - [decision · YYYY-MM-DD][cross-cutting] text
+
+    The `[cross-cutting]` flag is optional; absence implies cross_cutting=False.
+    """
+    section = _section_body(body, "Meeting notes & decisions")
+    sub = _subsection(section, "Decisions")
+    out: list[DecisionEntry] = []
+    for first, _cont in _bullets(sub):
+        # Only consider bullets matching the bracketed convention. Lines
+        # without a leading `[decision` bracket are legacy freeform entries;
+        # those are still captured by `_parse_meeting_notes` via the
+        # numbered-list shape.
+        if not first.lstrip("- ").startswith("[decision"):
+            continue
+        # Strip the leading `[decision · YYYY-MM-DD]` and optional
+        # `[cross-cutting]` markers, then the remainder is the text.
+        stripped = first.lstrip("- ").strip()
+        cross = False
+        if "[cross-cutting]" in stripped:
+            cross = True
+            stripped = stripped.replace("[cross-cutting]", "", 1).strip()
+        m = re.match(r"\[decision\s*·\s*([^\]]+)\]\s*(.*)$", stripped)
+        if not m:
+            continue
+        date_s = m.group(1).strip()
+        text = m.group(2).strip()
+        if not text:
+            continue
+        out.append(DecisionEntry(text=text, date=date_s, cross_cutting=cross))
+    return tuple(out)
+
+
+def parse_themes_from_week_file(week_md_path: Path) -> tuple[Theme, ...]:
+    """Parse the `## Themes` section from `sprints/<W##>/_week.md`.
+
+    Bracket convention: `[theme · YYYY-MM-DD] text`. Public helper (not
+    underscore-prefixed) because aggregators in `sync.py` need to call it
+    against a path that may or may not exist (returns empty tuple if not).
+    """
+    if not week_md_path.is_file():
+        return ()
+    body = week_md_path.read_text(encoding="utf-8")
+    section = _section_body(body, "Themes")
+    out: list[Theme] = []
+    for first, _cont in _bullets(section):
+        stripped = first.lstrip("- ").strip()
+        if not stripped.startswith("[theme"):
+            continue
+        m = re.match(r"\[theme\s*·\s*([^\]]+)\]\s*(.*)$", stripped)
+        if not m:
+            continue
+        date_s = m.group(1).strip()
+        text = m.group(2).strip()
+        if not text:
+            continue
+        out.append(Theme(text=text, date=date_s))
+    return tuple(out)
 
 
 def _parse_horizon(body: str) -> tuple[HorizonItem, ...]:

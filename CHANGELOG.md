@@ -4,6 +4,32 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.5 — 2026-05-12
+
+### Added — Tier 1 Phase 1.2 (engine-managed regions for transcript ingest)
+
+**Per the [Tier 1 design](https://github.com/FirstPersonSF/cp/blob/main/docs/plans/2026-05-12-tier-1-design.md), this is the first of three releases that together deliver the "every transcript at every level keeps every artifact top of mind" vision from the W19 retro. v0.8.5 adds the engine-managed regions that v0.8.6's `cp ingest` verbs will write to. Backward-compatible additions only — tenants pinned `~= 0.8` pick this up automatically.**
+
+- **Four new engine-managed regions in per-project `cp.md`**: `inbound-strip`, `recent-decisions-strip`, `open-asks-strip`, `stakeholders-strip`. All four aggregate handwritten content from the project's sprint files into the project's durable view. Time windows: last 4 weeks for inbound + decisions; all-time for open asks (until closed) and stakeholders (deduplicated by name, most-recent role/context wins).
+- **Three new engine-managed regions in `weekly-cp.md`**: `themes-strip`, `decisions-strip`, `carry-forward-strip`. Themes pulled from the new `sprints/<W##>/_week.md` (last 2 weeks); cross-cutting decisions from sprint files (last 4 weeks); carry-forward from open asks aged > 7 days, escalated risks, and decisions due in next +2 sprints. **`weekly-cp.md` is no longer "untouched by sync"** — it's now mostly handwritten with three engine-managed regions inside.
+- **New file: `sprints/<W##>/_week.md`** scaffolded on first sync of each week. Holds week-scope handwritten content (themes, attendance, meta) that doesn't belong to any single project. Like `weekly-cp.md`, created once and never overwritten.
+- **Sprint-file template gains `### Stakeholders` subsection** inside `## Client communication`. Old W18/W19 sprint files don't have this subsection — they just render empty stakeholder strips until new sprint files have content.
+- **New `cp_engine.aggregators` module** with `aggregate_project_strips`, `aggregate_tenant_strips`, and `carry_forward_rollup`. The last is shared between `master-cp.md`'s existing `agenda` region and the new `weekly-cp.md` `carry-forward-strip` (refactor: `_compute_agenda_rollup` in `render.py` now delegates to the shared function).
+- **New state types**: `Stakeholder`, `Theme`, `DecisionEntry` (with `cross_cutting: bool` flag). `SprintFile` extended with `stakeholders` and `decisions` fields.
+- **New parsers**: `_parse_stakeholders`, `_parse_decisions` (bracket-formatted, distinct from the legacy numbered-list freeform decisions in `MeetingNotes.decisions`), `parse_themes_from_week_file`.
+- **Bootstrap path for existing tenants**: sync injects the new strip markers into existing `weekly-cp.md` and project `cp.md` files (anchored before `## Active research` for weekly; after `tracked-issues` end marker for projects). Idempotent — already-present markers are skipped.
+
+### Tenant impact
+
+- Tenants pinned at `engine = "~= 0.8"` pick this up on next sync. No config changes needed.
+- First sync after upgrading: every active project's `cp.md` gains four new strip regions (initially with placeholder content since no v0.8.6 verbs have written into source yet); `weekly-cp.md` gains three new strip regions; current week's sprint folder gains `_week.md`. Handwritten content in any of these files is preserved.
+- Empty regions are normal until v0.8.6 ships — they show "_No X captured yet._" placeholders rather than real aggregated content. Existing W19 sprint files don't yet have bracket-formatted stakeholders/decisions/inbound, so the regions will look mostly empty until new transcripts get deepened.
+
+### Verification
+
+- 13 new tests in `test_sprints.py` (parsers for stakeholders, decisions, themes) and a new `test_aggregators.py` (project + tenant aggregation, dedup, time windows, horizon-target filtering). Full suite: **316 passing**.
+- Existing `test_weekly_cp_is_pure_skeleton` updated to reflect the new shape (renamed to `test_weekly_cp_template_has_three_engine_regions`); behavior of master-cp.md `agenda` region preserved across the shared-aggregator refactor.
+
 ## v0.8.4 — 2026-05-11
 
 ### Added

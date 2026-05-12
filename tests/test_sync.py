@@ -98,9 +98,11 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     # set, the slug is `mc-2-mission-control-v2`. Sprint file is `mc-2.md`
     # under sprints/<YYYY-W##>/ since make_state defaults to status="Open"
     # (active subset). The per-week sprint-index README.md is generated
-    # alongside the sprint file.
+    # alongside the sprint file. v0.8.5 adds `_week.md` for week-scope
+    # handwritten notes (themes, attendance, meta).
     assert written_names == {
-        "master-cp.md", "CLAUDE.md", ".gitignore", "cp.md", "mc-2.md", "README.md",
+        "master-cp.md", "CLAUDE.md", ".gitignore",
+        "cp.md", "mc-2.md", "README.md", "_week.md",
     }
 
     # Files actually exist + reference the project

@@ -176,12 +176,18 @@ def test_master_cp_exceptions_summary_omits_line_when_zero() -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_weekly_cp_is_pure_skeleton() -> None:
+def test_weekly_cp_template_has_three_engine_regions() -> None:
+    """v0.8.5: weekly-cp.md gains three engine-managed regions inside an
+    otherwise hand-written file. The handwritten sections (Quick Resume,
+    historical Decisions, Active research) must remain present alongside
+    the new strip regions.
+    """
     out = render_weekly_cp(make_tenant())
-    # No engine-managed markers — sync never touches this file
-    assert "cp-engine:start" not in out
+    assert "cp-engine:start themes-strip" in out
+    assert "cp-engine:start decisions-strip" in out
+    assert "cp-engine:start carry-forward-strip" in out
     assert "Quick Resume" in out
-    assert "Decisions" in out
+    assert "handwritten / historical" in out  # the surviving handwritten Decisions list
     assert "Active research" in out
 
 
