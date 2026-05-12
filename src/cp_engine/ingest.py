@@ -415,9 +415,18 @@ def _append_bullet_to_subsection(
         )
         sub_match = sub_re.search(body, pos=section_start)
         if not sub_match:
-            raise ValueError(
-                f"subsection '### {subsection_heading}' not found inside '## {section_heading}'"
-            )
+            # Auto-create the missing subsection. Bootstrap case: sprint files
+            # scaffolded before v0.8.5 (or before whichever release added the
+            # subsection in question) won't have it. Inserts the heading at the
+            # end of the parent section, before the next top-level `## ` (or EOF).
+            next_section_re = re.compile(r"^## ", re.MULTILINE)
+            next_section_match = next_section_re.search(body, pos=section_start + 1)
+            insert_pos = next_section_match.start() if next_section_match else len(body)
+            new_heading = f"\n### {subsection_heading}\n"
+            body = body[:insert_pos] + new_heading + body[insert_pos:]
+            # Re-locate after insertion.
+            sub_match = sub_re.search(body, pos=section_start)
+            assert sub_match, "subsection insertion failed"
         insert_zone_start = sub_match.end()
     else:
         insert_zone_start = section_start

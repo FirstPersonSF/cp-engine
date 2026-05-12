@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.6.1 — 2026-05-12
+
+### Fixed
+
+- **`cp ingest` auto-creates missing sprint-file subsections.** Bug discovered during live verification: sprint files scaffolded before v0.8.5 (e.g. the existing W19 files) don't have `### Stakeholders` inside `## Client communication` — so `cp ingest`'s stakeholder write failed with `subsection '### Stakeholders' not found inside '## Client communication'`. v0.8.6.1 makes `_append_bullet_to_subsection` auto-insert a missing subsection at the end of its parent section before appending the bullet. Same bootstrap behavior as `_ensure_strip_markers` for project cp.md regions.
+
 ## v0.8.6 — 2026-05-12
 
 ### Added — Tier 1 Phase 1.1 (cp ingest verbs + /cp-ingest plugin)
