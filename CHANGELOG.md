@@ -4,6 +4,13 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.5.1 — 2026-05-12
+
+### Fixed
+
+- **HTML escaping in strip-region output.** `_PROJECT_STRIPS_TEMPLATE` and `_WEEKLY_STRIPS_TEMPLATE` (the ad-hoc Jinja templates used for the new engine-managed regions) were rendered via `env.from_string()`, which doesn't apply the env's filename-based `select_autoescape(disabled_extensions=("md", "j2"))` — so apostrophes and ampersands were rendered as `&#39;` and `&amp;` in cp tenant artifacts. v0.8.5.1 introduces a shared `_render_strip_template()` helper that constructs the Jinja `Template` with `autoescape=False` explicitly. Existing escaped output gets corrected on the next sync that produces a content change (no automatic rewrite of files that haven't changed otherwise).
+- **Lenient bracket-bullet parsing.** The W19 hand-deepenings often wrapped brackets in backticks (`` - `[open · 2026-05-08 · Prosperous Health]` text ``). The pre-v0.8.5 `_BRACKET_RE` only matched bare brackets (`- [meta] text`), silently dropping backtick-wrapped entries — exactly the format-fragility risk the retro flagged. v0.8.5.1 updates the regex to tolerate optional backtick wrapping on either side of the bracket. **Side effect:** all bracket-formatted asks/risks/horizon/decisions from the W19 hand-deepenings now parse correctly and feed the new aggregators.
+
 ## v0.8.5 — 2026-05-12
 
 ### Added — Tier 1 Phase 1.2 (engine-managed regions for transcript ingest)

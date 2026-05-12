@@ -138,7 +138,12 @@ def _empty_where() -> WhereItStands:
     return WhereItStands(None, None, None, (), ())
 
 
-_BRACKET_RE = re.compile(r"^\s*-\s*\[(?P<meta>[^\]]+)\]\s*(?P<text>.*)$")
+# v0.8.5: tolerate optional backtick wrapping around the bracket. Many of the
+# W19 hand-deepenings used `` `[open · ...]` `` (backtick-wrapped). The parser
+# was silently dropping those — exactly the format-fragility risk the retro
+# flagged. Lenient regex closes that gap. The closing backtick after the
+# bracket is also optional (some authors only opened with a backtick).
+_BRACKET_RE = re.compile(r"^\s*-\s*`?\[(?P<meta>[^\]]+)\]`?\s*(?P<text>.*)$")
 
 
 def _parse_bracketed_bullet(line: str) -> tuple[list[str], str] | None:

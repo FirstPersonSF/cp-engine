@@ -296,11 +296,22 @@ def render_project_strip_bodies(project_strips: object | None) -> dict[str, str]
     # ad-hoc template that mirrors the same markup. Simpler than parsing
     # the rendered project-cp.md to extract regions, and keeps the source
     # of truth singular: change the strip rendering in one place.
-    env = _env()
-    template = env.from_string(_PROJECT_STRIPS_TEMPLATE)
-    rendered = template.render(project_strips=project_strips)
-    # Split the rendered output into the four region bodies. The template
-    # emits them separated by sentinel markers so we can split deterministically.
+    bodies = _render_strip_template(_PROJECT_STRIPS_TEMPLATE, project_strips=project_strips)
+    return bodies
+
+
+def _render_strip_template(template_str: str, **context) -> dict[str, str]:
+    """Shared helper: render an ad-hoc strip template and split by sentinel.
+
+    Uses ``env.from_string`` with ``autoescape=False`` explicitly (the env's
+    ``select_autoescape`` config only disables autoescape for *named*
+    templates with `.md`/`.j2` extensions; ``from_string`` doesn't get that
+    filename-based selection, and the default would HTML-escape apostrophes
+    and ampersands in the output — wrong for markdown).
+    """
+    from jinja2 import Template
+    template = Template(template_str, autoescape=False, keep_trailing_newline=True)
+    rendered = template.render(**context)
     bodies: dict[str, str] = {}
     for chunk in rendered.split("===END==="):
         chunk = chunk.strip()
@@ -371,18 +382,7 @@ def render_weekly_strip_bodies(tenant_strips: object | None) -> dict[str, str]:
     the first-scaffold template (keeps "first sync" vs. "subsequent sync"
     output stable).
     """
-    env = _env()
-    template = env.from_string(_WEEKLY_STRIPS_TEMPLATE)
-    rendered = template.render(tenant_strips=tenant_strips)
-    bodies: dict[str, str] = {}
-    for chunk in rendered.split("===END==="):
-        chunk = chunk.strip()
-        if not chunk or "===START===" not in chunk:
-            continue
-        header, body = chunk.split("===START===", 1)
-        region = header.strip()
-        bodies[region] = body.strip()
-    return bodies
+    return _render_strip_template(_WEEKLY_STRIPS_TEMPLATE, tenant_strips=tenant_strips)
 
 
 _WEEKLY_STRIPS_TEMPLATE = """\
