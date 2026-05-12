@@ -227,8 +227,56 @@ def stage_transcript(
         f"# (staged by cp fathom-fetch — feed to /cp-ingest <path>)\n"
         "\n---\n\n"
     )
-    target_path.write_text(header + (meeting.transcript or "(no transcript)"))
+    body = _render_transcript_body(meeting.transcript)
+    target_path.write_text(header + body)
     return target_path
+
+
+def _render_transcript_body(raw: object) -> str:
+    """Render a Supabase-shape transcript into the format cp parse-transcript expects.
+
+    Supabase stores transcripts as a JSONB array of utterance objects:
+        [{"text": "...", "speaker": {"display_name": "..."}, "timestamp": "HH:MM:SS"}, ...]
+
+    cp parse-transcript expects Fathom export format:
+        MM:SS - Speaker Name (label)
+          utterance text
+
+    Handles three input shapes for resilience:
+    - list[dict] (the Supabase JSONB shape) — render to Fathom format
+    - str (some legacy rows or future schema changes) — pass through
+    - None / empty — render the (no transcript) placeholder
+    """
+    if not raw:
+        return "(no transcript)"
+    if isinstance(raw, str):
+        return raw
+    if not isinstance(raw, list):
+        return f"(unexpected transcript shape: {type(raw).__name__})"
+
+    lines: list[str] = []
+    for utt in raw:
+        if not isinstance(utt, dict):
+            continue
+        ts_raw = (utt.get("timestamp") or "").strip()
+        speaker_obj = utt.get("speaker") or {}
+        if not isinstance(speaker_obj, dict):
+            speaker_obj = {}
+        speaker = (speaker_obj.get("display_name") or "Unknown").strip()
+        text = (utt.get("text") or "").strip()
+
+        # cp parse-transcript's _TIMESTAMP_LINE_RE matches MM:SS or HH:MM:SS.
+        # Supabase stores HH:MM:SS; strip leading "00:" if present so the
+        # output matches Fathom's typical export style for short meetings.
+        ts = ts_raw
+        if ts.startswith("00:") and ts.count(":") == 2:
+            ts = ts[3:]  # "00:15:21" -> "15:21"
+
+        lines.append(f"{ts} - {speaker}")
+        if text:
+            lines.append(f"  {text}")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
 
 
 # ──────────────────────────────────────────────────────────────────────

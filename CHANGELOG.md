@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.7.1 — 2026-05-12
+
+### Fixed
+
+- **`cp fathom-fetch` now handles Supabase's JSONB transcript shape.** Bug discovered in live verification: the `fathom_meetings.transcript` column is a list of `{text, speaker, timestamp}` utterance dicts (not a flat string as initially assumed). v0.8.7 crashed with `TypeError: can only concatenate str (not "list") to str`. v0.8.7.1 introduces `_render_transcript_body()` which converts the JSONB list into the `MM:SS - Speaker / utterance text` format that `cp parse-transcript` expects. Defensive: still passes through string transcripts (legacy/future schema), returns `(no transcript)` placeholder for None/empty/bad shapes, skips garbage list entries silently. Strips leading `00:` from short timestamps so they match Fathom's typical export style. 4 new tests covering all four input shapes (Supabase JSONB list, string, empty, missing fields).
+
 ## v0.8.7 — 2026-05-12
 
 ### Added — Tier 1 Phase 1.3 (Fathom bridge)

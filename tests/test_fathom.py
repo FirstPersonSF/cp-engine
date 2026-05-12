@@ -20,6 +20,7 @@ from cp_engine.fathom import (
     FathomStateFile,
     NEEDS_REVIEW_DIR,
     INCOMING_DIR,
+    _render_transcript_body,
     already_processed,
     has_good_tags,
     load_state,
@@ -174,3 +175,62 @@ def test_stage_transcript_handles_empty_transcript(tmp_path: Path) -> None:
     # Header still present, plus a placeholder for the empty body.
     assert "# id: abc-123" in body
     assert "(no transcript)" in body
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  _render_transcript_body — Supabase JSONB shape → Fathom format
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_render_transcript_body_handles_supabase_jsonb_shape() -> None:
+    """Supabase stores transcripts as a list of {text, speaker, timestamp}
+    dicts (not as a flat string). The renderer must convert to the
+    `MM:SS - Speaker / utterance` format `cp parse-transcript` expects."""
+    raw = [
+        {
+            "text": "Hello.",
+            "speaker": {"display_name": "Tony Welch"},
+            "timestamp": "00:00:00",
+        },
+        {
+            "text": "Hey there.",
+            "speaker": {"display_name": "Drew Fiero"},
+            "timestamp": "00:00:05",
+        },
+    ]
+    body = _render_transcript_body(raw)
+    # Leading "00:" stripped from short timestamps so output matches
+    # Fathom's typical short-meeting export style.
+    assert "0:00 - Tony Welch" in body
+    assert "  Hello." in body
+    assert "0:05 - Drew Fiero" in body
+    assert "  Hey there." in body
+
+
+def test_render_transcript_body_passes_string_through() -> None:
+    """Some legacy rows or future schema changes may store as flat string."""
+    assert _render_transcript_body("0:00 - X\n  Y") == "0:00 - X\n  Y"
+
+
+def test_render_transcript_body_returns_placeholder_for_empty() -> None:
+    assert _render_transcript_body(None) == "(no transcript)"
+    assert _render_transcript_body("") == "(no transcript)"
+    assert _render_transcript_body([]) == "(no transcript)"
+
+
+def test_render_transcript_body_handles_missing_fields_safely() -> None:
+    """Defensive: if a row is missing speaker or text, don't crash."""
+    raw = [
+        {"text": "ok", "speaker": {}, "timestamp": "00:01:00"},
+        {"text": "", "speaker": {"display_name": "X"}, "timestamp": "00:02:00"},
+        "not a dict",  # garbage entry — skipped silently
+        {"text": "final", "speaker": {"display_name": "Y"}, "timestamp": "01:30:00"},
+    ]
+    body = _render_transcript_body(raw)
+    assert "1:00 - Unknown" in body
+    assert "  ok" in body
+    # Empty text → speaker line only, no indented text line below.
+    assert "2:00 - X" in body
+    # Long timestamp with non-zero hour preserved as-is.
+    assert "01:30:00 - Y" in body
+    assert "  final" in body
