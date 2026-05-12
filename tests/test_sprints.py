@@ -7,7 +7,9 @@ from cp_engine.sprints import (
     current_sprint_week_iso,
     is_in_sprint_window,
     parse_sprint_file,
+    prior_sprint_week_iso,
     render_sprint_scaffold,
+    sprint_week_dates,
 )
 from cp_engine.state import (
     CarryForward,
@@ -444,8 +446,53 @@ def test_is_in_sprint_window(dt: datetime, expected: bool) -> None:
     assert is_in_sprint_window(dt) is expected
 
 
-def test_current_sprint_week_iso() -> None:
-    assert current_sprint_week_iso(datetime(2026, 5, 13)) == "2026-W19"
+def test_current_sprint_week_iso_planning_anchor() -> None:
+    """Planning-week rule (v0.8.7.3, matches MC-2's planningWeekMonday):
+    Mon/Tue → this week's Monday. Wed-Sun → next week's Monday.
+
+    Reference week:  2026-05-11 (Mon) → 2026-05-17 (Sun) = W19
+                     2026-05-18 (Mon) → 2026-05-24 (Sun) = W20
+    """
+    # Mon May 11 → W19 (planning current week, this week)
+    assert current_sprint_week_iso(datetime(2026, 5, 11)) == "2026-W19"
+    # Tue May 12 → W19 (still planning current week)
+    assert current_sprint_week_iso(datetime(2026, 5, 12)) == "2026-W19"
+    # Wed May 13 → W20 (rolls forward; planning next week)
+    assert current_sprint_week_iso(datetime(2026, 5, 13)) == "2026-W20"
+    # Thu May 14 → W20
+    assert current_sprint_week_iso(datetime(2026, 5, 14)) == "2026-W20"
+    # Fri May 15 → W20
+    assert current_sprint_week_iso(datetime(2026, 5, 15)) == "2026-W20"
+    # Sat May 16 → W20
+    assert current_sprint_week_iso(datetime(2026, 5, 16)) == "2026-W20"
+    # Sun May 17 → W20
+    assert current_sprint_week_iso(datetime(2026, 5, 17)) == "2026-W20"
+    # Mon May 18 → W20 (planning current week again, on the Monday it begins)
+    assert current_sprint_week_iso(datetime(2026, 5, 18)) == "2026-W20"
+
+
+def test_prior_sprint_week_iso_planning_anchor() -> None:
+    """Prior sprint = the planning Monday minus 7 days.
+
+    On Mon/Tue: prior sprint is the *previous* calendar week.
+    On Wed-Sun: prior sprint is *this* calendar week (just-closed).
+    """
+    # Mon May 11 → planning W19, prior W18
+    assert prior_sprint_week_iso(datetime(2026, 5, 11)) == "2026-W18"
+    # Tue May 12 → planning W19, prior W18
+    assert prior_sprint_week_iso(datetime(2026, 5, 12)) == "2026-W18"
+    # Wed May 13 → planning W20, prior W19 (the just-closed sprint)
+    assert prior_sprint_week_iso(datetime(2026, 5, 13)) == "2026-W19"
+    # Sun May 17 → planning W20, prior W19
+    assert prior_sprint_week_iso(datetime(2026, 5, 17)) == "2026-W19"
+
+
+def test_sprint_week_dates_planning_anchor() -> None:
+    """Date range covers the planning week, Mon-Sun."""
+    # Tue May 12 → planning W19 = May 11–17
+    assert sprint_week_dates(datetime(2026, 5, 12)) == ("2026-05-11", "2026-05-17")
+    # Wed May 13 → planning W20 = May 18–24 (rolled)
+    assert sprint_week_dates(datetime(2026, 5, 13)) == ("2026-05-18", "2026-05-24")
 
 
 def test_ensure_sprint_files_for_active_projects_writes_one_per_active(tmp_path) -> None:

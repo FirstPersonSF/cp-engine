@@ -4,6 +4,25 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.7.3 — 2026-05-12
+
+### Changed — Tier 2.6 from W19 retro: sprint-week alignment with MC-2
+
+- **`current_sprint_week_iso` now uses MC-2's planning-week rule.** Previously: always returned this calendar week's Monday (so Wed-Sun mid-sprint still labeled "this week"). Now matches MC-2's `planningWeekMonday()` in `frontend/src/components/sprint/WeekPicker.tsx`:
+  - **Mon (0) + Tue (1)** → THIS week's Monday (e.g. Tue May 12 → W19)
+  - **Wed (2) – Sun (6)** → NEXT week's Monday (e.g. Wed May 13 → W20)
+- **Why:** the W19 retro flagged that "MC-2 shows W20, cp shows W19" mid-week. Drew's mental anchor is MC-2 — when partners open the planner mid-week, they're planning the *upcoming* sprint, not reviewing the current one. cp tenant labels now match that intent so `/cp-ingest` writes to the file representing "what we're planning right now."
+- New helper `_planning_monday(now)` encapsulates the rule. `_monday_of()` retained as a pure utility (calendar-week Monday, no roll). `prior_sprint_week_iso` and `sprint_week_dates` both use the new anchor.
+
+### Tenant impact
+
+- **Behavior change visible mid-week.** On Wednesday morning, `cp sync` will now scaffold `sprints/<NEXT-week>/`, not refresh the previous folder. Sprint files written before the Wed-roll stay in their original week's folder (no data loss); aggregators read the last 4 weeks of sprint content so cross-sprint projections work normally.
+- Tenants pinned at `engine = "~= 0.8"` pick this up on next `uv tool install`. Live tenant on this machine reinstalled at v0.8.7.3.
+
+### Verification
+
+- 3 new tests in `test_sprints.py` covering the full Mon-Sun cycle for `current_sprint_week_iso`, `prior_sprint_week_iso`, and `sprint_week_dates`. Pre-existing `test_sync.py` cases that hard-coded `datetime(2026, 5, 13)` (Wed) updated to use `datetime(2026, 5, 11)` (Mon) so the semantic intent ("plan this week") is preserved. Full suite: **357 passing**.
+
 ## v0.8.7.2 — 2026-05-12
 
 ### Changed

@@ -936,7 +936,7 @@ def test_sync_writes_current_sprint_block_into_project_cp(tmp_path: Path) -> Non
     sync_tenant(
         config,
         backend_factory=lambda _: fake,
-        now=datetime(2026, 5, 13, 8, 0),
+        now=datetime(2026, 5, 11, 8, 0),  # Mon → planning W19 (v0.8.7.3 anchor)
     )
 
     week_iso = "2026-W19"
@@ -981,7 +981,7 @@ def test_sync_splices_current_sprint_into_existing_project_cp(tmp_path: Path) ->
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend((project,)),
-        now=datetime(2026, 5, 13, 8, 0),
+        now=datetime(2026, 5, 11, 8, 0),  # Mon → planning W19 (v0.8.7.3 anchor)
     )
 
     body = cp_path.read_text()
@@ -1056,7 +1056,7 @@ def test_sync_tenant_writes_sprint_files_for_active_projects(tmp_path: Path) -> 
     sync_tenant(
         config,
         backend_factory=lambda _: fake,
-        now=datetime(2026, 5, 13, 8, 0),
+        now=datetime(2026, 5, 11, 8, 0),  # Mon → planning W19 (v0.8.7.3 anchor)
     )
 
     sprint_dir = tmp_path / "sprints" / "2026-W19"
