@@ -143,14 +143,63 @@ def _make_meeting(transcript: str = "0:00 - Drew\n  Hello.", **kwargs) -> Fathom
 def test_stage_transcript_writes_to_incoming_by_default(tmp_path: Path) -> None:
     meeting = _make_meeting()
     path = stage_transcript(meeting, tenant_root=tmp_path)
-    assert path == tmp_path / INCOMING_DIR / "abc-123.txt"
+    # v0.8.7.2: filename is <date>-<slug>.txt instead of <id>.txt.
+    # Title "Test Meeting" → "test-meeting"; date 2026-05-12.
+    assert path == tmp_path / INCOMING_DIR / "2026-05-12-test-meeting.txt"
     assert path.is_file()
 
 
 def test_stage_transcript_writes_to_needs_review_when_flagged(tmp_path: Path) -> None:
     meeting = _make_meeting(project_tags=["untagged"])
     path = stage_transcript(meeting, tenant_root=tmp_path, needs_review=True)
-    assert path == tmp_path / NEEDS_REVIEW_DIR / "abc-123.txt"
+    assert path == tmp_path / NEEDS_REVIEW_DIR / "2026-05-12-test-meeting.txt"
+
+
+def test_stage_transcript_appends_collision_suffix_on_duplicate_filename(tmp_path: Path) -> None:
+    """Two meetings with the same title and date (e.g. multiple
+    'Impromptu Zoom Meeting' entries on 2026-05-12) should both stage
+    cleanly with -2, -3 suffixes — meeting id is preserved in the file
+    header so the auto-poll state file's id-based idempotency still works."""
+    m1 = _make_meeting(id="id-1", title="Impromptu Zoom Meeting")
+    m2 = _make_meeting(id="id-2", title="Impromptu Zoom Meeting")
+    m3 = _make_meeting(id="id-3", title="Impromptu Zoom Meeting")
+    p1 = stage_transcript(m1, tenant_root=tmp_path)
+    p2 = stage_transcript(m2, tenant_root=tmp_path)
+    p3 = stage_transcript(m3, tenant_root=tmp_path)
+    assert p1.name == "2026-05-12-impromptu-zoom-meeting.txt"
+    assert p2.name == "2026-05-12-impromptu-zoom-meeting-2.txt"
+    assert p3.name == "2026-05-12-impromptu-zoom-meeting-3.txt"
+    # All three exist; ids preserved in the per-file headers.
+    assert "id: id-1" in p1.read_text()
+    assert "id: id-2" in p2.read_text()
+    assert "id: id-3" in p3.read_text()
+
+
+def test_stage_transcript_slugifies_titles_with_special_chars(tmp_path: Path) -> None:
+    """Titles often have hashes, underscores, slashes, punctuation —
+    all should collapse into hyphens for filesystem safety."""
+    m = _make_meeting(title="#sap_5174_vision_update_2026")
+    p = stage_transcript(m, tenant_root=tmp_path)
+    assert p.name == "2026-05-12-sap-5174-vision-update-2026.txt"
+
+    # Tony/Louise sync → tony-louise-sync
+    m2 = _make_meeting(id="other", title="Tony/Louise sync")
+    p2 = stage_transcript(m2, tenant_root=tmp_path)
+    assert p2.name == "2026-05-12-tony-louise-sync.txt"
+
+
+def test_stage_transcript_caps_slug_at_60_chars(tmp_path: Path) -> None:
+    long_title = "A " + "very " * 30 + "long meeting title that goes on and on"
+    m = _make_meeting(title=long_title)
+    p = stage_transcript(m, tenant_root=tmp_path)
+    # 60-char cap on slug + "2026-05-12-" prefix (11) + ".txt" (4) = max 75.
+    assert len(p.name) <= 75
+
+
+def test_stage_transcript_handles_missing_title(tmp_path: Path) -> None:
+    m = _make_meeting(title="")
+    p = stage_transcript(m, tenant_root=tmp_path)
+    assert p.name == "2026-05-12-untitled.txt"
 
 
 def test_stage_transcript_includes_metadata_header(tmp_path: Path) -> None:

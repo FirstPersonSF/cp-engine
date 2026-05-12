@@ -205,6 +205,12 @@ def stage_transcript(
 ) -> Path:
     """Write the transcript to a staged path under the tenant root.
 
+    Filename is ``<YYYY-MM-DD>-<slugified-title>.txt`` with ``-2``, ``-3``…
+    suffixes appended on collision (common with repeated titles like
+    "Impromptu Zoom Meeting"). The meeting id is preserved inside the
+    file's metadata header so idempotency in the auto-poll state file
+    (which keys by id) still works.
+
     Args:
         needs_review: if True, write to `transcripts/needs-review/` instead
             of `transcripts/incoming/`. Used when the confidence gate
@@ -215,9 +221,8 @@ def stage_transcript(
     subdir = NEEDS_REVIEW_DIR if needs_review else INCOMING_DIR
     target_dir = tenant_root / subdir
     target_dir.mkdir(parents=True, exist_ok=True)
-    # Filename uses meeting id (stable, unique per Fathom). Also write a
-    # small header so a human reading the file can see the source meta.
-    target_path = target_dir / f"{meeting.id}.txt"
+    # Build a readable filename: <date>-<slug>.txt with collision suffix.
+    target_path = _resolve_target_path(target_dir, meeting)
     header = (
         f"# Fathom meeting: {meeting.title}\n"
         f"# id: {meeting.id}\n"
@@ -277,6 +282,59 @@ def _render_transcript_body(raw: object) -> str:
             lines.append(f"  {text}")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Filename slugging (for staged transcripts)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _slugify_title(title: str) -> str:
+    """Lowercase, replace non-alphanumeric runs with hyphens, trim.
+
+    Caps at 60 chars to keep filenames manageable on macOS/Linux/Windows.
+    Empty input → 'untitled'.
+    """
+    if not title:
+        return "untitled"
+    import re
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", title).strip("-").lower()
+    if not slug:
+        return "untitled"
+    return slug[:60].rstrip("-")
+
+
+def _date_prefix(meeting_date_iso: str) -> str:
+    """Extract YYYY-MM-DD prefix from a Supabase ISO timestamp.
+
+    Returns 'undated' if parsing fails.
+    """
+    if not meeting_date_iso:
+        return "undated"
+    return meeting_date_iso[:10] if len(meeting_date_iso) >= 10 else "undated"
+
+
+def _resolve_target_path(target_dir: Path, meeting: FathomMeetingFull) -> Path:
+    """Pick a non-colliding filename `<date>-<slug>.txt` in target_dir.
+
+    On collision (same date + slug — common for repeated titles like
+    "Impromptu Zoom Meeting"), append `-2`, `-3`, etc. until free.
+
+    Idempotency note: the meeting id is preserved inside the file's
+    metadata header, so the auto-poll state file (which keys by id)
+    correctly skips already-processed meetings even when filenames vary.
+    """
+    base = f"{_date_prefix(meeting.meeting_date)}-{_slugify_title(meeting.title)}"
+    candidate = target_dir / f"{base}.txt"
+    if not candidate.exists():
+        return candidate
+    # Collision — append -2, -3, etc.
+    n = 2
+    while True:
+        candidate = target_dir / f"{base}-{n}.txt"
+        if not candidate.exists():
+            return candidate
+        n += 1
 
 
 # ──────────────────────────────────────────────────────────────────────

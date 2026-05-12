@@ -4,6 +4,17 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.7.2 — 2026-05-12
+
+### Changed
+
+- **`cp fathom-fetch` filenames now use readable slugs.** Previously staged transcripts at `transcripts/incoming/<meeting-id>.txt` (UUID, unreadable in `ls`). Now stages as `<YYYY-MM-DD>-<slugified-title>.txt` (e.g. `2026-05-12-1p-weekly-scrum.txt`, `2026-05-12-sap-5174-vision-update-2026.txt`). On collision (common for repeated titles like "Impromptu Zoom Meeting"), appends `-2`, `-3` etc. Slug capped at 60 chars to keep filenames manageable across filesystems.
+- Meeting id is preserved inside the file's metadata header — auto-poll's id-based idempotency in `.cp-engine/state.json` continues to work correctly even when filenames vary.
+
+### Added
+
+- 5 new tests covering: collision-suffix behavior across 3 same-title meetings, special-char slugging (`#sap_5174_vision_update` → `sap-5174-vision-update`), 60-char cap on long titles, missing-title fallback to "untitled". Full suite: **355 passing**.
+
 ## v0.8.7.1 — 2026-05-12
 
 ### Fixed
