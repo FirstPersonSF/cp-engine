@@ -4,6 +4,23 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.8.2 — 2026-05-12
+
+### Added
+
+- **`cp prep-agenda --summary`** — JSON output mode emitting structured metrics: week meta, themes/decisions counts, per-section coverage (Quick Resume / inbound / cross-referenced decisions), urgency counts, and `workload_by_owner` bucketed by *normalized* owner key. The `/cp-prep` plugin command consumes this for its highlights summary instead of parsing markdown.
+- **`cp prep-agenda` auto-runs `cp sync` if master-cp's last sync is > 10 minutes old.** Avoids the "agenda shows yesterday's owner data" footgun. Opt out with `--no-sync` for environments where the network round-trip isn't acceptable. Threshold is `SYNC_STALENESS_THRESHOLD_MINUTES = 10` in `cp_engine.agenda`.
+- New `normalize_owner()` helper collapses MC-2 owner-name variants ("Drew Fiero", "Drew", "Drew + Tony", "Drew and Tony", "Drew and Marcello" all → `"drew"`) for the workload summary. The rendered agenda preserves the literal MC-2 string for fidelity; only the bucketing key is normalized.
+- New `master_cp_last_sync()` and `is_sync_stale()` helpers — read the `last-sync-timestamp` engine region in master-cp.md, compare against the threshold.
+
+### Fixed
+
+- **`cp prep-agenda` no longer warns "Skipping sprint file _agenda.md".** Earlier, the agenda generator's `_load_sprint_files` iterated `sprints/<W##>/*.md` and tried to parse `_agenda.md` itself as a sprint file (harmless warning, but noise). Fix: skip any `_`-prefixed file in the sprint folder, plus explicit blocklist for the three known sentinels (`README.md`, `_week.md`, `_agenda.md`).
+
+### Verification
+
+- 9 new tests in `test_agenda.py` covering: owner normalization (Drew variants → "drew", distinct first names stay distinct, empty/None handling), `master_cp_last_sync` parsing (missing file, real engine region), `is_sync_stale` (no master-cp → True; recent → False; > 1hr old → True; documented threshold matches constant). Full suite: **377 passing**.
+
 ## v0.8.8.1 — 2026-05-12
 
 ### Fixed

@@ -907,7 +907,22 @@ def fathom_auto_poll_cmd(limit: int, dry_run: bool) -> None:
     default=None,
     help="Write the agenda to this file path. Defaults to stdout.",
 )
-def prep_agenda_cmd(project_filter: str, out: Path | None) -> None:
+@click.option(
+    "--summary",
+    is_flag=True,
+    help="Emit JSON metrics (workload by owner, coverage, urgency counts) "
+    "instead of the rendered markdown. The /cp-prep plugin uses this.",
+)
+@click.option(
+    "--no-sync",
+    is_flag=True,
+    help="Skip the automatic sync-if-stale check at the start. "
+    "By default, prep-agenda auto-runs `cp sync` if master-cp's last sync "
+    "is more than 10 minutes old, so the agenda never shows stale data.",
+)
+def prep_agenda_cmd(
+    project_filter: str, out: Path | None, summary: bool, no_sync: bool
+) -> None:
     """Render a sprint-planning agenda from current cp tenant state.
 
     Reads master-cp's project list, weekly-cp.md decisions, current-week
@@ -918,20 +933,32 @@ def prep_agenda_cmd(project_filter: str, out: Path | None) -> None:
     With `--projects <code>,<code>...`: scoped agenda for those projects only.
 
     Output is markdown. Default to stdout; pass `--out sprints/<W##>/_agenda.md`
-    to overwrite the per-week agenda file.
+    to overwrite the per-week agenda file. Pass `--summary` to emit JSON
+    metrics instead (used by the /cp-prep plugin command).
     """
-    from datetime import datetime
-    from cp_engine.agenda import build_agenda
-    from cp_engine.sync import _default_backend_factory
+    import json
+    from datetime import datetime, timedelta
+    from cp_engine.agenda import build_agenda, build_agenda_summary, is_sync_stale
+    from cp_engine.sync import _default_backend_factory, sync_tenant
 
     config = _load_config_or_die()
+
+    # v0.8.8.2: auto-sync if stale. Avoids the "agenda shows yesterday's
+    # owner data" footgun. Opt-out via --no-sync for environments where
+    # the network round-trip isn't acceptable (CI dry-runs, etc.).
+    if not no_sync and is_sync_stale(config):
+        click.echo("master-cp sync is stale; running cp sync first…", err=True)
+        try:
+            sync_tenant(config)
+        except Exception as exc:
+            click.echo(f"sync failed (continuing with stale data): {exc}", err=True)
+
     backend = _default_backend_factory(config.sync.backend)
     projects = backend.read_projects(config)
 
     # Pull last-week allocations the same way master-cp does, so the agenda's
     # per-project "last sprint hours" line matches what's in master-cp.md.
     today = datetime.now().date()
-    from datetime import timedelta
     last_monday = today - timedelta(days=today.weekday() + 7)
     try:
         allocations = backend.read_allocations(config, last_monday.isoformat())
@@ -946,6 +973,18 @@ def prep_agenda_cmd(project_filter: str, out: Path | None) -> None:
                 last_sprint_hours_by_project[code] = ", ".join(entries)
 
     code_filter = tuple(c.strip() for c in project_filter.split(",") if c.strip()) or None
+
+    if summary:
+        s = build_agenda_summary(
+            config,
+            tuple(projects),
+            today=today,
+            project_filter=code_filter,
+            last_sprint_hours_by_project=last_sprint_hours_by_project,
+        )
+        click.echo(json.dumps(s.to_dict(), indent=2))
+        return
+
     agenda_md = build_agenda(
         config,
         tuple(projects),

@@ -590,7 +590,12 @@ def _load_sprint_files(sprint_dir: Path) -> tuple:
     import logging
     logger = logging.getLogger("cp_engine.agenda")
     for path in sorted(sprint_dir.glob("*.md")):
-        if path.name in ("README.md", "_week.md"):
+        # Skip the per-week sentinel files: README.md (sprint-index), _week.md
+        # (week-scope notes), _agenda.md (this command's own output), and any
+        # other underscore-prefixed sentinel that's not a per-project sprint file.
+        if path.name in ("README.md", "_week.md", "_agenda.md"):
+            continue
+        if path.name.startswith("_"):
             continue
         try:
             out.append(parse_sprint_file(path))
@@ -614,3 +619,214 @@ def _short_iso_date(iso: str | None) -> str | None:
         return d.strftime("%b %d").replace(" 0", " ")
     except ValueError:
         return iso
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  v0.8.8.2: Owner normalization + summary JSON
+# ──────────────────────────────────────────────────────────────────────
+
+
+def normalize_owner(raw: str | None) -> str:
+    """Collapse owner-name variants into a stable workload-bucket key.
+
+    MC-2's `account_manager` field is free-form text. The same person
+    appears under multiple strings:
+        "Drew Fiero", "Drew", "Drew + Tony", "Drew and Tony", "Drew and Marcello"
+    All five represent Drew (sometimes co-owned with another person).
+    For the workload summary the plugin surfaces, we want to bucket by
+    *primary* owner so the "consider splitting if X has >>others" callout
+    is meaningful.
+
+    Strategy: take the first whitespace-separated token (lowercased), strip
+    common punctuation. "Drew Fiero" → "drew"; "Drew + Tony" → "drew";
+    "Tony Welch" → "tony". Returns "(unowned)" for None/empty.
+
+    The agenda's RENDERED text preserves the literal MC-2 string for fidelity
+    — only the workload summary uses this normalized key.
+    """
+    if not raw:
+        return "(unowned)"
+    first = raw.strip().split()[0] if raw.strip() else ""
+    return first.strip("+,").lower() or "(unowned)"
+
+
+@dataclass
+class AgendaSummary:
+    """Brief metrics the /cp-prep plugin surfaces before/instead of the full agenda."""
+
+    week_iso: str
+    week_dates: str
+    project_count: int
+    estimated_minutes: int
+
+    themes_count: int
+    cross_cutting_decisions_count: int
+
+    quick_resume_coverage: int  # how many projects have non-template Quick Resume
+    recent_inbound_coverage: int  # how many have any recent inbound bullets
+    cross_referenced_decisions_coverage: int  # how many have weekly-cp decisions
+    urgency_flagged_count: int  # has_urgency=True
+    discussion_prompt_count: int  # discussion_prompt is not None
+
+    workload_by_owner: list[dict]  # [{owner_normalized, owner_display_strings, count, codes}]
+
+    def to_dict(self) -> dict:
+        return {
+            "week_iso": self.week_iso,
+            "week_dates": self.week_dates,
+            "project_count": self.project_count,
+            "estimated_minutes": self.estimated_minutes,
+            "themes_count": self.themes_count,
+            "cross_cutting_decisions_count": self.cross_cutting_decisions_count,
+            "coverage": {
+                "quick_resume": self.quick_resume_coverage,
+                "recent_inbound": self.recent_inbound_coverage,
+                "cross_referenced_decisions": self.cross_referenced_decisions_coverage,
+            },
+            "urgency": {
+                "flagged_projects": self.urgency_flagged_count,
+                "discussion_prompts": self.discussion_prompt_count,
+            },
+            "workload_by_owner": self.workload_by_owner,
+        }
+
+
+def build_agenda_summary(
+    config: TenantConfig,
+    projects: tuple[ProjectState, ...],
+    *,
+    today: date,
+    project_filter: tuple[str, ...] | None = None,
+    last_sprint_hours_by_project: dict[str, str] | None = None,
+) -> AgendaSummary:
+    """Build the AgendaSummary corresponding to what build_agenda would render.
+
+    Reuses the same internal pipeline so the summary always matches the
+    rendered doc. Plugins call this when they want metrics without
+    parsing the markdown back out.
+    """
+    active = tuple(_filter_active(projects))
+    if project_filter:
+        wanted = {c.lower() for c in project_filter}
+        active = tuple(p for p in active if p.code.lower() in wanted)
+    active_sorted = tuple(sorted(active, key=lambda p: (scope_for(p.company_kind), p.code)))
+
+    week_iso = current_sprint_week_iso(_to_datetime(today))
+    sprint_dir = config.root / "sprints" / week_iso
+    sprint_files = _load_sprint_files(sprint_dir)
+
+    weekly_path = config.root / "weekly-cp.md"
+    weekly_decisions: tuple[WeeklyDecision, ...] = ()
+    if weekly_path.is_file():
+        weekly_decisions = parse_weekly_decisions(weekly_path.read_text(encoding="utf-8"))
+
+    header = build_tenant_header(
+        config,
+        sprint_files=sprint_files,
+        today=today,
+        project_count=len(active_sorted),
+    )
+
+    blocks = tuple(
+        build_project_block(
+            p,
+            tenant_root=config.root,
+            sprint_files=sprint_files,
+            weekly_decisions=weekly_decisions,
+            today=today,
+            last_sprint_hours=(last_sprint_hours_by_project or {}).get(p.code),
+        )
+        for p in active_sorted
+    )
+
+    # Bucket projects by normalized owner.
+    bucket: dict[str, dict] = {}
+    for p in active_sorted:
+        key = normalize_owner(p.owner)
+        b = bucket.setdefault(
+            key,
+            {"owner_normalized": key, "owner_display_strings": [], "count": 0, "codes": []},
+        )
+        b["count"] += 1
+        b["codes"].append(p.code)
+        if p.owner and p.owner not in b["owner_display_strings"]:
+            b["owner_display_strings"].append(p.owner)
+    workload = sorted(bucket.values(), key=lambda r: -r["count"])
+
+    return AgendaSummary(
+        week_iso=header.week_iso,
+        week_dates=header.week_dates,
+        project_count=header.project_count,
+        estimated_minutes=header.estimated_minutes,
+        themes_count=len(header.themes),
+        cross_cutting_decisions_count=len(header.cross_cutting_decisions),
+        quick_resume_coverage=sum(1 for b in blocks if b.quick_resume_excerpt),
+        recent_inbound_coverage=sum(1 for b in blocks if b.recent_inbound),
+        cross_referenced_decisions_coverage=sum(
+            1 for b in blocks if b.relevant_weekly_decisions
+        ),
+        urgency_flagged_count=sum(1 for b in blocks if b.has_urgency),
+        discussion_prompt_count=sum(1 for b in blocks if b.discussion_prompt),
+        workload_by_owner=workload,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  v0.8.8.2: Auto-sync staleness check
+# ──────────────────────────────────────────────────────────────────────
+
+# Master-cp's `last-sync-timestamp` engine region encodes the most recent sync.
+# /cp-prep auto-runs sync if it's older than this threshold so the agenda
+# never shows stale owner/budget/last-touched data.
+SYNC_STALENESS_THRESHOLD_MINUTES = 10
+
+
+def master_cp_last_sync(config: TenantConfig) -> datetime | None:
+    """Read the timestamp from master-cp.md's `last-sync-timestamp` region.
+
+    Returns None if master-cp.md doesn't exist OR the region is empty/missing.
+    """
+    from datetime import datetime, timezone
+    master = config.root / "master-cp.md"
+    if not master.is_file():
+        return None
+    body = master.read_text(encoding="utf-8")
+    m = re.search(
+        r"<!-- cp-engine:start last-sync-timestamp -->(.*?)<!-- cp-engine:end last-sync-timestamp -->",
+        body,
+        re.DOTALL,
+    )
+    if not m:
+        return None
+    region = m.group(1)
+    ts_match = re.search(r"\*\*Last sync:\*\*\s*(\S+)", region)
+    if not ts_match:
+        return None
+    try:
+        return datetime.fromisoformat(ts_match.group(1).rstrip("Z"))
+    except ValueError:
+        return None
+
+
+def is_sync_stale(
+    config: TenantConfig, *, threshold_minutes: int = SYNC_STALENESS_THRESHOLD_MINUTES
+) -> bool:
+    """True if the last sync was more than threshold_minutes ago (or never).
+
+    Conservative: returns True when the timestamp can't be parsed (run sync
+    rather than risk stale data).
+    """
+    from datetime import datetime, timezone, timedelta
+    last = master_cp_last_sync(config)
+    if last is None:
+        return True
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    age = datetime.now(timezone.utc) - last
+    return age > timedelta(minutes=threshold_minutes)
+
+
+# This datetime import is used by the v0.8.8.2 helpers above. Defining it here
+# at module scope (instead of inside each helper) is cleaner — the duplicate
+# imports inside functions remain for backward-compat with prior call sites.
+from datetime import datetime, timezone, timedelta  # noqa: E402, F401

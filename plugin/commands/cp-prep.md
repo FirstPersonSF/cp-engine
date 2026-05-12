@@ -66,33 +66,63 @@ The engine's `cp prep-agenda` does the heavy lifting (parsing weekly-cp.md
 decisions, reading per-project cp.md Quick Resumes, computing strip
 rollups, rendering markdown). The plugin just orchestrates.
 
-### 4. Surface highlights
+### 4. Surface highlights via the engine's summary mode
 
-Read the generated file. Surface a brief summary to the user — don't
-dump the whole agenda inline. Focus on what the partners need to know
-before opening the file:
+Use `cp prep-agenda --summary` to get structured JSON metrics. v0.8.8.2+
+emits owner workload bucketed by *normalized* owner key ("Drew Fiero",
+"Drew", "Drew + Tony" all collapse to "drew") so the workload callout
+isn't fragmented by MC-2 owner-string variants.
+
+```bash
+SUMMARY=$(cp prep-agenda --summary ${CODES:+--projects "$CODES"})
+echo "$SUMMARY" | jq .
+```
+
+Then surface the highlights to the user. The JSON shape:
+
+```json
+{
+  "week_iso": "2026-W19",
+  "week_dates": "May 11 – May 17",
+  "project_count": 29,
+  "estimated_minutes": 87,
+  "themes_count": 6,
+  "cross_cutting_decisions_count": 2,
+  "coverage": {
+    "quick_resume": 14,
+    "recent_inbound": 10,
+    "cross_referenced_decisions": 4
+  },
+  "urgency": {
+    "flagged_projects": 0,
+    "discussion_prompts": 0
+  },
+  "workload_by_owner": [
+    {"owner_normalized": "brandon", "owner_display_strings": ["Brandon Grande"], "count": 13, "codes": [...]},
+    {"owner_normalized": "drew", "owner_display_strings": ["Drew Fiero", "Drew", "Drew + Tony", ...], "count": 14, "codes": [...]},
+    ...
+  ]
+}
+```
+
+Render to the user:
 
 ```
 Generated agenda → sprints/2026-W19/_agenda.md
+  29 active projects · est. 87 min @ 3min/project
+  Tenant context: 6 themes · 2 cross-cutting decisions
+  Coverage: 14/29 with Quick Resume · 10/29 with recent inbound ·
+            4/29 with cross-referenced weekly-cp decisions
+  Urgency: 0 projects flagged (no stale asks > 7d, no escalated risks,
+           no decisions due in next 2 sprints)
 
-Tenant context:
-- N themes carried from prior week
-- M cross-cutting decisions to reference
-- K projects with carry-forward urgency (open asks > 7d, decisions due,
-  escalated risks)
+Owner workload (consider splitting if any one owner >> others):
+  · Drew: 14 projects (spans "Drew Fiero", "Drew", "Drew + Tony",
+                       "Drew and Tony", "Drew and Marcello")
+  · Brandon: 13 projects
+  · Tony: 1 project (ggl-5185)
 
-Per-project urgency flags (🔴):
-- `ggl-5168`: 2 open asks > 7d (oldest 12d), 1 decision due
-- `ibx-5167`: 1 escalated risk
-- `tel-5149`: 0 strip activity in last 4 weeks (potentially stalled)
-
-Owner workload (from master-cp last-week-workload):
-- Tony: 8 projects (consider splitting his block in the agenda flow)
-- Brandon: 4 projects
-- Marcello: 4 projects
-- Drew: 5 projects
-
-Read `sprints/$WEEK_ISO/_agenda.md` to see the full per-project blocks.
+Read `sprints/$WEEK_ISO/_agenda.md` for full per-project blocks.
 ```
 
 The "consider splitting" callout is what would have prevented W19's

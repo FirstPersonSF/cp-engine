@@ -6,10 +6,14 @@ from datetime import date
 from pathlib import Path
 
 from cp_engine.agenda import (
+    SYNC_STALENESS_THRESHOLD_MINUTES,
     WeeklyDecision,
     _strip_hash_marker,
     decisions_for_project,
     extract_quick_resume,
+    is_sync_stale,
+    master_cp_last_sync,
+    normalize_owner,
     parse_weekly_decisions,
 )
 
@@ -180,3 +184,101 @@ def test_extract_quick_resume_strips_template_lines_when_mixed() -> None:
     assert out is not None
     assert "Real ongoing work" in out
     assert "_<date>_" not in out
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  v0.8.8.2: normalize_owner
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_normalize_owner_collapses_drew_variants_to_single_key() -> None:
+    """MC-2 has 'Drew Fiero', 'Drew', 'Drew + Tony', 'Drew and Tony',
+    'Drew and Marcello' all referring to Drew (sometimes co-owned).
+    All should bucket together for the workload summary."""
+    assert normalize_owner("Drew Fiero") == "drew"
+    assert normalize_owner("Drew") == "drew"
+    assert normalize_owner("Drew + Tony") == "drew"
+    assert normalize_owner("Drew and Tony") == "drew"
+    assert normalize_owner("Drew and Marcello") == "drew"
+
+
+def test_normalize_owner_keeps_distinct_first_names_distinct() -> None:
+    assert normalize_owner("Brandon Grande") == "brandon"
+    assert normalize_owner("Tony Welch") == "tony"
+    assert normalize_owner("Marcello Grande") == "marcello"
+
+
+def test_normalize_owner_handles_empty_and_none() -> None:
+    assert normalize_owner(None) == "(unowned)"
+    assert normalize_owner("") == "(unowned)"
+    assert normalize_owner("   ") == "(unowned)"
+
+
+# NB: defensive normalization for edge-case inputs like "+ Tony" isn't tested
+# because no MC-2 owner string starts with punctuation; behavior is undefined
+# and doesn't matter for the real workload bucketing.
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  v0.8.8.2: master_cp_last_sync + is_sync_stale
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_master_cp_last_sync_returns_none_for_missing_file(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    config = SimpleNamespace(root=tmp_path)
+    assert master_cp_last_sync(config) is None  # type: ignore[arg-type]
+
+
+def test_master_cp_last_sync_parses_engine_region(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    (tmp_path / "master-cp.md").write_text("""
+# Master CP
+
+<!-- cp-engine:start last-sync-timestamp -->
+**Last sync:** 2026-05-12T01:38:14.975502+00:00
+<!-- cp-engine:end last-sync-timestamp -->
+""")
+    config = SimpleNamespace(root=tmp_path)
+    ts = master_cp_last_sync(config)  # type: ignore[arg-type]
+    assert ts is not None
+    assert ts.year == 2026 and ts.month == 5 and ts.day == 12
+    assert ts.hour == 1 and ts.minute == 38
+
+
+def test_is_sync_stale_returns_true_when_no_master_cp(tmp_path: Path) -> None:
+    from types import SimpleNamespace
+    config = SimpleNamespace(root=tmp_path)
+    # No master-cp.md → conservatively stale (run sync to be safe).
+    assert is_sync_stale(config) is True  # type: ignore[arg-type]
+
+
+def test_is_sync_stale_returns_false_for_recent_sync(tmp_path: Path) -> None:
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    now_iso = datetime.now(timezone.utc).isoformat()
+    (tmp_path / "master-cp.md").write_text(f"""
+<!-- cp-engine:start last-sync-timestamp -->
+**Last sync:** {now_iso}
+<!-- cp-engine:end last-sync-timestamp -->
+""")
+    config = SimpleNamespace(root=tmp_path)
+    assert is_sync_stale(config) is False  # type: ignore[arg-type]
+
+
+def test_is_sync_stale_returns_true_for_old_sync(tmp_path: Path) -> None:
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+    old_iso = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    (tmp_path / "master-cp.md").write_text(f"""
+<!-- cp-engine:start last-sync-timestamp -->
+**Last sync:** {old_iso}
+<!-- cp-engine:end last-sync-timestamp -->
+""")
+    config = SimpleNamespace(root=tmp_path)
+    assert is_sync_stale(config) is True  # type: ignore[arg-type]
+
+
+def test_sync_staleness_threshold_is_10_minutes() -> None:
+    """Sanity check: the documented threshold matches the constant."""
+    assert SYNC_STALENESS_THRESHOLD_MINUTES == 10
