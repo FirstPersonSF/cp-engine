@@ -4,6 +4,29 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.8 — 2026-05-12
+
+### Added — Tier 2.4 from W19 retro: meeting-prep agent
+
+**`cp prep-agenda` + `/cp-prep` plugin command.** Closes the loop the other direction from `/cp-ingest`: instead of capturing what happened in a meeting, prepares what should happen in one. Reads cp tenant state and assembles a project-grouped markdown agenda that bridges master-cp.md (too sparse) and per-project sprint files (too heavy). Per the W19 retro's Tier 2.4 motivation: would have prevented "ran out of time before Tony's projects" by surfacing per-owner workload up front.
+
+- **`cp prep-agenda`** — engine verb. Default: full sprint planning agenda for all active projects. With `--projects ggl-5168,ibx-5167`: scoped agenda for the named projects only. With `--out <path>`: write to file (default stdout). Sources: master-cp project list + last-week allocations; weekly-cp.md decisions (parsed by `(YYYY-MM-DD, source: <code>)` regex); current-week sprint files (strip rollups + Horizon → Decisions due); per-project cp.md handwritten Quick Resume sections.
+- **`/cp-prep` plugin command** — thin wrapper. Determines current planning week via cp-engine's v0.8.7.3 planning-week rule, generates the agenda to `sprints/<W##>/_agenda.md`, surfaces a brief summary (urgency flags, owner-workload callout) without dumping the full agenda inline.
+- **Per-project block content (Option C from the design):** Quick Resume excerpt + recent inbound (last 3 from strip region) + open asks aged > 7d + decisions due this/next sprint (from sprint file Horizon section) + cross-referenced weekly-cp.md decisions matching the project code + stakeholders + discussion prompt (only when urgency signal exists).
+- **Tenant-wide header:** themes (from `_week.md` `## Themes` sections, current + prior week) + cross-cutting decisions (from weekly-cp.md decisions-strip aggregator) + carry-forward (escalated risks, stale asks, decisions due — same data as master-cp.md `agenda` region).
+- **New module:** `cp_engine.agenda` (~430 lines). Reuses existing `cp_engine.aggregators` (no duplicated logic).
+
+### Tenant impact
+
+- Tenants pinned at `engine = "~= 0.8"` pick this up on next `uv tool install`. New verb is purely additive — no behavior change to existing commands.
+- New optional file: `sprints/<W##>/_agenda.md`. Created only when `/cp-prep` runs. Idempotent (overwrites in place).
+- Auto-commit deliberately not implemented — `/cp-prep` is a working artifact for the meeting; whether to commit is per-team preference.
+
+### Verification
+
+- 10 new tests in `test_agenda.py` covering: weekly-decision parsing (single source, multi-source, engine-marker truncation, empty input), `decisions_for_project` filtering (case-insensitive, multi-source matches), `extract_quick_resume` (real content, template-placeholder rejection, mixed content). Full suite: **367 passing**.
+- Smoke-tested against the live cp tenant: parsed all 19 weekly-cp.md decisions; cross-references correctly match (#3+#5 → ggl-5136, #6+#7 → ggl-5168).
+
 ## v0.8.7.3 — 2026-05-12
 
 ### Changed — Tier 2.6 from W19 retro: sprint-week alignment with MC-2

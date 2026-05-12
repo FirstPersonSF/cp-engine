@@ -893,6 +893,75 @@ def fathom_auto_poll_cmd(limit: int, dry_run: bool) -> None:
     click.echo(json.dumps(summary, indent=2))
 
 
+@main.command("prep-agenda")
+@click.option(
+    "--projects",
+    "project_filter",
+    default="",
+    help="Comma-separated project codes to scope the agenda to. "
+    "Empty (default) → full sprint planning across all active projects.",
+)
+@click.option(
+    "--out",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Write the agenda to this file path. Defaults to stdout.",
+)
+def prep_agenda_cmd(project_filter: str, out: Path | None) -> None:
+    """Render a sprint-planning agenda from current cp tenant state.
+
+    Reads master-cp's project list, weekly-cp.md decisions, current-week
+    sprint files, and per-project cp.md Quick Resume sections; cross-
+    references everything into project-grouped blocks.
+
+    Default: agenda for all active projects (full sprint planning).
+    With `--projects <code>,<code>...`: scoped agenda for those projects only.
+
+    Output is markdown. Default to stdout; pass `--out sprints/<W##>/_agenda.md`
+    to overwrite the per-week agenda file.
+    """
+    from datetime import datetime
+    from cp_engine.agenda import build_agenda
+    from cp_engine.sync import _default_backend_factory
+
+    config = _load_config_or_die()
+    backend = _default_backend_factory(config.sync.backend)
+    projects = backend.read_projects(config)
+
+    # Pull last-week allocations the same way master-cp does, so the agenda's
+    # per-project "last sprint hours" line matches what's in master-cp.md.
+    today = datetime.now().date()
+    from datetime import timedelta
+    last_monday = today - timedelta(days=today.weekday() + 7)
+    try:
+        allocations = backend.read_allocations(config, last_monday.isoformat())
+    except Exception:
+        allocations = None
+
+    last_sprint_hours_by_project: dict[str, str] = {}
+    if allocations and getattr(allocations, "by_project", None):
+        for code, alloc in allocations.by_project.items():
+            entries = [f"{e.person_name.split()[0]} {e.hours:g}h" for e in alloc.entries]
+            if entries:
+                last_sprint_hours_by_project[code] = ", ".join(entries)
+
+    code_filter = tuple(c.strip() for c in project_filter.split(",") if c.strip()) or None
+    agenda_md = build_agenda(
+        config,
+        tuple(projects),
+        today=today,
+        project_filter=code_filter,
+        last_sprint_hours_by_project=last_sprint_hours_by_project,
+    )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(agenda_md)
+        click.echo(f"wrote {out}")
+    else:
+        click.echo(agenda_md)
+
+
 def _load_config_or_die() -> "TenantConfig":  # noqa: F821
     """Load tenant config from cwd; exit with a friendly error on failure."""
     try:
