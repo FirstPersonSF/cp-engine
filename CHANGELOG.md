@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.8.1 — 2026-05-12
+
+### Fixed
+
+- **`cp prep-agenda` now strips `<!-- cp:hash=... -->` idempotency markers from rendered text.** Bug found in live verification: `/cp-ingest` writes bullets with trailing hash markers for re-run dedup; the v0.8.5 strip aggregators preserve those markers in the bullet text; the agenda renderer was passing them straight through to the rendered surface. Fix: new `_strip_hash_marker()` helper applied to themes, cross-cutting decisions, recent inbound, and open-asks bullets in the agenda. 1 new test in `test_agenda.py`. Total: 368 passing.
+
 ## v0.8.8 — 2026-05-12
 
 ### Added — Tier 2.4 from W19 retro: meeting-prep agent

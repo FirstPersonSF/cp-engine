@@ -7,6 +7,7 @@ from pathlib import Path
 
 from cp_engine.agenda import (
     WeeklyDecision,
+    _strip_hash_marker,
     decisions_for_project,
     extract_quick_resume,
     parse_weekly_decisions,
@@ -149,6 +150,18 @@ def test_extract_quick_resume_returns_none_for_template_placeholders() -> None:
 def test_extract_quick_resume_returns_none_for_missing_section() -> None:
     body = "## Some Other Section\n\ncontent"
     assert extract_quick_resume(body) is None
+
+
+def test_strip_hash_marker_removes_trailing_idempotency_comment() -> None:
+    """The v0.8.6 ingest verbs append `<!-- cp:hash=<sha8> -->` to bullets
+    for re-run dedup. The agenda renderer should strip that marker so the
+    rendered surface stays clean."""
+    assert _strip_hash_marker("Some text <!-- cp:hash=abc12345 -->") == "Some text"
+    assert _strip_hash_marker("Multi-word text body  <!-- cp:hash=00000001 -->  ") == "Multi-word text body"
+    # No marker → unchanged.
+    assert _strip_hash_marker("Plain text") == "Plain text"
+    # Marker not at end → unchanged (only trailing markers get stripped).
+    assert _strip_hash_marker("<!-- cp:hash=abc -->prefix-marker stays") == "<!-- cp:hash=abc -->prefix-marker stays"
 
 
 def test_extract_quick_resume_strips_template_lines_when_mixed() -> None:

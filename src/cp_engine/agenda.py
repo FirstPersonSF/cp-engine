@@ -62,6 +62,18 @@ _MAX_INBOUND_PER_PROJECT = 3
 # Stale-ask threshold matches aggregators._STALE_ASK_DAYS.
 _STALE_ASK_DAYS = 7
 
+# v0.8.8.1: strip the v0.8.6 idempotency markers from rendered text.
+# /cp-ingest writes bullets with trailing `<!-- cp:hash=<sha8> -->` so re-runs
+# can dedupe; that marker is meant to be invisible in the rendered surface.
+# In the agenda we surface the same bullet text via aggregator output, so we
+# need to strip the marker again here.
+_HASH_MARKER_RE = re.compile(r"\s*<!--\s*cp:hash=[0-9a-f]+\s*-->\s*$")
+
+
+def _strip_hash_marker(text: str) -> str:
+    """Remove a trailing ``<!-- cp:hash=... -->`` marker if present."""
+    return _HASH_MARKER_RE.sub("", text).rstrip()
+
 
 # ──────────────────────────────────────────────────────────────────────
 #  Data shapes
@@ -374,7 +386,7 @@ def render_agenda_markdown(
     if header.themes:
         lines.append("**This week's themes:**")
         for t in header.themes:
-            lines.append(f"- {t}")
+            lines.append(f"- {_strip_hash_marker(t)}")
         lines.append("")
     cf = header.carry_forward
     has_carry = bool(
@@ -399,7 +411,7 @@ def render_agenda_markdown(
     if header.cross_cutting_decisions:
         lines.append("**Cross-cutting decisions, last 4 weeks:**")
         for d in header.cross_cutting_decisions:
-            lines.append(f"- [{d['date']} · `{d['project_code']}`] {d['text']}")
+            lines.append(f"- [{d['date']} · `{d['project_code']}`] {_strip_hash_marker(d['text'])}")
         lines.append("")
     if not (header.themes or has_carry or header.cross_cutting_decisions):
         lines.append("_No tenant-wide context surfaced this sprint._")
@@ -447,7 +459,7 @@ def _render_project_block(block: ProjectAgendaBlock) -> list[str]:
     if block.recent_inbound:
         out.append("**Recent inbound:**")
         for ib in block.recent_inbound:
-            out.append(f"- [{ib.date} · {ib.who}] {ib.text}")
+            out.append(f"- [{ib.date} · {ib.who}] {_strip_hash_marker(ib.text)}")
         out.append("")
 
     # Open asks aged > 7d.
@@ -455,7 +467,7 @@ def _render_project_block(block: ProjectAgendaBlock) -> list[str]:
         out.append(f"**Open asks aged > 7d ({len(block.open_asks_aged)}):**")
         for a in block.open_asks_aged:
             who = f" · {a['who']}" if a.get("who") else ""
-            out.append(f"- [{a['asked_date']}{who} · {a['aged_days']}d stale] {a['text']}")
+            out.append(f"- [{a['asked_date']}{who} · {a['aged_days']}d stale] {_strip_hash_marker(a['text'])}")
         out.append("")
 
     # Decisions due.
