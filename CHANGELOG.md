@@ -4,6 +4,30 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.6 — 2026-05-12
+
+### Added — Tier 1 Phase 1.1 (cp ingest verbs + /cp-ingest plugin)
+
+**Per the [Tier 1 design](https://github.com/FirstPersonSF/cp/blob/main/docs/plans/2026-05-12-tier-1-design.md), this is the second of three releases in the v0.8.5/6/7 cluster. v0.8.5 added the engine-managed regions; v0.8.6 adds the verbs that write into them. v0.8.7 will bridge fathom-meeting-sync.**
+
+- **`cp parse-transcript <path>`** — audits a Fathom-style transcript and emits JSON: speakers, duration, audio gaps (>= 2 min by default, configurable via `--gap-threshold`), action items, and mentioned project codes (via `--codes` flag). **Critical retro fix:** flags the kind of audio gaps that caused the W19 deepening's "Tony absent" misattribution.
+- **`cp list-active-projects`** — emits JSON list of active projects from MC-2 for transcript classification: `code, name, company_code, company_name, owner, scope, source`. Filterable by `--scope`. Used by the plugin to give Claude the candidate-projects list during classification.
+- **`cp ingest --plan <file>`** — validates a YAML plan against the schema and executes it atomically. Plan format documented in the design doc; supports 7 verbs (`record-inbound`, `record-ask`, `close-ask`, `add-decision`, `record-risk`, `record-stakeholder`, `record-theme`) plus shorthand names (`inbound`, `asks`, `decisions`, etc.). Idempotent — each appended bullet gets a trailing `<!-- cp:hash=<sha8> -->` content-hash comment; re-running the same plan is a no-op (counts as `skipped_duplicate`). `--dry-run` validates and reports without writing.
+- **`cp write-region <file> <region>`** — escape-hatch verb that splices arbitrary content into an engine-managed region. Logs a warning so routine use is visible. For cases the structured verbs don't cover.
+- **`/cp-ingest <transcript-path>` plugin command** — Claude-orchestrated workflow: audit → classify → plan → confirm → execute → log. Saves the executed plan to `sprints/<W##>/_ingest-log/<timestamp>.yaml` as an audit trail. Does **not** commit/push automatically — user reviews and commits.
+- **New `cp_engine.ingest` module** — holds `parse_transcript`, `execute_plan`, and the seven internal write functions. Single source of truth for the verb behavior.
+- **New dependency: `pyyaml>=6.0`** — for plan parsing.
+
+### Tenant impact
+
+- Tenants pinned at `engine = "~= 0.8"` pick this up on next `uv tool install`. No tenant config changes.
+- The v0.8.5 regions and templates are required precursors — `cp ingest` writes bracket-formatted bullets into the new subsections (`### Stakeholders`, etc.) and the v0.8.5 aggregators project them up into the strip regions on next sync.
+- Workflow change: instead of hand-writing 13 sprint files for a sprint planning, you can now run `/cp-ingest sprints/2026-W19/<transcript>.txt`. The protocol-defined trigger phrase `deepen from transcript` is now backed by deterministic engine verbs instead of Claude improvising.
+
+### Verification
+
+- 16 new tests in `test_ingest.py` covering parse_transcript (speakers, gaps, action items, mentioned codes, dedup), plan validation (schema, unknown verbs, shorthand names), and execute_plan (write semantics, idempotency, cross-cutting flag, missing-sprint-file error handling, close-ask flip). Full suite: **332 passing**.
+
 ## v0.8.5.1 — 2026-05-12
 
 ### Fixed

@@ -557,5 +557,212 @@ def parse_sprint_cmd(path: Path, as_json: bool) -> None:
         )
 
 
+@main.command("parse-transcript")
+@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.option(
+    "--gap-threshold",
+    type=int,
+    default=2,
+    help="Flag audio gaps >= this many minutes. Default 2.",
+)
+@click.option(
+    "--codes",
+    default="",
+    help="Comma-separated project codes to scan for. Empty → no code scan.",
+)
+def parse_transcript_cmd(path: Path, gap_threshold: int, codes: str) -> None:
+    """Audit a Fathom-style transcript. Emits JSON to stdout.
+
+    Output schema:
+      {speakers, duration_minutes, gaps[], mentioned_codes[], action_items[]}
+
+    Used by /cp-ingest plugin to surface a confirmation prompt before
+    writing anything. Catches transcripts with audio gaps, missing speakers,
+    or no mentioned project codes — the W19 retro flagged these failure
+    modes after several got into committed artifacts.
+    """
+    import json
+    from cp_engine.ingest import parse_transcript
+
+    code_list = tuple(c.strip() for c in codes.split(",") if c.strip())
+    audit = parse_transcript(
+        path, gap_threshold_minutes=gap_threshold, project_codes=code_list
+    )
+    click.echo(json.dumps(audit.to_dict(), indent=2))
+
+
+@main.command("list-active-projects")
+@click.option(
+    "--scope",
+    type=click.Choice(["1p", "fpsf", "canonic", "all"]),
+    default="all",
+    help="Filter by scope. Default 'all'.",
+)
+def list_active_projects_cmd(scope: str) -> None:
+    """List active projects from MC-2 as JSON for transcript classification.
+
+    Output: list of {code, name, company_code, company_name, owner, scope}.
+    Used by /cp-ingest plugin to give Claude the candidate-projects list
+    when classifying which projects a transcript touches.
+    """
+    import json
+    from cp_engine.state import scope_for
+    from cp_engine.status import is_active_status
+    from cp_engine.sync import _default_backend_factory
+
+    config = _load_config_or_die()
+    backend = _default_backend_factory(config.sync.backend)
+    projects = backend.read_projects(config)
+
+    out = []
+    for p in projects:
+        if p.source == "engagement":
+            if not is_active_status(p.status) or p.is_internal:
+                continue
+        else:
+            if p.status != "Active":
+                continue
+        proj_scope = scope_for(p.company_kind)
+        if scope != "all" and proj_scope != scope:
+            continue
+        out.append(
+            {
+                "code": p.code,
+                "name": p.name,
+                "company_code": p.company_code,
+                "company_name": p.company_name,
+                "owner": p.owner,
+                "scope": proj_scope,
+                "source": p.source,
+            }
+        )
+    out.sort(key=lambda r: (r["scope"], r["code"]))
+    click.echo(json.dumps(out, indent=2))
+
+
+@main.command("ingest")
+@click.option(
+    "--plan",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+    help="YAML plan file to execute.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Validate the plan and print what would happen, but don't write files.",
+)
+def ingest_cmd(plan: Path, dry_run: bool) -> None:
+    """Execute an ingest plan against the cp tenant.
+
+    The plan is a YAML file produced by /cp-ingest (or hand-authored).
+    Schema: {transcript: ..., projects: {<code>: {<verb>: [items]}}, themes: [...]}
+
+    On success: writes bullets to the right sprint-file subsections; the
+    plan is saved (separately, by the plugin) to sprints/<W##>/_ingest-log/
+    for audit. Idempotent — re-running the same plan is a no-op via
+    content-hash deduplication.
+    """
+    import json
+    import yaml
+    from cp_engine.ingest import execute_plan, IngestPlanError
+
+    plan_data = yaml.safe_load(plan.read_text(encoding="utf-8"))
+    config = _load_config_or_die()
+    today = datetime.now().date()
+
+    if dry_run:
+        # Just validate the plan; report what would happen.
+        from cp_engine.ingest import _validate_plan, _normalize_verb
+        try:
+            _validate_plan(plan_data)
+        except IngestPlanError as exc:
+            click.echo(f"Plan validation failed: {exc}", err=True)
+            sys.exit(1)
+        projects = plan_data.get("projects") or {}
+        themes = plan_data.get("themes") or []
+        summary = {
+            "valid": True,
+            "projects_touched": list(projects.keys()),
+            "verb_counts": {
+                code: {_normalize_verb(v): len(items) for v, items in entries.items()}
+                for code, entries in projects.items()
+            },
+            "themes_count": len(themes),
+        }
+        click.echo(json.dumps(summary, indent=2))
+        return
+
+    try:
+        result = execute_plan(plan_data, tenant_root=config.root, today=today)
+    except IngestPlanError as exc:
+        click.echo(f"Plan validation failed: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo(json.dumps(result.to_dict(), indent=2))
+    if result.errors:
+        sys.exit(2)
+
+
+@main.command("write-region")
+@click.argument("file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
+@click.argument("region")
+@click.option("--body", help="New body content for the region.")
+@click.option(
+    "--body-file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Read body from a file instead.",
+)
+def write_region_cmd(
+    file: Path, region: str, body: str | None, body_file: Path | None
+) -> None:
+    """Splice content into an engine-managed region (escape hatch).
+
+    Usage:
+      cp write-region 1p/ggl-5168-activation/cp.md inbound-strip --body-file new.md
+
+    Logs a warning so this is visible when used. Routine writes should
+    go through `cp ingest` or its structured verbs, not through this.
+    """
+    import logging
+    from cp_engine.render import splice_managed_region
+
+    if body is None and body_file is None:
+        click.echo("Provide --body or --body-file.", err=True)
+        sys.exit(1)
+    new_body = body if body is not None else body_file.read_text(encoding="utf-8")
+
+    logger = logging.getLogger("cp_engine.cli")
+    logger.warning(
+        "write-region called directly on %s region %r — routine writes "
+        "should go through `cp ingest`. Using this is fine but visible.",
+        file, region,
+    )
+
+    existing = file.read_text(encoding="utf-8")
+    updated = splice_managed_region(existing, region, new_body)
+    if updated != existing:
+        file.write_text(updated)
+        click.echo(f"wrote {file}")
+    else:
+        click.echo("no change")
+
+
+def _load_config_or_die() -> "TenantConfig":  # noqa: F821
+    """Load tenant config from cwd; exit with a friendly error on failure."""
+    try:
+        return load(Path.cwd())
+    except CommittedConfigMissing:
+        click.echo(
+            "No .cp-engine.toml in this directory. Run `cp init` "
+            "or cd into the cp tenant root.",
+            err=True,
+        )
+        sys.exit(1)
+    except ConfigError as exc:
+        click.echo(f"Config error: {exc}", err=True)
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     main()
