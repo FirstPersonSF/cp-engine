@@ -537,6 +537,10 @@ Thumbs.db
 
 # Engine config
 .cp-engine.local.toml
+
+# Engine state — v0.8.7: holds fathom auto-poll state (last_polled_at,
+# processed_ids). Per-machine; not shared via git.
+.cp-engine/
 """
 
 

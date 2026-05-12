@@ -4,6 +4,30 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.7 — 2026-05-12
+
+### Added — Tier 1 Phase 1.3 (Fathom bridge)
+
+**Third and final release of the v0.8.5/6/7 cluster from the [Tier 1 design doc](https://github.com/FirstPersonSF/cp/blob/main/docs/plans/2026-05-12-tier-1-design.md). With v0.8.7 shipped, the retro's full vision — "every transcript at every level keeps every artifact top of mind" — is operationally live for both file-sourced and Fathom-sourced transcripts.**
+
+- **`cp fathom-list --since <ts>`** — emits JSON list of meetings from the `fathom_meetings` Supabase table (same project as MC-2; populated by the fathom-meeting-sync webhook). Default 50 rows, newest first. Reuses MC-2 credentials so no new auth surface.
+- **`cp fathom-fetch <meeting-id>`** — pulls a single meeting's full transcript + metadata and stages it to `transcripts/incoming/<meeting-id>.txt` at the tenant root. Pass `--needs-review` to stage to `transcripts/needs-review/` instead. Includes a metadata header in the staged file (title, id, meeting_date, project_tags, duration).
+- **`cp fathom-auto-poll`** — polls for new meetings since the last poll and stages them via the **confidence gate**: meetings with non-empty + non-`untagged` `project_tags` land in `transcripts/incoming/` for downstream `/cp-ingest`; meetings with no real tags land in `transcripts/needs-review/` for manual handling. Idempotent — `.cp-engine/state.json` tracks `last_polled_at` + `processed_ids`. `--dry-run` reports without writing.
+- **`/cp-ingest --fathom <meeting-id>`** plugin mode — when the user passes `--fathom <id>` instead of a file path, the plugin runs `cp fathom-fetch` first to stage the transcript, then proceeds with the existing audit → classify → plan → confirm → execute flow.
+- **`fathom-auto-poll.yml` GitHub Actions workflow** at `.github/workflows/` of the cp tenant. `workflow_dispatch:` only by default (cron is commented out as a starting point); flip to a cron schedule once you trust the auto-tagger + the confidence gate. Commits staged transcripts with `[fathom-ingest]` prefix matching the existing `[cp-sync]` convention.
+- **`.gitignore` template gains `.cp-engine/`** entry so the per-tenant state file doesn't get committed.
+
+### Tenant impact
+
+- Tenants pinned at `engine = "~= 0.8"` pick this up on next `uv tool install` or workflow run.
+- New gitignored directory: `.cp-engine/` (holds `state.json`). Created on first auto-poll run.
+- New gitignored directories (with content tracked when populated): `transcripts/incoming/` and `transcripts/needs-review/`. Created on first fetch.
+
+### Verification
+
+- 15 new tests in `test_fathom.py` covering: `has_good_tags` confidence-gate logic, state-file round-trip (load/save/round-trip; corrupt handling; preserves non-fathom top-level keys), `stage_transcript` (writes to correct dir, metadata header, handles empty transcript, needs-review flag). Full suite: **347 passing**.
+- Live verification: see Step 9 of the v0.8.7 commit message. Real Fathom meeting fetched + ingested end-to-end against the cp tenant.
+
 ## v0.8.6.1 — 2026-05-12
 
 ### Fixed

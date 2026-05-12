@@ -10,8 +10,12 @@ projects it touches, produce a structured plan, confirm with the user,
 then execute via the deterministic `cp ingest --plan` verb. Saves a
 plan-log artifact regardless of outcome.
 
-**Argument:** path to a transcript file (Fathom export, custom export,
-or anything with the standard `MM:SS - Speaker` line format).
+**Arguments (mutually exclusive):**
+- A path to a transcript file (Fathom export, custom export, or anything
+  with the standard `MM:SS - Speaker` line format).
+- `--fathom <meeting-id>` — fetch a meeting from `fathom_meetings`
+  Supabase via `cp fathom-fetch`, then proceed with the rest of the
+  flow against the staged file.
 
 ## What you do
 
@@ -26,13 +30,29 @@ test -f "$(pwd)/.cp-engine.toml"
 If not, stop and tell the user: "Run /cp-ingest from the cp tenant root
 (e.g. ~/Documents/Python/cp) — that's where transcripts get routed from."
 
+### 1b. (If `--fathom <id>`) Resolve to a staged transcript path
+
+```bash
+# Only run this branch when invoked with --fathom <meeting-id>.
+FETCH_OUT=$(cp fathom-fetch "<MEETING_ID>")
+TRANSCRIPT_PATH=$(echo "$FETCH_OUT" | jq -r .path)
+echo "Fetched Fathom meeting → $TRANSCRIPT_PATH"
+echo "$FETCH_OUT" | jq '{title, meeting_date, project_tags, duration_minutes}'
+```
+
+`TRANSCRIPT_PATH` now points at `transcripts/incoming/<id>.txt` under
+the tenant root. Continue to step 2 with this path.
+
+If invoked with a direct file path (no `--fathom`), set
+`TRANSCRIPT_PATH=<the path the user gave>` and skip this step.
+
 ### 2. Audit the transcript
 
 ```bash
 # Pass the active project codes via --codes so mentioned_codes lights up.
 ACTIVE_PROJECTS=$(cp list-active-projects --scope all)
 CODES=$(echo "$ACTIVE_PROJECTS" | jq -r '[.[].code] | join(",")')
-AUDIT=$(cp parse-transcript "<TRANSCRIPT_PATH>" --codes "$CODES")
+AUDIT=$(cp parse-transcript "$TRANSCRIPT_PATH" --codes "$CODES")
 echo "$AUDIT"
 ```
 
