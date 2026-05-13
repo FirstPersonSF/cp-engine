@@ -718,6 +718,103 @@ def ingest_cmd(plan: Path, dry_run: bool) -> None:
         sys.exit(2)
 
 
+@main.command("ingest-from-transcript")
+@click.option(
+    "--project",
+    "project_code",
+    required=True,
+    help="Canonical project code (e.g. ggl-5168). One project per call.",
+)
+@click.option(
+    "--transcript",
+    "transcript_path",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    required=True,
+    help="Path to the transcript file.",
+)
+@click.option(
+    "--apply",
+    is_flag=True,
+    help="Execute the generated plan against the tenant. Default is to print YAML only.",
+)
+@click.option(
+    "--model",
+    default="claude-opus-4-7",
+    show_default=True,
+    help="Anthropic model to use for plan generation.",
+)
+@click.option(
+    "--show-prompt",
+    is_flag=True,
+    help="Print the assembled prompt and exit without calling the API. For prompt-iteration debugging.",
+)
+def ingest_from_transcript_cmd(
+    project_code: str,
+    transcript_path: Path,
+    apply: bool,
+    model: str,
+    show_prompt: bool,
+) -> None:
+    """Generate a cp ingest plan from a transcript via Claude (Phase C.1).
+
+    By default prints the generated YAML to stdout for human review.
+    With --apply, validates and executes the plan immediately.
+    Requires ANTHROPIC_API_KEY in environment.
+    """
+    import json
+    import yaml as _yaml
+
+    from cp_engine.ingest import IngestPlanError, execute_plan
+    from cp_engine.plan_from_transcript import (
+        PlanGenerationError,
+        _build_prompt,
+        _load_project_context,
+        _read_transcript,
+        generate_plan,
+    )
+
+    config = _load_config_or_die()
+
+    if show_prompt:
+        prompt = _build_prompt(
+            transcript=_read_transcript(transcript_path),
+            project_context=_load_project_context(config, project_code),
+            project_code=project_code,
+            transcript_path=transcript_path,
+        )
+        click.echo(prompt)
+        return
+
+    try:
+        result = generate_plan(
+            config=config,
+            project_code=project_code,
+            transcript_path=transcript_path,
+            model=model,
+        )
+    except PlanGenerationError as exc:
+        click.echo(f"Plan generation failed: {exc}", err=True)
+        sys.exit(1)
+
+    yaml_output = _yaml.safe_dump(result.plan, sort_keys=False, allow_unicode=True)
+
+    if not apply:
+        click.echo(yaml_output)
+        return
+
+    try:
+        exec_result = execute_plan(
+            result.plan, tenant_root=config.root, today=datetime.now().date()
+        )
+    except IngestPlanError as exc:
+        click.echo(f"Plan execution failed: {exc}", err=True)
+        sys.exit(1)
+
+    click.echo(json.dumps(exec_result.to_dict(), indent=2))
+    if exec_result.errors:
+        sys.exit(2)
+
+
 @main.command("write-region")
 @click.argument("file", type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.argument("region")
