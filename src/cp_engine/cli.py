@@ -693,6 +693,7 @@ def ingest_cmd(plan: Path, dry_run: bool) -> None:
             sys.exit(1)
         projects = plan_data.get("projects") or {}
         themes = plan_data.get("themes") or []
+        account_decisions = plan_data.get("account_decisions") or []
         summary = {
             "valid": True,
             "projects_touched": list(projects.keys()),
@@ -701,6 +702,7 @@ def ingest_cmd(plan: Path, dry_run: bool) -> None:
                 for code, entries in projects.items()
             },
             "themes_count": len(themes),
+            "account_decisions_count": len(account_decisions),
         }
         click.echo(json.dumps(summary, indent=2))
         return

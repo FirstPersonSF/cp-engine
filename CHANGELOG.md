@@ -4,6 +4,13 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.10.2 — 2026-05-13
+
+### Fixed
+
+- **`cp ingest --dry-run` summary now reports `account_decisions_count`.** Was silently absent from the JSON, making it impossible to confirm the plan parsed account-level decisions correctly.
+- **Plugin manifests catch up to actual release version.** `plugin/plugin.json` and `.claude-plugin/marketplace.json` had been stuck at 0.8.2 since the last seven releases bypassed `scripts/release.py` and only bumped `pyproject.toml` + `__init__.py`. The `sync-cli-version.sh` SessionStart hook reads `plugin.json` as authoritative, so it was *downgrading* fresh installs back to 0.8.2 every session. Releases must use `scripts/release.py` going forward — never hand-bump version files.
+
 ## v0.8.10.1 — 2026-05-13
 
 ### Fixed
