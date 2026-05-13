@@ -827,6 +827,7 @@ def fathom_fetch_cmd(meeting_id: str, needs_review: bool) -> None:
                 "title": meeting.title,
                 "meeting_date": meeting.meeting_date,
                 "project_tags": meeting.project_tags,
+                "meeting_type": meeting.meeting_type,
                 "duration_minutes": meeting.duration_minutes,
                 "needs_review": needs_review,
             },

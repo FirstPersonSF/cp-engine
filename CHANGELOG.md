@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.10.1 — 2026-05-13
+
+### Fixed
+
+- **`cp fathom-fetch` JSON output now includes `meeting_type`.** Bug discovered immediately after v0.8.10 ship: the dataclass had `meeting_type`, the file header had `meeting_type`, but the CLI's JSON output dict was missing it. Plugin code that depends on the JSON to route by type couldn't see it. One-line fix.
+
 ## v0.8.10 — 2026-05-13
 
 ### Added — Phase B from cascade design doc
