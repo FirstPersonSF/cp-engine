@@ -42,7 +42,12 @@ packages = ["src/cp_engine"]
 # `/plugin add github:FirstPersonSF/cp-engine?path=plugin`, not via PyPI,
 # so it's excluded from the source distribution too.
 [tool.hatch.build.targets.sdist]
-exclude = ["/plugin"]
+exclude = [
+    "/plugin",
+    "/webhook",         # FastAPI service deployed separately to Railway
+    "/.venv*",          # local virtualenvs (absolute symlinks break sdist build)
+    "/dist",
+]
 
 [tool.ruff]
 line-length = 100
