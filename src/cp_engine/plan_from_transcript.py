@@ -299,7 +299,11 @@ def _call_claude(prompt: str, *, model: str, api_key: str | None) -> str:
             messages=[{"role": "user", "content": prompt}],
         )
     except Exception as exc:  # anthropic SDK raises various subclasses
-        raise PlanGenerationError(f"Anthropic API call failed: {exc}") from exc
+        detail = str(exc)
+        body = getattr(exc, "body", None) or getattr(exc, "response", None)
+        if body is not None:
+            detail = f"{detail} | body={body!r}"
+        raise PlanGenerationError(f"Anthropic API call failed: {detail}") from exc
 
     if not response.content:
         raise PlanGenerationError("Anthropic returned empty content")

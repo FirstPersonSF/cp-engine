@@ -1,0 +1,21 @@
+# Railway service config for cp-engine-webhook.
+#
+# Deploy via Railway dashboard:
+# 1. Add new service to the existing fathom-meeting-sync Railway project
+#    (so env-var groups + metrics are shared).
+# 2. Connect to FirstPersonSF/cp-engine GitHub repo on `main`.
+# 3. Set "Root Directory" to "/" and point Railway at this file.
+# 4. Set the env vars listed in webhook/main.py's module docstring.
+#
+# The Dockerfile expects the build context to be the cp-engine repo
+# root, not webhook/ — so we explicitly point at it.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "webhook/Dockerfile"
+
+[deploy]
+healthcheckPath = "/health"
+healthcheckTimeout = 30
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
