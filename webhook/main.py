@@ -124,7 +124,15 @@ async def auto_ingest(request: Request) -> dict:
 
         if not anything_wrote:
             log.info("auto-ingest no-op: no files changed for meeting=%s", meeting_id)
-            return {"ingested": ingested, "commit_sha": None, "skipped_no_op": True}
+            response = {"ingested": ingested, "commit_sha": None, "skipped_no_op": True}
+            _log_run_to_supabase(
+                meeting_id=meeting_id,
+                project_codes=project_codes,
+                status=_status_from_ingested(ingested, anything_wrote=False),
+                ingested=ingested,
+                commit_sha=None,
+            )
+            return response
 
         commit_sha = _commit_and_push(
             tenant_root=tenant_root,
@@ -132,7 +140,15 @@ async def auto_ingest(request: Request) -> dict:
             ingested=ingested,
         )
         log.info("auto-ingest done: meeting=%s commit=%s", meeting_id, commit_sha)
-        return {"ingested": ingested, "commit_sha": commit_sha, "skipped_no_op": False}
+        response = {"ingested": ingested, "commit_sha": commit_sha, "skipped_no_op": False}
+        _log_run_to_supabase(
+            meeting_id=meeting_id,
+            project_codes=project_codes,
+            status="success",
+            ingested=ingested,
+            commit_sha=commit_sha,
+        )
+        return response
 
 
 # ─────────────────────────────────────────────────────────────
@@ -392,6 +408,69 @@ def _load_tenant_config(tenant_root: Path) -> TenantConfig:
     from cp_engine import config as cfg_mod
 
     return cfg_mod.load(tenant_root=tenant_root)
+
+
+# ─────────────────────────────────────────────────────────────
+#  Observability (Phase C.4)
+# ─────────────────────────────────────────────────────────────
+
+
+def _status_from_ingested(ingested: list[dict], *, anything_wrote: bool) -> str:
+    """Derive the auto_ingest_runs.status enum value.
+
+    - 'failed': at least one project errored out
+    - 'skipped_no_op': nothing wrote AND nothing errored (clean no-op)
+    - 'success': we wrote files (used in the commit-and-push branch)
+    """
+    if any(entry.get("errors") for entry in ingested):
+        return "failed"
+    if not anything_wrote:
+        return "skipped_no_op"
+    return "success"
+
+
+def _log_run_to_supabase(
+    *,
+    meeting_id: str,
+    project_codes: list[str],
+    status: str,
+    ingested: list[dict],
+    commit_sha: str | None,
+) -> None:
+    """Insert one row into auto_ingest_runs. Never raises.
+
+    Observability is best-effort: a failure to log must not break the
+    primary auto-ingest contract with fathom-meeting-sync. We log + swallow.
+    """
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not url or not key:
+        log.warning("auto_ingest_runs insert skipped: Supabase env not set")
+        return
+
+    plan_summary = {
+        entry["code"]: entry.get("plan_summary") or {}
+        for entry in ingested
+    }
+    errors_flat: list[str] = []
+    for entry in ingested:
+        for err in entry.get("errors") or []:
+            errors_flat.append(f"{entry['code']}: {err}")
+
+    try:
+        from supabase import create_client
+
+        client = create_client(url, key)
+        client.table("auto_ingest_runs").insert({
+            "meeting_id": meeting_id,
+            "project_codes": project_codes,
+            "status": status,
+            "plan_summary": plan_summary,
+            "commit_sha": commit_sha,
+            "errors": errors_flat or None,
+        }).execute()
+    except Exception as exc:  # noqa: BLE001 — observability must never throw
+        log.warning("auto_ingest_runs insert failed for %s: %s", meeting_id, exc)
 
 
 if __name__ == "__main__":
