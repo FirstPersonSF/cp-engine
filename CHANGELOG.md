@@ -4,6 +4,28 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.9 — 2026-05-12
+
+### Added — Phase A from cascade design doc
+
+**`meeting_type` field on Fathom meetings.** Phase A of the meeting-type cascade design (`cp/docs/plans/2026-05-12-meeting-type-cascade.md`). Foundation for Phases B (account-meeting ingest), C (project-meeting auto-ingest), and D (recurring-meeting cadence tracker).
+
+- **Schema migration** (in fathom-meeting-sync repo): `migrations/02_meeting_type.sql` adds the `meeting_type TEXT NOT NULL DEFAULT 'untagged'` column to `fathom_meetings` with a CHECK constraint enforcing the 6-value taxonomy: `project-status`, `account-status`, `sprint-planning`, `work-session`, `1-1`, `untagged`. Indexed for filtered queries.
+- **Classifier** (in fathom-meeting-sync repo): `extract-meeting-type.js` implements best-guess classification — title patterns first (sprint-planning + account-status are most distinctive), participant analysis second (2 FP-only → `1-1`; 3+ FP-only → `work-session`), project-tag fallback last (1 tag → `project-status`; 2+ → `untagged` for human review).
+- **`FathomMeetingSummary` and `FathomMeetingFull` extended** with `meeting_type: str = "untagged"` field. `cp fathom-list` and `cp fathom-fetch` surface it in JSON output. `stage_transcript()` includes `# meeting_type:` in the staged file's metadata header.
+- **No behavior change yet**: meeting_type drives auto-poll routing in Phase C and the cadence tracker in Phase D. v0.8.9 just makes the field available so downstream phases have something to read.
+
+### Tenant impact
+
+- Tenants pinned at `engine = "~= 0.8"` pick this up on next `uv tool install`.
+- Requires the schema migration to be applied to the Supabase project (`mgheymslksfyhuvhmvmj`). Already applied during the Phase A session via the Supabase MCP.
+
+### Verification
+
+- 3 new tests in `test_fathom.py` covering meeting_type in stage_transcript header, FathomMeetingSummary.to_dict, and the default value. Full suite: **380 passing**.
+- 27 new tests in fathom-meeting-sync's `__tests__/extract-meeting-type.test.js` covering title-pattern matching, participant-based classification, project-tag fallback, real W19 meeting titles, and the helper functions. Full fathom-meeting-sync suite: **67 passing**.
+- Live verification of the Supabase migration: all 273 existing rows defaulted to `meeting_type='untagged'` as expected; CHECK constraint and index in place.
+
 ## v0.8.8.2 — 2026-05-12
 
 ### Added

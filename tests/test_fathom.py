@@ -226,6 +226,43 @@ def test_stage_transcript_handles_empty_transcript(tmp_path: Path) -> None:
     assert "(no transcript)" in body
 
 
+def test_stage_transcript_includes_meeting_type_in_header(tmp_path: Path) -> None:
+    """Phase A.4: meeting_type appears in the staged file's metadata header
+    so a human reading the staged transcript sees the classification."""
+    meeting = _make_meeting(meeting_type="account-status")
+    path = stage_transcript(meeting, tenant_root=tmp_path)
+    body = path.read_text()
+    assert "# meeting_type: account-status" in body
+
+
+def test_fathom_meeting_summary_to_dict_includes_meeting_type() -> None:
+    """Phase A.4: cp fathom-list JSON output surfaces meeting_type."""
+    from cp_engine.fathom import FathomMeetingSummary
+
+    summary = FathomMeetingSummary(
+        id="abc-123",
+        title="Weekly Scrum",
+        meeting_date="2026-05-12T10:00:00+00:00",
+        project_tags=["ggl-5168"],
+        duration_minutes=30,
+        meeting_type="sprint-planning",
+    )
+    d = summary.to_dict()
+    assert d["meeting_type"] == "sprint-planning"
+
+
+def test_fathom_meeting_summary_defaults_meeting_type_to_untagged() -> None:
+    """Backward compat: rows without meeting_type fall back to the schema default."""
+    from cp_engine.fathom import FathomMeetingSummary
+
+    summary = FathomMeetingSummary(
+        id="abc-123",
+        title="Old Meeting",
+        meeting_date="2026-05-12T10:00:00+00:00",
+    )
+    assert summary.meeting_type == "untagged"
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  _render_transcript_body — Supabase JSONB shape → Fathom format
 # ──────────────────────────────────────────────────────────────────────

@@ -59,6 +59,11 @@ class FathomMeetingSummary:
     meeting_date: str  # ISO timestamp
     project_tags: list[str] = field(default_factory=list)
     duration_minutes: int | None = None
+    # Phase A from cp/docs/plans/2026-05-12-meeting-type-cascade.md.
+    # One of: project-status, account-status, sprint-planning,
+    # work-session, 1-1, untagged. Drives auto-poll routing in Phase C
+    # and the recurring-meeting cadence tracker in Phase D.
+    meeting_type: str = "untagged"
 
     def to_dict(self) -> dict:
         return {
@@ -67,6 +72,7 @@ class FathomMeetingSummary:
             "meeting_date": self.meeting_date,
             "project_tags": self.project_tags,
             "duration_minutes": self.duration_minutes,
+            "meeting_type": self.meeting_type,
         }
 
 
@@ -81,6 +87,8 @@ class FathomMeetingFull:
     transcript: str
     summary: str | None = None
     duration_minutes: int | None = None
+    # See FathomMeetingSummary.meeting_type docstring (Phase A).
+    meeting_type: str = "untagged"
 
 
 @dataclass
@@ -144,7 +152,9 @@ def list_meetings(
     client = get_client(config)
     query = (
         client.table("fathom_meetings")
-        .select("id, title, meeting_date, project_tags, duration_minutes")
+        .select(
+            "id, title, meeting_date, project_tags, duration_minutes, meeting_type"
+        )
         .order("meeting_date", desc=True)
         .limit(limit)
     )
@@ -158,6 +168,7 @@ def list_meetings(
             meeting_date=r.get("meeting_date") or "",
             project_tags=list(r.get("project_tags") or []),
             duration_minutes=r.get("duration_minutes"),
+            meeting_type=r.get("meeting_type") or "untagged",
         )
         for r in rows
     ]
@@ -175,7 +186,7 @@ def fetch_meeting(config: TenantConfig, meeting_id: str) -> FathomMeetingFull:
         client.table("fathom_meetings")
         .select(
             "id, title, meeting_date, project_tags, transcript, summary, "
-            "duration_minutes"
+            "duration_minutes, meeting_type"
         )
         .eq("id", meeting_id)
         .limit(1)
@@ -194,6 +205,7 @@ def fetch_meeting(config: TenantConfig, meeting_id: str) -> FathomMeetingFull:
         transcript=r.get("transcript") or "",
         summary=r.get("summary"),
         duration_minutes=r.get("duration_minutes"),
+        meeting_type=r.get("meeting_type") or "untagged",
     )
 
 
@@ -227,6 +239,7 @@ def stage_transcript(
         f"# Fathom meeting: {meeting.title}\n"
         f"# id: {meeting.id}\n"
         f"# meeting_date: {meeting.meeting_date}\n"
+        f"# meeting_type: {meeting.meeting_type}\n"
         f"# project_tags: {', '.join(meeting.project_tags) or '(none)'}\n"
         f"# duration_minutes: {meeting.duration_minutes or 'unknown'}\n"
         f"# (staged by cp fathom-fetch — feed to /cp-ingest <path>)\n"
