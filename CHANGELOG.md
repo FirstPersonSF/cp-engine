@@ -4,6 +4,17 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.11.1 — 2026-05-13
+
+### Added
+
+- **`TenantConfig.team`** field, populated from optional `[team]\nmembers = [...]` block in `.cp-engine.toml`. Used by `plan_from_transcript` so Claude doesn't auto-add internal team members as "new" project stakeholders during auto-ingest.
+- **Account decisions in `plan_from_transcript` context.** Up to 25 most-recent decision titles from `weekly-cp.md` (account-level + cross-project) are surfaced in the prompt under "Recent account-level decisions." Prevents Claude from re-emitting account-wide commitments as project-level ones.
+
+### Fixed
+
+- **`cp ingest-from-transcript --show-prompt`** wasn't passing `config.team` to the prompt builder, so the team block always rendered as "(No team roster declared in tenant config.)" even when configured. The non-`--show-prompt` path was already correct.
+
 ## v0.8.11 — 2026-05-13
 
 ### Added — Phase C (auto-ingest) from cascade design doc
