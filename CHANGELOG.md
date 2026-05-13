@@ -4,6 +4,22 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.11 — 2026-05-13
+
+### Added — Phase C (auto-ingest) from cascade design doc
+
+- **`cp ingest-from-transcript --project <code> --transcript <path>`** — new CLI command (Phase C.1). Generates a `cp ingest` plan from a transcript via Claude, prints YAML for review, or applies it with `--apply`. Requires `ANTHROPIC_API_KEY`. Used as the engine for the webhook service below; also useful standalone for "deepen this one transcript without typing the plan myself."
+- **`webhook/` — cp-engine-webhook FastAPI service** (Phase C.2). HMAC-signed `POST /api/auto-ingest` endpoint that auto-ingests Fathom meetings into the cp tenant: HMAC verify → clone-on-each-request via SSH deploy key → Claude plan generation → `execute_plan` → commit `[auto-ingest] <code>: meeting <id-prefix>` → push. Deploys to Railway alongside `fathom-meeting-sync`. Per-call observability writes to the new `auto_ingest_runs` Supabase table (Phase C.4).
+- **New runtime dependency: `anthropic>=0.40`.** Adds ~5 MB to the install footprint. The CLI never imports it unless `ingest-from-transcript` is invoked.
+
+### Fixed
+
+- **Anthropic error envelope.** `PlanGenerationError` now surfaces the actual SDK error body (including `BadRequestError` details like "credit balance too low") instead of the generic `Connection error`. Found via a real credit-balance issue during C.2 testing.
+
+### Operational notes
+
+- Production webhook URL: `https://cp-engine-production.up.railway.app`. See `webhook/README.md` for the deploy-key + Railway-env-var setup. Phase C.3 (the fathom-meeting-sync trigger) and Phase C.4 (the `auto_ingest_runs` observability table + dashboard view) live in the `fathom-meeting-sync` repo.
+
 ## v0.8.10.2 — 2026-05-13
 
 ### Fixed
