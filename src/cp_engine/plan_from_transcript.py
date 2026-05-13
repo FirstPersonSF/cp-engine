@@ -72,6 +72,7 @@ def generate_plan(
         project_context=project_ctx,
         project_code=project_code,
         transcript_path=transcript_path,
+        team=config.team,
     )
 
     response_text = _call_claude(prompt, model=model, api_key=api_key)
@@ -113,8 +114,12 @@ def _read_transcript(path: Path) -> str:
 def _load_project_context(config: TenantConfig, project_code: str) -> str:
     """Compact, prompt-shaped view of what's already known about this project.
 
-    Returns the project's `cp.md` (truncated) + its current sprint file
-    (truncated). Both are markdown; the model can read them as-is.
+    Returns:
+    - the project's `cp.md` (truncated)
+    - the current sprint file (truncated)
+    - recent account-level decisions from weekly-cp.md (filtered by company prefix)
+
+    All three are markdown; the model reads them as-is.
     """
     project_dir = _find_project_dir(config.root, project_code)
     parts: list[str] = []
@@ -144,7 +149,80 @@ def _load_project_context(config: TenantConfig, project_code: str) -> str:
             "this would be the first ingest of the sprint.)"
         )
 
+    account_decisions = _load_recent_account_decisions(config.root)
+    if account_decisions:
+        parts.append(
+            "### Recent account-level decisions (already in weekly-cp.md)\n\n"
+            "These are decisions that already exist in the tenant. If the\n"
+            "transcript restates one of these, do NOT emit it again — even\n"
+            "if the wording is slightly different.\n\n"
+            + account_decisions
+        )
+
     return "\n\n".join(parts)
+
+
+# A decision line in weekly-cp.md follows the shape:
+#   <N>. **<title>** ...optional body with arbitrary parens... (YYYY-MM-DD, source: <kind>)
+# The numbered prefix + bold title is the load-bearing signal; the source
+# clause tells us *what kind* of decision it is. We pull the title (first
+# **...** on the line) and date for the prompt.
+_DECISION_NUM_RE = re.compile(r"^\s*(?P<num>\d+)\.\s+\*\*(?P<title>[^*]+)\*\*", re.MULTILINE)
+_DECISION_DATE_RE = re.compile(
+    r"\((?P<date>\d{4}-\d{2}-\d{2}),\s*source:\s*(?P<source>[^)]+)\)"
+)
+
+
+def _load_recent_account_decisions(tenant_root: Path, *, max_lines: int = 25) -> str:
+    """Pull recent account-level decision titles from weekly-cp.md.
+
+    Conservative: just the bold-title sentence + date, not the full body.
+    Prevents Claude from re-emitting account-wide commitments as project-level
+    ones (the "Go Safety launches 6/1" duplication pattern from C.1 testing).
+
+    Two-pass parse because decision bodies contain arbitrary parentheses
+    (e.g. "(2-4 weeks)", "(payroll)") so a single regex anchoring on
+    `(YYYY-MM-DD, source: ...)` from the title block is fragile. Instead:
+    walk numbered decisions, then find their date+source clause in the
+    same line as the title.
+
+    Returns "" if no weekly-cp.md or no decisions match.
+    """
+    weekly_cp = tenant_root / "weekly-cp.md"
+    if not weekly_cp.is_file():
+        return ""
+
+    body = weekly_cp.read_text(encoding="utf-8")
+    decisions: list[dict] = []
+    for line in body.splitlines():
+        title_m = _DECISION_NUM_RE.match(line)
+        if not title_m:
+            continue
+        date_m = _DECISION_DATE_RE.search(line)
+        if not date_m:
+            continue
+        source = date_m.group("source").strip().lower()
+        # Account-level signals: explicit "account:" tag (Phase B format),
+        # the older "weekly account meeting" tag, or any per-project source
+        # like "ggl-5136" (these are project-level decisions but they affect
+        # related projects in the same client family — including them keeps
+        # Claude from re-emitting cross-project context).
+        if not (source.startswith("account:") or "account meeting" in source or "-" in source):
+            continue
+        decisions.append({
+            "title": title_m.group("title").strip(),
+            "date": date_m.group("date"),
+            "source": source,
+        })
+
+    if not decisions:
+        return ""
+
+    decisions.sort(key=lambda d: d["date"], reverse=True)
+    decisions = decisions[:max_lines]
+    return "\n".join(
+        f"- ({d['date']}, source: {d['source']}) {d['title']}" for d in decisions
+    )
 
 
 def _find_project_dir(tenant_root: Path, project_code: str) -> Path | None:
@@ -175,14 +253,24 @@ def _build_prompt(
     project_context: str,
     project_code: str,
     transcript_path: Path,
+    team: tuple[str, ...] = (),
 ) -> str:
     today = datetime.now().date().isoformat()
+    if team:
+        team_block = (
+            "These names are INTERNAL TEAM MEMBERS, not project stakeholders.\n"
+            "Never add them as new entries to the `stakeholders` verb:\n"
+            + ", ".join(team)
+        )
+    else:
+        team_block = "(No team roster declared in tenant config.)"
     return _PROMPT_TEMPLATE.format(
         today=today,
         project_code=project_code,
         transcript_relpath=str(transcript_path),
         project_context=project_context,
         transcript=transcript,
+        team_block=team_block,
     )
 
 
@@ -196,6 +284,9 @@ against the project's sprint file.
 
 # Target project
 {project_code}
+
+# Internal team
+{team_block}
 
 # What's already known about this project
 {project_context}
@@ -238,16 +329,23 @@ projects:
 1. **Only include verbs that have entries.** Empty lists like `decisions: []`
    are forbidden. If you have nothing to say for a verb, omit it entirely.
 2. **Don't duplicate what's already in the project context.** If a decision
-   or ask already appears in the sprint file or cp.md (even paraphrased),
-   skip it. The system has its own dedup, but you should still try.
+   or ask already appears in the sprint file, cp.md, OR the "Recent
+   account-level decisions" list, skip it. The system has its own dedup,
+   but you should still try. Account-wide decisions (Maria's departure,
+   consultant invoice routing, Go Safety launch dates) belong in
+   weekly-cp.md and are emitted via a separate `account_decisions` flow,
+   not by you here.
 3. **Decisions vs inbound:** a decision is a *commitment made in the meeting*
    (who's doing what, by when, what we agreed to). Inbound is *information*
    the client conveyed (status, opinions, constraints, concerns).
 4. **Asks** are open loops *we're waiting on someone for*. If the meeting
    resolved an existing ask, do NOT create a new entry — we'll handle
    close-ask in a different flow.
-5. **Stakeholders only when genuinely new.** Don't restate Maria, Brandon,
-   etc. who already appear in cp.md.
+5. **Stakeholders only when genuinely new and EXTERNAL.** Internal team
+   members from the "Internal team" list above must never appear here.
+   Also skip people already named in cp.md or the sprint file. Add a
+   stakeholder only when it's a client-side or vendor-side person not
+   yet known to the system.
 6. **Date fields:** use the meeting date if known (parse from transcript
    header), otherwise today ({today}). All dates as ISO YYYY-MM-DD.
 7. **Quote-like fidelity, no embellishment.** The text should reflect what

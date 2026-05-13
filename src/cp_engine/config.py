@@ -168,6 +168,12 @@ class TenantConfig:
         "scope",
         "timeline",
     )
+    # Internal team members. Surfaces in plan_from_transcript so Claude
+    # doesn't auto-add Drew/Tony/etc as "new" stakeholders. Empty by
+    # default; tenants opt in via `[team]\nmembers = [...]` in
+    # `.cp-engine.toml`. Free-form first-name strings; matching is
+    # case-insensitive substring on stakeholder name.
+    team: tuple[str, ...] = ()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -212,6 +218,8 @@ def load(tenant_root: Path) -> TenantConfig:
     # [risk_categories]; otherwise rely on the canonical six-axis default.
     if committed["risk_categories"] is not None:
         kwargs["risk_categories"] = committed["risk_categories"]
+    if committed["team"]:
+        kwargs["team"] = committed["team"]
     return TenantConfig(**kwargs)
 
 
@@ -365,6 +373,26 @@ def _normalize_committed(data: dict, source: Path) -> dict:
             )
         risk_categories = tuple(values)
 
+    # Optional [team] table: members = ["drew", "tony", ...].
+    # Used by plan_from_transcript so Claude doesn't auto-add internal
+    # team members as stakeholders. Free-form first-name strings; matching
+    # is case-insensitive substring at use-site.
+    team: tuple[str, ...] = ()
+    team_raw = data.get("team")
+    if team_raw is not None:
+        if not isinstance(team_raw, dict):
+            raise CommittedConfigInvalid(
+                f"{source}: [team] must be a table with a `members` array"
+            )
+        members = team_raw.get("members")
+        if not isinstance(members, list) or not all(
+            isinstance(v, str) and v for v in members
+        ):
+            raise CommittedConfigInvalid(
+                f"{source}: [team].members must be a list of non-empty strings"
+            )
+        team = tuple(members)
+
     return {
         "name": name,
         "display": display,
@@ -373,6 +401,7 @@ def _normalize_committed(data: dict, source: Path) -> dict:
         "projects": projects,
         "local_repos_by_user": local_repos_by_user,
         "risk_categories": risk_categories,
+        "team": team,
     }
 
 
