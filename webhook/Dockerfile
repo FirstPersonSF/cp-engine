@@ -24,8 +24,10 @@ RUN pip install --no-cache-dir ./cp-engine
 COPY webhook ./webhook
 RUN pip install --no-cache-dir ./webhook
 
-# Railway injects PORT; uvicorn reads it.
+# Railway injects $PORT at runtime — must use shell form (or sh -c) so
+# the variable expands. Exec form treats the literal string "$PORT" as
+# a value, which is why the first deploy 502'd.
 ENV PYTHONUNBUFFERED=1
 EXPOSE 8000
 
-CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--app-dir", "webhook"]
+CMD ["sh", "-c", "python -m uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000} --app-dir webhook"]
