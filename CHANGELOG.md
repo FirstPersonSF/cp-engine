@@ -4,6 +4,28 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.10 — 2026-05-13
+
+### Added — Phase B from cascade design doc
+
+**Account-meeting ingest workflow.** Phase B of the meeting-type cascade design (`cp/docs/plans/2026-05-12-meeting-type-cascade.md`). Builds on Phase A's `meeting_type` field.
+
+- **`/cp-ingest --account <company>` plugin mode.** New invocation that lists candidate `account-status` meetings for a company, lets the user pick one, fetches + classifies + plans + executes against it. Per-project plan template emphasizes per-project inbound/asks/decisions PLUS a new top-level `account_decisions` block for decisions that touch the whole client account but don't belong to any single project.
+- **New `account_decisions` block in the plan YAML schema** — parallel to `themes` (tenant-wide content). Each item has `{text, company, date}` and lands as a numbered entry in `weekly-cp.md`'s handwritten Decisions list with the `(YYYY-MM-DD, source: account: <company-lower>)` suffix per Q5 from the cascade design doc.
+- **`_write_account_decision()` internal function** — finds the highest existing decision number in `weekly-cp.md`, appends `<N+1>. **<text>** ...` before the first `cp-engine:start` marker (keeps the entry in the handwritten section, never inside engine-managed strip regions). Idempotent via content hash on `(company, "record-account-decision", text)`.
+- **`cp list-active-projects --company <code>`** (case-insensitive) — filters by `company_code`. Used by `/cp-ingest --account` to scope active projects to the company's portfolio.
+- **`cp fathom-list --type <meeting-type>`** — Click `--type` choice constrained to the 6-value taxonomy. Maps to `list_meetings(meeting_type=...)` which adds `.eq("meeting_type", ...)` to the Supabase query.
+
+### Tenant impact
+
+- Tenants pinned at `engine = "~= 0.8"` pick this up on next `uv tool install`.
+- New plan-block: `account_decisions`. Existing plans without it work unchanged.
+- `weekly-cp.md` decisions list grows when account-meeting ingests run. The cross-reference parser in `cp_engine.agenda.parse_weekly_decisions` already handles the `(date, source: <anything>)` suffix; `decisions_for_project` will pick up `source: account: <company>` entries automatically when projects of that company query for related decisions.
+
+### Verification
+
+- 8 new tests in `test_ingest.py` covering: account-decision write to weekly-cp.md, insertion before engine markers (handwritten section), idempotency, renumbering when no existing decisions, required-field validation (text + company), validation rejects non-list, valid alongside other plan blocks, errors when weekly-cp.md missing. Full suite: **388 passing**.
+
 ## v0.8.9 — 2026-05-12
 
 ### Added — Phase A from cascade design doc

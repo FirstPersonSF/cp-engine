@@ -189,12 +189,40 @@ Sprint: 2026-W19
 """)
 
 
-def _make_tenant(tmp_path: Path) -> Path:
-    """Build a minimal tenant scaffold with a W19 sprint file for ggl-5168."""
+def _make_tenant(tmp_path: Path, *, with_weekly_cp: bool = False) -> Path:
+    """Build a minimal tenant scaffold with a W19 sprint file for ggl-5168.
+
+    Pass ``with_weekly_cp=True`` to also scaffold a weekly-cp.md
+    (Phase B's account_decisions block needs one to write to).
+    """
     week_dir = tmp_path / "sprints" / "2026-W19"
     week_dir.mkdir(parents=True)
     _scaffold_minimal_sprint_file(week_dir / "ggl-5168.md", "ggl-5168")
     (week_dir / "_week.md").write_text("## Themes\n\n- _<theme>_\n")
+    if with_weekly_cp:
+        # Minimal weekly-cp shape — handwritten Decisions list + a marker
+        # so account-decision insert has somewhere to anchor.
+        (tmp_path / "weekly-cp.md").write_text("""# Weekly CP
+
+## Quick Resume
+
+placeholder
+
+## Decisions (cross-cutting, last 4 weeks)
+
+3. **An older decision.** (2026-05-08, source: weekly account meeting)
+
+2. **An even older one.** (2026-05-08, source: ggl-5136)
+
+1. **The oldest.** (2026-05-08, source: weekly account meeting)
+
+<!-- cp-engine:start themes-strip -->
+<!-- cp-engine:end themes-strip -->
+
+## Active research
+
+placeholder
+""")
     return tmp_path
 
 
@@ -310,3 +338,142 @@ def test_execute_plan_close_ask_flips_open_to_closed(tmp_path: Path) -> None:
     body = (tenant / "sprints" / "2026-W19" / "ggl-5168.md").read_text()
     assert "[open · 2026-05-08" not in body
     assert "[closed · 2026-05-08" in body
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Phase B — account_decisions
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_execute_plan_writes_account_decision_to_weekly_cp(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
+    plan = {
+        "account_decisions": [
+            {
+                "text": "All Google consultant invoices route through Brandon",
+                "company": "google",
+                "date": "2026-05-13",
+            }
+        ]
+    }
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
+    assert result.errors == []
+    assert (tenant / "weekly-cp.md") in result.files_written
+    body = (tenant / "weekly-cp.md").read_text()
+    # Highest existing was #3, so new one should be #4.
+    assert "4. **All Google consultant invoices route through Brandon**" in body
+    assert "(2026-05-13, source: account: google)" in body
+    # Hash marker present for idempotency.
+    assert "cp:hash=" in body
+
+
+def test_account_decision_inserts_before_engine_marker(tmp_path: Path) -> None:
+    """Account decisions should land in the handwritten section, not
+    inside any engine-managed strip region."""
+    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
+    plan = {
+        "account_decisions": [
+            {"text": "Test", "company": "google", "date": "2026-05-13"}
+        ]
+    }
+    execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
+    body = (tenant / "weekly-cp.md").read_text()
+    # Find the position of the new decision line and the first engine marker.
+    decision_pos = body.find("4. **Test**")
+    marker_pos = body.find("<!-- cp-engine:start themes-strip -->")
+    assert decision_pos > 0
+    assert marker_pos > 0
+    assert decision_pos < marker_pos, (
+        "account-decision should land before engine markers, "
+        "not inside the engine-managed regions"
+    )
+
+
+def test_account_decision_is_idempotent(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
+    plan = {
+        "account_decisions": [
+            {"text": "Same decision twice", "company": "google", "date": "2026-05-13"}
+        ]
+    }
+    r1 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
+    assert r1.skipped_duplicate == 0
+    body_after_first = (tenant / "weekly-cp.md").read_text()
+
+    r2 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
+    assert r2.skipped_duplicate == 1
+    assert r2.files_written == []
+    body_after_second = (tenant / "weekly-cp.md").read_text()
+    assert body_after_first == body_after_second
+
+
+def test_account_decision_renumbers_correctly_when_no_existing_decisions(tmp_path: Path) -> None:
+    """If weekly-cp.md has no existing numbered decisions, start at #1."""
+    week_dir = tmp_path / "sprints" / "2026-W19"
+    week_dir.mkdir(parents=True)
+    _scaffold_minimal_sprint_file(week_dir / "ggl-5168.md", "ggl-5168")
+    (week_dir / "_week.md").write_text("## Themes\n\n- _<theme>_\n")
+    # Empty weekly-cp.md (no existing decisions).
+    (tmp_path / "weekly-cp.md").write_text("# Weekly CP\n\n## Active research\n\nplaceholder\n")
+    plan = {
+        "account_decisions": [
+            {"text": "First decision", "company": "google", "date": "2026-05-13"}
+        ]
+    }
+    result = execute_plan(plan, tenant_root=tmp_path, today=date(2026, 5, 13))
+    assert result.errors == []
+    body = (tmp_path / "weekly-cp.md").read_text()
+    assert "1. **First decision**" in body
+
+
+def test_account_decision_validates_required_fields(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
+    # Missing 'text'
+    r1 = execute_plan(
+        {"account_decisions": [{"company": "google", "date": "2026-05-13"}]},
+        tenant_root=tenant, today=date(2026, 5, 13),
+    )
+    assert any("missing 'text'" in e for e in r1.errors)
+    # Missing 'company'
+    r2 = execute_plan(
+        {"account_decisions": [{"text": "x", "date": "2026-05-13"}]},
+        tenant_root=tenant, today=date(2026, 5, 13),
+    )
+    assert any("missing 'company'" in e for e in r2.errors)
+
+
+def test_validate_plan_rejects_account_decisions_not_a_list() -> None:
+    from cp_engine.ingest import _validate_plan
+    with pytest.raises(IngestPlanError, match="account_decisions must be a list"):
+        _validate_plan({"account_decisions": "not a list"})  # type: ignore[arg-type]
+
+
+def test_validate_plan_accepts_account_decisions_alongside_other_blocks() -> None:
+    """Plan with projects + themes + account_decisions all together."""
+    from cp_engine.ingest import _validate_plan
+    plan = {
+        "projects": {"ggl-5168": {"asks": [{"text": "x"}]}},
+        "themes": [{"text": "t", "date": "2026-05-13"}],
+        "account_decisions": [
+            {"text": "d", "company": "google", "date": "2026-05-13"}
+        ],
+    }
+    _validate_plan(plan)  # no raise
+
+
+def test_account_decision_errors_when_weekly_cp_missing(tmp_path: Path) -> None:
+    """If weekly-cp.md doesn't exist, account_decisions errors cleanly
+    (doesn't raise; logs to result.errors)."""
+    week_dir = tmp_path / "sprints" / "2026-W19"
+    week_dir.mkdir(parents=True)
+    _scaffold_minimal_sprint_file(week_dir / "ggl-5168.md", "ggl-5168")
+    (week_dir / "_week.md").write_text("## Themes\n\n")
+    # No weekly-cp.md.
+    plan = {
+        "account_decisions": [
+            {"text": "x", "company": "google", "date": "2026-05-13"}
+        ]
+    }
+    result = execute_plan(plan, tenant_root=tmp_path, today=date(2026, 5, 13))
+    assert any("weekly-cp.md missing" in e for e in result.errors)
+    assert result.files_written == []

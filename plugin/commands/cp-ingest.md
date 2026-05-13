@@ -13,9 +13,15 @@ plan-log artifact regardless of outcome.
 **Arguments (mutually exclusive):**
 - A path to a transcript file (Fathom export, custom export, or anything
   with the standard `MM:SS - Speaker` line format).
-- `--fathom <meeting-id>` — fetch a meeting from `fathom_meetings`
+- `--fathom <meeting-id>` — fetch a single meeting from `fathom_meetings`
   Supabase via `cp fathom-fetch`, then proceed with the rest of the
   flow against the staged file.
+- `--account <company-code>` (Phase B) — list candidate `account-status`
+  meetings for that company; user picks ONE; standard flow runs against
+  it. Uses `cp fathom-list --type account-status` + `cp list-active-projects
+  --company <code>` to scope. Per-project plan template emphasizes per-project
+  inbound/asks/decisions PLUS account-level decisions (with
+  `(YYYY-MM-DD, source: account: <company-lower>)` suffix in weekly-cp.md).
 
 ## What you do
 
@@ -45,6 +51,43 @@ the tenant root. Continue to step 2 with this path.
 
 If invoked with a direct file path (no `--fathom`), set
 `TRANSCRIPT_PATH=<the path the user gave>` and skip this step.
+
+### 1c. (If `--account <company>`) Pick + fetch one account-status meeting
+
+```bash
+# Only run this branch when invoked with --account <company-code>.
+# E.g. /cp-ingest --account GGL  (or "Google", we accept either).
+
+# 1. List candidate account-status meetings for this company since the
+# last ingest. The --type filter requires meeting_type='account-status'
+# (Phase A.2 classifier output); the matching company comes from
+# project_tags overlap, since fathom_meetings doesn't have a company
+# column directly.
+cp fathom-list --type account-status --limit 20
+
+# 2. Surface the candidates to the user with a brief summary per
+# meeting (id, title, date, current project_tags). Ask: which one?
+# Also tell them: "you can override by passing --fathom <id> directly
+# to skip this picker."
+```
+
+Once user picks an id:
+
+```bash
+# Same fetch-and-stage flow as --fathom mode.
+FETCH_OUT=$(cp fathom-fetch "<PICKED_ID>")
+TRANSCRIPT_PATH=$(echo "$FETCH_OUT" | jq -r .path)
+
+# Pre-load the company's active projects for Claude's classifier in step 3.
+ACCOUNT_PROJECTS=$(cp list-active-projects --company "<COMPANY_CODE>")
+echo "Active projects for <COMPANY_CODE>:"
+echo "$ACCOUNT_PROJECTS" | jq '.[] | {code, name, owner}'
+```
+
+Continue to step 2 with `TRANSCRIPT_PATH` set. The classification step
+(step 3) should expect the transcript to touch most-or-all of
+`$ACCOUNT_PROJECTS`, AND likely surface 1-3 account-level decisions
+that don't belong to any single project.
 
 ### 2. Audit the transcript
 
@@ -135,6 +178,18 @@ projects:
 
 themes:
   - text: "<theme spanning multiple projects>"
+    date: "YYYY-MM-DD"
+
+# Phase B: account-level decisions land in weekly-cp.md's handwritten
+# Decisions list (numbered, with `(YYYY-MM-DD, source: account: <company>)`
+# suffix). Use these for decisions that touch the whole client account
+# but don't belong to any single project — e.g. "All Google consultant
+# invoices route through Brandon" or "Maria off the Google account."
+# /cp-ingest --account <company> mode emphasizes this block; other modes
+# can omit it.
+account_decisions:
+  - text: "<decision text — first sentence becomes the bold title>"
+    company: "<company-code-lowercase, e.g. 'google'>"
     date: "YYYY-MM-DD"
 ```
 

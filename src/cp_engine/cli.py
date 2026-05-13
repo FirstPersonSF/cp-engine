@@ -598,7 +598,14 @@ def parse_transcript_cmd(path: Path, gap_threshold: int, codes: str) -> None:
     default="all",
     help="Filter by scope. Default 'all'.",
 )
-def list_active_projects_cmd(scope: str) -> None:
+@click.option(
+    "--company",
+    default=None,
+    help="Filter by company code (case-insensitive, e.g. 'GGL' or 'IBX'). "
+    "Used by /cp-ingest --account <company> to find the projects a "
+    "multi-project account meeting touches. Default: all companies.",
+)
+def list_active_projects_cmd(scope: str, company: str | None) -> None:
     """List active projects from MC-2 as JSON for transcript classification.
 
     Output: list of {code, name, company_code, company_name, owner, scope}.
@@ -614,6 +621,8 @@ def list_active_projects_cmd(scope: str) -> None:
     backend = _default_backend_factory(config.sync.backend)
     projects = backend.read_projects(config)
 
+    company_lc = company.lower() if company else None
+
     out = []
     for p in projects:
         if p.source == "engagement":
@@ -624,6 +633,9 @@ def list_active_projects_cmd(scope: str) -> None:
                 continue
         proj_scope = scope_for(p.company_kind)
         if scope != "all" and proj_scope != scope:
+            continue
+        # Phase B.2: --company filter for /cp-ingest --account flow.
+        if company_lc and (p.company_code or "").lower() != company_lc:
             continue
         out.append(
             {
@@ -756,7 +768,18 @@ def write_region_cmd(
     help="ISO timestamp; only return meetings newer than this. Default: most recent.",
 )
 @click.option("--limit", type=int, default=50, help="Max rows to return. Default 50.")
-def fathom_list_cmd(since_iso: str | None, limit: int) -> None:
+@click.option(
+    "--type",
+    "meeting_type",
+    type=click.Choice([
+        "project-status", "account-status", "sprint-planning",
+        "work-session", "1-1", "untagged",
+    ]),
+    default=None,
+    help="Filter by meeting_type (Phase B). Used by /cp-ingest --account to "
+    "pull just account-status meetings. Default: no filter.",
+)
+def fathom_list_cmd(since_iso: str | None, limit: int, meeting_type: str | None) -> None:
     """List Fathom meetings from Supabase, newest first.
 
     Reads from `fathom_meetings` (the same Supabase project MC-2 uses;
@@ -767,7 +790,9 @@ def fathom_list_cmd(since_iso: str | None, limit: int) -> None:
     from cp_engine.fathom import list_meetings
 
     config = _load_config_or_die()
-    meetings = list_meetings(config, since_iso=since_iso, limit=limit)
+    meetings = list_meetings(
+        config, since_iso=since_iso, limit=limit, meeting_type=meeting_type
+    )
     click.echo(json.dumps([m.to_dict() for m in meetings], indent=2))
 
 

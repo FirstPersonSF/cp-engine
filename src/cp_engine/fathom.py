@@ -138,6 +138,7 @@ def list_meetings(
     *,
     since_iso: str | None = None,
     limit: int = 50,
+    meeting_type: str | None = None,
 ) -> list[FathomMeetingSummary]:
     """List meetings from `fathom_meetings`, newest first.
 
@@ -145,6 +146,11 @@ def list_meetings(
         since_iso: only return meetings with `meeting_date > since_iso`.
             None → return the most recent `limit` meetings.
         limit: max rows to return (default 50).
+        meeting_type: filter by meeting_type (Phase B). One of the
+            6 taxonomy values (project-status, account-status,
+            sprint-planning, work-session, 1-1, untagged) or None for
+            no filter. Used by /cp-ingest --account to pull just
+            account-status meetings.
 
     Output rows have lightweight fields only — full transcript is
     fetched separately via `fetch_meeting`.
@@ -160,6 +166,8 @@ def list_meetings(
     )
     if since_iso:
         query = query.gt("meeting_date", since_iso)
+    if meeting_type:
+        query = query.eq("meeting_type", meeting_type)
     rows = query.execute().data or []
     return [
         FathomMeetingSummary(

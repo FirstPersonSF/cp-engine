@@ -283,6 +283,30 @@ def execute_plan(plan: dict, *, tenant_root: Path, today: date) -> IngestPlanRes
                 except Exception as exc:
                     result.errors.append(f"theme: {exc}")
 
+    # Phase B: account-level decisions are tenant-wide; they go in
+    # weekly-cp.md's handwritten Decisions list. Cross-references to
+    # specific projects come via `source: account: <company>` parsed by
+    # cp_engine.agenda.decisions_for_project — but the company itself
+    # isn't a project code, so these don't bucket under any one project.
+    # They surface in weekly-cp.md and in /cp-prep agenda's tenant-wide
+    # context block as "cross-cutting decisions, last 4 weeks."
+    account_decisions = plan.get("account_decisions") or []
+    if account_decisions:
+        weekly_cp_path = tenant_root / "weekly-cp.md"
+        if not weekly_cp_path.exists():
+            result.errors.append(f"weekly-cp.md missing: {weekly_cp_path}")
+        else:
+            for item in account_decisions:
+                try:
+                    written = _write_account_decision(item, weekly_cp_path)
+                    if written:
+                        if weekly_cp_path not in result.files_written:
+                            result.files_written.append(weekly_cp_path)
+                    else:
+                        result.skipped_duplicate += 1
+                except Exception as exc:
+                    result.errors.append(f"account-decision: {exc}")
+
     return result
 
 
@@ -325,6 +349,19 @@ def _validate_plan(plan: dict) -> None:
     themes = plan.get("themes")
     if themes is not None and not isinstance(themes, list):
         raise IngestPlanError("plan.themes must be a list of {text, date}")
+
+    # Phase B: account_decisions is tenant-wide, parallel to themes.
+    account_decisions = plan.get("account_decisions")
+    if account_decisions is not None:
+        if not isinstance(account_decisions, list):
+            raise IngestPlanError(
+                "plan.account_decisions must be a list of {text, company, date}"
+            )
+        for i, item in enumerate(account_decisions):
+            if not isinstance(item, dict):
+                raise IngestPlanError(
+                    f"plan.account_decisions[{i}] must be a mapping"
+                )
 
 
 def _normalize_verb(verb: str) -> str:
@@ -596,6 +633,79 @@ def _write_theme(item: dict, week_path: Path) -> bool:
     bullet = f"- [theme · {date_s}] {text} {_hash_marker(h)}"
     new = _append_bullet_to_subsection(body, "Themes", None, bullet)
     week_path.write_text(new)
+    return True
+
+
+def _write_account_decision(item: dict, weekly_cp_path: Path) -> bool:
+    """Phase B: append an account-level decision to weekly-cp.md.
+
+    Format matches the existing handwritten numbered-list style:
+      <N+1>. **<text>** (YYYY-MM-DD, source: account: <company-lower>) <hash-marker>
+
+    Where <N+1> is one greater than the highest numbered decision already
+    present, found via regex on lines like "19. **...** ...".
+
+    Inserted before the first cp-engine marker (so it lands inside the
+    handwritten section, not inside the engine-managed strip regions).
+    The cross-reference parser in cp_engine.agenda picks up
+    `source: account: <company-lower>` automatically (see Phase B Q5
+    in the cascade design doc).
+
+    Idempotency via content hash on (company, "record-account-decision",
+    text). Re-running the same plan is a no-op.
+    """
+    text = (item.get("text") or "").strip()
+    company = (item.get("company") or "").strip().lower()
+    date_s = (item.get("date") or _today_iso()).strip()
+    if not text:
+        raise IngestPlanError("account-decision item missing 'text'")
+    if not company:
+        raise IngestPlanError("account-decision item missing 'company'")
+    h = _content_hash(company, "record-account-decision", text)
+    body = weekly_cp_path.read_text(encoding="utf-8")
+    if _already_present(body, h):
+        return False
+
+    # Find highest existing decision number. Pattern matches lines like:
+    #   "19. **..." OR "1. **..." (any digit count, leading whitespace optional).
+    decision_nums = [
+        int(m.group(1))
+        for m in re.finditer(r"^\s*(\d+)\.\s+\*\*", body, re.MULTILINE)
+    ]
+    next_num = (max(decision_nums) + 1) if decision_nums else 1
+
+    # New decision line. Two newlines before so it gets its own paragraph
+    # (matches the spacing of existing entries in weekly-cp.md).
+    new_line = (
+        f"{next_num}. **{text}** "
+        f"({date_s}, source: account: {company}) {_hash_marker(h)}"
+    )
+
+    # Insert location: before the first cp-engine marker (so it lands in
+    # the handwritten section), or before "## Active research" as a
+    # fallback, or at end of file as last resort.
+    insertion_anchors = [
+        "<!-- cp-engine:start themes-strip -->",
+        "<!-- cp-engine:start decisions-strip -->",
+        "## Active research",
+    ]
+    anchor_pos = -1
+    for anchor in insertion_anchors:
+        pos = body.find(anchor)
+        if pos != -1:
+            anchor_pos = pos
+            break
+
+    if anchor_pos == -1:
+        # Append at end of file.
+        if not body.endswith("\n"):
+            body += "\n"
+        new = body + "\n" + new_line + "\n"
+    else:
+        # Insert just before the anchor, with blank-line padding.
+        new = body[:anchor_pos] + new_line + "\n\n" + body[anchor_pos:]
+
+    weekly_cp_path.write_text(new)
     return True
 
 
