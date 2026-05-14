@@ -760,6 +760,17 @@ def _today_iso() -> str:
 
 
 def _current_week_iso(today: date) -> str:
-    from datetime import timedelta
-    monday = today - timedelta(days=today.weekday())
-    return f"{monday.year}-W{monday.strftime('%W')}"
+    """Return the cp-engine sprint week label for `today` (e.g. "2026-W20").
+
+    Delegates to `sprints.current_sprint_week_iso` so this function and
+    the sprint-file scaffolding agree on the label. Previously this used
+    `strftime('%W')` which returned a non-ISO week number — that disagreed
+    with the actual filesystem dirs (which are named via the sprints
+    helper) and caused "sprint file missing" errors when execute_plan
+    ran on a date whose %W vs ISO week differed.
+    """
+    from datetime import datetime as _dt
+
+    from cp_engine.sprints import current_sprint_week_iso
+
+    return current_sprint_week_iso(_dt.combine(today, _dt.min.time()))
