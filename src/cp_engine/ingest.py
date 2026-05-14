@@ -510,6 +510,24 @@ def _append_bullet_to_subsection(
     return body[:insert_zone_start] + new_zone + body[insert_zone_end:]
 
 
+def _communication_section(body: str) -> str:
+    """Return whichever communication-style section header exists in the body.
+
+    Engagement sprint files have `## Client communication`. Initiative
+    sprint files have `## Team communication`. Both are emitted by their
+    respective templates and both carry the same subsection structure
+    (Open asks, Inbound, Stakeholders, Slack digest). The verb-write
+    functions need to land bullets in whichever section actually exists.
+
+    Falls back to "Client communication" when neither is present so the
+    error message from _append_bullet_to_subsection stays informative
+    (most sprint files in the wild are engagement-shape).
+    """
+    if re.search(r"^## Team communication\s*$", body, re.MULTILINE):
+        return "Team communication"
+    return "Client communication"
+
+
 def _write_inbound(code: str, item: dict, sprint_path: Path) -> bool:
     text = (item.get("text") or "").strip()
     date_s = (item.get("date") or "").strip()
@@ -523,7 +541,9 @@ def _write_inbound(code: str, item: dict, sprint_path: Path) -> bool:
     if _already_present(body, h):
         return False
     bullet = f"- [{date_s} · {who}] {text} {_hash_marker(h)}"
-    new = _append_bullet_to_subsection(body, "Client communication", "Inbound", bullet)
+    new = _append_bullet_to_subsection(
+        body, _communication_section(body), "Inbound", bullet
+    )
     sprint_path.write_text(new)
     return True
 
@@ -542,7 +562,9 @@ def _write_ask(code: str, item: dict, sprint_path: Path) -> bool:
         return False
     by_str = f" · by {by}" if by else ""
     bullet = f"- [{status} · {asked_date} · {who}{by_str}] {text} {_hash_marker(h)}"
-    new = _append_bullet_to_subsection(body, "Client communication", "Open asks", bullet)
+    new = _append_bullet_to_subsection(
+        body, _communication_section(body), "Open asks", bullet
+    )
     sprint_path.write_text(new)
     return True
 
@@ -629,7 +651,7 @@ def _write_stakeholder(code: str, item: dict, sprint_path: Path) -> bool:
         parts.append(context)
     bullet = f"- [{' · '.join(parts)}] {_hash_marker(h)}"
     new = _append_bullet_to_subsection(
-        body, "Client communication", "Stakeholders", bullet
+        body, _communication_section(body), "Stakeholders", bullet
     )
     sprint_path.write_text(new)
     return True
@@ -656,7 +678,7 @@ def _write_slack_digest(code: str, item: dict, sprint_path: Path) -> bool:
         return False
     bullet = f"- [{week} · Slack] {text} {_hash_marker(h)}"
     new = _append_bullet_to_subsection(
-        body, "Client communication", "Slack digest", bullet
+        body, _communication_section(body), "Slack digest", bullet
     )
     sprint_path.write_text(new)
     return True
