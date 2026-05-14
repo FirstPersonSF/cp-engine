@@ -4,6 +4,22 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.14.1 — 2026-05-14
+
+### Added — Initiative-shaped prompts for auto-ingest (Phase 2)
+
+`plan_from_transcript._build_prompt` now branches on whether the target project is an engagement (`<3-letter>-<digits>` code) or an initiative (slug code). Initiative prompts:
+
+- Drop `inbound` and `stakeholders` from the schema — no client side, no net-new external contacts.
+- Emphasize `decisions`, `risks`, and `asks` (team-to-team open loops) as the load-bearing verbs.
+- Use "internal workstream" framing instead of "client engagement."
+
+The engagement path is unchanged.
+
+New public helper: `plan_from_transcript._is_engagement_code(code)`. Used to discriminate without a separate `source` parameter.
+
+This makes the auto-ingest webhook (`cp-engine-webhook`) correctly handle initiative meetings: when the dashboard's project-assignment dropdown (Phase D.1) writes `project_tags: ["mission-control"]`, the trigger fires, the webhook calls `generate_plan(project_code="mission-control")`, and the resulting plan is initiative-shaped.
+
 ## v0.8.14 — 2026-05-14
 
 ### Added — Internal initiatives as a first-class workstream

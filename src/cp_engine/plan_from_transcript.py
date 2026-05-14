@@ -247,6 +247,19 @@ def _find_project_dir(tenant_root: Path, project_code: str) -> Path | None:
     return None
 
 
+# Engagement codes match `<3-letter>-<digits>` (e.g. ggl-5168). Anything
+# else (storyos, mission-control, mc-2) is an initiative or a standalone
+# repo. We don't distinguish initiative vs. repo for prompt-shaping
+# purposes — both are "internal", neither has a client-communication
+# surface — so the boolean `is_engagement` is the only discriminator
+# that matters.
+_ENGAGEMENT_CODE_RE = re.compile(r"^[a-z]{2,4}-\d{3,5}$")
+
+
+def _is_engagement_code(project_code: str) -> bool:
+    return bool(_ENGAGEMENT_CODE_RE.match(project_code or ""))
+
+
 def _build_prompt(
     *,
     transcript: str,
@@ -264,7 +277,17 @@ def _build_prompt(
         )
     else:
         team_block = "(No team roster declared in tenant config.)"
-    return _PROMPT_TEMPLATE.format(
+
+    # Initiatives (Mission Control, StoryOS, etc.) have no client side
+    # and no external stakeholders, so the engagement-shape verbs
+    # `inbound` and `stakeholders` don't apply — the prompt drops them
+    # from the schema and emphasizes decisions/risks/asks instead.
+    template = (
+        _PROMPT_TEMPLATE
+        if _is_engagement_code(project_code)
+        else _INITIATIVE_PROMPT_TEMPLATE
+    )
+    return template.format(
         today=today,
         project_code=project_code,
         transcript_relpath=str(transcript_path),
@@ -360,6 +383,103 @@ projects:
 Respond with ONLY the YAML plan inside a single ```yaml fenced code block.
 No preamble, no explanation, no postscript. If there is genuinely nothing
 to ingest from this transcript for this project, return:
+
+```yaml
+transcript:
+  source: fathom
+  path: {transcript_relpath}
+projects: {{}}
+```
+
+# Transcript
+
+{transcript}
+"""
+
+
+_INITIATIVE_PROMPT_TEMPLATE = """\
+You are extracting structured updates from an INTERNAL meeting transcript
+about an initiative (an internal workstream like Mission Control or
+StoryOS — NOT a client engagement). Your output is a YAML plan that
+`cp ingest` will execute against the initiative's sprint file.
+
+This is internal team work, so there is NO client side: no inbound
+client messages, no client stakeholders to record. The relevant verbs
+are `decisions`, `risks`, and `asks` (open loops between team members
+or between teams).
+
+# Today
+{today}
+
+# Target initiative
+{project_code}
+
+# Internal team
+{team_block}
+
+# What's already known about this initiative
+{project_context}
+
+# Schema you must produce
+
+```yaml
+transcript:
+  source: fathom
+  path: {transcript_relpath}
+
+projects:
+  {project_code}:
+    asks:           # open loops between team members or teams
+      - text: "..."
+        who: "<who we're asking>"
+        by: "YYYY-MM-DD"          # optional deadline
+        date: "YYYY-MM-DD"        # when we asked; defaults to today
+    decisions:
+      - text: "..."
+        date: "YYYY-MM-DD"
+        cross_cutting: false      # true → also surfaces in weekly-cp.md
+    risks:
+      - text: "..."
+        severity: "watching"      # or "escalated", "dependency"
+        category: "schedule"      # or contract, scope, technical, etc.
+        date: "YYYY-MM-DD"
+```
+
+# Rules
+
+1. **Only include verbs that have entries.** Empty lists are forbidden.
+   If you have nothing to say for a verb, omit it entirely.
+2. **No `inbound` and no `stakeholders` verbs.** This is internal work;
+   there's no client side to capture inbound from, and the team roster
+   is already known. Do NOT emit either verb — they're intentionally
+   omitted from the schema above.
+3. **Decisions are commitments made in the meeting.** Who's doing what,
+   by when, what we agreed to architecturally. "Maybe we should..." is
+   NOT a decision; "Drew will own the migration by Friday" is.
+4. **Asks are open loops we're waiting on someone for.** Cross-team
+   ("waiting on Tony to finish the schema review") or task-level
+   ("Maria needs the design specs by 5/22"). If the meeting resolved
+   an existing ask, do NOT create a new entry.
+5. **Risks are explicit concerns about schedule, scope, dependencies,
+   or technical issues.** Not vibes — "worried the migration won't be
+   done in time" qualifies; "we should probably watch this" does not.
+6. **Cross-cutting decisions go in weekly-cp.md.** Set `cross_cutting:
+   true` for decisions that affect multiple initiatives or the whole
+   company (e.g. team process changes, vendor selections).
+7. **Don't duplicate what's already in the project context.** If a
+   decision or ask already appears in the sprint file, cp.md, OR the
+   "Recent account-level decisions" list, skip it.
+8. **Date fields:** use the meeting date if known (parse from
+   transcript header), otherwise today ({today}). ISO YYYY-MM-DD.
+9. **Quote-like fidelity, no embellishment.** Reflect what was
+   actually said. No interpretation or speculation.
+
+# Output format
+
+Respond with ONLY the YAML plan inside a single ```yaml fenced code
+block. No preamble, no explanation, no postscript. If there is
+genuinely nothing to ingest from this transcript for this initiative,
+return:
 
 ```yaml
 transcript:
