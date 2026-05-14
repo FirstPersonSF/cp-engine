@@ -110,9 +110,14 @@ async def auto_ingest(request: Request) -> dict:
         config = _load_tenant_config(tenant_root)
         transcript_path = _stage_transcript(tenant_root, meeting_id, transcript_text)
 
+        # Per-project ingest + per-project commit. A multi-project
+        # auto-ingest call produces N commits (one per project that
+        # actually wrote files), not one combined commit. This makes
+        # the git log readable (each commit's diff scopes to one
+        # project's sprint file) and lets revert target one project
+        # without disturbing the others.
         ingested: list[dict] = []
-        anything_wrote = False
-
+        commits: list[str] = []
         for code in project_codes:
             entry = _ingest_one_project(
                 config=config,
@@ -120,9 +125,20 @@ async def auto_ingest(request: Request) -> dict:
                 transcript_path=transcript_path,
             )
             ingested.append(entry)
-            anything_wrote = anything_wrote or bool(entry["files_written"])
+            if entry["files_written"]:
+                commit_sha = _commit_and_push(
+                    tenant_root=tenant_root,
+                    meeting_id=meeting_id,
+                    ingested=[entry],
+                )
+                entry["commit_sha"] = commit_sha
+                commits.append(commit_sha)
+                log.info(
+                    "auto-ingest commit: meeting=%s project=%s commit=%s",
+                    meeting_id, code, commit_sha,
+                )
 
-        if not anything_wrote:
+        if not commits:
             log.info("auto-ingest no-op: no files changed for meeting=%s", meeting_id)
             response = {"ingested": ingested, "commit_sha": None, "skipped_no_op": True}
             _log_run_to_supabase(
@@ -134,19 +150,26 @@ async def auto_ingest(request: Request) -> dict:
             )
             return response
 
-        commit_sha = _commit_and_push(
-            tenant_root=tenant_root,
-            meeting_id=meeting_id,
-            ingested=ingested,
+        # observability: log one row per multi-project auto-ingest run
+        # against the last commit SHA. Per-project commit shas are
+        # surfaced in the `ingested` payload field.
+        last_commit = commits[-1]
+        log.info(
+            "auto-ingest done: meeting=%s commits=%d last=%s",
+            meeting_id, len(commits), last_commit,
         )
-        log.info("auto-ingest done: meeting=%s commit=%s", meeting_id, commit_sha)
-        response = {"ingested": ingested, "commit_sha": commit_sha, "skipped_no_op": False}
+        response = {
+            "ingested": ingested,
+            "commit_sha": last_commit,
+            "commit_shas": commits,
+            "skipped_no_op": False,
+        }
         _log_run_to_supabase(
             meeting_id=meeting_id,
             project_codes=project_codes,
             status="success",
             ingested=ingested,
-            commit_sha=commit_sha,
+            commit_sha=last_commit,
         )
         return response
 
