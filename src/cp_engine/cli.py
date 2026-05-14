@@ -1066,8 +1066,9 @@ def slack_channels_cmd(output_format: str, active_only: bool) -> None:
                         "company_code": r.company_code,
                         "status": r.status,
                         "enable_slack": r.enable_slack,
-                        "channel_id": r.channel_id,
-                        "channel_name": r.channel_name,
+                        "channel_ids": list(r.channel_ids),
+                        "primary_channel_id": r.primary_channel_id,
+                        "primary_channel_name": r.primary_channel_name,
                     }
                     for r in rows
                 ],
@@ -1085,7 +1086,7 @@ def slack_channels_cmd(output_format: str, active_only: bool) -> None:
     name_w = min(40, max(len(r.name) for r in rows))
     headers = (
         f"{'CODE':<{code_w}}  {'STATUS':<7}  {'SLACK':<5}  "
-        f"{'CHANNEL_ID':<15}  NAME"
+        f"{'#CH':<3}  {'CHANNELS':<40}  NAME"
     )
     click.echo(headers)
     click.echo("-" * len(headers))
@@ -1093,18 +1094,20 @@ def slack_channels_cmd(output_format: str, active_only: bool) -> None:
     n_unmapped = 0
     for r in rows:
         flag = "ON" if r.enable_slack else "OFF"
-        chan = r.channel_id or "(none)"
+        n_ch = len(r.channel_ids)
+        chans = ", ".join(r.channel_ids) if r.channel_ids else "(none)"
+        chans_clip = chans if len(chans) <= 40 else chans[:39] + "…"
         name_clip = r.name if len(r.name) <= name_w else r.name[: name_w - 1] + "…"
         click.echo(
             f"{r.code:<{code_w}}  {r.status:<7}  {flag:<5}  "
-            f"{chan:<15}  {name_clip}"
+            f"{n_ch:<3}  {chans_clip:<40}  {name_clip}"
         )
-        if r.channel_id:
+        if r.channel_ids:
             n_mapped += 1
         elif r.enable_slack:
             n_unmapped += 1
     click.echo()
-    click.echo(f"{n_mapped} mapped, {n_unmapped} enable_slack=true with no channel_id")
+    click.echo(f"{n_mapped} mapped, {n_unmapped} enable_slack=true with no channels")
 
 
 def _parse_iso_week(week: str) -> tuple[datetime, datetime]:
@@ -1147,17 +1150,18 @@ def _parse_iso_week(week: str) -> tuple[datetime, datetime]:
 def slack_fetch_cmd(project_code: str, week: str, output_format: str) -> None:
     """Pull one week of Slack messages for a single project.
 
-    Resolves the project's `slack_channel_id` from MC-2, then calls
-    Slack's `conversations.history` for the ISO week. Filters bots,
-    joins, reactions-only events; resolves user mentions.
+    Resolves the project's `slack_channel_ids` from MC-2, then calls
+    Slack's `conversations.history` for each channel and the ISO week.
+    Filters bots, joins, reactions-only events; resolves user mentions.
 
-    Used by the digest pipeline (P.3+) and standalone for debugging.
+    For multi-channel projects, prints one section per channel
+    (separated by `# Channel: <id> (<name>)` headers).
     """
     import json
     from cp_engine.slack import (
         ChannelMapRow,
         SlackError,
-        fetch_week,
+        fetch_channels,
         list_channel_map,
         load_slack_token,
     )
@@ -1171,9 +1175,9 @@ def slack_fetch_cmd(project_code: str, week: str, output_format: str) -> None:
     if row is None:
         click.echo(f"Project {project_code!r} not found in MC-2.", err=True)
         sys.exit(2)
-    if not row.channel_id:
+    if not row.channel_ids:
         click.echo(
-            f"Project {project_code} has no slack_channel_id in MC-2 "
+            f"Project {project_code} has no Slack channels in MC-2 "
             "(use `cp slack-channels` to see the full map).",
             err=True,
         )
@@ -1181,7 +1185,9 @@ def slack_fetch_cmd(project_code: str, week: str, output_format: str) -> None:
 
     try:
         token = load_slack_token(config)
-        messages = fetch_week(token, row.channel_id, monday, week_end=next_monday)
+        fetched = fetch_channels(
+            token, row.channel_ids, monday, week_end=next_monday
+        )
     except SlackError as exc:
         click.echo(f"Slack fetch failed: {exc}", err=True)
         sys.exit(1)
@@ -1190,19 +1196,31 @@ def slack_fetch_cmd(project_code: str, week: str, output_format: str) -> None:
         click.echo(
             json.dumps(
                 [
-                    {"ts": m.ts, "iso": m.iso, "user_name": m.user_name, "text": m.text}
-                    for m in messages
+                    {
+                        "channel_id": fc.channel_id,
+                        "channel_name": fc.channel_name,
+                        "messages": [
+                            {"ts": m.ts, "iso": m.iso, "user_name": m.user_name, "text": m.text}
+                            for m in fc.messages
+                        ],
+                    }
+                    for fc in fetched
                 ],
                 indent=2,
             )
         )
         return
 
+    total = sum(len(fc.messages) for fc in fetched)
     click.echo(
-        f"# {project_code} · {week} · channel {row.channel_id} · {len(messages)} messages\n"
+        f"# {project_code} · {week} · {len(fetched)} channel(s) · {total} message(s)\n"
     )
-    for m in messages:
-        click.echo(f"[{m.iso} · {m.user_name}] {m.text}")
+    for fc in fetched:
+        name = f"#{fc.channel_name}" if fc.channel_name else "(unknown name)"
+        click.echo(f"## Channel: {fc.channel_id} {name} · {len(fc.messages)} messages")
+        for m in fc.messages:
+            click.echo(f"[{m.iso} · {m.user_name}] {m.text}")
+        click.echo()
 
 
 @main.command("slack-digest")
@@ -1265,7 +1283,7 @@ def slack_digest_cmd(
     from cp_engine.slack import (
         ChannelMapRow,
         SlackError,
-        fetch_week,
+        fetch_channels,
         list_channel_map,
         load_slack_token,
     )
@@ -1282,13 +1300,13 @@ def slack_digest_cmd(
             sys.exit(2)
         targets = [by_code[project_code]]
     else:
-        # Multi-project: active (Deal | Open), enable_slack=true, channel_id set.
+        # Multi-project: active (Deal | Open), enable_slack=true, ≥1 channel.
         targets = [
             r for r in rows
-            if r.status in ("Deal", "Open") and r.enable_slack and r.channel_id
+            if r.status in ("Deal", "Open") and r.enable_slack and r.channel_ids
         ]
         if not targets:
-            click.echo("No active projects with slack_channel_id set.", err=True)
+            click.echo("No active projects with Slack channels set.", err=True)
             sys.exit(1)
 
     try:
@@ -1303,29 +1321,33 @@ def slack_digest_cmd(
     }
 
     for row in targets:
-        if not row.channel_id:
+        if not row.channel_ids:
             click.echo(
-                f"# skip {row.code}: no slack_channel_id", err=True
+                f"# skip {row.code}: no Slack channels", err=True
             )
-            summary["projects"].append({"code": row.code, "skipped": "no_channel_id"})
+            summary["projects"].append({"code": row.code, "skipped": "no_channels"})
             continue
 
         try:
-            messages = fetch_week(
-                token, row.channel_id, monday, week_end=next_monday
+            fetched = fetch_channels(
+                token, row.channel_ids, monday, week_end=next_monday
             )
         except SlackError as exc:
             click.echo(f"# {row.code}: fetch failed: {exc}", err=True)
             summary["projects"].append({"code": row.code, "skipped": f"fetch_error: {exc}"})
             continue
 
-        if not messages and skip_quiet:
-            click.echo(f"# skip {row.code}: 0 messages (quiet week)", err=True)
+        total_msgs = sum(len(fc.messages) for fc in fetched)
+        if total_msgs == 0 and skip_quiet:
+            click.echo(
+                f"# skip {row.code}: 0 messages across {len(fetched)} channel(s) (quiet week)",
+                err=True,
+            )
             summary["projects"].append({"code": row.code, "skipped": "quiet_week"})
             continue
 
         click.echo(
-            f"# {row.code} · {len(messages)} messages — generating plan…",
+            f"# {row.code} · {total_msgs} messages across {len(fetched)} channel(s) — generating plan…",
             err=True,
         )
         try:
@@ -1333,8 +1355,7 @@ def slack_digest_cmd(
                 config=config,
                 project_code=row.code,
                 week=week,
-                channel_id=row.channel_id,
-                messages=messages,
+                channels=fetched,
                 model=model,
             )
         except SlackPlanError as exc:
@@ -1348,7 +1369,13 @@ def slack_digest_cmd(
             )
             click.echo(f"# --- {row.code} ---")
             click.echo(yaml_output)
-            summary["projects"].append({"code": row.code, "messages": len(messages)})
+            summary["projects"].append(
+                {
+                    "code": row.code,
+                    "messages": total_msgs,
+                    "channels": len(fetched),
+                }
+            )
             continue
 
         try:
@@ -1366,7 +1393,8 @@ def slack_digest_cmd(
         summary["projects"].append(
             {
                 "code": row.code,
-                "messages": len(messages),
+                "messages": total_msgs,
+                "channels": len(fetched),
                 "files_written": [str(p) for p in exec_result.files_written],
                 "skipped_duplicate": exec_result.skipped_duplicate,
                 "errors": exec_result.errors,

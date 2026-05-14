@@ -1,6 +1,6 @@
 """Generate a `cp ingest` plan from one week of Slack messages.
 
-Mirrors `plan_from_transcript.py` but tuned for async chat. The two
+Mirrors `plan_from_transcript.py` but tuned for async chat. Two
 differences in the prompt:
 
 1. **Always emit a digest** — even if no structured items are confident
@@ -13,19 +13,17 @@ differences in the prompt:
    stakeholders entirely — Slack rarely introduces genuinely new
    external people and the false-positive rate is too high.
 
-Schema produced is identical to `plan_from_transcript` except it always
-includes a `slack_digest` entry per project (the digest bullet) and
-substitutes `transcript.source` = "slack" with a synthetic `path`
-identifying the channel + week.
+Multi-channel projects: each project can have N channels (e.g. a main
+channel and a `_team` internal one). The digest paragraph is structured
+with one labeled sub-paragraph per channel, separated by blank lines,
+so Drew/Tony can see at a glance where each thread happened. Single-
+channel projects render as a single paragraph with no channel label.
 """
 
 from __future__ import annotations
 
-import os
-import re
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 
 import yaml
 
@@ -36,11 +34,13 @@ from cp_engine.plan_from_transcript import (
     _call_claude,
     _extract_yaml,
 )
-from cp_engine.slack import SlackMessage
+from cp_engine.slack import FetchedChannel
 
 # Slack weeks tend to be much smaller than meeting transcripts (most
-# active project channels are <50 messages/week). 30k chars is generous.
-_MAX_MESSAGES_CHARS = 30_000
+# active project channels are <50 messages/week). 30k chars per channel
+# is generous; the total budget across channels is the same — we don't
+# want a noisy team channel to blow out the prompt size.
+_MAX_TOTAL_CHARS = 30_000
 
 
 class SlackPlanError(Exception):
@@ -53,7 +53,7 @@ class GeneratedSlackPlan:
     raw_response: str
     project_code: str
     week: str
-    channel_id: str
+    channel_ids: tuple[str, ...]
     model: str
 
 
@@ -62,22 +62,28 @@ def generate_slack_plan(
     config: TenantConfig,
     project_code: str,
     week: str,
-    channel_id: str,
-    messages: list[SlackMessage],
+    channels: list[FetchedChannel] | tuple[FetchedChannel, ...],
     model: str = "claude-opus-4-7",
     api_key: str | None = None,
 ) -> GeneratedSlackPlan:
-    """Read messages + project context, ask Claude for a digest plan, validate it."""
+    """Read messages + project context, ask Claude for a digest plan, validate it.
+
+    `channels` is a list of FetchedChannel — one per Slack channel
+    associated with the project. For single-channel projects, pass a
+    one-element list. Channels with zero messages are still passed
+    through; the prompt names them and tells Claude to mention them as
+    quiet weeks rather than omit them.
+    """
+    channels = list(channels)
     project_ctx = _load_project_context(config, project_code)
-    formatted = _format_messages(messages)
+    formatted = _format_multi_channel(channels)
     prompt = _build_slack_prompt(
-        messages_text=formatted,
+        channels_text=formatted,
         project_context=project_ctx,
         project_code=project_code,
         week=week,
-        channel_id=channel_id,
+        channels=channels,
         team=config.team,
-        message_count=len(messages),
     )
 
     response_text = _call_claude(prompt, model=model, api_key=api_key)
@@ -97,9 +103,7 @@ def generate_slack_plan(
 
     # Inject `week` into every slack_digest item before validation. The
     # prompt asks Claude to include it, but observed behavior is flaky —
-    # Claude sometimes drops the field on otherwise-valid responses. Since
-    # the caller always knows the target week, we can fill it server-side
-    # rather than depend on prompt adherence.
+    # Claude sometimes drops the field on otherwise-valid responses.
     projects = plan.get("projects") or {}
     proj_block = projects.get(project_code) or {}
     for verb_key in ("slack_digest", "slack-digest", "record-slack-digest"):
@@ -113,13 +117,17 @@ def generate_slack_plan(
         raise SlackPlanError(f"plan failed validation: {exc}") from exc
 
     # Post-validation: ensure the digest bullet got emitted for the target
-    # project. The prompt requires it, but be paranoid: if a quiet week
-    # ended up with no bullet at all, the caller should know.
+    # project IF there was any activity at all. Genuinely quiet weeks
+    # (zero messages across all channels) are allowed to skip the digest;
+    # the caller has already decided to invoke this code anyway, so a
+    # missing digest in that case isn't a hard failure.
     digest_items = proj_block.get("slack_digest") or proj_block.get("record-slack-digest")
-    if not digest_items and messages:
+    total_msgs = sum(len(c.messages) for c in channels)
+    if not digest_items and total_msgs > 0:
         raise SlackPlanError(
             "plan is missing the required `slack_digest` entry for "
-            f"{project_code} (had {len(messages)} messages — should have produced a digest)"
+            f"{project_code} (had {total_msgs} messages across "
+            f"{len(channels)} channel(s) — should have produced a digest)"
         )
 
     return GeneratedSlackPlan(
@@ -127,39 +135,53 @@ def generate_slack_plan(
         raw_response=response_text,
         project_code=project_code,
         week=week,
-        channel_id=channel_id,
+        channel_ids=tuple(c.channel_id for c in channels),
         model=model,
     )
 
 
-def _format_messages(messages: list[SlackMessage]) -> str:
-    """Render messages as a numbered list for the prompt.
+def _format_multi_channel(channels: list[FetchedChannel]) -> str:
+    """Render N channels worth of messages with per-channel headers.
 
-    Includes ISO timestamp + author + text. Truncates if the total exceeds
-    `_MAX_MESSAGES_CHARS` — quiet weeks won't hit this; busy ones may.
+    For each channel: `## Channel: #<name>` (or the raw ID if name is
+    empty) followed by a numbered chronological list. A total-char
+    budget is enforced across all channels combined to keep the prompt
+    reasonable even when one channel is much chattier than the rest.
     """
-    if not messages:
-        return "(no messages this week)"
-    lines: list[str] = []
+    if not channels:
+        return "(no channels)"
+
+    blocks: list[str] = []
     total = 0
-    for i, m in enumerate(messages, start=1):
-        line = f"{i}. [{m.iso} · {m.user_name}] {m.text}"
-        if total + len(line) > _MAX_MESSAGES_CHARS:
-            lines.append(f"... ({len(messages) - i + 1} more messages truncated) ...")
-            break
-        lines.append(line)
-        total += len(line) + 1
-    return "\n".join(lines)
+    for c in channels:
+        label = f"#{c.channel_name}" if c.channel_name else c.channel_id
+        header = f"## Channel: {label} ({c.channel_id}) · {len(c.messages)} messages"
+        if not c.messages:
+            block = f"{header}\n(no messages this week)"
+        else:
+            lines = [header]
+            for i, m in enumerate(c.messages, start=1):
+                line = f"{i}. [{m.iso} · {m.user_name}] {m.text}"
+                if total + len(line) > _MAX_TOTAL_CHARS:
+                    lines.append(
+                        f"... ({len(c.messages) - i + 1} more messages truncated) ..."
+                    )
+                    break
+                lines.append(line)
+                total += len(line) + 1
+            block = "\n".join(lines)
+        blocks.append(block)
+        total += len(header)
+    return "\n\n".join(blocks)
 
 
 def _build_slack_prompt(
     *,
-    messages_text: str,
+    channels_text: str,
     project_context: str,
     project_code: str,
     week: str,
-    channel_id: str,
-    message_count: int,
+    channels: list[FetchedChannel],
     team: tuple[str, ...] = (),
 ) -> str:
     today = datetime.now().date().isoformat()
@@ -170,17 +192,52 @@ def _build_slack_prompt(
         )
     else:
         team_block = "(No team roster declared in tenant config.)"
-    synthetic_path = f"slack://{channel_id}/{week}"
+    channel_summary = "\n".join(
+        f"- {('#' + c.channel_name) if c.channel_name else c.channel_id} "
+        f"({c.channel_id}) — {len(c.messages)} messages"
+        for c in channels
+    )
+    digest_shape = _digest_shape_instructions(channels)
+    synthetic_path = f"slack://{'+'.join(c.channel_id for c in channels)}/{week}"
     return _PROMPT_TEMPLATE.format(
         today=today,
         project_code=project_code,
         week=week,
-        channel_id=channel_id,
+        channel_summary=channel_summary,
         synthetic_path=synthetic_path,
         project_context=project_context,
-        messages_text=messages_text,
-        message_count=message_count,
+        channels_text=channels_text,
         team_block=team_block,
+        digest_shape=digest_shape,
+    )
+
+
+def _digest_shape_instructions(channels: list[FetchedChannel]) -> str:
+    """Tell Claude how to structure the digest's `text` field.
+
+    Single-channel: one paragraph, no labels.
+    Multi-channel: one labeled paragraph per channel, separated by
+    blank lines, in the same order as the channel list.
+    """
+    if len(channels) <= 1:
+        return (
+            "Single channel — produce ONE paragraph (60–120 words) "
+            "describing the week's chatter. No channel label is needed."
+        )
+    labels = [
+        f"**#{c.channel_name}**:" if c.channel_name else f"**{c.channel_id}**:"
+        for c in channels
+    ]
+    label_list = "\n".join(f"   - `{lab} <paragraph>`" for lab in labels)
+    return (
+        f"This project has {len(channels)} channels. The `text` field must "
+        f"contain ONE paragraph PER channel, in this order:\n"
+        f"{label_list}\n"
+        "Format: each channel's section starts with its bold-label "
+        "(e.g. `**#ibx_5167_ddi_platform_video_team**:`), followed by a "
+        "40–90 word paragraph. Separate channels with a blank line. "
+        "If a channel was quiet, write its label followed by `(quiet "
+        "this week)` or a one-sentence note — do not omit the channel."
     )
 
 
@@ -198,9 +255,8 @@ project's sprint file.
 # ISO week being summarized
 {week} (Monday 00:00 UTC through next Monday 00:00 UTC)
 
-# Slack channel
-{channel_id} ({message_count} top-level messages — bot/system messages
-already filtered out, thread replies dropped, mentions resolved)
+# Slack channels for this project
+{channel_summary}
 
 # Internal team
 {team_block}
@@ -217,10 +273,10 @@ transcript:
 
 projects:
   {project_code}:
-    slack_digest:                # ALWAYS emit exactly one entry, even
-      - text: "..."              # if you have no structured verbs below.
-        week: "{week}"           # This is the contract.
-    inbound:                     # OPTIONAL — only if confident
+    slack_digest:                # ALWAYS emit exactly one entry.
+      - text: "..."              # See "Digest shape" below for structure.
+        week: "{week}"
+    inbound:                     # OPTIONAL — only if HIGH confidence
       - text: "..."
         date: "YYYY-MM-DD"
         who: "<who said it>"
@@ -240,14 +296,15 @@ projects:
         date: "YYYY-MM-DD"
 ```
 
+# Digest shape
+
+{digest_shape}
+
 # Rules
 
-1. **The `slack_digest` entry is REQUIRED.** Exactly one entry. The
-   `text` is one paragraph (60–120 words) capturing the dominant
-   threads, decisions made or pending, and unresolved questions from
-   the week. Write it as a human standup-style summary, not a list of
-   message-by-message recaps. If the week was genuinely quiet (no
-   meaningful chatter despite messages existing), say so plainly.
+1. **The `slack_digest` entry is REQUIRED.** Exactly one YAML entry,
+   even for multi-channel projects (the `text` field carries the
+   per-channel paragraphs internally).
 2. **Verbs are bonus extraction.** Async chat is harder to classify
    than a meeting transcript. Only emit `inbound`/`asks`/`decisions`/
    `risks` when you have HIGH CONFIDENCE the message qualifies.
@@ -263,25 +320,20 @@ projects:
      won't make 6/1").
 3. **Skip stakeholders entirely.** Slack rarely introduces genuinely
    new external people, and the false-positive rate is too high for
-   automated extraction. The `record-stakeholder` verb is intentionally
-   omitted from the schema above.
-4. **Don't duplicate what's already known.** If the project_context
+   automated extraction.
+4. **Don't duplicate what's already known.** If the project context
    already records a decision or ask, do NOT re-emit it as a verb.
-   The digest can still mention it ("Tony confirmed his ownership of
-   Firebase setup, decided last week").
-5. **Internal team members never become stakeholders.** (Moot since
-   we skip stakeholders entirely, but stays true in spirit.)
-6. **Date fields:** use the message's ISO date (left of the `T`),
-   not today. If a date isn't extractable, use today ({today}).
-7. **No empty lists.** If a verb has no entries, omit it. (The
-   `slack_digest` entry is the only one that's always present.)
+   The digest can still mention it for color.
+5. **Internal team members never become stakeholders.**
+6. **Date fields:** use the message's ISO date (left of the `T`).
+7. **No empty lists.** If a verb has no entries, omit it.
 
 # Output format
 
 Respond with ONLY the YAML plan inside a single ```yaml fenced code
 block. No preamble, no explanation, no postscript.
 
-# Slack messages (chronological)
+# Slack messages (chronological, per channel)
 
-{messages_text}
+{channels_text}
 """

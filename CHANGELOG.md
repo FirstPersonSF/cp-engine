@@ -4,6 +4,27 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.13 — 2026-05-13
+
+### Added — Multi-channel Slack digests
+
+Projects can now have multiple Slack channels (e.g. a main channel + a `_team` internal channel). The digest pipeline fans out across all of them and produces one weekly bullet with one labeled paragraph per channel. Schema change on MC-2 (new `projects.slack_channel_ids` JSONB column) drives the fan-out; the legacy scalar `slack_channel_id` stays in place as a "primary channel" pointer for display purposes.
+
+- **`fetch_channels(token, channel_ids, week_start)`** — new public function in `cp_engine.slack`. Fans out `fetch_week` across N channels, sharing one WebClient + user/channel-name caches across all calls. Returns a list of `FetchedChannel(channel_id, channel_name, messages)`. `fetch_week()` is now a thin single-channel wrapper.
+- **`ChannelMapRow.channel_ids: tuple[str, ...]`** replaces the single `channel_id` field. The dataclass also exposes `primary_channel_id` + `primary_channel_name` for display; the digest pipeline does NOT special-case the primary.
+- **`generate_slack_plan(channels=[...])`** takes a list of `FetchedChannel`s instead of a single channel + message list. The prompt describes each channel by name and asks Claude to emit one labeled paragraph per channel (e.g. `**#ibx_5167_ddi_platform_video**: <para>` followed by a blank line and `**#ibx_5167_ddi_platform_video_team**: <para>`) inside the single `slack_digest` entry's `text` field.
+- **`cp slack-channels`** table format updated to show `#CH` (channel count) and a comma-separated list of channel IDs per project. JSON output now includes `channel_ids: [...]` + `primary_channel_id` + `primary_channel_name`.
+- **`cp slack-fetch`** prints one `## Channel: <id> #<name>` section per channel for multi-channel projects.
+
+### MC-2 migration
+
+Migration `add_slack_channel_ids_array_to_projects` adds a `slack_channel_ids JSONB NOT NULL DEFAULT '[]'` column and backfills it from the existing scalar `slack_channel_id` (1-element array for each non-null row). The admin UI does not need to change immediately — the array is populated correctly by the migration, and additional channels can be added via SQL until the UI catches up.
+
+### Breaking
+
+- `ChannelMapRow.channel_id` removed; use `channel_ids[0]` or `primary_channel_id`. Internal API only — no external consumers.
+- `generate_slack_plan` signature change: `channel_id` + `messages` → `channels: list[FetchedChannel]`. Internal API only.
+
 ## v0.8.12 — 2026-05-13
 
 ### Added — Weekly Slack digest pipeline

@@ -49,15 +49,26 @@ class SlackError(Exception):
 
 @dataclass(frozen=True)
 class ChannelMapRow:
-    """One project's Slack-mapping status, as surfaced by `cp slack-channels`."""
+    """One project's Slack-mapping status, as surfaced by `cp slack-channels`.
 
-    code: str            # canonical CP code, e.g. "ggl-5168"
-    name: str            # project name
-    company_code: str    # e.g. "GGL"
-    status: str          # MC-2 mc_status (Open, Deal, Closed, Holding)
-    enable_slack: bool   # MC-2's per-project toggle
-    channel_id: str | None
-    channel_name: str | None
+    `channel_ids` is the canonical source of truth — projects can have
+    one or more channels (e.g. a main channel plus a team-internal one).
+    The digest pipeline iterates each channel and merges the output into
+    a single weekly bullet with one paragraph per channel.
+
+    `primary_channel_id` mirrors MC-2's legacy scalar `slack_channel_id`
+    column — useful for display ("primary channel: #foo") but the
+    digest pipeline does NOT special-case it.
+    """
+
+    code: str                              # canonical CP code, e.g. "ggl-5168"
+    name: str                              # project name
+    company_code: str                      # e.g. "GGL"
+    status: str                            # MC-2 mc_status (Open, Deal, Closed, Holding)
+    enable_slack: bool                     # MC-2's per-project toggle
+    channel_ids: tuple[str, ...]           # all channels, including primary
+    primary_channel_id: str | None         # legacy scalar, kept for display
+    primary_channel_name: str | None       # legacy scalar, kept for display
 
 
 @dataclass(frozen=True)
@@ -68,6 +79,15 @@ class SlackMessage:
     iso: str             # ISO-8601 UTC, e.g. "2026-05-13T22:00:00Z"
     user_name: str       # resolved display name, or "(unknown)"
     text: str            # message text with <@U…> mentions resolved to names
+
+
+@dataclass(frozen=True)
+class FetchedChannel:
+    """One week of messages from a single Slack channel, with metadata."""
+
+    channel_id: str
+    channel_name: str    # e.g. "ibx_5167_ddi_platform_video_team", or "" if lookup failed
+    messages: tuple[SlackMessage, ...]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -93,7 +113,7 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
         .table("projects")
         .select(
             "number, name, mc_status, is_internal, enable_slack, "
-            "slack_channel_id, slack_channel_name, "
+            "slack_channel_id, slack_channel_name, slack_channel_ids, "
             "companies!inner(code)"
         )
         .neq("mc_status", "Archived")
@@ -113,6 +133,19 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
         if not company_code or number is None:
             continue
         code = f"{company_code.lower()}-{number}"
+
+        # `slack_channel_ids` is the source of truth; fall back to the
+        # legacy scalar for safety if the array is empty but the scalar
+        # is set (e.g. a row inserted by an admin path that hasn't been
+        # updated for the new column yet).
+        primary = row.get("slack_channel_id") or None
+        raw_ids = row.get("slack_channel_ids") or []
+        if not isinstance(raw_ids, list):
+            raw_ids = []
+        channel_ids = tuple(c for c in raw_ids if isinstance(c, str) and c)
+        if not channel_ids and primary:
+            channel_ids = (primary,)
+
         out.append(
             ChannelMapRow(
                 code=code,
@@ -120,8 +153,9 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
                 company_code=company_code,
                 status=row.get("mc_status") or "",
                 enable_slack=bool(row.get("enable_slack")),
-                channel_id=row.get("slack_channel_id") or None,
-                channel_name=row.get("slack_channel_name") or None,
+                channel_ids=channel_ids,
+                primary_channel_id=primary,
+                primary_channel_name=row.get("slack_channel_name") or None,
             )
         )
     out.sort(key=lambda r: (r.company_code, r.code))
@@ -164,6 +198,42 @@ def load_slack_token(config: TenantConfig) -> str:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def fetch_channels(
+    token: str,
+    channel_ids: tuple[str, ...] | list[str],
+    week_start: datetime,
+    *,
+    week_end: datetime | None = None,
+) -> list[FetchedChannel]:
+    """Fan out `fetch_week` across multiple channels.
+
+    Used by multi-channel projects (e.g. ibx-5167 has both a main and a
+    `_team` channel). Returns one FetchedChannel per ID, in the same
+    order as the input. Channels with zero messages are still returned
+    (caller decides whether to skip them).
+
+    Reuses one WebClient across channels so user-info lookups are cached.
+    """
+    try:
+        from slack_sdk import WebClient
+    except ImportError as exc:
+        raise SlackError(
+            "slack_sdk not installed. Run: pip install 'slack-sdk>=3.27'"
+        ) from exc
+
+    client = WebClient(token=token)
+    user_cache: dict[str, str] = {}
+    name_cache: dict[str, str] = {}
+    out: list[FetchedChannel] = []
+    for cid in channel_ids:
+        messages = _fetch_one(client, cid, week_start, week_end, user_cache)
+        name = _resolve_channel_name(client, cid, name_cache)
+        out.append(
+            FetchedChannel(channel_id=cid, channel_name=name, messages=tuple(messages))
+        )
+    return out
+
+
 def fetch_week(
     token: str,
     channel_id: str,
@@ -171,7 +241,11 @@ def fetch_week(
     *,
     week_end: datetime | None = None,
 ) -> list[SlackMessage]:
-    """Pull one week of top-level messages from a Slack channel.
+    """Pull one week of top-level messages from a single Slack channel.
+
+    Single-channel convenience wrapper around `fetch_channels`. Returns
+    a plain message list; channel name + ID metadata are dropped on the
+    floor (use `fetch_channels` if you need them).
 
     Filters out:
       - bot messages (`subtype == "bot_message"`, or sent by a bot user)
@@ -187,8 +261,23 @@ def fetch_week(
 
     Raises SlackError on API failure or auth error.
     """
+    fetched = fetch_channels(token, (channel_id,), week_start, week_end=week_end)
+    return list(fetched[0].messages)
+
+
+def _fetch_one(
+    client,
+    channel_id: str,
+    week_start: datetime,
+    week_end: datetime | None,
+    user_cache: dict[str, str],
+) -> list[SlackMessage]:
+    """Pull + filter one week of messages from one channel.
+
+    Internal helper. The public surface is `fetch_week` (single channel)
+    and `fetch_channels` (fan out across many).
+    """
     try:
-        from slack_sdk import WebClient
         from slack_sdk.errors import SlackApiError
     except ImportError as exc:
         raise SlackError(
@@ -202,9 +291,6 @@ def fetch_week(
 
     oldest = _to_unix(week_start)
     latest = _to_unix(week_end)
-
-    client = WebClient(token=token)
-    user_cache: dict[str, str] = {}
 
     raw_messages: list[dict] = []
     cursor: str | None = None
@@ -292,6 +378,23 @@ def _resolve_mentions(text: str, client, user_cache: dict[str, str]) -> str:
         return "@" + _resolve_user(uid, client, user_cache)
 
     return _MENTION_RE.sub(sub, text)
+
+
+def _resolve_channel_name(client, channel_id: str, name_cache: dict[str, str]) -> str:
+    """Resolve a Slack channel ID to its name via `conversations.info`.
+
+    Cached for the duration of the run. Returns "" on failure so callers
+    can fall back to displaying the raw ID.
+    """
+    if channel_id in name_cache:
+        return name_cache[channel_id]
+    try:
+        resp = client.conversations_info(channel=channel_id)
+        name = (resp.get("channel") or {}).get("name") or ""
+    except Exception:
+        name = ""
+    name_cache[channel_id] = name
+    return name
 
 
 def _resolve_user(user_id: str, client, user_cache: dict[str, str]) -> str:

@@ -128,6 +128,64 @@ def test_ts_to_iso_handles_garbage_input() -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  Multi-channel digest formatting (plan_from_slack)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_format_multi_channel_emits_per_channel_headers() -> None:
+    """Each channel renders with a `## Channel: #<name> (<id>)` header."""
+    from cp_engine.plan_from_slack import _format_multi_channel
+    from cp_engine.slack import FetchedChannel, SlackMessage
+
+    msg_a = SlackMessage(ts="100.0", iso="2026-05-13T00:00:00Z", user_name="Maria", text="hi")
+    msg_b = SlackMessage(ts="101.0", iso="2026-05-13T00:01:00Z", user_name="Geoff", text="hey")
+    channels = [
+        FetchedChannel(
+            channel_id="C123", channel_name="ibx_5167_main", messages=(msg_a,)
+        ),
+        FetchedChannel(
+            channel_id="C456", channel_name="ibx_5167_team", messages=(msg_b,)
+        ),
+    ]
+    out = _format_multi_channel(channels)
+    assert "## Channel: #ibx_5167_main (C123)" in out
+    assert "## Channel: #ibx_5167_team (C456)" in out
+    assert "[2026-05-13T00:00:00Z · Maria] hi" in out
+    assert "[2026-05-13T00:01:00Z · Geoff] hey" in out
+
+
+def test_format_multi_channel_falls_back_to_id_when_name_missing() -> None:
+    """If conversations.info failed and channel_name is '', use the raw ID."""
+    from cp_engine.plan_from_slack import _format_multi_channel
+    from cp_engine.slack import FetchedChannel
+
+    channels = [FetchedChannel(channel_id="C789", channel_name="", messages=())]
+    out = _format_multi_channel(channels)
+    # Header uses the raw ID twice (label + parens) when name is empty.
+    assert "## Channel: C789 (C789)" in out
+    assert "(no messages this week)" in out
+
+
+def test_digest_shape_instructions_single_vs_multi_channel() -> None:
+    """Single-channel: one paragraph, no labels.
+    Multi-channel: one labeled paragraph per channel."""
+    from cp_engine.plan_from_slack import _digest_shape_instructions
+    from cp_engine.slack import FetchedChannel
+
+    one = [FetchedChannel(channel_id="C1", channel_name="main", messages=())]
+    two = [
+        FetchedChannel(channel_id="C1", channel_name="main", messages=()),
+        FetchedChannel(channel_id="C2", channel_name="team", messages=()),
+    ]
+    assert "Single channel" in _digest_shape_instructions(one)
+    assert "No channel label" in _digest_shape_instructions(one) or "no channel label" in _digest_shape_instructions(one).lower()
+    multi = _digest_shape_instructions(two)
+    assert "2 channels" in multi
+    assert "**#main**" in multi
+    assert "**#team**" in multi
+
+
 def test_slack_message_is_frozen_and_hashable() -> None:
     m = SlackMessage(
         ts="100.0", iso="2026-05-11T00:00:00Z", user_name="Maria", text="hi"
