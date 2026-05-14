@@ -274,6 +274,61 @@ def _ingest_one_project(
 # ─────────────────────────────────────────────────────────────
 
 
+def _normalize_transcript(transcript_field) -> str:
+    """Normalize Fathom's transcript field into a single readable string.
+
+    Four shapes show up in production:
+      1. None / empty → ""
+      2. plain string → returned as-is (older webhook payload format)
+      3. JSONB object with "text"/"plain_text" key → that value
+      4. JSONB list of segments `[{text, speaker:{display_name}, timestamp}, ...]`
+         → rendered as `<ts> - <speaker>\\n  <text>` blocks matching the
+         staged-transcript file format that plan_from_transcript was
+         tuned against.
+
+    Shape 4 is the standard across all current Fathom-delivered meetings;
+    the earlier `str(...)` fallback turned a Python list into its repr
+    (which silently passed validation but produced garbage prompts).
+    """
+    if transcript_field is None:
+        return ""
+    if isinstance(transcript_field, str):
+        return transcript_field
+    if isinstance(transcript_field, list):
+        return _segments_to_text(transcript_field)
+    if isinstance(transcript_field, dict):
+        if transcript_field.get("text"):
+            return transcript_field["text"]
+        if transcript_field.get("plain_text"):
+            return transcript_field["plain_text"]
+        segments = transcript_field.get("segments")
+        if isinstance(segments, list):
+            return _segments_to_text(segments)
+    return ""
+
+
+def _segments_to_text(segments: list) -> str:
+    """Render Fathom segments as `<ts> - <speaker>\\n  <text>` blocks."""
+    lines: list[str] = []
+    for seg in segments:
+        if not isinstance(seg, dict):
+            continue
+        text = (seg.get("text") or "").strip()
+        if not text:
+            continue
+        speaker_obj = seg.get("speaker") or {}
+        speaker = (
+            (speaker_obj.get("display_name") if isinstance(speaker_obj, dict) else None)
+            or seg.get("display_name")
+            or seg.get("speaker_name")
+            or "Unknown"
+        )
+        ts = seg.get("timestamp") or seg.get("ts") or ""
+        header = f"{ts} - {speaker}" if ts else speaker
+        lines.append(f"{header}\n  {text}")
+    return "\n\n".join(lines)
+
+
 def _fetch_transcript(meeting_id: str) -> str:
     """Pull a transcript from Supabase fathom_meetings table."""
     try:
@@ -301,12 +356,7 @@ def _fetch_transcript(meeting_id: str) -> str:
     if not resp.data:
         raise HTTPException(status_code=404, detail=f"meeting {meeting_id} not found")
 
-    transcript_field = resp.data.get("transcript")
-    if isinstance(transcript_field, dict):
-        # Supabase JSONB shape: {"text": "...", "segments": [...]}
-        text = transcript_field.get("text") or transcript_field.get("plain_text") or ""
-    else:
-        text = str(transcript_field or "")
+    text = _normalize_transcript(resp.data.get("transcript"))
     if not text:
         raise HTTPException(
             status_code=422, detail=f"meeting {meeting_id} has no transcript text"
