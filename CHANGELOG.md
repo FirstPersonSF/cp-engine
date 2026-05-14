@@ -4,6 +4,22 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.12 — 2026-05-13
+
+### Added — Weekly Slack digest pipeline
+
+- **`cp slack-channels`** — debug command that lists every active engagement project alongside its MC-2 `slack_channel_id`, `enable_slack` flag, and `mc_status`. Used to spot projects that need a channel-id backfill before turning on the digest cron. Supports `--active-only` (Deal | Open) and `--format json`.
+- **`cp slack-fetch --code <code> --week <YYYY-W##>`** — pulls one ISO week of top-level messages from a project's Slack channel. Filters bots, channel-join/leave/topic messages, and thread replies; resolves `<@U…>` mentions to display names. Caches user lookups for the run.
+- **`cp slack-digest --week <YYYY-W##>`** — generates a `cp ingest` plan from one week of Slack chatter via Claude. Always emits a digest paragraph; emits `inbound`/`asks`/`decisions`/`risks` only when the chat content qualifies confidently. Multi-project mode (no `--code`) iterates every active project with `enable_slack=true` and a `slack_channel_id`, skipping channels with zero messages. With `--apply`, lands the plan via the existing `execute_plan` plumbing (idempotent via content-hash dedup).
+- **`record-slack-digest` verb** in the ingest schema. Writes one bullet per `(project, week)` under `## Client communication / ### Slack digest`. Hash key embeds the week so the same digest text in two different weeks doesn't false-dedup; re-runs for the same week are no-ops. Subsection auto-creates if missing.
+- **`execute_plan(week_iso=...)` override.** The Sunday cron runs in week N+1 but writes to week N's sprint files. The new optional parameter lets callers pin the target week explicitly instead of deriving it from `today`.
+- **New runtime dependency: `slack-sdk>=3.27`.** Wraps the three Slack scopes the bot uses: `channels:history`, `channels:read`, `users:read`.
+
+### Notes
+
+- Slack credentials resolve from `os.environ` first, then `<mc-2 clone>/backend/.env` (same dotenv fallback pattern as `_load_supabase_creds`). The GitHub Actions cron in the cp tenant repo passes `SLACK_BOT_TOKEN` + `ANTHROPIC_API_KEY` as secrets.
+- The sprint-file template now scaffolds the `### Slack digest` subsection alongside the existing Outbound/Open asks/Inbound/Stakeholders blocks.
+
 ## v0.8.11.1 — 2026-05-13
 
 ### Added

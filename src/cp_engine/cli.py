@@ -10,7 +10,7 @@ Subcommands per spec v02 §2.1:
 from __future__ import annotations
 
 import sys
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 import click
@@ -1017,6 +1017,364 @@ def fathom_auto_poll_cmd(limit: int, dry_run: bool) -> None:
         save_state(state, config.root)
 
     click.echo(json.dumps(summary, indent=2))
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Slack weekly-digest commands
+# ──────────────────────────────────────────────────────────────────────
+
+
+@main.command("slack-channels")
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["table", "json"]),
+    default="table",
+    help="Output format. Default 'table'.",
+)
+@click.option(
+    "--active-only",
+    is_flag=True,
+    help="Filter to Deal | Open projects (the digest's target set).",
+)
+def slack_channels_cmd(output_format: str, active_only: bool) -> None:
+    """List active projects + their Slack channel mapping.
+
+    Debug command for the weekly Slack digest pipeline. Each row is one
+    non-archived, non-internal engagement project with: canonical CP
+    code, Slack channel id (if mapped), enable_slack flag, and mc_status.
+
+    Use this to spot projects that need a `slack_channel_id` backfill in
+    MC-2 before turning on the cron in P.5.
+    """
+    import json
+    from cp_engine.slack import list_channel_map
+
+    config = _load_config_or_die()
+    rows = list_channel_map(config)
+
+    if active_only:
+        rows = [r for r in rows if r.status in ("Deal", "Open")]
+
+    if output_format == "json":
+        click.echo(
+            json.dumps(
+                [
+                    {
+                        "code": r.code,
+                        "name": r.name,
+                        "company_code": r.company_code,
+                        "status": r.status,
+                        "enable_slack": r.enable_slack,
+                        "channel_id": r.channel_id,
+                        "channel_name": r.channel_name,
+                    }
+                    for r in rows
+                ],
+                indent=2,
+            )
+        )
+        return
+
+    # Table output.
+    if not rows:
+        click.echo("(no projects)")
+        return
+
+    code_w = max(len(r.code) for r in rows)
+    name_w = min(40, max(len(r.name) for r in rows))
+    headers = (
+        f"{'CODE':<{code_w}}  {'STATUS':<7}  {'SLACK':<5}  "
+        f"{'CHANNEL_ID':<15}  NAME"
+    )
+    click.echo(headers)
+    click.echo("-" * len(headers))
+    n_mapped = 0
+    n_unmapped = 0
+    for r in rows:
+        flag = "ON" if r.enable_slack else "OFF"
+        chan = r.channel_id or "(none)"
+        name_clip = r.name if len(r.name) <= name_w else r.name[: name_w - 1] + "…"
+        click.echo(
+            f"{r.code:<{code_w}}  {r.status:<7}  {flag:<5}  "
+            f"{chan:<15}  {name_clip}"
+        )
+        if r.channel_id:
+            n_mapped += 1
+        elif r.enable_slack:
+            n_unmapped += 1
+    click.echo()
+    click.echo(f"{n_mapped} mapped, {n_unmapped} enable_slack=true with no channel_id")
+
+
+def _parse_iso_week(week: str) -> tuple[datetime, datetime]:
+    """Parse `YYYY-W##` → (monday_00:00_UTC, next_monday_00:00_UTC)."""
+    import re as _re
+    from datetime import timedelta
+
+    m = _re.fullmatch(r"(\d{4})-W(\d{1,2})", week)
+    if not m:
+        raise click.BadParameter(
+            f"week must be 'YYYY-W##' (e.g. '2026-W19'), got {week!r}"
+        )
+    year = int(m.group(1))
+    wk = int(m.group(2))
+    # ISO week date: Monday is weekday 1.
+    monday = datetime.fromisocalendar(year, wk, 1).replace(tzinfo=timezone.utc)
+    return monday, monday + timedelta(days=7)
+
+
+@main.command("slack-fetch")
+@click.option(
+    "--code",
+    "project_code",
+    required=True,
+    help="Canonical project code (e.g. ggl-5168). One project per call.",
+)
+@click.option(
+    "--week",
+    required=True,
+    help="ISO week, e.g. '2026-W19'. Pulls Monday 00:00 UTC through "
+    "next Monday 00:00 UTC.",
+)
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["text", "json"]),
+    default="text",
+    help="Output format. 'text' is human-readable; 'json' is for piping.",
+)
+def slack_fetch_cmd(project_code: str, week: str, output_format: str) -> None:
+    """Pull one week of Slack messages for a single project.
+
+    Resolves the project's `slack_channel_id` from MC-2, then calls
+    Slack's `conversations.history` for the ISO week. Filters bots,
+    joins, reactions-only events; resolves user mentions.
+
+    Used by the digest pipeline (P.3+) and standalone for debugging.
+    """
+    import json
+    from cp_engine.slack import (
+        ChannelMapRow,
+        SlackError,
+        fetch_week,
+        list_channel_map,
+        load_slack_token,
+    )
+
+    config = _load_config_or_die()
+    monday, next_monday = _parse_iso_week(week)
+
+    rows = list_channel_map(config)
+    by_code: dict[str, ChannelMapRow] = {r.code: r for r in rows}
+    row = by_code.get(project_code)
+    if row is None:
+        click.echo(f"Project {project_code!r} not found in MC-2.", err=True)
+        sys.exit(2)
+    if not row.channel_id:
+        click.echo(
+            f"Project {project_code} has no slack_channel_id in MC-2 "
+            "(use `cp slack-channels` to see the full map).",
+            err=True,
+        )
+        sys.exit(2)
+
+    try:
+        token = load_slack_token(config)
+        messages = fetch_week(token, row.channel_id, monday, week_end=next_monday)
+    except SlackError as exc:
+        click.echo(f"Slack fetch failed: {exc}", err=True)
+        sys.exit(1)
+
+    if output_format == "json":
+        click.echo(
+            json.dumps(
+                [
+                    {"ts": m.ts, "iso": m.iso, "user_name": m.user_name, "text": m.text}
+                    for m in messages
+                ],
+                indent=2,
+            )
+        )
+        return
+
+    click.echo(
+        f"# {project_code} · {week} · channel {row.channel_id} · {len(messages)} messages\n"
+    )
+    for m in messages:
+        click.echo(f"[{m.iso} · {m.user_name}] {m.text}")
+
+
+@main.command("slack-digest")
+@click.option(
+    "--code",
+    "project_code",
+    default=None,
+    help="Single project code (e.g. ggl-5168). Omit to iterate ALL active "
+    "projects with `enable_slack=true` and a slack_channel_id.",
+)
+@click.option(
+    "--week",
+    required=True,
+    help="ISO week, e.g. '2026-W19'. Pulls Monday 00:00 UTC through "
+    "next Monday 00:00 UTC.",
+)
+@click.option(
+    "--apply",
+    is_flag=True,
+    help="Execute the generated plan(s) against the tenant. Default is "
+    "to print YAML to stdout only.",
+)
+@click.option(
+    "--model",
+    default="claude-opus-4-7",
+    show_default=True,
+    help="Anthropic model to use for plan generation.",
+)
+@click.option(
+    "--skip-quiet/--include-quiet",
+    default=True,
+    help="When iterating multiple projects, skip channels with zero messages. "
+    "Default: skip (quiet weeks don't get a 'no activity' bullet).",
+)
+def slack_digest_cmd(
+    project_code: str | None,
+    week: str,
+    apply: bool,
+    model: str,
+    skip_quiet: bool,
+) -> None:
+    """Generate Slack-digest plan(s) for one week. Single project or all.
+
+    Single-project mode (--code <code>): pulls the week's messages,
+    generates one YAML plan, optionally applies it.
+
+    Multi-project mode (no --code): iterates every active project with
+    enable_slack=true and a slack_channel_id. Skips channels with zero
+    messages by default. Produces one combined commit if --apply is set
+    (P.4 phase — for now, applies each plan independently and prints a
+    summary).
+    """
+    import json
+    import yaml as _yaml
+    from cp_engine.ingest import IngestPlanError, execute_plan
+    from cp_engine.plan_from_slack import (
+        SlackPlanError,
+        generate_slack_plan,
+    )
+    from cp_engine.slack import (
+        ChannelMapRow,
+        SlackError,
+        fetch_week,
+        list_channel_map,
+        load_slack_token,
+    )
+
+    config = _load_config_or_die()
+    monday, next_monday = _parse_iso_week(week)
+
+    rows = list_channel_map(config)
+    by_code: dict[str, ChannelMapRow] = {r.code: r for r in rows}
+
+    if project_code:
+        if project_code not in by_code:
+            click.echo(f"Project {project_code!r} not found in MC-2.", err=True)
+            sys.exit(2)
+        targets = [by_code[project_code]]
+    else:
+        # Multi-project: active (Deal | Open), enable_slack=true, channel_id set.
+        targets = [
+            r for r in rows
+            if r.status in ("Deal", "Open") and r.enable_slack and r.channel_id
+        ]
+        if not targets:
+            click.echo("No active projects with slack_channel_id set.", err=True)
+            sys.exit(1)
+
+    try:
+        token = load_slack_token(config)
+    except SlackError as exc:
+        click.echo(f"Slack auth failed: {exc}", err=True)
+        sys.exit(1)
+
+    summary = {
+        "week": week,
+        "projects": [],
+    }
+
+    for row in targets:
+        if not row.channel_id:
+            click.echo(
+                f"# skip {row.code}: no slack_channel_id", err=True
+            )
+            summary["projects"].append({"code": row.code, "skipped": "no_channel_id"})
+            continue
+
+        try:
+            messages = fetch_week(
+                token, row.channel_id, monday, week_end=next_monday
+            )
+        except SlackError as exc:
+            click.echo(f"# {row.code}: fetch failed: {exc}", err=True)
+            summary["projects"].append({"code": row.code, "skipped": f"fetch_error: {exc}"})
+            continue
+
+        if not messages and skip_quiet:
+            click.echo(f"# skip {row.code}: 0 messages (quiet week)", err=True)
+            summary["projects"].append({"code": row.code, "skipped": "quiet_week"})
+            continue
+
+        click.echo(
+            f"# {row.code} · {len(messages)} messages — generating plan…",
+            err=True,
+        )
+        try:
+            result = generate_slack_plan(
+                config=config,
+                project_code=row.code,
+                week=week,
+                channel_id=row.channel_id,
+                messages=messages,
+                model=model,
+            )
+        except SlackPlanError as exc:
+            click.echo(f"# {row.code}: plan generation failed: {exc}", err=True)
+            summary["projects"].append({"code": row.code, "skipped": f"plan_error: {exc}"})
+            continue
+
+        if not apply:
+            yaml_output = _yaml.safe_dump(
+                result.plan, sort_keys=False, allow_unicode=True
+            )
+            click.echo(f"# --- {row.code} ---")
+            click.echo(yaml_output)
+            summary["projects"].append({"code": row.code, "messages": len(messages)})
+            continue
+
+        try:
+            exec_result = execute_plan(
+                result.plan,
+                tenant_root=config.root,
+                today=datetime.now().date(),
+                week_iso=week,
+            )
+        except IngestPlanError as exc:
+            click.echo(f"# {row.code}: plan execution failed: {exc}", err=True)
+            summary["projects"].append({"code": row.code, "skipped": f"exec_error: {exc}"})
+            continue
+
+        summary["projects"].append(
+            {
+                "code": row.code,
+                "messages": len(messages),
+                "files_written": [str(p) for p in exec_result.files_written],
+                "skipped_duplicate": exec_result.skipped_duplicate,
+                "errors": exec_result.errors,
+            }
+        )
+
+    if apply:
+        click.echo(json.dumps(summary, indent=2))
 
 
 @main.command("prep-agenda")

@@ -193,6 +193,7 @@ _SUPPORTED_VERBS = (
     "record-risk",         # → sprint file's ## Dependencies & risks
     "record-stakeholder",  # → sprint file's ### Stakeholders under ## Client communication
     "record-theme",        # → sprints/<W##>/_week.md's ## Themes
+    "record-slack-digest", # → sprint file's ### Slack digest under ## Client communication
 )
 
 
@@ -216,7 +217,13 @@ class IngestPlanError(Exception):
     """Plan validation failed before execution."""
 
 
-def execute_plan(plan: dict, *, tenant_root: Path, today: date) -> IngestPlanResult:
+def execute_plan(
+    plan: dict,
+    *,
+    tenant_root: Path,
+    today: date,
+    week_iso: str | None = None,
+) -> IngestPlanResult:
     """Validate + execute an ingest plan against the cp tenant.
 
     Plan schema (see docs/plans/2026-05-12-tier-1-design.md):
@@ -235,15 +242,19 @@ def execute_plan(plan: dict, *, tenant_root: Path, today: date) -> IngestPlanRes
           - {text, date}
 
     Validation: only known verbs; all required fields present; project
-    codes must correspond to existing sprint files in the current week.
+    codes must correspond to existing sprint files in the target week.
 
     Execution: each entry is dispatched to the matching internal write
     function. Idempotent — appending the same (project, verb, text)
     twice is a no-op (skipped_duplicate counter increments).
+
+    `week_iso` overrides the default of "current week derived from `today`".
+    Used by the Slack-digest pipeline (P.3+): the Sunday cron runs in
+    week N+1 but writes to week N's sprint files.
     """
     _validate_plan(plan)
     result = IngestPlanResult()
-    week_iso = _current_week_iso(today)
+    week_iso = week_iso or _current_week_iso(today)
 
     projects_block = plan.get("projects") or {}
     for code, entries in projects_block.items():
@@ -380,6 +391,8 @@ def _normalize_verb(verb: str) -> str:
         "stakeholder": "record-stakeholder",
         "themes": "record-theme",
         "theme": "record-theme",
+        "slack_digest": "record-slack-digest",
+        "slack-digest": "record-slack-digest",
     }
     return shorthand.get(verb, verb)
 
@@ -399,6 +412,7 @@ def _execute_step(verb: str, code: str, item: dict, sprint_path: Path) -> bool:
         "add-decision": _write_decision,
         "record-risk": _write_risk,
         "record-stakeholder": _write_stakeholder,
+        "record-slack-digest": _write_slack_digest,
     }.get(normalized)
     if handler is None:
         # Themes are handled separately at the top level.
@@ -616,6 +630,33 @@ def _write_stakeholder(code: str, item: dict, sprint_path: Path) -> bool:
     bullet = f"- [{' · '.join(parts)}] {_hash_marker(h)}"
     new = _append_bullet_to_subsection(
         body, "Client communication", "Stakeholders", bullet
+    )
+    sprint_path.write_text(new)
+    return True
+
+
+def _write_slack_digest(code: str, item: dict, sprint_path: Path) -> bool:
+    """Write one weekly Slack-digest bullet under ## Client communication / ### Slack digest.
+
+    Hash includes the ISO week so the same digest text in two different
+    weeks doesn't collide. Re-running for the same `(code, week)` is a
+    no-op — the bullet is already present.
+    """
+    text = (item.get("text") or "").strip()
+    week = (item.get("week") or "").strip()
+    if not text:
+        raise IngestPlanError("slack-digest item missing 'text'")
+    if not week:
+        raise IngestPlanError("slack-digest item missing 'week' (e.g. '2026-W19')")
+    # Hash key embeds the week so two weeks with similar summaries don't
+    # collide; re-running for the same week stays idempotent.
+    h = _content_hash(code, "record-slack-digest", f"{week}|{text}")
+    body = sprint_path.read_text(encoding="utf-8")
+    if _already_present(body, h):
+        return False
+    bullet = f"- [{week} · Slack] {text} {_hash_marker(h)}"
+    new = _append_bullet_to_subsection(
+        body, "Client communication", "Slack digest", bullet
     )
     sprint_path.write_text(new)
     return True

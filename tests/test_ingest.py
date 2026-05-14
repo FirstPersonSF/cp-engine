@@ -314,6 +314,82 @@ def test_execute_plan_writes_theme_to_week_md(tmp_path: Path) -> None:
     assert "[theme · 2026-05-12] Maria transition" in week_body
 
 
+def test_execute_plan_writes_slack_digest_under_client_communication(
+    tmp_path: Path,
+) -> None:
+    """The Slack digest pipeline (P.3) writes one bullet per week under
+    `## Client communication / ### Slack digest`. The subsection is
+    auto-created if missing (the v0.8.5 template doesn't include it)."""
+    tenant = _make_tenant(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "slack_digest": [
+                    {
+                        "text": (
+                            "Quiet week — Maria sent Geoff revision specs for "
+                            "the pop-up preso; Geoff turned them around next day."
+                        ),
+                        "week": "2026-W19",
+                    }
+                ],
+            }
+        }
+    }
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    assert result.errors == []
+    body = (tenant / "sprints" / "2026-W19" / "ggl-5168.md").read_text()
+    # The auto-created subsection lives under Client communication.
+    assert "### Slack digest" in body
+    assert "[2026-W19 · Slack] Quiet week — Maria sent Geoff" in body
+    assert "cp:hash=" in body
+
+
+def test_execute_plan_slack_digest_idempotent_same_week(tmp_path: Path) -> None:
+    """Re-running for the same `(code, week)` is a no-op (hash dedup)."""
+    tenant = _make_tenant(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "slack_digest": [
+                    {"text": "Week summary.", "week": "2026-W19"}
+                ],
+            }
+        }
+    }
+    r1 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    r2 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    assert r1.errors == [] and r2.errors == []
+    assert len(r1.files_written) == 1
+    assert r2.skipped_duplicate == 1
+    assert r2.files_written == []
+
+
+def test_execute_plan_slack_digest_writes_to_target_week_not_today(
+    tmp_path: Path,
+) -> None:
+    """The Sunday cron runs in W20 but digests W19. `week_iso` overrides
+    the today→week derivation so the bullet lands in the right sprint
+    file."""
+    tenant = _make_tenant(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "slack_digest": [
+                    {"text": "Last week's chatter.", "week": "2026-W19"}
+                ],
+            }
+        }
+    }
+    # today is a W20 date, but the digest should still land in W19.
+    result = execute_plan(
+        plan, tenant_root=tenant, today=date(2026, 5, 18), week_iso="2026-W19"
+    )
+    assert result.errors == []
+    w19 = (tenant / "sprints" / "2026-W19" / "ggl-5168.md").read_text()
+    assert "[2026-W19 · Slack] Last week's chatter." in w19
+
+
 def test_execute_plan_close_ask_flips_open_to_closed(tmp_path: Path) -> None:
     tenant = _make_tenant(tmp_path)
     # First, write an open ask.
