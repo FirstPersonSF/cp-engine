@@ -4,6 +4,29 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.14 — 2026-05-14
+
+### Added — Internal initiatives as a first-class workstream
+
+Implements Phase 1 of `docs/plans/2026-05-14-internal-initiatives.md`. Initiatives are internal workstreams (Mission Control, StoryOS, First Person Website, First Person Sales, Market Scorecard, First Person Operations) that don't fit the engagement shape (no client, no budget) and don't fit the standalone-repo shape (an initiative may span 0, 1, or N repos). They sit alongside engagements and repos as a third top-level entity.
+
+- **`EntrySource` extended** with `"initiative"`. A ProjectState with `source="initiative"` is read from the new MC-2 `initiatives` table.
+- **`sync_mc2.read_projects()`** now returns three streams: engagements + standalone repos + initiatives. Standalone repos are repos with both `project_id IS NULL` AND `initiative_id IS NULL` — initiative-linked repos surface as `_repo-<name>.md` under their initiative's working dir, mirroring engagement-linked repos.
+- **New initiative templates** (`initiative-cp.md.j2`, `initiative-sprint.md.j2`). Slimmer than engagement templates — drop "Client communication" / "Outbound" / "Inbound" / "Stakeholders" (no client side), keep "Open asks" + "Slack digest" + "Decisions" + "Risks" + the standard sprint/notes structure. `render_project_cp` and `sprints.render_sprint_file` branch on `source == "initiative"` to pick the right template.
+- **`master-cp.md` rollup** gains two new managed regions: `active-fpsf-initiatives` and `active-canonic-initiatives`. Initiatives appear in sibling tables below their scope's existing engagement/repo tables, with initiative-shaped columns (Code / Initiative / Owner / Status / Last touched / One-line summary / CP).
+- **`cp slack-channels` + `cp slack-digest`** discriminate on the new `ChannelMapRow.kind` field (`"engagement"` vs `"initiative"`). The active-filter accepts `"Active"` (initiative status) alongside `"Deal" | "Open"` (engagement status). Initiatives with `slack_channel_ids` get the same weekly-digest treatment.
+- **`cp list-active-projects`** surfaces initiatives as `source: "initiative"` rows. Used by the Fathom dashboard in Phase 2.
+- **New initiative status vocabulary** in `status.py`: `INITIATIVE_STATUSES = ("Active", "On hold", "Done", "Archived")`. Parallel to `MC_STATUSES` for engagements. `is_active_initiative_status()` returns True only for `"Active"`.
+
+### MC-2 migration
+
+Migration `add_initiatives_table` (applied 2026-05-14) creates the `initiatives` table, adds `repos.initiative_id` FK, and seeds six rows: Mission Control + Market Scorecard + First Person Website / Sales / Operations (FPSF) and StoryOS (Canonic). Four repos linked: `mc-2` + `cp-engine` → mission-control; `storyos` → storyos; `market-leadership-scorecard` → market-scorecard.
+
+### Operational notes
+
+- Repos with `initiative_id` set no longer appear as top-level standalone-repo working dirs. Existing standalone-repo dirs for `mc-2`, `cp-engine`, `market-leadership-scorecard`, `storyos` are auto-deactivated to `<scope>/inactive/` on first sync after this migration; their content has been preserved there. The canonical home is now `<scope>/<initiative-code>/_repo-<name>.md`.
+- The `canonic/storyos/` directory has a naming collision (initiative slug `storyos` matches the prior standalone-repo slug). The old `cp.md` and `_repo.md` remain alongside the new initiative-shaped scaffolding; clean up manually if desired.
+
 ## v0.8.13 — 2026-05-13
 
 ### Added — Multi-channel Slack digests

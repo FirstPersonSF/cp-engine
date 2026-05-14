@@ -63,6 +63,8 @@ _SECTION_STATE_PHRASES: dict[str, str] = {
     "client": "engagements in delivery",
     "self_fpsf": "tools in active build",
     "self_canonic": "projects in flight",
+    "self_fpsf_initiatives": "initiatives in motion",
+    "self_canonic_initiatives": "initiatives in motion",
 }
 
 # Spell out small counts; digits otherwise. Index 0 is intentionally
@@ -208,11 +210,30 @@ def render_master_cp(
             key=lambda p: (_STAGE_ORDER.get(p.deal_stage or "", 99), p.code),
         )
         client_active = [p for p in client_entries if p.status == "Open"]
+        # Initiatives split from repos so the FPSF/Canonic sections stay
+        # repo-shaped (Description / GitHub columns). Initiatives render
+        # into a sibling table per scope with initiative-shaped columns.
+        def _self_repos(kind: str) -> list[ProjectState]:
+            return [
+                p for p in active_list
+                if p.company_kind == kind and p.source != "initiative"
+            ]
+        def _self_initiatives(kind: str) -> list[ProjectState]:
+            return [
+                p for p in active_list
+                if p.company_kind == kind and p.source == "initiative"
+            ]
         return {
             "pipeline": [to_view(p) for p in pipeline],
             "client": [to_view(p) for p in client_active],
-            "self_fpsf": [to_view(p) for p in active_list if p.company_kind == "self-fpsf"],
-            "self_canonic": [to_view(p) for p in active_list if p.company_kind == "self-canonic"],
+            "self_fpsf": [to_view(p) for p in _self_repos("self-fpsf")],
+            "self_canonic": [to_view(p) for p in _self_repos("self-canonic")],
+            "self_fpsf_initiatives": [
+                to_view(p) for p in _self_initiatives("self-fpsf")
+            ],
+            "self_canonic_initiatives": [
+                to_view(p) for p in _self_initiatives("self-canonic")
+            ],
         }
 
     # Derive the short week label ("W19") from the ISO week ("2026-W19")
@@ -489,7 +510,14 @@ def render_project_cp(
     empty placeholders); pass a ProjectStrips instance on subsequent
     syncs.
     """
-    template = _env().get_template("project-cp.md.j2")
+    # Initiatives use a slimmer template than engagements — no client
+    # communication surfaces, no tracked-issues table, just decisions
+    # + open asks + the standard sprint/notes structure. See
+    # docs/plans/2026-05-14-internal-initiatives.md.
+    template_name = (
+        "initiative-cp.md.j2" if project.source == "initiative" else "project-cp.md.j2"
+    )
+    template = _env().get_template(template_name)
     return template.render(
         tenant=config,
         project=_project_view(project),

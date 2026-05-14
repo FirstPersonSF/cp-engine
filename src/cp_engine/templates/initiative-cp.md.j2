@@ -1,0 +1,88 @@
+---
+Project: {{ project.name }}
+Provenance: Version {{ engine_version }} | {{ today }}
+Filename: cp.md
+Author: cp-engine (initial scaffold)
+---
+
+# {{ project.name }} — Initiative CP
+
+> _<one-line description of what this initiative is and who's involved>_
+
+<!-- cp-engine:start project-facts -->
+## Facts
+
+| | |
+|---|---|
+| **Code** | `{{ project.code }}` |
+| **Type** | Initiative |
+| **Status** | {{ project.status }} |
+| **Owner** | {{ project.owner or "—" }} |
+{%- if project.company_name %}
+| **Company** | {{ project.company_name }}{% if project.company_code %} ({{ project.company_code }}){% endif %} |
+{%- endif %}
+| **Last touched** | {{ project.last_touched_short or "—" }} |
+<!-- cp-engine:end project-facts -->
+
+<!-- cp-engine:start current-sprint -->
+{{ current_sprint_block or "_No active sprint file._" }}
+<!-- cp-engine:end current-sprint -->
+
+<!-- cp-engine:start recent-decisions-strip -->
+## Recent decisions (auto-aggregated from sprint files, last 4 weeks)
+
+{%- if project_strips and project_strips.recent_decisions %}
+{% for dec in project_strips.recent_decisions %}
+- [{{ dec.date }}{% if dec.cross_cutting %} · cross-cutting{% endif %}] {{ dec.text }}
+{%- endfor %}
+{%- else %}
+- _No structured decisions captured in the last 4 weeks._
+{%- endif %}
+<!-- cp-engine:end recent-decisions-strip -->
+
+<!-- cp-engine:start open-asks-strip -->
+## Open asks (auto-aggregated from sprint files)
+
+{%- if project_strips and project_strips.open_asks %}
+{% for ask in project_strips.open_asks %}
+- [{{ ask.asked_date }}{% if ask.who %} · {{ ask.who }}{% endif %}{% if ask.aged_days is not none and ask.aged_days > 7 %} · **{{ ask.aged_days }}d stale**{% endif %}] {{ ask.text }}
+{%- endfor %}
+{%- else %}
+- _No open asks._
+{%- endif %}
+<!-- cp-engine:end open-asks-strip -->
+
+## Quick Resume
+
+**Last session:** _<date>_
+**Current work:** _<what's in flight right now>_
+**Next up:** _<next 1-3 concrete actions, dated where possible>_
+**Blockers:** _<or "None">_
+
+## Current Work
+
+_<2-10 paragraphs of substantive notes on the active workstream.>_
+
+## Decisions
+
+1. _<decision>_ (_<date>_)
+
+## Done
+
+_<recent completions, grouped by date or session>_
+
+## Active research
+
+_<per bootstrap v2 — pointers only, never raw research dumps>_
+
+## Initiative Notes
+
+_<durable conventions specific to this initiative that any AI assistant should know>_
+
+## Team
+
+_<who's contributing to this initiative — typically internal, plus any external collaborators>_
+
+## Archive Index
+
+_<links to archived content, if any>_

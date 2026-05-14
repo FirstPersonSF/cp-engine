@@ -49,26 +49,28 @@ class SlackError(Exception):
 
 @dataclass(frozen=True)
 class ChannelMapRow:
-    """One project's Slack-mapping status, as surfaced by `cp slack-channels`.
+    """One row in the Slack-channel map — either an engagement project or
+    an internal initiative — as surfaced by `cp slack-channels`.
 
-    `channel_ids` is the canonical source of truth — projects can have
+    `channel_ids` is the canonical source of truth — entries can have
     one or more channels (e.g. a main channel plus a team-internal one).
     The digest pipeline iterates each channel and merges the output into
     a single weekly bullet with one paragraph per channel.
 
     `primary_channel_id` mirrors MC-2's legacy scalar `slack_channel_id`
-    column — useful for display ("primary channel: #foo") but the
-    digest pipeline does NOT special-case it.
+    column (engagement projects only — initiatives never had a scalar).
+    Used for display only; the digest pipeline does NOT special-case it.
     """
 
-    code: str                              # canonical CP code, e.g. "ggl-5168"
-    name: str                              # project name
-    company_code: str                      # e.g. "GGL"
-    status: str                            # MC-2 mc_status (Open, Deal, Closed, Holding)
-    enable_slack: bool                     # MC-2's per-project toggle
+    code: str                              # canonical CP code (engagements: "ggl-5168"; initiatives: "mission-control")
+    name: str                              # project / initiative name
+    company_code: str                      # e.g. "GGL", "1PI", "CNC"
+    status: str                            # mc_status (Open/Deal/...) or initiative status (Active/On hold/...)
+    enable_slack: bool                     # per-row toggle
     channel_ids: tuple[str, ...]           # all channels, including primary
-    primary_channel_id: str | None         # legacy scalar, kept for display
-    primary_channel_name: str | None       # legacy scalar, kept for display
+    primary_channel_id: str | None         # legacy scalar; None for initiatives
+    primary_channel_name: str | None       # legacy scalar; None for initiatives
+    kind: str = "engagement"               # "engagement" or "initiative"
 
 
 @dataclass(frozen=True)
@@ -96,7 +98,11 @@ class FetchedChannel:
 
 
 def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
-    """Return one ChannelMapRow per non-archived, non-internal engagement project.
+    """Return ChannelMapRows for non-archived engagement projects AND initiatives.
+
+    Two streams: engagements (`projects` table, non-internal) and
+    initiatives (`initiatives` table — internal workstreams parallel to
+    engagements per docs/plans/2026-05-14-internal-initiatives.md).
 
     Uses MC-2 directly (not the cached ProjectState from `read_projects`)
     because the Slack-mapping columns aren't part of the standard project
@@ -108,7 +114,8 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
     url, key = _load_supabase_creds(config)
     client = create_client(url, key)
 
-    rows = (
+    # Stream A: engagement projects.
+    engagement_rows = (
         client.schema("public")
         .table("projects")
         .select(
@@ -124,7 +131,7 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
     )
 
     out: list[ChannelMapRow] = []
-    for row in rows:
+    for row in engagement_rows:
         if row.get("is_internal"):
             continue
         company = row.get("companies") or {}
@@ -156,9 +163,54 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
                 channel_ids=channel_ids,
                 primary_channel_id=primary,
                 primary_channel_name=row.get("slack_channel_name") or None,
+                kind="engagement",
             )
         )
-    out.sort(key=lambda r: (r.company_code, r.code))
+
+    # Stream B: initiatives (internal workstreams). No legacy scalar
+    # column — slack_channel_ids is the only source. Status uses the
+    # initiative vocabulary ("Active", "On hold", "Done", "Archived").
+    initiative_rows = (
+        client.schema("public")
+        .table("initiatives")
+        .select(
+            "code, name, status, enable_slack, slack_channel_ids, "
+            "companies!inner(code)"
+        )
+        .neq("status", "Archived")
+        .order("status")
+        .execute()
+        .data
+        or []
+    )
+
+    for row in initiative_rows:
+        company = row.get("companies") or {}
+        company_code = (company.get("code") or "").strip()
+        init_code = (row.get("code") or "").strip()
+        if not init_code or not company_code:
+            continue
+
+        raw_ids = row.get("slack_channel_ids") or []
+        if not isinstance(raw_ids, list):
+            raw_ids = []
+        channel_ids = tuple(c for c in raw_ids if isinstance(c, str) and c)
+
+        out.append(
+            ChannelMapRow(
+                code=init_code,
+                name=row.get("name") or "",
+                company_code=company_code,
+                status=row.get("status") or "",
+                enable_slack=bool(row.get("enable_slack")),
+                channel_ids=channel_ids,
+                primary_channel_id=None,
+                primary_channel_name=None,
+                kind="initiative",
+            )
+        )
+
+    out.sort(key=lambda r: (r.company_code, r.kind, r.code))
     return out
 
 

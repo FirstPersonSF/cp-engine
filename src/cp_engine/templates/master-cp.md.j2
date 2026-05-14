@@ -94,6 +94,19 @@ _{{ section_summaries.self_fpsf }}_
 {%- endfor %}
 <!-- cp-engine:end active-fpsf -->
 
+<!-- cp-engine:start active-fpsf-initiatives -->
+## First Person — Initiatives ({{ active_groups.self_fpsf_initiatives | length }})
+{%- if section_summaries.self_fpsf_initiatives %}
+_{{ section_summaries.self_fpsf_initiatives }}_
+{%- endif %}
+
+| Code | Initiative | Owner | Status | Last touched | One-line summary | CP |
+|---|---|---|---|---|---|---|
+{%- for p in active_groups.self_fpsf_initiatives %}
+| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.name }} | {{ p.owner or "—" }} | {{ p.status }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
+{%- endfor %}
+<!-- cp-engine:end active-fpsf-initiatives -->
+
 <!-- cp-engine:start active-canonic -->
 ## Canonic ({{ active_groups.self_canonic | length }})
 {%- if section_summaries.self_canonic %}
@@ -106,6 +119,19 @@ _{{ section_summaries.self_canonic }}_
 | `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.status }} | {{ p.owner or "—" }} | {{ p.description or "" }} | {{ p.last_touched_short or "—" }} | {% if p.github_org and p.repo_name %}[{{ p.github_org }}/{{ p.repo_name }}](https://github.com/{{ p.github_org }}/{{ p.repo_name }}){% else %}—{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-canonic -->
+
+<!-- cp-engine:start active-canonic-initiatives -->
+## Canonic — Initiatives ({{ active_groups.self_canonic_initiatives | length }})
+{%- if section_summaries.self_canonic_initiatives %}
+_{{ section_summaries.self_canonic_initiatives }}_
+{%- endif %}
+
+| Code | Initiative | Owner | Status | Last touched | One-line summary | CP |
+|---|---|---|---|---|---|---|
+{%- for p in active_groups.self_canonic_initiatives %}
+| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.name }} | {{ p.owner or "—" }} | {{ p.status }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
+{%- endfor %}
+<!-- cp-engine:end active-canonic-initiatives -->
 
 <!-- cp-engine:start last-week-workload -->
 {%- if workload_rollup %}

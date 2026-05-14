@@ -38,7 +38,7 @@ from pathlib import Path
 from supabase import Client, create_client
 
 from cp_engine.config import TenantConfig
-from cp_engine.status import MC_STATUSES
+from cp_engine.status import INITIATIVE_STATUSES, MC_STATUSES
 from cp_engine.state import (
     LinkedRepo,
     PersonHours,
@@ -74,6 +74,17 @@ _REPO_COLUMNS = (
     "companies!inner(code, name, kind)"
 )
 
+# Columns we read for initiatives. Same `repos!initiative_id(...)` join
+# pattern as engagements use for engagement-linked repos — initiative
+# membership surfaces as `_repo-<name>.md` files under the initiative's
+# working dir.
+_INITIATIVE_COLUMNS = (
+    "id, code, name, description, status, owner, updated_at, "
+    "enable_slack, slack_channel_ids, "
+    "companies!inner(code, name, kind), "
+    "repos!initiative_id(repo_name, status, description, github_orgs!inner(name))"
+)
+
 _VALID_REPO_STATUSES = {"Active", "Holding", "Inactive"}
 
 
@@ -102,13 +113,16 @@ class MC2Backend:
             if _engagement_row_is_valid(row)
         )
 
-        # Stream B: standalone repos (no engagement link)
-        # PostgREST: `is.null` for "project_id IS NULL"
+        # Stream B: standalone repos (linked to neither an engagement nor
+        # an initiative). PostgREST: `is.null` for "<col> IS NULL". A repo
+        # with `initiative_id` set surfaces as a `_repo-<name>.md` under
+        # its initiative's working dir, NOT as a top-level standalone row.
         repo_rows = (
             client.schema("public")
             .table("repos")
             .select(_REPO_COLUMNS)
             .is_("project_id", "null")
+            .is_("initiative_id", "null")
             .neq("status", "Inactive")
             .order("updated_at", desc=True)
             .execute()
@@ -119,7 +133,28 @@ class MC2Backend:
             _repo_row_to_state(row) for row in repo_rows if _repo_row_is_valid(row)
         )
 
-        return engagements + repos
+        # Stream C: initiatives (internal workstreams — Mission Control,
+        # StoryOS, etc.). Parallel to engagements but with `source="initiative"`.
+        # Linked repos via `repos.initiative_id` surface as `_repo-<name>.md`
+        # under the initiative's working dir, mirroring engagement-linked-repo
+        # rendering.
+        initiative_rows = (
+            client.schema("public")
+            .table("initiatives")
+            .select(_INITIATIVE_COLUMNS)
+            .neq("status", "Archived")
+            .order("updated_at", desc=True)
+            .execute()
+            .data
+            or []
+        )
+        initiatives = tuple(
+            _initiative_row_to_state(row)
+            for row in initiative_rows
+            if _initiative_row_is_valid(row)
+        )
+
+        return engagements + repos + initiatives
 
     def read_allocations(
         self,
@@ -447,6 +482,61 @@ def _repo_row_to_state(row: dict) -> ProjectState:
         github_org=org.get("name"),
         repo_name=row["repo_name"],
         description=row.get("description"),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Initiative row → ProjectState
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _initiative_row_is_valid(row: dict) -> bool:
+    """Skip rows MC-2 should never produce but technically could."""
+    if not row.get("code"):
+        return False
+    if row.get("status") not in INITIATIVE_STATUSES:
+        return False
+    return True
+
+
+def _initiative_row_to_state(row: dict) -> ProjectState:
+    """Transform an initiatives row into a ProjectState with source='initiative'.
+
+    The canonical id is just `code` (no company prefix). Linked repos
+    populate `linked_repos` via the same `repos!initiative_id(...)` join
+    payload shape as engagements; the render pipeline doesn't need to
+    distinguish — engagement-vs-initiative-owned repos render the same way.
+    """
+    company = row.get("companies") or {}
+    if not isinstance(company, dict):
+        company = {}
+    kind = company.get("kind") or "self-fpsf"
+
+    return ProjectState(
+        code=(row.get("code") or "").strip(),
+        name=row.get("name") or "",
+        source="initiative",
+        company_kind=kind,  # type: ignore[arg-type]
+        company_code=company.get("code"),
+        company_name=company.get("name"),
+        status=row["status"],
+        # is_internal stays False even though initiatives are conceptually
+        # internal work. The `is_internal` boolean on ProjectState is the
+        # "skip this — it's an MC-2 pseudo-project that doesn't deserve a
+        # working dir" gate used by the scaffolding loop in sync.py.
+        # Initiatives DO deserve working dirs, so they opt out of that
+        # gate by leaving is_internal=False. Internal-vs-external is
+        # encoded by `source="initiative"` instead.
+        is_internal=False,
+        owner=row.get("owner") or None,
+        last_touched=_parse_iso(row.get("updated_at")),
+        deadline=None,
+        # Engagement-specific fields stay None for initiatives.
+        deal_stage=None,
+        budget=None,
+        dropbox_folder_url=None,
+        # Linked repos use the same payload key/shape as engagements.
+        linked_repos=_parse_linked_repos(row.get("repos")),
     )
 
 

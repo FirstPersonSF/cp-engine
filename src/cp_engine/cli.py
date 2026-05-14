@@ -1035,17 +1035,18 @@ def fathom_auto_poll_cmd(limit: int, dry_run: bool) -> None:
 @click.option(
     "--active-only",
     is_flag=True,
-    help="Filter to Deal | Open projects (the digest's target set).",
+    help="Filter to active rows (engagements: Deal|Open; initiatives: Active).",
 )
 def slack_channels_cmd(output_format: str, active_only: bool) -> None:
-    """List active projects + their Slack channel mapping.
+    """List active engagement projects + initiatives + their Slack channels.
 
     Debug command for the weekly Slack digest pipeline. Each row is one
-    non-archived, non-internal engagement project with: canonical CP
-    code, Slack channel id (if mapped), enable_slack flag, and mc_status.
+    engagement (`projects` row, non-internal) or internal initiative
+    (`initiatives` row) with: canonical code, channel ids, enable_slack
+    flag, and status.
 
-    Use this to spot projects that need a `slack_channel_id` backfill in
-    MC-2 before turning on the cron in P.5.
+    Use this to spot rows that need a channel_id backfill in MC-2 before
+    turning on the cron.
     """
     import json
     from cp_engine.slack import list_channel_map
@@ -1053,8 +1054,9 @@ def slack_channels_cmd(output_format: str, active_only: bool) -> None:
     config = _load_config_or_die()
     rows = list_channel_map(config)
 
+    # Active = engagement (Deal|Open) OR initiative (Active).
     if active_only:
-        rows = [r for r in rows if r.status in ("Deal", "Open")]
+        rows = [r for r in rows if r.status in ("Deal", "Open", "Active")]
 
     if output_format == "json":
         click.echo(
@@ -1300,10 +1302,13 @@ def slack_digest_cmd(
             sys.exit(2)
         targets = [by_code[project_code]]
     else:
-        # Multi-project: active (Deal | Open), enable_slack=true, ≥1 channel.
+        # Active = engagement (Deal|Open) OR initiative (Active),
+        # plus enable_slack=true and ≥1 channel.
         targets = [
             r for r in rows
-            if r.status in ("Deal", "Open") and r.enable_slack and r.channel_ids
+            if r.status in ("Deal", "Open", "Active")
+            and r.enable_slack
+            and r.channel_ids
         ]
         if not targets:
             click.echo("No active projects with Slack channels set.", err=True)

@@ -1,0 +1,107 @@
+---
+Project: {{ project.code }} — {{ project.name }}
+Provenance: Version {{ engine_version }} | {{ today }}
+Filename: sprints/{{ week_iso }}/{{ project.code }}.md
+Author: cp-engine (scaffold) + partners (deepening)
+Sprint: {{ week_iso }}
+{%- if prior_sprint %}
+PriorSprint: {{ prior_sprint }}
+{%- endif %}
+---
+
+# {{ project.code }} — {{ project.name }} · Sprint {{ week_label }} ({{ week_dates }})
+
+← [Initiative CP](../../{{ project.scope }}/{{ project.dir_slug }}/cp.md) · [Master](../../master-cp.md){% if prior_sprint %} · [Prior sprint](../{{ prior_sprint }}/{{ project.code }}.md){% endif %}
+
+<!-- cp-engine:start sprint-facts -->
+| | |
+|---|---|
+| Owner | {{ project.owner or "—" }} |
+| Last touched | {{ project.last_touched_short or "—" }} |
+| Sessions this week | {{ sessions_this_week }} |
+| Open issues | {{ open_issues_count }} |
+<!-- cp-engine:end sprint-facts -->
+
+<!-- cp-engine:start where-it-stands -->
+## Where it stands
+
+**Last stand-up** — {{ last_session.date or "—" }}{% if last_session.who %}, {{ last_session.who }}{% endif %}
+{{ last_session.summary or "_No recent session captured._" }}
+
+### Recent activity
+
+**Commits (last 7 days)**
+{%- for c in recent_commits %}
+- `{{ c.sha_short }}` {{ c.subject }} — {{ c.author }}, {{ c.when_short }}
+{%- else %}
+- _No commits in the last 7 days._
+{%- endfor %}
+
+**Open tracked issues**
+{%- for i in open_issues %}
+- #{{ i.number }} — {{ i.title }} ({{ i.status }}, updated {{ i.updated_short }})
+{%- else %}
+- _None._
+{%- endfor %}
+<!-- cp-engine:end where-it-stands -->
+
+<!-- cp-engine:start carry-forward -->
+## Carried over from {{ prior_sprint or "prior sprint" }}
+{%- for a in carry_forward.asks %}
+- [ask · {{ a.asked_date }}{% if a.who %} · {{ a.who }}{% endif %}] {{ a.text }}
+{%- endfor %}
+{%- for r in carry_forward.risks %}
+- [risk · {{ r.severity }} · {{ r.category }} · {{ r.raised_date }}] {{ r.text }}
+{%- endfor %}
+{%- for h in carry_forward.horizon %}
+- [{{ h.bucket }}{% if h.target_date %} · {{ h.target_date }}{% endif %}] {{ h.text }}
+{%- endfor %}
+{%- if not carry_forward.asks and not carry_forward.risks and not carry_forward.horizon %}
+- _Nothing carried over._
+{%- endif %}
+<!-- cp-engine:end carry-forward -->
+
+## Team communication
+
+### Open asks
+- _<what we need from someone — `[open · date · who]` prefix>_
+
+### Slack digest
+- _<weekly summary of the initiative's Slack channel(s) — `[YYYY-W## · Slack]` prefix; one bullet per week, written by the Sunday cron>_
+
+## Dependencies & risks
+
+- _<risk — `[severity · category · date]` prefix>_
+
+## This sprint
+
+**Allocation:** _<Drew · Nh · Tony · Nh>_
+
+### Deliverables
+
+1. _<top deliverable>_
+
+### Definition of done
+
+_<short prose paragraph>_
+
+## Horizon — 4–8 weeks out
+
+### Milestones
+- _<calendar event — `[date]` prefix>_
+
+### Decisions due
+- _<choice — `[by W##]` prefix>_
+
+### Opportunities
+- _<early-planning note>_
+
+## Meeting notes & decisions
+
+_<filled by `deepen from transcript` during the partners' weekly review>_
+
+### Decisions
+- _<decision — `[decision · date]` prefix; cross-cutting flagged with `· cross-cutting`>_
+
+### Discussion notes
+- _<notes from the session>_

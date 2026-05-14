@@ -549,7 +549,15 @@ def render_sprint_scaffold(
     `test_sprints.py` assert that contract end-to-end.
     """
     env = _render._env()
-    template = env.get_template("sprint-cp.md.j2")
+    # Initiative-source projects use a slimmer sprint scaffold without
+    # the "Client communication" section (no client side; the
+    # "Team communication" block keeps Open asks + Slack digest).
+    template_name = (
+        "initiative-sprint.md.j2"
+        if project.source == "initiative"
+        else "sprint-cp.md.j2"
+    )
+    template = env.get_template(template_name)
     week_dates = f"{_short_md_date(week_start)} – {_long_md_date(week_end)}"
     return template.render(
         project={

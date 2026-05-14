@@ -12,9 +12,11 @@ from pathlib import Path
 from typing import Literal
 
 # Whether a ProjectState came from MC-2's `projects` table (a client
-# engagement) or from `repos` (a tracked code repo, possibly standalone).
-# Renderers branch on this to choose engagement-shape vs repo-shape tables.
-EntrySource = Literal["engagement", "repo"]
+# engagement), `repos` (a tracked code repo, possibly standalone), or
+# `initiatives` (an internal workstream — Mission Control, StoryOS, etc.).
+# Renderers branch on this to choose engagement-shape vs initiative-shape
+# vs repo-shape tables.
+EntrySource = Literal["engagement", "repo", "initiative"]
 
 # Which MC-2 company kind the entry belongs to. For engagements, derived
 # from the engagement's company. For repos, derived from the repo's company.
@@ -169,11 +171,13 @@ class ProjectState:
     # shape flexible without forcing a contact schema on every consumer.
     contacts: tuple[dict, ...] = ()
 
-    # Engagement-only — repos in MC-2 with `project_id` linked to this engagement.
+    # Engagement-or-initiative — repos in MC-2 linked to this parent via
+    # `repos.project_id` (engagements) or `repos.initiative_id` (initiatives).
     # Each linked repo gets its own `_repo-<repo-name>.md` written into the
-    # engagement's working dir, mirroring the standalone-repo `_repo.md` shape.
-    # Standalone repos (no project_id) populate this on the engagement-side
-    # ProjectState; this field stays empty on standalone-repo ProjectStates.
+    # parent's working dir, mirroring the standalone-repo `_repo.md` shape.
+    # Repos can be dual-linked (engagement AND initiative) — they then appear
+    # under both working dirs. This field stays empty on standalone-repo
+    # ProjectStates.
     linked_repos: tuple[LinkedRepo, ...] = ()
 
 

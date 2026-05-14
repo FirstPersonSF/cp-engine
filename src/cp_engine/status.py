@@ -31,3 +31,22 @@ ACTIVE_STATUSES: tuple[str, ...] = tuple(s for s, active in MC_STATUS_ACTIVE.ite
 def is_active_status(status: str | None) -> bool:
     """Return True if `status` is in the active subset (Deal or Open)."""
     return status is not None and MC_STATUS_ACTIVE.get(status, False)
+
+
+# Initiative status vocabulary (parallel to MC_STATUSES for engagements).
+# Initiatives don't go through a deal pipeline — they're either being
+# worked on, parked, finished, or hidden. Mirrors `initiatives.status`
+# CHECK constraint in the MC-2 schema.
+INITIATIVE_STATUSES = ("Active", "On hold", "Done", "Archived")
+
+INITIATIVE_STATUS_ACTIVE: dict[str, bool] = {
+    "Active": True,
+    "On hold": False,
+    "Done": False,
+    "Archived": False,
+}
+
+
+def is_active_initiative_status(status: str | None) -> bool:
+    """Return True if `status` is in the active subset for initiatives (Active only)."""
+    return status is not None and INITIATIVE_STATUS_ACTIVE.get(status, False)
