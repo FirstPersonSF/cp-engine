@@ -11,75 +11,172 @@ Author: cp-engine (generated)
 > `cp-engine` template change. Open an issue against `cp-engine` if you
 > need a behavior tweak.
 
-## Status vocabulary (read side)
+---
 
-Projects in this tenant carry one of: `Deal`, `Open`, `Holding`, `Closed`, `Archived`.
+# Part 1 — What's in the tree
 
-The **active subset** = `Deal ∪ Open` (combined with `is_internal=false` where the
-backend tracks it). Active projects appear in `master-cp.md`'s Active table; Holding
-and Closed-recent are collapsed `<details>` blocks below.
+## Three kinds of work
 
-`Internal` is **not** a status value — it's an orthogonal `is_internal` boolean on
-the source-of-truth side, used to filter out internal pseudo-projects from the
-master CP.
+The tenant tracks three kinds of trackable items:
 
-## Working tree layout (v0.7)
+- **Engagements** — client projects, sourced from MC-2's `projects` table.
+  Status vocabulary: `Deal | Open | Holding | Closed | Archived`.
+  Active subset: `Deal ∪ Open` with `is_internal=false`.
+  Canonical codes: `<company-lowercase>-<number>` (e.g. `ggl-5168`, `ibx-5153`).
 
-Project state lives in per-project working directories, one per scope:
+- **Initiatives** — internal workstreams (Mission Control, StoryOS, First Person
+  Website, Sales, Operations, Market Scorecard), sourced from MC-2's `initiatives`
+  table. Parallel to engagements but with no client side.
+  Status vocabulary: `Active | On hold | Done | Archived`.
+  Active subset: `Active`.
+  Canonical codes: slug form (e.g. `mission-control`, `storyos`) — no number.
+
+- **Standalone repos** — code repos in MC-2 not linked to an engagement or
+  initiative.
+  Status vocabulary: `Active | Holding | Inactive`.
+  Canonical codes: the raw repo slug (e.g. `cp-engine`, `mc-2`).
+
+Each kind appears in its own table on `master-cp.md`'s active section. Holding
+and Closed-recent collapse to `<details>` blocks; Archived items drop off.
+
+`is_internal` on the engagement table is a defensive filter, not a status —
+initiatives are the proper home for internal work and surface as first-class
+top-level items.
+
+## Working tree layout (v0.7+)
 
 ```
 <tenant root>/
-├── master-cp.md
-├── weekly-cp.md
-├── 1p/<code>/cp.md             ← client engagements
-├── firstpersonsf/<code>/cp.md  ← First Person internal tooling
-└── canonic/<code>/cp.md        ← Canonic
+├── master-cp.md                          ← index across everything
+├── weekly-cp.md                          ← tenant-wide partners' review surface
+│
+├── 1p/<code>/cp.md                       ← client engagements
+│   ├── ggl-5168-activation/cp.md
+│   ├── ibx-5153-ai-campaign/cp.md
+│   └── …
+│
+├── firstpersonsf/                        ← First Person internal: initiatives + standalone repos
+│   ├── mission-control/cp.md             ← initiative (slug code, no number)
+│   │   ├── _repo-mc-2.md                 ← linked repo surfaces here
+│   │   └── _repo-cp-engine.md            ← linked repo surfaces here
+│   ├── first-person-website/cp.md        ← initiative (no linked repo yet)
+│   ├── first-person-sales/cp.md
+│   ├── first-person-operations/cp.md
+│   ├── market-scorecard/cp.md
+│   ├── 1p-component-library/cp.md        ← standalone repo
+│   └── fathom-meeting-sync/cp.md         ← standalone repo
+│
+├── canonic/                              ← Canonic internal: initiatives + standalone repos
+│   ├── storyos/cp.md                     ← initiative (with linked storyos repo)
+│   └── unf-forge/cp.md                   ← standalone repo
+│
+└── sprints/<YYYY-W##>/                   ← per-sprint working files
+    ├── <code>.md                          ← one per active engagement OR initiative
+    ├── _week.md                           ← tenant-wide weekly cross-references
+    └── _ingest-log/                       ← auto-ingest audit log
 ```
 
-Inactive projects (status changed, deleted, or marked internal in MC-2) live alongside live ones at `<scope>/inactive/<code>/`. They flip back to live automatically if the project re-enters sync's view (no manual restore needed).
-Pre-v0.7 layouts had an extra `projects/` segment (`<scope>/projects/<code>/`);
-`cp migrate-projects-flat` moves them to the v0.7 shape in place.
+**Initiative-linked repos** surface as `_repo-<name>.md` files under their
+initiative's working dir, not as separate top-level dirs. A repo dual-linked to
+both an engagement and an initiative appears in both places.
 
-Each working directory is a place for everything related to one project:
-the `cp.md` itself, optional `_dropbox.md` link to media, plus any
-hand-added text artifacts (transcripts, syntheses, action items). Binary
-content lives in Dropbox per `.gitignore`.
+**Inactive items** (status changed, archived, marked internal) move to
+`<scope>/inactive/<code>/`. They flip back to live automatically if the row
+re-enters sync's view; nothing is destroyed.
 
-**Auto-load:** if this session's working directory matches `<scope>/<code>/`,
-treat `cp.md` in that directory as the primary context for this session
-(equivalent to `switch to <code>` mode). The per-project `_dropbox.md`,
-if present, is the canonical link to that project's binary artifacts.
+Each working dir is a place for *everything* related to that item: the `cp.md`
+itself, optional `_dropbox.md` link to media, plus any hand-added text artifacts
+(transcripts, syntheses, action items). Binary content lives in Dropbox per
+`.gitignore`.
 
-When the cwd is the tenant root or any non-project subdir, behave as
-described in "Reading modes" below.
+## How meetings get into the tree
 
-## Local-link traversal (v0.5)
+Fathom meetings flow into per-sprint files via four assignment shapes from the
+dashboard (`fathom-meeting-sync-production.up.railway.app`). The user picks one in
+the meeting card's "+ Assign" dropdown:
 
-Each repo-source project working directory has a `_repo.md`. When that
-file lists one or more `**Local clone (<User>):**` lines, the source
-repo is checked out on at least one teammate's machine. To answer
-"what shipped in this repo recently?" or "what's the current state
-of `<feature>`?" without network calls, navigate to whichever clone
-matches the current user (or any clone if running as a fresh agent)
-and read `git log`, recent diffs, file contents, etc.
+| Shape | What it does | Lands in |
+|---|---|---|
+| **Single project** | Tag a meeting with one engagement or initiative code | That item's `sprints/<W##>/<code>.md` |
+| **Account meeting** | Tag a meeting with one company (Google, Infoblox, …) | Per-project bullets across all active items under that company + one `## Account summaries` paragraph in `weekly-cp.md` |
+| **Sprint planning** | Tag a meeting with a scope (`1p`, `fpsf`, `canonic`) | Per-project bullets across every active item in scope + one `## Account summaries` paragraph (pseudo-company `1p-clients` / `fpsf-internal` / `canonic-internal`) |
+| **Untagged** | Default. No ingest. | (nothing) |
 
-The mappings come from `<tenant-root>/.cp-engine.toml` under
-`[local-repos.<user>]` sections — committed, multi-user, visible to
-everyone on the team. Each user declares their own clone paths once.
+All four flow through the cp-engine-webhook auto-ingest pipeline. Each project
+that receives bullets gets its own `[auto-ingest] <code>: meeting <id>` commit;
+account/sprint-planning summaries get an additional
+`[auto-ingest] account:<co>:` or `[auto-ingest] sprint-planning:<scope>:` commit.
 
-A separate per-machine map at `<tenant-root>/.cp-engine.local.toml`
-under `[local-repos]` (gitignored) drives `cp link-local` and
-`cp capture-session` self-healing. That one is local-only.
+The dashboard also fires a weekly Slack digest cron (Sunday) that fetches each
+active project's mapped Slack channel(s) and writes a `### Slack digest` bullet
+into the project's current sprint file.
 
-Conversely, when the working directory is a tracked source repo
-(`mc-2`, `cp-engine`, etc.) rather than a cp working dir, look for
-`.cp-link` at the repo root. It contains the absolute path of the
-corresponding cp working dir — `cd` there to read the project's `cp.md`,
-session history, and decisions.
+## Tenant-wide surfaces (`weekly-cp.md`)
 
-The `/cp-summarize` slash command (from the cp-engine plugin) writes a
-session summary back to the cp working dir at the end of a development
-session. Use it to keep the cp tree current without manual file edits.
+Cross-cutting content lives in `weekly-cp.md`:
+
+- **Quick Resume** — handwritten "where are we" entries by week.
+- **Account summaries** — one paragraph bullet per `(company, week)` for every
+  account meeting and sprint planning meeting that ran. Written by the
+  auto-ingest webhook; format `[<W##> · <COMPANY>] <paragraph>`.
+- **Decisions (cross-cutting, last 4 weeks)** — numbered handwritten list of
+  decisions that cross project boundaries. Account-level decisions from
+  auto-ingest land here with `source: account: <company>` annotations; the
+  `cp_engine.agenda` parser surfaces these to relevant project agendas.
+- **Active research** — handwritten pointers to in-flight research workstreams.
+
+Sync never overwrites `weekly-cp.md` (almost entirely human territory plus
+auto-appended bullets). Word-count discipline applies.
+
+## Sprint files
+
+Each active engagement OR initiative has a per-sprint working file at
+`sprints/<YYYY-W##>/<code>.md`. The file scaffolds itself on first sync of the
+week.
+
+**Engagement sprint files** carry a `## Client communication` section with
+subsections: `Outbound`, `Inbound`, `Open asks`, `Slack digest`, `Stakeholders`.
+
+**Initiative sprint files** carry a `## Team communication` section instead,
+with `Open asks` and `Slack digest` only (no Outbound/Inbound/Stakeholders since
+there's no client side).
+
+Both types share:
+
+- `## Where it stands` (engine-managed)
+- `## Carried over from <prior-W##>` (engine-managed)
+- `## Dependencies & risks`
+- `## This sprint` (Allocation, Deliverables, Definition of done)
+- `## Horizon — 4–8 weeks out` (Milestones, Decisions due, Opportunities)
+- `## Meeting notes & decisions` (Decisions, Discussion notes)
+
+The auto-ingest verbs auto-detect which section to write into based on which
+header the file uses, so the same ingest plan works for both shapes.
+
+## Local-link traversal (v0.5+)
+
+Each repo-source working directory (standalone repo dir OR initiative-linked
+repo file `_repo-<name>.md`) lists local clone paths via
+`**Local clone (<User>):**` lines. The source comes from `.cp-engine.toml`'s
+`[local-repos.<user>]` sections.
+
+To answer "what shipped in this repo recently?" or "what's the current state of
+`<feature>`?" without network calls, navigate to whichever clone matches the
+current user (or any clone for a fresh agent) and read `git log`, recent diffs,
+file contents, etc.
+
+A separate per-machine map at `.cp-engine.local.toml` under `[local-repos]`
+(gitignored) drives `cp link-local` and `cp capture-session` self-healing.
+
+Conversely, when the working directory is a tracked source repo rather than a cp
+working dir, look for `.cp-link` at the repo root. It contains the absolute path
+of the corresponding cp working dir — `cd` there to read the project's `cp.md`,
+session history, and decisions. The `/cp-summarize` slash command writes a
+session summary back to the cp working dir at the end of a development session.
+
+---
+
+# Part 2 — How to read and edit it
 
 ## Reading modes
 
@@ -96,6 +193,9 @@ Loaded: `master-cp.md` + the `cp.md` for one project (at `<scope>/<dir_slug>/cp.
 NOT loaded: other projects' `cp.md` files, `weekly-cp.md`
 Triggered by: `update <code>`, `check status <code>`, `switch to <code>`, or
 opening a session in a tracked project repo (auto-loads its CP).
+
+`<code>` works the same way for engagements (`ggl-5168`), initiatives
+(`mission-control`), and standalone repos (`cp-engine`).
 {% if has_sprint %}
 ### Mode 3 — Sprint
 Loaded: `master-cp.md` + `canonic/sprint-cp.md`
@@ -114,7 +214,7 @@ Triggered by: `run weekly review`.
 {%- if has_sprint %}
 - `switch to sprint` → mode 3
 {%- endif %}
-- `run weekly review` → mode 4
+- `run weekly review` → mode {{ 4 if has_sprint else 3 }}
 
 **Additive.** These phrases layer context onto the current mode:
 - `also load <code>` → adds that project's `cp.md`
@@ -129,10 +229,10 @@ persists if the session continues.
 ## Gatekeeper rule (enforced)
 
 Do NOT auto-glob, read, or search any path outside the connected tenant
-repositories unless the user explicitly references it by path or by repo
-name. Project source repos (those configured in `.cp-engine.toml [[projects]]`)
-are opt-in: the user must say "also load <code>" or "switch to <code>",
-or open a session inside that repo's directory.
+repositories unless the user explicitly references it by path or by repo name.
+Project source repos (those configured in `.cp-engine.toml [[projects]]`) are
+opt-in: the user must say "also load <code>" or "switch to <code>", or open a
+session inside that repo's directory.
 
 This rule is relative to the *set of currently connected tenant repositories*,
 not a single repo. A user with `cp-1p` and `cp-canonic` connected via Claude
@@ -159,8 +259,13 @@ conversation is about.
 
 ## Reference style
 
-When announcing a project to a human, **always** use code + name:
-"Updates on **{{ example_code }} {{ example_name }}**?" — never just the code alone.
+When announcing an item to a human, use the most readable form for the kind:
+
+- **Engagements** — code + name: "Updates on **{{ example_code }} {{ example_name }}**?"
+- **Initiatives** — name alone (the code IS the slug form of the name):
+  "Updates on **Mission Control**?" or "Updates on **Mission Control
+  (initiative)**?" if ambiguity matters.
+- **Standalone repos** — backticked slug: "what shipped in `mc-2` this week?"
 
 Anchor blocks at the top of every `.md` file follow this format:
 
@@ -177,23 +282,22 @@ Author: <person | "Claude" | "cp-engine">
 
 Sections marked with HTML comments like `<!-- cp-engine:start <name> -->` /
 `<!-- cp-engine:end <name> -->` are written by cp-engine sync. Outside those
-markers is human territory. Sync never touches `weekly-cp.md` at all.
+markers is human territory. Sync never touches `weekly-cp.md` outside of
+auto-appended bullets in known sections.
 
-## Sprint files
+## Deepening from transcript
 
-Each active project has a per-sprint working file at
-`sprints/<YYYY-W##>/<code>.md`. During `deepen from transcript`, write
-meeting notes, decisions, new client asks, outbound drafts, and risk
-updates into *that* sprint file's hand-written sections. Engine-managed
-regions inside the sprint file (`sprint-facts`, `where-it-stands`,
-`carry-forward`) MUST NOT be edited — sync owns them. Project `cp.md`
-still receives durable updates (Quick Resume, Project Notes,
-Stakeholders); transient weekly material belongs in the sprint file, not
-in `cp.md`.
+During `deepen from transcript`, write meeting notes, decisions, new client
+asks, outbound drafts, and risk updates into the *sprint file's* hand-written
+sections. Engine-managed regions inside the sprint file (`sprint-facts`,
+`where-it-stands`, `carry-forward`) MUST NOT be edited — sync owns them.
 
-`wrap up` extends to commit the entire `sprints/<YYYY-W##>/` directory
-alongside the master roll-up and to run word-count discipline on each
-sprint file.
+Project `cp.md` still receives durable updates (Quick Resume, Project Notes,
+Stakeholders); transient weekly material belongs in the sprint file, not in
+`cp.md`.
+
+`wrap up` extends to commit the entire `sprints/<YYYY-W##>/` directory alongside
+the master roll-up and to run word-count discipline on each sprint file.
 
 ## Word-count discipline
 

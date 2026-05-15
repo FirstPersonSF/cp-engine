@@ -267,10 +267,17 @@ def test_claude_md_includes_gatekeeper_rule() -> None:
 
 def test_claude_md_includes_status_vocabulary() -> None:
     out = render_claude_md(make_tenant())
+    # Engagement statuses
     for status in ("Deal", "Open", "Holding", "Closed", "Archived"):
         assert status in out
-    # Old vocab must NOT appear
-    assert "`Active`" not in out
+    # Initiative statuses (Phase D.4) — distinct from engagements; both
+    # vocabularies need to appear in the doc.
+    assert "On hold" in out
+    assert "Done" in out
+    # Standalone repo statuses
+    assert "Inactive" in out
+    # Old engagement-only vocab that conflicted with the new one must NOT
+    # appear.
     assert "`Complete`" not in out
 
 

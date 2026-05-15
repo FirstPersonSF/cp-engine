@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.16.1 — 2026-05-15
+
+### Changed — CLAUDE.md template restructured + updated for Phase D
+
+The session-protocol doc was written pre-initiatives and pre-Phase-D. Several sections were stale (`is_internal` framing, working-tree example missing initiative dirs, no mention of account meetings, sprint planning, account summaries, or the auto-ingest pipeline at all).
+
+Restructured into two clean parts:
+- **Part 1 — What's in the tree.** Three kinds of work (engagements, initiatives, standalone repos), working tree layout (now showing initiatives + linked repos explicitly), the four meeting-assignment shapes (single project, account meeting, sprint planning, untagged), tenant-wide surfaces in `weekly-cp.md`, engagement-vs-initiative sprint file shape, local-link traversal.
+- **Part 2 — How to read and edit it.** Reading modes, mode-switching, gatekeeper rule, trigger phrases, reference style (now with initiative + repo variants — "Updates on **Mission Control**?" not "**mission-control Mission Control**"), hand-written vs. engine-managed sections, deepening from transcript, word-count discipline.
+
+The new tree example shows real initiative dirs (mission-control, storyos, first-person-website, etc.) so the layout is concrete. Reference style explicitly covers the three kinds.
+
+No behavior change. Tenant CLAUDE.md regenerates on the next `cp sync`.
+
 ## v0.8.16 — 2026-05-15
 
 ### Added — Phase D.5 tenant-scope sprint planning
