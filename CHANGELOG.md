@@ -4,6 +4,22 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.15 — 2026-05-14
+
+### Added — Phase D.4 account meetings
+
+Implements the engine half of `cp/docs/plans/2026-05-14-account-meetings.md`. Account meetings (weekly client syncs touching N engagements, weekly internal-team syncs touching N initiatives) now have first-class support: the user picks ONE company in the dashboard; the webhook fetches the active project list at ingest time and routes content per-project via one Claude call.
+
+- **New verb `record-account-summary`** lands a paragraph bullet per `(company, week)` in `weekly-cp.md`'s new `## Account summaries` section. Section auto-creates if missing. Hash key embeds the week so re-runs are idempotent. The narrative companion to the existing one-liner `account_decisions` flow.
+- **New module `cp_engine.plan_from_account_meeting`** — `generate_account_plan()` takes the company + transcript + active project list and asks Claude to route per-project verbs in a single pass. Output is the existing `cp ingest` multi-project plan shape PLUS an `account_summary` block PLUS the existing `account_decisions` block. Server-side injection stamps `company` + `week` on every account_* item so the prompt doesn't have to.
+- **New helper `list_active_for_company(config, company_code)`** returns active engagements for client companies and active initiatives for self-fpsf/self-canonic companies, in one call.
+- **`_validate_plan` accepts the new `account_summary` block** (single dict or one-element list, mirroring how `account_decisions` is shaped).
+- **5 new tests** for the section auto-create, append-to-existing, idempotency, per-week dedup, and required-field validation.
+
+### Phase D.4 webhook
+
+The matching `POST /api/auto-ingest-account` endpoint lives in `webhook/main.py`. Same auth (HMAC), same Supabase observability, same per-project commit pattern as `/api/auto-ingest`. One additional commit lands `## Account summaries` to `weekly-cp.md` after all per-project commits.
+
 ## v0.8.14.1 — 2026-05-14
 
 ### Added — Initiative-shaped prompts for auto-ingest (Phase 2)

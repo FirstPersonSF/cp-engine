@@ -318,6 +318,33 @@ def execute_plan(
                 except Exception as exc:
                     result.errors.append(f"account-decision: {exc}")
 
+    # Phase D.4: account_summary is the narrative companion to
+    # account_decisions. One paragraph per (company, week) under the
+    # new ## Account summaries section in weekly-cp.md.
+    account_summary = plan.get("account_summary")
+    if account_summary:
+        weekly_cp_path = tenant_root / "weekly-cp.md"
+        if not weekly_cp_path.exists():
+            result.errors.append(f"weekly-cp.md missing: {weekly_cp_path}")
+        else:
+            # Accept both a single dict and a list of dicts; the prompt
+            # produces one but the validator already accepts list shape.
+            items = (
+                account_summary
+                if isinstance(account_summary, list)
+                else [account_summary]
+            )
+            for item in items:
+                try:
+                    written = _write_account_summary(item, weekly_cp_path)
+                    if written:
+                        if weekly_cp_path not in result.files_written:
+                            result.files_written.append(weekly_cp_path)
+                    else:
+                        result.skipped_duplicate += 1
+                except Exception as exc:
+                    result.errors.append(f"account-summary: {exc}")
+
     return result
 
 
@@ -372,6 +399,20 @@ def _validate_plan(plan: dict) -> None:
             if not isinstance(item, dict):
                 raise IngestPlanError(
                     f"plan.account_decisions[{i}] must be a mapping"
+                )
+
+    # Phase D.4: account_summary is a single dict (or list of one dict
+    # for forwards compatibility) — one paragraph per (company, week).
+    account_summary = plan.get("account_summary")
+    if account_summary is not None:
+        items = (
+            account_summary if isinstance(account_summary, list) else [account_summary]
+        )
+        for i, item in enumerate(items):
+            if not isinstance(item, dict):
+                raise IngestPlanError(
+                    f"plan.account_summary[{i}] must be a mapping "
+                    "(or pass a single mapping for one entry)"
                 )
 
 
@@ -767,6 +808,82 @@ def _write_account_decision(item: dict, weekly_cp_path: Path) -> bool:
     else:
         # Insert just before the anchor, with blank-line padding.
         new = body[:anchor_pos] + new_line + "\n\n" + body[anchor_pos:]
+
+    weekly_cp_path.write_text(new)
+    return True
+
+
+def _write_account_summary(item: dict, weekly_cp_path: Path) -> bool:
+    """Phase D.4: append an account-meeting summary to weekly-cp.md.
+
+    One paragraph bullet per (company, week) under the new
+    `## Account summaries` section. Captures the gestalt of an
+    account meeting (e.g. "Maria gave a status across all five
+    GGL projects this week...") alongside the existing
+    account_decisions flow which captures one-line tenant-wide
+    decisions.
+
+    Section auto-creates if missing — landed before the first
+    cp-engine marker block, or at end of file as fallback.
+
+    Hash key embeds the ISO week so the same summary text in two
+    different weeks doesn't false-collide; re-running for the same
+    `(company, week)` is idempotent.
+    """
+    text = (item.get("text") or "").strip()
+    company = (item.get("company") or "").strip().lower()
+    week = (item.get("week") or "").strip()
+    if not text:
+        raise IngestPlanError("account-summary item missing 'text'")
+    if not company:
+        raise IngestPlanError("account-summary item missing 'company'")
+    if not week:
+        raise IngestPlanError("account-summary item missing 'week' (e.g. '2026-W20')")
+
+    h = _content_hash(company, "record-account-summary", f"{week}|{text}")
+    body = weekly_cp_path.read_text(encoding="utf-8")
+    if _already_present(body, h):
+        return False
+
+    bullet = f"- [{week} · {company.upper()}] {text} {_hash_marker(h)}"
+
+    # If the section already exists, append the bullet under it. Otherwise
+    # create the section just before the first cp-engine marker (so it
+    # lands inside the handwritten region) or at end of file.
+    section_re = re.compile(r"^## Account summaries\s*$", re.MULTILINE)
+    sec_match = section_re.search(body)
+    if sec_match:
+        # Insert at the end of the section (right before the next ## or EOF).
+        next_h2 = re.compile(r"^## ", re.MULTILINE)
+        next_m = next_h2.search(body, pos=sec_match.end() + 1)
+        insert_pos = next_m.start() if next_m else len(body)
+        # Preserve trailing newline structure inside the section.
+        zone = body[sec_match.end():insert_pos]
+        if not zone.endswith("\n"):
+            zone += "\n"
+        new_zone = zone + bullet + "\n"
+        new = body[:sec_match.end()] + new_zone + body[insert_pos:]
+    else:
+        # Create the section. Insert before the first cp-engine marker
+        # so it joins the handwritten region rather than a managed strip.
+        insertion_anchors = [
+            "<!-- cp-engine:start themes-strip -->",
+            "<!-- cp-engine:start decisions-strip -->",
+            "## Active research",
+        ]
+        anchor_pos = -1
+        for anchor in insertion_anchors:
+            pos = body.find(anchor)
+            if pos != -1:
+                anchor_pos = pos
+                break
+        section_block = f"## Account summaries\n\n{bullet}\n\n"
+        if anchor_pos == -1:
+            if not body.endswith("\n"):
+                body += "\n"
+            new = body + "\n" + section_block
+        else:
+            new = body[:anchor_pos] + section_block + body[anchor_pos:]
 
     weekly_cp_path.write_text(new)
     return True

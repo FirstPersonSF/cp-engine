@@ -553,3 +553,137 @@ def test_account_decision_errors_when_weekly_cp_missing(tmp_path: Path) -> None:
     result = execute_plan(plan, tenant_root=tmp_path, today=date(2026, 5, 13))
     assert any("weekly-cp.md missing" in e for e in result.errors)
     assert result.files_written == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Phase D.4 — account_summary
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_account_summary_creates_section_and_writes_bullet(tmp_path: Path) -> None:
+    """First account_summary auto-creates the ## Account summaries section."""
+    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
+    plan = {
+        "account_summary": {
+            "text": "Maria gave a status across all five GGL projects this week. "
+            "5168 launch slipped to 6/8; 5151 interviews wrap; 5176 in client review.",
+            "company": "google",
+            "week": "2026-W20",
+        }
+    }
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
+    assert result.errors == []
+    body = (tenant / "weekly-cp.md").read_text()
+    assert "## Account summaries" in body
+    assert "[2026-W20 · GOOGLE] Maria gave a status" in body
+    assert "cp:hash=" in body
+
+
+def test_account_summary_appends_to_existing_section(tmp_path: Path) -> None:
+    """A second account_summary for a different company lands as a sibling
+    bullet under the existing section, not a duplicate section header."""
+    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
+    # First summary creates the section.
+    execute_plan(
+        {
+            "account_summary": {
+                "text": "Google week summary.",
+                "company": "google",
+                "week": "2026-W20",
+            }
+        },
+        tenant_root=tenant,
+        today=date(2026, 5, 13),
+    )
+    # Second summary appends.
+    execute_plan(
+        {
+            "account_summary": {
+                "text": "Infoblox week summary.",
+                "company": "ibx",
+                "week": "2026-W20",
+            }
+        },
+        tenant_root=tenant,
+        today=date(2026, 5, 13),
+    )
+    body = (tenant / "weekly-cp.md").read_text()
+    # Exactly one section header, both bullets present.
+    assert body.count("## Account summaries") == 1
+    assert "[2026-W20 · GOOGLE] Google week summary." in body
+    assert "[2026-W20 · IBX] Infoblox week summary." in body
+
+
+def test_account_summary_idempotent_same_company_same_week(tmp_path: Path) -> None:
+    """Re-running for (company, week) is a no-op via hash dedup."""
+    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
+    plan = {
+        "account_summary": {
+            "text": "Week summary.",
+            "company": "google",
+            "week": "2026-W20",
+        }
+    }
+    r1 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
+    r2 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
+    assert r1.errors == [] and r2.errors == []
+    assert len(r1.files_written) == 1
+    assert r2.files_written == []
+    assert r2.skipped_duplicate == 1
+
+
+def test_account_summary_same_company_different_week_writes_both(
+    tmp_path: Path,
+) -> None:
+    """The hash key embeds week, so a different week's summary doesn't dedup."""
+    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
+    execute_plan(
+        {
+            "account_summary": {
+                "text": "Week 19 summary.",
+                "company": "google",
+                "week": "2026-W19",
+            }
+        },
+        tenant_root=tenant,
+        today=date(2026, 5, 6),
+    )
+    execute_plan(
+        {
+            "account_summary": {
+                "text": "Week 20 summary.",
+                "company": "google",
+                "week": "2026-W20",
+            }
+        },
+        tenant_root=tenant,
+        today=date(2026, 5, 13),
+    )
+    body = (tenant / "weekly-cp.md").read_text()
+    assert "[2026-W19 · GOOGLE]" in body
+    assert "[2026-W20 · GOOGLE]" in body
+
+
+def test_account_summary_validates_required_fields(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
+    # Missing 'text'
+    r = execute_plan(
+        {"account_summary": {"company": "google", "week": "2026-W20"}},
+        tenant_root=tenant,
+        today=date(2026, 5, 13),
+    )
+    assert any("missing 'text'" in e for e in r.errors)
+    # Missing 'company'
+    r = execute_plan(
+        {"account_summary": {"text": "x", "week": "2026-W20"}},
+        tenant_root=tenant,
+        today=date(2026, 5, 13),
+    )
+    assert any("missing 'company'" in e for e in r.errors)
+    # Missing 'week'
+    r = execute_plan(
+        {"account_summary": {"text": "x", "company": "google"}},
+        tenant_root=tenant,
+        today=date(2026, 5, 13),
+    )
+    assert any("missing 'week'" in e for e in r.errors)

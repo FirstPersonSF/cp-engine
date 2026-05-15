@@ -43,6 +43,11 @@ from fastapi import FastAPI, HTTPException, Request
 import cp_engine
 from cp_engine.config import TenantConfig
 from cp_engine.ingest import IngestPlanError, execute_plan
+from cp_engine.plan_from_account_meeting import (
+    AccountPlanError,
+    generate_account_plan,
+    list_active_for_company,
+)
 from cp_engine.plan_from_transcript import (
     PlanGenerationError,
     generate_plan,
@@ -172,6 +177,257 @@ async def auto_ingest(request: Request) -> dict:
             commit_sha=last_commit,
         )
         return response
+
+
+# ─────────────────────────────────────────────────────────────
+#  Phase D.4: account-meeting endpoint
+# ─────────────────────────────────────────────────────────────
+
+
+@app.post("/api/auto-ingest-account")
+async def auto_ingest_account(request: Request) -> dict:
+    """Generate + apply an account-meeting plan.
+
+    Called by fathom-meeting-sync when the user assigns a meeting as an
+    account meeting via the dashboard. Different from /api/auto-ingest:
+    the project list is NOT in the request — we fetch all currently-
+    active projects for the company at ingest time.
+
+    Request body (JSON):
+        {
+          "meeting_id": "<uuid from fathom_meetings.id>",
+          "company_code": "GGL",                # canonical company code
+          "transcript_text": "<full transcript>"  # optional; fetched
+                                                    # from Supabase if absent
+        }
+
+    Headers:
+        X-Webhook-Signature: hex(hmac_sha256(body, WEBHOOK_HMAC_SECRET))
+
+    Response shape mirrors /api/auto-ingest plus an `account_summary`
+    field with the weekly-cp.md commit, and `commit_shas` listing all
+    per-project commits.
+    """
+    raw_body = await request.body()
+    _verify_signature(raw_body, request.headers.get("x-webhook-signature", ""))
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
+
+    meeting_id = payload.get("meeting_id")
+    company_code = payload.get("company_code")
+    transcript_text = payload.get("transcript_text")
+    if not meeting_id or not company_code:
+        raise HTTPException(
+            status_code=400,
+            detail="meeting_id and company_code are required",
+        )
+
+    if transcript_text is None:
+        transcript_text = _fetch_transcript(meeting_id)
+
+    log.info(
+        "auto-ingest-account start: meeting=%s company=%s",
+        meeting_id, company_code,
+    )
+
+    with _cloned_tenant() as tenant_root:
+        config = _load_tenant_config(tenant_root)
+
+        # Fetch the active project list at ingest time — not at
+        # assignment time. A project added today is in scope; a project
+        # closed today drops out.
+        active = list_active_for_company(config, company_code)
+        if not active:
+            log.warning(
+                "auto-ingest-account: no active projects for company=%s",
+                company_code,
+            )
+            response = {
+                "ingested": [],
+                "commit_sha": None,
+                "skipped_no_op": True,
+                "reason": f"no active projects for company '{company_code}'",
+            }
+            _log_run_to_supabase(
+                meeting_id=meeting_id,
+                project_codes=[],
+                status="skipped_no_op",
+                ingested=[],
+                commit_sha=None,
+            )
+            return response
+
+        log.info(
+            "auto-ingest-account: %d active project(s) for company=%s: %s",
+            len(active), company_code, [p.code for p in active],
+        )
+
+        # Stage transcript for the prompt + audit log.
+        transcript_path = _stage_transcript(tenant_root, meeting_id, transcript_text)
+
+        # Generate the multi-project plan in ONE Claude call.
+        try:
+            generated = generate_account_plan(
+                config=config,
+                company_code=company_code,
+                meeting_id=meeting_id,
+                transcript_text=transcript_text,
+                active_projects=list(active),
+            )
+        except AccountPlanError as exc:
+            log.error("account plan generation failed: %s", exc)
+            response = {
+                "ingested": [],
+                "commit_sha": None,
+                "skipped_no_op": False,
+                "errors": [str(exc)],
+            }
+            _log_run_to_supabase(
+                meeting_id=meeting_id,
+                project_codes=[p.code for p in active],
+                status="failed",
+                ingested=[],
+                commit_sha=None,
+            )
+            return response
+
+        # Execute the plan. Per-project entries fan out into per-project
+        # commits via the same pattern as /api/auto-ingest. The
+        # account_summary lands as a separate weekly-cp.md commit.
+        plan = generated.plan
+        projects_block = plan.get("projects") or {}
+
+        ingested: list[dict] = []
+        commits: list[str] = []
+
+        # Step 1: per-project ingest + commit (as before)
+        for code, entries in projects_block.items():
+            single_project_plan = {
+                "transcript": plan.get("transcript", {"source": "fathom"}),
+                "projects": {code: entries},
+            }
+            entry = {
+                "code": code,
+                "plan_summary": {v: len(items) for v, items in entries.items()},
+                "files_written": [],
+                "skipped_duplicate": 0,
+                "errors": [],
+            }
+            try:
+                exec_result = execute_plan(
+                    single_project_plan,
+                    tenant_root=tenant_root,
+                    today=datetime.now().date(),
+                )
+            except IngestPlanError as exc:
+                entry["errors"].append(f"plan execution failed: {exc}")
+                ingested.append(entry)
+                continue
+            entry["files_written"] = [str(p) for p in exec_result.files_written]
+            entry["skipped_duplicate"] = exec_result.skipped_duplicate
+            entry["errors"].extend(exec_result.errors)
+            ingested.append(entry)
+            if exec_result.files_written:
+                commit_sha = _commit_and_push(
+                    tenant_root=tenant_root,
+                    meeting_id=meeting_id,
+                    ingested=[entry],
+                )
+                entry["commit_sha"] = commit_sha
+                commits.append(commit_sha)
+                log.info(
+                    "auto-ingest-account commit: meeting=%s project=%s commit=%s",
+                    meeting_id, code, commit_sha,
+                )
+
+        # Step 2: account_summary (+ account_decisions if any) → one
+        # additional commit against weekly-cp.md.
+        summary_plan = {
+            "transcript": plan.get("transcript", {"source": "fathom"}),
+        }
+        if plan.get("account_summary"):
+            summary_plan["account_summary"] = plan["account_summary"]
+        if plan.get("account_decisions"):
+            summary_plan["account_decisions"] = plan["account_decisions"]
+
+        if "account_summary" in summary_plan or "account_decisions" in summary_plan:
+            summary_entry = {
+                "code": f"account:{company_code.lower()}",
+                "plan_summary": {
+                    "account_summary": 1 if "account_summary" in summary_plan else 0,
+                    "account_decisions": (
+                        len(summary_plan.get("account_decisions") or [])
+                    ),
+                },
+                "files_written": [],
+                "skipped_duplicate": 0,
+                "errors": [],
+            }
+            try:
+                summary_exec = execute_plan(
+                    summary_plan,
+                    tenant_root=tenant_root,
+                    today=datetime.now().date(),
+                )
+            except IngestPlanError as exc:
+                summary_entry["errors"].append(f"plan execution failed: {exc}")
+                ingested.append(summary_entry)
+            else:
+                summary_entry["files_written"] = [
+                    str(p) for p in summary_exec.files_written
+                ]
+                summary_entry["skipped_duplicate"] = summary_exec.skipped_duplicate
+                summary_entry["errors"].extend(summary_exec.errors)
+                if summary_exec.files_written:
+                    summary_commit = _commit_and_push(
+                        tenant_root=tenant_root,
+                        meeting_id=meeting_id,
+                        ingested=[summary_entry],
+                    )
+                    summary_entry["commit_sha"] = summary_commit
+                    commits.append(summary_commit)
+                    log.info(
+                        "auto-ingest-account summary commit: meeting=%s commit=%s",
+                        meeting_id, summary_commit,
+                    )
+                ingested.append(summary_entry)
+
+        if not commits:
+            log.info(
+                "auto-ingest-account no-op: nothing changed for meeting=%s",
+                meeting_id,
+            )
+            _log_run_to_supabase(
+                meeting_id=meeting_id,
+                project_codes=[p.code for p in active],
+                status="skipped_no_op",
+                ingested=ingested,
+                commit_sha=None,
+            )
+            return {
+                "ingested": ingested,
+                "commit_sha": None,
+                "commit_shas": [],
+                "skipped_no_op": True,
+            }
+
+        last_commit = commits[-1]
+        _log_run_to_supabase(
+            meeting_id=meeting_id,
+            project_codes=[p.code for p in active],
+            status="success",
+            ingested=ingested,
+            commit_sha=last_commit,
+        )
+        return {
+            "ingested": ingested,
+            "commit_sha": last_commit,
+            "commit_shas": commits,
+            "skipped_no_op": False,
+        }
 
 
 # ─────────────────────────────────────────────────────────────
