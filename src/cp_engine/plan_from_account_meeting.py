@@ -403,3 +403,342 @@ def list_active_for_company(
         # or unowned).
     out.sort(key=lambda p: p.code)
     return out
+
+
+# Phase D.5: tenant-scope sprint planning. Three valid scopes mapping
+# to companies.kind values; each pulls a different active set.
+_SCOPE_TO_KIND = {
+    "1p": "client",         # all active client engagements
+    "fpsf": "self-fpsf",    # all active FPSF initiatives
+    "canonic": "self-canonic",  # all active Canonic initiatives
+}
+
+# Pseudo-company codes for the account_summary's `company` field. These
+# don't match any real `companies.code` — they're scoped distinctly
+# from per-account summaries to avoid hash collisions and to make the
+# weekly-cp.md `## Account summaries` section readable.
+_SCOPE_TO_PSEUDO_COMPANY = {
+    "1p": "1p-clients",
+    "fpsf": "fpsf-internal",
+    "canonic": "canonic-internal",
+}
+
+_SCOPE_LABEL = {
+    "1p": "1P (all active client engagements)",
+    "fpsf": "First Person internal (all active FPSF initiatives)",
+    "canonic": "Canonic internal (all active Canonic initiatives)",
+}
+
+
+def list_active_for_scope(
+    config: TenantConfig, scope: str
+) -> list[ProjectState]:
+    """Return all active projects for a sprint-planning scope.
+
+    Three scopes (mapped via _SCOPE_TO_KIND):
+      - '1p'       → all active client engagements (any company.kind='client')
+      - 'fpsf'     → all active initiatives under any self-fpsf company
+      - 'canonic'  → all active initiatives under any self-canonic company
+
+    Sister function to `list_active_for_company` but the discriminator
+    is the company kind, not a single company code. Used by the cp-
+    engine-webhook /api/auto-ingest-sprint-planning endpoint.
+    """
+    from cp_engine.status import is_active_initiative_status, is_active_status
+    from cp_engine.state import scope_for
+    from cp_engine.sync import _default_backend_factory
+
+    if scope not in _SCOPE_TO_KIND:
+        raise AccountPlanError(
+            f"unknown sprint-planning scope {scope!r}; "
+            f"expected one of {sorted(_SCOPE_TO_KIND)}"
+        )
+    target_kind = _SCOPE_TO_KIND[scope]
+
+    backend = _default_backend_factory(config.sync.backend)
+    all_projects = backend.read_projects(config)
+
+    out: list[ProjectState] = []
+    for p in all_projects:
+        if p.company_kind != target_kind:
+            continue
+        if scope == "1p":
+            # Client engagements: Deal | Open, not internal.
+            if p.source == "engagement" and is_active_status(p.status) and not p.is_internal:
+                out.append(p)
+        else:
+            # FPSF / Canonic: active initiatives only (skip standalone repos
+            # — they're either initiative-linked or unowned and don't fit
+            # the "what we're planning this sprint" frame).
+            if p.source == "initiative" and is_active_initiative_status(p.status):
+                out.append(p)
+    out.sort(key=lambda p: (scope_for(p.company_kind), p.code))
+    return out
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Phase D.5: tenant-scope sprint planning plan generator
+# ──────────────────────────────────────────────────────────────────────
+
+
+def generate_sprint_planning_plan(
+    *,
+    config: TenantConfig,
+    scope: str,
+    meeting_id: str,
+    transcript_text: str,
+    active_projects: list[ProjectState],
+    week_iso: str | None = None,
+    model: str = "claude-opus-4-7",
+    api_key: str | None = None,
+) -> GeneratedAccountPlan:
+    """Generate a sprint-planning plan via one Claude call.
+
+    Same shape as `generate_account_plan` but the prompt frames this
+    as tenant-scope sprint planning — the meeting touches every active
+    project under the named scope (1P, FPSF, or Canonic). The
+    `account_summary` lands in weekly-cp.md tagged with a pseudo-
+    company code (`1p-clients`, `fpsf-internal`, `canonic-internal`)
+    so it's distinguishable from per-account summaries.
+    """
+    if scope not in _SCOPE_TO_PSEUDO_COMPANY:
+        raise AccountPlanError(
+            f"unknown sprint-planning scope {scope!r}; "
+            f"expected one of {sorted(_SCOPE_TO_PSEUDO_COMPANY)}"
+        )
+    if not active_projects:
+        raise AccountPlanError(
+            f"scope {scope!r} has no active projects to route to"
+        )
+
+    week = week_iso or current_sprint_week_iso(datetime.now())
+    pseudo_company = _SCOPE_TO_PSEUDO_COMPANY[scope]
+    scope_label = _SCOPE_LABEL[scope]
+
+    transcript = (
+        transcript_text
+        if len(transcript_text) <= _MAX_TRANSCRIPT_CHARS
+        else transcript_text[:_MAX_TRANSCRIPT_CHARS]
+        + "\n\n[... transcript truncated ...]\n"
+    )
+
+    project_block = _format_active_projects(config, active_projects)
+    account_decisions_context = _load_recent_account_decisions(config.root)
+
+    prompt = _build_sprint_planning_prompt(
+        scope=scope,
+        scope_label=scope_label,
+        week=week,
+        active_projects_block=project_block,
+        account_decisions_context=account_decisions_context,
+        transcript=transcript,
+        team=config.team,
+    )
+
+    response_text = _call_claude(prompt, model=model, api_key=api_key)
+    yaml_text = _extract_yaml(response_text)
+
+    try:
+        plan = yaml.safe_load(yaml_text)
+    except yaml.YAMLError as exc:
+        raise AccountPlanError(
+            f"Claude returned non-YAML output: {exc}\n--- response ---\n{response_text[:500]}"
+        ) from exc
+
+    if not isinstance(plan, dict):
+        raise AccountPlanError(
+            f"Claude returned a non-mapping plan: {type(plan).__name__}"
+        )
+
+    # Inject pseudo-company + week into account_summary defensively.
+    summary = plan.get("account_summary")
+    if isinstance(summary, dict):
+        summary.setdefault("company", pseudo_company)
+        summary.setdefault("week", week)
+    elif isinstance(summary, list):
+        for item in summary:
+            if isinstance(item, dict):
+                item.setdefault("company", pseudo_company)
+                item.setdefault("week", week)
+
+    # Same defensive injection for account_decisions.
+    for ad in plan.get("account_decisions") or []:
+        if isinstance(ad, dict):
+            ad.setdefault("company", pseudo_company)
+
+    try:
+        _validate_plan(plan)
+    except IngestPlanError as exc:
+        raise AccountPlanError(f"plan failed validation: {exc}") from exc
+
+    project_codes = tuple(p.code for p in active_projects)
+    return GeneratedAccountPlan(
+        plan=plan,
+        raw_response=response_text,
+        company_code=pseudo_company,
+        meeting_id=meeting_id,
+        project_codes=project_codes,
+        model=model,
+    )
+
+
+def _build_sprint_planning_prompt(
+    *,
+    scope: str,
+    scope_label: str,
+    week: str,
+    active_projects_block: str,
+    account_decisions_context: str,
+    transcript: str,
+    team: tuple[str, ...] = (),
+) -> str:
+    today = datetime.now().date().isoformat()
+    if team:
+        team_block = (
+            "These names are INTERNAL TEAM MEMBERS, not stakeholders.\n"
+            "Never add them as new entries to a `stakeholders` verb:\n"
+            + ", ".join(team)
+        )
+    else:
+        team_block = "(No team roster declared in tenant config.)"
+
+    if account_decisions_context:
+        decisions_block = (
+            "### Recent account-level decisions (already in weekly-cp.md)\n\n"
+            "Don't re-emit these as either project-level decisions OR new "
+            "account_decisions; the system already knows them.\n\n"
+            + account_decisions_context
+        )
+    else:
+        decisions_block = ""
+
+    return _SPRINT_PLANNING_PROMPT_TEMPLATE.format(
+        today=today,
+        week=week,
+        scope=scope,
+        scope_label=scope_label,
+        active_projects_block=active_projects_block,
+        decisions_block=decisions_block,
+        team_block=team_block,
+        transcript=transcript,
+    )
+
+
+_SPRINT_PLANNING_PROMPT_TEMPLATE = """\
+You are extracting structured updates from a TENANT-SCOPE SPRINT
+PLANNING transcript — a weekly meeting where the team plans work
+across every active project in scope. Different from a single-account
+meeting: the project list spans MULTIPLE clients (or all internal
+initiatives), so per-project routing must be especially careful.
+
+Your output is a YAML plan that `cp ingest` will execute against the
+tenant.
+
+# Today
+{today}
+
+# Sprint week
+{week}
+
+# Scope
+{scope_label}
+
+# Internal team
+{team_block}
+
+# Active projects in scope
+
+{active_projects_block}
+
+{decisions_block}
+
+# Schema you must produce
+
+```yaml
+transcript:
+  source: fathom
+  path: sprint-planning
+
+projects:                     # one entry per project that has content
+  <project-code>:
+    inbound:                  # things a stakeholder said
+      - text: "..."
+        date: "YYYY-MM-DD"
+        who: "<who said it>"
+    asks:                     # outstanding requests
+      - text: "..."
+        who: "<who we're asking>"
+        by: "YYYY-MM-DD"
+        date: "YYYY-MM-DD"
+    decisions:
+      - text: "..."
+        date: "YYYY-MM-DD"
+        cross_cutting: false
+    risks:
+      - text: "..."
+        severity: "watching"
+        category: "schedule"
+        date: "YYYY-MM-DD"
+
+account_summary:              # ONE entry — paragraph capturing the gestalt
+  text: "..."                  # 80–200 words, narrative not bullets
+  # company + week injected server-side; you don't need them
+
+account_decisions:            # OPTIONAL — tenant-wide decisions
+  - text: "..."
+    date: "YYYY-MM-DD"
+```
+
+# Rules
+
+1. **Route per-project, don't broadcast.** A bullet for `ggl-5168`
+   only goes in `projects.ggl-5168`. Cross-project items belong in
+   `account_summary` or `account_decisions`, not duplicated across
+   N projects.
+
+2. **Don't over-extract.** Sprint planning often touches projects
+   only briefly ("we'll pick up 5151 next week"). That's not a
+   per-project verb — it's a summary mention. Reserve project
+   verbs for substantive content.
+
+3. **The `account_summary` is REQUIRED.** Exactly one entry.
+   80–200 words covering: which projects got attention this sprint,
+   key allocation/capacity decisions, dominant risks, anything
+   that crosses project boundaries. This is the partner-review
+   surface in weekly-cp.md.
+
+4. **`account_decisions` are TENANT-WIDE structured one-liners.**
+   Examples: "Sprint cadence shifts to 2-week cycles starting
+   2026-W22." "Holding reviews moved from Friday to Tuesday."
+   Don't put project-specific decisions here.
+
+5. **Decisions vs inbound.** Decision = commitment made in the
+   meeting (who's doing what, by when). Inbound = information
+   conveyed.
+
+6. **Skip stakeholders entirely** for sprint planning — the team
+   roster is known; new external contacts almost never get
+   introduced in sprint planning.
+
+7. **Don't duplicate what's already known.** If the meeting
+   restates a recent account-level decision (above), skip it.
+
+8. **Date fields:** use the meeting date if known, otherwise
+   today ({today}). All dates as ISO YYYY-MM-DD.
+
+9. **Quote-like fidelity.** Reflect what was said. No
+   interpretation or speculation.
+
+10. **No empty lists.** Omit any project entry / verb that has no
+    items. The `account_summary` is the only field that's always
+    present.
+
+# Output format
+
+Respond with ONLY the YAML plan inside a single ```yaml fenced code
+block. No preamble, no explanation, no postscript.
+
+# Transcript
+
+{transcript}
+"""

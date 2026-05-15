@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.16 — 2026-05-15
+
+### Added — Phase D.5 tenant-scope sprint planning
+
+Sister concept to Phase D.4 account meetings. Where account meetings are per-company, sprint planning is per-scope: 1P sprint planning touches every active client engagement; FPSF/Canonic sprint planning touches every active initiative for that self-company. The user picks ONE scope; the webhook fetches the appropriate active project list at ingest time.
+
+- **New helper `list_active_for_scope(config, scope)`** in `cp_engine.plan_from_account_meeting`. Three scopes mapped via `_SCOPE_TO_KIND`: `'1p'` → all active client engagements; `'fpsf'` → all active self-fpsf initiatives; `'canonic'` → all active self-canonic initiatives. Sister to `list_active_for_company`.
+- **New `generate_sprint_planning_plan()`** mirrors `generate_account_plan()` but uses a sprint-planning-framed prompt and stamps the `account_summary`'s `company` field with a pseudo-code (`1p-clients`, `fpsf-internal`, `canonic-internal`) so it's distinguishable from per-account summaries in `weekly-cp.md`'s `## Account summaries` section.
+- Server-side defaults stamp `company` + `week` on every emitted `account_summary` and `account_decisions` item so the prompt doesn't have to (defensive injection mirroring the account flow).
+
+### Phase D.5 webhook
+
+`POST /api/auto-ingest-sprint-planning` lives in `webhook/main.py`. Same auth, same per-project commit pattern as `/api/auto-ingest-account`. One additional commit lands the sprint-planning summary to `weekly-cp.md`. Payload: `{meeting_id, scope, transcript_text}` — much smaller than the account variant since scope is a literal three-value enum.
+
 ## v0.8.15 — 2026-05-14
 
 ### Added — Phase D.4 account meetings
