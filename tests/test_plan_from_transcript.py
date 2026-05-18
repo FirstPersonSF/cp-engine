@@ -74,3 +74,52 @@ def test_build_prompt_initiative_drops_client_verbs() -> None:
     assert "decisions:" in schema_section
     assert "risks:" in schema_section
     assert "asks:" in schema_section
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  _extract_yaml — fenced code block handling, including truncation
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_extract_yaml_handles_complete_fenced_block() -> None:
+    from cp_engine.plan_from_transcript import _extract_yaml
+    response = '```yaml\nprojects:\n  ggl-5168:\n    asks: []\n```'
+    out = _extract_yaml(response)
+    assert out == 'projects:\n  ggl-5168:\n    asks: []'
+
+
+def test_extract_yaml_handles_truncated_response_with_open_fence_only() -> None:
+    """Real bug from 2026-05-18: a multi-project plan response was
+    truncated at max_tokens mid-output. The opening ```yaml fence was
+    present but the closing fence wasn't, so the extractor fell through
+    to its no-fence branch and returned the raw response with backticks
+    intact. yaml.safe_load then threw an opaque column-1 parse error.
+    Now the extractor strips the opening fence and returns the partial."""
+    from cp_engine.plan_from_transcript import _extract_yaml
+    truncated = (
+        '```yaml\n'
+        'projects:\n'
+        '  slt-5175:\n'
+        '    inbound:\n'
+        '      - text: "Art texted Marcello back from'  # ← chopped here
+    )
+    out = _extract_yaml(truncated)
+    # Backticks must be gone; partial YAML returned (caller decides what
+    # to do with it — typically a yaml.safe_load partial parse).
+    assert not out.startswith('```')
+    assert out.startswith('projects:')
+    assert 'slt-5175' in out
+
+
+def test_extract_yaml_handles_no_fence_at_all() -> None:
+    from cp_engine.plan_from_transcript import _extract_yaml
+    response = 'projects:\n  ggl-5168: {}\n'
+    out = _extract_yaml(response)
+    assert out == 'projects:\n  ggl-5168: {}'
+
+
+def test_extract_yaml_strips_yaml_language_tag_variants() -> None:
+    from cp_engine.plan_from_transcript import _extract_yaml
+    # Some responses use ``` (no language tag) instead of ```yaml.
+    response = '```\nprojects: {}\n```'
+    assert _extract_yaml(response) == 'projects: {}'

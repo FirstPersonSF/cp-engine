@@ -513,7 +513,14 @@ def _call_claude(prompt: str, *, model: str, api_key: str | None) -> str:
     try:
         response = client.messages.create(
             model=model,
-            max_tokens=4096,
+            # 16k headroom — multi-project plans (account meetings,
+            # sprint planning across 20+ projects) routinely produce
+            # 8k+ token responses. The earlier 4k ceiling silently
+            # truncated mid-output, producing un-closed YAML fences
+            # that _extract_yaml couldn't recover from. Single-project
+            # plans are well under this; we pay no extra cost for the
+            # headroom (Anthropic bills on actual output, not max).
+            max_tokens=16384,
             messages=[{"role": "user", "content": prompt}],
         )
     except Exception as exc:  # anthropic SDK raises various subclasses
@@ -529,15 +536,47 @@ def _call_claude(prompt: str, *, model: str, api_key: str | None) -> str:
     text = getattr(block, "text", None)
     if not text:
         raise PlanGenerationError(f"Anthropic returned non-text block: {block!r}")
+    # Surface truncation as a specific, diagnosable error before the
+    # caller hits a downstream YAML parse failure. Anthropic sets
+    # stop_reason='max_tokens' when the response was cut at the cap.
+    stop_reason = getattr(response, "stop_reason", None)
+    if stop_reason == "max_tokens":
+        raise PlanGenerationError(
+            "Anthropic response truncated at max_tokens — try a larger "
+            "max_tokens budget or reduce prompt scope. "
+            f"Got {len(text)} chars before truncation."
+        )
     return text
 
 
 _FENCE_RE = re.compile(r"```(?:yaml)?\s*\n?(.*?)\n?```", re.DOTALL)
+_OPEN_FENCE_RE = re.compile(r"```(?:yaml)?\s*\n?")
 
 
 def _extract_yaml(response_text: str) -> str:
-    """Pull the YAML out of a fenced code block. If no fence, return as-is."""
+    """Pull the YAML out of a fenced code block.
+
+    Three cases:
+    1. Complete fenced block (open + close) → return the inside.
+    2. Partial response with opening fence but no close (truncation
+       slipped past the max_tokens guard, or the model just forgot to
+       close) → strip the opening fence and return the rest; let YAML
+       parsing decide if there's anything usable.
+    3. No fence at all → return as-is.
+
+    Case 2 was a real bug pre-2026-05-18: a truncated multi-project
+    response would skip case 1, fall through to case 3, and the
+    backticks at the start would cause yaml.safe_load to throw a
+    parse error pointing at column 1 — completely opaque to the user.
+    """
+    # Case 1: complete fenced block.
     match = _FENCE_RE.search(response_text)
     if match:
         return match.group(1).strip()
+    # Case 2: opening fence present but no closing fence — strip the
+    # opening and return whatever followed.
+    open_match = _OPEN_FENCE_RE.search(response_text)
+    if open_match:
+        return response_text[open_match.end():].strip()
+    # Case 3: no fence at all.
     return response_text.strip()

@@ -293,6 +293,7 @@ async def auto_ingest_account(request: Request) -> dict:
                 status="failed",
                 ingested=[],
                 commit_sha=None,
+                top_level_errors=[f"account plan generation failed: {exc}"],
             )
             return response
 
@@ -538,6 +539,7 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
                 status="failed",
                 ingested=[],
                 commit_sha=None,
+                top_level_errors=[f"sprint-planning plan generation failed: {exc}"],
             )
             return response
 
@@ -1008,11 +1010,19 @@ def _log_run_to_supabase(
     status: str,
     ingested: list[dict],
     commit_sha: str | None,
+    top_level_errors: list[str] | None = None,
 ) -> None:
     """Insert one row into auto_ingest_runs. Never raises.
 
     Observability is best-effort: a failure to log must not break the
     primary auto-ingest contract with fathom-meeting-sync. We log + swallow.
+
+    `top_level_errors` captures failures that happen BEFORE the per-project
+    loop runs (plan generation crashed, transcript fetch failed, etc.) —
+    cases where `ingested=[]` so the per-project error aggregation has
+    nothing to surface. Without this, top-level failures landed in
+    auto_ingest_runs as status=failed but errors=null, leaving the
+    dashboard unable to show what actually went wrong.
     """
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_KEY")
@@ -1024,7 +1034,7 @@ def _log_run_to_supabase(
         entry["code"]: entry.get("plan_summary") or {}
         for entry in ingested
     }
-    errors_flat: list[str] = []
+    errors_flat: list[str] = list(top_level_errors or [])
     for entry in ingested:
         for err in entry.get("errors") or []:
             errors_flat.append(f"{entry['code']}: {err}")

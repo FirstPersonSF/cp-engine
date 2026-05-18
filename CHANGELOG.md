@@ -4,6 +4,19 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.16.2 — 2026-05-18
+
+### Fixed — three coupled bugs surfaced by 1P sprint planning
+
+Live failure path: tagging the 2026-05-18 1P Weekly Scrum as `sprint_planning_scope='1p'` ran `generate_sprint_planning_plan` against 20 active engagements; the response blew past the 4096-token cap and got truncated mid-output. Three fixes:
+
+- **`_call_claude` max_tokens bumped to 16384.** The 4k ceiling was tuned for single-project plans; multi-project (account meetings, sprint planning) routinely needs 8k+. Anthropic bills on actual output, not max — no cost penalty for the headroom.
+- **`_call_claude` raises a specific `PlanGenerationError` when `stop_reason == 'max_tokens'`.** Before, truncation cascaded silently into a YAML parse error downstream. Now the caller sees "response truncated at max_tokens — try a larger max_tokens budget or reduce prompt scope."
+- **`_extract_yaml` recovers from truncated responses.** When the opening ` ```yaml ` fence is present but the closing fence isn't (truncation, model forgot, etc.), strip the opening fence and return the partial — let YAML parsing decide what to do with it, rather than dumping backticks into yaml.safe_load and getting a column-1 parse error.
+- **`webhook._log_run_to_supabase` accepts a new `top_level_errors` parameter.** The two `status="failed"` paths (account / sprint-planning plan generation) now forward the AccountPlanError message into `auto_ingest_runs.errors` so the dashboard observability panel can show what actually went wrong. Before, `ingested=[]` failures landed with `errors=null` — opaque without Railway logs.
+
+4 new tests cover the YAML extractor's three cases (complete fence, opening-only truncation, no fence, no-language-tag fence).
+
 ## v0.8.16.1 — 2026-05-15
 
 ### Changed — CLAUDE.md template restructured + updated for Phase D
