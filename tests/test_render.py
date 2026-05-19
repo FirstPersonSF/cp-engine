@@ -748,3 +748,138 @@ def test_linked_repo_md_omits_description_blockquote_when_missing() -> None:
     repo = LinkedRepo(repo_name="x", github_org="Org", status="Active")
     body = render_linked_repo_md("Project Name", repo)
     assert "> " not in body  # no blockquote when description is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  _compute_slack_rollup — Phase D.6.1
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_slack_rollup_extracts_latest_bullet_per_project(tmp_path: Path) -> None:
+    """One row per project whose current sprint file has a Slack digest
+    bullet matching `- [<W##> · Slack] <text> <!-- cp:hash=... -->`."""
+    from cp_engine.render import _compute_slack_rollup
+    from cp_engine.state import ProjectState
+
+    sprints = tmp_path / "sprints" / "2026-W20"
+    sprints.mkdir(parents=True)
+    (sprints / "ggl-5168.md").write_text(
+        "## Client communication\n\n"
+        "### Slack digest\n"
+        "- [2026-W20 · Slack] Tony and Geoff drove a heads-down week. "
+        "<!-- cp:hash=abc123 -->\n"
+        "### Stakeholders\n"
+    )
+    (sprints / "ibx-5153.md").write_text(
+        "## Client communication\n\n"
+        "### Slack digest\n"
+        "- [2026-W20 · Slack] Marcello shipped the V0 UNF. <!-- cp:hash=def456 -->\n"
+    )
+    # Project with no digest bullet — quiet week, should be omitted.
+    (sprints / "sap-5171.md").write_text(
+        "## Client communication\n\n### Slack digest\n- _<placeholder>_\n"
+    )
+
+    projects = [
+        ProjectState(
+            code="ggl-5168", name="GGL 5168 Activation", source="engagement",
+            company_kind="client", company_code="GGL", company_name="Google",
+            status="Open", is_internal=False, owner="Brandon",
+            last_touched=None, deadline=None,
+        ),
+        ProjectState(
+            code="ibx-5153", name="IBX 5153 AI Campaign", source="engagement",
+            company_kind="client", company_code="IBX", company_name="Infoblox",
+            status="Open", is_internal=False, owner="Drew",
+            last_touched=None, deadline=None,
+        ),
+        ProjectState(
+            code="sap-5171", name="SAP 5171 Display Ads 26", source="engagement",
+            company_kind="client", company_code="SAP", company_name="SAP",
+            status="Open", is_internal=False, owner="Drew",
+            last_touched=None, deadline=None,
+        ),
+    ]
+    rollup = _compute_slack_rollup(tmp_path, projects, "2026-W20")
+    assert rollup is not None
+    assert len(rollup) == 2  # sap-5171 omitted (no real bullet)
+    codes = [r["code"] for r in rollup]
+    assert codes == ["ggl-5168", "ibx-5153"]  # sorted by scope/code
+    ggl = next(r for r in rollup if r["code"] == "ggl-5168")
+    assert ggl["week"] == "2026-W20"
+    assert ggl["text"].startswith("Tony and Geoff drove")
+    assert "<!-- cp:hash" not in ggl["text"]  # hash marker stripped
+    assert ggl["sprint_link"] == "sprints/2026-W20/ggl-5168.md"
+
+
+def test_slack_rollup_returns_none_when_no_projects_have_digests(
+    tmp_path: Path,
+) -> None:
+    """Quiet sprint — no project has a Slack bullet — returns None so
+    the template's `{% if slack_rollup %}` guard hides the section."""
+    from cp_engine.render import _compute_slack_rollup
+    from cp_engine.state import ProjectState
+
+    sprints = tmp_path / "sprints" / "2026-W20"
+    sprints.mkdir(parents=True)
+    (sprints / "ggl-5168.md").write_text(
+        "## Client communication\n\n### Slack digest\n- _<placeholder>_\n"
+    )
+
+    projects = [
+        ProjectState(
+            code="ggl-5168", name="x", source="engagement",
+            company_kind="client", company_code="GGL", company_name="Google",
+            status="Open", is_internal=False, owner=None,
+            last_touched=None, deadline=None,
+        ),
+    ]
+    assert _compute_slack_rollup(tmp_path, projects, "2026-W20") is None
+
+
+def test_slack_rollup_returns_none_when_sprint_dir_missing(
+    tmp_path: Path,
+) -> None:
+    """Sync runs before any sprint dir exists → no rollup."""
+    from cp_engine.render import _compute_slack_rollup
+    from cp_engine.state import ProjectState
+    projects = [
+        ProjectState(
+            code="ggl-5168", name="x", source="engagement",
+            company_kind="client", company_code="GGL", company_name="Google",
+            status="Open", is_internal=False, owner=None,
+            last_touched=None, deadline=None,
+        ),
+    ]
+    assert _compute_slack_rollup(tmp_path, projects, "2026-W20") is None
+    assert _compute_slack_rollup(tmp_path, projects, None) is None
+
+
+def test_slack_rollup_takes_last_bullet_when_multiple_for_same_week(
+    tmp_path: Path,
+) -> None:
+    """Re-running the digest cron for the same week should be idempotent
+    (hash dedup blocks duplicates), but if a duplicate ever slips in,
+    take the most recently appended one."""
+    from cp_engine.render import _compute_slack_rollup
+    from cp_engine.state import ProjectState
+
+    sprints = tmp_path / "sprints" / "2026-W20"
+    sprints.mkdir(parents=True)
+    (sprints / "ggl-5168.md").write_text(
+        "### Slack digest\n"
+        "- [2026-W20 · Slack] First version. <!-- cp:hash=a -->\n"
+        "- [2026-W20 · Slack] Second version. <!-- cp:hash=b -->\n"
+    )
+
+    projects = [
+        ProjectState(
+            code="ggl-5168", name="x", source="engagement",
+            company_kind="client", company_code="GGL", company_name="Google",
+            status="Open", is_internal=False, owner=None,
+            last_touched=None, deadline=None,
+        ),
+    ]
+    rollup = _compute_slack_rollup(tmp_path, projects, "2026-W20")
+    assert rollup is not None
+    assert rollup[0]["text"] == "Second version."

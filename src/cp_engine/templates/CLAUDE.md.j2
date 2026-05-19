@@ -285,6 +285,36 @@ Sections marked with HTML comments like `<!-- cp-engine:start <name> -->` /
 markers is human territory. Sync never touches `weekly-cp.md` outside of
 auto-appended bullets in known sections.
 
+## Sprint planning prep
+
+When the user asks to prep an agenda for sprint planning ("run weekly
+sprint planning", "prep sprint planning agenda", or similar), gather a
+cross-project view by reading the following per active project in the
+target scope (1P engagements, FPSF initiatives, or Canonic initiatives):
+
+1. **Open client/team asks** from each project's current sprint file's
+   `### Open asks` subsection — flag any past-due (`by <date>` in the
+   past).
+2. **Decisions** from each project's current sprint file's
+   `### Decisions` subsection.
+3. **Risks** from each project's current sprint file's
+   `## Dependencies & risks` section, especially `severity: escalated`.
+4. **The most recent Slack digest paragraph** from each project's
+   current sprint file's `### Slack digest` subsection. This is
+   load-bearing — async chatter often surfaces context the team forgot
+   to flag in the meeting. The digest cron lands these Sunday evenings,
+   so Monday-morning sprint planning sees the prior week's chatter.
+5. **Cross-cutting items** from `weekly-cp.md`'s `## Account summaries`
+   and `## Decisions (cross-cutting, last 4 weeks)` sections.
+6. **Allocation** from each project's `_<Person · Nh>_` annotations in
+   the master CP active tables (last week's hours).
+
+After the meeting runs, the canonical capture path is to tag the Fathom
+recording as `sprint_planning_scope='1p' | 'fpsf' | 'canonic'` in the
+dashboard. The auto-ingest webhook handles per-project routing + a
+tenant-wide summary in `weekly-cp.md`'s `## Account summaries`. Don't
+hand-write per-project bullets when the auto-ingest path is available.
+
 ## Deepening from transcript
 
 During `deepen from transcript`, write meeting notes, decisions, new client

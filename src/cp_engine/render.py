@@ -253,6 +253,14 @@ def render_master_cp(
         if parsed_sprint_files
         else None
     )
+    # Phase D.6: surface the most recent Slack digest per project so
+    # sprint planning + partners' review can see weekly Slack activity
+    # without opening each sprint file individually. None when no
+    # project has a digest this week (cron hasn't run, all channels
+    # were quiet, etc.) so the template hides the section.
+    slack_rollup = _compute_slack_rollup(
+        config.root, active, current_sprint_iso
+    )
     sprint_facts = (
         _compute_sprint_facts_strip(
             parsed_sprint_files, today_or_now, prior_sprint_iso
@@ -283,6 +291,7 @@ def render_master_cp(
         current_week_label=current_week_label,
         agenda=agenda,
         sprint_facts=sprint_facts,
+        slack_rollup=slack_rollup,
     )
 
 
@@ -892,6 +901,64 @@ def splice_managed_region(file_contents: str, region: str, new_body: str) -> str
 # NB: The agenda week-target regex moved to cp_engine.aggregators in v0.8.5
 # (shared between master-cp.md's `agenda` region and weekly-cp.md's
 # `carry-forward-strip`). This file no longer needs it directly.
+
+
+_SLACK_DIGEST_RE = re.compile(
+    r"^- \[(?P<week>\d{4}-W\d{1,2}) · Slack\] (?P<text>.+?)(?: <!-- cp:hash=[a-f0-9]+ -->)?\s*$",
+    re.MULTILINE,
+)
+
+
+def _compute_slack_rollup(
+    tenant_root: Path,
+    active_projects: list[ProjectState],
+    current_sprint_iso: str | None,
+) -> list[dict] | None:
+    """Aggregate the most recent Slack digest bullet across active projects.
+
+    Reads each active project's current sprint file and extracts the
+    last bullet matching `- [<W##> · Slack] <text>`. Returns one row
+    per project that has a digest this week — projects with quiet
+    weeks (no Slack activity, digest cron skipped them) don't appear.
+
+    Returns None when nothing matches so the template can hide the
+    section entirely.
+    """
+    if not current_sprint_iso:
+        return None
+
+    sprints_dir = tenant_root / "sprints" / current_sprint_iso
+    if not sprints_dir.is_dir():
+        return None
+
+    rows: list[dict] = []
+    for p in active_projects:
+        sprint_file = sprints_dir / f"{p.code}.md"
+        if not sprint_file.is_file():
+            continue
+        body = sprint_file.read_text(encoding="utf-8")
+        matches = list(_SLACK_DIGEST_RE.finditer(body))
+        if not matches:
+            continue
+        # Take the last match — if the digest cron ever runs twice for
+        # the same week, the newer bullet is at the bottom (append-only).
+        m = matches[-1]
+        rows.append({
+            "code": p.code,
+            "name": p.name,
+            "scope": scope_for(p.company_kind),
+            "dir_slug": dir_slug(p.code, p.name),
+            "week": m.group("week"),
+            "text": m.group("text").strip(),
+            "sprint_link": f"sprints/{current_sprint_iso}/{p.code}.md",
+        })
+
+    if not rows:
+        return None
+    # Sort by company_code (groups projects from same client together) for
+    # readability; matches the rest of master-cp's grouping convention.
+    rows.sort(key=lambda r: (r["scope"], r["code"]))
+    return rows
 
 
 def _compute_agenda_rollup(

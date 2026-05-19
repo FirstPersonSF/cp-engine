@@ -189,7 +189,8 @@ def sync_tenant(
         exceptions_count=exceptions_count,
     )
     first_pass_regions = tuple(
-        r for r in _MASTER_REGIONS if r not in ("agenda", "sprint-facts-strip")
+        r for r in _MASTER_REGIONS
+        if r not in ("agenda", "sprint-facts-strip", "slack-rollup")
     )
     if _write_if_changed(
         master_path,
@@ -591,6 +592,7 @@ _MASTER_REGIONS = (
     "last-sync-timestamp",
     "sprint-facts-strip",
     "agenda",
+    "slack-rollup",
     "exceptions-summary",
     "active-pipeline",
     "active-1p",

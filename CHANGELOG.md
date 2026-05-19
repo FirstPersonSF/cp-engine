@@ -4,6 +4,22 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.16.3 — 2026-05-19
+
+### Added — Phase D.6: Slack digest visibility in cross-cutting surfaces
+
+The weekly Slack digest cron lands `### Slack digest` bullets in each project's current sprint file. Until now, those bullets were only visible inside each individual sprint file — sprint planning prep couldn't see them without opening every file.
+
+- **New engine-managed region `## Recent Slack activity` in master-cp.md.** Reads the most recent `[<W##> · Slack]` bullet from each active project's current sprint file and surfaces them in a fold-out `<details>` block. Sorted by scope + project code. Hidden entirely when no project has a digest this week (quiet sprint, cron hasn't run, etc.).
+- **New helper `cp_engine.render._compute_slack_rollup(tenant_root, projects, current_sprint_iso)`** does the extraction via regex (`_SLACK_DIGEST_RE`). Takes the last-matched bullet per file to be defensive against duplicate digest runs. Returns None when nothing matches.
+- **Sync wires the new region into the post-sprint-files second pass** (alongside `agenda` and `sprint-facts-strip`) since it reads sprint file content.
+
+### CLAUDE.md template — sprint planning prep section
+
+New `## Sprint planning prep` section in Part 2 documents the prep workflow durably: read open asks, decisions, risks, **most recent Slack digest**, cross-cutting items from weekly-cp.md, and last-week allocations across all active items in the target scope. Then tag the Fathom recording for auto-ingest after the meeting runs.
+
+4 new tests cover `_compute_slack_rollup`'s extraction, the "no projects have digests" case, missing sprint dirs, and the last-bullet-wins behavior for duplicate weeks.
+
 ## v0.8.16.2 — 2026-05-18
 
 ### Fixed — three coupled bugs surfaced by 1P sprint planning

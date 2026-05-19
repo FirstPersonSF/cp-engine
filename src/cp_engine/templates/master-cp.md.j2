@@ -47,6 +47,22 @@ Author: cp-engine (sync)
 {%- endif %}
 <!-- cp-engine:end agenda -->
 
+<!-- cp-engine:start slack-rollup -->
+{%- if slack_rollup %}
+## Recent Slack activity (this sprint week)
+
+<details>
+<summary><strong>{{ slack_rollup | length }} project{% if slack_rollup | length != 1 %}s{% endif %} with Slack chatter this week</strong></summary>
+
+{% for r in slack_rollup %}
+**`{{ r.code }}` — {{ r.name }}** · [W## sprint](./{{ r.sprint_link }})
+> {{ r.text }}
+
+{% endfor %}
+</details>
+{%- endif %}
+<!-- cp-engine:end slack-rollup -->
+
 <!-- cp-engine:start exceptions-summary -->
 {%- if exceptions_count and exceptions_count > 0 %}
 **Exceptions:** {{ exceptions_count }} this week — see [`exceptions/`](exceptions/README.md) for unregistered repo activity.
