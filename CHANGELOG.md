@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.16.5 — 2026-05-19
+
+### Added — `storyos-mc` sprint planning scope (Phase D.7)
+
+Drew + Tony's standing weekly Canonic + Mission Control product/engineering sync was a mixed-scope meeting (StoryOS is Canonic; Mission Control is FPSF). The Phase D.5 sprint-planning scopes were per-org (`1p` / `fpsf` / `canonic`), so mixed-scope meetings either fanned too broadly (FPSF would hit all 5 initiatives) or had to fall back to a multi-tag work-session that lost the tenant-wide summary.
+
+Add a new named scope `storyos-mc` that maps to a fixed pair of initiative codes via the new `_SCOPE_TO_EXPLICIT_CODES` mapping. `list_active_for_scope` now branches on scope shape: kind-based scopes (`1p`/`fpsf`/`canonic`) iterate `read_projects` and filter by `company_kind`; explicit-code scopes iterate the listed codes and look them up directly. Future named-pair scopes (e.g. when another standing combined meeting emerges) need only one line in `_SCOPE_TO_EXPLICIT_CODES` + `_SCOPE_TO_PSEUDO_COMPANY` + `_SCOPE_LABEL`.
+
+Matching changes:
+- MC-2 migration: `fathom_meetings.sprint_planning_scope` CHECK constraint adds `'storyos-mc'`.
+- fathom-meeting-sync `VALID_SCOPES` includes `'storyos-mc'`; dashboard adds a fourth Sprint Planning button + chip labelMap entry.
+
 ## v0.8.16.4 — 2026-05-19
 
 ### Fixed — slack-rollup region wasn't being spliced into existing master-cp.md

@@ -413,6 +413,17 @@ _SCOPE_TO_KIND = {
     "canonic": "self-canonic",  # all active Canonic initiatives
 }
 
+# Phase D.7: explicit-list scopes that don't map to a single company.kind.
+# `storyos-mc` is Drew + Tony's standing weekly Canonic + Mission Control
+# product/engineering sync — pairs StoryOS (Canonic initiative) with
+# Mission Control (FPSF initiative). If you add a new explicit-list scope
+# later, list its target initiative codes here; list_active_for_scope
+# falls through to a code-allowlist lookup when the scope isn't in
+# _SCOPE_TO_KIND.
+_SCOPE_TO_EXPLICIT_CODES = {
+    "storyos-mc": ("storyos", "mission-control"),
+}
+
 # Pseudo-company codes for the account_summary's `company` field. These
 # don't match any real `companies.code` — they're scoped distinctly
 # from per-account summaries to avoid hash collisions and to make the
@@ -421,12 +432,14 @@ _SCOPE_TO_PSEUDO_COMPANY = {
     "1p": "1p-clients",
     "fpsf": "fpsf-internal",
     "canonic": "canonic-internal",
+    "storyos-mc": "storyos-mc",
 }
 
 _SCOPE_LABEL = {
     "1p": "1P (all active client engagements)",
     "fpsf": "First Person internal (all active FPSF initiatives)",
     "canonic": "Canonic internal (all active Canonic initiatives)",
+    "storyos-mc": "StoryOS + Mission Control (Drew + Tony product/engineering sync)",
 }
 
 
@@ -435,28 +448,57 @@ def list_active_for_scope(
 ) -> list[ProjectState]:
     """Return all active projects for a sprint-planning scope.
 
-    Three scopes (mapped via _SCOPE_TO_KIND):
-      - '1p'       → all active client engagements (any company.kind='client')
-      - 'fpsf'     → all active initiatives under any self-fpsf company
-      - 'canonic'  → all active initiatives under any self-canonic company
+    Two scope shapes:
+      1. Kind-based (mapped via _SCOPE_TO_KIND):
+         - '1p'       → all active client engagements (company.kind='client')
+         - 'fpsf'     → all active initiatives under self-fpsf companies
+         - 'canonic'  → all active initiatives under self-canonic companies
+      2. Explicit-code (mapped via _SCOPE_TO_EXPLICIT_CODES):
+         - 'storyos-mc' → fixed pair: StoryOS + Mission Control
 
     Sister function to `list_active_for_company` but the discriminator
-    is the company kind, not a single company code. Used by the cp-
-    engine-webhook /api/auto-ingest-sprint-planning endpoint.
+    is the company kind OR an explicit code list. Used by the cp-engine-
+    webhook /api/auto-ingest-sprint-planning endpoint.
     """
     from cp_engine.status import is_active_initiative_status, is_active_status
     from cp_engine.state import scope_for
     from cp_engine.sync import _default_backend_factory
 
-    if scope not in _SCOPE_TO_KIND:
+    valid_scopes = set(_SCOPE_TO_KIND) | set(_SCOPE_TO_EXPLICIT_CODES)
+    if scope not in valid_scopes:
         raise AccountPlanError(
             f"unknown sprint-planning scope {scope!r}; "
-            f"expected one of {sorted(_SCOPE_TO_KIND)}"
+            f"expected one of {sorted(valid_scopes)}"
         )
-    target_kind = _SCOPE_TO_KIND[scope]
 
     backend = _default_backend_factory(config.sync.backend)
     all_projects = backend.read_projects(config)
+
+    # Explicit-code scopes: return only the listed project codes, in the
+    # order they appear in the explicit list (preserves intent — e.g.
+    # 'storyos-mc' renders StoryOS first because that's how the meeting
+    # name reads).
+    if scope in _SCOPE_TO_EXPLICIT_CODES:
+        target_codes = _SCOPE_TO_EXPLICIT_CODES[scope]
+        by_code = {p.code: p for p in all_projects}
+        out: list[ProjectState] = []
+        for code in target_codes:
+            p = by_code.get(code)
+            if p is None:
+                # Skip silently — a project listed in an explicit scope
+                # that's no longer in MC-2 shouldn't block the rest.
+                continue
+            # Apply the same activity check that the kind-based scopes
+            # use, but be tolerant: explicit lists are curated by humans
+            # who may want to keep On-hold initiatives in scope for a
+            # bit longer.
+            if p.source == "initiative" and is_active_initiative_status(p.status):
+                out.append(p)
+            elif p.source == "engagement" and is_active_status(p.status) and not p.is_internal:
+                out.append(p)
+        return out
+
+    target_kind = _SCOPE_TO_KIND[scope]
 
     out: list[ProjectState] = []
     for p in all_projects:
