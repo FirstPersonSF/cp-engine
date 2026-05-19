@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.16.4 — 2026-05-19
+
+### Fixed — slack-rollup region wasn't being spliced into existing master-cp.md
+
+v0.8.16.3 added the `slack-rollup` region to `_MASTER_REGIONS` + the first-pass exclusion list, but the second-pass `_write_if_changed` call hardcoded `splice_regions=("agenda", "sprint-facts-strip")` — so `slack-rollup` was never offered to the splicer. Result: on existing tenants the region's markers never appeared in master-cp.md and the rollup content never landed. Fixed by adding `"slack-rollup"` to the second-pass tuple. Schema-evolution rewrite path now triggers correctly when the existing master-cp.md is missing the marker.
+
 ## v0.8.16.3 — 2026-05-19
 
 ### Added — Phase D.6: Slack digest visibility in cross-cutting surfaces

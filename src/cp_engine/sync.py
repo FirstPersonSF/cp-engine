@@ -507,7 +507,11 @@ def sync_tenant(
                 _write_if_changed(
                     master_path,
                     new_master_with_agenda,
-                    splice_regions=("agenda", "sprint-facts-strip"),
+                    splice_regions=(
+                        "agenda",
+                        "sprint-facts-strip",
+                        "slack-rollup",
+                    ),
                 )
                 and master_path not in files_written
             ):
