@@ -18,4 +18,4 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 # This package is deploy-only; we never publish a wheel.
-packages = ["main.py"]
+packages = ["main.py", "clickup_propose.py"]

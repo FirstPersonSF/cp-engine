@@ -129,7 +129,31 @@ The "consider splitting" callout is what would have prevented W19's
 "ran out of time before Tony" miss. If one owner has >>others,
 suggest splitting the meeting time accordingly.
 
-### 5. Don't commit
+### 5. Surface open ClickUp tasks per project (read-only)
+
+Meeting action items are tracked as ClickUp tasks (see the cp ClickUp
+tasks pipeline). For sprint-planning prep, surface each active project's
+open ClickUp tasks alongside the agenda so the partners see committed
+follow-ups, not just what's in the cp sprint files.
+
+This is **read-only** — never create, complete, or modify ClickUp tasks
+from `/cp-prep`.
+
+For each project in scope that has a `clickup_list_id` in MC-2's
+`public.projects`:
+
+1. Query MC-2 for the project's `clickup_list_id` (skip projects where
+   it is null — they have no ClickUp list yet).
+2. Use the ClickUp MCP `clickup_filter_tasks` (or `get_list` → tasks) on
+   that list id, filtered to open/not-closed tasks.
+3. Surface a short per-project block to the user: task name + assignee +
+   status. Flag `from-fathom`-tagged tasks that are still unassigned.
+
+If the ClickUp MCP is not available in the session, skip this step and
+note it — the rest of the agenda still stands. This step never blocks
+agenda generation.
+
+### 6. Don't commit
 
 The agenda is a working artifact for the meeting. Whether to commit it
 is a per-team call (some prefer the audit trail; others find the file
@@ -138,7 +162,7 @@ churn distracting). Default: don't auto-commit. Tell the user:
 > Agenda is at `sprints/<W##>/_agenda.md`. Commit when you're satisfied
 > with it (or leave uncommitted if you treat it as ephemeral).
 
-### 6. Re-running
+### 7. Re-running
 
 `/cp-prep` is idempotent — re-running overwrites `_agenda.md` in place
 with fresh state. Safe to re-run after a `cp sync`, after a `/cp-ingest`,

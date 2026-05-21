@@ -55,6 +55,8 @@ from cp_engine.plan_from_transcript import (
     generate_plan,
 )
 
+from clickup_propose import propose_clickup_tasks
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("cp-engine-webhook")
 
@@ -145,9 +147,19 @@ async def auto_ingest(request: Request) -> dict:
                     meeting_id, code, commit_sha,
                 )
 
+        # Stage A — propose ClickUp tasks from the meeting's Fathom action
+        # items. Independent of whether the transcript produced cp bullets;
+        # best-effort, never raises.
+        clickup_summary = propose_clickup_tasks(meeting_id, project_codes)
+
         if not commits:
             log.info("auto-ingest no-op: no files changed for meeting=%s", meeting_id)
-            response = {"ingested": ingested, "commit_sha": None, "skipped_no_op": True}
+            response = {
+                "ingested": ingested,
+                "commit_sha": None,
+                "skipped_no_op": True,
+                "clickup_proposals": clickup_summary,
+            }
             _log_run_to_supabase(
                 meeting_id=meeting_id,
                 project_codes=project_codes,
@@ -170,6 +182,7 @@ async def auto_ingest(request: Request) -> dict:
             "commit_sha": last_commit,
             "commit_shas": commits,
             "skipped_no_op": False,
+            "clickup_proposals": clickup_summary,
         }
         _log_run_to_supabase(
             meeting_id=meeting_id,
