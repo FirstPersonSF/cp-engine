@@ -317,6 +317,37 @@ def test_dry_run_with_unresolved_dirs_still_reports_them(tmp_path: Path) -> None
     assert result.moved_dirs == ()
 
 
+def test_migration_skips_dirs_that_dont_look_like_project_codes(tmp_path: Path) -> None:
+    """A `1p/<child>/` whose name doesn't look like a project code
+    (e.g. a hand-created account dir for inactive-only projects, or
+    just a stray dir) is silently skipped, not hard-failed.
+
+    Project codes follow `<prefix>-<digits>(-<slug>)?` shape; anything
+    that doesn't match that pattern can't be a project working dir.
+    Hard-failing on every such dir would block legitimate hand-created
+    account scaffolding (e.g. for clients whose only projects are
+    archived in MC-2)."""
+    root = _init_tenant(tmp_path)
+    # A real flat project dir that DOES need migrating.
+    _scaffold_flat_project(root, "ggl-5168-playbooks")
+    # A hand-created account dir for an inactive-only client (no live
+    # cp.md yet, just an inactive subdir holding archived projects).
+    hand_created_account = root / "1p" / "hexagon" / "inactive" / "hex-old-1-stub"
+    hand_created_account.mkdir(parents=True)
+    (hand_created_account / "cp.md").write_text("# old\n")
+    _commit_all(root, "scaffold + hand-created account")
+
+    fake = _FakeBackend((
+        _state("ggl-5168", "GGL", "Google", name="Playbooks"),
+    ))
+    result = migrate_accounts(root, backend_factory=lambda _: fake)
+
+    # ggl-5168 moved; hexagon dir untouched and not flagged as unresolved.
+    assert result.unresolved_dirs == ()
+    assert (root / "1p" / "google" / "ggl-5168-playbooks" / "cp.md").exists()
+    assert (root / "1p" / "hexagon" / "inactive" / "hex-old-1-stub" / "cp.md").exists()
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Inactive bin routing
 # ──────────────────────────────────────────────────────────────────────

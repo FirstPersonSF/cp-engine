@@ -123,6 +123,22 @@ def _extract_code_from_dir_name(dir_name: str, known_codes: set[str]) -> str | N
     return None
 
 
+# Project-code shape: `<lowercase-alpha-prefix>-<digits>(-<slug>)?`.
+# Examples: `ggl-5168`, `ibx-5167-ddi-platform-video`, `tel-5113`.
+# Used to distinguish flat project dirs (which should resolve against
+# MC-2 or hard-fail) from other dirs under 1p/ — hand-created account
+# scaffolding, stray notes, etc. — which should be silently skipped.
+# Freeform repo slugs (`mc-2`, `storyos`) don't appear under 1p/ so
+# this stricter pattern is safe.
+_PROJECT_CODE_DIR_NAME_RE = re.compile(r"^[a-z]+-\d+(-[a-z0-9-]+)?$")
+
+
+def _looks_like_project_code_dir(name: str) -> bool:
+    """True if `name` matches the `<prefix>-<digits>(-<slug>)?` shape
+    of a client engagement working dir under `1p/`."""
+    return bool(_PROJECT_CODE_DIR_NAME_RE.match(name))
+
+
 def migrate_accounts(
     tenant_root: Path,
     *,
@@ -199,6 +215,14 @@ def migrate_accounts(
             continue  # handled separately
         if child.name in known_slugs and (child / "cp.md").exists():
             continue  # already-migrated account dir
+        # Distinguish "looks like a project code → must resolve or
+        # hard-fail" from "doesn't look like a project code → silently
+        # skip." The latter covers hand-created account dirs that have
+        # no live cp.md yet (e.g. a client whose only project is
+        # archived in MC-2), stray notes dirs, and any other
+        # non-project content under 1p/.
+        if not _looks_like_project_code_dir(child.name):
+            continue
         code = _extract_code_from_dir_name(child.name, known_codes)
         if code is None:
             unresolved.append(child)
