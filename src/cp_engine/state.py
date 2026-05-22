@@ -47,6 +47,37 @@ def scope_for(company_kind: str) -> str:
         ) from None
 
 
+def company_slug(company_name: str | None) -> str:
+    """Kebab-case a company name for use as a working-dir name.
+
+    "Infoblox" -> "infoblox". "Sentinel One" -> "sentinel-one".
+    "AT&T, Inc." -> "at-t-inc". Empty / None / whitespace-only -> "unknown"
+    (so the caller never builds a path with `//` or a missing segment).
+    """
+    if not company_name or not company_name.strip():
+        return "unknown"
+    slug = _SLUG_NON_ALPHANUM.sub("-", company_name.lower()).strip("-")
+    return slug or "unknown"
+
+
+def account_scope_for(project: "ProjectState") -> str:
+    """Project working-dir parent: `<scope>/<account>` for clients.
+
+    For client engagements this is `1p/<company-slug>` (the new account-
+    nested layout). For self-companies (FPSF / Canonic) this is just
+    `scope_for(company_kind)` — those scopes already group by self-
+    company and don't gain another layer.
+
+    Used by sync to place project dirs and by render to build navigation
+    links. Keeping a single function as the authority means a layout
+    change is one edit, not a sweep.
+    """
+    scope = scope_for(project.company_kind)
+    if project.company_kind == "client":
+        return f"{scope}/{company_slug(project.company_name)}"
+    return scope
+
+
 # v0.7 working-tree layout: working dirs live directly under their scope
 # (`<tenant>/<scope>/<dir_slug>/`), with inactive dirs under
 # `<tenant>/<scope>/inactive/<dir_slug>/`. Pre-v0.7 layouts (which had
