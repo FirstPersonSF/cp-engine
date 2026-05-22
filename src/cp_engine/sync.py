@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 from cp_engine.config import TenantConfig
 from cp_engine.render import (
     count_exceptions_in_window,
+    render_account_cp,
+    render_account_facts_body,
+    render_account_projects_body,
     render_claude_md,
     render_dropbox_md,
     render_exceptions_readme,
@@ -52,6 +55,7 @@ from cp_engine.state import (  # noqa: F401
     LinkedRepo,
     ProjectState,
     account_scope_for,
+    company_slug,
     dir_slug,
     inactive_root,
     scope_for,
@@ -338,6 +342,66 @@ def sync_tenant(
             linked_path = project_dir / f"_repo-{linked.repo_name}.md"
             if _write_if_changed(linked_path, linked_body, splice_regions=()):
                 files_written.append(linked_path)
+
+    # Account CP scaffolding (v0.8.17+, 1p-only) — for every account that
+    # has ≥1 active client project, scaffold `1p/<company-slug>/cp.md`
+    # from the account template and re-splice the `account-facts` and
+    # `projects` engine regions on every sync. FPSF/Canonic already nest
+    # by self-company at the scope level and don't get this layer.
+    #
+    # Account list is derived from the projects we already have — same
+    # source of truth as the rest of master-cp, no separate backend
+    # query. company_kind == "client" is the gate; internal client
+    # projects are excluded (they don't get a project dir under 1p/, so
+    # they shouldn't contribute to an account dir either).
+    accounts_to_active_projects: dict[tuple[str, str], list[ProjectState]] = {}
+    for project in projects:
+        if project.is_internal or project.company_kind != "client":
+            continue
+        slug = company_slug(project.company_name)
+        # Display name falls back to the slug if company_name is missing;
+        # company_slug already normalizes None to "unknown".
+        display = project.company_name or slug
+        accounts_to_active_projects.setdefault((slug, display), []).append(project)
+
+    for (slug, display), account_projects in accounts_to_active_projects.items():
+        account_dir = config.root / "1p" / slug
+        account_cp_path = account_dir / "cp.md"
+        account_projects_tuple = tuple(account_projects)
+
+        first_scaffold = not account_cp_path.exists()
+        if first_scaffold:
+            # First scaffold: full render from the template. The account
+            # dir already exists (the project loop above created
+            # `1p/<slug>/<dir>/` on the way to placing project working
+            # dirs), so we only need to write the cp.md itself.
+            account_dir.mkdir(parents=True, exist_ok=True)
+            scaffold_body = render_account_cp(slug, display, account_projects_tuple)
+            account_cp_path.write_text(scaffold_body)
+
+        # Re-splice the two engine-managed regions even on first scaffold
+        # so first-render and re-render are byte-stable — otherwise small
+        # whitespace differences between the template's `{{ block }}`
+        # spacing and the splicer's strip-and-rejoin make the next sync
+        # re-write the file unnecessarily (and breaks the no-op promise).
+        # Handwritten content outside the markers is byte-stable.
+        existing = account_cp_path.read_text()
+        new_body = existing
+        for region, body in (
+            ("account-facts", render_account_facts_body(display, account_projects_tuple)),
+            ("projects", render_account_projects_body(account_projects_tuple)),
+        ):
+            try:
+                new_body = splice_managed_region(new_body, region, body)
+            except Exception as exc:
+                logger.warning(
+                    "Skipping %s splice for account %s: %s", region, slug, exc,
+                )
+        if first_scaffold or new_body != existing:
+            if new_body != existing:
+                account_cp_path.write_text(new_body)
+            if account_cp_path not in files_written:
+                files_written.append(account_cp_path)
 
     # Sprint files — per-project per-sprint markdown for the partners' weekly
     # review. Generated for every active project that the master CP also
