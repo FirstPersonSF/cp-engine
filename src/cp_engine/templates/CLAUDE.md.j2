@@ -337,6 +337,12 @@ Per bootstrap v2:
 
 The engine enforces both checks during `cp render` and `wrap up`.
 
+**Exempt:** per-meeting artifacts under any `meetings/` directory
+(`<scope>/<code>/meetings/*.md` and `*.txt`). These carry a meeting
+synthesis plus a verbatim transcript and are legitimately long — they
+are a fixed-per-meeting record, not an accreting CP file. Do not audit
+or rotate them.
+
 ## Spec
 
 Tenant config: `.cp-engine.toml` (committed) + `.cp-engine.local.toml` (gitignored).

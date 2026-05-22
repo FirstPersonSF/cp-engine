@@ -56,6 +56,7 @@ from cp_engine.plan_from_transcript import (
 )
 
 from clickup_propose import propose_clickup_tasks
+from meeting_artifact import write_meeting_artifacts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("cp-engine-webhook")
@@ -152,6 +153,16 @@ async def auto_ingest(request: Request) -> dict:
         # best-effort, never raises.
         clickup_summary = propose_clickup_tasks(meeting_id, project_codes)
 
+        # Per-meeting artifacts — synthesis + transcript into each
+        # project's meetings/ dir. Runs after the per-project bullet
+        # commits so their `git add -A` doesn't sweep these in.
+        artifact_summary = _generate_meeting_artifacts(
+            tenant_root=tenant_root,
+            meeting_id=meeting_id,
+            transcript_text=transcript_text,
+            project_codes=project_codes,
+        )
+
         if not commits:
             log.info("auto-ingest no-op: no files changed for meeting=%s", meeting_id)
             response = {
@@ -159,6 +170,7 @@ async def auto_ingest(request: Request) -> dict:
                 "commit_sha": None,
                 "skipped_no_op": True,
                 "clickup_proposals": clickup_summary,
+                "meeting_artifacts": artifact_summary,
             }
             _log_run_to_supabase(
                 meeting_id=meeting_id,
@@ -183,6 +195,7 @@ async def auto_ingest(request: Request) -> dict:
             "commit_shas": commits,
             "skipped_no_op": False,
             "clickup_proposals": clickup_summary,
+            "meeting_artifacts": artifact_summary,
         }
         _log_run_to_supabase(
             meeting_id=meeting_id,
@@ -411,6 +424,14 @@ async def auto_ingest_account(request: Request) -> dict:
                     )
                 ingested.append(summary_entry)
 
+        # Per-meeting artifacts into every active project's meetings/ dir.
+        artifact_summary = _generate_meeting_artifacts(
+            tenant_root=tenant_root,
+            meeting_id=meeting_id,
+            transcript_text=transcript_text,
+            project_codes=[p.code for p in active],
+        )
+
         if not commits:
             log.info(
                 "auto-ingest-account no-op: nothing changed for meeting=%s",
@@ -428,6 +449,7 @@ async def auto_ingest_account(request: Request) -> dict:
                 "commit_sha": None,
                 "commit_shas": [],
                 "skipped_no_op": True,
+                "meeting_artifacts": artifact_summary,
             }
 
         last_commit = commits[-1]
@@ -443,6 +465,7 @@ async def auto_ingest_account(request: Request) -> dict:
             "commit_sha": last_commit,
             "commit_shas": commits,
             "skipped_no_op": False,
+            "meeting_artifacts": artifact_summary,
         }
 
 
@@ -653,6 +676,14 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
                     )
                 ingested.append(summary_entry)
 
+        # Per-meeting artifacts into every active project's meetings/ dir.
+        artifact_summary = _generate_meeting_artifacts(
+            tenant_root=tenant_root,
+            meeting_id=meeting_id,
+            transcript_text=transcript_text,
+            project_codes=[p.code for p in active],
+        )
+
         if not commits:
             log.info(
                 "auto-ingest-sprint-planning no-op: nothing changed for meeting=%s",
@@ -670,6 +701,7 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
                 "commit_sha": None,
                 "commit_shas": [],
                 "skipped_no_op": True,
+                "meeting_artifacts": artifact_summary,
             }
 
         last_commit = commits[-1]
@@ -685,6 +717,7 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
             "commit_sha": last_commit,
             "commit_shas": commits,
             "skipped_no_op": False,
+            "meeting_artifacts": artifact_summary,
         }
 
 
@@ -907,6 +940,39 @@ def _fetch_transcript(meeting_id: str) -> str:
     return header + text
 
 
+def _fetch_meeting(meeting_id: str) -> dict | None:
+    """Pull the full fathom_meetings row needed for per-meeting artifacts.
+
+    Includes `summary` and `action_items` — fields the plan-generation
+    path drops but the meeting-artifact path needs. Best-effort: returns
+    None on any failure so artifact generation degrades gracefully
+    without breaking auto-ingest.
+    """
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not url or not key:
+        log.warning("meeting-artifact: Supabase env not set; skipping fetch")
+        return None
+    try:
+        from supabase import create_client
+
+        client = create_client(url, key)
+        resp = (
+            client.table("fathom_meetings")
+            .select(
+                "id, title, meeting_date, summary, action_items, "
+                "participants, duration_minutes, fathom_url"
+            )
+            .eq("id", meeting_id)
+            .single()
+            .execute()
+        )
+        return resp.data or None
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.warning("meeting-artifact: meeting fetch failed for %s: %s", meeting_id, exc)
+        return None
+
+
 def _stage_transcript(tenant_root: Path, meeting_id: str, text: str) -> Path:
     """Write transcript to tenant's transcripts/incoming/ for the prompt + audit."""
     incoming = tenant_root / "transcripts" / "incoming"
@@ -976,6 +1042,101 @@ def _commit_and_push(
         text=True,
     )
     return result.stdout.strip()
+
+
+def _commit_meeting_artifacts(
+    *, tenant_root: Path, meeting_id: str, artifact_paths: list[Path]
+) -> str | None:
+    """Commit + push the per-meeting artifact files.
+
+    Separate from _commit_and_push because a meeting can produce an
+    artifact even when it wrote no sprint-file bullets (so the per-project
+    commit loop would never fire). Stages only the artifact paths.
+
+    Best-effort: returns None on failure rather than raising — a failed
+    artifact commit must not break the auto-ingest contract.
+    """
+    if not artifact_paths:
+        return None
+    try:
+        env = _ssh_env()
+        rels = [str(p.relative_to(tenant_root)) for p in artifact_paths]
+        subprocess.run(["git", "add", *rels], cwd=tenant_root, check=True)
+
+        # If the sprint-file commit already swept these in via `git add
+        # -A`, there's nothing staged here — bail quietly.
+        staged = subprocess.run(
+            ["git", "diff", "--cached", "--quiet"], cwd=tenant_root, env=env
+        )
+        if staged.returncode == 0:
+            return None
+
+        message = (
+            f"[auto-ingest] meeting artifacts: meeting {meeting_id[:8]}\n\n"
+            f"Per-meeting synthesis + transcript for {len(rels)} file(s).\n"
+            f"Generated by cp-engine-webhook v{cp_engine.__version__}.\n"
+        )
+        subprocess.run(
+            ["git", "commit", "-m", message], cwd=tenant_root, check=True, env=env
+        )
+        target_branch = os.environ.get("CP_TENANT_BRANCH", "main")
+        subprocess.run(
+            ["git", "push", "origin", target_branch],
+            cwd=tenant_root,
+            check=True,
+            env=env,
+        )
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=tenant_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.warning(
+            "meeting-artifact: commit failed for meeting=%s: %s", meeting_id, exc
+        )
+        return None
+
+
+def _generate_meeting_artifacts(
+    *,
+    tenant_root: Path,
+    meeting_id: str,
+    transcript_text: str,
+    project_codes: list[str],
+) -> dict:
+    """Fetch the meeting, write per-meeting artifacts, commit them.
+
+    Shared by all auto-ingest endpoints. Best-effort — never raises.
+    Returns a summary dict for the response payload.
+    """
+    summary = {"files_written": 0, "commit_sha": None}
+    if not project_codes:
+        return summary
+    try:
+        meeting = _fetch_meeting(meeting_id)
+        if meeting is None:
+            return summary
+        paths = write_meeting_artifacts(
+            tenant_root=tenant_root,
+            meeting=meeting,
+            transcript_text=transcript_text,
+            project_codes=project_codes,
+        )
+        summary["files_written"] = len(paths)
+        if paths:
+            sha = _commit_meeting_artifacts(
+                tenant_root=tenant_root,
+                meeting_id=meeting_id,
+                artifact_paths=paths,
+            )
+            summary["commit_sha"] = sha
+    except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
+        log.warning("meeting-artifact: generation step failed: %s", exc)
+    return summary
 
 
 # ─────────────────────────────────────────────────────────────
