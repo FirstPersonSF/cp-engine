@@ -540,6 +540,7 @@ def render_sprint_scaffold(
     recent_commits: tuple[SprintCommit, ...],
     open_issues: tuple[Issue, ...],
     carry_forward: CarryForward,
+    meetings_this_sprint: int = 0,
 ) -> str:
     """Render a sprint file scaffold from the Jinja template.
 
@@ -559,12 +560,17 @@ def render_sprint_scaffold(
     )
     template = env.get_template(template_name)
     week_dates = f"{_short_md_date(week_start)} – {_long_md_date(week_end)}"
+    project_scope = scope_for(project.company_kind)
+    project_dir_slug = dir_slug(project.code, project.name)
+    # Relative path from the sprint file (sprints/<week>/<code>.md) to the
+    # project's meetings/ dir. Used only when meetings_this_sprint > 0.
+    meetings_link = f"../../{project_scope}/{project_dir_slug}/meetings/"
     return template.render(
         project={
             "code": project.code,
             "name": project.name,
-            "scope": scope_for(project.company_kind),
-            "dir_slug": dir_slug(project.code, project.name),
+            "scope": project_scope,
+            "dir_slug": project_dir_slug,
             "deal_stage": project.deal_stage,
             "owner": project.owner,
             "budget_short": _render._format_budget(project.budget),
@@ -580,6 +586,8 @@ def render_sprint_scaffold(
         last_sprint_hours_line=last_sprint_hours_line,
         sessions_this_week=sessions_this_week,
         open_issues_count=len(open_issues),
+        meetings_this_sprint=meetings_this_sprint,
+        meetings_link=meetings_link,
         last_session={
             "date": last_session_date,
             "who": last_session_who,
@@ -739,6 +747,20 @@ def ensure_sprint_file(
         else CarryForward(asks=(), risks=(), horizon=())
     )
 
+    # Count per-meeting artifacts (deeper-transcripts pipeline) dated in
+    # this sprint window. The project's meetings/ dir sits next to its
+    # cp.md, under <tenant_root>/<scope>/<dir_slug>/. sprint_root is
+    # <tenant_root>/sprints, so tenant_root is its parent.
+    meetings_dir = (
+        sprint_root.parent
+        / scope_for(project.company_kind)
+        / dir_slug(project.code, project.name)
+        / "meetings"
+    )
+    meetings_this_sprint = count_sprint_meetings(
+        meetings_dir, week_start=week_start, week_end=week_end
+    )
+
     new_body = render_sprint_scaffold(
         project=project,
         week_iso=week_iso,
@@ -754,6 +776,7 @@ def ensure_sprint_file(
         recent_commits=recent_commits,
         open_issues=open_issues,
         carry_forward=cf,
+        meetings_this_sprint=meetings_this_sprint,
     )
 
     if not out.exists():
@@ -803,6 +826,34 @@ def is_in_sprint_window(now: datetime) -> bool:
     # Phase 4 keeps every sync inside the window. Refine via existing v0.7.4
     # anchor logic in a later task if needed.
     return True
+
+
+# Per-meeting artifact filename: `<YYYY-MM-DD>-<slug>.md`, written by the
+# deeper-transcripts pipeline. The date prefix is the meeting date.
+_MEETING_FILE_DATE = re.compile(r"^(\d{4}-\d{2}-\d{2})-.+\.md$")
+
+
+def count_sprint_meetings(
+    meetings_dir: Path, *, week_start: str, week_end: str
+) -> int:
+    """Count per-meeting artifact `.md` files dated within a sprint window.
+
+    `meetings_dir` is a project's `meetings/` directory. `week_start` and
+    `week_end` are inclusive ISO dates (the sprint's Monday and Sunday).
+
+    Counts only `<YYYY-MM-DD>-<slug>.md` files whose date prefix falls in
+    `[week_start, week_end]`. The sibling `.txt` transcripts and any `.md`
+    without a parseable date prefix (e.g. a stray `README.md`) are ignored.
+    Returns 0 when the directory does not exist.
+    """
+    if not meetings_dir.is_dir():
+        return 0
+    count = 0
+    for entry in meetings_dir.iterdir():
+        m = _MEETING_FILE_DATE.match(entry.name)
+        if m and week_start <= m.group(1) <= week_end:
+            count += 1
+    return count
 
 
 def _monday_of(now: datetime) -> date:
