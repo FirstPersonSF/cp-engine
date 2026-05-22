@@ -443,12 +443,13 @@ def test_ensure_sprint_file_counts_meetings_from_project_dir(tmp_path) -> None:
     from cp_engine.sprints import ensure_sprint_file
     from cp_engine.state import dir_slug
 
-    # Project dir lives at <tenant>/1p/<dir_slug>/; sprint_root is
-    # <tenant>/sprints. _fixture_project keeps name "Pebble Foods", so
-    # code `ggl-5136` → dir_slug `ggl-5136-pebble-foods`.
+    # Project dir lives at <tenant>/1p/<company-slug>/<dir_slug>/ under
+    # the account-nested layout; sprint_root is <tenant>/sprints.
+    # _fixture_project keeps company_name "Pebble Foods" → account slug
+    # `pebble-foods`, and code `ggl-5136` → dir_slug `ggl-5136-pebble-foods`.
     project = _fixture_project(code="ggl-5136")
     slug = dir_slug(project.code, project.name)
-    meetings = tmp_path / "1p" / slug / "meetings"
+    meetings = tmp_path / "1p" / "pebble-foods" / slug / "meetings"
     meetings.mkdir(parents=True)
     # One meeting inside the W19 window (May 11–17), one outside it.
     (meetings / "2026-05-13-standup.md").write_text("# in window\n")
@@ -813,7 +814,10 @@ def test_sprint_facts_shows_meetings_row_when_count_positive() -> None:
     # The row links to the project's meetings/ dir, relative from the
     # sprint file at sprints/<week>/<code>.md.
     assert "| Meetings |" in body
-    assert "[2 this sprint](../../1p/ggl-5136-go-safety/meetings/)" in body
+    # Account-nested layout: client projects live at 1p/<company>/<dir>/,
+    # so the link from the sprint file walks up two and back down through
+    # the account dir. _scaffold_project's company_name is "Google".
+    assert "[2 this sprint](../../1p/google/ggl-5136-go-safety/meetings/)" in body
 
 
 def test_sprint_facts_omits_meetings_row_when_count_zero() -> None:

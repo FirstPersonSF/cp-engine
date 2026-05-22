@@ -137,7 +137,7 @@ def test_resync_with_unchanged_state_is_a_noop(tmp_path: Path) -> None:
     # Two syncs with the same state and same `now` — the first creates files,
     # the second should be a no-op.
     first = sync_tenant(config, backend_factory=lambda _: fake, now=fixed_now)
-    files = ["master-cp.md", "CLAUDE.md", "1p/mc-2/cp.md"]
+    files = ["master-cp.md", "CLAUDE.md", "1p/google/mc-2/cp.md"]
     mtimes_after_first = {f: (tmp_path / f).stat().st_mtime_ns for f in files}
 
     second = sync_tenant(config, backend_factory=lambda _: fake, now=fixed_now)
@@ -211,19 +211,19 @@ def test_resync_with_changed_status_updates_master_only(tmp_path: Path) -> None:
     fake1 = FakeBackend((make_state(status="Open"),))
     sync_tenant(config, backend_factory=lambda _: fake1)
 
-    project_cp_before = (tmp_path / "1p" / "mc-2" / "cp.md").read_text()
-    project_cp_mtime_before = (tmp_path / "1p" / "mc-2" / "cp.md").stat().st_mtime_ns
+    project_cp_before = (tmp_path / "1p" / "google" / "mc-2" / "cp.md").read_text()
+    project_cp_mtime_before = (tmp_path / "1p" / "google" / "mc-2" / "cp.md").stat().st_mtime_ns
 
     fake2 = FakeBackend((make_state(status="Holding"),))
     result = sync_tenant(config, backend_factory=lambda _: fake2)
 
     # master-cp.md changed; the project CP did NOT (still scaffolded, untouched)
     assert (tmp_path / "master-cp.md") in result.files_written
-    assert (tmp_path / "1p" / "mc-2" / "cp.md") not in result.files_written
+    assert (tmp_path / "1p" / "google" / "mc-2" / "cp.md") not in result.files_written
 
-    project_cp_after = (tmp_path / "1p" / "mc-2" / "cp.md").read_text()
+    project_cp_after = (tmp_path / "1p" / "google" / "mc-2" / "cp.md").read_text()
     assert project_cp_before == project_cp_after
-    assert (tmp_path / "1p" / "mc-2" / "cp.md").stat().st_mtime_ns == project_cp_mtime_before
+    assert (tmp_path / "1p" / "google" / "mc-2" / "cp.md").stat().st_mtime_ns == project_cp_mtime_before
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -264,7 +264,7 @@ def test_resync_preserves_hand_edits_outside_engine_regions(tmp_path: Path) -> N
     # User adds a hand-written tail to the project CP. The engine regions
     # remain in place (so the splice has somewhere to land); the tail is
     # outside them and must survive.
-    project_path = tmp_path / "1p" / "mc-2" / "cp.md"
+    project_path = tmp_path / "1p" / "google" / "mc-2" / "cp.md"
     original = project_path.read_text()
     edited = original + "\n## My hand notes\n\nShould survive.\n"
     project_path.write_text(edited)
@@ -305,9 +305,12 @@ def test_sync_with_mixed_statuses_renders_correct_subtables(tmp_path: Path) -> N
     # Project CP scaffolding matches master-CP visibility: internal projects
     # are NOT scaffolded into client/public tenants. They belong in their
     # own (cp-firstpersonsf) tenant. v0.3: each project is a working dir
-    # under <scope>/<code>-<slugified-name>/.
-    scope_dir = tmp_path / "1p"
-    dirs = sorted(p.name for p in scope_dir.iterdir() if p.is_dir())
+    # under <scope>/<code>-<slugified-name>/. Under the account-nested
+    # layout (v0.8.17+), client projects live one level deeper at
+    # `1p/<company-slug>/<dir>/` — these test states all default to
+    # company_name="Google", so they nest under `1p/google/`.
+    account_dir = tmp_path / "1p" / "google"
+    dirs = sorted(p.name for p in account_dir.iterdir() if p.is_dir())
     assert dirs == ["closed-1-closed-one", "hold-1-held-one", "open-1-open-one"]
 
 
@@ -318,13 +321,15 @@ def test_sync_with_mixed_statuses_renders_correct_subtables(tmp_path: Path) -> N
 
 def test_archived_project_cp_moves_to_inactive_dir(tmp_path: Path) -> None:
     """A project that disappears from sync output (archived in MC-2)
-    has its working dir moved to <scope>/inactive/<code>/, not deleted."""
+    has its working dir moved to its account's inactive/<code>/ bin
+    (account-nested layout: `1p/<company>/inactive/<dir>/`), not deleted."""
     config = make_config(tmp_path)
 
-    # First sync: project exists
+    # First sync: project exists. Default make_state has
+    # company_name="Google", so the live dir lands at 1p/google/.
     fake1 = FakeBackend((make_state(code="going-away"),))
     sync_tenant(config, backend_factory=lambda _: fake1)
-    live_dir = tmp_path / "1p" / "going-away"
+    live_dir = tmp_path / "1p" / "google" / "going-away"
     assert (live_dir / "cp.md").exists()
 
     # Second sync: project is gone (e.g. archived in MC-2)
@@ -332,7 +337,7 @@ def test_archived_project_cp_moves_to_inactive_dir(tmp_path: Path) -> None:
     result = sync_tenant(config, backend_factory=lambda _: fake2)
 
     assert not live_dir.exists()
-    inactive_dir = tmp_path / "1p" / "inactive" / "going-away"
+    inactive_dir = tmp_path / "1p" / "google" / "inactive" / "going-away"
     assert (inactive_dir / "cp.md").exists()
     assert inactive_dir in result.files_deactivated
     assert not result.no_op
@@ -348,8 +353,9 @@ def test_archive_preserves_hand_edited_content(tmp_path: Path) -> None:
         backend_factory=lambda _: FakeBackend((make_state(code="my-project"),)),
     )
 
-    # User adds notes to the project CP and drops a transcript file alongside
-    work_dir = tmp_path / "1p" / "my-project"
+    # User adds notes to the project CP and drops a transcript file alongside.
+    # Default fixture nests under 1p/google/ per the account-nested layout.
+    work_dir = tmp_path / "1p" / "google" / "my-project"
     cp_path = work_dir / "cp.md"
     edited = cp_path.read_text() + "\n## My notes\n\nImportant stuff.\n"
     cp_path.write_text(edited)
@@ -358,7 +364,7 @@ def test_archive_preserves_hand_edited_content(tmp_path: Path) -> None:
     # Project disappears from MC-2
     sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
 
-    archived = tmp_path / "1p" / "inactive" / "my-project"
+    archived = tmp_path / "1p" / "google" / "inactive" / "my-project"
     assert (archived / "cp.md").exists()
     assert "Important stuff." in (archived / "cp.md").read_text()
     # Transcript travelled with the dir
@@ -373,9 +379,10 @@ def test_resync_after_archive_is_a_noop_for_that_project(tmp_path: Path) -> None
         backend_factory=lambda _: FakeBackend((make_state(code="dead-project"),)),
     )
 
-    # Archive
+    # Archive — per-account inactive bin under 1p/google/inactive/ for
+    # the default fixture's company_name="Google".
     sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
-    archived = tmp_path / "1p" / "inactive" / "dead-project" / "cp.md"
+    archived = tmp_path / "1p" / "google" / "inactive" / "dead-project" / "cp.md"
     mtime_after_archive = archived.stat().st_mtime_ns
 
     # Second post-archive sync — should leave the archived dir alone.
@@ -394,13 +401,17 @@ def test_archive_collision_logs_and_skips(
     import logging
 
     config = make_config(tmp_path)
-    # Pre-populate an existing archived working dir
-    archived_old = tmp_path / "1p" / "inactive" / "ghost"
+    # Pre-populate an existing archived working dir under 1p/google/inactive/
+    # (the per-account inactive bin for client projects). Sync iterates
+    # `_project_parent_dirs("1p")`, which yields existing per-account
+    # subdirs — so the parent dir must exist before sync runs for the
+    # sweep to consider it. Default fixture's company is Google.
+    archived_old = tmp_path / "1p" / "google" / "inactive" / "ghost"
     archived_old.mkdir(parents=True)
     (archived_old / "cp.md").write_text("# Old archive\n\nFrom an earlier life.\n")
 
     # And a current live working dir for the same code
-    live_dir = tmp_path / "1p" / "ghost"
+    live_dir = tmp_path / "1p" / "google" / "ghost"
     live_dir.mkdir(parents=True)
     (live_dir / "cp.md").write_text("# Current\n\nIn flight.\n")
 
@@ -423,13 +434,14 @@ def test_archive_dir_itself_not_archived(tmp_path: Path) -> None:
     sweep must not treat it as a stale project."""
     config = make_config(tmp_path)
 
-    # First sync creates 1p/keep/
+    # First sync creates 1p/google/keep/ (default fixture → company Google,
+    # per the account-nested layout).
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend((make_state(code="keep"),)),
     )
-    # Manually create inactive/ with an unrelated entry
-    inactive_root = tmp_path / "1p" / "inactive"
+    # Manually create per-account inactive/ with an unrelated entry.
+    inactive_root = tmp_path / "1p" / "google" / "inactive"
     inactive_root.mkdir(parents=True, exist_ok=True)
     (inactive_root / "previous").mkdir(exist_ok=True)
     (inactive_root / "previous" / "cp.md").write_text("# Old\n")
@@ -439,7 +451,7 @@ def test_archive_dir_itself_not_archived(tmp_path: Path) -> None:
         config,
         backend_factory=lambda _: FakeBackend((make_state(code="keep"),)),
     )
-    assert (tmp_path / "1p" / "keep" / "cp.md").exists()
+    assert (tmp_path / "1p" / "google" / "keep" / "cp.md").exists()
     assert (inactive_root / "previous" / "cp.md").exists()
     assert result.files_deactivated == ()
 
@@ -507,13 +519,18 @@ def test_mixed_scopes_land_under_correct_dirs(tmp_path: Path) -> None:
     sync_tenant(config, backend_factory=lambda _: fake)
 
     # Working dirs use slugged names (code + slugified project name).
-    assert (tmp_path / "1p" / "ggl-5168-playbooks" / "cp.md").exists()
+    # Client projects nest under their account (1p/<company>/) per the
+    # account-nested layout; ggl-5168's company defaults to "Google".
+    # FPSF/Canonic projects are unchanged — they already nest by self-
+    # company at the scope level.
+    assert (tmp_path / "1p" / "google" / "ggl-5168-playbooks" / "cp.md").exists()
     assert (tmp_path / "firstpersonsf" / "mc-2" / "cp.md").exists()
     assert (tmp_path / "canonic" / "storyos" / "cp.md").exists()
 
-    # Master CP links use the slugged paths
+    # Master CP links use the slugged paths (including the per-account
+    # layer for client projects).
     master = (tmp_path / "master-cp.md").read_text()
-    assert "1p/ggl-5168-playbooks/cp.md" in master
+    assert "1p/google/ggl-5168-playbooks/cp.md" in master
     assert "firstpersonsf/mc-2/cp.md" in master
     assert "canonic/storyos/cp.md" in master
 
@@ -524,19 +541,20 @@ def test_un_archive_restores_working_dir_with_hand_content(tmp_path: Path) -> No
     config = make_config(tmp_path)
     state = make_state(code="resurrected", name="Resurrected")
 
-    # First sync: live
+    # First sync: live. Default fixture's company is Google, so the
+    # working dir lands under 1p/google/ per the account-nested layout.
     sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
-    work_dir = tmp_path / "1p" / "resurrected"
+    work_dir = tmp_path / "1p" / "google" / "resurrected"
 
     # Hand-add a transcript and edit cp.md
     (work_dir / "transcript-2026-05-08.md").write_text("# Call notes\n\nSecret sauce.\n")
     cp_path = work_dir / "cp.md"
     cp_path.write_text(cp_path.read_text() + "\n## Hand notes\n\nKeep me.\n")
 
-    # Project drops out — gets archived
+    # Project drops out — gets archived to the per-account inactive bin.
     sync_tenant(config, backend_factory=lambda _: FakeBackend(()))
     assert not work_dir.exists()
-    inactive_dir = tmp_path / "1p" / "inactive" / "resurrected"
+    inactive_dir = tmp_path / "1p" / "google" / "inactive" / "resurrected"
     assert (inactive_dir / "transcript-2026-05-08.md").exists()
 
     # Project comes back — un-archive should restore (not re-scaffold)
@@ -571,7 +589,7 @@ def test_dropbox_md_scaffolded_when_url_present(tmp_path: Path) -> None:
 
     sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
 
-    dropbox_path = tmp_path / "1p" / "ggl-5168-playbooks" / "_dropbox.md"
+    dropbox_path = tmp_path / "1p" / "google" / "ggl-5168-playbooks" / "_dropbox.md"
     assert dropbox_path.exists()
     body = dropbox_path.read_text()
     assert "https://www.dropbox.com/scl/fo/abc123/h?dl=0" in body
@@ -587,7 +605,7 @@ def test_dropbox_md_omitted_when_no_url(tmp_path: Path) -> None:
         backend_factory=lambda _: FakeBackend((make_state(code="no-dropbox"),)),
     )
 
-    dropbox_path = tmp_path / "1p" / "no-dropbox" / "_dropbox.md"
+    dropbox_path = tmp_path / "1p" / "google" / "no-dropbox" / "_dropbox.md"
     assert not dropbox_path.exists()
 
 
@@ -615,7 +633,10 @@ def test_dropbox_md_re_renders_on_url_change(tmp_path: Path) -> None:
         config,
         backend_factory=lambda _: FakeBackend((state_with("https://dropbox.com/old"),)),
     )
-    dropbox_path = tmp_path / "1p" / "mover" / "_dropbox.md"
+    # state_with(...) leaves company_name=None, which company_slug maps to
+    # "unknown" — so the per-account dir is `1p/unknown/` under the
+    # account-nested layout.
+    dropbox_path = tmp_path / "1p" / "unknown" / "mover" / "_dropbox.md"
     assert "old" in dropbox_path.read_text()
 
     sync_tenant(
@@ -650,7 +671,9 @@ def test_working_dir_uses_slugged_name(tmp_path: Path) -> None:
 
     sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
 
-    expected_dir = tmp_path / "1p" / "ggl-5177-event-safety-playbook"
+    # Account-nested layout: client projects live one level deeper under
+    # their account dir. The default fixture state has company "Google".
+    expected_dir = tmp_path / "1p" / "google" / "ggl-5177-event-safety-playbook"
     assert (expected_dir / "cp.md").exists()
 
 
@@ -677,7 +700,8 @@ def test_name_drift_renames_existing_dir(tmp_path: Path) -> None:
             (make_state(code="ggl-5177", name="GGL 5177 Event Safety Playbook"),)
         ),
     )
-    old_dir = tmp_path / "1p" / "ggl-5177-event-safety-playbook"
+    # Account-nested layout: both old and new slugs sit under 1p/google/.
+    old_dir = tmp_path / "1p" / "google" / "ggl-5177-event-safety-playbook"
     assert old_dir.exists()
 
     # Hand-add a transcript so we can verify content survives the rename
@@ -691,7 +715,7 @@ def test_name_drift_renames_existing_dir(tmp_path: Path) -> None:
         ),
     )
 
-    new_dir = tmp_path / "1p" / "ggl-5177-activation-playbook"
+    new_dir = tmp_path / "1p" / "google" / "ggl-5177-activation-playbook"
     assert new_dir.exists()
     assert (new_dir / "transcript.md").read_text() == "# call notes\n"
     assert not old_dir.exists()
@@ -849,7 +873,7 @@ def test_repo_md_omitted_for_engagement_source_projects(tmp_path: Path) -> None:
         backend_factory=lambda _: FakeBackend((make_state(code="ggl-5168"),)),
     )
 
-    repo_path = tmp_path / "1p" / "ggl-5168" / "_repo.md"
+    repo_path = tmp_path / "1p" / "google" / "ggl-5168" / "_repo.md"
     assert not repo_path.exists()
 
 
@@ -895,8 +919,12 @@ def test_legacy_bare_code_dir_renamed_to_slug(tmp_path: Path) -> None:
     gets renamed to the slugged form on the next sync."""
     config = make_config(tmp_path)
 
-    # Pre-create a legacy bare-code dir with hand content
-    legacy_dir = tmp_path / "1p" / "ggl-5177"
+    # Pre-create a legacy bare-code dir with hand content. The flat-to-
+    # account migration is the job of `cp migrate-accounts`, not regular
+    # sync — this test covers a different drift case (bare-code →
+    # slugged), so the legacy pre-position already sits inside the per-
+    # account dir.
+    legacy_dir = tmp_path / "1p" / "google" / "ggl-5177"
     legacy_dir.mkdir(parents=True)
     (legacy_dir / "cp.md").write_text("# legacy content\n")
     (legacy_dir / "notes.md").write_text("# preserved\n")
@@ -908,7 +936,7 @@ def test_legacy_bare_code_dir_renamed_to_slug(tmp_path: Path) -> None:
         ),
     )
 
-    new_dir = tmp_path / "1p" / "ggl-5177-event-safety-playbook"
+    new_dir = tmp_path / "1p" / "google" / "ggl-5177-event-safety-playbook"
     # Legacy hand-written content outside engine-managed regions survives the
     # rename. The active sync may splice in a `current-sprint` block (active
     # status + sprint window), so we assert the original line is still
@@ -928,7 +956,10 @@ def test_sync_writes_current_sprint_block_into_project_cp(tmp_path: Path) -> Non
     """When a sprint file exists for an active project, sync_tenant splices
     the rendered `## Current sprint` block into the project's cp.md inside
     the engine-managed `current-sprint` region."""
-    from cp_engine.state import dir_slug, scope_for
+    # account_scope_for includes the per-company layer for clients
+    # ("1p/<company>"), which is where the project actually lives on
+    # disk under the account-nested layout.
+    from cp_engine.state import account_scope_for, dir_slug
 
     config = make_config(tmp_path)
     project = make_state(code="peb", name="Pebble Foods", status="Open")
@@ -942,7 +973,7 @@ def test_sync_writes_current_sprint_block_into_project_cp(tmp_path: Path) -> Non
 
     week_iso = "2026-W19"
     slug = dir_slug(project.code, project.name)
-    scope = scope_for(project.company_kind)
+    scope = account_scope_for(project)
     cp_path = tmp_path / scope / slug / "cp.md"
     body = cp_path.read_text()
 
@@ -956,12 +987,14 @@ def test_sync_splices_current_sprint_into_existing_project_cp(tmp_path: Path) ->
     """When a project's cp.md was scaffolded BEFORE the current-sprint marker
     existed (legacy file on disk), the next sync still inserts the markers +
     rendered block. Hand-written content outside the engine regions survives."""
-    from cp_engine.state import dir_slug, scope_for
+    # account_scope_for handles the per-account layer for clients
+    # ("1p/<company>"), matching where sync places project dirs on disk.
+    from cp_engine.state import account_scope_for, dir_slug
 
     config = make_config(tmp_path)
     project = make_state(code="peb", name="Pebble Foods", status="Open")
     slug = dir_slug(project.code, project.name)
-    scope = scope_for(project.company_kind)
+    scope = account_scope_for(project)
     project_dir = tmp_path / scope / slug
     project_dir.mkdir(parents=True)
     cp_path = project_dir / "cp.md"
