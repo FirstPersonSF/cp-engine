@@ -4,6 +4,19 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.8.16.6 — 2026-05-22
+
+### Added — meeting count in the sprint-facts region
+
+The deeper-transcripts pipeline writes per-meeting artifacts into each project's `meetings/` dir, but nothing pointed at them — the design deliberately omitted a central index, which left the folder easy to forget. This adds a discovery signal in the sprint file's `sprint-facts` region: a `Meetings` row showing how many meeting artifacts are dated within the sprint window, linking to the project's `meetings/` dir.
+
+The row is sprint-scoped (matching the other `sprint-facts` rows) and emitted only when the count is greater than zero, so projects with no meetings get no dead link. It lives inside the `sprint-facts` region, which sync already re-splices every run, so it self-updates weekly with no new sync wiring.
+
+- `count_sprint_meetings()`: pure helper counting `<YYYY-MM-DD>-<slug>.md` artifacts whose filename date falls in a sprint window. Filename-only — no file reads, no network; ignores `.txt` siblings and stray `.md`.
+- `render_sprint_scaffold()`: new `meetings_this_sprint` param + relative link to the project's `meetings/` dir.
+- `sprint-cp.md.j2` + `initiative-sprint.md.j2`: conditional `Meetings` row.
+- `ensure_sprint_file()`: resolves the project's `meetings/` dir from `sprint_root.parent` and passes the windowed count through.
+
 ## v0.8.16.5 — 2026-05-19
 
 ### Added — `storyos-mc` sprint planning scope (Phase D.7)
