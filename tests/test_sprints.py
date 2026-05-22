@@ -437,6 +437,52 @@ def test_ensure_sprint_file_is_idempotent(tmp_path) -> None:
     assert body1 == body2
 
 
+def test_ensure_sprint_file_counts_meetings_from_project_dir(tmp_path) -> None:
+    """The sprint-facts 'Meetings' row reflects the project's meetings/
+    dir — `ensure_sprint_file` resolves it from `sprint_root.parent`."""
+    from cp_engine.sprints import ensure_sprint_file
+    from cp_engine.state import dir_slug
+
+    # Project dir lives at <tenant>/1p/<dir_slug>/; sprint_root is
+    # <tenant>/sprints. _fixture_project keeps name "Pebble Foods", so
+    # code `ggl-5136` → dir_slug `ggl-5136-pebble-foods`.
+    project = _fixture_project(code="ggl-5136")
+    slug = dir_slug(project.code, project.name)
+    meetings = tmp_path / "1p" / slug / "meetings"
+    meetings.mkdir(parents=True)
+    # One meeting inside the W19 window (May 11–17), one outside it.
+    (meetings / "2026-05-13-standup.md").write_text("# in window\n")
+    (meetings / "2026-05-13-standup.txt").write_text("t\n")
+    (meetings / "2026-05-20-later.md").write_text("# out of window\n")
+
+    out = ensure_sprint_file(
+        project=project,
+        sprint_root=tmp_path / "sprints",
+        week_iso="2026-W19", week_label="W19",
+        week_start="2026-05-11", week_end="2026-05-17",
+        prior_sprint=None, last_sprint_hours_line=None, sessions_this_week=0,
+        last_session_date=None, last_session_who=None, last_session_summary=None,
+        recent_commits=(), open_issues=(),
+    )
+    body = out.read_text()
+    assert "| Meetings | [1 this sprint]" in body
+
+
+def test_ensure_sprint_file_omits_meetings_row_when_none(tmp_path) -> None:
+    from cp_engine.sprints import ensure_sprint_file
+    out = ensure_sprint_file(
+        project=_fixture_project(code="ggl-5136"),
+        sprint_root=tmp_path / "sprints",
+        week_iso="2026-W19", week_label="W19",
+        week_start="2026-05-11", week_end="2026-05-17",
+        prior_sprint=None, last_sprint_hours_line=None, sessions_this_week=0,
+        last_session_date=None, last_session_who=None, last_session_summary=None,
+        recent_commits=(), open_issues=(),
+    )
+    # No meetings/ dir exists → no row, no dead link.
+    assert "| Meetings |" not in out.read_text()
+
+
 @pytest.mark.parametrize("dt,expected", [
     (datetime(2026, 5, 11, 8, 0), True),  # Monday
     (datetime(2026, 5, 13, 8, 0), True),  # mid-week
@@ -660,3 +706,121 @@ def test_parse_themes_from_week_file_returns_empty_when_missing(tmp_path: Path) 
     from cp_engine.sprints import parse_themes_from_week_file
     out = parse_themes_from_week_file(tmp_path / "missing.md")
     assert out == ()
+
+
+# ── count_sprint_meetings ──────────────────────────────────────────
+# Counts per-meeting artifact .md files (written by the deeper-transcripts
+# pipeline) whose YYYY-MM-DD filename prefix falls within a sprint window.
+# Drives the "Meetings" row in the sprint file's sprint-facts region.
+
+
+def _make_meetings_dir(tmp_path: Path, dated_slugs: list[str]) -> Path:
+    """Create a meetings/ dir with `<date>-<slug>.md` + .txt pairs."""
+    meetings = tmp_path / "meetings"
+    meetings.mkdir()
+    for name in dated_slugs:
+        (meetings / f"{name}.md").write_text("# artifact\n")
+        (meetings / f"{name}.txt").write_text("transcript\n")
+    return meetings
+
+
+def test_count_sprint_meetings_counts_only_in_window(tmp_path: Path) -> None:
+    from cp_engine.sprints import count_sprint_meetings
+    _make_meetings_dir(
+        tmp_path,
+        [
+            "2026-05-17-before-window",   # day before window
+            "2026-05-18-monday-edge",     # window start (inclusive)
+            "2026-05-21-mid-week",        # inside
+            "2026-05-24-sunday-edge",     # window end (inclusive)
+            "2026-05-25-after-window",    # day after window
+        ],
+    )
+    n = count_sprint_meetings(
+        tmp_path / "meetings", week_start="2026-05-18", week_end="2026-05-24"
+    )
+    assert n == 3
+
+
+def test_count_sprint_meetings_returns_zero_when_dir_absent(tmp_path: Path) -> None:
+    from cp_engine.sprints import count_sprint_meetings
+    n = count_sprint_meetings(
+        tmp_path / "meetings", week_start="2026-05-18", week_end="2026-05-24"
+    )
+    assert n == 0
+
+
+def test_count_sprint_meetings_ignores_txt_and_unparseable_names(
+    tmp_path: Path,
+) -> None:
+    from cp_engine.sprints import count_sprint_meetings
+    meetings = _make_meetings_dir(tmp_path, ["2026-05-21-real-meeting"])
+    # A .md whose name has no parseable date prefix — must not crash or count.
+    (meetings / "notes.md").write_text("# stray\n")
+    (meetings / "README.md").write_text("# readme\n")
+    n = count_sprint_meetings(
+        meetings, week_start="2026-05-18", week_end="2026-05-24"
+    )
+    # Only the one real dated .md counts; .txt siblings and stray .md ignored.
+    assert n == 1
+
+
+# ── "Meetings" row in the sprint-facts region ──────────────────────
+
+
+def _scaffold_project() -> ProjectState:
+    # Real-shaped code (`ggl-5136`) so dir_slug → `ggl-5136-go-safety`,
+    # matching how production project codes look.
+    return ProjectState(
+        code="ggl-5136",
+        name="Go Safety",
+        source="engagement",
+        company_kind="client",
+        company_code="GGL",
+        company_name="Google",
+        status="Deal",
+        is_internal=False,
+        owner="Drew",
+        last_touched=None,
+        deadline=None,
+        deal_stage="Negotiation",
+        budget=45000.0,
+    )
+
+
+def _render_with_meetings(count: int) -> str:
+    return render_sprint_scaffold(
+        project=_scaffold_project(),
+        week_iso="2026-W19",
+        week_label="W19",
+        week_start="2026-05-11",
+        week_end="2026-05-17",
+        prior_sprint="2026-W18",
+        last_sprint_hours_line="Drew 6.5h",
+        sessions_this_week=3,
+        last_session_date=None,
+        last_session_who=None,
+        last_session_summary=None,
+        recent_commits=(),
+        open_issues=(),
+        carry_forward=CarryForward(asks=(), risks=(), horizon=()),
+        meetings_this_sprint=count,
+    )
+
+
+def test_sprint_facts_shows_meetings_row_when_count_positive() -> None:
+    body = _render_with_meetings(2)
+    # The row links to the project's meetings/ dir, relative from the
+    # sprint file at sprints/<week>/<code>.md.
+    assert "| Meetings |" in body
+    assert "[2 this sprint](../../1p/ggl-5136-go-safety/meetings/)" in body
+
+
+def test_sprint_facts_omits_meetings_row_when_count_zero() -> None:
+    body = _render_with_meetings(0)
+    assert "| Meetings |" not in body
+
+
+def test_sprint_facts_meetings_row_singular_when_one() -> None:
+    body = _render_with_meetings(1)
+    assert "[1 this sprint]" in body

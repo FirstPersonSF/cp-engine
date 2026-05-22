@@ -20,7 +20,8 @@ PriorSprint: {{ prior_sprint }}
 | Last touched | {{ project.last_touched_short or "—" }} |
 | Sessions this week | {{ sessions_this_week }} |
 | Open issues | {{ open_issues_count }} |
-<!-- cp-engine:end sprint-facts -->
+{% if meetings_this_sprint and meetings_this_sprint > 0 %}| Meetings | [{{ meetings_this_sprint }} this sprint]({{ meetings_link }}) |
+{% endif %}<!-- cp-engine:end sprint-facts -->
 
 <!-- cp-engine:start where-it-stands -->
 ## Where it stands
