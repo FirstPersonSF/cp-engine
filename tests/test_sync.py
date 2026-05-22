@@ -93,13 +93,14 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     assert result.projects_seen == 1
     assert not result.no_op
     written_names = {p.name for p in result.files_written}
-    # v0.3 layout: project working dir at <scope>/<dir_slug>/cp.md.
-    # Default make_state has company_kind="client" → scope "1p". With name
-    # set, the slug is `mc-2-mission-control-v2`. Sprint file is `mc-2.md`
-    # under sprints/<YYYY-W##>/ since make_state defaults to status="Open"
-    # (active subset). The per-week sprint-index README.md is generated
-    # alongside the sprint file. v0.8.5 adds `_week.md` for week-scope
-    # handwritten notes (themes, attendance, meta).
+    # Account-nested layout: project working dir at
+    # <scope>/<company-slug>/<dir_slug>/cp.md. Default make_state has
+    # company_kind="client" + company_name="Google" → scope "1p/google".
+    # With name set, the project slug is `mc-2-mission-control-v2`.
+    # Sprint file is `mc-2.md` under sprints/<YYYY-W##>/ since
+    # make_state defaults to status="Open" (active subset). The per-week
+    # sprint-index README.md is generated alongside the sprint file.
+    # v0.8.5 adds `_week.md` for week-scope handwritten notes.
     assert written_names == {
         "master-cp.md", "CLAUDE.md", ".gitignore",
         "cp.md", "mc-2.md", "README.md", "_week.md",
@@ -110,7 +111,7 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     assert "mc-2" in master
     assert "Mission Control v2" in master
 
-    cp_path = tmp_path / "1p" / "mc-2-mission-control-v2" / "cp.md"
+    cp_path = tmp_path / "1p" / "google" / "mc-2-mission-control-v2" / "cp.md"
     project_cp = cp_path.read_text()
     assert "Mission Control v2" in project_cp
     assert "<!-- cp-engine:start tracked-issues -->" in project_cp

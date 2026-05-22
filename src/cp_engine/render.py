@@ -28,7 +28,15 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from cp_engine import __version__ as ENGINE_VERSION
 from cp_engine.config import TenantConfig
-from cp_engine.state import Issue, LinkedRepo, ProjectState, SprintFile, dir_slug, scope_for
+from cp_engine.state import (
+    Issue,
+    LinkedRepo,
+    ProjectState,
+    SprintFile,
+    account_scope_for,
+    dir_slug,
+    scope_for,
+)
 from cp_engine.status import is_active_status
 
 # ──────────────────────────────────────────────────────────────────────
@@ -946,7 +954,9 @@ def _compute_slack_rollup(
         rows.append({
             "code": p.code,
             "name": p.name,
-            "scope": scope_for(p.company_kind),
+            # Path-building scope (includes account layer for clients) so
+            # the master-cp link `<scope>/<dir_slug>/cp.md` resolves.
+            "scope": account_scope_for(p),
             "dir_slug": dir_slug(p.code, p.name),
             "week": m.group("week"),
             "text": m.group("text").strip(),
@@ -1082,7 +1092,9 @@ def _project_view(p: ProjectState) -> dict:
         "name": p.name,
         "source": p.source,
         "company_kind": p.company_kind,
-        "scope": scope_for(p.company_kind),
+        # Path-building scope (includes account layer for clients).
+        # Templates render `{{ p.scope }}/{{ p.dir_slug }}/cp.md` links.
+        "scope": account_scope_for(p),
         "dir_slug": dir_slug(p.code, p.name),
         "company_code": p.company_code,
         "company_name": p.company_name,

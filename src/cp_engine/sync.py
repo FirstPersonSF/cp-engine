@@ -51,6 +51,7 @@ from cp_engine.state import (  # noqa: F401
     Issue,
     LinkedRepo,
     ProjectState,
+    account_scope_for,
     dir_slug,
     inactive_root,
     scope_for,
@@ -226,8 +227,11 @@ def sync_tenant(
     # working dirs after this sync. Internal projects don't get dirs.
     # Tracked by code (not slug) because the deactivation sweep needs to match
     # against project identity, which is invariant under name changes.
+    # `account_scope_for` gives the full parent path including the account
+    # layer for clients (e.g. "1p/google"), so live_dirs reflect where the
+    # project actually lives on disk.
     live_dirs: set[tuple[str, str]] = {
-        (scope_for(p.company_kind), p.code)
+        (account_scope_for(p), p.code)
         for p in projects
         if not p.is_internal
     }
@@ -235,7 +239,7 @@ def sync_tenant(
     for project in projects:
         if project.is_internal:
             continue
-        scope = scope_for(project.company_kind)
+        scope = account_scope_for(project)
         scope_dir = scope_root(config.root, scope)
         target_slug = dir_slug(project.code, project.name)
         project_dir = working_dir(config.root, scope, target_slug)
@@ -382,7 +386,7 @@ def sync_tenant(
             sprint_path = config.root / "sprints" / week_iso / f"{project.code}.md"
             if not sprint_path.exists():
                 continue
-            scope = scope_for(project.company_kind)
+            scope = account_scope_for(project)
             slug = dir_slug(project.code, project.name)
             cp_path = config.root / scope / slug / "cp.md"
             if not cp_path.exists():
@@ -455,7 +459,7 @@ def sync_tenant(
             for project in projects:
                 if not _is_active_for_sprint(project):
                     continue
-                scope = scope_for(project.company_kind)
+                scope = account_scope_for(project)
                 slug = dir_slug(project.code, project.name)
                 cp_path = config.root / scope / slug / "cp.md"
                 if not cp_path.exists():
@@ -865,7 +869,7 @@ def _derive_summary(config: TenantConfig, project: ProjectState) -> str | None:
     """
     from cp_engine.summary import derive_from_project_cp
 
-    scope = scope_for(project.company_kind)
+    scope = account_scope_for(project)
     existing = _find_project_dir(scope_root(config.root, scope), project.code)
     if existing is None:
         return None
@@ -873,6 +877,39 @@ def _derive_summary(config: TenantConfig, project: ProjectState) -> str | None:
 
 
 _SCOPE_DIRS: tuple[str, ...] = ("1p", "firstpersonsf", "canonic")
+
+# Scopes whose project dirs live under an extra per-account layer
+# (1p/<company>/<dir_slug>/). Non-client scopes (firstpersonsf, canonic)
+# already nest by self-company at the scope level, so they have no extra
+# layer.
+_ACCOUNT_NESTED_SCOPES: frozenset[str] = frozenset({"1p"})
+
+
+def _project_parent_dirs(tenant_root: Path, scope: str) -> list[Path]:
+    """Directories that directly contain project working dirs for `scope`.
+
+    For account-nested scopes (`1p`), that's every per-account subdir
+    (`1p/google/`, `1p/infoblox/`, ...). The `inactive/` subdir of the
+    scope is skipped — it's a parking lot for whole inactive accounts,
+    not a project parent. (Per-project inactives live one level deeper,
+    inside their account: `1p/<company>/inactive/<dir>/`.)
+
+    For non-nested scopes (`firstpersonsf`, `canonic`), the scope root
+    itself is the project parent — projects live directly under it.
+
+    Returns an empty list when the scope dir doesn't exist yet.
+    """
+    scope_dir = scope_root(tenant_root, scope)
+    if not scope_dir.exists():
+        return []
+    if scope not in _ACCOUNT_NESTED_SCOPES:
+        return [scope_dir]
+    parents: list[Path] = []
+    for child in scope_dir.iterdir():
+        if not child.is_dir() or child.name == INACTIVE_DIR_NAME:
+            continue
+        parents.append(child)
+    return parents
 
 
 def _dir_code(name: str) -> str:
@@ -952,48 +989,57 @@ def _deactivate_stale_cps(
     Returns the list of new inactive directory paths.
     """
     moved: list[Path] = []
-    live_codes_by_scope: dict[str, set[str]] = {}
+    # `live_dirs` is keyed by the FULL account scope ("1p/google" for
+    # clients, "firstpersonsf"/"canonic" for self-companies) — the same
+    # path returned by account_scope_for(). Group live codes by that key
+    # so each project parent dir below can match against its own slice.
+    live_codes_by_account_scope: dict[str, set[str]] = {}
     for scope, code in live_dirs:
-        live_codes_by_scope.setdefault(scope, set()).add(code)
+        live_codes_by_account_scope.setdefault(scope, set()).add(code)
 
     for scope in _SCOPE_DIRS:
-        scope_dir = scope_root(tenant_root, scope)
-        if not scope_dir.exists():
-            continue
-        inactive_bin = inactive_root(tenant_root, scope)
-        live_codes = live_codes_by_scope.get(scope, set())
+        for parent in _project_parent_dirs(tenant_root, scope):
+            # The account-scope key for this parent: "1p/google" for a
+            # client per-company subdir; "firstpersonsf" / "canonic" for
+            # a self-company scope root.
+            account_scope = str(parent.relative_to(tenant_root))
+            live_codes = live_codes_by_account_scope.get(account_scope, set())
+            # Per-project inactive bin sits next to the live dirs — for
+            # clients, that's `1p/<company>/inactive/`; for self-company
+            # scopes, `firstpersonsf/inactive/` (unchanged).
+            inactive_bin = parent / INACTIVE_DIR_NAME
 
-        for path in scope_dir.iterdir():
-            if not path.is_dir():
-                continue
-            if path.name == INACTIVE_DIR_NAME:
-                continue
+            for path in parent.iterdir():
+                if not path.is_dir():
+                    continue
+                if path.name == INACTIVE_DIR_NAME:
+                    continue
 
-            # A dir is "live" if its name matches a known live project code
-            # in either form (bare or `<code>-<slug>`). Scan known codes.
-            if any(
-                path.name == code or path.name.startswith(f"{code}-")
-                for code in live_codes
-            ):
-                continue
+                # A dir is "live" if its name matches a known live project
+                # code in either form (bare or `<code>-<slug>`).
+                if any(
+                    path.name == code or path.name.startswith(f"{code}-")
+                    for code in live_codes
+                ):
+                    continue
 
-            # Stale. Move the whole dir.
-            inactive_bin.mkdir(exist_ok=True)
-            target = inactive_bin / path.name
-            if target.exists():
-                # v0.1.2 collision rule: never silently overwrite. Skip
-                # and warn — a human can resolve by renaming or merging
-                # the duplicate.
-                logger.warning(
-                    "Skipping deactivation of %s: %s already exists. "
-                    "Resolve the conflict by hand (rename or merge).",
-                    path,
-                    target,
-                )
-                continue
+                # Stale. Move the whole dir.
+                inactive_bin.mkdir(exist_ok=True)
+                target = inactive_bin / path.name
+                if target.exists():
+                    # v0.1.2 collision rule: never silently overwrite.
+                    # Skip and warn — a human can resolve by renaming
+                    # or merging the duplicate.
+                    logger.warning(
+                        "Skipping deactivation of %s: %s already exists. "
+                        "Resolve the conflict by hand (rename or merge).",
+                        path,
+                        target,
+                    )
+                    continue
 
-            path.rename(target)
-            moved.append(target)
+                path.rename(target)
+                moved.append(target)
 
     return moved
 
