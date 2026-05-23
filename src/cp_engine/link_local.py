@@ -81,26 +81,35 @@ def discover_cp_working_dirs(tenant_root: Path) -> tuple[CpWorkingDir, ...]:
 
     - **Singular `_repo.md`** — written by sync for repo-source projects
       (standalone repos like `firstpersonsf/cp-engine/_repo.md`). One
-      file per working dir.
+      file per working dir. This is the **canonical** working dir for
+      that repo — it carries the project's `cp.md`, `sessions/`, etc.
     - **`_repo-<name>.md`** — written by sync for each linked repo on
-      an engagement (e.g. an engagement with two MC-2-linked repos has
-      `_repo-ai-pipeline.md` + `_repo-events-calendar.md` in its dir).
-      Two source repos sharing one engagement dir each yield their own
-      `CpWorkingDir` entry pointing at the same `path` — that's correct
-      since both `.cp-link` files target the shared engagement dir.
+      an engagement OR initiative (e.g. an engagement with two MC-2-
+      linked repos has `_repo-ai-pipeline.md` + `_repo-events-calendar.md`
+      in its dir; an initiative that references cp-engine has a
+      `_repo-cp-engine.md` pointer). Treated as a **secondary
+      reference** to a repo whose primary home may be a standalone
+      `_repo.md` elsewhere in the tree.
 
-    Skips `inactive/` subdirs (and pre-v0.7.1 `archived/`) — those are
-    not link targets. The first GitHub URL in each file is canonical.
+    When the same `repo_name` appears as BOTH a singular `_repo.md`
+    AND a `_repo-<name>.md` reference, the singular wins — that's
+    the repo's working dir; the linked reference is decoration.
+    When only the linked reference exists (no standalone working
+    dir), it's surfaced as the working dir (initiative-only repos
+    have no standalone home).
 
-    Returns a tuple sorted by repo_name for deterministic ordering.
+    Skips `inactive/` subdirs (and pre-v0.7.1 `archived/`) — those
+    are not link targets. The first GitHub URL in each file is
+    canonical.
+
+    Returns a tuple with one entry per repo_name, sorted by
+    repo_name for deterministic ordering.
     """
-    found: list[CpWorkingDir] = []
-    # Glob both forms in one walk so we don't re-traverse the tree twice.
-    # `_repo-*.md` matches the per-linked-repo form; `_repo.md` matches
-    # the singular standalone-repo form. A working dir won't normally
-    # have both, but if it does (some hypothetical future shape), each
-    # file yields its own entry — `link_local` keys by repo_name so
-    # duplicates collapse naturally.
+    # Two-pass: collect all candidates, then dedup by repo_name with
+    # singular `_repo.md` winning over linked `_repo-<name>.md`. Tracking
+    # the source-file kind locally (not on CpWorkingDir) keeps the public
+    # type narrow — consumers only care about (repo_name, github_org, path).
+    candidates: list[tuple[CpWorkingDir, bool]] = []  # (dir, is_singular)
     for repo_md in tenant_root.rglob("_repo*.md"):
         # `rglob("_repo*.md")` also matches names like `_repository.md`;
         # narrow to the two canonical shapes.
@@ -112,14 +121,36 @@ def discover_cp_working_dirs(tenant_root: Path) -> tuple[CpWorkingDir, ...]:
         match = _REPO_URL_RE.search(text)
         if not match:
             continue
-        found.append(
+        candidates.append((
             CpWorkingDir(
                 repo_name=match["repo"],
                 github_org=match["org"],
                 path=repo_md.parent.resolve(),
-            )
-        )
-    return tuple(sorted(found, key=lambda d: d.repo_name))
+            ),
+            repo_md.name == "_repo.md",
+        ))
+
+    # Dedup: per repo_name, prefer the singular entry if one exists.
+    # When two singulars or two linked-only entries exist (e.g. same
+    # repo referenced from two initiative dirs — rare but possible),
+    # pick the first one in sorted-path order so the result is
+    # deterministic across runs.
+    by_name: dict[str, CpWorkingDir] = {}
+    name_has_singular: set[str] = set()
+    # Iterate sorted-path order so ties break the same way every run.
+    for cwd, is_singular in sorted(candidates, key=lambda c: str(c[0].path)):
+        existing = by_name.get(cwd.repo_name)
+        if existing is None:
+            by_name[cwd.repo_name] = cwd
+            if is_singular:
+                name_has_singular.add(cwd.repo_name)
+            continue
+        # An entry for this name already exists. The new one wins only
+        # if it's singular AND the existing one isn't.
+        if is_singular and cwd.repo_name not in name_has_singular:
+            by_name[cwd.repo_name] = cwd
+            name_has_singular.add(cwd.repo_name)
+    return tuple(sorted(by_name.values(), key=lambda d: d.repo_name))
 
 
 def find_cp_working_dir_for_remote(

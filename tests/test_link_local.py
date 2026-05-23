@@ -284,6 +284,89 @@ def test_find_for_remote_matches_a_per_repo_md_file(tmp_path: Path) -> None:
     assert wd.path == engagement_dir.resolve()
 
 
+def test_discover_prefers_singular_repo_md_over_linked_form(tmp_path: Path) -> None:
+    """When the same repo appears as BOTH a singular `_repo.md`
+    (canonical standalone-repo working dir) AND a `_repo-<name>.md`
+    (initiative-linked reference), discovery returns ONE entry pointing
+    at the singular form's dir.
+
+    The standalone dir is the repo's home — it carries the project's
+    `cp.md`, `sessions/` history, etc. The initiative-linked file is
+    a pointer; routing there would put `cp capture-session` writes
+    into the initiative's dir instead of the repo's own. Per CLAUDE.md
+    design: 'Initiative-linked repos surface as `_repo-<name>.md`
+    files under their initiative's working dir, not as separate
+    top-level dirs.' The standalone dir is the working dir; the
+    linked reference is decoration."""
+    tenant = tmp_path / "cp-tenant"
+    tenant.mkdir()
+    # Canonical standalone repo working dir.
+    make_tenant(tenant, working_dirs=[("firstpersonsf", "cp-engine", "cp-engine")])
+    # An initiative dir that references the same repo via _repo-<name>.md.
+    mission_control = tenant / "firstpersonsf" / "mission-control"
+    mission_control.mkdir(parents=True)
+    (mission_control / "_repo-cp-engine.md").write_text(
+        "[FirstPersonSF/cp-engine](https://github.com/FirstPersonSF/cp-engine)\n",
+        encoding="utf-8",
+    )
+
+    found = discover_cp_working_dirs(tenant)
+    cp_engine_entries = [d for d in found if d.repo_name == "cp-engine"]
+    assert len(cp_engine_entries) == 1, (
+        f"Expected exactly one cp-engine entry, got {len(cp_engine_entries)}: "
+        f"{[str(d.path) for d in cp_engine_entries]}"
+    )
+    # Points at the standalone repo dir, not the initiative dir.
+    assert cp_engine_entries[0].path == (
+        tenant / "firstpersonsf" / "projects" / "cp-engine"
+    ).resolve()
+
+
+def test_discover_collapses_duplicate_entries_in_same_dir(tmp_path: Path) -> None:
+    """A working dir with both `_repo.md` and `_repo-<name>.md` for
+    the same repo (e.g. a standalone repo project that's ALSO linked
+    to an initiative pointing at the same repo, where both files
+    happen to live in the same dir) collapses to one entry. Same path
+    twice is just deduplication."""
+    tenant = tmp_path / "cp-tenant"
+    tenant.mkdir()
+    wd = tenant / "canonic" / "storyos"
+    wd.mkdir(parents=True)
+    (wd / "_repo.md").write_text(
+        "[Canonic-OS/storyos](https://github.com/Canonic-OS/storyos)\n",
+        encoding="utf-8",
+    )
+    (wd / "_repo-storyos.md").write_text(
+        "[Canonic-OS/storyos](https://github.com/Canonic-OS/storyos)\n",
+        encoding="utf-8",
+    )
+
+    found = discover_cp_working_dirs(tenant)
+    storyos_entries = [d for d in found if d.repo_name == "storyos"]
+    assert len(storyos_entries) == 1
+    assert storyos_entries[0].path == wd.resolve()
+
+
+def test_discover_returns_initiative_linked_when_no_standalone(tmp_path: Path) -> None:
+    """When a repo has ONLY an initiative-linked `_repo-<name>.md`
+    file (no standalone working dir), discovery still surfaces it.
+    This is the realistic case where a repo's standalone dir got
+    deactivated and now only the initiative reference remains."""
+    tenant = tmp_path / "cp-tenant"
+    tenant.mkdir()
+    mission_control = tenant / "firstpersonsf" / "mission-control"
+    mission_control.mkdir(parents=True)
+    (mission_control / "_repo-mc-2.md").write_text(
+        "[FirstPersonSF/mc-2](https://github.com/FirstPersonSF/mc-2)\n",
+        encoding="utf-8",
+    )
+
+    found = discover_cp_working_dirs(tenant)
+    mc2_entries = [d for d in found if d.repo_name == "mc-2"]
+    assert len(mc2_entries) == 1
+    assert mc2_entries[0].path == mission_control.resolve()
+
+
 def test_link_local_wires_multirepo_engagement(tmp_path: Path) -> None:
     """End-to-end: two source repos sharing one multi-repo engagement
     dir each get a `.cp-link` pointing at the shared engagement dir."""
