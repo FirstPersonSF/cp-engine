@@ -50,6 +50,32 @@ def make_tenant(
     return tmp_path
 
 
+def make_multirepo_engagement(
+    tmp_path: Path,
+    *,
+    scope: str,
+    dir_slug: str,
+    repo_names: list[str],
+    org: str = "FirstPersonSF",
+) -> Path:
+    """Build a multi-repo engagement working dir.
+
+    Mirrors what sync writes for an engagement with multiple linked
+    repos in MC-2: each repo gets a `_repo-<name>.md` file (sync uses
+    `f"_repo-{linked.repo_name}.md"`). All files live in the same
+    engagement working dir; there's no singular `_repo.md`.
+    """
+    wd = tmp_path / scope / "projects" / dir_slug
+    wd.mkdir(parents=True)
+    for repo_name in repo_names:
+        (wd / f"_repo-{repo_name}.md").write_text(
+            f"# Linked source repository\n\n"
+            f"[{org}/{repo_name}](https://github.com/{org}/{repo_name})\n",
+            encoding="utf-8",
+        )
+    return wd
+
+
 def make_source_repo(
     tmp_path: Path,
     name: str,
@@ -156,6 +182,134 @@ def test_find_for_remote_no_match(tmp_path: Path) -> None:
     assert (
         find_cp_working_dir_for_remote(tenant, "https://github.com/foo/bar") is None
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Multi-repo engagement working dirs (_repo-<name>.md form)
+#
+# An engagement with N linked repos has N `_repo-<name>.md` files in
+# its working dir (no singular `_repo.md`). Discovery + remote-matching
+# + linking all need to surface each linked repo as its own entry so
+# `cp link-local` and `cp capture-session` can route correctly.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_discover_finds_repo_name_md_files_in_multirepo_engagement(
+    tmp_path: Path,
+) -> None:
+    """Each `_repo-<name>.md` yields its own CpWorkingDir entry, all
+    pointing at the shared engagement working dir."""
+    tenant = tmp_path / "cp-tenant"
+    tenant.mkdir()
+    engagement_dir = make_multirepo_engagement(
+        tenant,
+        scope="1p",
+        dir_slug="ggl-5136-go-safety-website",
+        repo_names=["ggl-5136-ai-pipeline", "ggl-5136-events-calendar"],
+    )
+
+    found = discover_cp_working_dirs(tenant)
+    repo_names = {d.repo_name for d in found}
+    assert repo_names == {"ggl-5136-ai-pipeline", "ggl-5136-events-calendar"}
+    # Both entries point at the same engagement dir (the file's parent).
+    for d in found:
+        assert d.path == engagement_dir.resolve()
+
+
+def test_discover_handles_mixed_singular_and_per_repo_forms(tmp_path: Path) -> None:
+    """A tenant with both a repo-source project (singular `_repo.md`)
+    and a multi-repo engagement (`_repo-<name>.md` files) finds both."""
+    tenant = tmp_path / "cp-tenant"
+    tenant.mkdir()
+    # Singular: a standalone repo-source project.
+    make_tenant(tenant, working_dirs=[("firstpersonsf", "cp-engine", "cp-engine")])
+    # Multi-repo: an engagement with two linked repos.
+    make_multirepo_engagement(
+        tenant,
+        scope="1p",
+        dir_slug="ggl-5136-go-safety-website",
+        repo_names=["ggl-5136-ai-pipeline", "ggl-5136-events-calendar"],
+    )
+
+    found = discover_cp_working_dirs(tenant)
+    assert {d.repo_name for d in found} == {
+        "cp-engine",
+        "ggl-5136-ai-pipeline",
+        "ggl-5136-events-calendar",
+    }
+
+
+def test_discover_skips_per_repo_files_in_inactive_dirs(tmp_path: Path) -> None:
+    """`_repo-<name>.md` files under an `inactive/` subtree are not
+    surfaced as link targets — same rule as singular `_repo.md`."""
+    tenant = tmp_path / "cp-tenant"
+    tenant.mkdir()
+    # Live multi-repo engagement
+    make_multirepo_engagement(
+        tenant,
+        scope="1p",
+        dir_slug="ggl-active",
+        repo_names=["live-repo"],
+    )
+    # Inactive multi-repo engagement (per-account inactive bin shape)
+    inactive_wd = tenant / "1p" / "google" / "inactive" / "ggl-old"
+    inactive_wd.mkdir(parents=True)
+    (inactive_wd / "_repo-old-repo.md").write_text(
+        "[FPSF/old-repo](https://github.com/FPSF/old-repo)\n", encoding="utf-8",
+    )
+
+    found = discover_cp_working_dirs(tenant)
+    assert {d.repo_name for d in found} == {"live-repo"}
+
+
+def test_find_for_remote_matches_a_per_repo_md_file(tmp_path: Path) -> None:
+    """`find_cp_working_dir_for_remote` resolves a source repo whose
+    cp working dir is a multi-repo engagement (only `_repo-<name>.md`
+    files, no singular `_repo.md`)."""
+    tenant = tmp_path / "cp-tenant"
+    tenant.mkdir()
+    engagement_dir = make_multirepo_engagement(
+        tenant,
+        scope="1p",
+        dir_slug="ggl-5136-go-safety-website",
+        repo_names=["ggl-5136-events-calendar"],
+    )
+
+    wd = find_cp_working_dir_for_remote(
+        tenant,
+        "https://github.com/FirstPersonSF/ggl-5136-events-calendar.git",
+    )
+    assert wd is not None
+    assert wd.repo_name == "ggl-5136-events-calendar"
+    assert wd.path == engagement_dir.resolve()
+
+
+def test_link_local_wires_multirepo_engagement(tmp_path: Path) -> None:
+    """End-to-end: two source repos sharing one multi-repo engagement
+    dir each get a `.cp-link` pointing at the shared engagement dir."""
+    tenant = tmp_path / "cp-tenant"
+    tenant.mkdir()
+    engagement_dir = make_multirepo_engagement(
+        tenant,
+        scope="1p",
+        dir_slug="ggl-5136-go-safety-website",
+        repo_names=["ggl-5136-ai-pipeline", "ggl-5136-events-calendar"],
+    )
+    pipeline_repo = make_source_repo(tmp_path, "ggl-5136-ai-pipeline")
+    calendar_repo = make_source_repo(tmp_path, "ggl-5136-events-calendar")
+
+    config = make_config(tenant, {
+        "ggl-5136-ai-pipeline": pipeline_repo,
+        "ggl-5136-events-calendar": calendar_repo,
+    })
+    results = link_local(config)
+
+    assert len(results) == 2
+    expected_target = str(engagement_dir.resolve())
+    for r in results:
+        assert (r.source_repo_path / ".cp-link").read_text(encoding="utf-8").strip() == expected_target
+        assert r.cp_working_dir == engagement_dir.resolve()
+        assert r.wrote_link is True
 
 
 # ──────────────────────────────────────────────────────────────────────

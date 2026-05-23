@@ -75,16 +75,37 @@ class CpWorkingDir:
 
 
 def discover_cp_working_dirs(tenant_root: Path) -> tuple[CpWorkingDir, ...]:
-    """Walk the cp tenant for working dirs that have a `_repo.md`.
+    """Walk the cp tenant for working dirs that have a repo file.
 
-    Skips `inactive/` subdirs (and pre-v0.7.1 `archived/` for tenants
-    not yet migrated) — those are not link targets. The first GitHub URL
-    in each `_repo.md` is treated as canonical.
+    Two file shapes count as a link target:
+
+    - **Singular `_repo.md`** — written by sync for repo-source projects
+      (standalone repos like `firstpersonsf/cp-engine/_repo.md`). One
+      file per working dir.
+    - **`_repo-<name>.md`** — written by sync for each linked repo on
+      an engagement (e.g. an engagement with two MC-2-linked repos has
+      `_repo-ai-pipeline.md` + `_repo-events-calendar.md` in its dir).
+      Two source repos sharing one engagement dir each yield their own
+      `CpWorkingDir` entry pointing at the same `path` — that's correct
+      since both `.cp-link` files target the shared engagement dir.
+
+    Skips `inactive/` subdirs (and pre-v0.7.1 `archived/`) — those are
+    not link targets. The first GitHub URL in each file is canonical.
 
     Returns a tuple sorted by repo_name for deterministic ordering.
     """
     found: list[CpWorkingDir] = []
-    for repo_md in tenant_root.rglob("_repo.md"):
+    # Glob both forms in one walk so we don't re-traverse the tree twice.
+    # `_repo-*.md` matches the per-linked-repo form; `_repo.md` matches
+    # the singular standalone-repo form. A working dir won't normally
+    # have both, but if it does (some hypothetical future shape), each
+    # file yields its own entry — `link_local` keys by repo_name so
+    # duplicates collapse naturally.
+    for repo_md in tenant_root.rglob("_repo*.md"):
+        # `rglob("_repo*.md")` also matches names like `_repository.md`;
+        # narrow to the two canonical shapes.
+        if repo_md.name != "_repo.md" and not repo_md.name.startswith("_repo-"):
+            continue
         if "inactive" in repo_md.parts or "archived" in repo_md.parts:
             continue
         text = repo_md.read_text(encoding="utf-8")
