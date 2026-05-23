@@ -4,6 +4,28 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.9.1 — 2026-05-23
+
+### Fixed — `link-local` and `capture-session` for multi-repo engagements (#5, #6)
+
+`discover_cp_working_dirs` only globbed `_repo.md` (singular), so working dirs for multi-repo engagements (which have one `_repo-<name>.md` per linked repo, no singular file) were invisible to both `cp link-local` and `cp capture-session`. Captures for those source repos fell through to `cp/exceptions/` even though the repos WERE tracked in MC-2.
+
+Concrete on the live tenant: 5 captures for `ggl-5136-events-calendar` had piled up in `cp/exceptions/` over ~2 weeks (2026-05-11 → 2026-05-23). Same shape affects any multi-repo engagement and `mc-2` / `market-leadership-scorecard` (linked from initiative dirs).
+
+**Fix 1 (commit `c46f3a8`):** glob `_repo*.md` with a name-check guard so accidental matches like `_repository.md` are filtered. Each `_repo-<name>.md` yields its own `CpWorkingDir` entry pointing at the engagement dir; two source repos sharing one engagement dir each get a `.cp-link` targeting that shared dir.
+
+**Fix 2 (commit `dbd0ba4`):** surfaced by Fix 1 — repos that have BOTH a standalone working dir AND appear as an initiative-linked `_repo-<name>.md` reference (e.g. `cp-engine` standalone in `firstpersonsf/cp-engine/` AND linked from Mission Control) yielded two `CpWorkingDir` entries with different paths; the prior dict-by-name builder silently picked whichever came last in rglob order — non-deterministic. Two-pass dedup now prefers the singular `_repo.md` (canonical standalone working dir) over `_repo-<name>.md` (pointer/reference), per CLAUDE.md design. Falls back to the linked-only entry when no standalone exists (`mc-2`'s case). Tie-breaking for unlikely edges uses sorted-path order so results are deterministic.
+
+Live tenant before this release: ambiguous/missing entries, captures landing in `exceptions/`. After: 10 working dirs, each repo with exactly one canonical home, deterministic across runs.
+
+Test coverage: 8 new tests in `tests/test_link_local.py`. **467 passing total (was 459 in v0.9.0)**, no regressions.
+
+### How tenants upgrade
+
+`~= 0.9` pins pick this up automatically (patch bump). No tenant action needed; no migration. The next `cp sync` / `cp capture-session` runs use the fixed discovery.
+
+To verify the fix on a multi-repo tenant: `cp link-local` should now wire `.cp-link` files for repos whose engagement dir uses the `_repo-<name>.md` form, and `cp capture-session` from those source repos should write into the project's working dir rather than `cp/exceptions/`.
+
 ## v0.9.0 — 2026-05-22
 
 ### Changed — `1p/` scope is now per-account-nested (`1p/<company>/<project>/`)
