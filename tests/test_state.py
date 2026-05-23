@@ -13,10 +13,13 @@ from cp_engine.state import (
     MeetingNotes,
     Outbound,
     PersonHours,
+    ProjectState,
     Risk,
     SprintFacts,
     SprintFile,
     WhereItStands,
+    account_scope_for,
+    company_slug,
     dir_slug,
     scope_for,
 )
@@ -35,6 +38,82 @@ def test_scope_for_known_kinds() -> None:
 def test_scope_for_unknown_raises() -> None:
     with pytest.raises(ValueError, match="Unknown company_kind"):
         scope_for("partner")
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  company_slug — kebab-case a company name for use as a dir name
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_company_slug_simple_name() -> None:
+    assert company_slug("Infoblox") == "infoblox"
+
+
+def test_company_slug_multi_word_kebab_cases() -> None:
+    assert company_slug("Sentinel One") == "sentinel-one"
+
+
+def test_company_slug_strips_non_alphanumeric() -> None:
+    # Punctuation collapses to single hyphens, no leading/trailing.
+    assert company_slug("AT&T, Inc.") == "at-t-inc"
+
+
+def test_company_slug_falls_back_to_unknown_when_empty() -> None:
+    # Empty / None / whitespace-only must not produce '' which would
+    # leave a project at 1p//<dir_slug>/ — a broken path.
+    assert company_slug(None) == "unknown"
+    assert company_slug("") == "unknown"
+    assert company_slug("   ") == "unknown"
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  account_scope_for — full project working-dir parent: <scope>/<account>
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _project_with(*, company_kind: str, company_name: str | None) -> ProjectState:
+    """Minimal ProjectState fixture for scope tests."""
+    return ProjectState(
+        code="dummy",
+        name="Dummy",
+        source="engagement",
+        company_kind=company_kind,
+        company_code="DUM",
+        company_name=company_name,
+        status="Open",
+        is_internal=False,
+        owner=None,
+        last_touched=None,
+        deadline=None,
+        deal_stage=None,
+        budget=None,
+    )
+
+
+def test_account_scope_for_client_includes_company_slug() -> None:
+    p = _project_with(company_kind="client", company_name="Infoblox")
+    assert account_scope_for(p) == "1p/infoblox"
+
+
+def test_account_scope_for_client_with_multiword_company() -> None:
+    p = _project_with(company_kind="client", company_name="Sentinel One")
+    assert account_scope_for(p) == "1p/sentinel-one"
+
+
+def test_account_scope_for_client_missing_name_falls_back() -> None:
+    # A client row with no company_name still needs a deterministic
+    # parent dir — `1p/unknown/` rather than a path with `//`.
+    p = _project_with(company_kind="client", company_name=None)
+    assert account_scope_for(p) == "1p/unknown"
+
+
+def test_account_scope_for_non_client_is_unchanged() -> None:
+    # FPSF / Canonic already nest by self-company at the scope level;
+    # account_scope_for is a no-op there (= scope_for).
+    fpsf = _project_with(company_kind="self-fpsf", company_name="First Person")
+    canonic = _project_with(company_kind="self-canonic", company_name="Canonic")
+    assert account_scope_for(fpsf) == "firstpersonsf"
+    assert account_scope_for(canonic) == "canonic"
 
 
 # ──────────────────────────────────────────────────────────────────────

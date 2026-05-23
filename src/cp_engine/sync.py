@@ -31,6 +31,9 @@ logger = logging.getLogger(__name__)
 from cp_engine.config import TenantConfig
 from cp_engine.render import (
     count_exceptions_in_window,
+    render_account_cp,
+    render_account_facts_body,
+    render_account_projects_body,
     render_claude_md,
     render_dropbox_md,
     render_exceptions_readme,
@@ -51,6 +54,8 @@ from cp_engine.state import (  # noqa: F401
     Issue,
     LinkedRepo,
     ProjectState,
+    account_scope_for,
+    company_slug,
     dir_slug,
     inactive_root,
     scope_for,
@@ -226,8 +231,11 @@ def sync_tenant(
     # working dirs after this sync. Internal projects don't get dirs.
     # Tracked by code (not slug) because the deactivation sweep needs to match
     # against project identity, which is invariant under name changes.
+    # `account_scope_for` gives the full parent path including the account
+    # layer for clients (e.g. "1p/google"), so live_dirs reflect where the
+    # project actually lives on disk.
     live_dirs: set[tuple[str, str]] = {
-        (scope_for(p.company_kind), p.code)
+        (account_scope_for(p), p.code)
         for p in projects
         if not p.is_internal
     }
@@ -235,7 +243,7 @@ def sync_tenant(
     for project in projects:
         if project.is_internal:
             continue
-        scope = scope_for(project.company_kind)
+        scope = account_scope_for(project)
         scope_dir = scope_root(config.root, scope)
         target_slug = dir_slug(project.code, project.name)
         project_dir = working_dir(config.root, scope, target_slug)
@@ -335,6 +343,66 @@ def sync_tenant(
             if _write_if_changed(linked_path, linked_body, splice_regions=()):
                 files_written.append(linked_path)
 
+    # Account CP scaffolding (v0.8.17+, 1p-only) — for every account that
+    # has ≥1 active client project, scaffold `1p/<company-slug>/cp.md`
+    # from the account template and re-splice the `account-facts` and
+    # `projects` engine regions on every sync. FPSF/Canonic already nest
+    # by self-company at the scope level and don't get this layer.
+    #
+    # Account list is derived from the projects we already have — same
+    # source of truth as the rest of master-cp, no separate backend
+    # query. company_kind == "client" is the gate; internal client
+    # projects are excluded (they don't get a project dir under 1p/, so
+    # they shouldn't contribute to an account dir either).
+    accounts_to_active_projects: dict[tuple[str, str], list[ProjectState]] = {}
+    for project in projects:
+        if project.is_internal or project.company_kind != "client":
+            continue
+        slug = company_slug(project.company_name)
+        # Display name falls back to the slug if company_name is missing;
+        # company_slug already normalizes None to "unknown".
+        display = project.company_name or slug
+        accounts_to_active_projects.setdefault((slug, display), []).append(project)
+
+    for (slug, display), account_projects in accounts_to_active_projects.items():
+        account_dir = config.root / "1p" / slug
+        account_cp_path = account_dir / "cp.md"
+        account_projects_tuple = tuple(account_projects)
+
+        first_scaffold = not account_cp_path.exists()
+        if first_scaffold:
+            # First scaffold: full render from the template. The account
+            # dir already exists (the project loop above created
+            # `1p/<slug>/<dir>/` on the way to placing project working
+            # dirs), so we only need to write the cp.md itself.
+            account_dir.mkdir(parents=True, exist_ok=True)
+            scaffold_body = render_account_cp(slug, display, account_projects_tuple)
+            account_cp_path.write_text(scaffold_body)
+
+        # Re-splice the two engine-managed regions even on first scaffold
+        # so first-render and re-render are byte-stable — otherwise small
+        # whitespace differences between the template's `{{ block }}`
+        # spacing and the splicer's strip-and-rejoin make the next sync
+        # re-write the file unnecessarily (and breaks the no-op promise).
+        # Handwritten content outside the markers is byte-stable.
+        existing = account_cp_path.read_text()
+        new_body = existing
+        for region, body in (
+            ("account-facts", render_account_facts_body(display, account_projects_tuple)),
+            ("projects", render_account_projects_body(account_projects_tuple)),
+        ):
+            try:
+                new_body = splice_managed_region(new_body, region, body)
+            except Exception as exc:
+                logger.warning(
+                    "Skipping %s splice for account %s: %s", region, slug, exc,
+                )
+        if first_scaffold or new_body != existing:
+            if new_body != existing:
+                account_cp_path.write_text(new_body)
+            if account_cp_path not in files_written:
+                files_written.append(account_cp_path)
+
     # Sprint files — per-project per-sprint markdown for the partners' weekly
     # review. Generated for every active project that the master CP also
     # surfaces. Engine-managed regions are refreshed every sync; hand-written
@@ -382,7 +450,7 @@ def sync_tenant(
             sprint_path = config.root / "sprints" / week_iso / f"{project.code}.md"
             if not sprint_path.exists():
                 continue
-            scope = scope_for(project.company_kind)
+            scope = account_scope_for(project)
             slug = dir_slug(project.code, project.name)
             cp_path = config.root / scope / slug / "cp.md"
             if not cp_path.exists():
@@ -455,7 +523,7 @@ def sync_tenant(
             for project in projects:
                 if not _is_active_for_sprint(project):
                     continue
-                scope = scope_for(project.company_kind)
+                scope = account_scope_for(project)
                 slug = dir_slug(project.code, project.name)
                 cp_path = config.root / scope / slug / "cp.md"
                 if not cp_path.exists():
@@ -865,7 +933,7 @@ def _derive_summary(config: TenantConfig, project: ProjectState) -> str | None:
     """
     from cp_engine.summary import derive_from_project_cp
 
-    scope = scope_for(project.company_kind)
+    scope = account_scope_for(project)
     existing = _find_project_dir(scope_root(config.root, scope), project.code)
     if existing is None:
         return None
@@ -873,6 +941,39 @@ def _derive_summary(config: TenantConfig, project: ProjectState) -> str | None:
 
 
 _SCOPE_DIRS: tuple[str, ...] = ("1p", "firstpersonsf", "canonic")
+
+# Scopes whose project dirs live under an extra per-account layer
+# (1p/<company>/<dir_slug>/). Non-client scopes (firstpersonsf, canonic)
+# already nest by self-company at the scope level, so they have no extra
+# layer.
+_ACCOUNT_NESTED_SCOPES: frozenset[str] = frozenset({"1p"})
+
+
+def _project_parent_dirs(tenant_root: Path, scope: str) -> list[Path]:
+    """Directories that directly contain project working dirs for `scope`.
+
+    For account-nested scopes (`1p`), that's every per-account subdir
+    (`1p/google/`, `1p/infoblox/`, ...). The `inactive/` subdir of the
+    scope is skipped — it's a parking lot for whole inactive accounts,
+    not a project parent. (Per-project inactives live one level deeper,
+    inside their account: `1p/<company>/inactive/<dir>/`.)
+
+    For non-nested scopes (`firstpersonsf`, `canonic`), the scope root
+    itself is the project parent — projects live directly under it.
+
+    Returns an empty list when the scope dir doesn't exist yet.
+    """
+    scope_dir = scope_root(tenant_root, scope)
+    if not scope_dir.exists():
+        return []
+    if scope not in _ACCOUNT_NESTED_SCOPES:
+        return [scope_dir]
+    parents: list[Path] = []
+    for child in scope_dir.iterdir():
+        if not child.is_dir() or child.name == INACTIVE_DIR_NAME:
+            continue
+        parents.append(child)
+    return parents
 
 
 def _dir_code(name: str) -> str:
@@ -952,48 +1053,57 @@ def _deactivate_stale_cps(
     Returns the list of new inactive directory paths.
     """
     moved: list[Path] = []
-    live_codes_by_scope: dict[str, set[str]] = {}
+    # `live_dirs` is keyed by the FULL account scope ("1p/google" for
+    # clients, "firstpersonsf"/"canonic" for self-companies) — the same
+    # path returned by account_scope_for(). Group live codes by that key
+    # so each project parent dir below can match against its own slice.
+    live_codes_by_account_scope: dict[str, set[str]] = {}
     for scope, code in live_dirs:
-        live_codes_by_scope.setdefault(scope, set()).add(code)
+        live_codes_by_account_scope.setdefault(scope, set()).add(code)
 
     for scope in _SCOPE_DIRS:
-        scope_dir = scope_root(tenant_root, scope)
-        if not scope_dir.exists():
-            continue
-        inactive_bin = inactive_root(tenant_root, scope)
-        live_codes = live_codes_by_scope.get(scope, set())
+        for parent in _project_parent_dirs(tenant_root, scope):
+            # The account-scope key for this parent: "1p/google" for a
+            # client per-company subdir; "firstpersonsf" / "canonic" for
+            # a self-company scope root.
+            account_scope = str(parent.relative_to(tenant_root))
+            live_codes = live_codes_by_account_scope.get(account_scope, set())
+            # Per-project inactive bin sits next to the live dirs — for
+            # clients, that's `1p/<company>/inactive/`; for self-company
+            # scopes, `firstpersonsf/inactive/` (unchanged).
+            inactive_bin = parent / INACTIVE_DIR_NAME
 
-        for path in scope_dir.iterdir():
-            if not path.is_dir():
-                continue
-            if path.name == INACTIVE_DIR_NAME:
-                continue
+            for path in parent.iterdir():
+                if not path.is_dir():
+                    continue
+                if path.name == INACTIVE_DIR_NAME:
+                    continue
 
-            # A dir is "live" if its name matches a known live project code
-            # in either form (bare or `<code>-<slug>`). Scan known codes.
-            if any(
-                path.name == code or path.name.startswith(f"{code}-")
-                for code in live_codes
-            ):
-                continue
+                # A dir is "live" if its name matches a known live project
+                # code in either form (bare or `<code>-<slug>`).
+                if any(
+                    path.name == code or path.name.startswith(f"{code}-")
+                    for code in live_codes
+                ):
+                    continue
 
-            # Stale. Move the whole dir.
-            inactive_bin.mkdir(exist_ok=True)
-            target = inactive_bin / path.name
-            if target.exists():
-                # v0.1.2 collision rule: never silently overwrite. Skip
-                # and warn — a human can resolve by renaming or merging
-                # the duplicate.
-                logger.warning(
-                    "Skipping deactivation of %s: %s already exists. "
-                    "Resolve the conflict by hand (rename or merge).",
-                    path,
-                    target,
-                )
-                continue
+                # Stale. Move the whole dir.
+                inactive_bin.mkdir(exist_ok=True)
+                target = inactive_bin / path.name
+                if target.exists():
+                    # v0.1.2 collision rule: never silently overwrite.
+                    # Skip and warn — a human can resolve by renaming
+                    # or merging the duplicate.
+                    logger.warning(
+                        "Skipping deactivation of %s: %s already exists. "
+                        "Resolve the conflict by hand (rename or merge).",
+                        path,
+                        target,
+                    )
+                    continue
 
-            path.rename(target)
-            moved.append(target)
+                path.rename(target)
+                moved.append(target)
 
     return moved
 

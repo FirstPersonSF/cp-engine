@@ -33,6 +33,7 @@ from .state import (
     Stakeholder,
     Theme,
     WhereItStands,
+    account_scope_for,
     dir_slug,
     scope_for,
 )
@@ -560,7 +561,11 @@ def render_sprint_scaffold(
     )
     template = env.get_template(template_name)
     week_dates = f"{_short_md_date(week_start)} – {_long_md_date(week_end)}"
-    project_scope = scope_for(project.company_kind)
+    # account_scope_for returns "1p/<company>" for clients (the nested
+    # layout), and the bare scope for FPSF / Canonic. The template uses
+    # this for `← Project CP` / `← Initiative CP` navigation links, so
+    # they must match the on-disk path.
+    project_scope = account_scope_for(project)
     project_dir_slug = dir_slug(project.code, project.name)
     # Relative path from the sprint file (sprints/<week>/<code>.md) to the
     # project's meetings/ dir. Used only when meetings_this_sprint > 0.
@@ -749,11 +754,12 @@ def ensure_sprint_file(
 
     # Count per-meeting artifacts (deeper-transcripts pipeline) dated in
     # this sprint window. The project's meetings/ dir sits next to its
-    # cp.md, under <tenant_root>/<scope>/<dir_slug>/. sprint_root is
-    # <tenant_root>/sprints, so tenant_root is its parent.
+    # cp.md, under <tenant_root>/<account_scope>/<dir_slug>/. sprint_root
+    # is <tenant_root>/sprints, so tenant_root is its parent.
+    # account_scope_for handles the per-client nesting (1p/<company>/...).
     meetings_dir = (
         sprint_root.parent
-        / scope_for(project.company_kind)
+        / account_scope_for(project)
         / dir_slug(project.code, project.name)
         / "meetings"
     )

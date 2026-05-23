@@ -1,0 +1,40 @@
+---
+Project: {{ account.display }} (account)
+Provenance: Version {{ engine_version }} | {{ today }}
+Filename: 1p/{{ account.slug }}/cp.md
+Author: cp-engine (initial scaffold)
+---
+
+# {{ account.display }} — Account CP
+
+> Account-level CP for {{ account.display }}. Per-project status lives in each
+> project's `cp.md`; this file holds the across-project view. Browse
+> `messages/` directly for cross-project client communications.
+
+<!-- cp-engine:start account-facts -->
+{{ account_facts_block or "_No account facts yet._" }}
+<!-- cp-engine:end account-facts -->
+
+<!-- cp-engine:start projects -->
+{{ projects_block or "_No active projects._" }}
+<!-- cp-engine:end projects -->
+
+## Quick Resume
+
+_<1–2 handwritten paragraphs: where the relationship stands right now>_
+
+## Stakeholders
+
+_<account-wide people, not per-project ones>_
+
+## Account-wide decisions / context
+
+_<durable truths about the relationship>_
+
+## Risks / open threads
+
+_<account-level only — not per-project risks>_
+
+## Active research / reference
+
+_<pointers only. Bootstrap v2 discipline>_

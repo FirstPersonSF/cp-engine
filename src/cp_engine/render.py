@@ -28,7 +28,16 @@ from jinja2 import Environment, FileSystemLoader, select_autoescape
 
 from cp_engine import __version__ as ENGINE_VERSION
 from cp_engine.config import TenantConfig
-from cp_engine.state import Issue, LinkedRepo, ProjectState, SprintFile, dir_slug, scope_for
+from cp_engine.state import (
+    Issue,
+    LinkedRepo,
+    ProjectState,
+    SprintFile,
+    account_scope_for,
+    company_slug,
+    dir_slug,
+    scope_for,
+)
 from cp_engine.status import is_active_status
 
 # ──────────────────────────────────────────────────────────────────────
@@ -205,11 +214,23 @@ def render_master_cp(
 
     def group(active_list: list[ProjectState]) -> dict:
         client_entries = [p for p in active_list if p.company_kind == "client"]
+        # Pipeline keeps stage-progression sort (Inquiry → Negotiation →
+        # Contract); deals are usually few enough that grouping by
+        # account adds noise without value.
         pipeline = sorted(
             (p for p in client_entries if p.status == "Deal"),
             key=lambda p: (_STAGE_ORDER.get(p.deal_stage or "", 99), p.code),
         )
-        client_active = [p for p in client_entries if p.status == "Open"]
+        # Active client engagements sort by (account_slug, code) so
+        # projects from the same account cluster — matches the new
+        # account-nested layout's grouping intent.
+        client_active = sorted(
+            (p for p in client_entries if p.status == "Open"),
+            key=lambda p: (
+                company_slug(p.company_name),
+                p.code,
+            ),
+        )
         # Initiatives split from repos so the FPSF/Canonic sections stay
         # repo-shaped (Description / GitHub columns). Initiatives render
         # into a sibling table per scope with initiative-shaped columns.
@@ -535,6 +556,112 @@ def render_project_cp(
         tracked_issues=[_issue_view(i) for i in tracked_issues],
         current_sprint_block=current_sprint_block,
         project_strips=project_strips,
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Account CP renderers (v0.8.17+, 1p-only)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def render_account_facts_body(
+    account_display: str,
+    projects_in_account: tuple[ProjectState, ...],
+) -> str:
+    """Body for the `account-facts` engine-managed region.
+
+    Small at-a-glance table mirroring the project-cp `Facts` table's
+    shape. Built from the projects already in scope, not a separate
+    backend query — `account_display` and the active-project count are
+    derivable from `projects_in_account` alone.
+
+    Returns the inner body (no marker lines) so the caller can either
+    pass it to the template on first scaffold or hand it to
+    `splice_managed_region` on subsequent syncs.
+    """
+    active_count = len(projects_in_account)
+    last_touched = max(
+        (p.last_touched for p in projects_in_account if p.last_touched),
+        default=None,
+    )
+    last_touched_short = _short(last_touched) if last_touched else "—"
+    # Owners aggregate the per-project owner field. None is filtered;
+    # duplicates collapse; the order is stable (first-seen) so re-renders
+    # are byte-stable when the project set is unchanged.
+    seen: dict[str, None] = {}
+    for p in projects_in_account:
+        if p.owner:
+            seen.setdefault(p.owner, None)
+    owners_str = ", ".join(seen) if seen else "—"
+    return (
+        f"## Facts\n\n"
+        f"| | |\n"
+        f"|---|---|\n"
+        f"| **Account** | {account_display} |\n"
+        f"| **Active projects** | {active_count} |\n"
+        f"| **Owners** | {owners_str} |\n"
+        f"| **Last project activity** | {last_touched_short} |\n"
+    )
+
+
+def render_account_projects_body(
+    projects_in_account: tuple[ProjectState, ...],
+) -> str:
+    """Body for the `projects` engine-managed region.
+
+    Lists every project under the account with code → linked dir_slug.
+    Projects live one level under their account on disk, so links are
+    literal relative paths (`<dir_slug>/cp.md`) — no `../` walk.
+
+    Empty list is allowed (e.g. an account where every project just
+    drained); the caller still calls this so the region stays in sync
+    rather than leaving stale content from a prior sync.
+    """
+    if not projects_in_account:
+        return "## Projects\n\n_No active projects._\n"
+    rows = []
+    # Stable order: by code so re-renders are byte-stable.
+    for p in sorted(projects_in_account, key=lambda x: x.code):
+        slug = dir_slug(p.code, p.name)
+        stage_or_status = p.deal_stage or p.status
+        owner = p.owner or "—"
+        last_touched_short = _short(p.last_touched) if p.last_touched else "—"
+        rows.append(
+            f"| [`{p.code}`]({slug}/cp.md) | {p.name} | {stage_or_status} | "
+            f"{owner} | {last_touched_short} |"
+        )
+    table = (
+        "## Projects\n\n"
+        "### Active\n"
+        "| Code | Project | Stage | Owner | Last touched |\n"
+        "|---|---|---|---|---|\n"
+        + "\n".join(rows)
+        + "\n"
+    )
+    return table
+
+
+def render_account_cp(
+    account_slug: str,
+    account_display: str,
+    projects_in_account: tuple[ProjectState, ...],
+) -> str:
+    """Render a full account `cp.md` from the empty template.
+
+    Only used on first scaffold of an account dir. Subsequent syncs
+    re-splice only the `account-facts` and `projects` engine regions
+    via `splice_managed_region` — handwritten content outside those
+    regions is byte-stable.
+    """
+    template = _env().get_template("account-cp.md.j2")
+    return template.render(
+        account={"slug": account_slug, "display": account_display},
+        account_facts_block=render_account_facts_body(
+            account_display, projects_in_account
+        ),
+        projects_block=render_account_projects_body(projects_in_account),
+        engine_version=ENGINE_VERSION,
+        today=_today_iso(),
     )
 
 
@@ -946,7 +1073,9 @@ def _compute_slack_rollup(
         rows.append({
             "code": p.code,
             "name": p.name,
-            "scope": scope_for(p.company_kind),
+            # Path-building scope (includes account layer for clients) so
+            # the master-cp link `<scope>/<dir_slug>/cp.md` resolves.
+            "scope": account_scope_for(p),
             "dir_slug": dir_slug(p.code, p.name),
             "week": m.group("week"),
             "text": m.group("text").strip(),
@@ -1077,15 +1206,34 @@ def _project_view(p: ProjectState) -> dict:
     Includes both engagement-shape and repo-shape fields. Templates
     branch on `source` to choose which to render.
     """
+    # Account view fields — populated for client projects so the
+    # master-cp 1P tables can render the leading Account column.
+    # account_link is a literal relative path from the tenant root to
+    # the account cp.md (`1p/<slug>/cp.md`). For non-client projects
+    # both are None and the template's account column simply renders
+    # empty if it ever lands there.
+    if p.company_kind == "client":
+        account_slug_value = company_slug(p.company_name)
+        account_display = p.company_name or account_slug_value
+        account_link = f"1p/{account_slug_value}/cp.md"
+    else:
+        account_slug_value = None
+        account_display = None
+        account_link = None
     return {
         "code": p.code,
         "name": p.name,
         "source": p.source,
         "company_kind": p.company_kind,
-        "scope": scope_for(p.company_kind),
+        # Path-building scope (includes account layer for clients).
+        # Templates render `{{ p.scope }}/{{ p.dir_slug }}/cp.md` links.
+        "scope": account_scope_for(p),
         "dir_slug": dir_slug(p.code, p.name),
         "company_code": p.company_code,
         "company_name": p.company_name,
+        "account_slug": account_slug_value,
+        "account_display": account_display,
+        "account_link": account_link,
         "status": p.status,
         "owner": p.owner,
         "last_touched_short": _short(p.last_touched),
