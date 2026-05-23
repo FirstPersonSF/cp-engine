@@ -4,6 +4,41 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.9.0 — 2026-05-22
+
+### Changed — `1p/` scope is now per-account-nested (`1p/<company>/<project>/`)
+
+**Structural change — tenants must opt in by bumping their `engine` pin and running `cp migrate-accounts`.** Triggered by the lack of any right home for cross-project account content (account-wide stakeholders, account-level decisions, multi-project client messages). The flat `1p/<project>/` layout meant a Janet email spanning ibx-5153 + ibx-5167 had to be shoved into one of the two project dirs; there was no surface for it.
+
+After this release, each 1P account gets its own `cp.md` plus a `messages/` sibling for cross-project comms. FPSF and Canonic scopes are unchanged — they already nest by self-company at the scope level.
+
+Engine support:
+
+- New `company_slug(company_name)` and `account_scope_for(project)` in `state.py` — the single source of truth for the per-account layer. Client projects' working dirs land under `1p/<slug>/<dir_slug>/`; self-company projects (FPSF/Canonic) pass through unchanged. `_project_parent_dirs(scope)` yields the per-account subdirs that sync iterates for the deactivation sweep. Per-project inactive bin sits at `1p/<company>/inactive/`.
+- New `account-cp.md.j2` template: anchor block, two engine-managed regions (`account-facts`, `projects`), and a handwritten skeleton for Quick Resume / Stakeholders / Account-wide decisions / Risks / Active research. Mirrors the project-cp.md hand-vs-engine discipline.
+- New `render_account_cp`, `render_account_facts_body`, `render_account_projects_body` in `render.py`. Sync scaffolds each account's `cp.md` on first sync and re-splices the two engine regions on every subsequent sync; first-scaffold immediately re-splices itself to guarantee byte-equivalence with subsequent syncs (otherwise small whitespace differences between the template's `{{ block }}` spacing and the splicer's strip-and-rejoin made every next sync re-write the file, breaking the no-op promise).
+- Master-cp `active-pipeline` + `active-1p` tables gain a leading **Account** column linking to each account's cp.md. Active engagements sort by `(account_slug, code)` so projects from the same account cluster (pipeline keeps stage-progression order). `_project_view` surfaces `account_display` + `account_link` for client projects; both are `None` for non-clients so the template renders an empty cell if it ever lands there.
+
+Migration command:
+
+- New `cp migrate-accounts [--dry-run]` CLI. Reads MC-2 once to build a `code → (slug, display)` map, plans `git mv` for every flat `1p/<dir>/`, hard-fails before any disk writes if any dir's code can't be resolved (no silent surprises, no junk-drawer `1p/unknown/`), executes the moves, absorbs `1p/_teleflex.md` (if present) into `1p/teleflex/cp.md` under a dated `## Legacy notes (migrated YYYY-MM-DD)` heading, runs `cp sync` so account `cp.md` files scaffold, then surfaces residue hints (stale `1p/<code>` references in `weekly-cp.md`) for the operator to hand-fix.
+- Idempotent: re-running on an already-migrated tree is a no-op. Account-dir detection uses a `<prefix>-<digits>(-<slug>)?` shape check — dirs that don't look like a project code are silently skipped (account dirs, stray notes), while dirs that do match but can't resolve still hard-fail.
+- Doesn't auto-commit: operator reviews with `git status` / `git diff` and commits manually. Mirrors `migrate-projects-flat`'s discipline.
+
+Test coverage: 459 passing total (32 new for Phase 1 + Phase 2). The 20 existing path-assertion tests that broke when paths gained the per-account layer were fixed mechanically.
+
+Live migration ran on the first cp tenant 2026-05-22 — 23 dirs into 7 account directories plus a hand-pre-positioned hexagon/. Idempotent `cp sync` post-migration reports `No changes (37 projects checked).`
+
+Designs: `cp/docs/plans/2026-05-22-account-restructure-design.md` (engine support) and `cp/docs/plans/2026-05-22-migrate-accounts-design.md` (the migration command).
+
+### How tenants upgrade
+
+1. Bump `.cp-engine.toml`'s `[engine].version` pin from `~= 0.8` to `~= 0.9`.
+2. `cp migrate-accounts --dry-run` to preview the moves and residue.
+3. Resolve any unresolved dirs surfaced by the dry-run (fix MC-2 or hand-move the dir).
+4. Run `cp migrate-accounts` for real in a quiet window (disable any sync/slack-digest crons that would race; don't tag Fathom meetings during the window).
+5. Review with `git status` / `git diff`, hand-fix the residue list, commit.
+
 ## v0.8.16.6 — 2026-05-22
 
 ### Added — meeting count in the sprint-facts region
