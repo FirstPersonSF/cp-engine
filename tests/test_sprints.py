@@ -66,7 +66,7 @@ def _fixture_sprint_file(
     asks: tuple[str, ...] = (),
     risks: tuple[str, ...] = (),
     allocation_line: str = "Drew 6h · Tony 2h",
-    link: str = "../../sprints/2026-W19/peb.md",
+    link: str = "../../sprints/2026-W20/peb.md",
     week_label: str = "W19",
     dates: str = "May 11 – May 17",
 ) -> SprintFile:
@@ -132,15 +132,15 @@ def test_parse_sprint_file_extracts_frontmatter(tmp_path: Path) -> None:
     f.write_text(
         "---\n"
         "Project: peb — Pebble Foods\n"
-        "Sprint: 2026-W19\n"
-        "PriorSprint: 2026-W18\n"
+        "Sprint: 2026-W20\n"
+        "PriorSprint: 2026-W19\n"
         "---\n"
-        "# peb — Pebble Foods · Sprint W19 (May 11 – May 17, 2026)\n"
+        "# peb — Pebble Foods · Sprint W20 (May 11 – May 17, 2026)\n"
     )
     sf = parse_sprint_file(f)
     assert sf.project_code == "peb"
-    assert sf.week_iso == "2026-W19"
-    assert sf.prior_sprint == "2026-W18"
+    assert sf.week_iso == "2026-W20"
+    assert sf.prior_sprint == "2026-W19"
     assert sf.week_start == "2026-05-11"
     assert sf.week_end == "2026-05-17"
 
@@ -152,7 +152,7 @@ def test_parse_sprint_file_handles_year_boundary_dates(tmp_path: Path) -> None:
         "Project: peb — Pebble Foods\n"
         "Sprint: 2026-W53\n"
         "---\n"
-        "# peb — Pebble Foods · Sprint W53 (Dec 28 – Jan 3, 2027)\n"
+        "# peb — Pebble Foods · Sprint W54 (Dec 28 – Jan 3, 2027)\n"
     )
     sf = parse_sprint_file(f)
     # The heading anchors on the year following the date range; the test
@@ -166,8 +166,8 @@ def test_parse_sprint_file_handles_year_boundary_dates(tmp_path: Path) -> None:
 def test_parse_sprint_facts_region(tmp_path) -> None:
     f = tmp_path / "peb.md"
     f.write_text(
-        "---\nProject: peb — Pebble Foods\nSprint: 2026-W19\n---\n"
-        "# peb — Pebble Foods · Sprint W19 (May 11 – May 17, 2026)\n\n"
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W20\n---\n"
+        "# peb — Pebble Foods · Sprint W20 (May 11 – May 17, 2026)\n\n"
         "<!-- cp-engine:start sprint-facts -->\n"
         "| | |\n|---|---|\n"
         "| Stage | Negotiation |\n"
@@ -190,8 +190,8 @@ def test_parse_sprint_facts_region(tmp_path) -> None:
 def test_parse_client_section_extracts_outbound_asks_inbound(tmp_path) -> None:
     f = tmp_path / "peb.md"
     f.write_text(
-        "---\nProject: peb — Pebble Foods\nSprint: 2026-W19\n---\n"
-        "# peb — Pebble Foods · Sprint W19 (May 11 – May 17, 2026)\n"
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W20\n---\n"
+        "# peb — Pebble Foods · Sprint W20 (May 11 – May 17, 2026)\n"
         "## Client communication\n\n"
         "### Outbound\n"
         "- [sent · 2026-05-09] Counter-proposal pricing draft sent to Maria + Sam\n"
@@ -215,8 +215,8 @@ def test_parse_client_section_extracts_outbound_asks_inbound(tmp_path) -> None:
 def test_parse_risks_and_horizon(tmp_path) -> None:
     f = tmp_path / "peb.md"
     f.write_text(
-        "---\nProject: peb — Pebble Foods\nSprint: 2026-W19\n---\n"
-        "# peb — Pebble Foods · Sprint W19 (May 11 – May 17, 2026)\n"
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W20\n---\n"
+        "# peb — Pebble Foods · Sprint W20 (May 11 – May 17, 2026)\n"
         "## Dependencies & risks\n"
         "- [escalated · contract · 2026-05-04] Legal turnaround may slip past May 22.\n"
         "  Why it matters: pushes contract into next sprint.\n"
@@ -244,8 +244,8 @@ def test_parse_risks_and_horizon(tmp_path) -> None:
 def test_parse_this_sprint_section(tmp_path) -> None:
     f = tmp_path / "peb.md"
     f.write_text(
-        "---\nProject: peb — Pebble Foods\nSprint: 2026-W19\n---\n"
-        "# peb — Pebble Foods · Sprint W19 (May 11 – May 17, 2026)\n"
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W20\n---\n"
+        "# peb — Pebble Foods · Sprint W20 (May 11 – May 17, 2026)\n"
         "## This sprint\n"
         "**Allocation:** Drew · 6h · Tony · 2h\n\n"
         "### Deliverables\n"
@@ -268,8 +268,8 @@ def test_parse_this_sprint_section(tmp_path) -> None:
 def test_parse_carry_forward_and_meeting_notes(tmp_path) -> None:
     f = tmp_path / "peb.md"
     f.write_text(
-        "---\nProject: peb — Pebble Foods\nSprint: 2026-W19\nPriorSprint: 2026-W18\n---\n"
-        "# peb — Pebble Foods · Sprint W19 (May 11 – May 17, 2026)\n"
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W20\nPriorSprint: 2026-W19\n---\n"
+        "# peb — Pebble Foods · Sprint W20 (May 11 – May 17, 2026)\n"
         "<!-- cp-engine:start carry-forward -->\n"
         "## Carried over from W18\n"
         "- [ask · 2026-05-04 · Maria] Volume forecast still open\n"
@@ -313,11 +313,11 @@ def test_render_sprint_scaffold_round_trips_through_parser(tmp_path: Path) -> No
     )
     body = render_sprint_scaffold(
         project=project,
-        week_iso="2026-W19",
+        week_iso="2026-W20",
         week_label="W19",
         week_start="2026-05-11",
         week_end="2026-05-17",
-        prior_sprint="2026-W18",
+        prior_sprint="2026-W19",
         last_sprint_hours_line="Drew 6.5h · Tony 2h",
         sessions_this_week=3,
         last_session_date=None,
@@ -350,11 +350,11 @@ def test_render_sprint_scaffold_round_trips_through_parser(tmp_path: Path) -> No
 
 def test_compute_carry_forward_from_prior_sprint_file(tmp_path) -> None:
     from cp_engine.sprints import compute_carry_forward
-    prior = tmp_path / "2026-W18" / "peb.md"
+    prior = tmp_path / "2026-W19" / "peb.md"
     prior.parent.mkdir(parents=True)
     prior.write_text(
-        "---\nProject: peb — Pebble Foods\nSprint: 2026-W18\n---\n"
-        "# peb — Pebble Foods · Sprint W18 (May 4 – May 10, 2026)\n"
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W19\n---\n"
+        "# peb — Pebble Foods · Sprint W19 (May 4 – May 10, 2026)\n"
         "## Client communication\n### Open asks\n"
         "- [open · 2026-05-04 · Maria] Volume forecast\n"
         "- [answered · 2026-05-06 · Sam] Contract sign-off\n"
@@ -376,7 +376,7 @@ def test_ensure_sprint_file_creates_new(tmp_path) -> None:
     out = ensure_sprint_file(
         project=_fixture_project(),
         sprint_root=tmp_path / "sprints",
-        week_iso="2026-W19",
+        week_iso="2026-W20",
         week_label="W19",
         week_start="2026-05-11",
         week_end="2026-05-17",
@@ -392,12 +392,12 @@ def test_ensure_sprint_file_creates_new(tmp_path) -> None:
 
 def test_ensure_sprint_file_preserves_handwritten_when_present(tmp_path) -> None:
     from cp_engine.sprints import ensure_sprint_file
-    out_dir = tmp_path / "sprints" / "2026-W19"
+    out_dir = tmp_path / "sprints" / "2026-W20"
     out_dir.mkdir(parents=True)
     existing = out_dir / "peb.md"
     existing.write_text(
-        "---\nProject: peb — Pebble Foods\nSprint: 2026-W19\n---\n"
-        "# peb — Pebble Foods · Sprint W19 (May 11 – May 17, 2026)\n"
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W20\n---\n"
+        "# peb — Pebble Foods · Sprint W20 (May 11 – May 17, 2026)\n"
         "<!-- cp-engine:start sprint-facts -->\n"
         "| | |\n|---|---|\n| Stage | Stale |\n"
         "<!-- cp-engine:end sprint-facts -->\n"
@@ -407,7 +407,7 @@ def test_ensure_sprint_file_preserves_handwritten_when_present(tmp_path) -> None
     ensure_sprint_file(
         project=_fixture_project(),
         sprint_root=tmp_path / "sprints",
-        week_iso="2026-W19",
+        week_iso="2026-W20",
         week_label="W19", week_start="2026-05-11", week_end="2026-05-17",
         prior_sprint=None, last_sprint_hours_line=None, sessions_this_week=0,
         last_session_date=None, last_session_who=None, last_session_summary=None,
@@ -424,7 +424,7 @@ def test_ensure_sprint_file_is_idempotent(tmp_path) -> None:
     kwargs = dict(
         project=_fixture_project(),
         sprint_root=tmp_path / "sprints",
-        week_iso="2026-W19", week_label="W19",
+        week_iso="2026-W20", week_label="W19",
         week_start="2026-05-11", week_end="2026-05-17",
         prior_sprint=None, last_sprint_hours_line=None, sessions_this_week=0,
         last_session_date=None, last_session_who=None, last_session_summary=None,
@@ -459,7 +459,7 @@ def test_ensure_sprint_file_counts_meetings_from_project_dir(tmp_path) -> None:
     out = ensure_sprint_file(
         project=project,
         sprint_root=tmp_path / "sprints",
-        week_iso="2026-W19", week_label="W19",
+        week_iso="2026-W20", week_label="W19",
         week_start="2026-05-11", week_end="2026-05-17",
         prior_sprint=None, last_sprint_hours_line=None, sessions_this_week=0,
         last_session_date=None, last_session_who=None, last_session_summary=None,
@@ -474,7 +474,7 @@ def test_ensure_sprint_file_omits_meetings_row_when_none(tmp_path) -> None:
     out = ensure_sprint_file(
         project=_fixture_project(code="ggl-5136"),
         sprint_root=tmp_path / "sprints",
-        week_iso="2026-W19", week_label="W19",
+        week_iso="2026-W20", week_label="W19",
         week_start="2026-05-11", week_end="2026-05-17",
         prior_sprint=None, last_sprint_hours_line=None, sessions_this_week=0,
         last_session_date=None, last_session_who=None, last_session_summary=None,
@@ -497,41 +497,61 @@ def test_current_sprint_week_iso_planning_anchor() -> None:
     """Planning-week rule (v0.8.7.3, matches MC-2's planningWeekMonday):
     Mon/Tue → this week's Monday. Wed-Sun → next week's Monday.
 
-    Reference week:  2026-05-11 (Mon) → 2026-05-17 (Sun) = W19
-                     2026-05-18 (Mon) → 2026-05-24 (Sun) = W20
+    Week numbering uses ISO 8601 (v0.10.0+). For 2026, ISO weeks happen
+    to equal Python's `%W` + 1 across the entire year — see the
+    iso-week-cutover design doc in cp/docs/plans.
+
+    Reference week:  2026-05-11 (Mon) → 2026-05-17 (Sun) = W20 (ISO)
+                     2026-05-18 (Mon) → 2026-05-24 (Sun) = W21 (ISO)
     """
-    # Mon May 11 → W19 (planning current week, this week)
-    assert current_sprint_week_iso(datetime(2026, 5, 11)) == "2026-W19"
-    # Tue May 12 → W19 (still planning current week)
-    assert current_sprint_week_iso(datetime(2026, 5, 12)) == "2026-W19"
-    # Wed May 13 → W20 (rolls forward; planning next week)
-    assert current_sprint_week_iso(datetime(2026, 5, 13)) == "2026-W20"
-    # Thu May 14 → W20
-    assert current_sprint_week_iso(datetime(2026, 5, 14)) == "2026-W20"
-    # Fri May 15 → W20
-    assert current_sprint_week_iso(datetime(2026, 5, 15)) == "2026-W20"
-    # Sat May 16 → W20
-    assert current_sprint_week_iso(datetime(2026, 5, 16)) == "2026-W20"
-    # Sun May 17 → W20
-    assert current_sprint_week_iso(datetime(2026, 5, 17)) == "2026-W20"
-    # Mon May 18 → W20 (planning current week again, on the Monday it begins)
-    assert current_sprint_week_iso(datetime(2026, 5, 18)) == "2026-W20"
+    # Mon May 11 → W20 (planning current week, this week)
+    assert current_sprint_week_iso(datetime(2026, 5, 11)) == "2026-W20"
+    # Tue May 12 → W20 (still planning current week)
+    assert current_sprint_week_iso(datetime(2026, 5, 12)) == "2026-W20"
+    # Wed May 13 → W21 (rolls forward; planning next week)
+    assert current_sprint_week_iso(datetime(2026, 5, 13)) == "2026-W21"
+    # Thu May 14 → W21
+    assert current_sprint_week_iso(datetime(2026, 5, 14)) == "2026-W21"
+    # Fri May 15 → W21
+    assert current_sprint_week_iso(datetime(2026, 5, 15)) == "2026-W21"
+    # Sat May 16 → W21
+    assert current_sprint_week_iso(datetime(2026, 5, 16)) == "2026-W21"
+    # Sun May 17 → W21
+    assert current_sprint_week_iso(datetime(2026, 5, 17)) == "2026-W21"
+    # Mon May 18 → W21 (planning current week again, on the Monday it begins)
+    assert current_sprint_week_iso(datetime(2026, 5, 18)) == "2026-W21"
+    # Tue May 26 → W22 (the date this fix went in)
+    assert current_sprint_week_iso(datetime(2026, 5, 26)) == "2026-W22"
 
 
 def test_prior_sprint_week_iso_planning_anchor() -> None:
-    """Prior sprint = the planning Monday minus 7 days.
+    """Prior sprint = the planning Monday minus 7 days. ISO 8601 numbering.
 
     On Mon/Tue: prior sprint is the *previous* calendar week.
     On Wed-Sun: prior sprint is *this* calendar week (just-closed).
     """
-    # Mon May 11 → planning W19, prior W18
-    assert prior_sprint_week_iso(datetime(2026, 5, 11)) == "2026-W18"
-    # Tue May 12 → planning W19, prior W18
-    assert prior_sprint_week_iso(datetime(2026, 5, 12)) == "2026-W18"
-    # Wed May 13 → planning W20, prior W19 (the just-closed sprint)
-    assert prior_sprint_week_iso(datetime(2026, 5, 13)) == "2026-W19"
-    # Sun May 17 → planning W20, prior W19
-    assert prior_sprint_week_iso(datetime(2026, 5, 17)) == "2026-W19"
+    # Mon May 11 → planning W20, prior W19
+    assert prior_sprint_week_iso(datetime(2026, 5, 11)) == "2026-W19"
+    # Tue May 12 → planning W20, prior W19
+    assert prior_sprint_week_iso(datetime(2026, 5, 12)) == "2026-W19"
+    # Wed May 13 → planning W21, prior W20 (the just-closed sprint)
+    assert prior_sprint_week_iso(datetime(2026, 5, 13)) == "2026-W20"
+    # Sun May 17 → planning W21, prior W20
+    assert prior_sprint_week_iso(datetime(2026, 5, 17)) == "2026-W20"
+
+
+def test_iso_week_handles_year_boundary() -> None:
+    """ISO week + ISO year differ from calendar year at the Jan boundary.
+
+    Jan 1 2027 (Friday) belongs to ISO week 53 of 2026. The helper must
+    use isocalendar().year (which respects ISO-year), not date.year.
+    """
+    # Jan 1 2027 is Friday → planning rolls to Mon Jan 4 2027 = ISO 2027-W01
+    assert current_sprint_week_iso(datetime(2027, 1, 1)) == "2027-W01"
+    # Mon Dec 28 2026 → ISO 2026-W53 (this Monday is still in 2026)
+    assert current_sprint_week_iso(datetime(2026, 12, 28)) == "2026-W53"
+    # Tue Dec 29 2026 → still W53
+    assert current_sprint_week_iso(datetime(2026, 12, 29)) == "2026-W53"
 
 
 def test_sprint_week_dates_planning_anchor() -> None:
@@ -597,10 +617,10 @@ def test_render_current_sprint_block_emits_top_3_asks_and_risks() -> None:
         asks=("a1", "a2", "a3", "a4"),
         risks=("escalated:r1", "watching:r2"),
         allocation_line="Drew 6h · Tony 2h",
-        link="../../sprints/2026-W19/peb.md",
+        link="../../sprints/2026-W20/peb.md",
         week_label="W19", dates="May 11 – May 17",
     )
-    block = render_current_sprint_block(sf, link_path="../../sprints/2026-W19/peb.md")
+    block = render_current_sprint_block(sf, link_path="../../sprints/2026-W20/peb.md")
     assert "## Current sprint" in block
     assert "[W19 (May 11 – May 17)]" in block
     assert block.count("\n- ") >= 5  # 3 asks + 2 risks
@@ -620,11 +640,11 @@ def test_render_sprint_index_lists_each_active_project_with_counts() -> None:
         risks=("watching:r1",),
     )
     body = render_sprint_index(
-        week_iso="2026-W19",
+        week_iso="2026-W20",
         week_dates="May 11 – May 17",
         sprint_files=[sf_peb, sf_orb],
     )
-    assert "# Sprint W19 (May 11 – May 17)" in body
+    assert "# Sprint W20 (May 11 – May 17)" in body
     assert "| `peb` |" in body
     assert "| `orb` |" in body
 
@@ -792,11 +812,11 @@ def _scaffold_project() -> ProjectState:
 def _render_with_meetings(count: int) -> str:
     return render_sprint_scaffold(
         project=_scaffold_project(),
-        week_iso="2026-W19",
+        week_iso="2026-W20",
         week_label="W19",
         week_start="2026-05-11",
         week_end="2026-05-17",
-        prior_sprint="2026-W18",
+        prior_sprint="2026-W19",
         last_sprint_hours_line="Drew 6.5h",
         sessions_this_week=3,
         last_session_date=None,

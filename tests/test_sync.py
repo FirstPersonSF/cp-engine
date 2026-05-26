@@ -1142,7 +1142,7 @@ def test_sync_writes_current_sprint_block_into_project_cp(tmp_path: Path) -> Non
         now=datetime(2026, 5, 11, 8, 0),  # Mon → planning W19 (v0.8.7.3 anchor)
     )
 
-    week_iso = "2026-W19"
+    week_iso = "2026-W20"
     slug = dir_slug(project.code, project.name)
     scope = account_scope_for(project)
     cp_path = tmp_path / scope / slug / "cp.md"
@@ -1193,7 +1193,7 @@ def test_sync_splices_current_sprint_into_existing_project_cp(tmp_path: Path) ->
     assert "<!-- cp-engine:start current-sprint -->" in body
     assert "<!-- cp-engine:end current-sprint -->" in body
     assert "## Current sprint" in body
-    assert "sprints/2026-W19/peb.md" in body
+    assert "sprints/2026-W20/peb.md" in body
     # Hand-written content must survive the marker injection.
     assert "Must survive." in body
     assert "## My hand-written notes" in body
@@ -1264,7 +1264,7 @@ def test_sync_tenant_writes_sprint_files_for_active_projects(tmp_path: Path) -> 
         now=datetime(2026, 5, 11, 8, 0),  # Mon → planning W19 (v0.8.7.3 anchor)
     )
 
-    sprint_dir = tmp_path / "sprints" / "2026-W19"
+    sprint_dir = tmp_path / "sprints" / "2026-W20"
     assert sprint_dir.is_dir()
     # Active engagements + repo-source projects with status=Active are included.
     assert (sprint_dir / "peb.md").exists()

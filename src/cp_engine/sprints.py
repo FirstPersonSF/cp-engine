@@ -812,22 +812,25 @@ def ensure_sprint_file(
 
 # Sprint-window helpers
 #
-# Week numbering follows %W (Monday-anchored) to match the existing codebase
-# convention where May 11 2026 is W19, not the ISO-8601 W20 that
-# ``datetime.isocalendar`` would yield.
+# Week numbering uses ISO 8601 (v0.10.0+). Tue May 26 2026 is W22, matching
+# the calendar / Slack / Google Calendar / human convention. Pre-v0.10.0
+# the engine used Python's `%W` which produced ISO_week - 1 for all of 2026,
+# leading to a one-week mismatch with every other tool. See the iso-week-
+# cutover design doc in cp/docs/plans/2026-05-26-* for the rationale.
 #
 # **Planning-week anchor (v0.8.7.3):** the "current sprint" is whichever week
 # is being *planned right now*, which depends on the day of week:
 #
-#   Mon (0) + Tue (1) → THIS calendar week's Monday  (e.g. Tue May 12 → W19)
-#   Wed (2) – Sun (6) → NEXT calendar week's Monday  (e.g. Wed May 13 → W20)
+#   Mon (0) + Tue (1) → THIS calendar week's Monday  (e.g. Tue May 12 → W20)
+#   Wed (2) – Sun (6) → NEXT calendar week's Monday  (e.g. Wed May 13 → W21)
 #
 # Matches MC-2's `planningWeekMonday()` rule in
-# `frontend/src/components/sprint/WeekPicker.tsx`. The motivation per the
-# 2026-05-11 retro: when the partners open the planner mid-week, they're
-# planning the *upcoming* sprint, not reviewing the current one. The cp
-# tenant labels should match that intent so /cp-ingest writes to the file
-# that represents "what we're planning now."
+# `frontend/src/components/sprint/WeekPicker.tsx` (which also flips to ISO
+# in the v0.10.0 cutover). The motivation per the 2026-05-11 retro: when
+# the partners open the planner mid-week, they're planning the *upcoming*
+# sprint, not reviewing the current one. The cp tenant labels should match
+# that intent so /cp-ingest writes to the file that represents "what we're
+# planning now."
 def is_in_sprint_window(now: datetime) -> bool:
     # Phase 4 keeps every sync inside the window. Refine via existing v0.7.4
     # anchor logic in a later task if needed.
@@ -885,13 +888,22 @@ def _planning_monday(now: datetime) -> date:
 
 
 def current_sprint_week_iso(now: datetime) -> str:
+    """ISO 8601 week label for the currently-planned sprint.
+
+    Uses ``isocalendar()`` so the year + week respect ISO-year boundaries
+    (e.g. Jan 1 2027 is in ISO 2026-W53). Pre-v0.10.0 this used `%W`
+    which silently disagreed with every other tool that uses ISO weeks.
+    """
     monday = _planning_monday(now)
-    return f"{monday.year}-W{monday.strftime('%W')}"
+    iso = monday.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
 
 
 def prior_sprint_week_iso(now: datetime) -> str:
+    """ISO 8601 week label for the sprint before the currently-planned one."""
     monday = _planning_monday(now) - timedelta(days=7)
-    return f"{monday.year}-W{monday.strftime('%W')}"
+    iso = monday.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
 
 
 def sprint_week_dates(now: datetime) -> tuple[str, str]:

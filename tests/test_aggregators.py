@@ -48,7 +48,7 @@ def _empty_carry() -> CarryForward:
 
 def _make_sprint(
     project_code: str = "ggl-5168",
-    week_iso: str = "2026-W19",
+    week_iso: str = "2026-W20",  # ISO 8601 — Mon May 11 2026 is W20
     week_start: str = "2026-05-11",
     *,
     inbound: tuple[InboundUpdate, ...] = (),
@@ -189,29 +189,29 @@ def test_tenant_strips_carry_forward_includes_escalated_risks_and_stale_asks() -
 
 
 def test_carry_forward_rollup_horizon_window_includes_only_next_two_sprints() -> None:
-    # Today: 2026-05-12 (Tuesday of W19, week_num=19 via Monday %W)
+    # Today: 2026-05-12 (Tuesday of W20 — ISO 8601 week numbering, v0.10.0+)
     sf = _make_sprint(
         "p1",
         horizon=(
-            HorizonItem(text="W18 (past)", bucket="decision", target_date="W18"),
-            HorizonItem(text="W19 (current)", bucket="decision", target_date="W19"),
-            HorizonItem(text="W20 (next)", bucket="decision", target_date="W20"),
-            HorizonItem(text="W21 (next+1)", bucket="decision", target_date="W21"),
-            HorizonItem(text="W22 (out of range)", bucket="decision", target_date="W22"),
+            HorizonItem(text="W19 (past)", bucket="decision", target_date="W19"),
+            HorizonItem(text="W20 (current)", bucket="decision", target_date="W20"),
+            HorizonItem(text="W21 (next)", bucket="decision", target_date="W21"),
+            HorizonItem(text="W22 (next+1)", bucket="decision", target_date="W22"),
+            HorizonItem(text="W23 (out of range)", bucket="decision", target_date="W23"),
             HorizonItem(text="non-week target", bucket="decision", target_date="2026-06-01"),
             HorizonItem(text="empty target", bucket="decision", target_date=""),
-            HorizonItem(text="not a decision", bucket="milestone", target_date="W20"),
+            HorizonItem(text="not a decision", bucket="milestone", target_date="W21"),
         ),
     )
     out = carry_forward_rollup((sf,), date(2026, 5, 12))
     texts = [d["text"] for d in out["decisions_due"]]
-    # Within range: W20 (current+1) and W21 (current+2). Non-week and empty targets pass through.
-    assert "W20 (next)" in texts
-    assert "W21 (next+1)" in texts
+    # Within range: W21 (current+1) and W22 (current+2). Non-week and empty targets pass through.
+    assert "W21 (next)" in texts
+    assert "W22 (next+1)" in texts
     assert "non-week target" in texts
     assert "empty target" in texts
     # Out of range or wrong bucket: dropped.
-    assert "W18 (past)" not in texts
-    assert "W19 (current)" not in texts
-    assert "W22 (out of range)" not in texts
+    assert "W19 (past)" not in texts
+    assert "W20 (current)" not in texts
+    assert "W23 (out of range)" not in texts
     assert "not a decision" not in texts
