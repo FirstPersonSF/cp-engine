@@ -4,6 +4,42 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.10.0 — 2026-05-26
+
+### Changed — sprint week numbering cuts over from Python `%W` to ISO 8601 (#7)
+
+**Structural change — tenants must opt in by bumping their `engine` pin AND renaming `sprints/<W##>/` dirs.** Pre-v0.10.0 cp-engine used Python's `%W` for sprint week labels. For all of 2026, `%W` produces ISO_week − 1 — a one-week mismatch with calendars, Slack, Google Calendar, MC-2's financials surfaces, and any other tool a tenant operator opens. The discrepancy bit Drew on 2026-05-26 during sprint planning prep (mentally thinking "this is W22" while cp wrote into `sprints/2026-W21/`).
+
+Internal contradictions already existed: `cli.py:_parse_week_iso` used `fromisocalendar` (ISO), `sprints.current_sprint_week_iso` used `%W`. So `cp slack-digest --week 2026-W22` would fetch ISO W22 but try to land it in `sprints/2026-W21/`. This release unifies on ISO 8601 throughout.
+
+**Engine changes:**
+
+- `sprints.current_sprint_week_iso` + `prior_sprint_week_iso`: `monday.strftime('%W')` → `monday.isocalendar()`. Uses ISO year (`isocalendar().year`) for correct Jan-boundary handling — Jan 1 2027 belongs to ISO `2026-W53` because that Friday is in 2026's last week per ISO.
+- `aggregators._carry_forward_rollup`: same `%W` → `isocalendar()` fix for the horizon-decision-window math (was using a stale week number that disagreed with the file labels).
+- Module docstrings in `sprints.py` + `ingest.py` updated to note the cutover.
+- Anchor logic UNCHANGED: Mon/Tue → "this Monday's week", Wed-Sun → "next Monday's week". Only the number written into the label changes.
+
+**Test surface:** 3 new tests in `test_sprints.py` (planning-anchor under ISO + new year-boundary coverage). ~100 hardcoded `2026-W##` test fixtures bumped +1. **468 passing total**, no regressions.
+
+### How tenants upgrade
+
+1. Bump `.cp-engine.toml`'s `[engine].version` pin from `~= 0.9` to `~= 0.10`.
+2. Rename `sprints/2026-W##/` dirs +1 (since for 2026 every `%W` week = ISO − 1):
+   ```bash
+   for old in sprints/2026-W*; do
+     [ -d "$old" ] || continue
+     num=$(basename "$old" | sed 's/2026-W//')
+     new=$(printf "W%02d" $((10#$num + 1)))
+     git mv "$old" "sprints/2026-$new"
+   done
+   ```
+3. Hand-fix cross-references in `weekly-cp.md` and any other handwritten files that mention `[W##]` or `2026-W##`. Engine-managed regions auto-refresh on next sync.
+4. Run `cp sync` to verify; commit; push.
+
+MC-2's `toWeekIso` flips to ISO concurrently (companion PR). Database values written pre-cutover stay as-is — they describe the week they were written for under the convention of that time. Cutover date for any audit: **2026-05-26**.
+
+Design: `cp/docs/plans/2026-05-26-iso-week-cutover-design.md`.
+
 ## v0.9.1 — 2026-05-23
 
 ### Fixed — `link-local` and `capture-session` for multi-repo engagements (#5, #6)
