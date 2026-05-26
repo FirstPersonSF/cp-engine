@@ -160,7 +160,7 @@ def _scaffold_minimal_sprint_file(path: Path, code: str = "ggl-5168") -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(f"""---
 Project: {code} — Test Project
-Sprint: 2026-W19
+Sprint: 2026-W20
 ---
 
 # {code} — Test Project · Sprint W19 (May 11 – May 17, 2026)
@@ -195,7 +195,7 @@ def _make_tenant(tmp_path: Path, *, with_weekly_cp: bool = False) -> Path:
     Pass ``with_weekly_cp=True`` to also scaffold a weekly-cp.md
     (Phase B's account_decisions block needs one to write to).
     """
-    week_dir = tmp_path / "sprints" / "2026-W19"
+    week_dir = tmp_path / "sprints" / "2026-W20"
     week_dir.mkdir(parents=True)
     _scaffold_minimal_sprint_file(week_dir / "ggl-5168.md", "ggl-5168")
     (week_dir / "_week.md").write_text("## Themes\n\n- _<theme>_\n")
@@ -238,7 +238,7 @@ def test_execute_plan_writes_inbound_and_replaces_placeholder(tmp_path: Path) ->
     result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert result.errors == []
     assert len(result.files_written) == 1
-    sprint_body = (tenant / "sprints" / "2026-W19" / "ggl-5168.md").read_text()
+    sprint_body = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
     # Placeholder is gone, real bullet is there, hash marker present.
     assert "_<what they told us" not in sprint_body
     assert "[2026-05-12 · Rena] Rena approved Round 3" in sprint_body
@@ -258,12 +258,12 @@ def test_execute_plan_is_idempotent_via_content_hash(tmp_path: Path) -> None:
     r1 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert r1.skipped_duplicate == 0
     assert len(r1.files_written) == 1
-    body_after_first = (tenant / "sprints" / "2026-W19" / "ggl-5168.md").read_text()
+    body_after_first = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
     # Second run: dedupes.
     r2 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert r2.skipped_duplicate == 1
     assert r2.files_written == []
-    body_after_second = (tenant / "sprints" / "2026-W19" / "ggl-5168.md").read_text()
+    body_after_second = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
     assert body_after_first == body_after_second
 
 
@@ -280,7 +280,7 @@ def test_execute_plan_writes_decision_with_cross_cutting_flag(tmp_path: Path) ->
         }
     }
     execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
-    body = (tenant / "sprints" / "2026-W19" / "ggl-5168.md").read_text()
+    body = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
     assert "[decision · 2026-05-12][cross-cutting] Drop Claude team plan" in body
     # Non-cross-cutting decision: no [cross-cutting] marker.
     assert "[decision · 2026-05-12] Marcello drafts 5 decks" in body
@@ -310,7 +310,7 @@ def test_execute_plan_writes_theme_to_week_md(tmp_path: Path) -> None:
     }
     result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert result.errors == []
-    week_body = (tenant / "sprints" / "2026-W19" / "_week.md").read_text()
+    week_body = (tenant / "sprints" / "2026-W20" / "_week.md").read_text()
     assert "[theme · 2026-05-12] Maria transition" in week_body
 
 
@@ -330,7 +330,7 @@ def test_execute_plan_writes_slack_digest_under_client_communication(
                             "Quiet week — Maria sent Geoff revision specs for "
                             "the pop-up preso; Geoff turned them around next day."
                         ),
-                        "week": "2026-W19",
+                        "week": "2026-W20",
                     }
                 ],
             }
@@ -338,10 +338,10 @@ def test_execute_plan_writes_slack_digest_under_client_communication(
     }
     result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert result.errors == []
-    body = (tenant / "sprints" / "2026-W19" / "ggl-5168.md").read_text()
+    body = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
     # The auto-created subsection lives under Client communication.
     assert "### Slack digest" in body
-    assert "[2026-W19 · Slack] Quiet week — Maria sent Geoff" in body
+    assert "[2026-W20 · Slack] Quiet week — Maria sent Geoff" in body
     assert "cp:hash=" in body
 
 
@@ -352,7 +352,7 @@ def test_execute_plan_slack_digest_idempotent_same_week(tmp_path: Path) -> None:
         "projects": {
             "ggl-5168": {
                 "slack_digest": [
-                    {"text": "Week summary.", "week": "2026-W19"}
+                    {"text": "Week summary.", "week": "2026-W20"}
                 ],
             }
         }
@@ -376,18 +376,18 @@ def test_execute_plan_slack_digest_writes_to_target_week_not_today(
         "projects": {
             "ggl-5168": {
                 "slack_digest": [
-                    {"text": "Last week's chatter.", "week": "2026-W19"}
+                    {"text": "Last week's chatter.", "week": "2026-W20"}
                 ],
             }
         }
     }
     # today is a W20 date, but the digest should still land in W19.
     result = execute_plan(
-        plan, tenant_root=tenant, today=date(2026, 5, 18), week_iso="2026-W19"
+        plan, tenant_root=tenant, today=date(2026, 5, 18), week_iso="2026-W20"
     )
     assert result.errors == []
-    w19 = (tenant / "sprints" / "2026-W19" / "ggl-5168.md").read_text()
-    assert "[2026-W19 · Slack] Last week's chatter." in w19
+    w19 = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
+    assert "[2026-W20 · Slack] Last week's chatter." in w19
 
 
 def test_execute_plan_close_ask_flips_open_to_closed(tmp_path: Path) -> None:
@@ -411,7 +411,7 @@ def test_execute_plan_close_ask_flips_open_to_closed(tmp_path: Path) -> None:
     }
     result = execute_plan(plan_close, tenant_root=tenant, today=date(2026, 5, 12))
     assert result.errors == []
-    body = (tenant / "sprints" / "2026-W19" / "ggl-5168.md").read_text()
+    body = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
     assert "[open · 2026-05-08" not in body
     assert "[closed · 2026-05-08" in body
 
@@ -485,7 +485,7 @@ def test_account_decision_is_idempotent(tmp_path: Path) -> None:
 
 def test_account_decision_renumbers_correctly_when_no_existing_decisions(tmp_path: Path) -> None:
     """If weekly-cp.md has no existing numbered decisions, start at #1."""
-    week_dir = tmp_path / "sprints" / "2026-W19"
+    week_dir = tmp_path / "sprints" / "2026-W20"
     week_dir.mkdir(parents=True)
     _scaffold_minimal_sprint_file(week_dir / "ggl-5168.md", "ggl-5168")
     (week_dir / "_week.md").write_text("## Themes\n\n- _<theme>_\n")
@@ -540,7 +540,7 @@ def test_validate_plan_accepts_account_decisions_alongside_other_blocks() -> Non
 def test_account_decision_errors_when_weekly_cp_missing(tmp_path: Path) -> None:
     """If weekly-cp.md doesn't exist, account_decisions errors cleanly
     (doesn't raise; logs to result.errors)."""
-    week_dir = tmp_path / "sprints" / "2026-W19"
+    week_dir = tmp_path / "sprints" / "2026-W20"
     week_dir.mkdir(parents=True)
     _scaffold_minimal_sprint_file(week_dir / "ggl-5168.md", "ggl-5168")
     (week_dir / "_week.md").write_text("## Themes\n\n")
@@ -568,14 +568,14 @@ def test_account_summary_creates_section_and_writes_bullet(tmp_path: Path) -> No
             "text": "Maria gave a status across all five GGL projects this week. "
             "5168 launch slipped to 6/8; 5151 interviews wrap; 5176 in client review.",
             "company": "google",
-            "week": "2026-W20",
+            "week": "2026-W21",
         }
     }
     result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
     assert result.errors == []
     body = (tenant / "weekly-cp.md").read_text()
     assert "## Account summaries" in body
-    assert "[2026-W20 · GOOGLE] Maria gave a status" in body
+    assert "[2026-W21 · GOOGLE] Maria gave a status" in body
     assert "cp:hash=" in body
 
 
@@ -589,7 +589,7 @@ def test_account_summary_appends_to_existing_section(tmp_path: Path) -> None:
             "account_summary": {
                 "text": "Google week summary.",
                 "company": "google",
-                "week": "2026-W20",
+                "week": "2026-W21",
             }
         },
         tenant_root=tenant,
@@ -601,7 +601,7 @@ def test_account_summary_appends_to_existing_section(tmp_path: Path) -> None:
             "account_summary": {
                 "text": "Infoblox week summary.",
                 "company": "ibx",
-                "week": "2026-W20",
+                "week": "2026-W21",
             }
         },
         tenant_root=tenant,
@@ -610,8 +610,8 @@ def test_account_summary_appends_to_existing_section(tmp_path: Path) -> None:
     body = (tenant / "weekly-cp.md").read_text()
     # Exactly one section header, both bullets present.
     assert body.count("## Account summaries") == 1
-    assert "[2026-W20 · GOOGLE] Google week summary." in body
-    assert "[2026-W20 · IBX] Infoblox week summary." in body
+    assert "[2026-W21 · GOOGLE] Google week summary." in body
+    assert "[2026-W21 · IBX] Infoblox week summary." in body
 
 
 def test_account_summary_idempotent_same_company_same_week(tmp_path: Path) -> None:
@@ -621,7 +621,7 @@ def test_account_summary_idempotent_same_company_same_week(tmp_path: Path) -> No
         "account_summary": {
             "text": "Week summary.",
             "company": "google",
-            "week": "2026-W20",
+            "week": "2026-W21",
         }
     }
     r1 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
@@ -642,7 +642,7 @@ def test_account_summary_same_company_different_week_writes_both(
             "account_summary": {
                 "text": "Week 19 summary.",
                 "company": "google",
-                "week": "2026-W19",
+                "week": "2026-W20",
             }
         },
         tenant_root=tenant,
@@ -653,29 +653,29 @@ def test_account_summary_same_company_different_week_writes_both(
             "account_summary": {
                 "text": "Week 20 summary.",
                 "company": "google",
-                "week": "2026-W20",
+                "week": "2026-W21",
             }
         },
         tenant_root=tenant,
         today=date(2026, 5, 13),
     )
     body = (tenant / "weekly-cp.md").read_text()
-    assert "[2026-W19 · GOOGLE]" in body
     assert "[2026-W20 · GOOGLE]" in body
+    assert "[2026-W21 · GOOGLE]" in body
 
 
 def test_account_summary_validates_required_fields(tmp_path: Path) -> None:
     tenant = _make_tenant(tmp_path, with_weekly_cp=True)
     # Missing 'text'
     r = execute_plan(
-        {"account_summary": {"company": "google", "week": "2026-W20"}},
+        {"account_summary": {"company": "google", "week": "2026-W21"}},
         tenant_root=tenant,
         today=date(2026, 5, 13),
     )
     assert any("missing 'text'" in e for e in r.errors)
     # Missing 'company'
     r = execute_plan(
-        {"account_summary": {"text": "x", "week": "2026-W20"}},
+        {"account_summary": {"text": "x", "week": "2026-W21"}},
         tenant_root=tenant,
         today=date(2026, 5, 13),
     )

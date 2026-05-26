@@ -899,14 +899,13 @@ def _today_iso() -> str:
 
 
 def _current_week_iso(today: date) -> str:
-    """Return the cp-engine sprint week label for `today` (e.g. "2026-W20").
+    """Return the cp-engine sprint week label for `today` (e.g. "2026-W21").
 
-    Delegates to `sprints.current_sprint_week_iso` so this function and
-    the sprint-file scaffolding agree on the label. Previously this used
-    `strftime('%W')` which returned a non-ISO week number — that disagreed
-    with the actual filesystem dirs (which are named via the sprints
-    helper) and caused "sprint file missing" errors when execute_plan
-    ran on a date whose %W vs ISO week differed.
+    Delegates to `sprints.current_sprint_week_iso`. As of v0.10.0 the
+    underlying helper uses ISO 8601 throughout, so this function and
+    the sprint-file scaffolding agree on the label. (Pre-v0.10.0 they
+    diverged because `sprints` used `%W` and this function delegated.
+    Now everyone uses ISO and there's no fork.)
     """
     from datetime import datetime as _dt
 

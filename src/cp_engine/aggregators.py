@@ -239,7 +239,9 @@ def _carry_forward_rollup(
     decisions_due: list[dict] = []
 
     monday = today - timedelta(days=today.weekday())
-    current_week_num = int(monday.strftime("%W"))
+    # ISO 8601 week number (v0.10.0+); was `%W` previously, which produced
+    # ISO_week - 1 for all of 2026 and disagreed with the rest of cp.
+    current_week_num = monday.isocalendar().week
 
     for sf in sprint_files:
         for risk in sf.risks:
