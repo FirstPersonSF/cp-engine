@@ -40,6 +40,11 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
+try:
+    from supabase import create_client
+except ImportError:
+    create_client = None  # type: ignore[assignment]
+
 import cp_engine
 from cp_engine.config import TenantConfig
 from cp_engine.ingest import IngestPlanError, execute_plan
@@ -109,6 +114,89 @@ async def auto_ingest(request: Request) -> dict:
             status_code=400, detail="meeting_id and project_codes are required"
         )
 
+    return _perform_auto_ingest(
+        meeting_id=meeting_id,
+        project_codes=project_codes,
+        transcript_text=transcript_text,
+    )
+
+
+@app.post("/api/auto-ingest/runs/{run_id}/rerun")
+async def rerun_auto_ingest(run_id: str, request: Request) -> dict:
+    """Rerun a previously-failed auto-ingest run.
+
+    Loads the row from auto_ingest_runs by id, extracts meeting_id +
+    project_codes, and re-fires the pipeline via _perform_auto_ingest.
+    Writes a NEW auto_ingest_runs row (don't mutate the original — keep
+    the failure as history).
+
+    Body is ignored (the source of truth is the row in Supabase); we still
+    HMAC-verify so the dashboard's proxy route is the only entry point.
+
+    Only `status='failed'` rows may be rerun. Successful reruns are risky
+    because sprint files may have been hand-edited since the original run.
+    """
+    raw_body = await request.body()
+    _verify_signature(raw_body, request.headers.get("x-webhook-signature", ""))
+
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not url or not key or create_client is None:
+        raise HTTPException(
+            status_code=500, detail="Supabase not configured for rerun"
+        )
+
+    client = create_client(url, key)
+    resp = (
+        client.table("auto_ingest_runs")
+        .select("meeting_id, project_codes, status")
+        .eq("id", run_id)
+        .single()
+        .execute()
+    )
+    row = resp.data
+    if not row:
+        raise HTTPException(status_code=404, detail=f"run {run_id} not found")
+    if row.get("status") != "failed":
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"only failed runs may be rerun "
+                f"(status={row.get('status')!r})"
+            ),
+        )
+
+    meeting_id = row.get("meeting_id")
+    project_codes = row.get("project_codes") or []
+    if not meeting_id or not project_codes:
+        raise HTTPException(
+            status_code=400,
+            detail="failed run is missing meeting_id or project_codes",
+        )
+
+    log.info(
+        "auto-ingest rerun: run_id=%s meeting=%s projects=%s",
+        run_id, meeting_id, project_codes,
+    )
+    return _perform_auto_ingest(
+        meeting_id=meeting_id,
+        project_codes=project_codes,
+    )
+
+
+def _perform_auto_ingest(
+    *,
+    meeting_id: str,
+    project_codes: list[str],
+    transcript_text: str | None = None,
+) -> dict:
+    """Body of /api/auto-ingest, factored out so the rerun endpoint can
+    call it directly without re-marshalling through a fastapi Request.
+
+    Does the transcript fetch (if absent), tenant clone, per-project
+    ingest+commit loop, ClickUp proposals, meeting artifacts, and
+    auto_ingest_runs row insert. Same return shape as /api/auto-ingest.
+    """
     if transcript_text is None:
         transcript_text = _fetch_transcript(meeting_id)
 
