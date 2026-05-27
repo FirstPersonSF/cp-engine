@@ -17,8 +17,10 @@ from .render import MarkerMissing, splice_managed_region
 from .state import (
     CarryForward,
     ClientAsk,
+    CompanyKind,
     DecisionEntry,
     Deliverable,
+    EntrySource,
     HorizonItem,
     InboundUpdate,
     Issue,
@@ -808,6 +810,164 @@ def ensure_sprint_file(
     if spliced != existing:
         out.write_text(spliced)
     return out
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  scaffold_from_prior — used by auto-ingest when target week is missing
+# ──────────────────────────────────────────────────────────────────────
+
+
+_CP_LINK_RE = re.compile(
+    r"^← \[(?P<text>Project CP|Initiative CP)\]\(\.\./\.\./(?P<scope_path>[^)]+?)/cp\.md\)",
+    re.MULTILINE,
+)
+
+
+def scaffold_from_prior(
+    *,
+    tenant_root: Path,
+    project_code: str,
+    target_week_iso: str,
+) -> Path | None:
+    """Create a sprint file for `target_week_iso` based on the most recent
+    prior sprint file for the same project.
+
+    Used by auto-ingest's `execute_plan` when the target sprint file is
+    missing — the most common cause being the late-in-week roll-forward in
+    `_planning_monday` (a Wed-Sun meeting wants to land in next week's
+    sprint dir, which sync hasn't created yet). Rather than dropping the
+    plan, race ahead of sync and scaffold the file.
+
+    Returns the created path. Returns ``None`` when no prior sprint file
+    exists for the project (first-ever-ingest edge case) — the caller
+    should fall back to logging the error.
+    """
+    sprints_root = tenant_root / "sprints"
+    if not sprints_root.is_dir():
+        return None
+
+    prior_weeks = sorted(
+        (p.parent.name for p in sprints_root.glob(f"*/{project_code}.md")),
+        reverse=True,
+    )
+    prior_weeks = [w for w in prior_weeks if w < target_week_iso]
+    if not prior_weeks:
+        return None
+
+    prior_week = prior_weeks[0]
+    prior_path = sprints_root / prior_week / f"{project_code}.md"
+
+    project = _project_state_from_sprint_file(prior_path, project_code)
+    if project is None:
+        return None
+
+    week_start_date, week_end_date = _iso_week_dates(target_week_iso)
+    week_start = week_start_date.isoformat()
+    week_end = week_end_date.isoformat()
+    week_label = f"W{target_week_iso.split('-W')[1]}"
+
+    cf = compute_carry_forward(prior_path)
+
+    new_body = render_sprint_scaffold(
+        project=project,
+        week_iso=target_week_iso,
+        week_label=week_label,
+        week_start=week_start,
+        week_end=week_end,
+        prior_sprint=prior_week,
+        last_sprint_hours_line=None,
+        sessions_this_week=0,
+        last_session_date=None,
+        last_session_who=None,
+        last_session_summary=None,
+        recent_commits=(),
+        open_issues=(),
+        carry_forward=cf,
+        meetings_this_sprint=0,
+    )
+
+    target_path = sprints_root / target_week_iso / f"{project_code}.md"
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    target_path.write_text(new_body)
+    return target_path
+
+
+def _iso_week_dates(week_iso: str) -> tuple[date, date]:
+    """Convert ``"2026-W23"`` to (Monday, Sunday) dates via stdlib.
+
+    `date.fromisocalendar(year, week, weekday)` uses ISO 8601 semantics
+    (Mon=1 … Sun=7), matching the rest of the engine since v0.10.0.
+    """
+    year_str, week_str = week_iso.split("-W")
+    monday = date.fromisocalendar(int(year_str), int(week_str), 1)
+    sunday = monday + timedelta(days=6)
+    return monday, sunday
+
+
+def _project_state_from_sprint_file(
+    path: Path, code: str
+) -> ProjectState | None:
+    """Reconstruct a minimal ProjectState from an existing sprint file.
+
+    We don't have MC-2 here, so we read the frontmatter (for `name`) and
+    the `← [Project CP](../../<scope>/<dir>/cp.md)` navigation link (for
+    `source` and `company_kind`/`company_name`). Fields we can't recover
+    — deal_stage, budget, owner, last_touched — get None / defaults.
+    These show up as "—" in the rendered sprint-facts table; the auto-
+    ingest path doesn't need them to be accurate.
+
+    Returns None when the file can't be parsed (caller falls back to
+    logging the error and dropping the plan).
+    """
+    try:
+        body = path.read_text(encoding="utf-8")
+        fm = _parse_frontmatter(body)
+    except (OSError, ValueError):
+        return None
+
+    project_field = fm.get("Project", "")
+    name = (
+        project_field.split(" — ", 1)[1].strip()
+        if " — " in project_field
+        else code
+    )
+
+    link_match = _CP_LINK_RE.search(body)
+    if not link_match:
+        return None
+
+    link_text = link_match.group("text")
+    scope_path = link_match.group("scope_path")
+    source: EntrySource = "initiative" if link_text == "Initiative CP" else "engagement"
+
+    scope_segment = scope_path.split("/", 1)[0]
+    if scope_segment == "1p":
+        company_kind: CompanyKind = "client"
+        parts = scope_path.split("/")
+        company_slug_raw = parts[1] if len(parts) >= 2 else ""
+        company_name = company_slug_raw.replace("-", " ").title() or None
+    elif scope_segment == "firstpersonsf":
+        company_kind = "self-fpsf"
+        company_name = "First Person"
+    elif scope_segment == "canonic":
+        company_kind = "self-canonic"
+        company_name = "Canonic"
+    else:
+        return None
+
+    return ProjectState(
+        code=code,
+        name=name,
+        source=source,
+        company_kind=company_kind,
+        company_code=None,
+        company_name=company_name,
+        status="Open" if source != "initiative" else "Active",
+        is_internal=False,
+        owner=None,
+        last_touched=None,
+        deadline=None,
+    )
 
 
 # Sprint-window helpers

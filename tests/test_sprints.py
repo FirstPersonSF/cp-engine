@@ -848,3 +848,140 @@ def test_sprint_facts_omits_meetings_row_when_count_zero() -> None:
 def test_sprint_facts_meetings_row_singular_when_one() -> None:
     body = _render_with_meetings(1)
     assert "[1 this sprint]" in body
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  scaffold_from_prior — Phase 1 of v0.13.0 auto-ingest resilience
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _write_prior_sprint_file(
+    *,
+    sprints_root: Path,
+    week_iso: str,
+    project_code: str,
+    project_name: str = "Pebble Foods",
+    scope_path: str = "1p/pebble/peb-5100-activation",
+    cp_link_text: str = "Project CP",
+    extra_body: str = "",
+) -> Path:
+    """Write a minimal but parseable prior sprint file for scaffold_from_prior tests."""
+    path = sprints_root / week_iso / f"{project_code}.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"---\nProject: {project_code} — {project_name}\n"
+        f"Sprint: {week_iso}\n---\n\n"
+        f"# {project_code} — {project_name} · Sprint W{week_iso.split('-W')[1]} (May 18 – May 24, 2026)\n\n"
+        f"← [{cp_link_text}](../../{scope_path}/cp.md) · "
+        f"[Master](../../master-cp.md) · [Prior sprint](../2026-W18/{project_code}.md)\n\n"
+        "<!-- cp-engine:start sprint-facts -->\n| | |\n|---|---|\n"
+        "| Stage | — |\n| Owner | Drew |\n| Budget | — |\n"
+        "<!-- cp-engine:end sprint-facts -->\n\n"
+        "<!-- cp-engine:start where-it-stands -->\n## Where it stands\n\nrolling\n"
+        "<!-- cp-engine:end where-it-stands -->\n\n"
+        "<!-- cp-engine:start carry-forward -->\n## Carried over from prior\n\n"
+        "<!-- cp-engine:end carry-forward -->\n\n"
+        "## Client communication\n### Open asks\n"
+        f"{extra_body}"
+    )
+    return path
+
+
+def test_scaffold_from_prior_creates_new_week_from_prior(tmp_path: Path) -> None:
+    """When a prior sprint file exists, scaffold the target week from it."""
+    from cp_engine.sprints import scaffold_from_prior
+
+    _write_prior_sprint_file(
+        sprints_root=tmp_path / "sprints",
+        week_iso="2026-W22",
+        project_code="peb-5100",
+        extra_body=(
+            "- [open · 2026-05-25 · Drew] Carry me forward "
+            "<!-- cp:hash=aaaaaaaa -->\n"
+        ),
+    )
+
+    target = tmp_path / "sprints" / "2026-W23" / "peb-5100.md"
+    assert not target.exists()
+
+    result = scaffold_from_prior(
+        tenant_root=tmp_path,
+        project_code="peb-5100",
+        target_week_iso="2026-W23",
+    )
+
+    assert result == target
+    assert target.exists()
+    body = target.read_text()
+    assert "2026-W23" in body
+    # The new file should round-trip through the parser.
+    sf = parse_sprint_file(target)
+    assert sf.project_code == "peb-5100"
+    assert sf.week_iso == "2026-W23"
+    # Carry-forward should reflect the prior week.
+    assert sf.prior_sprint == "2026-W22"
+
+
+def test_scaffold_from_prior_returns_none_when_no_prior(tmp_path: Path) -> None:
+    """No prior sprint file for the project — return None, don't crash."""
+    from cp_engine.sprints import scaffold_from_prior
+
+    result = scaffold_from_prior(
+        tenant_root=tmp_path,
+        project_code="peb-5100",
+        target_week_iso="2026-W23",
+    )
+    assert result is None
+
+
+def test_scaffold_from_prior_finds_most_recent_prior(tmp_path: Path) -> None:
+    """When MULTIPLE prior weeks exist, pick the most recent one."""
+    from cp_engine.sprints import scaffold_from_prior
+
+    sprints_root = tmp_path / "sprints"
+    for week in ("2026-W19", "2026-W21", "2026-W22"):
+        _write_prior_sprint_file(
+            sprints_root=sprints_root,
+            week_iso=week,
+            project_code="peb-5100",
+        )
+
+    scaffold_from_prior(
+        tenant_root=tmp_path,
+        project_code="peb-5100",
+        target_week_iso="2026-W23",
+    )
+
+    body = (sprints_root / "2026-W23" / "peb-5100.md").read_text()
+    # Carry-forward should reference W22, the most recent prior — not W19 or W21.
+    sf = parse_sprint_file(sprints_root / "2026-W23" / "peb-5100.md")
+    assert sf.prior_sprint == "2026-W22"
+
+
+def test_scaffold_from_prior_handles_initiative_source(tmp_path: Path) -> None:
+    """Initiative sprint files use the 'Initiative CP' link variant + a slimmer
+    template. scaffold_from_prior must detect the source and pick the right
+    template; otherwise the new file ends up with a Client communication
+    section a real initiative file would not have."""
+    from cp_engine.sprints import scaffold_from_prior
+
+    _write_prior_sprint_file(
+        sprints_root=tmp_path / "sprints",
+        week_iso="2026-W22",
+        project_code="first-person-operations",
+        project_name="First Person Operations",
+        scope_path="firstpersonsf/first-person-operations",
+        cp_link_text="Initiative CP",
+    )
+
+    result = scaffold_from_prior(
+        tenant_root=tmp_path,
+        project_code="first-person-operations",
+        target_week_iso="2026-W23",
+    )
+
+    assert result is not None
+    body = result.read_text()
+    # Initiative template uses "Team communication", not "Client communication".
+    assert "## Team communication" in body
+    assert "## Client communication" not in body
