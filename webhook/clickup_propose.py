@@ -17,6 +17,8 @@ from __future__ import annotations
 import logging
 import os
 
+from cp_engine.ingest import _content_hash
+
 log = logging.getLogger("cp-engine-webhook")
 
 
@@ -114,6 +116,35 @@ def _existing_descriptions(client, meeting_id: str) -> set[str]:
     return {r["description"] for r in (resp.data or []) if r.get("description")}
 
 
+def _build_proposal_row(*, meeting_id: str, project: dict, item: dict) -> dict:
+    """Shape one Fathom action_item into a clickup_task_proposals row.
+
+    The `cp_ask_hash` column carries the cp ask's 8-char content-hash
+    forward to the dashboard, which stamps `[cp:hash=...]` into the
+    ClickUp task description at creation time. Task 1.7's ClickUp-close
+    webhook reads that hash back from a closed task and routes a
+    close-ask plan to the project that owns it.
+
+    The hash recipe is `_content_hash(project_code, "record-ask",
+    description)` — EXACTLY the same as ingest._content_hash for
+    record-ask items. Re-ingest of the same meeting is therefore an
+    idempotent no-op: _write_ask's dedupe sees the matching hash and
+    skips the row.
+    """
+    description = (item.get("description") or "").strip()
+    assignee = item.get("assignee") or {}
+    return {
+        "meeting_id": meeting_id,
+        "project_id": project["id"],
+        "clickup_list_id": project["clickup_list_id"],
+        "description": description,
+        "assignee_email": assignee.get("email"),
+        "recording_playback_url": item.get("recording_playback_url"),
+        "cp_ask_hash": _content_hash(project["code"], "record-ask", description),
+        "status": "pending",
+    }
+
+
 def propose_clickup_tasks(meeting_id: str, project_codes: list[str]) -> dict:
     """Insert ``pending`` ClickUp task proposals for a meeting.
 
@@ -178,16 +209,9 @@ def propose_clickup_tasks(meeting_id: str, project_codes: list[str]) -> dict:
                     summary["skipped_duplicate"] += 1
                 continue
             already.add(description)  # guard against dups within one payload
-            assignee = item.get("assignee") or {}
-            rows.append({
-                "meeting_id": meeting_id,
-                "project_id": resolved["id"],
-                "clickup_list_id": resolved["clickup_list_id"],
-                "description": description,
-                "assignee_email": assignee.get("email"),
-                "recording_playback_url": item.get("recording_playback_url"),
-                "status": "pending",
-            })
+            rows.append(_build_proposal_row(
+                meeting_id=meeting_id, project=resolved, item=item
+            ))
 
         if rows:
             client.table("clickup_task_proposals").insert(rows).execute()
