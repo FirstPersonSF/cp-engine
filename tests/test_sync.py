@@ -1344,3 +1344,163 @@ def test_last_week_monday_accepts_date_or_datetime() -> None:
     as_datetime = _last_week_monday(datetime(2026, 5, 9, 12, 0, tzinfo=timezone.utc))
     as_date = _last_week_monday(date(2026, 5, 9))
     assert as_datetime == as_date == date(2026, 5, 4)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Quick Resume engine-managed region (v0.11.0+, Lever 5)
+#
+# Project cp.md's `## Quick Resume` becomes an engine-managed region
+# wrapped in `<!-- cp-engine:start quick-resume -->` markers. Sync
+# wraps existing un-marked sections on the cutover sync; new
+# scaffolds carry the markers from the template.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_ensure_quick_resume_markers_wraps_existing_section() -> None:
+    """Pre-cutover cp.md has `## Quick Resume` + body, no markers. The
+    helper inserts markers before the heading and after the section's
+    last line (just before the next `## ` heading)."""
+    from cp_engine.sync import _ensure_quick_resume_markers
+
+    body = (
+        "# Some project\n\n"
+        "<!-- cp-engine:end tracked-issues -->\n\n"
+        "## Quick Resume\n\n"
+        "**Last session:** 2026-05-25 — Drew\n"
+        "**Current work:** Tony shipping playbooks to Rena.\n"
+        "**Next up:** EHS pitch deck Tue-Thu.\n"
+        "**Blockers:** None.\n\n"
+        "## Current Work\n\n"
+        "_<long-form>_\n"
+    )
+    wrapped = _ensure_quick_resume_markers(body)
+
+    # Markers present, wrapping the Quick Resume section.
+    assert "<!-- cp-engine:start quick-resume -->" in wrapped
+    assert "<!-- cp-engine:end quick-resume -->" in wrapped
+    # Content preserved verbatim — all four lines still in the body.
+    assert "**Current work:** Tony shipping playbooks to Rena." in wrapped
+    assert "**Next up:** EHS pitch deck Tue-Thu." in wrapped
+    # End marker comes before the next `## ` heading (Current Work stays
+    # outside the region).
+    end_pos = wrapped.find("<!-- cp-engine:end quick-resume -->")
+    cw_pos = wrapped.find("## Current Work")
+    assert end_pos != -1 and cw_pos != -1
+    assert end_pos < cw_pos
+
+
+def test_ensure_quick_resume_markers_is_idempotent() -> None:
+    """Running twice on an already-wrapped body returns it unchanged."""
+    from cp_engine.sync import _ensure_quick_resume_markers
+
+    body = (
+        "<!-- cp-engine:start quick-resume -->\n"
+        "## Quick Resume\n\n"
+        "**Current work:** existing line.\n"
+        "<!-- cp-engine:end quick-resume -->\n\n"
+        "## Next Section\n"
+    )
+    once = _ensure_quick_resume_markers(body)
+    twice = _ensure_quick_resume_markers(once)
+    assert once == twice == body
+
+
+def test_ensure_quick_resume_markers_handles_section_at_end_of_file() -> None:
+    """Edge case: Quick Resume is the LAST section. End marker should
+    extend to end-of-file (no following `## ` heading to bound against)."""
+    from cp_engine.sync import _ensure_quick_resume_markers
+
+    body = (
+        "# Some project\n\n"
+        "## Quick Resume\n\n"
+        "**Last session:** _<date>_\n"
+        "**Current work:** _<what's in flight right now>_\n"
+        "**Next up:** _<next 1-3 concrete actions, dated where possible>_\n"
+        "**Blockers:** _<or \"None\">_\n"
+    )
+    wrapped = _ensure_quick_resume_markers(body)
+
+    assert "<!-- cp-engine:start quick-resume -->" in wrapped
+    assert "<!-- cp-engine:end quick-resume -->" in wrapped
+    # End marker is at the end of the file (after the last `**Blockers:**`
+    # line, no following section).
+    assert wrapped.rstrip().endswith("<!-- cp-engine:end quick-resume -->")
+
+
+def test_ensure_quick_resume_markers_handles_missing_section() -> None:
+    """Cp.md without a `## Quick Resume` section at all — should pass
+    through unchanged. (Not all CPs have this section; defensive.)"""
+    from cp_engine.sync import _ensure_quick_resume_markers
+
+    body = "# Some project\n\n## Something else\n\nbody\n"
+    assert _ensure_quick_resume_markers(body) == body
+
+
+def test_new_project_scaffold_includes_quick_resume_markers(tmp_path: Path) -> None:
+    """Fresh project scaffold (first sync after a project lands in MC-2)
+    carries the `quick-resume` markers from the template. New projects
+    don't need the migration wrap — markers are there from the start."""
+    config = make_config(tmp_path)
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend(
+            (make_state(code="new", name="Brand New", status="Open"),)
+        ),
+    )
+
+    cp_path = tmp_path / "1p" / "google" / "new-brand-new" / "cp.md"
+    body = cp_path.read_text()
+    assert "<!-- cp-engine:start quick-resume -->" in body
+    assert "<!-- cp-engine:end quick-resume -->" in body
+    # The four scaffolded lines live inside the region.
+    start_pos = body.find("<!-- cp-engine:start quick-resume -->")
+    end_pos = body.find("<!-- cp-engine:end quick-resume -->")
+    region_body = body[start_pos:end_pos]
+    assert "**Last session:**" in region_body
+    assert "**Current work:**" in region_body
+    assert "**Next up:**" in region_body
+    assert "**Blockers:**" in region_body
+
+
+def test_sync_wraps_quick_resume_in_existing_project_cp(tmp_path: Path) -> None:
+    """Integration: an unwrapped Quick Resume in a pre-existing project
+    cp.md gets wrapped on next sync. Content unchanged; markers added."""
+    from cp_engine.state import dir_slug
+
+    config = make_config(tmp_path)
+    project = make_state(code="peb", name="Pebble Foods", status="Open")
+    slug = dir_slug(project.code, project.name)
+    # Pre-create the project working dir + cp.md with the OLD shape
+    # (no quick-resume markers).
+    project_dir = tmp_path / "1p" / "google" / slug
+    project_dir.mkdir(parents=True)
+    cp_path = project_dir / "cp.md"
+    legacy = (
+        "# Pebble Foods — Project CP\n\n"
+        "<!-- cp-engine:start project-facts -->\n"
+        "## Facts\n"
+        "<!-- cp-engine:end project-facts -->\n\n"
+        "<!-- cp-engine:start tracked-issues -->\n"
+        "## Tracked issues\n"
+        "<!-- cp-engine:end tracked-issues -->\n\n"
+        "## Quick Resume\n\n"
+        "**Last session:** _<date>_\n"
+        "**Current work:** Tony shipping playbooks.\n"
+        "**Next up:** _<next 1-3 concrete actions>_\n"
+        "**Blockers:** _<or \"None\">_\n\n"
+        "## Current Work\n\n"
+        "_<2-10 paragraphs>_\n"
+    )
+    cp_path.write_text(legacy)
+
+    sync_tenant(
+        config,
+        backend_factory=lambda _: FakeBackend((project,)),
+    )
+
+    body = cp_path.read_text()
+    assert "<!-- cp-engine:start quick-resume -->" in body
+    assert "<!-- cp-engine:end quick-resume -->" in body
+    # Hand-written `**Current work:**` content preserved verbatim across
+    # the wrap — markers are inserted, content is untouched.
+    assert "**Current work:** Tony shipping playbooks." in body

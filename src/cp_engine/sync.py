@@ -21,6 +21,7 @@ isn't populated until v0.2's github-issues backend lands.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -290,6 +291,21 @@ def sync_tenant(
             body = render_project_cp(config, project, tracked_issues=())
             cp_path.write_text(body)
             files_written.append(cp_path)
+
+        # Quick Resume engine-region migration (v0.11.0+, Lever 5).
+        # Wrap any unwrapped `## Quick Resume` section in markers so the
+        # ingest verbs (current_work / next_up / blockers) have a region
+        # to write into. Idempotent: already-wrapped files are unchanged;
+        # files without a Quick Resume section pass through. Cutover-
+        # sync semantic — runs once per project after the v0.11.0 upgrade,
+        # then stays a no-op forever.
+        if cp_path.exists():
+            existing_qr = cp_path.read_text()
+            wrapped = _ensure_quick_resume_markers(existing_qr)
+            if wrapped != existing_qr:
+                cp_path.write_text(wrapped)
+                if cp_path not in files_written:
+                    files_written.append(cp_path)
 
         # _dropbox.md — re-render on every sync so a URL change in MC-2
         # propagates without manual intervention. The renderer returns
@@ -870,6 +886,66 @@ def _ensure_strip_markers(body: str) -> str:
     if not body.endswith("\n"):
         body += "\n"
     return body + "\n" + block
+
+
+_QUICK_RESUME_START = "<!-- cp-engine:start quick-resume -->"
+_QUICK_RESUME_END = "<!-- cp-engine:end quick-resume -->"
+
+
+def _ensure_quick_resume_markers(body: str) -> str:
+    """Wrap the project cp.md's `## Quick Resume` section in engine
+    markers if absent.
+
+    Pre-v0.11.0 the Quick Resume section was hand-written and had no
+    markers. v0.11.0 makes the section engine-managed: auto-ingest
+    writes `**Current work:**`, `**Next up:**`, `**Blockers:**` lines
+    inside the region on every meeting that touches the project. The
+    write functions require the markers to exist; this helper inserts
+    them on the cutover sync.
+
+    Behavior:
+      - Body already has the start marker → return unchanged (idempotent).
+      - Body has `## Quick Resume` heading → insert start marker on the
+        line BEFORE the heading and end marker on the line BEFORE the
+        next `## ` heading (or at end of file).
+      - Body has no `## Quick Resume` heading → return unchanged
+        (defensive; not all CPs have this section).
+
+    The section's content (the four `**Label:**` lines) is preserved
+    verbatim across the wrap. Subsequent auto-ingest plans rewrite
+    individual lines inside the region.
+    """
+    if _QUICK_RESUME_START in body:
+        return body
+    heading = "## Quick Resume"
+    heading_pos = body.find(heading)
+    if heading_pos == -1:
+        return body
+    # Find the end of the section: next `## ` heading after the Quick
+    # Resume heading, or end-of-file.
+    search_from = heading_pos + len(heading)
+    next_heading_match = re.search(r"^## ", body[search_from:], re.MULTILINE)
+    if next_heading_match:
+        section_end = search_from + next_heading_match.start()
+        # Trim trailing blank lines just before the next heading so the
+        # end marker sits flush with the section content.
+        before_next = body[:section_end].rstrip("\n") + "\n"
+        after_next = body[section_end:]
+        return (
+            before_next[:heading_pos]
+            + f"{_QUICK_RESUME_START}\n"
+            + before_next[heading_pos:]
+            + f"{_QUICK_RESUME_END}\n\n"
+            + after_next
+        )
+    # Quick Resume is the last section → end marker at end of file.
+    trimmed = body.rstrip("\n") + "\n"
+    return (
+        trimmed[:heading_pos]
+        + f"{_QUICK_RESUME_START}\n"
+        + trimmed[heading_pos:]
+        + f"{_QUICK_RESUME_END}\n"
+    )
 
 
 _WEEKLY_STRIP_REGIONS = (
