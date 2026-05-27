@@ -672,11 +672,17 @@ def _write_ask(code: str, item: dict, sprint_path: Path) -> bool:
 def _write_close_ask(code: str, item: dict, sprint_path: Path) -> bool:
     """Flip an existing `[open ...]` ask to `[closed ...]`.
 
-    Match strategy: substring of `text` against existing ask bullets.
-    Returns True if a flip happened; False if no match found OR the ask
-    was already closed (idempotent).
+    Match strategy: substring of `text` (or `match`) against existing ask
+    bullets. Returns True if a flip happened; False if no match found OR
+    the ask was already closed (idempotent).
+
+    Optional `closed_by` field (e.g. "clickup") appends a trailing
+    `<!-- cp:closed-by=<source> -->` audit marker — used by Task 1.7's
+    ClickUp-close webhook to distinguish closes-from-ClickUp from
+    human-run close-ask plans.
     """
     match_text = (item.get("text") or item.get("match") or "").strip()
+    closed_by = (item.get("closed_by") or "").strip()
     if not match_text:
         raise IngestPlanError("close-ask item missing 'text' (or 'match')")
     body = sprint_path.read_text(encoding="utf-8")
@@ -687,11 +693,14 @@ def _write_close_ask(code: str, item: dict, sprint_path: Path) -> bool:
         + r"[^\n]*)$",
         re.MULTILINE,
     )
-    new_body, n = open_bullet_re.subn(
-        lambda m: m.group("prefix") + "closed" + m.group("rest"),
-        body,
-        count=1,
-    )
+
+    def _flip(m: re.Match) -> str:
+        line = m.group("prefix") + "closed" + m.group("rest")
+        if closed_by:
+            line += f" <!-- cp:closed-by={closed_by} -->"
+        return line
+
+    new_body, n = open_bullet_re.subn(_flip, body, count=1)
     if n == 0:
         return False
     sprint_path.write_text(new_body)

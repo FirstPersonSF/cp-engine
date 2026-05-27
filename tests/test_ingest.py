@@ -416,6 +416,43 @@ def test_execute_plan_close_ask_flips_open_to_closed(tmp_path: Path) -> None:
     assert "[closed · 2026-05-08" in body
 
 
+def test_close_ask_appends_closed_by_marker_when_provided(tmp_path):
+    """A close-ask item with closed_by='clickup' appends an audit-trail marker."""
+    from cp_engine.ingest import _write_close_ask
+
+    sprint = tmp_path / "sprint.md"
+    sprint.write_text(
+        "## Client communication\n\n### Open asks\n\n"
+        "- [open · 2026-05-20 · Drew] Confirm ISCI code <!-- cp:hash=abc12345 -->\n"
+    )
+    item = {"match": "<!-- cp:hash=abc12345 -->", "closed_by": "clickup"}
+    changed = _write_close_ask("ggl-5168", item, sprint)
+    assert changed is True
+    body = sprint.read_text()
+    # Status flipped.
+    assert "[closed · 2026-05-20 · Drew]" in body
+    assert "[open · 2026-05-20 · Drew]" not in body
+    # Marker appended.
+    assert "<!-- cp:closed-by=clickup -->" in body
+
+
+def test_close_ask_omits_marker_when_closed_by_absent(tmp_path):
+    """Human-run close-ask (no closed_by field) must NOT add a marker."""
+    from cp_engine.ingest import _write_close_ask
+
+    sprint = tmp_path / "sprint.md"
+    sprint.write_text(
+        "## Client communication\n\n### Open asks\n\n"
+        "- [open · 2026-05-20 · Drew] Confirm ISCI <!-- cp:hash=abc12345 -->\n"
+    )
+    item = {"match": "<!-- cp:hash=abc12345 -->"}  # no closed_by
+    changed = _write_close_ask("ggl-5168", item, sprint)
+    assert changed is True
+    body = sprint.read_text()
+    assert "[closed · 2026-05-20 · Drew]" in body
+    assert "cp:closed-by" not in body  # NO marker
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Phase B — account_decisions
 # ──────────────────────────────────────────────────────────────────────
