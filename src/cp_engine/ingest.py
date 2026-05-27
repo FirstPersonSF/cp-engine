@@ -286,10 +286,30 @@ def execute_plan(
     for code, entries in projects_block.items():
         sprint_path = tenant_root / "sprints" / week_iso / f"{code}.md"
         if not sprint_path.exists():
-            result.errors.append(
-                f"sprint file missing for {code} (week {week_iso}): {sprint_path}"
+            # v0.13.0: race ahead of sync. The most common cause of "missing
+            # sprint file" is the late-in-week roll-forward in
+            # `_planning_monday` — a Wed-Sun meeting wants to land in next
+            # week's sprint dir, which sync hasn't created yet. Scaffold
+            # from the most recent prior sprint file rather than dropping
+            # the plan. Falls back to logging the error when no prior
+            # exists (first-ever-ingest only).
+            from cp_engine.sprints import scaffold_from_prior
+
+            scaffolded = scaffold_from_prior(
+                tenant_root=tenant_root,
+                project_code=code,
+                target_week_iso=week_iso,
             )
-            continue
+            if scaffolded is None:
+                result.errors.append(
+                    f"sprint file missing for {code} (week {week_iso}) "
+                    f"and no prior sprint file to scaffold from: {sprint_path}"
+                )
+                continue
+            logger.info(
+                "auto-scaffolded sprint file %s from prior week (week %s)",
+                scaffolded, week_iso,
+            )
         for verb, items in entries.items():
             normalized = _normalize_verb(verb)
             # Quick Resume verbs (v0.11.0+) are scalar and write to

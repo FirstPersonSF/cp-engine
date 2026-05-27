@@ -296,9 +296,68 @@ def test_execute_plan_collects_errors_for_missing_sprint_files(tmp_path: Path) -
         }
     }
     result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
-    # The missing project produced an error; the valid one still wrote.
+    # The missing project produced an error (no prior sprint file to scaffold
+    # from either); the valid one still wrote.
     assert any("sprint file missing for missing-code" in e for e in result.errors)
     assert len(result.files_written) == 1
+
+
+def test_execute_plan_auto_scaffolds_missing_sprint_file(tmp_path: Path) -> None:
+    """When the target sprint file is missing but a prior week's file exists
+    for the same project, execute_plan scaffolds the target file from the
+    prior week and proceeds with the ingest — rather than dropping the plan.
+
+    This is the v0.13.0 fix for the most common auto-ingest failure class:
+    _planning_monday rolls forward late-in-week, so a Wed-Sun meeting tries
+    to land in next week's sprint dir which sync hasn't created yet.
+    """
+    tenant = _make_tenant(tmp_path)  # has W20 ggl-5168 already
+    # Rewrite the W20 file as a "prior week" — i.e. give it the Project CP
+    # nav link that scaffold_from_prior reads.
+    (tenant / "sprints" / "2026-W20" / "ggl-5168.md").write_text(
+        "---\nProject: ggl-5168 — Test Project\n"
+        "Sprint: 2026-W20\nPriorSprint: 2026-W19\n---\n\n"
+        "# ggl-5168 — Test Project · Sprint W20 (May 11 – May 17, 2026)\n\n"
+        "← [Project CP](../../1p/google/ggl-5168-test/cp.md) · "
+        "[Master](../../master-cp.md) · [Prior sprint](../2026-W19/ggl-5168.md)\n\n"
+        "<!-- cp-engine:start sprint-facts -->\n| | |\n|---|---|\n"
+        "| Owner | Drew |\n<!-- cp-engine:end sprint-facts -->\n\n"
+        "<!-- cp-engine:start where-it-stands -->\n## Where it stands\n\n"
+        "<!-- cp-engine:end where-it-stands -->\n\n"
+        "<!-- cp-engine:start carry-forward -->\n## Carried over from 2026-W19\n\n"
+        "<!-- cp-engine:end carry-forward -->\n\n"
+        "## Client communication\n### Open asks\n"
+    )
+    # Plan targets W21 — which doesn't exist yet.
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "inbound": [{"text": "Late-week meeting note", "date": "2026-05-22", "who": "Rena"}],
+            }
+        }
+    }
+    # Wed May 20 2026 = weekday 2, so _planning_monday rolls forward to
+    # next Monday (May 25, ISO W22).
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 20))
+    assert result.errors == []
+    target = tenant / "sprints" / "2026-W22" / "ggl-5168.md"
+    assert target.exists()
+    body = target.read_text()
+    assert "Late-week meeting note" in body
+
+
+def test_execute_plan_falls_back_to_error_when_no_prior_exists(tmp_path: Path) -> None:
+    """A first-ever-ingest for a project that has no prior sprint file at all
+    still errors and drops the plan — there's nothing to scaffold from."""
+    tenant = _make_tenant(tmp_path)
+    plan = {
+        "projects": {
+            "brand-new-code": {"asks": [{"text": "First time"}]},
+        }
+    }
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    assert any("sprint file missing for brand-new-code" in e for e in result.errors)
+    assert result.files_written == []
 
 
 def test_execute_plan_writes_theme_to_week_md(tmp_path: Path) -> None:
