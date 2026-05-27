@@ -4,6 +4,91 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.12.0 — 2026-05-27
+
+### Added — Lever 1: bidirectional ClickUp (close a task → flip the cp ask)
+
+When a ClickUp task created from a cp ask is marked done, cp now flips the matching ask to `[closed]` automatically. The full round-trip:
+
+1. Fathom meeting auto-ingests. Each Fathom `action_item` becomes a deterministic `record-ask` in the sprint file with a `<!-- cp:hash=abc12345 -->` marker AND a row in `clickup_task_proposals` carrying the same `cp_ask_hash` column.
+2. Dashboard reviewer approves the proposal. Dashboard's `buildDescription` appends `[cp:hash=abc12345]` to the ClickUp task description.
+3. Someone marks the ClickUp task done. ClickUp fires the new `POST /clickup-task-closed` webhook. The handler regexes out the hash, looks up the owning project via `clickup_task_proposals.cp_ask_hash`, runs a `close-ask` plan with `closed_by=clickup`, commits + pushes.
+
+**Code changes:**
+
+- New helper `_action_items_to_ask_items` in `plan_from_transcript.py` converts Fathom's `action_items` JSONB into deterministic `record-ask` plan items. The hash recipe matches `ingest._content_hash(code, "record-ask", text)` exactly so `_write_ask`'s dedupe recognises re-ingests as no-ops AND the ClickUp round-trip works.
+- `generate_plan()` gains an optional `action_items` kwarg. When provided, the helper-built items are merged into `plan["projects"][code]["record-ask"]` AFTER `_validate_plan` runs. **Architectural shift:** Fathom's structured `action_items` are now the canonical source of asks; the LLM still surfaces additional contextual asks from the transcript, but the action-items stream is authoritative and roundtrippable.
+- `webhook/main.py`'s `/api/auto-ingest` fetches the meeting row ONCE (previously called twice — for ingest and artifact generation separately) and threads `action_items` through `_ingest_one_project`. Account-meeting and sprint-planning endpoints intentionally NOT updated — Fathom's `action_items` JSONB has no per-project attribution.
+- `_write_close_ask` gains an optional `closed_by` field. When present, appends a trailing `<!-- cp:closed-by=<source> -->` HTML-comment marker on the flipped bullet for audit.
+- New `_build_proposal_row` in `webhook/clickup_propose.py` populates `cp_ask_hash` using the same `_content_hash` recipe as ingest. Refactored from the inline row-build loop.
+- New endpoint `POST /clickup-task-closed` on cp-engine-webhook. HMAC-validated against new env var `CLICKUP_WEBHOOK_SECRET` (separate from Fathom's `WEBHOOK_HMAC_SECRET` so they rotate independently). Returns 200 on success or orphan, 204 on no hash, 401 on bad signature.
+
+**Schema change:**
+
+- Supabase migration adds `clickup_task_proposals.cp_ask_hash text` (nullable) with a partial index on non-null values. Migration name: `add_cp_ask_hash_to_clickup_task_proposals`. Applied to MC-2's Supabase project.
+
+**Companion repo:**
+
+- `fathom-meeting-sync/fathom/clickup-tasks.js` reads `cp_ask_hash` from the proposal row and appends `[cp:hash=<8-hex>]` as the last line of the ClickUp task description. Backward compatible — proposals without a hash produce a description without the trailer.
+
+### Added — Lever 2: daily attention digest
+
+A new `cp attention-digest` CLI command scans the current sprint dir for past-due asks + recently-escalated risks and prints a markdown digest. With `--post-to-slack`, sends as a DM to configured recipients. A new GitHub Action `daily-digest.yml` runs daily at 14:00 UTC (7am PT) and posts to Drew automatically.
+
+**Past-due definition:**
+- `· by <date>` set AND `<date>` < today (immediately overdue), OR
+- No `by` date AND asked at least N days ago (default 7 — stale).
+
+**Escalated-risk window:** risks with `severity=escalated` AND `raised` within the last N days (default 7).
+
+**Code changes:**
+
+- New module `src/cp_engine/attention_digest.py` with `_find_past_due_asks`, `_find_escalated_risks`, `compose_digest`, `attention_digest` (orchestrator), and `_post_digest_to_recipients` (Slack DM helper).
+- New CLI subcommand `cp attention-digest [--post-to-slack] [--recipient NAME] [--today YYYY-MM-DD]`. Default prints to stdout for local preview.
+- New `post_dm(client, *, user_id, text)` helper in `src/cp_engine/slack.py`. Slack auto-opens a DM when `chat.postMessage` is called with `channel=<user_id>`.
+- New `[attention_digest]` config block on `.cp-engine.toml`. All fields optional with sensible defaults. Type-validated via `CommittedConfigInvalid`. Mirrors how `[team]` and `[risk_categories]` are parsed.
+- Orchestrator falls back to the previous ISO week's sprint dir when the current week's dir doesn't exist yet (Monday-morning case where no meeting has scaffolded the new sprint dir).
+
+**Config shape:**
+
+```toml
+[attention_digest]
+recipients = ["U12ABCDE"]            # Slack user IDs; empty disables --post-to-slack
+past_due_threshold_days = 7          # no-by asks become "stale" after this many days
+escalated_window_days = 7            # risks escalated within this window count as "recent"
+allocation_cap_hours = 50            # reserved for Lever 3 (allocation watch); not yet used
+post_when_clear = true               # post "all clear" affirmation when nothing's flagged
+```
+
+**Companion repo:**
+
+- cp tenant gains `.github/workflows/daily-digest.yml`. Cron: `0 14 * * *`. Reuses existing secrets (`SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `SLACK_BOT_TOKEN`) — no new secrets needed.
+
+### Migration notes
+
+1. Bump `.cp-engine.toml`'s `[engine].version` pin from `~= 0.11` to `~= 0.12`.
+2. Add the `[attention_digest]` block with at least `recipients = ["U..."]` if you want Slack DMs.
+3. **For Lever 1:** set `CLICKUP_WEBHOOK_SECRET` on the cp-engine-webhook Railway service, subscribe ClickUp's "task closed" event to `https://cp-engine-production.up.railway.app/clickup-task-closed`, deploy the matching `fathom-meeting-sync` commit (the `[cp:hash=...]` description trailer).
+4. **For Lever 2:** enable `daily-digest.yml` in the tenant's GitHub Actions. First scheduled fire happens at 14:00 UTC the day after enable.
+
+### Known limitations
+
+- **Initiative-sourced ClickUp tasks:** `clickup_propose._resolve_project` returns an initiative's `id` when `initiatives.enable_clickup=true`, but `clickup_task_proposals.project_id` has an FK constraint to `projects.id`. An initiative-sourced proposal would fail to insert today. **Latent today** (verified: zero orphan rows in production), but worth flagging — a fix needs either an alternate FK + lookup path OR a routing change in `clickup_propose`. Engagement-sourced ClickUp tasks (the vast majority) are unaffected.
+- **Allocation watch:** `[attention_digest].allocation_cap_hours` is wired through config but the classifier always returns an empty list. Allocation is reserved for Lever 3+. The digest renders 0 lines for allocation today.
+- **DST:** the daily-digest cron is at 14:00 UTC = 7am PT during DST. After standard time kicks in (Nov), the effective time shifts to 6am PT. If 7am-PT-year-round matters, dual-cron with idempotent posting is the right fix.
+
+### Tests
+
+- Test suite: 538 passing (was 483 at v0.11.0). 55 new tests across 7 files:
+  - 5 in `test_plan_from_transcript.py` (action_items helper + merge)
+  - 3 in `test_ingest.py` (close-ask closed_by marker)
+  - 3 in `test_clickup_propose.py` (cp_ask_hash on proposal rows)
+  - 8 in `test_webhook_clickup_closed.py` (new endpoint, including null-history-data safety)
+  - 22 in `test_attention_digest.py` (classifiers, composer, orchestrator, sprint-dir fallback, recipients posting)
+  - 3 in `test_slack.py` (post_dm helper)
+  - 4 in `test_cli_attention_digest.py` (CLI subcommand)
+  - 7 in `test_config.py` (attention_digest block + type validation)
+
 ## v0.11.0 — 2026-05-26
 
 ### Changed — Quick Resume becomes engine-managed (Lever 5)
