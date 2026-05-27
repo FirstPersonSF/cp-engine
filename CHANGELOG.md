@@ -4,6 +4,40 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.11.0 — 2026-05-26
+
+### Changed — Quick Resume becomes engine-managed (Lever 5)
+
+**Structural change — tenants must opt in by bumping their `engine` pin AND accepting that auto-ingest will overwrite hand-written `**Current work:**` content over time.** Project `cp.md`'s `## Quick Resume` block becomes a fully engine-managed region wrapped in `<!-- cp-engine:start quick-resume -->` markers. Auto-ingest writes `**Current work:**`, `**Next up:**`, and `**Blockers:**` lines via three new scalar verbs on every meeting that touches the project. LLM is the source of truth.
+
+**Trigger:** pipeline projects (Deal-stage) had blank `One-line summary` cells in master-cp because their template-placeholder `**Current work:**` lines never got hand-filled. Auto-managing the field fixes this class of staleness durably — pipeline projects never show empty cells once their first meeting fires; active projects' summaries stay fresh week-by-week instead of going stale between hand-edit passes.
+
+**Engine changes:**
+
+- `sync._ensure_quick_resume_markers` wraps the existing `## Quick Resume` section in engine markers on the cutover sync. Idempotent — runs once per project after the upgrade, then no-ops forever. Pre-existing hand-written content gets wrapped as-is; next auto-ingest will overwrite individual lines.
+- `project-cp.md.j2` template scaffolds new projects with markers from the start.
+- Three new ingest verbs (`current_work`, `next_up`, `blockers`) are **scalar** (single string per project, not list of dicts). `null` value means LLM declined to refresh — leave prior line alone.
+- `ingest.execute_plan` branches on verb shape: scalar QR verbs write to project `cp.md` via `_write_quick_resume_verb`; existing list-typed verbs continue writing to sprint files. Both types appear in the same plan; both files appear in `files_written` on the same `[auto-ingest]` commit.
+- `_resolve_project_cp_path` locates the project `cp.md` by code under any scope (handles 1p account-nested + FPSF/Canonic flat) without importing sync (avoids circular dependency).
+- `plan_from_transcript` prompt templates (engagement + initiative) gain a Quick Resume schema block. The LLM evolves the prior `**Current work:**` / `**Next up:**` / `**Blockers:**` values with new signal from the meeting, returning `null` when the prior still describes state.
+
+**Test surface:** 13 new tests (5 for sync marker wrapping, 1 for fresh scaffold, 7 for QR verbs). 481 passing total. No regressions.
+
+### How tenants upgrade
+
+1. Bump `.cp-engine.toml`'s `[engine].version` pin from `~= 0.10` to `~= 0.11`.
+2. Run `cp sync` once. The cutover migration wraps `## Quick Resume` in markers across all project `cp.md` files (content unchanged on this pass).
+3. Single commit: `[cutover] Quick Resume wrapped in engine-managed markers (v0.11.0)`.
+4. Next auto-ingest fires per project → that project's Quick Resume gets first LLM-composed values. Over ~2 weeks of normal meeting flow, every active project transitions to LLM-composed Quick Resume content.
+
+**Existing hand-written Quick Resume content WILL be overwritten** by the LLM's version on next auto-ingest. This is by design — Quick Resume is now machine-managed. Git history preserves prior hand-written versions; `git blame` recovers any specific line.
+
+**Tenants who don't want auto-managed Quick Resume:** stay on `~= 0.10`. Auto-ingest still writes sprint files only; project `cp.md` Quick Resume stays hand-territory. Master-cp's One-line summary column still derives from hand-written `**Current work:**` lines.
+
+**Rollback:** revert the tenant cutover commit + bump pin back to `~= 0.10`. Git history preserves the prior Quick Resume content.
+
+Design: `cp/docs/plans/2026-05-26-quick-resume-engine-managed-design.md`.
+
 ## v0.10.1 — 2026-05-26
 
 ### Added — Sprint planning prep Step 0: empty-summary sweep
