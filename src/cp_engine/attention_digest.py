@@ -94,3 +94,66 @@ def _find_past_due_asks(
                         hash=cp_hash,
                     ))
     return out
+
+
+# Bullet shape (real production; see ingest._write_risk):
+#   Engine: `- [<severity> · <category> · YYYY-MM-DD] text <!-- cp:hash=8hex -->`
+#   Human:  `- [risk · <severity> · <category> · YYYY-MM-DD] text <!-- cp:hash=8hex -->`
+# The optional `(?:risk · )?` prefix handles both. Category may contain
+# spaces but not `]` or ` · ` (since that's the separator).
+_RISK_RE = re.compile(
+    r"^- \[(?:risk · )?(?P<sev>[a-z]+) · (?P<cat>[^\]]+?) · (?P<raised>\d{4}-\d{2}-\d{2})\]"
+    r"\s+(?P<text>.+?)\s+<!--\s*cp:hash=(?P<hash>[0-9a-f]{8})\s*-->\s*$",
+    re.MULTILINE,
+)
+
+
+@dataclass(frozen=True)
+class EscalatedRisk:
+    """One recently-escalated risk found by scanning a sprint file.
+
+    Fields:
+        code:     project/initiative code (sprint file's stem)
+        text:     the risk body, no trailing hash marker
+        category: the risk's category field (e.g., "scope", "capacity")
+        raised:   the date the risk was raised
+        hash:     8-char content hash
+    """
+    code: str
+    text: str
+    category: str
+    raised: date
+    hash: str
+
+
+def _find_escalated_risks(
+    *,
+    sprint_files: Iterable[Path],
+    today: date,
+    window_days: int = 7,
+) -> list[EscalatedRisk]:
+    """Scan sprint files and return risks recently escalated.
+
+    A risk qualifies if severity == "escalated" AND its raised date is
+    >= (today - window_days). Boundary is INCLUSIVE (a risk raised
+    exactly window_days ago counts).
+    """
+    out: list[EscalatedRisk] = []
+    cutoff = today - timedelta(days=window_days)
+    for path in sprint_files:
+        code = path.stem
+        body = path.read_text(encoding="utf-8")
+        for m in _RISK_RE.finditer(body):
+            if m.group("sev") != "escalated":
+                continue
+            raised = date.fromisoformat(m.group("raised"))
+            if raised < cutoff:
+                continue
+            out.append(EscalatedRisk(
+                code=code,
+                text=m.group("text").strip(),
+                category=m.group("cat").strip(),
+                raised=raised,
+                hash=m.group("hash"),
+            ))
+    return out

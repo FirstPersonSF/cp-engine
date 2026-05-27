@@ -106,3 +106,91 @@ def test_find_past_due_asks_extracts_code_from_filename(tmp_path):
     )
     assert len(found) == 1
     assert found[0].code == "mission-control"
+
+
+def test_find_escalated_risks_finds_recent_escalation_format_a(tmp_path):
+    """Engine-written shape: `- [escalated · category · date] text <!-- cp:hash=... -->`."""
+    from cp_engine.attention_digest import _find_escalated_risks
+    sprint = tmp_path / "ibx-5167.md"
+    sprint.write_text(
+        "## Dependencies & risks\n\n"
+        "- [escalated · capacity · 2026-05-25] Tony bandwidth conflict <!-- cp:hash=88b22d40 -->\n"
+    )
+    found = _find_escalated_risks(sprint_files=[sprint], today=date(2026, 5, 27), window_days=7)
+    assert len(found) == 1
+    r = found[0]
+    assert r.code == "ibx-5167"
+    assert r.text == "Tony bandwidth conflict"
+    assert r.category == "capacity"
+    assert r.raised == date(2026, 5, 25)
+    assert r.hash == "88b22d40"
+
+
+def test_find_escalated_risks_finds_recent_escalation_format_b(tmp_path):
+    """Human-written shape: `- [risk · escalated · category · date] text <!-- cp:hash=... -->`."""
+    from cp_engine.attention_digest import _find_escalated_risks
+    sprint = tmp_path / "ibx-5167.md"
+    sprint.write_text(
+        "## Dependencies & risks\n\n"
+        "- [risk · escalated · scope · 2026-05-25] Script churn blocking <!-- cp:hash=c12a6d46 -->\n"
+    )
+    found = _find_escalated_risks(sprint_files=[sprint], today=date(2026, 5, 27), window_days=7)
+    assert len(found) == 1
+    assert found[0].text == "Script churn blocking"
+    assert found[0].category == "scope"
+
+
+def test_find_escalated_risks_ignores_non_escalated_severities(tmp_path):
+    """severity=watching is NOT escalated, even if recent."""
+    from cp_engine.attention_digest import _find_escalated_risks
+    sprint = tmp_path / "p.md"
+    sprint.write_text(
+        "## Dependencies & risks\n\n"
+        "- [watching · scope · 2026-05-26] Minor concern <!-- cp:hash=22222222 -->\n"
+        "- [risk · watching · schedule · 2026-05-26] Another minor <!-- cp:hash=33333333 -->\n"
+    )
+    found = _find_escalated_risks(sprint_files=[sprint], today=date(2026, 5, 27), window_days=7)
+    assert found == []
+
+
+def test_find_escalated_risks_ignores_old_escalations(tmp_path):
+    """Escalations older than window_days are excluded."""
+    from cp_engine.attention_digest import _find_escalated_risks
+    sprint = tmp_path / "p.md"
+    sprint.write_text(
+        "## Dependencies & risks\n\n"
+        "- [escalated · vendor · 2026-04-15] Old escalation <!-- cp:hash=11111111 -->\n"  # >40 days ago
+        "- [escalated · scope · 2026-05-26] Recent escalation <!-- cp:hash=22222222 -->\n"
+    )
+    found = _find_escalated_risks(sprint_files=[sprint], today=date(2026, 5, 27), window_days=7)
+    texts = [r.text for r in found]
+    assert "Old escalation" not in texts
+    assert "Recent escalation" in texts
+
+
+def test_find_escalated_risks_window_includes_today(tmp_path):
+    """A risk raised today must appear."""
+    from cp_engine.attention_digest import _find_escalated_risks
+    sprint = tmp_path / "p.md"
+    sprint.write_text(
+        "## Dependencies & risks\n\n"
+        "- [escalated · scope · 2026-05-27] Fresh today <!-- cp:hash=12345678 -->\n"
+    )
+    found = _find_escalated_risks(sprint_files=[sprint], today=date(2026, 5, 27), window_days=7)
+    assert len(found) == 1
+    assert found[0].text == "Fresh today"
+
+
+def test_find_escalated_risks_window_boundary_exact(tmp_path):
+    """Boundary: raised == today - window_days inclusive."""
+    from cp_engine.attention_digest import _find_escalated_risks
+    sprint = tmp_path / "p.md"
+    sprint.write_text(
+        "## Dependencies & risks\n\n"
+        "- [escalated · scope · 2026-05-20] Exactly 7d ago <!-- cp:hash=44444444 -->\n"  # today=5/27, 5/20 is 7d ago
+        "- [escalated · scope · 2026-05-19] 8d ago, outside window <!-- cp:hash=55555555 -->\n"
+    )
+    found = _find_escalated_risks(sprint_files=[sprint], today=date(2026, 5, 27), window_days=7)
+    texts = [r.text for r in found]
+    assert "Exactly 7d ago" in texts
+    assert "8d ago, outside window" not in texts
