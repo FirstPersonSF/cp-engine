@@ -9,11 +9,14 @@ composer (Task 2.3) renders, and `--post-to-slack` (Task 2.6) sends.
 """
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Iterable
+
+log = logging.getLogger(__name__)
 
 
 # Bullet shape (real production, see ingest._write_ask):
@@ -157,3 +160,120 @@ def _find_escalated_risks(
                 hash=m.group("hash"),
             ))
     return out
+
+
+def attention_digest(
+    *,
+    config,
+    today: date,
+    past_due_threshold_days: int = 7,
+    escalated_window_days: int = 7,
+) -> dict:
+    """Run all three classifiers against the current sprint dir.
+
+    Reads sprint files at `<config.root>/sprints/<current ISO week>/*.md`,
+    runs `_find_past_due_asks` and `_find_escalated_risks`, returns a dict
+    consumed by `compose_digest`.
+
+    Allocation is a stub (empty list) — Task 2.3 leaves it pending per
+    the design doc; future tasks may populate from the workload signal.
+
+    Args:
+      config: TenantConfig (only `.root: Path` is used).
+      today: date for "as-of" computations.
+      past_due_threshold_days: stale-no-by threshold for asks.
+      escalated_window_days: how recently a risk must have escalated.
+
+    Returns:
+      {"past_due": list[PastDueAsk], "escalated": list[EscalatedRisk],
+       "allocation": []}
+    """
+    # current_sprint_week_iso takes a datetime; use today at midnight.
+    from cp_engine.sprints import current_sprint_week_iso
+    week_iso = current_sprint_week_iso(datetime(today.year, today.month, today.day))
+    sprint_dir = config.root / "sprints" / week_iso
+    if not sprint_dir.is_dir():
+        # Fallback: try the previous ISO week. Mondays-after-fresh-week-start
+        # mean today's W## dir often doesn't exist yet — no meeting has scaffolded
+        # it — but last week's W## has all the past-due asks we care about.
+        log.warning(
+            "attention-digest: %s missing; falling back to previous week",
+            sprint_dir,
+        )
+        prev_iso = current_sprint_week_iso(
+            datetime(today.year, today.month, today.day) - timedelta(days=7)
+        )
+        sprint_dir = config.root / "sprints" / prev_iso
+        if not sprint_dir.is_dir():
+            log.warning("attention-digest: previous week %s also missing; empty digest", sprint_dir)
+            return {"past_due": [], "escalated": [], "allocation": []}
+    sprint_files = sorted(sprint_dir.glob("*.md"))
+    # Exclude tenant-level scaffolding files; only per-project sprint files matter.
+    sprint_files = [p for p in sprint_files if not p.name.startswith("_")]
+    return {
+        "past_due": _find_past_due_asks(
+            sprint_files=sprint_files, today=today,
+            no_by_threshold_days=past_due_threshold_days,
+        ),
+        "escalated": _find_escalated_risks(
+            sprint_files=sprint_files, today=today,
+            window_days=escalated_window_days,
+        ),
+        "allocation": [],
+    }
+
+
+def compose_digest(digest: dict, *, recipient_name: str, today: date) -> str:
+    """Render the digest dict as Slack-flavored markdown.
+
+    Empty digest → "all clear" affirmation (silence is ambiguous; we
+    always post something so the recipient knows the cron ran).
+
+    Non-empty digest → one section per non-empty list, ordered:
+    past_due, escalated, allocation. Past-due asks sorted by `days_past`
+    desc; risks by `raised` desc.
+    """
+    past_due = digest.get("past_due") or []
+    escalated = digest.get("escalated") or []
+    allocation = digest.get("allocation") or []
+
+    if not past_due and not escalated and not allocation:
+        return (
+            f"**{recipient_name}, all clear this morning.** "
+            "No past-due asks, no new escalations, allocation within caps."
+        )
+
+    lines: list[str] = [f"**{recipient_name}, this morning's cp scan:**", ""]
+
+    if past_due:
+        past_due_sorted = sorted(past_due, key=lambda a: a.days_past, reverse=True)
+        noun = "ask" if len(past_due_sorted) == 1 else "asks"
+        lines.append(f"⏰ **{len(past_due_sorted)} {noun} past due**")
+        for ask in past_due_sorted:
+            date_str = _md_format_date(ask.by or ask.asked)
+            lines.append(
+                f"• `{ask.code}` — {ask.text} ({ask.days_past}d past · {date_str})"
+            )
+        lines.append("")
+
+    if escalated:
+        escalated_sorted = sorted(escalated, key=lambda r: r.raised, reverse=True)
+        noun = "risk" if len(escalated_sorted) == 1 else "risks"
+        lines.append(f"🚨 **{len(escalated_sorted)} {noun} escalated this week**")
+        for risk in escalated_sorted:
+            lines.append(f"• `{risk.code}` — {risk.text}")
+        lines.append("")
+
+    if allocation:
+        # Stub for future Task. Just render a heading + each entry as-is.
+        lines.append("📊 **Allocation watch**")
+        for entry in allocation:
+            lines.append(f"• {entry}")
+        lines.append("")
+
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _md_format_date(d: date) -> str:
+    """Format as M/D (e.g., 5/16)."""
+    return f"{d.month}/{d.day}"
