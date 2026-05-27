@@ -194,3 +194,49 @@ def test_slack_message_is_frozen_and_hashable() -> None:
         m.text = "changed"  # type: ignore[misc]
     # Frozen dataclasses are hashable by default — useful for dedup sets.
     assert hash(m) == hash(m)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  post_dm — chat.postMessage to a user ID
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_post_dm_calls_chat_postmessage_with_user_id_as_channel() -> None:
+    """post_dm passes user_id as the `channel` arg — Slack auto-opens the DM."""
+    from cp_engine.slack import post_dm
+
+    received: dict = {}
+
+    class _FakeClient:
+        def chat_postMessage(self, *, channel, text):
+            received["channel"] = channel
+            received["text"] = text
+            return {"ok": True, "ts": "9999.1111"}
+
+    ts = post_dm(_FakeClient(), user_id="U12ABCDE", text="hello")
+    assert received["channel"] == "U12ABCDE"
+    assert received["text"] == "hello"
+    assert ts == "9999.1111"
+
+
+def test_post_dm_raises_on_ok_false() -> None:
+    from cp_engine.slack import post_dm, SlackError
+
+    class _FakeClient:
+        def chat_postMessage(self, *, channel, text):
+            return {"ok": False, "error": "channel_not_found"}
+
+    with pytest.raises(SlackError, match="channel_not_found"):
+        post_dm(_FakeClient(), user_id="U", text="hi")
+
+
+def test_post_dm_wraps_underlying_exceptions_as_slack_error() -> None:
+    """Any exception thrown by the client is wrapped in SlackError."""
+    from cp_engine.slack import post_dm, SlackError
+
+    class _FakeClient:
+        def chat_postMessage(self, *, channel, text):
+            raise RuntimeError("network down")
+
+    with pytest.raises(SlackError, match="chat_postMessage failed"):
+        post_dm(_FakeClient(), user_id="U", text="hi")

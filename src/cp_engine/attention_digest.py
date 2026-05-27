@@ -3,9 +3,10 @@
 Lever 2 of cp-engine v0.12.0. See:
   cp/docs/plans/2026-05-27-clickup-bidirectional-and-daily-digest-design.md
 
-Pure classifiers — no Slack I/O, no LLM calls. The CLI subcommand
-(Task 2.4) wires these up against the live tenant, the markdown
-composer (Task 2.3) renders, and `--post-to-slack` (Task 2.6) sends.
+Classifiers are pure (no Slack I/O, no LLM calls). The CLI subcommand
+wires these up against the live tenant, the markdown composer renders,
+and `_post_digest_to_recipients` (invoked by `--post-to-slack`) DMs
+the digest to each configured Slack user ID.
 """
 from __future__ import annotations
 
@@ -279,15 +280,33 @@ def _md_format_date(d: date) -> str:
     return f"{d.month}/{d.day}"
 
 
-def _post_digest_to_recipients(*, config, digest_markdown: str) -> None:
-    """Post the digest as Slack DMs to configured recipients.
+def _post_digest_to_recipients(*, config, digest_markdown: str) -> list[str]:
+    """Post the digest as a Slack DM to each configured recipient.
 
-    Stub for Task 2.4 — Task 2.6 wires the actual Slack call. The CLI's
-    `--post-to-slack` flag invokes this; until Task 2.6 lands, this
-    raises NotImplementedError with a clean message that the CLI surfaces.
+    Reads recipients from `config.attention_digest.recipients`. Empty
+    list → raises `SlackError` with a clear message (caller can decide
+    to log + skip). Returns the list of message timestamps for the
+    successful posts.
+
+    If ANY post fails, the function raises (doesn't retry, doesn't
+    partial-succeed silently). Slack's API is reliable enough that
+    partial-success isn't worth the complexity.
     """
-    raise NotImplementedError(
-        "Slack DM posting is wired in Task 2.6 of cp-engine v0.12.0. "
-        "Use `cp attention-digest` without --post-to-slack for now to "
-        "print the digest to stdout."
-    )
+    from cp_engine import slack as slack_mod
+    from slack_sdk import WebClient
+
+    recipients = config.attention_digest.recipients
+    if not recipients:
+        raise slack_mod.SlackError(
+            "No recipients configured. Set [attention_digest].recipients "
+            "in .cp-engine.toml to a list of Slack user IDs."
+        )
+
+    token = slack_mod.load_slack_token(config)
+    client = WebClient(token=token)
+
+    timestamps: list[str] = []
+    for user_id in recipients:
+        ts = slack_mod.post_dm(client, user_id=user_id, text=digest_markdown)
+        timestamps.append(ts)
+    return timestamps

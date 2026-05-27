@@ -388,12 +388,81 @@ def test_attention_digest_respects_thresholds(tmp_path):
     assert len(digest["past_due"]) == 1
 
 
-# ── Task 2.4: --post-to-slack stub ───────────────────────────
+# ── Task 2.6: --post-to-slack real implementation ────────────
 
-def test_post_digest_to_recipients_stub_raises_not_implemented():
-    """Task 2.4 stub: Slack posting raises NotImplementedError until Task 2.6 wires it."""
+
+def test_post_digest_raises_when_no_recipients_configured():
+    """Empty recipients list → SlackError, not silent no-op."""
     from cp_engine.attention_digest import _post_digest_to_recipients
+    from cp_engine.config import AttentionDigestConfig
+    from cp_engine.slack import SlackError
 
-    with pytest.raises(NotImplementedError) as excinfo:
-        _post_digest_to_recipients(config=object(), digest_markdown="hi")
-    assert "Task 2.6" in str(excinfo.value)
+    class _Cfg:
+        attention_digest = AttentionDigestConfig(recipients=())
+
+    with pytest.raises(SlackError, match="No recipients configured"):
+        _post_digest_to_recipients(config=_Cfg(), digest_markdown="hi")
+
+
+def _install_fake_slack_sdk(monkeypatch):
+    """Install a fake `slack_sdk` module so the inline import in
+    `_post_digest_to_recipients` doesn't try to construct a real client."""
+    import sys
+    import types
+
+    class _FakeWebClient:
+        def __init__(self, token):
+            self.token = token
+
+    fake_slack_sdk = types.ModuleType("slack_sdk")
+    fake_slack_sdk.WebClient = _FakeWebClient
+    monkeypatch.setitem(sys.modules, "slack_sdk", fake_slack_sdk)
+
+
+def test_post_digest_posts_to_each_recipient(monkeypatch):
+    """Each recipient gets one chat_postMessage call with the digest text."""
+    from cp_engine.attention_digest import _post_digest_to_recipients
+    from cp_engine.config import AttentionDigestConfig
+
+    posted: list[tuple[str, str]] = []
+
+    def fake_post_dm(client, *, user_id, text):
+        posted.append((user_id, text))
+        return "1234.5678"
+
+    class _Cfg:
+        attention_digest = AttentionDigestConfig(recipients=("U1", "U2"))
+
+    import cp_engine.slack
+    monkeypatch.setattr(cp_engine.slack, "load_slack_token", lambda _cfg: "xoxb-fake")
+    monkeypatch.setattr(cp_engine.slack, "post_dm", fake_post_dm)
+    _install_fake_slack_sdk(monkeypatch)
+
+    timestamps = _post_digest_to_recipients(
+        config=_Cfg(), digest_markdown="morning digest"
+    )
+    assert len(posted) == 2
+    assert posted[0] == ("U1", "morning digest")
+    assert posted[1] == ("U2", "morning digest")
+    assert timestamps == ["1234.5678", "1234.5678"]
+
+
+def test_post_digest_propagates_slack_errors(monkeypatch):
+    """A SlackError from post_dm bubbles up — no silent partial failures."""
+    from cp_engine.attention_digest import _post_digest_to_recipients
+    from cp_engine.config import AttentionDigestConfig
+    from cp_engine.slack import SlackError
+
+    def failing_post_dm(client, *, user_id, text):
+        raise SlackError(f"channel_not_found for {user_id}")
+
+    class _Cfg:
+        attention_digest = AttentionDigestConfig(recipients=("U_BAD",))
+
+    import cp_engine.slack
+    monkeypatch.setattr(cp_engine.slack, "load_slack_token", lambda _cfg: "xoxb-fake")
+    monkeypatch.setattr(cp_engine.slack, "post_dm", failing_post_dm)
+    _install_fake_slack_sdk(monkeypatch)
+
+    with pytest.raises(SlackError, match="channel_not_found"):
+        _post_digest_to_recipients(config=_Cfg(), digest_markdown="hi")

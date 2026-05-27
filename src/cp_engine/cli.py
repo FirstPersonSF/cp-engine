@@ -1608,7 +1608,7 @@ def prep_agenda_cmd(
 @click.option(
     "--post-to-slack",
     is_flag=True,
-    help="Post the digest as a Slack DM (wired in Task 2.6).",
+    help="Post the digest as a Slack DM to configured recipients.",
 )
 @click.option(
     "--recipient",
@@ -1627,8 +1627,8 @@ def attention_digest_cmd(post_to_slack: bool, recipient: str, today) -> None:
 
     Scans the current ISO-week sprint dir for past-due open asks and
     recently-escalated risks, then renders a Slack-flavored markdown
-    digest. Default prints to stdout; `--post-to-slack` (wired in Task
-    2.6) will DM the digest to configured recipients.
+    digest. Default prints to stdout; `--post-to-slack` DMs the digest
+    to each Slack user ID listed in `[attention_digest].recipients`.
     """
     from datetime import date as _date
     from cp_engine.attention_digest import (
@@ -1648,11 +1648,17 @@ def attention_digest_cmd(post_to_slack: bool, recipient: str, today) -> None:
     markdown = compose_digest(digest, recipient_name=recipient, today=today_date)
 
     if post_to_slack:
+        from cp_engine.slack import SlackError
         try:
-            _post_digest_to_recipients(config=config, digest_markdown=markdown)
-        except NotImplementedError as exc:
-            click.echo(str(exc), err=True)
+            timestamps = _post_digest_to_recipients(
+                config=config, digest_markdown=markdown
+            )
+        except SlackError as exc:
+            click.echo(f"Slack post failed: {exc}", err=True)
             sys.exit(1)
+        click.echo(
+            f"Posted digest to {len(timestamps)} recipient(s).", err=False
+        )
         return
 
     click.echo(markdown.rstrip("\n"))

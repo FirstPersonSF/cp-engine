@@ -250,6 +250,30 @@ def load_slack_token(config: TenantConfig) -> str:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def post_dm(client, *, user_id: str, text: str) -> str:
+    """Post a Slack DM via chat.postMessage with channel=<user_id>.
+
+    Slack allows DMing a user by passing their user ID as the `channel`
+    parameter — the API auto-opens a DM if one doesn't already exist.
+    Returns the message timestamp (ts) for traceability.
+
+    Raises `SlackError` on any API failure with the Slack-returned
+    reason verbatim.
+    """
+    try:
+        resp = client.chat_postMessage(channel=user_id, text=text)
+    except Exception as exc:  # slack_sdk.errors.SlackApiError or transport
+        raise SlackError(
+            f"chat_postMessage failed for user={user_id}: {exc}"
+        ) from exc
+    if not resp.get("ok"):
+        raise SlackError(
+            f"chat_postMessage returned ok=false for user={user_id}: "
+            f"{resp.get('error', 'unknown')}"
+        )
+    return resp.get("ts", "")
+
+
 def fetch_channels(
     token: str,
     channel_ids: tuple[str, ...] | list[str],

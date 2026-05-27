@@ -45,15 +45,14 @@ def test_cli_attention_digest_uses_recipient_from_option(tmp_path, monkeypatch):
     assert "Tony" in result.output
 
 
-def test_cli_attention_digest_post_to_slack_flag_calls_stub(tmp_path, monkeypatch):
-    """`--post-to-slack` invokes the stub; stub currently exits with a clean error message."""
+def test_cli_attention_digest_post_to_slack_fails_clean_when_no_recipients(tmp_path, monkeypatch):
+    """`--post-to-slack` with empty recipients → SlackError with clean message + non-zero exit."""
     _fake_tenant(tmp_path)
     monkeypatch.chdir(tmp_path)
     runner = CliRunner()
     result = runner.invoke(main, ["attention-digest", "--post-to-slack"])
-    # Stub raises NotImplementedError, which the CLI should catch and turn into a clean exit.
     assert result.exit_code != 0
-    assert "Task 2.6" in result.output
+    assert "no recipients configured" in result.output.lower()
 
 
 def test_cli_attention_digest_today_option_overrides_date(tmp_path, monkeypatch):
