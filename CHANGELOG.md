@@ -4,6 +4,35 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.13.0 — 2026-05-27
+
+### Fixed — auto-ingest no longer drops content when target sprint file is missing
+
+`execute_plan` now auto-scaffolds the target sprint file from the most recent prior sprint file for the same project when the target file is absent. Previously this was the single largest source of auto-ingest failures (5 of 12 historic failures pre-v0.13), all triggered by the late-in-week roll-forward in `_planning_monday` — Wed-Sun meetings tried to land in next week's sprint dir, which sync hadn't created yet.
+
+- New `scaffold_from_prior(tenant_root, project_code, target_week_iso)` helper in `sprints.py`. Walks `sprints/*/<code>.md`, picks the most recent prior week, derives a minimal `ProjectState` from the prior file's frontmatter + `← [Project CP]`/`[Initiative CP]` navigation link (no MC-2 dependency), and renders the new file via the existing `render_sprint_scaffold` + Jinja templates. Supports 1p client engagements, FPSF/Canonic initiatives, and standalone repos.
+- `execute_plan` calls `scaffold_from_prior` when `sprint_path.exists()` is False. Falls back to logging the error (as before) only when no prior sprint file exists for the project — first-ever-ingest edge case.
+
+### Added — `POST /api/auto-ingest/runs/:run_id/rerun` for failed runs
+
+Failed `auto_ingest_runs` rows are now re-runnable. The endpoint loads the row, extracts `meeting_id` + `project_codes`, and re-fires the pipeline via a new shared `_perform_auto_ingest` helper (extracted from `/api/auto-ingest`). Writes a NEW row (keeps the original as a failure record for diagnostics). HMAC-signed against `WEBHOOK_HMAC_SECRET`; only `status='failed'` rows may be re-fired.
+
+The matching `fathom-meeting-sync` release adds a "Rerun" button on failed-status rows in the Auto-ingest activity panel. The dashboard's webhook-server proxy holds the HMAC secret and forwards to cp-engine-webhook.
+
+Recovers historic Class 2 (Anthropic 529) + Class 3 (Anthropic usage-limit) failures, plus any remaining Class 1 failures from before auto-scaffold shipped.
+
+### Migration notes
+
+- Tenants bump engine pin from `~= 0.12` to `~= 0.13`.
+- No new env vars or secrets on cp-engine.
+- For the Rerun button to work end-to-end, deploy the matching fathom-meeting-sync release (server proxy + dashboard) and ensure `CP_AUTO_INGEST_URL` + `CP_AUTO_INGEST_HMAC_SECRET` are set on fathom-webhook-server (they already are if auto-ingest itself is working).
+
+### Out of scope (deferred)
+
+- Retry-with-backoff for Anthropic 529s — the rerun button gives manual recovery. Automate later if 529s recur.
+- `rerun_of_id` column on `auto_ingest_runs` — inferable from order + project_codes for now. Add when a rerun-chain UI emerges.
+- Rerun for non-failed runs — risky with hand-edited sprint files.
+
 ## v0.12.1 — 2026-05-27
 
 ### Fixed — `/clickup-task-closed` matches ClickUp's real webhook payload shape
