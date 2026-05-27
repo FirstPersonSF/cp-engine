@@ -30,6 +30,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -38,7 +39,7 @@ from contextlib import contextmanager
 from datetime import datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 
 import cp_engine
 from cp_engine.config import TenantConfig
@@ -62,6 +63,12 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("cp-engine-webhook")
 
 app = FastAPI(title="cp-engine-webhook", version=cp_engine.__version__)
+
+# Matches the trailer that fathom-meeting-sync's clickup-tasks.js stamps
+# into every cp-sourced ClickUp task description. Exactly 8 lowercase hex
+# chars — see _content_hash() in cp_engine.ingest, which is what writes
+# these into sprint files in the first place.
+_CP_HASH_RE = re.compile(r"\[cp:hash=([0-9a-f]{8})\]")
 
 
 @app.get("/health")
@@ -756,6 +763,138 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────
+#  Lever 1 / Task 1.7 — ClickUp close round-trip
+# ─────────────────────────────────────────────────────────────
+
+
+@app.post("/clickup-task-closed")
+async def clickup_task_closed(request: Request):
+    """ClickUp webhook: a task was marked closed.
+
+    ClickUp fires this when a task in a list we sync with flips to a "done"
+    status. The handler extracts the ``[cp:hash=<8-hex>]`` trailer that
+    fathom-meeting-sync's clickup-tasks.js (Task 1.6) stamps into every
+    cp-sourced task description, looks up which project owns that hash via
+    ``clickup_task_proposals.cp_ask_hash``, builds a ``close-ask`` plan with
+    ``closed_by=clickup``, runs ingest against a fresh clone, commits +
+    pushes. Idempotent: running twice with the same hash flips the ask once
+    or no-ops (already closed).
+
+    Returns:
+      200 ``{matched_hash, code, commit_sha, ingested: true}`` on success
+      200 ``{matched_hash, ingested: false, reason}`` when no proposal row
+          owns the hash OR execute_plan wrote no files
+      204 No Content when the description has no ``[cp:hash=...]`` trailer
+          (non-cp-sourced task — silently ignored)
+      401 when HMAC signature is invalid or missing
+      500 when CLICKUP_WEBHOOK_SECRET isn't configured
+    """
+    raw_body = await request.body()
+    _verify_clickup_signature(raw_body, request.headers.get("x-webhook-signature", ""))
+
+    try:
+        payload = json.loads(raw_body) if raw_body else {}
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
+
+    # ClickUp delivers either a slim shape (``{task_id, description}``) or a
+    # richer event envelope (``{event, history_items: [{data: {description}}]}``).
+    # Probe both common spots, tolerating null values at any level — `.get("k", {})`
+    # only fires the default when `k` is ABSENT, not when present-and-None.
+    description = payload.get("description") or payload.get("task_description")
+    if not description:
+        history = payload.get("history_items") or []
+        first = history[0] if history else None
+        if isinstance(first, dict):
+            data = first.get("data")
+            if isinstance(data, dict):
+                description = data.get("description")
+    description = description or ""
+    if not isinstance(description, str):
+        description = ""
+
+    m = _CP_HASH_RE.search(description)
+    if not m:
+        log.info(
+            "clickup-task-closed: no cp:hash in task=%s; ignoring",
+            payload.get("task_id"),
+        )
+        return Response(status_code=204)
+
+    cp_hash = m.group(1)
+    code = _lookup_project_for_hash(cp_hash)
+    if code is None:
+        log.warning("clickup-task-closed: no proposal row for hash=%s", cp_hash)
+        return {
+            "matched_hash": cp_hash,
+            "ingested": False,
+            "reason": "no_proposal_row",
+        }
+
+    # Build a close-ask plan keyed on the hash marker. _write_close_ask
+    # does a substring search inside the open bullet, so the hash comment
+    # is a unique, durable anchor — won't false-match against any other
+    # bullet in the file.
+    hash_marker = f"<!-- cp:hash={cp_hash} -->"
+    plan = {
+        "projects": {
+            code: {
+                "close-ask": [
+                    {"match": hash_marker, "closed_by": "clickup"}
+                ]
+            }
+        },
+    }
+
+    with _cloned_tenant() as tenant_root:
+        config = _load_tenant_config(tenant_root)
+        try:
+            result = execute_plan(
+                plan, tenant_root=config.root, today=datetime.now().date()
+            )
+        except IngestPlanError as exc:
+            log.warning("clickup-task-closed: execute_plan failed: %s", exc)
+            return {
+                "matched_hash": cp_hash,
+                "ingested": False,
+                "reason": f"execute_plan_failed: {exc}",
+            }
+
+        if not result.files_written:
+            # No-op OR errors-without-writes: the ask was already closed,
+            # or the hash marker isn't present in any open bullet. Either
+            # way, nothing to commit — and we must NOT return ingested=True
+            # because the ClickUp end may use that signal to stop retrying.
+            log.info(
+                "clickup-task-closed: no files written for code=%s hash=%s errors=%s",
+                code, cp_hash, result.errors,
+            )
+            response: dict = {
+                "matched_hash": cp_hash,
+                "code": code,
+                "ingested": False,
+                "reason": "no_change" if not result.errors else "no_files_written",
+            }
+            if result.errors:
+                response["errors"] = result.errors
+            return response
+
+        commit_sha = _commit_clickup_close(
+            tenant_root=tenant_root, code=code, cp_hash=cp_hash,
+        )
+        log.info(
+            "clickup-task-closed: ingested code=%s hash=%s commit=%s",
+            code, cp_hash, commit_sha,
+        )
+        return {
+            "matched_hash": cp_hash,
+            "code": code,
+            "commit_sha": commit_sha,
+            "ingested": commit_sha is not None,
+        }
+
+
+# ─────────────────────────────────────────────────────────────
 #  Signature verification
 # ─────────────────────────────────────────────────────────────
 
@@ -769,6 +908,137 @@ def _verify_signature(raw_body: bytes, provided: str) -> None:
     expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, provided):
         raise HTTPException(status_code=401, detail="invalid signature")
+
+
+def _verify_clickup_signature(raw_body: bytes, provided: str) -> None:
+    """HMAC-SHA256 validate a ClickUp webhook payload.
+
+    Uses CLICKUP_WEBHOOK_SECRET — kept distinct from the Fathom webhook's
+    WEBHOOK_HMAC_SECRET so they can be rotated independently. Signing
+    algorithm matches ClickUp's webhook docs: hex(hmac_sha256(body, secret)).
+    """
+    secret = os.environ.get("CLICKUP_WEBHOOK_SECRET")
+    if not secret:
+        raise HTTPException(
+            status_code=500, detail="CLICKUP_WEBHOOK_SECRET not configured"
+        )
+    if not provided:
+        raise HTTPException(status_code=401, detail="missing X-Webhook-Signature header")
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, provided):
+        raise HTTPException(status_code=401, detail="invalid signature")
+
+
+def _lookup_project_for_hash(cp_hash: str) -> str | None:
+    """Find the canonical cp project code that owns a given cp_ask_hash.
+
+    Joins ``clickup_task_proposals`` → ``projects`` → ``companies`` and
+    reconstructs the ``<company>-<number>`` engagement code. Returns None
+    if no proposal row matches OR if Supabase is unavailable — best-effort:
+    any exception is swallowed and treated as "not found" so the webhook
+    can report ``ingested=false`` rather than 500.
+
+    Note: today, this only resolves engagement codes (``<company>-<number>``)
+    because the ``clickup_task_proposals.project_id`` FK targets
+    ``projects.id``, not ``initiatives.id``. The initiative ClickUp path in
+    ``clickup_propose._resolve_project`` is latently broken (would fail FK
+    insert) — when that's fixed in a separate task, this lookup will need
+    a parallel ``initiatives`` fallback.
+    """
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not url or not key:
+        log.warning("clickup-task-closed: Supabase env not set; can't look up hash")
+        return None
+    try:
+        from supabase import create_client
+
+        client = create_client(url, key)
+        resp = (
+            client.table("clickup_task_proposals")
+            .select("project_id, projects!inner(number, companies!inner(code))")
+            .eq("cp_ask_hash", cp_hash)
+            .limit(1)
+            .execute()
+        )
+        rows = resp.data or []
+        if not rows:
+            return None
+        row = rows[0]
+        proj = row.get("projects") or {}
+        # Supabase nested selects can return list-or-dict depending on
+        # how the relationship is declared; normalize both shapes.
+        if isinstance(proj, list):
+            proj = proj[0] if proj else {}
+        companies = proj.get("companies") or {}
+        if isinstance(companies, list):
+            companies = companies[0] if companies else {}
+        company_code = (companies.get("code") or "").lower()
+        number = proj.get("number")
+        if company_code and number is not None:
+            return f"{company_code}-{number}"
+        return None
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.warning(
+            "clickup-task-closed: hash lookup failed for %s: %s", cp_hash, exc
+        )
+        return None
+
+
+def _commit_clickup_close(
+    *, tenant_root: Path, code: str, cp_hash: str
+) -> str | None:
+    """Commit + push a ClickUp-close round-trip. Returns the new HEAD sha,
+    or None if the working tree was clean (e.g., execute_plan already
+    flipped the bullet on a previous webhook run)."""
+    env = _ssh_env()
+
+    # Short-circuit if execute_plan made no on-disk change. Without this,
+    # `git commit` would fail with "nothing to commit" and 500 the request.
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=tenant_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if not status.stdout.strip():
+        log.info(
+            "clickup-task-closed: no changes for code=%s hash=%s", code, cp_hash
+        )
+        return None
+
+    subprocess.run(["git", "add", "-A"], cwd=tenant_root, check=True)
+    message = (
+        f"[clickup-close] {code}: hash {cp_hash}\n\n"
+        f"Generated by cp-engine-webhook v{cp_engine.__version__}.\n"
+    )
+    subprocess.run(
+        ["git", "commit", "-m", message],
+        cwd=tenant_root,
+        check=True,
+        env=env,
+    )
+    target_branch = os.environ.get("CP_TENANT_BRANCH", "main")
+    if target_branch != "main":
+        subprocess.run(
+            ["git", "branch", "-M", target_branch], cwd=tenant_root, check=True
+        )
+    subprocess.run(
+        ["git", "push", "origin", target_branch],
+        cwd=tenant_root,
+        check=True,
+        env=env,
+    )
+
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tenant_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
 
 
 # ─────────────────────────────────────────────────────────────

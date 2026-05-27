@@ -27,6 +27,12 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.4",
     "mypy>=1.10",
+    # Webhook tests use FastAPI's TestClient against webhook/main.py. These
+    # live in the dev extra because the webhook itself is deployed separately
+    # (see webhook/pyproject.toml) — we want them on the test path but NOT
+    # in the published cp-engine wheel.
+    "fastapi>=0.115",
+    "httpx>=0.27",
 ]
 
 [project.scripts]
