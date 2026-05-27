@@ -432,7 +432,7 @@ def test_execute_plan_writes_account_decision_to_weekly_cp(tmp_path: Path) -> No
             }
         ]
     }
-    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert result.errors == []
     assert (tenant / "weekly-cp.md") in result.files_written
     body = (tenant / "weekly-cp.md").read_text()
@@ -452,7 +452,7 @@ def test_account_decision_inserts_before_engine_marker(tmp_path: Path) -> None:
             {"text": "Test", "company": "google", "date": "2026-05-13"}
         ]
     }
-    execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
+    execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     body = (tenant / "weekly-cp.md").read_text()
     # Find the position of the new decision line and the first engine marker.
     decision_pos = body.find("4. **Test**")
@@ -472,11 +472,11 @@ def test_account_decision_is_idempotent(tmp_path: Path) -> None:
             {"text": "Same decision twice", "company": "google", "date": "2026-05-13"}
         ]
     }
-    r1 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
+    r1 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert r1.skipped_duplicate == 0
     body_after_first = (tenant / "weekly-cp.md").read_text()
 
-    r2 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
+    r2 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert r2.skipped_duplicate == 1
     assert r2.files_written == []
     body_after_second = (tenant / "weekly-cp.md").read_text()
@@ -496,7 +496,7 @@ def test_account_decision_renumbers_correctly_when_no_existing_decisions(tmp_pat
             {"text": "First decision", "company": "google", "date": "2026-05-13"}
         ]
     }
-    result = execute_plan(plan, tenant_root=tmp_path, today=date(2026, 5, 13))
+    result = execute_plan(plan, tenant_root=tmp_path, today=date(2026, 5, 12))
     assert result.errors == []
     body = (tmp_path / "weekly-cp.md").read_text()
     assert "1. **First decision**" in body
@@ -507,13 +507,13 @@ def test_account_decision_validates_required_fields(tmp_path: Path) -> None:
     # Missing 'text'
     r1 = execute_plan(
         {"account_decisions": [{"company": "google", "date": "2026-05-13"}]},
-        tenant_root=tenant, today=date(2026, 5, 13),
+        tenant_root=tenant, today=date(2026, 5, 12),
     )
     assert any("missing 'text'" in e for e in r1.errors)
     # Missing 'company'
     r2 = execute_plan(
         {"account_decisions": [{"text": "x", "date": "2026-05-13"}]},
-        tenant_root=tenant, today=date(2026, 5, 13),
+        tenant_root=tenant, today=date(2026, 5, 12),
     )
     assert any("missing 'company'" in e for e in r2.errors)
 
@@ -550,7 +550,7 @@ def test_account_decision_errors_when_weekly_cp_missing(tmp_path: Path) -> None:
             {"text": "x", "company": "google", "date": "2026-05-13"}
         ]
     }
-    result = execute_plan(plan, tenant_root=tmp_path, today=date(2026, 5, 13))
+    result = execute_plan(plan, tenant_root=tmp_path, today=date(2026, 5, 12))
     assert any("weekly-cp.md missing" in e for e in result.errors)
     assert result.files_written == []
 
@@ -571,7 +571,7 @@ def test_account_summary_creates_section_and_writes_bullet(tmp_path: Path) -> No
             "week": "2026-W21",
         }
     }
-    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert result.errors == []
     body = (tenant / "weekly-cp.md").read_text()
     assert "## Account summaries" in body
@@ -593,7 +593,7 @@ def test_account_summary_appends_to_existing_section(tmp_path: Path) -> None:
             }
         },
         tenant_root=tenant,
-        today=date(2026, 5, 13),
+        today=date(2026, 5, 12),
     )
     # Second summary appends.
     execute_plan(
@@ -605,7 +605,7 @@ def test_account_summary_appends_to_existing_section(tmp_path: Path) -> None:
             }
         },
         tenant_root=tenant,
-        today=date(2026, 5, 13),
+        today=date(2026, 5, 12),
     )
     body = (tenant / "weekly-cp.md").read_text()
     # Exactly one section header, both bullets present.
@@ -624,8 +624,8 @@ def test_account_summary_idempotent_same_company_same_week(tmp_path: Path) -> No
             "week": "2026-W21",
         }
     }
-    r1 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
-    r2 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 13))
+    r1 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    r2 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert r1.errors == [] and r2.errors == []
     assert len(r1.files_written) == 1
     assert r2.files_written == []
@@ -657,7 +657,7 @@ def test_account_summary_same_company_different_week_writes_both(
             }
         },
         tenant_root=tenant,
-        today=date(2026, 5, 13),
+        today=date(2026, 5, 12),
     )
     body = (tenant / "weekly-cp.md").read_text()
     assert "[2026-W20 · GOOGLE]" in body
@@ -670,20 +670,217 @@ def test_account_summary_validates_required_fields(tmp_path: Path) -> None:
     r = execute_plan(
         {"account_summary": {"company": "google", "week": "2026-W21"}},
         tenant_root=tenant,
-        today=date(2026, 5, 13),
+        today=date(2026, 5, 12),
     )
     assert any("missing 'text'" in e for e in r.errors)
     # Missing 'company'
     r = execute_plan(
         {"account_summary": {"text": "x", "week": "2026-W21"}},
         tenant_root=tenant,
-        today=date(2026, 5, 13),
+        today=date(2026, 5, 12),
     )
     assert any("missing 'company'" in e for e in r.errors)
     # Missing 'week'
     r = execute_plan(
         {"account_summary": {"text": "x", "company": "google"}},
         tenant_root=tenant,
-        today=date(2026, 5, 13),
+        today=date(2026, 5, 12),
     )
     assert any("missing 'week'" in e for e in r.errors)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Quick Resume verbs (v0.11.0+, Lever 5)
+#
+# `current_work`, `next_up`, `blockers` are scalar per-project verbs
+# that write a single line each into the project cp.md's engine-managed
+# `quick-resume` region.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _scaffold_minimal_project_cp(
+    path: Path,
+    *,
+    current_work: str = "_<what's in flight right now>_",
+    next_up: str = "_<next 1-3 concrete actions, dated where possible>_",
+    blockers: str = '_<or "None">_',
+) -> None:
+    """Write a minimal project cp.md with the engine-managed quick-resume region."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        "# Test Project — Project CP\n\n"
+        "<!-- cp-engine:start quick-resume -->\n"
+        "## Quick Resume\n\n"
+        "**Last session:** _<date>_\n"
+        f"**Current work:** {current_work}\n"
+        f"**Next up:** {next_up}\n"
+        f"**Blockers:** {blockers}\n"
+        "<!-- cp-engine:end quick-resume -->\n"
+    )
+
+
+def _make_tenant_with_project_cp(
+    tmp_path: Path,
+    *,
+    code: str = "ggl-5168",
+    current_work: str = "_<what's in flight right now>_",
+    next_up: str = "_<next 1-3 concrete actions, dated where possible>_",
+    blockers: str = '_<or "None">_',
+) -> Path:
+    """Build a tenant with both a sprint file AND a project cp.md (with
+    quick-resume region) for the given code under 1p/google/<slug>/.
+    Slug is the code itself (no name-suffix), so the project dir is
+    1p/google/<code>/cp.md."""
+    tenant = _make_tenant(tmp_path)
+    project_cp = tenant / "1p" / "google" / code / "cp.md"
+    _scaffold_minimal_project_cp(
+        project_cp, current_work=current_work, next_up=next_up, blockers=blockers
+    )
+    return tenant
+
+
+def test_current_work_verb_overwrites_placeholder(tmp_path: Path) -> None:
+    """A `current_work` value in the plan overwrites the template
+    placeholder in the project cp.md's quick-resume region."""
+    tenant = _make_tenant_with_project_cp(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "current_work": "Tony+Geoff shipped 5 playbooks to Rena; awaiting feedback.",
+            },
+        },
+    }
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    assert result.errors == []
+    cp_path = tenant / "1p" / "google" / "ggl-5168" / "cp.md"
+    assert cp_path in result.files_written
+    body = cp_path.read_text()
+    assert "**Current work:** Tony+Geoff shipped 5 playbooks to Rena; awaiting feedback." in body
+    # Template placeholder is gone.
+    assert "_<what's in flight right now>_" not in body
+    # Region markers preserved.
+    assert "<!-- cp-engine:start quick-resume -->" in body
+    assert "<!-- cp-engine:end quick-resume -->" in body
+
+
+def test_current_work_verb_overwrites_existing_value(tmp_path: Path) -> None:
+    """A new `current_work` overwrites prior non-placeholder content
+    (auto-ingest is the source of truth)."""
+    tenant = _make_tenant_with_project_cp(
+        tmp_path, current_work="Prior summary that's now stale."
+    )
+    plan = {
+        "projects": {
+            "ggl-5168": {"current_work": "Fresh summary from today's meeting."},
+        },
+    }
+    execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    body = (tenant / "1p" / "google" / "ggl-5168" / "cp.md").read_text()
+    assert "**Current work:** Fresh summary from today's meeting." in body
+    assert "Prior summary" not in body
+
+
+def test_current_work_verb_null_preserves_existing(tmp_path: Path) -> None:
+    """A `current_work: null` in the plan means 'LLM declined to refresh' —
+    leave the prior line alone."""
+    tenant = _make_tenant_with_project_cp(
+        tmp_path, current_work="Existing summary stays put."
+    )
+    plan = {
+        "projects": {
+            "ggl-5168": {"current_work": None},
+        },
+    }
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    assert result.errors == []
+    body = (tenant / "1p" / "google" / "ggl-5168" / "cp.md").read_text()
+    assert "**Current work:** Existing summary stays put." in body
+
+
+def test_current_work_verb_idempotent_same_value(tmp_path: Path) -> None:
+    """Running the same plan twice — second run is a no-op for the verb."""
+    tenant = _make_tenant_with_project_cp(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {"current_work": "Same value both runs."},
+        },
+    }
+    first = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    second = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    cp_path = tenant / "1p" / "google" / "ggl-5168" / "cp.md"
+    # First run writes the value.
+    assert cp_path in first.files_written
+    # Second run is a no-op (same value already on disk).
+    assert cp_path not in second.files_written
+    assert second.skipped_duplicate >= 1
+
+
+def test_current_work_verb_skips_when_no_quick_resume_markers(tmp_path: Path) -> None:
+    """Project cp.md without the quick-resume markers (pre-cutover
+    legacy file): skip + log warning rather than write garbage."""
+    tenant = _make_tenant(tmp_path)
+    # cp.md with `## Quick Resume` but no engine markers around it.
+    project_cp = tenant / "1p" / "google" / "ggl-5168" / "cp.md"
+    project_cp.parent.mkdir(parents=True, exist_ok=True)
+    project_cp.write_text(
+        "# Test Project — Project CP\n\n"
+        "## Quick Resume\n\n"
+        "**Current work:** _<what's in flight right now>_\n"
+    )
+    plan = {
+        "projects": {
+            "ggl-5168": {"current_work": "Should not land — no markers."},
+        },
+    }
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    # Error surfaces (or at least, no successful write).
+    body = project_cp.read_text()
+    assert "Should not land" not in body
+    assert "**Current work:** _<what's in flight right now>_" in body
+
+
+def test_next_up_and_blockers_verbs_work_same_as_current_work(tmp_path: Path) -> None:
+    """Parametrized check: all three QR verbs write their corresponding
+    `**Label:**` line and leave the others alone."""
+    tenant = _make_tenant_with_project_cp(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "current_work": "CW value.",
+                "next_up": "NU value.",
+                "blockers": "None for now.",
+            },
+        },
+    }
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    assert result.errors == []
+    body = (tenant / "1p" / "google" / "ggl-5168" / "cp.md").read_text()
+    assert "**Current work:** CW value." in body
+    assert "**Next up:** NU value." in body
+    assert "**Blockers:** None for now." in body
+    # Last session line is untouched.
+    assert "**Last session:** _<date>_" in body
+
+
+def test_quick_resume_verbs_preserve_sprint_file_writes(tmp_path: Path) -> None:
+    """A plan with both QR verbs AND traditional list-typed verbs
+    (record-inbound) writes to both the project cp.md AND the sprint
+    file. Both files appear in files_written."""
+    tenant = _make_tenant_with_project_cp(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "current_work": "QR update from today.",
+                "record-inbound": [
+                    {"text": "Inbound bullet", "date": "2026-05-13", "who": "Jane"},
+                ],
+            },
+        },
+    }
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    assert result.errors == []
+    # Both files appear in files_written.
+    cp_path = tenant / "1p" / "google" / "ggl-5168" / "cp.md"
+    sprint_path = tenant / "sprints" / "2026-W20" / "ggl-5168.md"
+    assert cp_path in result.files_written
+    assert sprint_path in result.files_written

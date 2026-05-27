@@ -23,11 +23,14 @@ See cp/docs/plans/2026-05-12-tier-1-design.md for full design.
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────
 #  Transcript audit (cp parse-transcript)
@@ -194,7 +197,30 @@ _SUPPORTED_VERBS = (
     "record-stakeholder",  # → sprint file's ### Stakeholders under ## Client communication
     "record-theme",        # → sprints/<W##>/_week.md's ## Themes
     "record-slack-digest", # → sprint file's ### Slack digest under ## Client communication
+    # Quick Resume scalar verbs (v0.11.0+, Lever 5). Each takes a single
+    # string value (not a list of dicts) and writes one line in the
+    # project cp.md's engine-managed `quick-resume` region. `None` value
+    # means LLM declined to refresh — leave prior line alone.
+    "current_work",        # → project cp.md's **Current work:** line
+    "next_up",             # → project cp.md's **Next up:** line
+    "blockers",            # → project cp.md's **Blockers:** line
 )
+
+
+# Quick Resume scalar verbs are typed differently than the list-typed
+# verbs above — they take a single string (or None), not a list of dicts.
+# Plan validator + execute_plan branch on this set.
+_QUICK_RESUME_VERBS = frozenset({"current_work", "next_up", "blockers"})
+
+
+# Maps each Quick Resume verb to its `**Label:**` prefix in the project
+# cp.md. The writer locates the line by this prefix inside the engine
+# region and replaces its content.
+_QUICK_RESUME_VERB_TO_LABEL = {
+    "current_work": "**Current work:**",
+    "next_up": "**Next up:**",
+    "blockers": "**Blockers:**",
+}
 
 
 @dataclass
@@ -265,6 +291,29 @@ def execute_plan(
             )
             continue
         for verb, items in entries.items():
+            normalized = _normalize_verb(verb)
+            # Quick Resume verbs (v0.11.0+) are scalar and write to
+            # project cp.md, not the sprint file. Branch here so we
+            # don't iterate over a string.
+            if normalized in _QUICK_RESUME_VERBS:
+                project_cp_path = _resolve_project_cp_path(tenant_root, code)
+                if project_cp_path is None:
+                    result.errors.append(
+                        f"{code}/{verb}: project cp.md not found under tenant root"
+                    )
+                    continue
+                try:
+                    written = _write_quick_resume_verb(
+                        normalized, items, project_cp_path
+                    )
+                    if written:
+                        if project_cp_path not in result.files_written:
+                            result.files_written.append(project_cp_path)
+                    else:
+                        result.skipped_duplicate += 1
+                except Exception as exc:
+                    result.errors.append(f"{code}/{verb}: {exc}")
+                continue
             for item in items:
                 try:
                     written = _execute_step(verb, code, item, sprint_path)
@@ -374,6 +423,16 @@ def _validate_plan(plan: dict) -> None:
                         f"plan.projects[{code!r}]: unknown verb {verb!r}; "
                         f"expected one of {sorted(_SUPPORTED_VERBS)}"
                     )
+                # Quick Resume verbs (current_work / next_up / blockers)
+                # are scalar — a single string or None, not a list of
+                # dicts. Validated as either a non-empty string (write
+                # this value) or None (LLM declined; leave prior alone).
+                if normalized in _QUICK_RESUME_VERBS:
+                    if items is not None and not isinstance(items, str):
+                        raise IngestPlanError(
+                            f"plan.projects[{code!r}][{verb!r}] must be a string or null"
+                        )
+                    continue
                 if not isinstance(items, list):
                     raise IngestPlanError(
                         f"plan.projects[{code!r}][{verb!r}] must be a list of items"
@@ -722,6 +781,102 @@ def _write_slack_digest(code: str, item: dict, sprint_path: Path) -> bool:
         body, _communication_section(body), "Slack digest", bullet
     )
     sprint_path.write_text(new)
+    return True
+
+
+def _resolve_project_cp_path(tenant_root: Path, code: str) -> Path | None:
+    """Locate the project cp.md by code under any scope (1p/<account>/,
+    firstpersonsf/, canonic/). Returns None if no match.
+
+    Walks `<tenant_root>/<scope>/(<account>/)?<dir>/cp.md` looking for a
+    dir whose name starts with `<code>` (bare or `<code>-...`). Skips
+    `inactive/` subtrees. Same matching rule as
+    `cp_engine.sync._find_project_dir` but without importing sync (to
+    avoid the sync↔ingest circular dependency).
+    """
+    for scope in ("1p", "firstpersonsf", "canonic"):
+        scope_dir = tenant_root / scope
+        if not scope_dir.is_dir():
+            continue
+        # 1p has an extra per-account layer; FPSF/Canonic project dirs
+        # live directly under the scope root.
+        parents = []
+        if scope == "1p":
+            for child in scope_dir.iterdir():
+                if child.is_dir() and child.name != "inactive":
+                    parents.append(child)
+        else:
+            parents.append(scope_dir)
+        for parent in parents:
+            # Exact-match dir (bare code, like `mc-2` or `storyos`).
+            bare = parent / code / "cp.md"
+            if bare.is_file():
+                return bare
+            # Slug-prefix match (`<code>-<slug>`).
+            prefix = f"{code}-"
+            for entry in parent.iterdir():
+                if entry.is_dir() and entry.name.startswith(prefix):
+                    candidate = entry / "cp.md"
+                    if candidate.is_file():
+                        return candidate
+    return None
+
+
+_QUICK_RESUME_REGION_START = "<!-- cp-engine:start quick-resume -->"
+_QUICK_RESUME_REGION_END = "<!-- cp-engine:end quick-resume -->"
+
+
+def _write_quick_resume_verb(
+    verb: str, value: str | None, cp_path: Path
+) -> bool:
+    """Rewrite the `**<Label>:**` line for a Quick Resume verb.
+
+    Behavior:
+      - `value` is None → leave the existing line alone (LLM declined to
+        refresh; prior content still describes state). Returns False.
+      - Engine region markers absent → log warning + skip. Returns False.
+      - Existing line text already equals the new value → no-op (returns
+        False so the file doesn't appear in files_written).
+      - Otherwise → replace the line's content, preserve the
+        `**Label:** ` prefix, write file, return True.
+
+    The region markers must already exist on disk; sync's
+    `_ensure_quick_resume_markers` runs on the cutover sync to add them
+    to existing project cp.md files.
+    """
+    if value is None:
+        return False
+    new_value = " ".join(str(value).split()).strip()
+    if not new_value:
+        return False
+    label = _QUICK_RESUME_VERB_TO_LABEL[verb]
+    body = cp_path.read_text(encoding="utf-8")
+    if _QUICK_RESUME_REGION_START not in body or _QUICK_RESUME_REGION_END not in body:
+        logger.warning(
+            "Skipping %s on %s: quick-resume engine region markers not found",
+            verb,
+            cp_path,
+        )
+        return False
+    start_pos = body.find(_QUICK_RESUME_REGION_START)
+    end_pos = body.find(_QUICK_RESUME_REGION_END)
+    region = body[start_pos:end_pos]
+    # Find the line inside the region beginning with `**Label:**`.
+    line_pattern = re.compile(rf"^{re.escape(label)}\s*(.*)$", re.MULTILINE)
+    match = line_pattern.search(region)
+    if match is None:
+        logger.warning(
+            "Skipping %s on %s: %r line not found inside quick-resume region",
+            verb, cp_path, label,
+        )
+        return False
+    existing_value = match.group(1).strip()
+    if existing_value == new_value:
+        return False
+    new_line = f"{label} {new_value}"
+    new_region = region[:match.start()] + new_line + region[match.end():]
+    new_body = body[:start_pos] + new_region + body[end_pos:]
+    cp_path.write_text(new_body, encoding="utf-8")
     return True
 
 
