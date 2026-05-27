@@ -10,7 +10,28 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from cp_engine.config import SyncConfig, TenantConfig
 from cp_engine.plan_from_transcript import _build_prompt, _is_engagement_code
+
+
+def _make_tenant_config(tenant_root: Path) -> TenantConfig:
+    """Minimal TenantConfig pointing at a tmp tenant root.
+
+    The plan-generation tests don't exercise the sync backend or
+    project list — they stub `_call_claude` — so a barebones config
+    with the tenant root + sync stub is enough. Mirrors the pattern
+    in tests/test_sync.py::make_config.
+    """
+    return TenantConfig(
+        name="firstpersonsf",
+        display="First Person Internal",
+        engine_version_constraint="~= 0.1",
+        sync=SyncConfig(
+            backend="mc-2", cron="0 * * * *", mc_2_supabase_project_ref="ref"
+        ),
+        projects=(),
+        root=tenant_root,
+    )
 
 
 def test_is_engagement_code_recognizes_standard_shape() -> None:
@@ -170,3 +191,171 @@ def test_action_items_to_ask_items_skips_empty_descriptions():
     )
     assert len(items) == 1
     assert items[0]["text"] == "Real ask"
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  generate_plan — action_items merge (Task 1.2, Lever 1)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _stub_claude_response(monkeypatch, yaml_body: str) -> None:
+    """Stub `_call_claude` to return a fixed fenced-yaml response.
+
+    `generate_plan` is the only consumer of `_call_claude`, so we patch
+    at module level. The stub takes the same kwargs as the real function
+    to avoid silently masking signature changes. The yaml_body is
+    dedent'd before fencing so callers can use indented heredocs.
+    """
+    import textwrap
+
+    cleaned = textwrap.dedent(yaml_body).strip()
+
+    def fake_call_claude(prompt: str, *, model: str, api_key: str | None) -> str:
+        return f"```yaml\n{cleaned}\n```"
+
+    monkeypatch.setattr(
+        "cp_engine.plan_from_transcript._call_claude", fake_call_claude
+    )
+
+
+def test_generate_plan_merges_action_items_as_record_ask_items(tmp_path, monkeypatch):
+    """When action_items are passed, generate_plan emits a record-ask per item
+    with the hash recipe from _content_hash so re-ingests dedupe."""
+    from cp_engine.ingest import _content_hash
+    from cp_engine.plan_from_transcript import generate_plan
+
+    # LLM returns a plan with one inbound and no record-ask of its own —
+    # the action_items merge is what we're testing here.
+    _stub_claude_response(
+        monkeypatch,
+        """
+        transcript:
+          source: fathom
+          path: /tmp/t.txt
+        projects:
+          ggl-5168:
+            inbound:
+              - text: "Client confirmed schedule"
+                date: "2026-05-27"
+                who: "Jennifer"
+        """,
+    )
+
+    config = _make_tenant_config(tmp_path)
+    transcript_path = tmp_path / "transcript.txt"
+    transcript_path.write_text("2026-05-27 - ggl-5168 sync\nDrew: hi\n")
+
+    action_items = [
+        {"description": "Confirm ISCI code", "assignee": {"name": "Drew"}},
+        {"description": "Send Q3 invoice", "assignee": {}},
+    ]
+
+    result = generate_plan(
+        config=config,
+        project_code="ggl-5168",
+        transcript_path=transcript_path,
+        action_items=action_items,
+        api_key="stub-key",
+    )
+
+    record_asks = result.plan["projects"]["ggl-5168"]["record-ask"]
+    assert len(record_asks) == 2
+    texts = [a["text"] for a in record_asks]
+    assert "Confirm ISCI code" in texts
+    assert "Send Q3 invoice" in texts
+    expected_hash = _content_hash("ggl-5168", "record-ask", "Confirm ISCI code")
+    assert any(a.get("hash") == expected_hash for a in record_asks)
+    # The LLM's inbound is still there — merge didn't clobber other verbs.
+    assert len(result.plan["projects"]["ggl-5168"]["inbound"]) == 1
+
+
+def test_generate_plan_without_action_items_is_unchanged(tmp_path, monkeypatch):
+    """Existing call shape (no action_items kwarg) must continue to work and
+    not synthesize record-asks of its own."""
+    from cp_engine.plan_from_transcript import generate_plan
+
+    _stub_claude_response(
+        monkeypatch,
+        """
+        transcript:
+          source: fathom
+          path: /tmp/t.txt
+        projects:
+          ggl-5168:
+            asks:
+              - text: "LLM-detected ask"
+                who: "Jennifer"
+                date: "2026-05-27"
+        """,
+    )
+
+    config = _make_tenant_config(tmp_path)
+    transcript_path = tmp_path / "transcript.txt"
+    transcript_path.write_text("2026-05-27 - ggl-5168 sync\nDrew: hi\n")
+
+    result = generate_plan(
+        config=config,
+        project_code="ggl-5168",
+        transcript_path=transcript_path,
+        api_key="stub-key",
+    )
+
+    # The LLM-shorthand verb is `asks` — generate_plan does not normalize
+    # verb names (that happens at execute time in ingest._normalize_verb).
+    # So we look for the verb under whichever key the LLM returned it.
+    project_block = result.plan["projects"]["ggl-5168"]
+    asks = project_block.get("asks") or project_block.get("record-ask") or []
+    assert len(asks) == 1
+    assert asks[0]["text"] == "LLM-detected ask"
+    # No record-ask sneaked in via the action_items branch. The merge
+    # only fires when action_items is truthy, and this test passes no
+    # action_items kwarg, so the canonical `record-ask` key must be
+    # entirely absent from the project block.
+    assert "record-ask" not in project_block
+
+
+def test_generate_plan_appends_action_items_to_existing_record_ask_list(
+    tmp_path, monkeypatch
+):
+    """LLM-generated record-asks coexist with action-item-derived record-asks."""
+    from cp_engine.plan_from_transcript import generate_plan
+
+    # The LLM emits a plan whose verb key is the canonical `record-ask`
+    # (rather than the shorthand `asks`) so the merge appends to the same
+    # list rather than creating a parallel one.
+    _stub_claude_response(
+        monkeypatch,
+        """
+        transcript:
+          source: fathom
+          path: /tmp/t.txt
+        projects:
+          ggl-5168:
+            record-ask:
+              - text: "LLM-detected ask from transcript"
+                who: "Jennifer"
+                date: "2026-05-27"
+        """,
+    )
+
+    config = _make_tenant_config(tmp_path)
+    transcript_path = tmp_path / "transcript.txt"
+    transcript_path.write_text("2026-05-27 - ggl-5168 sync\nDrew: hi\n")
+
+    action_items = [
+        {"description": "Fathom action item", "assignee": {"name": "Drew"}},
+    ]
+
+    result = generate_plan(
+        config=config,
+        project_code="ggl-5168",
+        transcript_path=transcript_path,
+        action_items=action_items,
+        api_key="stub-key",
+    )
+
+    record_asks = result.plan["projects"]["ggl-5168"]["record-ask"]
+    assert len(record_asks) == 2
+    texts = [a["text"] for a in record_asks]
+    assert "LLM-detected ask from transcript" in texts
+    assert "Fathom action item" in texts

@@ -120,6 +120,17 @@ async def auto_ingest(request: Request) -> dict:
         config = _load_tenant_config(tenant_root)
         transcript_path = _stage_transcript(tenant_root, meeting_id, transcript_text)
 
+        # Fetch the meeting row once per request. We need `action_items`
+        # for the plan merge (each item becomes a deterministic
+        # record-ask) AND for the per-meeting artifact write later in
+        # this same function. Pre-Lever-1 the artifact path did its own
+        # fetch; we now share the result to avoid a redundant Supabase
+        # round-trip per auto-ingest call. Best-effort: a None here
+        # means we'll fall back to LLM-only ingest (no action_items
+        # merged) and artifact generation will skip cleanly.
+        meeting = _fetch_meeting(meeting_id)
+        action_items = (meeting or {}).get("action_items") or []
+
         # Per-project ingest + per-project commit. A multi-project
         # auto-ingest call produces N commits (one per project that
         # actually wrote files), not one combined commit. This makes
@@ -133,6 +144,7 @@ async def auto_ingest(request: Request) -> dict:
                 config=config,
                 code=code,
                 transcript_path=transcript_path,
+                action_items=action_items,
             )
             ingested.append(entry)
             if entry["files_written"]:
@@ -155,12 +167,16 @@ async def auto_ingest(request: Request) -> dict:
 
         # Per-meeting artifacts — synthesis + transcript into each
         # project's meetings/ dir. Runs after the per-project bullet
-        # commits so their `git add -A` doesn't sweep these in.
+        # commits so their `git add -A` doesn't sweep these in. Reuses
+        # the meeting row already fetched above; passes it via
+        # `meeting=` to skip the redundant Supabase round-trip inside
+        # _generate_meeting_artifacts.
         artifact_summary = _generate_meeting_artifacts(
             tenant_root=tenant_root,
             meeting_id=meeting_id,
             transcript_text=transcript_text,
             project_codes=project_codes,
+            meeting=meeting,
         )
 
         if not commits:
@@ -333,6 +349,15 @@ async def auto_ingest_account(request: Request) -> dict:
         commits: list[str] = []
 
         # Step 1: per-project ingest + commit (as before)
+        #
+        # NOTE: Fathom action_items are intentionally NOT threaded through
+        # this multi-project endpoint (unlike /api/auto-ingest, which
+        # passes them to _ingest_one_project). The action_items JSONB on
+        # fathom_meetings has no per-project attribution, so for an
+        # account meeting covering N projects we can't route a given item
+        # to the right one. See clickup_propose.py:148-151 for the same
+        # constraint downstream. If we ever change this, decide first how
+        # to handle the routing.
         for code, entries in projects_block.items():
             single_project_plan = {
                 "transcript": plan.get("transcript", {"source": "fathom"}),
@@ -586,6 +611,15 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
         commits: list[str] = []
 
         # Per-project ingest + commit (same pattern as /api/auto-ingest-account).
+        #
+        # NOTE: Fathom action_items are intentionally NOT threaded through
+        # this multi-project endpoint (unlike /api/auto-ingest, which
+        # passes them to _ingest_one_project). The action_items JSONB on
+        # fathom_meetings has no per-project attribution, so for a
+        # sprint-planning meeting covering N projects we can't route a
+        # given item to the right one. See clickup_propose.py:148-151 for
+        # the same constraint downstream. If we ever change this, decide
+        # first how to handle the routing.
         for code, entries in projects_block.items():
             single_project_plan = {
                 "transcript": plan.get("transcript", {"source": "fathom"}),
@@ -798,9 +832,20 @@ def _ssh_env() -> dict:
 
 
 def _ingest_one_project(
-    *, config: TenantConfig, code: str, transcript_path: Path
+    *,
+    config: TenantConfig,
+    code: str,
+    transcript_path: Path,
+    action_items: list[dict] | None = None,
 ) -> dict:
-    """Generate plan + execute for a single project. Returns a summary dict."""
+    """Generate plan + execute for a single project. Returns a summary dict.
+
+    `action_items` (the Fathom meeting's structured action_items JSONB)
+    is threaded into `generate_plan` where each item becomes a
+    deterministic `record-ask` appended to the plan. Default-None keeps
+    the function callable from any other site that hasn't fetched the
+    meeting row yet.
+    """
     entry = {
         "code": code,
         "plan_summary": None,
@@ -813,6 +858,7 @@ def _ingest_one_project(
             config=config,
             project_code=code,
             transcript_path=transcript_path,
+            action_items=action_items,
         )
     except PlanGenerationError as exc:
         entry["errors"].append(f"plan generation failed: {exc}")
@@ -1107,17 +1153,25 @@ def _generate_meeting_artifacts(
     meeting_id: str,
     transcript_text: str,
     project_codes: list[str],
+    meeting: dict | None = None,
 ) -> dict:
     """Fetch the meeting, write per-meeting artifacts, commit them.
 
     Shared by all auto-ingest endpoints. Best-effort — never raises.
     Returns a summary dict for the response payload.
+
+    `meeting` lets a caller pass in an already-fetched fathom_meetings
+    row to skip the redundant Supabase round-trip. The /api/auto-ingest
+    endpoint fetches the meeting up front to extract `action_items` for
+    plan generation; it passes the same row here. Other endpoints that
+    don't pre-fetch leave `meeting=None` and we fetch ourselves.
     """
     summary = {"files_written": 0, "commit_sha": None}
     if not project_codes:
         return summary
     try:
-        meeting = _fetch_meeting(meeting_id)
+        if meeting is None:
+            meeting = _fetch_meeting(meeting_id)
         if meeting is None:
             return summary
         paths = write_meeting_artifacts(

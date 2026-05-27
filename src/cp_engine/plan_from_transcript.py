@@ -56,10 +56,19 @@ def generate_plan(
     config: TenantConfig,
     project_code: str,
     transcript_path: Path,
+    action_items: list[dict] | None = None,
     model: str = "claude-opus-4-7",
     api_key: str | None = None,
 ) -> GeneratedPlan:
     """Read transcript + project context, ask Claude for a plan, validate it.
+
+    If `action_items` is provided (the Fathom meeting's `action_items`
+    JSONB), each item becomes a deterministic `record-ask` appended to
+    the plan's `projects[<project_code>]["record-ask"]` list. The hash
+    recipe matches `ingest._content_hash`, so `_write_ask`'s dedupe will
+    treat re-ingests of the same meeting as no-ops AND the ClickUp ↔ cp
+    round-trip (Task 1.7) can match a closed ClickUp task back to its
+    source ask.
 
     Raises PlanGenerationError if the response can't be parsed or doesn't
     pass `_validate_plan`. The caller should catch and decide what to do
@@ -94,6 +103,25 @@ def generate_plan(
         _validate_plan(plan)
     except IngestPlanError as exc:
         raise PlanGenerationError(f"plan failed validation: {exc}") from exc
+
+    # Merge Fathom action_items as deterministic record-ask items.
+    # Runs AFTER _validate_plan because the items are constructed by us
+    # (deterministic helper, well-formed by construction) — not by the
+    # LLM. The merge appends to projects[code]["record-ask"], a verb
+    # already in _SUPPORTED_VERBS; each item is a dict; extra fields
+    # (`verb`, `hash`) are ignored by _validate_plan's per-item check
+    # (it only verifies isinstance(item, dict)) and by _write_ask (it
+    # reads only `text`, `who`, `by`, `date`, `status`). Re-running
+    # _validate_plan here would therefore still pass — we skip it only
+    # to avoid the redundant pass on a now-trusted plan.
+    if action_items:
+        today_iso = datetime.now().strftime("%Y-%m-%d")
+        ask_items = _action_items_to_ask_items(
+            code=project_code, action_items=action_items, today_iso=today_iso
+        )
+        if ask_items:
+            proj = plan.setdefault("projects", {}).setdefault(project_code, {})
+            proj.setdefault("record-ask", []).extend(ask_items)
 
     return GeneratedPlan(
         plan=plan,
