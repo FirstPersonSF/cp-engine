@@ -277,3 +277,17 @@ def compose_digest(digest: dict, *, recipient_name: str, today: date) -> str:
 def _md_format_date(d: date) -> str:
     """Format as M/D (e.g., 5/16)."""
     return f"{d.month}/{d.day}"
+
+
+def _post_digest_to_recipients(*, config, digest_markdown: str) -> None:
+    """Post the digest as Slack DMs to configured recipients.
+
+    Stub for Task 2.4 — Task 2.6 wires the actual Slack call. The CLI's
+    `--post-to-slack` flag invokes this; until Task 2.6 lands, this
+    raises NotImplementedError with a clean message that the CLI surfaces.
+    """
+    raise NotImplementedError(
+        "Slack DM posting is wired in Task 2.6 of cp-engine v0.12.0. "
+        "Use `cp attention-digest` without --post-to-slack for now to "
+        "print the digest to stdout."
+    )

@@ -386,3 +386,14 @@ def test_attention_digest_respects_thresholds(tmp_path):
         past_due_threshold_days=3, escalated_window_days=7,
     )
     assert len(digest["past_due"]) == 1
+
+
+# ── Task 2.4: --post-to-slack stub ───────────────────────────
+
+def test_post_digest_to_recipients_stub_raises_not_implemented():
+    """Task 2.4 stub: Slack posting raises NotImplementedError until Task 2.6 wires it."""
+    from cp_engine.attention_digest import _post_digest_to_recipients
+
+    with pytest.raises(NotImplementedError) as excinfo:
+        _post_digest_to_recipients(config=object(), digest_markdown="hi")
+    assert "Task 2.6" in str(excinfo.value)

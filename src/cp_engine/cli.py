@@ -1604,6 +1604,60 @@ def prep_agenda_cmd(
         click.echo(agenda_md)
 
 
+@main.command("attention-digest")
+@click.option(
+    "--post-to-slack",
+    is_flag=True,
+    help="Post the digest as a Slack DM (wired in Task 2.6).",
+)
+@click.option(
+    "--recipient",
+    default="Drew",
+    show_default=True,
+    help="Recipient name used in the digest greeting.",
+)
+@click.option(
+    "--today",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Override today's date (YYYY-MM-DD). Useful for testing.",
+)
+def attention_digest_cmd(post_to_slack: bool, recipient: str, today) -> None:
+    """Print today's attention digest (past-due asks, escalated risks).
+
+    Scans the current ISO-week sprint dir for past-due open asks and
+    recently-escalated risks, then renders a Slack-flavored markdown
+    digest. Default prints to stdout; `--post-to-slack` (wired in Task
+    2.6) will DM the digest to configured recipients.
+    """
+    from datetime import date as _date
+    from cp_engine.attention_digest import (
+        _post_digest_to_recipients,
+        attention_digest as run_digest,
+        compose_digest,
+    )
+
+    try:
+        config = load(Path.cwd())
+    except ConfigError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+
+    today_date = today.date() if today else _date.today()
+    digest = run_digest(config=config, today=today_date)
+    markdown = compose_digest(digest, recipient_name=recipient, today=today_date)
+
+    if post_to_slack:
+        try:
+            _post_digest_to_recipients(config=config, digest_markdown=markdown)
+        except NotImplementedError as exc:
+            click.echo(str(exc), err=True)
+            sys.exit(1)
+        return
+
+    click.echo(markdown.rstrip("\n"))
+
+
 def _load_config_or_die() -> "TenantConfig":  # noqa: F821
     """Load tenant config from cwd; exit with a friendly error on failure."""
     try:
