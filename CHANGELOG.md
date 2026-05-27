@@ -4,6 +4,19 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.12.1 — 2026-05-27
+
+### Fixed — `/clickup-task-closed` matches ClickUp's real webhook payload shape
+
+Task 1.7 (shipped in v0.12.0) was built against an assumed payload shape that included the task `description` — we regexed the `[cp:hash=...]` trailer out of it to find the matching cp ask. ClickUp's real `taskStatusUpdated` payload doesn't include `description`, so the v0.12.0 endpoint would have 204'd on every real webhook call.
+
+Refactored to match the actual payload:
+
+- **Routing:** look up `cp_ask_hash` + project code from `clickup_task_proposals.clickup_task_id` (which the dashboard already stored at task-creation time) instead of trying to extract them from a `description` field that isn't there. One Supabase SELECT, no ClickUp API round-trip.
+- **Signature header:** `X-Signature` (previously had `X-Webhook-Signature` wrong). Algorithm unchanged — HMAC-SHA256 hex against `CLICKUP_WEBHOOK_SECRET`.
+- **Event filtering:** `taskStatusUpdated` fires on any status change. Now filter on `history_items[0].after.type == "closed"` so non-close transitions return 204 without doing any lookup or ingest work.
+- Dropped `_lookup_project_for_hash` and the `_CP_HASH_RE` regex; added `_lookup_proposal_by_clickup_task_id(task_id) -> tuple[cp_hash, code] | None`. Tests rewritten to drive the new payload shape (7 cases covering happy path, non-closed status, missing task_id, bad HMAC, missing secret, orphan task, no-op rerun).
+
 ## v0.12.0 — 2026-05-27
 
 ### Added — Lever 1: bidirectional ClickUp (close a task → flip the cp ask)
