@@ -128,6 +128,21 @@ class SyncConfig:
 
 
 @dataclass(frozen=True)
+class AttentionDigestConfig:
+    """Lever 2 — daily attention digest configuration.
+
+    All fields optional with sensible defaults. Empty `recipients` means
+    `cp attention-digest --post-to-slack` will no-op (or fail with a
+    clear message) — opt-in by adding Slack user IDs.
+    """
+    recipients: tuple[str, ...] = ()
+    past_due_threshold_days: int = 7
+    escalated_window_days: int = 7
+    allocation_cap_hours: int = 50
+    post_when_clear: bool = True
+
+
+@dataclass(frozen=True)
 class TenantConfig:
     """Merged view of a tenant's committed + local configuration.
 
@@ -174,6 +189,12 @@ class TenantConfig:
     # `.cp-engine.toml`. Free-form first-name strings; matching is
     # case-insensitive substring on stakeholder name.
     team: tuple[str, ...] = ()
+    # Lever 2 — daily attention digest configuration. Tenants opt in via
+    # `[attention_digest]` in `.cp-engine.toml`; absent block yields the
+    # default-constructed dataclass (no recipients = no Slack post).
+    attention_digest: AttentionDigestConfig = field(
+        default_factory=AttentionDigestConfig
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -220,6 +241,7 @@ def load(tenant_root: Path) -> TenantConfig:
         kwargs["risk_categories"] = committed["risk_categories"]
     if committed["team"]:
         kwargs["team"] = committed["team"]
+    kwargs["attention_digest"] = committed["attention_digest"]
     return TenantConfig(**kwargs)
 
 
@@ -393,6 +415,11 @@ def _normalize_committed(data: dict, source: Path) -> dict:
             )
         team = tuple(members)
 
+    # Optional [attention_digest] table (Lever 2). Absent block → defaults.
+    attention_digest = _parse_attention_digest(
+        data.get("attention_digest") or {}, source
+    )
+
     return {
         "name": name,
         "display": display,
@@ -402,7 +429,62 @@ def _normalize_committed(data: dict, source: Path) -> dict:
         "local_repos_by_user": local_repos_by_user,
         "risk_categories": risk_categories,
         "team": team,
+        "attention_digest": attention_digest,
     }
+
+
+def _parse_attention_digest(raw: dict, source: Path) -> AttentionDigestConfig:
+    """Parse the optional [attention_digest] block from .cp-engine.toml.
+
+    Empty/absent block returns the default-constructed dataclass. Partial
+    blocks fill in unset fields from the dataclass defaults.
+
+    Validates types up front and raises `CommittedConfigInvalid` on bad
+    input (mirrors how `team` and `risk_categories` are parsed). The
+    previous implementation coerced via `int(...)`/`bool(...)`/`tuple(...)`,
+    which silently mangled common misconfigurations — e.g. `recipients =
+    "U12"` became `("U", "1", "2")`, and `post_when_clear = "false"`
+    became `True`. Failing here, near the .cp-engine.toml source, is far
+    easier to debug than a downstream Slack DM call exploding.
+    """
+    if not raw:
+        return AttentionDigestConfig()
+
+    recipients_raw = raw.get("recipients", [])
+    if not isinstance(recipients_raw, list) or not all(
+        isinstance(r, str) and r for r in recipients_raw
+    ):
+        raise CommittedConfigInvalid(
+            f"{source}: [attention_digest].recipients must be a list of "
+            f"non-empty Slack user-ID strings"
+        )
+
+    # Note: in Python, `isinstance(True, int)` is True (bool subclasses int).
+    # Explicitly reject bools so `past_due_threshold_days = true` doesn't
+    # silently parse as 1.
+    for key in (
+        "past_due_threshold_days",
+        "escalated_window_days",
+        "allocation_cap_hours",
+    ):
+        val = raw.get(key)
+        if val is not None and (isinstance(val, bool) or not isinstance(val, int)):
+            raise CommittedConfigInvalid(
+                f"{source}: [attention_digest].{key} must be an integer"
+            )
+
+    if "post_when_clear" in raw and not isinstance(raw["post_when_clear"], bool):
+        raise CommittedConfigInvalid(
+            f"{source}: [attention_digest].post_when_clear must be a boolean"
+        )
+
+    return AttentionDigestConfig(
+        recipients=tuple(recipients_raw),
+        past_due_threshold_days=raw.get("past_due_threshold_days", 7),
+        escalated_window_days=raw.get("escalated_window_days", 7),
+        allocation_cap_hours=raw.get("allocation_cap_hours", 50),
+        post_when_clear=raw.get("post_when_clear", True),
+    )
 
 
 def _load_local(tenant_root: Path, *, committed_has_projects: bool) -> dict:

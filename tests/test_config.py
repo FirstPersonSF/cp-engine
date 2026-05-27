@@ -544,3 +544,120 @@ def test_project_loads_contacts(tmp_path: Path) -> None:
 
     cfg = load(tmp_path)
     assert cfg.projects[0].contacts == ({"name": "Maria", "role": "Ops"},)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  [attention_digest] (Lever 2)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_load_attention_digest_block(tmp_path: Path) -> None:
+    """Tenant with [attention_digest] block populates AttentionDigestConfig fields."""
+    extra = (
+        "[attention_digest]\n"
+        'recipients = ["U12ABCDE", "U34FGHIJ"]\n'
+        "past_due_threshold_days = 5\n"
+        "escalated_window_days = 10\n"
+        "allocation_cap_hours = 40\n"
+        "post_when_clear = false\n"
+    )
+    write_committed(tmp_path, projects=[], extra=extra)
+    write_local(tmp_path, {})
+
+    cfg = load(tmp_path)
+    assert cfg.attention_digest.recipients == ("U12ABCDE", "U34FGHIJ")
+    assert cfg.attention_digest.past_due_threshold_days == 5
+    assert cfg.attention_digest.escalated_window_days == 10
+    assert cfg.attention_digest.allocation_cap_hours == 40
+    assert cfg.attention_digest.post_when_clear is False
+
+
+def test_load_attention_digest_block_absent_uses_defaults(tmp_path: Path) -> None:
+    """No [attention_digest] block → defaults: empty recipients, 7d thresholds, 50h cap, post_when_clear=True."""
+    from cp_engine.config import AttentionDigestConfig
+
+    write_committed(tmp_path, projects=[])
+    write_local(tmp_path, {})
+
+    cfg = load(tmp_path)
+    assert cfg.attention_digest == AttentionDigestConfig()
+    assert cfg.attention_digest.recipients == ()
+    assert cfg.attention_digest.past_due_threshold_days == 7
+    assert cfg.attention_digest.escalated_window_days == 7
+    assert cfg.attention_digest.allocation_cap_hours == 50
+    assert cfg.attention_digest.post_when_clear is True
+
+
+def test_load_attention_digest_partial_block_fills_in_defaults(tmp_path: Path) -> None:
+    """Partial [attention_digest] (only recipients) keeps default thresholds."""
+    extra = (
+        "[attention_digest]\n"
+        'recipients = ["U12ABCDE"]\n'
+    )
+    write_committed(tmp_path, projects=[], extra=extra)
+    write_local(tmp_path, {})
+
+    cfg = load(tmp_path)
+    assert cfg.attention_digest.recipients == ("U12ABCDE",)
+    assert cfg.attention_digest.past_due_threshold_days == 7  # default kept
+    assert cfg.attention_digest.escalated_window_days == 7
+    assert cfg.attention_digest.allocation_cap_hours == 50
+    assert cfg.attention_digest.post_when_clear is True
+
+
+def test_attention_digest_recipients_must_be_list_of_strings(tmp_path: Path) -> None:
+    """recipients = "U12" (string) is rejected, not silently tupled to ('U','1','2')."""
+    extra = (
+        "[attention_digest]\n"
+        'recipients = "U12ABCDE"\n'
+    )
+    write_committed(tmp_path, projects=[], extra=extra)
+    write_local(tmp_path, {})
+
+    with pytest.raises(CommittedConfigInvalid) as excinfo:
+        load(tmp_path)
+    assert "recipients" in str(excinfo.value)
+
+
+def test_attention_digest_threshold_must_be_integer(tmp_path: Path) -> None:
+    """past_due_threshold_days = 'seven' raises CommittedConfigInvalid, not raw ValueError."""
+    extra = (
+        "[attention_digest]\n"
+        'past_due_threshold_days = "seven"\n'
+    )
+    write_committed(tmp_path, projects=[], extra=extra)
+    write_local(tmp_path, {})
+
+    with pytest.raises(CommittedConfigInvalid) as excinfo:
+        load(tmp_path)
+    assert "past_due_threshold_days" in str(excinfo.value)
+    assert "integer" in str(excinfo.value).lower()
+
+
+def test_attention_digest_post_when_clear_must_be_boolean(tmp_path: Path) -> None:
+    """post_when_clear = 'false' (string) is rejected (not silently truthy)."""
+    extra = (
+        "[attention_digest]\n"
+        'post_when_clear = "false"\n'
+    )
+    write_committed(tmp_path, projects=[], extra=extra)
+    write_local(tmp_path, {})
+
+    with pytest.raises(CommittedConfigInvalid) as excinfo:
+        load(tmp_path)
+    assert "post_when_clear" in str(excinfo.value)
+    assert "boolean" in str(excinfo.value).lower()
+
+
+def test_attention_digest_recipients_rejects_non_string_entries(tmp_path: Path) -> None:
+    """recipients = [123, "U2"] is rejected — entries must be strings."""
+    extra = (
+        "[attention_digest]\n"
+        'recipients = [123, "U2"]\n'
+    )
+    write_committed(tmp_path, projects=[], extra=extra)
+    write_local(tmp_path, {})
+
+    with pytest.raises(CommittedConfigInvalid) as excinfo:
+        load(tmp_path)
+    assert "recipients" in str(excinfo.value)
