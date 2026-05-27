@@ -28,7 +28,7 @@ from pathlib import Path
 import yaml
 
 from cp_engine.config import TenantConfig
-from cp_engine.ingest import IngestPlanError, _validate_plan
+from cp_engine.ingest import IngestPlanError, _content_hash, _validate_plan
 from cp_engine.sprints import current_sprint_week_iso
 
 # Conservative ceilings to keep prompt latency + cost reasonable.
@@ -602,3 +602,34 @@ def _extract_yaml(response_text: str) -> str:
         return response_text[open_match.end():].strip()
     # Case 3: no fence at all.
     return response_text.strip()
+
+
+def _action_items_to_ask_items(
+    *, code: str, action_items: list[dict], today_iso: str
+) -> list[dict]:
+    """Convert Fathom `action_items` JSONB into deterministic `record-ask` plan items.
+
+    Each Fathom action item becomes one ask whose hash is stable across
+    re-ingests of the same meeting — so the ClickUp ↔ cp round-trip can
+    match a closed ClickUp task back to its source ask. The hash uses the
+    same recipe as `_content_hash(code, "record-ask", text)` in ingest.py
+    so `_write_ask` recognises the item as already-present on re-ingest.
+    """
+    out: list[dict] = []
+    for raw in action_items or []:
+        if not isinstance(raw, dict):
+            continue
+        text = (raw.get("description") or "").strip()
+        if not text:
+            continue
+        assignee = raw.get("assignee") or {}
+        who = (assignee.get("name") or "").strip()
+        out.append({
+            "verb": "record-ask",
+            "text": text,
+            "who": who,
+            "date": today_iso,
+            "status": "open",
+            "hash": _content_hash(code, "record-ask", text),
+        })
+    return out

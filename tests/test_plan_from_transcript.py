@@ -123,3 +123,50 @@ def test_extract_yaml_strips_yaml_language_tag_variants() -> None:
     # Some responses use ``` (no language tag) instead of ```yaml.
     response = '```\nprojects: {}\n```'
     assert _extract_yaml(response) == 'projects: {}'
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  _action_items_to_ask_items — Fathom action_items → record-ask plan
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_action_items_to_ask_items_emits_one_record_ask_per_item():
+    from cp_engine.ingest import _content_hash
+    from cp_engine.plan_from_transcript import _action_items_to_ask_items
+
+    action_items = [
+        {
+            "description": "Confirm ISCI code with Jennifer",
+            "assignee": {"name": "Drew", "email": "drew@firstperson.is"},
+        },
+        {"description": "Send Q3 invoice", "assignee": {}},
+    ]
+    items = _action_items_to_ask_items(
+        code="ggl-5168", action_items=action_items, today_iso="2026-05-27"
+    )
+    assert len(items) == 2
+    assert items[0]["verb"] == "record-ask"
+    assert items[0]["text"] == "Confirm ISCI code with Jennifer"
+    assert items[0]["who"] == "Drew"
+    assert items[0]["date"] == "2026-05-27"
+    # Hash matches the ingest recipe exactly — guards against recipe drift
+    # that would break the ClickUp ↔ cp round-trip (_write_ask, clickup_propose,
+    # ClickUp-close webhook all rely on this exact hash).
+    expected_hash_0 = _content_hash("ggl-5168", "record-ask", "Confirm ISCI code with Jennifer")
+    assert items[0]["hash"] == expected_hash_0
+    # Second item uses a different text under the same code/verb — confirms
+    # the recipe is deterministic on text, not just on code/verb.
+    expected_hash_1 = _content_hash("ggl-5168", "record-ask", "Send Q3 invoice")
+    assert items[1]["hash"] == expected_hash_1
+
+
+def test_action_items_to_ask_items_skips_empty_descriptions():
+    from cp_engine.plan_from_transcript import _action_items_to_ask_items
+
+    items = _action_items_to_ask_items(
+        code="ggl-5168",
+        action_items=[{"description": ""}, {"description": "  "}, {"description": "Real ask"}],
+        today_iso="2026-05-27",
+    )
+    assert len(items) == 1
+    assert items[0]["text"] == "Real ask"
