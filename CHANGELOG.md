@@ -4,6 +4,34 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.10.1 — 2026-05-26
+
+### Added — Sprint planning prep Step 0: empty-summary sweep
+
+`CLAUDE.md.j2` template's Sprint planning prep playbook gets a new
+Step 0: scan master-cp's active tables for empty `One-line summary`
+cells and fill the corresponding project's `**Current work:**` line
+before continuing prep. Runs FIRST so the rest of the prep walks a
+fully-populated master-cp.
+
+Triggered by a recurring pattern: pipeline projects (Deal stage) get
+scaffolded with a template-placeholder `**Current work:**` line
+(`_<what's in flight right now>_`) that `_derive_summary` correctly
+reads as empty, leaving the master-cp summary cell blank until
+someone hand-fills the line. The placeholder pattern means new
+pipeline projects can sit summary-less indefinitely.
+
+This is a process fix (CLAUDE.md guidance only) — engine logic
+unchanged. A future v0.10.x can layer in a sync-side fallback
+(synthesize `<Stage> — <Account> pipeline; owner <Name>` when the
+template placeholder is present) so pipeline projects never show
+empty cells even before sprint planning runs. Filed as backlog.
+
+### How tenants upgrade
+
+`~= 0.10` pins pick this up automatically (patch bump). Next `cp sync`
+re-generates `CLAUDE.md` with the new playbook step.
+
 ## v0.10.0 — 2026-05-26
 
 ### Changed — sprint week numbering cuts over from Python `%W` to ISO 8601 (#7)
