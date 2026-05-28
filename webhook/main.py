@@ -1009,6 +1009,35 @@ def _verify_clickup_signature(raw_body: bytes, provided: str) -> None:
         raise HTTPException(status_code=401, detail="invalid signature")
 
 
+def _verify_slack_signature(raw_body: bytes, timestamp: str, provided: str) -> None:
+    """Verify Slack's `X-Slack-Signature` header.
+
+    Slack signs `v0:<timestamp>:<body>` with HMAC-SHA256 against
+    SLACK_SIGNING_SECRET. The header value is `v0=<hex digest>`. Also
+    enforces the 5-minute timestamp freshness window to prevent replays.
+
+    Reference: https://api.slack.com/authentication/verifying-requests-from-slack
+    """
+    secret = os.environ.get("SLACK_SIGNING_SECRET")
+    if not secret:
+        raise HTTPException(500, "SLACK_SIGNING_SECRET not configured")
+    if not provided or not provided.startswith("v0="):
+        raise HTTPException(401, "missing or malformed X-Slack-Signature")
+    if not timestamp:
+        raise HTTPException(401, "missing X-Slack-Request-Timestamp")
+    try:
+        ts_int = int(timestamp)
+    except ValueError:
+        raise HTTPException(401, "X-Slack-Request-Timestamp not an int") from None
+    import time as _time
+    if abs(_time.time() - ts_int) > 300:
+        raise HTTPException(401, "Slack timestamp outside 5-minute freshness window")
+    base = f"v0:{timestamp}:".encode() + raw_body
+    expected = "v0=" + hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, provided):
+        raise HTTPException(401, "invalid Slack signature")
+
+
 def _lookup_proposal_by_clickup_task_id(task_id: str) -> tuple[str, str] | None:
     """Return (cp_ask_hash, project_code) for a given ClickUp task_id.
 
