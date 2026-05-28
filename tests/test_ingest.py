@@ -980,3 +980,135 @@ def test_quick_resume_verbs_preserve_sprint_file_writes(tmp_path: Path) -> None:
     sprint_path = tenant / "sprints" / "2026-W20" / "ggl-5168.md"
     assert cp_path in result.files_written
     assert sprint_path in result.files_written
+
+
+def _make_tenant_w22(tmp_path: Path) -> Path:
+    """Build a tenant whose primary sprint dir is 2026-W22.
+
+    The resolve-risk tests assert on a W22 file because the task spec uses
+    dates around 2026-05-27/28 (which would route to W23 under the
+    Wed-Sun planning-monday roll-forward). Building W22 directly lets us
+    pass `week_iso="2026-W22"` to keep `today=2026-05-28` semantically
+    meaningful for the resolved-at marker without routing surprises.
+    """
+    week_dir = tmp_path / "sprints" / "2026-W22"
+    week_dir.mkdir(parents=True)
+    _scaffold_minimal_sprint_file(week_dir / "ggl-5168.md", "ggl-5168")
+    (week_dir / "_week.md").write_text("## Themes\n\n- _<theme>_\n")
+    return tmp_path
+
+
+def test_execute_plan_resolve_risk_flips_escalated_to_resolved(tmp_path: Path) -> None:
+    """A resolve-risk plan item flips `[escalated · ...]` to `[resolved · ...]`
+    on the bullet whose cp_hash matches. Date in the bullet stays as raised_date;
+    a `cp:resolved-at=<today>` comment is appended for audit."""
+    tenant = _make_tenant_w22(tmp_path)
+    # Seed an escalated risk via the normal ingest path so the bullet has a hash.
+    execute_plan(
+        {"projects": {"ggl-5168": {"risks": [
+            {"text": "Client keeps reopening locked script", "severity": "escalated",
+             "category": "scope", "date": "2026-05-27"},
+        ]}}},
+        tenant_root=tenant, today=date(2026, 5, 27), week_iso="2026-W22",
+    )
+    body_before = (tenant / "sprints" / "2026-W22" / "ggl-5168.md").read_text()
+    import re as _re
+    h = _re.search(r"cp:hash=([0-9a-f]{8})", body_before).group(1)
+    result = execute_plan(
+        {"projects": {"ggl-5168": {"resolve-risk": [
+            {"hash": h, "closed_by": "slack"},
+        ]}}},
+        tenant_root=tenant, today=date(2026, 5, 28), week_iso="2026-W22",
+    )
+    assert result.errors == []
+    body_after = (tenant / "sprints" / "2026-W22" / "ggl-5168.md").read_text()
+    assert "[resolved · scope · 2026-05-27]" in body_after
+    assert "[escalated · scope · 2026-05-27]" not in body_after
+    assert "cp:resolved-at=2026-05-28" in body_after
+    assert "cp:closed-by=slack" in body_after
+
+
+def test_resolve_risk_is_idempotent(tmp_path: Path) -> None:
+    """Running resolve-risk twice with the same hash is a no-op on the second
+    call — the bullet is already resolved, no further mutation."""
+    tenant = _make_tenant_w22(tmp_path)
+    execute_plan(
+        {"projects": {"ggl-5168": {"risks": [
+            {"text": "Recurring escalation", "severity": "escalated",
+             "category": "scope", "date": "2026-05-27"},
+        ]}}},
+        tenant_root=tenant, today=date(2026, 5, 27), week_iso="2026-W22",
+    )
+    import re as _re
+    body0 = (tenant / "sprints" / "2026-W22" / "ggl-5168.md").read_text()
+    h = _re.search(r"cp:hash=([0-9a-f]{8})", body0).group(1)
+    execute_plan(
+        {"projects": {"ggl-5168": {"resolve-risk": [{"hash": h}]}}},
+        tenant_root=tenant, today=date(2026, 5, 28), week_iso="2026-W22",
+    )
+    body1 = (tenant / "sprints" / "2026-W22" / "ggl-5168.md").read_text()
+    r2 = execute_plan(
+        {"projects": {"ggl-5168": {"resolve-risk": [{"hash": h}]}}},
+        tenant_root=tenant, today=date(2026, 5, 28), week_iso="2026-W22",
+    )
+    body2 = (tenant / "sprints" / "2026-W22" / "ggl-5168.md").read_text()
+    assert body1 == body2  # second run is byte-identical
+    assert r2.skipped_duplicate == 1
+
+
+def test_resolve_risk_silently_dedupes_when_hash_not_found(tmp_path: Path) -> None:
+    """Hash not found in sprint file → silent no-op + skipped_duplicate increments.
+
+    Slack-button reruns on stale digest messages are routine (risk was
+    already resolved, message scrolled but lingers). Surfacing those as
+    errors creates noise. The right semantic is 'nothing to do.'
+
+    Distinguishes from 'missing hash field' (still raises) — that's a
+    genuinely malformed plan, not a stale-message click.
+    """
+    tenant = _make_tenant_w22(tmp_path)
+    result = execute_plan(
+        {"projects": {"ggl-5168": {"resolve-risk": [{"hash": "deadbeef"}]}}},
+        tenant_root=tenant, today=date(2026, 5, 28), week_iso="2026-W22",
+    )
+    assert result.errors == []
+    assert result.skipped_duplicate == 1
+
+
+def test_resolve_risk_raises_when_hash_field_missing(tmp_path: Path) -> None:
+    """Missing 'hash' field is genuinely bad input — surface it as an error."""
+    tenant = _make_tenant_w22(tmp_path)
+    result = execute_plan(
+        {"projects": {"ggl-5168": {"resolve-risk": [{"closed_by": "slack"}]}}},
+        tenant_root=tenant, today=date(2026, 5, 28), week_iso="2026-W22",
+    )
+    assert any("missing 'hash'" in e for e in result.errors)
+
+
+def test_resolve_risk_omits_closed_by_marker_when_absent(tmp_path: Path) -> None:
+    """When closed_by is absent, no cp:closed-by marker is appended."""
+    tenant = _make_tenant_w22(tmp_path)
+    execute_plan(
+        {"projects": {"ggl-5168": {"risks": [
+            {"text": "Some risk", "severity": "escalated",
+             "category": "scope", "date": "2026-05-27"},
+        ]}}},
+        tenant_root=tenant, today=date(2026, 5, 27), week_iso="2026-W22",
+    )
+    body0 = (tenant / "sprints" / "2026-W22" / "ggl-5168.md").read_text()
+    import re as _re
+    h = _re.search(r"cp:hash=([0-9a-f]{8})", body0).group(1)
+    execute_plan(
+        {"projects": {"ggl-5168": {"resolve-risk": [{"hash": h}]}}},
+        tenant_root=tenant, today=date(2026, 5, 28), week_iso="2026-W22",
+    )
+    body1 = (tenant / "sprints" / "2026-W22" / "ggl-5168.md").read_text()
+    assert "cp:resolved-at=2026-05-28" in body1
+    assert "cp:closed-by" not in body1
+
+
+def test_resolve_risk_is_in_supported_verbs() -> None:
+    """Regression guard: _validate_plan rejects any unknown verb, so the
+    dispatch table addition is useless without this list edit."""
+    from cp_engine.ingest import _SUPPORTED_VERBS
+    assert "resolve-risk" in _SUPPORTED_VERBS

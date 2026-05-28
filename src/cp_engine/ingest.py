@@ -194,6 +194,7 @@ _SUPPORTED_VERBS = (
     "close-ask",           # → flips an existing [open ...] to [closed ...]
     "add-decision",        # → sprint file's ### Decisions under ## Meeting notes & decisions
     "record-risk",         # → sprint file's ## Dependencies & risks
+    "resolve-risk",        # → flips an existing [escalated|watching ...] risk to [resolved ...]
     "record-stakeholder",  # → sprint file's ### Stakeholders under ## Client communication
     "record-theme",        # → sprints/<W##>/_week.md's ## Themes
     "record-slack-digest", # → sprint file's ### Slack digest under ## Client communication
@@ -336,7 +337,9 @@ def execute_plan(
                 continue
             for item in items:
                 try:
-                    written = _execute_step(verb, code, item, sprint_path)
+                    written = _execute_step(
+                        verb, code, item, sprint_path, today=today
+                    )
                     if written:
                         if sprint_path not in result.files_written:
                             result.files_written.append(sprint_path)
@@ -507,6 +510,8 @@ def _normalize_verb(verb: str) -> str:
         "decision": "add-decision",
         "risks": "record-risk",
         "risk": "record-risk",
+        "resolve_risk": "resolve-risk",
+        "resolves": "resolve-risk",
         "stakeholders": "record-stakeholder",
         "stakeholder": "record-stakeholder",
         "themes": "record-theme",
@@ -522,7 +527,14 @@ def _normalize_verb(verb: str) -> str:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _execute_step(verb: str, code: str, item: dict, sprint_path: Path) -> bool:
+def _execute_step(
+    verb: str,
+    code: str,
+    item: dict,
+    sprint_path: Path,
+    *,
+    today: date | None = None,
+) -> bool:
     """Returns True if a new bullet was appended; False if it was a dup."""
     normalized = _normalize_verb(verb)
     handler = {
@@ -531,13 +543,14 @@ def _execute_step(verb: str, code: str, item: dict, sprint_path: Path) -> bool:
         "close-ask": _write_close_ask,
         "add-decision": _write_decision,
         "record-risk": _write_risk,
+        "resolve-risk": _write_resolve_risk,
         "record-stakeholder": _write_stakeholder,
         "record-slack-digest": _write_slack_digest,
     }.get(normalized)
     if handler is None:
         # Themes are handled separately at the top level.
         raise IngestPlanError(f"verb {verb!r} is not project-scoped")
-    return handler(code, item, sprint_path)
+    return handler(code, item, sprint_path, today=today)
 
 
 def _content_hash(code: str, verb: str, text: str) -> str:
@@ -648,7 +661,7 @@ def _communication_section(body: str) -> str:
     return "Client communication"
 
 
-def _write_inbound(code: str, item: dict, sprint_path: Path) -> bool:
+def _write_inbound(code: str, item: dict, sprint_path: Path, **_) -> bool:
     text = (item.get("text") or "").strip()
     date_s = (item.get("date") or "").strip()
     who = (item.get("who") or "").strip()
@@ -668,7 +681,7 @@ def _write_inbound(code: str, item: dict, sprint_path: Path) -> bool:
     return True
 
 
-def _write_ask(code: str, item: dict, sprint_path: Path) -> bool:
+def _write_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
     text = (item.get("text") or "").strip()
     who = (item.get("who") or "").strip()
     by = (item.get("by") or "").strip()
@@ -689,7 +702,7 @@ def _write_ask(code: str, item: dict, sprint_path: Path) -> bool:
     return True
 
 
-def _write_close_ask(code: str, item: dict, sprint_path: Path) -> bool:
+def _write_close_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
     """Flip an existing `[open ...]` ask to `[closed ...]`.
 
     Match strategy: substring of `text` (or `match`) against existing ask
@@ -727,7 +740,7 @@ def _write_close_ask(code: str, item: dict, sprint_path: Path) -> bool:
     return True
 
 
-def _write_decision(code: str, item: dict, sprint_path: Path) -> bool:
+def _write_decision(code: str, item: dict, sprint_path: Path, **_) -> bool:
     text = (item.get("text") or "").strip()
     date_s = (item.get("date") or _today_iso()).strip()
     cross = bool(item.get("cross_cutting") or item.get("cross-cutting") or False)
@@ -746,7 +759,7 @@ def _write_decision(code: str, item: dict, sprint_path: Path) -> bool:
     return True
 
 
-def _write_risk(code: str, item: dict, sprint_path: Path) -> bool:
+def _write_risk(code: str, item: dict, sprint_path: Path, **_) -> bool:
     text = (item.get("text") or "").strip()
     severity = (item.get("severity") or "watching").strip()
     category = (item.get("category") or "").strip()
@@ -763,7 +776,55 @@ def _write_risk(code: str, item: dict, sprint_path: Path) -> bool:
     return True
 
 
-def _write_stakeholder(code: str, item: dict, sprint_path: Path) -> bool:
+def _write_resolve_risk(
+    code: str, item: dict, sprint_path: Path, *, today: date | None = None,
+) -> bool:
+    """Flip an `[escalated · ...]` or `[watching · ...]` risk to `[resolved · ...]`,
+    matching by cp_hash. Returns True on flip, False if the risk is already
+    resolved OR the hash isn't present at all (idempotent no-op). Raises
+    ``IngestPlanError`` only when the plan item is malformed (missing the
+    ``hash`` field entirely) — that's bad webhook input, distinct from a
+    Slack-button click on a stale digest message (which is routine).
+
+    Appends `<!-- cp:resolved-at=YYYY-MM-DD -->` and optional
+    `<!-- cp:closed-by=<source> -->` audit markers — same pattern as
+    `_write_close_ask`. The raised_date in the bracket stays unchanged
+    (historical fidelity for "when did this become a risk?").
+    """
+    target_hash = (item.get("hash") or "").strip()
+    closed_by = (item.get("closed_by") or "").strip()
+    if not target_hash:
+        raise IngestPlanError("resolve-risk item missing 'hash'")
+
+    body = sprint_path.read_text(encoding="utf-8")
+
+    # Match an existing escalated/watching risk bullet by hash.
+    pattern = re.compile(
+        r"^(?P<prefix>- \[)(?P<sev>escalated|watching)(?P<rest>[^\]]*\][^\n]*"
+        r"cp:hash=" + re.escape(target_hash) + r"[^\n]*?)$",
+        re.MULTILINE,
+    )
+
+    def _flip(m: re.Match) -> str:
+        today_str = (today or date.today()).isoformat()
+        line = m.group("prefix") + "resolved" + m.group("rest")
+        line += f" <!-- cp:resolved-at={today_str} -->"
+        if closed_by:
+            line += f" <!-- cp:closed-by={closed_by} -->"
+        return line
+
+    new_body, n = pattern.subn(_flip, body, count=1)
+    if n == 0:
+        # Either the hash isn't present at all (stale Slack-digest click on
+        # a risk that scrolled off) OR it's present but already resolved
+        # (idempotent rerun). Both are silent no-ops — caller increments
+        # skipped_duplicate, no error surfaced.
+        return False
+    sprint_path.write_text(new_body)
+    return True
+
+
+def _write_stakeholder(code: str, item: dict, sprint_path: Path, **_) -> bool:
     name = (item.get("name") or "").strip()
     role = (item.get("role") or "").strip()
     context = (item.get("context") or "").strip()
@@ -786,7 +847,7 @@ def _write_stakeholder(code: str, item: dict, sprint_path: Path) -> bool:
     return True
 
 
-def _write_slack_digest(code: str, item: dict, sprint_path: Path) -> bool:
+def _write_slack_digest(code: str, item: dict, sprint_path: Path, **_) -> bool:
     """Write one weekly Slack-digest bullet under ## Client communication / ### Slack digest.
 
     Hash includes the ISO week so the same digest text in two different
