@@ -466,3 +466,44 @@ def test_post_digest_propagates_slack_errors(monkeypatch):
 
     with pytest.raises(SlackError, match="channel_not_found"):
         _post_digest_to_recipients(config=_Cfg(), digest_markdown="hi")
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Snooze marker — digest-side filter (Task 1.2 / v0.14.0)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_past_due_skips_snoozed_until_future(tmp_path: Path) -> None:
+    """An open ask with `cp:snoozed-until=<future date>` is excluded from past_due."""
+    sprint = tmp_path / "sprints" / "2026-W22" / "ggl-5168.md"
+    sprint.parent.mkdir(parents=True)
+    sprint.write_text(
+        "## Client communication\n### Open asks\n"
+        "- [open · 2026-05-10 · Rena] Past-due ask <!-- cp:hash=aaaaaaaa -->\n"
+        "- [open · 2026-05-10 · Rena] Snoozed past-due ask "
+        "<!-- cp:snoozed-until=2026-06-15 --> <!-- cp:hash=bbbbbbbb -->\n"
+        "- [open · 2026-05-10 · Rena] Re-emerged ask "
+        "<!-- cp:snoozed-until=2026-05-20 --> <!-- cp:hash=cccccccc -->\n"
+    )
+    from cp_engine.attention_digest import _find_past_due_asks
+    result = _find_past_due_asks(sprint_files=[sprint], today=date(2026, 5, 28))
+    hashes = {a.hash for a in result}
+    assert "aaaaaaaa" in hashes
+    assert "bbbbbbbb" not in hashes
+    assert "cccccccc" in hashes
+
+
+def test_escalated_skips_snoozed_until_future(tmp_path: Path) -> None:
+    sprint = tmp_path / "sprints" / "2026-W22" / "ibx-5167.md"
+    sprint.parent.mkdir(parents=True)
+    sprint.write_text(
+        "## Dependencies & risks\n"
+        "- [escalated · scope · 2026-05-27] Open risk <!-- cp:hash=11111111 -->\n"
+        "- [escalated · scope · 2026-05-27] Snoozed risk "
+        "<!-- cp:snoozed-until=2026-07-01 --> <!-- cp:hash=22222222 -->\n"
+    )
+    from cp_engine.attention_digest import _find_escalated_risks
+    result = _find_escalated_risks(sprint_files=[sprint], today=date(2026, 5, 28), window_days=7)
+    hashes = {r.hash for r in result}
+    assert "11111111" in hashes
+    assert "22222222" not in hashes

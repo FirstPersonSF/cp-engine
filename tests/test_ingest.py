@@ -1112,3 +1112,148 @@ def test_resolve_risk_is_in_supported_verbs() -> None:
     dispatch table addition is useless without this list edit."""
     from cp_engine.ingest import _SUPPORTED_VERBS
     assert "resolve-risk" in _SUPPORTED_VERBS
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Snooze writer (Task 1.2 — v0.14.0)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_snooze_ask_appends_marker_by_hash(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path)
+    execute_plan(
+        {"projects": {"ggl-5168": {"asks": [
+            {"text": "Approve Round 3", "who": "Rena", "date": "2026-05-12"},
+        ]}}},
+        tenant_root=tenant, today=date(2026, 5, 12),
+    )
+    body0 = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
+    import re as _re
+    h = _re.search(r"cp:hash=([0-9a-f]{8})", body0).group(1)
+    r = execute_plan(
+        {"projects": {"ggl-5168": {"snooze-ask": [
+            {"hash": h, "until": "2026-06-01"},
+        ]}}},
+        tenant_root=tenant, today=date(2026, 5, 12),  # Same Tuesday so file stays in W20
+        week_iso="2026-W20",
+    )
+    assert r.errors == []
+    body1 = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
+    assert "cp:snoozed-until=2026-06-01" in body1
+    # Ask is still [open], not flipped to closed.
+    assert "[open · 2026-05-12 · Rena]" in body1
+
+
+def test_snooze_risk_appends_marker_by_hash(tmp_path: Path) -> None:
+    tenant = _make_tenant_w22(tmp_path)
+    execute_plan(
+        {"projects": {"ggl-5168": {"risks": [
+            {"text": "Some risk", "severity": "escalated",
+             "category": "scope", "date": "2026-05-27"},
+        ]}}},
+        tenant_root=tenant, today=date(2026, 5, 27), week_iso="2026-W22",
+    )
+    body0 = (tenant / "sprints" / "2026-W22" / "ggl-5168.md").read_text()
+    import re as _re
+    h = _re.search(r"cp:hash=([0-9a-f]{8})", body0).group(1)
+    execute_plan(
+        {"projects": {"ggl-5168": {"snooze-risk": [
+            {"hash": h, "until": "2026-07-01"},
+        ]}}},
+        tenant_root=tenant, today=date(2026, 5, 28), week_iso="2026-W22",
+    )
+    body1 = (tenant / "sprints" / "2026-W22" / "ggl-5168.md").read_text()
+    assert "cp:snoozed-until=2026-07-01" in body1
+    assert "[escalated · scope · 2026-05-27]" in body1  # severity unchanged
+
+
+def test_snooze_replaces_prior_snooze(tmp_path: Path) -> None:
+    """Re-snoozing the same item REPLACES the prior until-date, not stacks."""
+    tenant = _make_tenant(tmp_path)
+    execute_plan(
+        {"projects": {"ggl-5168": {"asks": [
+            {"text": "Approve Round 3", "who": "Rena", "date": "2026-05-12"},
+        ]}}},
+        tenant_root=tenant, today=date(2026, 5, 12),
+    )
+    import re as _re
+    body0 = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
+    h = _re.search(r"cp:hash=([0-9a-f]{8})", body0).group(1)
+    # Snooze to date A.
+    execute_plan(
+        {"projects": {"ggl-5168": {"snooze-ask": [{"hash": h, "until": "2026-06-01"}]}}},
+        tenant_root=tenant, today=date(2026, 5, 12), week_iso="2026-W20",
+    )
+    # Snooze to date B.
+    execute_plan(
+        {"projects": {"ggl-5168": {"snooze-ask": [{"hash": h, "until": "2026-07-01"}]}}},
+        tenant_root=tenant, today=date(2026, 5, 12), week_iso="2026-W20",
+    )
+    body1 = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
+    # Only the LATEST until-date is present.
+    assert "cp:snoozed-until=2026-07-01" in body1
+    assert "cp:snoozed-until=2026-06-01" not in body1
+    # Only ONE snooze marker total on the line.
+    assert body1.count("cp:snoozed-until=") == 1
+
+
+def test_snooze_writer_preserves_existing_regex_matching(tmp_path: Path) -> None:
+    """REGRESSION GUARD: after snooze-writer mutates a bullet, the existing
+    _OPEN_ASK_RE / _RISK_RE must STILL match the line. The hash marker must
+    stay at end-of-line; the snooze marker must come BEFORE it.
+
+    This guards against the v0.14 design failure mode where appending the
+    snooze marker after the hash would break the digest scanner entirely.
+    """
+    from cp_engine.attention_digest import _OPEN_ASK_RE, _RISK_RE
+    tenant = _make_tenant(tmp_path)
+    # Seed an ask + risk
+    execute_plan(
+        {"projects": {"ggl-5168": {
+            "asks": [{"text": "Approve mocks", "who": "Rena", "date": "2026-05-12"}],
+            "risks": [{"text": "Scope creep", "severity": "escalated",
+                       "category": "scope", "date": "2026-05-12"}],
+        }}},
+        tenant_root=tenant, today=date(2026, 5, 12),
+    )
+    body0 = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
+    assert _OPEN_ASK_RE.search(body0), "open ask should match pre-snooze"
+    assert _RISK_RE.search(body0), "risk should match pre-snooze"
+    ask_hash = _OPEN_ASK_RE.search(body0).group("hash")
+    risk_hash = _RISK_RE.search(body0).group("hash")
+
+    execute_plan(
+        {"projects": {"ggl-5168": {
+            "snooze-ask": [{"hash": ask_hash, "until": "2026-07-01"}],
+            "snooze-risk": [{"hash": risk_hash, "until": "2026-07-01"}],
+        }}},
+        tenant_root=tenant, today=date(2026, 5, 12), week_iso="2026-W20",
+    )
+    body1 = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
+    ask_m = _OPEN_ASK_RE.search(body1)
+    risk_m = _RISK_RE.search(body1)
+    assert ask_m, "open ask must still match _OPEN_ASK_RE after snoozing"
+    assert risk_m, "risk must still match _RISK_RE after snoozing"
+    assert ask_m.group("hash") == ask_hash
+    assert risk_m.group("hash") == risk_hash
+    assert "cp:snoozed-until=2026-07-01" in ask_m.group(0)
+    assert "cp:snoozed-until=2026-07-01" in risk_m.group(0)
+
+    from cp_engine.attention_digest import _find_past_due_asks, _find_escalated_risks
+    pasts = _find_past_due_asks(
+        sprint_files=[tenant / "sprints" / "2026-W20" / "ggl-5168.md"],
+        today=date(2026, 5, 28),
+    )
+    risks = _find_escalated_risks(
+        sprint_files=[tenant / "sprints" / "2026-W20" / "ggl-5168.md"],
+        today=date(2026, 5, 28), window_days=30,
+    )
+    assert pasts == [] and risks == [], (
+        "snoozed-until in the future should suppress these from the digest"
+    )
+
+    from cp_engine.attention_digest import _strip_snooze_marker
+    raw_text = ask_m.group("text")
+    cleaned = _strip_snooze_marker(raw_text)
+    assert "cp:snoozed-until" not in cleaned
+    assert "Approve mocks" in cleaned

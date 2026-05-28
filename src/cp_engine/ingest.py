@@ -195,6 +195,8 @@ _SUPPORTED_VERBS = (
     "add-decision",        # → sprint file's ### Decisions under ## Meeting notes & decisions
     "record-risk",         # → sprint file's ## Dependencies & risks
     "resolve-risk",        # → flips an existing [escalated|watching ...] risk to [resolved ...]
+    "snooze-ask",          # → appends cp:snoozed-until=YYYY-MM-DD on an ask bullet, matched by hash
+    "snooze-risk",         # → appends cp:snoozed-until=YYYY-MM-DD on a risk bullet, matched by hash
     "record-stakeholder",  # → sprint file's ### Stakeholders under ## Client communication
     "record-theme",        # → sprints/<W##>/_week.md's ## Themes
     "record-slack-digest", # → sprint file's ### Slack digest under ## Client communication
@@ -512,6 +514,8 @@ def _normalize_verb(verb: str) -> str:
         "risk": "record-risk",
         "resolve_risk": "resolve-risk",
         "resolves": "resolve-risk",
+        "snooze_ask": "snooze-ask",
+        "snooze_risk": "snooze-risk",
         "stakeholders": "record-stakeholder",
         "stakeholder": "record-stakeholder",
         "themes": "record-theme",
@@ -544,6 +548,12 @@ def _execute_step(
         "add-decision": _write_decision,
         "record-risk": _write_risk,
         "resolve-risk": _write_resolve_risk,
+        "snooze-ask": lambda code, item, sprint_path, **kw: _write_snooze(
+            code, item, sprint_path, bullet_kind="ask", **kw
+        ),
+        "snooze-risk": lambda code, item, sprint_path, **kw: _write_snooze(
+            code, item, sprint_path, bullet_kind="risk", **kw
+        ),
         "record-stakeholder": _write_stakeholder,
         "record-slack-digest": _write_slack_digest,
     }.get(normalized)
@@ -821,6 +831,64 @@ def _write_resolve_risk(
         # skipped_duplicate, no error surfaced.
         return False
     sprint_path.write_text(new_body)
+    return True
+
+
+def _write_snooze(
+    code: str, item: dict, sprint_path: Path, *, bullet_kind: str, **_,
+) -> bool:
+    """Append (or replace) a `cp:snoozed-until=YYYY-MM-DD` marker on an
+    ask or risk bullet matched by cp_hash.
+
+    `bullet_kind` is "ask" or "risk" — used only for the error message;
+    matching is by hash and works against any bullet carrying that hash.
+
+    CRITICAL: the marker is inserted BEFORE the cp:hash marker (not after).
+    The existing _OPEN_ASK_RE and _RISK_RE in attention_digest.py anchor
+    `$` (line-end, MULTILINE) directly after the cp:hash comment; trailing
+    markers would break them. The hash comment stays at end-of-line.
+    """
+    target_hash = (item.get("hash") or "").strip()
+    until = (item.get("until") or "").strip()
+    if not target_hash:
+        raise IngestPlanError(f"snooze-{bullet_kind} item missing 'hash'")
+    if not until:
+        raise IngestPlanError(f"snooze-{bullet_kind} item missing 'until' (YYYY-MM-DD)")
+    try:
+        date.fromisoformat(until)
+    except ValueError as exc:
+        raise IngestPlanError(f"snooze-{bullet_kind} 'until' must be YYYY-MM-DD: {exc}") from exc
+
+    body = sprint_path.read_text(encoding="utf-8")
+
+    line_re = re.compile(
+        r"^(?P<line>- \[[^\]]+\][^\n]*?cp:hash=" + re.escape(target_hash) + r"[^\n]*)$",
+        re.MULTILINE,
+    )
+    m = line_re.search(body)
+    if not m:
+        # Same dedupe semantic as resolve-risk: hash not in body = nothing to do.
+        # Slack-button reruns on stale messages should be silent no-ops.
+        return False
+
+    old_line = m.group("line")
+
+    # Strip any pre-existing snooze marker so we replace rather than stack.
+    stripped = re.sub(
+        r"\s*<!--\s*cp:snoozed-until=\d{4}-\d{2}-\d{2}\s*-->",
+        "",
+        old_line,
+    )
+
+    # Insert the new marker BEFORE the cp:hash marker.
+    new_line = re.sub(
+        r"(\s*<!--\s*cp:hash=[0-9a-f]{8}\s*-->)",
+        f" <!-- cp:snoozed-until={until} -->\\1",
+        stripped,
+        count=1,
+    )
+
+    sprint_path.write_text(body.replace(old_line, new_line, 1))
     return True
 
 

@@ -20,6 +20,16 @@ from typing import Iterable
 log = logging.getLogger(__name__)
 
 
+_SNOOZE_MARKER_RE = re.compile(
+    r"\s*<!--\s*cp:snoozed-until=(?P<until>\d{4}-\d{2}-\d{2})\s*-->\s*"
+)
+
+
+def _strip_snooze_marker(s: str) -> str:
+    """Remove any cp:snoozed-until=... HTML comment from a string."""
+    return _SNOOZE_MARKER_RE.sub(" ", s).strip()
+
+
 # Bullet shape (real production, see ingest._write_ask):
 #   - [open · YYYY-MM-DD · Who[ · by YYYY-MM-DD]] text <!-- cp:hash=8hex -->
 # Separator is U+00B7 (MIDDLE DOT). `who` may contain spaces, parens,
@@ -74,9 +84,14 @@ def _find_past_due_asks(
         code = path.stem
         body = path.read_text(encoding="utf-8")
         for m in _OPEN_ASK_RE.finditer(body):
+            snooze_match = _SNOOZE_MARKER_RE.search(m.group(0))
+            if snooze_match:
+                snooze_until = date.fromisoformat(snooze_match.group("until"))
+                if snooze_until > today:
+                    continue  # still snoozed
             asked = date.fromisoformat(m.group("asked"))
             by_str = m.group("by")
-            text = m.group("text").strip()
+            text = _strip_snooze_marker(m.group("text"))
             who = m.group("who").strip()
             cp_hash = m.group("hash")
             if by_str:
@@ -150,12 +165,17 @@ def _find_escalated_risks(
         for m in _RISK_RE.finditer(body):
             if m.group("sev") != "escalated":
                 continue
+            snooze_match = _SNOOZE_MARKER_RE.search(m.group(0))
+            if snooze_match:
+                snooze_until = date.fromisoformat(snooze_match.group("until"))
+                if snooze_until > today:
+                    continue  # still snoozed
             raised = date.fromisoformat(m.group("raised"))
             if raised < cutoff:
                 continue
             out.append(EscalatedRisk(
                 code=code,
-                text=m.group("text").strip(),
+                text=_strip_snooze_marker(m.group("text")),
                 category=m.group("cat").strip(),
                 raised=raised,
                 hash=m.group("hash"),
