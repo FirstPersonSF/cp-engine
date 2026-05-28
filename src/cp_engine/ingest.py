@@ -715,27 +715,42 @@ def _write_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
 def _write_close_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
     """Flip an existing `[open ...]` ask to `[closed ...]`.
 
-    Match strategy: substring of `text` (or `match`) against existing ask
-    bullets. Returns True if a flip happened; False if no match found OR
-    the ask was already closed (idempotent).
+    Match strategy:
+      - If `hash` is provided, match the open bullet by its `cp:hash=<h>`
+        marker. Used by v0.14's Slack-action handler, which only has the
+        hash from the button payload (no text to substring-match against).
+      - Otherwise, fall back to substring match on `text` (or `match`).
+        Backward-compat with the v0.12 ClickUp pipeline + hand-written
+        close-ask plans, which pass `text` from a Supabase lookup.
 
-    Optional `closed_by` field (e.g. "clickup") appends a trailing
-    `<!-- cp:closed-by=<source> -->` audit marker — used by Task 1.7's
-    ClickUp-close webhook to distinguish closes-from-ClickUp from
-    human-run close-ask plans.
+    Returns True if a flip happened; False if no match found OR the ask
+    was already closed (idempotent).
+
+    Optional `closed_by` field (e.g. "clickup", "slack") appends a
+    trailing `<!-- cp:closed-by=<source> -->` audit marker — used by
+    Task 1.7's ClickUp-close webhook and v0.14's Slack-action handler to
+    distinguish automated closes from human-run close-ask plans.
     """
-    match_text = (item.get("text") or item.get("match") or "").strip()
+    target_hash = (item.get("hash") or "").strip()
     closed_by = (item.get("closed_by") or "").strip()
-    if not match_text:
-        raise IngestPlanError("close-ask item missing 'text' (or 'match')")
+    if target_hash:
+        open_bullet_re = re.compile(
+            r"^(?P<prefix>- `?\[)open(?P<rest>[^\]]*\][^\n]*?cp:hash="
+            + re.escape(target_hash) + r"[^\n]*)$",
+            re.MULTILINE,
+        )
+    else:
+        match_text = (item.get("text") or item.get("match") or "").strip()
+        if not match_text:
+            raise IngestPlanError("close-ask item missing 'hash' or 'text'/'match'")
+        # Find the first bullet under Open asks containing match_text, with status open.
+        open_bullet_re = re.compile(
+            r"^(?P<prefix>- `?\[)open(?P<rest>[^\]]*\][^\n]*"
+            + re.escape(match_text)
+            + r"[^\n]*)$",
+            re.MULTILINE,
+        )
     body = sprint_path.read_text(encoding="utf-8")
-    # Find the first bullet under Open asks containing match_text, with status open.
-    open_bullet_re = re.compile(
-        r"^(?P<prefix>- `?\[)open(?P<rest>[^\]]*\][^\n]*"
-        + re.escape(match_text)
-        + r"[^\n]*)$",
-        re.MULTILINE,
-    )
 
     def _flip(m: re.Match) -> str:
         line = m.group("prefix") + "closed" + m.group("rest")

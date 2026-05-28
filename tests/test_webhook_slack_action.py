@@ -244,6 +244,64 @@ def test_confirmation_text_renders_failure_when_errors_present() -> None:
     assert "hash not found" in msg
 
 
+def test_run_plan_for_one_item_dispatches_close_ask_with_hash(monkeypatch, tmp_path):
+    """End-to-end: a slack-action 'close-ask' payload with a hash flows
+    through _run_plan_for_one_item → _write_close_ask (hash branch) → commit.
+
+    Stubs _cloned_tenant + _commit_and_push so we don't hit network/git.
+    Freezes `date.today()` to a W20 weekday so execute_plan targets the
+    seeded W20 sprint file without auto-scaffolding forward to W23+.
+    """
+    from main import _run_plan_for_one_item
+    import main as webhook_main
+
+    # Build a minimal tenant with one open ask.
+    sprint_dir = tmp_path / "sprints" / "2026-W20"
+    sprint_dir.mkdir(parents=True)
+    ask_hash = "abc12345"
+    (sprint_dir / "ggl-5168.md").write_text(
+        "---\nProject: ggl-5168 — Test\nSprint: 2026-W20\n---\n"
+        "# ggl-5168 — Test · Sprint W19 (May 11 – May 17, 2026)\n"
+        "## Client communication\n### Open asks\n"
+        f"- [open · 2026-05-12 · Rena] Approve Round 3 <!-- cp:hash={ask_hash} -->\n"
+    )
+
+    from contextlib import contextmanager
+    @contextmanager
+    def fake_cloned():
+        yield tmp_path
+
+    captured = {}
+    def fake_commit(*, tenant_root, meeting_id, ingested):
+        captured["meeting_id"] = meeting_id
+        captured["ingested"] = ingested
+        return "fakesha1"
+
+    monkeypatch.setattr(webhook_main, "_cloned_tenant", fake_cloned)
+    monkeypatch.setattr(webhook_main, "_commit_and_push", fake_commit)
+
+    # Freeze today to a W20 weekday so execute_plan writes into the seeded
+    # 2026-W20 sprint file (not a future week that would need scaffolding).
+    from datetime import date as _date
+
+    class _FrozenDate(_date):
+        @classmethod
+        def today(cls):
+            return _date(2026, 5, 12)
+
+    monkeypatch.setattr(webhook_main, "date", _FrozenDate)
+
+    result = _run_plan_for_one_item(
+        verb="close-ask", code="ggl-5168", cp_hash=ask_hash, closed_by="slack",
+    )
+    assert result["committed"] is True
+    assert result["commit_sha"] == "fakesha1"
+    body = (sprint_dir / "ggl-5168.md").read_text()
+    assert "[closed · 2026-05-12 · Rena]" in body
+    assert "cp:closed-by=slack" in body
+    assert captured["meeting_id"] == f"slack-close-ask-{ask_hash}"
+
+
 def test_post_response_url_update_logs_non_ok_status(monkeypatch, caplog):
     """If Slack's response_url returns non-2xx, log a warning with the status
     code and response body (truncated). Don't raise — fire-and-forget UX."""
@@ -271,3 +329,192 @@ def test_post_response_url_update_logs_non_ok_status(monkeypatch, caplog):
         )
     assert any("410" in rec.message for rec in caplog.records)
     assert captured["url"] == "https://hooks.slack.com/expired"
+
+
+# ─────────────────────────────────────────────────────────────
+#  Task 3.3: views.open modal + view_submission handler
+# ─────────────────────────────────────────────────────────────
+
+
+def test_view_submission_dispatches_snooze_with_picked_date(monkeypatch, client):
+    """A view_submission for the snooze modal: validates date, queues background
+    work with `until` from the picker. Returns response_action: clear so Slack
+    closes the modal."""
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-slack-secret")
+    import main as webhook_main
+
+    called = {}
+    def fake_run(*, verb, code, cp_hash, **extras):
+        called["verb"] = verb
+        called["until"] = extras.get("until")
+        return {"committed": True, "commit_sha": "ghi789", "errors": []}
+
+    monkeypatch.setattr(webhook_main, "_run_plan_for_one_item", fake_run)
+    monkeypatch.setattr(webhook_main, "_post_response_url_update", lambda **_kw: None)
+
+    payload = {
+        "type": "view_submission",
+        "view": {
+            "callback_id": "snooze_until_modal",
+            "private_metadata": json.dumps({
+                "verb": "snooze-risk", "code": "ibx-5167", "hash": "09e3d0c7",
+                "response_url": "https://hooks.slack.com/actions/.../fake",
+            }),
+            "state": {"values": {
+                "date_block": {"until_date": {"selected_date": "2026-07-15"}},
+            }},
+        },
+    }
+    body, headers = _signed_slack_request(payload)
+    resp = client.post("/slack-action", content=body, headers=headers)
+    assert resp.status_code == 200
+    assert resp.json() == {"response_action": "clear"}
+
+    import time as _time
+    for _ in range(50):
+        if called:
+            break
+        _time.sleep(0.01)
+
+    assert called["verb"] == "snooze-risk"
+    assert called["until"] == "2026-07-15"
+
+
+def test_view_submission_returns_field_error_when_no_date_picked(monkeypatch, client):
+    """Empty selected_date → inline modal error, no background dispatch."""
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-slack-secret")
+    import main as webhook_main
+
+    called = {}
+    def fake_run(*, verb, code, cp_hash, **extras):
+        called["fired"] = True
+        return {}
+    monkeypatch.setattr(webhook_main, "_run_plan_for_one_item", fake_run)
+
+    payload = {
+        "type": "view_submission",
+        "view": {
+            "callback_id": "snooze_until_modal",
+            "private_metadata": json.dumps({
+                "verb": "snooze-risk", "code": "ibx-5167", "hash": "09e3d0c7",
+            }),
+            "state": {"values": {
+                "date_block": {"until_date": {"selected_date": ""}},
+            }},
+        },
+    }
+    body, headers = _signed_slack_request(payload)
+    resp = client.post("/slack-action", content=body, headers=headers)
+    assert resp.status_code == 200
+    body_json = resp.json()
+    assert body_json["response_action"] == "errors"
+    assert "date_block" in body_json["errors"]
+    assert called == {}
+
+
+def test_view_submission_ignores_unknown_callback_id(monkeypatch, client):
+    """Foreign modal callback_id: return ok+ignored, NOT response_action: clear
+    (which would close a modal we don't own)."""
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-slack-secret")
+    payload = {
+        "type": "view_submission",
+        "view": {"callback_id": "some_other_modal", "private_metadata": "{}"},
+    }
+    body, headers = _signed_slack_request(payload)
+    resp = client.post("/slack-action", content=body, headers=headers)
+    assert resp.status_code == 200
+    body_json = resp.json()
+    assert body_json["ok"] is True
+    assert body_json["ignored"] == "some_other_modal"
+    assert body_json.get("response_action") is None
+
+
+def test_view_submission_handles_malformed_private_metadata(monkeypatch, client):
+    """Malformed private_metadata JSON → return ignored, NOT a 500.
+
+    Defensive: Slack echoes private_metadata verbatim, but version skew or
+    test traffic could feed garbage. We should not return 500 (which Slack
+    retries 3x) or response_action: clear (which closes the modal silently)."""
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-slack-secret")
+    payload = {
+        "type": "view_submission",
+        "view": {
+            "callback_id": "snooze_until_modal",
+            "private_metadata": "{not valid json",
+            "state": {"values": {"date_block": {"until_date": {"selected_date": "2026-07-15"}}}},
+        },
+    }
+    body, headers = _signed_slack_request(payload)
+    resp = client.post("/slack-action", content=body, headers=headers)
+    assert resp.status_code == 200
+    body_json = resp.json()
+    assert body_json["ok"] is True
+    assert "malformed" in body_json.get("ignored", "").lower()
+
+
+def test_view_submission_returns_field_error_when_metadata_missing_fields(monkeypatch, client):
+    """If private_metadata is valid JSON but missing verb/code/hash (schema
+    drift or replayed old payload), return inline modal error rather than
+    silently dispatching a nonsense plan."""
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-slack-secret")
+    import main as webhook_main
+
+    called = {}
+    def fake_run(*, verb, code, cp_hash, **extras):
+        called["fired"] = True
+        return {}
+    monkeypatch.setattr(webhook_main, "_run_plan_for_one_item", fake_run)
+
+    payload = {
+        "type": "view_submission",
+        "view": {
+            "callback_id": "snooze_until_modal",
+            "private_metadata": json.dumps({"verb": "snooze-risk"}),  # missing code, hash
+            "state": {"values": {"date_block": {"until_date": {"selected_date": "2026-07-15"}}}},
+        },
+    }
+    body, headers = _signed_slack_request(payload)
+    resp = client.post("/slack-action", content=body, headers=headers)
+    assert resp.status_code == 200
+    body_json = resp.json()
+    assert body_json["response_action"] == "errors"
+    assert "date_block" in body_json["errors"]
+    assert "expired" in body_json["errors"]["date_block"].lower()
+    assert called == {}
+
+
+def test_view_submission_does_not_set_closed_by_on_snooze_extras(monkeypatch, client):
+    """Snooze items should not carry a `closed_by` field — it's only meaningful
+    for close-ask / resolve-risk. Snoozes are time-shifts, not closures."""
+    monkeypatch.setenv("SLACK_SIGNING_SECRET", "test-slack-secret")
+    import main as webhook_main
+
+    captured = {}
+    def fake_run(*, verb, code, cp_hash, **extras):
+        captured["extras"] = extras
+        return {"committed": True, "commit_sha": "abc", "errors": []}
+    monkeypatch.setattr(webhook_main, "_run_plan_for_one_item", fake_run)
+    monkeypatch.setattr(webhook_main, "_post_response_url_update", lambda **_: None)
+
+    payload = {
+        "type": "view_submission",
+        "view": {
+            "callback_id": "snooze_until_modal",
+            "private_metadata": json.dumps({
+                "verb": "snooze-risk", "code": "ibx-5167", "hash": "09e3d0c7",
+            }),
+            "state": {"values": {"date_block": {"until_date": {"selected_date": "2026-07-15"}}}},
+        },
+    }
+    body, headers = _signed_slack_request(payload)
+    resp = client.post("/slack-action", content=body, headers=headers)
+    assert resp.status_code == 200
+
+    import time as _time
+    for _ in range(50):
+        if captured:
+            break
+        _time.sleep(0.01)
+
+    assert captured["extras"].get("until") == "2026-07-15"
+    assert "closed_by" not in captured["extras"]

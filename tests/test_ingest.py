@@ -1257,3 +1257,56 @@ def test_snooze_writer_preserves_existing_regex_matching(tmp_path: Path) -> None
     cleaned = _strip_snooze_marker(raw_text)
     assert "cp:snoozed-until" not in cleaned
     assert "Approve mocks" in cleaned
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Task 3.3 — hash-based close-ask (Slack button payload)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_close_ask_matches_by_hash_when_provided(tmp_path: Path) -> None:
+    """close-ask with a `hash` field matches by cp:hash marker, not substring.
+
+    Required by v0.14's Slack-action handler which passes only hash in the
+    button payload — there's no text to substring-match against.
+    """
+    tenant = _make_tenant(tmp_path)
+    execute_plan(
+        {"projects": {"ggl-5168": {"asks": [
+            {"text": "Approve Round 3", "who": "Rena", "date": "2026-05-12"},
+        ]}}},
+        tenant_root=tenant, today=date(2026, 5, 12),
+    )
+    import re as _re
+    body0 = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
+    h = _re.search(r"cp:hash=([0-9a-f]{8})", body0).group(1)
+    r = execute_plan(
+        {"projects": {"ggl-5168": {"close-ask": [{"hash": h, "closed_by": "slack"}]}}},
+        tenant_root=tenant, today=date(2026, 5, 28), week_iso="2026-W20",
+    )
+    assert r.errors == []
+    body1 = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
+    assert "[closed · 2026-05-12 · Rena]" in body1
+    assert "cp:closed-by=slack" in body1
+
+
+def test_close_ask_falls_back_to_text_match_when_hash_absent(tmp_path: Path) -> None:
+    """Backward-compat: existing ClickUp pipeline + hand-written close-ask plans
+    still match by substring text when no hash is provided."""
+    tenant = _make_tenant(tmp_path)
+    execute_plan(
+        {"projects": {"ggl-5168": {"asks": [
+            {"text": "Approve Round 3", "who": "Rena", "date": "2026-05-12"},
+        ]}}},
+        tenant_root=tenant, today=date(2026, 5, 12),
+    )
+    r = execute_plan(
+        {"projects": {"ggl-5168": {"close-ask": [
+            {"text": "Approve Round 3", "closed_by": "clickup"},
+        ]}}},
+        tenant_root=tenant, today=date(2026, 5, 28), week_iso="2026-W20",
+    )
+    assert r.errors == []
+    body1 = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
+    assert "[closed · 2026-05-12 · Rena]" in body1
+    assert "cp:closed-by=clickup" in body1

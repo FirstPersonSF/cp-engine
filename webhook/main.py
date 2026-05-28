@@ -1090,12 +1090,53 @@ async def _handle_block_action(payload: dict) -> dict:
 
 
 async def _handle_view_submission(payload: dict) -> dict:
-    """Stub for Task 3.3 — the modal submission handler.
+    """Date-picker modal submission. Validates synchronously (so we can
+    return inline field errors), then backgrounds the plan run + response
+    update so we ack Slack inside the 3-second window."""
+    view = payload.get("view") or {}
+    if view.get("callback_id") != "snooze_until_modal":
+        # Unknown modal — DO NOT return `response_action: clear` (that would
+        # close a modal we don't own). Return `{"ok": True, "ignored": ...}`.
+        return {"ok": True, "ignored": view.get("callback_id")}
+    # Defensive: Slack echoes private_metadata verbatim, but version skew or
+    # test traffic could feed garbage. Bare json.loads → 500 → Slack retries 3x.
+    try:
+        meta = json.loads(view.get("private_metadata") or "{}")
+    except json.JSONDecodeError:
+        log.warning("view_submission has malformed private_metadata; ignoring")
+        return {"ok": True, "ignored": "malformed metadata"}
+    verb = meta.get("verb")
+    code = meta.get("code")
+    cp_hash = meta.get("hash")
+    response_url = meta.get("response_url", "")
+    # Schema-drift / replay guard: missing fields → inline modal error rather
+    # than silently dispatching a nonsense plan (verb=None, code=None, …).
+    if not (verb and code and cp_hash):
+        log.warning("view_submission missing required fields: %s", meta)
+        return {
+            "response_action": "errors",
+            "errors": {"date_block": "Snooze request expired; please click the button again."},
+        }
 
-    Returns {"ok": True} so Slack closes the modal. Task 3.3 fills in
-    the snooze-with-date-from-modal logic.
-    """
-    return {"ok": True}
+    state = view.get("state", {}).get("values", {})
+    until = (
+        state.get("date_block", {})
+             .get("until_date", {})
+             .get("selected_date", "")
+    )
+    if not until:
+        return {
+            "response_action": "errors",
+            "errors": {"date_block": "Pick a date"},
+        }
+
+    _spawn_background(_run_action_in_background(
+        verb=verb, code=code, cp_hash=cp_hash,
+        extras={"until": until},  # No closed_by — only meaningful for close/resolve verbs
+        response_url=response_url,
+        original_message={},  # modal submission has no original to splice into
+    ))
+    return {"response_action": "clear"}
 
 
 async def _run_action_in_background(
@@ -1237,14 +1278,43 @@ def _confirmation_text(*, verb: str, extras: dict, result: dict) -> str:
     return f"{label} · {now_str}{sha_str}"
 
 
-def _open_snooze_modal(*, trigger_id, verb, code, cp_hash, response_url) -> None:
-    """Stub for Task 3.3 — opens a Slack modal with a date picker.
+def _open_snooze_modal(
+    *, trigger_id: str, verb: str, code: str, cp_hash: str, response_url: str,
+) -> None:
+    """Open a Slack modal with a date picker; the actual snooze happens
+    on the subsequent view_submission callback.
 
-    Task 3.2 needs this to be importable so the snooze-pick branch in
-    _handle_block_action can reference it. Task 3.3 implements the full
-    views.open API call.
+    `verb` is the underlying verb without the -pick suffix: 'snooze-ask' or
+    'snooze-risk'. Packed into private_metadata so _handle_view_submission
+    can route the submission to the right plan.
     """
-    raise NotImplementedError("snooze-pick modal opens in Task 3.3")
+    from datetime import date, timedelta
+    from slack_sdk import WebClient
+
+    token = os.environ.get("SLACK_BOT_TOKEN")
+    if not token:
+        raise HTTPException(500, "SLACK_BOT_TOKEN not configured")
+    client = WebClient(token=token)
+    private_metadata = json.dumps({
+        "verb": verb, "code": code, "hash": cp_hash, "response_url": response_url,
+    })
+    client.views_open(trigger_id=trigger_id, view={
+        "type": "modal",
+        "callback_id": "snooze_until_modal",
+        "private_metadata": private_metadata,
+        "title": {"type": "plain_text", "text": "Snooze until"},
+        "submit": {"type": "plain_text", "text": "Snooze"},
+        "blocks": [{
+            "type": "input",
+            "block_id": "date_block",
+            "label": {"type": "plain_text", "text": f"Snooze {code} until:"},
+            "element": {
+                "type": "datepicker",
+                "action_id": "until_date",
+                "initial_date": (date.today() + timedelta(days=7)).isoformat(),
+            },
+        }],
+    })
 
 
 # ─────────────────────────────────────────────────────────────
