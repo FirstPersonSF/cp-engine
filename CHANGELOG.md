@@ -4,6 +4,54 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.14.0 — 2026-05-28
+
+### Added — Interactive daily attention digest with Slack action buttons
+
+Daily digest now emits Block Kit messages with one item per ask + risk and inline action buttons:
+
+- **Risk buttons:** ✅ Resolve · 💤 Snooze 7d · 📅 Snooze until…
+- **Non-ClickUp ask buttons:** ✅ Mark closed · 💤 Snooze 7d · 📅 Snooze until…
+- **ClickUp-linked ask:** single "Open in ClickUp" link button. v0.12's bidirectional close-loop is the authoritative closure path; we deliberately avoid double sources of truth by hiding Resolve/Snooze on those.
+
+Button clicks hit a new `POST /slack-action` endpoint that returns 200 immediately (Slack's 3-second ack window), then runs the cp plan + commit + push in a background asyncio task, then updates the original Slack message in-place via `response_url` so the buttons get replaced with "✅ Resolved · 7:42 AM · `commit_sha`".
+
+### Added — Three new plan verbs
+
+- `resolve-risk` — flips `[escalated · ...]` or `[watching · ...]` to `[resolved · ...]` matching by `cp_hash`. Stamps `<!-- cp:resolved-at=YYYY-MM-DD -->` and optional `<!-- cp:closed-by=<source> -->` audit markers. Hash-not-found is a silent no-op (matches Task 1.1 dedupe pattern) — Slack-button re-clicks on stale messages don't pollute `errors`.
+- `snooze-ask` / `snooze-risk` — append (or replace) a `<!-- cp:snoozed-until=YYYY-MM-DD -->` HTML-comment marker on the bullet matching `cp_hash`. CRITICAL placement: marker is inserted BEFORE the `cp:hash=` marker, NOT after — `_OPEN_ASK_RE` and `_RISK_RE` anchor `$` after `cp:hash`, so trailing markers would silently break the digest scanner. Regression-tested.
+
+Digest scanners (`_find_past_due_asks`, `_find_escalated_risks`) now check each matched bullet for the snooze marker and `continue` if `until > today`. The marker is stripped from the captured text before the digest UI renders it.
+
+### Added — `_write_close_ask` hash branch (Slack-button entry point)
+
+`_write_close_ask` now accepts an optional `hash` field. When present, matches by `cp:hash` marker; otherwise falls through to existing text/match substring (backward compat — v0.12's ClickUp pipeline keeps working unchanged).
+
+### Added — `POST /slack-action` endpoint with async background dispatch
+
+Receives Slack `block_actions` and `view_submission` payloads. Verifies Slack's `v0:<timestamp>:<body>` HMAC scheme against new `SLACK_SIGNING_SECRET` (with 5-minute timestamp replay window). Returns `200` immediately, then runs work in `_spawn_background(...)` (asyncio.create_task with strong-reference retention to defeat asyncio's weak-ref GC). All sync calls (git subprocess, slack_sdk WebClient, requests.post) wrap in `asyncio.to_thread` so the event loop stays free.
+
+For the "Snooze until…" button, the modal must open within the 3-second `trigger_id` expiry window, so `views.open` runs inline (still via `asyncio.to_thread`). The actual snooze happens on the subsequent `view_submission` callback, which `_spawn_background`s the same way as block_actions.
+
+The `_post_response_url_update` helper splices the actions block out of the original message and replaces it with a context block carrying the confirmation text — buttons get visually replaced in-place after the work completes. Non-2xx Slack responses are logged but never raise (fire-and-forget UX).
+
+### Migration notes
+
+- Tenants bump engine pin from `~= 0.13` to `~= 0.14`.
+- **New required env vars on cp-engine-webhook Railway service:**
+  - `SLACK_SIGNING_SECRET` — from the Slack app's "Basic Information" page (used by `/slack-action` for HMAC verification).
+  - `SLACK_BOT_TOKEN` — `xoxb-...` bot token (used by `views.open` to launch the date-picker modal).
+- **Slack app configuration:** enable Interactivity & Shortcuts, set Request URL to `https://cp-engine-production.up.railway.app/slack-action`.
+- `[attention_digest].recipients` in `.cp-engine.toml` MUST be Slack user IDs (not channel IDs). `views.open`'s `trigger_id` is per-user — interactive buttons require a DM context. (Already true since v0.12; reasserting because v0.14 makes it load-bearing.)
+- The CLI surface `cp attention-digest --post-to-slack` is unchanged. The daily-digest cron in cp tenant continues to work as-is.
+
+### Out of scope (deferred)
+
+- Slash-command entry point (`/cp snooze ibx-5167 1w`) — Block-Kit buttons cover the digest case; slash commands cover the "from any context" case, which isn't on the table yet.
+- "Unsnooze" button — if Drew snoozes by mistake, hand-edit the marker out of the sprint file. Add only if the use case proves real.
+- Channel posts — digest stays in DM. Channel posting requires different auth scopes + UX considerations.
+- Audit trail UI — `cp:resolved-at` + `cp:closed-by=slack` markers are in the bullet markdown; a queryable audit page lives in dashboard territory, not engine territory.
+
 ## v0.13.0 — 2026-05-27
 
 ### Fixed — auto-ingest no longer drops content when target sprint file is missing

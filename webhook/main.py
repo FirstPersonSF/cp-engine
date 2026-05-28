@@ -10,6 +10,8 @@ git push using a deploy key on the cp tenant repo with write access.
 
 Endpoints:
   POST /api/auto-ingest   — main entry; HMAC-signed by caller
+  POST /clickup-task-closed — ClickUp → cp bullet-flip (v0.12+); HMAC-signed
+  POST /slack-action      — Slack interactive button + modal (v0.14+); HMAC-signed
   GET  /health            — liveness check; reports cp-engine version
 
 Required env vars:
@@ -21,6 +23,12 @@ Required env vars:
   GIT_SSH_KEY             — private SSH key matching the deploy key
   GIT_AUTHOR_NAME         — "cp-engine-webhook"
   GIT_AUTHOR_EMAIL        — "webhook@firstperson.is" or similar
+  CLICKUP_WEBHOOK_SECRET  — (v0.12+) HMAC for /clickup-task-closed; separate
+                            from WEBHOOK_HMAC_SECRET so they rotate independently
+  SLACK_SIGNING_SECRET    — (v0.14+) HMAC for /slack-action; from Slack app's
+                            Basic Information page
+  SLACK_BOT_TOKEN         — (v0.14+) `xoxb-...`; used by views.open to launch
+                            the "Snooze until…" date-picker modal
 """
 
 from __future__ import annotations
