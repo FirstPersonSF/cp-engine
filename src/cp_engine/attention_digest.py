@@ -300,13 +300,192 @@ def _md_format_date(d: date) -> str:
     return f"{d.month}/{d.day}"
 
 
-def _post_digest_to_recipients(*, config, digest_markdown: str) -> list[str]:
+def _render_digest_blocks(
+    digest: dict,
+    *,
+    recipient_name: str,
+    clickup_task_ids: dict[str, str] | None = None,
+) -> list[dict]:
+    """Render the daily attention digest as a Block Kit `blocks` array.
+
+    `clickup_task_ids` maps cp_hash → ClickUp task_id for any ask pushed to
+    ClickUp via v0.12's pipeline. Those asks get a single 'Open in ClickUp'
+    link button instead of the Resolve/Snooze trio; v0.12's bidirectional
+    close-loop is the authoritative closure path for them.
+
+    Reference: https://api.slack.com/block-kit
+    """
+    clickup_task_ids = clickup_task_ids or {}
+    past_due = digest.get("past_due") or []
+    escalated = digest.get("escalated") or []
+    allocation = digest.get("allocation") or []
+
+    if not past_due and not escalated and not allocation:
+        return [{
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"*{recipient_name}, all clear this morning.* "
+                    "No past-due asks, no new escalations, allocation within caps."
+                ),
+            },
+        }]
+
+    blocks: list[dict] = [{
+        "type": "header",
+        "text": {"type": "plain_text", "text": f"{recipient_name}, your cp scan"},
+    }]
+
+    if past_due:
+        past_due_sorted = sorted(past_due, key=lambda a: a.days_past, reverse=True)
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"⏰ *{len(past_due_sorted)} ask{'s' if len(past_due_sorted) != 1 else ''} past due*",
+            },
+        })
+        for ask in past_due_sorted:
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"`{ask.code}` — {ask.text}"},
+            })
+            blocks.append({
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": f"{ask.days_past}d past · asked {ask.asked.isoformat()} · {ask.who}",
+                }],
+            })
+            clickup_id = clickup_task_ids.get(ask.hash)
+            if clickup_id:
+                blocks.append({
+                    "type": "actions",
+                    "elements": [{
+                        "type": "button",
+                        "text": {"type": "plain_text", "text": "Open in ClickUp"},
+                        "url": f"https://app.clickup.com/t/{clickup_id}",
+                    }],
+                })
+            else:
+                blocks.append({
+                    "type": "actions",
+                    "elements": _ask_action_buttons(code=ask.code, cp_hash=ask.hash),
+                })
+
+    if escalated:
+        escalated_sorted = sorted(escalated, key=lambda r: r.raised, reverse=True)
+        blocks.append({"type": "divider"})
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": f"🚨 *{len(escalated_sorted)} risk{'s' if len(escalated_sorted) != 1 else ''} escalated this week*",
+            },
+        })
+        for risk in escalated_sorted:
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"`{risk.code}` — {risk.text}"},
+            })
+            blocks.append({
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": f"{risk.category} · raised {risk.raised.isoformat()}",
+                }],
+            })
+            blocks.append({
+                "type": "actions",
+                "elements": _risk_action_buttons(code=risk.code, cp_hash=risk.hash),
+            })
+
+    if allocation:
+        blocks.append({"type": "divider"})
+        blocks.append({
+            "type": "section",
+            "text": {"type": "mrkdwn", "text": "📊 *Allocation watch*"},
+        })
+        for entry in allocation:
+            blocks.append({
+                "type": "section",
+                "text": {"type": "mrkdwn", "text": f"• {entry}"},
+            })
+
+    return blocks
+
+
+def _ask_action_buttons(*, code: str, cp_hash: str) -> list[dict]:
+    """Three buttons for a non-ClickUp ask: Mark closed, Snooze 7d, Snooze until..."""
+    return [
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "✅ Mark closed"},
+            "style": "primary",
+            "value": f"close-ask|{code}|{cp_hash}",
+            "action_id": f"close-ask_{code}_{cp_hash}",
+        },
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "💤 Snooze 7d"},
+            "value": f"snooze-ask-7d|{code}|{cp_hash}",
+            "action_id": f"snooze-ask-7d_{code}_{cp_hash}",
+        },
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "📅 Snooze until…"},
+            "value": f"snooze-ask-pick|{code}|{cp_hash}",
+            "action_id": f"snooze-ask-pick_{code}_{cp_hash}",
+        },
+    ]
+
+
+def _risk_action_buttons(*, code: str, cp_hash: str) -> list[dict]:
+    return [
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "✅ Resolve"},
+            "style": "primary",
+            "value": f"resolve-risk|{code}|{cp_hash}",
+            "action_id": f"resolve-risk_{code}_{cp_hash}",
+        },
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "💤 Snooze 7d"},
+            "value": f"snooze-risk-7d|{code}|{cp_hash}",
+            "action_id": f"snooze-risk-7d_{code}_{cp_hash}",
+        },
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "📅 Snooze until…"},
+            "value": f"snooze-risk-pick|{code}|{cp_hash}",
+            "action_id": f"snooze-risk-pick_{code}_{cp_hash}",
+        },
+    ]
+
+
+def _post_digest_to_recipients(
+    *,
+    config,
+    digest: dict,
+    recipient_name: str = "Drew",
+    clickup_task_ids: dict[str, str] | None = None,
+) -> list[str]:
     """Post the digest as a Slack DM to each configured recipient.
 
     Reads recipients from `config.attention_digest.recipients`. Empty
     list → raises `SlackError` with a clear message (caller can decide
     to log + skip). Returns the list of message timestamps for the
     successful posts.
+
+    Sends BOTH the markdown text (notification preview + accessibility
+    fallback) AND the Block Kit blocks (rich rendering with per-item
+    action buttons). `clickup_task_ids` maps cp_hash → ClickUp task_id
+    for asks already pushed to ClickUp; those asks get an "Open in
+    ClickUp" link button instead of Resolve/Snooze.
 
     If ANY post fails, the function raises (doesn't retry, doesn't
     partial-succeed silently). Slack's API is reliable enough that
@@ -322,11 +501,22 @@ def _post_digest_to_recipients(*, config, digest_markdown: str) -> list[str]:
             "in .cp-engine.toml to a list of Slack user IDs."
         )
 
+    text_fallback = compose_digest(
+        digest, recipient_name=recipient_name, today=date.today()
+    )
+    blocks = _render_digest_blocks(
+        digest,
+        recipient_name=recipient_name,
+        clickup_task_ids=clickup_task_ids or {},
+    )
+
     token = slack_mod.load_slack_token(config)
     client = WebClient(token=token)
 
     timestamps: list[str] = []
     for user_id in recipients:
-        ts = slack_mod.post_dm(client, user_id=user_id, text=digest_markdown)
+        ts = slack_mod.post_dm(
+            client, user_id=user_id, text=text_fallback, blocks=blocks
+        )
         timestamps.append(ts)
     return timestamps

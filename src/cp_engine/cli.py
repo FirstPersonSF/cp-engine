@@ -1649,9 +1649,20 @@ def attention_digest_cmd(post_to_slack: bool, recipient: str, today) -> None:
 
     if post_to_slack:
         from cp_engine.slack import SlackError
+        # Look up ClickUp task IDs for past-due asks so the Block Kit
+        # renderer can emit "Open in ClickUp" link buttons instead of
+        # Resolve/Snooze for asks already pushed via v0.12's pipeline.
+        # Degrades to {} on any failure — digest send must not fail.
+        clickup_task_ids: dict[str, str] = {}
+        if digest.get("past_due"):
+            hashes = [a.hash for a in digest["past_due"]]
+            clickup_task_ids = _fetch_clickup_task_ids_for_hashes(config, hashes)
         try:
             timestamps = _post_digest_to_recipients(
-                config=config, digest_markdown=markdown
+                config=config,
+                digest=digest,
+                recipient_name=recipient,
+                clickup_task_ids=clickup_task_ids,
             )
         except SlackError as exc:
             click.echo(f"Slack post failed: {exc}", err=True)
@@ -1662,6 +1673,45 @@ def attention_digest_cmd(post_to_slack: bool, recipient: str, today) -> None:
         return
 
     click.echo(markdown.rstrip("\n"))
+
+
+def _fetch_clickup_task_ids_for_hashes(config, hashes: list[str]) -> dict[str, str]:
+    """Map each cp_ask_hash to its clickup_task_id (if any).
+
+    Returns {} on any failure — Supabase missing, query error, network. The
+    digest must still send when this helper degrades, because the
+    Slack-button UX is a nice-to-have on top of the existing markdown digest.
+    """
+    import logging
+    import os
+
+    log = logging.getLogger(__name__)
+
+    if not hashes:
+        return {}
+    try:
+        from supabase import create_client
+        url = os.environ.get("SUPABASE_URL")
+        key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY")
+        if not url or not key:
+            log.info("clickup task-id lookup skipped: SUPABASE env not set")
+            return {}
+        client = create_client(url, key)
+        resp = (
+            client.table("clickup_task_proposals")
+            .select("cp_ask_hash, clickup_task_id")
+            .in_("cp_ask_hash", hashes)
+            .not_.is_("clickup_task_id", "null")
+            .execute()
+        )
+        return {
+            row["cp_ask_hash"]: row["clickup_task_id"]
+            for row in (resp.data or [])
+            if row.get("clickup_task_id")
+        }
+    except Exception as exc:  # noqa: BLE001 — digest send must not fail
+        log.warning("clickup task-id lookup failed (degrading to no links): %s", exc)
+        return {}
 
 
 def _load_config_or_die() -> "TenantConfig":  # noqa: F821

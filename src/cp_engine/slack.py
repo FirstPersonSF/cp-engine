@@ -250,18 +250,31 @@ def load_slack_token(config: TenantConfig) -> str:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def post_dm(client, *, user_id: str, text: str) -> str:
+def post_dm(
+    client,
+    *,
+    user_id: str,
+    text: str,
+    blocks: list[dict] | None = None,
+) -> str:
     """Post a Slack DM via chat.postMessage with channel=<user_id>.
 
     Slack allows DMing a user by passing their user ID as the `channel`
     parameter — the API auto-opens a DM if one doesn't already exist.
     Returns the message timestamp (ts) for traceability.
 
+    `text` is always passed (notification preview + accessibility
+    fallback). `blocks` is optional — when provided, Slack renders the
+    rich layout and falls back to `text` for notifications/screen-readers.
+
     Raises `SlackError` on any API failure with the Slack-returned
     reason verbatim.
     """
+    kwargs = {"channel": user_id, "text": text}
+    if blocks is not None:
+        kwargs["blocks"] = blocks
     try:
-        resp = client.chat_postMessage(channel=user_id, text=text)
+        resp = client.chat_postMessage(**kwargs)
     except Exception as exc:  # slack_sdk.errors.SlackApiError or transport
         raise SlackError(
             f"chat_postMessage failed for user={user_id}: {exc}"

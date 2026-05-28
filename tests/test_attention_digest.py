@@ -401,7 +401,10 @@ def test_post_digest_raises_when_no_recipients_configured():
         attention_digest = AttentionDigestConfig(recipients=())
 
     with pytest.raises(SlackError, match="No recipients configured"):
-        _post_digest_to_recipients(config=_Cfg(), digest_markdown="hi")
+        _post_digest_to_recipients(
+            config=_Cfg(),
+            digest={"past_due": [], "escalated": [], "allocation": []},
+        )
 
 
 def _install_fake_slack_sdk(monkeypatch):
@@ -420,14 +423,14 @@ def _install_fake_slack_sdk(monkeypatch):
 
 
 def test_post_digest_posts_to_each_recipient(monkeypatch):
-    """Each recipient gets one chat_postMessage call with the digest text."""
+    """Each recipient gets one chat_postMessage call with text fallback + blocks."""
     from cp_engine.attention_digest import _post_digest_to_recipients
     from cp_engine.config import AttentionDigestConfig
 
-    posted: list[tuple[str, str]] = []
+    posted: list[tuple[str, str, object]] = []
 
-    def fake_post_dm(client, *, user_id, text):
-        posted.append((user_id, text))
+    def fake_post_dm(client, *, user_id, text, blocks=None):
+        posted.append((user_id, text, blocks))
         return "1234.5678"
 
     class _Cfg:
@@ -439,11 +442,17 @@ def test_post_digest_posts_to_each_recipient(monkeypatch):
     _install_fake_slack_sdk(monkeypatch)
 
     timestamps = _post_digest_to_recipients(
-        config=_Cfg(), digest_markdown="morning digest"
+        config=_Cfg(),
+        digest={"past_due": [], "escalated": [], "allocation": []},
+        recipient_name="Drew",
     )
     assert len(posted) == 2
-    assert posted[0] == ("U1", "morning digest")
-    assert posted[1] == ("U2", "morning digest")
+    # text fallback comes from compose_digest — should include "all clear"
+    assert "all clear" in posted[0][1].lower()
+    assert "all clear" in posted[1][1].lower()
+    # Block Kit blocks are also passed (the empty-digest "all clear" section)
+    assert posted[0][2] is not None
+    assert posted[0][2][0]["type"] == "section"
     assert timestamps == ["1234.5678", "1234.5678"]
 
 
@@ -453,7 +462,7 @@ def test_post_digest_propagates_slack_errors(monkeypatch):
     from cp_engine.config import AttentionDigestConfig
     from cp_engine.slack import SlackError
 
-    def failing_post_dm(client, *, user_id, text):
+    def failing_post_dm(client, *, user_id, text, blocks=None):
         raise SlackError(f"channel_not_found for {user_id}")
 
     class _Cfg:
@@ -465,7 +474,10 @@ def test_post_digest_propagates_slack_errors(monkeypatch):
     _install_fake_slack_sdk(monkeypatch)
 
     with pytest.raises(SlackError, match="channel_not_found"):
-        _post_digest_to_recipients(config=_Cfg(), digest_markdown="hi")
+        _post_digest_to_recipients(
+            config=_Cfg(),
+            digest={"past_due": [], "escalated": [], "allocation": []},
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -507,3 +519,117 @@ def test_escalated_skips_snoozed_until_future(tmp_path: Path) -> None:
     hashes = {r.hash for r in result}
     assert "11111111" in hashes
     assert "22222222" not in hashes
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Block Kit rendering (Task 2.1)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_render_digest_blocks_emits_header_and_per_item_blocks() -> None:
+    """Each past-due ask + escalated risk becomes one section block plus one
+    actions block. ClickUp-linked asks (those with a clickup_task_id present
+    in the corresponding clickup_task_proposals row) get a single 'Open in
+    ClickUp' link button instead of the Resolve/Snooze trio.
+
+    For this test, we pass clickup_task_ids as a dict keyed by cp_hash so the
+    renderer doesn't have to do its own Supabase lookup.
+    """
+    from cp_engine.attention_digest import (
+        PastDueAsk, EscalatedRisk, _render_digest_blocks,
+    )
+    digest = {
+        "past_due": [
+            PastDueAsk(code="ibx-5167", text="Re-record VO", who="Marcello",
+                       asked=date(2026, 5, 27), by=None, days_past=1, hash="6a1b52d2"),
+            PastDueAsk(code="ggl-5168", text="Approve mocks", who="Rena",
+                       asked=date(2026, 5, 20), by=None, days_past=8, hash="abc12345"),
+        ],
+        "escalated": [
+            EscalatedRisk(code="ibx-5167", text="Client keeps reopening locked script",
+                          category="scope", raised=date(2026, 5, 27), hash="09e3d0c7"),
+        ],
+        "allocation": [],
+    }
+    blocks = _render_digest_blocks(
+        digest, recipient_name="Drew",
+        clickup_task_ids={"abc12345": "task-789"},
+    )
+    block_types = [b["type"] for b in blocks]
+    assert block_types[0] == "header"
+    assert block_types.count("actions") == 3  # 2 asks + 1 risk
+    actions_blocks = [b for b in blocks if b["type"] == "actions"]
+    clickup_action = next(
+        b for b in actions_blocks
+        if any(el.get("text", {}).get("text") == "Open in ClickUp"
+               for el in b["elements"])
+    )
+    assert clickup_action["elements"][0]["url"].endswith("/t/task-789")
+    non_clickup_action = next(
+        b for b in actions_blocks
+        if any("Resolve" not in el.get("text", {}).get("text", "")
+               and "Mark closed" in el.get("text", {}).get("text", "")
+               for el in b["elements"])
+    )
+    assert len(non_clickup_action["elements"]) == 3
+    risk_action = next(
+        b for b in actions_blocks
+        if any(el.get("value", "").startswith("resolve-risk|") for el in b["elements"])
+    )
+    resolve_btn = next(
+        el for el in risk_action["elements"]
+        if el.get("value", "").startswith("resolve-risk|")
+    )
+    assert resolve_btn["value"] == "resolve-risk|ibx-5167|09e3d0c7"
+    all_action_ids = [
+        el["action_id"]
+        for b in actions_blocks
+        for el in b["elements"]
+        if "action_id" in el  # url buttons don't have action_id
+    ]
+    assert len(all_action_ids) == len(set(all_action_ids)), (
+        f"action_ids must be unique within a Slack message: {all_action_ids}"
+    )
+
+
+def test_render_digest_blocks_unique_action_ids_with_duplicate_hash() -> None:
+    """REGRESSION GUARD: if two asks share a cp_hash (unusual but possible via
+    auto-ingest race or hand-edit), action_ids must still be unique across the
+    message. Slack rejects the entire message on duplicate action_ids.
+    Namespacing action_id by code+hash provides the uniqueness."""
+    from cp_engine.attention_digest import (
+        PastDueAsk, EscalatedRisk, _render_digest_blocks,
+    )
+    digest = {
+        "past_due": [
+            PastDueAsk(code="ibx-5167", text="A", who="X",
+                       asked=date(2026, 5, 27), by=None, days_past=1, hash="dup"),
+            PastDueAsk(code="ggl-5168", text="B", who="Y",
+                       asked=date(2026, 5, 27), by=None, days_past=2, hash="dup"),
+        ],
+        "escalated": [],
+        "allocation": [],
+    }
+    blocks = _render_digest_blocks(digest, recipient_name="Drew", clickup_task_ids={})
+    action_ids = [
+        el["action_id"]
+        for b in blocks
+        if b.get("type") == "actions"
+        for el in b["elements"]
+        if "action_id" in el
+    ]
+    assert len(action_ids) == len(set(action_ids)), (
+        f"Duplicate cp_hash across asks must still yield unique action_ids: {action_ids}"
+    )
+
+
+def test_render_digest_blocks_empty_renders_all_clear() -> None:
+    from cp_engine.attention_digest import _render_digest_blocks
+    blocks = _render_digest_blocks(
+        {"past_due": [], "escalated": [], "allocation": []},
+        recipient_name="Drew",
+        clickup_task_ids={},
+    )
+    assert len(blocks) == 1
+    assert blocks[0]["type"] == "section"
+    assert "all clear" in blocks[0]["text"]["text"].lower()

@@ -63,3 +63,35 @@ def test_cli_attention_digest_today_option_overrides_date(tmp_path, monkeypatch)
     result = runner.invoke(main, ["attention-digest", "--today", "2026-05-27"])
     assert result.exit_code == 0
     # We're not asserting specific dates render — just that the option parses.
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  ClickUp task-id lookup degradation (Task 2.1)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_attention_digest_sends_when_clickup_lookup_fails(monkeypatch):
+    """If Supabase is unavailable, the digest still sends — ClickUp-linked
+    asks just get the standard Resolve buttons instead of an Open-in-ClickUp
+    link. NEW NETWORK DEPENDENCY in the digest path: if this fails wrong,
+    every daily digest fails."""
+    from cp_engine.cli import _fetch_clickup_task_ids_for_hashes
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_KEY", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    result = _fetch_clickup_task_ids_for_hashes(None, ["aaaa1111", "bbbb2222"])
+    assert result == {}
+
+
+def test_attention_digest_sends_when_clickup_query_raises(monkeypatch):
+    """Even when create_client raises, the helper returns {} and digest send proceeds."""
+    from cp_engine.cli import _fetch_clickup_task_ids_for_hashes
+    monkeypatch.setenv("SUPABASE_URL", "https://nonexistent.invalid")
+    monkeypatch.setenv("SUPABASE_KEY", "fake")
+
+    def _boom(*a, **k):
+        raise RuntimeError("network failure")
+
+    monkeypatch.setattr("supabase.create_client", _boom, raising=False)
+    result = _fetch_clickup_task_ids_for_hashes(None, ["aaaa1111"])
+    assert result == {}
