@@ -1375,21 +1375,45 @@ def _verify_slack_signature(raw_body: bytes, timestamp: str, provided: str) -> N
     """
     secret = os.environ.get("SLACK_SIGNING_SECRET")
     if not secret:
+        log.warning("slack-verify rejected: SLACK_SIGNING_SECRET not configured")
         raise HTTPException(500, "SLACK_SIGNING_SECRET not configured")
     if not provided or not provided.startswith("v0="):
+        log.warning(
+            "slack-verify rejected: missing or malformed X-Slack-Signature "
+            "(provided=%r)", (provided or "")[:16],
+        )
         raise HTTPException(401, "missing or malformed X-Slack-Signature")
     if not timestamp:
+        log.warning("slack-verify rejected: missing X-Slack-Request-Timestamp")
         raise HTTPException(401, "missing X-Slack-Request-Timestamp")
     try:
         ts_int = int(timestamp)
     except ValueError:
+        log.warning("slack-verify rejected: timestamp not an int: %r", timestamp[:32])
         raise HTTPException(401, "X-Slack-Request-Timestamp not an int") from None
     import time as _time
-    if abs(_time.time() - ts_int) > 300:
+    skew = _time.time() - ts_int
+    if abs(skew) > 300:
+        log.warning(
+            "slack-verify rejected: timestamp outside 5-min window (skew=%.1fs)",
+            skew,
+        )
         raise HTTPException(401, "Slack timestamp outside 5-minute freshness window")
     base = f"v0:{timestamp}:".encode() + raw_body
     expected = "v0=" + hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, provided):
+        # Diagnostic logging: never log the full secret OR the full signatures
+        # (would leak HMAC state). Log first 6 hex chars of expected vs provided
+        # so we can tell if it's a wrong-secret-entirely case (totally different
+        # prefixes) vs body-encoding case (close prefixes but not exact match).
+        log.warning(
+            "slack-verify rejected: HMAC mismatch (expected_prefix=%s provided_prefix=%s "
+            "body_len=%d secret_len=%d)",
+            expected[:9],  # "v0=" + 6 hex chars
+            provided[:9],
+            len(raw_body),
+            len(secret),
+        )
         raise HTTPException(401, "invalid Slack signature")
 
 

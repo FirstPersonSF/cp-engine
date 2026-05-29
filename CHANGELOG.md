@@ -4,6 +4,16 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.14.1 — 2026-05-28
+
+### Added — diagnostic logging on all `/slack-action` 401 branches
+
+`_verify_slack_signature` now emits `log.warning(...)` on every 401 reject path, with enough context to diagnose which of the 5 verification checks failed (missing/malformed header, missing/non-int timestamp, replay-window skew, or HMAC mismatch). For HMAC mismatches, logs the first 9 chars of expected vs provided signatures (safe: 6 hex chars of a single HMAC output don't compromise the secret), plus body and secret lengths so wrong-secret-entirely cases are distinguishable from body-encoding mismatches.
+
+Triggered by a production debugging session: silent 401s on real Slack callbacks gave only the access-log line ("401 Unauthorized"), with the HTTPException detail string not surfaced anywhere actionable. Now the application logs name the exact failure mode.
+
+No behavior change beyond logging. Same env vars.
+
 ## v0.14.0 — 2026-05-28
 
 ### Added — Interactive daily attention digest with Slack action buttons
