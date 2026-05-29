@@ -113,7 +113,7 @@ def test_slack_action_resolve_risk_acks_immediately_and_queues_work(
 
     update_calls = []
 
-    def fake_update(*, response_url, original_message, confirmation):
+    def fake_update(*, response_url, original_message, confirmation, clicked_action_id=""):
         update_calls.append({"url": response_url, "confirmation": confirmation})
 
     monkeypatch.setattr(webhook_main, "_run_plan_for_one_item", fake_run)
@@ -326,9 +326,101 @@ def test_post_response_url_update_logs_non_ok_status(monkeypatch, caplog):
             response_url="https://hooks.slack.com/expired",
             original_message={"blocks": []},
             confirmation="✅ Done",
+            clicked_action_id="",
         )
     assert any("410" in rec.message for rec in caplog.records)
     assert captured["url"] == "https://hooks.slack.com/expired"
+
+
+def test_post_response_url_update_replaces_only_clicked_action_block(monkeypatch):
+    """REGRESSION GUARD (v0.14.2, Bug 1 fix): When a daily digest has N items
+    each with their own actions block, clicking ONE button must only replace
+    that ONE actions block — not all of them.
+
+    Before this fix, _post_response_url_update walked every actions block in
+    the message and replaced each with the same confirmation, so one click
+    visually closed every item in the digest.
+
+    The fix: thread the clicked action_id through and only replace the actions
+    block whose element matches.
+    """
+    from main import _post_response_url_update
+
+    captured = {}
+    def fake_post(url, **kw):
+        captured["json"] = kw.get("json")
+        class _R:
+            status_code = 200
+            text = "ok"
+            ok = True
+        return _R()
+    monkeypatch.setattr("requests.post", fake_post)
+
+    # Three items, each with their own actions block. The user clicked the
+    # SECOND item's Resolve button.
+    original_message = {
+        "blocks": [
+            {"type": "header", "text": {"type": "plain_text", "text": "scan"}},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "item 1"}},
+            {"type": "actions", "elements": [
+                {"type": "button", "action_id": "resolve-risk_a-1_aaaa1111"},
+            ]},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "item 2"}},
+            {"type": "actions", "elements": [
+                {"type": "button", "action_id": "resolve-risk_b-2_bbbb2222"},
+            ]},
+            {"type": "section", "text": {"type": "mrkdwn", "text": "item 3"}},
+            {"type": "actions", "elements": [
+                {"type": "button", "action_id": "resolve-risk_c-3_cccc3333"},
+            ]},
+        ],
+    }
+    _post_response_url_update(
+        response_url="https://hooks.slack.com/fake",
+        original_message=original_message,
+        confirmation="✅ Resolved",
+        clicked_action_id="resolve-risk_b-2_bbbb2222",
+    )
+
+    new_blocks = captured["json"]["blocks"]
+    # Item 1's actions block: unchanged (still type=actions)
+    assert new_blocks[2]["type"] == "actions"
+    assert new_blocks[2]["elements"][0]["action_id"] == "resolve-risk_a-1_aaaa1111"
+    # Item 2's actions block: replaced with context carrying the confirmation
+    assert new_blocks[4]["type"] == "context"
+    assert "Resolved" in new_blocks[4]["elements"][0]["text"]
+    # Item 3's actions block: unchanged
+    assert new_blocks[6]["type"] == "actions"
+    assert new_blocks[6]["elements"][0]["action_id"] == "resolve-risk_c-3_cccc3333"
+
+
+def test_post_response_url_update_logs_when_action_id_not_found(monkeypatch, caplog):
+    """If the clicked action_id can't be found in original_message blocks
+    (e.g. message was edited mid-click), log a warning. Don't silently
+    swallow the confirmation by collapsing every actions block (the v0.14.1
+    bug we're fixing)."""
+    from main import _post_response_url_update
+    import logging as _logging
+
+    monkeypatch.setattr("requests.post", lambda *a, **kw: type(
+        "R", (), {"status_code": 200, "text": "", "ok": True}
+    )())
+
+    original_message = {
+        "blocks": [
+            {"type": "actions", "elements": [
+                {"type": "button", "action_id": "real-id_a_aaaa"},
+            ]},
+        ],
+    }
+    with caplog.at_level(_logging.WARNING):
+        _post_response_url_update(
+            response_url="https://hooks.slack.com/fake",
+            original_message=original_message,
+            confirmation="✅ Done",
+            clicked_action_id="bogus_id_that_does_not_exist",
+        )
+    assert any("not found" in rec.message for rec in caplog.records)
 
 
 # ─────────────────────────────────────────────────────────────

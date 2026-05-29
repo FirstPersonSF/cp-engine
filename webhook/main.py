@@ -1054,6 +1054,13 @@ async def _handle_block_action(payload: dict) -> dict:
         raise HTTPException(400, "no actions in payload")
     action = actions[0]
     value = action.get("value") or ""
+    # Slack guarantees action_id is unique per block-element. v0.14's
+    # button emitters namespace it as `<verb>_<code>_<hash>` so even
+    # duplicate-hash items still produce unique ids. _post_response_url_update
+    # uses this to find and surgically replace ONLY the clicked item's
+    # actions block (Bug 1 in v0.14.0/1: walking ALL actions blocks made
+    # one click visually close every item in the digest).
+    action_id = action.get("action_id") or ""
     user_id = (payload.get("user") or {}).get("id", "")
     response_url = payload.get("response_url") or ""
     trigger_id = payload.get("trigger_id", "")
@@ -1093,6 +1100,7 @@ async def _handle_block_action(payload: dict) -> dict:
     _spawn_background(_run_action_in_background(
         verb=verb, code=code, cp_hash=cp_hash, extras=extras,
         response_url=response_url, original_message=original_message,
+        clicked_action_id=action_id,
     ))
     return {"ok": True, "queued": True}
 
@@ -1151,11 +1159,18 @@ async def _run_action_in_background(
     *,
     verb: str, code: str, cp_hash: str, extras: dict,
     response_url: str, original_message: dict,
+    clicked_action_id: str = "",
 ) -> None:
     """Background coroutine: run the cp plan via to_thread, update Slack.
 
     Wraps sync work (git subprocess, slack_sdk sync calls, requests.post)
     via asyncio.to_thread so the event loop stays free.
+
+    `clicked_action_id` is threaded through to _post_response_url_update so
+    that only the actions block carrying that action_id is replaced with
+    a confirmation (Bug 1 fix in v0.14.2: previously the loop replaced
+    EVERY actions block in the message, so one click visually closed all
+    digest items at once).
 
     Logs but never raises — exceptions here would be lost. Surface failures
     via the in-place Slack message instead.
@@ -1178,6 +1193,7 @@ async def _run_action_in_background(
             response_url=response_url,
             original_message=original_message,
             confirmation=confirmation,
+            clicked_action_id=clicked_action_id,
         )
     except Exception:  # noqa: BLE001
         log.exception(
@@ -1229,23 +1245,71 @@ def _run_plan_for_one_item(
 
 
 def _post_response_url_update(
-    *, response_url: str, original_message: dict, confirmation: str,
+    *,
+    response_url: str,
+    original_message: dict,
+    confirmation: str,
+    clicked_action_id: str = "",
 ) -> None:
-    """POST to Slack's `response_url` to replace the original message.
+    """POST to Slack's `response_url` to replace ONLY the clicked item's
+    actions block with the confirmation context.
 
-    Strategy: keep the section + context blocks (item text + meta), replace
-    the actions block with a context block containing the confirmation.
+    The original digest message has N items, each with its own actions
+    block carrying 3 buttons. When a user clicks one button, we want
+    the corresponding actions block (and ONLY that one) replaced with
+    "✅ Resolved · 10:42 AM UTC · `abc12345`" — every OTHER item must
+    keep its action buttons intact.
+
+    `clicked_action_id` is the `action_id` of the button the user
+    clicked. We walk the message blocks and only replace the actions
+    block that contains an element with that action_id.
+
+    Fallback: if `clicked_action_id` is empty (older view_submission
+    code path that doesn't have a single source block), fall through
+    to the old replace-all behavior — modal submissions pass
+    `original_message={}` anyway, so no blocks are touched.
     """
     import requests as _req
-    new_blocks = []
+
+    def _block_contains_action_id(block: dict, target_id: str) -> bool:
+        if not target_id or block.get("type") != "actions":
+            return False
+        for el in block.get("elements", []) or []:
+            if el.get("action_id") == target_id:
+                return True
+        return False
+
+    new_blocks: list[dict] = []
+    replaced = False
     for block in original_message.get("blocks", []):
-        if block.get("type") == "actions":
+        if _block_contains_action_id(block, clicked_action_id):
             new_blocks.append({
                 "type": "context",
                 "elements": [{"type": "mrkdwn", "text": confirmation}],
             })
+            replaced = True
+        elif block.get("type") == "actions" and not clicked_action_id:
+            # Backward-compat fallback: no clicked_action_id provided,
+            # collapse all actions blocks (legacy view_submission path).
+            new_blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": confirmation}],
+            })
+            replaced = True
         else:
             new_blocks.append(block)
+
+    if not replaced and clicked_action_id:
+        # The action_id we were told to replace wasn't found in the
+        # message — e.g. message was edited mid-click, or Slack
+        # delivered a stale message blob. Log it; don't silently
+        # disappear the confirmation.
+        log.warning(
+            "response_url update: action_id %r not found in message blocks; "
+            "no in-place update applied",
+            clicked_action_id,
+        )
+
     resp = _req.post(response_url, json={
         "replace_original": True,
         "blocks": new_blocks,

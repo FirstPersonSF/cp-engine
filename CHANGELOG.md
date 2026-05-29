@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.14.2 — 2026-05-29
+
+### Fixed — clicking one digest button no longer visually closes every item
+
+`_post_response_url_update` used to walk every `actions` block in the original message and replace each with the same confirmation context. The daily digest packs N items into a single Block Kit message, each with its own `actions` block, so one click on item 3's "✅ Mark closed" button caused all N items to render as closed in-place — even though only item 3 had actually been committed to the cp tenant.
+
+Symptom in the wild on 2026-05-29: 6 past-due asks in the digest; user clicked Mark closed on 1; the message showed all 6 with "✅ Closed · 5:47 PM UTC · `6320e6e4`" (the same fake-looking SHA on every line). The single real commit was correctly applied; the other 5 were UI lies.
+
+Fix: thread the clicked button's `action_id` (Slack-guaranteed unique per element since the v0.14.0 namespacing of `<verb>_<code>_<hash>`) from `_handle_block_action` through `_run_action_in_background` into `_post_response_url_update`. The loop now only replaces the actions block whose element matches the clicked `action_id`. Other items keep their buttons intact, so the user can continue clicking down the list.
+
+Also adds a `log.warning` when the action_id can't be found in the message blocks (e.g. message was edited mid-click) instead of silently misbehaving.
+
+No behavior change to the cp tenant — clicks were always writing the correct file/commit; only the in-Slack visual was wrong.
+
 ## v0.14.1 — 2026-05-28
 
 ### Added — diagnostic logging on all `/slack-action` 401 branches
