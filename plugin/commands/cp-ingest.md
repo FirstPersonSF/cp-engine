@@ -248,8 +248,14 @@ list to the user and ask whether to retry or abort.
 
 ### 7. Save the plan to the ingest log
 
+The ingest log is bucketed by the current ISO week (UTC). `cp ingest`
+itself resolves the planning week per project; this step just stashes
+the plan YAML for audit, so use today's ISO week directly. Sprint
+files live at `sprints/<W##>/<code>.md` (one per active engagement /
+initiative), not at `sprints/<W##>/cp.md`.
+
 ```bash
-WEEK=$(cp parse-sprint --json sprints/2026-W19/cp.md 2>/dev/null | jq -r .week_iso 2>/dev/null || echo "$(date +%Y-W%V)")
+WEEK=$(date -u +%Y-W%V)
 LOG_DIR="sprints/$WEEK/_ingest-log"
 mkdir -p "$LOG_DIR"
 TS=$(date -u +%Y-%m-%dT%H-%M-%SZ)
