@@ -213,6 +213,41 @@ def test_parse_client_section_extracts_outbound_asks_inbound(tmp_path) -> None:
     assert sf.client_inbound[0].who == "Maria"
 
 
+def test_parse_client_section_skips_outbound_scaffold_placeholder(tmp_path) -> None:
+    """The Outbound scaffold's ``- _<...>_`` placeholder must not turn into
+    a ghost Outbound entry. Mirrors ``_parse_horizon``'s placeholder filter.
+    """
+    f = tmp_path / "peb.md"
+    f.write_text(
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W20\n---\n"
+        "# peb — Pebble Foods · Sprint W20 (May 11 – May 17, 2026)\n"
+        "## Client communication\n\n"
+        "### Outbound\n"
+        "- _<message — `[status · date]` prefix>_\n"
+    )
+    sf = parse_sprint_file(f)
+    assert sf.client_outbound == ()
+
+
+def test_parse_client_section_real_outbound_after_placeholder_survives(tmp_path) -> None:
+    """Regression: real Outbound bullets still parse when the scaffold
+    placeholder is present (mixed state during the first edits of a
+    sprint file)."""
+    f = tmp_path / "peb.md"
+    f.write_text(
+        "---\nProject: peb — Pebble Foods\nSprint: 2026-W20\n---\n"
+        "# peb — Pebble Foods · Sprint W20 (May 11 – May 17, 2026)\n"
+        "## Client communication\n\n"
+        "### Outbound\n"
+        "- _<message — `[status · date]` prefix>_\n"
+        "- [sent · 2026-05-11] Pricing follow-up sent\n"
+    )
+    sf = parse_sprint_file(f)
+    assert len(sf.client_outbound) == 1
+    assert sf.client_outbound[0].status == "sent"
+    assert sf.client_outbound[0].date == "2026-05-11"
+
+
 def test_parse_risks_and_horizon(tmp_path) -> None:
     f = tmp_path / "peb.md"
     f.write_text(

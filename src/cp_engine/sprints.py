@@ -212,6 +212,13 @@ def _parse_client_section(
     section = section_body(body, "Client communication")
     out: list[Outbound] = []
     for first, cont in bullets(subsection(section, "Outbound")):
+        # Skip unfilled scaffold placeholders (e.g.
+        # ``- _<message — `[status · date]` prefix>_``). Mirrors
+        # ``_parse_horizon``. Without this, any future consumer
+        # iterating ``sf.client_outbound`` would silently include the
+        # template's "ghost" bullet.
+        if _is_template_placeholder(first):
+            continue
         parsed = parse_bracketed_bullet(first)
         if parsed:
             parts, text = parsed
