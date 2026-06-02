@@ -76,6 +76,14 @@ def list_remote_tags(repo_url: str = ENGINE_REPO_URL) -> tuple[str, ...]:
             v = Version(tag.lstrip("v"))
         except InvalidVersion:
             continue
+        # Exclude prereleases at source. `packaging.SpecifierSet.contains`
+        # admits a prerelease candidate when the spec itself lacks a
+        # prerelease marker (e.g. `~= 0.15` would match `0.16.0a1`); since
+        # tags are sorted newest-first, that would silently ship an alpha
+        # to every tenant on next sync. Drop prereleases so they're never
+        # considered.
+        if v.is_prerelease:
+            continue
         tags.append((v, tag))
 
     tags.sort(key=lambda x: x[0], reverse=True)
@@ -93,6 +101,11 @@ def resolve(constraint: str, tags: tuple[str, ...]) -> PinResolution:
         try:
             v = Version(tag.lstrip("v"))
         except InvalidVersion:
+            continue
+        # Defense in depth: `list_remote_tags` already drops prereleases,
+        # but skip them here too in case a caller hand-builds the tuple.
+        # Prereleases must never satisfy a stable constraint.
+        if v.is_prerelease:
             continue
         if v in spec:
             return PinResolution(constraint=constraint, tag=tag, version=v)

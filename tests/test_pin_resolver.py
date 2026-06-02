@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import pytest
 
+from unittest.mock import patch
+
 from cp_engine.pin_resolver import (
     PinResolution,
     PinResolutionError,
+    list_remote_tags,
     read_constraint,
     resolve,
 )
@@ -60,6 +63,52 @@ def test_resolve_skips_non_version_tags() -> None:
     tags = ("v-banana", "v0.5.2", "v0.5.1")
     result = resolve("~= 0.5.0", tags)
     assert result.tag == "v0.5.2"
+
+
+def test_resolve_skips_prereleases_for_stable_constraint() -> None:
+    """`packaging.SpecifierSet.contains` admits a prerelease candidate
+    when the spec lacks an explicit prerelease marker. With tags sorted
+    newest-first, that would silently ship `v0.16.0a1` for `~= 0.15`.
+    The resolver must drop prereleases regardless."""
+    tags = ("v0.16.0a1", "v0.16.0", "v0.15.5")
+    # `~= 0.15` would match v0.16.0a1 under default packaging semantics;
+    # we want v0.16.0 (the highest stable that satisfies the constraint).
+    assert resolve("~= 0.15", tags).tag == "v0.16.0"
+
+
+def test_resolve_skips_prereleases_when_only_prerelease_matches() -> None:
+    """If the only candidate satisfying the constraint is a prerelease,
+    resolve must raise — never silently ship it."""
+    tags = ("v0.16.0a1", "v0.15.5")
+    with pytest.raises(PinResolutionError, match="No tag matches"):
+        resolve("~= 0.16", tags)
+
+
+def _ls_remote_stdout(tags: list[str]) -> str:
+    """Render fake `git ls-remote --tags --refs` output for the given tag list."""
+    return "\n".join(
+        f"00000000000000000000000000000000\trefs/tags/{tag}" for tag in tags
+    )
+
+
+def test_list_remote_tags_filters_prereleases() -> None:
+    """list_remote_tags must drop prereleases at the source so they never
+    reach resolve(). Belt-and-suspenders with the resolve-level filter."""
+    fake_stdout = _ls_remote_stdout(
+        ["v0.16.0a1", "v0.16.0b2", "v0.16.0rc1", "v0.16.0", "v0.15.5"]
+    )
+    with patch("cp_engine.pin_resolver.subprocess.run") as mock_run:
+        mock_run.return_value.stdout = fake_stdout
+        tags = list_remote_tags("https://example.invalid/repo.git")
+    assert tags == ("v0.16.0", "v0.15.5")
+
+
+def test_list_remote_tags_keeps_stable_tags_in_descending_order() -> None:
+    fake_stdout = _ls_remote_stdout(["v0.15.5", "v0.16.0", "v0.15.0", "v0.16.1"])
+    with patch("cp_engine.pin_resolver.subprocess.run") as mock_run:
+        mock_run.return_value.stdout = fake_stdout
+        tags = list_remote_tags("https://example.invalid/repo.git")
+    assert tags == ("v0.16.1", "v0.16.0", "v0.15.5", "v0.15.0")
 
 
 def test_read_constraint_happy_path(tmp_path) -> None:
