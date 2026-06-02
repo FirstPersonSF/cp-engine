@@ -176,6 +176,25 @@ async def auto_ingest(request: Request) -> dict:
             status_code=400, detail="meeting_id and project_codes are required"
         )
 
+    # Fathom retries on timeout. If the same (meeting_id, project_codes)
+    # tuple already has a successful run, short-circuit and return early
+    # — no fresh clone, no LLM call, no second auto_ingest_runs row.
+    # Reruns from the dashboard go through a different endpoint
+    # (/api/auto-ingest/runs/{run_id}/rerun) and intentionally skip
+    # this check.
+    dup = _find_successful_duplicate_run(meeting_id, project_codes)
+    if dup is not None:
+        log.info(
+            "auto-ingest duplicate delivery: meeting=%s codes=%s existing_run=%s",
+            meeting_id, project_codes, dup,
+        )
+        return {
+            "status": "duplicate_delivery_skipped",
+            "existing_run_id": dup,
+            "meeting_id": meeting_id,
+            "project_codes": project_codes,
+        }
+
     return _perform_auto_ingest(
         meeting_id=meeting_id,
         project_codes=project_codes,
@@ -2333,6 +2352,59 @@ def _status_from_ingested(ingested: list[dict], *, anything_wrote: bool) -> str:
     if not anything_wrote:
         return "skipped_no_op"
     return "success"
+
+
+def _find_successful_duplicate_run(
+    meeting_id: str, project_codes: list[str]
+) -> str | None:
+    """Return the existing ``auto_ingest_runs.id`` if a successful run
+    already exists for this (meeting_id, sorted project_codes) tuple.
+
+    Used by /api/auto-ingest to short-circuit Fathom's retry-on-timeout
+    behavior. A duplicate delivery is harmless thanks to the content-hash
+    dedupe inside execute_plan, but the second pass still spends a Claude
+    call + git push for zero net change and pollutes auto_ingest_runs
+    with two rows. This check turns that into a 200 with
+    ``status: duplicate_delivery_skipped`` and the original run_id.
+
+    Best-effort: any Supabase failure logs and returns None, so a
+    transient observability outage degrades to "process every request"
+    rather than "fail every request".
+
+    Project codes are sorted before comparison so the dedupe key is
+    independent of the caller's ordering — Fathom may not preserve
+    array order between retries.
+    """
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not url or not key or create_client is None:
+        return None
+    sorted_codes = sorted(project_codes)
+    try:
+        client = create_client(url, key)
+        # Filter to status='success' — a previous failure should NOT
+        # block a fresh attempt. Limit 20 lets us tolerate a handful
+        # of past runs against the same meeting while still being a
+        # single-page query.
+        resp = (
+            client.table("auto_ingest_runs")
+            .select("id, project_codes")
+            .eq("meeting_id", meeting_id)
+            .eq("status", "success")
+            .order("created_at", desc=True)
+            .limit(20)
+            .execute()
+        )
+        for row in resp.data or []:
+            row_codes = row.get("project_codes") or []
+            if sorted(row_codes) == sorted_codes:
+                return row.get("id")
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.warning(
+            "duplicate-delivery check failed for meeting=%s: %s",
+            meeting_id, exc,
+        )
+    return None
 
 
 def _log_run_to_supabase(
