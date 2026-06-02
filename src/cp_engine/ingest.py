@@ -207,7 +207,24 @@ _SUPPORTED_VERBS = (
     "current_work",        # → project cp.md's **Current work:** line
     "next_up",             # → project cp.md's **Next up:** line
     "blockers",            # → project cp.md's **Blockers:** line
+    # Forward-looking sprint-planning verbs (v0.15+, Task 2).
+    # These do NOT touch sprint markdown — they insert proposal rows
+    # into the existing `clickup_task_proposals` Supabase table for the
+    # dashboard's human review-and-approve gate. Milestones live in
+    # ClickUp; client-asks become tracked tasks once approved. Both
+    # paths are best-effort: if no Supabase client is supplied, the
+    # verbs are silently skipped (the primary sprint-file ingest must
+    # never be broken by ClickUp-routing problems).
+    "set-milestone",
+    "set-client-ask-task",
 )
+
+
+# Verbs that write to clickup_task_proposals via Supabase rather than
+# to the sprint file. execute_plan branches off to a separate write
+# path for these (they need a client; the file-write dispatch can't
+# fulfill that).
+_CLICKUP_PROPOSAL_VERBS = frozenset({"set-milestone", "set-client-ask-task"})
 
 
 # Quick Resume scalar verbs are typed differently than the list-typed
@@ -252,6 +269,8 @@ def execute_plan(
     tenant_root: Path,
     today: date,
     week_iso: str | None = None,
+    supabase: Any = None,
+    meeting_id: str | None = None,
 ) -> IngestPlanResult:
     """Validate + execute an ingest plan against the cp tenant.
 
@@ -280,6 +299,13 @@ def execute_plan(
     `week_iso` overrides the default of "current week derived from `today`".
     Used by the Slack-digest pipeline (P.3+): the Sunday cron runs in
     week N+1 but writes to week N's sprint files.
+
+    `supabase` is an optional Supabase client used by the ClickUp-proposal
+    verbs (``set-milestone`` / ``set-client-ask-task``). When absent, those
+    verbs are silently skipped — the primary sprint-file ingest must never
+    be broken by ClickUp routing problems. `meeting_id` is the source
+    Fathom meeting UUID, plumbed onto each inserted proposal row so the
+    dashboard can link review actions back to the originating meeting.
     """
     _validate_plan(plan)
     result = IngestPlanResult()
@@ -336,6 +362,29 @@ def execute_plan(
                         result.skipped_duplicate += 1
                 except Exception as exc:
                     result.errors.append(f"{code}/{verb}: {exc}")
+                continue
+            # ClickUp proposal verbs (v0.15+, Task 2) write rows into
+            # Supabase, not files. Skip silently if no client supplied —
+            # ClickUp routing must never break the primary file path.
+            if normalized in _CLICKUP_PROPOSAL_VERBS:
+                if supabase is None:
+                    logger.info(
+                        "ingest: skipping %s for %s — no Supabase client supplied",
+                        normalized, code,
+                    )
+                    continue
+                handler = {
+                    "set-milestone": _write_milestone,
+                    "set-client-ask-task": _write_client_ask_task,
+                }[normalized]
+                for item in items:
+                    try:
+                        handler(
+                            code, item,
+                            supabase=supabase, meeting_id=meeting_id,
+                        )
+                    except Exception as exc:
+                        result.errors.append(f"{code}/{verb}: {exc}")
                 continue
             for item in items:
                 try:
@@ -1215,6 +1264,210 @@ def _write_account_summary(item: dict, weekly_cp_path: Path) -> bool:
 
     weekly_cp_path.write_text(new)
     return True
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  ClickUp proposal writers (set-milestone / set-client-ask-task)
+# ──────────────────────────────────────────────────────────────────────
+#
+# These verbs insert ``pending`` rows into ``clickup_task_proposals``,
+# the same table that ``webhook/clickup_propose.py`` writes Fathom
+# action-items into. The dashboard surfaces them behind a yes/no review
+# gate; the webhook's approve path creates the actual ClickUp task.
+#
+# The proposals table today carries:
+#     meeting_id, project_id, clickup_list_id, description,
+#     assignee_email, recording_playback_url, cp_ask_hash, status,
+#     clickup_task_id
+# A parallel migration (Task 1) adds:
+#     task_type, is_milestone, milestone_confidence,
+#     milestone_depends_on, milestone_linked_to
+# Drew applies that migration before these handlers run in production.
+#
+# There is NO ``due_date`` column today, so the milestone date and the
+# client-ask expected-by date are folded into the ``description`` text
+# (visible to the reviewer in the dashboard without joins).
+
+
+def _resolve_proposal_project(client, code: str) -> dict | None:
+    """Resolve a cp project code to its MC-2 routing row for ClickUp proposals.
+
+    Mirrors ``webhook/clickup_propose._resolve_project`` (one-side
+    duplication is intentional — webhook/ isn't on cp_engine's import
+    path, and adding a webhook→cp_engine import creates a cycle the
+    other way during ``cp ingest`` tests). Returns a dict with
+    ``id``, ``clickup_list_id``, ``code`` — or None if the project can't
+    be resolved.
+
+    NOTE: unlike the webhook version, we tolerate ``enable_clickup`` being
+    absent from the response (some test mocks don't supply it). When the
+    column is present and falsy we still skip, matching prod behaviour.
+    """
+    tail = code.rsplit("-", 1)[-1]
+    number = int(tail) if tail.isdigit() else None
+
+    if number is not None:
+        resp = (
+            client.table("projects")
+            .select("id, number, clickup_list_id, enable_clickup")
+            .eq("number", number)
+            .execute()
+        )
+        rows = resp.data or []
+        if not rows:
+            return None
+        row = rows[0]
+        if "enable_clickup" in row and not row.get("enable_clickup"):
+            return None
+        return {
+            "id": row["id"],
+            "clickup_list_id": row.get("clickup_list_id"),
+            "code": code,
+        }
+
+    # Initiative — slug code. Tolerate missing ClickUp columns on the
+    # initiatives table (the column set rolled out incrementally).
+    try:
+        resp = (
+            client.table("initiatives")
+            .select("id, code, clickup_list_id, enable_clickup")
+            .eq("code", code)
+            .execute()
+        )
+    except Exception:  # noqa: BLE001 — initiatives may lack ClickUp cols
+        return None
+    rows = resp.data or []
+    if not rows:
+        return None
+    row = rows[0]
+    if "enable_clickup" in row and not row.get("enable_clickup"):
+        return None
+    return {
+        "id": row["id"],
+        "clickup_list_id": row.get("clickup_list_id"),
+        "code": code,
+    }
+
+
+def _write_milestone(
+    code: str,
+    item: dict,
+    *,
+    supabase: Any,
+    meeting_id: str | None = None,
+) -> None:
+    """Insert a milestone proposal into clickup_task_proposals.
+
+    Milestones live in ClickUp; this row is a ``pending`` proposal
+    surfaced by the dashboard for human review. The approve path
+    (Task 3, not yet built) creates the ClickUp task and flips status
+    to ``approved`` + populates ``clickup_task_id``.
+
+    Required fields on ``item``: ``deliverable``, ``date``, ``owner``,
+    ``confidence``. Optional: ``depends_on``, ``linked_to``,
+    ``source_meeting_id`` (overrides the plan-level meeting_id).
+    """
+    deliverable = (item.get("deliverable") or "").strip()
+    date_str = (item.get("date") or "").strip()
+    owner = (item.get("owner") or "").strip()
+    confidence = (item.get("confidence") or "").strip()
+    if not deliverable:
+        raise IngestPlanError("set-milestone item missing 'deliverable'")
+    if not date_str:
+        raise IngestPlanError("set-milestone item missing 'date'")
+    if not owner:
+        raise IngestPlanError("set-milestone item missing 'owner'")
+    if confidence not in ("high", "medium", "low"):
+        raise IngestPlanError(
+            f"set-milestone item has invalid confidence {confidence!r}; "
+            "expected one of high|medium|low"
+        )
+
+    project = _resolve_proposal_project(supabase, code)
+    if project is None:
+        raise IngestPlanError(
+            f"set-milestone {code}: project not found in MC-2 (or ClickUp routing disabled)"
+        )
+    if not project.get("clickup_list_id"):
+        raise IngestPlanError(
+            f"set-milestone {code}: project has no clickup_list_id; "
+            "add a ClickUp list before capturing milestones"
+        )
+
+    # No `due_date` column on clickup_task_proposals today — fold the
+    # date + owner into the description so the dashboard reviewer sees
+    # the full context without a join.
+    description = f"{deliverable} (due {date_str}, owner: {owner})"
+
+    row = {
+        "meeting_id": item.get("source_meeting_id") or meeting_id,
+        "project_id": project["id"],
+        "clickup_list_id": project["clickup_list_id"],
+        "description": description,
+        "assignee_email": None,  # owner names are unresolved free text; reviewer assigns
+        "status": "pending",
+        # Columns added by the Task 1 migration.
+        "task_type": "milestone",
+        "is_milestone": True,
+        "milestone_confidence": confidence,
+        "milestone_depends_on": list(item.get("depends_on") or []),
+        "milestone_linked_to": list(item.get("linked_to") or []),
+    }
+    supabase.table("clickup_task_proposals").insert(row).execute()
+
+
+def _write_client_ask_task(
+    code: str,
+    item: dict,
+    *,
+    supabase: Any,
+    meeting_id: str | None = None,
+) -> None:
+    """Insert a client-ask proposal into clickup_task_proposals.
+
+    Required: ``what``, ``from_party``. Optional: ``expected_by``,
+    ``source_meeting_id``. ``from_party`` is the external stakeholder
+    we're waiting on; until we add a structured column for it, we
+    fold the name into the description text.
+    """
+    what = (item.get("what") or "").strip()
+    from_party = (item.get("from_party") or "").strip()
+    expected_by = (item.get("expected_by") or "").strip()
+    if not what:
+        raise IngestPlanError("set-client-ask-task item missing 'what'")
+    if not from_party:
+        raise IngestPlanError("set-client-ask-task item missing 'from_party'")
+
+    project = _resolve_proposal_project(supabase, code)
+    if project is None:
+        raise IngestPlanError(
+            f"set-client-ask-task {code}: project not found in MC-2 (or ClickUp routing disabled)"
+        )
+    if not project.get("clickup_list_id"):
+        raise IngestPlanError(
+            f"set-client-ask-task {code}: project has no clickup_list_id"
+        )
+
+    # Description embeds from_party + expected_by until those become
+    # first-class columns. Reviewer sees the full ask at a glance.
+    parts = [f"{what} (from {from_party}"]
+    if expected_by:
+        parts.append(f", by {expected_by}")
+    parts.append(")")
+    description = "".join(parts)
+
+    row = {
+        "meeting_id": item.get("source_meeting_id") or meeting_id,
+        "project_id": project["id"],
+        "clickup_list_id": project["clickup_list_id"],
+        "description": description,
+        "assignee_email": None,
+        "status": "pending",
+        # Columns added by the Task 1 migration.
+        "task_type": "client_ask",
+        "is_milestone": False,
+    }
+    supabase.table("clickup_task_proposals").insert(row).execute()
 
 
 # ──────────────────────────────────────────────────────────────────────

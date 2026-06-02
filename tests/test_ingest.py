@@ -1310,3 +1310,278 @@ def test_close_ask_falls_back_to_text_match_when_hash_absent(tmp_path: Path) -> 
     body1 = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
     assert "[closed · 2026-05-12 · Rena]" in body1
     assert "cp:closed-by=clickup" in body1
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  set-milestone + set-client-ask-task (v0.15 — forward-looking sprint planning)
+# ──────────────────────────────────────────────────────────────────────
+#
+# These verbs do NOT touch the sprint markdown — they insert proposal
+# rows into the existing ``clickup_task_proposals`` Supabase table.
+# Milestones live in ClickUp; the dashboard surfaces these proposals
+# behind a human review-and-approve gate, then the webhook approve path
+# (Task 3) creates the real ClickUp tasks.
+
+
+def _fake_supabase_for_project(*, project_id: str = "p1",
+                                clickup_list_id: str | None = "L1",
+                                code: str = "ggl-5168",
+                                enable_clickup: bool = True):
+    """Mock the chained-builder pattern used by the supabase-py client.
+
+    Returns a ``unittest.mock.MagicMock`` (un-annotated to avoid a
+    module-level MagicMock import in this otherwise dependency-light file).
+
+    Configures the chain so:
+        client.table("projects").select(...).eq(...).execute().data
+        → [{"id": project_id, "number": <int>, "clickup_list_id": ..., "enable_clickup": True}]
+
+    Insert calls (``client.table("clickup_task_proposals").insert(row).execute()``)
+    are not stubbed beyond returning a MagicMock — tests assert by
+    inspecting ``client.table.call_args_list`` and the captured
+    insert payload.
+    """
+    from unittest.mock import MagicMock
+
+    number = int(code.rsplit("-", 1)[-1]) if code.rsplit("-", 1)[-1].isdigit() else None
+    project_row = {
+        "id": project_id,
+        "number": number,
+        "clickup_list_id": clickup_list_id,
+        "enable_clickup": enable_clickup,
+    }
+
+    client = MagicMock()
+    # SELECT chain → list of rows
+    select_chain = client.table.return_value.select.return_value.eq.return_value
+    select_chain.execute.return_value.data = [project_row]
+    return client
+
+
+def _last_insert_row(client) -> dict:
+    """Pull the dict passed to the most recent ``insert(...)`` call."""
+    insert_calls = client.table.return_value.insert.call_args_list
+    assert insert_calls, "no insert() was called on the mock"
+    args, _kwargs = insert_calls[-1]
+    return args[0]
+
+
+def test_set_milestone_validates() -> None:
+    """Well-formed milestone plan passes _validate_plan."""
+    from cp_engine.ingest import _validate_plan
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "set-milestone": [
+                    {
+                        "deliverable": "Pop-up final to Rena",
+                        "date": "2026-06-06",
+                        "owner": "brandon",
+                        "confidence": "medium",
+                    }
+                ]
+            }
+        }
+    }
+    _validate_plan(plan)  # no raise
+
+
+def test_set_client_ask_task_validates() -> None:
+    """Well-formed client-ask plan passes _validate_plan."""
+    from cp_engine.ingest import _validate_plan
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "set-client-ask-task": [
+                    {
+                        "what": "Round 3 pop-up feedback",
+                        "from_party": "rena",
+                        "expected_by": "2026-06-02",
+                    }
+                ]
+            }
+        }
+    }
+    _validate_plan(plan)  # no raise
+
+
+def test_unknown_verb_still_rejected() -> None:
+    """Adding new verbs must not weaken the unknown-verb gate."""
+    from cp_engine.ingest import _validate_plan
+    plan = {"projects": {"ggl-5168": {"set-imaginary-thing": [{"text": "x"}]}}}
+    with pytest.raises(IngestPlanError, match="unknown verb"):
+        _validate_plan(plan)
+
+
+def test_set_milestone_inserts_row(tmp_path: Path) -> None:
+    """Handler inserts the expected row shape into clickup_task_proposals."""
+    tenant = _make_tenant(tmp_path)
+    sb = _fake_supabase_for_project(code="ggl-5168")
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "set-milestone": [
+                    {
+                        "deliverable": "Pop-up final to Rena",
+                        "date": "2026-06-06",
+                        "owner": "brandon",
+                        "confidence": "medium",
+                        "depends_on": ["pop-up-r3-feedback"],
+                        "linked_to": ["ggl-5177"],
+                    }
+                ]
+            }
+        }
+    }
+    result = execute_plan(
+        plan,
+        tenant_root=tenant,
+        today=date(2026, 5, 12),
+        supabase=sb,
+        meeting_id="meet-abc",
+    )
+    assert result.errors == [], result.errors
+    row = _last_insert_row(sb)
+    assert row["project_id"] == "p1"
+    assert row["clickup_list_id"] == "L1"
+    assert row["task_type"] == "milestone"
+    assert row["is_milestone"] is True
+    # The description must include the milestone-deliverable text so a
+    # reviewer in the dashboard can see what's being proposed without
+    # joining tables. Date may be folded into the description (no
+    # `due_date` column on the proposals table today).
+    assert "Pop-up final to Rena" in row["description"]
+    assert "2026-06-06" in row["description"]
+    assert row["milestone_confidence"] == "medium"
+    assert row["milestone_depends_on"] == ["pop-up-r3-feedback"]
+    assert row["milestone_linked_to"] == ["ggl-5177"]
+    assert row["meeting_id"] == "meet-abc"
+    assert row["status"] == "pending"
+
+
+def test_set_milestone_missing_clickup_list_raises(tmp_path: Path) -> None:
+    """Project with no clickup_list_id surfaces as an ingest error.
+
+    (Result.errors collects per-verb exceptions; the verb wraps its
+    own ValueError.) No row is inserted.
+    """
+    tenant = _make_tenant(tmp_path)
+    sb = _fake_supabase_for_project(code="ggl-5168", clickup_list_id=None)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "set-milestone": [
+                    {
+                        "deliverable": "Pop-up final",
+                        "date": "2026-06-06",
+                        "owner": "brandon",
+                        "confidence": "medium",
+                    }
+                ]
+            }
+        }
+    }
+    result = execute_plan(
+        plan, tenant_root=tenant, today=date(2026, 5, 12), supabase=sb
+    )
+    assert any("clickup_list_id" in e for e in result.errors), result.errors
+    # No insert happened — the project routing failed before that.
+    assert not sb.table.return_value.insert.called
+
+
+def test_set_client_ask_task_inserts_row(tmp_path: Path) -> None:
+    """Handler inserts a client_ask proposal with the expected shape."""
+    tenant = _make_tenant(tmp_path)
+    sb = _fake_supabase_for_project(code="ggl-5168")
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "set-client-ask-task": [
+                    {
+                        "what": "Round 3 pop-up feedback",
+                        "from_party": "rena",
+                        "expected_by": "2026-06-02",
+                    }
+                ]
+            }
+        }
+    }
+    result = execute_plan(
+        plan,
+        tenant_root=tenant,
+        today=date(2026, 5, 12),
+        supabase=sb,
+        meeting_id="meet-abc",
+    )
+    assert result.errors == [], result.errors
+    row = _last_insert_row(sb)
+    assert row["project_id"] == "p1"
+    assert row["clickup_list_id"] == "L1"
+    assert row["task_type"] == "client_ask"
+    assert row["is_milestone"] is False
+    assert "Round 3 pop-up feedback" in row["description"]
+    # Stakeholder name preserved in description until we add a structured field.
+    assert "rena" in row["description"].lower()
+    assert "2026-06-02" in row["description"]
+    assert row["meeting_id"] == "meet-abc"
+    assert row["status"] == "pending"
+
+
+def test_set_client_ask_task_optional_expected_by(tmp_path: Path) -> None:
+    """expected_by is optional; absence does not error and is not in description."""
+    tenant = _make_tenant(tmp_path)
+    sb = _fake_supabase_for_project(code="ggl-5168")
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "set-client-ask-task": [
+                    {"what": "Joe to confirm date", "from_party": "joe"}
+                ]
+            }
+        }
+    }
+    result = execute_plan(
+        plan, tenant_root=tenant, today=date(2026, 5, 12), supabase=sb
+    )
+    assert result.errors == [], result.errors
+    row = _last_insert_row(sb)
+    assert "Joe to confirm date" in row["description"]
+
+
+def test_set_milestone_no_supabase_is_skipped(tmp_path: Path) -> None:
+    """No supabase client → verb is skipped silently (best-effort), not a hard error.
+
+    Mirrors the resilience pattern in webhook/clickup_propose: ClickUp
+    routing must never break the primary auto-ingest contract.
+    """
+    tenant = _make_tenant(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "set-milestone": [
+                    {
+                        "deliverable": "Pop-up final",
+                        "date": "2026-06-06",
+                        "owner": "brandon",
+                        "confidence": "medium",
+                    }
+                ],
+                # …with a regular file-write verb in the same plan to
+                # prove the milestone branch doesn't poison the primary
+                # path.
+                "asks": [{"text": "A normal ask", "who": "Rena", "date": "2026-05-12"}],
+            }
+        }
+    }
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    # The ask was still written; the milestone was silently skipped.
+    assert any("ggl-5168.md" in str(p) for p in result.files_written)
+    # No error surfaced for the silently-skipped milestone.
+    assert not any("set-milestone" in e for e in result.errors), result.errors
+
+
+def test_set_milestone_is_in_supported_verbs() -> None:
+    """Regression guard: both new verbs must be in the supported tuple."""
+    from cp_engine.ingest import _SUPPORTED_VERBS
+    assert "set-milestone" in _SUPPORTED_VERBS
+    assert "set-client-ask-task" in _SUPPORTED_VERBS
