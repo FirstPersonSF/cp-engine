@@ -1604,6 +1604,107 @@ def prep_agenda_cmd(
         click.echo(agenda_md)
 
 
+@main.command("prep-planning")
+@click.option(
+    "--projects",
+    "project_filter",
+    default="",
+    help="Comma-separated project codes to scope the doc to. "
+    "Empty (default) → all active projects across the tenant.",
+)
+@click.option(
+    "--out",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Write the planning doc to this file path. Defaults to stdout.",
+)
+@click.option(
+    "--summary",
+    is_flag=True,
+    help="Emit a JSON summary (milestone counts, urgent counts, errors) "
+    "instead of the rendered markdown. The /cp-prep-planning plugin uses this.",
+)
+def prep_planning_cmd(
+    project_filter: str, out: Path | None, summary: bool
+) -> None:
+    """Render a forward-looking sprint-planning doc.
+
+    Pulls per-project milestones from ClickUp (matched to each project's
+    ``clickup_list_id`` in MC-2) and assembles an account-grouped doc with
+    Where / Forward calendar / Open commitments per project. Replaces
+    ``cp prep-agenda`` for sprint planning.
+
+    Default: full doc across all active engagements + initiatives.
+    With ``--projects <code>,<code>``: scoped to those projects only.
+
+    Default writes markdown to stdout. ``--out sprints/<W##>/_planning.md``
+    persists it; ``--summary`` emits JSON instead.
+    """
+    from datetime import datetime, timedelta
+
+    from cp_engine.prep_planning import (
+        render_planning_doc,
+        render_planning_summary,
+    )
+    from cp_engine.sync import _default_backend_factory
+
+    config = _load_config_or_die()
+
+    backend = _default_backend_factory(config.sync.backend)
+    projects = backend.read_projects(config)
+
+    # Pull last-week allocations the same way prep-agenda does so the tenant
+    # strip stays consistent with the rest of cp's surfacing.
+    today = datetime.now().date()
+    last_monday = today - timedelta(days=today.weekday() + 7)
+    tenant_hours: dict[str, int] = {}
+    try:
+        allocations = backend.read_allocations(config, last_monday.isoformat())
+    except Exception:
+        allocations = None
+    if allocations is not None:
+        rollup = getattr(allocations, "rollup", ()) or ()
+        for entry in rollup:
+            name = entry.person_name.split()[0] if entry.person_name else None
+            if name:
+                tenant_hours[name] = int(round(entry.total_hours))
+
+    # MC-2 Supabase client for clickup_list_id resolution. Silent degrade if
+    # creds aren't set — per-project blocks will render "(ClickUp list not set)".
+    from cp_engine.prep_planning import _make_supabase_client
+    supabase_client = _make_supabase_client(config)
+
+    code_filter = tuple(c.strip() for c in project_filter.split(",") if c.strip()) or None
+
+    if summary:
+        out_str = render_planning_summary(
+            config,
+            tuple(projects),
+            today=today,
+            project_filter=code_filter,
+            tenant_hours_last_week=tenant_hours,
+            supabase_client=supabase_client,
+        )
+        click.echo(out_str)
+        return
+
+    doc = render_planning_doc(
+        config,
+        tuple(projects),
+        today=today,
+        project_filter=code_filter,
+        tenant_hours_last_week=tenant_hours,
+        supabase_client=supabase_client,
+    )
+
+    if out:
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(doc)
+        click.echo(f"wrote {out}")
+    else:
+        click.echo(doc)
+
+
 @main.command("attention-digest")
 @click.option(
     "--post-to-slack",
