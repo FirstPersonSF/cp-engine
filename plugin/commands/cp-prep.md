@@ -120,7 +120,7 @@ Conditional rendering rules:
 - If `capacity_binding` is empty, render
   `Capacity binding: none flagged (no owner ≥ 5 projects)`.
 - If `cross_cutting_decisions_count` is 0, render
-  `Cross-cutting decisions: none in last 4 weeks`.
+  `Cross-cutting decisions partners owe each other: none in last 4 weeks`.
 - If `milestone_counts.errored` is 0, drop the parenthetical and render
   `Milestones: <fetched> fetched`.
 
@@ -148,11 +148,16 @@ For each project in scope that has a `clickup_list_id` in MC-2's
 
 1. Query MC-2 for the project's `clickup_list_id` (skip projects where
    it is null — they have no ClickUp list yet).
-2. Use the ClickUp MCP `clickup_filter_tasks` (or `get_list` → tasks) on
-   that list id, filtered to open/not-closed tasks. **Exclude the
-   `milestone` tag** so we don't duplicate what's already in the
-   forward calendar of `_planning.md`. Action-item-tagged and
-   client-ask-tagged tasks pass through.
+2. Call the ClickUp MCP `clickup_filter_tasks` with
+   `list_ids: ["<id>"]` and `include_closed: false` to fetch open
+   tasks for the list. The tool has **no native tag-exclude
+   parameter** (its `tags` argument is a positive include with OR
+   logic across multiple tags), so **filter milestones client-side**:
+   after the call returns, drop any task whose `tags` array contains
+   an entry named `"milestone"` before surfacing it. Milestones are
+   already in the forward calendar of `_planning.md` and would
+   double-count. Action-item-tagged and client-ask-tagged tasks pass
+   through unchanged.
 3. Surface a short per-project block to the user: task name + assignee +
    status. Flag `from-fathom`-tagged tasks that are still unassigned.
 
