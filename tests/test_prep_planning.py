@@ -697,6 +697,77 @@ def test_non_escalated_risk_no_flag():
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  Template-placeholder filtering (decisions + risks)
+#
+#  The sprint scaffold seeds every new file with italicized
+#  angle-bracketed placeholder bullets — ``- _<choice — `[by W##]`
+#  prefix>_`` under Decisions due, ``- _<risk — `[severity · category ·
+#  date]` prefix>_`` under Dependencies & risks. Before this fix every
+#  unfilled scaffold flagged ``decision_due`` urgent (the literal text
+#  ``by W##`` matched ``_is_decision_horizon_urgent``'s ISO-week
+#  substring logic) — 26 false positives across 26 active projects.
+# ──────────────────────────────────────────────────────────────────────
+
+
+_DECISIONS_DUE_PLACEHOLDER = "- _<choice — `[by W##]` prefix>_"
+_RISK_PLACEHOLDER = "- _<risk — `[severity · category · date]` prefix>_"
+
+
+def test_decision_due_template_placeholder_not_flagged():
+    """Unfilled `### Decisions due` scaffold placeholder MUST NOT flag urgent."""
+    state = make_state("ggl-5168")
+    body = _body_with_decisions(_DECISIONS_DUE_PLACEHOLDER)
+    flags = _detect_urgent(state, (), (), today=_TODAY, sprint_file_body=body)
+    assert flags == []
+
+
+def test_decision_due_real_decision_still_flagged():
+    """Filtering placeholders MUST NOT regress real-decision detection."""
+    state = make_state("ggl-5168")
+    body = _body_with_decisions(
+        "- [this sprint] Confirm the workshop deck template"
+    )
+    flags = _detect_urgent(state, (), (), today=_TODAY, sprint_file_body=body)
+    assert len(flags) == 1
+    assert flags[0]["type"] == "decision_due"
+    assert "workshop deck template" in flags[0]["text"]
+
+
+def test_decision_due_mixed_placeholder_and_real_only_real_flagged():
+    """A section with both shapes flags only the real bullet."""
+    state = make_state("ggl-5168")
+    body = _body_with_decisions(
+        _DECISIONS_DUE_PLACEHOLDER,
+        "- [this sprint] Confirm the workshop deck template",
+    )
+    flags = _detect_urgent(state, (), (), today=_TODAY, sprint_file_body=body)
+    assert len(flags) == 1
+    assert flags[0]["type"] == "decision_due"
+    assert "workshop deck template" in flags[0]["text"]
+
+
+def test_escalated_risk_template_placeholder_not_flagged():
+    """Unfilled `## Dependencies & risks` placeholder MUST NOT flag urgent."""
+    state = make_state("ggl-5168")
+    body = _body_with_risks(_RISK_PLACEHOLDER)
+    flags = _detect_urgent(state, (), (), today=_TODAY, sprint_file_body=body)
+    assert flags == []
+
+
+def test_escalated_risk_real_risk_still_flagged():
+    """Filtering placeholders MUST NOT regress real escalated-risk detection."""
+    state = make_state("ggl-5168")
+    body = _body_with_risks(
+        _RISK_PLACEHOLDER,
+        "- [escalated · staffing · 2026-05-30] Brandon out next week",
+    )
+    flags = _detect_urgent(state, (), (), today=_TODAY, sprint_file_body=body)
+    assert len(flags) == 1
+    assert flags[0]["type"] == "escalated_risk"
+    assert "Brandon out next week" in flags[0]["text"]
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Combined + summary aggregation
 # ──────────────────────────────────────────────────────────────────────
 

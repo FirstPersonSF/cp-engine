@@ -454,12 +454,41 @@ def _loose_section_body(body: str, heading: str) -> str:
     return m.group(1) if m else ""
 
 
+# Sprint scaffold placeholder shape: a bullet whose body (after the leading
+# `- `) is entirely italicized angle-bracket hint text, e.g.
+# ``- _<choice — `[by W##]` prefix>_`` or ``- _<risk — `[severity · category
+# · date]` prefix>_``. Real human-written bullets never wrap their entire
+# body in single-underscore italics + angle brackets; placeholders always do.
+# Surveyed against the live tenant's W20–W23 sprint files — all 13 distinct
+# placeholder shapes match this pattern (decisions-due, risks, milestones,
+# stakeholders, outbound/inbound, Slack digest, opportunities, etc.).
+# Matches ingest.py's `placeholder_re` so the two stay in lockstep.
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"^\s*-\s+_<[^>]+>_\s*$")
+
+
+def _is_template_placeholder(bullet_first_line: str) -> bool:
+    """True when a bullet's first line is an unfilled scaffold placeholder.
+
+    ``_bullets`` returns ``(first_line, continuation)`` pairs whose first_line
+    still carries the leading ``- ``; the regex anchors on that.
+    """
+    return bool(_TEMPLATE_PLACEHOLDER_RE.match(bullet_first_line))
+
+
 def _parse_decisions_due_from_body(body: str) -> tuple[dict, ...]:
-    """Pull `## Horizon → ### Decisions due` items from a raw sprint file body."""
+    """Pull `## Horizon → ### Decisions due` items from a raw sprint file body.
+
+    Skips unfilled scaffold placeholder bullets (``- _<choice — ...>_``) so
+    they don't surface as spurious ``decision_due`` urgency flags — the
+    placeholder text ``[by W##]`` would otherwise trip
+    ``_is_decision_horizon_urgent``'s ISO-week substring match.
+    """
     horizon_section = _loose_section_body(body, "Horizon")
     decisions_sub = _subsection(horizon_section, "Decisions due")
     out: list[dict] = []
     for first, _cont in _bullets(decisions_sub):
+        if _is_template_placeholder(first):
+            continue
         parsed = _parse_bracketed_bullet(first)
         if parsed:
             parts, text = parsed
@@ -474,10 +503,20 @@ def _parse_decisions_due_from_body(body: str) -> tuple[dict, ...]:
 
 
 def _parse_risks_from_body(body: str) -> tuple[dict, ...]:
-    """Pull `## Dependencies & risks` items from a raw sprint file body."""
+    """Pull `## Dependencies & risks` items from a raw sprint file body.
+
+    Skips unfilled scaffold placeholder bullets (``- _<risk — ...>_``). The
+    risk placeholder leads with ``[severity · category · date]`` — the
+    literal token ``severity`` would slip past ``_parse_bracketed_bullet``
+    as a non-escalated severity today, but the same scaffold could just as
+    easily be misread tomorrow. Filter at the source so the rule only ever
+    sees human-written bullets.
+    """
     risks_section = _loose_section_body(body, "Dependencies & risks")
     out: list[dict] = []
     for first, _cont in _bullets(risks_section):
+        if _is_template_placeholder(first):
+            continue
         parsed = _parse_bracketed_bullet(first)
         if not parsed:
             continue
