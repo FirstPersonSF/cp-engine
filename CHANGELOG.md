@@ -4,6 +4,104 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.15.2 — 2026-06-02
+
+Day 2 of the post-v0.15.0 system-review cleanup. Ships the remaining 16 findings (12 Important + 4 defensive) across webhook, ingest, sprints, sync, prep_planning, and tooling. 745 tests passing (was 684 at v0.15.1).
+
+### Security
+
+#### Fixed — Fathom auto-ingest had no replay protection
+
+`/api/auto-ingest` used body-only HMAC with no timestamp window. A captured signed request could be replayed indefinitely. Combined with the v0.13 `/rerun` endpoint (which ignored its body), one captured signature would have let an attacker rerun arbitrary failed runs.
+
+Added `X-Webhook-Timestamp` header support folded into the HMAC base, matching the existing Slack-signature pattern. Skew check rejects timestamps more than 300 seconds off when the new `WEBHOOK_REQUIRE_TIMESTAMP=true` env var is set. The rerun endpoint additionally requires a JSON body `{"run_id": "<uuid>"}` that matches the URL path's `run_id`, binding the HMAC to the target.
+
+**Backwards-compatibility gate:** when `WEBHOOK_REQUIRE_TIMESTAMP` is unset or `false` (the default), legacy body-only HMAC is still accepted with a transient WARNING log. This lets cp-engine ship first, then fathom-meeting-sync deploys its own update sending the new header, then the gate flips on. The cp-engine warning text instructs the operator to flip the env var once fathom-meeting-sync rolls.
+
+When the gate is enforced, missing `run_id` in the rerun body returns 400 immediately (the equality check no longer silently falls through on absent keys).
+
+### Correctness — webhook
+
+#### Fixed — concurrent auto-ingest pushes clobbered each other
+
+When two webhook requests arrived close together, each cloned independently and pushed to `main` with no rebase loop. The second push hit a non-fast-forward error → 500 → Fathom retry → race. Phantom "failed" runs accumulated even though the underlying ingests had succeeded.
+
+Added `_push_with_retry()` that detects non-fast-forward via stderr markers (`non-fast-forward`, `fetch first` — deliberately NOT the broader `rejected` substring, which also catches auth failures and pre-receive hook rejections), runs `git pull --rebase` between attempts (up to 3), and aborts cleanly with `git rebase --abort` on rebase conflict. Wired into all 3 push call sites (`_commit_and_push`, `_commit_meeting_artifacts`, `_commit_clickup_close`).
+
+#### Fixed — Fathom duplicate-delivery idempotency
+
+When Fathom retried a webhook delivery (its 30s timeout window vs. the LLM-process loop), we'd re-clone, re-LLM-plan, and re-push. `execute_plan`'s content-hash dedupe caught the bullet writes, but `auto_ingest_runs` accumulated duplicate `success` rows.
+
+Added `_find_successful_duplicate_run()` that scans the last 20 `auto_ingest_runs` rows for the same `(meeting_id, sorted(project_codes))` fingerprint. Match → 200 `{"status": "duplicate_delivery_skipped", "existing_run_id": "..."}` BEFORE clone/LLM. The rerun endpoint intentionally bypasses this check (explicit user intent).
+
+#### Fixed — Slack-action background tasks were invisible to postmortem
+
+When Railway restarted (deploy, OOM, scale-down) during a Slack-action background task, the user saw the click acknowledged but the cp tenant never updated, with no log trail to reconstruct what was queued. Added structured `slack_action_spawn` and `slack_action_complete` log lines (key=value greppable) emitted in `_handle_block_action`, `_handle_view_submission`, and `_run_action_in_background`. A `TODO(v0.16)` comment notes the planned `slack_action_intents` persistence layer for actual recovery.
+
+#### Fixed — ClickUp close webhook missed batched events
+
+`/clickup-task-closed` read only `history_items[0]`. ClickUp's webhook batches multiple changes per event (assignee + status); if the first item was the assignee change, we silently 204'd even though the payload carried a real status→closed transition. Now iterates the full array, finds the first `field=='status'` item with `after.type=='closed'`, and processes it. Diagnostic log captures `(field, after.type)` of every item when no close transition is found.
+
+### Correctness — data layer
+
+#### Fixed — sprint-file open asks double-rendered against promoted ClickUp client-asks
+
+During the bridging period as `set-client-ask-task` rolls out, the same ask exists both in the sprint file's `### Open asks` section AND in ClickUp as a `client_ask`-typed task. The Open Commitments table rendered both copies.
+
+Threaded a `clickup_task_ids: dict[str, str]` map (cp_hash → ClickUp task_id) from the CLI through `build_planning_result` → `build_project_block`. The CLI pre-fetches the map by scanning current sprint files for hashes, then calling the existing `_fetch_clickup_task_ids_for_hashes` (already used by the daily digest for "Open in ClickUp" buttons). Sprint asks whose hash matches a known ClickUp task are filtered out. Silent-degrade on pre-fetch failure (the dedupe is polish, not load-bearing).
+
+#### Fixed — LLM-extracted text with newlines broke same-line hash regex
+
+`_write_ask`, `_write_decision`, `_write_risk`, `_write_inbound`, `_write_stakeholder`, and `_write_slack_digest` wrote text directly from the LLM extractor. Multi-line text (e.g. `"Line one\nLine two"`) produced bullets where the `<!-- cp:hash=... -->` trailer ended up on a different line than the bullet text, breaking the subsequent `close-ask`/`snooze-ask`/`resolve-risk` regex matches.
+
+Added `_sanitize_inline_text()` (`" ".join((text or "").split())`) at the start of every affected handler, mirroring the pattern already used in `_write_quick_resume_verb`.
+
+#### Fixed — `today=` parameter ignored by date-defaulting handlers
+
+`_write_ask`, `_write_decision`, `_write_risk`, `_write_inbound` accepted `**_` and fell through to `_today_iso()` (which calls real `datetime.now()`). The `today` parameter Drew threaded through `execute_plan` for backfill/test scenarios silently did nothing. Added `_resolve_today_iso(today)` and updated handler signatures to accept `*, today: date | None = None`.
+
+#### Fixed — Outbound scaffold placeholder leaked into `client_outbound`
+
+`_parse_client_section`'s Outbound branch had a fall-through `else` that wrapped any non-bracket bullet — including the scaffold placeholder `- _<message — \`[status · date]\` prefix>_` — into an `Outbound(status="draft", date="", text=...)`. Today no consumer iterates `sf.client_outbound`, but the field is in `SprintFile` and `sprint_file_to_dict`, so any future consumer would silently see ghost rows. Added the `_is_template_placeholder` guard, matching the `_parse_horizon` pattern.
+
+#### Fixed — `splice_managed_region` exception in master CP aborted the entire sync
+
+Inside `_write_if_changed`, `splice_managed_region` for the master CP first pass could raise `MarkerDuplicated` / `MarkerInverted` on a single duplicated marker (hand-edit, leftover merge conflict). The whole `sync_tenant` run died before sprint files, account CPs, or weekly strips were written. Account/strip splices already wrapped in `except Exception`; master CP didn't.
+
+Wrapped both splice loops in `try/except Exception`. On failure: log warning + fall back to full rewrite (mirrors the schema-evolution branch directly above), continue the sync.
+
+#### Fixed — `_parse_heading_dates` mis-dated cross-year sprints
+
+The H1 carried one year (`Dec 28 – Jan 3, 2027`), so a W53 sprint parsed as start=Dec 28 **2027**, end=Jan 3 2027. The bad start would propagate through `SprintFile.week_start` into `count_sprint_meetings`, `_carry_forward_rollup` ask aging, and aggregate sort keys. Would fire late December 2026.
+
+Added `_WEEK_ISO_RE` and updated `_parse_heading_dates` to derive both dates from `week_iso` via `date.fromisocalendar` when available. The H1 regex stays as a fallback for malformed input.
+
+### Operations & tooling
+
+#### Fixed — empty/whitespace `.cp-link` silently captured into cwd
+
+`capture_session.py` resolved an empty `.cp-link` to `Path("")` → `Path(".")`, which then `.exists()` to True and `.resolve()` to the user's current working directory. That cwd got treated as a cp working dir; we'd write `sessions/...md`, edit `cp.md`, and `git add` against whatever random repo was there. Silent footgun.
+
+Added a strip-then-truthy guard before the `Path(target_str)` construction. Empty/whitespace falls through to the unlinked branch.
+
+#### Fixed — `pin_resolver` could silently select a prerelease tag
+
+`packaging.SpecifierSet.contains()` defaults to including prereleases when the candidate is a prerelease and the spec lacks an explicit prerelease marker. A hypothetical `v0.16.0a1` tag pushed before `v0.16.0` lands would have been chosen as the highest match for `~= 0.15`, silently shipping a prerelease engine to every tenant on next sync.
+
+`list_remote_tags` now filters `v.is_prerelease` at source. Defense-in-depth check in `resolve()` belt-and-suspenders the same exclusion.
+
+#### Fixed — `/cp-ingest` skill had hardcoded sample data
+
+`plugin/commands/cp-ingest.md` referenced `sprints/2026-W19/cp.md` (sample data leaked into the real script). On real tenants without that directory, `parse-sprint` failed and the script silently fell back to `date +%Y-W%V` (no `-u`), so a late-night Pacific user landed in the wrong ISO week. Replaced with `WEEK=$(date -u +%Y-W%V)` directly; surrounding prose updated to reference `sprints/<W##>/<code>.md`.
+
+#### Fixed — `scripts/release.py` CHANGELOG check was one-sided
+
+The preflight check verified that a `## v<new-version>` section existed in CHANGELOG.md, but never that it was at the top. If someone drafted `## v0.16.0` ahead of `v0.15.2`, `release.py 0.15.2` would still pass preflight and ship, leaving the v0.16 stub orphaned above. Now asserts the first `^## v` match equals the new version.
+
+#### Fixed — `scripts/release.py` tag check only covered local
+
+A tag that existed on origin but had been deleted locally would pass preflight, then `git push origin v0.15.x` would reject AFTER the commit landed on `main`. Added `git ls-remote --tags origin <tag>` check; refuses release if remote already has it.
+
 ## v0.15.1 — 2026-06-02
 
 A system-wide code review after v0.15.0 shipped surfaced 20 issues across cp-engine. This patch ships the 4 most urgent fixes; the rest are tracked for v0.15.2 + v0.16.
