@@ -300,6 +300,29 @@ def _md_format_date(d: date) -> str:
     return f"{d.month}/{d.day}"
 
 
+# Slack rejects messages with more than 50 blocks. The daily digest emits
+# ~4 blocks per past-due ask (section + context + divider + actions) and
+# ~4 per escalated risk. On busy weeks (W22 had 24 past-due asks) the
+# unbounded loop would silently kill the whole digest send.
+#
+# Two caps:
+#  - MAX_ITEMS_PER_SECTION (10): per-section soft cap; sorted by urgency
+#    so the most important items survive. A single full section emits
+#    ~10*4 + section heading + truncation context ≈ 42 blocks, leaving
+#    headroom under 50.
+#  - MAX_TOTAL_BLOCKS (45): hard cap across all sections. If multiple
+#    sections are populated, we stop emitting items (and append a
+#    truncation context block to whichever section we're in) once we'd
+#    breach the budget. Leaves ~5 blocks of headroom for the header +
+#    final dividers.
+#
+# Truncated sections append a "+N more not shown (see weekly-cp.md or
+# run /cp-prep for full list)" context block so the recipient knows
+# something was dropped and where to look for the full list.
+MAX_ITEMS_PER_SECTION = 10
+MAX_TOTAL_BLOCKS = 45
+
+
 def _render_digest_blocks(
     digest: dict,
     *,
@@ -312,6 +335,10 @@ def _render_digest_blocks(
     ClickUp via v0.12's pipeline. Those asks get a single 'Open in ClickUp'
     link button instead of the Resolve/Snooze trio; v0.12's bidirectional
     close-loop is the authoritative closure path for them.
+
+    Each section is capped at ``MAX_ITEMS_PER_SECTION`` items (sorted by
+    urgency) to keep total block count safely under Slack's 50-block hard
+    limit. Truncation is communicated via a "+ N more …" context block.
 
     Reference: https://api.slack.com/block-kit
     """
@@ -337,8 +364,22 @@ def _render_digest_blocks(
         "text": {"type": "plain_text", "text": f"{recipient_name}, your cp scan"},
     }]
 
+    # Per-item block cost (used by the global budget):
+    #   past-due ask / escalated risk: 4 blocks (divider + section + context + actions)
+    #   allocation entry:              1 block  (section only)
+    # Plus per-section overhead: 1 heading + optional 1 truncation context.
+
+    def _remaining_budget() -> int:
+        # +1 reserved for a possible truncation block we may need to append.
+        return MAX_TOTAL_BLOCKS - len(blocks) - 1
+
     if past_due:
         past_due_sorted = sorted(past_due, key=lambda a: a.days_past, reverse=True)
+        # Per-section cap.
+        section_cap = MAX_ITEMS_PER_SECTION
+        # Global cap. Section heading is one of the first blocks we'll
+        # emit; budget for items is whatever's left after that, divided
+        # by 4 blocks/item.
         blocks.append({
             "type": "section",
             "text": {
@@ -346,7 +387,11 @@ def _render_digest_blocks(
                 "text": f"⏰ *{len(past_due_sorted)} ask{'s' if len(past_due_sorted) != 1 else ''} past due*",
             },
         })
-        for ask in past_due_sorted:
+        budget_items = max(0, _remaining_budget() // 4)
+        cap = min(section_cap, budget_items)
+        shown = past_due_sorted[:cap]
+        dropped = len(past_due_sorted) - len(shown)
+        for ask in shown:
             blocks.append({"type": "divider"})
             blocks.append({
                 "type": "section",
@@ -374,8 +419,21 @@ def _render_digest_blocks(
                     "type": "actions",
                     "elements": _ask_action_buttons(code=ask.code, cp_hash=ask.hash),
                 })
+        if dropped > 0:
+            blocks.append({
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": (
+                        f"_+ {dropped} more past-due ask{'s' if dropped != 1 else ''} "
+                        "not shown (see weekly-cp.md or run /cp-prep for full list)_"
+                    ),
+                }],
+            })
 
     if escalated:
+        # severity is uniformly "escalated" here (the classifier already
+        # filtered); secondary key is most-recently raised first.
         escalated_sorted = sorted(escalated, key=lambda r: r.raised, reverse=True)
         blocks.append({"type": "divider"})
         blocks.append({
@@ -385,7 +443,11 @@ def _render_digest_blocks(
                 "text": f"🚨 *{len(escalated_sorted)} risk{'s' if len(escalated_sorted) != 1 else ''} escalated this week*",
             },
         })
-        for risk in escalated_sorted:
+        budget_items = max(0, _remaining_budget() // 4)
+        cap = min(MAX_ITEMS_PER_SECTION, budget_items)
+        shown_risks = escalated_sorted[:cap]
+        dropped_risks = len(escalated_sorted) - len(shown_risks)
+        for risk in shown_risks:
             blocks.append({"type": "divider"})
             blocks.append({
                 "type": "section",
@@ -402,6 +464,18 @@ def _render_digest_blocks(
                 "type": "actions",
                 "elements": _risk_action_buttons(code=risk.code, cp_hash=risk.hash),
             })
+        if dropped_risks > 0:
+            blocks.append({
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": (
+                        f"_+ {dropped_risks} more escalated risk"
+                        f"{'s' if dropped_risks != 1 else ''} not shown "
+                        "(see weekly-cp.md or run /cp-prep for full list)_"
+                    ),
+                }],
+            })
 
     if allocation:
         blocks.append({"type": "divider"})
@@ -409,10 +483,26 @@ def _render_digest_blocks(
             "type": "section",
             "text": {"type": "mrkdwn", "text": "📊 *Allocation watch*"},
         })
-        for entry in allocation:
+        # Allocation entries are 1 block each.
+        budget_items = max(0, _remaining_budget())
+        cap = min(MAX_ITEMS_PER_SECTION, budget_items)
+        shown_alloc = allocation[:cap]
+        dropped_alloc = len(allocation) - len(shown_alloc)
+        for entry in shown_alloc:
             blocks.append({
                 "type": "section",
                 "text": {"type": "mrkdwn", "text": f"• {entry}"},
+            })
+        if dropped_alloc > 0:
+            blocks.append({
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": (
+                        f"_+ {dropped_alloc} more allocation item"
+                        f"{'s' if dropped_alloc != 1 else ''} not shown_"
+                    ),
+                }],
             })
 
     return blocks

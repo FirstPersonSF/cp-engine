@@ -633,3 +633,151 @@ def test_render_digest_blocks_empty_renders_all_clear() -> None:
     assert len(blocks) == 1
     assert blocks[0]["type"] == "section"
     assert "all clear" in blocks[0]["text"]["text"].lower()
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  v0.15.1 Fix 3 — block-count cap to stay under Slack's 50-block limit
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _make_past_due_asks(n: int):
+    """Build n PastDueAsk objects with distinct hashes + decreasing urgency."""
+    from cp_engine.attention_digest import PastDueAsk
+    return [
+        PastDueAsk(
+            code=f"prj-{i:04d}",
+            text=f"Ask number {i}",
+            who="Drew",
+            asked=date(2026, 5, 1),
+            by=None,
+            days_past=100 - i,  # higher i → less urgent
+            hash=f"{i:08x}",
+        )
+        for i in range(n)
+    ]
+
+
+def _make_escalated_risks(n: int):
+    from cp_engine.attention_digest import EscalatedRisk
+    return [
+        EscalatedRisk(
+            code=f"prj-{i:04d}",
+            text=f"Risk number {i}",
+            category="scope",
+            raised=date(2026, 5, max(1, 28 - i)),
+            hash=f"{i:08x}",
+        )
+        for i in range(n)
+    ]
+
+
+def test_render_digest_blocks_under_cap_renders_all_items() -> None:
+    """5 items per section stays under the cap → all rendered, no truncation note."""
+    from cp_engine.attention_digest import _render_digest_blocks
+    digest = {
+        "past_due": _make_past_due_asks(5),
+        "escalated": [],
+        "allocation": [],
+    }
+    blocks = _render_digest_blocks(digest, recipient_name="Drew", clickup_task_ids={})
+    # No truncation marker present.
+    all_text = " ".join(
+        b.get("text", {}).get("text", "")
+        for b in blocks
+        if b.get("type") == "context"
+    )
+    assert "not shown" not in all_text
+
+
+def test_render_digest_blocks_past_due_caps_at_max_items() -> None:
+    """15 past-due asks → 10 rendered + truncation note for the 5 dropped."""
+    from cp_engine.attention_digest import (
+        MAX_ITEMS_PER_SECTION,
+        _render_digest_blocks,
+    )
+    n = 15
+    digest = {
+        "past_due": _make_past_due_asks(n),
+        "escalated": [],
+        "allocation": [],
+    }
+    blocks = _render_digest_blocks(digest, recipient_name="Drew", clickup_task_ids={})
+    # Count the per-item `actions` blocks for past-due asks (one per shown ask).
+    actions_blocks = [b for b in blocks if b.get("type") == "actions"]
+    assert len(actions_blocks) == MAX_ITEMS_PER_SECTION
+    # Truncation context block present with the right N.
+    truncation = [
+        b for b in blocks
+        if b.get("type") == "context"
+        and "not shown" in b["elements"][0]["text"]
+    ]
+    assert len(truncation) == 1
+    assert f"+ {n - MAX_ITEMS_PER_SECTION} more past-due ask" in truncation[0]["elements"][0]["text"]
+
+
+def test_render_digest_blocks_escalated_caps_at_max_items() -> None:
+    """15 escalated risks → 10 rendered + truncation note for the 5 dropped."""
+    from cp_engine.attention_digest import (
+        MAX_ITEMS_PER_SECTION,
+        _render_digest_blocks,
+    )
+    n = 15
+    digest = {
+        "past_due": [],
+        "escalated": _make_escalated_risks(n),
+        "allocation": [],
+    }
+    blocks = _render_digest_blocks(digest, recipient_name="Drew", clickup_task_ids={})
+    actions_blocks = [b for b in blocks if b.get("type") == "actions"]
+    assert len(actions_blocks) == MAX_ITEMS_PER_SECTION
+    truncation = [
+        b for b in blocks
+        if b.get("type") == "context"
+        and "not shown" in b["elements"][0]["text"]
+    ]
+    assert len(truncation) == 1
+    assert f"+ {n - MAX_ITEMS_PER_SECTION} more escalated risk" in (
+        truncation[0]["elements"][0]["text"]
+    )
+
+
+def test_render_digest_blocks_total_count_stays_under_slack_50_limit() -> None:
+    """25 items spread across sections must produce < 50 blocks total.
+
+    Slack rejects any message with more than 50 blocks. Before the cap,
+    24 past-due asks would emit ~100 blocks and silently kill the digest.
+    """
+    from cp_engine.attention_digest import _render_digest_blocks
+    digest = {
+        "past_due": _make_past_due_asks(15),
+        "escalated": _make_escalated_risks(10),
+        "allocation": [],
+    }
+    blocks = _render_digest_blocks(digest, recipient_name="Drew", clickup_task_ids={})
+    assert len(blocks) < 50, f"got {len(blocks)} blocks; Slack hard-limit is 50"
+
+
+def test_render_digest_blocks_past_due_sorted_by_urgency_descending() -> None:
+    """When truncating, the MOST urgent (highest days_past) items survive."""
+    from cp_engine.attention_digest import _render_digest_blocks
+    asks = _make_past_due_asks(15)
+    # _make_past_due_asks already produces decreasing days_past, but
+    # shuffle to prove the renderer's sort is doing the work.
+    digest = {
+        "past_due": list(reversed(asks)),
+        "escalated": [],
+        "allocation": [],
+    }
+    blocks = _render_digest_blocks(digest, recipient_name="Drew", clickup_task_ids={})
+    # The first section block after the header carries the urgency-sorted
+    # asks. Pull the code from each section block that contains a hash-styled
+    # project code (`prj-NNNN`).
+    rendered_codes = []
+    for b in blocks:
+        if b.get("type") == "section":
+            text = b["text"]["text"]
+            if text.startswith("`prj-"):
+                rendered_codes.append(text.split("`")[1])
+    # The first 10 (most urgent) asks have days_past = 100..91 →
+    # codes prj-0000..prj-0009 (highest days_past corresponds to lowest i).
+    assert rendered_codes == [f"prj-{i:04d}" for i in range(10)]
