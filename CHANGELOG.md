@@ -4,6 +4,42 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.15.1 — 2026-06-02
+
+A system-wide code review after v0.15.0 shipped surfaced 20 issues across cp-engine. This patch ships the 4 most urgent fixes; the rest are tracked for v0.15.2 + v0.16.
+
+### Fixed — `set-milestone` and `set-client-ask-task` were dead code in production
+
+The v0.15.0 headline ingest verbs (`set-milestone`, `set-client-ask-task`) silently logged INFO and skipped on every real Fathom webhook. Root cause: `webhook/main.py` had 7 `execute_plan()` callsites that never passed `supabase=`, so the new handlers hit the graceful-degrade branch (`if supabase is None: continue`) and did nothing. The LLM prompt actively instructed Claude to emit these verbs; the verb dispatch worked in tests with mocked supabase; the wiring just wasn't there in the webhook caller.
+
+Threaded `supabase=_create_supabase_client()` plus `meeting_id=` through all 7 callsites (per-meeting × single-project, per-meeting × summary, sprint-planning × single-project, sprint-planning × summary, clickup-task-closed, slack-action, account-meeting via `_ingest_one_project`). For the two callsites where no `meeting_id` is in scope (clickup-task-closed, slack-action), `meeting_id=None` is acceptable — those endpoints emit only `close-ask` / `snooze-ask` / `resolve-risk` plans, never proposal verbs.
+
+Added regression test `test_ingest_one_project_passes_supabase_and_meeting_id_to_execute_plan` plus an end-to-end test file `tests/test_webhook_milestone_wiring.py` that catches future re-regressions.
+
+### Fixed — `set-milestone` and `set-client-ask-task` had no dedupe
+
+The two new ingest verbs did raw `clickup_task_proposals.insert(row)` with no `cp_ask_hash` check. Combined with v0.13's rerun endpoint (which Drew shipped specifically to make re-ingest safe), every rerun created N duplicate `pending` proposal rows.
+
+Added `cp_ask_hash` computation via `_content_hash(code, "set-milestone" | "set-client-ask-task", deliverable_or_what)` and a `_proposal_already_present()` helper that queries the existing pending/approved row for that hash. Match → silent no-op (logged INFO). Rejected rows do NOT dedupe (a previously-rejected proposal can re-enter on rerun by design). Lookup failure falls back to allowing the insert (preserves graceful-degrade).
+
+### Fixed — daily digest block count could exceed Slack's 50-block limit
+
+`attention_digest._render_digest_blocks` produces ~4 blocks per past-due ask + ~4 per escalated risk. The W22 retro showed 24 past-due asks across the tenant; the next time a similar week happens, Slack would reject the digest with `invalid_blocks` and the whole digest would fail silently for all recipients.
+
+Added `MAX_ITEMS_PER_SECTION=10` (per-section soft cap, sorted by urgency descending — `days_past` for asks, `raised` for risks) AND `MAX_TOTAL_BLOCKS=45` (global hard budget). Each section recomputes its remaining budget so later sections shrink as earlier ones consume budget. When a section is truncated, an end-of-section context block surfaces the count: `"+ N more past-due asks not shown (see weekly-cp.md or run /cp-prep for full list)"`.
+
+### Fixed — Open Commitments table cells could break on `|` or newlines in content
+
+`prep_planning._render_commitments_table` built table rows with unescaped cell content. ClickUp task names like `"Spec | implementation | review"` or sprint-file asks containing newlines would corrupt the table, shifting every subsequent cell.
+
+Added `_md_table_cell(text)` helper that escapes `|` → `\|`, collapses `\n`/`\r` → space, handles `None`, and strips trailing whitespace. Applied at the single row-emit site, covering all 4 cell positions across all 3 row sources (ClickUp milestones, ClickUp client-asks, sprint-file open asks).
+
+### Fixed — `templates/CLAUDE.md.j2` still described the old `cp prep-agenda` flow
+
+The Jinja template that scaffolds every tenant's CLAUDE.md still had the multi-step `cp prep-agenda` procedure (read sprint files manually, etc.) in its "Sprint planning prep" section. Next `cp sync` would have written this stale workflow into every tenant's live CLAUDE.md, silently undoing v0.15.0's `/cp-prep` skill rewire from the tenant's perspective.
+
+Replaced the multi-step procedure with terse `/cp-prep` guidance pointing at `cp prep-planning` and the rendered `sprints/<W##>/_planning.md`.
+
 ## v0.15.0 — 2026-06-02
 
 ### Added — `cp prep-planning` forward-looking sprint-planning doc
