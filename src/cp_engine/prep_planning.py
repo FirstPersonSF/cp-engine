@@ -17,9 +17,10 @@ ClickUp REST API.
 rules (slip_risk, decision_due, past_due_ask, escalated_risk). See its
 docstring for rule semantics.
 
-``_render_cross_cutting`` returns the tenant-wide strip — capacity-binding
-analysis and ``weekly-cp.md`` cross-cutting decisions layer on top of the
-per-project blocks.
+``_render_cross_cutting`` returns the tenant strip plus capacity-binding
+owners (>=5 projects of record) and ``weekly-cp.md`` cross-cutting
+decisions (last 4 weeks, unresolved). Implicit-owner detection from
+sprint-file asks/commitments is deferred to v2.
 
 The CLI entry point (``cp prep-planning``) lives in cli.py.
 """
@@ -30,17 +31,20 @@ import json
 import logging
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass, field
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import TypedDict
 
 import httpx
 
 from cp_engine.agenda import (
+    WeeklyDecision,
     _filter_active,
     _short_iso_date,
     _to_datetime,
+    parse_weekly_decisions,
 )
 from cp_engine.config import TenantConfig
 from cp_engine.sprints import (
@@ -121,6 +125,12 @@ class PlanningResult:
     blocks_by_account: dict[str, list[ProjectPlanningBlock]]
     milestone_counts: dict[str, int]  # {"total", "fetched", "errored"}
     urgent_counts: dict[str, int]
+    # Task 8: capacity-binding owners + cross-cutting decisions partners owe
+    # each other. Populated by build_planning_result; consumed by
+    # _render_cross_cutting. Both default to empty so the renderer can
+    # safely skip the corresponding sub-blocks.
+    capacity_binding: tuple[tuple[str, int], ...] = ()
+    cross_cutting_decisions: tuple[WeeklyDecision, ...] = ()
     errors: list[str] = field(default_factory=list)
     generated_at: str = ""
 
@@ -133,6 +143,11 @@ class PlanningResult:
             "tenant_hours_last_week": self.tenant_hours_last_week,
             "milestone_counts": self.milestone_counts,
             "urgent_counts": self.urgent_counts,
+            "capacity_binding": [
+                {"owner": name, "count": count}
+                for name, count in self.capacity_binding
+            ],
+            "cross_cutting_decisions_count": len(self.cross_cutting_decisions),
             "errors": self.errors,
         }
 
@@ -765,21 +780,158 @@ def _render_tenant_strip(
     return f"**Active:** {project_count} · **Last sprint:** {hours_str}"
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  Task 8: cross-cutting detection (capacity binding + partner decisions)
+# ──────────────────────────────────────────────────────────────────────
+
+
+# Owners with >= this many projects of record become "capacity binding".
+# The retro pegged 5 as the floor at which an owner stops being able to
+# context-switch cleanly between projects in a single sprint.
+_CAPACITY_BINDING_FLOOR = 5
+
+# Cross-cutting decisions are surfaced when their parser date is within
+# this many days of `today` — the weekly-cp.md section header itself
+# scopes to "last 4 weeks", and we mirror that bound here so old hand-
+# written entries don't bleed forward indefinitely.
+_CROSS_CUTTING_LOOKBACK_DAYS = 28
+
+# Decisions tagged with this inline marker have already been resolved and
+# should drop out of the planning surface. Matches forms like
+# "[decided: 2026-05-30]" or "[decided yes]".
+_DECIDED_MARKER_RE = re.compile(r"\[decided[:\s][^\]]*\]", re.IGNORECASE)
+
+
+def _detect_capacity_binding(
+    projects: tuple[ProjectState, ...],
+) -> tuple[tuple[str, int], ...]:
+    """Owners carrying >= ``_CAPACITY_BINDING_FLOOR`` projects of record.
+
+    Returns ``(name, count)`` pairs ordered by count desc, then name asc
+    for stable rendering. ``"—"`` and ``None`` owners are ignored so an
+    unassigned-owner cluster never trips the binding flag.
+
+    TODO(v2): layer implicit ownership — for each project, parse its
+    current sprint file's ``### Open asks`` and ``### Commitments`` so a
+    person who's named on many asks without being owner-of-record (the
+    Tony shape from the W19 retro) also surfaces here. Skipped in v1
+    because the parsing is gnarly and the explicit count is a useful
+    floor on its own.
+    """
+    counts: Counter[str] = Counter()
+    for p in projects:
+        owner = (p.owner or "").strip()
+        if not owner or owner == "—":
+            continue
+        counts[owner] += 1
+    binding = [
+        (name, count)
+        for name, count in counts.most_common()
+        if count >= _CAPACITY_BINDING_FLOOR
+    ]
+    # most_common preserves insertion order for ties; re-sort to break
+    # ties alphabetically so output is deterministic across runs.
+    binding.sort(key=lambda nc: (-nc[1], nc[0].lower()))
+    return tuple(binding)
+
+
+def _is_resolved_decision(text: str) -> bool:
+    """True if the decision text carries a ``[decided: ...]`` marker."""
+    return bool(_DECIDED_MARKER_RE.search(text))
+
+
+def _load_cross_cutting_decisions(
+    tenant_root: Path,
+    *,
+    today: date,
+    lookback_days: int = _CROSS_CUTTING_LOOKBACK_DAYS,
+) -> tuple[WeeklyDecision, ...]:
+    """Read ``weekly-cp.md`` and return decisions still owed across partners.
+
+    Filters:
+      - Section absent or empty → ``()``.
+      - Entry's date older than ``lookback_days`` → dropped.
+      - Entry text contains a ``[decided: ...]`` marker → dropped.
+
+    Reuses ``agenda.parse_weekly_decisions`` so the parsing contract is
+    shared with ``cp prep-agenda``. The order returned mirrors the
+    handwritten numbering in ``weekly-cp.md`` (newest entries at top).
+    """
+    weekly_path = tenant_root / "weekly-cp.md"
+    if not weekly_path.is_file():
+        return ()
+    body = weekly_path.read_text(encoding="utf-8")
+    decisions = parse_weekly_decisions(body)
+    if not decisions:
+        return ()
+    cutoff = today - timedelta(days=lookback_days)
+    out: list[WeeklyDecision] = []
+    for d in decisions:
+        try:
+            d_date = date.fromisoformat(d.date)
+        except ValueError:
+            # Malformed date — surface the entry rather than silently
+            # dropping it; partners can spot the bad format.
+            d_date = today
+        if d_date < cutoff:
+            continue
+        if _is_resolved_decision(d.text):
+            continue
+        out.append(d)
+    return tuple(out)
+
+
 def _render_cross_cutting(
     result: PlanningResult,
 ) -> list[str]:
-    """STUB for Task 8. Returns only the tenant strip today.
+    """Render the top-of-doc tenant strip + cross-cutting block.
 
-    Task 8 will add capacity-binding analysis (e.g. "Drew has 8 milestones
-    landing this week against 24h headroom") and cross-cutting decisions
-    pulled from ``weekly-cp.md``. Until then this is the headline strip
-    plus a one-line placeholder so Task 8 has a clear anchor to grow into.
+    The shape is:
+
+        ## Tenant strip
+        **Active:** N · **Last sprint:** ...
+
+        ## Cross-cutting (read before walking projects)
+        **Capacity binding constraints:**
+        - **<name>** — owner-of-record on N projects
+        ...
+        **Decisions partners owe each other this week:**
+        1. <decision text>
+        ...
+
+    Either sub-block is omitted entirely when its source data is empty,
+    so a clean tenant week renders just the tenant strip + a "no
+    cross-cutting signals" line.
     """
     out = ["## Tenant strip"]
-    out.append(_render_tenant_strip(result.project_count, result.tenant_hours_last_week))
+    out.append(
+        _render_tenant_strip(result.project_count, result.tenant_hours_last_week)
+    )
     out.append("")
     out.append("## Cross-cutting (read before walking projects)")
-    out.append("_(stub — Task 8 layers capacity-binding analysis here)_")
+
+    binding = result.capacity_binding
+    decisions = result.cross_cutting_decisions
+
+    if not binding and not decisions:
+        out.append("_(no cross-cutting signals this sprint)_")
+        return out
+
+    if binding:
+        out.append("**Capacity binding constraints:**")
+        for name, count in binding:
+            suffix = "" if count == 1 else "s"
+            out.append(
+                f"- **{name}** — owner-of-record on {count} project{suffix}"
+            )
+
+    if decisions:
+        if binding:
+            out.append("")
+        out.append("**Decisions partners owe each other this week:**")
+        for i, d in enumerate(decisions, 1):
+            out.append(f"{i}. {d.text}")
+
     return out
 
 
@@ -1043,6 +1195,12 @@ def build_planning_result(
             if t in urgent_counts:
                 urgent_counts[t] += 1
 
+    # Task 8: cross-cutting capacity binding + partner-owed decisions.
+    capacity_binding = _detect_capacity_binding(active_sorted)
+    cross_cutting_decisions = _load_cross_cutting_decisions(
+        config.root, today=today
+    )
+
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
     return PlanningResult(
         week_iso=week_iso,
@@ -1057,6 +1215,8 @@ def build_planning_result(
             "errored": errored,
         },
         urgent_counts=urgent_counts,
+        capacity_binding=capacity_binding,
+        cross_cutting_decisions=cross_cutting_decisions,
         errors=errors,
         generated_at=generated_at,
     )
