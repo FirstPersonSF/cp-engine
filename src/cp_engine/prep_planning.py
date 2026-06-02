@@ -211,12 +211,14 @@ def _fetch_clickup_milestones(
         client = httpx.Client(timeout=_CLICKUP_TIMEOUT)
 
     all_tasks: list[dict] = []
+    page = 0
     try:
-        for page in range(_CLICKUP_MAX_PAGES + 1):
-            if page > _CLICKUP_MAX_PAGES:
+        while True:
+            if page >= _CLICKUP_MAX_PAGES:
                 raise RuntimeError(
-                    f"ClickUp pagination exceeded {_CLICKUP_MAX_PAGES} "
-                    f"pages for list {list_id}"
+                    f"ClickUp pagination exceeded {_CLICKUP_MAX_PAGES} pages "
+                    f"for list {list_id} (over "
+                    f"{_CLICKUP_MAX_PAGES * _CLICKUP_PAGE_SIZE} tasks)"
                 )
             params: list[tuple[str, str]] = [
                 ("tags[]", tag),
@@ -244,6 +246,7 @@ def _fetch_clickup_milestones(
             all_tasks.extend(page_tasks)
             if len(page_tasks) < _CLICKUP_PAGE_SIZE:
                 break
+            page += 1
     finally:
         if owns_client:
             client.close()

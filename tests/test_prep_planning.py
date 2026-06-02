@@ -26,6 +26,8 @@ from cp_engine import prep_planning
 from cp_engine.prep_planning import (
     Milestone,
     ProjectPlanningBlock,
+    _CLICKUP_MAX_PAGES,
+    _CLICKUP_PAGE_SIZE,
     _detect_urgent,
     _fetch_clickup_milestones,
     _group_by_account,
@@ -1011,3 +1013,45 @@ def test_fetch_milestones_stops_at_exactly_100():
     # Page 0 fetched, page 1 fetched (returned 0 tasks), stop.
     page_args = [c[2] for c in client.calls]
     assert page_args == ["0", "1"]
+
+
+class _AlwaysFullPageFakeClient:
+    """FakeClient that returns ``_CLICKUP_PAGE_SIZE`` tasks for every page.
+
+    Simulates a misconfigured tag matching enough tasks to blow past the
+    safety cap, so the pagination loop should raise rather than silently
+    truncate.
+    """
+
+    def __init__(self):
+        self.calls: list[str] = []  # page numbers requested
+
+    def get(self, url: str, *, headers=None, params=None):
+        page = "0"
+        for k, v in params or []:
+            if k == "page":
+                page = v
+        self.calls.append(page)
+        full_page = [
+            {"id": f"T{page}-{i}", "name": f"M{i}",
+             "tags": [{"name": "milestone"}]}
+            for i in range(_CLICKUP_PAGE_SIZE)
+        ]
+        return FakeResp(200, {"tasks": full_page})
+
+
+def test_fetch_milestones_safety_cap_raises():
+    """When ClickUp keeps returning full pages past the cap, raise rather
+    than silently truncating."""
+    client = _AlwaysFullPageFakeClient()
+
+    with pytest.raises(RuntimeError, match="pagination exceeded"):
+        _fetch_clickup_milestones(
+            "L1", tag="milestone", token="tok", client=client
+        )
+
+    # Cap is _CLICKUP_MAX_PAGES — we fetched pages 0..MAX-1 before the
+    # next iteration tripped the guard.
+    assert len(client.calls) == _CLICKUP_MAX_PAGES
+    assert client.calls[0] == "0"
+    assert client.calls[-1] == str(_CLICKUP_MAX_PAGES - 1)
