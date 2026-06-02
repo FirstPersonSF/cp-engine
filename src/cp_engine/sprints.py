@@ -149,7 +149,7 @@ def _empty_where() -> WhereItStands:
 _BRACKET_RE = re.compile(r"^\s*-\s*`?\[(?P<meta>[^\]]+)\]`?\s*(?P<text>.*)$")
 
 
-def _parse_bracketed_bullet(line: str) -> tuple[list[str], str] | None:
+def parse_bracketed_bullet(line: str) -> tuple[list[str], str] | None:
     m = _BRACKET_RE.match(line)
     if not m:
         return None
@@ -157,7 +157,7 @@ def _parse_bracketed_bullet(line: str) -> tuple[list[str], str] | None:
     return parts, m.group("text").strip()
 
 
-def _section_body(body: str, heading: str) -> str:
+def section_body(body: str, heading: str) -> str:
     """Slice out a `## heading` section up to next `## ` or EOF.
 
     Matches the heading exactly OR with a trailing separator + suffix, so
@@ -179,21 +179,21 @@ def _section_body(body: str, heading: str) -> str:
     return m.group(1) if m else ""
 
 
-def _subsection(section_body: str, sub: str) -> str:
+def subsection(body: str, sub: str) -> str:
     pattern = re.compile(
         rf"^### {re.escape(sub)}\s*$(.*?)(?=^### |\Z)",
         re.MULTILINE | re.DOTALL,
     )
-    m = pattern.search(section_body)
+    m = pattern.search(body)
     return m.group(1) if m else ""
 
 
-def _bullets(section_body: str) -> list[tuple[str, str]]:
+def bullets(body: str) -> list[tuple[str, str]]:
     """Return [(first_line, indented_continuation)] pairs."""
     out: list[tuple[str, str]] = []
     cur_first: str | None = None
     cur_cont: list[str] = []
-    for line in section_body.splitlines():
+    for line in body.splitlines():
         if line.startswith("- ") or line.startswith("-\t"):
             if cur_first is not None:
                 out.append((cur_first, "\n".join(cur_cont).strip()))
@@ -209,10 +209,10 @@ def _bullets(section_body: str) -> list[tuple[str, str]]:
 def _parse_client_section(
     body: str,
 ) -> tuple[tuple[Outbound, ...], tuple[ClientAsk, ...], tuple[InboundUpdate, ...]]:
-    section = _section_body(body, "Client communication")
+    section = section_body(body, "Client communication")
     out: list[Outbound] = []
-    for first, cont in _bullets(_subsection(section, "Outbound")):
-        parsed = _parse_bracketed_bullet(first)
+    for first, cont in bullets(subsection(section, "Outbound")):
+        parsed = parse_bracketed_bullet(first)
         if parsed:
             parts, text = parsed
             status = parts[0] if parts else "draft"
@@ -226,8 +226,8 @@ def _parse_client_section(
                 Outbound(text=text, status="draft", date="", note=cont or None)
             )
     asks: list[ClientAsk] = []
-    for first, _cont in _bullets(_subsection(section, "Open asks")):
-        parsed = _parse_bracketed_bullet(first)
+    for first, _cont in bullets(subsection(section, "Open asks")):
+        parsed = parse_bracketed_bullet(first)
         if parsed:
             parts, text = parsed
             status = parts[0] if parts else "open"
@@ -237,8 +237,8 @@ def _parse_client_section(
                 ClientAsk(text=text, asked_date=asked_date, status=status, who=who)
             )
     inbound: list[InboundUpdate] = []
-    for first, _ in _bullets(_subsection(section, "Inbound")):
-        parsed = _parse_bracketed_bullet(first)
+    for first, _ in bullets(subsection(section, "Inbound")):
+        parsed = parse_bracketed_bullet(first)
         if parsed:
             parts, text = parsed
             inbound.append(
@@ -252,10 +252,10 @@ def _parse_client_section(
 
 
 def _parse_risks(body: str) -> tuple[Risk, ...]:
-    section = _section_body(body, "Dependencies & risks")
+    section = section_body(body, "Dependencies & risks")
     out: list[Risk] = []
-    for first, cont in _bullets(section):
-        parsed = _parse_bracketed_bullet(first)
+    for first, cont in bullets(section):
+        parsed = parse_bracketed_bullet(first)
         if not parsed:
             continue
         parts, text = parsed
@@ -284,7 +284,7 @@ _PERSON_HOURS_RE = re.compile(r"(?P<name>[A-Za-z][\w\s]*?)\s*·\s*(?P<hours>[\d.
 def _parse_this_sprint(
     body: str,
 ) -> tuple[tuple[PersonHours, ...], tuple[Deliverable, ...], str]:
-    section = _section_body(body, "This sprint")
+    section = section_body(body, "This sprint")
     alloc: list[PersonHours] = []
     m = _ALLOCATION_RE.search(section)
     if m:
@@ -296,14 +296,14 @@ def _parse_this_sprint(
                 )
             )
     deliverables: list[Deliverable] = []
-    deliv_section = _subsection(section, "Deliverables")
+    deliv_section = subsection(section, "Deliverables")
     for i, line in enumerate(
         [ln for ln in deliv_section.splitlines() if re.match(r"^\d+\.\s+", ln)],
         start=1,
     ):
         text = re.sub(r"^\d+\.\s+", "", line).strip()
         deliverables.append(Deliverable(text=text, position=i))
-    dod = _subsection(section, "Definition of done").strip()
+    dod = subsection(section, "Definition of done").strip()
     return tuple(alloc), tuple(deliverables), dod
 
 
@@ -331,8 +331,8 @@ def _parse_carry_forward(body: str) -> CarryForward:
     asks: list[ClientAsk] = []
     risks: list[Risk] = []
     horizon: list[HorizonItem] = []
-    for first, _ in _bullets(region):
-        parsed = _parse_bracketed_bullet(first)
+    for first, _ in bullets(region):
+        parsed = parse_bracketed_bullet(first)
         if not parsed:
             continue
         parts, text = parsed
@@ -377,7 +377,7 @@ _MEETING_META_RE = re.compile(
 
 
 def _parse_meeting_notes(body: str) -> MeetingNotes | None:
-    section = _section_body(body, "Meeting notes & decisions")
+    section = section_body(body, "Meeting notes & decisions")
     if not section.strip():
         return None
     src = att = dur = None
@@ -388,10 +388,10 @@ def _parse_meeting_notes(body: str) -> MeetingNotes | None:
         dur = m.group("duration").strip()
     decisions = tuple(
         re.sub(r"^\d+\.\s+", "", ln).strip()
-        for ln in _subsection(section, "Decisions").splitlines()
+        for ln in subsection(section, "Decisions").splitlines()
         if re.match(r"^\d+\.\s+", ln)
     )
-    discussion = _subsection(section, "Discussion notes").strip()
+    discussion = subsection(section, "Discussion notes").strip()
     return MeetingNotes(
         source=src,
         attendees=att,
@@ -408,10 +408,10 @@ def _parse_stakeholders(body: str) -> tuple[Stakeholder, ...]:
     via the markdown content but never fails (per v0.8.5 design: aggregators
     log on bad format, don't crash).
     """
-    section = _section_body(body, "Client communication")
+    section = section_body(body, "Client communication")
     out: list[Stakeholder] = []
-    for first, _cont in _bullets(_subsection(section, "Stakeholders")):
-        parsed = _parse_bracketed_bullet(first)
+    for first, _cont in bullets(subsection(section, "Stakeholders")):
+        parsed = parse_bracketed_bullet(first)
         if not parsed:
             continue
         parts, _text = parsed
@@ -435,10 +435,10 @@ def _parse_decisions(body: str) -> tuple[DecisionEntry, ...]:
 
     The `[cross-cutting]` flag is optional; absence implies cross_cutting=False.
     """
-    section = _section_body(body, "Meeting notes & decisions")
-    sub = _subsection(section, "Decisions")
+    section = section_body(body, "Meeting notes & decisions")
+    sub = subsection(section, "Decisions")
     out: list[DecisionEntry] = []
-    for first, _cont in _bullets(sub):
+    for first, _cont in bullets(sub):
         # Only consider bullets matching the bracketed convention. Lines
         # without a leading `[decision` bracket are legacy freeform entries;
         # those are still captured by `_parse_meeting_notes` via the
@@ -473,9 +473,9 @@ def parse_themes_from_week_file(week_md_path: Path) -> tuple[Theme, ...]:
     if not week_md_path.is_file():
         return ()
     body = week_md_path.read_text(encoding="utf-8")
-    section = _section_body(body, "Themes")
+    section = section_body(body, "Themes")
     out: list[Theme] = []
-    for first, _cont in _bullets(section):
+    for first, _cont in bullets(section):
         stripped = first.lstrip("- ").strip()
         if not stripped.startswith("[theme"):
             continue
@@ -500,22 +500,22 @@ def _is_template_placeholder(bullet_first_line: str) -> bool:
 
 
 def _parse_horizon(body: str) -> tuple[HorizonItem, ...]:
-    section = _section_body(body, "Horizon")
+    section = section_body(body, "Horizon")
     out: list[HorizonItem] = []
     for bucket, sub in (
         ("milestone", "Milestones"),
         ("decision", "Decisions due"),
         ("opportunity", "Opportunities"),
     ):
-        for first, cont in _bullets(_subsection(section, sub)):
+        for first, cont in bullets(subsection(section, sub)):
             # Skip unfilled scaffold placeholders. Pre-v0.15 the loose
-            # _section_body regex was silently dropping the entire Horizon
+            # section_body regex was silently dropping the entire Horizon
             # block on real files, so these never surfaced; the lenient
             # backport makes the filter load-bearing. Mirrors the
             # placeholder shape filtered by prep_planning + ingest.
             if _is_template_placeholder(first):
                 continue
-            parsed = _parse_bracketed_bullet(first)
+            parsed = parse_bracketed_bullet(first)
             if parsed:
                 parts, text = parsed
                 target = parts[0] if parts else None

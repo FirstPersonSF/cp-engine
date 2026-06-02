@@ -266,7 +266,7 @@ def build_project_block(
     return ProjectAgendaBlock(
         project=project,
         quick_resume_excerpt=quick_resume,
-        last_touched=_short_iso_date(project.last_touched.isoformat()) if project.last_touched else None,
+        last_touched=short_iso_date(project.last_touched.isoformat()) if project.last_touched else None,
         last_sprint_hours=last_sprint_hours,
         recent_inbound=recent_inbound,
         open_asks_aged=aged_asks,
@@ -332,13 +332,13 @@ def build_tenant_header(
     project_count: int,
 ) -> TenantAgendaHeader:
     """Assemble tenant-wide agenda header data."""
-    week_iso = current_sprint_week_iso(_to_datetime(today))
-    week_start, week_end = sprint_week_dates(_to_datetime(today))
-    week_label = f"{_short_iso_date(week_start)} – {_short_iso_date(week_end)}"
+    week_iso = current_sprint_week_iso(to_datetime(today))
+    week_start, week_end = sprint_week_dates(to_datetime(today))
+    week_label = f"{short_iso_date(week_start)} – {short_iso_date(week_end)}"
 
     # Themes from current + prior week's _week.md (matches sync.py's tenant-strip flow).
     from cp_engine.sprints import prior_sprint_week_iso
-    prior_iso = prior_sprint_week_iso(_to_datetime(today))
+    prior_iso = prior_sprint_week_iso(to_datetime(today))
     themes_list = []
     for w in (week_iso, prior_iso):
         wpath = config.root / "sprints" / w / "_week.md"
@@ -524,7 +524,7 @@ def build_agenda(
             this from the same MC-2 allocations source master-cp uses.
     """
     # Filter to active.
-    active = tuple(_filter_active(projects))
+    active = tuple(filter_active(projects))
     if project_filter:
         wanted = {c.lower() for c in project_filter}
         active = tuple(p for p in active if p.code.lower() in wanted)
@@ -533,7 +533,7 @@ def build_agenda(
     active_sorted = tuple(sorted(active, key=lambda p: (scope_for(p.company_kind), p.code)))
 
     # Load all sprint files for the current week (drives strips + aggregator).
-    week_iso = current_sprint_week_iso(_to_datetime(today))
+    week_iso = current_sprint_week_iso(to_datetime(today))
     sprint_dir = config.root / "sprints" / week_iso
     sprint_files = _load_sprint_files(sprint_dir)
 
@@ -574,7 +574,7 @@ def build_agenda(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _filter_active(projects: tuple[ProjectState, ...]):
+def filter_active(projects: tuple[ProjectState, ...]):
     """Engagement: status active + not internal. Repo: status == 'Active'."""
     for p in projects:
         if p.source == "engagement":
@@ -606,13 +606,13 @@ def _load_sprint_files(sprint_dir: Path) -> tuple:
     return tuple(out)
 
 
-def _to_datetime(d: date):
+def to_datetime(d: date):
     """current_sprint_week_iso wants a datetime; build one at midnight UTC."""
     from datetime import datetime, timezone
     return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
 
 
-def _short_iso_date(iso: str | None) -> str | None:
+def short_iso_date(iso: str | None) -> str | None:
     """Render '2026-05-12' as 'May 12'. Returns None on falsy input."""
     if not iso:
         return None
@@ -707,13 +707,13 @@ def build_agenda_summary(
     rendered doc. Plugins call this when they want metrics without
     parsing the markdown back out.
     """
-    active = tuple(_filter_active(projects))
+    active = tuple(filter_active(projects))
     if project_filter:
         wanted = {c.lower() for c in project_filter}
         active = tuple(p for p in active if p.code.lower() in wanted)
     active_sorted = tuple(sorted(active, key=lambda p: (scope_for(p.company_kind), p.code)))
 
-    week_iso = current_sprint_week_iso(_to_datetime(today))
+    week_iso = current_sprint_week_iso(to_datetime(today))
     sprint_dir = config.root / "sprints" / week_iso
     sprint_files = _load_sprint_files(sprint_dir)
 

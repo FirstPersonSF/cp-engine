@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from cp_engine.sprints import (
-    _section_body,
+    section_body,
     current_sprint_week_iso,
     is_in_sprint_window,
     parse_sprint_file,
@@ -989,54 +989,54 @@ def test_scaffold_from_prior_handles_initiative_source(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
-# _section_body lenient-heading regression tests
+# section_body lenient-heading regression tests
 # ---------------------------------------------------------------------------
 #
 # Real sprint scaffolds carry suffixes after the bare title (e.g.
-# ``## Horizon — 4–8 weeks out``). Prior to v0.15, _section_body required
+# ``## Horizon — 4–8 weeks out``). Prior to v0.15, section_body required
 # an exact ``## <heading>\s*$`` match, which silently returned "" on real
 # files and caused agenda._extract_decisions_due_for_project to drop every
 # decisions-due bullet. These tests pin the lenient matcher.
 
 
-def test_section_body_exact_heading():
+def testsection_body_exact_heading():
     body = "## Horizon\nbody line\n\n## Next\nignored\n"
-    assert _section_body(body, "Horizon").strip() == "body line"
+    assert section_body(body, "Horizon").strip() == "body line"
 
 
-def test_section_body_em_dash_suffix():
+def testsection_body_em_dash_suffix():
     body = "## Horizon — 4–8 weeks out\nbody line\n\n## Next\nignored\n"
-    assert _section_body(body, "Horizon").strip() == "body line"
+    assert section_body(body, "Horizon").strip() == "body line"
 
 
-def test_section_body_en_dash_suffix():
+def testsection_body_en_dash_suffix():
     body = "## Horizon – rolling outlook\nbody line\n\n## Next\nignored\n"
-    assert _section_body(body, "Horizon").strip() == "body line"
+    assert section_body(body, "Horizon").strip() == "body line"
 
 
-def test_section_body_hyphen_suffix():
+def testsection_body_hyphen_suffix():
     body = "## Horizon - rolling outlook\nbody line\n\n## Next\nignored\n"
-    assert _section_body(body, "Horizon").strip() == "body line"
+    assert section_body(body, "Horizon").strip() == "body line"
 
 
-def test_section_body_colon_suffix():
+def testsection_body_colon_suffix():
     body = "## Horizon: rolling outlook\nbody line\n\n## Next\nignored\n"
-    assert _section_body(body, "Horizon").strip() == "body line"
+    assert section_body(body, "Horizon").strip() == "body line"
 
 
-def test_section_body_multi_word_heading_with_suffix():
+def testsection_body_multi_word_heading_with_suffix():
     body = (
         "## Dependencies & risks — rolling\nbody line\n\n## Next\nignored\n"
     )
-    assert _section_body(body, "Dependencies & risks").strip() == "body line"
+    assert section_body(body, "Dependencies & risks").strip() == "body line"
 
 
-def test_section_body_no_match():
+def testsection_body_no_match():
     body = "## Other\nbody line\n"
-    assert _section_body(body, "Horizon") == ""
+    assert section_body(body, "Horizon") == ""
 
 
-def test_section_body_stops_at_next_h2():
+def testsection_body_stops_at_next_h2():
     body = (
         "## Horizon — 4–8 weeks out\n"
         "first\n"
@@ -1044,13 +1044,13 @@ def test_section_body_stops_at_next_h2():
         "## Next section\n"
         "should not appear\n"
     )
-    out = _section_body(body, "Horizon")
+    out = section_body(body, "Horizon")
     assert "first" in out
     assert "second" in out
     assert "should not appear" not in out
 
 
-def test_section_body_prefix_match_not_greedy():
+def testsection_body_prefix_match_not_greedy():
     """``Horizon`` must not match ``## Horizons & roadmap`` (different word)."""
     body = "## Horizons & roadmap\nbody line\n\n## Next\nignored\n"
-    assert _section_body(body, "Horizon") == ""
+    assert section_body(body, "Horizon") == ""

@@ -41,19 +41,19 @@ import httpx
 
 from cp_engine.agenda import (
     WeeklyDecision,
-    _filter_active,
-    _short_iso_date,
-    _to_datetime,
+    filter_active,
     parse_weekly_decisions,
+    short_iso_date,
+    to_datetime,
 )
 from cp_engine.config import TenantConfig
 from cp_engine.sprints import (
-    _bullets,
-    _parse_bracketed_bullet,
-    _section_body,
-    _subsection,
+    bullets,
     current_sprint_week_iso,
+    parse_bracketed_bullet,
+    section_body,
     sprint_week_dates,
+    subsection,
 )
 from cp_engine.state import (
     ProjectState,
@@ -448,7 +448,7 @@ _TEMPLATE_PLACEHOLDER_RE = re.compile(r"^\s*-\s+_<[^>]+>_\s*$")
 def _is_template_placeholder(bullet_first_line: str) -> bool:
     """True when a bullet's first line is an unfilled scaffold placeholder.
 
-    ``_bullets`` returns ``(first_line, continuation)`` pairs whose first_line
+    ``bullets`` returns ``(first_line, continuation)`` pairs whose first_line
     still carries the leading ``- ``; the regex anchors on that.
     """
     return bool(_TEMPLATE_PLACEHOLDER_RE.match(bullet_first_line))
@@ -462,13 +462,13 @@ def _parse_decisions_due_from_body(body: str) -> tuple[dict, ...]:
     placeholder text ``[by W##]`` would otherwise trip
     ``_is_decision_horizon_urgent``'s ISO-week substring match.
     """
-    horizon_section = _section_body(body, "Horizon")
-    decisions_sub = _subsection(horizon_section, "Decisions due")
+    horizon_section = section_body(body, "Horizon")
+    decisions_sub = subsection(horizon_section, "Decisions due")
     out: list[dict] = []
-    for first, _cont in _bullets(decisions_sub):
+    for first, _cont in bullets(decisions_sub):
         if _is_template_placeholder(first):
             continue
-        parsed = _parse_bracketed_bullet(first)
+        parsed = parse_bracketed_bullet(first)
         if parsed:
             parts, text = parsed
             target = parts[0] if parts else ""
@@ -486,17 +486,17 @@ def _parse_risks_from_body(body: str) -> tuple[dict, ...]:
 
     Skips unfilled scaffold placeholder bullets (``- _<risk — ...>_``). The
     risk placeholder leads with ``[severity · category · date]`` — the
-    literal token ``severity`` would slip past ``_parse_bracketed_bullet``
+    literal token ``severity`` would slip past ``parse_bracketed_bullet``
     as a non-escalated severity today, but the same scaffold could just as
     easily be misread tomorrow. Filter at the source so the rule only ever
     sees human-written bullets.
     """
-    risks_section = _section_body(body, "Dependencies & risks")
+    risks_section = section_body(body, "Dependencies & risks")
     out: list[dict] = []
-    for first, _cont in _bullets(risks_section):
+    for first, _cont in bullets(risks_section):
         if _is_template_placeholder(first):
             continue
-        parsed = _parse_bracketed_bullet(first)
+        parsed = parse_bracketed_bullet(first)
         if not parsed:
             continue
         parts, text = parsed
@@ -985,7 +985,7 @@ def _render_forward_calendar(block: ProjectPlanningBlock) -> list[str]:
         ]
     out = ["**Forward calendar:**"]
     for m in dated:
-        date_short = _short_iso_date(m["date"]) or m["date"]
+        date_short = short_iso_date(m["date"]) or m["date"]
         owner = m.get("owner") or "—"
         confidence = m.get("confidence") or "medium"
         deliverable = m.get("deliverable") or "(untitled)"
@@ -1009,7 +1009,7 @@ def _render_commitments_table(block: ProjectPlanningBlock) -> list[str]:
     """
     rows: list[tuple[str, str, str, str]] = []  # (Who, Owes what, To, By)
     for m in block.milestones:
-        date_str = _short_iso_date(m.get("date")) or "—"
+        date_str = short_iso_date(m.get("date")) or "—"
         rows.append(
             (
                 m.get("owner") or "—",
@@ -1019,13 +1019,13 @@ def _render_commitments_table(block: ProjectPlanningBlock) -> list[str]:
             )
         )
     for ca in block.client_asks:
-        date_str = _short_iso_date(ca.get("date")) or "—"
+        date_str = short_iso_date(ca.get("date")) or "—"
         # Client-asks: the "owner" assigned in ClickUp is who owes us the
         # answer — typically the client-side person. Surface as "external".
         who = ca.get("owner") or "client"
         rows.append((who, ca.get("deliverable") or "(untitled)", "us", date_str))
     for sa in block.sprint_open_asks:
-        date_str = _short_iso_date(sa["by"]) if sa.get("by") else "—"
+        date_str = short_iso_date(sa["by"]) if sa.get("by") else "—"
         rows.append(
             (
                 sa.get("who") or "—",
@@ -1166,7 +1166,7 @@ def build_planning_result(
     """
     list_id_lookup = list_id_lookup or {}
 
-    active = tuple(_filter_active(projects))
+    active = tuple(filter_active(projects))
     if project_filter:
         wanted = {c.lower() for c in project_filter}
         active = tuple(p for p in active if p.code.lower() in wanted)
@@ -1175,10 +1175,10 @@ def build_planning_result(
         sorted(active, key=lambda p: (scope_for(p.company_kind), p.code))
     )
 
-    week_iso = current_sprint_week_iso(_to_datetime(today))
-    week_start_iso, week_end_iso = sprint_week_dates(_to_datetime(today))
+    week_iso = current_sprint_week_iso(to_datetime(today))
+    week_start_iso, week_end_iso = sprint_week_dates(to_datetime(today))
     week_dates_label = (
-        f"{_short_iso_date(week_start_iso)} – {_short_iso_date(week_end_iso)}"
+        f"{short_iso_date(week_start_iso)} – {short_iso_date(week_end_iso)}"
     )
 
     blocks: list[ProjectPlanningBlock] = []
