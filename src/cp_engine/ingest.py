@@ -30,6 +30,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
+from postgrest.exceptions import APIError
+
 logger = logging.getLogger(__name__)
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1290,18 +1292,10 @@ def _write_account_summary(item: dict, weekly_cp_path: Path) -> bool:
 
 
 def _resolve_proposal_project(client, code: str) -> dict | None:
-    """Resolve a cp project code to its MC-2 routing row for ClickUp proposals.
-
-    Mirrors ``webhook/clickup_propose._resolve_project`` (one-side
-    duplication is intentional — webhook/ isn't on cp_engine's import
-    path, and adding a webhook→cp_engine import creates a cycle the
-    other way during ``cp ingest`` tests). Returns a dict with
-    ``id``, ``clickup_list_id``, ``code`` — or None if the project can't
-    be resolved.
-
-    NOTE: unlike the webhook version, we tolerate ``enable_clickup`` being
-    absent from the response (some test mocks don't supply it). When the
-    column is present and falsy we still skip, matching prod behaviour.
+    """Resolve a cp code to an MC-2 routing row. Duplicates
+    ``webhook/clickup_propose._resolve_project`` because webhook/ isn't
+    on cp_engine's import path. Tolerates ``enable_clickup`` being
+    absent (some test mocks omit it).
     """
     tail = code.rsplit("-", 1)[-1]
     number = int(tail) if tail.isdigit() else None
@@ -1325,8 +1319,9 @@ def _resolve_proposal_project(client, code: str) -> dict | None:
             "code": code,
         }
 
-    # Initiative — slug code. Tolerate missing ClickUp columns on the
-    # initiatives table (the column set rolled out incrementally).
+    # Initiative — slug code. ClickUp columns rolled out incrementally
+    # on initiatives; a PostgREST APIError here means the column is
+    # missing, not that the network is down.
     try:
         resp = (
             client.table("initiatives")
@@ -1334,7 +1329,7 @@ def _resolve_proposal_project(client, code: str) -> dict | None:
             .eq("code", code)
             .execute()
         )
-    except Exception:  # noqa: BLE001 — initiatives may lack ClickUp cols
+    except APIError:
         return None
     rows = resp.data or []
     if not rows:
@@ -1356,16 +1351,9 @@ def _write_milestone(
     supabase: Any,
     meeting_id: str | None = None,
 ) -> None:
-    """Insert a milestone proposal into clickup_task_proposals.
-
-    Milestones live in ClickUp; this row is a ``pending`` proposal
-    surfaced by the dashboard for human review. The approve path
-    (Task 3, not yet built) creates the ClickUp task and flips status
-    to ``approved`` + populates ``clickup_task_id``.
-
-    Required fields on ``item``: ``deliverable``, ``date``, ``owner``,
-    ``confidence``. Optional: ``depends_on``, ``linked_to``,
-    ``source_meeting_id`` (overrides the plan-level meeting_id).
+    """Insert a ``pending`` milestone proposal into clickup_task_proposals
+    for dashboard review. The approve path (Task 3) creates the real
+    ClickUp task.
     """
     deliverable = (item.get("deliverable") or "").strip()
     date_str = (item.get("date") or "").strip()
@@ -1424,11 +1412,8 @@ def _write_client_ask_task(
     meeting_id: str | None = None,
 ) -> None:
     """Insert a client-ask proposal into clickup_task_proposals.
-
-    Required: ``what``, ``from_party``. Optional: ``expected_by``,
-    ``source_meeting_id``. ``from_party`` is the external stakeholder
-    we're waiting on; until we add a structured column for it, we
-    fold the name into the description text.
+    ``from_party`` folds into the description until it becomes a
+    first-class column.
     """
     what = (item.get("what") or "").strip()
     from_party = (item.get("from_party") or "").strip()
