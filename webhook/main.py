@@ -43,6 +43,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
@@ -156,7 +157,11 @@ async def auto_ingest(request: Request) -> dict:
           "commit_sha": "...", "skipped_no_op": false }
     """
     raw_body = await request.body()
-    _verify_signature(raw_body, request.headers.get("x-webhook-signature", ""))
+    _verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
 
     try:
         payload = json.loads(raw_body)
@@ -187,14 +192,60 @@ async def rerun_auto_ingest(run_id: str, request: Request) -> dict:
     Writes a NEW auto_ingest_runs row (don't mutate the original — keep
     the failure as history).
 
-    Body is ignored (the source of truth is the row in Supabase); we still
-    HMAC-verify so the dashboard's proxy route is the only entry point.
+    Body SHOULD be JSON ``{"run_id": "<uuid>"}`` matching the URL path.
+    Body+timestamp are folded into the HMAC base (see
+    ``_verify_signature``), so this binds the signed request to a
+    specific target — a captured signature can no longer be replayed
+    against an arbitrary ``run_id`` by swapping just the path segment.
+    During the phased rollout window we still accept empty bodies for
+    backwards compatibility with the v0.13 dashboard; once
+    ``WEBHOOK_REQUIRE_TIMESTAMP`` is enforced, the body becomes
+    mandatory and its ``run_id`` must equal the URL ``run_id``.
 
-    Only `status='failed'` rows may be rerun. Successful reruns are risky
-    because sprint files may have been hand-edited since the original run.
+    Only ``status='failed'`` rows may be rerun. Successful reruns are
+    risky because sprint files may have been hand-edited since the
+    original run.
     """
     raw_body = await request.body()
-    _verify_signature(raw_body, request.headers.get("x-webhook-signature", ""))
+    _verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
+
+    # Body-binds-to-URL guard. If a body is present, its ``run_id`` must
+    # match the URL — a captured signed body for run-A can no longer
+    # be replayed against run-B via path manipulation. Empty body is
+    # allowed for backwards compatibility with the v0.13 dashboard
+    # *only* while the legacy-timestamp gate is off; once enforced, the
+    # body becomes mandatory (the HMAC must bind to the run_id).
+    require_ts = _truthy_env("WEBHOOK_REQUIRE_TIMESTAMP")
+    if raw_body:
+        try:
+            body_payload = json.loads(raw_body)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"invalid JSON: {exc}"
+            ) from exc
+        body_run_id = (
+            body_payload.get("run_id") if isinstance(body_payload, dict) else None
+        )
+        if body_run_id and body_run_id != run_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"body run_id {body_run_id!r} does not match "
+                    f"URL run_id {run_id!r}"
+                ),
+            )
+    elif require_ts:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "rerun requires JSON body {'run_id': '<id>'} "
+                "when timestamps are enforced"
+            ),
+        )
 
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_KEY")
@@ -399,7 +450,11 @@ async def auto_ingest_account(request: Request) -> dict:
     per-project commits.
     """
     raw_body = await request.body()
-    _verify_signature(raw_body, request.headers.get("x-webhook-signature", ""))
+    _verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
 
     try:
         payload = json.loads(raw_body)
@@ -669,7 +724,11 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
     Response shape mirrors /api/auto-ingest-account.
     """
     raw_body = await request.body()
-    _verify_signature(raw_body, request.headers.get("x-webhook-signature", ""))
+    _verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
 
     try:
         payload = json.loads(raw_body)
@@ -1446,13 +1505,82 @@ def _open_snooze_modal(
 # ─────────────────────────────────────────────────────────────
 
 
-def _verify_signature(raw_body: bytes, provided: str) -> None:
+# Replay-window (seconds). Matches the Slack signature freshness budget.
+_TIMESTAMP_REPLAY_WINDOW_SEC = 300
+
+
+def _truthy_env(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _verify_signature(
+    raw_body: bytes, provided: str, timestamp: str | None = None
+) -> None:
+    """HMAC-SHA256 verify the fathom-meeting-sync -> cp-engine-webhook body.
+
+    Two HMAC shapes are accepted to allow a phased rollout:
+
+    1. Legacy (no timestamp): ``hmac(secret, body)`` — accepted when
+       ``timestamp`` is empty AND the env var ``WEBHOOK_REQUIRE_TIMESTAMP``
+       is unset/false. A warning is logged so we can monitor when the
+       caller side finishes rolling out.
+
+    2. Replay-protected: ``hmac(secret, f"{timestamp}.{body}")`` —
+       always accepted. The timestamp is rejected (401) if it's older
+       or further in the future than 5 minutes (``abs(now - ts) > 300``).
+
+    When ``WEBHOOK_REQUIRE_TIMESTAMP`` is true, missing timestamps and
+    legacy-shape signatures both 401. This is the gate we flip after
+    fathom-meeting-sync ships its own update.
+
+    ``timestamp`` is Unix epoch seconds as a string (matches the Slack
+    pattern at ``_verify_slack_signature``).
+    """
     secret = os.environ.get("WEBHOOK_HMAC_SECRET")
     if not secret:
         raise HTTPException(status_code=500, detail="WEBHOOK_HMAC_SECRET not configured")
     if not provided:
         raise HTTPException(status_code=401, detail="missing X-Webhook-Signature header")
-    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+
+    require_ts = _truthy_env("WEBHOOK_REQUIRE_TIMESTAMP")
+
+    if not timestamp:
+        if require_ts:
+            raise HTTPException(
+                status_code=401, detail="missing X-Webhook-Timestamp header"
+            )
+        # Phased rollout: accept the legacy body-only shape but log it
+        # so we know when the caller side has cut over.
+        log.warning(
+            "webhook-verify: legacy unsigned-timestamp request accepted "
+            "(set WEBHOOK_REQUIRE_TIMESTAMP=true to enforce)"
+        )
+        expected_legacy = hmac.new(
+            secret.encode(), raw_body, hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(expected_legacy, provided):
+            raise HTTPException(status_code=401, detail="invalid signature")
+        return
+
+    try:
+        ts_int = int(timestamp)
+    except ValueError:
+        raise HTTPException(
+            status_code=401, detail="X-Webhook-Timestamp not an integer"
+        ) from None
+
+    skew = time.time() - ts_int
+    if abs(skew) > _TIMESTAMP_REPLAY_WINDOW_SEC:
+        log.warning(
+            "webhook-verify rejected: timestamp outside %ds window (skew=%.1fs)",
+            _TIMESTAMP_REPLAY_WINDOW_SEC, skew,
+        )
+        raise HTTPException(
+            status_code=401, detail="X-Webhook-Timestamp outside freshness window"
+        )
+
+    base = f"{timestamp}.".encode() + raw_body
+    expected = hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, provided):
         raise HTTPException(status_code=401, detail="invalid signature")
 
