@@ -378,7 +378,13 @@ def test_render_planning_doc_renders_open_commitments_table():
 
 
 def test_render_planning_doc_handles_empty_clickup_list(tmp_path):
-    """Project HAS a list_id but ClickUp returns 0 tasks → placeholder."""
+    """Project HAS a list_id but ClickUp returns 0 tasks → ``no_milestones_tagged``.
+
+    Distinct from ``no_clickup_list`` (the project simply hasn't been
+    wired to a ClickUp list at all) — see
+    ``test_render_planning_doc_distinguishes_list_unset_vs_list_empty``
+    for both branches side by side.
+    """
     config = make_config(tmp_path)
     state = make_state("ggl-5168", name="GGL 5168 Activation")
     list_id = "EMPTY"
@@ -399,10 +405,13 @@ def test_render_planning_doc_handles_empty_clickup_list(tmp_path):
         clickup_token="tok_test",
         list_id_override=list_id,
     )
-    assert block.fetch_error is None
+    # The list-id resolved + the fetch returned 0 tasks → distinct sentinel
+    # from the no-list case so the renderer can point users to the right fix.
+    assert block.fetch_error == "no_milestones_tagged"
     assert block.milestones == ()
     rendered = "\n".join(prep_planning._render_forward_calendar(block))
-    assert "no milestones tracked yet" in rendered
+    assert "no milestones tagged in ClickUp yet" in rendered
+    assert "Task 29" in rendered
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -424,9 +433,72 @@ def test_render_planning_doc_handles_project_without_clickup_list(tmp_path):
         clickup_token=None,
         list_id_override=None,
     )
-    assert block.fetch_error == "no clickup_list_id"
+    assert block.fetch_error == "no_clickup_list"
     rendered = "\n".join(prep_planning._render_forward_calendar(block))
-    assert "ClickUp list not set" in rendered
+    assert "ClickUp list not set in MC-2" in rendered
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Test 8b (#36): list-unset vs list-empty render distinct messages
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_render_planning_doc_distinguishes_list_unset_vs_list_empty(tmp_path):
+    """The two empty-states render distinct messages.
+
+    Before #36 both cases emitted "_(ClickUp list not set — milestones not
+    tracked)_", which confused users into thinking they needed to set a
+    list-id that was already set. After #36:
+
+      - No clickup_list_id at all → "ClickUp list not set in MC-2"
+      - List set but ClickUp returned 0 tasks → "no milestones tagged
+        in ClickUp yet" + a pointer to Task 29 back-population.
+    """
+    config = make_config(tmp_path)
+    state_unset = make_state("ggl-9999", name="No List Yet")
+    state_empty = make_state("ggl-5168", name="GGL 5168 Activation")
+
+    # Branch A — no list_id.
+    block_unset = prep_planning.build_project_block(
+        state_unset,
+        config=config,
+        supabase_client=None,
+        today=date(2026, 6, 7),
+        week_iso="2026-W24",
+        clickup_client=None,
+        clickup_token=None,
+        list_id_override=None,
+    )
+    assert block_unset.fetch_error == "no_clickup_list"
+    rendered_unset = "\n".join(prep_planning._render_forward_calendar(block_unset))
+    assert "ClickUp list not set in MC-2" in rendered_unset
+    assert "Task 29" not in rendered_unset
+
+    # Branch B — list_id present, fetch returns 0 tasks.
+    list_id = "EMPTY"
+    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
+    client = FakeClient(
+        {
+            (url, "milestone"): FakeResp(200, {"tasks": []}),
+            (url, "client-ask"): FakeResp(200, {"tasks": []}),
+        }
+    )
+    block_empty = prep_planning.build_project_block(
+        state_empty,
+        config=config,
+        supabase_client=None,
+        today=date(2026, 6, 7),
+        week_iso="2026-W24",
+        clickup_client=client,
+        clickup_token="tok_test",
+        list_id_override=list_id,
+    )
+    assert block_empty.fetch_error == "no_milestones_tagged"
+    rendered_empty = "\n".join(prep_planning._render_forward_calendar(block_empty))
+    assert "no milestones tagged in ClickUp yet" in rendered_empty
+    assert "Task 29" in rendered_empty
+    # And critically — the two messages do NOT collide.
+    assert rendered_unset != rendered_empty
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -438,7 +510,7 @@ def test_summary_mode_emits_json(tmp_path):
     """render_planning_summary returns a JSON string with the contracted keys."""
     config = make_config(tmp_path)
     state = make_state("ggl-5168", name="GGL 5168 Activation")
-    # No list_id_lookup, no Supabase → block degrades to "no clickup_list_id"
+    # No list_id_lookup, no Supabase → block degrades to "no_clickup_list"
     # but the summary still renders.
     summary_str = render_planning_summary(
         config,
@@ -823,7 +895,7 @@ def test_summary_counts_per_type(tmp_path):
         (state,),
         today=_TODAY,
         supabase_client=None,
-        # No list_id_lookup → "no clickup_list_id" path; milestones=()
+        # No list_id_lookup → "no_clickup_list" path; milestones=()
     )
     # past_due_ask and escalated_risk fired; the other two are zero.
     assert result.urgent_counts == {

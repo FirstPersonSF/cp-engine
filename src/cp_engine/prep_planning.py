@@ -123,7 +123,17 @@ class ProjectPlanningBlock:
     client_asks: tuple[Milestone, ...]
     sprint_open_asks: tuple[SprintAsk, ...]
     urgent: tuple[dict, ...]  # flags from _detect_urgent (may be empty)
-    fetch_error: str | None  # non-None when ClickUp fetch failed
+    fetch_error: str | None  # non-None when ClickUp fetch failed OR list is unset/empty
+    # ``fetch_error`` carries three distinct sentinels alongside genuine
+    # network/4xx error strings — keep the rendering branches in
+    # ``_render_forward_calendar`` and the error-aggregation guard in
+    # ``build_planning_result`` in sync with this list:
+    #   "no_clickup_list"      — project has no clickup_list_id in MC-2
+    #   "no_milestones_tagged" — list_id present, fetch returned 0 milestones
+    #                            AND 0 client-asks (back-population pending)
+    #   <other string>         — real ClickUp/network/4xx error (counts as
+    #                            errored in milestone_counts, surfaces in
+    #                            result.errors)
 
 
 @dataclass
@@ -731,7 +741,7 @@ def build_project_block(
     client_asks: tuple[Milestone, ...] = ()
     fetch_error: str | None = None
     if not list_id:
-        fetch_error = "no clickup_list_id"
+        fetch_error = "no_clickup_list"
     else:
         try:
             raw_ms = _fetch_clickup_milestones(
@@ -748,6 +758,12 @@ def build_project_block(
                 client=clickup_client,
             )
             client_asks = tuple(_normalize_clickup_task(t) for t in raw_asks)
+            # List exists but nothing milestone-tagged yet — distinguish from
+            # the list-not-set case so the renderer can point users to the
+            # back-population work (Task 29) rather than nagging them to set
+            # a list-id they already have.
+            if not milestones and not client_asks:
+                fetch_error = "no_milestones_tagged"
         except RuntimeError as exc:
             fetch_error = str(exc)
             log.warning("ClickUp fetch failed for %s: %s", project.code, exc)
@@ -1022,10 +1038,15 @@ def _render_forward_calendar(block: ProjectPlanningBlock) -> list[str]:
     Skips milestones with no date (no anchor to render). Falls back to a
     placeholder when nothing remains.
     """
-    if block.fetch_error == "no clickup_list_id":
+    if block.fetch_error == "no_clickup_list":
         return [
             "**Forward calendar:**",
-            "_(ClickUp list not set — milestones not tracked)_",
+            "_(ClickUp list not set in MC-2 — milestones not tracked)_",
+        ]
+    if block.fetch_error == "no_milestones_tagged":
+        return [
+            "**Forward calendar:**",
+            "_(no milestones tagged in ClickUp yet — see Task 29 back-population)_",
         ]
     if block.fetch_error:
         return [
@@ -1254,10 +1275,20 @@ def build_planning_result(
             list_id_override=list_id,
         )
         total += len(block.milestones) + len(block.client_asks)
-        if block.fetch_error and block.fetch_error != "no clickup_list_id":
+        # ``no_clickup_list`` and ``no_milestones_tagged`` are legitimate
+        # empty-states, not fetch failures — don't count them as errored or
+        # bubble them to ``result.errors``. ``no_milestones_tagged`` still
+        # counts as a successful fetch (the request itself succeeded —
+        # the list was just empty); ``no_clickup_list`` skipped the fetch
+        # entirely so it's neither fetched nor errored. Anything else
+        # (network errors, 4xx/5xx) is a real fetch failure.
+        if block.fetch_error and block.fetch_error not in (
+            "no_clickup_list",
+            "no_milestones_tagged",
+        ):
             errored += 1
             errors.append(f"{p.code}: {block.fetch_error}")
-        elif block.fetch_error is None:
+        elif block.fetch_error is None or block.fetch_error == "no_milestones_tagged":
             fetched += 1
         blocks.append(block)
 
