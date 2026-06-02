@@ -128,3 +128,80 @@ def test_push_non_recoverable_error_raises_without_rebase(tmp_path: Path) -> Non
             webhook_main._push_with_retry(tmp_path, target_branch="main", env={})
 
     assert run.call_count == 1  # no rebase attempted
+
+
+def test_push_auth_failure_with_rejected_word_does_not_retry(tmp_path: Path) -> None:
+    """Regression: a real auth-failure stderr containing only the word
+    'rejected' (but NOT 'non-fast-forward' / 'fetch first') must raise
+    immediately, not trigger two wasted rebase round-trips.
+
+    Previously the marker tuple included a bare 'rejected' substring,
+    which matched every push reject (auth, pre-receive hooks, branch
+    protection) and burned ~10s of retry latency on each before bottoming
+    out at attempt == max_attempts."""
+    push_auth_fail = _result(
+        returncode=1,
+        stderr=(
+            "remote: Permission to FirstPersonSF/cp.git denied to deploy key.\n"
+            "fatal: unable to access 'https://github.com/FirstPersonSF/cp.git/': "
+            "The requested URL returned error: 403\n"
+            "error: failed to push some refs to 'origin'\n"
+            "remote: error: GH006: Protected branch update failed for refs/heads/main.\n"
+            "! [remote rejected] main -> main (protected branch hook declined)"
+        ),
+    )
+
+    with patch.object(webhook_main.subprocess, "run") as run:
+        run.side_effect = [push_auth_fail]
+        with pytest.raises(subprocess.CalledProcessError):
+            webhook_main._push_with_retry(tmp_path, target_branch="main", env={})
+
+    # ONE push attempt, NO rebase, NO retry. The bug would have produced
+    # 5 calls (push, rebase, push, rebase, push).
+    assert run.call_count == 1
+    cmds = [c.args[0] for c in run.call_args_list]
+    assert cmds[0] == ["git", "push", "origin", "main"]
+
+
+def test_push_warns_when_rebase_abort_itself_fails(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Regression: if git rebase --abort fails (worktree already clean,
+    no rebase in progress, transient git error), surface it as a
+    warning log line — a silently-wedged worktree would be invisible
+    to the operator otherwise."""
+    push_reject = _result(
+        returncode=1,
+        stderr="! [rejected] non-fast-forward",
+    )
+    rebase_fail = _result(
+        returncode=1,
+        stderr="CONFLICT (content): Merge conflict in sprints/2026-W22/ggl-5168.md",
+    )
+    abort_fail = _result(
+        returncode=128,
+        stderr="fatal: No rebase in progress?",
+    )
+
+    import logging
+
+    with patch.object(webhook_main.subprocess, "run") as run:
+        run.side_effect = [push_reject, rebase_fail, abort_fail]
+        with caplog.at_level(logging.WARNING, logger="cp-engine-webhook"):
+            with pytest.raises(subprocess.CalledProcessError):
+                webhook_main._push_with_retry(
+                    tmp_path, target_branch="main", env={}
+                )
+
+    # All three subprocess calls happened.
+    cmds = [c.args[0] for c in run.call_args_list]
+    assert cmds == [
+        ["git", "push", "origin", "main"],
+        ["git", "pull", "--rebase", "origin", "main"],
+        ["git", "rebase", "--abort"],
+    ]
+    # And the abort failure surfaced in logs.
+    assert any(
+        "rebase --abort failed" in r.message.lower()
+        for r in caplog.records
+    )

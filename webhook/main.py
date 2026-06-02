@@ -249,7 +249,30 @@ async def rerun_auto_ingest(run_id: str, request: Request) -> dict:
         body_run_id = (
             body_payload.get("run_id") if isinstance(body_payload, dict) else None
         )
-        if body_run_id and body_run_id != run_id:
+        if require_ts:
+            # Enforcement on: body_run_id is mandatory AND must match the
+            # URL. A missing/empty key would otherwise silently bypass the
+            # equality check, breaking the spec invariant "body run_id ==
+            # URL run_id under enforcement".
+            if not body_run_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "rerun requires JSON body {'run_id': '<id>'} "
+                        "when timestamps are enforced"
+                    ),
+                )
+            if body_run_id != run_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"body run_id {body_run_id!r} does not match "
+                        f"URL run_id {run_id!r}"
+                    ),
+                )
+        elif body_run_id and body_run_id != run_id:
+            # Enforcement off (legacy): only check when key is present,
+            # backwards-compatible with v0.13 dashboard.
             raise HTTPException(
                 status_code=400,
                 detail=(
@@ -2133,11 +2156,16 @@ def _stage_transcript(tenant_root: Path, meeting_id: str, text: str) -> Path:
 # we can recover from with a pull --rebase). Anything else (auth, hook
 # rejection, network) is raised straight through — we don't want to
 # loop on those.
+#
+# NB: a bare "rejected" marker was previously here too but matched every
+# kind of push reject (auth failures, pre-receive hooks, branch
+# protection), wasting two pull-rebase round-trips on each before
+# bottoming out. The two markers below are what git actually emits for
+# the non-ff race condition; auth/hook rejects raise immediately.
 _NON_FAST_FORWARD_MARKERS = (
     "non-fast-forward",
     "(non-fast-forward)",
     "fetch first",
-    "rejected",
 )
 
 
@@ -2221,13 +2249,22 @@ def _push_with_retry(
                 "pull --rebase failed (%s); aborting rebase and giving up",
                 (rebase.stderr or "")[:240],
             )
-            subprocess.run(
+            abort = subprocess.run(
                 ["git", "rebase", "--abort"],
                 cwd=tenant_root,
                 env=env,
                 capture_output=True,
                 text=True,
             )
+            if abort.returncode != 0:
+                # Don't swallow this — a wedged worktree is the kind of
+                # thing the operator needs to see in logs (next clone
+                # may inherit a half-rebase state).
+                log.warning(
+                    "git rebase --abort failed (rc=%d): %s",
+                    abort.returncode,
+                    (abort.stderr or "")[:200],
+                )
             raise last_err
 
 

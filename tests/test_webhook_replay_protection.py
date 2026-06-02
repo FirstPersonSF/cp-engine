@@ -267,3 +267,90 @@ def test_rerun_empty_body_rejected_when_gate_enabled(
         },
     )
     assert resp.status_code == 400
+
+
+def test_rerun_body_without_run_id_rejected_when_gate_enabled(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """Regression: under enforcement, a JSON body that omits the run_id
+    key (or sets it to "") must NOT bypass the URL/body equality check.
+    Previously the ``if body_run_id and ...`` guard treated a falsy
+    body_run_id as a no-op, silently violating the spec invariant
+    that body run_id must equal URL run_id under enforcement."""
+    monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
+    monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "k")
+    monkeypatch.setenv("WEBHOOK_REQUIRE_TIMESTAMP", "true")
+
+    # Sentinel: if _perform_auto_ingest ever runs, the test will fail
+    # (because we don't expect to get past the guard).
+    monkeypatch.setattr(
+        webhook_main,
+        "_perform_auto_ingest",
+        lambda **kw: pytest.fail("_perform_auto_ingest should not run"),
+    )
+
+    # Case 1: key entirely missing.
+    body = json.dumps({"meeting_id": "m1"}).encode()
+    ts = str(int(time.time()))
+    sig = _sign_with_ts(body, ts=ts)
+    resp = client.post(
+        "/api/auto-ingest/runs/run-A/rerun",
+        content=body,
+        headers={
+            "x-webhook-signature": sig,
+            "x-webhook-timestamp": ts,
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert "run_id" in resp.text.lower()
+
+    # Case 2: key present but empty string.
+    body = json.dumps({"run_id": ""}).encode()
+    sig = _sign_with_ts(body, ts=ts)
+    resp = client.post(
+        "/api/auto-ingest/runs/run-A/rerun",
+        content=body,
+        headers={
+            "x-webhook-signature": sig,
+            "x-webhook-timestamp": ts,
+        },
+    )
+    assert resp.status_code == 400, resp.text
+
+
+def test_rerun_body_without_run_id_allowed_when_gate_off(
+    monkeypatch: pytest.MonkeyPatch, client: TestClient
+) -> None:
+    """Legacy behavior preserved when enforcement is off: a body that
+    omits run_id falls through to the rerun loader (back-compat with
+    the v0.13 dashboard's empty-body POST)."""
+    monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
+    monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "k")
+    monkeypatch.delenv("WEBHOOK_REQUIRE_TIMESTAMP", raising=False)
+
+    failed_row = {
+        "meeting_id": "m1",
+        "project_codes": ["ggl-5168"],
+        "status": "failed",
+    }
+    sb_client = MagicMock()
+    sb_client.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = failed_row
+    monkeypatch.setattr(
+        webhook_main, "create_client", lambda u, k: sb_client, raising=False
+    )
+    monkeypatch.setattr(
+        webhook_main,
+        "_perform_auto_ingest",
+        lambda **kw: {"ingested": [], "commit_sha": None, "skipped_no_op": True},
+    )
+
+    body = json.dumps({"meeting_id": "m1"}).encode()
+    sig = _sign_legacy(body)
+    resp = client.post(
+        "/api/auto-ingest/runs/run-A/rerun",
+        content=body,
+        headers={"x-webhook-signature": sig},
+    )
+    assert resp.status_code == 200, resp.text
