@@ -147,21 +147,42 @@ def test_parse_sprint_file_extracts_frontmatter(tmp_path: Path) -> None:
 
 
 def test_parse_sprint_file_handles_year_boundary_dates(tmp_path: Path) -> None:
+    """Cross-year sprint (W53 spanning Dec→Jan): the H1 carries one year for
+    both dates, so the legacy regex-only parser stamped the start as the
+    H1's trailing year (wrong for the start half of the span). Fix 6
+    derives dates from ``week_iso`` (``Sprint: 2026-W53``) via
+    ``date.fromisocalendar`` so start = 2026-12-28 and end = 2027-01-03.
+    """
     f = tmp_path / "peb.md"
     f.write_text(
         "---\n"
         "Project: peb — Pebble Foods\n"
         "Sprint: 2026-W53\n"
         "---\n"
-        "# peb — Pebble Foods · Sprint W54 (Dec 28 – Jan 3, 2027)\n"
+        "# peb — Pebble Foods · Sprint W53 (Dec 28 – Jan 3, 2027)\n"
     )
     sf = parse_sprint_file(f)
-    # The heading anchors on the year following the date range; the test
-    # asserts that BOTH dates parse against that year, regardless of when
-    # the test runs. Without the fix, the start date would be stamped as
-    # the current year rather than the heading's year (2027).
-    assert sf.week_start == "2027-12-28"
+    # week_iso is the authoritative source — H1's single year is ignored
+    # for the structural derivation.
+    assert sf.week_start == "2026-12-28"
     assert sf.week_end == "2027-01-03"
+
+
+def test_parse_sprint_file_same_year_week_still_correct(tmp_path: Path) -> None:
+    """Regression for Fix 6: same-year weeks (the common case) still
+    derive correct dates from ``week_iso``."""
+    f = tmp_path / "peb.md"
+    f.write_text(
+        "---\n"
+        "Project: peb — Pebble Foods\n"
+        "Sprint: 2026-W22\n"
+        "---\n"
+        "# peb — Pebble Foods · Sprint W22 (May 25 – May 31, 2026)\n"
+    )
+    sf = parse_sprint_file(f)
+    # ISO 2026-W22 starts Monday May 25 and ends Sunday May 31.
+    assert sf.week_start == "2026-05-25"
+    assert sf.week_end == "2026-05-31"
 
 
 def test_parse_sprint_facts_region(tmp_path) -> None:
