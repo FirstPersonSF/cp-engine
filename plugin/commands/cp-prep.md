@@ -119,8 +119,37 @@ Generated planning doc → sprints/$WEEK_ISO/_planning.md
 
 Conditional rendering rules:
 
-- If `urgent_counts` is all zeros, render
-  `Urgent attention items: none flagged` instead of the per-type breakdown.
+- **Urgent attention items — drop zero counters per-type.** For each of
+  the four counters (`slip_risk`, `decision_due`, `past_due_ask`,
+  `escalated_risk`), only include it in the bullet if its value is `> 0`.
+  Counter labels: `<n> slip risk[s]`, `<n> decision[s] due`,
+  `<n> past-due ask[s]`, `<n> escalated risk[s]` — pluralize only when
+  `n != 1`. Join the surviving counters with ` · `. If ALL four are zero,
+  render `Urgent attention items: none flagged` instead.
+
+  Examples:
+  - `slip_risk=3, decision_due=0, past_due_ask=0, escalated_risk=1`
+    → `Urgent attention items: 3 slip risks · 1 escalated risk`
+  - `slip_risk=0, decision_due=0, past_due_ask=0, escalated_risk=2`
+    → `Urgent attention items: 2 escalated risks`
+  - `slip_risk=0, decision_due=0, past_due_ask=0, escalated_risk=0`
+    → `Urgent attention items: none flagged`
+
+  A jq filter that produces the joined string (empty when all zero):
+
+  ```bash
+  echo "$SUMMARY" | jq -r '
+    .urgent_counts as $u
+    | [
+        ($u.slip_risk      | select(. > 0) | "\(.) slip risk\(if . == 1 then "" else "s" end)"),
+        ($u.decision_due   | select(. > 0) | "\(.) decision\(if . == 1 then "" else "s" end) due"),
+        ($u.past_due_ask   | select(. > 0) | "\(.) past-due ask\(if . == 1 then "" else "s" end)"),
+        ($u.escalated_risk | select(. > 0) | "\(.) escalated risk\(if . == 1 then "" else "s" end)")
+      ]
+    | join(" · ")
+  '
+  ```
+
 - If `capacity_binding` is empty, render
   `Capacity binding: none flagged (no owner ≥ 5 projects)`.
 - If `cross_cutting_decisions_count` is 0, render
