@@ -90,7 +90,7 @@ def test_capacity_binding_flags_owner_with_5plus_projects():
         make_state(f"ggl-{i}", owner="tony") for i in range(5)
     )
     binding = _detect_capacity_binding(projects)
-    assert ("tony", 5) in binding
+    assert {"owner": "tony", "count": 5} in binding
 
 
 def test_capacity_binding_no_binding_when_all_owners_under_5():
@@ -112,7 +112,11 @@ def test_capacity_binding_orders_by_count_desc():
     )
     binding = _detect_capacity_binding(projects)
     # tony (6) first; brandon/drew tied at 5, alphabetical → brandon, drew.
-    assert binding == (("tony", 6), ("brandon", 5), ("drew", 5))
+    assert binding == (
+        {"owner": "tony", "count": 6},
+        {"owner": "brandon", "count": 5},
+        {"owner": "drew", "count": 5},
+    )
 
 
 def test_capacity_binding_ignores_unassigned_owners():
@@ -384,7 +388,10 @@ def test_render_cross_cutting_full_output():
     result = _make_result(
         project_count=10,
         tenant_hours={"Drew": 52, "Tony": 52, "Marcello": 42},
-        capacity_binding=(("tony", 6), ("marcello", 5)),
+        capacity_binding=(
+            {"owner": "tony", "count": 6},
+            {"owner": "marcello", "count": 5},
+        ),
         cross_cutting_decisions=decisions,
     )
     lines = _render_cross_cutting(result)
@@ -410,7 +417,7 @@ def test_render_cross_cutting_capacity_only_no_decisions():
     result = _make_result(
         project_count=5,
         tenant_hours={"Drew": 40},
-        capacity_binding=(("tony", 5),),
+        capacity_binding=({"owner": "tony", "count": 5},),
         cross_cutting_decisions=(),
     )
     body = "\n".join(_render_cross_cutting(result))
@@ -445,7 +452,7 @@ def test_render_cross_cutting_decisions_only_no_capacity():
 def test_render_cross_cutting_singular_project_when_count_is_one():
     """Singular 'project' when exactly 1 (regression guard)."""
     result = _make_result(
-        capacity_binding=(("tony", 1),),
+        capacity_binding=({"owner": "tony", "count": 1},),
     )
     # An owner with 1 project would not normally clear the floor — but the
     # renderer must still grammar-correctly if that data ever arrives.
@@ -481,7 +488,7 @@ def test_build_planning_result_populates_capacity_and_decisions(tmp_path):
         supabase_client=None,
     )
     # Owner "tony" has 5 of 5 projects → clears floor.
-    assert ("tony", 5) in result.capacity_binding
+    assert {"owner": "tony", "count": 5} in result.capacity_binding
     # Decision parsed from weekly-cp.md.
     assert len(result.cross_cutting_decisions) == 1
     assert "Open partners decision" in result.cross_cutting_decisions[0].text

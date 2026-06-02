@@ -101,6 +101,18 @@ class SprintAsk(TypedDict):
     hash: str
 
 
+class CapacityBindingOwner(TypedDict):
+    """A single owner-of-record entry surfaced as capacity-binding.
+
+    Emitted by ``_detect_capacity_binding`` and rendered by
+    ``_render_cross_cutting``. Serializing to JSON for ``--summary`` is
+    a no-op since the entries are already dicts.
+    """
+
+    owner: str
+    count: int
+
+
 @dataclass
 class ProjectPlanningBlock:
     """Per-project rendered content."""
@@ -130,7 +142,7 @@ class PlanningResult:
     # each other. Populated by build_planning_result; consumed by
     # _render_cross_cutting. Both default to empty so the renderer can
     # safely skip the corresponding sub-blocks.
-    capacity_binding: tuple[tuple[str, int], ...] = ()
+    capacity_binding: tuple[CapacityBindingOwner, ...] = ()
     cross_cutting_decisions: tuple[WeeklyDecision, ...] = ()
     errors: list[str] = field(default_factory=list)
     generated_at: str = ""
@@ -144,10 +156,7 @@ class PlanningResult:
             "tenant_hours_last_week": self.tenant_hours_last_week,
             "milestone_counts": self.milestone_counts,
             "urgent_counts": self.urgent_counts,
-            "capacity_binding": [
-                {"owner": name, "count": count}
-                for name, count in self.capacity_binding
-            ],
+            "capacity_binding": [dict(b) for b in self.capacity_binding],
             "cross_cutting_decisions_count": len(self.cross_cutting_decisions),
             "errors": self.errors,
         }
@@ -852,12 +861,12 @@ _DECIDED_MARKER_RE = re.compile(
 
 def _detect_capacity_binding(
     projects: tuple[ProjectState, ...],
-) -> tuple[tuple[str, int], ...]:
+) -> tuple[CapacityBindingOwner, ...]:
     """Owners carrying >= ``_CAPACITY_BINDING_FLOOR`` projects of record.
 
-    Returns ``(name, count)`` pairs ordered by count desc, then name asc
-    for stable rendering. ``"—"`` and ``None`` owners are ignored so an
-    unassigned-owner cluster never trips the binding flag.
+    Returns ``CapacityBindingOwner`` dicts ordered by count desc, then
+    name asc for stable rendering. ``"—"`` and ``None`` owners are
+    ignored so an unassigned-owner cluster never trips the binding flag.
 
     TODO(v2): layer implicit ownership — for each project, parse its
     current sprint file's ``### Open asks`` and ``### Commitments`` so a
@@ -872,14 +881,14 @@ def _detect_capacity_binding(
         if not owner or owner == "—":
             continue
         counts[owner] += 1
-    binding = [
-        (name, count)
+    binding: list[CapacityBindingOwner] = [
+        {"owner": name, "count": count}
         for name, count in counts.most_common()
         if count >= _CAPACITY_BINDING_FLOOR
     ]
     # most_common preserves insertion order for ties; re-sort to break
     # ties alphabetically so output is deterministic across runs.
-    binding.sort(key=lambda nc: (-nc[1], nc[0].lower()))
+    binding.sort(key=lambda b: (-b["count"], b["owner"].lower()))
     return tuple(binding)
 
 
@@ -986,7 +995,9 @@ def _render_cross_cutting(
 
     if binding:
         out.append("**Capacity binding constraints:**")
-        for name, count in binding:
+        for entry in binding:
+            name = entry["owner"]
+            count = entry["count"]
             suffix = "" if count == 1 else "s"
             out.append(
                 f"- **{name}** — owner-of-record on {count} project{suffix}"
