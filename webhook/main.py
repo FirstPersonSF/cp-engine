@@ -43,6 +43,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from datetime import date, datetime
 from pathlib import Path
@@ -156,7 +157,11 @@ async def auto_ingest(request: Request) -> dict:
           "commit_sha": "...", "skipped_no_op": false }
     """
     raw_body = await request.body()
-    _verify_signature(raw_body, request.headers.get("x-webhook-signature", ""))
+    _verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
 
     try:
         payload = json.loads(raw_body)
@@ -170,6 +175,25 @@ async def auto_ingest(request: Request) -> dict:
         raise HTTPException(
             status_code=400, detail="meeting_id and project_codes are required"
         )
+
+    # Fathom retries on timeout. If the same (meeting_id, project_codes)
+    # tuple already has a successful run, short-circuit and return early
+    # — no fresh clone, no LLM call, no second auto_ingest_runs row.
+    # Reruns from the dashboard go through a different endpoint
+    # (/api/auto-ingest/runs/{run_id}/rerun) and intentionally skip
+    # this check.
+    dup = _find_successful_duplicate_run(meeting_id, project_codes)
+    if dup is not None:
+        log.info(
+            "auto-ingest duplicate delivery: meeting=%s codes=%s existing_run=%s",
+            meeting_id, project_codes, dup,
+        )
+        return {
+            "status": "duplicate_delivery_skipped",
+            "existing_run_id": dup,
+            "meeting_id": meeting_id,
+            "project_codes": project_codes,
+        }
 
     return _perform_auto_ingest(
         meeting_id=meeting_id,
@@ -187,14 +211,83 @@ async def rerun_auto_ingest(run_id: str, request: Request) -> dict:
     Writes a NEW auto_ingest_runs row (don't mutate the original — keep
     the failure as history).
 
-    Body is ignored (the source of truth is the row in Supabase); we still
-    HMAC-verify so the dashboard's proxy route is the only entry point.
+    Body SHOULD be JSON ``{"run_id": "<uuid>"}`` matching the URL path.
+    Body+timestamp are folded into the HMAC base (see
+    ``_verify_signature``), so this binds the signed request to a
+    specific target — a captured signature can no longer be replayed
+    against an arbitrary ``run_id`` by swapping just the path segment.
+    During the phased rollout window we still accept empty bodies for
+    backwards compatibility with the v0.13 dashboard; once
+    ``WEBHOOK_REQUIRE_TIMESTAMP`` is enforced, the body becomes
+    mandatory and its ``run_id`` must equal the URL ``run_id``.
 
-    Only `status='failed'` rows may be rerun. Successful reruns are risky
-    because sprint files may have been hand-edited since the original run.
+    Only ``status='failed'`` rows may be rerun. Successful reruns are
+    risky because sprint files may have been hand-edited since the
+    original run.
     """
     raw_body = await request.body()
-    _verify_signature(raw_body, request.headers.get("x-webhook-signature", ""))
+    _verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
+
+    # Body-binds-to-URL guard. If a body is present, its ``run_id`` must
+    # match the URL — a captured signed body for run-A can no longer
+    # be replayed against run-B via path manipulation. Empty body is
+    # allowed for backwards compatibility with the v0.13 dashboard
+    # *only* while the legacy-timestamp gate is off; once enforced, the
+    # body becomes mandatory (the HMAC must bind to the run_id).
+    require_ts = _truthy_env("WEBHOOK_REQUIRE_TIMESTAMP")
+    if raw_body:
+        try:
+            body_payload = json.loads(raw_body)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"invalid JSON: {exc}"
+            ) from exc
+        body_run_id = (
+            body_payload.get("run_id") if isinstance(body_payload, dict) else None
+        )
+        if require_ts:
+            # Enforcement on: body_run_id is mandatory AND must match the
+            # URL. A missing/empty key would otherwise silently bypass the
+            # equality check, breaking the spec invariant "body run_id ==
+            # URL run_id under enforcement".
+            if not body_run_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "rerun requires JSON body {'run_id': '<id>'} "
+                        "when timestamps are enforced"
+                    ),
+                )
+            if body_run_id != run_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"body run_id {body_run_id!r} does not match "
+                        f"URL run_id {run_id!r}"
+                    ),
+                )
+        elif body_run_id and body_run_id != run_id:
+            # Enforcement off (legacy): only check when key is present,
+            # backwards-compatible with v0.13 dashboard.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"body run_id {body_run_id!r} does not match "
+                    f"URL run_id {run_id!r}"
+                ),
+            )
+    elif require_ts:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "rerun requires JSON body {'run_id': '<id>'} "
+                "when timestamps are enforced"
+            ),
+        )
 
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_KEY")
@@ -399,7 +492,11 @@ async def auto_ingest_account(request: Request) -> dict:
     per-project commits.
     """
     raw_body = await request.body()
-    _verify_signature(raw_body, request.headers.get("x-webhook-signature", ""))
+    _verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
 
     try:
         payload = json.loads(raw_body)
@@ -669,7 +766,11 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
     Response shape mirrors /api/auto-ingest-account.
     """
     raw_body = await request.body()
-    _verify_signature(raw_body, request.headers.get("x-webhook-signature", ""))
+    _verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
 
     try:
         payload = json.loads(raw_body)
@@ -925,13 +1026,17 @@ async def clickup_task_closed(request: Request):
     look up the cp_ask_hash + project code from clickup_task_proposals.
     No need to fetch the task description from ClickUp's API.
 
-    ClickUp's `taskStatusUpdated` event fires on ANY status change, so we
-    filter to transitions where `history_items[0].after.type == "closed"`
-    (the standard ClickUp grouping for "done" statuses across spaces).
+    ClickUp's `taskStatusUpdated` event fires on ANY status change.
+    The payload's ``history_items`` can carry MULTIPLE changes per
+    delivery (e.g. an assignee change + a status flip in the same
+    update). Pre-fix, we only inspected ``history_items[0]``; if the
+    assignee change happened to land first, the close transition in
+    ``[1]`` was silently ignored. Now we iterate and look for the
+    first ``field=='status'`` item with ``after.type=='closed'``.
 
     Returns:
       200 success: {matched_hash, code, commit_sha, ingested}
-      200 not-closed: ignored — task moved to a non-closed status (204)
+      204 not-closed: no item in history transitions to a closed status
       200 orphan: {ingested: false, reason: "no_proposal_row"}
       401: bad HMAC
       500: missing secret env var
@@ -950,16 +1055,44 @@ async def clickup_task_closed(request: Request):
         return Response(status_code=204)
 
     # Filter for actual close events. taskStatusUpdated fires on any
-    # status change; we only want transitions INTO a closed status.
+    # status change AND can pack multiple changes (assignee, priority,
+    # status) into one event. Walk every item and look for a status
+    # transition INTO the `closed` family.
     history = payload.get("history_items") or []
     if not history:
-        log.info("clickup-task-closed: no history_items for task=%s; ignoring", task_id)
-        return Response(status_code=204)
-    after = (history[0] or {}).get("after") or {}
-    if not isinstance(after, dict) or after.get("type") != "closed":
         log.info(
-            "clickup-task-closed: task=%s status not 'closed' (type=%s); ignoring",
-            task_id, after.get("type") if isinstance(after, dict) else None,
+            "clickup-task-closed: no history_items for task=%s; ignoring",
+            task_id,
+        )
+        return Response(status_code=204)
+
+    close_item = None
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        # The `field` key tells us which attribute changed. We only
+        # care about status. Old payloads sometimes omit field entirely
+        # and only ever carry status changes — in that case we fall
+        # back to the after.type test alone.
+        field = item.get("field")
+        if field is not None and field != "status":
+            continue
+        after = item.get("after") or {}
+        if isinstance(after, dict) and after.get("type") == "closed":
+            close_item = item
+            break
+
+    if close_item is None:
+        # Diagnostic: which fields did we see, so we can tell a no-op
+        # (only assignee changed) from a schema drift (status item
+        # present but type label changed).
+        fields_seen = [
+            (i.get("field"), (i.get("after") or {}).get("type"))
+            for i in history if isinstance(i, dict)
+        ]
+        log.info(
+            "clickup-task-closed: task=%s no closed transition in history (%s); ignoring",
+            task_id, fields_seen,
         )
         return Response(status_code=204)
 
@@ -1140,6 +1273,18 @@ async def _handle_block_action(payload: dict) -> dict:
 
     # Dispatch the slow path (clone + plan + push + Slack update) to a
     # background task via _spawn_background (strong-ref retention).
+    #
+    # Structured-log every spawn so a Railway restart that interrupts the
+    # background task is recoverable from logs (postmortem: grep for
+    # `slack_action_spawn` and replay any missing `slack_action_complete`
+    # in the same time window).
+    # TODO(v0.16): persist to slack_action_intents for automatic recovery
+    # sweep on restart — until we see real drops in prod, structured
+    # logs are good enough.
+    log.info(
+        "slack_action_spawn code=%s verb=%s hash=%s action_id=%s user=%s",
+        code, verb, cp_hash, action_id, user_id,
+    )
     _spawn_background(_run_action_in_background(
         verb=verb, code=code, cp_hash=cp_hash, extras=extras,
         response_url=response_url, original_message=original_message,
@@ -1189,6 +1334,13 @@ async def _handle_view_submission(payload: dict) -> dict:
             "errors": {"date_block": "Pick a date"},
         }
 
+    # Same structured-log shape as _handle_block_action so a single
+    # logfilter catches both spawn paths.
+    log.info(
+        "slack_action_spawn code=%s verb=%s hash=%s action_id=%s "
+        "source=view_submission until=%s",
+        code, verb, cp_hash, "", until,
+    )
     _spawn_background(_run_action_in_background(
         verb=verb, code=code, cp_hash=cp_hash,
         extras={"until": until},  # No closed_by — only meaningful for close/resolve verbs
@@ -1228,6 +1380,19 @@ async def _run_action_in_background(
             "slack-action background failed: %s/%s/%s", verb, code, cp_hash
         )
         result = {"committed": False, "commit_sha": None, "errors": [str(exc)]}
+
+    # Pairs with `slack_action_spawn` so postmortem can correlate spawns
+    # with completions and identify clicks that never wrapped up (Railway
+    # restart mid-task). action_id isn't in scope here; correlation key
+    # is (code, verb, hash) which is unique per displayed digest item.
+    log.info(
+        "slack_action_complete code=%s verb=%s hash=%s committed=%s "
+        "commit_sha=%s errors=%d",
+        code, verb, cp_hash,
+        result.get("committed"),
+        (result.get("commit_sha") or "")[:8],
+        len(result.get("errors") or []),
+    )
 
     confirmation = _confirmation_text(verb=verb, extras=extras, result=result)
     try:
@@ -1446,13 +1611,82 @@ def _open_snooze_modal(
 # ─────────────────────────────────────────────────────────────
 
 
-def _verify_signature(raw_body: bytes, provided: str) -> None:
+# Replay-window (seconds). Matches the Slack signature freshness budget.
+_TIMESTAMP_REPLAY_WINDOW_SEC = 300
+
+
+def _truthy_env(name: str) -> bool:
+    return (os.environ.get(name) or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _verify_signature(
+    raw_body: bytes, provided: str, timestamp: str | None = None
+) -> None:
+    """HMAC-SHA256 verify the fathom-meeting-sync -> cp-engine-webhook body.
+
+    Two HMAC shapes are accepted to allow a phased rollout:
+
+    1. Legacy (no timestamp): ``hmac(secret, body)`` — accepted when
+       ``timestamp`` is empty AND the env var ``WEBHOOK_REQUIRE_TIMESTAMP``
+       is unset/false. A warning is logged so we can monitor when the
+       caller side finishes rolling out.
+
+    2. Replay-protected: ``hmac(secret, f"{timestamp}.{body}")`` —
+       always accepted. The timestamp is rejected (401) if it's older
+       or further in the future than 5 minutes (``abs(now - ts) > 300``).
+
+    When ``WEBHOOK_REQUIRE_TIMESTAMP`` is true, missing timestamps and
+    legacy-shape signatures both 401. This is the gate we flip after
+    fathom-meeting-sync ships its own update.
+
+    ``timestamp`` is Unix epoch seconds as a string (matches the Slack
+    pattern at ``_verify_slack_signature``).
+    """
     secret = os.environ.get("WEBHOOK_HMAC_SECRET")
     if not secret:
         raise HTTPException(status_code=500, detail="WEBHOOK_HMAC_SECRET not configured")
     if not provided:
         raise HTTPException(status_code=401, detail="missing X-Webhook-Signature header")
-    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+
+    require_ts = _truthy_env("WEBHOOK_REQUIRE_TIMESTAMP")
+
+    if not timestamp:
+        if require_ts:
+            raise HTTPException(
+                status_code=401, detail="missing X-Webhook-Timestamp header"
+            )
+        # Phased rollout: accept the legacy body-only shape but log it
+        # so we know when the caller side has cut over.
+        log.warning(
+            "webhook-verify: legacy unsigned-timestamp request accepted "
+            "(set WEBHOOK_REQUIRE_TIMESTAMP=true to enforce)"
+        )
+        expected_legacy = hmac.new(
+            secret.encode(), raw_body, hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(expected_legacy, provided):
+            raise HTTPException(status_code=401, detail="invalid signature")
+        return
+
+    try:
+        ts_int = int(timestamp)
+    except ValueError:
+        raise HTTPException(
+            status_code=401, detail="X-Webhook-Timestamp not an integer"
+        ) from None
+
+    skew = time.time() - ts_int
+    if abs(skew) > _TIMESTAMP_REPLAY_WINDOW_SEC:
+        log.warning(
+            "webhook-verify rejected: timestamp outside %ds window (skew=%.1fs)",
+            _TIMESTAMP_REPLAY_WINDOW_SEC, skew,
+        )
+        raise HTTPException(
+            status_code=401, detail="X-Webhook-Timestamp outside freshness window"
+        )
+
+    base = f"{timestamp}.".encode() + raw_body
+    expected = hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
     if not hmac.compare_digest(expected, provided):
         raise HTTPException(status_code=401, detail="invalid signature")
 
@@ -1634,12 +1868,7 @@ def _commit_clickup_close(
         subprocess.run(
             ["git", "branch", "-M", target_branch], cwd=tenant_root, check=True
         )
-    subprocess.run(
-        ["git", "push", "origin", target_branch],
-        cwd=tenant_root,
-        check=True,
-        env=env,
-    )
+    _push_with_retry(tenant_root, target_branch=target_branch, env=env)
 
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -1923,6 +2152,122 @@ def _stage_transcript(tenant_root: Path, meeting_id: str, text: str) -> Path:
 # ─────────────────────────────────────────────────────────────
 
 
+# Markers that git emits on a non-fast-forward push reject (the case
+# we can recover from with a pull --rebase). Anything else (auth, hook
+# rejection, network) is raised straight through — we don't want to
+# loop on those.
+#
+# NB: a bare "rejected" marker was previously here too but matched every
+# kind of push reject (auth failures, pre-receive hooks, branch
+# protection), wasting two pull-rebase round-trips on each before
+# bottoming out. The two markers below are what git actually emits for
+# the non-ff race condition; auth/hook rejects raise immediately.
+_NON_FAST_FORWARD_MARKERS = (
+    "non-fast-forward",
+    "(non-fast-forward)",
+    "fetch first",
+)
+
+
+def _push_with_retry(
+    tenant_root: Path,
+    *,
+    target_branch: str,
+    env: dict,
+    max_attempts: int = 3,
+) -> None:
+    """``git push origin <branch>`` with rebase-on-reject recovery.
+
+    Concurrent auto-ingest webhooks each clone independently and race on
+    push. The loser of the race gets a non-fast-forward rejection. This
+    helper recovers by ``git pull --rebase origin <branch>`` and trying
+    again. After ``max_attempts`` consecutive failures, the last error
+    is re-raised so the request 500s and Fathom can retry the whole
+    pipeline cleanly (rather than wedging mid-rebase).
+
+    Important: if the ``pull --rebase`` itself fails (e.g., true content
+    conflict on the same line), we run ``git rebase --abort`` to leave
+    the working tree on a clean detached state and then raise. We do
+    NOT try to auto-resolve — that would silently overwrite one webhook
+    call's bullet with another's.
+
+    Modelled on src/cp_engine/capture_session.py:_push_with_retry but
+    parameterized for the webhook's per-request SSH env + named-branch
+    push.
+    """
+    last_err: subprocess.CalledProcessError | None = None
+    for attempt in range(1, max_attempts + 1):
+        push = subprocess.run(
+            ["git", "push", "origin", target_branch],
+            cwd=tenant_root,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if push.returncode == 0:
+            if attempt > 1:
+                log.info(
+                    "push succeeded on attempt %d (after rebase)", attempt
+                )
+            return
+
+        last_err = subprocess.CalledProcessError(
+            push.returncode, push.args, output=push.stdout, stderr=push.stderr
+        )
+
+        stderr_lc = (push.stderr or "").lower()
+        is_non_ff = any(m in stderr_lc for m in _NON_FAST_FORWARD_MARKERS)
+        if not is_non_ff or attempt == max_attempts:
+            # Either a non-recoverable class of failure (auth, hook
+            # reject, network) or we've exhausted retries. Surface it.
+            if not is_non_ff:
+                log.warning(
+                    "push failed with non-recoverable error: %s",
+                    (push.stderr or "")[:240],
+                )
+            raise last_err
+
+        log.warning(
+            "push rejected non-fast-forward (attempt %d/%d); "
+            "rebasing and retrying",
+            attempt, max_attempts,
+        )
+        rebase = subprocess.run(
+            ["git", "pull", "--rebase", "origin", target_branch],
+            cwd=tenant_root,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if rebase.returncode != 0:
+            # Don't leave the tenant in a mid-rebase state — abort so
+            # the next clone (whether this same request or a Fathom
+            # retry) starts from a clean tree. Then surface the
+            # original push failure: that's the operationally
+            # actionable signal.
+            log.warning(
+                "pull --rebase failed (%s); aborting rebase and giving up",
+                (rebase.stderr or "")[:240],
+            )
+            abort = subprocess.run(
+                ["git", "rebase", "--abort"],
+                cwd=tenant_root,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            if abort.returncode != 0:
+                # Don't swallow this — a wedged worktree is the kind of
+                # thing the operator needs to see in logs (next clone
+                # may inherit a half-rebase state).
+                log.warning(
+                    "git rebase --abort failed (rc=%d): %s",
+                    abort.returncode,
+                    (abort.stderr or "")[:200],
+                )
+            raise last_err
+
+
 def _commit_and_push(
     *, tenant_root: Path, meeting_id: str, ingested: list[dict]
 ) -> str:
@@ -1962,12 +2307,7 @@ def _commit_and_push(
             cwd=tenant_root,
             check=True,
         )
-    subprocess.run(
-        ["git", "push", "origin", target_branch],
-        cwd=tenant_root,
-        check=True,
-        env=env,
-    )
+    _push_with_retry(tenant_root, target_branch=target_branch, env=env)
 
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -2015,12 +2355,7 @@ def _commit_meeting_artifacts(
             ["git", "commit", "-m", message], cwd=tenant_root, check=True, env=env
         )
         target_branch = os.environ.get("CP_TENANT_BRANCH", "main")
-        subprocess.run(
-            ["git", "push", "origin", target_branch],
-            cwd=tenant_root,
-            check=True,
-            env=env,
-        )
+        _push_with_retry(tenant_root, target_branch=target_branch, env=env)
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=tenant_root,
@@ -2118,6 +2453,59 @@ def _status_from_ingested(ingested: list[dict], *, anything_wrote: bool) -> str:
     if not anything_wrote:
         return "skipped_no_op"
     return "success"
+
+
+def _find_successful_duplicate_run(
+    meeting_id: str, project_codes: list[str]
+) -> str | None:
+    """Return the existing ``auto_ingest_runs.id`` if a successful run
+    already exists for this (meeting_id, sorted project_codes) tuple.
+
+    Used by /api/auto-ingest to short-circuit Fathom's retry-on-timeout
+    behavior. A duplicate delivery is harmless thanks to the content-hash
+    dedupe inside execute_plan, but the second pass still spends a Claude
+    call + git push for zero net change and pollutes auto_ingest_runs
+    with two rows. This check turns that into a 200 with
+    ``status: duplicate_delivery_skipped`` and the original run_id.
+
+    Best-effort: any Supabase failure logs and returns None, so a
+    transient observability outage degrades to "process every request"
+    rather than "fail every request".
+
+    Project codes are sorted before comparison so the dedupe key is
+    independent of the caller's ordering — Fathom may not preserve
+    array order between retries.
+    """
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not url or not key or create_client is None:
+        return None
+    sorted_codes = sorted(project_codes)
+    try:
+        client = create_client(url, key)
+        # Filter to status='success' — a previous failure should NOT
+        # block a fresh attempt. Limit 20 lets us tolerate a handful
+        # of past runs against the same meeting while still being a
+        # single-page query.
+        resp = (
+            client.table("auto_ingest_runs")
+            .select("id, project_codes")
+            .eq("meeting_id", meeting_id)
+            .eq("status", "success")
+            .order("created_at", desc=True)
+            .limit(20)
+            .execute()
+        )
+        for row in resp.data or []:
+            row_codes = row.get("project_codes") or []
+            if sorted(row_codes) == sorted_codes:
+                return row.get("id")
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.warning(
+            "duplicate-delivery check failed for meeting=%s: %s",
+            meeting_id, exc,
+        )
+    return None
 
 
 def _log_run_to_supabase(
