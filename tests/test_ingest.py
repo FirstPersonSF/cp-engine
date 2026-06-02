@@ -1784,3 +1784,140 @@ def test_set_milestone_dedupe_lookup_failure_falls_back_to_insert(
     assert result.errors == [], result.errors
     # Insert WAS attempted despite the dedupe failure.
     assert sb.table.return_value.insert.called
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Fix 2 (v0.15.2): sanitize newlines in LLM text fields
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _read_sprint_body(tenant: Path) -> str:
+    return (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
+
+
+def test_ingest_sanitizes_multiline_inbound_text(tmp_path: Path) -> None:
+    """Multi-line LLM text collapses to a single line so the trailing
+    ``<!-- cp:hash=... -->`` stays on the same line as the bullet (or
+    future close-ask / snooze-ask regex matching will silently fail)."""
+    tenant = _make_tenant(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "inbound": [
+                    {
+                        "text": "Line one\nLine two",
+                        "date": "2026-05-12",
+                        "who": "Rena",
+                    }
+                ]
+            }
+        }
+    }
+    execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    body = _read_sprint_body(tenant)
+    assert "Line one Line two" in body
+    # Critical: the bullet + hash marker are on the same physical line.
+    for line in body.splitlines():
+        if "cp:hash=" in line and "Line one" in line:
+            assert "Line two" in line, line
+            break
+    else:
+        raise AssertionError("expected single-line bullet with cp:hash trailer")
+
+
+def test_ingest_sanitizes_multiline_ask_text(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "asks": [
+                    {
+                        "text": "Send us\nthe brief",
+                        "who": "Rena",
+                        "date": "2026-05-12",
+                    }
+                ]
+            }
+        }
+    }
+    execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    body = _read_sprint_body(tenant)
+    assert "Send us the brief" in body
+
+
+def test_ingest_sanitizes_multiline_decision_text(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "decisions": [
+                    {"text": "Drop\nClaude\nteam plan", "date": "2026-05-12"}
+                ]
+            }
+        }
+    }
+    execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    body = _read_sprint_body(tenant)
+    assert "Drop Claude team plan" in body
+
+
+def test_ingest_sanitizes_multiline_risk_text(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "risks": [
+                    {
+                        "text": "Vendor\ndelivery slips",
+                        "severity": "watching",
+                        "category": "vendor",
+                        "date": "2026-05-12",
+                    }
+                ]
+            }
+        }
+    }
+    execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    body = _read_sprint_body(tenant)
+    assert "Vendor delivery slips" in body
+
+
+def test_ingest_sanitizes_multiline_stakeholder(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "stakeholders": [
+                    {
+                        "name": "Rena\nLee",
+                        "role": "VP\nmarketing",
+                        "context": "owns\nthe brief",
+                    }
+                ]
+            }
+        }
+    }
+    execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    body = _read_sprint_body(tenant)
+    assert "Rena Lee" in body
+    assert "VP marketing" in body
+    assert "owns the brief" in body
+
+
+def test_ingest_sanitizes_multiline_slack_digest(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "slack_digest": [
+                    {
+                        "text": "Quiet week.\nOne question on briefing.",
+                        "week": "2026-W20",
+                    }
+                ]
+            }
+        }
+    }
+    execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    body = _read_sprint_body(tenant)
+    assert "Quiet week. One question on briefing." in body
