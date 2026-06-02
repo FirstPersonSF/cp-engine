@@ -4,6 +4,88 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.15.0 — 2026-06-02
+
+### Added — `cp prep-planning` forward-looking sprint-planning doc
+
+Replaces the backward-looking `cp prep-agenda` for sprint planning. Where prep-agenda surfaced *past* state (recent inbound, aged asks, last-week decisions), prep-planning assembles a *forward-looking* doc anchored on dated ClickUp milestones: per-account project blocks each with a Where line, a Forward Calendar (milestones with due dates), and an Open Commitments table that two-ways tracks "us → them" (milestones we own) and "them → us" (client-asks we're waiting on).
+
+The motivation: Drew's 2026-06-01 sprint-planning run with the old prep-agenda surfaced its limits — partners walked 30 projects' past-tense state in flat order, with no way to see "what ships when" or which projects need decisions this week vs. next week. The new doc:
+
+- Groups by account (walk Google → Infoblox → SAP → Teleflex → … → FPSF initiatives → Canonic)
+- Leads each project block with **urgent flags** (slip risk, decision due, past-due ask, escalated risk) so partners' attention vectors to what matters
+- Surfaces tenant-wide cross-cutting context at the top — capacity-binding owners (≥5 projects) and decisions partners owe each other from `weekly-cp.md`
+- Renders an Open Commitments table mixing dated ClickUp milestones with sprint-file open asks for the back-populate-in-progress period
+
+Source of truth for milestones is ClickUp. Each active project (engagement OR initiative) carries a `clickup_list_id` in MC-2; this module fetches `tags[]=milestone` and `tags[]=client-ask` tasks from each list via the ClickUp REST API with pagination support (`_CLICKUP_MAX_PAGES=100`, safety cap at 10,000 milestones per list).
+
+### Added — `set-milestone` + `set-client-ask-task` ingest verbs
+
+Two new auto-ingest verbs (`set-milestone`, `set-client-ask-task`) classify Fathom action items into the existing `clickup_task_proposals` review-gate inbox with three new `task_type` values (`action_item` / `client_ask` / `milestone`). Milestones carry `confidence` (high/medium/low), `depends_on`, and `linked_to` fields. Client-asks track external commitments back to us as first-class tasks rather than free-form bullets.
+
+The dashboard's approve-and-push path (in `fathom-meeting-sync`) was extended to write these classifications + dependencies through to ClickUp as custom fields and native task dependencies. Required env vars: `CLICKUP_TYPE_FIELD_ID`, `CLICKUP_CONFIDENCE_FIELD_ID`, `CLICKUP_LINKED_TO_FIELD_ID`. The webhook fails fast at module load if any are missing.
+
+### Added — urgent-flag detection with 4 rules
+
+`_detect_urgent` in `prep_planning.py` surfaces per-project attention items via four rules:
+
+1. **slip_risk** — milestone with date in next 14 days, low confidence OR stale `depends_on` (where stale = sprint ask's `by` date is in past + dep substring-matches ask description)
+2. **decision_due** — decisions in this/next sprint horizon, with template placeholders filtered out (the `_<...>_` italic-angle-bracket scaffold shape never trips a flag)
+3. **past_due_ask** — sprint asks with `by` date in past (warn if age < 14 days, alert if ≥ 14)
+4. **escalated_risk** — sprint risks marked `severity: escalated`
+
+### Added — cross-cutting section with capacity binding + decisions
+
+`_render_cross_cutting` surfaces tenant-wide context before the per-project walk:
+
+- **Capacity-binding owners** — anyone with ≥5 active projects of record (sorted by count descending; implicit ownership from sprint-file commitments deferred to v2 with TODO)
+- **Cross-cutting decisions partners owe each other** — parsed from `weekly-cp.md`'s `## Decisions (cross-cutting, last 4 weeks)` section, filtered to the last 28 days and excluding entries marked `[decided: ...]` or `[resolved: ...]`
+
+### Changed — `_section_body` regex now matches suffixed headings
+
+`sprints._section_body` previously matched only exact `## Heading` form, silently returning empty bodies for real scaffold headings like `## Horizon — 4–8 weeks out`. Caused `agenda._extract_decisions_due_for_project` and `_parse_horizon` to silently drop their entire payloads on every real sprint file — a regression that had been hiding in production since the scaffold templates added suffixes.
+
+Loosened the regex to accept `— suffix`, `– suffix`, `- suffix`, `: suffix` separators (suffix kept on one line so DOTALL can't bleed across sections). Also filters scaffold `- _<...>_` placeholder bullets out of `_parse_horizon` so they don't leak into the master-cp.md carry-forward roll-up.
+
+### Changed — shared helpers promoted to public names
+
+Helpers previously imported across modules under leading-underscore names (`_filter_active`, `_short_iso_date`, `_to_datetime` from `agenda.py`; `_bullets`, `_parse_bracketed_bullet`, `_section_body`, `_subsection` from `sprints.py`) are now public — no leading underscore. Each had exactly one cross-module caller; a `_shared.py` module would have been over-engineering.
+
+### Changed — `cp prep-agenda` deprecated
+
+Still works (still produces its backward-looking doc; existing automations don't break) but emits a stderr deprecation warning naming `cp prep-planning` as the replacement. Will be removed in a future release.
+
+### Migration notes
+
+- **Tenants must bump** `.cp-engine.toml`'s `[engine].version` from `~= 0.14` to `~= 0.15`.
+- **MC-2 migrations 051 + 052** must be applied (already applied to the live `1p_knowledge_dev` project in this release cycle; new tenants will need them).
+- **`/cp-prep` skill** now points at `cp prep-planning` and writes to `sprints/<W##>/_planning.md` (was `_agenda.md`). Old `_agenda.md` files from prior runs can coexist.
+- **ClickUp setup required:** projects need `clickup_list_id` populated in MC-2; FPSF initiatives need their lists too. Custom-field IDs (Type, Confidence, Linked To) must be set on Railway as `CLICKUP_*_FIELD_ID` env vars. See `docs/clickup-field-ids.md`.
+
+### Fixed — `_validate_plan` rejects malformed `set-milestone` / `set-client-ask-task` plans early
+
+Both new verbs validate at plan-time, not handler-time, so the LLM gets a clear "missing field" or "unknown verb" error before the row reaches Supabase.
+
+### Fixed — pagination in `_fetch_clickup_milestones`
+
+Previously the ClickUp `/list/{id}/task` fetch was a single GET with the default 100-task page size, silently truncating any project that ever accumulates 100+ milestone-tagged tasks. Now loops with explicit page counter, breaks when a page returns < 100 tasks, raises `RuntimeError` with task-ceiling context if the safety cap of 100 pages (10,000 tasks per list) is exceeded.
+
+### Fixed — malformed dates in weekly-cp.md decisions
+
+`_load_cross_cutting_decisions` previously fell back to `today` when a decision's date parsed failed — silently keeping typo'd 2019 entries in scope forever. Now logs a warning via the module logger AND appends a tenant-wide entry to `result.errors` AND skips the malformed entry entirely. Better for everyone: the bad data surfaces, the good data still flows.
+
+### Fixed — ClickUp auth failures now surface in `--summary`
+
+`_fetch_clickup_milestones` distinguishes 401/403 auth failures from generic 4xx/5xx, raising distinct `RuntimeError` messages. `build_planning_result` dedupes auth failures to a single tenant-wide `result.errors` entry (so 26 projects hitting the same bad token don't produce 26 redundant errors). Missing `CLICKUP_API_TOKEN` raises early with a load-bearing message.
+
+### Fixed — `_(ClickUp list not set)_` placeholder distinguishes list-unset from list-empty
+
+Previously the same misleading message rendered whether `clickup_list_id` was actually unset OR the list IS set but has zero milestone-tagged tasks. Now two distinct sentinels: `no_clickup_list` (fix via MC-2 dashboard) vs `no_milestones_tagged` (fix via back-population). Important during the v0.15 ramp-up period when most lists are set but empty.
+
+### Fixed — project header dedup when code == name
+
+When `project.code == project.name` (e.g. `cp`, `1p-component-library`), the header renders as `### cp — Drew and Tony` rather than the duplicated `### cp cp — Drew and Tony`.
+
 ## v0.14.2 — 2026-05-29
 
 ### Fixed — clicking one digest button no longer visually closes every item
