@@ -1251,6 +1251,63 @@ def test_summary_auth_failure_dedupes_across_projects(tmp_path):
     assert result.milestone_counts["errored"] == 3
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  Project header dedup when code == name (#38)
+#
+#  Standalone repos (and some initiatives) carry name == code. The old
+#  ``f"### {p.code} {p.name} — {owner}"`` template rendered as e.g.
+#  "### cp cp — Drew and Tony", duplicating the slug. Cosmetic only,
+#  but distracting in a doc partners read every Monday.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_project_header_dedupes_when_code_equals_name():
+    """code == name → single slug in the header (no "cp cp" duplication)."""
+    state = make_state(
+        "cp",
+        name="cp",
+        company_kind="self-fpsf",
+        company_code=None,
+        company_name=None,
+        source="repo",
+        owner="Drew and Tony",
+    )
+    block = ProjectPlanningBlock(
+        project=state,
+        quick_resume_line=None,
+        milestones=(),
+        client_asks=(),
+        sprint_open_asks=(),
+        urgent=(),
+        fetch_error=None,
+    )
+    rendered = "\n".join(prep_planning._render_project_block(block))
+    assert "### cp — Drew and Tony" in rendered
+    # The duplicated form must NOT appear.
+    assert "### cp cp" not in rendered
+
+
+def test_project_header_keeps_both_when_code_differs_from_name():
+    """code != name → both still surface, em-dash and spacing unchanged."""
+    state = make_state(
+        "ggl-5168",
+        name="GGL 5168 Activation",
+        company_name="Google",
+        owner="drew",
+    )
+    block = ProjectPlanningBlock(
+        project=state,
+        quick_resume_line=None,
+        milestones=(),
+        client_asks=(),
+        sprint_open_asks=(),
+        urgent=(),
+        fetch_error=None,
+    )
+    rendered = "\n".join(prep_planning._render_project_block(block))
+    assert "### ggl-5168 GGL 5168 Activation — drew" in rendered
+
+
 def test_summary_non_auth_error_does_not_surface_auth_error(tmp_path):
     """A 500 (or any non-401/403) MUST NOT bubble an auth-error entry —
     those errors are real, project-specific and should appear per-project."""

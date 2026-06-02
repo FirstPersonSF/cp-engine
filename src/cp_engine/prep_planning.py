@@ -1154,7 +1154,14 @@ def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
     """Render one project's section: urgent → Where → Forward → Commitments."""
     p = block.project
     owner = p.owner or "—"
-    out = [f"### {p.code} {p.name} — {owner}", ""]
+    # Standalone repos (and some initiatives) carry name == code, which used
+    # to render as a duplicated header like "### cp cp — Drew and Tony".
+    # Collapse to one slug in that case — cosmetic only, exact em-dash and
+    # spacing preserved.
+    if p.code == p.name:
+        out = [f"### {p.code} — {owner}", ""]
+    else:
+        out = [f"### {p.code} {p.name} — {owner}", ""]
 
     if block.urgent:
         out.append("**Urgent:**")
