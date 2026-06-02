@@ -1687,6 +1687,42 @@ def prep_planning_cmd(
 
     code_filter = tuple(c.strip() for c in project_filter.split(",") if c.strip()) or None
 
+    # Pre-fetch the cp_ask_hash → clickup_task_id map for bridging-period
+    # dedupe (Open Commitments would otherwise render an ask once as a
+    # ClickUp client-ask and once as a sprint-file fallback). Scan each
+    # active project's current sprint file for hashes; degrade silently on
+    # any failure since the dedupe is a polish, not load-bearing.
+    clickup_task_ids: dict[str, str] = {}
+    try:
+        from cp_engine.prep_planning import (
+            _parse_sprint_open_asks,
+            filter_active,
+        )
+        from cp_engine.sprints import current_sprint_week_iso
+
+        week_iso_for_dedupe = current_sprint_week_iso(
+            datetime.combine(today, datetime.min.time())
+        )
+        wanted_codes = (
+            {c.lower() for c in code_filter} if code_filter else None
+        )
+        all_hashes: list[str] = []
+        for p in filter_active(projects):
+            if wanted_codes is not None and p.code.lower() not in wanted_codes:
+                continue
+            sprint_path = (
+                config.root / "sprints" / week_iso_for_dedupe / f"{p.code}.md"
+            )
+            for a in _parse_sprint_open_asks(sprint_path):
+                if a["hash"]:
+                    all_hashes.append(a["hash"])
+        if all_hashes:
+            clickup_task_ids = _fetch_clickup_task_ids_for_hashes(
+                config, all_hashes
+            )
+    except Exception:  # noqa: BLE001 — dedupe must not break the doc
+        clickup_task_ids = {}
+
     if summary:
         out_str = render_planning_summary(
             config,
@@ -1695,6 +1731,7 @@ def prep_planning_cmd(
             project_filter=code_filter,
             tenant_hours_last_week=tenant_hours,
             supabase_client=supabase_client,
+            clickup_task_ids=clickup_task_ids,
         )
         click.echo(out_str)
         return
@@ -1706,6 +1743,7 @@ def prep_planning_cmd(
         project_filter=code_filter,
         tenant_hours_last_week=tenant_hours,
         supabase_client=supabase_client,
+        clickup_task_ids=clickup_task_ids,
     )
 
     if out:

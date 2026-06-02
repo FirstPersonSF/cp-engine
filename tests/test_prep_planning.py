@@ -587,6 +587,87 @@ def test_render_planning_doc_distinguishes_list_unset_vs_list_empty(tmp_path):
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  Fix 1 (v0.15.2): bridging-period dedupe of sprint-file asks
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_build_project_block_filters_sprint_asks_already_in_clickup(tmp_path):
+    """A sprint-file open ask whose hash exists in the ClickUp task-id map
+    drops out of ``block.sprint_open_asks``. Without the dedupe, the Open
+    Commitments table renders the same ask twice (once as a ClickUp
+    client-ask, once as a sprint-file fallback)."""
+    config = make_config(tmp_path)
+    state = make_state("ggl-5168", name="GGL 5168 Activation")
+
+    # 3 open asks: hashes aaaa1111 + bbbb2222 already in ClickUp;
+    # cccc3333 only in sprint file.
+    sprint_path = tmp_path / "sprints" / "2026-W24" / "ggl-5168.md"
+    sprint_path.parent.mkdir(parents=True, exist_ok=True)
+    sprint_path.write_text(
+        "# 2026-W24 · ggl-5168\n\n"
+        "## Client communication\n\n"
+        "### Open asks\n\n"
+        "- [open · 2026-06-01 · rena · by 2026-06-15] Send AI samples "
+        "<!-- cp:hash=aaaa1111 -->\n"
+        "- [open · 2026-06-02 · janet · by 2026-06-20] Pick a domain "
+        "<!-- cp:hash=bbbb2222 -->\n"
+        "- [open · 2026-06-03 · ruth] Confirm budget "
+        "<!-- cp:hash=cccc3333 -->\n"
+    )
+
+    clickup_task_ids = {"aaaa1111": "TASK_A", "bbbb2222": "TASK_B"}
+
+    block = prep_planning.build_project_block(
+        state,
+        config=config,
+        supabase_client=None,
+        today=date(2026, 6, 10),
+        week_iso="2026-W24",
+        clickup_client=None,
+        clickup_token=None,
+        list_id_override=None,
+        clickup_task_ids=clickup_task_ids,
+    )
+
+    # Only the un-promoted ask survives.
+    assert len(block.sprint_open_asks) == 1
+    assert block.sprint_open_asks[0]["hash"] == "cccc3333"
+    assert block.sprint_open_asks[0]["text"] == "Confirm budget"
+
+
+def test_build_project_block_no_dedupe_when_clickup_task_ids_is_none(tmp_path):
+    """Without ``clickup_task_ids`` (older callers, tests), all sprint
+    open asks pass through — no surprise filtering."""
+    config = make_config(tmp_path)
+    state = make_state("ggl-5168", name="GGL 5168 Activation")
+
+    sprint_path = tmp_path / "sprints" / "2026-W24" / "ggl-5168.md"
+    sprint_path.parent.mkdir(parents=True, exist_ok=True)
+    sprint_path.write_text(
+        "# 2026-W24 · ggl-5168\n\n"
+        "### Open asks\n\n"
+        "- [open · 2026-06-01 · rena · by 2026-06-15] Send AI samples "
+        "<!-- cp:hash=aaaa1111 -->\n"
+        "- [open · 2026-06-02 · janet · by 2026-06-20] Pick a domain "
+        "<!-- cp:hash=bbbb2222 -->\n"
+    )
+
+    block = prep_planning.build_project_block(
+        state,
+        config=config,
+        supabase_client=None,
+        today=date(2026, 6, 10),
+        week_iso="2026-W24",
+        clickup_client=None,
+        clickup_token=None,
+        list_id_override=None,
+        clickup_task_ids=None,
+    )
+
+    assert len(block.sprint_open_asks) == 2
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Test 9: --summary mode emits valid JSON with the documented keys
 # ──────────────────────────────────────────────────────────────────────
 
