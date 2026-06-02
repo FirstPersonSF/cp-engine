@@ -142,8 +142,11 @@ def test_cross_cutting_decisions_renders_from_weekly_cp(tmp_path):
         "1. **Tony hidden-load** — re-attribute owner on implicit projects. "
         "(2026-05-25, source: weekly account meeting)\n",
     )
-    decisions = _load_cross_cutting_decisions(tmp_path, today=date(2026, 6, 2))
+    decisions, errors = _load_cross_cutting_decisions(
+        tmp_path, today=date(2026, 6, 2)
+    )
     assert len(decisions) == 3
+    assert errors == []
     texts = [d.text for d in decisions]
     assert any("Marcello capacity triage" in t for t in texts)
     assert any("SAP delivery date conflict" in t for t in texts)
@@ -153,14 +156,20 @@ def test_cross_cutting_decisions_renders_from_weekly_cp(tmp_path):
 def test_cross_cutting_decisions_empty_section_omitted(tmp_path):
     """weekly-cp.md with the header but no entries → empty tuple."""
     _write_weekly_cp(tmp_path, _DECISIONS_HEADER + "\n## Account summaries\n")
-    decisions = _load_cross_cutting_decisions(tmp_path, today=date(2026, 6, 2))
+    decisions, errors = _load_cross_cutting_decisions(
+        tmp_path, today=date(2026, 6, 2)
+    )
     assert decisions == ()
+    assert errors == []
 
 
 def test_cross_cutting_decisions_missing_file_returns_empty(tmp_path):
     """No weekly-cp.md at all → empty tuple, not a crash."""
-    decisions = _load_cross_cutting_decisions(tmp_path, today=date(2026, 6, 2))
+    decisions, errors = _load_cross_cutting_decisions(
+        tmp_path, today=date(2026, 6, 2)
+    )
     assert decisions == ()
+    assert errors == []
 
 
 def test_cross_cutting_decisions_resolved_marker_filtered(tmp_path):
@@ -173,7 +182,9 @@ def test_cross_cutting_decisions_resolved_marker_filtered(tmp_path):
         "1. **Already settled** — [decided: 2026-05-29] partners agreed Y. "
         "(2026-05-28, source: sprint planning)\n",
     )
-    decisions = _load_cross_cutting_decisions(tmp_path, today=date(2026, 6, 2))
+    decisions, _errors = _load_cross_cutting_decisions(
+        tmp_path, today=date(2026, 6, 2)
+    )
     assert len(decisions) == 1
     assert "Still owed" in decisions[0].text
 
@@ -188,7 +199,9 @@ def test_cross_cutting_decisions_old_entries_filtered(tmp_path):
         "1. **Stale** — older than 4 weeks. "
         "(2026-04-15, source: weekly account meeting)\n",
     )
-    decisions = _load_cross_cutting_decisions(tmp_path, today=date(2026, 6, 2))
+    decisions, _errors = _load_cross_cutting_decisions(
+        tmp_path, today=date(2026, 6, 2)
+    )
     assert len(decisions) == 1
     assert "Recent" in decisions[0].text
 
@@ -203,7 +216,9 @@ def test_cross_cutting_decisions_resolved_marker_filtered_with_resolved_verb(tmp
         "1. **Already settled** — [resolved: 2026-05-29] partners agreed Y. "
         "(2026-05-28, source: sprint planning)\n",
     )
-    decisions = _load_cross_cutting_decisions(tmp_path, today=date(2026, 6, 2))
+    decisions, _errors = _load_cross_cutting_decisions(
+        tmp_path, today=date(2026, 6, 2)
+    )
     assert len(decisions) == 1
     assert "Still owed" in decisions[0].text
 
@@ -223,7 +238,7 @@ def test_cross_cutting_decisions_included_at_exactly_28_days(tmp_path):
         + f"1. **On the boundary** — exactly 28 days back. "
         f"({boundary.isoformat()}, source: sprint planning)\n",
     )
-    decisions = _load_cross_cutting_decisions(tmp_path, today=today)
+    decisions, _errors = _load_cross_cutting_decisions(tmp_path, today=today)
     assert len(decisions) == 1
     assert "On the boundary" in decisions[0].text
 
@@ -238,8 +253,69 @@ def test_cross_cutting_decisions_excluded_at_29_days(tmp_path):
         + f"1. **Just past** — 29 days back. "
         f"({past_boundary.isoformat()}, source: sprint planning)\n",
     )
-    decisions = _load_cross_cutting_decisions(tmp_path, today=today)
+    decisions, _errors = _load_cross_cutting_decisions(tmp_path, today=today)
     assert decisions == ()
+
+
+def test_cross_cutting_decisions_malformed_date_skipped_with_warning(
+    tmp_path, caplog
+):
+    """Malformed-date entries are SKIPPED (not surfaced with d_date=today)
+    AND surface as an error in the summary + a warning in the logs.
+
+    Pre-v0.15 the fallback was ``d_date = today``, which silently kept a
+    typo'd 2019-dated decision in scope forever. The new behavior is to
+    skip + warn so partners can spot the bad data.
+    """
+    _write_weekly_cp(
+        tmp_path,
+        _DECISIONS_HEADER
+        + "2. **Good entry** — within window. "
+        "(2026-05-30, source: sprint planning)\n\n"
+        "1. **Bad entry** — typo'd date. "
+        "(2026-13-99, source: sprint planning)\n",
+    )
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="cp_engine.prep_planning"):
+        decisions, errors = _load_cross_cutting_decisions(
+            tmp_path, today=date(2026, 6, 2)
+        )
+
+    # Only the valid entry survives.
+    assert len(decisions) == 1
+    assert "Good entry" in decisions[0].text
+    # The bad entry is dropped entirely, not surfaced with d_date=today.
+    assert all("Bad entry" not in d.text for d in decisions)
+    # The bad date shows up in the error list (for --summary).
+    assert len(errors) == 1
+    assert "2026-13-99" in errors[0]
+    # And in the warning log.
+    assert any(
+        "malformed date" in rec.message.lower() for rec in caplog.records
+    )
+
+
+def test_cross_cutting_decisions_valid_date_no_error(tmp_path, caplog):
+    """Sanity: a fully valid file produces no errors and no warnings."""
+    _write_weekly_cp(
+        tmp_path,
+        _DECISIONS_HEADER
+        + "1. **Clean entry** — well-formed. "
+        "(2026-05-30, source: sprint planning)\n",
+    )
+    import logging
+
+    with caplog.at_level(logging.WARNING, logger="cp_engine.prep_planning"):
+        decisions, errors = _load_cross_cutting_decisions(
+            tmp_path, today=date(2026, 6, 2)
+        )
+
+    assert len(decisions) == 1
+    assert errors == []
+    assert not any(
+        "malformed date" in rec.message.lower() for rec in caplog.records
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────

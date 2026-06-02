@@ -896,14 +896,22 @@ def _load_cross_cutting_decisions(
     *,
     today: date,
     lookback_days: int = _CROSS_CUTTING_LOOKBACK_DAYS,
-) -> tuple[WeeklyDecision, ...]:
+) -> tuple[tuple[WeeklyDecision, ...], list[str]]:
     """Read ``weekly-cp.md`` and return decisions still owed across partners.
 
+    Returns ``(decisions, errors)`` — caller appends ``errors`` to the
+    PlanningResult so malformed-date entries surface in ``--summary``.
+
     Filters:
-      - Section absent or empty → ``()``.
+      - Section absent or empty → ``((), [])``.
       - Entry's date older than ``lookback_days`` → dropped.
       - Entry text contains a ``[decided: ...]`` or ``[resolved: ...]``
         marker → dropped.
+      - Entry's date is malformed (not ISO-8601) → SKIPPED entirely +
+        warning logged + error appended. Pre-v0.15 we fell through with
+        ``d_date = today``, which surfaced typo'd entries with the
+        wrong implicit date — worse than dropping them, because partners
+        couldn't tell anything was wrong.
 
     Reuses ``agenda.parse_weekly_decisions`` so the parsing contract is
     shared with ``cp prep-agenda``. The order returned mirrors the
@@ -911,26 +919,33 @@ def _load_cross_cutting_decisions(
     """
     weekly_path = tenant_root / "weekly-cp.md"
     if not weekly_path.is_file():
-        return ()
+        return (), []
     body = weekly_path.read_text(encoding="utf-8")
     decisions = parse_weekly_decisions(body)
     if not decisions:
-        return ()
+        return (), []
     cutoff = today - timedelta(days=lookback_days)
     out: list[WeeklyDecision] = []
+    errors: list[str] = []
     for d in decisions:
         try:
             d_date = date.fromisoformat(d.date)
-        except ValueError:
-            # Malformed date — surface the entry rather than silently
-            # dropping it; partners can spot the bad format.
-            d_date = today
+        except (ValueError, TypeError):
+            log.warning(
+                "malformed date in weekly-cp.md decision: %r (entry: %s)",
+                d.date,
+                d.text[:60],
+            )
+            errors.append(
+                f"malformed date in cross-cutting decision: {d.date!r}"
+            )
+            continue
         if d_date < cutoff:
             continue
         if _is_resolved_decision(d.text):
             continue
         out.append(d)
-    return tuple(out)
+    return tuple(out), errors
 
 
 def _render_cross_cutting(
@@ -1249,9 +1264,10 @@ def build_planning_result(
 
     # Task 8: cross-cutting capacity binding + partner-owed decisions.
     capacity_binding = _detect_capacity_binding(active_sorted)
-    cross_cutting_decisions = _load_cross_cutting_decisions(
-        config.root, today=today
+    cross_cutting_decisions, cross_cutting_errors = (
+        _load_cross_cutting_decisions(config.root, today=today)
     )
+    errors.extend(cross_cutting_errors)
 
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
     return PlanningResult(
