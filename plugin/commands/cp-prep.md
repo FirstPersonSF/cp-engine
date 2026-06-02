@@ -36,16 +36,19 @@ If not, stop and tell the user: "Run /cp-prep from the cp tenant root
 `cp prep-planning --summary` emits `week_iso` as JSON — use it as the
 authoritative source so this matches MC-2's planning-week rule
 (Mon/Tue → this week, Wed-Sun → next week) without any text-parsing.
+Capture the whole JSON object once into `$SUMMARY` so later steps can
+reuse it without re-shelling out.
 
 ```bash
-WEEK_ISO=$(cp prep-planning --summary 2>/dev/null | jq -r .week_iso 2>/dev/null)
+SUMMARY=$(cp prep-planning --summary 2>/dev/null)
+WEEK_ISO=$(echo "$SUMMARY" | jq -r .week_iso 2>/dev/null)
 # Fall back to today's ISO week if --summary fails.
 test -n "$WEEK_ISO" && test "$WEEK_ISO" != "null" || WEEK_ISO=$(date -u +%Y-W%V)
 echo "Planning week: $WEEK_ISO"
 ```
 
-Per cp-engine v0.8.7.3, the engine resolves the planning week itself —
-the skill just reads it back.
+The engine resolves the planning week itself — the skill just reads it
+back. `$SUMMARY` (the full JSON object) is also reused in Step 4 below.
 
 ### 3. Generate the planning doc
 
@@ -78,10 +81,13 @@ coexist; `_planning.md` is the current source of truth.
 
 ### 4. Surface highlights via the engine's summary mode
 
-Use `cp prep-planning --summary` to get structured JSON metrics.
+Use the `$SUMMARY` already captured in Step 2 for structured JSON
+metrics. If invoked with project codes (Step 3 set `$CODES`), re-capture
+the summary scoped to those projects so the metrics line up with the
+generated doc.
 
 ```bash
-SUMMARY=$(cp prep-planning --summary ${CODES:+--projects "$CODES"})
+test -n "$CODES" && SUMMARY=$(cp prep-planning --summary --projects "$CODES")
 echo "$SUMMARY" | jq .
 ```
 
@@ -242,7 +248,7 @@ in ClickUp).
   in your shell or `mc-2/backend/.env`.
 - **Forward calendar shows `_(ClickUp list not set — milestones not
   tracked)_`.**
-  <!-- TODO(v0.16+): split this rendering at the engine level so the
+  <!-- TODO(v0.16): split this rendering at the engine level so the
        skill can disambiguate the two cases without guessing. -->
   The message is ambiguous — either:
   (a) the project genuinely has no `clickup_list_id` in MC-2 (fix: set
