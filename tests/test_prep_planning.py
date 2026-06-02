@@ -1127,3 +1127,154 @@ def test_fetch_milestones_safety_cap_raises():
     assert len(client.calls) == _CLICKUP_MAX_PAGES
     assert client.calls[0] == "0"
     assert client.calls[-1] == str(_CLICKUP_MAX_PAGES - 1)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  ClickUp auth-failure surfacing (#37)
+#
+#  Before #37 a 401/403 from ClickUp landed as a generic per-project
+#  "ClickUp returned 401 for list X: ..." fetch_error and was lost in
+#  the noise. Now:
+#    - ``_fetch_clickup_milestones`` raises a distinct shape for 401/403
+#      ("ClickUp auth failed (HTTP <code>): check CLICKUP_API_TOKEN").
+#    - ``build_planning_result`` dedupes those failures into one
+#      tenant-wide entry in ``result.errors`` so ``--summary`` shows
+#      one clear "check your token" line rather than N copies.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_fetch_milestones_401_raises_auth_failed():
+    """A 401 from ClickUp surfaces as a distinct auth-failure RuntimeError."""
+    list_id = "L1"
+    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
+    client = FakeClient({(url, "milestone"): FakeResp(401, text="invalid token")})
+
+    with pytest.raises(RuntimeError, match="ClickUp auth failed.*HTTP 401"):
+        _fetch_clickup_milestones(
+            list_id, tag="milestone", token="bad_token", client=client
+        )
+
+
+def test_fetch_milestones_403_raises_auth_failed():
+    """403 is treated the same as 401 — both mean "token is no good"."""
+    list_id = "L1"
+    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
+    client = FakeClient({(url, "milestone"): FakeResp(403, text="forbidden")})
+
+    with pytest.raises(RuntimeError, match="ClickUp auth failed.*HTTP 403"):
+        _fetch_clickup_milestones(
+            list_id, tag="milestone", token="bad_token", client=client
+        )
+
+
+def test_fetch_milestones_missing_token_raises_with_env_phrasing():
+    """Missing token raises with the load-bearing 'in environment' phrasing
+    so the per-project loop can dedupe it as an auth failure."""
+    with pytest.raises(RuntimeError, match="CLICKUP_API_TOKEN not set in environment"):
+        _fetch_clickup_milestones("L1", tag="milestone", token="", client=None)
+
+
+def test_summary_auth_failure_surfaces_as_tenant_wide_error(tmp_path):
+    """A 401 on the first project's fetch surfaces ONE tenant-wide auth-error
+    entry in ``result.errors`` so ``--summary`` flags it clearly."""
+    config = make_config(tmp_path)
+    state = make_state("ggl-5168", name="GGL 5168 Activation")
+    list_id = "L1"
+    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
+    client = FakeClient(
+        {
+            (url, "milestone"): FakeResp(401, text="invalid token"),
+            (url, "client-ask"): FakeResp(401, text="invalid token"),
+        }
+    )
+
+    result = build_planning_result(
+        config,
+        (state,),
+        today=date(2026, 6, 7),
+        tenant_hours_last_week={},
+        supabase_client=None,
+        clickup_token="bad_token",
+        clickup_client=client,
+        list_id_lookup={"ggl-5168": list_id},
+    )
+    assert any("ClickUp auth failed" in err for err in result.errors)
+    assert any("CLICKUP_API_TOKEN" in err for err in result.errors)
+    # The single project also surfaces as errored in milestone_counts.
+    assert result.milestone_counts["errored"] == 1
+
+
+def test_summary_auth_failure_dedupes_across_projects(tmp_path):
+    """When auth fails on every project, ``result.errors`` carries exactly
+    ONE auth-error entry (dedup), not N copies."""
+    config = make_config(tmp_path)
+    projects = (
+        make_state("ggl-5168", name="GGL 5168", company_name="Google"),
+        make_state(
+            "ibx-5153", name="IBX 5153",
+            company_code="IBX", company_name="Infoblox",
+        ),
+        make_state(
+            "snt-5189", name="SNT 5189",
+            company_code="SNT", company_name="Sentinel One",
+        ),
+    )
+
+    class _AlwaysAuthFailClient:
+        """Routes every request to a 401, regardless of list_id."""
+
+        def __init__(self):
+            self.calls: list[str] = []
+
+        def get(self, url, *, headers=None, params=None):
+            self.calls.append(url)
+            return FakeResp(401, text="invalid token")
+
+    client = _AlwaysAuthFailClient()
+    result = build_planning_result(
+        config,
+        projects,
+        today=date(2026, 6, 7),
+        tenant_hours_last_week={},
+        supabase_client=None,
+        clickup_token="bad_token",
+        clickup_client=client,
+        list_id_lookup={
+            "ggl-5168": "L1",
+            "ibx-5153": "L2",
+            "snt-5189": "L3",
+        },
+    )
+    auth_errors = [e for e in result.errors if "ClickUp auth failed" in e]
+    assert len(auth_errors) == 1
+    # Every project still counts as errored individually in milestone_counts.
+    assert result.milestone_counts["errored"] == 3
+
+
+def test_summary_non_auth_error_does_not_surface_auth_error(tmp_path):
+    """A 500 (or any non-401/403) MUST NOT bubble an auth-error entry —
+    those errors are real, project-specific and should appear per-project."""
+    config = make_config(tmp_path)
+    state = make_state("ggl-5168", name="GGL 5168 Activation")
+    list_id = "L1"
+    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
+    client = FakeClient(
+        {
+            (url, "milestone"): FakeResp(500, text="server error"),
+            (url, "client-ask"): FakeResp(500, text="server error"),
+        }
+    )
+
+    result = build_planning_result(
+        config,
+        (state,),
+        today=date(2026, 6, 7),
+        tenant_hours_last_week={},
+        supabase_client=None,
+        clickup_token="tok_test",
+        clickup_client=client,
+        list_id_lookup={"ggl-5168": list_id},
+    )
+    assert not any("ClickUp auth failed" in err for err in result.errors)
+    # The 500 still lands per-project.
+    assert any("ggl-5168" in err for err in result.errors)

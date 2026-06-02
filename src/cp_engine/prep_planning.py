@@ -186,6 +186,21 @@ def _clickup_token() -> str | None:
     return os.environ.get("CLICKUP_API_TOKEN")
 
 
+# Sentinel substrings used by ``build_planning_result`` to recognize
+# auth-failure ``fetch_error`` strings without re-parsing them. Keep these
+# substrings present in the corresponding ``RuntimeError`` messages in
+# ``_fetch_clickup_milestones`` or the tenant-wide dedup goes silent.
+_AUTH_ERROR_SUBSTRINGS = (
+    "ClickUp auth failed",
+    "CLICKUP_API_TOKEN not set",
+)
+
+
+def _is_auth_error(fetch_error: str) -> bool:
+    """True when ``fetch_error`` came from a missing/invalid ClickUp token."""
+    return any(s in fetch_error for s in _AUTH_ERROR_SUBSTRINGS)
+
+
 _CLICKUP_PAGE_SIZE = 100  # ClickUp /list/{id}/task max page size
 _CLICKUP_MAX_PAGES = 100  # safety cap: 100 pages × 100/page = 10k tasks
 
@@ -211,7 +226,12 @@ def _fetch_clickup_milestones(
     if token is None:
         token = _clickup_token()
     if not token:
-        raise RuntimeError("CLICKUP_API_TOKEN not set")
+        # The "not set in environment" phrasing is load-bearing — the
+        # per-project loop in ``build_planning_result`` greps it (along
+        # with "ClickUp auth failed") to surface one tenant-wide entry
+        # in ``result.errors`` regardless of how many projects hit the
+        # same missing token.
+        raise RuntimeError("CLICKUP_API_TOKEN not set in environment")
 
     headers = {"Authorization": token}
     url = f"{_CLICKUP_BASE}/list/{list_id}/task"
@@ -241,6 +261,14 @@ def _fetch_clickup_milestones(
             except httpx.HTTPError as exc:
                 raise RuntimeError(f"ClickUp network error: {exc}") from exc
 
+            if resp.status_code in (401, 403):
+                # Single explicit auth-failure shape — the per-project
+                # loop matches the "ClickUp auth failed" substring to
+                # dedupe a tenant-wide entry in result.errors.
+                raise RuntimeError(
+                    f"ClickUp auth failed (HTTP {resp.status_code}): "
+                    f"check CLICKUP_API_TOKEN"
+                )
             if resp.status_code >= 400:
                 raise RuntimeError(
                     f"ClickUp returned {resp.status_code} for list "
@@ -1262,6 +1290,11 @@ def build_planning_result(
     fetched = 0
     errored = 0
     total = 0
+    # Auth failures (missing/invalid CLICKUP_API_TOKEN) hit every project
+    # the same way, so collapsing to a single tenant-wide ``errors`` entry
+    # keeps ``--summary`` legible. Per-project blocks still carry the full
+    # ``fetch_error`` string for the renderer's "could not fetch" branch.
+    seen_auth_error = False
     for p in active_sorted:
         list_id = list_id_lookup.get(p.code)
         block = build_project_block(
@@ -1287,7 +1320,18 @@ def build_planning_result(
             "no_milestones_tagged",
         ):
             errored += 1
-            errors.append(f"{p.code}: {block.fetch_error}")
+            # Auth failures dedupe to one tenant-wide entry; everything
+            # else (network errors, 4xx/5xx other than 401/403) appends
+            # per-project as before.
+            if _is_auth_error(block.fetch_error):
+                if not seen_auth_error:
+                    errors.append(
+                        "ClickUp auth failed for all projects: "
+                        "check CLICKUP_API_TOKEN"
+                    )
+                    seen_auth_error = True
+            else:
+                errors.append(f"{p.code}: {block.fetch_error}")
         elif block.fetch_error is None or block.fetch_error == "no_milestones_tagged":
             fetched += 1
         blocks.append(block)
