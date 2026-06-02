@@ -373,6 +373,91 @@ def test_render_planning_doc_renders_open_commitments_table():
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  v0.15.1 Fix 4 — pipe-escape Open Commitments table cells
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_md_table_cell_escapes_pipes_and_collapses_newlines():
+    """Helper escapes the two characters that corrupt markdown table rows."""
+    assert prep_planning._md_table_cell("Spec | Implementation | Review") == (
+        "Spec \\| Implementation \\| Review"
+    )
+    assert prep_planning._md_table_cell("line1\nline2") == "line1 line2"
+    assert prep_planning._md_table_cell("line1\r\nline2") == "line1  line2"
+    assert prep_planning._md_table_cell(None) == ""
+    assert prep_planning._md_table_cell("  padded  ") == "padded"
+
+
+def test_commitments_table_escapes_pipes_in_milestone_deliverable():
+    """A milestone deliverable with literal `|` must not break the row.
+
+    Before Fix 4: f"| {what} |" → "| Spec | Implementation | Review |"
+    rendered as a 5-column row in a 4-column table, corrupting the layout.
+
+    After Fix 4: pipes escape to `\\|`, the row stays 4 columns wide.
+    """
+    state = make_state("ggl-5168", name="GGL 5168 Activation")
+    ms: Milestone = Milestone(
+        id="M1", task_type="milestone",
+        deliverable="Spec | Implementation | Review",
+        date="2026-06-03", owner="brandon", confidence="high",
+        depends_on=[], status="open", linked_to=[],
+    )
+    block = ProjectPlanningBlock(
+        project=state,
+        quick_resume_line=None,
+        milestones=(ms,),
+        client_asks=(),
+        sprint_open_asks=(),
+        urgent=(),
+        fetch_error=None,
+    )
+    out = "\n".join(prep_planning._render_commitments_table(block))
+    # Each row has 5 pipe characters (4 separators + leading + trailing).
+    # Literal `|` inside `what` would push that to 7 — assert it stays at 5.
+    row_lines = [
+        ln for ln in out.splitlines()
+        if ln.startswith("| ") and "Spec" in ln
+    ]
+    assert len(row_lines) == 1
+    # Count unescaped pipes (split would treat \| as a separator otherwise,
+    # so escape them first to count just the cell separators).
+    raw_pipes = row_lines[0].count("|") - row_lines[0].count("\\|")
+    assert raw_pipes == 5, (
+        f"row corrupted: got {raw_pipes} unescaped pipes (expected 5): {row_lines[0]!r}"
+    )
+    assert "Spec \\| Implementation \\| Review" in out
+
+
+def test_commitments_table_escapes_newlines_in_client_ask():
+    """Newlines in a ClickUp task name collapse to a single space row."""
+    state = make_state("ggl-5168", name="GGL 5168 Activation")
+    ask: Milestone = Milestone(
+        id="A1", task_type="client_ask",
+        deliverable="Round 3 feedback\nincluding pop-up assets",
+        date="2026-06-05", owner="rena", confidence="medium",
+        depends_on=[], status="open", linked_to=[],
+    )
+    block = ProjectPlanningBlock(
+        project=state,
+        quick_resume_line=None,
+        milestones=(),
+        client_asks=(ask,),
+        sprint_open_asks=(),
+        urgent=(),
+        fetch_error=None,
+    )
+    out = "\n".join(prep_planning._render_commitments_table(block))
+    # No raw newline inside the rendered row — collapsed to a space.
+    assert "Round 3 feedback including pop-up assets" in out
+    # Sanity: the row stays single-line.
+    matching_lines = [
+        ln for ln in out.splitlines() if "Round 3 feedback" in ln
+    ]
+    assert len(matching_lines) == 1
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Test 7: empty milestone list renders the "no milestones tracked yet" line
 # ──────────────────────────────────────────────────────────────────────
 

@@ -1101,6 +1101,24 @@ def _render_forward_calendar(block: ProjectPlanningBlock) -> list[str]:
     return out
 
 
+def _md_table_cell(text: str | None) -> str:
+    """Escape markdown-table-breaking characters in a cell value.
+
+    A literal `|` in a cell terminates the column (corrupting the row);
+    a literal newline collapses the row into multiple lines and breaks
+    the table outright. ClickUp task names and Fathom-derived asks both
+    contain pipes and newlines in the wild — the latter especially after
+    LLM cleanup. Carriage returns get the same treatment for Windows
+    payloads.
+
+    None becomes "" so callers don't have to pre-coerce.
+    """
+    if text is None:
+        return ""
+    s = str(text).replace("|", "\\|").replace("\n", " ").replace("\r", " ")
+    return s.strip()
+
+
 def _render_commitments_table(block: ProjectPlanningBlock) -> list[str]:
     """Two-way commitments table: us→them (milestones) + them→us (asks).
 
@@ -1110,6 +1128,9 @@ def _render_commitments_table(block: ProjectPlanningBlock) -> list[str]:
                                 To = "us", By = date.
         Sprint-file open ask  — Who = ask's "who" field, To/From inferred,
                                 flagged "(sprint file)" so reviewers promote.
+
+    All cell values flow through ``_md_table_cell`` so literal `|` or
+    newline in a ClickUp task name doesn't corrupt the rendered table row.
     """
     rows: list[tuple[str, str, str, str]] = []  # (Who, Owes what, To, By)
     for m in block.milestones:
@@ -1146,7 +1167,10 @@ def _render_commitments_table(block: ProjectPlanningBlock) -> list[str]:
         "|---|---|---|---|",
     ]
     for who, what, to, by in rows:
-        out.append(f"| {who} | {what} | {to} | {by} |")
+        out.append(
+            f"| {_md_table_cell(who)} | {_md_table_cell(what)} "
+            f"| {_md_table_cell(to)} | {_md_table_cell(by)} |"
+        )
     return out
 
 
