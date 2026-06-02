@@ -1003,13 +1003,17 @@ async def clickup_task_closed(request: Request):
     look up the cp_ask_hash + project code from clickup_task_proposals.
     No need to fetch the task description from ClickUp's API.
 
-    ClickUp's `taskStatusUpdated` event fires on ANY status change, so we
-    filter to transitions where `history_items[0].after.type == "closed"`
-    (the standard ClickUp grouping for "done" statuses across spaces).
+    ClickUp's `taskStatusUpdated` event fires on ANY status change.
+    The payload's ``history_items`` can carry MULTIPLE changes per
+    delivery (e.g. an assignee change + a status flip in the same
+    update). Pre-fix, we only inspected ``history_items[0]``; if the
+    assignee change happened to land first, the close transition in
+    ``[1]`` was silently ignored. Now we iterate and look for the
+    first ``field=='status'`` item with ``after.type=='closed'``.
 
     Returns:
       200 success: {matched_hash, code, commit_sha, ingested}
-      200 not-closed: ignored — task moved to a non-closed status (204)
+      204 not-closed: no item in history transitions to a closed status
       200 orphan: {ingested: false, reason: "no_proposal_row"}
       401: bad HMAC
       500: missing secret env var
@@ -1028,16 +1032,44 @@ async def clickup_task_closed(request: Request):
         return Response(status_code=204)
 
     # Filter for actual close events. taskStatusUpdated fires on any
-    # status change; we only want transitions INTO a closed status.
+    # status change AND can pack multiple changes (assignee, priority,
+    # status) into one event. Walk every item and look for a status
+    # transition INTO the `closed` family.
     history = payload.get("history_items") or []
     if not history:
-        log.info("clickup-task-closed: no history_items for task=%s; ignoring", task_id)
-        return Response(status_code=204)
-    after = (history[0] or {}).get("after") or {}
-    if not isinstance(after, dict) or after.get("type") != "closed":
         log.info(
-            "clickup-task-closed: task=%s status not 'closed' (type=%s); ignoring",
-            task_id, after.get("type") if isinstance(after, dict) else None,
+            "clickup-task-closed: no history_items for task=%s; ignoring",
+            task_id,
+        )
+        return Response(status_code=204)
+
+    close_item = None
+    for item in history:
+        if not isinstance(item, dict):
+            continue
+        # The `field` key tells us which attribute changed. We only
+        # care about status. Old payloads sometimes omit field entirely
+        # and only ever carry status changes — in that case we fall
+        # back to the after.type test alone.
+        field = item.get("field")
+        if field is not None and field != "status":
+            continue
+        after = item.get("after") or {}
+        if isinstance(after, dict) and after.get("type") == "closed":
+            close_item = item
+            break
+
+    if close_item is None:
+        # Diagnostic: which fields did we see, so we can tell a no-op
+        # (only assignee changed) from a schema drift (status item
+        # present but type label changed).
+        fields_seen = [
+            (i.get("field"), (i.get("after") or {}).get("type"))
+            for i in history if isinstance(i, dict)
+        ]
+        log.info(
+            "clickup-task-closed: task=%s no closed transition in history (%s); ignoring",
+            task_id, fields_seen,
         )
         return Response(status_code=204)
 
