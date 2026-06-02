@@ -925,3 +925,89 @@ def test_summary_counts_errors_for_failed_fetch(tmp_path):
     assert result.milestone_counts["errored"] == 1
     assert result.milestone_counts["fetched"] == 0
     assert any("ggl-5168" in err for err in result.errors)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  ClickUp pagination tests
+# ──────────────────────────────────────────────────────────────────────
+#
+# ``_fetch_clickup_milestones`` paginates over /list/{id}/task because
+# ClickUp caps each page at 100 tasks. The fetcher stops as soon as a
+# page returns fewer than 100 tasks.
+
+
+class _PaginatedFakeClient:
+    """FakeClient variant that routes by (url, tag, page) so a single
+    list-id can return distinct pages without colliding."""
+
+    def __init__(self, pages_by_tag: dict[str, list[list[dict]]]):
+        # pages_by_tag[tag][page_num] = list of task dicts for that page
+        self._pages_by_tag = pages_by_tag
+        self.calls: list[tuple[str, str, str]] = []  # (url, tag, page)
+
+    def get(self, url: str, *, headers=None, params=None):
+        tag = ""
+        page = "0"
+        for k, v in params or []:
+            if k == "tags[]":
+                tag = v
+            elif k == "page":
+                page = v
+        self.calls.append((url, tag, page))
+        pages = self._pages_by_tag.get(tag, [])
+        page_idx = int(page)
+        if page_idx < len(pages):
+            return FakeResp(200, {"tasks": pages[page_idx]})
+        return FakeResp(200, {"tasks": []})
+
+
+def test_fetch_milestones_single_page_no_extra_request():
+    """Fewer than 100 tasks on page 0 → fetch stops after one call."""
+    single_page = [{"id": f"T{i}", "name": f"M{i}", "tags": [{"name": "milestone"}]}
+                   for i in range(5)]
+    client = _PaginatedFakeClient({"milestone": [single_page]})
+
+    out = _fetch_clickup_milestones(
+        "L1", tag="milestone", token="tok", client=client
+    )
+
+    assert len(out) == 5
+    # Exactly one page fetched — no page=1 follow-up.
+    assert client.calls == [
+        ("https://api.clickup.com/api/v2/list/L1/task", "milestone", "0"),
+    ]
+
+
+def test_fetch_milestones_paginates_when_first_page_full():
+    """100 tasks on page 0 + 50 on page 1 → 150 total, both pages fetched."""
+    page0 = [{"id": f"T{i}", "name": f"M{i}", "tags": [{"name": "milestone"}]}
+             for i in range(100)]
+    page1 = [{"id": f"T{i + 100}", "name": f"M{i + 100}",
+              "tags": [{"name": "milestone"}]} for i in range(50)]
+    client = _PaginatedFakeClient({"milestone": [page0, page1]})
+
+    out = _fetch_clickup_milestones(
+        "L1", tag="milestone", token="tok", client=client
+    )
+
+    assert len(out) == 150
+    # Page 0 + page 1 fetched; page 2 NOT fetched (page1 was < 100).
+    page_args = [c[2] for c in client.calls]
+    assert page_args == ["0", "1"]
+
+
+def test_fetch_milestones_stops_at_exactly_100():
+    """Page that is exactly empty stops the loop."""
+    page0 = [{"id": f"T{i}", "name": f"M{i}", "tags": [{"name": "milestone"}]}
+             for i in range(100)]
+    # page1 empty
+    client = _PaginatedFakeClient({"milestone": [page0, []]})
+
+    out = _fetch_clickup_milestones(
+        "L1", tag="milestone", token="tok", client=client
+    )
+
+    assert len(out) == 100
+    # Page 0 fetched, page 1 fetched (returned 0 tasks), stop.
+    page_args = [c[2] for c in client.calls]
+    assert page_args == ["0", "1"]

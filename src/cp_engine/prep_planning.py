@@ -167,6 +167,10 @@ def _clickup_token() -> str | None:
     return os.environ.get("CLICKUP_API_TOKEN")
 
 
+_CLICKUP_PAGE_SIZE = 100  # ClickUp /list/{id}/task max page size
+_CLICKUP_MAX_PAGES = 100  # safety cap: 100 pages × 100/page = 10k tasks
+
+
 def _fetch_clickup_milestones(
     list_id: str,
     *,
@@ -175,6 +179,11 @@ def _fetch_clickup_milestones(
     client: httpx.Client | None = None,
 ) -> list[dict]:
     """Fetch tasks tagged ``tag`` from ClickUp list ``list_id``.
+
+    Paginates over ``GET /list/{id}/task`` (ClickUp caps each page at 100
+    tasks); the loop stops when a page returns fewer than 100 tasks. A
+    ``_CLICKUP_MAX_PAGES`` safety raises ``RuntimeError`` past 10k tasks
+    on a single list so we never spin forever on a misconfigured tag.
 
     Raises ``RuntimeError`` on any 4xx/5xx or network error so the caller
     can degrade per-project. The renderer wraps this in a try/except and
@@ -186,34 +195,51 @@ def _fetch_clickup_milestones(
         raise RuntimeError("CLICKUP_API_TOKEN not set")
 
     headers = {"Authorization": token}
-    params: list[tuple[str, str]] = [
-        ("tags[]", tag),
-        ("include_closed", "false"),
-        ("subtasks", "true"),
-    ]
     url = f"{_CLICKUP_BASE}/list/{list_id}/task"
 
     owns_client = client is None
     if owns_client:
         client = httpx.Client(timeout=_CLICKUP_TIMEOUT)
+
+    all_tasks: list[dict] = []
     try:
-        resp = client.get(url, headers=headers, params=params)
-    except httpx.HTTPError as exc:
-        raise RuntimeError(f"ClickUp network error: {exc}") from exc
+        for page in range(_CLICKUP_MAX_PAGES + 1):
+            if page > _CLICKUP_MAX_PAGES:
+                raise RuntimeError(
+                    f"ClickUp pagination exceeded {_CLICKUP_MAX_PAGES} "
+                    f"pages for list {list_id}"
+                )
+            params: list[tuple[str, str]] = [
+                ("tags[]", tag),
+                ("include_closed", "false"),
+                ("subtasks", "true"),
+                ("page", str(page)),
+            ]
+            try:
+                resp = client.get(url, headers=headers, params=params)
+            except httpx.HTTPError as exc:
+                raise RuntimeError(f"ClickUp network error: {exc}") from exc
+
+            if resp.status_code >= 400:
+                raise RuntimeError(
+                    f"ClickUp returned {resp.status_code} for list "
+                    f"{list_id}: {resp.text[:200]}"
+                )
+            try:
+                data = resp.json()
+            except ValueError as exc:
+                raise RuntimeError(
+                    f"ClickUp returned non-JSON: {exc}"
+                ) from exc
+            page_tasks = data.get("tasks") or []
+            all_tasks.extend(page_tasks)
+            if len(page_tasks) < _CLICKUP_PAGE_SIZE:
+                break
     finally:
         if owns_client:
             client.close()
 
-    if resp.status_code >= 400:
-        raise RuntimeError(
-            f"ClickUp returned {resp.status_code} for list {list_id}: "
-            f"{resp.text[:200]}"
-        )
-    try:
-        data = resp.json()
-    except ValueError as exc:
-        raise RuntimeError(f"ClickUp returned non-JSON: {exc}") from exc
-    return data.get("tasks") or []
+    return all_tasks
 
 
 def _from_clickup_timestamp(ts: str | int | None) -> str:
