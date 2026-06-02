@@ -781,11 +781,35 @@ def _write_if_changed(
 
         # The "actual" merged content we'd write — splices in every region
         # using the freshly-rendered body.
-        merged = existing
-        for region in splice_regions:
-            merged = splice_managed_region(
-                merged, region, _extract_region(new_full_body, region)
+        #
+        # ``splice_managed_region`` raises ``MarkerDuplicated`` /
+        # ``MarkerInverted`` when the existing body has hand-edits that
+        # broke a region's marker pair (e.g. a leftover merge-conflict
+        # marker or someone hand-pasted the same region twice). Without
+        # a guard the entire sync_tenant run aborts before sprint files,
+        # account CPs, and the weekly strip get written. Mirror the
+        # per-strip-region pattern below by catching and falling back to
+        # a full rewrite — the same content the splice would have
+        # produced, just clobbering the broken region instead of trying
+        # to surgically replace it.
+        try:
+            merged = existing
+            for region in splice_regions:
+                merged = splice_managed_region(
+                    merged, region, _extract_region(new_full_body, region)
+                )
+        except Exception as exc:  # noqa: BLE001 — sync continuation > region fidelity
+            logger.warning(
+                "%s splice failed (%s); falling back to full rewrite. "
+                "Hand-edited content outside engine-managed regions may be "
+                "lost — back up before re-running sync if that's a concern.",
+                path, exc,
             )
+            if existing == new_full_body:
+                return False
+            path.write_text(new_full_body)
+            return True
+
         if merged == existing:
             return False
 
@@ -794,15 +818,23 @@ def _write_if_changed(
         # leaving cosmetic regions matching `existing`. If that equals
         # existing, the only diff is in cosmetic regions → skip write.
         if cosmetic_regions:
-            comparison = existing
-            for region in splice_regions:
-                if region in cosmetic_regions:
-                    continue
-                comparison = splice_managed_region(
-                    comparison, region, _extract_region(new_full_body, region)
+            try:
+                comparison = existing
+                for region in splice_regions:
+                    if region in cosmetic_regions:
+                        continue
+                    comparison = splice_managed_region(
+                        comparison, region, _extract_region(new_full_body, region)
+                    )
+                if comparison == existing:
+                    return False
+            except Exception as exc:  # noqa: BLE001
+                # Cosmetic-only-diff check failed for the same reason
+                # (broken markers); fall through to writing ``merged``.
+                logger.debug(
+                    "%s cosmetic-region splice failed (%s); writing merged body.",
+                    path, exc,
                 )
-            if comparison == existing:
-                return False
 
         path.write_text(merged)
         return True

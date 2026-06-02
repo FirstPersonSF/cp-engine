@@ -735,8 +735,15 @@ def build_project_block(
     clickup_client: httpx.Client | None,
     clickup_token: str | None,
     list_id_override: str | None = None,
+    clickup_task_ids: dict[str, str] | None = None,
 ) -> ProjectPlanningBlock:
-    """Assemble all per-project rendering data."""
+    """Assemble all per-project rendering data.
+
+    ``clickup_task_ids`` maps cp_ask_hash → clickup_task_id for asks that
+    have already been promoted to ClickUp. During the bridging period a
+    sprint-file ask may also exist as a ClickUp client-ask; dedupe so the
+    Open Commitments table doesn't render the same ask twice.
+    """
     # Quick Resume line from the project's cp.md
     scope = account_scope_for(project)
     slug = dir_slug(project.code, project.name)
@@ -755,6 +762,16 @@ def build_project_block(
         config.root / "sprints" / week_iso / f"{project.code}.md"
     )
     sprint_asks = _parse_sprint_open_asks(sprint_file_path)
+    # Bridging-period dedupe: filter out asks that already have a ClickUp
+    # task (they'll surface via ``client_asks`` from the ClickUp fetch
+    # below). Without this, the Open Commitments table renders the same
+    # ask twice — once as a ClickUp client-ask, once with a ``(sprint
+    # file)`` suffix. ``clickup_task_ids`` is None in older callers
+    # (degrades to no-op).
+    if clickup_task_ids:
+        sprint_asks = tuple(
+            a for a in sprint_asks if a["hash"] not in clickup_task_ids
+        )
     # Read the sprint body once so urgent-detection's Rule 2 + Rule 4 can
     # parse Decisions due / Dependencies & risks without re-reading the file.
     sprint_file_body: str | None = None
@@ -1283,6 +1300,7 @@ def build_planning_result(
     clickup_token: str | None = None,
     clickup_client: httpx.Client | None = None,
     list_id_lookup: dict[str, str] | None = None,
+    clickup_task_ids: dict[str, str] | None = None,
 ) -> PlanningResult:
     """Build a full PlanningResult. Pure-ish: passes all dependencies in.
 
@@ -1298,6 +1316,9 @@ def build_planning_result(
         clickup_client: shared httpx.Client. None = a new client per fetch.
         list_id_lookup: optional pre-fetched code → list_id map. Tests use
             this to avoid mocking ``_resolve_proposal_project``.
+        clickup_task_ids: cp_ask_hash → clickup_task_id map for bridging-
+            period dedupe of sprint-file open asks against ClickUp
+            client-asks. None or empty = no dedupe.
     """
     list_id_lookup = list_id_lookup or {}
 
@@ -1337,6 +1358,7 @@ def build_planning_result(
             clickup_client=clickup_client,
             clickup_token=clickup_token,
             list_id_override=list_id,
+            clickup_task_ids=clickup_task_ids,
         )
         total += len(block.milestones) + len(block.client_asks)
         # ``no_clickup_list`` and ``no_milestones_tagged`` are legitimate
@@ -1420,6 +1442,7 @@ def render_planning_doc(
     supabase_client=None,
     clickup_token: str | None = None,
     list_id_lookup: dict[str, str] | None = None,
+    clickup_task_ids: dict[str, str] | None = None,
 ) -> str:
     """Top-level entry: assemble + render the planning doc as markdown."""
     # Share one httpx.Client across all per-project fetches.
@@ -1437,6 +1460,7 @@ def render_planning_doc(
             clickup_token=clickup_token,
             clickup_client=client,
             list_id_lookup=list_id_lookup,
+            clickup_task_ids=clickup_task_ids,
         )
     finally:
         if client is not None:
@@ -1454,6 +1478,7 @@ def render_planning_summary(
     supabase_client=None,
     clickup_token: str | None = None,
     list_id_lookup: dict[str, str] | None = None,
+    clickup_task_ids: dict[str, str] | None = None,
 ) -> str:
     """Return the summary JSON as a string (matches ``--summary`` mode)."""
     client: httpx.Client | None = None
@@ -1470,6 +1495,7 @@ def render_planning_summary(
             clickup_token=clickup_token,
             clickup_client=client,
             list_id_lookup=list_id_lookup,
+            clickup_task_ids=clickup_task_ids,
         )
     finally:
         if client is not None:

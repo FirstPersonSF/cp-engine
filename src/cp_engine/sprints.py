@@ -56,7 +56,7 @@ def parse_sprint_file(path: Path) -> SprintFile:
     project_code = fm["Project"].split(" — ", 1)[0].strip()
     week_iso = fm["Sprint"]
     prior = fm.get("PriorSprint")
-    start, end = _parse_heading_dates(body)
+    start, end = _parse_heading_dates(body, week_iso=week_iso)
     client_outbound, client_open_asks, client_inbound = _parse_client_section(body)
     allocation, deliverables, definition_of_done = _parse_this_sprint(body)
     return SprintFile(
@@ -94,7 +94,37 @@ def _parse_frontmatter(body: str) -> dict[str, str]:
     return out
 
 
-def _parse_heading_dates(body: str) -> tuple[str, str]:
+_WEEK_ISO_RE = re.compile(r"^(?P<year>\d{4})-W(?P<week>\d{2})$")
+
+
+def _parse_heading_dates(
+    body: str, *, week_iso: str | None = None
+) -> tuple[str, str]:
+    """Return ``(start_iso, end_iso)`` for the sprint week.
+
+    Preferred path: derive from ``week_iso`` (frontmatter ``Sprint:``).
+    Using ``date.fromisocalendar`` keeps cross-year weeks (W53 spanning
+    Dec→Jan) honest — the H1 carries one year for both dates and would
+    misdate the end as the same year as the start. Falls back to the
+    H1 regex for malformed ``week_iso`` so callers that don't supply
+    one still work.
+    """
+    if week_iso:
+        m_iso = _WEEK_ISO_RE.match(week_iso)
+        if m_iso:
+            year = int(m_iso.group("year"))
+            week_num = int(m_iso.group("week"))
+            try:
+                start_d = date.fromisocalendar(year, week_num, 1)
+                end_d = start_d + timedelta(days=6)
+                return start_d.isoformat(), end_d.isoformat()
+            except ValueError:
+                # Out-of-range ISO week (e.g. W54). Fall through to H1.
+                pass
+
+    # Fallback: parse the H1's bracketed date range. Buggy for cross-year
+    # weeks (single year applied to both dates) but still useful for
+    # malformed week_iso input.
     m = _HEADING_RE.search(body)
     if not m:
         raise ValueError("sprint file missing H1 with week date range")
@@ -212,6 +242,13 @@ def _parse_client_section(
     section = section_body(body, "Client communication")
     out: list[Outbound] = []
     for first, cont in bullets(subsection(section, "Outbound")):
+        # Skip unfilled scaffold placeholders (e.g.
+        # ``- _<message — `[status · date]` prefix>_``). Mirrors
+        # ``_parse_horizon``. Without this, any future consumer
+        # iterating ``sf.client_outbound`` would silently include the
+        # template's "ghost" bullet.
+        if _is_template_placeholder(first):
+            continue
         parsed = parse_bracketed_bullet(first)
         if parsed:
             parts, text = parsed

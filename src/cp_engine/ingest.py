@@ -722,8 +722,32 @@ def _communication_section(body: str) -> str:
     return "Client communication"
 
 
-def _write_inbound(code: str, item: dict, sprint_path: Path, **_) -> bool:
-    text = (item.get("text") or "").strip()
+def _sanitize_inline_text(text: str) -> str:
+    """Collapse whitespace runs so multi-line LLM output stays on one bullet line.
+
+    Used by handlers that write text to markdown bullets ending in a same-line
+    ``<!-- cp:hash=... -->`` trailer. Multi-line text would break close-ask /
+    snooze-ask / resolve-risk regex matching, which anchors on the trailer
+    being on the same line as the bullet's bracket prefix.
+    """
+    return " ".join((text or "").split())
+
+
+def _resolve_today_iso(today: date | None) -> str:
+    """Return ``today.isoformat()`` if provided, else today's real date.
+
+    Lets handlers that fall back to ``_today_iso()`` honor the ``today``
+    keyword threaded through ``execute_plan`` for backfill/test scenarios.
+    Without this, ``today`` was silently ignored for date-defaulting and
+    every backfilled ingest got stamped with the real wall-clock date.
+    """
+    return today.isoformat() if today else _today_iso()
+
+
+def _write_inbound(
+    code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
+) -> bool:
+    text = _sanitize_inline_text(item.get("text") or "")
     date_s = (item.get("date") or "").strip()
     who = (item.get("who") or "").strip()
     if not text:
@@ -742,11 +766,15 @@ def _write_inbound(code: str, item: dict, sprint_path: Path, **_) -> bool:
     return True
 
 
-def _write_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
-    text = (item.get("text") or "").strip()
+def _write_ask(
+    code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
+) -> bool:
+    text = _sanitize_inline_text(item.get("text") or "")
     who = (item.get("who") or "").strip()
     by = (item.get("by") or "").strip()
-    asked_date = (item.get("date") or item.get("asked_date") or _today_iso()).strip()
+    asked_date = (
+        item.get("date") or item.get("asked_date") or _resolve_today_iso(today)
+    ).strip()
     status = (item.get("status") or "open").strip()
     if not text:
         raise IngestPlanError("ask item missing 'text'")
@@ -816,9 +844,11 @@ def _write_close_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
     return True
 
 
-def _write_decision(code: str, item: dict, sprint_path: Path, **_) -> bool:
-    text = (item.get("text") or "").strip()
-    date_s = (item.get("date") or _today_iso()).strip()
+def _write_decision(
+    code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
+) -> bool:
+    text = _sanitize_inline_text(item.get("text") or "")
+    date_s = (item.get("date") or _resolve_today_iso(today)).strip()
     cross = bool(item.get("cross_cutting") or item.get("cross-cutting") or False)
     if not text:
         raise IngestPlanError("decision item missing 'text'")
@@ -835,11 +865,15 @@ def _write_decision(code: str, item: dict, sprint_path: Path, **_) -> bool:
     return True
 
 
-def _write_risk(code: str, item: dict, sprint_path: Path, **_) -> bool:
-    text = (item.get("text") or "").strip()
+def _write_risk(
+    code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
+) -> bool:
+    text = _sanitize_inline_text(item.get("text") or "")
     severity = (item.get("severity") or "watching").strip()
     category = (item.get("category") or "").strip()
-    raised = (item.get("date") or item.get("raised_date") or _today_iso()).strip()
+    raised = (
+        item.get("date") or item.get("raised_date") or _resolve_today_iso(today)
+    ).strip()
     if not text:
         raise IngestPlanError("risk item missing 'text'")
     h = _content_hash(code, "record-risk", text)
@@ -959,9 +993,9 @@ def _write_snooze(
 
 
 def _write_stakeholder(code: str, item: dict, sprint_path: Path, **_) -> bool:
-    name = (item.get("name") or "").strip()
-    role = (item.get("role") or "").strip()
-    context = (item.get("context") or "").strip()
+    name = _sanitize_inline_text(item.get("name") or "")
+    role = _sanitize_inline_text(item.get("role") or "")
+    context = _sanitize_inline_text(item.get("context") or "")
     if not name:
         raise IngestPlanError("stakeholder item missing 'name'")
     h = _content_hash(code, "record-stakeholder", name)  # dedupe by name
@@ -988,7 +1022,7 @@ def _write_slack_digest(code: str, item: dict, sprint_path: Path, **_) -> bool:
     weeks doesn't collide. Re-running for the same `(code, week)` is a
     no-op — the bullet is already present.
     """
-    text = (item.get("text") or "").strip()
+    text = _sanitize_inline_text(item.get("text") or "")
     week = (item.get("week") or "").strip()
     if not text:
         raise IngestPlanError("slack-digest item missing 'text'")
