@@ -13,11 +13,10 @@ OR initiative) carries a ``clickup_list_id`` in MC-2; this module fetches
 ``tags[]=milestone`` and ``tags[]=client-ask`` tasks from each list via the
 ClickUp REST API.
 
-Boundary with Task 7 / Task 8:
-    ``_detect_urgent`` is stubbed (returns ``[]``) — Task 7 fills the
-    rules in. The renderer always calls it and skips the urgent block when
-    the list is empty, so dropping in real detection later doesn't touch
-    rendering code.
+Boundary with Task 8:
+    ``_detect_urgent`` implements four urgency rules (slip_risk,
+    decision_due, past_due_ask, escalated_risk). See its docstring for
+    rule semantics.
 
     ``_render_cross_cutting`` returns only the tenant strip today. Task 8
     layers capacity-binding analysis + ``weekly-cp.md`` cross-cutting
@@ -102,7 +101,7 @@ class ProjectPlanningBlock:
     milestones: tuple[Milestone, ...]
     client_asks: tuple[Milestone, ...]
     sprint_open_asks: tuple[SprintAsk, ...]
-    urgent: tuple[dict, ...]  # always () until Task 7
+    urgent: tuple[dict, ...]  # flags from _detect_urgent (may be empty)
     fetch_error: str | None  # non-None when ClickUp fetch failed
 
 
@@ -385,27 +384,260 @@ def _parse_sprint_open_asks(sprint_file_path: Path) -> tuple[SprintAsk, ...]:
     return tuple(out)
 
 
+_URGENT_HORIZON_KEYWORDS = ("this sprint", "next sprint", "by workshop")
+_URGENT_HORIZON_DAYS = 14
+
+
+def _check_dep_stale(
+    dep: str,
+    sprint_asks: tuple[SprintAsk, ...],
+    today: date,
+) -> int | None:
+    """Return how many days a `depends_on` ID is stale via sprint asks.
+
+    Heuristic: if any sprint_ask's text mentions ``dep`` (case-insensitive
+    substring) AND has a ``by`` date in the past, return the age in days.
+    Otherwise return None. Simple substring matching is intentional for v1
+    — depends_on IDs are ClickUp task IDs, but authors often spell them as
+    short tags in ask text. False positives are surfaced to humans as
+    flags, not auto-executed actions, so the noise is acceptable.
+    """
+    if not dep:
+        return None
+    needle = dep.lower()
+    for ask in sprint_asks:
+        text = (ask.get("text") or "").lower()
+        if needle not in text:
+            continue
+        by = ask.get("by") or ""
+        if not by:
+            continue
+        try:
+            by_date = date.fromisoformat(by)
+        except ValueError:
+            continue
+        if by_date < today:
+            return (today - by_date).days
+    return None
+
+
+# Lenient section-header regex: matches `## <heading>` even when the
+# heading carries a trailing modifier (e.g. `## Horizon — 4–8 weeks out`).
+# Note: ``sprints._section_body`` requires the heading line to be exactly
+# `## <heading>\s*$`, which doesn't match the real sprint scaffold whose
+# Horizon heading carries the `— 4–8 weeks out` suffix. We use this looser
+# matcher just for urgent detection so Rule 2 / Rule 4 work on real files.
+# Non-greedy on the suffix and the body so DOTALL doesn't eat across
+# sections — see test debugging notes in this PR for the gotcha.
+_LOOSE_SECTION_RE = "^## {heading}(?:\\s+—\\s+.*?)?\\s*$(.*?)(?=^## |\\Z)"
+
+
+def _loose_section_body(body: str, heading: str) -> str:
+    pattern = re.compile(
+        _LOOSE_SECTION_RE.format(heading=re.escape(heading)),
+        re.MULTILINE | re.DOTALL,
+    )
+    m = pattern.search(body)
+    return m.group(1) if m else ""
+
+
+def _parse_decisions_due_from_body(body: str) -> tuple[dict, ...]:
+    """Pull `## Horizon → ### Decisions due` items from a raw sprint file body.
+
+    Uses ``sprints._bullets`` + ``_parse_bracketed_bullet`` (the parsing
+    convention that backs the rest of the sprint-file shape) but applies a
+    lenient header matcher so the real `## Horizon — 4–8 weeks out` heading
+    is found. Items keep their ``target_date`` (the first bracket-part) so
+    Rule 2 can decide whether the horizon qualifies as "this/next sprint".
+    """
+    from cp_engine.sprints import _bullets, _parse_bracketed_bullet, _subsection
+
+    horizon_section = _loose_section_body(body, "Horizon")
+    decisions_sub = _subsection(horizon_section, "Decisions due")
+    out: list[dict] = []
+    for first, _cont in _bullets(decisions_sub):
+        parsed = _parse_bracketed_bullet(first)
+        if parsed:
+            parts, text = parsed
+            target = parts[0] if parts else ""
+            out.append({"text": text, "target_date": target})
+        else:
+            # Plain bullet without bracket meta: treat as urgent (no date).
+            text = first.lstrip("- ").strip()
+            if text:
+                out.append({"text": text, "target_date": ""})
+    return tuple(out)
+
+
+def _parse_risks_from_body(body: str) -> tuple[dict, ...]:
+    """Pull `## Dependencies & risks` items from a raw sprint file body.
+
+    Reuses the bracket-bullet parsing convention from ``sprints`` and the
+    existing `## Dependencies & risks` heading shape (no trailing modifier),
+    so ``sprints._section_body`` would also work — but we keep the lenient
+    matcher here for consistency in case the heading shape drifts later.
+    """
+    from cp_engine.sprints import _bullets, _parse_bracketed_bullet
+
+    risks_section = _loose_section_body(body, "Dependencies & risks")
+    out: list[dict] = []
+    for first, _cont in _bullets(risks_section):
+        parsed = _parse_bracketed_bullet(first)
+        if not parsed:
+            continue
+        parts, text = parsed
+        severity = parts[0] if parts else "watching"
+        out.append({"severity": severity, "text": text})
+    return tuple(out)
+
+
+def _is_decision_horizon_urgent(target_date: str, today: date) -> bool:
+    """True when a Decisions-due target falls in the next two sprints.
+
+    Recognises three shapes seen in real sprint files:
+        - the literal strings "this sprint" / "next sprint"
+        - an ISO date within ``_URGENT_HORIZON_DAYS``
+        - any other free-text marker (e.g. "by workshop", "by 2026-06-11")
+          where embedded ISO dates parse within the window
+    A missing/blank target_date is treated as urgent (no date = assume soon).
+    """
+    if not target_date:
+        return True
+    lowered = target_date.lower()
+    if any(k in lowered for k in _URGENT_HORIZON_KEYWORDS):
+        return True
+    # Try the whole thing as an ISO date.
+    try:
+        target = date.fromisoformat(target_date)
+        return 0 <= (target - today).days <= _URGENT_HORIZON_DAYS
+    except ValueError:
+        pass
+    # Last shot: hunt an ISO-ish substring (e.g. "by 2026-06-11").
+    m = re.search(r"(\d{4}-\d{2}-\d{2})", target_date)
+    if m:
+        try:
+            target = date.fromisoformat(m.group(1))
+            return 0 <= (target - today).days <= _URGENT_HORIZON_DAYS
+        except ValueError:
+            return False
+    return False
+
+
 def _detect_urgent(
     project: ProjectState,
     milestones: tuple[Milestone, ...],
     sprint_asks: tuple[SprintAsk, ...],
+    *,
+    today: date | None = None,
+    sprint_file_body: str | None = None,
 ) -> list[dict]:
-    """STUB for Task 7. Returns ``[]`` until urgent-flag rules are implemented.
+    """Surface this-week-attention items for the project's planning block.
 
-    The renderer calls this and only emits an urgent block when the list is
-    non-empty, so dropping in Task 7's real detection here doesn't touch
-    rendering code.
+    Returns a flat list of flag dicts shaped::
 
-    Task 7 will surface signals like:
-      - slip risk: milestone due in <= N days with low confidence
-      - decision due: depends_on links to an unresolved upstream
-      - past-due ask: sprint_asks with ``by`` < today
-      - escalated risk: pulled from the sprint file's risk section
+        {"type": <rule>, "text": <one-line>, "severity": "warn" | "alert"}
 
-    Each returned dict carries at minimum:
-        {"type": str, "text": str, "severity": "warn"|"alert"}
+    Four rules in order (deterministic for rendering + assertions):
+
+      1. **slip_risk** — milestone due within ``_URGENT_HORIZON_DAYS`` whose
+         status is still open AND has at least one risk signal (low
+         confidence or a stale-by-sprint-ask ``depends_on``).
+      2. **decision_due** — entry under ``## Horizon → ### Decisions due``
+         whose target lands this/next sprint (see
+         ``_is_decision_horizon_urgent``).
+      3. **past_due_ask** — sprint_ask with ``by`` strictly before today.
+      4. **escalated_risk** — entry under ``## Dependencies & risks`` whose
+         bracket-meta begins with ``escalated``.
+
+    Sprint-file-sourced rules (2 + 4) take the raw markdown body as a
+    keyword arg so tests don't need a full scaffold and the caller stays
+    in charge of file IO. None / missing body → just no sprint-derived
+    flags from this project.
     """
-    return []
+    if today is None:
+        today = date.today()
+    flags: list[dict] = []
+
+    # Rule 1 — slip_risk
+    for m in milestones:
+        if (m.get("status") or "").lower() in ("shipped", "slipped", "closed", "done"):
+            continue
+        due_str = m.get("date") or ""
+        if not due_str:
+            continue
+        try:
+            due_date = date.fromisoformat(due_str)
+        except ValueError:
+            continue
+        days_to_due = (due_date - today).days
+        if not (0 <= days_to_due <= _URGENT_HORIZON_DAYS):
+            continue
+
+        reasons: list[str] = []
+        if (m.get("confidence") or "").lower() == "low":
+            reasons.append("low confidence")
+        for dep in m.get("depends_on") or []:
+            stale_days = _check_dep_stale(dep, sprint_asks, today)
+            if stale_days is not None:
+                reasons.append(f"{dep} stale {stale_days}d")
+
+        if reasons:
+            deliverable = m.get("deliverable") or "(untitled)"
+            flags.append(
+                {
+                    "type": "slip_risk",
+                    "text": f"{deliverable} (due {due_str}): "
+                    + ", ".join(reasons),
+                    "severity": "warn",
+                }
+            )
+
+    # Rule 2 — decision_due
+    if sprint_file_body:
+        for d in _parse_decisions_due_from_body(sprint_file_body):
+            if _is_decision_horizon_urgent(d["target_date"], today):
+                flags.append(
+                    {
+                        "type": "decision_due",
+                        "text": d["text"],
+                        "severity": "alert",
+                    }
+                )
+
+    # Rule 3 — past_due_ask
+    for ask in sprint_asks:
+        by = ask.get("by") or ""
+        if not by:
+            continue
+        try:
+            by_date = date.fromisoformat(by)
+        except ValueError:
+            continue
+        if by_date >= today:
+            continue
+        age_days = (today - by_date).days
+        text = ask.get("text") or "(no text)"
+        flags.append(
+            {
+                "type": "past_due_ask",
+                "text": f"{text} ({age_days}d past due)",
+                "severity": "warn" if age_days < _URGENT_HORIZON_DAYS else "alert",
+            }
+        )
+
+    # Rule 4 — escalated_risk
+    if sprint_file_body:
+        for r in _parse_risks_from_body(sprint_file_body):
+            if (r.get("severity") or "").lower() == "escalated":
+                flags.append(
+                    {
+                        "type": "escalated_risk",
+                        "text": r.get("text") or "(no text)",
+                        "severity": "alert",
+                    }
+                )
+
+    return flags
 
 
 def build_project_block(
@@ -438,6 +670,14 @@ def build_project_block(
         config.root / "sprints" / week_iso / f"{project.code}.md"
     )
     sprint_asks = _parse_sprint_open_asks(sprint_file_path)
+    # Read the sprint body once so urgent-detection's Rule 2 + Rule 4 can
+    # parse Decisions due / Dependencies & risks without re-reading the file.
+    sprint_file_body: str | None = None
+    if sprint_file_path.is_file():
+        try:
+            sprint_file_body = sprint_file_path.read_text(encoding="utf-8")
+        except OSError as exc:  # pragma: no cover — defensive
+            log.warning("sprint file read failed for %s: %s", project.code, exc)
 
     # ClickUp fetch — milestones + client-asks.
     list_id = list_id_override or _resolve_clickup_list_for_project(
@@ -473,7 +713,13 @@ def build_project_block(
         sorted(milestones, key=lambda m: (m.get("date") or "9999-99-99"))
     )
 
-    urgent_list = _detect_urgent(project, milestones, sprint_asks)
+    urgent_list = _detect_urgent(
+        project,
+        milestones,
+        sprint_asks,
+        today=today,
+        sprint_file_body=sprint_file_body,
+    )
 
     return ProjectPlanningBlock(
         project=project,
@@ -811,7 +1057,7 @@ def build_planning_result(
 
     blocks_by_account = _group_by_account(tuple(blocks))
 
-    # Urgent counts are zero today (Task 7 stub returns []).
+    # Urgent counts: tallied per rule type from _detect_urgent results.
     urgent_counts = {
         "slip_risk": 0,
         "decision_due": 0,

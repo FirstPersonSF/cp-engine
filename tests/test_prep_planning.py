@@ -473,22 +473,292 @@ def test_summary_mode_emits_json(tmp_path):
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Test 10: urgent stub returns []  (Task 7 boundary)
+#  Test 10: cruising project (no urgent signals) returns empty list
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_urgent_stub_returns_empty_list():
-    """``_detect_urgent`` is a stub for Task 7. Until that lands, it MUST
-    return [] regardless of input so the renderer never tries to surface
-    half-implemented urgency signals."""
-    state = make_state("ggl-5168")
-    sample_ms: Milestone = Milestone(
-        id="x", task_type="milestone", deliverable="x", date="2026-06-08",
-        owner="drew", confidence="low", depends_on=["dep"], status="open",
+# Fixed "today" for every urgent-detection test — pins the 14d slip window.
+_TODAY = date(2026, 6, 2)
+
+
+def _ms(
+    *,
+    deliverable: str = "Deliverable",
+    date_str: str = "",
+    confidence: str = "medium",
+    depends_on: list[str] | None = None,
+    status: str = "open",
+) -> Milestone:
+    """Compact Milestone factory for urgent tests."""
+    return Milestone(
+        id="x",
+        task_type="milestone",
+        deliverable=deliverable,
+        date=date_str,
+        owner="drew",
+        confidence=confidence,
+        depends_on=depends_on or [],
+        status=status,
         linked_to=[],
     )
-    assert _detect_urgent(state, (sample_ms,), ()) == []
-    assert _detect_urgent(state, (), ()) == []
+
+
+def _ask(*, text: str, by: str, who: str = "drew") -> dict:
+    """Compact SprintAsk factory (returned as dict for TypedDict use)."""
+    return {
+        "text": text,
+        "who": who,
+        "asked": "2026-05-01",
+        "by": by,
+        "hash": "deadbeef",
+    }
+
+
+def test_cruising_project_returns_empty_list():
+    """No milestones, no asks, no sprint file → no urgent flags."""
+    state = make_state("ggl-5168")
+    assert _detect_urgent(state, (), (), today=_TODAY) == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Rule 1 — slip_risk
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_slip_risk_low_confidence_milestone_in_next_14d_flags():
+    """A low-confidence milestone due in the 14-day window flags as slip_risk."""
+    state = make_state("ggl-5168")
+    m = _ms(deliverable="Pop-up R3", date_str="2026-06-08", confidence="low")
+    flags = _detect_urgent(state, (m,), (), today=_TODAY)
+    assert len(flags) == 1
+    assert flags[0]["type"] == "slip_risk"
+    assert "Pop-up R3" in flags[0]["text"]
+    assert "low confidence" in flags[0]["text"]
+    assert flags[0]["severity"] == "warn"
+
+
+def test_slip_risk_stale_depends_on_flags():
+    """A milestone whose depends_on matches a past-due sprint ask flags."""
+    state = make_state("ggl-5168")
+    m = _ms(
+        deliverable="Workshop prep",
+        date_str="2026-06-10",
+        confidence="medium",
+        depends_on=["rena-feedback"],
+    )
+    asks = (
+        _ask(text="Awaiting rena-feedback on R3 mocks", by="2026-05-26"),
+    )
+    flags = _detect_urgent(state, (m,), asks, today=_TODAY)
+    # One slip_risk (and Rule 3 also flags the ask as past_due).
+    slip = [f for f in flags if f["type"] == "slip_risk"]
+    assert len(slip) == 1
+    assert "rena-feedback stale 7d" in slip[0]["text"]
+
+
+def test_slip_risk_outside_14d_window_no_flag():
+    """A low-confidence milestone due 30 days out does NOT flag."""
+    state = make_state("ggl-5168")
+    m = _ms(deliverable="Future thing", date_str="2026-07-02", confidence="low")
+    flags = _detect_urgent(state, (m,), (), today=_TODAY)
+    assert flags == []
+
+
+def test_slip_risk_already_shipped_no_flag():
+    """A shipped milestone in the window doesn't flag even with low confidence."""
+    state = make_state("ggl-5168")
+    m = _ms(
+        deliverable="Already done",
+        date_str="2026-06-08",
+        confidence="low",
+        status="shipped",
+    )
+    flags = _detect_urgent(state, (m,), (), today=_TODAY)
+    assert flags == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Rule 2 — decision_due
+# ──────────────────────────────────────────────────────────────────────
+
+
+_SPRINT_BODY_DECISIONS_TEMPLATE = """## Horizon — 4–8 weeks out
+
+### Milestones
+
+### Decisions due
+{decisions}
+
+### Opportunities
+"""
+
+
+def _body_with_decisions(*decisions: str) -> str:
+    """Build a minimal sprint body whose Decisions due section holds bullets."""
+    return _SPRINT_BODY_DECISIONS_TEMPLATE.format(decisions="\n".join(decisions))
+
+
+def test_decision_due_this_sprint_flags():
+    """A decision marked `[this sprint]` surfaces a decision_due flag."""
+    state = make_state("ggl-5168")
+    body = _body_with_decisions(
+        "- [this sprint] Pick a deck template for the workshop"
+    )
+    flags = _detect_urgent(state, (), (), today=_TODAY, sprint_file_body=body)
+    assert len(flags) == 1
+    assert flags[0]["type"] == "decision_due"
+    assert "deck template" in flags[0]["text"]
+    assert flags[0]["severity"] == "alert"
+
+
+def test_decision_due_next_sprint_flags():
+    """A decision marked `[next sprint]` also surfaces."""
+    state = make_state("ggl-5168")
+    body = _body_with_decisions(
+        "- [next sprint] Reconcile Engage/Execute/Extend frame"
+    )
+    flags = _detect_urgent(state, (), (), today=_TODAY, sprint_file_body=body)
+    assert len(flags) == 1
+    assert flags[0]["type"] == "decision_due"
+
+
+def test_decision_due_later_horizon_no_flag():
+    """A decision dated 60 days out does NOT flag."""
+    state = make_state("ggl-5168")
+    body = _body_with_decisions(
+        "- [2026-08-15] Q3 portfolio direction"
+    )
+    flags = _detect_urgent(state, (), (), today=_TODAY, sprint_file_body=body)
+    assert flags == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Rule 3 — past_due_ask
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_past_due_ask_flags_with_age():
+    """A sprint ask with `by` < today flags with the age in days."""
+    state = make_state("ggl-5168")
+    asks = (_ask(text="Share R3 mocks", by="2026-05-26"),)  # 7d past due
+    flags = _detect_urgent(state, (), asks, today=_TODAY)
+    assert len(flags) == 1
+    assert flags[0]["type"] == "past_due_ask"
+    assert "7d past due" in flags[0]["text"]
+    assert flags[0]["severity"] == "warn"  # <14d
+
+
+def test_past_due_ask_today_no_flag():
+    """`by == today` is not yet past due → no flag."""
+    state = make_state("ggl-5168")
+    asks = (_ask(text="Send the deck", by="2026-06-02"),)
+    flags = _detect_urgent(state, (), asks, today=_TODAY)
+    assert flags == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Rule 4 — escalated_risk
+# ──────────────────────────────────────────────────────────────────────
+
+
+_SPRINT_BODY_RISKS_TEMPLATE = """## Dependencies & risks
+
+{risks}
+
+## This sprint
+"""
+
+
+def _body_with_risks(*risks: str) -> str:
+    return _SPRINT_BODY_RISKS_TEMPLATE.format(risks="\n".join(risks))
+
+
+def test_escalated_risk_flags():
+    """A risk bullet with severity=escalated surfaces an alert flag."""
+    state = make_state("ggl-5168")
+    body = _body_with_risks(
+        "- [escalated · staffing · 2026-05-30] Brandon out next week"
+    )
+    flags = _detect_urgent(state, (), (), today=_TODAY, sprint_file_body=body)
+    assert len(flags) == 1
+    assert flags[0]["type"] == "escalated_risk"
+    assert "Brandon out next week" in flags[0]["text"]
+    assert flags[0]["severity"] == "alert"
+
+
+def test_non_escalated_risk_no_flag():
+    """A `watching`-severity risk does NOT flag."""
+    state = make_state("ggl-5168")
+    body = _body_with_risks(
+        "- [watching · tooling · 2026-05-21] Brandon ramping on new tools"
+    )
+    flags = _detect_urgent(state, (), (), today=_TODAY, sprint_file_body=body)
+    assert flags == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Combined + summary aggregation
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_multiple_rules_combine_in_order():
+    """A project triggering all 4 rules returns one flag of each, in rule order."""
+    state = make_state("ggl-5168")
+    m = _ms(deliverable="Workshop deck", date_str="2026-06-08", confidence="low")
+    asks = (_ask(text="Share R3 mocks", by="2026-05-26"),)
+    body = (
+        _body_with_risks(
+            "- [escalated · staffing · 2026-05-30] Brandon out next week"
+        )
+        + _body_with_decisions(
+            "- [this sprint] Pick a deck template"
+        )
+    )
+    flags = _detect_urgent(state, (m,), asks, today=_TODAY, sprint_file_body=body)
+    # All four rule types present, in declared rule order:
+    types = [f["type"] for f in flags]
+    assert types == [
+        "slip_risk",
+        "decision_due",
+        "past_due_ask",
+        "escalated_risk",
+    ]
+
+
+def test_summary_counts_per_type(tmp_path):
+    """The build_planning_result urgent_counts tallies flags per rule type."""
+    config = make_config(tmp_path)
+    state = make_state("ggl-5168", name="GGL 5168 Activation")
+    # Lay down a sprint file with both a past-due ask AND an escalated risk
+    # so two rules fire end-to-end (no ClickUp/Supabase plumbing needed).
+    week_iso = "2026-W23"  # the sprint that contains 2026-06-02
+    sprint_dir = tmp_path / "sprints" / week_iso
+    sprint_dir.mkdir(parents=True)
+    sprint_body = (
+        "## Client communication\n\n"
+        "### Open asks\n\n"
+        "- [open · 2026-05-01 · drew · by 2026-05-26] Share R3 mocks "
+        "<!-- cp:hash=abc12345 -->\n\n"
+        "## Dependencies & risks\n\n"
+        "- [escalated · staffing · 2026-05-30] Brandon out next week\n\n"
+        "## This sprint\n"
+    )
+    (sprint_dir / "ggl-5168.md").write_text(sprint_body, encoding="utf-8")
+
+    result = build_planning_result(
+        config,
+        (state,),
+        today=_TODAY,
+        supabase_client=None,
+        # No list_id_lookup → "no clickup_list_id" path; milestones=()
+    )
+    # past_due_ask and escalated_risk fired; the other two are zero.
+    assert result.urgent_counts == {
+        "slip_risk": 0,
+        "decision_due": 0,
+        "past_due_ask": 1,
+        "escalated_risk": 1,
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────
