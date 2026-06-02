@@ -1354,6 +1354,15 @@ def _write_milestone(
     """Insert a ``pending`` milestone proposal into clickup_task_proposals
     for dashboard review. The approve path (Task 3) creates the real
     ClickUp task.
+
+    Idempotent under rerun via ``cp_ask_hash``: the hash is computed over
+    (code, "set-milestone", deliverable) — matching the same recipe
+    ``webhook/clickup_propose._build_proposal_row`` uses for record-ask
+    proposals. If a row with the same ``cp_ask_hash`` already exists in
+    ``pending`` or ``approved`` status, the insert is skipped silently.
+    Rejected proposals are NOT counted as duplicates — they may legitimately
+    re-enter on a rerun if Drew rejected the first iteration and the LLM
+    re-proposed the same milestone on the next run.
     """
     deliverable = (item.get("deliverable") or "").strip()
     date_str = (item.get("date") or "").strip()
@@ -1382,6 +1391,14 @@ def _write_milestone(
             "add a ClickUp list before capturing milestones"
         )
 
+    cp_ask_hash = _content_hash(code, "set-milestone", deliverable)
+    if _proposal_already_present(supabase, cp_ask_hash):
+        logger.info(
+            "set-milestone %s: hash=%s already pending/approved; skipping",
+            code, cp_ask_hash,
+        )
+        return
+
     # No `due_date` column on clickup_task_proposals today — fold the
     # date + owner into the description so the dashboard reviewer sees
     # the full context without a join.
@@ -1393,6 +1410,7 @@ def _write_milestone(
         "clickup_list_id": project["clickup_list_id"],
         "description": description,
         "assignee_email": None,  # owner names are unresolved free text; reviewer assigns
+        "cp_ask_hash": cp_ask_hash,
         "status": "pending",
         # Columns added by the Task 1 migration.
         "task_type": "milestone",
@@ -1414,6 +1432,10 @@ def _write_client_ask_task(
     """Insert a client-ask proposal into clickup_task_proposals.
     ``from_party`` folds into the description until it becomes a
     first-class column.
+
+    Idempotent under rerun via ``cp_ask_hash``: hash is over (code,
+    "set-client-ask-task", what). Existing pending/approved row →
+    silent skip; rejected rows are NOT considered duplicates.
     """
     what = (item.get("what") or "").strip()
     from_party = (item.get("from_party") or "").strip()
@@ -1433,6 +1455,14 @@ def _write_client_ask_task(
             f"set-client-ask-task {code}: project has no clickup_list_id"
         )
 
+    cp_ask_hash = _content_hash(code, "set-client-ask-task", what)
+    if _proposal_already_present(supabase, cp_ask_hash):
+        logger.info(
+            "set-client-ask-task %s: hash=%s already pending/approved; skipping",
+            code, cp_ask_hash,
+        )
+        return
+
     # Description embeds from_party + expected_by until those become
     # first-class columns. Reviewer sees the full ask at a glance.
     parts = [f"{what} (from {from_party}"]
@@ -1447,12 +1477,46 @@ def _write_client_ask_task(
         "clickup_list_id": project["clickup_list_id"],
         "description": description,
         "assignee_email": None,
+        "cp_ask_hash": cp_ask_hash,
         "status": "pending",
         # Columns added by the Task 1 migration.
         "task_type": "client_ask",
         "is_milestone": False,
     }
     supabase.table("clickup_task_proposals").insert(row).execute()
+
+
+def _proposal_already_present(client, cp_ask_hash: str) -> bool:
+    """Return True if a clickup_task_proposals row with this cp_ask_hash
+    is already in ``pending`` or ``approved`` status.
+
+    Rejected rows are intentionally excluded — a rejected proposal that
+    re-appears on a rerun should be re-proposed (the reviewer may have
+    rejected the first iteration as malformed and want the LLM's revised
+    version). This matches the rejected-row semantic in
+    ``webhook/clickup_propose._existing_descriptions``.
+
+    Best-effort: any unexpected query error falls back to False (insert
+    proceeds). The webhook's auto-ingest contract is that ClickUp routing
+    never breaks the primary file path; the cost of a duplicate
+    proposal row is much smaller than the cost of silently dropping a
+    real milestone.
+    """
+    try:
+        resp = (
+            client.table("clickup_task_proposals")
+            .select("id, status")
+            .eq("cp_ask_hash", cp_ask_hash)
+            .in_("status", ["pending", "approved"])
+            .execute()
+        )
+        return bool(resp.data)
+    except Exception as exc:  # noqa: BLE001 — never block primary ingest
+        logger.warning(
+            "proposal dedupe lookup failed for hash=%s: %s; allowing insert",
+            cp_ask_hash, exc,
+        )
+        return False
 
 
 # ──────────────────────────────────────────────────────────────────────

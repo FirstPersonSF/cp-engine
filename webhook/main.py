@@ -95,6 +95,34 @@ def _spawn_background(coro) -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
+def _create_supabase_client():
+    """Build a Supabase client for execute_plan's ClickUp-proposal verbs.
+
+    Returns None when env vars are missing OR the supabase package isn't
+    importable. Callers MUST treat None as "ClickUp routing degraded" and
+    keep going — the primary sprint-file ingest contract is that we never
+    break it on best-effort Supabase work (see clickup_propose._supabase_client
+    for the original of this pattern; this helper exists so every
+    `execute_plan(...)` callsite can thread a real client through to the
+    v0.15 ``set-milestone`` / ``set-client-ask-task`` verbs instead of
+    falling into ingest.py's "no client → silent skip" branch, which is
+    what made the v0.15.0 headline feature dead code in prod).
+    """
+    url = os.environ.get("SUPABASE_URL")
+    key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not url or not key or create_client is None:
+        log.warning(
+            "execute_plan supabase client unavailable: "
+            "SUPABASE_URL/SUPABASE_SERVICE_KEY env missing OR supabase pkg not installed"
+        )
+        return None
+    try:
+        return create_client(url, key)
+    except Exception as exc:  # noqa: BLE001 — never block primary ingest
+        log.warning("execute_plan supabase client failed to build: %s", exc)
+        return None
+
+
 app = FastAPI(title="cp-engine-webhook", version=cp_engine.__version__)
 
 
@@ -262,6 +290,7 @@ def _perform_auto_ingest(
                 code=code,
                 transcript_path=transcript_path,
                 action_items=action_items,
+                meeting_id=meeting_id,
             )
             ingested.append(entry)
             if entry["files_written"]:
@@ -492,6 +521,8 @@ async def auto_ingest_account(request: Request) -> dict:
                     single_project_plan,
                     tenant_root=tenant_root,
                     today=datetime.now().date(),
+                    supabase=_create_supabase_client(),
+                    meeting_id=meeting_id,
                 )
             except IngestPlanError as exc:
                 entry["errors"].append(f"plan execution failed: {exc}")
@@ -542,6 +573,8 @@ async def auto_ingest_account(request: Request) -> dict:
                     summary_plan,
                     tenant_root=tenant_root,
                     today=datetime.now().date(),
+                    supabase=_create_supabase_client(),
+                    meeting_id=meeting_id,
                 )
             except IngestPlanError as exc:
                 summary_entry["errors"].append(f"plan execution failed: {exc}")
@@ -754,6 +787,8 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
                     single_project_plan,
                     tenant_root=tenant_root,
                     today=datetime.now().date(),
+                    supabase=_create_supabase_client(),
+                    meeting_id=meeting_id,
                 )
             except IngestPlanError as exc:
                 entry["errors"].append(f"plan execution failed: {exc}")
@@ -803,6 +838,8 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
                     summary_plan,
                     tenant_root=tenant_root,
                     today=datetime.now().date(),
+                    supabase=_create_supabase_client(),
+                    meeting_id=meeting_id,
                 )
             except IngestPlanError as exc:
                 summary_entry["errors"].append(f"plan execution failed: {exc}")
@@ -950,8 +987,14 @@ async def clickup_task_closed(request: Request):
     with _cloned_tenant() as tenant_root:
         config = _load_tenant_config(tenant_root)
         try:
+            # close-ask plan — no ClickUp-proposal verbs in scope, but pass
+            # the client for parity (cheap, and future-safe).
             result = execute_plan(
-                plan, tenant_root=config.root, today=datetime.now().date()
+                plan,
+                tenant_root=config.root,
+                today=datetime.now().date(),
+                supabase=_create_supabase_client(),
+                meeting_id=None,
             )
         except IngestPlanError as exc:
             log.warning("clickup-task-closed: execute_plan failed: %s", exc)
@@ -1218,7 +1261,16 @@ def _run_plan_for_one_item(
     plan = {"projects": {code: {verb: [item]}}}
 
     with _cloned_tenant() as tenant_root:
-        result = execute_plan(plan, tenant_root=tenant_root, today=date.today())
+        # Slack-button plans are close-ask / snooze-ask / resolve-risk — no
+        # ClickUp-proposal verbs in scope here. Pass the client for parity
+        # (cheap) and meeting_id=None (this is a Slack click, not a meeting).
+        result = execute_plan(
+            plan,
+            tenant_root=tenant_root,
+            today=date.today(),
+            supabase=_create_supabase_client(),
+            meeting_id=None,
+        )
 
         ingested_entry = {
             "code": code,
@@ -1665,6 +1717,7 @@ def _ingest_one_project(
     code: str,
     transcript_path: Path,
     action_items: list[dict] | None = None,
+    meeting_id: str | None = None,
 ) -> dict:
     """Generate plan + execute for a single project. Returns a summary dict.
 
@@ -1673,6 +1726,10 @@ def _ingest_one_project(
     deterministic `record-ask` appended to the plan. Default-None keeps
     the function callable from any other site that hasn't fetched the
     meeting row yet.
+
+    `meeting_id` is threaded into ``execute_plan`` so the v0.15+
+    ClickUp-proposal verbs (``set-milestone`` / ``set-client-ask-task``)
+    can stamp the originating meeting onto each proposal row.
     """
     entry = {
         "code": code,
@@ -1700,7 +1757,11 @@ def _ingest_one_project(
 
     try:
         exec_result = execute_plan(
-            gen.plan, tenant_root=config.root, today=datetime.now().date()
+            gen.plan,
+            tenant_root=config.root,
+            today=datetime.now().date(),
+            supabase=_create_supabase_client(),
+            meeting_id=meeting_id,
         )
     except IngestPlanError as exc:
         entry["errors"].append(f"plan execution failed: {exc}")

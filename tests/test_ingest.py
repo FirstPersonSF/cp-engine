@@ -1326,20 +1326,31 @@ def test_close_ask_falls_back_to_text_match_when_hash_absent(tmp_path: Path) -> 
 def _fake_supabase_for_project(*, project_id: str = "p1",
                                 clickup_list_id: str | None = "L1",
                                 code: str = "ggl-5168",
-                                enable_clickup: bool = True):
+                                enable_clickup: bool = True,
+                                existing_hashes: list[str] | None = None):
     """Mock the chained-builder pattern used by the supabase-py client.
 
     Returns a ``unittest.mock.MagicMock`` (un-annotated to avoid a
     module-level MagicMock import in this otherwise dependency-light file).
 
-    Configures the chain so:
-        client.table("projects").select(...).eq(...).execute().data
+    Configures TWO chain endpoints:
+
+    1. Project lookup (``_resolve_proposal_project``):
+        client.table("projects").select(...).eq("number", n).execute().data
         → [{"id": project_id, "number": <int>, "clickup_list_id": ..., "enable_clickup": True}]
 
+    2. Dedupe lookup (``_proposal_already_present``):
+        client.table("clickup_task_proposals").select("id, status")
+            .eq("cp_ask_hash", h).in_("status", [...]).execute().data
+        → [{"id": "...", "status": "pending"}] if `h in existing_hashes`,
+          else [].
+        ``existing_hashes`` defaults to []; pass a list to simulate
+        pre-existing rows so the milestone/client-ask-task verb
+        idempotently skips its insert.
+
     Insert calls (``client.table("clickup_task_proposals").insert(row).execute()``)
-    are not stubbed beyond returning a MagicMock — tests assert by
-    inspecting ``client.table.call_args_list`` and the captured
-    insert payload.
+    return a MagicMock — tests assert by inspecting ``client.table.call_args_list``
+    and the captured insert payload.
     """
     from unittest.mock import MagicMock
 
@@ -1350,11 +1361,39 @@ def _fake_supabase_for_project(*, project_id: str = "p1",
         "clickup_list_id": clickup_list_id,
         "enable_clickup": enable_clickup,
     }
+    existing = set(existing_hashes or [])
 
     client = MagicMock()
-    # SELECT chain → list of rows
+    # Project SELECT chain → list of rows.
     select_chain = client.table.return_value.select.return_value.eq.return_value
     select_chain.execute.return_value.data = [project_row]
+
+    # Dedupe SELECT chain (extra `.in_(...)` step) → list of rows when the
+    # cp_ask_hash matches `existing_hashes`, else []. We dynamically inspect
+    # what hash was passed in by reading ``client.table.return_value
+    # .select.return_value.eq.call_args``. Because MagicMock returns the
+    # same chain endpoint regardless of arguments, the side_effect on
+    # ``.in_(...).execute()`` is where we branch on the captured hash.
+    in_chain = (
+        client.table.return_value.select.return_value
+        .eq.return_value.in_.return_value
+    )
+
+    def _dedupe_execute(*_args, **_kwargs):
+        # The eq() call right before .in_() carried the cp_ask_hash as its
+        # second positional arg: .eq("cp_ask_hash", h).
+        eq_calls = client.table.return_value.select.return_value.eq.call_args_list
+        last_hash = None
+        for call in reversed(eq_calls):
+            args = call.args
+            if len(args) >= 2 and args[0] == "cp_ask_hash":
+                last_hash = args[1]
+                break
+        result = MagicMock()
+        result.data = [{"id": "x", "status": "pending"}] if last_hash in existing else []
+        return result
+
+    in_chain.execute.side_effect = _dedupe_execute
     return client
 
 
@@ -1585,3 +1624,163 @@ def test_set_milestone_is_in_supported_verbs() -> None:
     from cp_engine.ingest import _SUPPORTED_VERBS
     assert "set-milestone" in _SUPPORTED_VERBS
     assert "set-client-ask-task" in _SUPPORTED_VERBS
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  v0.15.1 — cp_ask_hash dedupe on ClickUp-proposal verbs
+# ──────────────────────────────────────────────────────────────────────
+#
+# Without dedupe, the v0.13 rerun endpoint re-inserts the same milestone /
+# client-ask N times. The hash recipe matches webhook/clickup_propose's
+# record-ask path so all proposal verbs use a single round-tripping hash.
+
+
+def test_set_milestone_inserts_cp_ask_hash(tmp_path: Path) -> None:
+    """Hash recipe: _content_hash(code, 'set-milestone', deliverable)."""
+    from cp_engine.ingest import _content_hash
+    tenant = _make_tenant(tmp_path)
+    sb = _fake_supabase_for_project(code="ggl-5168")
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "set-milestone": [
+                    {
+                        "deliverable": "Pop-up final to Rena",
+                        "date": "2026-06-06",
+                        "owner": "brandon",
+                        "confidence": "medium",
+                    }
+                ]
+            }
+        }
+    }
+    result = execute_plan(
+        plan, tenant_root=tenant, today=date(2026, 5, 12), supabase=sb,
+    )
+    assert result.errors == [], result.errors
+    row = _last_insert_row(sb)
+    expected = _content_hash("ggl-5168", "set-milestone", "Pop-up final to Rena")
+    assert row["cp_ask_hash"] == expected
+
+
+def test_set_milestone_dedupes_existing_pending(tmp_path: Path) -> None:
+    """Re-inserting the same milestone is a silent no-op when an existing
+    row in pending/approved status already carries the same cp_ask_hash."""
+    from cp_engine.ingest import _content_hash
+    tenant = _make_tenant(tmp_path)
+    deliverable = "Pop-up final to Rena"
+    expected_hash = _content_hash("ggl-5168", "set-milestone", deliverable)
+    sb = _fake_supabase_for_project(
+        code="ggl-5168", existing_hashes=[expected_hash],
+    )
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "set-milestone": [
+                    {
+                        "deliverable": deliverable,
+                        "date": "2026-06-06",
+                        "owner": "brandon",
+                        "confidence": "medium",
+                    }
+                ]
+            }
+        }
+    }
+    result = execute_plan(
+        plan, tenant_root=tenant, today=date(2026, 5, 12), supabase=sb,
+    )
+    assert result.errors == [], result.errors
+    # Dedupe path: no insert was issued.
+    assert not sb.table.return_value.insert.called
+
+
+def test_set_client_ask_task_inserts_cp_ask_hash(tmp_path: Path) -> None:
+    """Hash recipe: _content_hash(code, 'set-client-ask-task', what)."""
+    from cp_engine.ingest import _content_hash
+    tenant = _make_tenant(tmp_path)
+    sb = _fake_supabase_for_project(code="ggl-5168")
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "set-client-ask-task": [
+                    {
+                        "what": "Round 3 pop-up feedback",
+                        "from_party": "rena",
+                        "expected_by": "2026-06-02",
+                    }
+                ]
+            }
+        }
+    }
+    result = execute_plan(
+        plan, tenant_root=tenant, today=date(2026, 5, 12), supabase=sb,
+    )
+    assert result.errors == [], result.errors
+    row = _last_insert_row(sb)
+    expected = _content_hash(
+        "ggl-5168", "set-client-ask-task", "Round 3 pop-up feedback"
+    )
+    assert row["cp_ask_hash"] == expected
+
+
+def test_set_client_ask_task_dedupes_existing_pending(tmp_path: Path) -> None:
+    """Same dedupe semantic for client-ask-task."""
+    from cp_engine.ingest import _content_hash
+    tenant = _make_tenant(tmp_path)
+    what = "Round 3 pop-up feedback"
+    expected_hash = _content_hash("ggl-5168", "set-client-ask-task", what)
+    sb = _fake_supabase_for_project(
+        code="ggl-5168", existing_hashes=[expected_hash],
+    )
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "set-client-ask-task": [
+                    {"what": what, "from_party": "rena"}
+                ]
+            }
+        }
+    }
+    result = execute_plan(
+        plan, tenant_root=tenant, today=date(2026, 5, 12), supabase=sb,
+    )
+    assert result.errors == [], result.errors
+    assert not sb.table.return_value.insert.called
+
+
+def test_set_milestone_dedupe_lookup_failure_falls_back_to_insert(
+    tmp_path: Path,
+) -> None:
+    """If the dedupe Supabase query errors, _proposal_already_present must
+    fall back to allowing the insert — the auto-ingest contract is that
+    ClickUp routing never silently drops a real milestone.
+    """
+    from unittest.mock import MagicMock
+    tenant = _make_tenant(tmp_path)
+    sb = _fake_supabase_for_project(code="ggl-5168")
+    # Make the dedupe lookup raise. The project lookup chain is separate
+    # (it's `.eq.return_value.execute`) so it stays intact.
+    sb.table.return_value.select.return_value.eq.return_value.in_.return_value.execute.side_effect = RuntimeError(
+        "boom"
+    )
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "set-milestone": [
+                    {
+                        "deliverable": "Pop-up final to Rena",
+                        "date": "2026-06-06",
+                        "owner": "brandon",
+                        "confidence": "medium",
+                    }
+                ]
+            }
+        }
+    }
+    result = execute_plan(
+        plan, tenant_root=tenant, today=date(2026, 5, 12), supabase=sb,
+    )
+    assert result.errors == [], result.errors
+    # Insert WAS attempted despite the dedupe failure.
+    assert sb.table.return_value.insert.called
