@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(cp:*), Bash(cat:*), Bash(ls:*), Bash(mkdir:*), Bash(date:*), Bash(test:*), Read
+allowed-tools: Bash(cp:*), Bash(cat:*), Bash(ls:*), Bash(mkdir:*), Bash(date:*), Bash(test:*), Bash(jq:*), Bash(echo:*), Read
 description: Prepare a forward-looking sprint planning doc from current cp tenant state.
 ---
 
@@ -33,15 +33,19 @@ If not, stop and tell the user: "Run /cp-prep from the cp tenant root
 
 ### 2. Determine the current planning week
 
+`cp prep-planning --summary` emits `week_iso` as JSON — use it as the
+authoritative source so this matches MC-2's planning-week rule
+(Mon/Tue → this week, Wed-Sun → next week) without any text-parsing.
+
 ```bash
-WEEK_ISO=$(cp prep-planning --projects __nonexistent__ 2>/dev/null | head -1 | sed -n 's/^# Sprint \([0-9-W]*\) Planning.*$/\1/p')
-# If that fails, fall back to today's date.
-test -n "$WEEK_ISO" || WEEK_ISO=$(date -u +%Y-W%V)
+WEEK_ISO=$(cp prep-planning --summary 2>/dev/null | jq -r .week_iso 2>/dev/null)
+# Fall back to today's ISO week if --summary fails.
+test -n "$WEEK_ISO" && test "$WEEK_ISO" != "null" || WEEK_ISO=$(date -u +%Y-W%V)
 echo "Planning week: $WEEK_ISO"
 ```
 
-Per cp-engine v0.8.7.3, this matches MC-2's planning-week rule
-(Mon/Tue → this week, Wed-Sun → next week).
+Per cp-engine v0.8.7.3, the engine resolves the planning week itself —
+the skill just reads it back.
 
 ### 3. Generate the planning doc
 
