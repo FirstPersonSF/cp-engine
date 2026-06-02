@@ -123,6 +123,22 @@ def preflight(new: str) -> tuple[Version, Version]:
             "Add release notes before releasing."
         )
 
+    # The new-version section must be the FIRST `## v...` in CHANGELOG.md.
+    # If someone drafted a future release ahead of the current one (e.g.
+    # `## v0.16.0` ahead of `v0.15.1`), the check above passes but
+    # release notes for the wrong version sit on top of the changelog
+    # afterwards. Force the drafted section to be the highest one.
+    first_section = re.search(r"^## v(\S+)", changelog, flags=re.MULTILINE)
+    if first_section is None:
+        raise ReleaseError("CHANGELOG.md has no version sections at all.")
+    first_version = first_section.group(1)
+    if first_version != new:
+        raise ReleaseError(
+            f"CHANGELOG.md's first version section is `## v{first_version}`, "
+            f"not `## v{new}`. Re-order the changelog so the new version "
+            "is at the top before releasing."
+        )
+
     tag = f"v{new}"
     existing = run(["git", "tag", "--list", tag], capture=True).stdout.strip()
     if existing:
