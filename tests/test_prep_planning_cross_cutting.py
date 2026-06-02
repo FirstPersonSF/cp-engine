@@ -2,13 +2,14 @@
 
 Covers:
   - _detect_capacity_binding (>=5-projects floor, sort, empty)
-  - _load_cross_cutting_decisions (lookback, [decided: ...] filter, empty file)
+  - _load_cross_cutting_decisions (lookback, [decided|resolved: ...] filter,
+    empty file, 28-day boundary inclusive)
   - _render_cross_cutting (omits sub-blocks when empty, full golden, no-op case)
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 from cp_engine import (
@@ -190,6 +191,55 @@ def test_cross_cutting_decisions_old_entries_filtered(tmp_path):
     decisions = _load_cross_cutting_decisions(tmp_path, today=date(2026, 6, 2))
     assert len(decisions) == 1
     assert "Recent" in decisions[0].text
+
+
+def test_cross_cutting_decisions_resolved_marker_filtered_with_resolved_verb(tmp_path):
+    """[resolved: ...] markers are filtered out same as [decided: ...]."""
+    _write_weekly_cp(
+        tmp_path,
+        _DECISIONS_HEADER
+        + "2. **Still owed** — partners must decide X. "
+        "(2026-05-30, source: sprint planning)\n\n"
+        "1. **Already settled** — [resolved: 2026-05-29] partners agreed Y. "
+        "(2026-05-28, source: sprint planning)\n",
+    )
+    decisions = _load_cross_cutting_decisions(tmp_path, today=date(2026, 6, 2))
+    assert len(decisions) == 1
+    assert "Still owed" in decisions[0].text
+
+
+def test_cross_cutting_decisions_included_at_exactly_28_days(tmp_path):
+    """Decision dated exactly today - 28 days is INCLUDED (boundary inclusive).
+
+    The filter is ``d_date < today - lookback_days`` so an entry whose date
+    equals the cutoff sticks around — the "last 4 weeks" header is read as
+    inclusive of day 28.
+    """
+    today = date(2026, 6, 2)
+    boundary = today - timedelta(days=28)
+    _write_weekly_cp(
+        tmp_path,
+        _DECISIONS_HEADER
+        + f"1. **On the boundary** — exactly 28 days back. "
+        f"({boundary.isoformat()}, source: sprint planning)\n",
+    )
+    decisions = _load_cross_cutting_decisions(tmp_path, today=today)
+    assert len(decisions) == 1
+    assert "On the boundary" in decisions[0].text
+
+
+def test_cross_cutting_decisions_excluded_at_29_days(tmp_path):
+    """Decision dated today - 29 days is EXCLUDED (just past the window)."""
+    today = date(2026, 6, 2)
+    past_boundary = today - timedelta(days=29)
+    _write_weekly_cp(
+        tmp_path,
+        _DECISIONS_HEADER
+        + f"1. **Just past** — 29 days back. "
+        f"({past_boundary.isoformat()}, source: sprint planning)\n",
+    )
+    decisions = _load_cross_cutting_decisions(tmp_path, today=today)
+    assert decisions == ()
 
 
 # ──────────────────────────────────────────────────────────────────────

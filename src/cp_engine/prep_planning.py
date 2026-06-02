@@ -798,8 +798,12 @@ _CROSS_CUTTING_LOOKBACK_DAYS = 28
 
 # Decisions tagged with this inline marker have already been resolved and
 # should drop out of the planning surface. Matches forms like
-# "[decided: 2026-05-30]" or "[decided yes]".
-_DECIDED_MARKER_RE = re.compile(r"\[decided[:\s][^\]]*\]", re.IGNORECASE)
+# "[decided: 2026-05-30]", "[decided yes]", or "[resolved: 2026-05-30]" —
+# partners use the two verbs interchangeably.
+_DECIDED_MARKER_RE = re.compile(
+    r"\[(?:decided|resolved)[:\s][^\]]*\]",
+    re.IGNORECASE,
+)
 
 
 def _detect_capacity_binding(
@@ -836,7 +840,10 @@ def _detect_capacity_binding(
 
 
 def _is_resolved_decision(text: str) -> bool:
-    """True if the decision text carries a ``[decided: ...]`` marker."""
+    """True if the decision text carries a ``[decided: ...]`` or
+    ``[resolved: ...]`` marker — partners use the two verbs interchangeably
+    to signal an entry has been settled and should drop from the surface.
+    """
     return bool(_DECIDED_MARKER_RE.search(text))
 
 
@@ -851,7 +858,8 @@ def _load_cross_cutting_decisions(
     Filters:
       - Section absent or empty → ``()``.
       - Entry's date older than ``lookback_days`` → dropped.
-      - Entry text contains a ``[decided: ...]`` marker → dropped.
+      - Entry text contains a ``[decided: ...]`` or ``[resolved: ...]``
+        marker → dropped.
 
     Reuses ``agenda.parse_weekly_decisions`` so the parsing contract is
     shared with ``cp prep-agenda``. The order returned mirrors the
