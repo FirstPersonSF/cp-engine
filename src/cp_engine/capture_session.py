@@ -369,7 +369,12 @@ def _resolve_destination(
     """
     link_file = source_repo / ".cp-link"
 
-    if link_file.exists():
+    # Guard: treat an empty/whitespace-only `.cp-link` as missing. Without
+    # this, `Path("").exists()` is True (it resolves to `.`) and
+    # `.resolve()` returns the caller's cwd — we'd silently capture into
+    # a random repo and `git add` against it. Fall through to the
+    # unlinked branch instead.
+    if link_file.exists() and link_file.read_text(encoding="utf-8").strip():
         target = Path(link_file.read_text(encoding="utf-8").strip())
         if target.exists():
             return target.resolve(), False, False

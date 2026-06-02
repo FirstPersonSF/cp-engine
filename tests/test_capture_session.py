@@ -322,6 +322,79 @@ def test_unlinked_no_tenant_raises(tmp_path: Path) -> None:
         )
 
 
+def test_empty_cp_link_treated_as_missing(tmp_path: Path) -> None:
+    """An empty `.cp-link` must not silently resolve to `Path(".")`. With
+    the guard, it falls through to the unlinked branch and either matches
+    by remote or lands in `exceptions/`. Without the guard, capture would
+    write into the caller's cwd.
+    """
+    tenant = make_cp_tenant(
+        tmp_path, working_dirs=[("firstpersonsf", "mc-2", "mc-2")]
+    )
+    # Source repo with an EMPTY .cp-link file. Its origin doesn't match
+    # any tracked project → exceptions path.
+    repo = make_source_repo(tmp_path, "1p-component-library")
+    (repo / ".cp-link").write_text("", encoding="utf-8")
+
+    result = capture_session(
+        source_repo=repo,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        cp_tenant=tenant,
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=False,
+        push=False,
+    )
+    assert result.is_exception is True
+    assert result.cp_working_dir is None
+
+
+def test_whitespace_only_cp_link_treated_as_missing(tmp_path: Path) -> None:
+    """Whitespace-only `.cp-link` is the same defect as empty — must not
+    resolve to cwd."""
+    tenant = make_cp_tenant(
+        tmp_path, working_dirs=[("firstpersonsf", "mc-2", "mc-2")]
+    )
+    repo = make_source_repo(tmp_path, "1p-component-library")
+    (repo / ".cp-link").write_text("   \n\n  \t", encoding="utf-8")
+
+    result = capture_session(
+        source_repo=repo,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        cp_tenant=tenant,
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=False,
+        push=False,
+    )
+    assert result.is_exception is True
+    assert result.cp_working_dir is None
+
+
+def test_empty_cp_link_with_matching_remote_uses_linked_path(tmp_path: Path) -> None:
+    """Empty `.cp-link` + remote that matches a tracked project: capture
+    into the working dir (fall-through, NOT cwd). Proves the guard really
+    routes through the unlinked branch."""
+    tenant = make_cp_tenant(
+        tmp_path, working_dirs=[("firstpersonsf", "mc-2", "mc-2")]
+    )
+    wd = tenant / "firstpersonsf" / "projects" / "mc-2"
+    repo = make_source_repo(tmp_path, "mc-2")  # origin matches tracked repo
+    (repo / ".cp-link").write_text("", encoding="utf-8")
+
+    result = capture_session(
+        source_repo=repo,
+        summary_text=SAMPLE_SUMMARY,
+        user="Drew",
+        cp_tenant=tenant,
+        when=datetime(2026, 5, 9, 14, 30),
+        commit=False,
+        push=False,
+    )
+    assert result.is_exception is False
+    assert result.cp_working_dir == wd.resolve()
+
+
 def test_invalid_tenant_path_raises(tmp_path: Path) -> None:
     repo = make_source_repo(tmp_path, "any")
     fake_tenant = tmp_path / "not-a-tenant"
