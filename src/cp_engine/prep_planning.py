@@ -81,7 +81,6 @@ class Milestone(TypedDict, total=False):
     depends_on: list[str]
     status: str
     linked_to: list[str]
-    from_party: str  # client_ask only
 
 
 class SprintAsk(TypedDict):
@@ -606,7 +605,8 @@ def _render_commitments_table(block: ProjectPlanningBlock) -> list[str]:
 
     The "to/from" mapping:
         Milestone (us → them) — Who = owner, To = client, By = date.
-        ClickUp client-ask    — Who = from_party (client), To = "us", By = date.
+        ClickUp client-ask    — Who = ClickUp owner (or "client" fallback),
+                                To = "us", By = date.
         Sprint-file open ask  — Who = ask's "who" field, To/From inferred,
                                 flagged "(sprint file)" so reviewers promote.
     """
@@ -628,7 +628,7 @@ def _render_commitments_table(block: ProjectPlanningBlock) -> list[str]:
         who = ca.get("owner") or "client"
         rows.append((who, ca.get("deliverable") or "(untitled)", "us", date_str))
     for sa in block.sprint_open_asks:
-        date_str = _short_iso_date(sa.get("by")) or "—" if sa.get("by") else "—"
+        date_str = _short_iso_date(sa["by"]) if sa.get("by") else "—"
         rows.append(
             (
                 sa.get("who") or "—",
