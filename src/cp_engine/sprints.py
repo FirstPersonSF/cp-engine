@@ -158,9 +158,21 @@ def _parse_bracketed_bullet(line: str) -> tuple[list[str], str] | None:
 
 
 def _section_body(body: str, heading: str) -> str:
-    """Slice out a `## heading` section up to next `## ` or EOF."""
+    """Slice out a `## heading` section up to next `## ` or EOF.
+
+    Matches the heading exactly OR with a trailing separator + suffix, so
+    scaffold headings like ``## Horizon — 4–8 weeks out`` or
+    ``## Dependencies & risks - rolling`` resolve to the same logical
+    section as ``## Horizon`` / ``## Dependencies & risks``. Recognized
+    separators: em-dash (—), en-dash (–), hyphen (-), colon (:).
+
+    The suffix character class is `[^\n]` (not `.`) so the optional group
+    can't eat across lines under ``re.DOTALL`` — the body slice after the
+    heading line uses ``.``+DOTALL to span sections, but the heading
+    itself must stay on one line.
+    """
     pattern = re.compile(
-        rf"^## {re.escape(heading)}\s*$(.*?)(?=^## |\Z)",
+        rf"^## {re.escape(heading)}(?:[ \t]*[—–:\-][ \t]+[^\n]*)?[ \t]*$(.*?)(?=^## |\Z)",
         re.MULTILINE | re.DOTALL,
     )
     m = pattern.search(body)
@@ -478,6 +490,15 @@ def parse_themes_from_week_file(week_md_path: Path) -> tuple[Theme, ...]:
     return tuple(out)
 
 
+# Mirrors ``prep_planning._TEMPLATE_PLACEHOLDER_RE`` and ingest.py's
+# ``placeholder_re`` — keep these three in lockstep.
+_TEMPLATE_PLACEHOLDER_RE = re.compile(r"^\s*-\s+_<[^>]+>_\s*$")
+
+
+def _is_template_placeholder(bullet_first_line: str) -> bool:
+    return bool(_TEMPLATE_PLACEHOLDER_RE.match(bullet_first_line))
+
+
 def _parse_horizon(body: str) -> tuple[HorizonItem, ...]:
     section = _section_body(body, "Horizon")
     out: list[HorizonItem] = []
@@ -487,6 +508,13 @@ def _parse_horizon(body: str) -> tuple[HorizonItem, ...]:
         ("opportunity", "Opportunities"),
     ):
         for first, cont in _bullets(_subsection(section, sub)):
+            # Skip unfilled scaffold placeholders. Pre-v0.15 the loose
+            # _section_body regex was silently dropping the entire Horizon
+            # block on real files, so these never surfaced; the lenient
+            # backport makes the filter load-bearing. Mirrors the
+            # placeholder shape filtered by prep_planning + ingest.
+            if _is_template_placeholder(first):
+                continue
             parsed = _parse_bracketed_bullet(first)
             if parsed:
                 parts, text = parsed

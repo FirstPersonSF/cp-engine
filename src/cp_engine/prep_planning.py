@@ -50,6 +50,7 @@ from cp_engine.config import TenantConfig
 from cp_engine.sprints import (
     _bullets,
     _parse_bracketed_bullet,
+    _section_body,
     _subsection,
     current_sprint_week_iso,
     sprint_week_dates,
@@ -432,28 +433,6 @@ def _check_dep_stale(
     return None
 
 
-# Lenient section-header regex: matches `## <heading>` even when the
-# heading carries a trailing modifier (e.g. `## Horizon — 4–8 weeks out`).
-# Note: ``sprints._section_body`` requires the heading line to be exactly
-# `## <heading>\s*$`, which doesn't match the real sprint scaffold whose
-# Horizon heading carries the `— 4–8 weeks out` suffix. We use this looser
-# matcher just for urgent detection so Rule 2 / Rule 4 work on real files.
-# Non-greedy on the suffix and the body so DOTALL doesn't eat across
-# sections — see test debugging notes in this PR for the gotcha.
-_LOOSE_SECTION_RE = "^## {heading}(?:\\s+—\\s+.*?)?\\s*$(.*?)(?=^## |\\Z)"
-
-
-# TODO(v0.16): backport lenient matcher to sprints._section_body so agenda
-# stops silently dropping decisions-due under the suffixed Horizon heading.
-def _loose_section_body(body: str, heading: str) -> str:
-    pattern = re.compile(
-        _LOOSE_SECTION_RE.format(heading=re.escape(heading)),
-        re.MULTILINE | re.DOTALL,
-    )
-    m = pattern.search(body)
-    return m.group(1) if m else ""
-
-
 # Sprint scaffold placeholder shape: a bullet whose body (after the leading
 # `- `) is entirely italicized angle-bracket hint text, e.g.
 # ``- _<choice — `[by W##]` prefix>_`` or ``- _<risk — `[severity · category
@@ -483,7 +462,7 @@ def _parse_decisions_due_from_body(body: str) -> tuple[dict, ...]:
     placeholder text ``[by W##]`` would otherwise trip
     ``_is_decision_horizon_urgent``'s ISO-week substring match.
     """
-    horizon_section = _loose_section_body(body, "Horizon")
+    horizon_section = _section_body(body, "Horizon")
     decisions_sub = _subsection(horizon_section, "Decisions due")
     out: list[dict] = []
     for first, _cont in _bullets(decisions_sub):
@@ -512,7 +491,7 @@ def _parse_risks_from_body(body: str) -> tuple[dict, ...]:
     easily be misread tomorrow. Filter at the source so the rule only ever
     sees human-written bullets.
     """
-    risks_section = _loose_section_body(body, "Dependencies & risks")
+    risks_section = _section_body(body, "Dependencies & risks")
     out: list[dict] = []
     for first, _cont in _bullets(risks_section):
         if _is_template_placeholder(first):
