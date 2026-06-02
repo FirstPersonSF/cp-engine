@@ -144,6 +144,20 @@ def preflight(new: str) -> tuple[Version, Version]:
     if existing:
         raise ReleaseError(f"Tag {tag} already exists locally.")
 
+    # Also refuse if the tag exists on origin. Without this check, a
+    # locally-deleted-but-remotely-present tag passes preflight, then
+    # `git push origin v<X>` fails AFTER the release commit has already
+    # been pushed to main — leaving the branch ahead of remote with no
+    # clean way to recover.
+    remote_existing = run(
+        ["git", "ls-remote", "--tags", "origin", tag], capture=True
+    ).stdout.strip()
+    if remote_existing:
+        raise ReleaseError(
+            f"Tag {tag} already exists on origin. Run `git fetch --tags` "
+            "and reconcile before releasing again."
+        )
+
     return cur_v, new_v
 
 

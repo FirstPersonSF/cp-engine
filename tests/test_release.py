@@ -121,3 +121,66 @@ def test_preflight_rejects_when_section_missing(tmp_path: Path) -> None:
         pytest.raises(release.ReleaseError, match=r"no `## v0\.15\.1.*` section"),
     ):
         release.preflight("0.15.1")
+
+
+def test_preflight_rejects_when_tag_exists_on_origin(tmp_path: Path) -> None:
+    """A tag that exists on remote but was deleted locally must fail
+    preflight. Without this check, the release commits land on main,
+    then `git push origin v<X>` fails afterwards — leaving the branch
+    ahead of remote with no clean recovery."""
+    pyproject, cl, _ = _patch_release(
+        tmp_path,
+        current="0.15.0",
+        changelog="## v0.15.1 — 2026-06-02\n\n- Patch.\n",
+    )
+
+    def fake_run_with_remote_tag(cmd, **kwargs):
+        if cmd[:2] == ["git", "status"]:
+            return _make_completed("")
+        if cmd[:2] == ["git", "rev-parse"]:
+            return _make_completed("main")
+        if cmd[:3] == ["git", "tag", "--list"]:
+            return _make_completed("")  # NOT local
+        if cmd[:3] == ["git", "ls-remote", "--tags"]:
+            # Simulate: tag IS on origin even though absent locally.
+            return _make_completed(
+                "0123456789abcdef0123456789abcdef01234567\trefs/tags/v0.15.1"
+            )
+        return _make_completed("")
+
+    with (
+        patch.object(release, "PYPROJECT", pyproject),
+        patch.object(release, "CHANGELOG", cl),
+        patch.object(release, "run", side_effect=fake_run_with_remote_tag),
+        pytest.raises(release.ReleaseError, match="already exists on origin"),
+    ):
+        release.preflight("0.15.1")
+
+
+def test_preflight_rejects_when_tag_exists_locally(tmp_path: Path) -> None:
+    """Belt-and-suspenders: the original local-tag check must still
+    fire even with the new remote check in place."""
+    pyproject, cl, _ = _patch_release(
+        tmp_path,
+        current="0.15.0",
+        changelog="## v0.15.1 — 2026-06-02\n\n- Patch.\n",
+    )
+
+    def fake_run_with_local_tag(cmd, **kwargs):
+        if cmd[:2] == ["git", "status"]:
+            return _make_completed("")
+        if cmd[:2] == ["git", "rev-parse"]:
+            return _make_completed("main")
+        if cmd[:3] == ["git", "tag", "--list"]:
+            return _make_completed("v0.15.1")  # IS local
+        if cmd[:3] == ["git", "ls-remote", "--tags"]:
+            return _make_completed("")
+        return _make_completed("")
+
+    with (
+        patch.object(release, "PYPROJECT", pyproject),
+        patch.object(release, "CHANGELOG", cl),
+        patch.object(release, "run", side_effect=fake_run_with_local_tag),
+        pytest.raises(release.ReleaseError, match="already exists locally"),
+    ):
+        release.preflight("0.15.1")
