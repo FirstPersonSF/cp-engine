@@ -1538,11 +1538,22 @@ def prep_agenda_cmd(
     Output is markdown. Default to stdout; pass `--out sprints/<W##>/_agenda.md`
     to overwrite the per-week agenda file. Pass `--summary` to emit JSON
     metrics instead (used by the /cp-prep plugin command).
+
+    Deprecated as of v0.15.0 — superseded by ``cp prep-planning``, which
+    produces a forward-looking, account-grouped sprint-planning doc with
+    ClickUp-sourced milestones. ``cp prep-agenda`` will be removed in a
+    future release.
     """
     import json
     from datetime import datetime, timedelta
     from cp_engine.agenda import build_agenda, build_agenda_summary, is_sync_stale
     from cp_engine.sync import _default_backend_factory, sync_tenant
+
+    click.echo(
+        "warning: 'cp prep-agenda' is deprecated and will be removed in a future "
+        "release. Use 'cp prep-planning' instead.",
+        err=True,
+    )
 
     config = _load_config_or_die()
 
