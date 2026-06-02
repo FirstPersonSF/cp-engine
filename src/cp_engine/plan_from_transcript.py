@@ -385,6 +385,22 @@ projects:
       - name: "<name>"
         role: "<role>"            # optional
         context: "<one-line context>"  # optional
+
+    # Forward-looking sprint-planning verbs (v0.15+). These propose
+    # ClickUp tasks behind the dashboard's human review gate — they
+    # do NOT write to the sprint file. Use them ONLY when the
+    # transcript names a concrete, dated commitment (not aspiration).
+    set-milestone:                # internal deliverables that ship with a date
+      - deliverable: "<what's being shipped>"
+        date: "YYYY-MM-DD"        # ship date
+        owner: "<internal person>"
+        confidence: "high"        # high | medium | low — your read of certainty
+        depends_on: ["<other deliverable / event>"]  # optional
+        linked_to: ["<other_project_code>"]          # optional
+    set-client-ask-task:          # external commitment we're waiting on
+      - what: "<what we're waiting on>"
+        from_party: "<external stakeholder name>"
+        expected_by: "YYYY-MM-DD" # optional
 ```
 
 # Rules
@@ -417,6 +433,17 @@ projects:
 8. **One project only.** Even if the meeting touches other projects, only
    record items relevant to {project_code}. Cross-project items belong in
    themes (handled separately).
+9. **Milestones vs decisions vs asks.** Use `set-milestone` when the
+   transcript names an INTERNAL deliverable with a date AND an owner
+   ("Pop-up final to Rena Friday", "Tony delivers redirect page
+   Monday"). Use `set-client-ask-task` when someone EXTERNAL commits
+   to give us something by a date ("Rena will send R3 feedback by
+   Tuesday", "Joe to confirm date"). Both go into ClickUp behind a
+   review gate — propose them ONLY when the commitment is concrete
+   and dated. Aspirational language ("we should ship something by
+   end of month") is NOT a milestone. If the date is genuinely
+   unclear, prefer the existing `asks`/`decisions` verbs which write
+   to the sprint file's narrative sections.
 
 # Output format
 
@@ -493,6 +520,19 @@ projects:
         severity: "watching"      # or "escalated", "dependency"
         category: "schedule"      # or contract, scope, technical, etc.
         date: "YYYY-MM-DD"
+
+    # Forward-looking sprint-planning verbs (v0.15+). Propose ClickUp
+    # tasks behind the dashboard's human review gate — they do NOT
+    # write to the sprint file. Use ONLY for concrete, dated
+    # commitments (not aspiration). `set-client-ask-task` is omitted
+    # here because initiatives have no external client side.
+    set-milestone:                # internal deliverables that ship with a date
+      - deliverable: "<what's being shipped>"
+        date: "YYYY-MM-DD"
+        owner: "<internal person>"
+        confidence: "high"        # high | medium | low — your read of certainty
+        depends_on: ["<other deliverable / event>"]  # optional
+        linked_to: ["<other_project_code>"]          # optional
 ```
 
 # Rules
@@ -523,6 +563,12 @@ projects:
    transcript header), otherwise today ({today}). ISO YYYY-MM-DD.
 9. **Quote-like fidelity, no embellishment.** Reflect what was
    actually said. No interpretation or speculation.
+10. **Milestones vs decisions.** Use `set-milestone` when the
+    transcript names a concrete internal deliverable with a date AND
+    owner ("Tony delivers the schema migration Friday"). This
+    proposes a ClickUp task behind a review gate. Aspirational or
+    undated commitments stay in `decisions` (which writes to the
+    sprint file).
 
 # Output format
 
