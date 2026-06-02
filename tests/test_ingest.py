@@ -1921,3 +1921,76 @@ def test_ingest_sanitizes_multiline_slack_digest(tmp_path: Path) -> None:
     execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     body = _read_sprint_body(tenant)
     assert "Quiet week. One question on briefing." in body
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Fix 3 (v0.15.2): handlers honor today= for date defaulting
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_ingest_ask_honors_today_for_default_asked_date(tmp_path: Path) -> None:
+    """When ``date`` is omitted, the ask's ``asked`` field defaults to the
+    ``today=`` kwarg threaded through execute_plan — not wall-clock today.
+    Without the fix, backfilled/test-time ingests stamp the real date."""
+    tenant = _make_tenant(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "asks": [{"text": "Approve Round 3", "who": "Rena"}],
+            }
+        }
+    }
+    # week_iso pinned so today= can be a backfill date that lives in a
+    # different ISO week from the scaffolded sprint file.
+    execute_plan(
+        plan,
+        tenant_root=tenant,
+        today=date(2025, 1, 1),
+        week_iso="2026-W20",
+    )
+    body = _read_sprint_body(tenant)
+    assert "[open · 2025-01-01 · Rena]" in body
+
+
+def test_ingest_decision_honors_today_for_default_date(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "decisions": [{"text": "Ship the thing"}],
+            }
+        }
+    }
+    execute_plan(
+        plan,
+        tenant_root=tenant,
+        today=date(2025, 1, 1),
+        week_iso="2026-W20",
+    )
+    body = _read_sprint_body(tenant)
+    assert "[decision · 2025-01-01]" in body
+
+
+def test_ingest_risk_honors_today_for_default_date(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path)
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "risks": [
+                    {
+                        "text": "Schedule slip",
+                        "severity": "watching",
+                        "category": "schedule",
+                    }
+                ]
+            }
+        }
+    }
+    execute_plan(
+        plan,
+        tenant_root=tenant,
+        today=date(2025, 1, 1),
+        week_iso="2026-W20",
+    )
+    body = _read_sprint_body(tenant)
+    assert "[watching · schedule · 2025-01-01]" in body

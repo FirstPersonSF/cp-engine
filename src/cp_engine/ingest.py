@@ -733,7 +733,20 @@ def _sanitize_inline_text(text: str) -> str:
     return " ".join((text or "").split())
 
 
-def _write_inbound(code: str, item: dict, sprint_path: Path, **_) -> bool:
+def _resolve_today_iso(today: date | None) -> str:
+    """Return ``today.isoformat()`` if provided, else today's real date.
+
+    Lets handlers that fall back to ``_today_iso()`` honor the ``today``
+    keyword threaded through ``execute_plan`` for backfill/test scenarios.
+    Without this, ``today`` was silently ignored for date-defaulting and
+    every backfilled ingest got stamped with the real wall-clock date.
+    """
+    return today.isoformat() if today else _today_iso()
+
+
+def _write_inbound(
+    code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
+) -> bool:
     text = _sanitize_inline_text(item.get("text") or "")
     date_s = (item.get("date") or "").strip()
     who = (item.get("who") or "").strip()
@@ -753,11 +766,15 @@ def _write_inbound(code: str, item: dict, sprint_path: Path, **_) -> bool:
     return True
 
 
-def _write_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
+def _write_ask(
+    code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
+) -> bool:
     text = _sanitize_inline_text(item.get("text") or "")
     who = (item.get("who") or "").strip()
     by = (item.get("by") or "").strip()
-    asked_date = (item.get("date") or item.get("asked_date") or _today_iso()).strip()
+    asked_date = (
+        item.get("date") or item.get("asked_date") or _resolve_today_iso(today)
+    ).strip()
     status = (item.get("status") or "open").strip()
     if not text:
         raise IngestPlanError("ask item missing 'text'")
@@ -827,9 +844,11 @@ def _write_close_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
     return True
 
 
-def _write_decision(code: str, item: dict, sprint_path: Path, **_) -> bool:
+def _write_decision(
+    code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
+) -> bool:
     text = _sanitize_inline_text(item.get("text") or "")
-    date_s = (item.get("date") or _today_iso()).strip()
+    date_s = (item.get("date") or _resolve_today_iso(today)).strip()
     cross = bool(item.get("cross_cutting") or item.get("cross-cutting") or False)
     if not text:
         raise IngestPlanError("decision item missing 'text'")
@@ -846,11 +865,15 @@ def _write_decision(code: str, item: dict, sprint_path: Path, **_) -> bool:
     return True
 
 
-def _write_risk(code: str, item: dict, sprint_path: Path, **_) -> bool:
+def _write_risk(
+    code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
+) -> bool:
     text = _sanitize_inline_text(item.get("text") or "")
     severity = (item.get("severity") or "watching").strip()
     category = (item.get("category") or "").strip()
-    raised = (item.get("date") or item.get("raised_date") or _today_iso()).strip()
+    raised = (
+        item.get("date") or item.get("raised_date") or _resolve_today_iso(today)
+    ).strip()
     if not text:
         raise IngestPlanError("risk item missing 'text'")
     h = _content_hash(code, "record-risk", text)
