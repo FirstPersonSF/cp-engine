@@ -1762,12 +1762,7 @@ def _commit_clickup_close(
         subprocess.run(
             ["git", "branch", "-M", target_branch], cwd=tenant_root, check=True
         )
-    subprocess.run(
-        ["git", "push", "origin", target_branch],
-        cwd=tenant_root,
-        check=True,
-        env=env,
-    )
+    _push_with_retry(tenant_root, target_branch=target_branch, env=env)
 
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -2051,6 +2046,108 @@ def _stage_transcript(tenant_root: Path, meeting_id: str, text: str) -> Path:
 # ─────────────────────────────────────────────────────────────
 
 
+# Markers that git emits on a non-fast-forward push reject (the case
+# we can recover from with a pull --rebase). Anything else (auth, hook
+# rejection, network) is raised straight through — we don't want to
+# loop on those.
+_NON_FAST_FORWARD_MARKERS = (
+    "non-fast-forward",
+    "(non-fast-forward)",
+    "fetch first",
+    "rejected",
+)
+
+
+def _push_with_retry(
+    tenant_root: Path,
+    *,
+    target_branch: str,
+    env: dict,
+    max_attempts: int = 3,
+) -> None:
+    """``git push origin <branch>`` with rebase-on-reject recovery.
+
+    Concurrent auto-ingest webhooks each clone independently and race on
+    push. The loser of the race gets a non-fast-forward rejection. This
+    helper recovers by ``git pull --rebase origin <branch>`` and trying
+    again. After ``max_attempts`` consecutive failures, the last error
+    is re-raised so the request 500s and Fathom can retry the whole
+    pipeline cleanly (rather than wedging mid-rebase).
+
+    Important: if the ``pull --rebase`` itself fails (e.g., true content
+    conflict on the same line), we run ``git rebase --abort`` to leave
+    the working tree on a clean detached state and then raise. We do
+    NOT try to auto-resolve — that would silently overwrite one webhook
+    call's bullet with another's.
+
+    Modelled on src/cp_engine/capture_session.py:_push_with_retry but
+    parameterized for the webhook's per-request SSH env + named-branch
+    push.
+    """
+    last_err: subprocess.CalledProcessError | None = None
+    for attempt in range(1, max_attempts + 1):
+        push = subprocess.run(
+            ["git", "push", "origin", target_branch],
+            cwd=tenant_root,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if push.returncode == 0:
+            if attempt > 1:
+                log.info(
+                    "push succeeded on attempt %d (after rebase)", attempt
+                )
+            return
+
+        last_err = subprocess.CalledProcessError(
+            push.returncode, push.args, output=push.stdout, stderr=push.stderr
+        )
+
+        stderr_lc = (push.stderr or "").lower()
+        is_non_ff = any(m in stderr_lc for m in _NON_FAST_FORWARD_MARKERS)
+        if not is_non_ff or attempt == max_attempts:
+            # Either a non-recoverable class of failure (auth, hook
+            # reject, network) or we've exhausted retries. Surface it.
+            if not is_non_ff:
+                log.warning(
+                    "push failed with non-recoverable error: %s",
+                    (push.stderr or "")[:240],
+                )
+            raise last_err
+
+        log.warning(
+            "push rejected non-fast-forward (attempt %d/%d); "
+            "rebasing and retrying",
+            attempt, max_attempts,
+        )
+        rebase = subprocess.run(
+            ["git", "pull", "--rebase", "origin", target_branch],
+            cwd=tenant_root,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+        if rebase.returncode != 0:
+            # Don't leave the tenant in a mid-rebase state — abort so
+            # the next clone (whether this same request or a Fathom
+            # retry) starts from a clean tree. Then surface the
+            # original push failure: that's the operationally
+            # actionable signal.
+            log.warning(
+                "pull --rebase failed (%s); aborting rebase and giving up",
+                (rebase.stderr or "")[:240],
+            )
+            subprocess.run(
+                ["git", "rebase", "--abort"],
+                cwd=tenant_root,
+                env=env,
+                capture_output=True,
+                text=True,
+            )
+            raise last_err
+
+
 def _commit_and_push(
     *, tenant_root: Path, meeting_id: str, ingested: list[dict]
 ) -> str:
@@ -2090,12 +2187,7 @@ def _commit_and_push(
             cwd=tenant_root,
             check=True,
         )
-    subprocess.run(
-        ["git", "push", "origin", target_branch],
-        cwd=tenant_root,
-        check=True,
-        env=env,
-    )
+    _push_with_retry(tenant_root, target_branch=target_branch, env=env)
 
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],
@@ -2143,12 +2235,7 @@ def _commit_meeting_artifacts(
             ["git", "commit", "-m", message], cwd=tenant_root, check=True, env=env
         )
         target_branch = os.environ.get("CP_TENANT_BRANCH", "main")
-        subprocess.run(
-            ["git", "push", "origin", target_branch],
-            cwd=tenant_root,
-            check=True,
-            env=env,
-        )
+        _push_with_retry(tenant_root, target_branch=target_branch, env=env)
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
             cwd=tenant_root,
