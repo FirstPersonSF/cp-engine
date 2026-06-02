@@ -232,13 +232,26 @@ in ClickUp).
 
 - **`cp prep-planning` fails with config error.** Run `cp init` if
   `.cp-engine.toml` is missing. Otherwise check the error and resolve.
-- **`CLICKUP_API_TOKEN` not set.** Per-project milestone fetch returns
-  errors. The doc renders `_Could not fetch milestones — check ClickUp
-  connection._` for affected projects. Set `CLICKUP_API_TOKEN` on the
-  system running `cp prep-planning`.
-- **Project has no `clickup_list_id`.** Block renders `_(ClickUp list
-  not set — milestones not tracked)_`. Add the list id via MC-2
-  dashboard or migration.
+- **`CLICKUP_API_TOKEN` unset or invalid.** `cp prep-planning --summary`
+  currently returns `milestone_counts: {total: 0, fetched: 0, errored: 0}`
+  and `errors: []` — i.e. the failure is silent on the summary output
+  (engine fix tracked for v0.16). If you see all-zero milestone counts
+  AND no errors AND the doc renders `_Could not fetch milestones — check
+  ClickUp connection._` for affected projects, verify the token:
+  `echo $CLICKUP_API_TOKEN | head -c 20` should start with `pk_`. Set it
+  in your shell or `mc-2/backend/.env`.
+- **Forward calendar shows `_(ClickUp list not set — milestones not
+  tracked)_`.**
+  <!-- TODO(v0.16+): split this rendering at the engine level so the
+       skill can disambiguate the two cases without guessing. -->
+  The message is ambiguous — either:
+  (a) the project genuinely has no `clickup_list_id` in MC-2 (fix: set
+      one via MC-2 dashboard or a migration), OR
+  (b) the list IS set but has zero tasks tagged `milestone` (fix: back-
+      populate milestones via Task 29's pipeline, OR add a milestone
+      task directly in ClickUp).
+  Today's first runs of `cp prep-planning` will see (b) for every
+  project until back-population happens; that's normal.
 - **Forward calendar empty for all projects.** No milestones have been
   added to ClickUp yet. Fresh tenants and the first run after v0.15
   ships look thin until back-population happens.
