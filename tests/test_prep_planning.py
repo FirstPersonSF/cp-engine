@@ -1,0 +1,586 @@
+"""Tests for cp_engine.prep_planning — Task 6 of v0.15.0.
+
+Covers:
+  - ClickUp REST fetch + normalization (happy path, 4xx, missing fields)
+  - account grouping
+  - per-project rendering (forward calendar, commitments table)
+  - missing list_id placeholder
+  - --summary JSON shape
+  - Task 7 stub boundary (_detect_urgent returns [])
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import date, datetime, timezone
+from pathlib import Path
+
+import pytest
+
+from cp_engine import (
+    ProjectState,
+    SyncConfig,
+    TenantConfig,
+)
+from cp_engine import prep_planning
+from cp_engine.prep_planning import (
+    Milestone,
+    ProjectPlanningBlock,
+    _detect_urgent,
+    _fetch_clickup_milestones,
+    _group_by_account,
+    _normalize_clickup_task,
+    build_planning_result,
+    render_planning_doc,
+    render_planning_summary,
+)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Fixtures
+# ──────────────────────────────────────────────────────────────────────
+
+
+def make_config(tenant_root: Path) -> TenantConfig:
+    return TenantConfig(
+        name="firstpersonsf",
+        display="First Person Internal",
+        engine_version_constraint="~= 0.1",
+        sync=SyncConfig(
+            backend="mc-2", cron="0 * * * *", mc_2_supabase_project_ref="ref"
+        ),
+        projects=(),
+        root=tenant_root,
+    )
+
+
+def make_state(
+    code: str,
+    *,
+    name: str | None = None,
+    company_kind: str = "client",
+    company_code: str | None = "GGL",
+    company_name: str | None = "Google",
+    status: str = "Open",
+    source: str = "engagement",
+    owner: str = "drew",
+    is_internal: bool = False,
+) -> ProjectState:
+    return ProjectState(
+        code=code,
+        name=name if name is not None else code,
+        source=source,  # type: ignore[arg-type]
+        company_kind=company_kind,  # type: ignore[arg-type]
+        company_code=company_code,
+        company_name=company_name,
+        status=status,
+        is_internal=is_internal,
+        owner=owner,
+        last_touched=datetime(2026, 6, 1, tzinfo=timezone.utc),
+        deadline=None,
+        one_line_summary=None,
+    )
+
+
+# A fake httpx response object — just enough for prep_planning's use.
+class FakeResp:
+    def __init__(self, status_code: int, json_data: dict | None = None, text: str = ""):
+        self.status_code = status_code
+        self._json = json_data
+        self.text = text or ""
+
+    def json(self):
+        if self._json is None:
+            raise ValueError("no json")
+        return self._json
+
+
+class FakeClient:
+    """Stand-in for httpx.Client. Routes by (url, tag) → FakeResp.
+
+    The "tag" key matches the ``tags[]`` query param so milestone vs
+    client-ask fetches can return different payloads from the same list.
+    """
+
+    def __init__(self, responses: dict[tuple[str, str], FakeResp]):
+        self._responses = responses
+        self.calls: list[tuple[str, str]] = []
+
+    def get(self, url: str, *, headers=None, params=None):
+        tag = ""
+        if params:
+            for k, v in params:
+                if k == "tags[]":
+                    tag = v
+                    break
+        self.calls.append((url, tag))
+        return self._responses.get((url, tag), FakeResp(404, text="not mocked"))
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Test 1: fetch returns normalized shape
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_fetch_milestones_returns_normalized_shape():
+    """A mocked ClickUp JSON response normalizes into the documented Milestone keys."""
+    list_id = "L1"
+    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
+    payload = {
+        "tasks": [
+            {
+                "id": "T1",
+                "name": "Pop-up final",
+                "due_date": "1812844800000",  # 2027-06-06 ish — date is asserted approximately
+                "assignees": [{"username": "brandon"}],
+                "custom_fields": [
+                    {"name": "Confidence", "value": "medium"},
+                    {"name": "Type", "value": "milestone"},
+                    {"name": "Linked To", "value": "ggl-5168, ggl-5151"},
+                ],
+                "tags": [{"name": "milestone"}],
+                "status": {"status": "open"},
+                "dependencies": [{"task_id": "dep-1"}, {"task_id": "dep-2"}],
+            }
+        ]
+    }
+    client = FakeClient({(url, "milestone"): FakeResp(200, payload)})
+
+    raw = _fetch_clickup_milestones(
+        list_id, tag="milestone", token="tok_test", client=client
+    )
+    assert len(raw) == 1
+    normalized = _normalize_clickup_task(raw[0])
+    # Verify every key the renderer + Task 7 will rely on.
+    assert normalized["id"] == "T1"
+    assert normalized["deliverable"] == "Pop-up final"
+    assert normalized["owner"] == "brandon"
+    assert normalized["confidence"] == "medium"
+    assert normalized["task_type"] == "milestone"
+    assert normalized["depends_on"] == ["dep-1", "dep-2"]
+    assert normalized["status"] == "open"
+    assert normalized["linked_to"] == ["ggl-5168", "ggl-5151"]
+    # Date is derived from the ms timestamp — we only verify the shape.
+    assert isinstance(normalized["date"], str) and len(normalized["date"]) == 10
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Test 2: 4xx from ClickUp surfaces as RuntimeError, caller catches it
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_fetch_milestones_handles_clickup_4xx_returns_empty_with_error_logged(tmp_path):
+    """ClickUp returning 404 raises RuntimeError; build_project_block converts
+    it into a fetch_error on the block so rendering continues."""
+    list_id = "MISSING"
+    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
+    client = FakeClient(
+        {
+            (url, "milestone"): FakeResp(404, text="list not found"),
+            (url, "client-ask"): FakeResp(404, text="list not found"),
+        }
+    )
+
+    with pytest.raises(RuntimeError, match="404"):
+        _fetch_clickup_milestones(
+            list_id, tag="milestone", token="tok_test", client=client
+        )
+
+    # And the renderer degrades per-project rather than crashing.
+    config = make_config(tmp_path)
+    state = make_state("ggl-5168", name="GGL 5168 Activation")
+    block = prep_planning.build_project_block(
+        state,
+        config=config,
+        supabase_client=None,
+        today=date(2026, 6, 7),
+        week_iso="2026-W24",
+        clickup_client=client,
+        clickup_token="tok_test",
+        list_id_override="MISSING",
+    )
+    assert block.fetch_error is not None
+    assert "404" in block.fetch_error
+    assert block.milestones == ()
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Test 3: missing custom fields default to "medium" confidence
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_normalize_handles_missing_custom_fields():
+    """A ClickUp task with NO custom_fields at all gets confidence='medium'."""
+    task = {
+        "id": "T2",
+        "name": "Bare task",
+        "due_date": None,
+        "assignees": [],
+        "tags": [{"name": "milestone"}],
+        "status": {"status": "open"},
+    }
+    norm = _normalize_clickup_task(task)
+    assert norm["confidence"] == "medium"
+    assert norm["owner"] == "—"
+    assert norm["date"] == ""
+    assert norm["depends_on"] == []
+    assert norm["linked_to"] == []
+    # Defaulted task_type — falls back to "milestone" without a Type field
+    # and without the client-ask tag.
+    assert norm["task_type"] == "milestone"
+
+
+def test_normalize_routes_client_ask_by_tag_when_no_type_field():
+    """When the Type custom field is missing, tags[]=client-ask routes the type."""
+    task = {
+        "id": "T3",
+        "name": "Round 3 feedback",
+        "due_date": None,
+        "assignees": [{"username": "rena"}],
+        "tags": [{"name": "client-ask"}],
+        "status": {"status": "open"},
+        "custom_fields": [],
+    }
+    norm = _normalize_clickup_task(task)
+    assert norm["task_type"] == "client_ask"
+    assert norm["owner"] == "rena"
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Test 4: render groups by account
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_render_planning_doc_groups_by_account():
+    """Three accounts → three ## headers in alphabetical order."""
+    blocks = (
+        ProjectPlanningBlock(
+            project=make_state("ggl-1", company_name="Google"),
+            quick_resume_line=None,
+            milestones=(),
+            client_asks=(),
+            sprint_open_asks=(),
+            urgent=(),
+            fetch_error=None,
+        ),
+        ProjectPlanningBlock(
+            project=make_state("ibx-1", company_code="IBX", company_name="Infoblox"),
+            quick_resume_line=None,
+            milestones=(),
+            client_asks=(),
+            sprint_open_asks=(),
+            urgent=(),
+            fetch_error=None,
+        ),
+        ProjectPlanningBlock(
+            project=make_state(
+                "snt-1", company_code="SNT", company_name="Sentinel One"
+            ),
+            quick_resume_line=None,
+            milestones=(),
+            client_asks=(),
+            sprint_open_asks=(),
+            urgent=(),
+            fetch_error=None,
+        ),
+    )
+    by_account = _group_by_account(blocks)
+    assert list(by_account.keys()) == ["Google", "Infoblox", "Sentinel One"]
+    assert len(by_account["Google"]) == 1
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Test 5: forward calendar renders ascending by date
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_render_planning_doc_renders_forward_calendar():
+    """Feed 2 milestones out of order — output dated bullets in date order ascending."""
+    state = make_state("ggl-5168", name="GGL 5168 Activation")
+    ms1: Milestone = Milestone(
+        id="A", task_type="milestone", deliverable="Later thing",
+        date="2026-06-20", owner="drew", confidence="high",
+        depends_on=[], status="open", linked_to=[],
+    )
+    ms2: Milestone = Milestone(
+        id="B", task_type="milestone", deliverable="Earlier thing",
+        date="2026-06-08", owner="tony", confidence="low",
+        depends_on=["dep-1"], status="open", linked_to=[],
+    )
+    block = ProjectPlanningBlock(
+        project=state,
+        quick_resume_line="we are here",
+        # Build expects pre-sorted; build_project_block sorts inside.
+        milestones=tuple(sorted([ms1, ms2], key=lambda m: m["date"])),
+        client_asks=(),
+        sprint_open_asks=(),
+        urgent=(),
+        fetch_error=None,
+    )
+    out = "\n".join(prep_planning._render_forward_calendar(block))
+    assert "Earlier thing" in out
+    assert "Later thing" in out
+    # Verify ordering: "Earlier" appears before "Later" in the string.
+    assert out.index("Earlier thing") < out.index("Later thing")
+    assert "depends_on: dep-1" in out
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Test 6: commitments table includes all three categories
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_render_planning_doc_renders_open_commitments_table():
+    """Internal milestone + client-ask + sprint-file ask all appear in the table."""
+    state = make_state("ggl-5168", name="GGL 5168 Activation")
+    ms: Milestone = Milestone(
+        id="M1", task_type="milestone", deliverable="Roadshow plan",
+        date="2026-06-03", owner="brandon", confidence="high",
+        depends_on=[], status="open", linked_to=[],
+    )
+    ask: Milestone = Milestone(
+        id="A1", task_type="client_ask", deliverable="Round 3 feedback",
+        date="2026-06-05", owner="rena", confidence="medium",
+        depends_on=[], status="open", linked_to=[],
+    )
+    sprint_ask = {
+        "text": "share new mock",
+        "who": "geoff",
+        "asked": "2026-05-28",
+        "by": "2026-06-10",
+        "hash": "abc12345",
+    }
+    block = ProjectPlanningBlock(
+        project=state,
+        quick_resume_line=None,
+        milestones=(ms,),
+        client_asks=(ask,),
+        sprint_open_asks=(sprint_ask,),  # type: ignore[arg-type]
+        urgent=(),
+        fetch_error=None,
+    )
+    out = "\n".join(prep_planning._render_commitments_table(block))
+    assert "| Who | Owes what | To | By |" in out
+    assert "Roadshow plan" in out
+    assert "brandon" in out
+    assert "Round 3 feedback" in out
+    assert "rena" in out
+    assert "share new mock" in out
+    assert "geoff" in out
+    assert "(sprint file)" in out
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Test 7: empty milestone list renders the "no milestones tracked yet" line
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_render_planning_doc_handles_empty_clickup_list(tmp_path):
+    """Project HAS a list_id but ClickUp returns 0 tasks → placeholder."""
+    config = make_config(tmp_path)
+    state = make_state("ggl-5168", name="GGL 5168 Activation")
+    list_id = "EMPTY"
+    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
+    client = FakeClient(
+        {
+            (url, "milestone"): FakeResp(200, {"tasks": []}),
+            (url, "client-ask"): FakeResp(200, {"tasks": []}),
+        }
+    )
+    block = prep_planning.build_project_block(
+        state,
+        config=config,
+        supabase_client=None,
+        today=date(2026, 6, 7),
+        week_iso="2026-W24",
+        clickup_client=client,
+        clickup_token="tok_test",
+        list_id_override=list_id,
+    )
+    assert block.fetch_error is None
+    assert block.milestones == ()
+    rendered = "\n".join(prep_planning._render_forward_calendar(block))
+    assert "no milestones tracked yet" in rendered
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Test 8: project without a clickup_list_id renders the "not set" line
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_render_planning_doc_handles_project_without_clickup_list(tmp_path):
+    """No list_id resolvable → block renders the (ClickUp list not set) line."""
+    config = make_config(tmp_path)
+    state = make_state("ggl-9999", name="No List Yet")
+    block = prep_planning.build_project_block(
+        state,
+        config=config,
+        supabase_client=None,  # no Supabase client → can't resolve list_id
+        today=date(2026, 6, 7),
+        week_iso="2026-W24",
+        clickup_client=None,
+        clickup_token=None,
+        list_id_override=None,
+    )
+    assert block.fetch_error == "no clickup_list_id"
+    rendered = "\n".join(prep_planning._render_forward_calendar(block))
+    assert "ClickUp list not set" in rendered
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Test 9: --summary mode emits valid JSON with the documented keys
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_summary_mode_emits_json(tmp_path):
+    """render_planning_summary returns a JSON string with the contracted keys."""
+    config = make_config(tmp_path)
+    state = make_state("ggl-5168", name="GGL 5168 Activation")
+    # No list_id_lookup, no Supabase → block degrades to "no clickup_list_id"
+    # but the summary still renders.
+    summary_str = render_planning_summary(
+        config,
+        (state,),
+        today=date(2026, 6, 7),
+        tenant_hours_last_week={"Drew": 52, "Tony": 50},
+    )
+    data = json.loads(summary_str)
+    # Documented keys per Task 6 spec.
+    expected_keys = {
+        "week_iso",
+        "week_dates",
+        "project_count",
+        "estimated_minutes",
+        "tenant_hours_last_week",
+        "milestone_counts",
+        "urgent_counts",
+        "errors",
+    }
+    assert expected_keys.issubset(data.keys())
+    assert data["project_count"] == 1
+    assert data["tenant_hours_last_week"] == {"Drew": 52, "Tony": 50}
+    # Urgent counts shape — all zero today (Task 7 not landed).
+    assert data["urgent_counts"] == {
+        "slip_risk": 0,
+        "decision_due": 0,
+        "past_due_ask": 0,
+        "escalated_risk": 0,
+    }
+    # Milestone counts shape — total/fetched/errored present, all integers.
+    for k in ("total", "fetched", "errored"):
+        assert k in data["milestone_counts"]
+        assert isinstance(data["milestone_counts"][k], int)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Test 10: urgent stub returns []  (Task 7 boundary)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_urgent_stub_returns_empty_list():
+    """``_detect_urgent`` is a stub for Task 7. Until that lands, it MUST
+    return [] regardless of input so the renderer never tries to surface
+    half-implemented urgency signals."""
+    state = make_state("ggl-5168")
+    sample_ms: Milestone = Milestone(
+        id="x", task_type="milestone", deliverable="x", date="2026-06-08",
+        owner="drew", confidence="low", depends_on=["dep"], status="open",
+        linked_to=[],
+    )
+    assert _detect_urgent(state, (sample_ms,), ()) == []
+    assert _detect_urgent(state, (), ()) == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Bonus integration: full doc render walks every section
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_render_planning_doc_full_walk(tmp_path):
+    """Two active projects across two accounts → full markdown doc walks both."""
+    config = make_config(tmp_path)
+    projects = (
+        make_state("ggl-5168", name="GGL 5168 Activation", company_name="Google"),
+        make_state(
+            "ibx-5153", name="IBX 5153 AI Campaign",
+            company_code="IBX", company_name="Infoblox",
+        ),
+    )
+
+    doc = render_planning_doc(
+        config,
+        projects,
+        today=date(2026, 6, 7),
+        tenant_hours_last_week={"Drew": 52, "Tony": 50},
+        supabase_client=None,
+    )
+    # Top-of-doc strip + cross-cutting stub + per-account walks.
+    assert "Sprint" in doc
+    assert "Planning" in doc
+    assert "## Tenant strip" in doc
+    assert "Active:" in doc
+    assert "Drew 52h" in doc
+    assert "## Cross-cutting" in doc
+    assert "## Google (1 projects)" in doc
+    assert "## Infoblox (1 projects)" in doc
+    assert "ggl-5168" in doc
+    assert "ibx-5153" in doc
+
+
+def test_render_quick_resume_when_present(tmp_path):
+    """When cp.md has a real **Current work:** line, the Where block reflects it."""
+    config = make_config(tmp_path)
+    state = make_state("ggl-5168", name="GGL 5168 Activation", company_name="Google")
+    # Lay down a real cp.md at the account-scoped path.
+    from cp_engine.state import account_scope_for, dir_slug
+    scope = account_scope_for(state)
+    slug = dir_slug(state.code, state.name)
+    cp_md = tmp_path / scope / slug / "cp.md"
+    cp_md.parent.mkdir(parents=True, exist_ok=True)
+    cp_md.write_text(
+        "## Quick Resume\n\n"
+        "**Last session:** _<date>_\n"
+        "**Current work:** Pop-up R3 with Rena since 5/22.\n"
+        "**Next up:** Wait for Rena feedback.\n"
+        "**Blockers:** Awaiting Rena.\n\n"
+        "## Next\n"
+    )
+    block = prep_planning.build_project_block(
+        state,
+        config=config,
+        supabase_client=None,
+        today=date(2026, 6, 7),
+        week_iso="2026-W24",
+        clickup_client=None,
+        clickup_token=None,
+        list_id_override=None,
+    )
+    assert block.quick_resume_line is not None
+    assert "Pop-up R3 with Rena" in block.quick_resume_line
+
+
+def test_summary_counts_errors_for_failed_fetch(tmp_path):
+    """When ClickUp returns 4xx, the project counts as errored in milestone_counts."""
+    config = make_config(tmp_path)
+    state = make_state("ggl-5168", name="GGL 5168 Activation")
+    list_id = "BAD"
+    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
+    client = FakeClient(
+        {
+            (url, "milestone"): FakeResp(500, text="server error"),
+            (url, "client-ask"): FakeResp(500, text="server error"),
+        }
+    )
+    result = build_planning_result(
+        config,
+        (state,),
+        today=date(2026, 6, 7),
+        tenant_hours_last_week={},
+        supabase_client=None,
+        clickup_token="tok_test",
+        clickup_client=client,
+        list_id_lookup={"ggl-5168": list_id},
+    )
+    assert result.milestone_counts["errored"] == 1
+    assert result.milestone_counts["fetched"] == 0
+    assert any("ggl-5168" in err for err in result.errors)
