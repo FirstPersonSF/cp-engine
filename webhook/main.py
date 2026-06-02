@@ -1218,6 +1218,18 @@ async def _handle_block_action(payload: dict) -> dict:
 
     # Dispatch the slow path (clone + plan + push + Slack update) to a
     # background task via _spawn_background (strong-ref retention).
+    #
+    # Structured-log every spawn so a Railway restart that interrupts the
+    # background task is recoverable from logs (postmortem: grep for
+    # `slack_action_spawn` and replay any missing `slack_action_complete`
+    # in the same time window).
+    # TODO(v0.16): persist to slack_action_intents for automatic recovery
+    # sweep on restart — until we see real drops in prod, structured
+    # logs are good enough.
+    log.info(
+        "slack_action_spawn code=%s verb=%s hash=%s action_id=%s user=%s",
+        code, verb, cp_hash, action_id, user_id,
+    )
     _spawn_background(_run_action_in_background(
         verb=verb, code=code, cp_hash=cp_hash, extras=extras,
         response_url=response_url, original_message=original_message,
@@ -1267,6 +1279,13 @@ async def _handle_view_submission(payload: dict) -> dict:
             "errors": {"date_block": "Pick a date"},
         }
 
+    # Same structured-log shape as _handle_block_action so a single
+    # logfilter catches both spawn paths.
+    log.info(
+        "slack_action_spawn code=%s verb=%s hash=%s action_id=%s "
+        "source=view_submission until=%s",
+        code, verb, cp_hash, "", until,
+    )
     _spawn_background(_run_action_in_background(
         verb=verb, code=code, cp_hash=cp_hash,
         extras={"until": until},  # No closed_by — only meaningful for close/resolve verbs
@@ -1306,6 +1325,19 @@ async def _run_action_in_background(
             "slack-action background failed: %s/%s/%s", verb, code, cp_hash
         )
         result = {"committed": False, "commit_sha": None, "errors": [str(exc)]}
+
+    # Pairs with `slack_action_spawn` so postmortem can correlate spawns
+    # with completions and identify clicks that never wrapped up (Railway
+    # restart mid-task). action_id isn't in scope here; correlation key
+    # is (code, verb, hash) which is unique per displayed digest item.
+    log.info(
+        "slack_action_complete code=%s verb=%s hash=%s committed=%s "
+        "commit_sha=%s errors=%d",
+        code, verb, cp_hash,
+        result.get("committed"),
+        (result.get("commit_sha") or "")[:8],
+        len(result.get("errors") or []),
+    )
 
     confirmation = _confirmation_text(verb=verb, extras=extras, result=result)
     try:
