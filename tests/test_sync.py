@@ -1504,3 +1504,83 @@ def test_sync_wraps_quick_resume_in_existing_project_cp(tmp_path: Path) -> None:
     # Hand-written `**Current work:**` content preserved verbatim across
     # the wrap — markers are inserted, content is untouched.
     assert "**Current work:** Tony shipping playbooks." in body
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Fix 5 (v0.15.2): _write_if_changed graceful fallback on splice failure
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_write_if_changed_falls_back_to_full_rewrite_on_duplicated_marker(
+    tmp_path: Path, caplog
+) -> None:
+    """A duplicated start marker for a region in the existing file used to
+    abort the entire sync (MarkerDuplicated propagated out of
+    ``splice_managed_region``). After the fix, the splice failure logs a
+    warning and falls back to a full rewrite of the new body."""
+    import logging
+
+    from cp_engine.sync import _write_if_changed
+
+    target = tmp_path / "master-cp.md"
+    # Existing file has TWO `cp-engine:start banner` markers — corrupt.
+    target.write_text(
+        "# Master\n"
+        "<!-- cp-engine:start banner -->\n"
+        "old banner one\n"
+        "<!-- cp-engine:end banner -->\n"
+        "<!-- cp-engine:start banner -->\n"
+        "old banner two (duplicate!)\n"
+        "<!-- cp-engine:end banner -->\n"
+    )
+    new_body = (
+        "# Master\n"
+        "<!-- cp-engine:start banner -->\n"
+        "fresh banner\n"
+        "<!-- cp-engine:end banner -->\n"
+    )
+
+    with caplog.at_level(logging.WARNING, logger="cp_engine.sync"):
+        changed = _write_if_changed(
+            target, new_body, splice_regions=("banner",)
+        )
+
+    assert changed is True
+    # Full-rewrite fallback: the new body fully replaces the old (the
+    # duplicated marker is gone).
+    final = target.read_text()
+    assert final == new_body
+    assert "fresh banner" in final
+    assert "old banner one" not in final
+    assert "old banner two" not in final
+    # A warning was emitted naming the file + the splice failure.
+    assert any(
+        "splice failed" in rec.message and "master-cp.md" in rec.message
+        for rec in caplog.records
+    )
+
+
+def test_write_if_changed_no_op_on_duplicated_marker_when_content_matches(
+    tmp_path: Path,
+) -> None:
+    """If the duplicated-marker file ALREADY equals the new body verbatim,
+    the fallback returns False (no write). Keeps the no-op-resync property
+    even in the corrupted-marker case."""
+    from cp_engine.sync import _write_if_changed
+
+    target = tmp_path / "master-cp.md"
+    body = (
+        "# Master\n"
+        "<!-- cp-engine:start banner -->\n"
+        "x\n"
+        "<!-- cp-engine:end banner -->\n"
+        "<!-- cp-engine:start banner -->\n"
+        "y\n"
+        "<!-- cp-engine:end banner -->\n"
+    )
+    target.write_text(body)
+
+    changed = _write_if_changed(
+        target, body, splice_regions=("banner",)
+    )
+    assert changed is False
