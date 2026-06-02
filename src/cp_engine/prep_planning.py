@@ -13,14 +13,13 @@ OR initiative) carries a ``clickup_list_id`` in MC-2; this module fetches
 ``tags[]=milestone`` and ``tags[]=client-ask`` tasks from each list via the
 ClickUp REST API.
 
-Boundary with Task 8:
-    ``_detect_urgent`` implements four urgency rules (slip_risk,
-    decision_due, past_due_ask, escalated_risk). See its docstring for
-    rule semantics.
+``_detect_urgent`` surfaces per-project attention items via four urgency
+rules (slip_risk, decision_due, past_due_ask, escalated_risk). See its
+docstring for rule semantics.
 
-    ``_render_cross_cutting`` returns only the tenant strip today. Task 8
-    layers capacity-binding analysis + ``weekly-cp.md`` cross-cutting
-    decisions on top.
+``_render_cross_cutting`` returns the tenant-wide strip — capacity-binding
+analysis and ``weekly-cp.md`` cross-cutting decisions layer on top of the
+per-project blocks.
 
 The CLI entry point (``cp prep-planning``) lives in cli.py.
 """
@@ -45,6 +44,9 @@ from cp_engine.agenda import (
 )
 from cp_engine.config import TenantConfig
 from cp_engine.sprints import (
+    _bullets,
+    _parse_bracketed_bullet,
+    _subsection,
     current_sprint_week_iso,
     sprint_week_dates,
 )
@@ -64,11 +66,13 @@ log = logging.getLogger(__name__)
 
 
 class Milestone(TypedDict, total=False):
-    """Normalized ClickUp milestone task. Task 7 relies on these keys.
+    """Normalized ClickUp milestone task.
 
-    ``task_type`` is either ``"milestone"`` or ``"client_ask"`` — the
-    same module fetches both shapes from ClickUp; the table renderer
-    routes by ``task_type``.
+    Consumed by the table renderer and by ``_detect_urgent`` (which reads
+    ``status``, ``date``, ``confidence``, ``depends_on``, and
+    ``deliverable``). ``task_type`` is either ``"milestone"`` or
+    ``"client_ask"`` — the same module fetches both shapes from ClickUp;
+    the renderer routes by ``task_type``.
     """
 
     id: str
@@ -393,15 +397,7 @@ def _check_dep_stale(
     sprint_asks: tuple[SprintAsk, ...],
     today: date,
 ) -> int | None:
-    """Return how many days a `depends_on` ID is stale via sprint asks.
-
-    Heuristic: if any sprint_ask's text mentions ``dep`` (case-insensitive
-    substring) AND has a ``by`` date in the past, return the age in days.
-    Otherwise return None. Simple substring matching is intentional for v1
-    — depends_on IDs are ClickUp task IDs, but authors often spell them as
-    short tags in ask text. False positives are surfaced to humans as
-    flags, not auto-executed actions, so the noise is acceptable.
-    """
+    """Return staleness in days if a sprint ask mentions ``dep`` past its `by`."""
     if not dep:
         return None
     needle = dep.lower()
@@ -432,6 +428,8 @@ def _check_dep_stale(
 _LOOSE_SECTION_RE = "^## {heading}(?:\\s+—\\s+.*?)?\\s*$(.*?)(?=^## |\\Z)"
 
 
+# TODO(v0.16): backport lenient matcher to sprints._section_body so agenda
+# stops silently dropping decisions-due under the suffixed Horizon heading.
 def _loose_section_body(body: str, heading: str) -> str:
     pattern = re.compile(
         _LOOSE_SECTION_RE.format(heading=re.escape(heading)),
@@ -442,16 +440,7 @@ def _loose_section_body(body: str, heading: str) -> str:
 
 
 def _parse_decisions_due_from_body(body: str) -> tuple[dict, ...]:
-    """Pull `## Horizon → ### Decisions due` items from a raw sprint file body.
-
-    Uses ``sprints._bullets`` + ``_parse_bracketed_bullet`` (the parsing
-    convention that backs the rest of the sprint-file shape) but applies a
-    lenient header matcher so the real `## Horizon — 4–8 weeks out` heading
-    is found. Items keep their ``target_date`` (the first bracket-part) so
-    Rule 2 can decide whether the horizon qualifies as "this/next sprint".
-    """
-    from cp_engine.sprints import _bullets, _parse_bracketed_bullet, _subsection
-
+    """Pull `## Horizon → ### Decisions due` items from a raw sprint file body."""
     horizon_section = _loose_section_body(body, "Horizon")
     decisions_sub = _subsection(horizon_section, "Decisions due")
     out: list[dict] = []
@@ -470,15 +459,7 @@ def _parse_decisions_due_from_body(body: str) -> tuple[dict, ...]:
 
 
 def _parse_risks_from_body(body: str) -> tuple[dict, ...]:
-    """Pull `## Dependencies & risks` items from a raw sprint file body.
-
-    Reuses the bracket-bullet parsing convention from ``sprints`` and the
-    existing `## Dependencies & risks` heading shape (no trailing modifier),
-    so ``sprints._section_body`` would also work — but we keep the lenient
-    matcher here for consistency in case the heading shape drifts later.
-    """
-    from cp_engine.sprints import _bullets, _parse_bracketed_bullet
-
+    """Pull `## Dependencies & risks` items from a raw sprint file body."""
     risks_section = _loose_section_body(body, "Dependencies & risks")
     out: list[dict] = []
     for first, _cont in _bullets(risks_section):
@@ -492,15 +473,7 @@ def _parse_risks_from_body(body: str) -> tuple[dict, ...]:
 
 
 def _is_decision_horizon_urgent(target_date: str, today: date) -> bool:
-    """True when a Decisions-due target falls in the next two sprints.
-
-    Recognises three shapes seen in real sprint files:
-        - the literal strings "this sprint" / "next sprint"
-        - an ISO date within ``_URGENT_HORIZON_DAYS``
-        - any other free-text marker (e.g. "by workshop", "by 2026-06-11")
-          where embedded ISO dates parse within the window
-    A missing/blank target_date is treated as urgent (no date = assume soon).
-    """
+    """True when a Decisions-due target falls in the next two sprints (blank = urgent)."""
     if not target_date:
         return True
     lowered = target_date.lower()
@@ -576,6 +549,9 @@ def _detect_urgent(
         reasons: list[str] = []
         if (m.get("confidence") or "").lower() == "low":
             reasons.append("low confidence")
+        # Substring match between dep ID and ask text — v1 simplicity. Authors
+        # spell depends_on ClickUp task IDs as short tags in ask text, so false
+        # positives are tolerable since flags surface to humans, not actions.
         for dep in m.get("depends_on") or []:
             stale_days = _check_dep_stale(dep, sprint_asks, today)
             if stale_days is not None:
@@ -674,10 +650,7 @@ def build_project_block(
     # parse Decisions due / Dependencies & risks without re-reading the file.
     sprint_file_body: str | None = None
     if sprint_file_path.is_file():
-        try:
-            sprint_file_body = sprint_file_path.read_text(encoding="utf-8")
-        except OSError as exc:  # pragma: no cover — defensive
-            log.warning("sprint file read failed for %s: %s", project.code, exc)
+        sprint_file_body = sprint_file_path.read_text(encoding="utf-8")
 
     # ClickUp fetch — milestones + client-asks.
     list_id = list_id_override or _resolve_clickup_list_for_project(
