@@ -288,41 +288,25 @@ auto-appended bullets in known sections.
 ## Sprint planning prep
 
 When the user asks to prep an agenda for sprint planning ("run weekly
-sprint planning", "prep sprint planning agenda", or similar), gather a
-cross-project view by reading the following per active project in the
-target scope (1P engagements, FPSF initiatives, or Canonic initiatives):
+sprint planning", "prep sprint planning agenda", or similar), run
+`/cp-prep` (the engine-managed slash command). It generates
+`sprints/<W##>/_planning.md` — the partners' sprint-planning doc with:
 
-0. **Empty one-line-summary sweep.** Scan `master-cp.md`'s active
-   tables (Pipeline, Active Engagements, FPSF, Canonic, initiatives)
-   for any row whose `One-line summary` cell is empty. For each empty
-   row, open the project's `cp.md` and fill in its `**Current work:**`
-   line in the `## Quick Resume` section — sync derives the master-cp
-   summary from that line, and an unfilled template placeholder
-   (`_<what's in flight right now>_`) reads as empty. Draft the summary
-   from the project's recent inbound / open asks / latest meeting
-   notes. **Run this FIRST so prep walks a fully-populated master-cp.**
-1. **Open client/team asks** from each project's current sprint file's
-   `### Open asks` subsection — flag any past-due (`by <date>` in the
-   past).
-2. **Decisions** from each project's current sprint file's
-   `### Decisions` subsection.
-3. **Risks** from each project's current sprint file's
-   `## Dependencies & risks` section, especially `severity: escalated`.
-4. **The most recent Slack digest paragraph** from each project's
-   current sprint file's `### Slack digest` subsection. This is
-   load-bearing — async chatter often surfaces context the team forgot
-   to flag in the meeting. The digest cron lands these Sunday evenings,
-   so Monday-morning sprint planning sees the prior week's chatter.
-5. **Cross-cutting items** from `weekly-cp.md`'s `## Account summaries`
-   and `## Decisions (cross-cutting, last 4 weeks)` sections.
-6. **Allocation** from each project's `_<Person · Nh>_` annotations in
-   the master CP active tables (last week's hours).
+- Tenant strip + cross-cutting capacity binding + cross-cutting
+  decisions from `weekly-cp.md`
+- Per-account project blocks, urgent flags leading each block
+- Forward calendar of dated ClickUp milestones per project
+- Two-way Open Commitments table (us → them + them → us)
 
-After the meeting runs, the canonical capture path is to tag the Fathom
-recording as `sprint_planning_scope='1p' | 'fpsf' | 'canonic'` in the
-dashboard. The auto-ingest webhook handles per-project routing + a
-tenant-wide summary in `weekly-cp.md`'s `## Account summaries`. Don't
-hand-write per-project bullets when the auto-ingest path is available.
+For ad-hoc scoped prep (e.g. one client meeting): `/cp-prep <code>
+[<code> ...]`.
+
+After the meeting runs, the canonical capture path is to tag the
+Fathom recording in the dashboard as `sprint_planning_scope='1p' |
+'fpsf' | 'canonic' | 'storyos-mc'`. The auto-ingest webhook handles
+per-project routing + a tenant-wide summary in `weekly-cp.md`'s
+`## Account summaries`. Don't hand-write per-project bullets when the
+auto-ingest path is available.
 
 ## Deepening from transcript
 
