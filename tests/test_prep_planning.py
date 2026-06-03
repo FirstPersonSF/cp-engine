@@ -248,6 +248,64 @@ def test_normalize_routes_client_ask_by_tag_when_no_type_field():
     assert norm["owner"] == "rena"
 
 
+def test_normalize_falls_back_to_due_date_in_name_when_structured_field_missing():
+    """When ClickUp's structured due_date is null but the name contains
+    `(due YYYY-MM-DD`, extract the date so Forward Calendar still renders.
+
+    Regression: 2026-06-02 IBX milestone push from fathom-meeting-sync did
+    not set the structured field, so the date lived only in the name. Engine
+    skipped the Forward Calendar bullet (no anchor) — the task surfaced only
+    in the Open Commitments fallback.
+    """
+    task = {
+        "id": "T4",
+        "name": (
+            "Campaign strategy workshop with Infoblox "
+            "(due 2026-06-17, owner: Marcello)"
+        ),
+        "due_date": None,
+        "assignees": [],
+        "tags": [{"name": "milestone"}],
+        "status": {"status": "open"},
+        "custom_fields": [],
+    }
+    norm = _normalize_clickup_task(task)
+    assert norm["date"] == "2026-06-17"
+
+
+def test_normalize_prefers_structured_due_date_over_name():
+    """When both ClickUp's structured due_date and a `(due ...)` in the name
+    exist, the structured field wins. Hand-edits to either should not
+    silently override a server-side value."""
+    task = {
+        "id": "T5",
+        "name": "Pop-up final (due 2026-06-06, owner: brandon)",
+        # 2026-07-01 12:00 UTC in ms-since-epoch
+        "due_date": "1782907200000",
+        "assignees": [],
+        "tags": [{"name": "milestone"}],
+        "status": {"status": "open"},
+        "custom_fields": [],
+    }
+    norm = _normalize_clickup_task(task)
+    assert norm["date"] == "2026-07-01"
+
+
+def test_normalize_no_due_anywhere_yields_empty_date():
+    """No structured field, no `(due ...)` in name → empty date string."""
+    task = {
+        "id": "T6",
+        "name": "Some milestone without dates",
+        "due_date": None,
+        "assignees": [],
+        "tags": [{"name": "milestone"}],
+        "status": {"status": "open"},
+        "custom_fields": [],
+    }
+    norm = _normalize_clickup_task(task)
+    assert norm["date"] == ""
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Test 4: render groups by account
 # ──────────────────────────────────────────────────────────────────────

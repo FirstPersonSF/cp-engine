@@ -292,6 +292,23 @@ def _fetch_clickup_milestones(
     return all_tasks
 
 
+# Fallback for tasks pushed by older / external integrations that put the
+# date in the task name (e.g. "Workshop (due 2026-06-17, owner: Marcello)")
+# but never set ClickUp's structured ``due_date`` field. Without this the
+# Forward Calendar bullet is skipped because ``date == ""``. Matches the
+# `(due YYYY-MM-DD` shape the v0.15 LLM emits for milestone deliverables.
+# Tracked for fix in fathom-meeting-sync (Task 63) so the structured
+# due_date gets set going forward; the regex stays as defensive cover for
+# legacy data and any other push source that omits the field.
+_NAME_DUE_DATE_RE = re.compile(r"\(due\s+(\d{4}-\d{2}-\d{2})")
+
+
+def _parse_due_date_from_name(name: str) -> str:
+    """Best-effort extract of ``YYYY-MM-DD`` from a ClickUp task name."""
+    match = _NAME_DUE_DATE_RE.search(name or "")
+    return match.group(1) if match else ""
+
+
 def _from_clickup_timestamp(ts: str | int | None) -> str:
     """Convert a ClickUp due_date (ms since epoch as string) to ISO date.
 
@@ -369,7 +386,10 @@ def _normalize_clickup_task(task: dict) -> Milestone:
         id=str(task.get("id") or ""),
         task_type=task_type,
         deliverable=str(task.get("name") or "").strip(),
-        date=_from_clickup_timestamp(task.get("due_date")),
+        date=(
+            _from_clickup_timestamp(task.get("due_date"))
+            or _parse_due_date_from_name(str(task.get("name") or ""))
+        ),
         owner=owner,
         confidence=confidence,
         depends_on=depends_on,
