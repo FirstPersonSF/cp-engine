@@ -4,6 +4,24 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.16.0 — 2026-06-03
+
+### Added — sprint files now show real recent-commits activity
+
+`_collect_sprint_per_project_data` had been a v0.8.0 stub returning `{}`, so every sprint file in every tenant rendered "_No commits in the last 7 days._" regardless of real activity. This release implements the recent-commits aggregation: for each project, the engine walks the local clone (resolved from `TenantConfig.local_repos`, the per-machine map in `.cp-engine.local.toml`), runs `git log --since=<sprint_start>`, and renders the commits as a bulleted list in the sprint file's `Where it stands` → `Recent activity` section. Caps each list at 20 entries; truncates subject lines to 80 chars with ellipsis. Skips projects without a mapped clone, with a missing path, or where `git log` errors — none of those should break sync.
+
+Caught during implementation: `sprint_week_dates(now)[0]` returns the *planning-rolled* Monday (Wed-Sun rolls forward to next week's Monday per the cp planning-week rule). Using it as the `--since` anchor filtered out everything on any Wed-Sun sync. The fix anchors at calendar Monday via the existing `sprints._monday_of(now)` helper. The "(last 7 days)" rendered header now actually matches the data window, which it never did before.
+
+Backwards-compatible: only the `recent_commits` dict key is populated. The other per-project metric keys (`sessions_this_week`, `open_issues`, `last_session_*`) keep their renderer-default fallbacks. Tenants without any `[local-repos]` entries see no behavior change.
+
+### Migration notes
+
+**Tenants must bump** `.cp-engine.toml`'s `[engine].version` from `~= 0.15` to `~= 0.16`.
+
+**No data migration required.** No schema changes. Sprint files refresh on next `cp sync` (idempotent — no-op when no new commits).
+
+**Recommended:** ensure every project the tenant tracks under FPSF/Canonic Internal Tooling has its local clone mapped in `.cp-engine.local.toml`'s `[local-repos]` block. Without the mapping, that project's sprint file will continue showing the "no commits" placeholder. The cp tenant's mapping was extended this release: `cp`, `fathom-meeting-sync`, and `1p-component-library` are now mapped alongside the existing `mc-2`, `cp-engine`, `storyos`, `unf-forge`, `market-leadership-scorecard`.
+
 ## v0.15.4 — 2026-06-02
 
 ### Fixed — Forward Calendar empty when ClickUp `due_date` is null but task name carries the date
