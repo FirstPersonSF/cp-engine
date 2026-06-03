@@ -427,6 +427,7 @@ def sync_tenant(
     # regions are preserved. Lazy-imported to break the sync ↔ sprints
     # circular dependency (sprints.py imports `_extract_region` from here).
     from cp_engine.sprints import (
+        _monday_of,
         _short_md_date,
         current_sprint_week_iso,
         ensure_sprint_files_for_active_projects,
@@ -447,13 +448,20 @@ def sync_tenant(
             active_projects=active_for_sprints,
             sprint_root=config.root / "sprints",
             now=sync_clock,
+            # Sprint-start floor for the "Recent activity" commit walk.
+            # Use the *calendar* Monday of `sync_clock`, NOT the planning
+            # Monday — `sprint_week_dates` rolls Wed-Sun to next week's
+            # Monday (for sprint-file labeling), which would put the
+            # commit floor in the future for half the week and yield an
+            # always-empty "Commits (last 7 days)" section. The renderer's
+            # own header is "last 7 days", so anchoring at the calendar
+            # Monday keeps the displayed window consistent with what the
+            # heading promises.
             per_project_data=_collect_sprint_per_project_data(
                 config,
                 projects,
                 allocations,
-                sprint_start=date.fromisoformat(
-                    sprint_week_dates(sync_clock)[0]
-                ),
+                sprint_start=_monday_of(sync_clock),
             ),
         )
         files_written.extend(sprint_paths)
