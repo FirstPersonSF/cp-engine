@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.15.3 — 2026-06-02
+
+### Fixed — `cp prep-planning` couldn't resolve clickup_list_id from a fresh shell
+
+`_make_supabase_client` in `prep_planning.py` only read `os.environ` for `SUPABASE_URL` / `SUPABASE_SERVICE_KEY`. It did NOT use the `mc-2/backend/.env` fallback that `sync_mc2._load_supabase_creds` uses (the canonical local-dev convention per `[local-repos.<user>]` in `.cp-engine.local.toml`).
+
+Symptom: any user running `cp prep-planning` from a fresh shell without exported SUPABASE creds saw "ClickUp list not set in MC-2 — milestones not tracked" for EVERY project — even projects with valid `clickup_list_id` rows in MC-2. The v0.15 Forward Calendar feature silently produced no data.
+
+Surfaced during the live verification: pushed an IBX milestone through the Fathom dashboard's Stage C → ClickUp; `cp prep-planning` couldn't see it. Manual call to `_resolve_proposal_project` worked; the same code path through the CLI didn't. Root cause: supabase_client was None because the env-loader path differed from sync's.
+
+Fix: `_make_supabase_client` now delegates to `sync_mc2._load_supabase_creds`. Both `cp sync` and `cp prep-planning` use the same precedence rules (os.environ first, then mc-2/backend/.env via tenant local-repos config). Returns None on `BackendUnavailable` (preserves graceful-degrade for tenants without an mc-2 clone).
+
+The cluster-4 reviewer flagged this as a nitpick during the v0.15.2 system review ("Inconsistent SUPABASE creds resolution"). Turned out to be a silent feature-killer, not a nitpick.
+
 ## v0.15.2 — 2026-06-02
 
 Day 2 of the post-v0.15.0 system-review cleanup. Ships the remaining 16 findings (12 Important + 4 defensive) across webhook, ingest, sprints, sync, prep_planning, and tooling. 745 tests passing (was 684 at v0.15.1).
