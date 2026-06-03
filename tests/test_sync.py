@@ -7,6 +7,7 @@ backend.
 
 from __future__ import annotations
 
+import subprocess
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -21,7 +22,7 @@ from cp_engine import (
     UnknownBackend,
     sync_tenant,
 )
-from cp_engine.sync import Backend, _last_week_monday
+from cp_engine.sync import Backend, _collect_sprint_per_project_data, _last_week_monday
 
 
 class FakeBackend(Backend):
@@ -1584,3 +1585,204 @@ def test_write_if_changed_no_op_on_duplicated_marker_when_content_matches(
         target, body, splice_regions=("banner",)
     )
     assert changed is False
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  _collect_sprint_per_project_data — recent_commits aggregation
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _init_git_repo(path: Path) -> None:
+    """Create a fresh git repo at `path` with deterministic config."""
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(
+        ["git", "init", "--initial-branch=main", "--quiet"],
+        cwd=path, check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "test@example.com"],
+        cwd=path, check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test"],
+        cwd=path, check=True,
+    )
+    subprocess.run(
+        ["git", "config", "commit.gpgsign", "false"],
+        cwd=path, check=True,
+    )
+
+
+def _git_commit(
+    path: Path,
+    *,
+    subject: str,
+    author: str = "Test Author",
+    when: str = "2026-06-01T12:00:00",
+) -> None:
+    """Create an empty commit with controlled author + date."""
+    env = {
+        "GIT_AUTHOR_NAME": author,
+        "GIT_AUTHOR_EMAIL": "author@example.com",
+        "GIT_AUTHOR_DATE": when,
+        "GIT_COMMITTER_NAME": author,
+        "GIT_COMMITTER_EMAIL": "author@example.com",
+        "GIT_COMMITTER_DATE": when,
+        "GIT_CONFIG_GLOBAL": "/dev/null",
+        "GIT_CONFIG_SYSTEM": "/dev/null",
+        # Keep PATH so git can find its helpers.
+        "PATH": __import__("os").environ.get("PATH", ""),
+        "HOME": str(path.parent),
+    }
+    subprocess.run(
+        ["git", "commit", "--allow-empty", "--quiet", "-m", subject],
+        cwd=path, check=True, env=env,
+    )
+
+
+def _config_with_local_repos(
+    tmp_path: Path, local_repos: dict[str, Path]
+) -> TenantConfig:
+    """Build a TenantConfig anchored at `tmp_path` with a local_repos map."""
+    from types import MappingProxyType
+    return TenantConfig(
+        name="firstpersonsf",
+        display="First Person Internal",
+        engine_version_constraint="~= 0.1",
+        sync=SyncConfig(
+            backend="mc-2", cron="0 * * * *", mc_2_supabase_project_ref="ref",
+        ),
+        projects=(),
+        root=tmp_path,
+        local_repos=MappingProxyType(dict(local_repos)),
+    )
+
+
+def test_collect_sprint_per_project_data_returns_commits_from_local_repo(
+    tmp_path: Path,
+) -> None:
+    """Three real commits in a local clone surface as SprintCommits."""
+    repo = tmp_path / "foo"
+    _init_git_repo(repo)
+    _git_commit(repo, subject="first", author="Alice", when="2026-06-01T09:00:00")
+    _git_commit(repo, subject="second", author="Bob",   when="2026-06-01T10:00:00")
+    _git_commit(repo, subject="third",  author="Carol", when="2026-06-01T11:00:00")
+
+    config = _config_with_local_repos(tmp_path, {"foo": repo})
+    projects = (make_state(code="foo", name="foo"),)
+
+    result = _collect_sprint_per_project_data(
+        config, projects, (), sprint_start=date(2026, 6, 1),
+    )
+
+    assert "foo" in result
+    commits = result["foo"]["recent_commits"]
+    assert len(commits) == 3
+    # git log --pretty=format walks newest → oldest.
+    subjects = [c.subject for c in commits]
+    assert subjects == ["third", "second", "first"]
+    authors = [c.author for c in commits]
+    assert authors == ["Carol", "Bob", "Alice"]
+    for c in commits:
+        assert c.when_short == "2026-06-01"
+        assert len(c.sha_short) >= 4  # %h gives a short SHA
+
+
+def test_collect_sprint_per_project_data_skips_projects_without_local_repo(
+    tmp_path: Path,
+) -> None:
+    """Projects without a local_repos entry are absent from the result."""
+    config = _config_with_local_repos(tmp_path, {})  # empty
+    projects = (
+        make_state(code="foo", name="foo"),
+        make_state(code="bar", name="bar"),
+    )
+
+    result = _collect_sprint_per_project_data(
+        config, projects, (), sprint_start=date(2026, 6, 1),
+    )
+    assert result == {}
+
+
+def test_collect_sprint_per_project_data_skips_commits_before_sprint_start(
+    tmp_path: Path,
+) -> None:
+    """Commits dated before sprint_start are excluded from `recent_commits`."""
+    repo = tmp_path / "foo"
+    _init_git_repo(repo)
+    # One way before, two in-window.
+    _git_commit(repo, subject="old",      when="2026-05-10T09:00:00")
+    _git_commit(repo, subject="in-1",     when="2026-06-01T12:00:00")
+    _git_commit(repo, subject="in-2",     when="2026-06-02T12:00:00")
+
+    config = _config_with_local_repos(tmp_path, {"foo": repo})
+    projects = (make_state(code="foo", name="foo"),)
+
+    result = _collect_sprint_per_project_data(
+        config, projects, (), sprint_start=date(2026, 6, 1),
+    )
+    subjects = [c.subject for c in result["foo"]["recent_commits"]]
+    assert subjects == ["in-2", "in-1"]
+    assert "old" not in subjects
+
+
+def test_collect_sprint_per_project_data_caps_at_20_commits(
+    tmp_path: Path,
+) -> None:
+    """30 in-window commits → cap at 20 in the result."""
+    repo = tmp_path / "foo"
+    _init_git_repo(repo)
+    for i in range(30):
+        _git_commit(
+            repo,
+            subject=f"commit-{i:02d}",
+            when=f"2026-06-01T{i % 24:02d}:00:00",
+        )
+
+    config = _config_with_local_repos(tmp_path, {"foo": repo})
+    projects = (make_state(code="foo", name="foo"),)
+
+    result = _collect_sprint_per_project_data(
+        config, projects, (), sprint_start=date(2026, 6, 1),
+    )
+    assert len(result["foo"]["recent_commits"]) == 20
+
+
+def test_collect_sprint_per_project_data_handles_missing_clone_gracefully(
+    tmp_path: Path,
+) -> None:
+    """A nonexistent path in local_repos is skipped, not an exception."""
+    bogus = tmp_path / "does-not-exist"
+    config = _config_with_local_repos(tmp_path, {"bar": bogus})
+    projects = (make_state(code="bar", name="bar"),)
+
+    result = _collect_sprint_per_project_data(
+        config, projects, (), sprint_start=date(2026, 6, 1),
+    )
+    assert "bar" not in result
+    assert result == {}
+
+
+def test_collect_sprint_per_project_data_handles_unicode_subject(
+    tmp_path: Path,
+) -> None:
+    """Non-ASCII subjects round-trip cleanly through git log → SprintCommit."""
+    repo = tmp_path / "foo"
+    _init_git_repo(repo)
+    _git_commit(
+        repo,
+        subject="ship 🚀 résumé update — café",
+        when="2026-06-01T09:00:00",
+    )
+
+    config = _config_with_local_repos(tmp_path, {"foo": repo})
+    projects = (make_state(code="foo", name="foo"),)
+
+    result = _collect_sprint_per_project_data(
+        config, projects, (), sprint_start=date(2026, 6, 1),
+    )
+    commits = result["foo"]["recent_commits"]
+    assert len(commits) == 1
+    assert "🚀" in commits[0].subject
+    assert "résumé" in commits[0].subject
+    assert "café" in commits[0].subject

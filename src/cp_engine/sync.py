@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
+import subprocess
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -55,6 +56,7 @@ from cp_engine.state import (  # noqa: F401
     Issue,
     LinkedRepo,
     ProjectState,
+    SprintCommit,
     account_scope_for,
     company_slug,
     dir_slug,
@@ -445,7 +447,14 @@ def sync_tenant(
             active_projects=active_for_sprints,
             sprint_root=config.root / "sprints",
             now=sync_clock,
-            per_project_data=_collect_sprint_per_project_data(projects, allocations),
+            per_project_data=_collect_sprint_per_project_data(
+                config,
+                projects,
+                allocations,
+                sprint_start=date.fromisoformat(
+                    sprint_week_dates(sync_clock)[0]
+                ),
+            ),
         )
         files_written.extend(sprint_paths)
 
@@ -1018,16 +1027,109 @@ def _ensure_weekly_strip_markers(body: str) -> str:
     return body + "\n" + block
 
 
-def _collect_sprint_per_project_data(projects, allocations) -> dict:
+# Field separator (US, ASCII 0x1F) between git-log fields. Subjects can
+# contain tabs, pipes, colons, etc. — US is reserved for this purpose and
+# never appears in real subjects.
+_GIT_LOG_FIELD_SEP = "\x1f"
+
+# Cap recent-commits list per project so a busy week (50+ commits) doesn't
+# bloat the sprint file. Partners scanning the section don't need every
+# commit; the top N most recent is plenty.
+_SPRINT_RECENT_COMMITS_CAP = 20
+
+# Cap commit subject length so each rendered bullet stays one line in a
+# typical terminal/editor view. The full subject is in `git log` anyway.
+_SPRINT_COMMIT_SUBJECT_CAP = 80
+
+
+def _recent_commits_for_repo(
+    repo_path: Path, *, sprint_start: date
+) -> tuple[SprintCommit, ...]:
+    """Walk `repo_path`'s git log for commits at-or-after `sprint_start`.
+
+    Returns an empty tuple on any error (missing path, not a git repo,
+    `git log` non-zero) so callers can skip silently. This is best-effort
+    context for the sprint file — a broken clone must not break sync.
+    """
+    if not repo_path.exists() or not (repo_path / ".git").exists():
+        return ()
+    fmt = _GIT_LOG_FIELD_SEP.join(("%h", "%s", "%an", "%ad"))
+    # `git log --since=YYYY-MM-DD` (bare date) is interpreted as "now on
+    # that date" — it silently filters out commits with timestamps
+    # earlier in the same day. Appending an explicit `00:00:00` pins it
+    # to midnight, so a commit dated `<sprint_start>T09:00` is included.
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "log",
+                f"--since={sprint_start.isoformat()} 00:00:00",
+                f"--pretty=format:{fmt}",
+                "--date=short",
+            ],
+            cwd=str(repo_path),
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError) as exc:
+        logger.debug("git log failed for %s: %s", repo_path, exc)
+        return ()
+    commits: list[SprintCommit] = []
+    for line in result.stdout.splitlines():
+        parts = line.split(_GIT_LOG_FIELD_SEP)
+        if len(parts) != 4:
+            continue
+        sha_short, subject, author, when_short = parts
+        if len(subject) > _SPRINT_COMMIT_SUBJECT_CAP:
+            subject = subject[: _SPRINT_COMMIT_SUBJECT_CAP - 1].rstrip() + "…"
+        commits.append(
+            SprintCommit(
+                sha_short=sha_short,
+                subject=subject,
+                author=author,
+                when_short=when_short,
+            )
+        )
+        if len(commits) >= _SPRINT_RECENT_COMMITS_CAP:
+            break
+    return tuple(commits)
+
+
+def _collect_sprint_per_project_data(
+    config: TenantConfig,
+    projects,
+    allocations,
+    *,
+    sprint_start: date,
+) -> dict:
     """Per-project context fed into sprint-file scaffolding.
 
-    v0.8.0 stub: returns empty dict, so all sprint files render with the
-    renderer's default fallbacks (sessions_this_week=0, no commits, no
-    recent-session paragraph). Later tasks will expand this to aggregate
-    session metadata, recent commits, open issues, and last-sprint-hours
-    from the existing data sources.
+    Walks each project's local git clone (resolved via
+    `config.local_repos[project.code]`) for commits at-or-after
+    `sprint_start`, capped at `_SPRINT_RECENT_COMMITS_CAP`. Projects
+    without a local clone or without commits in the window are simply
+    absent from the result dict — `ensure_sprint_files_for_active_projects`
+    falls back to `()` for missing keys.
+
+    Other per-project keys (`sessions_this_week`, `last_session_*`,
+    `open_issues`, `last_sprint_hours_line`) are not yet aggregated; the
+    renderer applies safe defaults for the keys we omit. `allocations` is
+    accepted for forward-compat with the upcoming hours-line work.
     """
-    return {}
+    del allocations  # reserved for future hours-line aggregation
+    out: dict[str, dict] = {}
+    for project in projects:
+        repo_path = config.local_repos.get(project.code)
+        if repo_path is None:
+            continue
+        commits = _recent_commits_for_repo(
+            repo_path, sprint_start=sprint_start
+        )
+        if not commits:
+            continue
+        out[project.code] = {"recent_commits": commits}
+    return out
 
 
 def _derive_summary(config: TenantConfig, project: ProjectState) -> str | None:
