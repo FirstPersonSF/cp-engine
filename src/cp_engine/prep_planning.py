@@ -1273,17 +1273,22 @@ def render_planning_doc_markdown(result: PlanningResult) -> str:
 def _make_supabase_client(config: TenantConfig):
     """Build a Supabase client for MC-2 reads. Returns None on missing creds.
 
-    Mirrors ``cli._fetch_clickup_task_ids_for_hashes``: silent degrade is OK
-    because every per-project ClickUp fetch already handles a missing
-    list_id by rendering a "not set" placeholder.
+    Delegates env resolution to ``sync_mc2._load_supabase_creds`` so both
+    ``cp sync`` and ``cp prep-planning`` use the same precedence rules:
+    os.environ first, then ``<mc-2 clone>/backend/.env`` via the tenant's
+    ``[local-repos]`` config. Without this, ``cp prep-planning`` ran from
+    a fresh shell sees os.environ only, silently fails to resolve any
+    project's clickup_list_id, and renders "(ClickUp list not set)" for
+    every project — killing the v0.15 Forward Calendar feature.
     """
     try:
         from supabase import create_client
     except ImportError:  # pragma: no cover
         return None
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY")
-    if not url or not key:
+    try:
+        from cp_engine.sync_mc2 import _load_supabase_creds
+        url, key = _load_supabase_creds(config)
+    except Exception:  # noqa: BLE001 — sync_mc2 raises BackendUnavailable
         log.info("Supabase env not set; ClickUp list resolution disabled.")
         return None
     return create_client(url, key)
