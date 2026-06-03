@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.15.4 — 2026-06-02
+
+### Fixed — Forward Calendar empty when ClickUp `due_date` is null but task name carries the date
+
+`_normalize_clickup_task` only read ClickUp's structured `due_date` field. fathom-meeting-sync's Stage C push (the dashboard's "Create N tasks" button) sets the proposal's text-form deliverable as the ClickUp task NAME — including the `(due YYYY-MM-DD, owner: ...)` suffix — but does NOT set ClickUp's structured `due_date`. So milestones pushed via the dashboard arrived in ClickUp with `due_date: null` even though the date was right there in the name.
+
+Symptom (surfaced 2026-06-02 in live verification): IBX milestone (`tag=milestone`, `Type=2` custom field, correct in every other way) appeared in the doc only as an Open Commitments row, never in Forward Calendar — because `_render_forward_calendar` skips milestones with no date anchor.
+
+Added `_NAME_DUE_DATE_RE` (matches `(due YYYY-MM-DD`) and `_parse_due_date_from_name`. `_normalize_clickup_task` now prefers ClickUp's structured field when present and falls through to the name regex when null. Defensive against any push source that omits the structured field — not just fathom-meeting-sync's current shape.
+
+The upstream fix (set ClickUp's structured `due_date` in `pushApprovedProposal`) is tracked separately so structured data becomes the norm going forward. This regex stays as defensive cover.
+
 ## v0.15.3 — 2026-06-02
 
 ### Fixed — `cp prep-planning` couldn't resolve clickup_list_id from a fresh shell
