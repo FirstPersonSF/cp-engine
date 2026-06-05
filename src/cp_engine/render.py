@@ -705,6 +705,9 @@ Thumbs.db
 # Engine state — v0.8.7: holds fathom auto-poll state (last_polled_at,
 # processed_ids). Per-machine; not shared via git.
 .cp-engine/
+
+# Bytecode cache from the engine-managed .claude/ hook script.
+.claude/hooks/__pycache__/
 """
 
 

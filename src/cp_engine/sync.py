@@ -30,6 +30,7 @@ from typing import Callable, Protocol
 
 logger = logging.getLogger(__name__)
 
+from cp_engine.claude_settings import install_into_tenant
 from cp_engine.config import TenantConfig
 from cp_engine.render import (
     count_exceptions_in_window,
@@ -220,6 +221,11 @@ def sync_tenant(
     gitignore_path = config.root / ".gitignore"
     if _write_if_changed(gitignore_path, render_gitignore(), splice_regions=()):
         files_written.append(gitignore_path)
+
+    # .claude/ — engine-managed SessionStart hook that self-heals a stale
+    # `cp` CLI vs the tenant's [engine].version pin. Idempotent and
+    # non-fatal; preserves any tenant-authored settings/hooks.
+    files_written.extend(install_into_tenant(config.root))
 
     # Project CPs — v0.7 layout: each project gets a working directory at
     # <scope>/<dir_slug>/ where dir_slug encodes both the code and a
