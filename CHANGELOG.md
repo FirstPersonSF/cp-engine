@@ -4,6 +4,24 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.17.0 — 2026-06-05
+
+### Added — engine-managed `.claude/` SessionStart hook that self-heals a stale `cp` CLI
+
+The `cp` CLI is a `uv tool`-installed binary, separate from the cp-engine Claude Code plugin. It is installed from a frozen git rev, the marketplace entry has `autoUpdate: false`, and nothing re-resolves it — so the CLI silently lags the tenant's `[engine].version` pin. The failure is invisible until someone runs `cp sync`, which then refuses with "installed cp-engine X does not satisfy the tenant's engine pin". Observed in the cp tenant: the CLI sat at 0.10.0 while the engine shipped through 0.16, because the pin's guard only fires at sync time and server-side auto-ingest (a separate, current install) masks the staleness day-to-day.
+
+This release ships a SessionStart hook into every tenant on sync. `install_into_tenant` (new module `cp_engine.claude_settings`) copies a packaged hook script to `.claude/hooks/check-cp-engine-version.py` and idempotently merges a single SessionStart entry into `.claude/settings.json`. On each session the hook compares `cp --version` against the tenant pin and, on mismatch, reinstalls `cp` from the local clone (resolved from `.cp-engine.local.toml`'s `[local-repos] cp-engine`).
+
+The hook is deliberately defensive: it implements the `~=`/`>=`/`==`/bare PEP-440 constraint check inline (no `packaging` dependency, so it runs under bare system python3), is non-blocking and fully silent on the healthy path, and exits 0 on every failure path — a version-check hook must never stop a session from starting. The settings merge recognizes its own entry by a stable sentinel substring, preserves any tenant-authored hooks and settings, and refuses to clobber a malformed `settings.json`.
+
+`settings.json` is JSON and can't carry the `cp-engine:start/end` splice markers the markdown files use, hence the sentinel-based merge rather than region splicing. The hook script directory carries an `__init__.py` so hatch reliably ships it on directory/editable installs (the wheel already included it; a directory install dropped it without the package marker).
+
+### Migration notes
+
+**Tenants must bump** `.cp-engine.toml`'s `[engine].version` from `~= 0.16` to `~= 0.17`.
+
+**No data migration required.** On next `cp sync` the engine creates `.claude/settings.json` and `.claude/hooks/check-cp-engine-version.py` (or merges into an existing `settings.json`). Both are committed to the tenant. Tenants with their own `.claude/settings.json` keep all existing keys and hooks — the engine only ensures its one SessionStart entry. The generated `.gitignore` now also ignores `.claude/hooks/__pycache__/`.
+
 ## v0.16.0 — 2026-06-03
 
 ### Added — sprint files now show real recent-commits activity
