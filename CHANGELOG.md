@@ -4,6 +4,22 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.18.0 — 2026-06-06
+
+### Fixed — `cp prep-planning` now resolves the ClickUp token from MC-2's `.env`
+
+`cp prep-planning` read the ClickUp Personal API Token only from `CLICKUP_API_TOKEN` in the process environment. But MC-2's `backend/.env` — the canonical local-dev home for the engine's credentials — stores the same token under `CLICKUP_API_KEY`, and unlike the SUPABASE creds (which already fall back to that `.env` via `sync_mc2._load_supabase_creds`), the ClickUp side never did. The result: running `cp prep-planning` from a fresh shell silently failed *every* project's milestone fetch — `milestone_counts` all zero, an empty Forward Calendar across the whole doc — which defeats the entire point of the v0.15 forward-looking planning doc. This was the same class of env-name mismatch that bit the SUPABASE wiring in v0.15.
+
+New `_resolve_clickup_token(config)` mirrors the SUPABASE resolver exactly: it checks the process environment first (accepting **both** `CLICKUP_API_TOKEN` and `CLICKUP_API_KEY`), then falls back to `<mc-2 clone>/backend/.env` (again both names, clone path from `.cp-engine.local.toml`'s `[local-repos]`), printing a one-line stderr note on `.env` fallback so the implicit dependency stays visible. The token is resolved once at the CLI level (where `config` is available) and passed through `render_planning_doc` / `render_planning_summary`'s existing `clickup_token` parameter. `_clickup_token()` also now accepts both env-var names for any direct callers.
+
+### Migration notes
+
+**Tenants must bump** `.cp-engine.toml`'s `[engine].version` from `~= 0.17` to `~= 0.18`.
+
+**No data migration required.** If you previously had to export `CLICKUP_API_TOKEN` by hand to get a populated Forward Calendar, you no longer need to — `cp prep-planning` now finds the token in `mc-2/backend/.env` automatically.
+
+**Plugin users:** update the cp-engine Claude Code plugin (`/plugin`) to pick up the current `/cp-prep` command, which has used `cp prep-planning` (not the deprecated `cp prep-agenda`) since v0.15. The marketplace entry has `autoUpdate` off, so the plugin cache does not refresh on its own.
+
 ## v0.17.0 — 2026-06-05
 
 ### Added — engine-managed `.claude/` SessionStart hook that self-heals a stale `cp` CLI
