@@ -1682,8 +1682,14 @@ def prep_planning_cmd(
 
     # MC-2 Supabase client for clickup_list_id resolution. Silent degrade if
     # creds aren't set — per-project blocks will render "(ClickUp list not set)".
-    from cp_engine.prep_planning import _make_supabase_client
+    from cp_engine.prep_planning import _make_supabase_client, _resolve_clickup_token
     supabase_client = _make_supabase_client(config)
+
+    # ClickUp token: env first, then <mc-2 clone>/backend/.env (accepting both
+    # CLICKUP_API_TOKEN and CLICKUP_API_KEY). Resolved here where config is
+    # available — without it, a fresh shell resolves nothing and every
+    # project's Forward Calendar renders empty.
+    clickup_token = _resolve_clickup_token(config)
 
     code_filter = tuple(c.strip() for c in project_filter.split(",") if c.strip()) or None
 
@@ -1731,6 +1737,7 @@ def prep_planning_cmd(
             project_filter=code_filter,
             tenant_hours_last_week=tenant_hours,
             supabase_client=supabase_client,
+            clickup_token=clickup_token,
             clickup_task_ids=clickup_task_ids,
         )
         click.echo(out_str)
@@ -1743,6 +1750,7 @@ def prep_planning_cmd(
         project_filter=code_filter,
         tenant_hours_last_week=tenant_hours,
         supabase_client=supabase_client,
+        clickup_token=clickup_token,
         clickup_task_ids=clickup_task_ids,
     )
 

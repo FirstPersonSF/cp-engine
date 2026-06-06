@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
@@ -181,9 +182,48 @@ _CLICKUP_BASE = "https://api.clickup.com/api/v2"
 _CLICKUP_TIMEOUT = 15.0
 
 
+# ClickUp token env-var names, in preference order. The engine canonically
+# uses ``CLICKUP_API_TOKEN``; MC-2's ``backend/.env`` stores the same
+# credential as ``CLICKUP_API_KEY``. Accept both so the token resolves whether
+# it's exported in the shell or only present in the MC-2 clone's .env.
+_CLICKUP_TOKEN_KEYS = ("CLICKUP_API_TOKEN", "CLICKUP_API_KEY")
+
+
 def _clickup_token() -> str | None:
-    """Read the ClickUp Personal API Token from ``CLICKUP_API_TOKEN``."""
-    return os.environ.get("CLICKUP_API_TOKEN")
+    """Read the ClickUp token from the environment (either accepted name)."""
+    for key in _CLICKUP_TOKEN_KEYS:
+        val = os.environ.get(key)
+        if val:
+            return val
+    return None
+
+
+def _resolve_clickup_token(config: TenantConfig) -> str | None:
+    """Resolve the ClickUp token: env first, then ``<mc-2 clone>/backend/.env``.
+
+    Mirrors ``sync_mc2._load_supabase_creds`` so ``cp prep-planning`` run from
+    a fresh shell resolves the token the same way SUPABASE creds do — instead
+    of silently failing every project's milestone fetch. Accepts both
+    ``CLICKUP_API_TOKEN`` and ``CLICKUP_API_KEY`` (MC-2's .env uses the latter).
+    Prints a one-line note on .env fallback so the implicit dependency stays
+    visible. Returns None if neither source has it.
+    """
+    token = _clickup_token()
+    if token:
+        return token
+
+    from cp_engine.sync_mc2 import _mc2_env_file, _read_dotenv
+
+    env_file = _mc2_env_file(config)
+    if env_file is None:
+        return None
+    file_creds = _read_dotenv(env_file, _CLICKUP_TOKEN_KEYS)
+    for key in _CLICKUP_TOKEN_KEYS:
+        val = file_creds.get(key)
+        if val:
+            print(f"Loaded {key} from {env_file}", file=sys.stderr)
+            return val
+    return None
 
 
 # Sentinel substrings used by ``build_planning_result`` to recognize

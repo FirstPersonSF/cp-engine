@@ -1559,3 +1559,95 @@ def test_summary_non_auth_error_does_not_surface_auth_error(tmp_path):
     assert not any("ClickUp auth failed" in err for err in result.errors)
     # The 500 still lands per-project.
     assert any("ggl-5168" in err for err in result.errors)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  ClickUp token resolution — env (both names) + mc-2 .env fallback
+# ──────────────────────────────────────────────────────────────────────
+
+def _config_with_mc2(tenant_root: Path, mc2_clone: Path) -> TenantConfig:
+    return TenantConfig(
+        name="firstpersonsf",
+        display="First Person Internal",
+        engine_version_constraint="~= 0.1",
+        sync=SyncConfig(
+            backend="mc-2", cron="0 * * * *", mc_2_supabase_project_ref="ref"
+        ),
+        projects=(),
+        root=tenant_root,
+        local_repos={"mc-2": mc2_clone},
+    )
+
+
+def test_clickup_token_env_canonical(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLICKUP_API_TOKEN", "pk_canonical")
+    monkeypatch.delenv("CLICKUP_API_KEY", raising=False)
+    cfg = _config_with_mc2(tmp_path, tmp_path / "mc-2")
+    assert prep_planning._resolve_clickup_token(cfg) == "pk_canonical"
+
+
+def test_clickup_token_env_key_alias(monkeypatch, tmp_path):
+    # MC-2's name, exported in the shell — should still resolve.
+    monkeypatch.delenv("CLICKUP_API_TOKEN", raising=False)
+    monkeypatch.setenv("CLICKUP_API_KEY", "pk_alias")
+    cfg = _config_with_mc2(tmp_path, tmp_path / "mc-2")
+    assert prep_planning._resolve_clickup_token(cfg) == "pk_alias"
+
+
+def test_clickup_token_env_token_wins_over_key(monkeypatch, tmp_path):
+    monkeypatch.setenv("CLICKUP_API_TOKEN", "pk_token")
+    monkeypatch.setenv("CLICKUP_API_KEY", "pk_key")
+    cfg = _config_with_mc2(tmp_path, tmp_path / "mc-2")
+    assert prep_planning._resolve_clickup_token(cfg) == "pk_token"
+
+
+def test_clickup_token_falls_back_to_mc2_env_key(monkeypatch, tmp_path, capsys):
+    # THE bug this fixes: token only in mc-2/backend/.env as CLICKUP_API_KEY.
+    monkeypatch.delenv("CLICKUP_API_TOKEN", raising=False)
+    monkeypatch.delenv("CLICKUP_API_KEY", raising=False)
+    mc2 = tmp_path / "mc-2"
+    backend = mc2 / "backend"
+    backend.mkdir(parents=True)
+    (backend / ".env").write_text(
+        'SUPABASE_URL="https://x.supabase.co"\n'
+        'CLICKUP_API_KEY="pk_from_dotenv"\n'
+    )
+    cfg = _config_with_mc2(tmp_path, mc2)
+    assert prep_planning._resolve_clickup_token(cfg) == "pk_from_dotenv"
+    # one-line stderr note keeps the implicit dependency visible
+    assert "CLICKUP_API_KEY" in capsys.readouterr().err
+
+
+def test_clickup_token_falls_back_to_mc2_env_token_name(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLICKUP_API_TOKEN", raising=False)
+    monkeypatch.delenv("CLICKUP_API_KEY", raising=False)
+    mc2 = tmp_path / "mc-2"
+    backend = mc2 / "backend"
+    backend.mkdir(parents=True)
+    (backend / ".env").write_text('CLICKUP_API_TOKEN="pk_dotenv_canonical"\n')
+    cfg = _config_with_mc2(tmp_path, mc2)
+    assert prep_planning._resolve_clickup_token(cfg) == "pk_dotenv_canonical"
+
+
+def test_clickup_token_none_when_nowhere(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLICKUP_API_TOKEN", raising=False)
+    monkeypatch.delenv("CLICKUP_API_KEY", raising=False)
+    # mc-2 clone configured but no .env file present
+    cfg = _config_with_mc2(tmp_path, tmp_path / "mc-2")
+    assert prep_planning._resolve_clickup_token(cfg) is None
+
+
+def test_clickup_token_none_when_no_mc2_clone(monkeypatch, tmp_path):
+    monkeypatch.delenv("CLICKUP_API_TOKEN", raising=False)
+    monkeypatch.delenv("CLICKUP_API_KEY", raising=False)
+    cfg = TenantConfig(
+        name="firstpersonsf",
+        display="First Person Internal",
+        engine_version_constraint="~= 0.1",
+        sync=SyncConfig(
+            backend="mc-2", cron="0 * * * *", mc_2_supabase_project_ref="ref"
+        ),
+        projects=(),
+        root=tmp_path,
+    )
+    assert prep_planning._resolve_clickup_token(cfg) is None
