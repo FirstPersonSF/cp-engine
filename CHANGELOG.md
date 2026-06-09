@@ -4,6 +4,22 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.18.1 — 2026-06-09
+
+### Fixed — three sync/status bugs surfaced while debugging a "stale master-cp" report
+
+A user reported `master-cp.md` looking out of date after a meeting ingest. The root cause was operational (a missing `cp sync` — `cp ingest` writes sprint files only), but the debugging surfaced three real engine bugs that amplified the "something's broken" impression. All three are fixed here, test-first.
+
+**`master-cp.md` provenance header not bumped on sync (#10).** The anchor `Provenance: Version <NN> | <date>` line lives *outside* every engine-managed region, so splice-mode sync never refreshed it — the file showed an old version + date (e.g. `0.8.16.4 | 2026-05-18`) even immediately after a clean regeneration. The header contradicted the in-body `Last sync` timestamp and read as "out of date." `_write_if_changed` now refreshes the provenance line from the freshly-rendered body on every splice write (new `_refresh_provenance_header`).
+
+**`cp status` was a stub (#9).** It printed `not implemented yet (lands in v0.4)` and exited 1, despite being advertised in `--help` as "show what would change on next sync" — the natural first command to reach for when diagnosing a stale tenant. It's now a real no-write dry-run: `sync_tenant` gains a `dry_run=` flag, `_write_if_changed` delegates change-detection to a new `_would_change` (compute-don't-write), and the write-heavy passes (`install_into_tenant`, account/sprint scaffolding, deactivation) are skipped under dry-run. `cp status` reports the high-signal files that would change (master-cp, CLAUDE, .gitignore, new project CPs) and touches nothing.
+
+**`last-week-workload` regenerated empty at the start of a sprint week (#11).** Sync read allocations via `_last_week_monday`, which returns the *upcoming sprint-planning* window's Monday — at the start of a sprint that's the **current** week, which has no logged hours yet. Result: every project lost its `_Last week: <hours>_` annotation and the whole workload region emptied, reading as data loss. Sync now reads the **prior completed** week via `_prior_completed_week_monday`, matching the rule `cp prep-planning` already uses, so the two surfaces agree and last week's real hours show.
+
+### Migration notes
+
+**No tenant action required** beyond the patch flowing automatically (`~= 0.18`). No data migration. The next `cp sync` will bring stale provenance headers current and restore the workload annotations.
+
 ## v0.18.0 — 2026-06-06
 
 ### Fixed — `cp prep-planning` now resolves the ClickUp token from MC-2's `.env`
