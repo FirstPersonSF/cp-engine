@@ -135,6 +135,7 @@ def sync_tenant(
     *,
     backend_factory: BackendFactory | None = None,
     now: datetime | None = None,
+    dry_run: bool = False,
 ) -> SyncResult:
     """Run one sync cycle for the tenant.
 
@@ -168,10 +169,13 @@ def sync_tenant(
         for p in projects
     )
 
-    # Read sprint allocations for last week (Monday-starting). v0.2.4 only
-    # surfaces last week; "this week" is entered live during the partners'
-    # review session, so it's incomplete at sync time and not useful here.
-    last_week_start = _last_week_monday(sync_clock)
+    # Read sprint allocations for the prior COMPLETED week (Monday-starting).
+    # Bug #11: `_last_week_monday` returns the *upcoming sprint-planning*
+    # window's Monday — which, at the start of a sprint week, is THIS week and
+    # has no logged hours yet, silently emptying the workload section. Use the
+    # same "Monday of the previous calendar week" rule prep-planning uses so
+    # the two surfaces agree and last week's real hours show.
+    last_week_start = _prior_completed_week_monday(sync_clock)
     try:
         allocations = backend.read_allocations(config, last_week_start.isoformat())
     except (AttributeError, NotImplementedError):
@@ -206,26 +210,32 @@ def sync_tenant(
         new_master,
         splice_regions=first_pass_regions,
         cosmetic_regions=_MASTER_COSMETIC_REGIONS,
+        dry_run=dry_run,
     ):
         files_written.append(master_path)
 
     # CLAUDE.md — fully generated; overwrite if changed.
     claude_path = config.root / "CLAUDE.md"
     new_claude = render_claude_md(config)
-    if _write_if_changed(claude_path, new_claude, splice_regions=()):
+    if _write_if_changed(claude_path, new_claude, splice_regions=(), dry_run=dry_run):
         files_written.append(claude_path)
 
     # .gitignore — generated, idempotent. Tenants shouldn't hand-edit;
     # exceptions can layer in per-scope or per-project .gitignore files
     # if real cases emerge (see v0.3 design doc).
     gitignore_path = config.root / ".gitignore"
-    if _write_if_changed(gitignore_path, render_gitignore(), splice_regions=()):
+    if _write_if_changed(
+        gitignore_path, render_gitignore(), splice_regions=(), dry_run=dry_run
+    ):
         files_written.append(gitignore_path)
 
     # .claude/ — engine-managed SessionStart hook that self-heals a stale
     # `cp` CLI vs the tenant's [engine].version pin. Idempotent and
-    # non-fatal; preserves any tenant-authored settings/hooks.
-    files_written.extend(install_into_tenant(config.root))
+    # non-fatal; preserves any tenant-authored settings/hooks. Skipped under
+    # dry-run (it mutates the filesystem directly rather than via
+    # _write_if_changed).
+    if not dry_run:
+        files_written.extend(install_into_tenant(config.root))
 
     # Project CPs — v0.7 layout: each project gets a working directory at
     # <scope>/<dir_slug>/ where dir_slug encodes both the code and a
@@ -264,6 +274,15 @@ def sync_tenant(
         existing_inactive = _find_project_dir(
             inactive_root(config.root, scope), project.code
         )
+
+        if dry_run:
+            # Report what would be created; perform no filesystem mutation.
+            # (Slug-drift renames / reactivations are reported coarsely as the
+            # target cp.md; a precise per-file diff isn't needed for `cp status`.)
+            cp_path = project_dir / "cp.md"
+            if existing_live is None and not cp_path.exists():
+                files_written.append(cp_path)
+            continue
 
         if existing_live is not None and existing_live != project_dir:
             # Slug drift: rename live dir to current slug.
@@ -389,6 +408,9 @@ def sync_tenant(
         accounts_to_active_projects.setdefault((slug, display), []).append(project)
 
     for (slug, display), account_projects in accounts_to_active_projects.items():
+        if dry_run:
+            break  # account/sprint/deactivation passes are write-heavy; the
+            # dry-run report covers master-cp + CLAUDE + new project CPs.
         account_dir = config.root / "1p" / slug
         account_cp_path = account_dir / "cp.md"
         account_projects_tuple = tuple(account_projects)
@@ -444,7 +466,7 @@ def sync_tenant(
         render_sprint_index,
         sprint_week_dates,
     )
-    if is_in_sprint_window(sync_clock):
+    if is_in_sprint_window(sync_clock) and not dry_run:
         # Pass the full project list; the orchestrator owns the active-filter
         # rule (engagement → is_active_status + not internal; repo → status ==
         # "Active"). Pre-filtering here would strip FPSF + Canonic repos,
@@ -682,7 +704,9 @@ def sync_tenant(
     # status flipped, deleted, or is_internal=true). Move the whole
     # working dir to <scope>/inactive/<dir_slug>/. Reactivation is
     # symmetric: a live dir matching an inactive one gets restored.
-    files_deactivated = _deactivate_stale_cps(config.root, live_dirs)
+    files_deactivated = (
+        () if dry_run else _deactivate_stale_cps(config.root, live_dirs)
+    )
 
     return SyncResult(
         projects_seen=len(projects),
@@ -715,6 +739,18 @@ _MASTER_REGIONS = (
     "holding-subtable",
     "closed-recent",
 )
+
+
+def _prior_completed_week_monday(now: datetime) -> date:
+    """Monday of the previous calendar week relative to `now`.
+
+    Matches prep-planning's `today - timedelta(days=today.weekday() + 7)`.
+    Used to surface last week's logged allocations (bug #11) — always a
+    completed week, never the just-started current one. On Tue 2026-06-09
+    (weekday 1) → 2026-06-01.
+    """
+    today = now.date()
+    return today - timedelta(days=today.weekday() + 7)
 
 
 def _last_week_monday(now: datetime) -> date:
@@ -753,12 +789,68 @@ def _last_week_monday(now: datetime) -> date:
 _MASTER_COSMETIC_REGIONS = ("last-sync-timestamp",)
 
 
+def _would_change(
+    path: Path,
+    new_full_body: str,
+    *,
+    splice_regions: tuple[str, ...],
+    cosmetic_regions: tuple[str, ...] = (),
+) -> bool:
+    """Return True iff `_write_if_changed` would write — without writing.
+
+    Mirrors the change-detection in `_write_if_changed`: a missing file would
+    be created; an existing file is compared region-by-region (ignoring
+    cosmetic-only diffs and refreshing the provenance header) the same way.
+    Backs `cp status` (bug #9).
+    """
+    if not path.exists():
+        return True
+    if not splice_regions:
+        return path.read_text() != new_full_body
+
+    existing = path.read_text()
+    missing = [
+        r for r in splice_regions
+        if f"<!-- cp-engine:start {r} -->" not in existing
+    ]
+    if missing:
+        return existing != new_full_body
+
+    try:
+        merged = existing
+        for region in splice_regions:
+            merged = splice_managed_region(
+                merged, region, _extract_region(new_full_body, region)
+            )
+        merged = _refresh_provenance_header(merged, new_full_body)
+    except Exception:  # noqa: BLE001 — match _write_if_changed's fallback
+        return existing != new_full_body
+
+    if merged == existing:
+        return False
+    if cosmetic_regions:
+        try:
+            comparison = existing
+            for region in splice_regions:
+                if region in cosmetic_regions:
+                    continue
+                comparison = splice_managed_region(
+                    comparison, region, _extract_region(new_full_body, region)
+                )
+            if comparison == existing:
+                return False
+        except Exception:  # noqa: BLE001
+            pass
+    return True
+
+
 def _write_if_changed(
     path: Path,
     new_full_body: str,
     *,
     splice_regions: tuple[str, ...],
     cosmetic_regions: tuple[str, ...] = (),
+    dry_run: bool = False,
 ) -> bool:
     """Write `new_full_body` to `path`, splicing region-by-region if the file
     already exists and `splice_regions` is non-empty. Otherwise overwrite.
@@ -767,8 +859,15 @@ def _write_if_changed(
     ignored when deciding whether the file changed: if every other region
     matches, the write is skipped even though the cosmetic region differs.
 
-    Returns True iff the file changed on disk.
+    When `dry_run` is True, computes whether the file *would* change but
+    performs no write — used by `cp status` (bug #9). Returns True iff the
+    file changed (or would change, under dry_run).
     """
+    if dry_run:
+        return _would_change(
+            path, new_full_body,
+            splice_regions=splice_regions, cosmetic_regions=cosmetic_regions,
+        )
     if path.exists() and splice_regions:
         existing = path.read_text()
 
@@ -821,6 +920,12 @@ def _write_if_changed(
                 merged = splice_managed_region(
                     merged, region, _extract_region(new_full_body, region)
                 )
+            # Bug #10: the anchor `Provenance:` header lives outside every
+            # engine-managed region, so the region splice above never touches
+            # it — the file looked stale (old version/date) even right after a
+            # clean regen. Refresh it from the freshly-rendered body so the
+            # header always reports the running engine version + sync date.
+            merged = _refresh_provenance_header(merged, new_full_body)
         except Exception as exc:  # noqa: BLE001 — sync continuation > region fidelity
             logger.warning(
                 "%s splice failed (%s); falling back to full rewrite. "
@@ -867,6 +972,23 @@ def _write_if_changed(
         return False
     path.write_text(new_full_body)
     return True
+
+
+def _refresh_provenance_header(merged: str, new_full_body: str) -> str:
+    """Replace the anchor `Provenance: Version <NN> | <date>` line in `merged`
+    with the one from the freshly-rendered `new_full_body`.
+
+    The anchor header sits above all engine-managed regions, so the region
+    splice never updates it; without this the version/date stamp stays frozen
+    at whatever was last written (bug #10). Only the first match is touched —
+    the anchor is the file's first `Provenance:` line. No-op if either side
+    lacks the line.
+    """
+    pattern = re.compile(r"^Provenance: Version [^\n]*$", re.MULTILINE)
+    fresh = pattern.search(new_full_body)
+    if fresh is None:
+        return merged
+    return pattern.sub(fresh.group(0), merged, count=1)
 
 
 _CURRENT_SPRINT_START = "<!-- cp-engine:start current-sprint -->"

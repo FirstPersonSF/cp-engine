@@ -37,6 +37,41 @@ class FakeBackend(Backend):
         return self._states
 
 
+class AllocationRecordingBackend(Backend):
+    """Backend that records which week `read_allocations` is asked for, so we
+    can pin WHICH week sync surfaces as 'last week's workload' (bug #11)."""
+
+    def __init__(self, states: tuple[ProjectState, ...]) -> None:
+        self._states = states
+        self.allocations_weeks: list[str] = []
+
+    def read_projects(self, config: TenantConfig) -> tuple[ProjectState, ...]:
+        return self._states
+
+    def read_allocations(self, config: TenantConfig, week_start: str):
+        self.allocations_weeks.append(week_start)
+        return None
+
+
+def test_sync_reads_prior_completed_week_for_workload(tmp_path: Path) -> None:
+    """Bug #11: on a Tuesday, sync must read allocations for the PRIOR completed
+    week (the one with logged hours), not the current just-started sprint week.
+    `_last_week_monday` returns the upcoming-planning-window Monday (this week),
+    which is empty at the start of a sprint — emptying the workload section."""
+    config = make_config(tmp_path)
+    fake = AllocationRecordingBackend((make_state(),))
+
+    # Tuesday 2026-06-09. Prior completed week starts Monday 2026-06-01.
+    sync_tenant(
+        config,
+        backend_factory=lambda _: fake,
+        now=datetime(2026, 6, 9, 14, 0, 0, tzinfo=timezone.utc),
+    )
+
+    assert fake.allocations_weeks, "sync never read allocations"
+    assert fake.allocations_weeks[0] == "2026-06-01"
+
+
 def make_config(tenant_root: Path, backend: str = "mc-2") -> TenantConfig:
     return TenantConfig(
         name="firstpersonsf",
@@ -128,6 +163,36 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     assert "<!-- cp-engine:start tracked-issues -->" in project_cp
 
 
+def test_dry_run_sync_reports_changes_without_writing(tmp_path: Path) -> None:
+    """Bug #9: `cp status` should report what sync WOULD change without writing.
+    A dry-run sync on a fresh tenant reports the files it would create but
+    leaves the disk untouched."""
+    config = make_config(tmp_path)
+    fake = FakeBackend((make_state(name="Mission Control v2"),))
+
+    result = sync_tenant(config, backend_factory=lambda _: fake, dry_run=True)
+
+    # It reports what WOULD be written...
+    written_names = {p.name for p in result.files_written}
+    assert "master-cp.md" in written_names
+    assert not result.no_op
+    # ...but nothing is actually on disk.
+    assert not (tmp_path / "master-cp.md").exists()
+    assert not (tmp_path / "CLAUDE.md").exists()
+    assert not (tmp_path / "1p").exists()
+
+
+def test_dry_run_sync_on_synced_tenant_is_noop(tmp_path: Path) -> None:
+    """Bug #9: a dry-run against an already-synced tenant reports no changes."""
+    config = make_config(tmp_path)
+    fake = FakeBackend((make_state(),))
+    sync_tenant(config, backend_factory=lambda _: fake)  # real sync first
+
+    result = sync_tenant(config, backend_factory=lambda _: fake, dry_run=True)
+    assert result.no_op
+    assert result.files_written == ()
+
+
 def test_sync_invokes_backend_exactly_once(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     fake = FakeBackend((make_state(),))
@@ -215,6 +280,53 @@ def test_resync_with_real_change_refreshes_timestamp_too(tmp_path: Path) -> None
     # Timestamp reflects the new sync clock, not the old one
     assert "13:00:00" in master_text
     assert "12:00:00" not in master_text
+
+
+def test_resync_refreshes_stale_provenance_header(tmp_path: Path) -> None:
+    """Bug #10: the master-cp.md anchor `Provenance: Version <NN> | <date>`
+    header lives outside engine-managed regions, so splice-mode sync never
+    refreshed it — the file looked stale (old version + date) even right after
+    a clean regeneration. A real-change resync must bring the header current."""
+    from cp_engine import __version__ as ENGINE_VERSION
+
+    config = make_config(tmp_path)
+    fake1 = FakeBackend((make_state(status="Open"),))
+    sync_tenant(
+        config,
+        backend_factory=lambda _: fake1,
+        now=datetime(2026, 5, 7, 12, 0, 0, tzinfo=timezone.utc),
+    )
+
+    import re
+
+    master_path = tmp_path / "master-cp.md"
+    # Simulate a header frozen from a much older engine version (the real bug:
+    # a months-old `Provenance:` line surviving every subsequent sync).
+    text = re.sub(
+        r"Provenance: Version [^\n]+",
+        "Provenance: Version 0.8.16.4 | 2026-05-18",
+        master_path.read_text(),
+        count=1,
+    )
+    master_path.write_text(text)
+    assert "Version 0.8.16.4 | 2026-05-18" in master_path.read_text()
+
+    # Resync with a real change forces a write.
+    fake2 = FakeBackend((make_state(status="Holding"),))
+    sync_tenant(
+        config,
+        backend_factory=lambda _: fake2,
+        now=datetime(2026, 5, 8, 9, 0, 0, tzinfo=timezone.utc),
+    )
+
+    final = master_path.read_text()
+    # Header now reflects the running engine version + today's date, not the
+    # stale stamp. (The date tracks the render's `today`, currently date.today().)
+    from datetime import date as _date
+
+    assert f"Provenance: Version {ENGINE_VERSION} | {_date.today().isoformat()}" in final
+    assert "0.8.16.4" not in final
+    assert "2026-05-18" not in final
 
 
 def test_resync_with_changed_status_updates_master_only(tmp_path: Path) -> None:

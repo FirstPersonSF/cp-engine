@@ -437,9 +437,38 @@ def link_local_cmd() -> None:
 
 @main.command()
 def status() -> None:
-    """Show what would change on next sync (no writes — read-only)."""
-    click.echo("cp status — not implemented yet (lands in v0.4)")
-    sys.exit(1)
+    """Show what would change on next sync (no writes — read-only).
+
+    Runs a dry-run sync and reports the high-signal files that would be
+    created or updated (master-cp.md, CLAUDE.md, .gitignore, new project CPs)
+    without touching the tenant. For the full set of writes (sprint files,
+    account CPs, deactivations) run `cp sync` — it's idempotent.
+    """
+    try:
+        config = load(Path.cwd())
+    except ConfigError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+
+    try:
+        result = sync_tenant(config, dry_run=True)
+    except SyncError as exc:
+        click.echo(f"Status check failed: {exc}", err=True)
+        sys.exit(1)
+
+    if result.no_op:
+        click.echo(
+            f"Up to date ({result.projects_seen} projects checked) — "
+            "next sync would make no changes."
+        )
+        return
+
+    click.echo(
+        f"{len(result.files_written)} file(s) would change "
+        f"({result.projects_seen} projects checked). Run `cp sync` to apply:"
+    )
+    for path in result.files_written:
+        click.echo(f"  would write    {path.relative_to(config.root)}")
 
 
 @main.command(name="migrate-projects-flat")
