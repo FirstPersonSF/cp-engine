@@ -4,6 +4,27 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.18.2 — 2026-06-10
+
+### Fixed — remove the plugin's CLI-install hook (it fought the tenant hook and kept reverting `cp` to a stale version)
+
+Root cause of a recurring, hand-fixed-3–4-times bug: the local `cp` CLI kept reverting to an old version (observed: 0.10.0 from frozen rev `1cfe5e4`) every session, even right after a manual `uv tool install --force` to the current version.
+
+**Two SessionStart hooks were fighting over the `cp` binary, installing from different sources:**
+
+- The **plugin** shipped `plugin/hooks/sync-cli-version.sh`, a SessionStart hook that force-reinstalls `cp` from **`git+…@v<plugin-version>`** — the plugin's *own* released tag.
+- The **tenant** ships `.claude/hooks/check-cp-engine-version.py` (added in v0.17.0), which reinstalls `cp` from the **local cp-engine clone** — the right source for a developer who runs unreleased engine code.
+
+Because the plugin marketplace has `autoUpdate` off, **multiple stale plugin versions (0.8.2 / 0.10.0 / 0.18.0) stayed cached and registered simultaneously**, each carrying its own copy of the hook. Whenever a stale plugin's hook won the SessionStart race, it dragged `cp` back to that plugin's git-tagged version, undoing the tenant hook's local-clone install. Manual heals only lasted until the next session — hence the repeated recurrence.
+
+**Fix:** delete the plugin's CLI-install hook entirely (`plugin/hooks/sync-cli-version.sh` + `plugin/hooks/hooks.json`). The plugin no longer touches the `cp` CLI in any way. The **tenant hook is now the single source of truth** for the CLI version, installing from the local clone. One healer, one source — the war is over.
+
+**Machine cleanup also required (one-time, not shipped):** the already-cached stale plugin versions still carry the hook until purged. On an affected machine, remove the `hooks/` dir from each cached plugin version under `~/.claude/plugins/cache/cp-engine/cp-engine/<ver>/` and from `~/.claude/plugins/marketplaces/cp-engine/plugin/hooks/`. New plugin installs from v0.18.2+ won't ship it.
+
+### Migration notes
+
+**No tenant action required** beyond the patch flowing automatically (`~= 0.18`). The tenant SessionStart hook (v0.17.0+) continues to keep `cp` in lockstep with the tenant pin via the local clone. If your `cp` has been flapping, purge the stale plugin caches as above once; it won't come back.
+
 ## v0.18.1 — 2026-06-09
 
 ### Fixed — three sync/status bugs surfaced while debugging a "stale master-cp" report
