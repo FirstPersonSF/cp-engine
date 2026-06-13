@@ -65,16 +65,25 @@ COPY src ./cp-engine/src
 # CAN appear in `docker history` of the build image — acceptable for a read-only
 # token (Contents:read on canonic-component-library) on a private builder.
 # Operator: set a Railway service variable named `gh_token` (lowercase).
+# The git insteadOf rewrite is configured (and used) inside EACH RUN that pip
+# might clone the private cloud-storage transitive ref. It does not persist
+# across RUN layers, so both the cp-engine install AND the webhook install set
+# it. Token via ARG (Railway exposes service vars as build ARGs); never ENV'd.
 ARG gh_token
 RUN sh -c 'if [ -n "$gh_token" ]; then \
              git config --global url."https://${gh_token}@github.com/".insteadOf "https://github.com/"; \
            fi && \
-           pip install --no-cache-dir ./cp-engine && \
-           git config --global --unset-all url."https://${gh_token}@github.com/".insteadOf 2>/dev/null || true'
+           pip install --no-cache-dir ./cp-engine'
 
-# Install the webhook itself.
+# Install the webhook itself. Re-applies the token rewrite because pip
+# re-resolves webhook's deps, which include cp-engine's private git+https
+# transitive ref (cloud-storage) and would otherwise try an unauthenticated
+# clone. webhook also pulls fastapi/uvicorn etc., so we can't use --no-deps.
 COPY webhook ./webhook
-RUN pip install --no-cache-dir ./webhook
+RUN sh -c 'if [ -n "$gh_token" ]; then \
+             git config --global url."https://${gh_token}@github.com/".insteadOf "https://github.com/"; \
+           fi && \
+           pip install --no-cache-dir ./webhook'
 
 # Railway injects $PORT at runtime — must use shell form (or sh -c) so
 # the variable expands. Exec form treats the literal string "$PORT" as
