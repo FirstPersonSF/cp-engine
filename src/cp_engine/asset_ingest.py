@@ -29,6 +29,7 @@ import shutil
 import sys
 import tempfile
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 # Columns we read from MC-2's `projects` table. Explicit list (never `*`) per
@@ -607,3 +608,155 @@ def _stamp_scope(client, folders: ProjectFolders, file_path: str) -> None:
     ).eq("project_id", folders.project_id).eq("file_path", file_path).eq(
         "status", "active"
     ).execute()
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Task C6 — scope-transition verbs (pure rag_assets re-tags + review SELECT)
+#
+#  These flip `rag_assets.scope ∈ {project, account, archived}` and stamp the
+#  matching lifecycle timestamp. They NEVER touch chunks or embeddings: those
+#  key to the asset row, which doesn't move — only its scope tag changes.
+#
+#  Affected-row counting: supabase-py's `update(...).execute()` returns the
+#  updated rows in `.data` (PostgREST returns the representation by default), so
+#  `len(resp.data)` is the count of rows the WHERE clause matched. We rely on
+#  that for the bool / int returns below.
+#
+#  Timestamps: supabase-py can't pass a raw SQL `now()` into `.update({...})`, so
+#  we generate a UTC ISO timestamp in Python — the established cp_engine pattern
+#  (see fathom._now_iso / sync). Testable and unambiguous.
+# ──────────────────────────────────────────────────────────────────────
+
+
+# Review-gate columns. Explicit list (never `*`) per Drew's global Supabase rule
+# — rag_assets carries large text/JSONB columns (chunk text, embeddings live in a
+# sibling table but `meta` can be sizeable) we don't want to haul over the wire.
+_PROMOTABLE_COLUMNS = "id, title, url, meta"
+
+
+def _utc_now_iso() -> str:
+    """UTC ISO-8601 timestamp for lifecycle columns (promoted_at/archived_at)."""
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _affected_count(resp) -> int:
+    """Number of rows an update touched, from its `.data` representation."""
+    return len(getattr(resp, "data", None) or [])
+
+
+def promote_asset(client, asset_id: str) -> bool:
+    """Promote a project-scoped asset to account scope (human curation).
+
+    `UPDATE rag_assets SET scope='account', promoted_at=now()
+     WHERE id=<asset_id> AND scope='project'`.
+
+    The `scope='project'` filter makes this idempotent and atomic: promoting an
+    already-account asset (or a missing id) matches 0 rows — a clean no-op.
+    The asset's company_id was set at ingest, so promotion only flips the scope.
+
+    Returns True if a row was promoted, False on the already-account/not-found
+    no-op.
+    """
+    resp = (
+        client.table("rag_assets")
+        .update({"scope": "account", "promoted_at": _utc_now_iso()})
+        .eq("id", asset_id)
+        .eq("scope", "project")
+        .execute()
+    )
+    return _affected_count(resp) > 0
+
+
+def demote_asset(client, asset_id: str) -> bool:
+    """Reverse a promotion: account scope back to project, clearing promoted_at.
+
+    `UPDATE rag_assets SET scope='project', promoted_at=NULL
+     WHERE id=<asset_id> AND scope='account'`.
+
+    Returns True if a row was demoted, False on the no-op (already project /
+    not found).
+    """
+    resp = (
+        client.table("rag_assets")
+        .update({"scope": "project", "promoted_at": None})
+        .eq("id", asset_id)
+        .eq("scope", "account")
+        .execute()
+    )
+    return _affected_count(resp) > 0
+
+
+def archive_project_assets(client, project_id: str) -> int:
+    """Archive a project's un-promoted assets on project close.
+
+    `UPDATE rag_assets SET scope='archived', archived_at=now()
+     WHERE project_id=<project_id> AND scope='project'`.
+
+    CRITICAL: the `scope='project'` filter is the guard — only un-promoted
+    assets archive. Account-scoped (already promoted) assets belong to the
+    company now, not the project, and are left untouched.
+
+    Returns the count of assets archived.
+    """
+    resp = (
+        client.table("rag_assets")
+        .update({"scope": "archived", "archived_at": _utc_now_iso()})
+        .eq("project_id", project_id)
+        .eq("scope", "project")
+        .execute()
+    )
+    return _affected_count(resp)
+
+
+def unarchive_project_assets(client, project_id: str) -> int:
+    """Restore a project's archived assets back to project scope (recovery).
+
+    `UPDATE rag_assets SET scope='project', archived_at=NULL
+     WHERE project_id=<project_id> AND scope='archived'`.
+
+    Returns the count of assets restored.
+    """
+    resp = (
+        client.table("rag_assets")
+        .update({"scope": "project", "archived_at": None})
+        .eq("project_id", project_id)
+        .eq("scope", "archived")
+        .execute()
+    )
+    return _affected_count(resp)
+
+
+def list_promotable(client, project_id: str) -> list[dict]:
+    """The review-gate surface: project-scoped active assets a human can promote.
+
+    `SELECT id, title, url, meta FROM rag_assets
+     WHERE scope='project' AND status='active' AND project_id=<project_id>`.
+
+    Returns each row shaped for a human decision: id, title, url, and the
+    classifier's decision lifted out of `meta` (stored as
+    `meta->>'classifier_decision'`). `meta` is carried through too in case the
+    caller wants more context.
+    """
+    resp = (
+        client.table("rag_assets")
+        .select(_PROMOTABLE_COLUMNS)
+        .eq("scope", "project")
+        .eq("status", "active")
+        .eq("project_id", project_id)
+        .execute()
+    )
+    rows = getattr(resp, "data", None) or []
+    out: list[dict] = []
+    for row in rows:
+        meta = row.get("meta") or {}
+        classifier = meta.get("classifier_decision") if isinstance(meta, dict) else None
+        out.append(
+            {
+                "id": row.get("id"),
+                "title": row.get("title"),
+                "url": row.get("url"),
+                "classifier_decision": classifier,
+                "meta": row.get("meta"),
+            }
+        )
+    return out
