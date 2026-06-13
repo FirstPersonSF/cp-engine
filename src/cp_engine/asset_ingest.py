@@ -432,11 +432,12 @@ def _stable_dir_for(tmp_root: Path, file_ref: FileRef) -> Path:
 
 
 def _source_url(file_ref: FileRef) -> str | None:
-    """A stable source URL for the asset, or None.
+    """Stub: source view-URLs deferred; returns None for now.
 
     Dropbox/Drive list responses here don't carry a public webViewLink, so we
     pass None rather than fabricate one. (The pipeline stores url verbatim and
-    builds citation deep-links from it; a wrong url is worse than no url.)
+    builds citation deep-links from it; a wrong url is worse than no url.) Kept
+    as a named seam so the future real lookup has an obvious home.
     """
     return None
 
@@ -533,26 +534,51 @@ def ingest_project_assets(
             # all three. Because `local` is derived from a stable source id, it
             # re-derives identically on the next run → dedup → skip.
             file_path = str(local)
-            ingest_result = pipeline.ingest_file(
-                file_path,
-                title=file_ref.name,
-                url=_source_url(file_ref),
-            )
 
-            action = getattr(ingest_result, "action", "failed")
-            if action in ("created", "versioned"):
-                _stamp_scope(client, folders, file_path)
-                if action == "created":
-                    result.created += 1
-                else:
-                    result.versioned += 1
-            elif action == "skipped":
-                # Already stamped on the run that first created it — no-op.
-                result.skipped += 1
-            else:  # 'failed' (or anything unexpected)
+            # The whole post-download body (ingest + action handling + stamp) is
+            # guarded so a raise from ingest_file OR the stamp UPDATE is collected
+            # and the loop continues — same collect-and-continue contract as the
+            # download above. Without this, a transient PostgREST error on the
+            # stamp (or a parser blowup) would propagate out, abort every
+            # remaining file, AND replace the IngestRunResult with the exception.
+            try:
+                ingest_result = pipeline.ingest_file(
+                    file_path,
+                    title=file_ref.name,
+                    url=_source_url(file_ref),
+                )
+
+                action = getattr(ingest_result, "action", "failed")
+                if action in ("created", "versioned"):
+                    # Count the ingest action FIRST (the asset is written). The
+                    # stamp is a separate concern below so that a stamp failure
+                    # doesn't undo a real created/versioned count.
+                    if action == "created":
+                        result.created += 1
+                    else:
+                        result.versioned += 1
+                    # Stamp-failure policy: the asset IS ingested (it keeps the
+                    # column-default scope='project', so it's not lost), only the
+                    # company_id stamp didn't land. We DON'T count it as `failed`
+                    # (the ingest succeeded) — instead we surface the stamp
+                    # failure in `failures` so it's visible and re-runnable,
+                    # while still leaving created/versioned incremented.
+                    try:
+                        _stamp_scope(client, folders, file_path)
+                    except Exception as exc:
+                        result.failures.append(
+                            (file_ref.name, f"scope-stamp failed: {exc}")
+                        )
+                elif action == "skipped":
+                    # Already stamped on the run that first created it — no-op.
+                    result.skipped += 1
+                else:  # 'failed' (or anything unexpected)
+                    result.failed += 1
+                    err = getattr(ingest_result, "error", None) or f"action={action}"
+                    result.failures.append((file_ref.name, err))
+            except Exception as exc:  # ingest_file blew up — collect, keep going
                 result.failed += 1
-                err = getattr(ingest_result, "error", None) or f"action={action}"
-                result.failures.append((file_ref.name, err))
+                result.failures.append((file_ref.name, f"ingest failed: {exc}"))
         finally:
             # Bytes are never persisted: drop the per-file temp dir whatever
             # happened (success, skip, or failure).

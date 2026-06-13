@@ -112,6 +112,44 @@ class _FakeClient:
         return _FakeTable(self.updates)
 
 
+class _RaisingOnceUpdateChain:
+    """An update chain whose .execute() raises the first time, succeeds after."""
+
+    def __init__(self, client):
+        self._client = client
+        self._payload = None
+        self._filters = {}
+
+    def update(self, payload):
+        self._payload = payload
+        return self
+
+    def eq(self, col, val):
+        self._filters[col] = val
+        return self
+
+    def execute(self):
+        self._client.stamp_attempts += 1
+        if self._client.stamp_attempts == 1:
+            raise RuntimeError("transient PostgREST stamp error")
+        self._client.updates.append(
+            {"payload": self._payload, "filters": dict(self._filters)}
+        )
+        return None
+
+
+class _StampRaisesOnceClient:
+    """Fake client whose first stamp UPDATE raises, later ones succeed."""
+
+    def __init__(self):
+        self.updates = []  # successful stamps only
+        self.stamp_attempts = 0  # total UPDATE execute() calls (incl. the raise)
+
+    def table(self, name):
+        assert name == "rag_assets", f"unexpected table {name!r}"
+        return _RaisingOnceUpdateChain(self)
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Helpers
 # ──────────────────────────────────────────────────────────────────────
@@ -226,6 +264,67 @@ def test_run_collects_failures_without_aborting(monkeypatch, tmp_path):
     assert len(client.updates) == 2
 
 
+def test_run_stamp_failure_does_not_abort(monkeypatch, tmp_path):
+    """A raising scope-stamp UPDATE on the first file must NOT abort the run.
+
+    The asset WAS ingested ('created'); only the post-insert stamp blew up. The
+    run must still return an IngestRunResult, process the second file, and surface
+    the stamp failure in `failures` (not silently swallow it).
+    """
+    files = [_ref("first.docx"), _ref("second.docx")]
+    _patch_resolve_and_list(monkeypatch, _FOLDERS, files)
+    _patch_download_writes(monkeypatch)
+    pipeline = _FakePipeline({"first.docx": "created", "second.docx": "created"})
+    client = _StampRaisesOnceClient()  # first stamp raises, second succeeds
+
+    # Must NOT propagate — the call returns normally.
+    result = ingest_project_assets(
+        "acme-1", client=client, pipeline=pipeline, tmp_root=tmp_path
+    )
+
+    assert isinstance(result, IngestRunResult)
+    # both files were ingested by the pipeline (the loop didn't abort)
+    assert len(pipeline.calls) == 2
+    # the second file's stamp succeeded
+    assert client.stamp_attempts == 2
+    assert len(client.updates) == 1
+    # the first file's stamp failure was surfaced, not swallowed
+    names = [n for n, _ in result.failures]
+    assert "first.docx" in names
+    first_err = next(err for n, err in result.failures if n == "first.docx")
+    assert "scope-stamp failed" in first_err
+
+
+def test_run_ingest_file_raising_is_collected(monkeypatch, tmp_path):
+    """A raising pipeline.ingest_file for one file is collected, not propagated."""
+    files = [_ref("first.docx"), _ref("boom.docx"), _ref("third.docx")]
+    _patch_resolve_and_list(monkeypatch, _FOLDERS, files)
+    _patch_download_writes(monkeypatch)
+
+    def _raise():
+        raise RuntimeError("parser exploded")
+
+    pipeline = _FakePipeline(
+        {"first.docx": "created", "boom.docx": _raise, "third.docx": "created"}
+    )
+    client = _FakeClient()
+
+    # Must NOT propagate.
+    result = ingest_project_assets(
+        "acme-1", client=client, pipeline=pipeline, tmp_root=tmp_path
+    )
+
+    assert isinstance(result, IngestRunResult)
+    # the two good files still ran (no abort)
+    assert result.created == 2
+    assert len(client.updates) == 2
+    # the raising file is recorded as a failure with its error text
+    names = [n for n, _ in result.failures]
+    assert "boom.docx" in names
+    boom_err = next(err for n, err in result.failures if n == "boom.docx")
+    assert "parser exploded" in boom_err
+
+
 def test_run_download_error_collected_without_aborting(monkeypatch, tmp_path):
     files = [_ref("first.docx"), _ref("raise.docx"), _ref("third.docx")]
     _patch_resolve_and_list(monkeypatch, _FOLDERS, files)
@@ -283,9 +382,8 @@ def test_run_versioned_is_stamped(monkeypatch, tmp_path):
 
 def test_run_empty_file_list_returns_zero_counts(monkeypatch, tmp_path):
     _patch_resolve_and_list(monkeypatch, _FOLDERS, [])
-    # A pipeline that explodes if touched — proves it is never constructed/called.
-    sentinel = object()
 
+    # A pipeline that explodes if touched — proves it is never constructed/called.
     def _boom_factory(*a, **k):  # pragma: no cover - must not be called
         raise AssertionError("pipeline must not be built for an empty file list")
 
@@ -299,7 +397,6 @@ def test_run_empty_file_list_returns_zero_counts(monkeypatch, tmp_path):
     assert isinstance(result, IngestRunResult)
     assert (result.created, result.versioned, result.skipped, result.failed) == (0, 0, 0, 0)
     assert result.failures == []
-    assert sentinel is sentinel  # no-op; readability anchor
 
 
 def test_run_project_not_found(monkeypatch, tmp_path):
