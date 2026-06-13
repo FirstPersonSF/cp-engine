@@ -760,3 +760,79 @@ def list_promotable(client, project_id: str) -> list[dict]:
             }
         )
     return out
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Task C9 — the scoped read query (the consumption payoff; Spec C uses it)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def read_scoped_chunks(
+    client,
+    project_id: str,
+    company_id: str,
+    query_embedding: list[float] | None = None,
+    limit: int = 20,
+) -> list[dict]:
+    """Read a project's readable asset text: its own + its company's account assets.
+
+    This is how engines retrieve the text a project is allowed to read: the
+    project's OWN project-scoped assets PLUS its company's account-scoped (shared)
+    assets, EXCLUDING archived. When a `query_embedding` is given the rows are
+    ordered by pgvector cosine distance (`embedding <=> query`); otherwise by
+    recency. Spec §7 SQL (the contract):
+
+        SELECT c.text, c.meta->>'citation_url' AS cite, a.title, a.scope
+        FROM asset_chunks c JOIN rag_assets a ON a.id = c.asset_id
+        WHERE a.status='active'
+          AND ( (a.scope='project' AND a.project_id = :project_id)
+             OR (a.scope='account' AND a.company_id = :company_id) )
+        ORDER BY (embedding <=> :query_vec)   -- vector search when given
+        LIMIT :k;
+
+    WHY THIS IS AN RPC, NOT A POSTGREST CHAIN: supabase-py's PostgREST query
+    builder cannot cleanly express (a) the JOIN across `asset_chunks` and
+    `rag_assets`, (b) the OR across two different columns (project_id vs
+    company_id), or (c) the pgvector `<=>` distance ordering. The right home for
+    that SQL is a Postgres function. So this calls a DB RPC and returns its rows;
+    the SQL stays in the database where it belongs.
+
+    REQUIRED — Phase B migration (056) MUST create this RPC. Expected signature:
+
+        read_scoped_asset_chunks(
+            p_project_id     uuid,
+            p_company_id     uuid,
+            p_query_embedding vector(1024) default null,
+            p_limit          int          default 20
+        ) returns table (
+            text         text,
+            citation_url text,
+            title        text,
+            scope        text
+        )
+
+      Body contract:
+        - JOIN asset_chunks c ON rag_assets a (a.id = c.asset_id)
+        - WHERE a.status = 'active'
+          AND ( (a.scope = 'project' AND a.project_id = p_project_id)
+             OR (a.scope = 'account' AND a.company_id = p_company_id) )
+          -- archived rows are excluded by status='active' + the scope union
+        - ORDER BY c.embedding <=> p_query_embedding when p_query_embedding IS NOT
+          NULL, else by a.created_at DESC (recency fallback)
+        - LIMIT p_limit
+        - select explicit columns only (c.text, c.meta->>'citation_url', a.title,
+          a.scope) — never SELECT *.
+
+    Returns the RPC's `.data` (a list of dict rows shaped {text, citation_url,
+    title, scope}).
+    """
+    resp = client.rpc(
+        "read_scoped_asset_chunks",
+        {
+            "p_project_id": project_id,
+            "p_company_id": company_id,
+            "p_query_embedding": query_embedding,
+            "p_limit": limit,
+        },
+    ).execute()
+    return getattr(resp, "data", None) or []
