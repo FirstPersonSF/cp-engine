@@ -12,8 +12,9 @@ things and nothing more:
    so the heavy `cloud_storage` clients (and their network/credential setup) can
    be mocked in tests.
 
-Download / extraction / scope-stamping are deliberately NOT here — they are the
-next task. Keep this module list-only.
+`ingest_project_assets` (Task C5) is the run loop that ties resolve → list →
+download → document-ingest pipeline (with the Voyage embedder) together and
+applies the 1P scope stamp to each freshly-written `rag_assets` row.
 
 Scope guard: asset ingest targets *client* companies only. Self-fpsf /
 self-canonic companies are house/framework territory and out of scope; `list_files`
@@ -22,9 +23,12 @@ returns `[]` for them.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import sys
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 # Columns we read from MC-2's `projects` table. Explicit list (never `*`) per
@@ -328,3 +332,252 @@ def download_file(
         f"[asset-ingest] cannot download FileRef with unknown source "
         f"'{file_ref.source}' (expected 'drive' or 'dropbox')"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Ingest run (Task C5)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class IngestRunResult:
+    """Summary of one `ingest_project_assets` run.
+
+    Counts are by IngestResult.action. `failures` carries one (file_name, error)
+    tuple per file that failed (a 'failed' action OR a raising download) so the
+    caller can surface every failure — nothing is silently swallowed.
+    `project_found` is False only for the "no matching MC-2 project" case.
+    """
+
+    created: int = 0
+    versioned: int = 0
+    skipped: int = 0
+    failed: int = 0
+    failures: list[tuple[str, str]] = field(default_factory=list)
+    project_found: bool = True
+
+
+# configure_ingest() wires document-ingest's module-level singletons (settings +
+# OpenAI client factory). It is idempotent at the engine's level, but we also
+# guard here so repeated calls in the same process are a no-op.
+_pipeline_configured = False
+
+
+def _configure_pipeline_once() -> None:
+    """Wire document-ingest's settings + OpenAI client factory exactly once.
+
+    The pipeline needs an OpenAI client even when embeddings come from Voyage:
+    `IngestPipeline.__init__` eagerly constructs the audio/image/video parsers,
+    which read OPENAI_API_KEY. cp's env has it, so that's fine — we just hand the
+    engine a factory that builds a plain `OpenAI(api_key=OPENAI_API_KEY)`.
+    """
+    global _pipeline_configured
+    if _pipeline_configured:
+        return
+
+    from ingest.config import configure_ingest
+
+    from cp_engine.asset_ingest_settings import AssetIngestSettings
+
+    def _openai_client_factory():
+        from openai import OpenAI
+
+        return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+    configure_ingest(
+        settings=AssetIngestSettings(),
+        openai_client_factory=_openai_client_factory,
+    )
+    _pipeline_configured = True
+
+
+def _build_pipeline(project_id: str, supabase_url: str, supabase_key: str):
+    """Construct an IngestPipeline wired to the Voyage embedder.
+
+    Kept tiny + separate so `ingest_project_assets` can inject a pipeline (or a
+    pipeline_factory) in tests and never touch real Supabase/OpenAI/Voyage.
+    """
+    from ingest.embedding_service import IngestEmbeddingService
+    from ingest.pipeline import IngestPipeline
+
+    return IngestPipeline(
+        project_id=project_id,
+        supabase_url=supabase_url,
+        supabase_key=supabase_key,
+        embed_model="voyage-3-large",
+        chunking_strategy="text",
+        embedder=IngestEmbeddingService(model="voyage-3-large"),
+    )
+
+
+def _stable_dir_for(tmp_root: Path, file_ref: FileRef) -> Path:
+    """A per-source, deterministic temp subdir for one file.
+
+    WHY deterministic and not a random `tempfile.mkdtemp()`: the pipeline's
+    `ingest_file(file_path, ...)` uses `file_path` for THREE things at once —
+    it (a) opens & parses it, (b) keys deduplication on it, and (c) stores it as
+    `rag_assets.file_path`. There is no separate "dedup key" arg. So the path we
+    download to IS the dedup key. If it were a random tmp name, every re-run
+    would produce a brand-new file_path → dedup never matches → re-ingest always
+    re-creates instead of skipping (spec checklist item 4 demands re-run = all
+    skipped). Deriving the directory from a STABLE source identifier
+    (`<source>-<id>`) makes the download land at the same path on every run, so
+    the file_hash check in DeduplicationService.check_asset short-circuits to
+    'skip'. The Drive-export suffix the connector may append is itself
+    deterministic, so the returned path is stable too.
+    """
+    # Sanitize the source id into a filesystem-safe directory name.
+    safe_id = re.sub(r"[^A-Za-z0-9._-]", "_", f"{file_ref.source}-{file_ref.id}")
+    return tmp_root / safe_id
+
+
+def _source_url(file_ref: FileRef) -> str | None:
+    """A stable source URL for the asset, or None.
+
+    Dropbox/Drive list responses here don't carry a public webViewLink, so we
+    pass None rather than fabricate one. (The pipeline stores url verbatim and
+    builds citation deep-links from it; a wrong url is worse than no url.)
+    """
+    return None
+
+
+def ingest_project_assets(
+    project_code: str,
+    *,
+    client=None,
+    drive_connector=None,
+    dropbox_connector=None,
+    tmp_root: Path | None = None,
+    pipeline=None,
+    pipeline_factory=None,
+    supabase_url: str | None = None,
+    supabase_key: str | None = None,
+) -> IngestRunResult:
+    """Resolve, list, download, ingest, and scope-stamp a project's cloud assets.
+
+    Flow: resolve the project's Drive/Dropbox folders → list their files →
+    for each file download it to a STABLE temp path → run it through the
+    document-ingest pipeline (Voyage embedder) → stamp the freshly-written
+    `rag_assets` row with `scope='project'` + `company_id`.
+
+    Injectable seams (all for testability; real deps are built lazily otherwise):
+      - `client`: the MC-2 Supabase client. Built from creds if omitted.
+      - `pipeline`: a ready IngestPipeline. Overrides `pipeline_factory`.
+      - `pipeline_factory`: `(project_id, url, key) -> pipeline`. Defaults to
+        `_build_pipeline`.
+      - `supabase_url`/`supabase_key`: the Supabase coordinates the pipeline
+        writes to. Resolved from cp config if omitted.
+
+    Failure policy: a 'failed' IngestResult OR a raising download is recorded in
+    `failures` and the loop continues — one bad file never aborts the run, and no
+    failure is silently swallowed. Downloaded bytes are always cleaned up.
+    """
+    # Resolve creds lazily, and ONLY the pieces actually missing — so the unit-
+    # test path (injected client + pipeline) never touches cp config / Supabase.
+    def _resolve_creds() -> tuple[str, str]:
+        from cp_engine import config as cp_config
+        from cp_engine.sync_mc2 import _load_supabase_creds
+
+        return _load_supabase_creds(cp_config.load(Path.cwd()))
+
+    # Build the MC-2 client up front (needed for resolve + the scope stamp).
+    if client is None:
+        if supabase_url is None or supabase_key is None:
+            supabase_url, supabase_key = _resolve_creds()
+        from supabase import create_client
+
+        client = create_client(supabase_url, supabase_key)
+
+    folders = resolve_project_folders(client, project_code)
+    if folders is None:
+        # No numbered/matching MC-2 project — asset ingest doesn't apply.
+        # resolve_project_folders already printed the reason to stderr.
+        return IngestRunResult(project_found=False)
+
+    files = list_files(folders, drive_connector, dropbox_connector)
+    if not files:
+        # Nothing to ingest (non-client company, disabled sources, empty folder,
+        # missing folder ids — all handled + noted inside list_files). Short-
+        # circuit BEFORE constructing the pipeline (no Supabase/OpenAI touched).
+        return IngestRunResult()
+
+    if pipeline is None:
+        # Only now (real files, no injected pipeline) do we need Supabase coords.
+        if supabase_url is None or supabase_key is None:
+            supabase_url, supabase_key = _resolve_creds()
+        _configure_pipeline_once()
+        factory = pipeline_factory or _build_pipeline
+        pipeline = factory(folders.project_id, supabase_url, supabase_key)
+
+    result = IngestRunResult()
+    run_root = Path(tmp_root) if tmp_root is not None else Path(tempfile.gettempdir())
+    run_root.mkdir(parents=True, exist_ok=True)
+
+    for file_ref in files:
+        # Stable, per-source temp dir so the download path (== dedup key) is
+        # identical across runs. Cleaned in `finally` regardless of outcome.
+        file_dir = _stable_dir_for(run_root, file_ref)
+        try:
+            file_dir.mkdir(parents=True, exist_ok=True)
+            try:
+                local = download_file(
+                    file_ref, file_dir, drive_connector, dropbox_connector
+                )
+            except Exception as exc:  # download blew up — collect, keep going
+                result.failed += 1
+                result.failures.append((file_ref.name, str(exc)))
+                continue
+
+            # `file_path` here is BOTH the parse target AND the dedup key AND the
+            # stored rag_assets.file_path — the pipeline uses the single arg for
+            # all three. Because `local` is derived from a stable source id, it
+            # re-derives identically on the next run → dedup → skip.
+            file_path = str(local)
+            ingest_result = pipeline.ingest_file(
+                file_path,
+                title=file_ref.name,
+                url=_source_url(file_ref),
+            )
+
+            action = getattr(ingest_result, "action", "failed")
+            if action in ("created", "versioned"):
+                _stamp_scope(client, folders, file_path)
+                if action == "created":
+                    result.created += 1
+                else:
+                    result.versioned += 1
+            elif action == "skipped":
+                # Already stamped on the run that first created it — no-op.
+                result.skipped += 1
+            else:  # 'failed' (or anything unexpected)
+                result.failed += 1
+                err = getattr(ingest_result, "error", None) or f"action={action}"
+                result.failures.append((file_ref.name, err))
+        finally:
+            # Bytes are never persisted: drop the per-file temp dir whatever
+            # happened (success, skip, or failure).
+            shutil.rmtree(file_dir, ignore_errors=True)
+
+    return result
+
+
+def _stamp_scope(client, folders: ProjectFolders, file_path: str) -> None:
+    """Apply the 1P scope stamp to the just-ingested active asset row.
+
+    The spec wanted `UPDATE rag_assets SET scope, company_id WHERE id=<asset_id>`,
+    but IngestResult exposes NO asset_id (the pipeline computes it internally and
+    keeps it). So we stamp by the DEDUP KEY instead: the migration makes
+    `(project_id, file_path) WHERE status='active'` a UNIQUE index, so this WHERE
+    clause matches exactly one row — the asset we just wrote. `file_path` MUST be
+    the same value passed to `ingest_file` (it is: both come from `local`). The
+    pipeline already set project_id; what the stamp adds is company_id (and it
+    re-affirms scope='project', which is also the column default).
+    """
+    client.table("rag_assets").update(
+        {
+            "scope": "project",
+            "company_id": folders.company_id,
+        }
+    ).eq("project_id", folders.project_id).eq("file_path", file_path).eq(
+        "status", "active"
+    ).execute()
