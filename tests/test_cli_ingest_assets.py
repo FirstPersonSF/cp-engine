@@ -65,6 +65,23 @@ def test_ingest_assets_failures_exit_nonzero(monkeypatch):
     assert "notes.txt" in result.output
 
 
+def test_ingest_assets_unknown_project_exits_nonzero(monkeypatch):
+    _stub_client(monkeypatch)
+
+    def fake_ingest(code, **kwargs):
+        # Mirror asset_ingest's "no matching MC-2 project" result: zero counts,
+        # project_found=False.
+        return IngestRunResult(project_found=False)
+
+    monkeypatch.setattr(asset_ingest, "ingest_project_assets", fake_ingest)
+
+    result = CliRunner().invoke(main, ["ingest-assets", "nope-9999"])
+    assert result.exit_code != 0, result.output
+    out = result.output.lower()
+    assert "nope-9999" in result.output
+    assert "no" in out and "project" in out
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  ingest-assets --all
 # ──────────────────────────────────────────────────────────────────────

@@ -1961,6 +1961,9 @@ def ingest_assets_cmd(code: str | None, all_: bool, scope: str | None) -> None:
     # ── Single project ──
     if code:
         run = asset_ingest.ingest_project_assets(code)
+        if not run.project_found:
+            click.echo(f"Error: no MC-2 project resolved for '{code}'.", err=True)
+            sys.exit(1)
         _echo_run_summary(code, run)
         if run.failed or run.failures:
             sys.exit(1)
