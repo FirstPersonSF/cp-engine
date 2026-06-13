@@ -11,8 +11,9 @@ Scope mapping for `cp ingest-assets --scope <scope>`:
   - `fpsf`   → internal initiatives/repos; asset ingest is client-only → no-op.
   - `canonic`→ internal initiatives/repos; asset ingest is client-only → no-op.
 
-"Active client project" = an MC-2 `projects` row with `is_internal=false`,
-`mc_status in ('Deal','Open')`, owned by a company whose `kind == 'client'`.
+"Active client project" reuses the canonical definition the rest of the engine
+uses: an active-status engagement (`is_active_status`) with `is_internal=false`
+and `company_kind == 'client'`. See `active_client_project_codes`.
 """
 
 from __future__ import annotations
@@ -22,11 +23,6 @@ from pathlib import Path
 
 # Scopes that have no client engagements: asset ingest skips them entirely.
 INTERNAL_SCOPES = ("fpsf", "canonic")
-
-# Explicit column list (never `*`) per Drew's global Supabase rule — `projects`
-# carries multi-megabyte JSONB cache columns we must not pull. The nested
-# `companies(code, kind)` embed gives us the client-scope guard + the code prefix.
-_ACTIVE_PROJECT_COLUMNS = "number, mc_status, is_internal, companies(code, kind)"
 
 
 def build_mc2_client():
@@ -45,49 +41,32 @@ def build_mc2_client():
     return create_client(url, key)
 
 
-def _company_embed(row: dict) -> dict:
-    """Lift the to-one `companies` embed, defending against the list shape.
-
-    PostgREST returns a to-one embed as either a dict or a single-element list;
-    match the guard in `resolve_project_folders`.
-    """
-    companies = row.get("companies") or {}
-    if isinstance(companies, list):
-        companies = companies[0] if companies else {}
-    return companies if isinstance(companies, dict) else {}
-
-
-def active_client_project_codes(client) -> list[str]:
+def active_client_project_codes(config) -> list[str]:
     """Enumerate cp codes for every active *client* project in MC-2.
 
-    Active client = `is_internal=false` AND `mc_status in ('Deal','Open')` AND
-    the owning company's `kind == 'client'`. Each code is built as
-    `<company.code>-<number>` so the human-readable code surfaces in summaries;
-    `resolve_project_folders` parses out the number regardless of prefix, so a
-    missing company code degrades to the bare number rather than dropping the
-    project.
+    Reuses the canonical "active client project" definition rather than
+    re-deriving it: enumerate via the sync backend's `read_projects` and apply
+    the SAME predicate `sync.py` and `list-active-projects` use —
+    `source == "engagement"`, active status via `is_active_status` (the single
+    source of truth for the active vocabulary, so Holding ever joining the
+    active set flows through here for free), `is_internal=False`, and
+    `company_kind == "client"`. Returns each `ProjectState.code` (already the
+    pre-built `<company-lowercase>-<number>` form — no hand-rebuilt string).
     """
-    rows = (
-        client.table("projects")
-        .select(_ACTIVE_PROJECT_COLUMNS)
-        .eq("is_internal", False)
-        .in_("mc_status", ["Deal", "Open"])
-        .execute()
-        .data
-        or []
-    )
+    from cp_engine.status import is_active_status
+    from cp_engine.sync import _default_backend_factory
 
-    codes: list[str] = []
-    for row in rows:
-        company = _company_embed(row)
-        if (company.get("kind") or "") != "client":
-            continue
-        number = row.get("number")
-        if number is None:
-            continue
-        prefix = (company.get("code") or "").strip().lower()
-        codes.append(f"{prefix}-{number}" if prefix else str(number))
-    return codes
+    backend = _default_backend_factory(config.sync.backend)
+    projects = backend.read_projects(config)
+
+    return [
+        p.code
+        for p in projects
+        if p.source == "engagement"
+        and is_active_status(p.status)
+        and not p.is_internal
+        and p.company_kind == "client"
+    ]
 
 
 @dataclass

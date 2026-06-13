@@ -1974,24 +1974,21 @@ def ingest_assets_cmd(code: str | None, all_: bool, scope: str | None) -> None:
         click.echo(f"scope={scope}: asset ingest is client-only; nothing to do.")
         return
 
-    client = build_mc2_client()
-    codes = asset_ingest_cli.active_client_project_codes(client)
+    # Enumeration goes through the canonical read_projects path (config-driven);
+    # the per-project fan-out work still needs an MC-2 client.
+    config = _load_config_or_die()
+    codes = asset_ingest_cli.active_client_project_codes(config)
     if not codes:
         click.echo("No active client projects found; nothing to do.")
         return
 
+    client = build_mc2_client()
     result = asset_ingest_cli.fan_out_ingest(client, codes)
     for outcome in result.outcomes:
         if outcome.error:
             click.echo(f"{outcome.code}: ERROR {outcome.error}", err=True)
             continue
-        click.echo(
-            f"{outcome.code}: created={outcome.created} "
-            f"versioned={outcome.versioned} skipped={outcome.skipped} "
-            f"failed={outcome.failed}"
-        )
-        for name, err in outcome.failures:
-            click.echo(f"  FAIL {name}: {err}", err=True)
+        _echo_run_summary(outcome.code, outcome)
 
     click.echo(
         f"TOTAL ({len(result.outcomes)} projects): "

@@ -23,6 +23,19 @@ def _stub_client(monkeypatch):
     return sentinel
 
 
+def _stub_config(monkeypatch):
+    """Stub the tenant-config load the --all enumeration now needs.
+
+    The --all branch calls `_load_config_or_die()` to drive the canonical
+    `read_projects`-based enumeration. Tests fake the enumeration itself
+    (`active_client_project_codes`), so the config object only needs to be a
+    harmless sentinel that never gets touched.
+    """
+    sentinel = object()
+    monkeypatch.setattr(cli_mod, "_load_config_or_die", lambda: sentinel)
+    return sentinel
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  ingest-assets — single project
 # ──────────────────────────────────────────────────────────────────────
@@ -77,9 +90,8 @@ def test_ingest_assets_unknown_project_exits_nonzero(monkeypatch):
 
     result = CliRunner().invoke(main, ["ingest-assets", "nope-9999"])
     assert result.exit_code != 0, result.output
-    out = result.output.lower()
     assert "nope-9999" in result.output
-    assert "no" in out and "project" in out
+    assert "no MC-2 project resolved" in result.output
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -89,11 +101,12 @@ def test_ingest_assets_unknown_project_exits_nonzero(monkeypatch):
 
 def test_ingest_assets_all_fans_out(monkeypatch):
     _stub_client(monkeypatch)
+    _stub_config(monkeypatch)
 
     monkeypatch.setattr(
         asset_ingest_cli,
         "active_client_project_codes",
-        lambda client: ["ibx-5153", "ggl-5168", "peb-5170"],
+        lambda config: ["ibx-5153", "ggl-5168", "peb-5170"],
     )
 
     called: list[str] = []
@@ -117,11 +130,12 @@ def test_ingest_assets_all_fans_out(monkeypatch):
 
 def test_ingest_assets_all_one_project_failing_does_not_stop_others(monkeypatch):
     _stub_client(monkeypatch)
+    _stub_config(monkeypatch)
 
     monkeypatch.setattr(
         asset_ingest_cli,
         "active_client_project_codes",
-        lambda client: ["a-1", "b-2", "c-3"],
+        lambda config: ["a-1", "b-2", "c-3"],
     )
 
     called: list[str] = []
