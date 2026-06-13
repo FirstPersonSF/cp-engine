@@ -56,26 +56,21 @@ WORKDIR /app
 # Install cp-engine first (its deps cache well between builds).
 COPY pyproject.toml README.md ./cp-engine/
 COPY src ./cp-engine/src
-# Token for cloning private canonic-component-library deps. Supplied EITHER as
-# a BuildKit secret (id=gh_token) OR — for platforms like Railway that expose
-# service variables to the build as ARGs but don't support BuildKit secrets —
-# as a build ARG `gh_token`. The secret is preferred (never hits image history);
-# the ARG path is used only when the secret mount is absent. In BOTH paths the
-# token is consumed inside this single RUN for a git insteadOf rewrite and is
-# NOT written to an ENV or a persisted config (the rewrite is unset at the end,
-# and ARG values are not in the final image's ENV — though an ARG value CAN
-# appear in `docker history` of the build; acceptable for a read-only token on
-# a private builder. Prefer the BuildKit secret in environments that support it).
+# Token for cloning private canonic-component-library deps. Supplied as a build
+# ARG `gh_token` (Railway exposes service variables to the Docker build as ARGs).
+# Railway's builder does NOT support BuildKit `--mount=type=secret` (it rejects
+# any mount type other than `type=cache`), so the token comes via ARG only. It's
+# consumed inside this single RUN for a git insteadOf rewrite and is NOT written
+# to an ENV (so it's not in the running image). Tradeoff: a referenced ARG value
+# CAN appear in `docker history` of the build image — acceptable for a read-only
+# token (Contents:read on canonic-component-library) on a private builder.
+# Operator: set a Railway service variable named `gh_token` (lowercase).
 ARG gh_token
-RUN --mount=type=secret,id=gh_token \
-    sh -c 'TOKEN=""; \
-           if [ -f /run/secrets/gh_token ]; then TOKEN="$(cat /run/secrets/gh_token)"; \
-           elif [ -n "$gh_token" ]; then TOKEN="$gh_token"; fi; \
-           if [ -n "$TOKEN" ]; then \
-             git config --global url."https://${TOKEN}@github.com/".insteadOf "https://github.com/"; \
+RUN sh -c 'if [ -n "$gh_token" ]; then \
+             git config --global url."https://${gh_token}@github.com/".insteadOf "https://github.com/"; \
            fi && \
            pip install --no-cache-dir ./cp-engine && \
-           git config --global --unset-all url."https://${TOKEN}@github.com/".insteadOf 2>/dev/null || true'
+           git config --global --unset-all url."https://${gh_token}@github.com/".insteadOf 2>/dev/null || true'
 
 # Install the webhook itself.
 COPY webhook ./webhook
