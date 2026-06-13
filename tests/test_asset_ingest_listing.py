@@ -9,6 +9,8 @@ Scope: resolve_project_folders + list_files only. Download is a later task.
 
 from __future__ import annotations
 
+import re
+
 import pytest
 
 from cp_engine.asset_ingest import (
@@ -58,49 +60,149 @@ class _FakeClient:
         return _FakeQuery(self._data, self.recorder)
 
 
-class _FakeDriveConnector:
-    """Mirrors GoogleDriveConnector's listing primitive."""
+_DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
 
-    def __init__(self, files):
+
+def _drive_file(id, name, mime="application/pdf", size="1024", modified="2026-06-01T00:00:00Z"):
+    """A non-folder Drive child dict (mirrors the API's files() shape)."""
+    return {"id": id, "name": name, "mimeType": mime, "size": size, "modifiedTime": modified}
+
+
+def _drive_folder(id, name):
+    """A folder Drive child dict — recursion descends into these."""
+    return {"id": id, "name": name, "mimeType": _DRIVE_FOLDER_MIME}
+
+
+def _parent_id_from_query(query: str) -> str | None:
+    """Pull the `'<id>' in parents` folder id out of a Drive query string."""
+    m = re.search(r"'([^']+)' in parents", query)
+    return m.group(1) if m else None
+
+
+class _FakeDriveConnector:
+    """Mirrors GoogleDriveConnector's listing primitive.
+
+    Two construction modes:
+      - `files=[...]`: a flat single-folder listing (the original behavior). The
+        same list is returned for any query — fine for the original tests whose
+        root folder has files and no subfolders.
+      - `tree={folder_id: [child, ...]}`: a folder TREE keyed by folder id. The
+        connector dispatches on the `'<id>' in parents` clause in the query so
+        recursion into a subfolder returns that subfolder's children.
+    """
+
+    def __init__(self, files=None, tree=None):
         self._files = files
+        self._tree = tree
         self.calls: list[dict] = []
 
     def _list_files_with_pagination(self, query, fields, page_size=100, **kwargs):
         self.calls.append({"query": query, "fields": fields, "page_size": page_size})
+        if self._tree is not None:
+            parent = _parent_id_from_query(query)
+            return list(self._tree.get(parent, []))
         return self._files
 
 
+class _InfiniteDriveConnector:
+    """Every folder contains exactly one fresh subfolder — infinite nesting.
+
+    Used to prove the depth cap halts the tree-walk (no hang / no stack blow-up).
+    """
+
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def _list_files_with_pagination(self, query, fields, page_size=100, **kwargs):
+        self.calls.append({"query": query, "fields": fields, "page_size": page_size})
+        parent = _parent_id_from_query(query)
+        # One file (so we can see depth-of-descent) + one deeper subfolder.
+        return [
+            _drive_file(f"file-at-{parent}", f"f-{parent}.pdf"),
+            _drive_folder(f"{parent}-child", f"sub-{parent}"),
+        ]
+
+
+class _CycleDriveConnector:
+    """Folder A → B → A: a cycle. Proves the visited-set stops infinite looping."""
+
+    def __init__(self):
+        self.calls: list[dict] = []
+        self._graph = {
+            "A": [_drive_file("fa", "a.pdf"), _drive_folder("B", "folder-B")],
+            "B": [_drive_file("fb", "b.pdf"), _drive_folder("A", "folder-A")],
+        }
+
+    def _list_files_with_pagination(self, query, fields, page_size=100, **kwargs):
+        self.calls.append({"query": query, "fields": fields, "page_size": page_size})
+        parent = _parent_id_from_query(query)
+        return list(self._graph.get(parent, []))
+
+
+class _DbxResult:
+    """A files_list_folder / _continue result page."""
+
+    def __init__(self, entries, has_more=False, cursor=None):
+        self.entries = entries
+        self.has_more = has_more
+        self.cursor = cursor
+
+
 class _FakeDropboxConnector:
-    """Mirrors the low-level dbx.files_list_folder primitive used by list_files."""
+    """Mirrors the low-level dbx.files_list_folder primitive used by list_files.
+
+    Single-page mode: pass `entries`. Records the `recursive` kwarg so tests can
+    assert recursive=True is passed. Multi-page mode: pass `pages` (a list of
+    entry-lists); the connector drains them via has_more + files_list_folder_continue.
+    """
 
     class _Dbx:
-        def __init__(self, entries):
+        def __init__(self, entries=None, pages=None):
             self._entries = entries
+            self._pages = list(pages) if pages is not None else None
             self.calls: list = []
+            self.continue_calls: list = []
+            self.recursive_flags: list = []
+            self._page_idx = 0
 
-        def files_list_folder(self, path):
+        def files_list_folder(self, path, recursive=False):
             self.calls.append(path)
+            self.recursive_flags.append(recursive)
+            if self._pages is not None:
+                self._page_idx = 0
+                entries = self._pages[0]
+                has_more = len(self._pages) > 1
+                return _DbxResult(entries, has_more=has_more, cursor="cursor-0")
+            return _DbxResult(self._entries or [], has_more=False)
 
-            class _Result:
-                pass
+        def files_list_folder_continue(self, cursor):
+            self.continue_calls.append(cursor)
+            self._page_idx += 1
+            entries = self._pages[self._page_idx]
+            has_more = self._page_idx < len(self._pages) - 1
+            return _DbxResult(entries, has_more=has_more, cursor=f"cursor-{self._page_idx}")
 
-            r = _Result()
-            r.entries = self._entries
-            r.has_more = False
-            return r
-
-    def __init__(self, entries):
-        self.dbx = self._Dbx(entries)
+    def __init__(self, entries=None, pages=None):
+        self.dbx = self._Dbx(entries=entries, pages=pages)
 
 
 class _FakeDropboxEntry:
-    """Minimal stand-in for dropbox.files.FileMetadata."""
+    """Minimal stand-in for dropbox.files.FileMetadata (has .size)."""
 
     def __init__(self, name, path, size, modified, id):
         self.name = name
         self.path_display = path
         self.size = size
         self.client_modified = modified
+        self.id = id
+
+
+class _FakeDropboxFolderEntry:
+    """Minimal stand-in for dropbox.files.FolderMetadata (NO .size — skipped)."""
+
+    def __init__(self, name, path, id):
+        self.name = name
+        self.path_display = path
         self.id = id
 
 
@@ -323,3 +425,107 @@ def test_list_skips_dropbox_when_disabled() -> None:
     out = list_files(folders, drive_connector=drive, dropbox_connector=dropbox)
     assert dropbox.dbx.calls == []
     assert [f.source for f in out] == ["drive"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Recursive subfolder listing — Drive tree-walk
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_list_drive_recurses_into_subfolders() -> None:
+    """Root has ZERO files and two subfolders; the files live one level down.
+
+    This mirrors real client folders (Drive nests under 'Define and Approach' /
+    'Client Share' / 'Management' with nothing at the top). A non-recursive
+    listing would return nothing — recursion must descend and find the files.
+    """
+    folders = _client_folders(enable_dropbox=False, google_drive_folder_id="root")
+    tree = {
+        "root": [_drive_folder("sub-a", "Define and Approach"),
+                 _drive_folder("sub-b", "Management")],
+        "sub-a": [_drive_file("fa1", "narrative.docx"), _drive_file("fa2", "approach.pdf")],
+        "sub-b": [_drive_file("fb1", "sow.pdf")],
+    }
+    drive = _FakeDriveConnector(tree=tree)
+    out = list_files(folders, drive_connector=drive, dropbox_connector=None)
+
+    names = {f.name for f in out}
+    assert names == {"narrative.docx", "approach.pdf", "sow.pdf"}
+    assert all(f.source == "drive" for f in out)
+    # Each nested file keeps its own id (download is by id).
+    assert {f.id for f in out} == {"fa1", "fa2", "fb1"}
+    # It actually queried the two subfolders' ids (proof it recursed).
+    queried_parents = {_parent_id_from_query(c["query"]) for c in drive.calls}
+    assert {"root", "sub-a", "sub-b"} <= queried_parents
+
+
+def test_list_drive_recursion_depth_cap(capsys: pytest.CaptureFixture[str]) -> None:
+    """Infinitely-nested tree must stop at the depth cap, not hang/recurse forever."""
+    folders = _client_folders(enable_dropbox=False, google_drive_folder_id="root")
+    drive = _InfiniteDriveConnector()
+    out = list_files(folders, drive_connector=drive, dropbox_connector=None)
+
+    # It terminated (no hang) and collected the files down to the cap.
+    assert len(out) >= 1
+    assert all(f.source == "drive" for f in out)
+    # The number of list calls is bounded (cap + root), not unbounded.
+    assert len(drive.calls) <= 12  # max_depth=10 → root + 10 descents, with slack
+    # The cap was surfaced — NOT a silent truncation.
+    err = capsys.readouterr().err.lower()
+    assert "depth" in err or "cap" in err
+
+
+def test_list_drive_cycle_guard() -> None:
+    """Folder A→B→A is a cycle; the visited-set must stop the infinite loop."""
+    folders = _client_folders(enable_dropbox=False, google_drive_folder_id="A")
+    drive = _CycleDriveConnector()
+    out = list_files(folders, drive_connector=drive, dropbox_connector=None)
+
+    names = {f.name for f in out}
+    assert names == {"a.pdf", "b.pdf"}
+    # A and B were each visited exactly once (no re-descent into the cycle).
+    queried = [_parent_id_from_query(c["query"]) for c in drive.calls]
+    assert sorted(queried) == ["A", "B"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Recursive subfolder listing — Dropbox recursive=True
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_list_dropbox_recursive_flag() -> None:
+    """recursive=True is passed; FolderMetadata entries are skipped, files kept."""
+    folders = _client_folders(enable_google_drive=False)
+    entries = [
+        _FakeDropboxFolderEntry("01 Project Notes", "/p/01 Project Notes", "id:f1"),
+        _FakeDropboxEntry("brief.pdf", "/p/01 Project Notes/brief.pdf", 10, "2026", "id:a"),
+        _FakeDropboxFolderEntry("02 Working Files", "/p/02 Working Files", "id:f2"),
+        _FakeDropboxEntry(
+            "deep.docx", "/p/02 Working Files/sub/deep.docx", 20, "2026", "id:b"
+        ),
+    ]
+    dropbox = _FakeDropboxConnector(entries=entries)
+    out = list_files(folders, drive_connector=None, dropbox_connector=dropbox)
+
+    # recursive=True was passed to the SDK.
+    assert dropbox.dbx.recursive_flags == [True]
+    # Only the FileMetadata entries became FileRefs (folders skipped).
+    assert {f.name for f in out} == {"brief.pdf", "deep.docx"}
+    # path_display (full nested path) is carried for download-by-path.
+    paths = {f.path for f in out}
+    assert "/p/01 Project Notes/brief.pdf" in paths
+    assert "/p/02 Working Files/sub/deep.docx" in paths
+    assert all(f.source == "dropbox" for f in out)
+
+
+def test_list_dropbox_paginates_has_more() -> None:
+    """has_more drains via files_list_folder_continue; both pages' files included."""
+    folders = _client_folders(enable_google_drive=False)
+    page1 = [_FakeDropboxEntry("p1.pdf", "/p/a/p1.pdf", 1, "2026", "id:1")]
+    page2 = [_FakeDropboxEntry("p2.pdf", "/p/b/p2.pdf", 2, "2026", "id:2")]
+    dropbox = _FakeDropboxConnector(pages=[page1, page2])
+    out = list_files(folders, drive_connector=None, dropbox_connector=dropbox)
+
+    assert {f.name for f in out} == {"p1.pdf", "p2.pdf"}
+    # The cursor was drained exactly once (one continue call for the 2nd page).
+    assert len(dropbox.dbx.continue_calls) == 1

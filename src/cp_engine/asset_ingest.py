@@ -156,34 +156,81 @@ def _coerce_size(v) -> int | None:
         return None
 
 
+# Drive folders carry this mimeType; everything else is a leaf file.
+_DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
+
+# Recursion safety rail for the Drive tree-walk. Real client folder trees are a
+# handful of levels deep; 10 is generous headroom. The cap (alongside a visited-
+# set of folder ids) guarantees termination even on a pathological/cyclic tree —
+# Drive shortcuts can introduce loops. Hitting it is surfaced to stderr, never a
+# silent truncation.
+_DRIVE_MAX_DEPTH = 10
+
+
+def _drive_file_ref(item: dict) -> FileRef:
+    """Map one non-folder Drive child dict to a FileRef (download is by id)."""
+    return FileRef(
+        source="drive",
+        id=item.get("id"),
+        name=item.get("name"),
+        mime_type=item.get("mimeType"),
+        size=_coerce_size(item.get("size")),
+        modified=item.get("modifiedTime"),
+        path=None,
+    )
+
+
 def _list_drive(connector, folder_id: str) -> list[FileRef]:
-    """List a Drive folder via the connector's pagination primitive.
+    """Recursively list a Drive folder tree via the pagination primitive.
+
+    Real client folders nest their files in subfolders ("Define and Approach" /
+    "Management" / …) with ZERO files at the top level, so a single-level listing
+    finds nothing. We tree-walk: list each folder's direct children, emit a
+    FileRef for every non-folder child, and descend into every folder child.
 
     `_list_files_with_pagination` is the listing primitive on GoogleDriveConnector
     (it has no simple public `list(folder_id)`); it returns dicts with the fields
-    we request. We query direct children of the folder, excluding trashed files.
+    we request, already drained across Drive API pages. We request `mimeType` on
+    every child so we can tell folders from leaf files.
+
+    Termination is bounded two ways: a visited-set of folder ids (Drive shortcuts
+    can create cycles) AND a depth cap (`_DRIVE_MAX_DEPTH`). Hitting the cap emits
+    a stderr note rather than silently dropping the deeper subtree.
     """
-    items = connector._list_files_with_pagination(
-        query=f"'{folder_id}' in parents and trashed=false",
-        fields="files(id,name,mimeType,size,modifiedTime)",
-        page_size=100,
-    )
-    return [
-        FileRef(
-            source="drive",
-            id=item.get("id"),
-            name=item.get("name"),
-            mime_type=item.get("mimeType"),
-            size=_coerce_size(item.get("size")),
-            modified=item.get("modifiedTime"),
-            path=None,
+    refs: list[FileRef] = []
+    visited: set[str] = set()
+
+    def _walk(fid: str, depth: int) -> None:
+        if fid in visited:
+            return  # cycle guard — Drive shortcuts can point back up the tree
+        visited.add(fid)
+        if depth > _DRIVE_MAX_DEPTH:
+            print(
+                f"[asset-ingest] Drive recursion hit depth cap "
+                f"({_DRIVE_MAX_DEPTH}) at folder '{fid}' — not descending "
+                "further (subtree below this point NOT listed)",
+                file=sys.stderr,
+            )
+            return
+        items = connector._list_files_with_pagination(
+            query=f"'{fid}' in parents and trashed=false",
+            fields="files(id,name,mimeType,size,modifiedTime)",
+            page_size=100,
         )
-        for item in items
-    ]
+        for item in items:
+            if item.get("mimeType") == _DRIVE_FOLDER_MIME:
+                child_id = item.get("id")
+                if child_id:
+                    _walk(child_id, depth + 1)
+            else:
+                refs.append(_drive_file_ref(item))
+
+    _walk(folder_id, 0)
+    return refs
 
 
 def _list_dropbox(connector, folder: str) -> list[FileRef]:
-    """List a Dropbox folder via the low-level `dbx.files_list_folder`.
+    """Recursively list a Dropbox folder via `dbx.files_list_folder(recursive=True)`.
 
     ASSUMPTION (documented for the next task): MC-2's `mc_dropbox_folder_id` is
     treated as a value `files_list_folder` accepts directly — i.e. a folder path
@@ -191,27 +238,41 @@ def _list_dropbox(connector, folder: str) -> list[FileRef]:
     handles. The connector's public `list_project_files` is path-derived from
     project_code/name and does NOT take the stored folder id, so we use the
     underlying `dbx` client and normalize the FileMetadata entries ourselves.
-    Pagination (`has_more`/`cursor`) is left to the download task; client folders
-    here are small. We filter to FileMetadata (skip subfolders) defensively by
-    duck-typing on `path_display`.
+
+    Real client folders nest files in subfolders ("01 Project Notes" /
+    "02 Working Files" / …) with nothing at the top, so we pass `recursive=True`
+    — the SDK returns ALL descendants (files + folders) at every depth in a single
+    logical listing, drained across pages via `has_more` + `files_list_folder_continue`.
+    No manual tree-walk is needed: recursive=True already flattens the whole tree.
+
+    We keep only FileMetadata entries (FolderMetadata has no `.size`) and use each
+    entry's `path_display` (the full nested path) as the FileRef path, which is
+    what the download step fetches by.
     """
-    result = connector.dbx.files_list_folder(folder)
+    result = connector.dbx.files_list_folder(folder, recursive=True)
     refs: list[FileRef] = []
-    for entry in getattr(result, "entries", []) or []:
-        # FileMetadata has size + client_modified; FolderMetadata does not.
-        if not hasattr(entry, "size"):
-            continue
-        refs.append(
-            FileRef(
-                source="dropbox",
-                id=getattr(entry, "id", None),
-                name=getattr(entry, "name", None),
-                mime_type=None,  # Dropbox doesn't expose a mime type on list
-                size=_coerce_size(getattr(entry, "size", None)),
-                modified=str(getattr(entry, "client_modified", None) or "") or None,
-                path=getattr(entry, "path_display", None),
+    while True:
+        for entry in getattr(result, "entries", []) or []:
+            # FileMetadata has size + client_modified; FolderMetadata does not —
+            # skip folders, keep files (at any depth, since recursive=True).
+            if not hasattr(entry, "size"):
+                continue
+            refs.append(
+                FileRef(
+                    source="dropbox",
+                    id=getattr(entry, "id", None),
+                    name=getattr(entry, "name", None),
+                    mime_type=None,  # Dropbox doesn't expose a mime type on list
+                    size=_coerce_size(getattr(entry, "size", None)),
+                    modified=str(getattr(entry, "client_modified", None) or "")
+                    or None,
+                    path=getattr(entry, "path_display", None),
+                )
             )
-        )
+        # Drain the cursor: recursive results page just like a flat listing.
+        if not getattr(result, "has_more", False):
+            break
+        result = connector.dbx.files_list_folder_continue(result.cursor)
     return refs
 
 
