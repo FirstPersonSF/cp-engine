@@ -1901,6 +1901,188 @@ def _fetch_clickup_task_ids_for_hashes(config, hashes: list[str]) -> dict[str, s
         return {}
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  1P asset-ingest verbs (Task C8)
+#
+#  Thin command bodies — all real work lives in `cp_engine.asset_ingest`
+#  (the glue) and `cp_engine.asset_ingest_cli` (client build + --all
+#  enumeration + summary formatting). Verbs that need a Supabase client
+#  build one via `build_mc2_client`, which reuses the same cred resolver the
+#  glue uses internally so the CLI and glue always agree.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def build_mc2_client():
+    """Build the MC-2 Supabase client (re-exported for monkeypatch in tests)."""
+    from cp_engine.asset_ingest_cli import build_mc2_client as _build
+
+    return _build()
+
+
+def _echo_run_summary(code: str, run) -> None:
+    """Print one project's ingest summary line + any per-file failures."""
+    click.echo(
+        f"{code}: created={run.created} versioned={run.versioned} "
+        f"skipped={run.skipped} failed={run.failed}"
+    )
+    for name, err in run.failures:
+        click.echo(f"  FAIL {name}: {err}", err=True)
+
+
+@main.command(name="ingest-assets")
+@click.argument("code", required=False)
+@click.option("--all", "all_", is_flag=True, help="Ingest all active client projects.")
+@click.option(
+    "--scope",
+    type=click.Choice(["1p", "fpsf", "canonic"]),
+    help="Narrow --all to a tenant scope. fpsf/canonic are internal "
+    "(asset ingest is client-only) → no-op.",
+)
+def ingest_assets_cmd(code: str | None, all_: bool, scope: str | None) -> None:
+    """Ingest a project's Drive/Dropbox assets into the asset store.
+
+    `cp ingest-assets ibx-5153` ingests one engagement; `cp ingest-assets
+    --all` fans out across every active client project. Exactly one of CODE
+    or --all is required. Exits non-zero if any file (or project) failed, so
+    cron/CI notices.
+
+    --scope mapping: 1p == --all (client engagements); fpsf/canonic are
+    internal and yield nothing (asset ingest is client-only).
+    """
+    from cp_engine import asset_ingest, asset_ingest_cli
+
+    if bool(code) == bool(all_):
+        click.echo(
+            "Error: pass exactly one of CODE or --all (got both or neither).",
+            err=True,
+        )
+        sys.exit(2)
+
+    # ── Single project ──
+    if code:
+        run = asset_ingest.ingest_project_assets(code)
+        _echo_run_summary(code, run)
+        if run.failed or run.failures:
+            sys.exit(1)
+        return
+
+    # ── --all (optionally scoped) ──
+    if scope in asset_ingest_cli.INTERNAL_SCOPES:
+        click.echo(f"scope={scope}: asset ingest is client-only; nothing to do.")
+        return
+
+    client = build_mc2_client()
+    codes = asset_ingest_cli.active_client_project_codes(client)
+    if not codes:
+        click.echo("No active client projects found; nothing to do.")
+        return
+
+    result = asset_ingest_cli.fan_out_ingest(client, codes)
+    for outcome in result.outcomes:
+        if outcome.error:
+            click.echo(f"{outcome.code}: ERROR {outcome.error}", err=True)
+            continue
+        click.echo(
+            f"{outcome.code}: created={outcome.created} "
+            f"versioned={outcome.versioned} skipped={outcome.skipped} "
+            f"failed={outcome.failed}"
+        )
+        for name, err in outcome.failures:
+            click.echo(f"  FAIL {name}: {err}", err=True)
+
+    click.echo(
+        f"TOTAL ({len(result.outcomes)} projects): "
+        f"created={result.total_created} versioned={result.total_versioned} "
+        f"skipped={result.total_skipped} failed={result.total_failed}"
+    )
+    if result.any_failures:
+        sys.exit(1)
+
+
+def _resolve_project_id_or_die(client, code: str) -> str:
+    """Resolve a cp code to its MC-2 project_id; exit non-zero on miss."""
+    from cp_engine import asset_ingest
+
+    folders = asset_ingest.resolve_project_folders(client, code)
+    if folders is None:
+        click.echo(f"Error: no MC-2 project resolved for '{code}'.", err=True)
+        sys.exit(1)
+    return folders.project_id
+
+
+@main.command(name="promote-asset")
+@click.argument("asset_id")
+def promote_asset_cmd(asset_id: str) -> None:
+    """Promote a project-scoped asset to account scope (shared across the company)."""
+    from cp_engine import asset_ingest
+
+    client = build_mc2_client()
+    if asset_ingest.promote_asset(client, asset_id):
+        click.echo(f"Promoted {asset_id}")
+    else:
+        click.echo(f"{asset_id} already account-scoped (no-op)")
+
+
+@main.command(name="demote-asset")
+@click.argument("asset_id")
+def demote_asset_cmd(asset_id: str) -> None:
+    """Demote an account-scoped asset back to project scope."""
+    from cp_engine import asset_ingest
+
+    client = build_mc2_client()
+    if asset_ingest.demote_asset(client, asset_id):
+        click.echo(f"Demoted {asset_id}")
+    else:
+        click.echo(f"{asset_id} not account-scoped (no-op)")
+
+
+@main.command(name="list-promotable")
+@click.argument("code")
+def list_promotable_cmd(code: str) -> None:
+    """List a project's project-scoped assets eligible for promotion review."""
+    from cp_engine import asset_ingest
+
+    client = build_mc2_client()
+    project_id = _resolve_project_id_or_die(client, code)
+    rows = asset_ingest.list_promotable(client, project_id)
+    if not rows:
+        click.echo("(no promotable assets)")
+        return
+    for row in rows:
+        click.echo(
+            f"{row.get('id')}  "
+            f"{row.get('title') or '(untitled)'}  "
+            f"[{row.get('classifier_decision') or '—'}]"
+        )
+
+
+@main.command(name="archive-project-assets")
+@click.argument("code")
+def archive_project_assets_cmd(code: str) -> None:
+    """Archive a project's un-promoted assets (on project close)."""
+    from cp_engine import asset_ingest
+
+    client = build_mc2_client()
+    project_id = _resolve_project_id_or_die(client, code)
+    n = asset_ingest.archive_project_assets(client, project_id)
+    click.echo(
+        f"Archived {n} project-scoped assets for {code} "
+        "(account assets unaffected)"
+    )
+
+
+@main.command(name="unarchive-project-assets")
+@click.argument("code")
+def unarchive_project_assets_cmd(code: str) -> None:
+    """Restore a project's archived assets back to project scope."""
+    from cp_engine import asset_ingest
+
+    client = build_mc2_client()
+    project_id = _resolve_project_id_or_die(client, code)
+    n = asset_ingest.unarchive_project_assets(client, project_id)
+    click.echo(f"Restored {n} archived assets for {code}")
+
+
 def _load_config_or_die() -> "TenantConfig":  # noqa: F821
     """Load tenant config from cwd; exit with a friendly error on failure."""
     try:
