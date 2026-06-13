@@ -6,27 +6,42 @@
 # We need the cp_engine package source available so the webhook can
 # pip install ../ to pick up the same code we ship as the CLI.
 #
-# BUILD SECRET — gh_token (REQUIRED):
+# BUILD AUTH — gh_token (REQUIRED):
 #   cp-engine's deps include private git+https refs to
 #   github.com/Canonic-OS/canonic-component-library, so the build stage
-#   needs GitHub read auth. We mount a token as a BuildKit secret
-#   (id=gh_token) and use it via git's insteadOf rewrite ONLY inside the
-#   install RUN — it is never baked into an ARG/ENV or image layer.
+#   needs GitHub read auth. The token is accepted via EITHER of two
+#   mechanisms, the secret being preferred:
+#     1. A BuildKit secret (id=gh_token) — preferred; never appears in
+#        image history.
+#     2. A build ARG `gh_token` — fallback for platforms (e.g. Railway)
+#        that expose service variables to the build as ARGs but do NOT
+#        support BuildKit secret mounts. NOTE: a referenced ARG value can
+#        appear in `docker history` of the build; acceptable for a
+#        read-only token on a private builder, but prefer the secret where
+#        supported.
+#   In both paths the token is consumed via git's insteadOf rewrite ONLY
+#   inside the install RUN — it is never written to an ENV or persisted
+#   config (the rewrite is unset at the end of the RUN).
 #
 #   Token scope: a READ-ONLY token is sufficient. Either a fine-grained
 #   PAT scoped to Canonic-OS/canonic-component-library with
 #   "Contents: read", or a machine-user classic PAT with `repo:read`.
 #
-#   Railway:  Service → Settings → Build → add a build secret named
-#             `gh_token` (Railway passes registered build secrets through
-#             to BuildKit's --mount=type=secret). The operator must wire
-#             this in the Railway dashboard; the build will fail to clone
-#             the private deps without it (unless they are already cached).
+#   Railway:  Service → Variables → add a service variable named
+#             `gh_token` (lowercase). Railway passes service variables to
+#             the Docker build as build ARGs (because the Dockerfile
+#             declares `ARG gh_token`). Railway does NOT support BuildKit
+#             secret mounts, so the ARG path is the one that applies here.
+#             Without the token the build fails to clone the private deps
+#             (unless they are already cached).
 #
 #   Local:    DOCKER_BUILDKIT=1 docker build \
 #               --secret id=gh_token,env=GH_TOKEN \
 #               -f webhook/Dockerfile -t cp-webhook .
-#             (with GH_TOKEN exported to a read-only token)
+#             (with GH_TOKEN exported to a read-only token; preferred)
+#             — or, mirroring the Railway path —
+#             docker build --build-arg gh_token=$GH_TOKEN \
+#               -f webhook/Dockerfile -t cp-webhook .
 
 FROM python:3.11-slim
 
@@ -41,18 +56,26 @@ WORKDIR /app
 # Install cp-engine first (its deps cache well between builds).
 COPY pyproject.toml README.md ./cp-engine/
 COPY src ./cp-engine/src
-# cp-engine's deps include private git+https refs to
-# canonic-component-library, so we need GitHub read auth at build time.
-# The token is provided via a BuildKit secret (id=gh_token) and read from
-# /run/secrets/gh_token at use-time — it is NEVER written to an image
-# layer, ARG, or ENV. git's insteadOf rewrite injects it into the clone
-# URL only for the duration of this RUN; we unset it again afterwards.
+# Token for cloning private canonic-component-library deps. Supplied EITHER as
+# a BuildKit secret (id=gh_token) OR — for platforms like Railway that expose
+# service variables to the build as ARGs but don't support BuildKit secrets —
+# as a build ARG `gh_token`. The secret is preferred (never hits image history);
+# the ARG path is used only when the secret mount is absent. In BOTH paths the
+# token is consumed inside this single RUN for a git insteadOf rewrite and is
+# NOT written to an ENV or a persisted config (the rewrite is unset at the end,
+# and ARG values are not in the final image's ENV — though an ARG value CAN
+# appear in `docker history` of the build; acceptable for a read-only token on
+# a private builder. Prefer the BuildKit secret in environments that support it).
+ARG gh_token
 RUN --mount=type=secret,id=gh_token \
-    sh -c 'if [ -f /run/secrets/gh_token ]; then \
-             git config --global url."https://$(cat /run/secrets/gh_token)@github.com/".insteadOf "https://github.com/"; \
+    sh -c 'TOKEN=""; \
+           if [ -f /run/secrets/gh_token ]; then TOKEN="$(cat /run/secrets/gh_token)"; \
+           elif [ -n "$gh_token" ]; then TOKEN="$gh_token"; fi; \
+           if [ -n "$TOKEN" ]; then \
+             git config --global url."https://${TOKEN}@github.com/".insteadOf "https://github.com/"; \
            fi && \
            pip install --no-cache-dir ./cp-engine && \
-           git config --global --unset url."https://$(cat /run/secrets/gh_token)@github.com/".insteadOf || true'
+           git config --global --unset-all url."https://${TOKEN}@github.com/".insteadOf 2>/dev/null || true'
 
 # Install the webhook itself.
 COPY webhook ./webhook
