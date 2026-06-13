@@ -116,8 +116,13 @@ def resolve_project_folders(client, project_code: str) -> ProjectFolders | None:
         return None
 
     row = rows[0]
+    # PostgREST returns the to-one `companies` embed as either a dict or a
+    # single-element list (shape varies); defend against both — see the same
+    # guard in sync_mc2._engagement_canonical_id / _repo_row_to_state.
     companies = row.get("companies") or {}
-    company_kind = companies.get("kind") or ""
+    if isinstance(companies, list):
+        companies = companies[0] if companies else {}
+    company_kind = (companies.get("kind") if isinstance(companies, dict) else "") or ""
 
     return ProjectFolders(
         project_id=row.get("id"),
@@ -218,6 +223,10 @@ def list_files(
       - non-client company kinds (out of scope)
       - a source with its enable flag off
       - a source missing its folder id
+
+    Config gaps (non-client company, disabled source, missing folder id) are
+    skipped with a stderr note. Connector/API errors (auth failure, bad folder
+    id, rate limit) propagate uncaught — the caller handles per-source failure.
     """
     if folders.company_kind != "client":
         print(

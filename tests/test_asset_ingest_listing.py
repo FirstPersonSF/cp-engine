@@ -148,6 +148,47 @@ def test_resolve_returns_none_for_codeless_input() -> None:
     assert resolve_project_folders(client, "") is None
 
 
+def test_resolve_handles_companies_as_list() -> None:
+    # PostgREST sometimes returns a to-one embed as a single-element LIST
+    # instead of a dict. resolve must not crash and must read kind from it.
+    client = _FakeClient(
+        [
+            {
+                "id": "p",
+                "company_id": "c",
+                "google_drive_folder_id": "drive-1",
+                "mc_dropbox_folder_id": "/p",
+                "enable_google_drive": True,
+                "enable_dropbox": True,
+                "companies": [{"kind": "client"}],  # list, not dict
+            }
+        ]
+    )
+    folders = resolve_project_folders(client, "ibx-5153")
+    assert folders is not None
+    assert folders.company_kind == "client"
+
+
+def test_resolve_handles_companies_as_empty_list() -> None:
+    # Empty embed list must not IndexError and yields empty company_kind.
+    client = _FakeClient(
+        [
+            {
+                "id": "p",
+                "company_id": "c",
+                "google_drive_folder_id": None,
+                "mc_dropbox_folder_id": None,
+                "enable_google_drive": False,
+                "enable_dropbox": False,
+                "companies": [],  # empty list
+            }
+        ]
+    )
+    folders = resolve_project_folders(client, "ibx-5153")
+    assert folders is not None
+    assert folders.company_kind == ""
+
+
 def test_resolve_coerces_enable_flags_to_bool() -> None:
     client = _FakeClient(
         [
