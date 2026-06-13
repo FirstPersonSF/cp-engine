@@ -25,6 +25,7 @@ from __future__ import annotations
 import re
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 # Columns we read from MC-2's `projects` table. Explicit list (never `*`) per
 # Drew's global Supabase rule — the projects table carries multi-megabyte JSONB
@@ -273,3 +274,57 @@ def list_files(
             )
 
     return results
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Download
+# ──────────────────────────────────────────────────────────────────────
+
+
+def download_file(
+    file_ref: FileRef,
+    tmp_dir: Path,
+    drive_connector=None,
+    dropbox_connector=None,
+) -> Path:
+    """Download one `FileRef` into `tmp_dir`, returning the written path.
+
+    Connectors are injectable for testability; when omitted they are constructed
+    from the environment (same lazy pattern as `list_files`). `tmp_dir` is owned
+    by the caller (the next task creates and cleans it); this function only
+    writes into it.
+
+    The returned path may differ from `tmp_dir / file_ref.name`: for Drive,
+    Google-native files (Docs/Sheets/Slides) are EXPORTED with an office/PDF
+    suffix the connector appends, and we MUST return the connector's actual path
+    because the downstream parser dispatches on file extension.
+    """
+    if file_ref.source == "drive":
+        if drive_connector is None:
+            from cloud_storage.google_drive_connector import GoogleDriveConnector
+
+            drive_connector = GoogleDriveConnector(service_account_file=None)
+        # download_file auto-exports Google-native files and RETURNS the actual
+        # written path (it may add `.docx`/`.pdf`/etc. when exporting). Trust the
+        # returned path — do NOT assume it equals the destination we passed in.
+        return drive_connector.download_file(file_ref.id, tmp_dir / file_ref.name)
+
+    if file_ref.source == "dropbox":
+        if dropbox_connector is None:
+            from cloud_storage.dropbox_connector import DropboxConnector
+
+            dropbox_connector = DropboxConnector()
+        # WORKAROUND: the Dropbox connector has no download_file; using the SDK
+        # client's files_download directly. Retire when the component adds
+        # download_file. Fetch by path_display (the value `list_files` stored on
+        # the FileRef); Dropbox returns (metadata, response) and the bytes live
+        # on response.content.
+        local_path = tmp_dir / file_ref.name
+        _metadata, response = dropbox_connector.dbx.files_download(path=file_ref.path)
+        local_path.write_bytes(response.content)
+        return local_path
+
+    raise ValueError(
+        f"[asset-ingest] cannot download FileRef with unknown source "
+        f"'{file_ref.source}' (expected 'drive' or 'dropbox')"
+    )
