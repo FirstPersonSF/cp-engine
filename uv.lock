@@ -467,7 +467,7 @@ wheels = [
 [[package]]
 name = "cloud-storage"
 version = "0.1.0"
-source = { git = "https://github.com/Canonic-OS/canonic-component-library.git?subdirectory=integrations%2Fcloud-storage&rev=1558f49#1558f4967e4ee7ea51ce3cea234f27a86a1adea9" }
+source = { git = "https://github.com/Canonic-OS/canonic-component-library.git?subdirectory=integrations%2Fcloud-storage&rev=dc1fbaf#dc1fbaf6a4c9c1fa6aff064883ee56b49df0053e" }
 dependencies = [
     { name = "resilience" },
 ]
@@ -626,8 +626,8 @@ dev = [
 requires-dist = [
     { name = "anthropic", specifier = ">=0.40" },
     { name = "click", specifier = ">=8.1" },
-    { name = "cloud-storage", extras = ["all"], git = "https://github.com/Canonic-OS/canonic-component-library.git?subdirectory=integrations%2Fcloud-storage&rev=1558f49" },
-    { name = "document-ingest", extras = ["llm", "docx", "pptx", "pdf", "spreadsheet", "supabase", "web", "voyage"], git = "https://github.com/Canonic-OS/canonic-component-library.git?subdirectory=starters%2Fdocument-ingest&rev=1558f49" },
+    { name = "cloud-storage", extras = ["all"], git = "https://github.com/Canonic-OS/canonic-component-library.git?subdirectory=integrations%2Fcloud-storage&rev=dc1fbaf" },
+    { name = "document-ingest", extras = ["llm", "docx", "pptx", "pdf", "spreadsheet", "supabase", "web", "voyage"], git = "https://github.com/Canonic-OS/canonic-component-library.git?subdirectory=starters%2Fdocument-ingest&rev=dc1fbaf" },
     { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "jinja2", specifier = ">=3.1" },
@@ -738,7 +738,7 @@ wheels = [
 [[package]]
 name = "document-ingest"
 version = "2.0.0"
-source = { git = "https://github.com/Canonic-OS/canonic-component-library.git?subdirectory=starters%2Fdocument-ingest&rev=1558f49#1558f4967e4ee7ea51ce3cea234f27a86a1adea9" }
+source = { git = "https://github.com/Canonic-OS/canonic-component-library.git?subdirectory=starters%2Fdocument-ingest&rev=dc1fbaf#dc1fbaf6a4c9c1fa6aff064883ee56b49df0053e" }
 dependencies = [
     { name = "pyyaml" },
 ]
