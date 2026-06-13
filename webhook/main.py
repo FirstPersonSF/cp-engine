@@ -29,6 +29,16 @@ Required env vars:
                             Basic Information page
   SLACK_BOT_TOKEN         — (v0.14+) `xoxb-...`; used by views.open to launch
                             the "Snooze until…" date-picker modal
+
+Required BUILD-TIME secret (NOT a runtime env var):
+  gh_token                — read-only GitHub token, mounted as a BuildKit
+                            secret (id=gh_token) in webhook/Dockerfile.
+                            cp-engine's deps include private git+https refs
+                            to Canonic-OS/canonic-component-library; the
+                            token authenticates the clone at build time and
+                            is never baked into an image layer. In Railway,
+                            add it under Service → Settings → Build. Local:
+                            docker build --secret id=gh_token,env=GH_TOKEN …
 """
 
 from __future__ import annotations

@@ -6,6 +6,14 @@
 # 2. Connect to FirstPersonSF/cp-engine GitHub repo on `main`.
 # 3. Set "Root Directory" to "/" and point Railway at this file.
 # 4. Set the env vars listed in webhook/main.py's module docstring.
+# 5. Add a BUILD secret named `gh_token` (Service → Settings → Build).
+#    cp-engine's deps include private git+https refs to
+#    Canonic-OS/canonic-component-library; the Dockerfile mounts this
+#    token as a BuildKit secret to authenticate the clone at build time.
+#    Scope: read-only (fine-grained PAT with Contents:read on
+#    canonic-component-library, or a machine-user `repo:read` PAT).
+#    Without it the build fails to clone the private deps. The token is
+#    used only inside the install RUN and is never baked into a layer.
 #
 # The Dockerfile expects the build context to be the cp-engine repo
 # root, not webhook/ — so we explicitly point at it.
