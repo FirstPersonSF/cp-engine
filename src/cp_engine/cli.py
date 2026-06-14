@@ -767,29 +767,26 @@ def list_active_projects_cmd(scope: str, company: str | None) -> None:
     click.echo(json.dumps(out, indent=2))
 
 
-@main.command("shell")
-@click.argument("code")
-def shell_cmd(code: str) -> None:
-    """Print the project shell's full ranked relevance sweep.
+def _load_shell_elements(config, code: str):
+    """Load a project's shell elements (MC-2 canonical, disk fallback).
 
-    Reads the spine from MC-2 (canonical); falls back to the on-disk markdown
-    frontmatter when MC-2 is unreachable so the command works offline.
+    Returns ``(elements, project_dir)`` where ``project_dir`` is the resolved
+    working dir if the disk path was used, else ``None`` (MC-2 served the read).
+    Exits 1 via ``ShellDirNotFound`` if the project can't be resolved on disk
+    during fallback. Shared by ``cp shell`` and ``cp sweep``.
     """
-    from datetime import date
-
     from cp_engine.shell import (
         ShellDirNotFound,
         find_shell_dir,
         load_shell,
         load_shell_from_mc2,
-        render_sweep,
     )
-
-    config = _load_config_or_die()
-    elements: tuple = ()
-    reached_mc2 = False
     from cp_engine.sync import BackendUnavailable
     from cp_engine.sync_mc2 import MC2Backend
+
+    elements: tuple = ()
+    project_dir = None
+    reached_mc2 = False
 
     backend = MC2Backend()
     try:
@@ -821,7 +818,106 @@ def shell_cmd(code: str) -> None:
             sys.exit(1)
         elements = load_shell(project_dir)
 
+    return elements, project_dir
+
+
+@main.command("shell")
+@click.argument("code")
+def shell_cmd(code: str) -> None:
+    """Print the project shell's full ranked relevance sweep.
+
+    Reads the spine from MC-2 (canonical); falls back to the on-disk markdown
+    frontmatter when MC-2 is unreachable so the command works offline.
+    """
+    from datetime import date
+
+    from cp_engine.shell import render_sweep
+
+    config = _load_config_or_die()
+    elements, _ = _load_shell_elements(config, code)
+
     click.echo(render_sweep(code, elements, today=date.today()))
+
+
+@main.command("sweep")
+@click.argument("code")
+@click.option(
+    "--model",
+    default="claude-opus-4-7",
+    help="LLM model for the synthesis.",
+)
+def sweep_cmd(code: str, model: str) -> None:
+    """Sweep a project's whole shell → write a Synthesis-layer readout.
+
+    Loads the shell (MC-2 canonical, disk fallback — same as `cp shell`), runs
+    the LLM synthesis, and writes it as a `Synthesis`-layer element at
+    `shell/Synthesis/<today>-sweep.md` (idempotent per day — re-running
+    overwrites). An empty shell writes nothing.
+    """
+    from datetime import date
+
+    import frontmatter
+
+    from cp_engine.shell import ShellDirNotFound, find_shell_dir
+    from cp_engine.shell_sweep import run_sweep
+
+    config = _load_config_or_die()
+    elements, project_dir = _load_shell_elements(config, code)
+
+    # Empty shell: do NOT write a sentinel Synthesis element, do NOT call the LLM.
+    if not elements:
+        click.echo(f"No shell elements to sweep for {code}.")
+        return
+
+    # The injected LLM wrapper around _call_claude.
+    from cp_engine.plan_from_transcript import _call_claude
+
+    def _llm(prompt: str) -> str:
+        return _call_claude(prompt, model=model, api_key=None)
+
+    today = date.today()
+    try:
+        result = run_sweep(code, elements, today=today, llm=_llm)
+    except Exception as exc:  # noqa: BLE001 — LLM/transport failure
+        click.echo(
+            f"Sweep synthesis failed (is ANTHROPIC_API_KEY set?): {exc}",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Write the Synthesis-layer element. `project_dir` may be None if the
+    # elements came from MC-2; resolve it now for the write target.
+    if project_dir is None:
+        try:
+            project_dir = find_shell_dir(config.root, code)
+        except ShellDirNotFound as exc:
+            click.echo(str(exc), err=True)
+            sys.exit(1)
+    syn_dir = project_dir / "shell" / "Synthesis"
+    syn_dir.mkdir(parents=True, exist_ok=True)
+    fname = f"{today.isoformat()}-sweep.md"
+    el_id = f"{code}/synthesis/{today.isoformat()}-sweep"
+    # The sweep readout is ABOUT the active work, so it serves the active
+    # deliverables — this makes the fresh element score hot on the next Lens
+    # pass via _serves_active_term (rather than scoring cold with serves=[]).
+    from cp_engine.shell import active_deliverable_ids
+
+    serves = sorted(active_deliverable_ids(elements))
+    post = frontmatter.Post(
+        result.synthesis_text,
+        id=el_id,
+        project=code,
+        layer="Synthesis",
+        type="sweep",
+        title=f"Whole-project sweep — {today.isoformat()}",
+        status="active",
+        last_touched=today.isoformat(),
+        serves=serves,
+    )
+    (syn_dir / fname).write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
+
+    click.echo(result.ranked_table)
+    click.echo(f"\nSynthesis written: shell/Synthesis/{fname}")
 
 
 @main.command("snapshot")
