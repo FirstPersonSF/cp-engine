@@ -129,3 +129,19 @@ def test_parse_element_missing_required_key_raises_with_path(tmp_path: Path) -> 
         parse_element(f)
 
     assert "missing-id.md" in str(excinfo.value)
+
+
+def test_parse_element_broken_yaml_raises_with_path(tmp_path: Path) -> None:
+    f = tmp_path / "broken-yaml.md"
+    f.write_text(
+        "---\n"
+        "id: [unclosed\n"
+        "---\n"
+        "body\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        parse_element(f)
+
+    assert "broken-yaml.md" in str(excinfo.value)

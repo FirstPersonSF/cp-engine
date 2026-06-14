@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import frontmatter
+import yaml
 
 # The 11 fixed layers (dir names == `layer:` values).
 LAYERS: tuple[str, ...] = (
@@ -68,7 +69,10 @@ def _as_tuple(value: object) -> tuple:
 
 def parse_element(path: Path) -> ShellElement:
     """Parse one shell element markdown file into a ShellElement."""
-    post = frontmatter.load(str(path))
+    try:
+        post = frontmatter.load(str(path))
+    except yaml.YAMLError as exc:
+        raise ValueError(f"{path}: failed to parse frontmatter: {exc}") from exc
     meta = post.metadata
 
     def _str(key: str) -> str | None:
