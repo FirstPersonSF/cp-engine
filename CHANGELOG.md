@@ -4,6 +4,21 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.19.0 — 2026-06-13
+
+### Added — Project Shell, slice 1 (`cp shell <code>`)
+
+The first slice of the **Project Shell** — structured per-project state that gives incoming material a known home so a project's history stops mushing together. Markdown-only and read-only this slice; the MC-2 spine, snapshots, and demotion automation land later.
+
+- **Element schema + `shell/` convention.** A project's state is a set of small markdown elements under `<project>/shell/<Layer>/<name>.md`, where the YAML frontmatter is the structured spine (`id`, `layer`, `type`, `stage`, `target_date`, `depends_on`, `serves`, `status`, `last_touched`, …) and the body is the content. Eleven fixed layers: Brief, Agreement, Research, SourceMaterial, ClientFeedback, Synthesis, Drafts, Deliverables, Decisions, Timeline, Stakeholders.
+- **The Lens (computed relevance).** `relevance = recency × serves-active × layer-importance` — never stored, always computed. Elements serving an active deliverable (or in an always-ambient framing layer) score hot; everything else decays but never reaches zero ("a dimmer, not an off-switch").
+- **`cp shell <code>`** — read-only command that prints the full relevance-ranked sweep of a project's shell, hottest first, with `[stage]` / `due <date>` (with `(overdue)` marking) / `(reference|dormant)` annotations. Resolves the project dir offline (no MC-2 connection), reusing sync's scope/dir-resolution helpers.
+- New dependency: `python-frontmatter`.
+
+### Fixed — closed-recent + exceptions recency windows anchored on the injectable sync clock
+
+`render_master_cp`'s `is_closed_recent` and the exceptions-README window used wall-clock `datetime.now()` instead of the `sync_clock` the rest of sync already threads, so the first master-cp render pass and the agenda second pass disagreed on "now." Both now anchor on `sync_clock`, fixing two time-dependent test failures and the latent inconsistency behind them.
+
 ## v0.18.2 — 2026-06-10
 
 ### Fixed — remove the plugin's CLI-install hook (it fought the tenant hook and kept reverting `cp` to a stale version)
