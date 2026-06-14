@@ -198,3 +198,51 @@ def score_element(el: ShellElement, active: set[str], today: date) -> float:
     serves = _serves_active_term(el, active)
     importance = LAYER_IMPORTANCE.get(el.layer, 0.5)
     return recency * serves * importance
+
+
+# Scope roots a project dir can live under (design "working tree layout").
+_SCOPE_ROOTS: tuple[str, ...] = ("1p", "firstpersonsf", "canonic")
+_INACTIVE = "inactive"
+
+
+class ShellDirNotFound(Exception):
+    """No working dir matching the given code under any scope root."""
+
+
+def _match_in(parent: Path, code: str) -> Path | None:
+    if not parent.is_dir():
+        return None
+    bare = parent / code
+    if code != _INACTIVE and bare.is_dir():
+        return bare
+    prefix = f"{code}-"
+    for path in sorted(parent.iterdir()):
+        if path.is_dir() and path.name != _INACTIVE and path.name.startswith(prefix):
+            return path
+    return None
+
+
+def find_shell_dir(tenant_root: Path, code: str) -> Path:
+    """Locate a project's working dir from its code, offline (no MC-2).
+
+    Searches `1p/<account>/`, `firstpersonsf/`, and `canonic/` for a dir named
+    `<code>` or `<code>-<slug>`, skipping `inactive/` bins. Raises
+    ShellDirNotFound if nothing matches.
+    """
+    for scope in _SCOPE_ROOTS:
+        scope_root = tenant_root / scope
+        if not scope_root.is_dir():
+            continue
+        # Initiative/standalone-repo dirs sit directly under the scope root.
+        direct = _match_in(scope_root, code)
+        if direct is not None:
+            return direct
+        # Engagement dirs sit under an account dir (1p/<account>/<proj>).
+        for account in sorted(scope_root.iterdir()):
+            if account.is_dir() and account.name != _INACTIVE:
+                hit = _match_in(account, code)
+                if hit is not None:
+                    return hit
+    raise ShellDirNotFound(
+        f"No working dir for '{code}' under {', '.join(_SCOPE_ROOTS)}/"
+    )
