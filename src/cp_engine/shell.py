@@ -172,6 +172,49 @@ def _parse_date(value: str) -> date | None:
         return None
 
 
+def _date_or_none(value: str | None) -> str | None:
+    """Return an ISO date string only if it parses; else None (→ SQL null)."""
+    return value if (value and _parse_date(value)) else None
+
+
+def element_to_row(
+    el: ShellElement,
+    *,
+    project_id: str,
+    project_root: Path,
+) -> dict[str, object]:
+    """Map a ShellElement to its MC-2 `shell_elements` row (pure, no I/O).
+
+    `project_root` is the tenant root, used to compute a tenant-relative
+    `rel_path` for round-trip back to the file. Date fields that don't parse
+    become null (empty `last_touched` is common on framing elements)."""
+    try:
+        rel = str(el.path.relative_to(project_root))
+    except ValueError:
+        rel = el.path.name
+    return {
+        "element_id": el.id,
+        "project_id": project_id,
+        "project_code": el.project,
+        "layer": el.layer,
+        "type": el.type,
+        "title": el.title,
+        "stage": el.stage,
+        "fidelity": el.fidelity,
+        "target_date": _date_or_none(el.target_date),
+        "status": el.status,
+        "last_touched": _date_or_none(el.last_touched),
+        "depends_on": list(el.depends_on),
+        "serves": list(el.serves),
+        "source": list(el.source),
+        # nested date values pass through verbatim; normalizing for JSONB (if
+        # ever needed) is the sync writer's job, not this pure mapper's.
+        "target_history": list(el.target_history),
+        "author": el.author,
+        "rel_path": rel,
+    }
+
+
 def _recency_term(last_touched: str, today: date) -> float:
     """Exponential decay on age in days. ~30-day half-life; floored at 0.1 so
     cold never reaches zero ("a dimmer, not an off-switch", design §2)."""
