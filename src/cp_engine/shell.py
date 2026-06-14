@@ -102,3 +102,40 @@ def parse_element(path: Path) -> ShellElement:
         source=tuple(str(x) for x in _as_tuple(meta.get("source"))),
         author=_str("author"),
     )
+
+
+# Layer-importance weights (design open-thread #1, resolved from the IBX
+# backfill in a later task). Higher = stays warmer in the ranked sweep.
+# Rationale: Deliverables are the project's spine; Decisions and ClientFeedback
+# carry the "still wants attention" signal; framing layers
+# (Brief/Timeline/Stakeholders) are ambient-important but shouldn't outrank live
+# work; raw inputs (SourceMaterial/Research) matter most via `serves`, less on
+# their own weight.
+LAYER_IMPORTANCE: dict[str, float] = {
+    "Deliverables": 1.00,
+    "Decisions": 0.85,
+    "ClientFeedback": 0.80,
+    "Drafts": 0.75,
+    "Synthesis": 0.70,
+    "Brief": 0.65,
+    "Agreement": 0.60,
+    "Timeline": 0.60,
+    "Stakeholders": 0.55,
+    "Research": 0.50,
+    "SourceMaterial": 0.45,
+}
+
+
+def load_shell(project_dir: Path) -> tuple[ShellElement, ...]:
+    """Parse every shell element under `<project_dir>/shell/<Layer>/*.md`."""
+    shell_root = project_dir / "shell"
+    if not shell_root.is_dir():
+        return ()
+    elements: list[ShellElement] = []
+    for layer in LAYERS:
+        layer_dir = shell_root / layer
+        if not layer_dir.is_dir():
+            continue
+        for md in sorted(layer_dir.glob("*.md")):
+            elements.append(parse_element(md))
+    return tuple(elements)
