@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.21.0 — 2026-06-13
+
+### Added — Project Shell, slice 3 (snapshots + sweep + analytics)
+
+The shell's deferred trio. Snapshots give a deliverable a version axis; the sweep turns the whole-project Lens into a written readout; analytics query the spine across every project. Requires the `shell_snapshots` table (mc-2 migration `060_shell_snapshots`).
+
+**Phase A — named snapshots.** `cp snapshot <code>/<deliverable-id> --label "..." --reason "..."` freezes a deliverable's current body+spine into a `shell/<Layer>/<el>.snapshots/<date>-<label>.md` sibling file — a verbatim copy with an added `snapshot:` frontmatter block (label, reason, a `commit` pointer to "what else was true then", and a `working_copy_dirty` flag). `cp snapshots <code>/<deliverable-id>` lists a deliverable's snapshots newest-first. The frozen file is the source of truth; a `shell_snapshots` MC-2 row indexes it, mirrored by `cp sync` (per-project upsert + orphan-reap, best-effort). Recovers *what a document said* at a turning point — `target_history` only preserved *when the date moved*.
+
+**Phase B — whole-project sweep.** `cp sweep <code>` widens the Lens to every element, sends the ranked set + body excerpts to the LLM, and writes the synthesis as a `Synthesis`-layer element (`shell/Synthesis/<date>-sweep.md`, idempotent same-day) — a written across-the-project readout that explicitly names the cold-but-important threads (re-heat as advisory prose, no persisted state). The sweep element `serves` the active deliverables, so it scores hot on the next pass. Also available opt-in as `cp prep-planning --sweep`, riding the existing weekly rhythm (best-effort per project; default path unchanged — no LLM call without the flag). Needs `ANTHROPIC_API_KEY` exported (no dotenv fallback); a clear error if it's missing. The sweep's ranking is shared with `cp shell`'s display via one `rank_elements` helper, so the two can never drift.
+
+**Phase C — cross-project analytics.** `cp shell-stats` reads the `shell_elements` spine across all projects: a deliverable **type inventory** ("how many Positioning Narratives have we made"), a **stage distribution** (in-flight vs shipped), and **due-soon** (deliverables with a `target_date` in the next N days — `--within-days`, default 14). `--type <t>` narrows the inventory + due-soon. Unlike `cp shell`, this command **requires MC-2** — it *is* the cross-project index, so offline is a clear error with no disk fallback, by design. Note: **due-soon excludes already-shipped (`stage: final`) deliverables** (a shipped thing isn't "due"), while the inventory and distribution count all deliverables — the section headers say so.
+
+**Deferred beyond slice 3:** auto-snapshots (manual only for now), persisted re-heat flags, per-stage timing analytics, the Strategy engine / StoryOS bridge.
+
 ## v0.20.0 — 2026-06-13
 
 ### Added — Project Shell, slice 2 (MC-2 spine + sync + auto-demotion)
