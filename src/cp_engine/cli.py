@@ -824,6 +824,94 @@ def shell_cmd(code: str) -> None:
     click.echo(render_sweep(code, elements, today=date.today()))
 
 
+@main.command("snapshot")
+@click.argument("ref")  # "<code>/<deliverable-id>"
+@click.option("--label", required=True, help="Human name for this snapshot.")
+@click.option("--reason", default=None, help="Why this turn mattered.")
+def snapshot_cmd(ref: str, label: str, reason: str | None) -> None:
+    """Freeze a deliverable's current body+spine as a named snapshot.
+
+    Writes the frozen markdown into a `<el>.snapshots/` sibling folder (the
+    source of truth) and best-effort upserts an index row into MC-2's
+    `shell_snapshots` table. An MC-2 failure is logged to stderr but never
+    fails the command — the on-disk file is canonical.
+    """
+    from datetime import date
+
+    from cp_engine.shell import ShellDirNotFound, find_shell_dir
+    from cp_engine.shell_snapshot import (
+        DeliverableNotFound,
+        build_snapshot,
+        git_head_commit,
+        resolve_deliverable_file,
+        working_copy_is_dirty,
+    )
+
+    config = _load_config_or_die()
+    # `ref` IS the deliverable id; its first path segment is the project code
+    # (shell element ids are code-prefixed by convention, e.g.
+    # "ibx-5153/deliverable/pos" → code "ibx-5153").
+    code = ref.split("/", 1)[0]
+    deliverable_id = ref
+    try:
+        project_dir = find_shell_dir(config.root, code)
+    except ShellDirNotFound as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+    try:
+        working_file = resolve_deliverable_file(project_dir, deliverable_id)
+    except DeliverableNotFound as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+
+    working_text = working_file.read_text()
+    commit = git_head_commit(config.root)
+    dirty = working_copy_is_dirty(working_file, config.root)
+    snap = build_snapshot(
+        working_text=working_text,
+        deliverable_id=deliverable_id,
+        project_code=code,
+        label=label,
+        reason=reason,
+        commit=commit,
+        working_copy_dirty=dirty,
+        created=date.today(),
+    )
+
+    snap_dir = working_file.parent / f"{working_file.stem}.snapshots"
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    target = snap_dir / snap.filename
+    base = target
+    n = 2
+    while target.exists():
+        target = base.with_name(base.stem + f"-{n}" + base.suffix)
+        n += 1
+    target.write_text(snap.frozen_text)
+
+    row = dict(snap.row)
+    row["rel_path"] = str(target.relative_to(config.root))
+    # Recompute id from the FINAL filename so the row and the on-disk file
+    # agree even after same-day collision resolution.
+    row["id"] = f"{deliverable_id}@{target.stem}"
+    from cp_engine.sync import BackendUnavailable
+    from cp_engine.sync_mc2 import MC2Backend
+
+    try:
+        client = MC2Backend().connect(config)
+        client.table("shell_snapshots").upsert(row, on_conflict="id").execute()
+    except BackendUnavailable as exc:
+        # Expected when offline / no creds — the file is the source of truth.
+        click.echo(f"(snapshot saved to disk; MC-2 index skipped — {exc})", err=True)
+    except Exception as exc:  # noqa: BLE001 — connected but the upsert failed = likely a bug
+        click.echo(
+            f"(WARNING: snapshot saved to disk, but the MC-2 index upsert "
+            f"failed — this may be a schema/query bug: {exc})",
+            err=True,
+        )
+
+    click.echo(f"Snapshot saved: {target.relative_to(config.root)}")
+
+
 @main.command("ingest")
 @click.option(
     "--plan",
