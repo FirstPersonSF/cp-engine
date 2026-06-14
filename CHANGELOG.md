@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.21.1 — 2026-06-14
+
+### Changed — `derive_status` warmest-wins for multi-serve elements
+
+An element that `serves` multiple deliverables now takes the **warmest** state across them (active > reference > dormant) instead of the coldest. Previously a single blocked or shipped consumer dragged the whole element down — so the Phase B sweep synthesis, which serves the active foundation doc *and* the blocked 6/17 workshop, rendered `(dormant)` despite actively feeding live work. Now it stays `active`: an element is as live as its liveliest consumer (stays active if it feeds any live unblocked deliverable; settles to `reference` if it only feeds shipped/citable work; cools to `dormant` only when every consumer is blocked). Single-serve elements and all invariants (frontmatter floor, framing-never-demotes) are unchanged. Verified live on IBX-5153: exactly two multi-serve elements flipped `dormant`→`active` (the sweep readout 0.48→0.68, and the in-progress "five concepts" deliverable that a blocked downstream consumer had wrongly cooled), nothing moved cooler.
+
 ## v0.21.0 — 2026-06-13
 
 ### Added — Project Shell, slice 3 (snapshots + sweep + analytics)
