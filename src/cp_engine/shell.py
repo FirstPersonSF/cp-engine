@@ -8,7 +8,9 @@ Lens relevance score (design §2). No MC-2, no writes — slice 1 is read-only.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import frontmatter
@@ -143,3 +145,56 @@ def load_shell(project_dir: Path) -> tuple[ShellElement, ...]:
         for md in sorted(layer_dir.glob("*.md")):
             elements.append(parse_element(md))
     return tuple(elements)
+
+
+def active_deliverable_ids(elements: tuple[ShellElement, ...]) -> set[str]:
+    """Ids of deliverables that are the project's live focus.
+
+    Active = a Deliverables-layer element whose stage is not `final` and whose
+    status is `active` (not dormant/final/reference). Design §2 coordinate #1.
+    """
+    return {
+        e.id
+        for e in elements
+        if e.layer == "Deliverables"
+        and e.stage != "final"
+        and e.status == "active"
+    }
+
+
+def _parse_date(value: str) -> date | None:
+    try:
+        return date.fromisoformat(value)
+    except (ValueError, TypeError):
+        return None
+
+
+def _recency_term(last_touched: str, today: date) -> float:
+    """Exponential decay on age in days. ~30-day half-life; floored at 0.1 so
+    cold never reaches zero ("a dimmer, not an off-switch", design §2)."""
+    d = _parse_date(last_touched)
+    if d is None:
+        return 0.1
+    age_days = max(0, (today - d).days)
+    decayed = math.exp(-age_days / 43.28)  # 43.28 ≈ 30-day half-life
+    return max(0.1, decayed)
+
+
+def _serves_active_term(el: ShellElement, active: set[str]) -> float:
+    """1.0 if the element serves an active deliverable OR is a framing layer
+    (always ambient); 0.35 otherwise (cold but not gone)."""
+    if el.layer in FRAMING_LAYERS:
+        return 1.0
+    if el.layer == "Deliverables" and el.id in active:
+        return 1.0
+    if any(s in active for s in el.serves):
+        return 1.0
+    return 0.35
+
+
+def score_element(el: ShellElement, active: set[str], today: date) -> float:
+    """The Lens score: recency × serves-active × layer-importance (design §2)."""
+    recency = _recency_term(el.last_touched, today)
+    serves = _serves_active_term(el, active)
+    importance = LAYER_IMPORTANCE.get(el.layer, 0.5)
+    return recency * serves * importance
