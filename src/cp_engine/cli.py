@@ -767,6 +767,35 @@ def list_active_projects_cmd(scope: str, company: str | None) -> None:
     click.echo(json.dumps(out, indent=2))
 
 
+@main.command("shell")
+@click.argument("code")
+def shell_cmd(code: str) -> None:
+    """Print the project shell's full ranked relevance sweep (read-only).
+
+    Reads `<project>/shell/<Layer>/*.md` elements, computes the Lens score
+    (recency × serves-active × layer-importance), and prints every element
+    ranked hottest-first. No writes, no MC-2 connection — slice 1.
+    """
+    from datetime import date
+
+    from cp_engine.shell import (
+        ShellDirNotFound,
+        find_shell_dir,
+        load_shell,
+        render_sweep,
+    )
+
+    config = _load_config_or_die()
+    try:
+        project_dir = find_shell_dir(config.root, code)
+    except ShellDirNotFound as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+
+    elements = load_shell(project_dir)
+    click.echo(render_sweep(code, elements, today=date.today()))
+
+
 @main.command("ingest")
 @click.option(
     "--plan",

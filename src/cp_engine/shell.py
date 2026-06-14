@@ -225,3 +225,49 @@ def find_shell_dir(tenant_root: Path, code: str) -> Path:
     raise ShellDirNotFound(
         f"No working dir for '{code}' under {', '.join(_SCOPE_DIRS)}/"
     )
+
+
+def _glyph(score: float) -> str:
+    """Cosmetic tier glyph for the sweep — helps the eye scan hot vs cold."""
+    if score >= 0.66:
+        return "◆"  # hot
+    if score >= 0.33:
+        return "◇"  # warm
+    return "○"  # cold
+
+
+def render_sweep(
+    code: str,
+    elements: tuple[ShellElement, ...],
+    *,
+    today: date,
+) -> str:
+    """Render the full ranked sweep (design §2 'whole-project sweep' mode).
+
+    Every element, hot and cold, ranked by Lens score descending. Read-only.
+    """
+    active = active_deliverable_ids(elements)
+    scored = sorted(
+        ((score_element(e, active, today), e) for e in elements),
+        key=lambda pair: pair[0],
+        reverse=True,
+    )
+    lines = [f"{code} — full sweep ({len(elements)} elements)"]
+    if not elements:
+        lines.append("  (no shell/ elements — has this project been backfilled?)")
+        return "\n".join(lines)
+    for score, e in scored:
+        suffix_parts: list[str] = []
+        if e.stage:
+            suffix_parts.append(f"[{e.stage}]")
+        if e.target_date:
+            suffix_parts.append(f"due {e.target_date}")
+        if e.status in ("reference", "dormant"):
+            suffix_parts.append(f"({e.status})")
+        suffix = ("  " + " ".join(suffix_parts)) if suffix_parts else ""
+        lines.append(
+            f"  {score:0.2f} {_glyph(score)} {e.title}  ·{e.layer}{suffix}"
+        )
+        if e.serves:
+            lines.append(f"        ← serves: {', '.join(e.serves)}")
+    return "\n".join(lines)
