@@ -403,6 +403,10 @@ def render_sweep(
     """
     active = active_deliverable_ids(elements)
     by_id = {e.id: e for e in elements}
+    # Effective (derived) status drives both the score and the marker, so the
+    # display can never contradict the ranking. derive_status is pure, so this
+    # agrees by construction with score_element's internal derivation.
+    effective = {e.id: derive_status(e, by_id) for e in elements}
     scored = sorted(
         ((score_element(e, active, today, by_id), e) for e in elements),
         key=lambda pair: (-pair[0], pair[1].layer, pair[1].id),
@@ -421,8 +425,9 @@ def render_sweep(
                 suffix_parts.append(f"due {e.target_date} (overdue)")
             else:
                 suffix_parts.append(f"due {e.target_date}")
-        if e.status in ("reference", "dormant"):
-            suffix_parts.append(f"({e.status})")
+        eff_status = effective[e.id]
+        if eff_status in ("reference", "dormant"):
+            suffix_parts.append(f"({eff_status})")
         suffix = ("  " + " ".join(suffix_parts)) if suffix_parts else ""
         lines.append(
             f"  {score:0.2f} {_glyph(score)} {e.title}  ·{e.layer}{suffix}"

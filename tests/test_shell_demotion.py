@@ -79,3 +79,18 @@ def test_dangling_dependency_blocks_deliverable():
     note = _el("p/research/r1", "Research", serves=("p/deliverable/d2",))
     by_id = {e.id: e for e in (d2, note)}
     assert derive_status(note, by_id) == "dormant"
+
+
+def test_sweep_marks_graph_derived_reference():
+    # A note whose frontmatter status is "active" but which serves a FINAL
+    # deliverable → derives to reference → the rendered marker must reflect
+    # that derived status, not the raw frontmatter status.
+    deliv = _el("p/deliverable/d1", "Deliverables", stage="final", status="final")
+    note = _el("p/research/r1", "Research", status="active",
+               serves=("p/deliverable/d1",), last_touched="2026-06-13")
+    out = render_sweep("p", (deliv, note), today=date(2026, 6, 13))
+    # render_sweep prints "<title>  ·<layer>" then suffix on the same line;
+    # _el sets title=eid, so the note's title is "p/research/r1".
+    note_line = next(ln for ln in out.splitlines()
+                     if "p/research/r1" in ln and "serves:" not in ln)
+    assert "(reference)" in note_line
