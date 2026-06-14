@@ -770,11 +770,10 @@ def list_active_projects_cmd(scope: str, company: str | None) -> None:
 @main.command("shell")
 @click.argument("code")
 def shell_cmd(code: str) -> None:
-    """Print the project shell's full ranked relevance sweep (read-only).
+    """Print the project shell's full ranked relevance sweep.
 
-    Reads `<project>/shell/<Layer>/*.md` elements, computes the Lens score
-    (recency × serves-active × layer-importance), and prints every element
-    ranked hottest-first. No writes, no MC-2 connection — slice 1.
+    Reads the spine from MC-2 (canonical); falls back to the on-disk markdown
+    frontmatter when MC-2 is unreachable so the command works offline.
     """
     from datetime import date
 
@@ -782,17 +781,46 @@ def shell_cmd(code: str) -> None:
         ShellDirNotFound,
         find_shell_dir,
         load_shell,
+        load_shell_from_mc2,
         render_sweep,
     )
 
     config = _load_config_or_die()
-    try:
-        project_dir = find_shell_dir(config.root, code)
-    except ShellDirNotFound as exc:
-        click.echo(str(exc), err=True)
-        sys.exit(1)
+    elements: tuple = ()
+    reached_mc2 = False
+    from cp_engine.sync import BackendUnavailable
+    from cp_engine.sync_mc2 import MC2Backend
 
-    elements = load_shell(project_dir)
+    backend = MC2Backend()
+    try:
+        client = backend.connect(config)  # lightweight: client only, no read
+        reached_mc2 = True
+    except BackendUnavailable as exc:
+        click.echo(f"(MC-2 unavailable, reading from disk: {exc})", err=True)
+    except Exception as exc:  # noqa: BLE001 — unexpected connect failure, still degrade
+        click.echo(
+            f"(WARNING: MC-2 connect failed unexpectedly — falling back to disk: {exc})",
+            err=True,
+        )
+
+    if reached_mc2:
+        try:
+            elements = load_shell_from_mc2(client, code)
+        except Exception as exc:  # noqa: BLE001 — connected but query failed = likely a bug
+            click.echo(
+                f"(WARNING: MC-2 shell read failed — falling back to disk, "
+                f"this may be a schema/query bug: {exc})",
+                err=True,
+            )
+
+    if not elements:
+        try:
+            project_dir = find_shell_dir(config.root, code)
+        except ShellDirNotFound as exc:
+            click.echo(str(exc), err=True)
+            sys.exit(1)
+        elements = load_shell(project_dir)
+
     click.echo(render_sweep(code, elements, today=date.today()))
 
 

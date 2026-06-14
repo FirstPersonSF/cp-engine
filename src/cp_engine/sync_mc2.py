@@ -268,6 +268,16 @@ class MC2Backend:
         self._client = create_client(url, key)
         return self._client
 
+    def connect(self, config: TenantConfig) -> Client:
+        """Establish (and cache) the Supabase client without reading projects.
+
+        The read-only `cp shell` command needs the client but not the full
+        project sweep `read_projects` performs (three table queries). This is
+        the lightweight client-acquisition path: it builds/caches via
+        `_get_client`, which raises `BackendUnavailable` if creds are absent.
+        """
+        return self._get_client(config)
+
     def shell_client(self) -> Client:
         """Return the Supabase client read_projects already created.
 

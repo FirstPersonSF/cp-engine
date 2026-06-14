@@ -215,6 +215,52 @@ def element_to_row(
     }
 
 
+def row_to_element(row: dict[str, object]) -> ShellElement:
+    """Reconstruct a ShellElement from a `shell_elements` MC-2 row.
+
+    Body is empty (the spine row doesn't carry it — read the file via rel_path
+    if the body is needed). Sufficient for the Lens, which scores from spine.
+    """
+    def _t(key: str) -> tuple[str, ...]:
+        v = row.get(key) or []
+        return tuple(str(x) for x in v)
+    return ShellElement(
+        id=row["element_id"],
+        project=row.get("project_code", ""),
+        layer=row["layer"],
+        title=row.get("title", row["element_id"]),
+        status=row.get("status", "active"),
+        last_touched=str(row.get("last_touched") or ""),
+        path=Path(row.get("rel_path") or row["element_id"]),
+        body="",
+        type=row.get("type"),
+        stage=row.get("stage"),
+        fidelity=row.get("fidelity"),
+        target_date=(str(row["target_date"]) if row.get("target_date") else None),
+        depends_on=_t("depends_on"),
+        serves=_t("serves"),
+        target_history=tuple(row.get("target_history") or []),
+        source=_t("source"),
+        author=row.get("author"),
+    )
+
+
+def load_shell_from_mc2(client, project_code: str) -> tuple[ShellElement, ...]:
+    """Load a project's shell elements from MC-2 (canonical read path)."""
+    data = (
+        client.table("shell_elements")
+        .select(
+            "element_id, project_code, layer, type, title, stage, fidelity, "
+            "target_date, status, last_touched, depends_on, serves, source, "
+            "target_history, author, rel_path"
+        )
+        .eq("project_code", project_code)
+        .execute()
+        .data
+    ) or []
+    return tuple(row_to_element(r) for r in data)
+
+
 def _recency_term(last_touched: str, today: date) -> float:
     """Exponential decay on age in days. ~30-day half-life; floored at 0.1 so
     cold never reaches zero ("a dimmer, not an off-switch", design §2)."""

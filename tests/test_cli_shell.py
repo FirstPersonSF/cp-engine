@@ -130,6 +130,49 @@ def test_cli_shell_prints_sweep(tmp_path, monkeypatch) -> None:
     assert "April input brief" in result.output
 
 
+def test_cli_shell_falls_back_to_disk_when_mc2_unavailable(tmp_path, monkeypatch) -> None:
+    """No SUPABASE creds + no mc-2 clone → connect() raises BackendUnavailable,
+    and the command falls back to reading the on-disk markdown frontmatter."""
+    _tenant_with_ibx(tmp_path)
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, ["shell", "ibx-5153"])
+    assert result.exit_code == 0, result.output
+    assert "MC-2 unavailable, reading from disk" in result.output
+    assert "Positioning narrative" in result.output
+
+
+def test_cli_shell_prefers_mc2_rows(tmp_path, monkeypatch) -> None:
+    """When MC-2 returns rows, the command renders those, not the disk shell."""
+    _tenant_with_ibx(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    from cp_engine.shell import ShellElement
+
+    def _fake_load_from_mc2(client, code):
+        return (
+            ShellElement(
+                id="ibx-5153/deliverable/from-mc2",
+                project="ibx-5153",
+                layer="Deliverables",
+                title="From MC-2 spine",
+                status="active",
+                last_touched="2026-06-13",
+                path=Path("x"),
+                body="",
+                stage="revised",
+            ),
+        )
+
+    monkeypatch.setattr("cp_engine.sync_mc2.MC2Backend.connect", lambda self, cfg: object())
+    monkeypatch.setattr("cp_engine.shell.load_shell_from_mc2", _fake_load_from_mc2)
+    result = CliRunner().invoke(main, ["shell", "ibx-5153"])
+    assert result.exit_code == 0, result.output
+    assert "From MC-2 spine" in result.output
+    assert "Positioning narrative" not in result.output  # disk path NOT used
+
+
 def test_cli_shell_unknown_code_errors(tmp_path, monkeypatch) -> None:
     (tmp_path / ".cp-engine.toml").write_text(
         '[tenant]\nname = "test"\n[engine]\nversion = "~= 0.18"\n'
