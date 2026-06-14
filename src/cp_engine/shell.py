@@ -16,6 +16,9 @@ from pathlib import Path
 import frontmatter
 import yaml
 
+from cp_engine.state import INACTIVE_DIR_NAME
+from cp_engine.sync import _SCOPE_DIRS, _find_project_dir, _project_parent_dirs
+
 # The 11 fixed layers (dir names == `layer:` values).
 LAYERS: tuple[str, ...] = (
     "Brief",
@@ -200,49 +203,25 @@ def score_element(el: ShellElement, active: set[str], today: date) -> float:
     return recency * serves * importance
 
 
-# Scope roots a project dir can live under (design "working tree layout").
-_SCOPE_ROOTS: tuple[str, ...] = ("1p", "firstpersonsf", "canonic")
-_INACTIVE = "inactive"
-
-
 class ShellDirNotFound(Exception):
     """No working dir matching the given code under any scope root."""
-
-
-def _match_in(parent: Path, code: str) -> Path | None:
-    if not parent.is_dir():
-        return None
-    bare = parent / code
-    if code != _INACTIVE and bare.is_dir():
-        return bare
-    prefix = f"{code}-"
-    for path in sorted(parent.iterdir()):
-        if path.is_dir() and path.name != _INACTIVE and path.name.startswith(prefix):
-            return path
-    return None
 
 
 def find_shell_dir(tenant_root: Path, code: str) -> Path:
     """Locate a project's working dir from its code, offline (no MC-2).
 
-    Searches `1p/<account>/`, `firstpersonsf/`, and `canonic/` for a dir named
-    `<code>` or `<code>-<slug>`, skipping `inactive/` bins. Raises
-    ShellDirNotFound if nothing matches.
+    Reuses sync's scope/account-nesting model (`_project_parent_dirs`) and
+    prefix-matcher (`_find_project_dir`) so this stays in lockstep with how
+    sync itself lays out the tree. Raises ShellDirNotFound if nothing matches.
     """
-    for scope in _SCOPE_ROOTS:
-        scope_root = tenant_root / scope
-        if not scope_root.is_dir():
-            continue
-        # Initiative/standalone-repo dirs sit directly under the scope root.
-        direct = _match_in(scope_root, code)
-        if direct is not None:
-            return direct
-        # Engagement dirs sit under an account dir (1p/<account>/<proj>).
-        for account in sorted(scope_root.iterdir()):
-            if account.is_dir() and account.name != _INACTIVE:
-                hit = _match_in(account, code)
-                if hit is not None:
-                    return hit
+    if code == INACTIVE_DIR_NAME:
+        # Never resolve the inactive bin itself as a project.
+        raise ShellDirNotFound(f"'{code}' is not a valid project code")
+    for scope in _SCOPE_DIRS:
+        for parent in _project_parent_dirs(tenant_root, scope):
+            hit = _find_project_dir(parent, code)
+            if hit is not None:
+                return hit
     raise ShellDirNotFound(
-        f"No working dir for '{code}' under {', '.join(_SCOPE_ROOTS)}/"
+        f"No working dir for '{code}' under {', '.join(_SCOPE_DIRS)}/"
     )
