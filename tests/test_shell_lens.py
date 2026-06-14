@@ -34,6 +34,19 @@ def test_active_deliverable_ids_excludes_final_and_dormant() -> None:
     assert active_deliverable_ids(els) == {"d1"}
 
 
+def test_active_deliverable_ids_excludes_stage_final_even_when_status_active() -> None:
+    # The stage != "final" clause must do its own work: a final-stage deliverable
+    # is excluded even when its status is "active".
+    final_but_active = _el(
+        id="d_final", layer="Deliverables", stage="final", status="active"
+    )
+    revised_active = _el(
+        id="d_revised", layer="Deliverables", stage="revised", status="active"
+    )
+    assert active_deliverable_ids((final_but_active,)) == set()
+    assert active_deliverable_ids((final_but_active, revised_active)) == {"d_revised"}
+
+
 def test_serving_active_deliverable_scores_above_serving_nothing() -> None:
     active = {"d1"}
     serving = _el(id="a", serves=("d1",), last_touched="2026-06-13")
