@@ -75,10 +75,18 @@ def parse_element(path: Path) -> ShellElement:
         v = meta.get(key)
         return None if v is None else str(v)
 
+    def _required(key: str) -> str:
+        try:
+            return str(meta[key])
+        except KeyError:
+            raise ValueError(
+                f"{path}: shell element missing required key '{key}'"
+            ) from None
+
     return ShellElement(
-        id=str(meta["id"]),
-        project=str(meta["project"]),
-        layer=str(meta["layer"]),
+        id=_required("id"),
+        project=_required("project"),
+        layer=_required("layer"),
         title=str(meta.get("title", path.stem)),
         status=str(meta.get("status", "active")),
         last_touched=str(meta.get("last_touched", "")),
