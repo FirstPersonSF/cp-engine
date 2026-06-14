@@ -195,12 +195,31 @@ def _serves_active_term(el: ShellElement, active: set[str]) -> float:
     return 0.35
 
 
+# Status weights — a settled element stays in consideration but ranks below
+# live work (design §2: "deliverable ships → its elements demote together";
+# "cold is a dimmer, not an off-switch"). A freshly-delivered `final` artifact
+# should sit just under the still-open work it served, not tie it.
+_STATUS_WEIGHT: dict[str, float] = {
+    "active": 1.0,
+    "reference": 0.7,
+    "dormant": 0.7,
+    "final": 0.5,
+}
+
+
+def _status_term(status: str) -> float:
+    return _STATUS_WEIGHT.get(status, 1.0)
+
+
 def score_element(el: ShellElement, active: set[str], today: date) -> float:
-    """The Lens score: recency × serves-active × layer-importance (design §2)."""
+    """The Lens score: recency × serves-active × layer-importance × status
+    (design §2). The status term demotes settled (final/reference/dormant)
+    elements below live ones without dropping them out of the sweep."""
     recency = _recency_term(el.last_touched, today)
     serves = _serves_active_term(el, active)
     importance = LAYER_IMPORTANCE.get(el.layer, 0.5)
-    return recency * serves * importance
+    status = _status_term(el.status)
+    return recency * serves * importance * status
 
 
 class ShellDirNotFound(Exception):

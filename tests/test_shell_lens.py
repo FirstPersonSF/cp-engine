@@ -79,3 +79,45 @@ def test_missing_last_touched_does_not_crash() -> None:
     active: set[str] = set()
     el = _el(id="nodate", serves=(), last_touched="")
     assert score_element(el, active, TODAY) > 0.0
+
+
+def test_final_status_demotes_below_active_when_otherwise_equal() -> None:
+    # A delivered (final) artifact serving an active deliverable should rank
+    # BELOW a still-active one with the same recency/layer/serves wiring.
+    active = {"d1"}
+    live = _el(
+        id="live", layer="Deliverables", serves=("d1",),
+        status="active", last_touched="2026-06-13",
+    )
+    delivered = _el(
+        id="done", layer="Deliverables", serves=("d1",),
+        status="final", last_touched="2026-06-13",
+    )
+    assert score_element(delivered, active, TODAY) < score_element(live, active, TODAY)
+
+
+def test_final_artifact_still_above_a_cold_reference() -> None:
+    # Demoted, not dropped: a recent final artifact still outranks an old
+    # reference element (the "dimmer, not off-switch" property).
+    active = {"d1"}
+    delivered = _el(
+        id="done", layer="Deliverables", serves=("d1",),
+        status="final", last_touched="2026-06-13",
+    )
+    cold_ref = _el(
+        id="old", layer="SourceMaterial", serves=(),
+        status="reference", last_touched="2026-01-01",
+    )
+    assert score_element(delivered, active, TODAY) > score_element(cold_ref, active, TODAY)
+
+
+def test_reference_and_dormant_demote_but_less_than_final() -> None:
+    active: set[str] = set()
+    base = dict(layer="Research", serves=(), last_touched="2026-06-13")
+    active_el = _el(id="a", status="active", **base)
+    reference_el = _el(id="r", status="reference", **base)
+    final_el = _el(id="f", status="final", **base)
+    s_active = score_element(active_el, active, TODAY)
+    s_reference = score_element(reference_el, active, TODAY)
+    s_final = score_element(final_el, active, TODAY)
+    assert s_active > s_reference > s_final
