@@ -1651,3 +1651,278 @@ def test_clickup_token_none_when_no_mc2_clone(monkeypatch, tmp_path):
         root=tmp_path,
     )
     assert prep_planning._resolve_clickup_token(cfg) is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Project Shell slice 3 — Phase B: opt-in --sweep wiring
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _write_shell_element(
+    tenant_root: Path,
+    project: ProjectState,
+    *,
+    layer: str = "Deliverables",
+    name: str = "thing",
+    title: str = "The Thing",
+    status: str = "active",
+    stage: str | None = "first",
+    last_touched: str = "2026-06-05",
+    body: str = "Some element body content.",
+) -> Path:
+    """Lay down one shell element under the project's working dir on disk.
+
+    Mirrors the layout build_project_block reads from
+    (``<root>/<account_scope>/<dir_slug>/shell/<Layer>/<name>.md``), computed
+    via the same state helpers so the test stays in lockstep with the code.
+    """
+    from cp_engine.state import account_scope_for, dir_slug
+
+    scope = account_scope_for(project)
+    slug = dir_slug(project.code, project.name)
+    layer_dir = tenant_root / scope / slug / "shell" / layer
+    layer_dir.mkdir(parents=True, exist_ok=True)
+    el_path = layer_dir / f"{name}.md"
+    fm_lines = [
+        "---",
+        f"id: {project.code}/{layer.lower()}/{name}",
+        f"project: {project.code}",
+        f"layer: {layer}",
+        f"title: {title}",
+        f"status: {status}",
+        f"last_touched: {last_touched}",
+    ]
+    if stage is not None:
+        fm_lines.append(f"stage: {stage}")
+    fm_lines.append("---")
+    el_path.write_text("\n".join(fm_lines) + f"\n\n{body}\n", encoding="utf-8")
+    return el_path
+
+
+class _CountingLLM:
+    """A fake sweep LLM that counts calls and returns canned synthesis."""
+
+    def __init__(self, text: str = "CANNED SWEEP SYNTHESIS", raises: bool = False):
+        self.text = text
+        self.raises = raises
+        self.calls = 0
+
+    def __call__(self, prompt: str) -> str:
+        self.calls += 1
+        if self.raises:
+            raise RuntimeError("simulated LLM failure")
+        return self.text
+
+
+def test_sweep_on_attaches_synthesis_to_block(tmp_path):
+    """With sweep_llm provided + a backfilled shell, the project's block
+    carries the synthesis and it renders in the doc."""
+    config = make_config(tmp_path)
+    state = make_state("ggl-5168", name="GGL 5168 Activation", company_name="Google")
+    _write_shell_element(tmp_path, state)
+    llm = _CountingLLM("WHOLE PROJECT READOUT")
+
+    result = build_planning_result(
+        config,
+        (state,),
+        today=_TODAY,
+        supabase_client=None,
+        sweep_llm=llm,
+    )
+
+    assert llm.calls == 1
+    block = next(
+        b for blocks in result.blocks_by_account.values() for b in blocks
+    )
+    assert block.sweep_synthesis == "WHOLE PROJECT READOUT"
+
+    doc = render_planning_doc(
+        config,
+        (state,),
+        today=_TODAY,
+        supabase_client=None,
+        sweep_llm=llm,
+    )
+    assert "**Sweep:**" in doc
+    assert "WHOLE PROJECT READOUT" in doc
+
+
+def test_sweep_off_default_makes_no_llm_call(tmp_path):
+    """Default path (no sweep_llm): the fake LLM is never called and no
+    synthesis is attached — fast path completely unchanged."""
+    config = make_config(tmp_path)
+    state = make_state("ggl-5168", name="GGL 5168 Activation", company_name="Google")
+    _write_shell_element(tmp_path, state)
+    llm = _CountingLLM()
+
+    result = build_planning_result(
+        config,
+        (state,),
+        today=_TODAY,
+        supabase_client=None,
+        # sweep_llm omitted → default None
+    )
+
+    assert llm.calls == 0
+    block = next(
+        b for blocks in result.blocks_by_account.values() for b in blocks
+    )
+    assert block.sweep_synthesis is None
+
+    doc = render_planning_doc(config, (state,), today=_TODAY, supabase_client=None)
+    assert "**Sweep:**" not in doc
+
+
+def test_sweep_no_shell_attaches_nothing(tmp_path):
+    """A project with no backfilled shell skips the LLM and attaches no
+    synthesis (empty elements → run_sweep sentinel, dropped)."""
+    config = make_config(tmp_path)
+    state = make_state("ggl-5168", name="GGL 5168 Activation", company_name="Google")
+    # No _write_shell_element → no shell/ dir on disk.
+    llm = _CountingLLM()
+
+    result = build_planning_result(
+        config,
+        (state,),
+        today=_TODAY,
+        supabase_client=None,
+        sweep_llm=llm,
+    )
+
+    assert llm.calls == 0  # empty shell short-circuits before the LLM
+    block = next(
+        b for blocks in result.blocks_by_account.values() for b in blocks
+    )
+    assert block.sweep_synthesis is None
+
+
+def test_sweep_best_effort_per_project(tmp_path):
+    """A project whose sweep raises gets no synthesis but the doc still
+    builds — other projects are unaffected and no exception propagates."""
+    config = make_config(tmp_path)
+    raising = make_state(
+        "ggl-5168", name="GGL 5168 Activation", company_name="Google"
+    )
+    healthy = make_state(
+        "ibx-5153", name="IBX 5153 AI Campaign",
+        company_code="IBX", company_name="Infoblox",
+    )
+    _write_shell_element(tmp_path, raising)
+    _write_shell_element(tmp_path, healthy)
+
+    # An LLM that raises on the first project but the test asserts the doc
+    # still builds. Since both call the same llm, use one that always raises
+    # and assert neither synthesis lands but the doc renders both projects.
+    llm = _CountingLLM(raises=True)
+
+    doc = render_planning_doc(
+        config,
+        (raising, healthy),
+        today=_TODAY,
+        supabase_client=None,
+        sweep_llm=llm,
+    )
+
+    # Both projects rendered, no synthesis attached, no exception escaped.
+    assert "ggl-5168" in doc
+    assert "ibx-5153" in doc
+    assert "**Sweep:**" not in doc
+    assert llm.calls == 2  # attempted both, both caught
+
+
+def test_sweep_resolves_drifted_dir_via_find_shell_dir(tmp_path):
+    """Fix 1: the sweep resolves the working dir via find_shell_dir (prefix-
+    tolerant), not a hand-built exact-slug path. A name-drifted dir — where
+    the on-disk dir name differs from the current dir_slug because the project
+    was renamed in MC-2 — still gets swept. An exact-slug match would miss it.
+    """
+    from cp_engine.state import account_scope_for, dir_slug
+
+    config = make_config(tmp_path)
+    # State whose current slug is ggl-5168-new-name…
+    state = make_state(
+        "ggl-5168", name="GGL 5168 New Name", company_name="Google"
+    )
+    scope = account_scope_for(state)
+    current_slug = dir_slug(state.code, state.name)
+
+    # …but the shell lives under a DRIFTED dir name (old slug, same code
+    # prefix). find_shell_dir prefix-matches on "ggl-5168-"; the old exact
+    # path (config.root / scope / current_slug) would not exist.
+    drifted_slug = f"{state.code}-stale-old-name"
+    assert drifted_slug != current_slug
+    layer_dir = tmp_path / scope / drifted_slug / "shell" / "Deliverables"
+    layer_dir.mkdir(parents=True, exist_ok=True)
+    (layer_dir / "thing.md").write_text(
+        "---\n"
+        f"id: {state.code}/deliverables/thing\n"
+        f"project: {state.code}\n"
+        "layer: Deliverables\n"
+        "title: The Thing\n"
+        "status: active\n"
+        "last_touched: 2026-06-05\n"
+        "stage: first\n"
+        "---\n\nSome element body content.\n",
+        encoding="utf-8",
+    )
+    # The current-slug dir must NOT exist, proving resolution isn't the
+    # hand-built exact path.
+    assert not (tmp_path / scope / current_slug).exists()
+
+    llm = _CountingLLM("DRIFTED READOUT")
+    result = build_planning_result(
+        config,
+        (state,),
+        today=_TODAY,
+        supabase_client=None,
+        sweep_llm=llm,
+    )
+
+    assert llm.calls == 1  # shell found via find_shell_dir → swept
+    block = next(
+        b for blocks in result.blocks_by_account.values() for b in blocks
+    )
+    assert block.sweep_synthesis == "DRIFTED READOUT"
+
+
+def test_sweep_best_effort_one_fails_one_succeeds(tmp_path):
+    """Per-project isolation: a failing sweep on one project doesn't block a
+    successful sweep on another."""
+    config = make_config(tmp_path)
+    bad = make_state(
+        "ggl-5168", name="GGL 5168 Activation", company_name="Google"
+    )
+    good = make_state(
+        "ibx-5153", name="IBX 5153 AI Campaign",
+        company_code="IBX", company_name="Infoblox",
+    )
+    _write_shell_element(tmp_path, bad)
+    _write_shell_element(tmp_path, good)
+
+    # Fail only when the prompt is for ggl-5168 (the sweep prompt header
+    # includes the project code), succeed otherwise.
+    class _SelectiveLLM:
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, prompt: str) -> str:
+            self.calls += 1
+            if "ggl-5168" in prompt:
+                raise RuntimeError("boom")
+            return "GOOD SYNTHESIS"
+
+    llm = _SelectiveLLM()
+    result = build_planning_result(
+        config,
+        (bad, good),
+        today=_TODAY,
+        supabase_client=None,
+        sweep_llm=llm,
+    )
+    by_code = {
+        b.project.code: b
+        for blocks in result.blocks_by_account.values()
+        for b in blocks
+    }
+    assert by_code["ggl-5168"].sweep_synthesis is None
+    assert by_code["ibx-5153"].sweep_synthesis == "GOOD SYNTHESIS"

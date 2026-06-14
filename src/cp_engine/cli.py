@@ -1947,8 +1947,26 @@ def prep_agenda_cmd(
     help="Emit a JSON summary (milestone counts, urgent counts, errors) "
     "instead of the rendered markdown. The /cp-prep-planning plugin uses this.",
 )
+@click.option(
+    "--sweep",
+    is_flag=True,
+    help="Attach a whole-project shell sweep synthesis to each active "
+    "project's block (Project Shell). OPT-IN — makes one LLM call per "
+    "project that has a backfilled shell/ dir, best-effort per project. "
+    "Default (off) leaves the doc fast + free. Requires ANTHROPIC_API_KEY.",
+)
+@click.option(
+    "--sweep-model",
+    default="claude-opus-4-7",
+    show_default=True,
+    help="LLM model for the --sweep synthesis.",
+)
 def prep_planning_cmd(
-    project_filter: str, out: Path | None, summary: bool
+    project_filter: str,
+    out: Path | None,
+    summary: bool,
+    sweep: bool,
+    sweep_model: str,
 ) -> None:
     """Render a forward-looking sprint-planning doc.
 
@@ -2042,6 +2060,9 @@ def prep_planning_cmd(
         clickup_task_ids = {}
 
     if summary:
+        # Summary mode renders no per-project prose, so the sweep synthesis
+        # has nowhere to land — skip it even if --sweep was passed (and don't
+        # burn LLM calls). The markdown doc path below is the only consumer.
         out_str = render_planning_summary(
             config,
             tuple(projects),
@@ -2055,6 +2076,26 @@ def prep_planning_cmd(
         click.echo(out_str)
         return
 
+    # --sweep: build the real LLM wrapper and pass it to the renderer. Off by
+    # default (sweep_llm=None → no shell load, no LLM call, fast path). The
+    # per-project sweep is best-effort inside build_project_block, so a missing
+    # ANTHROPIC_API_KEY logs a warning per project rather than aborting — note
+    # it up front so the failure isn't a mystery.
+    sweep_llm = None
+    if sweep:
+        import os
+
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            click.echo(
+                "(note: --sweep needs ANTHROPIC_API_KEY; without it every "
+                "project's sweep is skipped)",
+                err=True,
+            )
+        from cp_engine.plan_from_transcript import _call_claude
+
+        def sweep_llm(prompt: str) -> str:
+            return _call_claude(prompt, model=sweep_model, api_key=None)
+
     doc = render_planning_doc(
         config,
         tuple(projects),
@@ -2064,6 +2105,7 @@ def prep_planning_cmd(
         supabase_client=supabase_client,
         clickup_token=clickup_token,
         clickup_task_ids=clickup_task_ids,
+        sweep_llm=sweep_llm,
     )
 
     if out:

@@ -36,7 +36,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import TypedDict
+from typing import Callable, TypedDict
 
 import httpx
 
@@ -125,6 +125,12 @@ class ProjectPlanningBlock:
     sprint_open_asks: tuple[SprintAsk, ...]
     urgent: tuple[dict, ...]  # flags from _detect_urgent (may be empty)
     fetch_error: str | None  # non-None when ClickUp fetch failed OR list is unset/empty
+    # Optional whole-project sweep synthesis (Project Shell slice 3, Phase B).
+    # None on the default fast path — only populated when ``cp prep-planning
+    # --sweep`` injects a ``sweep_llm`` and the project has a backfilled shell.
+    # Best-effort per project: a sweep failure leaves this None and the block
+    # still renders. See ``build_project_block``'s ``sweep_llm`` handling.
+    sweep_synthesis: str | None = None
     # ``fetch_error`` carries three distinct sentinels alongside genuine
     # network/4xx error strings — keep the rendering branches in
     # ``_render_forward_calendar`` and the error-aggregation guard in
@@ -796,6 +802,7 @@ def build_project_block(
     clickup_token: str | None,
     list_id_override: str | None = None,
     clickup_task_ids: dict[str, str] | None = None,
+    sweep_llm: Callable[[str], str] | None = None,
 ) -> ProjectPlanningBlock:
     """Assemble all per-project rendering data.
 
@@ -803,6 +810,14 @@ def build_project_block(
     have already been promoted to ClickUp. During the bridging period a
     sprint-file ask may also exist as a ClickUp client-ask; dedupe so the
     Open Commitments table doesn't render the same ask twice.
+
+    ``sweep_llm`` (Project Shell slice 3, Phase B) is the opt-in seam: when
+    provided, this loads the project's on-disk shell elements and runs a
+    whole-project sweep synthesis via ``run_sweep``, attaching it to the
+    block as ``sweep_synthesis``. When None (the default fast path), no
+    shell load and no LLM call happen at all — the default planning doc is
+    unchanged and free. Best-effort: a sweep failure (or a project with no
+    backfilled shell) logs + leaves ``sweep_synthesis=None`` without aborting.
     """
     # Quick Resume line from the project's cp.md
     scope = account_scope_for(project)
@@ -886,6 +901,22 @@ def build_project_block(
         sprint_file_body=sprint_file_body,
     )
 
+    # Opt-in whole-project sweep synthesis (Project Shell slice 3, Phase B).
+    # Default path (sweep_llm is None) does NOTHING here — no disk read, no
+    # LLM call. When a sweep_llm is injected, load the project's shell
+    # (MC-2-canonical, disk fallback) and run the sweep. The MC-2 client
+    # already in scope from the ClickUp list resolution is reused. Best-effort:
+    # any failure logs + leaves sweep_synthesis None.
+    sweep_synthesis: str | None = None
+    if sweep_llm is not None:
+        sweep_synthesis = _run_project_sweep(
+            project,
+            config=config,
+            supabase_client=supabase_client,
+            today=today,
+            sweep_llm=sweep_llm,
+        )
+
     return ProjectPlanningBlock(
         project=project,
         quick_resume_line=current_work,
@@ -894,7 +925,77 @@ def build_project_block(
         sprint_open_asks=sprint_asks,
         urgent=tuple(urgent_list),
         fetch_error=fetch_error,
+        sweep_synthesis=sweep_synthesis,
     )
+
+
+def _run_project_sweep(
+    project: ProjectState,
+    *,
+    config: TenantConfig,
+    supabase_client,
+    today: date,
+    sweep_llm: Callable[[str], str],
+) -> str | None:
+    """Run a best-effort whole-project sweep for one project (Phase B).
+
+    Loads the project's shell elements MC-2-canonical with a disk fallback
+    (matching ``cp shell`` / ``cp sweep``) and runs ``run_sweep``. The disk
+    working dir is resolved via ``find_shell_dir`` (prefix-tolerant), not a
+    hand-built exact-slug path — name-drifted / legacy-bare-code dirs still
+    resolve. Returns the synthesis text, or None when there's nothing to
+    attach:
+      - the project has no shell in MC-2 *and* no backfilled ``shell/`` dir
+        on disk (find_shell_dir raises / empty elements);
+      - the sweep raises (LLM/transport error, missing ANTHROPIC_API_KEY) —
+        logged as a warning so the planning doc still builds for every other
+        project.
+    """
+    from cp_engine.shell import (
+        ShellDirNotFound,
+        find_shell_dir,
+        load_shell,
+        load_shell_from_mc2,
+    )
+    from cp_engine.shell_sweep import run_sweep
+
+    try:
+        # Load the project's shell — MC-2 canonical, disk fallback (matches
+        # cp shell/sweep). Reuse the client already in scope; if none, try a
+        # best-effort connect (any failure → disk fallback, no propagation).
+        elements: tuple = ()
+        client = supabase_client
+        if client is None:
+            try:
+                from cp_engine.sync_mc2 import MC2Backend
+
+                client = MC2Backend().connect(config)
+            except Exception:  # noqa: BLE001 — offline / no creds → disk path
+                client = None
+        if client is not None:
+            try:
+                elements = load_shell_from_mc2(client, project.code)
+            except Exception:  # noqa: BLE001 — read error → disk fallback
+                elements = ()
+        if not elements:
+            try:
+                project_dir = find_shell_dir(config.root, project.code)
+            except ShellDirNotFound:
+                log.debug(
+                    "no shell elements for %s — skipping sweep", project.code
+                )
+                return None  # no shell on disk either → no sweep
+            elements = load_shell(project_dir)
+        if not elements:
+            log.debug(
+                "no shell elements for %s — skipping sweep", project.code
+            )
+            return None  # no shell backfilled → nothing to synthesize
+        result = run_sweep(project.code, elements, today=today, llm=sweep_llm)
+    except Exception as exc:  # noqa: BLE001 — best-effort per project
+        log.warning("sweep failed for %s: %s", project.code, exc)
+        return None
+    return result.synthesis_text
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1281,6 +1382,15 @@ def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
         out.append("**Where:** _(Quick Resume empty — fill in before sprint planning)_")
     out.append("")
 
+    # Whole-project sweep synthesis (Project Shell slice 3, Phase B). Only
+    # present when ``cp prep-planning --sweep`` ran and the project had a
+    # backfilled shell; absent on the default fast path.
+    if block.sweep_synthesis:
+        out.append("**Sweep:**")
+        out.append("")
+        out.append(block.sweep_synthesis.strip())
+        out.append("")
+
     out.extend(_render_forward_calendar(block))
     out.append("")
     out.extend(_render_commitments_table(block))
@@ -1366,6 +1476,7 @@ def build_planning_result(
     clickup_client: httpx.Client | None = None,
     list_id_lookup: dict[str, str] | None = None,
     clickup_task_ids: dict[str, str] | None = None,
+    sweep_llm: Callable[[str], str] | None = None,
 ) -> PlanningResult:
     """Build a full PlanningResult. Pure-ish: passes all dependencies in.
 
@@ -1384,6 +1495,10 @@ def build_planning_result(
         clickup_task_ids: cp_ask_hash → clickup_task_id map for bridging-
             period dedupe of sprint-file open asks against ClickUp
             client-asks. None or empty = no dedupe.
+        sweep_llm: opt-in whole-project sweep synthesizer (Project Shell
+            slice 3, Phase B). None (default) = no sweep, no LLM call, the
+            fast path is unchanged. When provided, each project's block gets
+            a best-effort sweep synthesis attached (failures log + continue).
     """
     list_id_lookup = list_id_lookup or {}
 
@@ -1424,6 +1539,7 @@ def build_planning_result(
             clickup_token=clickup_token,
             list_id_override=list_id,
             clickup_task_ids=clickup_task_ids,
+            sweep_llm=sweep_llm,
         )
         total += len(block.milestones) + len(block.client_asks)
         # ``no_clickup_list`` and ``no_milestones_tagged`` are legitimate
@@ -1508,6 +1624,7 @@ def render_planning_doc(
     clickup_token: str | None = None,
     list_id_lookup: dict[str, str] | None = None,
     clickup_task_ids: dict[str, str] | None = None,
+    sweep_llm: Callable[[str], str] | None = None,
 ) -> str:
     """Top-level entry: assemble + render the planning doc as markdown."""
     # Share one httpx.Client across all per-project fetches.
@@ -1526,6 +1643,7 @@ def render_planning_doc(
             clickup_client=client,
             list_id_lookup=list_id_lookup,
             clickup_task_ids=clickup_task_ids,
+            sweep_llm=sweep_llm,
         )
     finally:
         if client is not None:
