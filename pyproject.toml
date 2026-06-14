@@ -17,6 +17,7 @@ dependencies = [
     "supabase>=2.0",
     "pygithub>=2.0",
     "pyyaml>=6.0",
+    "python-frontmatter>=1.1",
     "anthropic>=0.40",
     "slack-sdk>=3.27",
     "document-ingest[llm,docx,pptx,pdf,spreadsheet,supabase,web,voyage] @ git+https://github.com/Canonic-OS/canonic-component-library.git@5efa7e1#subdirectory=starters/document-ingest",
