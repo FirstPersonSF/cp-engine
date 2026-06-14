@@ -358,6 +358,27 @@ def score_element(
     return recency * serves * importance * status
 
 
+def rank_elements(
+    elements: tuple[ShellElement, ...], *, today: date
+) -> tuple[list[tuple[float, ShellElement]], dict[str, str]]:
+    """Rank elements by the Lens score (hot first) + the derived-status map.
+
+    The canonical ranking contract shared by `render_sweep` (display) and the
+    sweep prompt builder — factored out so the two views can never drift. Returns
+    `(scored, effective)` where `scored` is `(score, element)` pairs sorted
+    hottest-first with a `(layer, id)` tiebreak, and `effective` maps element id
+    → derived (auto-demoted) status.
+    """
+    active = active_deliverable_ids(elements)
+    by_id = {e.id: e for e in elements}
+    effective = {e.id: derive_status(e, by_id) for e in elements}
+    scored = sorted(
+        ((score_element(e, active, today, by_id), e) for e in elements),
+        key=lambda pair: (-pair[0], pair[1].layer, pair[1].id),
+    )
+    return scored, effective
+
+
 class ShellDirNotFound(Exception):
     """No working dir matching the given code under any scope root."""
 
@@ -401,16 +422,10 @@ def render_sweep(
 
     Every element, hot and cold, ranked by Lens score descending. Read-only.
     """
-    active = active_deliverable_ids(elements)
-    by_id = {e.id: e for e in elements}
     # Effective (derived) status drives both the score and the marker, so the
-    # display can never contradict the ranking. derive_status is pure, so this
-    # agrees by construction with score_element's internal derivation.
-    effective = {e.id: derive_status(e, by_id) for e in elements}
-    scored = sorted(
-        ((score_element(e, active, today, by_id), e) for e in elements),
-        key=lambda pair: (-pair[0], pair[1].layer, pair[1].id),
-    )
+    # display can never contradict the ranking. Shared with the sweep prompt
+    # builder via rank_elements so the two views can never drift.
+    scored, effective = rank_elements(elements, today=today)
     lines = [f"{code} — full sweep ({len(elements)} elements)"]
     if not elements:
         lines.append("  (no shell/ elements — has this project been backfilled?)")
