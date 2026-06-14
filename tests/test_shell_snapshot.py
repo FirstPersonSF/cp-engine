@@ -1,4 +1,7 @@
+import subprocess
 from datetime import date
+
+import pytest
 
 from cp_engine.shell_snapshot import build_snapshot, slugify_label
 
@@ -55,3 +58,68 @@ def test_build_snapshot_preserves_original_frontmatter():
     assert "stage: final" in snap.frozen_text
     assert snap.row["reason"] is None
     assert snap.row["working_copy_dirty"] is True
+
+
+# --- deliverable resolution + git helpers ---
+
+
+def test_resolve_deliverable_file(tmp_path):
+    from cp_engine.shell_snapshot import resolve_deliverable_file
+    d = tmp_path / "1p/acct/proj-1/shell/Deliverables"
+    d.mkdir(parents=True)
+    f = d / "pos.md"
+    f.write_text(
+        "---\nid: proj-1/deliverable/pos\nproject: proj-1\nlayer: Deliverables\n---\nbody\n"
+    )
+    proj_dir = tmp_path / "1p/acct/proj-1"
+    found = resolve_deliverable_file(proj_dir, "proj-1/deliverable/pos")
+    assert found == f
+
+
+def test_resolve_deliverable_file_missing(tmp_path):
+    from cp_engine.shell_snapshot import resolve_deliverable_file, DeliverableNotFound
+    proj_dir = tmp_path / "1p/acct/proj-1"
+    (proj_dir / "shell/Deliverables").mkdir(parents=True)
+    with pytest.raises(DeliverableNotFound):
+        resolve_deliverable_file(proj_dir, "proj-1/deliverable/nope")
+
+
+def _git(args, cwd):
+    subprocess.run(["git", *args], cwd=cwd, check=True, capture_output=True, text=True)
+
+
+def _init_repo(path):
+    _git(["init"], path)
+    _git(["config", "user.email", "test@example.com"], path)
+    _git(["config", "user.name", "Test"], path)
+
+
+def test_git_head_commit_in_repo(tmp_path):
+    from cp_engine.shell_snapshot import git_head_commit
+    _init_repo(tmp_path)
+    (tmp_path / "a.txt").write_text("hello\n")
+    _git(["add", "a.txt"], tmp_path)
+    _git(["commit", "-m", "init"], tmp_path)
+    sha = git_head_commit(tmp_path)
+    assert isinstance(sha, str)
+    assert sha
+
+
+def test_git_head_commit_outside_repo(tmp_path):
+    from cp_engine.shell_snapshot import git_head_commit
+    # tmp_path is NOT a git repo — must return None, never raise.
+    assert git_head_commit(tmp_path) is None
+
+
+def test_working_copy_is_dirty(tmp_path):
+    from cp_engine.shell_snapshot import working_copy_is_dirty
+    _init_repo(tmp_path)
+    f = tmp_path / "a.txt"
+    f.write_text("hello\n")
+    _git(["add", "a.txt"], tmp_path)
+    _git(["commit", "-m", "init"], tmp_path)
+    # clean committed file
+    assert working_copy_is_dirty(f, tmp_path) is False
+    # modified working copy
+    f.write_text("hello world\n")
+    assert working_copy_is_dirty(f, tmp_path) is True
