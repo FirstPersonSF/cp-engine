@@ -254,14 +254,61 @@ def _status_term(status: str) -> float:
     return _STATUS_WEIGHT.get(status, 1.0)
 
 
-def score_element(el: ShellElement, active: set[str], today: date) -> float:
+def _deliverable_is_blocked(
+    deliv: ShellElement, by_id: dict[str, ShellElement]
+) -> bool:
+    """A deliverable is blocked if any dependency is not yet final."""
+    for dep_id in deliv.depends_on:
+        dep = by_id.get(dep_id)
+        if dep is None or dep.stage != "final":
+            return True
+    return False
+
+
+def derive_status(el: ShellElement, by_id: dict[str, ShellElement]) -> str:
+    """Compute an element's effective status from the deliverable graph.
+
+    Derivation only *demotes* below an active frontmatter status, never
+    promotes (relevance is computed, the floor is what frontmatter
+    declares). Framing-layer elements are always ambient and never demote.
+    An explicit frontmatter `final`/`reference` is honored as-is.
+    """
+    if el.status != "active":
+        return el.status  # explicit non-active frontmatter wins
+    if el.layer in FRAMING_LAYERS:
+        return "active"
+    # Find the deliverables this element serves (or is, if it's a deliverable).
+    served = [by_id[s] for s in el.serves if s in by_id]
+    if el.layer == "Deliverables" and el.id in by_id:
+        served.append(el)
+    if not served:
+        return "active"
+    # Demote to the *coolest* state any served deliverable forces.
+    if any(d.stage == "final" for d in served):
+        return "reference"
+    if any(_deliverable_is_blocked(d, by_id) for d in served):
+        return "dormant"
+    return "active"
+
+
+def score_element(
+    el: ShellElement,
+    active: set[str],
+    today: date,
+    by_id: dict[str, ShellElement] | None = None,
+) -> float:
     """The Lens score: recency × serves-active × layer-importance × status
     (design §2). The status term demotes settled (final/reference/dormant)
-    elements below live ones without dropping them out of the sweep."""
+    elements below live ones without dropping them out of the sweep.
+
+    When `by_id` is supplied, the status term uses the *derived* status
+    (auto-demotion from the deliverable graph); otherwise it falls back to
+    the frontmatter `status` (backward compatible)."""
     recency = _recency_term(el.last_touched, today)
     serves = _serves_active_term(el, active)
     importance = LAYER_IMPORTANCE.get(el.layer, 0.5)
-    status = _status_term(el.status)
+    effective_status = derive_status(el, by_id) if by_id is not None else el.status
+    status = _status_term(effective_status)
     return recency * serves * importance * status
 
 
@@ -309,8 +356,9 @@ def render_sweep(
     Every element, hot and cold, ranked by Lens score descending. Read-only.
     """
     active = active_deliverable_ids(elements)
+    by_id = {e.id: e for e in elements}
     scored = sorted(
-        ((score_element(e, active, today), e) for e in elements),
+        ((score_element(e, active, today, by_id), e) for e in elements),
         key=lambda pair: (-pair[0], pair[1].layer, pair[1].id),
     )
     lines = [f"{code} — full sweep ({len(elements)} elements)"]
