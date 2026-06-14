@@ -8,11 +8,14 @@ names the cold-but-important threads. The LLM call itself lives in run_sweep
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import date
+from typing import Callable
 
 from cp_engine.shell import (
     ShellElement,
     rank_elements,
+    render_sweep,
 )
 
 # Top-N elements by score get a body excerpt; the rest are listed title-only.
@@ -88,3 +91,41 @@ def build_sweep_prompt(
     ]
 
     return "\n".join(lines)
+
+
+@dataclass(frozen=True)
+class SweepResult:
+    """The output of a whole-project sweep: an LLM synthesis plus the ranked
+    table that produced it. The table is always present (pure/cheap); the
+    synthesis is a placeholder for empty shells (no LLM call was made)."""
+
+    synthesis_text: str
+    ranked_table: str
+
+
+def run_sweep(
+    code: str,
+    elements: tuple[ShellElement, ...],
+    *,
+    today: date,
+    llm: Callable[[str], str],
+) -> SweepResult:
+    """Run a whole-project sweep: rank, synthesize (via the injected `llm`),
+    and return the synthesis + the ranked table.
+
+    The `llm` is injected (`Callable[[str], str]`) so this is testable without a
+    live model: the CLI wraps the real call, tests pass a fake.
+
+    Empty shells skip the LLM entirely (don't pay for nothing) — design B: an
+    empty project would otherwise burn a call asking the model to synthesize a
+    project with no content. The ranked table is always included (pure/cheap).
+    """
+    table = render_sweep(code, elements, today=today)
+    if not elements:
+        return SweepResult(
+            synthesis_text="(no shell elements to sweep)",
+            ranked_table=table,
+        )
+    prompt = build_sweep_prompt(code, elements, today=today)
+    synthesis = llm(prompt)
+    return SweepResult(synthesis_text=synthesis, ranked_table=table)

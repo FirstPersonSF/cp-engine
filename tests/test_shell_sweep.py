@@ -50,3 +50,30 @@ def test_build_sweep_prompt_ranks_hot_before_cold():
     prompt = build_sweep_prompt("ibx-5153", (cold, hot), today=date(2026, 6, 13))
     # hot element's title appears before the cold one in the ranked list
     assert prompt.index("Hot foundation") < prompt.index("Cold April note")
+
+
+def test_run_sweep_calls_llm_and_returns_result():
+    from datetime import date
+    from cp_engine.shell_sweep import run_sweep
+    hot = _el("ibx-5153/deliverable/foundation", "Deliverables", title="Foundation",
+              stage="revised", last_touched="2026-06-13")
+    calls = []
+    def fake_llm(prompt):
+        calls.append(prompt)
+        return "SYNTHESIS: the project is in good shape."
+    result = run_sweep("ibx-5153", (hot,), today=date(2026, 6, 13), llm=fake_llm)
+    assert len(calls) == 1                       # llm was called once
+    assert "Foundation" in calls[0]              # got the built prompt
+    assert result.synthesis_text == "SYNTHESIS: the project is in good shape."
+    assert "Foundation" in result.ranked_table   # render_sweep table included
+
+
+def test_run_sweep_empty_shell_skips_llm():
+    from datetime import date
+    from cp_engine.shell_sweep import run_sweep
+    calls = []
+    def fake_llm(prompt):
+        calls.append(prompt); return "should not be called"
+    result = run_sweep("ibx-5153", (), today=date(2026, 6, 13), llm=fake_llm)
+    assert calls == []                            # LLM NOT called for empty shell
+    assert "no shell elements" in result.synthesis_text.lower()
