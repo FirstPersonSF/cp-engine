@@ -417,7 +417,11 @@ def test_sync_with_mixed_statuses_renders_correct_subtables(tmp_path: Path) -> N
         )
     )
 
-    sync_tenant(config, backend_factory=lambda _: fake)
+    sync_tenant(
+        config,
+        backend_factory=lambda _: fake,
+        now=datetime(2026, 5, 10, tzinfo=timezone.utc),
+    )
 
     master = (tmp_path / "master-cp.md").read_text()
     assert "open-1" in master  # active
@@ -1179,6 +1183,7 @@ def test_exceptions_readme_regenerated_when_dir_exists(tmp_path: Path) -> None:
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend(()),
+        now=datetime(2026, 5, 12, tzinfo=timezone.utc),
     )
 
     readme = exceptions / "README.md"

@@ -200,6 +200,7 @@ def sync_tenant(
         last_sync=sync_clock,
         allocations=allocations,
         exceptions_count=exceptions_count,
+        today=sync_clock.date(),
     )
     first_pass_regions = tuple(
         r for r in _MASTER_REGIONS
@@ -691,7 +692,7 @@ def sync_tenant(
     exceptions_dir = config.root / "exceptions"
     if exceptions_dir.exists():
         readme_path = exceptions_dir / "README.md"
-        new_readme = render_exceptions_readme(config.root)
+        new_readme = render_exceptions_readme(config.root, now=sync_clock)
         if _write_if_changed(
             readme_path,
             new_readme,

@@ -174,10 +174,12 @@ def render_master_cp(
             return p.status == "Holding" and not p.is_internal
         return p.status == "Holding"
 
+    ref_date = today or date.today()
+
     def is_closed_recent(p: ProjectState) -> bool:
         if p.last_touched is None:
             return False
-        if (datetime.now(p.last_touched.tzinfo) - p.last_touched).days > 30:
+        if (ref_date - p.last_touched.date()).days > 30:
             return False
         if p.source == "engagement":
             return p.status == "Closed" and not p.is_internal
@@ -821,6 +823,10 @@ def render_exceptions_readme(
     by sync.py to preserve any out-of-region hand-edits.
     """
     when = now or datetime.now()
+    # Exception filenames parse to naive datetimes; an injected clock may be
+    # tz-aware. Normalize to naive so the cutoff comparison stays valid.
+    if when.tzinfo is not None:
+        when = when.replace(tzinfo=None)
     cutoff = when - timedelta(days=days)
 
     exceptions_dir = tenant_root / "exceptions"
@@ -921,6 +927,8 @@ def count_exceptions_in_window(
     master-cp.md to surface a small "Exceptions ({N} this week)" line.
     """
     when = now or datetime.now()
+    if when.tzinfo is not None:
+        when = when.replace(tzinfo=None)
     cutoff = when - timedelta(days=days)
     entries = _collect_exception_entries(tenant_root / "exceptions", cutoff)
     return len(entries)
