@@ -56,6 +56,64 @@ def test_render_sweep_ranks_live_deliverable_above_cold_brief(tmp_path: Path) ->
     assert "due 2026-06-19" in out
 
 
+def test_render_sweep_shows_serves_continuation(tmp_path: Path) -> None:
+    proj = tmp_path / "1p" / "infoblox" / "ibx-5153-ai-campaign"
+    shell = proj / "shell"
+    _write(
+        shell / "Deliverables" / "x.md",
+        id="ibx-5153/deliverable/x",
+        project="ibx-5153",
+        layer="Deliverables",
+        title="Deliverable X",
+        stage="revised",
+        status="active",
+        last_touched="2026-06-13",
+    )
+    _write(
+        shell / "Research" / "market-scan.md",
+        id="ibx-5153/research/market-scan",
+        project="ibx-5153",
+        layer="Research",
+        title="Market scan",
+        status="active",
+        last_touched="2026-06-10",
+        serves="[ibx-5153/deliverable/x]",
+    )
+    out = render_sweep("ibx-5153", load_shell(proj), today=date(2026, 6, 13))
+    assert "← serves: ibx-5153/deliverable/x" in out
+
+
+def test_render_sweep_marks_overdue(tmp_path: Path) -> None:
+    proj = tmp_path / "1p" / "infoblox" / "ibx-5153-ai-campaign"
+    shell = proj / "shell"
+    _write(
+        shell / "Deliverables" / "past.md",
+        id="ibx-5153/deliverable/past",
+        project="ibx-5153",
+        layer="Deliverables",
+        title="Past deliverable",
+        stage="revised",
+        status="active",
+        last_touched="2026-06-13",
+        target_date="2026-05-01",
+    )
+    _write(
+        shell / "Deliverables" / "future.md",
+        id="ibx-5153/deliverable/future",
+        project="ibx-5153",
+        layer="Deliverables",
+        title="Future deliverable",
+        stage="revised",
+        status="active",
+        last_touched="2026-06-13",
+        target_date="2026-06-26",
+    )
+    out = render_sweep("ibx-5153", load_shell(proj), today=date(2026, 6, 13))
+    assert "due 2026-05-01 (overdue)" in out
+    assert "due 2026-06-26" in out
+    assert "due 2026-06-26 (overdue)" not in out
+
+
 def test_render_sweep_empty_shell(tmp_path: Path) -> None:
     out = render_sweep("ibx-5153", (), today=date(2026, 6, 13))
     assert "ibx-5153" in out

@@ -249,8 +249,7 @@ def render_sweep(
     active = active_deliverable_ids(elements)
     scored = sorted(
         ((score_element(e, active, today), e) for e in elements),
-        key=lambda pair: pair[0],
-        reverse=True,
+        key=lambda pair: (-pair[0], pair[1].layer, pair[1].id),
     )
     lines = [f"{code} — full sweep ({len(elements)} elements)"]
     if not elements:
@@ -261,7 +260,11 @@ def render_sweep(
         if e.stage:
             suffix_parts.append(f"[{e.stage}]")
         if e.target_date:
-            suffix_parts.append(f"due {e.target_date}")
+            due_date = _parse_date(e.target_date)
+            if due_date is not None and due_date < today:
+                suffix_parts.append(f"due {e.target_date} (overdue)")
+            else:
+                suffix_parts.append(f"due {e.target_date}")
         if e.status in ("reference", "dormant"):
             suffix_parts.append(f"({e.status})")
         suffix = ("  " + " ".join(suffix_parts)) if suffix_parts else ""
