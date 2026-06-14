@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.20.0 — 2026-06-13
+
+### Added — Project Shell, slice 2 (MC-2 spine + sync + auto-demotion)
+
+The shell's structured project state graduates from markdown-only (slice 1) to a queryable MC-2 spine, with the relevance Lens now reading from that spine and computing demotion from the deliverable graph rather than hand-set frontmatter. Requires the `shell_elements` table (mc-2 migration `059_shell_elements`).
+
+- **Frontmatter → MC-2 mirror, folded into `cp sync`.** Every sync cycle mirrors each project's `shell/<Layer>/*.md` frontmatter into the `shell_elements` table — one row per element, keyed to `projects.id`, upserted by `element_id`, with orphan rows (elements deleted/renamed on disk) reaped per-project. The file owns the body, the frontmatter owns the spine, MC-2 is the queryable index. The mirror is **best-effort per project**: a mirror failure logs a `WARNING` (with traceback) and never aborts the surrounding sprint/CP sync.
+- **`cp shell <code>` reads MC-2 (canonical), falls back to disk.** The Lens now reads the spine from MC-2 so cross-project queries and auto-demotion drive the same command. When MC-2 is unreachable (no creds / offline) it degrades **visibly** to the slice-1 markdown read — a missing-creds `BackendUnavailable` is a quiet stderr note, while a connected-but-query-failed error is a loud `WARNING` flagging a likely schema/query bug (never a silent stale read).
+- **Auto-demotion — derived status from the deliverable graph.** An element's effective relevance status is now *computed*: an element serving a `final` deliverable settles to `reference`; one serving a blocked deliverable (a `depends_on` target not yet final) cools to `dormant`; framing-layer elements never demote; an explicit non-active frontmatter status is the floor (derivation only demotes, never promotes). The sweep's score **and** its `(reference)`/`(dormant)` markers both read this derived status, so display and ranking always agree.
+
+Verified end-to-end on IBX-5153: `cp sync` mirrored 29 elements across 10 layers, `cp shell ibx-5153` produced the identical ranked sweep MC-2-backed (foundation doc + 6/17 workshop on top), and the offline fallback rendered the full sweep from disk.
+
+**Deferred to slice 3:** named snapshots, the periodic sweep/synthesis readout, auto-snapshots, cross-project type analytics.
+
 ## v0.19.1 — 2026-06-13
 
 ### Changed — Lens gains a status-weight term (Project Shell)
