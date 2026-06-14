@@ -839,6 +839,79 @@ def shell_cmd(code: str) -> None:
     click.echo(render_sweep(code, elements, today=date.today()))
 
 
+@main.command("shell-stats")
+@click.option(
+    "--type", "type_filter", default=None, help="Narrow to one deliverable type."
+)
+@click.option(
+    "--within-days", default=14, show_default=True, help="Due-soon window (days)."
+)
+def shell_stats_cmd(type_filter: str | None, within_days: int) -> None:
+    """Cross-project analytics over the shell spine (Deliverables).
+
+    Needs MC-2 — this is inherently the cross-project index, so there is no
+    offline/disk fallback (unlike `cp shell`). If MC-2 is unreachable this
+    prints a clear error and exits non-zero.
+    """
+    from datetime import date
+
+    from cp_engine.shell_stats import (
+        due_soon,
+        stage_distribution,
+        type_inventory,
+    )
+    from cp_engine.sync import BackendUnavailable
+    from cp_engine.sync_mc2 import MC2Backend
+
+    config = _load_config_or_die()
+    try:
+        client = MC2Backend().connect(config)
+    except BackendUnavailable as exc:
+        click.echo(
+            f"cross-project stats need MC-2 (this command has no offline mode): {exc}",
+            err=True,
+        )
+        sys.exit(1)
+
+    inv = type_inventory(client)
+    dist = stage_distribution(client)
+    soon = due_soon(client, today=date.today(), within_days=within_days)
+
+    # --type narrows the per-type views (inventory + due-soon). The stage
+    # distribution stays global by design (a cross-project health readout).
+    if type_filter:
+        inv = [(t, n) for t, n in inv if t == type_filter]
+        soon = [r for r in soon if r.get("type") == type_filter]
+
+    click.echo("Deliverable type inventory:")
+    if inv:
+        for t, n in inv:
+            click.echo(f"  {n:3d}  {t}")
+    else:
+        click.echo("  (none)")
+
+    stage_header = (
+        "Stage distribution (all types):" if type_filter else "Stage distribution:"
+    )
+    click.echo(f"\n{stage_header}")
+    if dist:
+        click.echo(
+            "  " + " · ".join(f"{stage}: {n}" for stage, n in sorted(dist.items()))
+        )
+    else:
+        click.echo("  (none)")
+
+    click.echo(f"\nDue within {within_days} days (excludes shipped):")
+    if soon:
+        for r in soon:
+            click.echo(
+                f"  {r.get('target_date')}  {r.get('project_code')}  "
+                f"{r.get('title')}  [{r.get('stage')}]"
+            )
+    else:
+        click.echo("  (none)")
+
+
 @main.command("sweep")
 @click.argument("code")
 @click.option(
