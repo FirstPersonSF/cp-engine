@@ -61,7 +61,7 @@ from cp_engine.sync import BackendUnavailable
 # downstream in `_engagement_row_to_state` (PostgREST nested filters are
 # awkward; cleaner to filter in Python given the small row count).
 _ENGAGEMENT_COLUMNS = (
-    "number, full_job_name, name, mc_status, account_manager, "
+    "id, number, full_job_name, name, mc_status, account_manager, "
     "is_internal, deal_stage, budget, dropbox_folder_url, updated_at, "
     "companies(code, name, kind), "
     "repos!project_id(repo_name, status, description, github_orgs!inner(name))"
@@ -268,6 +268,17 @@ class MC2Backend:
         self._client = create_client(url, key)
         return self._client
 
+    def shell_client(self) -> Client:
+        """Return the Supabase client read_projects already created.
+
+        The shell-spine mirror reuses the exact client (and creds) the project
+        read used — never mints a fresh connection."""
+        if self._client is None:
+            raise RuntimeError(
+                "shell_client() called before read_projects(); no client cached."
+            )
+        return self._client
+
 
 # ──────────────────────────────────────────────────────────────────────
 #  Supabase credential loading
@@ -375,6 +386,7 @@ def _engagement_row_to_state(row: dict) -> ProjectState:
         code=_engagement_canonical_id(row),
         name=row.get("full_job_name") or row.get("name") or "",
         source="engagement",
+        mc2_id=row.get("id"),
         company_kind=kind,  # type: ignore[arg-type]
         company_code=company.get("code"),
         company_name=company.get("name"),
@@ -471,6 +483,7 @@ def _repo_row_to_state(row: dict) -> ProjectState:
         code=row["repo_name"],
         name=row["repo_name"],
         source="repo",
+        mc2_id=row.get("id"),
         company_kind=kind,  # type: ignore[arg-type]
         company_code=company.get("code"),
         company_name=company.get("name"),
@@ -516,6 +529,7 @@ def _initiative_row_to_state(row: dict) -> ProjectState:
         code=(row.get("code") or "").strip(),
         name=row.get("name") or "",
         source="initiative",
+        mc2_id=row.get("id"),
         company_kind=kind,  # type: ignore[arg-type]
         company_code=company.get("code"),
         company_name=company.get("name"),

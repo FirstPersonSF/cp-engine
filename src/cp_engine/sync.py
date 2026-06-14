@@ -109,6 +109,15 @@ class Backend(Protocol):
         """
         ...
 
+    def shell_client(self) -> object:
+        """Return the Supabase client used to read projects.
+
+        Used by the shell-spine mirror (slice 2) to reconcile a project's
+        `shell/` frontmatter into MC-2's `shell_elements` table without
+        re-resolving credentials. Returns the live client instance.
+        """
+        ...
+
 
 # Type for the factory that resolves a backend by name. Tests pass a fake
 # factory; the CLI uses _default_backend_factory below.
@@ -386,6 +395,26 @@ def sync_tenant(
             linked_path = project_dir / f"_repo-{linked.repo_name}.md"
             if _write_if_changed(linked_path, linked_body, splice_regions=()):
                 files_written.append(linked_path)
+
+        # Mirror the project's shell spine into MC-2 (slice 2). Best-effort:
+        # a shell mirror failure must never abort the sprint/CP sync that
+        # surrounds it. Only this block is wrapped — the surrounding sync is
+        # NOT best-effort.
+        if project.mc2_id:
+            try:
+                from cp_engine.shell_sync import sync_shell_elements
+
+                client = backend.shell_client()
+                sync_shell_elements(
+                    client,
+                    project_id=project.mc2_id,
+                    project_dir=project_dir,
+                    tenant_root=config.root,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort mirror
+                logger.warning(
+                    "shell mirror skipped for %s: %s", project.code, exc, exc_info=True
+                )
 
     # Account CP scaffolding (v0.8.17+, 1p-only) — for every account that
     # has ≥1 active client project, scaffold `1p/<company-slug>/cp.md`
