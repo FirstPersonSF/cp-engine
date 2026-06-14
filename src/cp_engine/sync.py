@@ -401,19 +401,35 @@ def sync_tenant(
         # surrounds it. Only this block is wrapped — the surrounding sync is
         # NOT best-effort.
         if project.mc2_id:
-            try:
-                from cp_engine.shell_sync import sync_shell_elements
+            from cp_engine.shell_sync import (
+                sync_shell_elements,
+                sync_shell_snapshots,
+            )
 
-                client = backend.shell_client()
+            client = backend.shell_client()
+            try:
                 sync_shell_elements(
                     client,
                     project_id=project.mc2_id,
                     project_dir=project_dir,
                     tenant_root=config.root,
                 )
-            except Exception as exc:  # noqa: BLE001 — best-effort mirror
+            except Exception as exc:  # noqa: BLE001 — best-effort element mirror
                 logger.warning(
-                    "shell mirror skipped for %s: %s", project.code, exc, exc_info=True
+                    "shell-element mirror skipped for %s: %s",
+                    project.code, exc, exc_info=True,
+                )
+            try:
+                sync_shell_snapshots(
+                    client,
+                    project_code=project.code,
+                    project_dir=project_dir,
+                    tenant_root=config.root,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort snapshot mirror
+                logger.warning(
+                    "shell-snapshot mirror skipped for %s: %s",
+                    project.code, exc, exc_info=True,
                 )
 
     # Account CP scaffolding (v0.8.17+, 1p-only) — for every account that

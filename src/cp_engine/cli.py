@@ -912,6 +912,48 @@ def snapshot_cmd(ref: str, label: str, reason: str | None) -> None:
     click.echo(f"Snapshot saved: {target.relative_to(config.root)}")
 
 
+@main.command("snapshots")
+@click.argument("ref")  # "<code>/<deliverable-id>"
+def snapshots_cmd(ref: str) -> None:
+    """List a deliverable's snapshots (newest first), from disk."""
+    import frontmatter
+    import yaml
+
+    from cp_engine.shell import ShellDirNotFound, find_shell_dir
+    from cp_engine.shell_snapshot import (
+        DeliverableNotFound,
+        resolve_deliverable_file,
+    )
+
+    config = _load_config_or_die()
+    code = ref.split("/", 1)[0]
+    try:
+        project_dir = find_shell_dir(config.root, code)
+        working_file = resolve_deliverable_file(project_dir, ref)
+    except (ShellDirNotFound, DeliverableNotFound) as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+
+    snap_dir = working_file.parent / f"{working_file.stem}.snapshots"
+    if not snap_dir.is_dir():
+        click.echo(f"No snapshots for {ref}.")
+        return
+    snaps = []
+    for md in snap_dir.glob("*.md"):
+        try:
+            meta = frontmatter.load(str(md)).metadata.get("snapshot", {})
+        except yaml.YAMLError:
+            continue  # skip malformed snapshot files
+        if isinstance(meta, dict):
+            snaps.append((str(meta.get("created", "")), meta, md.name))
+    snaps.sort(key=lambda s: (s[0], s[2]), reverse=True)  # newest first
+    click.echo(f"{ref} — {len(snaps)} snapshot(s):")
+    for created, meta, fname in snaps:
+        reason = meta.get("reason") or ""
+        commit = meta.get("commit") or "—"
+        click.echo(f"  {created}  {meta.get('label','')}  [{commit}]  {reason}")
+
+
 @main.command("ingest")
 @click.option(
     "--plan",

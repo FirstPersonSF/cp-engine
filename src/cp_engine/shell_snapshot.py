@@ -75,6 +75,41 @@ def build_snapshot(
     return Snapshot(filename=filename, frozen_text=frozen_text, row=row)
 
 
+def row_from_frozen(path: Path, *, tenant_root: Path) -> dict | None:
+    """Build a shell_snapshots row from a frozen snapshot file's frontmatter.
+
+    Returns None if the file lacks a `snapshot:` block (not a snapshot file).
+    The row shape MUST match what `build_snapshot` produces (minus rel_path,
+    which is computed here from the file's actual location)."""
+    try:
+        meta = frontmatter.load(str(path)).metadata
+    except yaml.YAMLError:
+        return None
+    snap = meta.get("snapshot")
+    if not isinstance(snap, dict):
+        return None
+    deliverable_id = str(snap.get("of", ""))
+    created = str(snap.get("created", ""))
+    stem = path.stem
+    try:
+        rel = str(path.relative_to(tenant_root))
+    except ValueError:
+        rel = path.name
+    return {
+        "id": f"{deliverable_id}@{stem}",
+        "deliverable_id": deliverable_id,
+        # project_code is the deliverable id's first segment, matching the
+        # freeze path so both write the same row (and reap stays scoped).
+        "project_code": deliverable_id.split("/", 1)[0] if deliverable_id else "",
+        "label": str(snap.get("label", "")),
+        "reason": snap.get("reason"),
+        "commit": snap.get("commit"),
+        "rel_path": rel,
+        "working_copy_dirty": bool(snap.get("working_copy_dirty", False)),
+        "created": created,
+    }
+
+
 # --- deliverable resolution + git helpers (disk/git I/O, isolated) ---
 #
 # These touch the filesystem and shell out to git, so they live apart from the

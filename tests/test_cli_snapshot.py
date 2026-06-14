@@ -201,3 +201,76 @@ def test_snapshot_mc2_unavailable_still_writes_file(tmp_path, monkeypatch) -> No
     assert "MC-2 index skipped" in result.output
     matches = list(_snap_dir(tmp_path).glob("*-offline-snap.md"))
     assert len(matches) == 1
+
+
+# --- cp snapshots (list) ---
+
+
+def _write_frozen(snap_dir: Path, fname: str, *, created: str, label: str,
+                  reason: str | None = None, commit: str | None = None) -> None:
+    snap_dir.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "---",
+        "project: ibx-5153",
+        "snapshot:",
+        "  of: ibx-5153/deliverable/pos",
+        f"  label: {label}",
+        f"  reason: {reason}",
+        f"  created: {created}",
+        f"  commit: {commit}",
+        "  working_copy_dirty: false",
+        "---",
+        "frozen body",
+    ]
+    (snap_dir / fname).write_text("\n".join(lines) + "\n")
+
+
+def test_snapshots_lists_newest_first(tmp_path, monkeypatch) -> None:
+    _tenant_with_deliverable(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    sd = _snap_dir(tmp_path)
+    _write_frozen(sd, "2026-06-10-old.md", created="2026-06-10",
+                  label="Older", reason="r1", commit="aaa1111")
+    _write_frozen(sd, "2026-06-13-new.md", created="2026-06-13",
+                  label="Newer", reason="r2", commit="bbb2222")
+
+    result = CliRunner().invoke(main, ["snapshots", "ibx-5153/deliverable/pos"])
+    assert result.exit_code == 0, result.output
+    assert "2 snapshot(s)" in result.output
+    # Newest first: "Newer" line precedes "Older".
+    assert result.output.index("Newer") < result.output.index("Older")
+    assert "aaa1111" in result.output and "bbb2222" in result.output
+
+
+def test_snapshots_same_day_collision_does_not_crash(tmp_path, monkeypatch) -> None:
+    # Regression: two snapshots with the SAME created date previously crashed
+    # snapshots_cmd because sort(reverse=True) fell through to comparing the
+    # meta dicts (TypeError: '<' not supported between dict and dict).
+    _tenant_with_deliverable(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    sd = _snap_dir(tmp_path)
+    _write_frozen(sd, "2026-06-10-before.md", created="2026-06-10",
+                  label="First", reason="r1", commit="aaa1111")
+    _write_frozen(sd, "2026-06-10-before-2.md", created="2026-06-10",
+                  label="Second", reason="r2", commit="bbb2222")
+
+    result = CliRunner().invoke(main, ["snapshots", "ibx-5153/deliverable/pos"])
+    assert result.exit_code == 0, result.output
+    assert "2 snapshot(s)" in result.output
+    assert "aaa1111" in result.output and "bbb2222" in result.output
+
+
+def test_snapshots_empty_message(tmp_path, monkeypatch) -> None:
+    _tenant_with_deliverable(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, ["snapshots", "ibx-5153/deliverable/pos"])
+    assert result.exit_code == 0, result.output
+    assert "No snapshots" in result.output
+
+
+def test_snapshots_missing_deliverable_exits_1(tmp_path, monkeypatch) -> None:
+    _tenant_with_deliverable(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    result = CliRunner().invoke(main, ["snapshots", "ibx-5153/deliverable/nope"])
+    assert result.exit_code == 1
+    assert "nope" in result.output

@@ -50,3 +50,48 @@ def sync_shell_elements(
             ).execute()
 
     return len(rows)
+
+
+_SNAPSHOTS_TABLE = "shell_snapshots"
+
+
+def sync_shell_snapshots(
+    client,
+    *,
+    project_code: str,
+    project_dir: Path,
+    tenant_root: Path,
+) -> int:
+    """Reconcile shell_snapshots rows for one project to match disk.
+
+    Scans every shell/<Layer>/*.snapshots/*.md, upserts a row per snapshot
+    file, reaps rows whose file vanished (scoped per-project). Returns count
+    upserted."""
+    from cp_engine.shell_snapshot import row_from_frozen
+
+    rows = []
+    shell_root = project_dir / "shell"
+    if shell_root.is_dir():
+        for snap_dir in sorted(shell_root.glob("*/*.snapshots")):
+            for md in sorted(snap_dir.glob("*.md")):
+                row = row_from_frozen(md, tenant_root=tenant_root)
+                if row is not None:
+                    rows.append(row)
+    present_ids = {r["id"] for r in rows}
+
+    if rows:
+        client.table(_SNAPSHOTS_TABLE).upsert(rows, on_conflict="id").execute()
+
+    # Reap orphans: rows for this project whose snapshot file vanished.
+    existing = (
+        client.table(_SNAPSHOTS_TABLE)
+        .select("id")
+        .eq("project_code", project_code)
+        .execute()
+        .data
+    ) or []
+    for row in existing:
+        if row["id"] not in present_ids:
+            client.table(_SNAPSHOTS_TABLE).delete().eq("id", row["id"]).execute()
+
+    return len(rows)
