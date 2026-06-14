@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.19.1 — 2026-06-13
+
+### Changed — Lens gains a status-weight term (Project Shell)
+
+Surfaced by hand-backfilling IBX-5153 into the shell: delivered `final` artifacts (a workshop pre-read, a leave-behind) were tying the still-open work they served at the top of the sweep. The Lens score now multiplies a fourth term — a status weight (`active=1.0`, `reference/dormant=0.7`, `final=0.5`) — so settled elements demote below live ones without dropping out of the sweep. The design's "deliverable ships → its elements demote together," made real.
+
 ## v0.19.0 — 2026-06-13
 
 ### Added — Project Shell, slice 1 (`cp shell <code>`)
