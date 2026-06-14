@@ -81,6 +81,63 @@ def test_dangling_dependency_blocks_deliverable():
     assert derive_status(note, by_id) == "dormant"
 
 
+def test_warmest_wins_active_plus_blocked():
+    # Warmest-wins (the IBX sweep fix): an element serving an active-unblocked
+    # deliverable AND a blocked one stays "active" — was "dormant" under the old
+    # coldest-wins logic. The liveliest consumer keeps it live.
+    d_active = _el("p/deliverable/dact", "Deliverables", stage="revised",
+                   status="active")
+    d_unfinished_dep = _el("p/deliverable/dx", "Deliverables", stage="revised",
+                        status="active")
+    d_blocked = _el("p/deliverable/dblk", "Deliverables", stage="first",
+                    status="active", depends_on=("p/deliverable/dx",))
+    note = _el("p/research/r1", "Research",
+               serves=("p/deliverable/dact", "p/deliverable/dblk"))
+    by_id = {e.id: e for e in (d_active, d_unfinished_dep, d_blocked, note)}
+    assert derive_status(note, by_id) == "active"
+
+
+def test_warmest_wins_active_plus_final():
+    # Serving active-unblocked + final → "active" (live consumer wins over shipped).
+    d_active = _el("p/deliverable/dact", "Deliverables", stage="revised",
+                   status="active")
+    d_final = _el("p/deliverable/dfin", "Deliverables", stage="final",
+                  status="final")
+    note = _el("p/research/r1", "Research",
+               serves=("p/deliverable/dact", "p/deliverable/dfin"))
+    by_id = {e.id: e for e in (d_active, d_final, note)}
+    assert derive_status(note, by_id) == "active"
+
+
+def test_warmest_wins_blocked_plus_final():
+    # Serving only blocked + final (no active-unblocked) → "reference":
+    # shipped (citable) beats stalled.
+    d_unfinished_dep = _el("p/deliverable/dx", "Deliverables", stage="revised",
+                        status="active")
+    d_blocked = _el("p/deliverable/dblk", "Deliverables", stage="first",
+                    status="active", depends_on=("p/deliverable/dx",))
+    d_final = _el("p/deliverable/dfin", "Deliverables", stage="final",
+                  status="final")
+    note = _el("p/research/r1", "Research",
+               serves=("p/deliverable/dblk", "p/deliverable/dfin"))
+    by_id = {e.id: e for e in (d_unfinished_dep, d_blocked, d_final, note)}
+    assert derive_status(note, by_id) == "reference"
+
+
+def test_warmest_wins_all_blocked():
+    # Serving only blocked deliverables → "dormant" (every consumer stalled).
+    d_dep = _el("p/deliverable/dx", "Deliverables", stage="revised",
+                status="active")
+    d_blocked1 = _el("p/deliverable/db1", "Deliverables", stage="first",
+                     status="active", depends_on=("p/deliverable/dx",))
+    d_blocked2 = _el("p/deliverable/db2", "Deliverables", stage="first",
+                     status="active", depends_on=("p/deliverable/dx",))
+    note = _el("p/research/r1", "Research",
+               serves=("p/deliverable/db1", "p/deliverable/db2"))
+    by_id = {e.id: e for e in (d_dep, d_blocked1, d_blocked2, note)}
+    assert derive_status(note, by_id) == "dormant"
+
+
 def test_sweep_marks_graph_derived_reference():
     # A note whose frontmatter status is "active" but which serves a FINAL
     # deliverable → derives to reference → the rendered marker must reflect

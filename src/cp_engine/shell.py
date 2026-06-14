@@ -288,6 +288,9 @@ def _serves_active_term(el: ShellElement, active: set[str]) -> float:
 # live work (design §2: "deliverable ships → its elements demote together";
 # "cold is a dimmer, not an off-switch"). A freshly-delivered `final` artifact
 # should sit just under the still-open work it served, not tie it.
+# NOTE: `reference` and `dormant` share weight 0.7 — so derive_status's
+# reference-vs-dormant distinction changes only the displayed marker, not the
+# Lens score. Only the active (1.0) vs cool (0.7) split moves sweep ranking.
 _STATUS_WEIGHT: dict[str, float] = {
     "active": 1.0,
     "reference": 0.7,
@@ -311,6 +314,11 @@ def _deliverable_is_blocked(
     return False
 
 
+def _is_active_unblocked(deliv: ShellElement, by_id: dict[str, ShellElement]) -> bool:
+    """A deliverable that is live: not shipped (final) and not blocked on a dep."""
+    return deliv.stage != "final" and not _deliverable_is_blocked(deliv, by_id)
+
+
 def derive_status(el: ShellElement, by_id: dict[str, ShellElement]) -> str:
     """Compute an element's effective status from the deliverable graph.
 
@@ -318,6 +326,12 @@ def derive_status(el: ShellElement, by_id: dict[str, ShellElement]) -> str:
     promotes (relevance is computed, the floor is what frontmatter
     declares). Framing-layer elements are always ambient and never demote.
     An explicit frontmatter `final`/`reference` is honored as-is.
+
+    When an element serves multiple deliverables, the *warmest* consumer wins
+    (active > reference > dormant): it stays active if it feeds any live
+    (unblocked, non-final) deliverable; settles to reference if it only feeds
+    shipped work (still citable); cools to dormant only when every consumer is
+    blocked.
     """
     if el.status != "active":
         return el.status  # explicit non-active frontmatter wins
@@ -329,12 +343,15 @@ def derive_status(el: ShellElement, by_id: dict[str, ShellElement]) -> str:
         served.append(el)
     if not served:
         return "active"
-    # Demote to the *coolest* state any served deliverable forces.
+    # Warmest-wins: an element is as live as its liveliest consumer. Any
+    # active-unblocked served deliverable keeps it active; else a shipped (final)
+    # consumer keeps it reference (citable); only when every consumer is blocked
+    # does it cool to dormant.
+    if any(_is_active_unblocked(d, by_id) for d in served):
+        return "active"
     if any(d.stage == "final" for d in served):
         return "reference"
-    if any(_deliverable_is_blocked(d, by_id) for d in served):
-        return "dormant"
-    return "active"
+    return "dormant"
 
 
 def score_element(
