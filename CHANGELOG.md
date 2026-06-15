@@ -4,6 +4,22 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.22.0 — 2026-06-15
+
+### Changed — Project Shell spine inversion, Phase 1 (MC-2 becomes the verified source of truth)
+
+The shell shipped (slices 1–3) with markdown as source of truth and MC-2 as a downstream mirror. The original intent was the opposite: **MC-2 is the fast, human-verified spine**; markdown is the rich detail it points into. This phase restores that direction. Requires mc-2 migration `061_shell_field_verification` (adds `field_states`, `confirmed_by`, `confirmed_at`, `review_flags` to `shell_elements`).
+
+**Reconcile, don't clobber.** `cp sync`'s shell mirror no longer overwrites the five human-confirmable fields (`status`, `stage`, `target_date`, `serves`, `depends_on`). For each, once a human has marked it `confirmed` in MC-2 (via `field_states`), a conflicting re-derivation from disk is recorded as a `review_flag` and the confirmed value is **kept** — never overwritten. Proposed/absent fields update freely, as before. This one-way door is what makes MC-2 authoritative: the machine may *suggest* a change, but only a human may *change* a confirmed value.
+
+**Confirmed rows survive disk loss.** The orphan-reap that deletes rows whose markdown vanished now skips any row carrying a confirmed field — deleting it would silently destroy confirmed state. Such rows are kept and flagged (`source: present→missing`) for human resolution. Unconfirmed orphans are still reaped.
+
+**Bounded review queue.** At most one open `review_flag` per field — a persistent conflict refreshes its flag rather than appending a new one on every sync (sync runs on every auto-ingest push and SessionStart).
+
+**Reads treat MC-2 as truth.** `cp shell` reads MC-2 unconditionally; a successful read — even an empty one — is the authoritative answer and no longer falls through to disk. Disk is consulted only when MC-2 doesn't serve the read, and that path is labelled loudly: *"MC-2 unreachable — showing last-known markdown-derived state, unverified."* Elements read from MC-2 now surface their `field_states`/`review_flags`/`confirmed_by`/`confirmed_at` for the forthcoming Mission Control verification UI.
+
+Element *creation* and body authoring remain markdown — this inverts authority over **structured state**, not over **content**. Design: `cp/docs/plans/2026-06-15-shell-authoritative-spine-design.md`.
+
 ## v0.21.1 — 2026-06-14
 
 ### Changed — `derive_status` warmest-wins for multi-serve elements
