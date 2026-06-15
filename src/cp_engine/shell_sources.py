@@ -48,3 +48,40 @@ def match_sources_to_assets(source_refs, assets):
         else:
             out.append(ref)
     return tuple(out)
+
+
+def fetch_project_assets(client, project_code):
+    """Return a project's active rag_assets as a list of dicts.
+
+    Each dict carries (id, title, source_type, scope). Resolves the project's
+    uuid via shell_elements (shell_elements.project_id === rag_assets.project_id
+    — NOT projects.code, which is a different slug), then queries rag_assets.
+
+    Best-effort by contract: the 'Source documents' facet must never break
+    `cp shell`. Returns [] if the project_id can't be resolved, if there are no
+    assets, or on any client error. Explicit columns only (rag_assets carries a
+    `meta jsonb` we must never pull)."""
+    try:
+        rows = (
+            client.table("shell_elements")
+            .select("project_id")
+            .eq("project_code", project_code)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+        if not rows:
+            return []
+        pid = rows[0].get("project_id")
+        if not pid:
+            return []
+        return (
+            client.table("rag_assets")
+            .select("id, title, source_type, scope")
+            .eq("project_id", pid)
+            .eq("status", "active")
+            .execute()
+            .data
+        ) or []
+    except Exception:  # noqa: BLE001 — facet is best-effort, never break the sweep
+        return []

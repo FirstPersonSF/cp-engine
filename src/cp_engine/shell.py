@@ -493,3 +493,57 @@ def render_sweep(
         if e.serves:
             lines.append(f"        ← serves: {', '.join(e.serves)}")
     return "\n".join(lines)
+
+
+# Cap the rendered asset list — ibx-5153 alone carries ~101 assets, and the
+# facet is an orientation aid, not a full manifest. The header count is always
+# the TRUE total (no silent caps); only the bullet list is truncated.
+_SOURCE_DOCS_CAP = 25
+
+
+def render_source_documents(assets, elements) -> str:
+    """Render the 'Source documents' facet block (a string).
+
+    `assets` is the list from `fetch_project_assets`; `elements` is the
+    project's ShellElements, scanned for typed `source` links back to those
+    assets so each linked asset can show which distilled element(s) cite it.
+
+    Linked assets sort first (most useful), then the rest by title. Long lists
+    are capped at `_SOURCE_DOCS_CAP` bullets with an `…and K more` line; the
+    header `(N)` is always the true total. Returns '' when there are no assets
+    so the caller can omit the block entirely.
+    """
+    if not assets:
+        return ""
+
+    # asset_id -> [linking element titles]
+    linked_by: dict[str, list[str]] = {}
+    for el in elements:
+        for ref in el.source:
+            if isinstance(ref, dict) and ref.get("type") == "rag_asset":
+                linked_by.setdefault(ref.get("id"), []).append(el.title)
+
+    total = len(assets)
+    # Linked assets first, then by title (both groups title-sorted).
+    ordered = sorted(
+        assets,
+        key=lambda a: (
+            0 if linked_by.get(a.get("id")) else 1,
+            str(a.get("title", "")).casefold(),
+        ),
+    )
+
+    lines = [f"Source documents ({total})"]
+    for a in ordered[:_SOURCE_DOCS_CAP]:
+        title = a.get("title", "(untitled)")
+        src_type = a.get("source_type") or "?"
+        scope = a.get("scope") or "?"
+        suffix = ""
+        linkers = linked_by.get(a.get("id"))
+        if linkers:
+            suffix = f"  ← {', '.join(linkers)}"
+        lines.append(f"  • {title}  ·{src_type}  [{scope}]{suffix}")
+    remaining = total - _SOURCE_DOCS_CAP
+    if remaining > 0:
+        lines.append(f"  …and {remaining} more")
+    return "\n".join(lines)
