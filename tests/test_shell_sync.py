@@ -48,8 +48,9 @@ class _FakeClient:
 def _write_el(root: Path, layer: str, name: str, eid: str, **fm):
     d = root / "1p/acct/proj-1/shell" / layer
     d.mkdir(parents=True, exist_ok=True)
+    status = fm.pop("status", "active")
     lines = [f"id: {eid}", "project: proj-1", f"layer: {layer}",
-             f"title: {name}", "status: active", "last_touched: 2026-06-13"]
+             f"title: {name}", f"status: {status}", "last_touched: 2026-06-13"]
     for k, v in fm.items():
         lines.append(f"{k}: {v}")
     (d / f"{name}.md").write_text("---\n" + "\n".join(lines) + "\n---\nbody\n")
@@ -104,3 +105,51 @@ def test_sync_reap_is_scoped_to_one_project(tmp_path):
     ids = {r["element_id"] for r in client.store["shell_elements"]}
     assert "proj-2/research/keep" in ids   # sibling survived
     assert "proj-1/deliverable/pos" in ids
+
+
+def test_sync_keeps_confirmed_field_and_appends_flag(tmp_path):
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    # Pre-seed MC-2 row: status confirmed=active, but disk will say dormant.
+    client.store["shell_elements"] = [{
+        "element_id": "proj-1/deliverable/pos", "project_id": "u1",
+        "status": "active", "stage": None, "target_date": None,
+        "serves": [], "depends_on": [],
+        "field_states": {"status": "confirmed"}, "review_flags": [],
+    }]
+    _write_el(tmp_path, "Deliverables", "pos", "proj-1/deliverable/pos", status="dormant")
+    sync_shell_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
+    row = next(r for r in client.store["shell_elements"]
+               if r["element_id"] == "proj-1/deliverable/pos")
+    assert row["status"] == "active"   # confirmed value kept, not clobbered
+    assert row["field_states"]["status"] == "confirmed"
+    assert any(f["field"] == "status" and f["was"] == "active" and f["now"] == "dormant"
+               for f in row["review_flags"])
+
+
+def test_sync_updates_proposed_field_freely(tmp_path):
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    client.store["shell_elements"] = [{
+        "element_id": "proj-1/deliverable/pos", "project_id": "u1",
+        "status": "active", "stage": None, "target_date": None,
+        "serves": [], "depends_on": [],
+        "field_states": {}, "review_flags": [],
+    }]
+    _write_el(tmp_path, "Deliverables", "pos", "proj-1/deliverable/pos", status="dormant")
+    sync_shell_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
+    row = next(r for r in client.store["shell_elements"]
+               if r["element_id"] == "proj-1/deliverable/pos")
+    assert row["status"] == "dormant"   # proposed ⇒ free update
+    assert row["review_flags"] == []
+
+
+def test_sync_new_element_has_empty_verification_state(tmp_path):
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    _write_el(tmp_path, "Deliverables", "pos", "proj-1/deliverable/pos")
+    sync_shell_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
+    row = next(r for r in client.store["shell_elements"]
+               if r["element_id"] == "proj-1/deliverable/pos")
+    assert row["field_states"] == {}
+    assert row["review_flags"] == []
