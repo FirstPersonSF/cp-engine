@@ -85,7 +85,7 @@ from cp_engine.plan_from_transcript import (
     generate_plan,
 )
 from cp_engine.retrospective import append_entry, build_entry
-from cp_engine.shell import ShellDirNotFound, find_shell_dir
+from cp_engine.spine import SpineDirNotFound, find_spine_dir
 
 from clickup_propose import propose_clickup_tasks
 from meeting_artifact import write_meeting_artifacts
@@ -2073,7 +2073,7 @@ def _append_retrospective(
             meeting_id=meeting_id or None,
         )
         history_path = (
-            find_shell_dir(config.root, code)
+            find_spine_dir(config.root, code)
             / "shell"
             / "Retrospective"
             / "meeting-history.md"
@@ -2087,7 +2087,7 @@ def _append_retrospective(
             today=datetime.now().date(),
         )
         return "appended" if wrote else "duplicate"
-    except ShellDirNotFound as exc:
+    except SpineDirNotFound as exc:
         # The project's working dir hasn't been synced yet (e.g. its first
         # meeting arrives before sync ran). Distinct from a genuine error so
         # it's observable as a benign skip, not a failure.

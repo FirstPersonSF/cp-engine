@@ -941,23 +941,23 @@ def _run_project_sweep(
 
     Loads the project's shell elements MC-2-canonical with a disk fallback
     (matching ``cp shell`` / ``cp sweep``) and runs ``run_sweep``. The disk
-    working dir is resolved via ``find_shell_dir`` (prefix-tolerant), not a
+    working dir is resolved via ``find_spine_dir`` (prefix-tolerant), not a
     hand-built exact-slug path — name-drifted / legacy-bare-code dirs still
     resolve. Returns the synthesis text, or None when there's nothing to
     attach:
       - the project has no shell in MC-2 *and* no backfilled ``shell/`` dir
-        on disk (find_shell_dir raises / empty elements);
+        on disk (find_spine_dir raises / empty elements);
       - the sweep raises (LLM/transport error, missing ANTHROPIC_API_KEY) —
         logged as a warning so the planning doc still builds for every other
         project.
     """
-    from cp_engine.shell import (
-        ShellDirNotFound,
-        find_shell_dir,
-        load_shell,
-        load_shell_from_mc2,
+    from cp_engine.spine import (
+        SpineDirNotFound,
+        find_spine_dir,
+        load_spine,
+        load_spine_from_mc2,
     )
-    from cp_engine.shell_sweep import run_sweep
+    from cp_engine.spine_sweep import run_sweep
 
     try:
         # Load the project's shell — MC-2 canonical, disk fallback (matches
@@ -974,18 +974,18 @@ def _run_project_sweep(
                 client = None
         if client is not None:
             try:
-                elements = load_shell_from_mc2(client, project.code)
+                elements = load_spine_from_mc2(client, project.code)
             except Exception:  # noqa: BLE001 — read error → disk fallback
                 elements = ()
         if not elements:
             try:
-                project_dir = find_shell_dir(config.root, project.code)
-            except ShellDirNotFound:
+                project_dir = find_spine_dir(config.root, project.code)
+            except SpineDirNotFound:
                 log.debug(
                     "no shell elements for %s — skipping sweep", project.code
                 )
                 return None  # no shell on disk either → no sweep
-            elements = load_shell(project_dir)
+            elements = load_spine(project_dir)
         if not elements:
             log.debug(
                 "no shell elements for %s — skipping sweep", project.code

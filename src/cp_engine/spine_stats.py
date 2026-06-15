@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import date, timedelta
 
-from cp_engine.shell import _parse_date
+from cp_engine.spine import _parse_date
 
 
 def _deliverable_rows(client, cols: str) -> list[dict]:

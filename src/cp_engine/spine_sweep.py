@@ -15,8 +15,8 @@ from typing import Callable
 
 import yaml
 
-from cp_engine.shell import (
-    ShellElement,
+from cp_engine.spine import (
+    SpineElement,
     rank_elements,
     render_sweep,
 )
@@ -50,7 +50,7 @@ _ENTRY_HEADER_RE = re.compile(r"^### \d{4}-\d{2}-\d{2}\b")
 
 
 def recent_meeting_summaries(
-    elements: tuple[ShellElement, ...],
+    elements: tuple[SpineElement, ...],
     *,
     limit: int = _MEETING_LIMIT,
 ) -> list[str]:
@@ -97,7 +97,7 @@ def recent_meeting_summaries(
 
 def build_sweep_prompt(
     code: str,
-    elements: tuple[ShellElement, ...],
+    elements: tuple[SpineElement, ...],
     *,
     today: date,
     meeting_summaries: list[str] | None = None,
@@ -287,7 +287,7 @@ def _hydrate_retrospective_body(elements, tenant_root):
 
 def run_sweep(
     code: str,
-    elements: tuple[ShellElement, ...],
+    elements: tuple[SpineElement, ...],
     *,
     today: date,
     llm: Callable[[str], str],

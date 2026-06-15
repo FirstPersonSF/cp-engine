@@ -18,7 +18,7 @@ import click
 from cp_engine.config import ConfigError, load
 from cp_engine.config import CommittedConfigMissing
 from cp_engine.init import InitAborted, run_init
-from cp_engine.shell_sources import fetch_project_assets
+from cp_engine.spine_sources import fetch_project_assets
 from cp_engine.sync import SyncError, sync_tenant
 
 
@@ -768,19 +768,19 @@ def list_active_projects_cmd(scope: str, company: str | None) -> None:
     click.echo(json.dumps(out, indent=2))
 
 
-def _load_shell_elements(config, code: str):
+def _load_spine_elements(config, code: str):
     """Load a project's shell elements (MC-2 canonical, disk fallback).
 
     Returns ``(elements, project_dir)`` where ``project_dir`` is the resolved
     working dir if the disk path was used, else ``None`` (MC-2 served the read).
-    Exits 1 via ``ShellDirNotFound`` if the project can't be resolved on disk
+    Exits 1 via ``SpineDirNotFound`` if the project can't be resolved on disk
     during fallback. Shared by ``cp shell`` and ``cp sweep``.
     """
-    from cp_engine.shell import (
-        ShellDirNotFound,
-        find_shell_dir,
-        load_shell,
-        load_shell_from_mc2,
+    from cp_engine.spine import (
+        SpineDirNotFound,
+        find_spine_dir,
+        load_spine,
+        load_spine_from_mc2,
     )
     from cp_engine.sync import BackendUnavailable
     from cp_engine.sync_mc2 import MC2Backend
@@ -801,7 +801,7 @@ def _load_shell_elements(config, code: str):
 
     if reached_mc2:
         try:
-            elements = load_shell_from_mc2(client, code)
+            elements = load_spine_from_mc2(client, code)
             served_by_mc2 = True  # an empty result is still the authoritative answer
         except Exception as exc:  # noqa: BLE001 — connected but query failed = likely a bug
             click.echo(
@@ -819,11 +819,11 @@ def _load_shell_elements(config, code: str):
             err=True,
         )
         try:
-            project_dir = find_shell_dir(config.root, code)
-        except ShellDirNotFound as exc:
+            project_dir = find_spine_dir(config.root, code)
+        except SpineDirNotFound as exc:
             click.echo(str(exc), err=True)
             sys.exit(1)
-        elements = load_shell(project_dir)
+        elements = load_spine(project_dir)
     elif not elements:
         # MC-2 served the read but the project has no shell elements yet — say
         # so, so an empty render isn't mistaken for a failed/unreachable read.
@@ -832,11 +832,11 @@ def _load_shell_elements(config, code: str):
     return elements, project_dir
 
 
-def _shell_mc2_client(config):
+def _spine_mc2_client(config):
     """Connect to MC-2 for best-effort read-only facets, or return None.
 
     Used by `cp shell`'s Source-documents facet, which needs a live client that
-    `_load_shell_elements` does not expose. Never raises — a facet must never
+    `_load_spine_elements` does not expose. Never raises — a facet must never
     break the sweep — so any connect failure degrades to None (facet omitted).
     """
     from cp_engine.sync_mc2 import MC2Backend
@@ -859,10 +859,10 @@ def shell_cmd(code: str) -> None:
     """
     from datetime import date
 
-    from cp_engine.shell import render_source_documents, render_sweep
+    from cp_engine.spine import render_source_documents, render_sweep
 
     config = _load_config_or_die()
-    elements, project_dir = _load_shell_elements(config, code)
+    elements, project_dir = _load_spine_elements(config, code)
 
     click.echo(render_sweep(code, elements, today=date.today()))
 
@@ -871,7 +871,7 @@ def shell_cmd(code: str) -> None:
     # MC-2 is reachable, then open a fresh client for the asset query.
     if project_dir is None:
         try:
-            client = _shell_mc2_client(config)
+            client = _spine_mc2_client(config)
             if client is not None:
                 assets = fetch_project_assets(client, code)
                 block = render_source_documents(assets, elements)
@@ -898,7 +898,7 @@ def shell_stats_cmd(type_filter: str | None, within_days: int) -> None:
     """
     from datetime import date
 
-    from cp_engine.shell_stats import (
+    from cp_engine.spine_stats import (
         due_soon,
         stage_distribution,
         type_inventory,
@@ -974,11 +974,11 @@ def sweep_cmd(code: str, model: str) -> None:
 
     import frontmatter
 
-    from cp_engine.shell import ShellDirNotFound, find_shell_dir
-    from cp_engine.shell_sweep import run_sweep
+    from cp_engine.spine import SpineDirNotFound, find_spine_dir
+    from cp_engine.spine_sweep import run_sweep
 
     config = _load_config_or_die()
-    elements, project_dir = _load_shell_elements(config, code)
+    elements, project_dir = _load_spine_elements(config, code)
 
     # Empty shell: do NOT write a sentinel Synthesis element, do NOT call the LLM.
     if not elements:
@@ -1007,8 +1007,8 @@ def sweep_cmd(code: str, model: str) -> None:
     # elements came from MC-2; resolve it now for the write target.
     if project_dir is None:
         try:
-            project_dir = find_shell_dir(config.root, code)
-        except ShellDirNotFound as exc:
+            project_dir = find_spine_dir(config.root, code)
+        except SpineDirNotFound as exc:
             click.echo(str(exc), err=True)
             sys.exit(1)
     syn_dir = project_dir / "shell" / "Synthesis"
@@ -1018,7 +1018,7 @@ def sweep_cmd(code: str, model: str) -> None:
     # The sweep readout is ABOUT the active work, so it serves the active
     # deliverables — this makes the fresh element score hot on the next Lens
     # pass via _serves_active_term (rather than scoring cold with serves=[]).
-    from cp_engine.shell import active_deliverable_ids
+    from cp_engine.spine import active_deliverable_ids
 
     serves = sorted(active_deliverable_ids(elements))
     post = frontmatter.Post(
@@ -1060,7 +1060,7 @@ def _write_drift_flags(client, drift_items, today: str) -> int:
     row (one open flag per field, via `_merge_flag`). Best-effort per item: a
     single failure is logged and skipped, the rest still land. Returns the
     number of elements successfully flagged."""
-    from cp_engine.shell_sync import _merge_flag
+    from cp_engine.spine_sync import _merge_flag
 
     written = 0
     for item in drift_items:
@@ -1113,8 +1113,8 @@ def snapshot_cmd(ref: str, label: str, reason: str | None) -> None:
     """
     from datetime import date
 
-    from cp_engine.shell import ShellDirNotFound, find_shell_dir
-    from cp_engine.shell_snapshot import (
+    from cp_engine.spine import SpineDirNotFound, find_spine_dir
+    from cp_engine.spine_snapshot import (
         DeliverableNotFound,
         build_snapshot,
         git_head_commit,
@@ -1129,8 +1129,8 @@ def snapshot_cmd(ref: str, label: str, reason: str | None) -> None:
     code = ref.split("/", 1)[0]
     deliverable_id = ref
     try:
-        project_dir = find_shell_dir(config.root, code)
-    except ShellDirNotFound as exc:
+        project_dir = find_spine_dir(config.root, code)
+    except SpineDirNotFound as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
     try:
@@ -1194,8 +1194,8 @@ def snapshots_cmd(ref: str) -> None:
     import frontmatter
     import yaml
 
-    from cp_engine.shell import ShellDirNotFound, find_shell_dir
-    from cp_engine.shell_snapshot import (
+    from cp_engine.spine import SpineDirNotFound, find_spine_dir
+    from cp_engine.spine_snapshot import (
         DeliverableNotFound,
         resolve_deliverable_file,
     )
@@ -1203,9 +1203,9 @@ def snapshots_cmd(ref: str) -> None:
     config = _load_config_or_die()
     code = ref.split("/", 1)[0]
     try:
-        project_dir = find_shell_dir(config.root, code)
+        project_dir = find_spine_dir(config.root, code)
         working_file = resolve_deliverable_file(project_dir, ref)
-    except (ShellDirNotFound, DeliverableNotFound) as exc:
+    except (SpineDirNotFound, DeliverableNotFound) as exc:
         click.echo(str(exc), err=True)
         sys.exit(1)
 

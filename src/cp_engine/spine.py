@@ -43,7 +43,7 @@ FRAMING_LAYERS: frozenset[str] = frozenset(
 
 
 @dataclass(frozen=True)
-class ShellElement:
+class SpineElement:
     """One addressable unit in a project shell (frontmatter spine + body)."""
 
     id: str
@@ -89,8 +89,8 @@ def _as_source(value: object) -> tuple:
     return tuple(x if isinstance(x, dict) else str(x) for x in _as_tuple(value))
 
 
-def parse_element(path: Path) -> ShellElement:
-    """Parse one shell element markdown file into a ShellElement."""
+def parse_element(path: Path) -> SpineElement:
+    """Parse one shell element markdown file into a SpineElement."""
     try:
         post = frontmatter.load(str(path))
     except yaml.YAMLError as exc:
@@ -109,7 +109,7 @@ def parse_element(path: Path) -> ShellElement:
                 f"{path}: shell element missing required key '{key}'"
             ) from None
 
-    return ShellElement(
+    return SpineElement(
         id=_required("id"),
         project=_required("project"),
         layer=_required("layer"),
@@ -156,14 +156,14 @@ LAYER_IMPORTANCE: dict[str, float] = {
 }
 
 
-def load_shell(project_dir: Path) -> tuple[ShellElement, ...]:
+def load_spine(project_dir: Path) -> tuple[SpineElement, ...]:
     """Parse every shell element under `<project_dir>/shell/<Layer>/*.md`."""
-    shell_root = project_dir / "shell"
-    if not shell_root.is_dir():
+    spine_root = project_dir / "shell"
+    if not spine_root.is_dir():
         return ()
-    elements: list[ShellElement] = []
+    elements: list[SpineElement] = []
     for layer in LAYERS:
-        layer_dir = shell_root / layer
+        layer_dir = spine_root / layer
         if not layer_dir.is_dir():
             continue
         for md in sorted(layer_dir.glob("*.md")):
@@ -171,7 +171,7 @@ def load_shell(project_dir: Path) -> tuple[ShellElement, ...]:
     return tuple(elements)
 
 
-def active_deliverable_ids(elements: tuple[ShellElement, ...]) -> set[str]:
+def active_deliverable_ids(elements: tuple[SpineElement, ...]) -> set[str]:
     """Ids of deliverables that are the project's live focus.
 
     Active = a Deliverables-layer element whose stage is not `final` and whose
@@ -199,12 +199,12 @@ def _date_or_none(value: str | None) -> str | None:
 
 
 def element_to_row(
-    el: ShellElement,
+    el: SpineElement,
     *,
     project_id: str,
     project_root: Path,
 ) -> dict[str, object]:
-    """Map a ShellElement to its MC-2 `shell_elements` row (pure, no I/O).
+    """Map a SpineElement to its MC-2 `shell_elements` row (pure, no I/O).
 
     `project_root` is the tenant root, used to compute a tenant-relative
     `rel_path` for round-trip back to the file. Date fields that don't parse
@@ -236,8 +236,8 @@ def element_to_row(
     }
 
 
-def row_to_element(row: dict[str, object]) -> ShellElement:
-    """Reconstruct a ShellElement from a `shell_elements` MC-2 row.
+def row_to_element(row: dict[str, object]) -> SpineElement:
+    """Reconstruct a SpineElement from a `shell_elements` MC-2 row.
 
     Body is empty (the spine row doesn't carry it — read the file via rel_path
     if the body is needed). Sufficient for the Lens, which scores from spine.
@@ -245,7 +245,7 @@ def row_to_element(row: dict[str, object]) -> ShellElement:
     def _t(key: str) -> tuple[str, ...]:
         v = row.get(key) or []
         return tuple(str(x) for x in v)
-    return ShellElement(
+    return SpineElement(
         id=row["element_id"],
         project=row.get("project_code", ""),
         layer=row["layer"],
@@ -270,7 +270,7 @@ def row_to_element(row: dict[str, object]) -> ShellElement:
     )
 
 
-def load_shell_from_mc2(client, project_code: str) -> tuple[ShellElement, ...]:
+def load_spine_from_mc2(client, project_code: str) -> tuple[SpineElement, ...]:
     """Load a project's shell elements from MC-2 (canonical read path)."""
     data = (
         client.table("shell_elements")
@@ -298,7 +298,7 @@ def _recency_term(last_touched: str, today: date) -> float:
     return max(0.1, decayed)
 
 
-def _serves_active_term(el: ShellElement, active: set[str]) -> float:
+def _serves_active_term(el: SpineElement, active: set[str]) -> float:
     """1.0 if the element serves an active deliverable OR is a framing layer
     (always ambient); 0.35 otherwise (cold but not gone)."""
     if el.layer in FRAMING_LAYERS:
@@ -330,7 +330,7 @@ def _status_term(status: str) -> float:
 
 
 def _deliverable_is_blocked(
-    deliv: ShellElement, by_id: dict[str, ShellElement]
+    deliv: SpineElement, by_id: dict[str, SpineElement]
 ) -> bool:
     """A deliverable is blocked if any dependency is not yet final."""
     for dep_id in deliv.depends_on:
@@ -340,12 +340,12 @@ def _deliverable_is_blocked(
     return False
 
 
-def _is_active_unblocked(deliv: ShellElement, by_id: dict[str, ShellElement]) -> bool:
+def _is_active_unblocked(deliv: SpineElement, by_id: dict[str, SpineElement]) -> bool:
     """A deliverable that is live: not shipped (final) and not blocked on a dep."""
     return deliv.stage != "final" and not _deliverable_is_blocked(deliv, by_id)
 
 
-def derive_status(el: ShellElement, by_id: dict[str, ShellElement]) -> str:
+def derive_status(el: SpineElement, by_id: dict[str, SpineElement]) -> str:
     """Compute an element's effective status from the deliverable graph.
 
     Derivation only *demotes* below an active frontmatter status, never
@@ -381,10 +381,10 @@ def derive_status(el: ShellElement, by_id: dict[str, ShellElement]) -> str:
 
 
 def score_element(
-    el: ShellElement,
+    el: SpineElement,
     active: set[str],
     today: date,
-    by_id: dict[str, ShellElement] | None = None,
+    by_id: dict[str, SpineElement] | None = None,
 ) -> float:
     """The Lens score: recency × serves-active × layer-importance × status
     (design §2). The status term demotes settled (final/reference/dormant)
@@ -402,8 +402,8 @@ def score_element(
 
 
 def rank_elements(
-    elements: tuple[ShellElement, ...], *, today: date
-) -> tuple[list[tuple[float, ShellElement]], dict[str, str]]:
+    elements: tuple[SpineElement, ...], *, today: date
+) -> tuple[list[tuple[float, SpineElement]], dict[str, str]]:
     """Rank elements by the Lens score (hot first) + the derived-status map.
 
     The canonical ranking contract shared by `render_sweep` (display) and the
@@ -422,26 +422,26 @@ def rank_elements(
     return scored, effective
 
 
-class ShellDirNotFound(Exception):
+class SpineDirNotFound(Exception):
     """No working dir matching the given code under any scope root."""
 
 
-def find_shell_dir(tenant_root: Path, code: str) -> Path:
+def find_spine_dir(tenant_root: Path, code: str) -> Path:
     """Locate a project's working dir from its code, offline (no MC-2).
 
     Reuses sync's scope/account-nesting model (`_project_parent_dirs`) and
     prefix-matcher (`_find_project_dir`) so this stays in lockstep with how
-    sync itself lays out the tree. Raises ShellDirNotFound if nothing matches.
+    sync itself lays out the tree. Raises SpineDirNotFound if nothing matches.
     """
     if code == INACTIVE_DIR_NAME:
         # Never resolve the inactive bin itself as a project.
-        raise ShellDirNotFound(f"'{code}' is not a valid project code")
+        raise SpineDirNotFound(f"'{code}' is not a valid project code")
     for scope in _SCOPE_DIRS:
         for parent in _project_parent_dirs(tenant_root, scope):
             hit = _find_project_dir(parent, code)
             if hit is not None:
                 return hit
-    raise ShellDirNotFound(
+    raise SpineDirNotFound(
         f"No working dir for '{code}' under {', '.join(_SCOPE_DIRS)}/"
     )
 
@@ -457,7 +457,7 @@ def _glyph(score: float) -> str:
 
 def render_sweep(
     code: str,
-    elements: tuple[ShellElement, ...],
+    elements: tuple[SpineElement, ...],
     *,
     today: date,
 ) -> str:
@@ -505,7 +505,7 @@ def render_source_documents(assets, elements) -> str:
     """Render the 'Source documents' facet block (a string).
 
     `assets` is the list from `fetch_project_assets`; `elements` is the
-    project's ShellElements. Links are computed LIVE: each element's `source`
+    project's SpineElements. Links are computed LIVE: each element's `source`
     refs (plain-string file refs and/or already-typed dicts) are matched to the
     assets by basename via `match_sources_to_assets`, so each linked asset shows
     which distilled element(s) cite it without persisting links into frontmatter.
@@ -518,7 +518,7 @@ def render_source_documents(assets, elements) -> str:
     if not assets:
         return ""
 
-    from cp_engine.shell_sources import match_sources_to_assets
+    from cp_engine.spine_sources import match_sources_to_assets
 
     # asset_id -> [linking element titles], computed live (frontmatter untouched).
     linked_by: dict[str, list[str]] = {}

@@ -401,14 +401,14 @@ def sync_tenant(
         # surrounds it. Only this block is wrapped — the surrounding sync is
         # NOT best-effort.
         if project.mc2_id:
-            from cp_engine.shell_sync import (
-                sync_shell_elements,
-                sync_shell_snapshots,
+            from cp_engine.spine_sync import (
+                sync_spine_elements,
+                sync_spine_snapshots,
             )
 
             client = backend.shell_client()
             try:
-                sync_shell_elements(
+                sync_spine_elements(
                     client,
                     project_id=project.mc2_id,
                     project_dir=project_dir,
@@ -421,7 +421,7 @@ def sync_tenant(
                     project.code, exc, exc_info=True,
                 )
             try:
-                sync_shell_snapshots(
+                sync_spine_snapshots(
                     client,
                     project_code=project.code,
                     project_dir=project_dir,

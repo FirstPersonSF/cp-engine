@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from cp_engine.shell import element_to_row, load_shell
+from cp_engine.spine import element_to_row, load_spine
 
 _TABLE = "shell_elements"
 
@@ -68,7 +68,7 @@ def _has_confirmed_field(row):
     return any(states.get(f) == "confirmed" for f in _TRACKED_FIELDS)
 
 
-def sync_shell_elements(
+def sync_spine_elements(
     client,
     *,
     project_id: str,
@@ -89,7 +89,7 @@ def sync_shell_elements(
     a clean no-op (returns 0) but STILL reaps any stale rows it left behind."""
     now_iso = (now or datetime.now(timezone.utc)).isoformat()
 
-    elements = load_shell(project_dir)
+    elements = load_spine(project_dir)
     rows = [
         element_to_row(e, project_id=project_id, project_root=tenant_root)
         for e in elements
@@ -165,7 +165,7 @@ def sync_shell_elements(
 _SNAPSHOTS_TABLE = "shell_snapshots"
 
 
-def sync_shell_snapshots(
+def sync_spine_snapshots(
     client,
     *,
     project_code: str,
@@ -177,12 +177,12 @@ def sync_shell_snapshots(
     Scans every shell/<Layer>/*.snapshots/*.md, upserts a row per snapshot
     file, reaps rows whose file vanished (scoped per-project). Returns count
     upserted."""
-    from cp_engine.shell_snapshot import row_from_frozen
+    from cp_engine.spine_snapshot import row_from_frozen
 
     rows = []
-    shell_root = project_dir / "shell"
-    if shell_root.is_dir():
-        for snap_dir in sorted(shell_root.glob("*/*.snapshots")):
+    spine_root = project_dir / "shell"
+    if spine_root.is_dir():
+        for snap_dir in sorted(spine_root.glob("*/*.snapshots")):
             for md in sorted(snap_dir.glob("*.md")):
                 row = row_from_frozen(md, tenant_root=tenant_root)
                 if row is not None:
