@@ -181,3 +181,115 @@ def test_run_sweep_passes_meeting_summaries_to_llm():
     assert len(calls) == 1
     assert "## Recent meeting discussion" in calls[0]
     assert "two-track AI story" in calls[0]
+
+
+# --- Task 4.2: drift proposal ----------------------------------------------
+
+def test_parse_drift_extracts_block_and_strips_it():
+    from cp_engine.shell_sweep import parse_drift
+    text = (
+        "The project is progressing.\n\nCold thread: the April brief.\n\n"
+        "```yaml\n"
+        "drift:\n"
+        "  - element_id: ibx-5153/deliverable/pos\n"
+        "    field: stage\n"
+        "    observation: stage says draft but client signed off.\n"
+        "  - element_id: ibx-5153/research/old\n"
+        "    field: status\n"
+        "    observation: superseded by the June direction.\n"
+        "```\n"
+    )
+    clean, items = parse_drift(text)
+    assert "```" not in clean
+    assert "drift:" not in clean
+    assert clean == "The project is progressing.\n\nCold thread: the April brief."
+    assert len(items) == 2
+    assert items[0] == {
+        "element_id": "ibx-5153/deliverable/pos",
+        "field": "stage",
+        "observation": "stage says draft but client signed off.",
+    }
+    assert items[1]["element_id"] == "ibx-5153/research/old"
+
+
+def test_parse_drift_no_block_returns_original():
+    from cp_engine.shell_sweep import parse_drift
+    text = "Just prose, no drift here at all."
+    clean, items = parse_drift(text)
+    assert clean == text
+    assert items == []
+
+
+def test_parse_drift_malformed_yaml_returns_original():
+    from cp_engine.shell_sweep import parse_drift
+    text = "Prose.\n\n```yaml\ndrift:\n  - element_id: x\n   bad: : indent\n```\n"
+    clean, items = parse_drift(text)
+    assert clean == text
+    assert items == []
+
+
+def test_parse_drift_skips_items_without_element_id():
+    from cp_engine.shell_sweep import parse_drift
+    text = (
+        "Prose.\n\n```yaml\n"
+        "drift:\n"
+        "  - field: stage\n"
+        "    observation: no id here\n"
+        "  - element_id: ibx-5153/deliverable/pos\n"
+        "    observation: real one\n"
+        "```\n"
+    )
+    clean, items = parse_drift(text)
+    assert len(items) == 1
+    assert items[0]["element_id"] == "ibx-5153/deliverable/pos"
+    # field defaults to "thinking" when missing
+    assert items[0]["field"] == "thinking"
+    assert items[0]["observation"] == "real one"
+
+
+def test_parse_drift_block_without_drift_key_is_ignored():
+    from cp_engine.shell_sweep import parse_drift
+    text = "Prose.\n\n```yaml\nsomething: else\n```\n"
+    clean, items = parse_drift(text)
+    assert clean == text
+    assert items == []
+
+
+def test_run_sweep_populates_drift_and_strips_block():
+    from cp_engine.shell_sweep import run_sweep
+    hot = _el("ibx-5153/deliverable/foundation", "Deliverables", title="Foundation",
+              stage="revised", body="brief")
+    synthesis = (
+        "Readout prose here.\n\n"
+        "```yaml\n"
+        "drift:\n"
+        "  - element_id: ibx-5153/deliverable/foundation\n"
+        "    field: stage\n"
+        "    observation: looks stale.\n"
+        "```\n"
+    )
+    result = run_sweep("ibx-5153", (hot,), today=date(2026, 6, 13),
+                       llm=lambda p: synthesis)
+    assert result.synthesis_text == "Readout prose here."
+    assert "```" not in result.synthesis_text
+    assert len(result.drift_items) == 1
+    assert result.drift_items[0]["element_id"] == "ibx-5153/deliverable/foundation"
+
+
+def test_run_sweep_no_drift_default():
+    from cp_engine.shell_sweep import run_sweep
+    hot = _el("ibx-5153/deliverable/foundation", "Deliverables", title="Foundation",
+              body="brief")
+    result = run_sweep("ibx-5153", (hot,), today=date(2026, 6, 13),
+                       llm=lambda p: "just prose")
+    assert result.synthesis_text == "just prose"
+    assert result.drift_items == ()
+
+
+def test_build_sweep_prompt_asks_for_drift_block():
+    hot = _el("ibx-5153/deliverable/foundation", "Deliverables", title="Foundation",
+              body="brief")
+    prompt = build_sweep_prompt("ibx-5153", (hot,), today=date(2026, 6, 13))
+    low = prompt.lower()
+    assert "drift" in low
+    assert "element_id" in prompt

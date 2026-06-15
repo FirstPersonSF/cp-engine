@@ -13,6 +13,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Callable
 
+import yaml
+
 from cp_engine.shell import (
     ShellElement,
     rank_elements,
@@ -153,9 +155,78 @@ def build_sweep_prompt(
             "let the meeting discussion drive what's live and what's stalled."
         )
 
+    instruction += (
+        " After the prose, if and only if any element's recorded status or "
+        "thinking appears to have drifted from the recent discussion (a "
+        "decision now superseded, a brief no longer reflected in current "
+        "direction, a deliverable whose stage looks stale), append a fenced "
+        "yaml block listing them:\n"
+        "```yaml\n"
+        "drift:\n"
+        "  - element_id: <id>\n"
+        "    field: <status|stage|thinking>\n"
+        "    observation: <one sentence on the apparent drift>\n"
+        "```\n"
+        "Omit the block entirely if nothing has drifted. Use the exact "
+        "element ids from the ranked list above."
+    )
+
     lines += ["", "## Instruction", instruction]
 
     return "\n".join(lines)
+
+
+# Match a fenced ```yaml ... ``` (or bare ```) block whose body contains a
+# top-level `drift:` key. Non-greedy so we capture the smallest such block.
+_DRIFT_FENCE_RE = re.compile(
+    r"\n?[ \t]*```(?:yaml)?[ \t]*\n(?P<body>.*?\bdrift:.*?)\n?```[ \t]*",
+    re.DOTALL,
+)
+
+
+def parse_drift(synthesis_text: str) -> tuple[str, list[dict]]:
+    """Extract drift items from a sweep synthesis that may carry a trailing
+    fenced ```yaml drift: ...``` block.
+
+    Returns ``(clean_prose, drift_items)`` where ``clean_prose`` is the
+    synthesis with the drift block removed (trailing whitespace trimmed) and
+    ``drift_items`` is a list of ``{"element_id","field","observation"}`` dicts
+    (possibly empty). Best-effort: a malformed or absent block yields
+    ``(original_text, [])`` — drift is advisory, never load-bearing.
+
+    Each item defaults ``field`` to ``"thinking"`` and ``observation`` to ``""``
+    when absent; items lacking an ``element_id`` are skipped.
+    """
+    match = _DRIFT_FENCE_RE.search(synthesis_text)
+    if not match:
+        return synthesis_text, []
+
+    try:
+        parsed = yaml.safe_load(match.group("body"))
+    except yaml.YAMLError:
+        return synthesis_text, []
+    if not isinstance(parsed, dict) or "drift" not in parsed:
+        return synthesis_text, []
+
+    raw_items = parsed.get("drift") or []
+    if not isinstance(raw_items, list):
+        return synthesis_text, []
+
+    items: list[dict] = []
+    for raw in raw_items:
+        if not isinstance(raw, dict):
+            continue
+        element_id = raw.get("element_id")
+        if not element_id:
+            continue
+        items.append({
+            "element_id": str(element_id),
+            "field": str(raw.get("field") or "thinking"),
+            "observation": str(raw.get("observation") or ""),
+        })
+
+    clean = (synthesis_text[: match.start()] + synthesis_text[match.end():]).rstrip()
+    return clean, items
 
 
 @dataclass(frozen=True)
@@ -166,6 +237,7 @@ class SweepResult:
 
     synthesis_text: str
     ranked_table: str
+    drift_items: tuple = ()
 
 
 def run_sweep(
@@ -196,4 +268,9 @@ def run_sweep(
         code, elements, today=today, meeting_summaries=meetings
     )
     synthesis = llm(prompt)
-    return SweepResult(synthesis_text=synthesis, ranked_table=table)
+    clean, drift = parse_drift(synthesis)
+    return SweepResult(
+        synthesis_text=clean,
+        ranked_table=table,
+        drift_items=tuple(drift),
+    )
