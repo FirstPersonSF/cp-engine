@@ -3,7 +3,7 @@ from datetime import date
 
 import pytest
 
-from cp_engine.shell_snapshot import build_snapshot, slugify_label
+from cp_engine.spine_snapshot import build_snapshot, slugify_label
 
 
 def test_slugify_label():
@@ -64,8 +64,8 @@ def test_build_snapshot_preserves_original_frontmatter():
 
 
 def test_resolve_deliverable_file(tmp_path):
-    from cp_engine.shell_snapshot import resolve_deliverable_file
-    d = tmp_path / "1p/acct/proj-1/shell/Deliverables"
+    from cp_engine.spine_snapshot import resolve_deliverable_file
+    d = tmp_path / "1p/acct/proj-1/spine/Deliverables"
     d.mkdir(parents=True)
     f = d / "pos.md"
     f.write_text(
@@ -77,9 +77,9 @@ def test_resolve_deliverable_file(tmp_path):
 
 
 def test_resolve_deliverable_file_missing(tmp_path):
-    from cp_engine.shell_snapshot import resolve_deliverable_file, DeliverableNotFound
+    from cp_engine.spine_snapshot import resolve_deliverable_file, DeliverableNotFound
     proj_dir = tmp_path / "1p/acct/proj-1"
-    (proj_dir / "shell/Deliverables").mkdir(parents=True)
+    (proj_dir / "spine/Deliverables").mkdir(parents=True)
     with pytest.raises(DeliverableNotFound):
         resolve_deliverable_file(proj_dir, "proj-1/deliverable/nope")
 
@@ -95,7 +95,7 @@ def _init_repo(path):
 
 
 def test_git_head_commit_in_repo(tmp_path):
-    from cp_engine.shell_snapshot import git_head_commit
+    from cp_engine.spine_snapshot import git_head_commit
     _init_repo(tmp_path)
     (tmp_path / "a.txt").write_text("hello\n")
     _git(["add", "a.txt"], tmp_path)
@@ -106,13 +106,13 @@ def test_git_head_commit_in_repo(tmp_path):
 
 
 def test_git_head_commit_outside_repo(tmp_path):
-    from cp_engine.shell_snapshot import git_head_commit
+    from cp_engine.spine_snapshot import git_head_commit
     # tmp_path is NOT a git repo — must return None, never raise.
     assert git_head_commit(tmp_path) is None
 
 
 def test_working_copy_is_dirty(tmp_path):
-    from cp_engine.shell_snapshot import working_copy_is_dirty
+    from cp_engine.spine_snapshot import working_copy_is_dirty
     _init_repo(tmp_path)
     f = tmp_path / "a.txt"
     f.write_text("hello\n")

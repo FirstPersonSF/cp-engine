@@ -24,9 +24,9 @@ def _tenant_with_deliverable(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     proj = tmp_path / "1p" / "infoblox" / "ibx-5153-ai-campaign"
-    shell = proj / "shell"
+    spine = proj / "spine"
     _write(
-        shell / "Deliverables" / "pos.md",
+        spine / "Deliverables" / "pos.md",
         body="The positioning story so far.",
         id="ibx-5153/deliverable/pos",
         project="ibx-5153",
@@ -72,7 +72,7 @@ def _snap_dir(tmp_path: Path) -> Path:
         / "1p"
         / "infoblox"
         / "ibx-5153-ai-campaign"
-        / "shell"
+        / "spine"
         / "Deliverables"
         / "pos.snapshots"
     )
@@ -114,7 +114,7 @@ def test_snapshot_writes_file_and_row(tmp_path, monkeypatch) -> None:
     assert snap["of"] == "ibx-5153/deliverable/pos"
 
     # Index row upserted with id locked to the on-disk filename.
-    rows = fake.store["shell_snapshots"]
+    rows = fake.store["spine_snapshots"]
     assert len(rows) == 1
     row = rows[0]
     assert row["id"] == f"ibx-5153/deliverable/pos@{frozen.stem}"
@@ -150,7 +150,7 @@ def test_snapshot_same_day_collision_appends_suffix(tmp_path, monkeypatch) -> No
     assert any(n.endswith("-before-ibx-workshop-2.md") for n in names)
 
     # The -2 file's index row id must end in -2 (lockstep with the filename).
-    rows = fake.store["shell_snapshots"]
+    rows = fake.store["spine_snapshots"]
     ids = sorted(r["id"] for r in rows)
     assert len(ids) == 2
     assert any(i.endswith("-before-ibx-workshop-2") for i in ids)

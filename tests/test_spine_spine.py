@@ -1,7 +1,7 @@
 from datetime import date
 from pathlib import Path
 
-from cp_engine.shell import ShellElement, element_to_row
+from cp_engine.spine import SpineElement, element_to_row
 
 
 def _el(**over):
@@ -12,7 +12,7 @@ def _el(**over):
         title="IBX positioning narrative",
         status="active",
         last_touched="2026-06-13",
-        path=Path("/t/1p/infoblox/ibx-5153/shell/Deliverables/pos.md"),
+        path=Path("/t/1p/infoblox/ibx-5153/spine/Deliverables/pos.md"),
         body="# body",
         type="positioning-narrative",
         stage="revised",
@@ -21,7 +21,7 @@ def _el(**over):
         serves=("ibx-5153/deliverable/positioning-narrative",),
     )
     base.update(over)
-    return ShellElement(**base)
+    return SpineElement(**base)
 
 
 def test_element_to_row_maps_spine_fields():
@@ -48,7 +48,7 @@ def test_element_to_row_empty_date_becomes_null():
 
 def test_element_to_row_rel_path_is_relative_to_project_root():
     row = element_to_row(_el(), project_id="u", project_root=Path("/t"))
-    assert row["rel_path"] == "1p/infoblox/ibx-5153/shell/Deliverables/pos.md"
+    assert row["rel_path"] == "1p/infoblox/ibx-5153/spine/Deliverables/pos.md"
 
 
 def test_element_to_row_target_history_passes_through_as_list():

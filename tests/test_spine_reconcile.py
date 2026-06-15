@@ -1,4 +1,4 @@
-from cp_engine.shell_sync import reconcile_field
+from cp_engine.spine_sync import reconcile_field
 
 # reconcile_field(field, current_value, current_field_state, new_value, now_iso)
 #   -> (value_to_store, new_field_state, review_flag_or_None)

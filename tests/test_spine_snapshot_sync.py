@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from cp_engine.shell_snapshot import row_from_frozen
-from cp_engine.shell_sync import sync_shell_snapshots
+from cp_engine.spine_snapshot import row_from_frozen
+from cp_engine.spine_sync import sync_spine_snapshots
 
 
 class _FakeTable:
@@ -67,7 +67,7 @@ def _write_snap(
     created: str = "2026-06-13",
     dirty: bool = False,
 ) -> Path:
-    d = root / proj_rel / "shell" / layer / f"{deliverable_stem}.snapshots"
+    d = root / proj_rel / "spine" / layer / f"{deliverable_stem}.snapshots"
     d.mkdir(parents=True, exist_ok=True)
     lines = [
         "---",
@@ -111,7 +111,7 @@ def test_row_from_frozen_with_snapshot_block(tmp_path):
 
 
 def test_row_from_frozen_without_snapshot_block_is_none(tmp_path):
-    d = tmp_path / "1p/acct/proj-1/shell/Deliverables/pos.snapshots"
+    d = tmp_path / "1p/acct/proj-1/spine/Deliverables/pos.snapshots"
     d.mkdir(parents=True)
     p = d / "not-a-snap.md"
     p.write_text("---\nproject: proj-1\ntitle: nope\n---\nbody\n")
@@ -119,14 +119,14 @@ def test_row_from_frozen_without_snapshot_block_is_none(tmp_path):
 
 
 def test_row_from_frozen_malformed_yaml_is_none(tmp_path):
-    d = tmp_path / "1p/acct/proj-1/shell/Deliverables/pos.snapshots"
+    d = tmp_path / "1p/acct/proj-1/spine/Deliverables/pos.snapshots"
     d.mkdir(parents=True)
     p = d / "broken.md"
     p.write_text("---\n: : :\n---\nbody\n")  # malformed YAML frontmatter
     assert row_from_frozen(p, tenant_root=tmp_path) is None
 
 
-# --- sync_shell_snapshots ---
+# --- sync_spine_snapshots ---
 
 
 def test_sync_upserts_all_snapshots(tmp_path):
@@ -136,11 +136,11 @@ def test_sync_upserts_all_snapshots(tmp_path):
     _write_snap(tmp_path, "1p/acct/proj-1", "Deliverables", "pos",
                 "2026-06-12-b.md", of="proj-1/deliverable/pos", project="proj-1")
     client = _FakeClient()
-    n = sync_shell_snapshots(
+    n = sync_spine_snapshots(
         client, project_code="proj-1", project_dir=proj, tenant_root=tmp_path
     )
     assert n == 2
-    ids = {r["id"] for r in client.store["shell_snapshots"]}
+    ids = {r["id"] for r in client.store["spine_snapshots"]}
     assert ids == {
         "proj-1/deliverable/pos@2026-06-13-a",
         "proj-1/deliverable/pos@2026-06-12-b",
@@ -150,54 +150,54 @@ def test_sync_upserts_all_snapshots(tmp_path):
 def test_sync_reaps_orphaned_snapshot_rows(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
-    client.store["shell_snapshots"] = [
+    client.store["spine_snapshots"] = [
         {"id": "proj-1/deliverable/pos@GONE", "project_code": "proj-1"},
     ]
     _write_snap(tmp_path, "1p/acct/proj-1", "Deliverables", "pos",
                 "2026-06-13-a.md", of="proj-1/deliverable/pos", project="proj-1")
-    sync_shell_snapshots(
+    sync_spine_snapshots(
         client, project_code="proj-1", project_dir=proj, tenant_root=tmp_path
     )
-    ids = {r["id"] for r in client.store["shell_snapshots"]}
+    ids = {r["id"] for r in client.store["spine_snapshots"]}
     assert ids == {"proj-1/deliverable/pos@2026-06-13-a"}  # GONE reaped
 
 
 def test_sync_reap_scoped_to_one_project(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
-    client.store["shell_snapshots"] = [
+    client.store["spine_snapshots"] = [
         {"id": "proj-2/deliverable/x@keep", "project_code": "proj-2"},
     ]
     _write_snap(tmp_path, "1p/acct/proj-1", "Deliverables", "pos",
                 "2026-06-13-a.md", of="proj-1/deliverable/pos", project="proj-1")
-    sync_shell_snapshots(
+    sync_spine_snapshots(
         client, project_code="proj-1", project_dir=proj, tenant_root=tmp_path
     )
-    ids = {r["id"] for r in client.store["shell_snapshots"]}
+    ids = {r["id"] for r in client.store["spine_snapshots"]}
     assert "proj-2/deliverable/x@keep" in ids  # sibling survived
     assert "proj-1/deliverable/pos@2026-06-13-a" in ids
 
 
-def test_sync_no_shell_dir_is_noop(tmp_path):
+def test_sync_no_spine_dir_is_noop(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     proj.mkdir(parents=True)
     client = _FakeClient()
-    n = sync_shell_snapshots(
+    n = sync_spine_snapshots(
         client, project_code="proj-1", project_dir=proj, tenant_root=tmp_path
     )
     assert n == 0
-    assert client.store.get("shell_snapshots", []) == []
+    assert client.store.get("spine_snapshots", []) == []
 
 
 def test_sync_skips_non_snapshot_files(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
-    d = tmp_path / "1p/acct/proj-1/shell/Deliverables/pos.snapshots"
+    d = tmp_path / "1p/acct/proj-1/spine/Deliverables/pos.snapshots"
     d.mkdir(parents=True)
     (d / "stray.md").write_text("---\nproject: proj-1\n---\nbody\n")
     _write_snap(tmp_path, "1p/acct/proj-1", "Deliverables", "pos",
                 "2026-06-13-a.md", of="proj-1/deliverable/pos", project="proj-1")
     client = _FakeClient()
-    n = sync_shell_snapshots(
+    n = sync_spine_snapshots(
         client, project_code="proj-1", project_dir=proj, tenant_root=tmp_path
     )
     assert n == 1  # stray (no snapshot block) ignored

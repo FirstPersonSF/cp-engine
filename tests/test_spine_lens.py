@@ -1,13 +1,13 @@
 from datetime import date
 
-from cp_engine.shell import (
-    ShellElement,
+from cp_engine.spine import (
+    SpineElement,
     active_deliverable_ids,
     score_element,
 )
 
 
-def _el(**kw) -> ShellElement:
+def _el(**kw) -> SpineElement:
     base = dict(
         id="x",
         project="ibx-5153",
@@ -19,7 +19,7 @@ def _el(**kw) -> ShellElement:
         body="",
     )
     base.update(kw)
-    return ShellElement(**base)  # type: ignore[arg-type]
+    return SpineElement(**base)  # type: ignore[arg-type]
 
 
 TODAY = date(2026, 6, 13)

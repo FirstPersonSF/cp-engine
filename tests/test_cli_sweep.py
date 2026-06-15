@@ -26,9 +26,9 @@ def _tenant_with_ibx(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     proj = tmp_path / "1p" / "infoblox" / "ibx-5153-ai-campaign"
-    shell = proj / "shell"
+    spine = proj / "spine"
     _write(
-        shell / "Deliverables" / "pos.md",
+        spine / "Deliverables" / "pos.md",
         body="The positioning story so far.",
         id="ibx-5153/deliverable/pos",
         project="ibx-5153",
@@ -42,8 +42,8 @@ def _tenant_with_ibx(tmp_path: Path) -> Path:
 
 
 def _empty_tenant(tmp_path: Path) -> Path:
-    """A tenant whose project dir exists (so find_shell_dir resolves) but the
-    shell has no elements."""
+    """A tenant whose project dir exists (so find_spine_dir resolves) but the
+    spine has no elements."""
     (tmp_path / ".cp-engine.toml").write_text(
         '[tenant]\nname = "test"\n'
         '[engine]\nversion = "~= 0.18"\n'
@@ -52,7 +52,7 @@ def _empty_tenant(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     proj = tmp_path / "1p" / "infoblox" / "ibx-5153-ai-campaign"
-    (proj / "shell").mkdir(parents=True, exist_ok=True)
+    (proj / "spine").mkdir(parents=True, exist_ok=True)
     # A cp.md so the dir is discoverable as a project working dir.
     (proj / "cp.md").write_text("placeholder\n", encoding="utf-8")
     return tmp_path
@@ -64,7 +64,7 @@ def _syn_dir(tmp_path: Path) -> Path:
         / "1p"
         / "infoblox"
         / "ibx-5153-ai-campaign"
-        / "shell"
+        / "spine"
         / "Synthesis"
     )
 
@@ -144,19 +144,19 @@ def test_sweep_llm_failure_helpful_message(tmp_path, monkeypatch) -> None:
 
 
 def test_sweep_mc2_path_reresolves_and_writes(tmp_path, monkeypatch) -> None:
-    """When elements come from MC-2, _load_shell_elements returns project_dir=None;
+    """When elements come from MC-2, _load_spine_elements returns project_dir=None;
     sweep_cmd must re-resolve the dir on disk before writing. This covers the
     `project_dir is None` re-resolve branch the disk-fallback tests never hit."""
     from datetime import date
     from pathlib import Path
 
-    from cp_engine.shell import ShellElement
+    from cp_engine.spine import SpineElement
 
-    _tenant_with_ibx(tmp_path)  # gives a real on-disk project dir (cp.md + shell)
+    _tenant_with_ibx(tmp_path)  # gives a real on-disk project dir (cp.md + spine)
     monkeypatch.chdir(tmp_path)
 
     # Simulate the MC-2 path: non-empty elements, project_dir=None.
-    el = ShellElement(
+    el = SpineElement(
         id="ibx-5153/deliverable/pos",
         project="ibx-5153",
         layer="Deliverables",
@@ -171,7 +171,7 @@ def test_sweep_mc2_path_reresolves_and_writes(tmp_path, monkeypatch) -> None:
     def fake_load(config, code):
         return (el,), None
 
-    monkeypatch.setattr("cp_engine.cli._load_shell_elements", fake_load)
+    monkeypatch.setattr("cp_engine.cli._load_spine_elements", fake_load)
 
     def fake(prompt, *, model, api_key=None):
         return FAKE_SYNTHESIS
@@ -191,7 +191,7 @@ def test_sweep_mc2_path_reresolves_and_writes(tmp_path, monkeypatch) -> None:
     assert post.metadata["serves"] == ["ibx-5153/deliverable/pos"]
 
 
-def test_sweep_empty_shell_writes_nothing(tmp_path, monkeypatch) -> None:
+def test_sweep_empty_spine_writes_nothing(tmp_path, monkeypatch) -> None:
     _empty_tenant(tmp_path)
     monkeypatch.chdir(tmp_path)
 
@@ -205,7 +205,7 @@ def test_sweep_empty_shell_writes_nothing(tmp_path, monkeypatch) -> None:
 
     result = CliRunner().invoke(main, ["sweep", "ibx-5153"])
     assert result.exit_code == 0, result.output
-    assert "No shell elements to sweep for ibx-5153." in result.output
+    assert "No spine elements to sweep for ibx-5153." in result.output
     assert called["llm"] is False
     # No Synthesis element written.
     assert not list(_syn_dir(tmp_path).glob("*-sweep.md"))
@@ -251,7 +251,7 @@ class _DriftFakeTable:
 
 class _DriftFakeClient:
     def __init__(self, rows):
-        self.store = {"shell_elements": rows}
+        self.store = {"spine_elements": rows}
 
     def table(self, name):
         return _DriftFakeTable(self.store, name)

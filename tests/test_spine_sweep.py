@@ -1,15 +1,15 @@
 from datetime import date
 from pathlib import Path
 
-from cp_engine.shell import ShellElement
-from cp_engine.shell_sweep import build_sweep_prompt
+from cp_engine.spine import SpineElement
+from cp_engine.spine_sweep import build_sweep_prompt
 
 
 def _el(eid, layer, **o):
     d = dict(id=eid, project="ibx-5153", layer=layer, title=eid, status="active",
              last_touched="2026-06-13", path=Path("/x.md"), body="")
     d.update(o)
-    return ShellElement(**d)
+    return SpineElement(**d)
 
 
 def test_build_sweep_prompt_structure():
@@ -54,7 +54,7 @@ def test_build_sweep_prompt_ranks_hot_before_cold():
 
 def test_run_sweep_calls_llm_and_returns_result():
     from datetime import date
-    from cp_engine.shell_sweep import run_sweep
+    from cp_engine.spine_sweep import run_sweep
     hot = _el("ibx-5153/deliverable/foundation", "Deliverables", title="Foundation",
               stage="revised", last_touched="2026-06-13")
     calls = []
@@ -68,15 +68,15 @@ def test_run_sweep_calls_llm_and_returns_result():
     assert "Foundation" in result.ranked_table   # render_sweep table included
 
 
-def test_run_sweep_empty_shell_skips_llm():
+def test_run_sweep_empty_spine_skips_llm():
     from datetime import date
-    from cp_engine.shell_sweep import run_sweep
+    from cp_engine.spine_sweep import run_sweep
     calls = []
     def fake_llm(prompt):
         calls.append(prompt); return "should not be called"
     result = run_sweep("ibx-5153", (), today=date(2026, 6, 13), llm=fake_llm)
-    assert calls == []                            # LLM NOT called for empty shell
-    assert "no shell elements" in result.synthesis_text.lower()
+    assert calls == []                            # LLM NOT called for empty spine
+    assert "no spine elements" in result.synthesis_text.lower()
 
 
 # --- meeting-summary enrichment (sweep-enrichment) ---------------------------
@@ -112,13 +112,13 @@ def _retro(body=_RETRO_BODY):
 
 
 def test_recent_meeting_summaries_no_retro_element():
-    from cp_engine.shell_sweep import recent_meeting_summaries
+    from cp_engine.spine_sweep import recent_meeting_summaries
     hot = _el("ibx-5153/deliverable/foundation", "Deliverables", body="x")
     assert recent_meeting_summaries((hot,)) == []
 
 
 def test_recent_meeting_summaries_extracts_newest_first():
-    from cp_engine.shell_sweep import recent_meeting_summaries
+    from cp_engine.spine_sweep import recent_meeting_summaries
     out = recent_meeting_summaries((_retro(),))
     assert len(out) == 3
     # newest first
@@ -133,7 +133,7 @@ def test_recent_meeting_summaries_extracts_newest_first():
 
 
 def test_recent_meeting_summaries_respects_limit():
-    from cp_engine.shell_sweep import recent_meeting_summaries
+    from cp_engine.spine_sweep import recent_meeting_summaries
     out = recent_meeting_summaries((_retro(),), limit=2)
     assert len(out) == 2
     assert "Workshop kickoff" in out[0]
@@ -141,7 +141,7 @@ def test_recent_meeting_summaries_respects_limit():
 
 
 def test_recent_meeting_summaries_strips_meeting_marker():
-    from cp_engine.shell_sweep import recent_meeting_summaries
+    from cp_engine.spine_sweep import recent_meeting_summaries
     out = recent_meeting_summaries((_retro(),))
     assert all("cp:meeting" not in e for e in out)
 
@@ -170,7 +170,7 @@ def test_build_sweep_prompt_no_summaries_is_unchanged():
 
 
 def test_run_sweep_passes_meeting_summaries_to_llm():
-    from cp_engine.shell_sweep import run_sweep
+    from cp_engine.spine_sweep import run_sweep
     hot = _el("ibx-5153/deliverable/foundation", "Deliverables", title="Foundation",
               stage="revised", body="brief")
     calls = []
@@ -186,7 +186,7 @@ def test_run_sweep_passes_meeting_summaries_to_llm():
 # --- Task 4.2: drift proposal ----------------------------------------------
 
 def test_parse_drift_extracts_block_and_strips_it():
-    from cp_engine.shell_sweep import parse_drift
+    from cp_engine.spine_sweep import parse_drift
     text = (
         "The project is progressing.\n\nCold thread: the April brief.\n\n"
         "```yaml\n"
@@ -213,7 +213,7 @@ def test_parse_drift_extracts_block_and_strips_it():
 
 
 def test_parse_drift_no_block_returns_original():
-    from cp_engine.shell_sweep import parse_drift
+    from cp_engine.spine_sweep import parse_drift
     text = "Just prose, no drift here at all."
     clean, items = parse_drift(text)
     assert clean == text
@@ -221,7 +221,7 @@ def test_parse_drift_no_block_returns_original():
 
 
 def test_parse_drift_malformed_yaml_returns_original():
-    from cp_engine.shell_sweep import parse_drift
+    from cp_engine.spine_sweep import parse_drift
     text = "Prose.\n\n```yaml\ndrift:\n  - element_id: x\n   bad: : indent\n```\n"
     clean, items = parse_drift(text)
     assert clean == text
@@ -229,7 +229,7 @@ def test_parse_drift_malformed_yaml_returns_original():
 
 
 def test_parse_drift_skips_items_without_element_id():
-    from cp_engine.shell_sweep import parse_drift
+    from cp_engine.spine_sweep import parse_drift
     text = (
         "Prose.\n\n```yaml\n"
         "drift:\n"
@@ -248,7 +248,7 @@ def test_parse_drift_skips_items_without_element_id():
 
 
 def test_parse_drift_block_without_drift_key_is_ignored():
-    from cp_engine.shell_sweep import parse_drift
+    from cp_engine.spine_sweep import parse_drift
     text = "Prose.\n\n```yaml\nsomething: else\n```\n"
     clean, items = parse_drift(text)
     assert clean == text
@@ -256,7 +256,7 @@ def test_parse_drift_block_without_drift_key_is_ignored():
 
 
 def test_run_sweep_populates_drift_and_strips_block():
-    from cp_engine.shell_sweep import run_sweep
+    from cp_engine.spine_sweep import run_sweep
     hot = _el("ibx-5153/deliverable/foundation", "Deliverables", title="Foundation",
               stage="revised", body="brief")
     synthesis = (
@@ -277,7 +277,7 @@ def test_run_sweep_populates_drift_and_strips_block():
 
 
 def test_run_sweep_no_drift_default():
-    from cp_engine.shell_sweep import run_sweep
+    from cp_engine.spine_sweep import run_sweep
     hot = _el("ibx-5153/deliverable/foundation", "Deliverables", title="Foundation",
               body="brief")
     result = run_sweep("ibx-5153", (hot,), today=date(2026, 6, 13),
@@ -298,7 +298,7 @@ def test_build_sweep_prompt_asks_for_drift_block():
 def test_recent_meeting_summaries_keeps_whole_entry_with_embedded_h3():
     # A Fathom summary embedded WHOLE can contain its own '### ' sub-headers.
     # The entry must NOT split on those — only on real `### <date>` headers.
-    from cp_engine.shell_sweep import recent_meeting_summaries
+    from cp_engine.spine_sweep import recent_meeting_summaries
     body = (
         "# Meeting history\n\n"
         "### 2026-06-11 · Workshop framing (Janet, Carol)\n\n"
@@ -322,15 +322,15 @@ def test_recent_meeting_summaries_keeps_whole_entry_with_embedded_h3():
 
 def test_recent_meeting_summaries_empty_body_returns_empty():
     # MC-2-loaded elements carry body="" — the feature degrades to a no-op.
-    from cp_engine.shell_sweep import recent_meeting_summaries
+    from cp_engine.spine_sweep import recent_meeting_summaries
     assert recent_meeting_summaries((_retro(body=""),)) == []
 
 
 def test_run_sweep_hydrates_retrospective_body_from_disk(tmp_path):
     # The element comes from MC-2 (body=""), but run_sweep(tenant_root=...) must
     # read its body from disk so meeting summaries reach the prompt.
-    from cp_engine.shell_sweep import run_sweep
-    rel = Path("1p/acct/ibx-5153/shell/Retrospective/meeting-history.md")
+    from cp_engine.spine_sweep import run_sweep
+    rel = Path("1p/acct/ibx-5153/spine/Retrospective/meeting-history.md")
     f = tmp_path / rel
     f.parent.mkdir(parents=True, exist_ok=True)
     f.write_text(
@@ -354,7 +354,7 @@ def test_run_sweep_hydrates_retrospective_body_from_disk(tmp_path):
 
 def test_parse_drift_ignores_earlier_prose_code_fence():
     # A prose code fence before the drift block must not break drift capture.
-    from cp_engine.shell_sweep import parse_drift
+    from cp_engine.spine_sweep import parse_drift
     text = (
         "Here is the readout.\n\n"
         "```python\nexample_code()\n```\n\n"

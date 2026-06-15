@@ -4,7 +4,7 @@ from pathlib import Path
 from click.testing import CliRunner
 
 from cp_engine.cli import main
-from cp_engine.shell import load_shell, render_sweep
+from cp_engine.spine import load_spine, render_sweep
 
 
 def _write(p: Path, **fm) -> None:
@@ -25,9 +25,9 @@ def _tenant_with_ibx(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     proj = tmp_path / "1p" / "infoblox" / "ibx-5153-ai-campaign"
-    shell = proj / "shell"
+    spine = proj / "spine"
     _write(
-        shell / "Deliverables" / "positioning-narrative.md",
+        spine / "Deliverables" / "positioning-narrative.md",
         id="ibx-5153/deliverable/positioning-narrative",
         project="ibx-5153",
         layer="Deliverables",
@@ -38,7 +38,7 @@ def _tenant_with_ibx(tmp_path: Path) -> Path:
         target_date="2026-06-19",
     )
     _write(
-        shell / "Brief" / "april-brief.md",
+        spine / "Brief" / "april-brief.md",
         id="ibx-5153/brief/april-brief",
         project="ibx-5153",
         layer="Brief",
@@ -51,16 +51,16 @@ def _tenant_with_ibx(tmp_path: Path) -> Path:
 
 def test_render_sweep_ranks_live_deliverable_above_cold_brief(tmp_path: Path) -> None:
     proj = _tenant_with_ibx(tmp_path) / "1p" / "infoblox" / "ibx-5153-ai-campaign"
-    out = render_sweep("ibx-5153", load_shell(proj), today=date(2026, 6, 13))
+    out = render_sweep("ibx-5153", load_spine(proj), today=date(2026, 6, 13))
     assert out.index("Positioning narrative") < out.index("April input brief")
     assert "due 2026-06-19" in out
 
 
 def test_render_sweep_shows_serves_continuation(tmp_path: Path) -> None:
     proj = tmp_path / "1p" / "infoblox" / "ibx-5153-ai-campaign"
-    shell = proj / "shell"
+    spine = proj / "spine"
     _write(
-        shell / "Deliverables" / "x.md",
+        spine / "Deliverables" / "x.md",
         id="ibx-5153/deliverable/x",
         project="ibx-5153",
         layer="Deliverables",
@@ -70,7 +70,7 @@ def test_render_sweep_shows_serves_continuation(tmp_path: Path) -> None:
         last_touched="2026-06-13",
     )
     _write(
-        shell / "Research" / "market-scan.md",
+        spine / "Research" / "market-scan.md",
         id="ibx-5153/research/market-scan",
         project="ibx-5153",
         layer="Research",
@@ -79,15 +79,15 @@ def test_render_sweep_shows_serves_continuation(tmp_path: Path) -> None:
         last_touched="2026-06-10",
         serves="[ibx-5153/deliverable/x]",
     )
-    out = render_sweep("ibx-5153", load_shell(proj), today=date(2026, 6, 13))
+    out = render_sweep("ibx-5153", load_spine(proj), today=date(2026, 6, 13))
     assert "← serves: ibx-5153/deliverable/x" in out
 
 
 def test_render_sweep_marks_overdue(tmp_path: Path) -> None:
     proj = tmp_path / "1p" / "infoblox" / "ibx-5153-ai-campaign"
-    shell = proj / "shell"
+    spine = proj / "spine"
     _write(
-        shell / "Deliverables" / "past.md",
+        spine / "Deliverables" / "past.md",
         id="ibx-5153/deliverable/past",
         project="ibx-5153",
         layer="Deliverables",
@@ -98,7 +98,7 @@ def test_render_sweep_marks_overdue(tmp_path: Path) -> None:
         target_date="2026-05-01",
     )
     _write(
-        shell / "Deliverables" / "future.md",
+        spine / "Deliverables" / "future.md",
         id="ibx-5153/deliverable/future",
         project="ibx-5153",
         layer="Deliverables",
@@ -108,65 +108,65 @@ def test_render_sweep_marks_overdue(tmp_path: Path) -> None:
         last_touched="2026-06-13",
         target_date="2026-06-26",
     )
-    out = render_sweep("ibx-5153", load_shell(proj), today=date(2026, 6, 13))
+    out = render_sweep("ibx-5153", load_spine(proj), today=date(2026, 6, 13))
     assert "due 2026-05-01 (overdue)" in out
     assert "due 2026-06-26" in out
     assert "due 2026-06-26 (overdue)" not in out
 
 
-def test_render_sweep_empty_shell(tmp_path: Path) -> None:
+def test_render_sweep_empty_spine(tmp_path: Path) -> None:
     out = render_sweep("ibx-5153", (), today=date(2026, 6, 13))
     assert "ibx-5153" in out
     assert "0 elements" in out
 
 
-def test_cli_shell_prints_sweep(tmp_path, monkeypatch) -> None:
+def test_cli_spine_prints_sweep(tmp_path, monkeypatch) -> None:
     _tenant_with_ibx(tmp_path)
     monkeypatch.chdir(tmp_path)
-    result = CliRunner().invoke(main, ["shell", "ibx-5153"])
+    result = CliRunner().invoke(main, ["spine", "ibx-5153"])
     assert result.exit_code == 0, result.output
     assert "ibx-5153" in result.output
     assert "Positioning narrative" in result.output
     assert "April input brief" in result.output
 
 
-def test_cli_shell_falls_back_to_disk_when_mc2_unavailable(tmp_path, monkeypatch) -> None:
+def test_cli_spine_falls_back_to_disk_when_mc2_unavailable(tmp_path, monkeypatch) -> None:
     """No SUPABASE creds + no mc-2 clone → connect() raises BackendUnavailable,
     and the command falls back to reading the on-disk markdown frontmatter."""
     _tenant_with_ibx(tmp_path)
     monkeypatch.delenv("SUPABASE_URL", raising=False)
     monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
     monkeypatch.chdir(tmp_path)
-    result = CliRunner().invoke(main, ["shell", "ibx-5153"])
+    result = CliRunner().invoke(main, ["spine", "ibx-5153"])
     assert result.exit_code == 0, result.output
     assert "MC-2 unavailable" in result.output
     assert "last-known markdown-derived state, unverified" in result.output
     assert "Positioning narrative" in result.output
 
 
-def test_cli_shell_empty_mc2_does_not_fall_back_to_disk(tmp_path, monkeypatch) -> None:
+def test_cli_spine_empty_mc2_does_not_fall_back_to_disk(tmp_path, monkeypatch) -> None:
     """An empty MC-2 result is the authoritative answer — we must NOT silently
     fall through to disk and mask it. No unverified banner; no disk content."""
     _tenant_with_ibx(tmp_path)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr("cp_engine.sync_mc2.MC2Backend.connect", lambda self, cfg: object())
-    monkeypatch.setattr("cp_engine.shell.load_shell_from_mc2", lambda client, code: ())
-    result = CliRunner().invoke(main, ["shell", "ibx-5153"])
+    monkeypatch.setattr("cp_engine.spine.load_spine_from_mc2", lambda client, code: ())
+    result = CliRunner().invoke(main, ["spine", "ibx-5153"])
     assert result.exit_code == 0, result.output
     assert "unverified" not in result.output  # MC-2 served the read
     assert "Positioning narrative" not in result.output  # disk NOT consulted
 
 
-def test_cli_shell_prefers_mc2_rows(tmp_path, monkeypatch) -> None:
-    """When MC-2 returns rows, the command renders those, not the disk shell."""
+def test_cli_spine_prefers_mc2_rows(tmp_path, monkeypatch) -> None:
+    """When MC-2 returns rows, the command renders those, not the disk spine."""
     _tenant_with_ibx(tmp_path)
     monkeypatch.chdir(tmp_path)
 
-    from cp_engine.shell import ShellElement
+    from cp_engine.spine import SpineElement
 
     def _fake_load_from_mc2(client, code):
         return (
-            ShellElement(
+            SpineElement(
                 id="ibx-5153/deliverable/from-mc2",
                 project="ibx-5153",
                 layer="Deliverables",
@@ -180,23 +180,23 @@ def test_cli_shell_prefers_mc2_rows(tmp_path, monkeypatch) -> None:
         )
 
     monkeypatch.setattr("cp_engine.sync_mc2.MC2Backend.connect", lambda self, cfg: object())
-    monkeypatch.setattr("cp_engine.shell.load_shell_from_mc2", _fake_load_from_mc2)
-    result = CliRunner().invoke(main, ["shell", "ibx-5153"])
+    monkeypatch.setattr("cp_engine.spine.load_spine_from_mc2", _fake_load_from_mc2)
+    result = CliRunner().invoke(main, ["spine", "ibx-5153"])
     assert result.exit_code == 0, result.output
     assert "From MC-2 spine" in result.output
     assert "Positioning narrative" not in result.output  # disk path NOT used
 
 
-def test_cli_shell_shows_source_documents_facet(tmp_path, monkeypatch) -> None:
-    """When MC-2 serves the read, `cp shell` appends the Source documents facet."""
+def test_cli_spine_shows_source_documents_facet(tmp_path, monkeypatch) -> None:
+    """When MC-2 serves the read, `cp spine` appends the Source documents facet."""
     _tenant_with_ibx(tmp_path)
     monkeypatch.chdir(tmp_path)
 
-    from cp_engine.shell import ShellElement
+    from cp_engine.spine import SpineElement
 
     def _fake_load_from_mc2(client, code):
         return (
-            ShellElement(
+            SpineElement(
                 id="ibx-5153/deliverable/from-mc2",
                 project="ibx-5153",
                 layer="Deliverables",
@@ -210,7 +210,7 @@ def test_cli_shell_shows_source_documents_facet(tmp_path, monkeypatch) -> None:
         )
 
     monkeypatch.setattr("cp_engine.sync_mc2.MC2Backend.connect", lambda self, cfg: object())
-    monkeypatch.setattr("cp_engine.shell.load_shell_from_mc2", _fake_load_from_mc2)
+    monkeypatch.setattr("cp_engine.spine.load_spine_from_mc2", _fake_load_from_mc2)
     monkeypatch.setattr(
         "cp_engine.cli.fetch_project_assets",
         lambda client, code: [
@@ -218,13 +218,13 @@ def test_cli_shell_shows_source_documents_facet(tmp_path, monkeypatch) -> None:
             {"id": "a2", "title": "logo.png", "source_type": "png", "scope": "account"},
         ],
     )
-    result = CliRunner().invoke(main, ["shell", "ibx-5153"])
+    result = CliRunner().invoke(main, ["spine", "ibx-5153"])
     assert result.exit_code == 0, result.output
     assert "Source documents (2)" in result.output
     assert "april-brief.pdf" in result.output
 
 
-def test_cli_shell_unknown_code_errors(tmp_path, monkeypatch) -> None:
+def test_cli_spine_unknown_code_errors(tmp_path, monkeypatch) -> None:
     (tmp_path / ".cp-engine.toml").write_text(
         '[tenant]\nname = "test"\n[engine]\nversion = "~= 0.18"\n'
         '[sync]\nbackend = "mc-2"\n'
@@ -232,6 +232,6 @@ def test_cli_shell_unknown_code_errors(tmp_path, monkeypatch) -> None:
         encoding="utf-8",
     )
     monkeypatch.chdir(tmp_path)
-    result = CliRunner().invoke(main, ["shell", "nope-9999"])
+    result = CliRunner().invoke(main, ["spine", "nope-9999"])
     assert result.exit_code == 1
     assert "No working dir" in result.output

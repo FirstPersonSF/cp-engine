@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from cp_engine.shell_sync import sync_shell_elements
+from cp_engine.spine_sync import sync_spine_elements
 
 
 class _FakeTable:
@@ -62,7 +62,7 @@ class _FakeClient:
 
 
 def _write_el(root: Path, layer: str, name: str, eid: str, **fm):
-    d = root / "1p/acct/proj-1/shell" / layer
+    d = root / "1p/acct/proj-1/spine" / layer
     d.mkdir(parents=True, exist_ok=True)
     status = fm.pop("status", "active")
     lines = [f"id: {eid}", "project: proj-1", f"layer: {layer}",
@@ -77,10 +77,10 @@ def test_sync_inserts_all_elements(tmp_path):
     _write_el(tmp_path, "Deliverables", "pos", "proj-1/deliverable/pos", stage="revised")
     _write_el(tmp_path, "Research", "iv1", "proj-1/research/iv1")
     client = _FakeClient()
-    n = sync_shell_elements(client, project_id="u1",
+    n = sync_spine_elements(client, project_id="u1",
                             project_dir=proj, tenant_root=tmp_path)
     assert n == 2
-    rows = client.store["shell_elements"]
+    rows = client.store["spine_elements"]
     assert {r["element_id"] for r in rows} == {
         "proj-1/deliverable/pos", "proj-1/research/iv1"}
 
@@ -89,36 +89,36 @@ def test_sync_deletes_orphaned_rows(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
     # Pre-seed a stale row for this project that's no longer on disk.
-    client.store["shell_elements"] = [
+    client.store["spine_elements"] = [
         {"element_id": "proj-1/research/GONE", "project_id": "u1"},
     ]
     _write_el(tmp_path, "Deliverables", "pos", "proj-1/deliverable/pos")
-    sync_shell_elements(client, project_id="u1",
+    sync_spine_elements(client, project_id="u1",
                         project_dir=proj, tenant_root=tmp_path)
-    ids = {r["element_id"] for r in client.store["shell_elements"]}
+    ids = {r["element_id"] for r in client.store["spine_elements"]}
     assert ids == {"proj-1/deliverable/pos"}  # GONE was reaped
 
 
-def test_sync_no_shell_dir_is_noop(tmp_path):
+def test_sync_no_spine_dir_is_noop(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"; proj.mkdir(parents=True)
     client = _FakeClient()
-    n = sync_shell_elements(client, project_id="u1",
+    n = sync_spine_elements(client, project_id="u1",
                             project_dir=proj, tenant_root=tmp_path)
     assert n == 0
-    assert client.store.get("shell_elements", []) == []
+    assert client.store.get("spine_elements", []) == []
 
 
 def test_sync_reap_is_scoped_to_one_project(tmp_path):
     # A sibling project's row must NOT be reaped when we sync proj-1.
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
-    client.store["shell_elements"] = [
+    client.store["spine_elements"] = [
         {"element_id": "proj-2/research/keep", "project_id": "u2"},
     ]
     _write_el(tmp_path, "Deliverables", "pos", "proj-1/deliverable/pos")
-    sync_shell_elements(client, project_id="u1",
+    sync_spine_elements(client, project_id="u1",
                         project_dir=proj, tenant_root=tmp_path)
-    ids = {r["element_id"] for r in client.store["shell_elements"]}
+    ids = {r["element_id"] for r in client.store["spine_elements"]}
     assert "proj-2/research/keep" in ids   # sibling survived
     assert "proj-1/deliverable/pos" in ids
 
@@ -127,15 +127,15 @@ def test_sync_keeps_confirmed_field_and_appends_flag(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
     # Pre-seed MC-2 row: status confirmed=active, but disk will say dormant.
-    client.store["shell_elements"] = [{
+    client.store["spine_elements"] = [{
         "element_id": "proj-1/deliverable/pos", "project_id": "u1",
         "status": "active", "stage": None, "target_date": None,
         "serves": [], "depends_on": [],
         "field_states": {"status": "confirmed"}, "review_flags": [],
     }]
     _write_el(tmp_path, "Deliverables", "pos", "proj-1/deliverable/pos", status="dormant")
-    sync_shell_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
-    row = next(r for r in client.store["shell_elements"]
+    sync_spine_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
+    row = next(r for r in client.store["spine_elements"]
                if r["element_id"] == "proj-1/deliverable/pos")
     assert row["status"] == "active"   # confirmed value kept, not clobbered
     assert row["field_states"]["status"] == "confirmed"
@@ -146,15 +146,15 @@ def test_sync_keeps_confirmed_field_and_appends_flag(tmp_path):
 def test_sync_updates_proposed_field_freely(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
-    client.store["shell_elements"] = [{
+    client.store["spine_elements"] = [{
         "element_id": "proj-1/deliverable/pos", "project_id": "u1",
         "status": "active", "stage": None, "target_date": None,
         "serves": [], "depends_on": [],
         "field_states": {}, "review_flags": [],
     }]
     _write_el(tmp_path, "Deliverables", "pos", "proj-1/deliverable/pos", status="dormant")
-    sync_shell_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
-    row = next(r for r in client.store["shell_elements"]
+    sync_spine_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
+    row = next(r for r in client.store["spine_elements"]
                if r["element_id"] == "proj-1/deliverable/pos")
     assert row["status"] == "dormant"   # proposed ⇒ free update
     assert row["review_flags"] == []
@@ -164,8 +164,8 @@ def test_sync_new_element_has_empty_verification_state(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
     _write_el(tmp_path, "Deliverables", "pos", "proj-1/deliverable/pos")
-    sync_shell_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
-    row = next(r for r in client.store["shell_elements"]
+    sync_spine_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
+    row = next(r for r in client.store["spine_elements"]
                if r["element_id"] == "proj-1/deliverable/pos")
     assert row["field_states"] == {}
     assert row["review_flags"] == []
@@ -177,7 +177,7 @@ def test_sync_does_not_reap_confirmed_orphan_and_flags_it(tmp_path):
     review_flag is recorded so a human can resolve it."""
     proj = tmp_path / "1p/acct/proj-1"; proj.mkdir(parents=True)
     client = _FakeClient()
-    client.store["shell_elements"] = [{
+    client.store["spine_elements"] = [{
         "element_id": "proj-1/deliverable/CONFIRMED", "project_id": "u1",
         "status": "active", "stage": None, "target_date": None,
         "serves": [], "depends_on": [],
@@ -185,8 +185,8 @@ def test_sync_does_not_reap_confirmed_orphan_and_flags_it(tmp_path):
         "confirmed_by": "drew", "confirmed_at": "2026-06-15T00:00:00Z",
     }]
     # No markdown on disk for this element.
-    sync_shell_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
-    rows = client.store["shell_elements"]
+    sync_spine_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
+    rows = client.store["spine_elements"]
     surviving = next(r for r in rows
                      if r["element_id"] == "proj-1/deliverable/CONFIRMED")
     assert surviving["status"] == "active"                 # not deleted
@@ -199,12 +199,12 @@ def test_sync_still_reaps_unconfirmed_orphan(tmp_path):
     """An orphan with NO confirmed field is still reaped (unchanged behavior)."""
     proj = tmp_path / "1p/acct/proj-1"; proj.mkdir(parents=True)
     client = _FakeClient()
-    client.store["shell_elements"] = [{
+    client.store["spine_elements"] = [{
         "element_id": "proj-1/research/GONE", "project_id": "u1",
         "field_states": {}, "review_flags": [],
     }]
-    sync_shell_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
-    ids = {r["element_id"] for r in client.store["shell_elements"]}
+    sync_spine_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
+    ids = {r["element_id"] for r in client.store["spine_elements"]}
     assert "proj-1/research/GONE" not in ids
 
 
@@ -213,7 +213,7 @@ def test_sync_keeps_at_most_one_flag_per_field(tmp_path):
     syncing twice with the same divergence yields exactly one status flag."""
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
-    client.store["shell_elements"] = [{
+    client.store["spine_elements"] = [{
         "element_id": "proj-1/deliverable/pos", "project_id": "u1",
         "status": "active", "stage": None, "target_date": None,
         "serves": [], "depends_on": [],
@@ -221,8 +221,8 @@ def test_sync_keeps_at_most_one_flag_per_field(tmp_path):
     }]
     _write_el(tmp_path, "Deliverables", "pos", "proj-1/deliverable/pos", status="dormant")
     for _ in range(2):
-        sync_shell_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
-    row = next(r for r in client.store["shell_elements"]
+        sync_spine_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
+    row = next(r for r in client.store["spine_elements"]
                if r["element_id"] == "proj-1/deliverable/pos")
     status_flags = [f for f in row["review_flags"] if f["field"] == "status"]
     assert len(status_flags) == 1                          # not 2
@@ -232,7 +232,7 @@ def test_sync_keeps_at_most_one_flag_per_field(tmp_path):
 def test_merge_flag_is_source_aware():
     # A reconcile clean-up (flag=None, source default) must NOT wipe a sweep
     # flag on the same field — two independent producers coexist.
-    from cp_engine.shell_sync import _merge_flag
+    from cp_engine.spine_sync import _merge_flag
     sweep_flag = {"field": "status", "now": "drifted", "source": "sweep"}
     flags = [sweep_flag]
     # reconcile finds no divergence on status → calls with flag=None:

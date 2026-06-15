@@ -847,9 +847,9 @@ def _spine_mc2_client(config):
         return None
 
 
-@main.command("shell")
+@main.command("spine")
 @click.argument("code")
-def shell_cmd(code: str) -> None:
+def spine_cmd(code: str) -> None:
     """Print the project spine's full ranked relevance sweep.
 
     Reads the spine from MC-2 (canonical); falls back to the on-disk markdown
@@ -882,14 +882,14 @@ def shell_cmd(code: str) -> None:
             click.echo(f"(source-documents facet skipped: {exc})", err=True)
 
 
-@main.command("shell-stats")
+@main.command("spine-stats")
 @click.option(
     "--type", "type_filter", default=None, help="Narrow to one deliverable type."
 )
 @click.option(
     "--within-days", default=14, show_default=True, help="Due-soon window (days)."
 )
-def shell_stats_cmd(type_filter: str | None, within_days: int) -> None:
+def spine_stats_cmd(type_filter: str | None, within_days: int) -> None:
     """Cross-project analytics over the spine (Deliverables).
 
     Needs MC-2 — this is inherently the cross-project index, so there is no

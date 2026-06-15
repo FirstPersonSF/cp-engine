@@ -1,7 +1,7 @@
 """Tests for the Retrospective append wiring (spine-inversion Part B).
 
 Every tagged Fathom meeting should leave a dated entry in the project's
-`shell/Retrospective/meeting-history.md`, embedding the WHOLE Fathom
+`spine/Retrospective/meeting-history.md`, embedding the WHOLE Fathom
 summary (anti-compression). The append is best-effort and MUST NOT break
 auto-ingest: a missing/empty summary, an unresolvable project dir, or any
 other failure degrades to "no retrospective entry written" rather than a
@@ -74,7 +74,7 @@ def test_append_retrospective_writes_whole_summary(tmp_path: Path) -> None:
         plan={"projects": {code: {}}},
     )
 
-    history = proj / "shell" / "Retrospective" / "meeting-history.md"
+    history = proj / "spine" / "Retrospective" / "meeting-history.md"
     assert history.exists(), "retrospective history file was not created"
     text = history.read_text()
     assert summary in text, "the WHOLE Fathom summary must be embedded"
@@ -106,7 +106,7 @@ def test_append_retrospective_skips_when_summary_empty(tmp_path: Path) -> None:
         plan=None,
     )
 
-    history = proj / "shell" / "Retrospective" / "meeting-history.md"
+    history = proj / "spine" / "Retrospective" / "meeting-history.md"
     assert not history.exists(), "no file should be written when summary is empty"
     assert status == "skipped"
 
@@ -145,7 +145,7 @@ def test_append_retrospective_is_idempotent_on_meeting_id(tmp_path: Path) -> Non
     assert first == "appended"
     assert second == "duplicate"
 
-    history = proj / "shell" / "Retrospective" / "meeting-history.md"
+    history = proj / "spine" / "Retrospective" / "meeting-history.md"
     assert history.read_text().count("A real summary.") == 1
 
 
@@ -160,10 +160,10 @@ def test_append_retrospective_never_raises_on_unresolvable_dir(tmp_path: Path) -
         "participants": [],
         "fathom_url": None,
     }
-    # No project dir created → find_shell_dir raises internally; helper swallows
-    # it and reports the benign, observable "no-shell-dir" status (distinct from
+    # No project dir created → find_spine_dir raises internally; helper swallows
+    # it and reports the benign, observable "no-spine-dir" status (distinct from
     # a genuine "error") rather than raising.
     status = webhook_main._append_retrospective(
         config=config, code="nope-9999", meeting=meeting, action_items=[], plan=None,
     )
-    assert status == "no-shell-dir"
+    assert status == "no-spine-dir"

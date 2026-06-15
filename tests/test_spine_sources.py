@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from cp_engine.shell import _as_source, parse_element
-from cp_engine.shell_sources import match_sources_to_assets
+from cp_engine.spine import _as_source, parse_element
+from cp_engine.spine_sources import match_sources_to_assets
 
 
 # --- _as_source -----------------------------------------------------------

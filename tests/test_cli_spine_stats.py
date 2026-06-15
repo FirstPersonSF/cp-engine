@@ -73,7 +73,7 @@ def _patch_connect(monkeypatch, rows):
     )
 
 
-def test_shell_stats_happy_path(tmp_path, monkeypatch):
+def test_spine_stats_happy_path(tmp_path, monkeypatch):
     """All three sections render: type inventory, stage distribution, due-soon."""
     _tenant(tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -85,7 +85,7 @@ def test_shell_stats_happy_path(tmp_path, monkeypatch):
     far = (today + timedelta(days=60)).isoformat()
     _patch_connect(monkeypatch, _seed_rows(today.isoformat(), soon, far))
 
-    result = CliRunner().invoke(main, ["shell-stats"])
+    result = CliRunner().invoke(main, ["spine-stats"])
     assert result.exit_code == 0, result.output
 
     # type inventory: type + count
@@ -99,7 +99,7 @@ def test_shell_stats_happy_path(tmp_path, monkeypatch):
     assert "SAP MH" not in result.output
 
 
-def test_shell_stats_type_filter(tmp_path, monkeypatch):
+def test_spine_stats_type_filter(tmp_path, monkeypatch):
     """--type narrows inventory + due-soon to one type only."""
     _tenant(tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -110,7 +110,7 @@ def test_shell_stats_type_filter(tmp_path, monkeypatch):
     _patch_connect(monkeypatch, _seed_rows(today.isoformat(), soon, soon))
 
     result = CliRunner().invoke(
-        main, ["shell-stats", "--type", "positioning-narrative"]
+        main, ["spine-stats", "--type", "positioning-narrative"]
     )
     assert result.exit_code == 0, result.output
     assert "positioning-narrative" in result.output
@@ -122,7 +122,7 @@ def test_shell_stats_type_filter(tmp_path, monkeypatch):
     assert "(all types)" in result.output
 
 
-def test_shell_stats_within_days_passthrough(tmp_path, monkeypatch):
+def test_spine_stats_within_days_passthrough(tmp_path, monkeypatch):
     """--within-days widens the due window so a far-future row appears."""
     _tenant(tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -133,17 +133,17 @@ def test_shell_stats_within_days_passthrough(tmp_path, monkeypatch):
     _patch_connect(monkeypatch, _seed_rows(today.isoformat(), far, far))
 
     # default 14d → the +45d rows are NOT due-soon
-    default_res = CliRunner().invoke(main, ["shell-stats"])
+    default_res = CliRunner().invoke(main, ["spine-stats"])
     assert default_res.exit_code == 0, default_res.output
     assert "IBX pos" not in default_res.output
 
     # --within-days 60 → now they ARE due-soon
-    wide_res = CliRunner().invoke(main, ["shell-stats", "--within-days", "60"])
+    wide_res = CliRunner().invoke(main, ["spine-stats", "--within-days", "60"])
     assert wide_res.exit_code == 0, wide_res.output
     assert "IBX pos" in wide_res.output
 
 
-def test_shell_stats_offline_errors_no_fallback(tmp_path, monkeypatch):
+def test_spine_stats_offline_errors_no_fallback(tmp_path, monkeypatch):
     """MC-2 unavailable → clear cross-project error + non-zero exit, NO fallback."""
     _tenant(tmp_path)
     monkeypatch.chdir(tmp_path)
@@ -153,8 +153,8 @@ def test_shell_stats_offline_errors_no_fallback(tmp_path, monkeypatch):
 
     monkeypatch.setattr("cp_engine.sync_mc2.MC2Backend.connect", _raise)
 
-    result = CliRunner().invoke(main, ["shell-stats"])
+    result = CliRunner().invoke(main, ["spine-stats"])
     assert result.exit_code != 0
     assert "cross-project stats need MC-2" in result.output
-    # distinct from cp shell's fallback wording
+    # distinct from cp spine's fallback wording
     assert "reading from disk" not in result.output

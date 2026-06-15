@@ -1,5 +1,5 @@
 from datetime import date
-from cp_engine.shell_stats import type_inventory, due_soon, stage_distribution
+from cp_engine.spine_stats import type_inventory, due_soon, stage_distribution
 
 
 class _FakeTable:

@@ -7,7 +7,7 @@ from datetime import date
 import pytest
 
 from cp_engine.retrospective import append_entry, build_entry
-from cp_engine.shell import parse_element
+from cp_engine.spine import parse_element
 
 SUMMARY = (
     "The team reviewed the Q3 campaign. Janet pushed for a sharper two-track "
@@ -167,7 +167,7 @@ def _entry(meeting_id: str, title: str = "W") -> str:
 
 
 def test_append_entry_creates_parseable_element(tmp_path):
-    hp = tmp_path / "shell" / "Retrospective" / "meeting-history.md"
+    hp = tmp_path / "spine" / "Retrospective" / "meeting-history.md"
     wrote = append_entry(
         hp,
         "m-1",
@@ -186,7 +186,7 @@ def test_append_entry_creates_parseable_element(tmp_path):
 
 
 def test_append_entry_idempotent_on_meeting_id(tmp_path):
-    hp = tmp_path / "shell" / "Retrospective" / "meeting-history.md"
+    hp = tmp_path / "spine" / "Retrospective" / "meeting-history.md"
     append_entry(
         hp, "m-1", _entry("m-1"), code="ibx-5153", project="ibx-5153",
         today=date(2026, 6, 11),
@@ -201,7 +201,7 @@ def test_append_entry_idempotent_on_meeting_id(tmp_path):
 
 
 def test_append_entry_different_meeting_appends(tmp_path):
-    hp = tmp_path / "shell" / "Retrospective" / "meeting-history.md"
+    hp = tmp_path / "spine" / "Retrospective" / "meeting-history.md"
     append_entry(
         hp, "m-1", _entry("m-1", "First"), code="ibx-5153", project="ibx-5153",
         today=date(2026, 6, 11),

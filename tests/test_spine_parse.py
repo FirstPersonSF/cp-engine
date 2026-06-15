@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from cp_engine.shell import ShellElement, parse_element
+from cp_engine.spine import SpineElement, parse_element
 
 
 def test_parse_element_reads_frontmatter_and_body(tmp_path: Path) -> None:
@@ -27,7 +27,7 @@ def test_parse_element_reads_frontmatter_and_body(tmp_path: Path) -> None:
 
     el = parse_element(f)
 
-    assert isinstance(el, ShellElement)
+    assert isinstance(el, SpineElement)
     assert el.id == "ibx-5153/deliverable/positioning-narrative"
     assert el.layer == "Deliverables"
     assert el.type == "positioning-narrative"

@@ -1,4 +1,4 @@
-from cp_engine.shell import row_to_element, load_shell_from_mc2
+from cp_engine.spine import row_to_element, load_spine_from_mc2
 
 
 def test_row_to_element_roundtrips_spine():
@@ -9,7 +9,7 @@ def test_row_to_element_roundtrips_spine():
         "status": "active", "last_touched": "2026-06-13",
         "depends_on": ["p/deliverable/d0"], "serves": ["p/deliverable/d1"],
         "source": [], "target_history": [], "author": "drew",
-        "rel_path": "1p/a/p/shell/Deliverables/d1.md",
+        "rel_path": "1p/a/p/spine/Deliverables/d1.md",
     }
     el = row_to_element(row)
     assert el.id == "p/deliverable/d1"
@@ -19,7 +19,7 @@ def test_row_to_element_roundtrips_spine():
     assert el.serves == ("p/deliverable/d1",)
 
 
-def test_load_shell_from_mc2_filters_by_project(monkeypatch):
+def test_load_spine_from_mc2_filters_by_project(monkeypatch):
     captured = {}
 
     class _T:
@@ -36,7 +36,7 @@ def test_load_shell_from_mc2_filters_by_project(monkeypatch):
             return type("R", (), {"data": data})()
     class _C:
         def table(self, n): return _T()
-    els = load_shell_from_mc2(_C(), "p")
+    els = load_spine_from_mc2(_C(), "p")
     assert len(els) == 1 and els[0].id == "p/deliverable/d1"
     # The query filtered on project_code = the requested code.
     assert captured["col"] == "project_code"
@@ -44,7 +44,7 @@ def test_load_shell_from_mc2_filters_by_project(monkeypatch):
 
 
 def test_row_to_element_surfaces_verification_state():
-    from cp_engine.shell import row_to_element
+    from cp_engine.spine import row_to_element
     el = row_to_element({
         "element_id": "p/deliverable/x", "layer": "Deliverables",
         "field_states": {"status": "confirmed"},
@@ -58,7 +58,7 @@ def test_row_to_element_surfaces_verification_state():
 
 
 def test_row_to_element_defaults_empty_verification():
-    from cp_engine.shell import row_to_element
+    from cp_engine.spine import row_to_element
     el = row_to_element({"element_id": "p/x", "layer": "Brief"})
     assert el.field_states == {}
     assert el.review_flags == ()
@@ -66,8 +66,8 @@ def test_row_to_element_defaults_empty_verification():
 
 
 def test_element_to_row_omits_verification_columns(tmp_path):
-    from cp_engine.shell import ShellElement, element_to_row
-    el = ShellElement(id="p/x", project="p", layer="Brief", title="T",
+    from cp_engine.spine import SpineElement, element_to_row
+    el = SpineElement(id="p/x", project="p", layer="Brief", title="T",
                       status="active", last_touched="2026-06-13",
                       path=tmp_path / "x.md", body="")
     row = element_to_row(el, project_id="u1", project_root=tmp_path)

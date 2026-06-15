@@ -1587,7 +1587,7 @@ def test_clickup_token_env_canonical(monkeypatch, tmp_path):
 
 
 def test_clickup_token_env_key_alias(monkeypatch, tmp_path):
-    # MC-2's name, exported in the shell — should still resolve.
+    # MC-2's name, exported in the spine — should still resolve.
     monkeypatch.delenv("CLICKUP_API_TOKEN", raising=False)
     monkeypatch.setenv("CLICKUP_API_KEY", "pk_alias")
     cfg = _config_with_mc2(tmp_path, tmp_path / "mc-2")
@@ -1654,11 +1654,11 @@ def test_clickup_token_none_when_no_mc2_clone(monkeypatch, tmp_path):
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Project Shell slice 3 — Phase B: opt-in --sweep wiring
+#  Project Spine slice 3 — Phase B: opt-in --sweep wiring
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _write_shell_element(
+def _write_spine_element(
     tenant_root: Path,
     project: ProjectState,
     *,
@@ -1670,17 +1670,17 @@ def _write_shell_element(
     last_touched: str = "2026-06-05",
     body: str = "Some element body content.",
 ) -> Path:
-    """Lay down one shell element under the project's working dir on disk.
+    """Lay down one spine element under the project's working dir on disk.
 
     Mirrors the layout build_project_block reads from
-    (``<root>/<account_scope>/<dir_slug>/shell/<Layer>/<name>.md``), computed
+    (``<root>/<account_scope>/<dir_slug>/spine/<Layer>/<name>.md``), computed
     via the same state helpers so the test stays in lockstep with the code.
     """
     from cp_engine.state import account_scope_for, dir_slug
 
     scope = account_scope_for(project)
     slug = dir_slug(project.code, project.name)
-    layer_dir = tenant_root / scope / slug / "shell" / layer
+    layer_dir = tenant_root / scope / slug / "spine" / layer
     layer_dir.mkdir(parents=True, exist_ok=True)
     el_path = layer_dir / f"{name}.md"
     fm_lines = [
@@ -1715,11 +1715,11 @@ class _CountingLLM:
 
 
 def test_sweep_on_attaches_synthesis_to_block(tmp_path):
-    """With sweep_llm provided + a backfilled shell, the project's block
+    """With sweep_llm provided + a backfilled spine, the project's block
     carries the synthesis and it renders in the doc."""
     config = make_config(tmp_path)
     state = make_state("ggl-5168", name="GGL 5168 Activation", company_name="Google")
-    _write_shell_element(tmp_path, state)
+    _write_spine_element(tmp_path, state)
     llm = _CountingLLM("WHOLE PROJECT READOUT")
 
     result = build_planning_result(
@@ -1752,7 +1752,7 @@ def test_sweep_off_default_makes_no_llm_call(tmp_path):
     synthesis is attached — fast path completely unchanged."""
     config = make_config(tmp_path)
     state = make_state("ggl-5168", name="GGL 5168 Activation", company_name="Google")
-    _write_shell_element(tmp_path, state)
+    _write_spine_element(tmp_path, state)
     llm = _CountingLLM()
 
     result = build_planning_result(
@@ -1773,12 +1773,12 @@ def test_sweep_off_default_makes_no_llm_call(tmp_path):
     assert "**Sweep:**" not in doc
 
 
-def test_sweep_no_shell_attaches_nothing(tmp_path):
-    """A project with no backfilled shell skips the LLM and attaches no
+def test_sweep_no_spine_attaches_nothing(tmp_path):
+    """A project with no backfilled spine skips the LLM and attaches no
     synthesis (empty elements → run_sweep sentinel, dropped)."""
     config = make_config(tmp_path)
     state = make_state("ggl-5168", name="GGL 5168 Activation", company_name="Google")
-    # No _write_shell_element → no shell/ dir on disk.
+    # No _write_spine_element → no spine/ dir on disk.
     llm = _CountingLLM()
 
     result = build_planning_result(
@@ -1789,7 +1789,7 @@ def test_sweep_no_shell_attaches_nothing(tmp_path):
         sweep_llm=llm,
     )
 
-    assert llm.calls == 0  # empty shell short-circuits before the LLM
+    assert llm.calls == 0  # empty spine short-circuits before the LLM
     block = next(
         b for blocks in result.blocks_by_account.values() for b in blocks
     )
@@ -1807,8 +1807,8 @@ def test_sweep_best_effort_per_project(tmp_path):
         "ibx-5153", name="IBX 5153 AI Campaign",
         company_code="IBX", company_name="Infoblox",
     )
-    _write_shell_element(tmp_path, raising)
-    _write_shell_element(tmp_path, healthy)
+    _write_spine_element(tmp_path, raising)
+    _write_spine_element(tmp_path, healthy)
 
     # An LLM that raises on the first project but the test asserts the doc
     # still builds. Since both call the same llm, use one that always raises
@@ -1830,8 +1830,8 @@ def test_sweep_best_effort_per_project(tmp_path):
     assert llm.calls == 2  # attempted both, both caught
 
 
-def test_sweep_resolves_drifted_dir_via_find_shell_dir(tmp_path):
-    """Fix 1: the sweep resolves the working dir via find_shell_dir (prefix-
+def test_sweep_resolves_drifted_dir_via_find_spine_dir(tmp_path):
+    """Fix 1: the sweep resolves the working dir via find_spine_dir (prefix-
     tolerant), not a hand-built exact-slug path. A name-drifted dir — where
     the on-disk dir name differs from the current dir_slug because the project
     was renamed in MC-2 — still gets swept. An exact-slug match would miss it.
@@ -1846,12 +1846,12 @@ def test_sweep_resolves_drifted_dir_via_find_shell_dir(tmp_path):
     scope = account_scope_for(state)
     current_slug = dir_slug(state.code, state.name)
 
-    # …but the shell lives under a DRIFTED dir name (old slug, same code
-    # prefix). find_shell_dir prefix-matches on "ggl-5168-"; the old exact
+    # …but the spine lives under a DRIFTED dir name (old slug, same code
+    # prefix). find_spine_dir prefix-matches on "ggl-5168-"; the old exact
     # path (config.root / scope / current_slug) would not exist.
     drifted_slug = f"{state.code}-stale-old-name"
     assert drifted_slug != current_slug
-    layer_dir = tmp_path / scope / drifted_slug / "shell" / "Deliverables"
+    layer_dir = tmp_path / scope / drifted_slug / "spine" / "Deliverables"
     layer_dir.mkdir(parents=True, exist_ok=True)
     (layer_dir / "thing.md").write_text(
         "---\n"
@@ -1878,7 +1878,7 @@ def test_sweep_resolves_drifted_dir_via_find_shell_dir(tmp_path):
         sweep_llm=llm,
     )
 
-    assert llm.calls == 1  # shell found via find_shell_dir → swept
+    assert llm.calls == 1  # spine found via find_spine_dir → swept
     block = next(
         b for blocks in result.blocks_by_account.values() for b in blocks
     )
@@ -1896,8 +1896,8 @@ def test_sweep_best_effort_one_fails_one_succeeds(tmp_path):
         "ibx-5153", name="IBX 5153 AI Campaign",
         company_code="IBX", company_name="Infoblox",
     )
-    _write_shell_element(tmp_path, bad)
-    _write_shell_element(tmp_path, good)
+    _write_spine_element(tmp_path, bad)
+    _write_spine_element(tmp_path, good)
 
     # Fail only when the prompt is for ggl-5168 (the sweep prompt header
     # includes the project code), succeed otherwise.

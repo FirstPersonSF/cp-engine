@@ -1,4 +1,4 @@
-from cp_engine.shell import ShellElement, derive_status, render_sweep
+from cp_engine.spine import SpineElement, derive_status, render_sweep
 from datetime import date
 from pathlib import Path
 
@@ -7,7 +7,7 @@ def _el(eid, layer, **o):
     d = dict(id=eid, project="p", layer=layer, title=eid, status="active",
              last_touched="2026-06-13", path=Path("/x.md"), body="")
     d.update(o)
-    return ShellElement(**d)
+    return SpineElement(**d)
 
 
 def test_server_of_final_deliverable_demotes_to_reference():

@@ -1,27 +1,27 @@
-"""Tests for the 'Source documents' facet of `cp shell`.
+"""Tests for the 'Source documents' facet of `cp spine`.
 
-`fetch_project_assets` resolves a project's rag_assets via shell_elements,
+`fetch_project_assets` resolves a project's rag_assets via spine_elements,
 `render_source_documents` renders them with linked-by element suffixes.
 """
 from pathlib import Path
 
-from cp_engine.shell import ShellElement, render_source_documents
-from cp_engine.shell_sources import fetch_project_assets
+from cp_engine.spine import SpineElement, render_source_documents
+from cp_engine.spine_sources import fetch_project_assets
 
 
 # --- fake supabase client (two-table) ------------------------------------
 
-def _fake_client(*, shell_rows, asset_rows, raise_on=None):
+def _fake_client(*, spine_rows, asset_rows, raise_on=None):
     """Build a fake client mirroring the chained-builder style.
 
-    `shell_rows` answers the shell_elements project_id resolve; `asset_rows`
+    `spine_rows` answers the spine_elements project_id resolve; `asset_rows`
     answers the rag_assets query. `raise_on` (a table name) makes that table
     raise on .execute() to exercise the best-effort guard.
     """
     class _Q:
         def __init__(self, name):
             self._name = name
-            self._rows = shell_rows if name == "shell_elements" else asset_rows
+            self._rows = spine_rows if name == "spine_elements" else asset_rows
 
         def select(self, c):
             return self
@@ -46,7 +46,7 @@ def _fake_client(*, shell_rows, asset_rows, raise_on=None):
 
 def test_fetch_resolves_project_id_then_queries_assets():
     client = _fake_client(
-        shell_rows=[{"project_id": "uuid-1"}],
+        spine_rows=[{"project_id": "uuid-1"}],
         asset_rows=[
             {"id": "a1", "title": "brief.pdf", "source_type": "pdf", "scope": "project"},
             {"id": "a2", "title": "logo.png", "source_type": "png", "scope": "account"},
@@ -57,14 +57,14 @@ def test_fetch_resolves_project_id_then_queries_assets():
     assert out[0]["title"] == "brief.pdf"
 
 
-def test_fetch_returns_empty_when_no_shell_row():
-    client = _fake_client(shell_rows=[], asset_rows=[{"id": "a1"}])
+def test_fetch_returns_empty_when_no_spine_row():
+    client = _fake_client(spine_rows=[], asset_rows=[{"id": "a1"}])
     assert fetch_project_assets(client, "ibx-5153") == []
 
 
 def test_fetch_returns_empty_on_client_error():
     client = _fake_client(
-        shell_rows=[{"project_id": "uuid-1"}],
+        spine_rows=[{"project_id": "uuid-1"}],
         asset_rows=[{"id": "a1"}],
         raise_on="rag_assets",
     )
@@ -74,7 +74,7 @@ def test_fetch_returns_empty_on_client_error():
 # --- render --------------------------------------------------------------
 
 def _el(title, source=()):
-    return ShellElement(
+    return SpineElement(
         id=f"ibx-5153/brief/{title}",
         project="ibx-5153",
         layer="Brief",
