@@ -1,7 +1,7 @@
-"""Project Shell — slice 1 (markdown-only, read-only Lens).
+"""Project Spine — slice 1 (markdown-only, read-only Lens).
 
-A shell *element* is a markdown file under
-`1p/<acct>/<proj>/shell/<Layer>/<name>.md` whose YAML frontmatter is the
+A spine *element* is a markdown file under
+`1p/<acct>/<proj>/spine/<Layer>/<name>.md` whose YAML frontmatter is the
 structured spine (design §3). This module parses those files and computes the
 Lens relevance score (design §2). No MC-2, no writes — slice 1 is read-only.
 """
@@ -44,7 +44,7 @@ FRAMING_LAYERS: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class SpineElement:
-    """One addressable unit in a project shell (frontmatter spine + body)."""
+    """One addressable unit in a project spine (frontmatter spine + body)."""
 
     id: str
     project: str
@@ -90,7 +90,7 @@ def _as_source(value: object) -> tuple:
 
 
 def parse_element(path: Path) -> SpineElement:
-    """Parse one shell element markdown file into a SpineElement."""
+    """Parse one spine element markdown file into a SpineElement."""
     try:
         post = frontmatter.load(str(path))
     except yaml.YAMLError as exc:
@@ -106,7 +106,7 @@ def parse_element(path: Path) -> SpineElement:
             return str(meta[key])
         except KeyError:
             raise ValueError(
-                f"{path}: shell element missing required key '{key}'"
+                f"{path}: spine element missing required key '{key}'"
             ) from None
 
     return SpineElement(
@@ -157,8 +157,8 @@ LAYER_IMPORTANCE: dict[str, float] = {
 
 
 def load_spine(project_dir: Path) -> tuple[SpineElement, ...]:
-    """Parse every shell element under `<project_dir>/shell/<Layer>/*.md`."""
-    spine_root = project_dir / "shell"
+    """Parse every spine element under `<project_dir>/spine/<Layer>/*.md`."""
+    spine_root = project_dir / "spine"
     if not spine_root.is_dir():
         return ()
     elements: list[SpineElement] = []
@@ -204,7 +204,7 @@ def element_to_row(
     project_id: str,
     project_root: Path,
 ) -> dict[str, object]:
-    """Map a SpineElement to its MC-2 `shell_elements` row (pure, no I/O).
+    """Map a SpineElement to its MC-2 `spine_elements` row (pure, no I/O).
 
     `project_root` is the tenant root, used to compute a tenant-relative
     `rel_path` for round-trip back to the file. Date fields that don't parse
@@ -237,7 +237,7 @@ def element_to_row(
 
 
 def row_to_element(row: dict[str, object]) -> SpineElement:
-    """Reconstruct a SpineElement from a `shell_elements` MC-2 row.
+    """Reconstruct a SpineElement from a `spine_elements` MC-2 row.
 
     Body is empty (the spine row doesn't carry it — read the file via rel_path
     if the body is needed). Sufficient for the Lens, which scores from spine.
@@ -271,7 +271,7 @@ def row_to_element(row: dict[str, object]) -> SpineElement:
 
 
 def load_spine_from_mc2(client, project_code: str) -> tuple[SpineElement, ...]:
-    """Load a project's shell elements from MC-2 (canonical read path)."""
+    """Load a project's spine elements from MC-2 (canonical read path)."""
     data = (
         client.table("spine_elements")
         .select(
@@ -471,7 +471,7 @@ def render_sweep(
     scored, effective = rank_elements(elements, today=today)
     lines = [f"{code} — full sweep ({len(elements)} elements)"]
     if not elements:
-        lines.append("  (no shell/ elements — has this project been backfilled?)")
+        lines.append("  (no spine/ elements — has this project been backfilled?)")
         return "\n".join(lines)
     for score, e in scored:
         suffix_parts: list[str] = []

@@ -271,21 +271,21 @@ class MC2Backend:
     def connect(self, config: TenantConfig) -> Client:
         """Establish (and cache) the Supabase client without reading projects.
 
-        The read-only `cp shell` command needs the client but not the full
+        The read-only `cp spine` command needs the client but not the full
         project sweep `read_projects` performs (three table queries). This is
         the lightweight client-acquisition path: it builds/caches via
         `_get_client`, which raises `BackendUnavailable` if creds are absent.
         """
         return self._get_client(config)
 
-    def shell_client(self) -> Client:
+    def spine_client(self) -> Client:
         """Return the Supabase client read_projects already created.
 
-        The shell-spine mirror reuses the exact client (and creds) the project
+        The spine mirror reuses the exact client (and creds) the project
         read used — never mints a fresh connection."""
         if self._client is None:
             raise RuntimeError(
-                "shell_client() called before read_projects(); no client cached."
+                "spine_client() called before read_projects(); no client cached."
             )
         return self._client
 

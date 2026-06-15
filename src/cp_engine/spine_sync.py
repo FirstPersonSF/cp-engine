@@ -1,7 +1,7 @@
-"""Project Shell slice 2 — mirror shell-element frontmatter into MC-2 rows.
+"""Project Spine slice 2 — mirror spine-element frontmatter into MC-2 rows.
 
 Source of truth is the markdown file's frontmatter; this reconciles the
-`shell_elements` table to match what's on disk for one project: upsert every
+`spine_elements` table to match what's on disk for one project: upsert every
 present element, delete rows whose element_id no longer exists on disk.
 """
 
@@ -76,7 +76,7 @@ def sync_spine_elements(
     tenant_root: Path,
     now: datetime | None = None,
 ) -> int:
-    """Reconcile `shell_elements` rows for one project to match disk.
+    """Reconcile `spine_elements` rows for one project to match disk.
 
     For the five human-confirmable fields (`status`, `stage`, `target_date`,
     `serves`, `depends_on`) this is a RECONCILE, not an overwrite: a confirmed
@@ -85,7 +85,7 @@ def sync_spine_elements(
     written as-is. `confirmed_by`/`confirmed_at` are human-only and are never
     included in the payload.
 
-    Returns the number of elements upserted. A project with no `shell/` dir is
+    Returns the number of elements upserted. A project with no `spine/` dir is
     a clean no-op (returns 0) but STILL reaps any stale rows it left behind."""
     now_iso = (now or datetime.now(timezone.utc)).isoformat()
 
@@ -172,15 +172,15 @@ def sync_spine_snapshots(
     project_dir: Path,
     tenant_root: Path,
 ) -> int:
-    """Reconcile shell_snapshots rows for one project to match disk.
+    """Reconcile spine_snapshots rows for one project to match disk.
 
-    Scans every shell/<Layer>/*.snapshots/*.md, upserts a row per snapshot
+    Scans every spine/<Layer>/*.snapshots/*.md, upserts a row per snapshot
     file, reaps rows whose file vanished (scoped per-project). Returns count
     upserted."""
     from cp_engine.spine_snapshot import row_from_frozen
 
     rows = []
-    spine_root = project_dir / "shell"
+    spine_root = project_dir / "spine"
     if spine_root.is_dir():
         for snap_dir in sorted(spine_root.glob("*/*.snapshots")):
             for md in sorted(snap_dir.glob("*.md")):

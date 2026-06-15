@@ -1,8 +1,8 @@
-"""Link distilled shell elements to their rag_assets source documents.
+"""Link distilled spine elements to their rag_assets source documents.
 
 A distilled Brief/ClientFeedback element's `source` frontmatter holds
 human-readable file refs. This matches those refs to actual rag_assets rows
-(by basename) so the element can carry a typed link the shell renders and the
+(by basename) so the element can carry a typed link the spine renders and the
 future sweep can follow back to the embedded original. Linkage only — no
 semantic matching (a design Non-goal)."""
 from __future__ import annotations
@@ -58,11 +58,11 @@ def fetch_project_assets(client, project_code):
     """Return a project's active rag_assets as a list of dicts.
 
     Each dict carries (id, title, source_type, scope). Resolves the project's
-    uuid via shell_elements (shell_elements.project_id === rag_assets.project_id
+    uuid via spine_elements (spine_elements.project_id === rag_assets.project_id
     — NOT projects.code, which is a different slug), then queries rag_assets.
 
     Best-effort by contract: the 'Source documents' facet must never break
-    `cp shell`. Returns [] if the project_id can't be resolved, if there are no
+    `cp spine`. Returns [] if the project_id can't be resolved, if there are no
     assets, or on any client error. Explicit columns only (rag_assets carries a
     `meta jsonb` we must never pull)."""
     try:

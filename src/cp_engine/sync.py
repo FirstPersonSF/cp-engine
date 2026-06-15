@@ -109,11 +109,11 @@ class Backend(Protocol):
         """
         ...
 
-    def shell_client(self) -> object:
+    def spine_client(self) -> object:
         """Return the Supabase client used to read projects.
 
-        Used by the shell-spine mirror (slice 2) to reconcile a project's
-        `shell/` frontmatter into MC-2's `shell_elements` table without
+        Used by the spine mirror (slice 2) to reconcile a project's
+        `spine/` frontmatter into MC-2's `spine_elements` table without
         re-resolving credentials. Returns the live client instance.
         """
         ...
@@ -396,8 +396,8 @@ def sync_tenant(
             if _write_if_changed(linked_path, linked_body, splice_regions=()):
                 files_written.append(linked_path)
 
-        # Mirror the project's shell spine into MC-2 (slice 2). Best-effort:
-        # a shell mirror failure must never abort the sprint/CP sync that
+        # Mirror the project's spine into MC-2 (slice 2). Best-effort:
+        # a spine mirror failure must never abort the sprint/CP sync that
         # surrounds it. Only this block is wrapped — the surrounding sync is
         # NOT best-effort.
         if project.mc2_id:
@@ -406,7 +406,7 @@ def sync_tenant(
                 sync_spine_snapshots,
             )
 
-            client = backend.shell_client()
+            client = backend.spine_client()
             try:
                 sync_spine_elements(
                     client,
@@ -417,7 +417,7 @@ def sync_tenant(
                 )
             except Exception as exc:  # noqa: BLE001 — best-effort element mirror
                 logger.warning(
-                    "shell-element mirror skipped for %s: %s",
+                    "spine-element mirror skipped for %s: %s",
                     project.code, exc, exc_info=True,
                 )
             try:
@@ -429,7 +429,7 @@ def sync_tenant(
                 )
             except Exception as exc:  # noqa: BLE001 — best-effort snapshot mirror
                 logger.warning(
-                    "shell-snapshot mirror skipped for %s: %s",
+                    "spine-snapshot mirror skipped for %s: %s",
                     project.code, exc, exc_info=True,
                 )
 

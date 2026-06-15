@@ -1,8 +1,8 @@
-"""Project Shell slice 3 — named snapshots (Phase A).
+"""Project Spine slice 3 — named snapshots (Phase A).
 
 Pure freeze logic: given a deliverable's working markdown, produce the frozen
 snapshot file's content (verbatim body + augmented `snapshot:` frontmatter) and
-the `shell_snapshots` index row. No disk/git I/O here — that's the CLI's job.
+the `spine_snapshots` index row. No disk/git I/O here — that's the CLI's job.
 """
 
 from __future__ import annotations
@@ -76,7 +76,7 @@ def build_snapshot(
 
 
 def row_from_frozen(path: Path, *, tenant_root: Path) -> dict | None:
-    """Build a shell_snapshots row from a frozen snapshot file's frontmatter.
+    """Build a spine_snapshots row from a frozen snapshot file's frontmatter.
 
     Returns None if the file lacks a `snapshot:` block (not a snapshot file).
     The row shape MUST match what `build_snapshot` produces (minus rel_path,
@@ -126,7 +126,7 @@ def resolve_deliverable_file(project_dir: Path, deliverable_id: str) -> Path:
     """Find the working markdown for a deliverable id under the project's
     Deliverables layer. Snapshots are deliverable-scoped, so only that layer
     is scanned. Malformed frontmatter is skipped rather than fatal."""
-    deliv_dir = project_dir / "shell" / "Deliverables"
+    deliv_dir = project_dir / "spine" / "Deliverables"
     if deliv_dir.is_dir():
         for md in sorted(deliv_dir.glob("*.md")):
             try:

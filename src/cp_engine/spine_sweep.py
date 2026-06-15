@@ -1,4 +1,4 @@
-"""Project Shell slice 3 — sweep synthesis (Phase B).
+"""Project Spine slice 3 — sweep synthesis (Phase B).
 
 Pure prompt construction for the whole-project sweep: rank every element via
 the Lens, then build an LLM prompt asking for an across-the-project readout that
@@ -244,7 +244,7 @@ def parse_drift(synthesis_text: str) -> tuple[str, list[dict]]:
 class SweepResult:
     """The output of a whole-project sweep: an LLM synthesis plus the ranked
     table that produced it. The table is always present (pure/cheap); the
-    synthesis is a placeholder for empty shells (no LLM call was made)."""
+    synthesis is a placeholder for empty spines (no LLM call was made)."""
 
     synthesis_text: str
     ranked_table: str
@@ -303,14 +303,14 @@ def run_sweep(
     disk (MC-2-loaded elements have empty bodies) so recent meeting summaries
     reach the prompt. Omitted in pure tests that build bodies directly.
 
-    Empty shells skip the LLM entirely (don't pay for nothing) — design B: an
+    Empty spines skip the LLM entirely (don't pay for nothing) — design B: an
     empty project would otherwise burn a call asking the model to synthesize a
     project with no content. The ranked table is always included (pure/cheap).
     """
     table = render_sweep(code, elements, today=today)
     if not elements:
         return SweepResult(
-            synthesis_text="(no shell elements to sweep)",
+            synthesis_text="(no spine elements to sweep)",
             ranked_table=table,
         )
     elements = _hydrate_retrospective_body(elements, tenant_root)

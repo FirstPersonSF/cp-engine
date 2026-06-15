@@ -1,6 +1,6 @@
-"""Project Shell slice 3 — cross-project analytics (Phase C).
+"""Project Spine slice 3 — cross-project analytics (Phase C).
 
-Read-only queries over the `shell_elements` spine: type inventory, deliverables
+Read-only queries over the `spine_elements` spine: type inventory, deliverables
 due soon, stage distribution. All scoped to the Deliverables layer (the unit of
 project work). Pure-after-fetch — the only I/O is one select per function.
 """

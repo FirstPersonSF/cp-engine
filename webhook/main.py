@@ -2074,7 +2074,7 @@ def _append_retrospective(
         )
         history_path = (
             find_spine_dir(config.root, code)
-            / "shell"
+            / "spine"
             / "Retrospective"
             / "meeting-history.md"
         )
@@ -2091,8 +2091,8 @@ def _append_retrospective(
         # The project's working dir hasn't been synced yet (e.g. its first
         # meeting arrives before sync ran). Distinct from a genuine error so
         # it's observable as a benign skip, not a failure.
-        log.warning("retrospective: no shell dir yet for %s: %s", code, exc)
-        return "no-shell-dir"
+        log.warning("retrospective: no spine dir yet for %s: %s", code, exc)
+        return "no-spine-dir"
     except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
         log.warning("retrospective: append failed for %s: %s", code, exc)
         return "error"

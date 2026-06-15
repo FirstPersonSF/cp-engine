@@ -7,7 +7,7 @@ Fathom `summary` is embedded WHOLE (anti-compression) — structured pointers
 narrative summary.
 
 `build_entry` is a pure renderer for one entry. `append_entry` does the file
-IO: it creates the per-project `shell/Retrospective/meeting-history.md` element
+IO: it creates the per-project `spine/Retrospective/meeting-history.md` element
 with parseable frontmatter on first call, then appends idempotently keyed on
 the meeting id (re-ingesting the same meeting is a no-op).
 """
@@ -69,7 +69,7 @@ def build_entry(
 
 
 def _frontmatter(*, code: str, project: str, today: date) -> str:
-    """The Retrospective element's frontmatter — parseable by shell.parse_element."""
+    """The Retrospective element's frontmatter — parseable by spine.parse_element."""
     return (
         "---\n"
         f"id: {code}/retrospective/meeting-history\n"

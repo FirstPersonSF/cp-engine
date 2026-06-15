@@ -187,8 +187,8 @@ class ProjectState:
     deadline: datetime | None  # not tracked yet for either source
     one_line_summary: str | None = None  # regenerated during deepening pass
 
-    # MC-2 row uuid (`id`). Threaded through so the shell-spine mirror
-    # (slice 2) can key `shell_elements.project_id` without re-querying.
+    # MC-2 row uuid (`id`). Threaded through so the spine mirror
+    # (slice 2) can key `spine_elements.project_id` without re-querying.
     # All three sources carry an `id`; None only when a fake/legacy state
     # is built without one.
     mc2_id: str | None = None

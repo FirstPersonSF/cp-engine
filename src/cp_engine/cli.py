@@ -769,12 +769,12 @@ def list_active_projects_cmd(scope: str, company: str | None) -> None:
 
 
 def _load_spine_elements(config, code: str):
-    """Load a project's shell elements (MC-2 canonical, disk fallback).
+    """Load a project's spine elements (MC-2 canonical, disk fallback).
 
     Returns ``(elements, project_dir)`` where ``project_dir`` is the resolved
     working dir if the disk path was used, else ``None`` (MC-2 served the read).
     Exits 1 via ``SpineDirNotFound`` if the project can't be resolved on disk
-    during fallback. Shared by ``cp shell`` and ``cp sweep``.
+    during fallback. Shared by ``cp spine`` and ``cp sweep``.
     """
     from cp_engine.spine import (
         SpineDirNotFound,
@@ -805,7 +805,7 @@ def _load_spine_elements(config, code: str):
             served_by_mc2 = True  # an empty result is still the authoritative answer
         except Exception as exc:  # noqa: BLE001 — connected but query failed = likely a bug
             click.echo(
-                f"(WARNING: MC-2 shell read failed — this may be a schema/query bug: {exc})",
+                f"(WARNING: MC-2 spine read failed — this may be a schema/query bug: {exc})",
                 err=True,
             )
 
@@ -825,9 +825,9 @@ def _load_spine_elements(config, code: str):
             sys.exit(1)
         elements = load_spine(project_dir)
     elif not elements:
-        # MC-2 served the read but the project has no shell elements yet — say
+        # MC-2 served the read but the project has no spine elements yet — say
         # so, so an empty render isn't mistaken for a failed/unreachable read.
-        click.echo(f"(MC-2 returned 0 shell elements for {code}.)", err=True)
+        click.echo(f"(MC-2 returned 0 spine elements for {code}.)", err=True)
 
     return elements, project_dir
 
@@ -835,7 +835,7 @@ def _load_spine_elements(config, code: str):
 def _spine_mc2_client(config):
     """Connect to MC-2 for best-effort read-only facets, or return None.
 
-    Used by `cp shell`'s Source-documents facet, which needs a live client that
+    Used by `cp spine`'s Source-documents facet, which needs a live client that
     `_load_spine_elements` does not expose. Never raises — a facet must never
     break the sweep — so any connect failure degrades to None (facet omitted).
     """
@@ -850,7 +850,7 @@ def _spine_mc2_client(config):
 @main.command("shell")
 @click.argument("code")
 def shell_cmd(code: str) -> None:
-    """Print the project shell's full ranked relevance sweep.
+    """Print the project spine's full ranked relevance sweep.
 
     Reads the spine from MC-2 (canonical); falls back to the on-disk markdown
     frontmatter when MC-2 is unreachable so the command works offline. When
@@ -890,10 +890,10 @@ def shell_cmd(code: str) -> None:
     "--within-days", default=14, show_default=True, help="Due-soon window (days)."
 )
 def shell_stats_cmd(type_filter: str | None, within_days: int) -> None:
-    """Cross-project analytics over the shell spine (Deliverables).
+    """Cross-project analytics over the spine (Deliverables).
 
     Needs MC-2 — this is inherently the cross-project index, so there is no
-    offline/disk fallback (unlike `cp shell`). If MC-2 is unreachable this
+    offline/disk fallback (unlike `cp spine`). If MC-2 is unreachable this
     prints a clear error and exits non-zero.
     """
     from datetime import date
@@ -963,12 +963,12 @@ def shell_stats_cmd(type_filter: str | None, within_days: int) -> None:
     help="LLM model for the synthesis.",
 )
 def sweep_cmd(code: str, model: str) -> None:
-    """Sweep a project's whole shell → write a Synthesis-layer readout.
+    """Sweep a project's whole spine → write a Synthesis-layer readout.
 
-    Loads the shell (MC-2 canonical, disk fallback — same as `cp shell`), runs
+    Loads the spine (MC-2 canonical, disk fallback — same as `cp spine`), runs
     the LLM synthesis, and writes it as a `Synthesis`-layer element at
-    `shell/Synthesis/<today>-sweep.md` (idempotent per day — re-running
-    overwrites). An empty shell writes nothing.
+    `spine/Synthesis/<today>-sweep.md` (idempotent per day — re-running
+    overwrites). An empty spine writes nothing.
     """
     from datetime import date
 
@@ -980,9 +980,9 @@ def sweep_cmd(code: str, model: str) -> None:
     config = _load_config_or_die()
     elements, project_dir = _load_spine_elements(config, code)
 
-    # Empty shell: do NOT write a sentinel Synthesis element, do NOT call the LLM.
+    # Empty spine: do NOT write a sentinel Synthesis element, do NOT call the LLM.
     if not elements:
-        click.echo(f"No shell elements to sweep for {code}.")
+        click.echo(f"No spine elements to sweep for {code}.")
         return
 
     # The injected LLM wrapper around _call_claude.
@@ -1011,7 +1011,7 @@ def sweep_cmd(code: str, model: str) -> None:
         except SpineDirNotFound as exc:
             click.echo(str(exc), err=True)
             sys.exit(1)
-    syn_dir = project_dir / "shell" / "Synthesis"
+    syn_dir = project_dir / "spine" / "Synthesis"
     syn_dir.mkdir(parents=True, exist_ok=True)
     fname = f"{today.isoformat()}-sweep.md"
     el_id = f"{code}/synthesis/{today.isoformat()}-sweep"
@@ -1035,7 +1035,7 @@ def sweep_cmd(code: str, model: str) -> None:
     (syn_dir / fname).write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
 
     click.echo(result.ranked_table)
-    click.echo(f"\nSynthesis written: shell/Synthesis/{fname}")
+    click.echo(f"\nSynthesis written: spine/Synthesis/{fname}")
 
     # Best-effort: record proposed drift as review_flags on each element's MC-2
     # row (the human confirms later in the UI). Advisory only — an MC-2 failure
@@ -1108,7 +1108,7 @@ def snapshot_cmd(ref: str, label: str, reason: str | None) -> None:
 
     Writes the frozen markdown into a `<el>.snapshots/` sibling folder (the
     source of truth) and best-effort upserts an index row into MC-2's
-    `shell_snapshots` table. An MC-2 failure is logged to stderr but never
+    `spine_snapshots` table. An MC-2 failure is logged to stderr but never
     fails the command — the on-disk file is canonical.
     """
     from datetime import date
@@ -1124,7 +1124,7 @@ def snapshot_cmd(ref: str, label: str, reason: str | None) -> None:
 
     config = _load_config_or_die()
     # `ref` IS the deliverable id; its first path segment is the project code
-    # (shell element ids are code-prefixed by convention, e.g.
+    # (spine element ids are code-prefixed by convention, e.g.
     # "ibx-5153/deliverable/pos" → code "ibx-5153").
     code = ref.split("/", 1)[0]
     deliverable_id = ref
@@ -2129,9 +2129,9 @@ def prep_agenda_cmd(
 @click.option(
     "--sweep",
     is_flag=True,
-    help="Attach a whole-project shell sweep synthesis to each active "
-    "project's block (Project Shell). OPT-IN — makes one LLM call per "
-    "project that has a backfilled shell/ dir, best-effort per project. "
+    help="Attach a whole-project spine sweep synthesis to each active "
+    "project's block (Project Spine). OPT-IN — makes one LLM call per "
+    "project that has a backfilled spine/ dir, best-effort per project. "
     "Default (off) leaves the doc fast + free. Requires ANTHROPIC_API_KEY.",
 )
 @click.option(
@@ -2256,7 +2256,7 @@ def prep_planning_cmd(
         return
 
     # --sweep: build the real LLM wrapper and pass it to the renderer. Off by
-    # default (sweep_llm=None → no shell load, no LLM call, fast path). The
+    # default (sweep_llm=None → no spine load, no LLM call, fast path). The
     # per-project sweep is best-effort inside build_project_block, so a missing
     # ANTHROPIC_API_KEY logs a warning per project rather than aborting — note
     # it up front so the failure isn't a mystery.

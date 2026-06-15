@@ -125,9 +125,9 @@ class ProjectPlanningBlock:
     sprint_open_asks: tuple[SprintAsk, ...]
     urgent: tuple[dict, ...]  # flags from _detect_urgent (may be empty)
     fetch_error: str | None  # non-None when ClickUp fetch failed OR list is unset/empty
-    # Optional whole-project sweep synthesis (Project Shell slice 3, Phase B).
+    # Optional whole-project sweep synthesis (Project Spine slice 3, Phase B).
     # None on the default fast path — only populated when ``cp prep-planning
-    # --sweep`` injects a ``sweep_llm`` and the project has a backfilled shell.
+    # --sweep`` injects a ``sweep_llm`` and the project has a backfilled spine.
     # Best-effort per project: a sweep failure leaves this None and the block
     # still renders. See ``build_project_block``'s ``sweep_llm`` handling.
     sweep_synthesis: str | None = None
@@ -811,13 +811,13 @@ def build_project_block(
     sprint-file ask may also exist as a ClickUp client-ask; dedupe so the
     Open Commitments table doesn't render the same ask twice.
 
-    ``sweep_llm`` (Project Shell slice 3, Phase B) is the opt-in seam: when
-    provided, this loads the project's on-disk shell elements and runs a
+    ``sweep_llm`` (Project Spine slice 3, Phase B) is the opt-in seam: when
+    provided, this loads the project's on-disk spine elements and runs a
     whole-project sweep synthesis via ``run_sweep``, attaching it to the
     block as ``sweep_synthesis``. When None (the default fast path), no
-    shell load and no LLM call happen at all — the default planning doc is
+    spine load and no LLM call happen at all — the default planning doc is
     unchanged and free. Best-effort: a sweep failure (or a project with no
-    backfilled shell) logs + leaves ``sweep_synthesis=None`` without aborting.
+    backfilled spine) logs + leaves ``sweep_synthesis=None`` without aborting.
     """
     # Quick Resume line from the project's cp.md
     scope = account_scope_for(project)
@@ -901,9 +901,9 @@ def build_project_block(
         sprint_file_body=sprint_file_body,
     )
 
-    # Opt-in whole-project sweep synthesis (Project Shell slice 3, Phase B).
+    # Opt-in whole-project sweep synthesis (Project Spine slice 3, Phase B).
     # Default path (sweep_llm is None) does NOTHING here — no disk read, no
-    # LLM call. When a sweep_llm is injected, load the project's shell
+    # LLM call. When a sweep_llm is injected, load the project's spine
     # (MC-2-canonical, disk fallback) and run the sweep. The MC-2 client
     # already in scope from the ClickUp list resolution is reused. Best-effort:
     # any failure logs + leaves sweep_synthesis None.
@@ -939,13 +939,13 @@ def _run_project_sweep(
 ) -> str | None:
     """Run a best-effort whole-project sweep for one project (Phase B).
 
-    Loads the project's shell elements MC-2-canonical with a disk fallback
-    (matching ``cp shell`` / ``cp sweep``) and runs ``run_sweep``. The disk
+    Loads the project's spine elements MC-2-canonical with a disk fallback
+    (matching ``cp spine`` / ``cp sweep``) and runs ``run_sweep``. The disk
     working dir is resolved via ``find_spine_dir`` (prefix-tolerant), not a
     hand-built exact-slug path — name-drifted / legacy-bare-code dirs still
     resolve. Returns the synthesis text, or None when there's nothing to
     attach:
-      - the project has no shell in MC-2 *and* no backfilled ``shell/`` dir
+      - the project has no spine in MC-2 *and* no backfilled ``spine/`` dir
         on disk (find_spine_dir raises / empty elements);
       - the sweep raises (LLM/transport error, missing ANTHROPIC_API_KEY) —
         logged as a warning so the planning doc still builds for every other
@@ -960,8 +960,8 @@ def _run_project_sweep(
     from cp_engine.spine_sweep import run_sweep
 
     try:
-        # Load the project's shell — MC-2 canonical, disk fallback (matches
-        # cp shell/sweep). Reuse the client already in scope; if none, try a
+        # Load the project's spine — MC-2 canonical, disk fallback (matches
+        # cp spine/sweep). Reuse the client already in scope; if none, try a
         # best-effort connect (any failure → disk fallback, no propagation).
         elements: tuple = ()
         client = supabase_client
@@ -982,15 +982,15 @@ def _run_project_sweep(
                 project_dir = find_spine_dir(config.root, project.code)
             except SpineDirNotFound:
                 log.debug(
-                    "no shell elements for %s — skipping sweep", project.code
+                    "no spine elements for %s — skipping sweep", project.code
                 )
-                return None  # no shell on disk either → no sweep
+                return None  # no spine on disk either → no sweep
             elements = load_spine(project_dir)
         if not elements:
             log.debug(
-                "no shell elements for %s — skipping sweep", project.code
+                "no spine elements for %s — skipping sweep", project.code
             )
-            return None  # no shell backfilled → nothing to synthesize
+            return None  # no spine backfilled → nothing to synthesize
         result = run_sweep(project.code, elements, today=today, llm=sweep_llm)
     except Exception as exc:  # noqa: BLE001 — best-effort per project
         log.warning("sweep failed for %s: %s", project.code, exc)
@@ -1382,9 +1382,9 @@ def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
         out.append("**Where:** _(Quick Resume empty — fill in before sprint planning)_")
     out.append("")
 
-    # Whole-project sweep synthesis (Project Shell slice 3, Phase B). Only
+    # Whole-project sweep synthesis (Project Spine slice 3, Phase B). Only
     # present when ``cp prep-planning --sweep`` ran and the project had a
-    # backfilled shell; absent on the default fast path.
+    # backfilled spine; absent on the default fast path.
     if block.sweep_synthesis:
         out.append("**Sweep:**")
         out.append("")
@@ -1495,7 +1495,7 @@ def build_planning_result(
         clickup_task_ids: cp_ask_hash → clickup_task_id map for bridging-
             period dedupe of sprint-file open asks against ClickUp
             client-asks. None or empty = no dedupe.
-        sweep_llm: opt-in whole-project sweep synthesizer (Project Shell
+        sweep_llm: opt-in whole-project sweep synthesizer (Project Spine
             slice 3, Phase B). None (default) = no sweep, no LLM call, the
             fast path is unchanged. When provided, each project's block gets
             a best-effort sweep synthesis attached (failures log + continue).
