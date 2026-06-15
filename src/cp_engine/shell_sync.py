@@ -14,6 +14,23 @@ from cp_engine.shell import element_to_row, load_shell
 _TABLE = "shell_elements"
 
 
+def reconcile_field(field, current_value, current_field_state, new_value, now_iso):
+    """Decide stored value + field state + optional review_flag for one tracked field.
+
+    Absent/proposed state ⇒ accept the new derived value. Confirmed + same ⇒
+    no-op. Confirmed + different ⇒ keep the confirmed value and emit a
+    review_flag. Never clobber a confirmed value — this is the one-way door
+    that makes MC-2 the authoritative spine.
+    """
+    state = current_field_state or "proposed"
+    if state != "confirmed":
+        return new_value, "proposed", None
+    if new_value == current_value:
+        return current_value, "confirmed", None
+    flag = {"field": field, "was": current_value, "now": new_value, "at": now_iso}
+    return current_value, "confirmed", flag
+
+
 def sync_shell_elements(
     client,
     *,
