@@ -84,6 +84,8 @@ from cp_engine.plan_from_transcript import (
     PlanGenerationError,
     generate_plan,
 )
+from cp_engine.retrospective import append_entry, build_entry
+from cp_engine.shell import ShellDirNotFound, find_shell_dir
 
 from clickup_propose import propose_clickup_tasks
 from meeting_artifact import write_meeting_artifacts
@@ -399,6 +401,7 @@ def _perform_auto_ingest(
                 transcript_path=transcript_path,
                 action_items=action_items,
                 meeting_id=meeting_id,
+                meeting=meeting,
             )
             ingested.append(entry)
             if entry["files_written"]:
@@ -603,6 +606,12 @@ async def auto_ingest_account(request: Request) -> dict:
         plan = generated.plan
         projects_block = plan.get("projects") or {}
 
+        # The whole Fathom summary feeds each touched project's Retrospective
+        # (Part B: "every meeting that touches a project"). Fetched once;
+        # action_items stay None here — they have no per-project attribution
+        # on an account meeting (same constraint as the bullet routing above).
+        meeting = _fetch_meeting(meeting_id)
+
         ingested: list[dict] = []
         commits: list[str] = []
 
@@ -643,8 +652,15 @@ async def auto_ingest_account(request: Request) -> dict:
             entry["files_written"] = [str(p) for p in exec_result.files_written]
             entry["skipped_duplicate"] = exec_result.skipped_duplicate
             entry["errors"].extend(exec_result.errors)
+            entry["retrospective"] = _append_retrospective(
+                config=config,
+                code=code,
+                meeting=meeting,
+                action_items=None,
+                plan=single_project_plan,
+            )
             ingested.append(entry)
-            if exec_result.files_written:
+            if exec_result.files_written or entry["retrospective"] == "appended":
                 commit_sha = _commit_and_push(
                     tenant_root=tenant_root,
                     meeting_id=meeting_id,
@@ -873,6 +889,10 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
         plan = generated.plan
         projects_block = plan.get("projects") or {}
 
+        # Whole Fathom summary → each touched project's Retrospective (Part B).
+        # Fetched once; action_items stay None (no per-project attribution).
+        meeting = _fetch_meeting(meeting_id)
+
         ingested: list[dict] = []
         commits: list[str] = []
 
@@ -913,8 +933,15 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
             entry["files_written"] = [str(p) for p in exec_result.files_written]
             entry["skipped_duplicate"] = exec_result.skipped_duplicate
             entry["errors"].extend(exec_result.errors)
+            entry["retrospective"] = _append_retrospective(
+                config=config,
+                code=code,
+                meeting=meeting,
+                action_items=None,
+                plan=single_project_plan,
+            )
             ingested.append(entry)
-            if exec_result.files_written:
+            if exec_result.files_written or entry["retrospective"] == "appended":
                 commit_sha = _commit_and_push(
                     tenant_root=tenant_root,
                     meeting_id=meeting_id,
@@ -1955,6 +1982,122 @@ def _ssh_env() -> dict:
 # ─────────────────────────────────────────────────────────────
 
 
+def _speaker_names(participants) -> list[str]:
+    """Extract participant display names defensively.
+
+    Fathom's `participants` is a list whose items may be dicts (with a
+    `name` field) or bare strings. Anything else is ignored. Mirrors the
+    parsing already done in meeting_artifact._build_markdown.
+    """
+    names: list[str] = []
+    for p in participants or []:
+        if isinstance(p, dict) and p.get("name"):
+            names.append(p["name"])
+        elif isinstance(p, str) and p:
+            names.append(p)
+    return names
+
+
+def _plan_decisions(plan: dict | None, code: str) -> list[str]:
+    """Pull decision texts out of the generated plan's project block, if any.
+
+    The plan's `record-decision` verb (when present) carries one dict per
+    decision; we extract a text/description field defensively. Returns []
+    if the plan has no decisions for this project.
+    """
+    if not plan:
+        return []
+    block = (plan.get("projects") or {}).get(code) or {}
+    out: list[str] = []
+    for item in block.get("record-decision") or []:
+        if isinstance(item, dict):
+            text = item.get("text") or item.get("decision") or item.get("description")
+            if text:
+                out.append(str(text).strip())
+        elif isinstance(item, str) and item.strip():
+            out.append(item.strip())
+    return out
+
+
+def _action_item_texts(action_items: list[dict] | None) -> list[str]:
+    """Extract a text/description field from each Fathom action item."""
+    out: list[str] = []
+    for item in action_items or []:
+        if isinstance(item, dict):
+            text = item.get("description") or item.get("text") or item.get("title")
+            if text:
+                out.append(str(text).strip())
+        elif isinstance(item, str) and item.strip():
+            out.append(item.strip())
+    return out
+
+
+def _append_retrospective(
+    *,
+    config: TenantConfig,
+    code: str,
+    meeting: dict | None,
+    action_items: list[dict] | None,
+    plan: dict | None,
+) -> str:
+    """Append the meeting's WHOLE Fathom summary to the project's Retrospective.
+
+    Best-effort, never raises. Returns one of:
+      - "skipped"   — no meeting, or no summary to preserve
+      - "appended"  — a new entry was written
+      - "duplicate" — meeting already present (idempotency no-op)
+      - "error"     — an exception was caught (logged); ingest continues
+
+    The Fathom `summary` is embedded WHOLE (anti-compression); decisions /
+    action items / links are ADDED as structured pointers, never a
+    replacement. The history file is committed by the caller's normal
+    `git add -A` commit.
+    """
+    if meeting is None:
+        return "skipped"
+    summary = (meeting.get("summary") or "").strip()
+    if not summary:
+        return "skipped"
+
+    try:
+        meeting_id = str(meeting.get("id") or "")
+        entry_md = build_entry(
+            date=str(meeting.get("meeting_date") or ""),
+            title=str(meeting.get("title") or "Untitled meeting"),
+            speakers=_speaker_names(meeting.get("participants")),
+            summary=summary,
+            decisions=_plan_decisions(plan, code),
+            action_items=_action_item_texts(action_items),
+            recording_url=meeting.get("fathom_url"),
+            transcript_link=None,
+            meeting_id=meeting_id or None,
+        )
+        history_path = (
+            find_shell_dir(config.root, code)
+            / "shell"
+            / "Retrospective"
+            / "meeting-history.md"
+        )
+        wrote = append_entry(
+            history_path,
+            meeting_id,
+            entry_md,
+            code=code,
+            project=code,
+            today=datetime.now().date(),
+        )
+        return "appended" if wrote else "duplicate"
+    except ShellDirNotFound as exc:
+        # The project's working dir hasn't been synced yet (e.g. its first
+        # meeting arrives before sync ran). Distinct from a genuine error so
+        # it's observable as a benign skip, not a failure.
+        log.warning("retrospective: no shell dir yet for %s: %s", code, exc)
+        return "no-shell-dir"
+    except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
+        log.warning("retrospective: append failed for %s: %s", code, exc)
+        return "error"
+
+
 def _ingest_one_project(
     *,
     config: TenantConfig,
@@ -1962,6 +2105,7 @@ def _ingest_one_project(
     transcript_path: Path,
     action_items: list[dict] | None = None,
     meeting_id: str | None = None,
+    meeting: dict | None = None,
 ) -> dict:
     """Generate plan + execute for a single project. Returns a summary dict.
 
@@ -2015,6 +2159,18 @@ def _ingest_one_project(
     entry["files_written"] = [str(p) for p in exec_result.files_written]
     entry["skipped_duplicate"] = exec_result.skipped_duplicate
     entry["errors"].extend(exec_result.errors)
+
+    # Retrospective append (spine-inversion Part B). Best-effort: never
+    # raises, never appends to entry["errors"], so a retrospective failure
+    # can't flip the project's ingest status to "failed". The new file is
+    # picked up by the caller's normal `git add -A` commit.
+    entry["retrospective"] = _append_retrospective(
+        config=config,
+        code=code,
+        meeting=meeting,
+        action_items=action_items,
+        plan=gen.plan,
+    )
     return entry
 
 

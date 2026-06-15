@@ -32,12 +32,13 @@ LAYERS: tuple[str, ...] = (
     "Decisions",
     "Timeline",
     "Stakeholders",
+    "Retrospective",
 )
 
 # Layers that are always ambient — relevant regardless of which deliverable is
 # active (design §2: "project-framing layer ... always ambient").
 FRAMING_LAYERS: frozenset[str] = frozenset(
-    {"Brief", "Agreement", "Timeline", "Stakeholders"}
+    {"Brief", "Agreement", "Timeline", "Stakeholders", "Retrospective"}
 )
 
 
@@ -139,6 +140,10 @@ LAYER_IMPORTANCE: dict[str, float] = {
     "Stakeholders": 0.55,
     "Research": 0.50,
     "SourceMaterial": 0.45,
+    # Living per-project meeting timeline — moderately important, framing
+    # (never demotes). Weight tunable after a real sweep; see Part B of the
+    # spine-inversion design.
+    "Retrospective": 0.60,
 }
 
 

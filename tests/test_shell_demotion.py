@@ -151,3 +151,15 @@ def test_sweep_marks_graph_derived_reference():
     note_line = next(ln for ln in out.splitlines()
                      if "p/research/r1" in ln and "serves:" not in ln)
     assert "(reference)" in note_line
+
+
+def test_retrospective_layer_never_demotes():
+    # Retrospective is framing/living: even serving only a blocked deliverable
+    # it must stay active (it's append-only history, not deliverable-bound work).
+    d1 = _el("p/deliverable/d1", "Deliverables", stage="revised", status="active")
+    d2 = _el("p/deliverable/d2", "Deliverables", stage="first", status="active",
+             depends_on=("p/deliverable/d1",), serves=("p/deliverable/d2",))
+    retro = _el("p/retrospective/meeting-history", "Retrospective",
+                serves=("p/deliverable/d2",))
+    by_id = {e.id: e for e in (d1, d2, retro)}
+    assert derive_status(retro, by_id) == "active"
