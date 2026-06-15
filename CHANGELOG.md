@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.24.0 — 2026-06-15
+
+### Added — Project Shell spine inversion, Phase 3 (client-document linkage)
+
+A meeting gives a summary we preserve whole (Phase 2). A client document deserves the same: the distillation is useful, but the original must stay reachable and re-considerable. Client originals already live in `rag_assets` (chunked, embedded — IBX-5153 has 101); the distilled `Brief`/`ClientFeedback` shell elements are our synthesis of them. Nothing connected the two. This phase links them.
+
+**`cp shell` "Source documents" facet.** After the ranked sweep, `cp shell` lists the project's active `rag_assets` and shows which distilled elements cite each one. The project's assets are resolved via the bridge `shell_elements.project_id === rag_assets.project_id` (a uuid the shell already carries — *not* via `projects.code`, which is a different slug). Best-effort and MC-2-only — never breaks the sweep. The list caps at 25 bullets (linked assets first) with the true total in the header.
+
+**Live-computed links, no frontmatter mutation.** A distilled element's `source` frontmatter holds human-readable file refs (e.g. `synthesis-docs/client_input_brief_distilled.md`). `match_sources_to_assets` matches those to assets by basename (case-insensitive, deterministic, empty-key-guarded) at render time — so an element shows its linked original without baking typed links into human-authored files. The `source` parser was widened to also *preserve* typed-link dicts (`{type: rag_asset, id, title}`) when present, round-tripping them through MC-2's `source` jsonb; `source` is not a reconcile-tracked field, so it mirrors freely.
+
+Linkage and reachability only — embeddings-driven reconsideration across the corpus stays out of scope (a design Non-goal). No migration: rides the existing `shell_elements.source` jsonb. Verified live on IBX-5153 — 13 distilled elements link their embedded originals (the foundation doc → `infoblox_ai_foundation.md`, Carol's framework deck → the client-owned pptx, the kickoff transcript → the agency briefing).
+
 ## v0.23.0 — 2026-06-15
 
 ### Added — Project Shell spine inversion, Phase 2 (the Retrospective layer)
