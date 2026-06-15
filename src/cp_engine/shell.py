@@ -9,7 +9,7 @@ Lens relevance score (design §2). No MC-2, no writes — slice 1 is read-only.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -62,6 +62,13 @@ class ShellElement:
     target_history: tuple[dict, ...] = ()
     source: tuple[str, ...] = ()
     author: str | None = None
+    # Read-only spine verification metadata (slice: spine inversion). Sourced
+    # only from MC-2; never round-trips into markdown or the mirror payload —
+    # the reconcile writer owns these columns.
+    field_states: dict = field(default_factory=dict)  # {field: "proposed"|"confirmed"}
+    review_flags: tuple[dict, ...] = ()  # re-derivation conflicts
+    confirmed_by: str | None = None
+    confirmed_at: str | None = None
 
 
 def _as_tuple(value: object) -> tuple:
@@ -242,6 +249,10 @@ def row_to_element(row: dict[str, object]) -> ShellElement:
         target_history=tuple(row.get("target_history") or []),
         source=_t("source"),
         author=row.get("author"),
+        field_states=dict(row.get("field_states") or {}),
+        review_flags=tuple(row.get("review_flags") or []),
+        confirmed_by=row.get("confirmed_by"),
+        confirmed_at=(str(row["confirmed_at"]) if row.get("confirmed_at") else None),
     )
 
 
@@ -252,7 +263,8 @@ def load_shell_from_mc2(client, project_code: str) -> tuple[ShellElement, ...]:
         .select(
             "element_id, project_code, layer, type, title, stage, fidelity, "
             "target_date, status, last_touched, depends_on, serves, source, "
-            "target_history, author, rel_path"
+            "target_history, author, rel_path, "
+            "field_states, review_flags, confirmed_by, confirmed_at"
         )
         .eq("project_code", project_code)
         .execute()

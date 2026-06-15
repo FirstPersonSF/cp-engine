@@ -787,36 +787,46 @@ def _load_shell_elements(config, code: str):
     elements: tuple = ()
     project_dir = None
     reached_mc2 = False
+    served_by_mc2 = False  # connected AND query succeeded — MC-2 is the truth source
 
     backend = MC2Backend()
     try:
         client = backend.connect(config)  # lightweight: client only, no read
         reached_mc2 = True
     except BackendUnavailable as exc:
-        click.echo(f"(MC-2 unavailable, reading from disk: {exc})", err=True)
+        click.echo(f"(MC-2 unavailable: {exc})", err=True)
     except Exception as exc:  # noqa: BLE001 — unexpected connect failure, still degrade
-        click.echo(
-            f"(WARNING: MC-2 connect failed unexpectedly — falling back to disk: {exc})",
-            err=True,
-        )
+        click.echo(f"(WARNING: MC-2 connect failed unexpectedly: {exc})", err=True)
 
     if reached_mc2:
         try:
             elements = load_shell_from_mc2(client, code)
+            served_by_mc2 = True  # an empty result is still the authoritative answer
         except Exception as exc:  # noqa: BLE001 — connected but query failed = likely a bug
             click.echo(
-                f"(WARNING: MC-2 shell read failed — falling back to disk, "
-                f"this may be a schema/query bug: {exc})",
+                f"(WARNING: MC-2 shell read failed — this may be a schema/query bug: {exc})",
                 err=True,
             )
 
-    if not elements:
+    # Reads treat MC-2 as the source of truth. We only touch disk when MC-2 did
+    # not serve the read — and when we do, we say so loudly: the result is
+    # last-known, unverified state, NOT the authoritative spine.
+    if not served_by_mc2:
+        click.echo(
+            "(MC-2 unreachable — showing last-known markdown-derived state, "
+            "unverified.)",
+            err=True,
+        )
         try:
             project_dir = find_shell_dir(config.root, code)
         except ShellDirNotFound as exc:
             click.echo(str(exc), err=True)
             sys.exit(1)
         elements = load_shell(project_dir)
+    elif not elements:
+        # MC-2 served the read but the project has no shell elements yet — say
+        # so, so an empty render isn't mistaken for a failed/unreachable read.
+        click.echo(f"(MC-2 returned 0 shell elements for {code}.)", err=True)
 
     return elements, project_dir
 

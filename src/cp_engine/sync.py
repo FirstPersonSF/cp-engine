@@ -413,6 +413,7 @@ def sync_tenant(
                     project_id=project.mc2_id,
                     project_dir=project_dir,
                     tenant_root=config.root,
+                    now=sync_clock,
                 )
             except Exception as exc:  # noqa: BLE001 — best-effort element mirror
                 logger.warning(

@@ -139,8 +139,22 @@ def test_cli_shell_falls_back_to_disk_when_mc2_unavailable(tmp_path, monkeypatch
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(main, ["shell", "ibx-5153"])
     assert result.exit_code == 0, result.output
-    assert "MC-2 unavailable, reading from disk" in result.output
+    assert "MC-2 unavailable" in result.output
+    assert "last-known markdown-derived state, unverified" in result.output
     assert "Positioning narrative" in result.output
+
+
+def test_cli_shell_empty_mc2_does_not_fall_back_to_disk(tmp_path, monkeypatch) -> None:
+    """An empty MC-2 result is the authoritative answer — we must NOT silently
+    fall through to disk and mask it. No unverified banner; no disk content."""
+    _tenant_with_ibx(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("cp_engine.sync_mc2.MC2Backend.connect", lambda self, cfg: object())
+    monkeypatch.setattr("cp_engine.shell.load_shell_from_mc2", lambda client, code: ())
+    result = CliRunner().invoke(main, ["shell", "ibx-5153"])
+    assert result.exit_code == 0, result.output
+    assert "unverified" not in result.output  # MC-2 served the read
+    assert "Positioning narrative" not in result.output  # disk NOT consulted
 
 
 def test_cli_shell_prefers_mc2_rows(tmp_path, monkeypatch) -> None:
