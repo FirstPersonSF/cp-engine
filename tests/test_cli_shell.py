@@ -187,6 +187,43 @@ def test_cli_shell_prefers_mc2_rows(tmp_path, monkeypatch) -> None:
     assert "Positioning narrative" not in result.output  # disk path NOT used
 
 
+def test_cli_shell_shows_source_documents_facet(tmp_path, monkeypatch) -> None:
+    """When MC-2 serves the read, `cp shell` appends the Source documents facet."""
+    _tenant_with_ibx(tmp_path)
+    monkeypatch.chdir(tmp_path)
+
+    from cp_engine.shell import ShellElement
+
+    def _fake_load_from_mc2(client, code):
+        return (
+            ShellElement(
+                id="ibx-5153/deliverable/from-mc2",
+                project="ibx-5153",
+                layer="Deliverables",
+                title="From MC-2 spine",
+                status="active",
+                last_touched="2026-06-13",
+                path=Path("x"),
+                body="",
+                stage="revised",
+            ),
+        )
+
+    monkeypatch.setattr("cp_engine.sync_mc2.MC2Backend.connect", lambda self, cfg: object())
+    monkeypatch.setattr("cp_engine.shell.load_shell_from_mc2", _fake_load_from_mc2)
+    monkeypatch.setattr(
+        "cp_engine.cli.fetch_project_assets",
+        lambda client, code: [
+            {"id": "a1", "title": "april-brief.pdf", "source_type": "pdf", "scope": "project"},
+            {"id": "a2", "title": "logo.png", "source_type": "png", "scope": "account"},
+        ],
+    )
+    result = CliRunner().invoke(main, ["shell", "ibx-5153"])
+    assert result.exit_code == 0, result.output
+    assert "Source documents (2)" in result.output
+    assert "april-brief.pdf" in result.output
+
+
 def test_cli_shell_unknown_code_errors(tmp_path, monkeypatch) -> None:
     (tmp_path / ".cp-engine.toml").write_text(
         '[tenant]\nname = "test"\n[engine]\nversion = "~= 0.18"\n'

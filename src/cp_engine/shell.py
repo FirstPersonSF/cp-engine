@@ -61,7 +61,9 @@ class ShellElement:
     depends_on: tuple[str, ...] = ()
     serves: tuple[str, ...] = ()
     target_history: tuple[dict, ...] = ()
-    source: tuple[str, ...] = ()
+    # May hold a mix of plain-string file refs and typed-link dicts
+    # ({"type":"rag_asset","id":...}); see _as_source.
+    source: tuple = ()
     author: str | None = None
     # Read-only spine verification metadata (slice: spine inversion). Sourced
     # only from MC-2; never round-trips into markdown or the mirror payload —
@@ -78,6 +80,13 @@ def _as_tuple(value: object) -> tuple:
     if isinstance(value, (list, tuple)):
         return tuple(value)
     return (value,)
+
+
+def _as_source(value: object) -> tuple:
+    """Coerce a frontmatter/row `source` into a tuple, preserving dict entries
+    (typed links like {"type":"rag_asset","id":...}) while stringifying scalars
+    (legacy plain-text file refs)."""
+    return tuple(x if isinstance(x, dict) else str(x) for x in _as_tuple(value))
 
 
 def parse_element(path: Path) -> ShellElement:
@@ -116,7 +125,7 @@ def parse_element(path: Path) -> ShellElement:
         depends_on=tuple(str(x) for x in _as_tuple(meta.get("depends_on"))),
         serves=tuple(str(x) for x in _as_tuple(meta.get("serves"))),
         target_history=_as_tuple(meta.get("target_history")),
-        source=tuple(str(x) for x in _as_tuple(meta.get("source"))),
+        source=_as_source(meta.get("source")),
         author=_str("author"),
     )
 
@@ -252,7 +261,7 @@ def row_to_element(row: dict[str, object]) -> ShellElement:
         depends_on=_t("depends_on"),
         serves=_t("serves"),
         target_history=tuple(row.get("target_history") or []),
-        source=_t("source"),
+        source=_as_source(row.get("source")),
         author=row.get("author"),
         field_states=dict(row.get("field_states") or {}),
         review_flags=tuple(row.get("review_flags") or []),
@@ -483,4 +492,64 @@ def render_sweep(
         )
         if e.serves:
             lines.append(f"        ← serves: {', '.join(e.serves)}")
+    return "\n".join(lines)
+
+
+# Cap the rendered asset list — ibx-5153 alone carries ~101 assets, and the
+# facet is an orientation aid, not a full manifest. The header count is always
+# the TRUE total (no silent caps); only the bullet list is truncated.
+_SOURCE_DOCS_CAP = 25
+
+
+def render_source_documents(assets, elements) -> str:
+    """Render the 'Source documents' facet block (a string).
+
+    `assets` is the list from `fetch_project_assets`; `elements` is the
+    project's ShellElements. Links are computed LIVE: each element's `source`
+    refs (plain-string file refs and/or already-typed dicts) are matched to the
+    assets by basename via `match_sources_to_assets`, so each linked asset shows
+    which distilled element(s) cite it without persisting links into frontmatter.
+
+    Linked assets sort first (most useful), then the rest by title. Long lists
+    are capped at `_SOURCE_DOCS_CAP` bullets with an `…and K more` line; the
+    header `(N)` is always the true total. Returns '' when there are no assets
+    so the caller can omit the block entirely.
+    """
+    if not assets:
+        return ""
+
+    from cp_engine.shell_sources import match_sources_to_assets
+
+    # asset_id -> [linking element titles], computed live (frontmatter untouched).
+    linked_by: dict[str, list[str]] = {}
+    for el in elements:
+        if not el.source:
+            continue
+        for ref in match_sources_to_assets(el.source, assets):
+            if isinstance(ref, dict) and ref.get("type") == "rag_asset":
+                linked_by.setdefault(ref.get("id"), []).append(el.title)
+
+    total = len(assets)
+    # Linked assets first, then by title (both groups title-sorted).
+    ordered = sorted(
+        assets,
+        key=lambda a: (
+            0 if linked_by.get(a.get("id")) else 1,
+            str(a.get("title", "")).casefold(),
+        ),
+    )
+
+    lines = [f"Source documents ({total})"]
+    for a in ordered[:_SOURCE_DOCS_CAP]:
+        title = a.get("title", "(untitled)")
+        src_type = a.get("source_type") or "?"
+        scope = a.get("scope") or "?"
+        suffix = ""
+        linkers = linked_by.get(a.get("id"))
+        if linkers:
+            suffix = f"  ← {', '.join(linkers)}"
+        lines.append(f"  • {title}  ·{src_type}  [{scope}]{suffix}")
+    remaining = total - _SOURCE_DOCS_CAP
+    if remaining > 0:
+        lines.append(f"  …and {remaining} more")
     return "\n".join(lines)

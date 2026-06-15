@@ -18,6 +18,7 @@ import click
 from cp_engine.config import ConfigError, load
 from cp_engine.config import CommittedConfigMissing
 from cp_engine.init import InitAborted, run_init
+from cp_engine.shell_sources import fetch_project_assets
 from cp_engine.sync import SyncError, sync_tenant
 
 
@@ -831,22 +832,54 @@ def _load_shell_elements(config, code: str):
     return elements, project_dir
 
 
+def _shell_mc2_client(config):
+    """Connect to MC-2 for best-effort read-only facets, or return None.
+
+    Used by `cp shell`'s Source-documents facet, which needs a live client that
+    `_load_shell_elements` does not expose. Never raises — a facet must never
+    break the sweep — so any connect failure degrades to None (facet omitted).
+    """
+    from cp_engine.sync_mc2 import MC2Backend
+
+    try:
+        return MC2Backend().connect(config)
+    except Exception:  # noqa: BLE001 — facet is best-effort; degrade silently
+        return None
+
+
 @main.command("shell")
 @click.argument("code")
 def shell_cmd(code: str) -> None:
     """Print the project shell's full ranked relevance sweep.
 
     Reads the spine from MC-2 (canonical); falls back to the on-disk markdown
-    frontmatter when MC-2 is unreachable so the command works offline.
+    frontmatter when MC-2 is unreachable so the command works offline. When
+    MC-2 serves the read, appends a 'Source documents' facet listing the
+    project's rag_assets and which distilled elements link them.
     """
     from datetime import date
 
-    from cp_engine.shell import render_sweep
+    from cp_engine.shell import render_source_documents, render_sweep
 
     config = _load_config_or_die()
-    elements, _ = _load_shell_elements(config, code)
+    elements, project_dir = _load_shell_elements(config, code)
 
     click.echo(render_sweep(code, elements, today=date.today()))
+
+    # Source-documents facet — best-effort, MC-2-only. project_dir is None
+    # exactly when MC-2 served the spine read; we reuse that as the signal that
+    # MC-2 is reachable, then open a fresh client for the asset query.
+    if project_dir is None:
+        try:
+            client = _shell_mc2_client(config)
+            if client is not None:
+                assets = fetch_project_assets(client, code)
+                block = render_source_documents(assets, elements)
+                if block:
+                    click.echo()
+                    click.echo(block)
+        except Exception as exc:  # noqa: BLE001 — facet must never break the sweep
+            click.echo(f"(source-documents facet skipped: {exc})", err=True)
 
 
 @main.command("shell-stats")
