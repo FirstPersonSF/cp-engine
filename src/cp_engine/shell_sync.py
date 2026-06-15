@@ -36,6 +36,27 @@ def reconcile_field(field, current_value, current_field_state, new_value, now_is
     return current_value, "confirmed", flag
 
 
+def _merge_flag(review_flags, field, flag):
+    """Return review_flags with at most one open flag per field.
+
+    A persistent confirmed/disk conflict would otherwise append a fresh flag on
+    every sync (sync runs on every auto-ingest push + SessionStart), growing the
+    column without bound and burying the review surface. We keep one current
+    flag per field: drop any prior flag for the same field, then add the new one
+    (if any). The review queue shows the *current* divergence, not its history.
+    """
+    pruned = [f for f in review_flags if f.get("field") != field]
+    if flag is not None:
+        pruned.append(flag)
+    return pruned
+
+
+def _has_confirmed_field(row):
+    """True if any tracked field on this MC-2 row is human-confirmed."""
+    states = row.get("field_states") or {}
+    return any(states.get(f) == "confirmed" for f in _TRACKED_FIELDS)
+
+
 def sync_shell_elements(
     client,
     *,
@@ -97,8 +118,7 @@ def sync_shell_elements(
             )
             row[field] = value
             field_states[field] = state
-            if flag is not None:
-                review_flags.append(flag)
+            review_flags = _merge_flag(review_flags, field, flag)
         row["field_states"] = field_states
         row["review_flags"] = review_flags
 
@@ -106,17 +126,26 @@ def sync_shell_elements(
         client.table(_TABLE).upsert(rows, on_conflict="element_id").execute()
 
     # Reap orphans: rows for this project whose element_id vanished from disk.
-    existing = (
-        client.table(_TABLE)
-        .select("element_id")
-        .eq("project_id", project_id)
-        .execute()
-        .data
-    ) or []
-    for row in existing:
-        if row["element_id"] not in present_ids:
+    # A row carrying ANY confirmed field is part of the human-verified spine —
+    # deleting it because its markdown source vanished would clobber confirmed
+    # state, the exact thing the inversion forbids. Such rows are NOT deleted;
+    # instead we flag that the source went missing so a human can resolve it.
+    for element_id, existing in existing_by_id.items():
+        if element_id in present_ids:
+            continue
+        if _has_confirmed_field(existing):
+            review_flags = _merge_flag(
+                list(existing.get("review_flags") or []),
+                "source",
+                {"field": "source", "was": "present", "now": "missing",
+                 "at": now_iso},
+            )
+            client.table(_TABLE).update(
+                {"review_flags": review_flags}
+            ).eq("element_id", element_id).execute()
+        else:
             client.table(_TABLE).delete().eq(
-                "element_id", row["element_id"]
+                "element_id", element_id
             ).execute()
 
     return len(rows)

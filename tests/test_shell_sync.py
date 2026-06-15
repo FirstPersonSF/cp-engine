@@ -16,6 +16,9 @@ class _FakeTable:
     def delete(self):
         self._op = ("delete", None); return self
 
+    def update(self, values):
+        self._op = ("update", values); return self
+
     def select(self, cols):
         self._op = ("select", cols); return self
 
@@ -26,13 +29,26 @@ class _FakeTable:
         op, payload = self._op
         rows = self.store.setdefault(self.name, [])
         if op == "upsert":
+            # Real PostgREST upsert does a PARTIAL update on conflict: columns
+            # NOT in the payload are preserved. Mirror that so the fake catches
+            # a regression that nulls human-only columns (confirmed_by/at).
             for r in payload:
-                rows[:] = [x for x in rows if x["element_id"] != r["element_id"]]
-                rows.append(dict(r))
+                match = next(
+                    (x for x in rows if x["element_id"] == r["element_id"]), None)
+                if match is not None:
+                    match.update(r)
+                else:
+                    rows.append(dict(r))
             return type("R", (), {"data": payload})()
         if op == "select":
             col, val = self._filter
             return type("R", (), {"data": [x for x in rows if x[col] == val]})()
+        if op == "update":
+            col, val = self._filter
+            for x in rows:
+                if x[col] == val:
+                    x.update(payload)
+            return type("R", (), {"data": []})()
         if op == "delete":
             col, val = self._filter
             before = len(rows)
@@ -153,3 +169,61 @@ def test_sync_new_element_has_empty_verification_state(tmp_path):
                if r["element_id"] == "proj-1/deliverable/pos")
     assert row["field_states"] == {}
     assert row["review_flags"] == []
+
+
+def test_sync_does_not_reap_confirmed_orphan_and_flags_it(tmp_path):
+    """A row with a confirmed field whose markdown vanished is part of the
+    human-verified spine — it must NOT be deleted. Instead a 'source missing'
+    review_flag is recorded so a human can resolve it."""
+    proj = tmp_path / "1p/acct/proj-1"; proj.mkdir(parents=True)
+    client = _FakeClient()
+    client.store["shell_elements"] = [{
+        "element_id": "proj-1/deliverable/CONFIRMED", "project_id": "u1",
+        "status": "active", "stage": None, "target_date": None,
+        "serves": [], "depends_on": [],
+        "field_states": {"status": "confirmed"}, "review_flags": [],
+        "confirmed_by": "drew", "confirmed_at": "2026-06-15T00:00:00Z",
+    }]
+    # No markdown on disk for this element.
+    sync_shell_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
+    rows = client.store["shell_elements"]
+    surviving = next(r for r in rows
+                     if r["element_id"] == "proj-1/deliverable/CONFIRMED")
+    assert surviving["status"] == "active"                 # not deleted
+    assert surviving["confirmed_by"] == "drew"             # human state intact
+    assert any(f["field"] == "source" and f["now"] == "missing"
+               for f in surviving["review_flags"])
+
+
+def test_sync_still_reaps_unconfirmed_orphan(tmp_path):
+    """An orphan with NO confirmed field is still reaped (unchanged behavior)."""
+    proj = tmp_path / "1p/acct/proj-1"; proj.mkdir(parents=True)
+    client = _FakeClient()
+    client.store["shell_elements"] = [{
+        "element_id": "proj-1/research/GONE", "project_id": "u1",
+        "field_states": {}, "review_flags": [],
+    }]
+    sync_shell_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
+    ids = {r["element_id"] for r in client.store["shell_elements"]}
+    assert "proj-1/research/GONE" not in ids
+
+
+def test_sync_keeps_at_most_one_flag_per_field(tmp_path):
+    """A persistent confirmed/disk conflict must not accrue a flag per sync —
+    syncing twice with the same divergence yields exactly one status flag."""
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    client.store["shell_elements"] = [{
+        "element_id": "proj-1/deliverable/pos", "project_id": "u1",
+        "status": "active", "stage": None, "target_date": None,
+        "serves": [], "depends_on": [],
+        "field_states": {"status": "confirmed"}, "review_flags": [],
+    }]
+    _write_el(tmp_path, "Deliverables", "pos", "proj-1/deliverable/pos", status="dormant")
+    for _ in range(2):
+        sync_shell_elements(client, project_id="u1", project_dir=proj, tenant_root=tmp_path)
+    row = next(r for r in client.store["shell_elements"]
+               if r["element_id"] == "proj-1/deliverable/pos")
+    status_flags = [f for f in row["review_flags"] if f["field"] == "status"]
+    assert len(status_flags) == 1                          # not 2
+    assert row["status"] == "active"                       # still not clobbered

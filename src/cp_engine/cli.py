@@ -823,6 +823,10 @@ def _load_shell_elements(config, code: str):
             click.echo(str(exc), err=True)
             sys.exit(1)
         elements = load_shell(project_dir)
+    elif not elements:
+        # MC-2 served the read but the project has no shell elements yet — say
+        # so, so an empty render isn't mistaken for a failed/unreachable read.
+        click.echo(f"(MC-2 returned 0 shell elements for {code}.)", err=True)
 
     return elements, project_dir
 
