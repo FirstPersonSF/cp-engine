@@ -1068,7 +1068,7 @@ def _write_drift_flags(client, drift_items, today: str) -> int:
         field = item["field"]
         try:
             prior = (
-                client.table("shell_elements")
+                client.table("spine_elements")
                 .select("review_flags")
                 .eq("element_id", element_id)
                 .limit(1)
@@ -1088,7 +1088,7 @@ def _write_drift_flags(client, drift_items, today: str) -> int:
                 "source": "sweep",
             }
             merged = _merge_flag(existing, field, flag)
-            client.table("shell_elements").update(
+            client.table("spine_elements").update(
                 {"review_flags": merged}
             ).eq("element_id", element_id).execute()
             written += 1
@@ -1173,7 +1173,7 @@ def snapshot_cmd(ref: str, label: str, reason: str | None) -> None:
 
     try:
         client = MC2Backend().connect(config)
-        client.table("shell_snapshots").upsert(row, on_conflict="id").execute()
+        client.table("spine_snapshots").upsert(row, on_conflict="id").execute()
     except BackendUnavailable as exc:
         # Expected when offline / no creds — the file is the source of truth.
         click.echo(f"(snapshot saved to disk; MC-2 index skipped — {exc})", err=True)

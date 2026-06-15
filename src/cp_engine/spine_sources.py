@@ -67,7 +67,7 @@ def fetch_project_assets(client, project_code):
     `meta jsonb` we must never pull)."""
     try:
         rows = (
-            client.table("shell_elements")
+            client.table("spine_elements")
             .select("project_id")
             .eq("project_code", project_code)
             .limit(1)

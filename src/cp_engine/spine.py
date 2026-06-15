@@ -273,7 +273,7 @@ def row_to_element(row: dict[str, object]) -> SpineElement:
 def load_spine_from_mc2(client, project_code: str) -> tuple[SpineElement, ...]:
     """Load a project's shell elements from MC-2 (canonical read path)."""
     data = (
-        client.table("shell_elements")
+        client.table("spine_elements")
         .select(
             "element_id, project_code, layer, type, title, stage, fidelity, "
             "target_date, status, last_touched, depends_on, serves, source, "

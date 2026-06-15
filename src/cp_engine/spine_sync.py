@@ -12,7 +12,7 @@ from pathlib import Path
 
 from cp_engine.spine import element_to_row, load_spine
 
-_TABLE = "shell_elements"
+_TABLE = "spine_elements"
 
 # The only fields a human can confirm in MC-2; sync reconciles these rather
 # than overwriting. Everything else on the row is proposed/overwrite.
@@ -162,7 +162,7 @@ def sync_spine_elements(
     return len(rows)
 
 
-_SNAPSHOTS_TABLE = "shell_snapshots"
+_SNAPSHOTS_TABLE = "spine_snapshots"
 
 
 def sync_spine_snapshots(

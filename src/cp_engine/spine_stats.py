@@ -13,7 +13,7 @@ from cp_engine.spine import _parse_date
 
 def _deliverable_rows(client, cols: str) -> list[dict]:
     return (
-        client.table("shell_elements")
+        client.table("spine_elements")
         .select(cols).eq("layer", "Deliverables").execute().data
     ) or []
 
