@@ -505,8 +505,10 @@ def render_source_documents(assets, elements) -> str:
     """Render the 'Source documents' facet block (a string).
 
     `assets` is the list from `fetch_project_assets`; `elements` is the
-    project's ShellElements, scanned for typed `source` links back to those
-    assets so each linked asset can show which distilled element(s) cite it.
+    project's ShellElements. Links are computed LIVE: each element's `source`
+    refs (plain-string file refs and/or already-typed dicts) are matched to the
+    assets by basename via `match_sources_to_assets`, so each linked asset shows
+    which distilled element(s) cite it without persisting links into frontmatter.
 
     Linked assets sort first (most useful), then the rest by title. Long lists
     are capped at `_SOURCE_DOCS_CAP` bullets with an `…and K more` line; the
@@ -516,10 +518,14 @@ def render_source_documents(assets, elements) -> str:
     if not assets:
         return ""
 
-    # asset_id -> [linking element titles]
+    from cp_engine.shell_sources import match_sources_to_assets
+
+    # asset_id -> [linking element titles], computed live (frontmatter untouched).
     linked_by: dict[str, list[str]] = {}
     for el in elements:
-        for ref in el.source:
+        if not el.source:
+            continue
+        for ref in match_sources_to_assets(el.source, assets):
             if isinstance(ref, dict) and ref.get("type") == "rag_asset":
                 linked_by.setdefault(ref.get("id"), []).append(el.title)
 

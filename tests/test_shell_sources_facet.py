@@ -104,6 +104,20 @@ def test_render_shows_linked_by_suffix():
     assert "← April brief" in out
 
 
+def test_render_links_live_from_plain_string_source_ref():
+    # The real-world case: an element's source is a plain-string file ref (NOT a
+    # pre-typed dict). The facet must match it to the asset LIVE by basename and
+    # show the linked-by suffix — frontmatter is never mutated.
+    assets = [
+        {"id": "a1", "title": "client_input_brief_distilled.md",
+         "source_type": "doc", "scope": "project"},
+    ]
+    el = _el("Client input brief (distilled)",
+             source=("synthesis-docs/client_input_brief_distilled.md",))
+    out = render_source_documents(assets, (el,))
+    assert "← Client input brief (distilled)" in out
+
+
 def test_render_linked_assets_sort_first():
     assets = [
         {"id": "a1", "title": "aaa.txt", "source_type": "txt", "scope": "project"},
