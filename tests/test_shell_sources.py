@@ -95,3 +95,14 @@ def test_match_determinism_smaller_id_wins() -> None:
     ]
     out = match_sources_to_assets(("dir/dup.md",), assets)
     assert out[0]["id"] == "a-id"
+
+
+def test_match_empty_ref_does_not_match_untitled_asset() -> None:
+    # An empty/whitespace source ref must NOT spuriously link to an asset whose
+    # title is also empty/blank — both would normalize to the empty key.
+    assets = [
+        {"id": "untitled", "title": ""},
+        {"id": "blank", "title": "   "},
+    ]
+    out = match_sources_to_assets(("", "   ", "client-email/no-extension"), assets)
+    assert out == ("", "   ", "client-email/no-extension")  # all pass through

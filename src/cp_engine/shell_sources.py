@@ -26,17 +26,21 @@ def match_sources_to_assets(source_refs, assets):
     (sort assets by id for stability)."""
     # Build basename -> asset index. Sort by str(id) so that, for two assets
     # sharing a basename, the smallest id wins deterministically (first-wins).
+    # An empty key (blank/whitespace/extensionless title) is NOT indexed —
+    # otherwise an empty source ref would spuriously match an untitled asset.
     index: dict[str, dict] = {}
     for asset in sorted(assets, key=lambda a: str(a.get("id"))):
         key = _basename_key(asset.get("title", ""))
-        index.setdefault(key, asset)
+        if key:
+            index.setdefault(key, asset)
 
     out = []
     for ref in source_refs:
         if isinstance(ref, dict):
             out.append(ref)
             continue
-        asset = index.get(_basename_key(ref))
+        ref_key = _basename_key(ref)
+        asset = index.get(ref_key) if ref_key else None
         if asset is not None:
             out.append(
                 {
