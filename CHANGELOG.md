@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.23.0 — 2026-06-15
+
+### Added — Project Shell spine inversion, Phase 2 (the Retrospective layer)
+
+We process every input down to tiny nuggets and the big picture evaporates. The Retrospective is the anti-compression move: a new living shell layer that preserves the narrative of *how a project got to where it is*, built entirely from data we already store but throw away.
+
+**New `Retrospective` layer.** A twelfth shell layer holding one living element per project at `shell/Retrospective/meeting-history.md`. It's framing (never demotes — append-only history), Lens-scored (`LAYER_IMPORTANCE` 0.60), and a first-class shell element: spine row in MC-2, snapshot-able, sweep-visible — not a special-cased sidecar.
+
+**Whole Fathom summaries, preserved.** On every tagged-meeting auto-ingest, the webhook appends a dated entry that embeds the Fathom summary **whole** — the good narrative we already store in `fathom_meetings.summary` but never used. Structured pointers (decisions, action items, recording link) are *added* around it, never a replacement. Entries are newest-first under the element's H1, idempotent on `meeting_id`. Covers all three ingest shapes — single-project, account, and sprint-planning meetings each leave a Retrospective entry in every project they touch.
+
+The append is best-effort: a retrospective failure never breaks or fails the surrounding ingest, and it rides the existing per-project `git add -A` commit (no extra commits). Per the design, entries are markdown-only — no `retrospective_entries` structured table until a UI needs it.
+
 ## v0.22.0 — 2026-06-15
 
 ### Changed — Project Shell spine inversion, Phase 1 (MC-2 becomes the verified source of truth)
