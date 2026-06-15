@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.26.0 — 2026-06-15
+
+### Changed — Shell → Spine rename (no behavior change)
+
+The structural backbone has been called the *spine* throughout the design ("the authoritative spine"); the code, CLI, and data still said *shell*. This release renames everything to *spine* so the metaphor is consistent and the forthcoming Mission Control verification UI is born as "Spine" rather than shipping as "Shell" and renaming later. Purely mechanical — no behavior changes; the full suite stays green at 1018 passing.
+
+- **Modules:** `shell.py → spine.py`, `shell_sync.py → spine_sync.py`, `shell_sweep.py → spine_sweep.py`, `shell_snapshot.py → spine_snapshot.py`, `shell_sources.py → spine_sources.py`, `shell_stats.py → spine_stats.py`.
+- **CLI:** `cp shell → cp spine`, `cp shell-stats → cp spine-stats` (no back-compat alias — single operator). `cp sweep`/`cp snapshot`/`cp snapshots` keep their names.
+- **Symbols:** `ShellElement → SpineElement`, `load_shell → load_spine`, `find_shell_dir → find_spine_dir`, `sync_shell_elements → sync_spine_elements`, and the rest.
+- **Data:** live tables renamed `shell_elements → spine_elements`, `shell_snapshots → spine_snapshots` (mc-2 migration 062 — data-preserving `RENAME`; rows, RLS, FKs, indexes preserved).
+- **Tenant tree:** project working dirs `shell/ → spine/`.
+
 ## v0.25.0 — 2026-06-15
 
 ### Changed — Project Shell spine inversion, Phase 4 (sweep enrichment)
