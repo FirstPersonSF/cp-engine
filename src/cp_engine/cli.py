@@ -993,7 +993,9 @@ def sweep_cmd(code: str, model: str) -> None:
 
     today = date.today()
     try:
-        result = run_sweep(code, elements, today=today, llm=_llm)
+        result = run_sweep(
+            code, elements, today=today, llm=_llm, tenant_root=config.root
+        )
     except Exception as exc:  # noqa: BLE001 — LLM/transport failure
         click.echo(
             f"Sweep synthesis failed (is ANTHROPIC_API_KEY set?): {exc}",
@@ -1034,6 +1036,67 @@ def sweep_cmd(code: str, model: str) -> None:
 
     click.echo(result.ranked_table)
     click.echo(f"\nSynthesis written: shell/Synthesis/{fname}")
+
+    # Best-effort: record proposed drift as review_flags on each element's MC-2
+    # row (the human confirms later in the UI). Advisory only — an MC-2 failure
+    # must NEVER fail the sweep.
+    if result.drift_items:
+        from cp_engine.sync_mc2 import MC2Backend
+
+        try:
+            client = MC2Backend().connect(config)
+        except Exception as exc:  # noqa: BLE001 — advisory, never fail the sweep
+            click.echo(
+                f"Could not record drift flags (MC-2 unavailable): {exc}",
+                err=True,
+            )
+        else:
+            n = _write_drift_flags(client, result.drift_items, today.isoformat())
+            click.echo(f"Flagged {n} drifted element(s) for review.")
+
+
+def _write_drift_flags(client, drift_items, today: str) -> int:
+    """Record each proposed drift item as a `review_flag` on its element's MC-2
+    row (one open flag per field, via `_merge_flag`). Best-effort per item: a
+    single failure is logged and skipped, the rest still land. Returns the
+    number of elements successfully flagged."""
+    from cp_engine.shell_sync import _merge_flag
+
+    written = 0
+    for item in drift_items:
+        element_id = item["element_id"]
+        field = item["field"]
+        try:
+            prior = (
+                client.table("shell_elements")
+                .select("review_flags")
+                .eq("element_id", element_id)
+                .limit(1)
+                .execute()
+                .data
+            ) or []
+            if not prior:
+                # Unknown element id (e.g. an LLM hallucination) — don't update
+                # zero rows and overcount. Skip quietly.
+                continue
+            existing = list(prior[0].get("review_flags") or [])
+            flag = {
+                "field": field,
+                "was": "(sweep)",
+                "now": item["observation"],
+                "at": today,
+                "source": "sweep",
+            }
+            merged = _merge_flag(existing, field, flag)
+            client.table("shell_elements").update(
+                {"review_flags": merged}
+            ).eq("element_id", element_id).execute()
+            written += 1
+        except Exception as exc:  # noqa: BLE001 — advisory, skip on failure
+            click.echo(
+                f"Could not flag drift on {element_id}: {exc}", err=True
+            )
+    return written
 
 
 @main.command("snapshot")

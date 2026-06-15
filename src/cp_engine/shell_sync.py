@@ -36,16 +36,27 @@ def reconcile_field(field, current_value, current_field_state, new_value, now_is
     return current_value, "confirmed", flag
 
 
-def _merge_flag(review_flags, field, flag):
-    """Return review_flags with at most one open flag per field.
+def _merge_flag(review_flags, field, flag, *, source=None):
+    """Return review_flags with at most one open flag per (field, source).
 
     A persistent confirmed/disk conflict would otherwise append a fresh flag on
     every sync (sync runs on every auto-ingest push + SessionStart), growing the
     column without bound and burying the review surface. We keep one current
-    flag per field: drop any prior flag for the same field, then add the new one
-    (if any). The review queue shows the *current* divergence, not its history.
+    flag per field PER PRODUCER: drop any prior flag for the same field that
+    shares the incoming flag's `source`, then add the new one (if any).
+
+    Source-awareness matters because two independent producers now write flags:
+    reconcile (`source` absent) and the sweep (`source="sweep"`). Keying on
+    field alone would let each producer's clean-up wipe the other's flag every
+    cycle. When `flag` is None (a clean-up call), pass the producer's `source`
+    explicitly so only that producer's stale flag for the field is pruned.
     """
-    pruned = [f for f in review_flags if f.get("field") != field]
+    incoming_source = flag.get("source") if flag is not None else source
+
+    def _same_producer(f):
+        return f.get("field") == field and f.get("source") == incoming_source
+
+    pruned = [f for f in review_flags if not _same_producer(f)]
     if flag is not None:
         pruned.append(flag)
     return pruned

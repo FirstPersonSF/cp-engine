@@ -209,3 +209,92 @@ def test_sweep_empty_shell_writes_nothing(tmp_path, monkeypatch) -> None:
     assert called["llm"] is False
     # No Synthesis element written.
     assert not list(_syn_dir(tmp_path).glob("*-sweep.md"))
+
+
+# --- Task 4.2: drift flags written to MC-2 ---------------------------------
+
+class _DriftFakeTable:
+    """Minimal PostgREST-shaped fake supporting select/eq/limit/update/execute."""
+
+    def __init__(self, store, name):
+        self.store, self.name = store, name
+        self._op = None
+        self._payload = None
+        self._filter = None
+
+    def select(self, cols):
+        self._op = "select"; return self
+
+    def update(self, values):
+        self._op = "update"; self._payload = values; return self
+
+    def eq(self, col, val):
+        self._filter = (col, val); return self
+
+    def limit(self, n):
+        return self
+
+    def execute(self):
+        rows = self.store.setdefault(self.name, [])
+        if self._op == "select":
+            col, val = self._filter
+            data = [x for x in rows if x.get(col) == val]
+            return type("R", (), {"data": data})()
+        if self._op == "update":
+            col, val = self._filter
+            for x in rows:
+                if x.get(col) == val:
+                    x.update(self._payload)
+            return type("R", (), {"data": []})()
+        raise AssertionError(f"unexpected op {self._op}")
+
+
+class _DriftFakeClient:
+    def __init__(self, rows):
+        self.store = {"shell_elements": rows}
+
+    def table(self, name):
+        return _DriftFakeTable(self.store, name)
+
+
+def test_write_drift_flags_lands_flag_with_source_sweep():
+    from cp_engine.cli import _write_drift_flags
+
+    rows = [{"element_id": "ibx-5153/deliverable/pos", "review_flags": []}]
+    client = _DriftFakeClient(rows)
+    drift = [{
+        "element_id": "ibx-5153/deliverable/pos",
+        "field": "stage",
+        "observation": "stage looks stale.",
+    }]
+    n = _write_drift_flags(client, drift, "2026-06-15")
+    assert n == 1
+    flags = rows[0]["review_flags"]
+    assert len(flags) == 1
+    assert flags[0]["field"] == "stage"
+    assert flags[0]["source"] == "sweep"
+    assert flags[0]["now"] == "stage looks stale."
+    assert flags[0]["at"] == "2026-06-15"
+
+
+def test_write_drift_flags_keeps_one_per_field():
+    from cp_engine.cli import _write_drift_flags
+
+    rows = [{"element_id": "ibx-5153/deliverable/pos", "review_flags": []}]
+    client = _DriftFakeClient(rows)
+    drift = [{
+        "element_id": "ibx-5153/deliverable/pos",
+        "field": "stage",
+        "observation": "first observation.",
+    }]
+    _write_drift_flags(client, drift, "2026-06-15")
+    drift2 = [{
+        "element_id": "ibx-5153/deliverable/pos",
+        "field": "stage",
+        "observation": "second observation.",
+    }]
+    _write_drift_flags(client, drift2, "2026-06-16")
+    flags = rows[0]["review_flags"]
+    stage_flags = [f for f in flags if f["field"] == "stage"]
+    assert len(stage_flags) == 1
+    assert stage_flags[0]["now"] == "second observation."
