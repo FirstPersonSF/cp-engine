@@ -61,7 +61,9 @@ class ShellElement:
     depends_on: tuple[str, ...] = ()
     serves: tuple[str, ...] = ()
     target_history: tuple[dict, ...] = ()
-    source: tuple[str, ...] = ()
+    # May hold a mix of plain-string file refs and typed-link dicts
+    # ({"type":"rag_asset","id":...}); see _as_source.
+    source: tuple = ()
     author: str | None = None
     # Read-only spine verification metadata (slice: spine inversion). Sourced
     # only from MC-2; never round-trips into markdown or the mirror payload —
@@ -78,6 +80,13 @@ def _as_tuple(value: object) -> tuple:
     if isinstance(value, (list, tuple)):
         return tuple(value)
     return (value,)
+
+
+def _as_source(value: object) -> tuple:
+    """Coerce a frontmatter/row `source` into a tuple, preserving dict entries
+    (typed links like {"type":"rag_asset","id":...}) while stringifying scalars
+    (legacy plain-text file refs)."""
+    return tuple(x if isinstance(x, dict) else str(x) for x in _as_tuple(value))
 
 
 def parse_element(path: Path) -> ShellElement:
@@ -116,7 +125,7 @@ def parse_element(path: Path) -> ShellElement:
         depends_on=tuple(str(x) for x in _as_tuple(meta.get("depends_on"))),
         serves=tuple(str(x) for x in _as_tuple(meta.get("serves"))),
         target_history=_as_tuple(meta.get("target_history")),
-        source=tuple(str(x) for x in _as_tuple(meta.get("source"))),
+        source=_as_source(meta.get("source")),
         author=_str("author"),
     )
 
@@ -252,7 +261,7 @@ def row_to_element(row: dict[str, object]) -> ShellElement:
         depends_on=_t("depends_on"),
         serves=_t("serves"),
         target_history=tuple(row.get("target_history") or []),
-        source=_t("source"),
+        source=_as_source(row.get("source")),
         author=row.get("author"),
         field_states=dict(row.get("field_states") or {}),
         review_flags=tuple(row.get("review_flags") or []),
