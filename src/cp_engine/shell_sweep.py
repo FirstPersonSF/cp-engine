@@ -8,6 +8,7 @@ names the cold-but-important threads. The LLM call itself lives in run_sweep
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import date
 from typing import Callable
@@ -35,11 +36,60 @@ def _excerpt(body: str) -> str:
     return collapsed[:_EXCERPT_CHARS].rstrip() + "…"
 
 
+# Default number of recent meeting entries to feed the sweep prompt. Bounded so
+# a long-running project's full meeting history doesn't swamp the token budget;
+# the newest few are what ground the synthesis in "what was just discussed".
+_MEETING_LIMIT = 4
+_MEETING_MARKER_RE = re.compile(r"^[ \t]*<!--[ \t]*cp:meeting=[^>]*-->[ \t]*\n?", re.MULTILINE)
+
+
+def recent_meeting_summaries(
+    elements: tuple[ShellElement, ...],
+    *,
+    limit: int = _MEETING_LIMIT,
+) -> list[str]:
+    """Extract up to `limit` most-recent meeting entries from the project's
+    Retrospective element body, newest first.
+
+    Returns a list of entry strings (each the markdown block for one meeting,
+    header through links). Returns [] if there's no Retrospective element or it
+    has no `### `-headed entries. The Retrospective body is already newest-first
+    (Phase 2 inserts at the top), so we just take the first `limit`.
+
+    The idempotency `<!-- cp:meeting=... -->` trailer is stripped from each
+    returned block — it's machine bookkeeping, noise for the LLM.
+    """
+    retro = next((e for e in elements if e.layer == "Retrospective"), None)
+    if retro is None:
+        return []
+
+    entries: list[str] = []
+    current: list[str] | None = None
+    for line in retro.body.splitlines():
+        if line.startswith("### "):
+            if current is not None:
+                entries.append("\n".join(current))
+            current = [line]
+        elif current is not None:
+            current.append(line)
+        # lines before the first `### ` (e.g. a leading `# Meeting history`
+        # H1 or blank lines) are ignored — only `### ` blocks are entries.
+    if current is not None:
+        entries.append("\n".join(current))
+
+    cleaned: list[str] = []
+    for entry in entries[:limit]:
+        entry = _MEETING_MARKER_RE.sub("", entry)
+        cleaned.append(entry.rstrip())
+    return cleaned
+
+
 def build_sweep_prompt(
     code: str,
     elements: tuple[ShellElement, ...],
     *,
     today: date,
+    meeting_summaries: list[str] | None = None,
 ) -> str:
     """Build the LLM prompt for a whole-project sweep synthesis.
 
@@ -48,6 +98,12 @@ def build_sweep_prompt(
     element list (every element, title-only for the cold tail; body excerpts for
     the top-N), and an instruction block asking for an across-the-project readout
     that explicitly names cold-but-important threads. Pure: no I/O, no model call.
+
+    When `meeting_summaries` is non-empty, a `## Recent meeting discussion`
+    section (those entries, newest first) is inserted before the instruction,
+    and the instruction asks the model to ground the synthesis in what was
+    actually discussed. When None/empty the prompt is byte-identical to the
+    no-meetings form (backward-compatible).
     """
     scored, effective = rank_elements(elements, today=today)
 
@@ -75,20 +131,29 @@ def build_sweep_prompt(
         if rank < _EXCERPT_LIMIT and e.body.strip():
             lines.append(f"    excerpt: {_excerpt(e.body)}")
 
-    lines += [
-        "",
-        "## Instruction",
-        (
-            f"Write a concise across-the-project readout (synthesis) for "
-            f"{code}: where the project stands, what's active, and what's due "
-            "next. Then explicitly name the cold threads that still want "
-            "attention — unresolved asks, stalled deliverables, and decisions "
-            "never closed. The ranking above is a relevance Lens, not a "
-            "priority order: a low-scored (cold) element can still be the most "
-            "important thing to re-heat, so call those out by name. Prose, no "
-            "preamble."
-        ),
-    ]
+    if meeting_summaries:
+        lines += ["", "## Recent meeting discussion (newest first)"]
+        for entry in meeting_summaries:
+            lines += ["", entry]
+
+    instruction = (
+        f"Write a concise across-the-project readout (synthesis) for "
+        f"{code}: where the project stands, what's active, and what's due "
+        "next. Then explicitly name the cold threads that still want "
+        "attention — unresolved asks, stalled deliverables, and decisions "
+        "never closed. The ranking above is a relevance Lens, not a "
+        "priority order: a low-scored (cold) element can still be the most "
+        "important thing to re-heat, so call those out by name. Prose, no "
+        "preamble."
+    )
+    if meeting_summaries:
+        instruction += (
+            " Ground the synthesis in what was actually discussed in the "
+            "recent meetings above, not only the elements' current state — "
+            "let the meeting discussion drive what's live and what's stalled."
+        )
+
+    lines += ["", "## Instruction", instruction]
 
     return "\n".join(lines)
 
@@ -126,6 +191,9 @@ def run_sweep(
             synthesis_text="(no shell elements to sweep)",
             ranked_table=table,
         )
-    prompt = build_sweep_prompt(code, elements, today=today)
+    meetings = recent_meeting_summaries(elements)
+    prompt = build_sweep_prompt(
+        code, elements, today=today, meeting_summaries=meetings
+    )
     synthesis = llm(prompt)
     return SweepResult(synthesis_text=synthesis, ranked_table=table)

@@ -77,3 +77,107 @@ def test_run_sweep_empty_shell_skips_llm():
     result = run_sweep("ibx-5153", (), today=date(2026, 6, 13), llm=fake_llm)
     assert calls == []                            # LLM NOT called for empty shell
     assert "no shell elements" in result.synthesis_text.lower()
+
+
+# --- meeting-summary enrichment (sweep-enrichment) ---------------------------
+
+_RETRO_BODY = """# Meeting history
+
+### 2026-06-11 · Workshop kickoff (Janet, Drew)
+
+We aligned on the two-track AI story and the Engage/Execute/Extend framing.
+
+**Decisions:** ship the foundation doc by 6/12
+**Action items:** Drew to draft P&P pre-read
+[Fathom recording](http://f/1)
+<!-- cp:meeting=m1 -->
+
+### 2026-06-08 · Carol framework review (Carol, Drew)
+
+Carol walked her five-category deck collapsing into three chapters.
+
+**Decisions:** adopt three-chapter structure
+<!-- cp:meeting=m2 -->
+
+### 2026-05-27 · Janet positioning (Janet)
+
+Leadership positioning sharpening on the two-track thesis.
+<!-- cp:meeting=m3 -->
+"""
+
+
+def _retro(body=_RETRO_BODY):
+    return _el("ibx-5153/retrospective/meeting-history", "Retrospective",
+               title="Meeting history", type="retrospective", body=body)
+
+
+def test_recent_meeting_summaries_no_retro_element():
+    from cp_engine.shell_sweep import recent_meeting_summaries
+    hot = _el("ibx-5153/deliverable/foundation", "Deliverables", body="x")
+    assert recent_meeting_summaries((hot,)) == []
+
+
+def test_recent_meeting_summaries_extracts_newest_first():
+    from cp_engine.shell_sweep import recent_meeting_summaries
+    out = recent_meeting_summaries((_retro(),))
+    assert len(out) == 3
+    # newest first
+    assert "Workshop kickoff" in out[0]
+    assert "Carol framework review" in out[1]
+    assert "Janet positioning" in out[2]
+    # full entry text preserved (summary + decisions)
+    assert "two-track AI story" in out[0]
+    assert "ship the foundation doc by 6/12" in out[0]
+    # the H1 is not an entry
+    assert all("# Meeting history" not in e for e in out)
+
+
+def test_recent_meeting_summaries_respects_limit():
+    from cp_engine.shell_sweep import recent_meeting_summaries
+    out = recent_meeting_summaries((_retro(),), limit=2)
+    assert len(out) == 2
+    assert "Workshop kickoff" in out[0]
+    assert "Carol framework review" in out[1]
+
+
+def test_recent_meeting_summaries_strips_meeting_marker():
+    from cp_engine.shell_sweep import recent_meeting_summaries
+    out = recent_meeting_summaries((_retro(),))
+    assert all("cp:meeting" not in e for e in out)
+
+
+def test_build_sweep_prompt_includes_meeting_summaries():
+    hot = _el("ibx-5153/deliverable/foundation", "Deliverables", title="Foundation",
+              body="brief")
+    prompt = build_sweep_prompt(
+        "ibx-5153", (hot,), today=date(2026, 6, 13),
+        meeting_summaries=["### 2026-06-11 · X\n\nSummary text about the workshop"],
+    )
+    assert "## Recent meeting discussion" in prompt
+    assert "Summary text about the workshop" in prompt
+
+
+def test_build_sweep_prompt_no_summaries_is_unchanged():
+    hot = _el("ibx-5153/deliverable/foundation", "Deliverables", title="Foundation",
+              body="brief")
+    none_prompt = build_sweep_prompt("ibx-5153", (hot,), today=date(2026, 6, 13))
+    explicit_none = build_sweep_prompt("ibx-5153", (hot,), today=date(2026, 6, 13),
+                                       meeting_summaries=None)
+    empty = build_sweep_prompt("ibx-5153", (hot,), today=date(2026, 6, 13),
+                               meeting_summaries=[])
+    assert "## Recent meeting discussion" not in none_prompt
+    assert none_prompt == explicit_none == empty
+
+
+def test_run_sweep_passes_meeting_summaries_to_llm():
+    from cp_engine.shell_sweep import run_sweep
+    hot = _el("ibx-5153/deliverable/foundation", "Deliverables", title="Foundation",
+              stage="revised", body="brief")
+    calls = []
+    def fake_llm(prompt):
+        calls.append(prompt)
+        return "synthesis"
+    run_sweep("ibx-5153", (hot, _retro()), today=date(2026, 6, 13), llm=fake_llm)
+    assert len(calls) == 1
+    assert "## Recent meeting discussion" in calls[0]
+    assert "two-track AI story" in calls[0]
