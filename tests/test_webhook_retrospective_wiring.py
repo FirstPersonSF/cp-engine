@@ -160,8 +160,10 @@ def test_append_retrospective_never_raises_on_unresolvable_dir(tmp_path: Path) -
         "participants": [],
         "fathom_url": None,
     }
-    # No project dir created → find_shell_dir raises internally; helper swallows.
+    # No project dir created → find_shell_dir raises internally; helper swallows
+    # it and reports the benign, observable "no-shell-dir" status (distinct from
+    # a genuine "error") rather than raising.
     status = webhook_main._append_retrospective(
         config=config, code="nope-9999", meeting=meeting, action_items=[], plan=None,
     )
-    assert status == "error"
+    assert status == "no-shell-dir"

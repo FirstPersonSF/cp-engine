@@ -606,6 +606,12 @@ async def auto_ingest_account(request: Request) -> dict:
         plan = generated.plan
         projects_block = plan.get("projects") or {}
 
+        # The whole Fathom summary feeds each touched project's Retrospective
+        # (Part B: "every meeting that touches a project"). Fetched once;
+        # action_items stay None here — they have no per-project attribution
+        # on an account meeting (same constraint as the bullet routing above).
+        meeting = _fetch_meeting(meeting_id)
+
         ingested: list[dict] = []
         commits: list[str] = []
 
@@ -646,8 +652,15 @@ async def auto_ingest_account(request: Request) -> dict:
             entry["files_written"] = [str(p) for p in exec_result.files_written]
             entry["skipped_duplicate"] = exec_result.skipped_duplicate
             entry["errors"].extend(exec_result.errors)
+            entry["retrospective"] = _append_retrospective(
+                config=config,
+                code=code,
+                meeting=meeting,
+                action_items=None,
+                plan=single_project_plan,
+            )
             ingested.append(entry)
-            if exec_result.files_written:
+            if exec_result.files_written or entry["retrospective"] == "appended":
                 commit_sha = _commit_and_push(
                     tenant_root=tenant_root,
                     meeting_id=meeting_id,
@@ -876,6 +889,10 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
         plan = generated.plan
         projects_block = plan.get("projects") or {}
 
+        # Whole Fathom summary → each touched project's Retrospective (Part B).
+        # Fetched once; action_items stay None (no per-project attribution).
+        meeting = _fetch_meeting(meeting_id)
+
         ingested: list[dict] = []
         commits: list[str] = []
 
@@ -916,8 +933,15 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
             entry["files_written"] = [str(p) for p in exec_result.files_written]
             entry["skipped_duplicate"] = exec_result.skipped_duplicate
             entry["errors"].extend(exec_result.errors)
+            entry["retrospective"] = _append_retrospective(
+                config=config,
+                code=code,
+                meeting=meeting,
+                action_items=None,
+                plan=single_project_plan,
+            )
             ingested.append(entry)
-            if exec_result.files_written:
+            if exec_result.files_written or entry["retrospective"] == "appended":
                 commit_sha = _commit_and_push(
                     tenant_root=tenant_root,
                     meeting_id=meeting_id,
@@ -2064,8 +2088,11 @@ def _append_retrospective(
         )
         return "appended" if wrote else "duplicate"
     except ShellDirNotFound as exc:
-        log.warning("retrospective: no shell dir for %s: %s", code, exc)
-        return "error"
+        # The project's working dir hasn't been synced yet (e.g. its first
+        # meeting arrives before sync ran). Distinct from a genuine error so
+        # it's observable as a benign skip, not a failure.
+        log.warning("retrospective: no shell dir yet for %s: %s", code, exc)
+        return "no-shell-dir"
     except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
         log.warning("retrospective: append failed for %s: %s", code, exc)
         return "error"
