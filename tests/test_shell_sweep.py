@@ -293,3 +293,77 @@ def test_build_sweep_prompt_asks_for_drift_block():
     low = prompt.lower()
     assert "drift" in low
     assert "element_id" in prompt
+
+
+def test_recent_meeting_summaries_keeps_whole_entry_with_embedded_h3():
+    # A Fathom summary embedded WHOLE can contain its own '### ' sub-headers.
+    # The entry must NOT split on those — only on real `### <date>` headers.
+    from cp_engine.shell_sweep import recent_meeting_summaries
+    body = (
+        "# Meeting history\n\n"
+        "### 2026-06-11 · Workshop framing (Janet, Carol)\n\n"
+        "Summary intro.\n\n"
+        "### Key decisions\n"   # an H3 INSIDE the Fathom summary
+        "- two-track confirmed\n\n"
+        "### Next steps\n"      # another summary H3
+        "- Carol sends deck\n"
+        "<!-- cp:meeting=m1 -->\n\n"
+        "### 2026-06-10 · Jamie feedback (Jamie)\n\n"
+        "Older meeting.\n"
+        "<!-- cp:meeting=m2 -->\n"
+    )
+    out = recent_meeting_summaries((_retro(body),), limit=4)
+    assert len(out) == 2  # two MEETINGS, not four fragments
+    # The first entry retains its embedded summary H3s whole.
+    assert "### Key decisions" in out[0]
+    assert "### Next steps" in out[0]
+    assert "2026-06-10" in out[1]
+
+
+def test_recent_meeting_summaries_empty_body_returns_empty():
+    # MC-2-loaded elements carry body="" — the feature degrades to a no-op.
+    from cp_engine.shell_sweep import recent_meeting_summaries
+    assert recent_meeting_summaries((_retro(body=""),)) == []
+
+
+def test_run_sweep_hydrates_retrospective_body_from_disk(tmp_path):
+    # The element comes from MC-2 (body=""), but run_sweep(tenant_root=...) must
+    # read its body from disk so meeting summaries reach the prompt.
+    from cp_engine.shell_sweep import run_sweep
+    rel = Path("1p/acct/ibx-5153/shell/Retrospective/meeting-history.md")
+    f = tmp_path / rel
+    f.parent.mkdir(parents=True, exist_ok=True)
+    f.write_text(
+        "---\nid: ibx-5153/retrospective/meeting-history\nproject: ibx-5153\n"
+        "layer: Retrospective\ntitle: Meeting history\nstatus: active\n"
+        "last_touched: 2026-06-13\n---\n\n# Meeting history\n\n"
+        "### 2026-06-11 · Workshop framing (Janet)\n\nDISTINCTIVE_SUMMARY_TEXT\n"
+        "<!-- cp:meeting=m1 -->\n"
+    )
+    retro = _el("ibx-5153/retrospective/meeting-history", "Retrospective",
+                body="", path=rel)  # empty body, as MC-2 returns
+    hot = _el("ibx-5153/deliverable/d", "Deliverables", body="work")
+    captured = {}
+    def _fake_llm(prompt):
+        captured["prompt"] = prompt
+        return "synthesis prose"
+    run_sweep("ibx-5153", (retro, hot), today=date.today(),
+              llm=_fake_llm, tenant_root=tmp_path)
+    assert "DISTINCTIVE_SUMMARY_TEXT" in captured["prompt"]
+
+
+def test_parse_drift_ignores_earlier_prose_code_fence():
+    # A prose code fence before the drift block must not break drift capture.
+    from cp_engine.shell_sweep import parse_drift
+    text = (
+        "Here is the readout.\n\n"
+        "```python\nexample_code()\n```\n\n"
+        "More prose.\n\n"
+        "```yaml\ndrift:\n  - element_id: ibx-5153/deliverable/d\n"
+        "    field: status\n    observation: looks stale\n```\n"
+    )
+    clean, items = parse_drift(text)
+    assert len(items) == 1
+    assert items[0]["element_id"] == "ibx-5153/deliverable/d"
+    assert "example_code()" in clean       # prose fence preserved
+    assert "drift:" not in clean           # only the drift block removed

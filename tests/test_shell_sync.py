@@ -227,3 +227,25 @@ def test_sync_keeps_at_most_one_flag_per_field(tmp_path):
     status_flags = [f for f in row["review_flags"] if f["field"] == "status"]
     assert len(status_flags) == 1                          # not 2
     assert row["status"] == "active"                       # still not clobbered
+
+
+def test_merge_flag_is_source_aware():
+    # A reconcile clean-up (flag=None, source default) must NOT wipe a sweep
+    # flag on the same field — two independent producers coexist.
+    from cp_engine.shell_sync import _merge_flag
+    sweep_flag = {"field": "status", "now": "drifted", "source": "sweep"}
+    flags = [sweep_flag]
+    # reconcile finds no divergence on status → calls with flag=None:
+    after = _merge_flag(flags, "status", None)
+    assert sweep_flag in after  # sweep flag survived the reconcile clean-up
+    # a NEW reconcile flag on status replaces only the reconcile-sourced one:
+    recon_flag = {"field": "status", "was": "active", "now": "dormant"}
+    after2 = _merge_flag(after, "status", recon_flag)
+    assert sweep_flag in after2          # still there
+    assert recon_flag in after2          # both producers' flags coexist
+    # a second sweep flag replaces the first sweep flag (≤1 per producer/field):
+    sweep_flag2 = {"field": "status", "now": "drifted again", "source": "sweep"}
+    after3 = _merge_flag(after2, "status", sweep_flag2)
+    assert sweep_flag2 in after3
+    assert sweep_flag not in after3
+    assert recon_flag in after3          # reconcile flag untouched

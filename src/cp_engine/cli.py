@@ -993,7 +993,9 @@ def sweep_cmd(code: str, model: str) -> None:
 
     today = date.today()
     try:
-        result = run_sweep(code, elements, today=today, llm=_llm)
+        result = run_sweep(
+            code, elements, today=today, llm=_llm, tenant_root=config.root
+        )
     except Exception as exc:  # noqa: BLE001 — LLM/transport failure
         click.echo(
             f"Sweep synthesis failed (is ANTHROPIC_API_KEY set?): {exc}",
@@ -1073,7 +1075,11 @@ def _write_drift_flags(client, drift_items, today: str) -> int:
                 .execute()
                 .data
             ) or []
-            existing = list((prior[0].get("review_flags") if prior else None) or [])
+            if not prior:
+                # Unknown element id (e.g. an LLM hallucination) — don't update
+                # zero rows and overcount. Skip quietly.
+                continue
+            existing = list(prior[0].get("review_flags") or [])
             flag = {
                 "field": field,
                 "was": "(sweep)",

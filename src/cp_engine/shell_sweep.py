@@ -9,7 +9,7 @@ names the cold-but-important threads. The LLM call itself lives in run_sweep
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Callable
 
@@ -43,6 +43,10 @@ def _excerpt(body: str) -> str:
 # the newest few are what ground the synthesis in "what was just discussed".
 _MEETING_LIMIT = 4
 _MEETING_MARKER_RE = re.compile(r"^[ \t]*<!--[ \t]*cp:meeting=[^>]*-->[ \t]*\n?", re.MULTILINE)
+# A real Retrospective entry header is `### <YYYY-MM-DD> · …` (build_entry's
+# format). Anchoring on the date keeps embedded Fathom-summary H3s from being
+# mistaken for entry boundaries.
+_ENTRY_HEADER_RE = re.compile(r"^### \d{4}-\d{2}-\d{2}\b")
 
 
 def recent_meeting_summaries(
@@ -62,20 +66,25 @@ def recent_meeting_summaries(
     returned block — it's machine bookkeeping, noise for the LLM.
     """
     retro = next((e for e in elements if e.layer == "Retrospective"), None)
-    if retro is None:
+    if retro is None or not retro.body:
         return []
 
+    # Split ONLY on true entry headers `### <YYYY-MM-DD> · …` (build_entry's
+    # format). A bare `### ` test would also split on H3s inside an embedded
+    # Fathom summary — which we deliberately keep WHOLE — fragmenting a meeting
+    # into several "entries". The date anchor distinguishes a real entry header
+    # from summary sub-headers.
     entries: list[str] = []
     current: list[str] | None = None
     for line in retro.body.splitlines():
-        if line.startswith("### "):
+        if _ENTRY_HEADER_RE.match(line):
             if current is not None:
                 entries.append("\n".join(current))
             current = [line]
         elif current is not None:
             current.append(line)
-        # lines before the first `### ` (e.g. a leading `# Meeting history`
-        # H1 or blank lines) are ignored — only `### ` blocks are entries.
+        # lines before the first entry header (e.g. a leading `# Meeting
+        # history` H1 or blank lines) are ignored.
     if current is not None:
         entries.append("\n".join(current))
 
@@ -176,10 +185,12 @@ def build_sweep_prompt(
     return "\n".join(lines)
 
 
-# Match a fenced ```yaml ... ``` (or bare ```) block whose body contains a
-# top-level `drift:` key. Non-greedy so we capture the smallest such block.
+# Match a fenced ```yaml ... ``` (or bare ```) block whose body STARTS with a
+# top-level `drift:` key. Anchoring on `drift:` at the fence start (not merely
+# "contains") prevents latching onto an earlier illustrative code fence in the
+# prose and spanning across it. Non-greedy body so we stop at the first close.
 _DRIFT_FENCE_RE = re.compile(
-    r"\n?[ \t]*```(?:yaml)?[ \t]*\n(?P<body>.*?\bdrift:.*?)\n?```[ \t]*",
+    r"\n?[ \t]*```(?:yaml)?[ \t]*\n(?P<body>[ \t]*drift:.*?)\n?```[ \t]*",
     re.DOTALL,
 )
 
@@ -240,18 +251,57 @@ class SweepResult:
     drift_items: tuple = ()
 
 
+def _hydrate_retrospective_body(elements, tenant_root):
+    """Return `elements` with the Retrospective element's body read from disk.
+
+    Elements loaded from MC-2 (the canonical read path) carry an empty body —
+    `row_to_element` sets `body=""`. The meeting-summaries feature needs the
+    Retrospective body, so we read it from the element's on-disk file
+    (`tenant_root / rel_path`). Best-effort: if there's no Retrospective
+    element, no tenant_root, or the file is unreadable, elements are returned
+    unchanged (the feature degrades to a no-op, never raises).
+    """
+    if tenant_root is None:
+        return elements
+    from pathlib import Path
+
+    out = []
+    changed = False
+    for e in elements:
+        if e.layer == "Retrospective" and not e.body and e.path is not None:
+            try:
+                text = (Path(tenant_root) / e.path).read_text(encoding="utf-8")
+                # Strip frontmatter so .body matches the parse_element contract.
+                if text.startswith("---"):
+                    end = text.find("\n---", 3)
+                    if end != -1:
+                        text = text[text.find("\n", end + 1) + 1 :]
+                out.append(replace(e, body=text))
+                changed = True
+                continue
+            except OSError:
+                pass
+        out.append(e)
+    return tuple(out) if changed else elements
+
+
 def run_sweep(
     code: str,
     elements: tuple[ShellElement, ...],
     *,
     today: date,
     llm: Callable[[str], str],
+    tenant_root=None,
 ) -> SweepResult:
     """Run a whole-project sweep: rank, synthesize (via the injected `llm`),
     and return the synthesis + the ranked table.
 
     The `llm` is injected (`Callable[[str], str]`) so this is testable without a
     live model: the CLI wraps the real call, tests pass a fake.
+
+    `tenant_root`, when given, hydrates the Retrospective element's body from
+    disk (MC-2-loaded elements have empty bodies) so recent meeting summaries
+    reach the prompt. Omitted in pure tests that build bodies directly.
 
     Empty shells skip the LLM entirely (don't pay for nothing) — design B: an
     empty project would otherwise burn a call asking the model to synthesize a
@@ -263,6 +313,7 @@ def run_sweep(
             synthesis_text="(no shell elements to sweep)",
             ranked_table=table,
         )
+    elements = _hydrate_retrospective_body(elements, tenant_root)
     meetings = recent_meeting_summaries(elements)
     prompt = build_sweep_prompt(
         code, elements, today=today, meeting_summaries=meetings
