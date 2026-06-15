@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.25.0 — 2026-06-15
+
+### Changed — Project Shell spine inversion, Phase 4 (sweep enrichment)
+
+The sweep was meant to be the reconsideration mechanism — re-reading the whole project and surfacing what's drifted — and wasn't yet. Two additions, scope deliberately tight.
+
+**Meeting summaries feed the synthesis.** `cp sweep` now pulls the project's recent meeting entries (the whole Fathom summaries preserved in the Retrospective layer, Phase 2) into the LLM prompt, so the readout reflects what was actually *discussed*, not only the elements' current state. Up to the last 4 meetings, newest first. (Because MC-2 spine rows don't carry element bodies, the sweep hydrates the Retrospective body from disk before reading it — without this the feature is silently inert on the canonical read path.) Entries are split on true `### <date>` headers so an embedded `###` inside a Fathom summary doesn't fragment a meeting.
+
+**Drift → review flags.** The sweep may now *propose drift* — elements whose recorded status or thinking looks superseded by the recent discussion — as a trailing fenced `drift:` yaml block. `cp sweep` parses it (best-effort; the Synthesis file keeps clean prose) and records each as a `review_flag` (`source: sweep`) on the element's MC-2 row, for the human to confirm in the forthcoming Mission Control UI. The sweep proposes; the human confirms.
+
+`review_flags` are now **source-aware**: reconcile (Phase 1) and sweep flags coexist — at most one open flag per field *per producer* — so a routine `cp sync` no longer wipes a sweep-proposed drift flag (and vice versa). No migration: rides the existing `review_flags` jsonb. Embeddings-driven corpus reconsideration and active client-doc re-surfacing remain out of scope (design Non-goals).
+
 ## v0.24.0 — 2026-06-15
 
 ### Added — Project Shell spine inversion, Phase 3 (client-document linkage)
