@@ -1,0 +1,290 @@
+from pathlib import Path
+
+import pytest
+
+from cp_engine.substance import (
+    SubstanceVersion,
+    WorkItemSubstance,
+    add_version,
+    parse_substance,
+    render_substance,
+)
+
+FIXTURE = (
+    Path(__file__).parent
+    / "fixtures"
+    / "spine"
+    / "phase-0-discovery"
+    / "pp-report.md"
+)
+
+
+# --- Task 1.1: parse -------------------------------------------------------
+
+
+def test_parse_substance_frontmatter():
+    item = parse_substance(FIXTURE)
+    assert item.est_item_id == "7c9e6f2a-3b1d-4a5e-9f0c-2d8b6a4e1c33"
+    assert item.est_item_kind == "deliverable"
+    assert item.binding == "live"
+    assert item.phase == "Phase 0 Discovery & Alignment"
+
+
+def test_parse_substance_versions():
+    item = parse_substance(FIXTURE)
+    assert len(item.versions) == 2
+
+    v3 = item.versions[0]
+    assert v3.label == "v3"
+    assert v3.status == "live"
+    assert v3.date == "2026-06-11"
+    assert v3.framing.startswith("two-track")
+    assert v3.sources == ("janet-5-27-transcript", "carol-deck#p12-18")
+    assert "two-track story" in v3.body
+    assert "framing:" not in v3.body
+    assert "sources:" not in v3.body
+    assert "## v3" not in v3.body
+
+    v2 = item.versions[1]
+    assert v2.label == "v2"
+    assert v2.status == "superseded"
+
+
+def test_live_version_returns_the_one_live():
+    item = parse_substance(FIXTURE)
+    live = item.live_version()
+    assert live.label == "v3"
+    assert live.status == "live"
+
+
+def test_two_live_versions_raises(tmp_path):
+    content = (
+        "---\n"
+        "est_item_id: abc-123\n"
+        "est_item_kind: deliverable\n"
+        "binding: live\n"
+        "---\n"
+        "## v2 — 2026-06-11 · live\n"
+        "framing: first\n"
+        "sources:\n"
+        "  - a\n"
+        "\n"
+        "body two\n"
+        "\n"
+        "## v1 — 2026-04-23 · live\n"
+        "framing: second\n"
+        "sources:\n"
+        "  - b\n"
+        "\n"
+        "body one\n"
+    )
+    p = tmp_path / "twolive.md"
+    p.write_text(content)
+    with pytest.raises(ValueError, match="exactly one"):
+        parse_substance(p)
+
+
+def test_missing_required_key_raises(tmp_path):
+    content = (
+        "---\n"
+        "est_item_kind: deliverable\n"
+        "---\n"
+        "## v1 — 2026-04-23 · live\n"
+        "framing: x\n"
+        "sources:\n"
+        "  - a\n"
+        "\n"
+        "body\n"
+    )
+    p = tmp_path / "missing.md"
+    p.write_text(content)
+    with pytest.raises(ValueError, match="est_item_id"):
+        parse_substance(p)
+
+
+# --- Task 1.2: serialize + add_version -------------------------------------
+
+
+def test_render_substance_round_trips():
+    item = parse_substance(FIXTURE)
+    rendered = render_substance(item)
+    original = FIXTURE.read_text()
+    assert rendered.rstrip("\n") == original.rstrip("\n")
+
+
+# --- Review fixes: C1/C2/I1-I3/M1 ------------------------------------------
+
+
+def test_framing_with_colons_parsed_as_literal(tmp_path):
+    """C1: framing prose with YAML-hostile chars must parse verbatim."""
+    framing = "the thesis: two-track AI story — IQ vs MCP, 3:1 odds #campaign"
+    content = (
+        "---\n"
+        "est_item_id: abc-123\n"
+        "est_item_kind: deliverable\n"
+        "binding: live\n"
+        "---\n"
+        "## v1 — 2026-06-11 · live\n"
+        f"framing: {framing}\n"
+        "sources:\n"
+        "  - a\n"
+        "\n"
+        "body\n"
+    )
+    p = tmp_path / "colon.md"
+    p.write_text(content)
+    item = parse_substance(p)
+    assert item.versions[0].framing == framing
+    assert item.versions[0].sources == ("a",)
+
+
+def test_render_round_trips_programmatic_special_chars(tmp_path):
+    """C2 + M4: programmatic objects with special chars survive render->parse."""
+    v = SubstanceVersion(
+        label="v1",
+        date="2026-06-15",
+        status="live",
+        framing="key: value — and a #hash, 'quoted'",
+        sources=("src:with-colon", "plain-source"),
+        body="A buildable body paragraph.",
+    )
+    item = WorkItemSubstance(
+        est_item_id="abc-123",
+        est_item_kind="deliverable",
+        phase="Phase: tricky",
+        binding="live",
+        versions=(v,),
+        path=tmp_path / "prog.md",
+    )
+    out = tmp_path / "prog.md"
+    out.write_text(render_substance(item))
+    reparsed = parse_substance(out)
+    rv = reparsed.versions[0]
+    assert rv.framing == "key: value — and a #hash, 'quoted'"
+    assert rv.sources == ("src:with-colon", "plain-source")
+    assert reparsed.phase == "Phase: tricky"
+    assert reparsed.est_item_id == "abc-123"
+
+
+def test_subheading_in_body_not_split_as_version(tmp_path):
+    """I1: a `## ` subheading inside a body must stay in the body."""
+    content = (
+        "---\n"
+        "est_item_id: abc-123\n"
+        "est_item_kind: deliverable\n"
+        "binding: live\n"
+        "---\n"
+        "## v1 — 2026-06-11 · live\n"
+        "framing: x\n"
+        "sources:\n"
+        "  - a\n"
+        "\n"
+        "Intro paragraph.\n"
+        "\n"
+        "## Key risks\n"
+        "\n"
+        "Risk one.\n"
+    )
+    p = tmp_path / "subhead.md"
+    p.write_text(content)
+    item = parse_substance(p)
+    assert len(item.versions) == 1
+    assert "## Key risks" in item.versions[0].body
+    assert "Risk one." in item.versions[0].body
+
+
+def test_unknown_frontmatter_key_preserved(tmp_path):
+    """I2: extra frontmatter keys survive parse->render."""
+    content = (
+        "---\n"
+        "est_item_id: abc-123\n"
+        "est_item_kind: deliverable\n"
+        "binding: live\n"
+        "mc2_row_id: 999\n"
+        "---\n"
+        "## v1 — 2026-06-11 · live\n"
+        "framing: x\n"
+        "sources:\n"
+        "  - a\n"
+        "\n"
+        "body\n"
+    )
+    p = tmp_path / "extra.md"
+    p.write_text(content)
+    item = parse_substance(p)
+    rendered = render_substance(item)
+    assert "mc2_row_id: 999" in rendered
+    # round trip stable
+    p.write_text(rendered)
+    reparsed = parse_substance(p)
+    assert render_substance(reparsed) == rendered
+
+
+def test_preamble_before_first_version_raises(tmp_path):
+    """I3: non-whitespace text before the first version header is an error."""
+    content = (
+        "---\n"
+        "est_item_id: abc-123\n"
+        "est_item_kind: deliverable\n"
+        "binding: live\n"
+        "---\n"
+        "stray preamble text\n"
+        "\n"
+        "## v1 — 2026-06-11 · live\n"
+        "framing: x\n"
+        "sources:\n"
+        "  - a\n"
+        "\n"
+        "body\n"
+    )
+    p = tmp_path / "preamble.md"
+    p.write_text(content)
+    with pytest.raises(ValueError, match=str(p)):
+        parse_substance(p)
+
+
+def test_whitespace_preamble_ok(tmp_path):
+    """I3: pure-whitespace preamble before the first version is fine."""
+    content = (
+        "---\n"
+        "est_item_id: abc-123\n"
+        "est_item_kind: deliverable\n"
+        "binding: live\n"
+        "---\n"
+        "\n"
+        "\n"
+        "## v1 — 2026-06-11 · live\n"
+        "framing: x\n"
+        "sources:\n"
+        "  - a\n"
+        "\n"
+        "body\n"
+    )
+    p = tmp_path / "ws.md"
+    p.write_text(content)
+    item = parse_substance(p)
+    assert len(item.versions) == 1
+
+
+def test_add_version_demotes_prior_live():
+    item = parse_substance(FIXTURE)
+    new = SubstanceVersion(
+        label="v4",
+        date="2026-06-15",
+        status="live",
+        framing="post-workshop refinement",
+        sources=("workshop-6-11-transcript",),
+        body="The post-workshop pass tightens the proof points under each verb.",
+    )
+    updated = add_version(item, new)
+
+    assert updated.versions[0].label == "v4"
+    assert updated.versions[0].status == "live"
+    # exactly one live afterward
+    lives = [v for v in updated.versions if v.status == "live"]
+    assert len(lives) == 1
+    assert lives[0].label == "v4"
+    # prior live (v3) is now superseded
+    v3 = next(v for v in updated.versions if v.label == "v3")
+    assert v3.status == "superseded"
+    assert updated.live_version().label == "v4"

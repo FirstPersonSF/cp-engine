@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.27.0 — 2026-06-16
+
+### Added — Spine estimate-binding (the spine is re-founded on the live estimate)
+
+The spine no longer carries free-floating pointer-stubs (the v0.26 per-field grid that failed on first real use). It is re-founded on the project's **live default estimate** (the `estimator` schema's phases → activities/deliverables that drives the client portal): each estimate work-item *is* a thread, and its distilled, versioned **substance** binds to it. Substance is markdown source-of-truth on disk, mirrored to MC-2; git is the version history.
+
+- **Estimate reader** (`estimate.py`): `fetch_estimate(client, mc_project_id)` reads the live default estimate over PostgREST (`.schema("estimator")`) into frozen `Estimate`/`EstimatePhase`/`EstimateItem` dataclasses.
+- **Versioned substance model** (`substance.py`, `spine_context.py`): per-item substance files (`spine/<phase>/<item>.md`) with frontmatter binding `est_item_id`, and `## v<N> — date · status` version sections (framing brief + sources + distilled body; exactly one `live`, the rest `superseded`). Project-level context elements (`brief|agreement|stakeholder|decision|source`) with optional links to estimate items.
+- **MC-2 mirror** (`spine_substance_sync.py`): `cp sync` reconciles substance + context to the `spine_substance`/`spine_context` tables per project (reconcile-don't-clobber, reusing the spine_elements field-state pattern). Bindings reconcile against the estimate: a missing item → `orphaned` (flagged, never deleted), not lost.
+- **Ingestion inbox** (`spine_inbox.py`, `cp spine-frame`): the Fathom webhook writes a *proposed* card (raw-faithful distillation + a best-guess estimate item) to `spine_inbox` instead of writing substance directly. A human supplies a framing brief and promotes the card → a directed re-distillation under that framing becomes a new live version. The webhook path is kill-switchable (`SPINE_INBOX_ENABLED`).
+- **One-click promote endpoint** (`webhook/main.py` `POST /api/spine/promote`): the server-side equivalent of `cp spine-frame`, signed like the other webhook endpoints. It clones the tenant, runs the directed distill, writes the markdown, mirrors, commits + pushes, and flips the card to `promoted` **only after a successful push** (the push is the commit point — a push failure leaves the card un-promoted for safe retry, no data loss). MC-2's verification UI calls this through a thin signed proxy so a browser click lands a version directly in the tenant repo.
+
+Requires MC-2 migrations 063 (`spine_substance` + `spine_context`) and 064 (`spine_inbox`). The MC-2 spine UI ships the estimate-outline view (substance inline, version history, per-version confirm) + the framing inbox, replacing the per-field grid.
+
 ## v0.26.0 — 2026-06-15
 
 ### Changed — Shell → Spine rename (no behavior change)

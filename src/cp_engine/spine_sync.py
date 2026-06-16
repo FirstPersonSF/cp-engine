@@ -62,10 +62,10 @@ def _merge_flag(review_flags, field, flag, *, source=None):
     return pruned
 
 
-def _has_confirmed_field(row):
+def _has_confirmed_field(row, tracked_fields=_TRACKED_FIELDS):
     """True if any tracked field on this MC-2 row is human-confirmed."""
     states = row.get("field_states") or {}
-    return any(states.get(f) == "confirmed" for f in _TRACKED_FIELDS)
+    return any(states.get(f) == "confirmed" for f in tracked_fields)
 
 
 def sync_spine_elements(

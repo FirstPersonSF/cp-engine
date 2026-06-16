@@ -1,0 +1,380 @@
+"""Spine ingestion inbox (spine estimate-binding, Phase 3).
+
+The webhook no longer writes spine *substance* directly from a transcript.
+Instead it writes a *proposed card* into the ``spine_inbox`` table: a
+raw-faithful first-pass distillation of the meeting + a best-guess estimate
+work item + a guessed type. A human then *frames* the card — supplies a
+directing brief — and *promotes* it: a directed re-distillation under that
+framing becomes a new live `SubstanceVersion` bound to an estimate work item.
+
+This is the "human directs / LLM distills / human confirms" loop. The card is
+the react-to draft; the framed promotion is the distilled spine memory.
+
+Live table ``public.spine_inbox`` (migration 064):
+  id text pk = ``<project_code>/inbox/<source_ref>``
+  project_id uuid, project_code text, source_ref text,
+  raw_distillation text, guessed_est_item_id text, guessed_type text,
+  status text (proposed|framed|promoted|dismissed) default proposed,
+  framing text, created_at, updated_at.
+
+GLOBAL RULE: never ``.select("*")`` — always explicit columns.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
+from typing import Callable
+
+from cp_engine.substance import (
+    SubstanceVersion,
+    WorkItemSubstance,
+    add_version,
+    parse_substance,
+    render_substance,
+)
+
+_INBOX_TABLE = "spine_inbox"
+
+# Columns we read back from spine_inbox (never "*").
+_CARD_COLUMNS = (
+    "id, project_id, project_code, source_ref, raw_distillation, "
+    "guessed_est_item_id, guessed_type, status, framing"
+)
+
+
+@dataclass(frozen=True)
+class InboxCard:
+    """One proposed/framed/promoted ingestion card."""
+
+    id: str
+    project_id: str
+    project_code: str
+    source_ref: str
+    raw_distillation: str
+    guessed_est_item_id: str | None
+    guessed_type: str | None
+    status: str
+    framing: str | None
+
+
+def proposed_card(
+    *,
+    project_id: str,
+    project_code: str,
+    source_ref: str,
+    raw_distillation: str,
+    guessed_est_item_id: str | None = None,
+    guessed_type: str | None = None,
+) -> InboxCard:
+    """Build a fresh ``proposed`` card. id = ``<project_code>/inbox/<source_ref>``."""
+    return InboxCard(
+        id=f"{project_code}/inbox/{source_ref}",
+        project_id=project_id,
+        project_code=project_code,
+        source_ref=source_ref,
+        raw_distillation=raw_distillation,
+        guessed_est_item_id=guessed_est_item_id,
+        guessed_type=guessed_type,
+        status="proposed",
+        framing=None,
+    )
+
+
+def load_card(client, card_id: str) -> InboxCard | None:
+    """Load one inbox card by id, or None if it doesn't exist. Explicit columns."""
+    rows = (
+        client.table(_INBOX_TABLE)
+        .select(_CARD_COLUMNS)
+        .eq("id", card_id)
+        .execute()
+        .data
+        or []
+    )
+    return row_to_card(rows[0]) if rows else None
+
+
+def card_to_row(card: InboxCard) -> dict:
+    """Map a card to a ``spine_inbox`` row (created_at/updated_at left to the DB)."""
+    return {
+        "id": card.id,
+        "project_id": card.project_id,
+        "project_code": card.project_code,
+        "source_ref": card.source_ref,
+        "raw_distillation": card.raw_distillation,
+        "guessed_est_item_id": card.guessed_est_item_id,
+        "guessed_type": card.guessed_type,
+        "status": card.status,
+        "framing": card.framing,
+    }
+
+
+def row_to_card(row: dict) -> InboxCard:
+    """Map a ``spine_inbox`` row to an InboxCard (extra columns are ignored)."""
+    return InboxCard(
+        id=row["id"],
+        project_id=row["project_id"],
+        project_code=row["project_code"],
+        source_ref=row["source_ref"],
+        raw_distillation=row.get("raw_distillation") or "",
+        guessed_est_item_id=row.get("guessed_est_item_id"),
+        guessed_type=row.get("guessed_type"),
+        status=row.get("status") or "proposed",
+        framing=row.get("framing"),
+    )
+
+
+# ---- Task 3.2: build a proposed card from a transcript ----------------------
+
+
+_PROPOSE_PROMPT = """\
+You are distilling a project meeting into a faithful first-pass record for a
+human to react to. Do NOT interpret, editorialize, or impose a framing yet —
+just capture what was actually said and decided, densely and accurately.
+
+You are also given a list of the project's estimate work items. Pick the ONE
+whose name best matches what this meeting was primarily about, or null if none
+clearly fit.
+
+Estimate work items (name — kind):
+{item_list}
+
+Respond with ONLY a JSON object, no fences, no prose:
+{{"distillation": "<a faithful 150-350 word distillation of the meeting>",
+  "matched_item_name": "<exact name from the list above, or null>"}}
+
+# Transcript
+{transcript}
+"""
+
+
+def _normalize(name: str) -> str:
+    return re.sub(r"\s+", " ", name or "").strip().lower()
+
+
+def _match_item(matched_name, estimate):
+    """Resolve an LLM-picked item name to its (id, kind), or (None, None).
+
+    Case-insensitive, whitespace-collapsed exact match against the estimate's
+    item names — a coarse heuristic, intentional. Returns the first match.
+    """
+    if estimate is None or not matched_name:
+        return None, None
+    target = _normalize(str(matched_name))
+    if not target:
+        return None, None
+    for it in estimate.all_items():
+        if _normalize(it.name) == target:
+            return it.id, it.kind
+    return None, None
+
+
+def _parse_distiller_json(raw: str) -> dict:
+    """Parse the distiller's JSON, tolerating an accidental ```json fence."""
+    text = raw.strip()
+    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
+    if m:
+        text = m.group(1).strip()
+    obj = json.loads(text)
+    if not isinstance(obj, dict):
+        raise ValueError("distiller did not return a JSON object")
+    return obj
+
+
+def build_inbox_card_from_transcript(
+    client,
+    *,
+    project_id: str,
+    project_code: str,
+    source_ref: str,
+    transcript: str,
+    estimate=None,
+    distiller: Callable[..., str],
+    model: str,
+    api_key: str | None = None,
+) -> InboxCard:
+    """Distill a transcript into a *proposed* ``spine_inbox`` card and upsert it.
+
+    ONE LLM call (cost discipline): a raw-faithful first-pass distillation plus
+    a best-guess estimate work item picked from the project's estimate item
+    names. The matched name is resolved to ``guessed_est_item_id``; the type
+    guess defaults to the matched item's kind, or ``"source"`` when nothing
+    matched (a coarse guess the human refines at frame time).
+
+    Writes ONLY to ``spine_inbox`` — never spine_substance. Returns the card.
+    """
+    items = estimate.all_items() if estimate is not None else ()
+    item_list = (
+        "\n".join(f"- {it.name} — {it.kind}" for it in items) or "(none)"
+    )
+    prompt = _PROPOSE_PROMPT.format(item_list=item_list, transcript=transcript)
+
+    raw = distiller(prompt, model=model, api_key=api_key)
+    obj = _parse_distiller_json(raw)
+    distillation = str(obj.get("distillation") or "").strip()
+    matched_id, matched_kind = _match_item(obj.get("matched_item_name"), estimate)
+    guessed_type = matched_kind or "source"
+
+    card = proposed_card(
+        project_id=project_id,
+        project_code=project_code,
+        source_ref=source_ref,
+        raw_distillation=distillation,
+        guessed_est_item_id=matched_id,
+        guessed_type=guessed_type,
+    )
+    client.table(_INBOX_TABLE).upsert(
+        [card_to_row(card)], on_conflict="id"
+    ).execute()
+    return card
+
+
+# ---- Task 3.3: frame + promote (directed re-distill → version) --------------
+
+
+_FRAME_PROMPT = """\
+You are distilling project material into the single buildable memory for ONE
+work item, UNDER a human's explicit framing brief. Stay faithful to the source
+material — do not invent — but organize and emphasize it to serve the framing.
+Write 200-450 words of dense, buildable prose (no preamble, no headers, no
+meta-commentary). Output ONLY the distilled body.
+
+## Framing brief (the human's directing intent)
+{framing}
+
+## Raw material
+{raw}
+"""
+
+
+def _slugify(text: str) -> str:
+    """Lowercase, hyphenated, ascii-ish slug for a phase/item file path."""
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return s or "item"
+
+
+def _iter_substance_files(spine_root: Path):
+    """Yield every substance ``.md`` under ``spine/<phase>/`` (skips _context
+    and *.snapshots dirs), same scoping as the Phase-2 mirror."""
+    if not spine_root.is_dir():
+        return
+    for md in sorted(spine_root.glob("*/*.md")):
+        parts = md.relative_to(spine_root).parts
+        if parts[0] == "_context" or any(p.endswith(".snapshots") for p in parts):
+            continue
+        yield md
+
+
+def _target_path(spine_root: Path, *, phase, name, est_item_id) -> Path:
+    """The substance file path for an item: ``spine/<phase-slug>/<item-slug>.md``.
+
+    Slugs derive from the human-readable phase/name when given (so files stay
+    legible, matching the existing tree), falling back to the stable est_item_id
+    when not — the file PATH need only be stable; the mirror keys on est_item_id.
+    """
+    phase_slug = _slugify(phase) if phase else "unbound"
+    item_slug = _slugify(name) if name else _slugify(est_item_id)
+    return spine_root / phase_slug / f"{item_slug}.md"
+
+
+def promote_card(
+    card: InboxCard,
+    *,
+    framing: str,
+    est_item_id: str,
+    kind: str,
+    project_dir: Path,
+    sources,
+    distiller: Callable[..., str],
+    model: str,
+    client=None,
+    name: str | None = None,
+    phase: str | None = None,
+    today=None,
+) -> Path:
+    """Frame + promote a proposed card into a directed-distilled live version.
+
+    Runs a DIRECTED distillation: the prompt carries the human ``framing`` brief
+    + the card's raw material and asks for a faithful distillation UNDER that
+    framing. The result becomes a new ``live`` `SubstanceVersion` (v1 if the
+    item has no file yet, else next v-number with the prior live demoted to
+    ``superseded`` via `add_version`). Writes the substance markdown at
+    ``spine/<phase-slug>/<item-slug>.md`` with frontmatter binding
+    ``est_item_id``/``est_item_kind``/``phase``. If ``client`` is given, the
+    card's ``spine_inbox`` status flips to ``promoted``. Returns the written Path.
+
+    TARGETING (one substance file per ``est_item_id`` within a project): the
+    binding key is ``est_item_id``, not the slug-derived path. So we FIRST scan
+    for an existing substance file already bound to ``est_item_id`` and, if one
+    exists, append a version *into that file* — regardless of what slug the
+    card's name would derive. Only when NO file binds the id yet do we derive a
+    fresh ``_target_path`` and create v1. If MORE THAN ONE existing file binds
+    the same id (a pre-existing corrupt state), raise ValueError — that's the
+    only genuinely-ambiguous case left.
+    """
+    today_iso = today if isinstance(today, str) else (today or date.today()).isoformat()
+    spine_root = project_dir / "spine"
+
+    # Route by binding key, not by slug: find any existing file bound to this id.
+    bound = []
+    for md in _iter_substance_files(spine_root):
+        try:
+            other = parse_substance(md)
+        except Exception:
+            continue
+        if other.est_item_id == est_item_id:
+            bound.append(md)
+
+    if len(bound) > 1:
+        raise ValueError(
+            f"est_item_id {est_item_id!r} is bound by {len(bound)} substance "
+            f"files ({', '.join(str(p) for p in bound)}); the one-file-per-item "
+            f"invariant is already violated on disk. Refusing to promote into an "
+            f"ambiguous binding — reconcile the duplicate files first."
+        )
+
+    target = (
+        bound[0]
+        if bound
+        else _target_path(spine_root, phase=phase, name=name, est_item_id=est_item_id)
+    )
+
+    body = distiller(
+        _FRAME_PROMPT.format(framing=framing, raw=card.raw_distillation),
+        model=model,
+        api_key=None,
+    ).strip()
+    sources_tuple = tuple(str(s) for s in (sources or []))
+
+    if target.exists():
+        existing = parse_substance(target)
+        n = max(int(v.label[1:]) for v in existing.versions) + 1
+        version = SubstanceVersion(
+            label=f"v{n}", date=today_iso, status="live",
+            framing=framing, sources=sources_tuple, body=body,
+        )
+        item = add_version(existing, version)
+        # add_version preserves the existing item's binding/phase/extra; only
+        # versions change. (phase/kind stay as the file already declared them.)
+    else:
+        version = SubstanceVersion(
+            label="v1", date=today_iso, status="live",
+            framing=framing, sources=sources_tuple, body=body,
+        )
+        item = WorkItemSubstance(
+            est_item_id=est_item_id, est_item_kind=kind, phase=phase,
+            binding="live", versions=(version,), path=target,
+        )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(render_substance(item))
+
+    if client is not None:
+        client.table(_INBOX_TABLE).update({"status": "promoted"}).eq(
+            "id", card.id
+        ).execute()
+
+    return target
