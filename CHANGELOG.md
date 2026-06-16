@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.27.3 — 2026-06-16
+
+### Fixed — asset ingest resolves the project by id, not a parsed code-number
+
+Asset ingest resolved the MC-2 project by extracting a number from the code (`re.search(r"(\d+)")` → `projects WHERE number=…`). The post-restructure slug codes don't carry the number — `SAP-vision-update-2026` parses to **2026** (a year) but its number is **5174**, and `IBX-ai-campaign` (5153) has no digits at all — so resolution failed with "no MC-2 project resolved". Adds `resolve_project_folders_by_id` (looks up `projects.id` directly) and threads an optional `mc_project_id` through `ingest_project_assets` and the webhook `POST /api/assets/ingest`. The MC-2 button passes the authoritative project id, so no number-parsing is involved. The by-code/by-number path is kept as back-compat (bare-numeric codes + the CLI). Requires a webhook redeploy.
+
 ## v0.27.2 — 2026-06-16
 
 ### Fixed — asset ingest from the webhook (cwd-config crash)
