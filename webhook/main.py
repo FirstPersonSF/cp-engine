@@ -51,6 +51,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import hmac
+import inspect
 import json
 import logging
 import os
@@ -92,6 +93,13 @@ from meeting_artifact import write_meeting_artifacts
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("cp-engine-webhook")
+
+# The Anthropic model used for spine-inbox distillation. Derived from
+# generate_plan's own default so this webhook never drifts from the engine's
+# canonical model choice (rather than re-hardcoding the id).
+DEFAULT_MODEL: str = (
+    inspect.signature(generate_plan).parameters["model"].default
+)
 
 # Strong-reference set for background tasks spawned from Slack-action
 # handlers. Python's asyncio keeps only WEAK references to tasks created
@@ -2098,6 +2106,70 @@ def _append_retrospective(
         return "error"
 
 
+def _append_inbox_card(
+    *,
+    code: str,
+    transcript_path: Path,
+    meeting_id: str | None,
+) -> str:
+    """Distill the meeting into a *proposed* ``spine_inbox`` card (Phase 3).
+
+    The spine no longer gets un-framed substance stubs written straight from a
+    transcript: instead a human frames+promotes a proposed card (`cp spine
+    frame`). This step writes that proposed card — a raw-faithful first-pass
+    distillation + a best-guess estimate work item — for one project.
+
+    Best-effort, never raises. Returns one of:
+      - "skipped"   — no supabase client, no source_ref, or no MC-2 project
+      - "proposed"  — a proposed card was upserted
+      - "error"     — an exception was caught (logged); ingest continues
+
+    Writes ONLY to ``spine_inbox`` (one ANTHROPIC call). Does NOT write spine
+    substance — that is the human-directed frame→promote step.
+    """
+    source_ref = str(meeting_id or "").strip()
+    if not source_ref:
+        return "skipped"
+    client = _create_supabase_client()
+    if client is None:
+        return "skipped"
+    try:
+        from cp_engine import asset_ingest
+        from cp_engine.estimate import fetch_estimate
+        from cp_engine.plan_from_transcript import _call_claude, _read_transcript
+        from cp_engine.spine_inbox import build_inbox_card_from_transcript
+
+        folders = asset_ingest.resolve_project_folders(client, code)
+        if folders is None:
+            log.warning("inbox: no MC-2 project resolved for %s", code)
+            return "skipped"
+        project_id = folders.project_id
+
+        # Estimate is best-effort scope: a missing/unreachable estimate just
+        # means no item guess (guessed_type falls back to "source").
+        try:
+            estimate = fetch_estimate(client, project_id)
+        except Exception as exc:  # noqa: BLE001 — estimator unreachable
+            log.warning("inbox: estimate fetch failed for %s: %s", code, exc)
+            estimate = None
+
+        transcript = _read_transcript(transcript_path)
+        build_inbox_card_from_transcript(
+            client,
+            project_id=project_id,
+            project_code=code,
+            source_ref=source_ref,
+            transcript=transcript,
+            estimate=estimate,
+            distiller=_call_claude,
+            model=DEFAULT_MODEL,
+        )
+        return "proposed"
+    except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
+        log.warning("inbox: proposed-card write failed for %s: %s", code, exc)
+        return "error"
+
+
 def _ingest_one_project(
     *,
     config: TenantConfig,
@@ -2170,6 +2242,15 @@ def _ingest_one_project(
         meeting=meeting,
         action_items=action_items,
         plan=gen.plan,
+    )
+
+    # Spine ingestion inbox (Phase 3). Best-effort, never raises: write a
+    # PROPOSED card (raw distillation + guessed estimate item) for a human to
+    # frame+promote via `cp spine frame`. Never writes spine substance.
+    entry["inbox_card"] = _append_inbox_card(
+        code=code,
+        transcript_path=transcript_path,
+        meeting_id=meeting_id,
     )
     return entry
 
