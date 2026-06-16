@@ -28,6 +28,7 @@ import re
 import shutil
 import sys
 import tempfile
+import traceback
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -280,7 +281,7 @@ def list_files(
     folders: ProjectFolders,
     drive_connector=None,
     dropbox_connector=None,
-) -> tuple[list[FileRef], list[dict]]:
+) -> tuple[list[FileRef], list[dict[str, str]]]:
     """Enumerate the files in a project's enabled Drive + Dropbox folders.
 
     Returns `(refs, source_notes)`: the discovered `FileRef`s, and a list of
@@ -300,7 +301,7 @@ def list_files(
     propagate. Config gaps (non-client company, disabled source, missing folder
     id) are likewise recorded as notes, not errors.
     """
-    source_notes: list[dict] = []
+    source_notes: list[dict[str, str]] = []
 
     if folders.company_kind != "client":
         print(
@@ -326,11 +327,14 @@ def list_files(
                     _list_drive(drive_connector, folders.google_drive_folder_id)
                 )
             except Exception as exc:  # noqa: BLE001 — a dead Drive source must not kill Dropbox; record + continue
-                source_notes.append({"source": "drive", "note": str(exc)})
+                source_notes.append(
+                    {"source": "drive", "note": f"{type(exc).__name__}: {exc}"}
+                )
                 print(
                     f"[asset-ingest] drive source failed, continuing: {exc}",
                     file=sys.stderr,
                 )
+                traceback.print_exc()
         else:
             note = "enable_google_drive set but no google_drive_folder_id"
             source_notes.append({"source": "drive", "note": note})
@@ -348,11 +352,14 @@ def list_files(
                     _list_dropbox(dropbox_connector, folders.mc_dropbox_folder_id)
                 )
             except Exception as exc:  # noqa: BLE001 — a dead Dropbox source must not kill Drive; record + continue
-                source_notes.append({"source": "dropbox", "note": str(exc)})
+                source_notes.append(
+                    {"source": "dropbox", "note": f"{type(exc).__name__}: {exc}"}
+                )
                 print(
                     f"[asset-ingest] dropbox source failed, continuing: {exc}",
                     file=sys.stderr,
                 )
+                traceback.print_exc()
         else:
             note = "enable_dropbox set but no mc_dropbox_folder_id"
             source_notes.append({"source": "dropbox", "note": note})
@@ -439,7 +446,7 @@ class IngestRunResult:
     # Per-source listing notes from list_files: a dead/skipped source records a
     # {"source", "note"} entry here rather than aborting the whole run, so the
     # caller (and the button UI) can show why a source produced nothing.
-    source_notes: list[dict] = field(default_factory=list)
+    source_notes: list[dict[str, str]] = field(default_factory=list)
 
 
 # configure_ingest() wires document-ingest's module-level singletons (settings +

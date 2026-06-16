@@ -98,20 +98,21 @@ def test_drive_failure_does_not_block_dropbox() -> None:
     # Exactly one note, for the drive source — no dropbox note.
     assert len(source_notes) == 1
     assert source_notes[0]["source"] == "drive"
-    assert "note" in source_notes[0]
+    # The note now leads with the exception TYPE so operators can tell an
+    # expected creds failure (RuntimeError/HttpError) from a programming bug.
+    assert source_notes[0]["note"].startswith("RuntimeError: ")
     assert all(n["source"] != "dropbox" for n in source_notes)
 
 
 def test_both_sources_succeed_no_notes() -> None:
     """Both sources list cleanly → no notes, refs from both."""
-    folders = _client_folders(enable_google_drive=False)  # avoid real Drive build
     dropbox = _FakeDropboxConnector(
         entries=[
             _FakeDropboxEntry("a.pdf", "/p/a.pdf", 1, "2026", "id:1"),
         ]
     )
 
-    # Use a tree-driven fake drive that succeeds, with drive enabled.
+    # Tree-driven fake drive that succeeds, with drive enabled.
     folders = _client_folders()
 
     class _OkDrive:
