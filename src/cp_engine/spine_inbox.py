@@ -25,7 +25,17 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
+from datetime import date
+from pathlib import Path
 from typing import Callable
+
+from cp_engine.substance import (
+    SubstanceVersion,
+    WorkItemSubstance,
+    add_version,
+    parse_substance,
+    render_substance,
+)
 
 _INBOX_TABLE = "spine_inbox"
 
@@ -72,6 +82,19 @@ def proposed_card(
         status="proposed",
         framing=None,
     )
+
+
+def load_card(client, card_id: str) -> InboxCard | None:
+    """Load one inbox card by id, or None if it doesn't exist. Explicit columns."""
+    rows = (
+        client.table(_INBOX_TABLE)
+        .select(_CARD_COLUMNS)
+        .eq("id", card_id)
+        .execute()
+        .data
+        or []
+    )
+    return row_to_card(rows[0]) if rows else None
 
 
 def card_to_row(card: InboxCard) -> dict:
@@ -207,3 +230,140 @@ def build_inbox_card_from_transcript(
         [card_to_row(card)], on_conflict="id"
     ).execute()
     return card
+
+
+# ---- Task 3.3: frame + promote (directed re-distill → version) --------------
+
+
+_FRAME_PROMPT = """\
+You are distilling project material into the single buildable memory for ONE
+work item, UNDER a human's explicit framing brief. Stay faithful to the source
+material — do not invent — but organize and emphasize it to serve the framing.
+Write 200-450 words of dense, buildable prose (no preamble, no headers, no
+meta-commentary). Output ONLY the distilled body.
+
+## Framing brief (the human's directing intent)
+{framing}
+
+## Raw material
+{raw}
+"""
+
+
+def _slugify(text: str) -> str:
+    """Lowercase, hyphenated, ascii-ish slug for a phase/item file path."""
+    s = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return s or "item"
+
+
+def _iter_substance_files(spine_root: Path):
+    """Yield every substance ``.md`` under ``spine/<phase>/`` (skips _context
+    and *.snapshots dirs), same scoping as the Phase-2 mirror."""
+    if not spine_root.is_dir():
+        return
+    for md in sorted(spine_root.glob("*/*.md")):
+        parts = md.relative_to(spine_root).parts
+        if parts[0] == "_context" or any(p.endswith(".snapshots") for p in parts):
+            continue
+        yield md
+
+
+def _target_path(spine_root: Path, *, phase, name, est_item_id) -> Path:
+    """The substance file path for an item: ``spine/<phase-slug>/<item-slug>.md``.
+
+    Slugs derive from the human-readable phase/name when given (so files stay
+    legible, matching the existing tree), falling back to the stable est_item_id
+    when not — the file PATH need only be stable; the mirror keys on est_item_id.
+    """
+    phase_slug = _slugify(phase) if phase else "unbound"
+    item_slug = _slugify(name) if name else _slugify(est_item_id)
+    return spine_root / phase_slug / f"{item_slug}.md"
+
+
+def promote_card(
+    card: InboxCard,
+    *,
+    framing: str,
+    est_item_id: str,
+    kind: str,
+    project_dir: Path,
+    sources,
+    distiller: Callable[..., str],
+    model: str,
+    client=None,
+    name: str | None = None,
+    phase: str | None = None,
+    today=None,
+) -> Path:
+    """Frame + promote a proposed card into a directed-distilled live version.
+
+    Runs a DIRECTED distillation: the prompt carries the human ``framing`` brief
+    + the card's raw material and asks for a faithful distillation UNDER that
+    framing. The result becomes a new ``live`` `SubstanceVersion` (v1 if the
+    item has no file yet, else next v-number with the prior live demoted to
+    ``superseded`` via `add_version`). Writes the substance markdown at
+    ``spine/<phase-slug>/<item-slug>.md`` with frontmatter binding
+    ``est_item_id``/``est_item_kind``/``phase``. If ``client`` is given, the
+    card's ``spine_inbox`` status flips to ``promoted``. Returns the written Path.
+
+    CARRY-FORWARD GUARD: exactly one substance file per ``est_item_id`` within a
+    project. If a DIFFERENT existing file already binds this ``est_item_id``,
+    raise ValueError rather than silently creating a second file that would
+    collide on the mirror's ``<project_code>/<est_item_id>/<version>`` id.
+    """
+    today_iso = today if isinstance(today, str) else (today or date.today()).isoformat()
+    spine_root = project_dir / "spine"
+    target = _target_path(spine_root, phase=phase, name=name, est_item_id=est_item_id)
+
+    # Carry-forward guard: scan for any OTHER file already bound to est_item_id.
+    for md in _iter_substance_files(spine_root):
+        if md.resolve() == target.resolve():
+            continue
+        try:
+            other = parse_substance(md)
+        except Exception:
+            continue
+        if other.est_item_id == est_item_id:
+            raise ValueError(
+                f"est_item_id {est_item_id!r} already bound by a different "
+                f"substance file ({md}); refusing to create a second file "
+                f"that would collide in the spine_substance mirror. Promote "
+                f"into the existing file instead."
+            )
+
+    body = distiller(
+        _FRAME_PROMPT.format(framing=framing, raw=card.raw_distillation),
+        model=model,
+        api_key=None,
+    ).strip()
+    sources_tuple = tuple(str(s) for s in (sources or []))
+
+    if target.exists():
+        existing = parse_substance(target)
+        n = max(int(v.label[1:]) for v in existing.versions) + 1
+        version = SubstanceVersion(
+            label=f"v{n}", date=today_iso, status="live",
+            framing=framing, sources=sources_tuple, body=body,
+        )
+        item = add_version(existing, version)
+        # add_version preserves the existing item's binding/phase/extra; only
+        # versions change. (phase/kind stay as the file already declared them.)
+    else:
+        version = SubstanceVersion(
+            label="v1", date=today_iso, status="live",
+            framing=framing, sources=sources_tuple, body=body,
+        )
+        item = WorkItemSubstance(
+            est_item_id=est_item_id, est_item_kind=kind, phase=phase,
+            binding="live", versions=(version,), path=target,
+        )
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(render_substance(item))
+
+    if client is not None:
+        client.table(_INBOX_TABLE).update({"status": "promoted"}).eq(
+            "id", card.id
+        ).execute()
+
+    return target

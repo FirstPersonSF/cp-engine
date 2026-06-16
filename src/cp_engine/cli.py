@@ -955,6 +955,101 @@ def spine_stats_cmd(type_filter: str | None, within_days: int) -> None:
         click.echo("  (none)")
 
 
+@main.command("spine-frame")
+@click.argument("card_id")
+@click.option("--framing", required=True, help="The directing brief for the distillation.")
+@click.option(
+    "--est-item-id", "est_item_id", default=None,
+    help="Estimate work item to bind to (defaults to the card's guess).",
+)
+@click.option(
+    "--kind", default=None,
+    help="Work item kind (activity|deliverable); defaults to the estimate item's kind.",
+)
+@click.option(
+    "--source", "sources", multiple=True,
+    help="A source ref (repeatable). Defaults to the card's source_ref.",
+)
+@click.option(
+    "--model", default="claude-opus-4-7", show_default=True,
+    help="Anthropic model for the directed distillation.",
+)
+def spine_frame_cmd(card_id, framing, est_item_id, kind, sources, model) -> None:
+    """Frame + promote a proposed spine_inbox card into a live substance version.
+
+    Loads the card, runs a directed re-distillation under the framing brief,
+    and writes a new live `## v<N>` substance version bound to an estimate work
+    item (the card's guessed item by default). Prints the written path.
+    """
+    from cp_engine.estimate import fetch_estimate
+    from cp_engine.plan_from_transcript import _call_claude
+    from cp_engine.spine import find_spine_dir
+    from cp_engine.spine_inbox import load_card, promote_card
+    from cp_engine.sync import BackendUnavailable
+    from cp_engine.sync_mc2 import MC2Backend
+
+    config = _load_config_or_die()
+    try:
+        client = MC2Backend().connect(config)
+    except BackendUnavailable as exc:
+        click.echo(f"cp spine-frame needs MC-2: {exc}", err=True)
+        sys.exit(1)
+
+    card = load_card(client, card_id)
+    if card is None:
+        click.echo(f"Error: no inbox card '{card_id}'.", err=True)
+        sys.exit(1)
+
+    # Resolve the target estimate item (CLI default = the card's guess). The
+    # estimate gives us the item's name + phase for the substance file path +
+    # frontmatter; degrade gracefully if the estimator schema is unreachable.
+    target_item_id = est_item_id or card.guessed_est_item_id
+    if not target_item_id:
+        click.echo(
+            "Error: no estimate item to bind to. Pass --est-item-id "
+            "(the card carries no guess).",
+            err=True,
+        )
+        sys.exit(1)
+
+    name = phase = None
+    resolved_kind = kind
+    try:
+        estimate = fetch_estimate(client, card.project_id)
+    except Exception as exc:  # noqa: BLE001 — estimator unreachable
+        click.echo(f"(estimate fetch failed — proceeding unbound-by-name: {exc})",
+                   err=True)
+        estimate = None
+    if estimate is not None:
+        item = estimate.item_by_id(target_item_id)
+        if item is not None:
+            name = item.name
+            resolved_kind = kind or item.kind
+            for ph in estimate.phases:
+                if any(i.id == target_item_id for i in ph.items):
+                    phase = ph.name
+                    break
+    resolved_kind = resolved_kind or "deliverable"
+
+    project_dir = find_spine_dir(config.root, card.project_code)
+    src = list(sources) or [card.source_ref]
+
+    path = promote_card(
+        card,
+        framing=framing,
+        est_item_id=target_item_id,
+        kind=resolved_kind,
+        project_dir=project_dir,
+        sources=src,
+        distiller=_call_claude,
+        model=model,
+        client=client,
+        name=name,
+        phase=phase,
+    )
+    click.echo(f"Wrote {path}")
+
+
 @main.command("sweep")
 @click.argument("code")
 @click.option(
