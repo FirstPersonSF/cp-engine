@@ -28,8 +28,9 @@ import re
 import shutil
 import sys
 import tempfile
+import traceback
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 # Columns we read from MC-2's `projects` table. Explicit list (never `*`) per
@@ -280,66 +281,91 @@ def list_files(
     folders: ProjectFolders,
     drive_connector=None,
     dropbox_connector=None,
-) -> list[FileRef]:
+) -> tuple[list[FileRef], list[dict[str, str]]]:
     """Enumerate the files in a project's enabled Drive + Dropbox folders.
+
+    Returns `(refs, source_notes)`: the discovered `FileRef`s, and a list of
+    `{"source": "drive"|"dropbox", "note": "<reason>"}` notes describing anything
+    that went wrong or was skipped for a source. The notes let a UI surface *why*
+    a source produced nothing without aborting the run.
 
     Connectors are injectable for testability; when omitted they are constructed
     from the environment (service-account file / Dropbox refresh-token creds).
 
-    Skips (not errors, surfaced as stderr notes):
-      - non-client company kinds (out of scope)
-      - a source with its enable flag off
-      - a source missing its folder id
-
-    Config gaps (non-client company, disabled source, missing folder id) are
-    skipped with a stderr note. Connector/API errors (auth failure, bad folder
-    id, rate limit) propagate uncaught — the caller handles per-source failure.
+    PER-SOURCE RESILIENCE (the point of this function's shape): the two sources
+    are INDEPENDENT. A failure walking Drive (auth failure, bad folder id, rate
+    limit) MUST NOT abort the Dropbox walk — the docs the user wants may live in
+    the other source, and this is driven from a button where the user can't fix
+    creds. So each source block is wrapped in its own `try/except`: on a raise we
+    record a note, log to stderr, and CONTINUE to the next source rather than
+    propagate. Config gaps (non-client company, disabled source, missing folder
+    id) are likewise recorded as notes, not errors.
     """
+    source_notes: list[dict[str, str]] = []
+
     if folders.company_kind != "client":
         print(
             f"[asset-ingest] skipping non-client company kind="
             f"'{folders.company_kind}' (asset ingest targets clients only)",
             file=sys.stderr,
         )
-        return []
+        return [], []
 
     results: list[FileRef] = []
 
     # ── Drive ──
     if folders.enable_google_drive:
         if folders.google_drive_folder_id:
-            if drive_connector is None:
-                from cloud_storage.google_drive_connector import GoogleDriveConnector
+            try:
+                if drive_connector is None:
+                    from cloud_storage.google_drive_connector import (
+                        GoogleDriveConnector,
+                    )
 
-                drive_connector = GoogleDriveConnector(service_account_file=None)
-            results.extend(
-                _list_drive(drive_connector, folders.google_drive_folder_id)
-            )
+                    drive_connector = GoogleDriveConnector(service_account_file=None)
+                results.extend(
+                    _list_drive(drive_connector, folders.google_drive_folder_id)
+                )
+            except Exception as exc:  # noqa: BLE001 — a dead Drive source must not kill Dropbox; record + continue
+                source_notes.append(
+                    {"source": "drive", "note": f"{type(exc).__name__}: {exc}"}
+                )
+                print(
+                    f"[asset-ingest] drive source failed, continuing: {exc}",
+                    file=sys.stderr,
+                )
+                traceback.print_exc()
         else:
-            print(
-                "[asset-ingest] enable_google_drive set but no "
-                "google_drive_folder_id — skipping Drive",
-                file=sys.stderr,
-            )
+            note = "enable_google_drive set but no google_drive_folder_id"
+            source_notes.append({"source": "drive", "note": note})
+            print(f"[asset-ingest] {note} — skipping Drive", file=sys.stderr)
 
     # ── Dropbox ──
     if folders.enable_dropbox:
         if folders.mc_dropbox_folder_id:
-            if dropbox_connector is None:
-                from cloud_storage.dropbox_connector import DropboxConnector
+            try:
+                if dropbox_connector is None:
+                    from cloud_storage.dropbox_connector import DropboxConnector
 
-                dropbox_connector = DropboxConnector()
-            results.extend(
-                _list_dropbox(dropbox_connector, folders.mc_dropbox_folder_id)
-            )
+                    dropbox_connector = DropboxConnector()
+                results.extend(
+                    _list_dropbox(dropbox_connector, folders.mc_dropbox_folder_id)
+                )
+            except Exception as exc:  # noqa: BLE001 — a dead Dropbox source must not kill Drive; record + continue
+                source_notes.append(
+                    {"source": "dropbox", "note": f"{type(exc).__name__}: {exc}"}
+                )
+                print(
+                    f"[asset-ingest] dropbox source failed, continuing: {exc}",
+                    file=sys.stderr,
+                )
+                traceback.print_exc()
         else:
-            print(
-                "[asset-ingest] enable_dropbox set but no "
-                "mc_dropbox_folder_id — skipping Dropbox",
-                file=sys.stderr,
-            )
+            note = "enable_dropbox set but no mc_dropbox_folder_id"
+            source_notes.append({"source": "dropbox", "note": note})
+            print(f"[asset-ingest] {note} — skipping Dropbox", file=sys.stderr)
 
-    return results
+    return results, source_notes
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -417,6 +443,10 @@ class IngestRunResult:
     failed: int = 0
     failures: list[tuple[str, str]] = field(default_factory=list)
     project_found: bool = True
+    # Per-source listing notes from list_files: a dead/skipped source records a
+    # {"source", "note"} entry here rather than aborting the whole run, so the
+    # caller (and the button UI) can show why a source produced nothing.
+    source_notes: list[dict[str, str]] = field(default_factory=list)
 
 
 # configure_ingest() wires document-ingest's module-level singletons (settings +
@@ -557,12 +587,14 @@ def ingest_project_assets(
         # resolve_project_folders already printed the reason to stderr.
         return IngestRunResult(project_found=False)
 
-    files = list_files(folders, drive_connector, dropbox_connector)
+    files, source_notes = list_files(folders, drive_connector, dropbox_connector)
     if not files:
         # Nothing to ingest (non-client company, disabled sources, empty folder,
-        # missing folder ids — all handled + noted inside list_files). Short-
-        # circuit BEFORE constructing the pipeline (no Supabase/OpenAI touched).
-        return IngestRunResult()
+        # missing folder ids, OR a dead source — all handled + noted inside
+        # list_files). Short-circuit BEFORE constructing the pipeline (no
+        # Supabase/OpenAI touched), but carry the source notes through so the
+        # caller can see why a source listed nothing.
+        return IngestRunResult(source_notes=source_notes)
 
     if pipeline is None:
         # Only now (real files, no injected pipeline) do we need Supabase coords.
@@ -572,7 +604,7 @@ def ingest_project_assets(
         factory = pipeline_factory or _build_pipeline
         pipeline = factory(folders.project_id, supabase_url, supabase_key)
 
-    result = IngestRunResult()
+    result = IngestRunResult(source_notes=source_notes)
     run_root = Path(tmp_root) if tmp_root is not None else Path(tempfile.gettempdir())
     run_root.mkdir(parents=True, exist_ok=True)
 
@@ -697,7 +729,7 @@ _PROMOTABLE_COLUMNS = "id, title, url, meta"
 
 def _utc_now_iso() -> str:
     """UTC ISO-8601 timestamp for lifecycle columns (promoted_at/archived_at)."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 def _affected_count(resp) -> int:

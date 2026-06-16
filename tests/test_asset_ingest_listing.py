@@ -334,7 +334,7 @@ def test_list_skips_non_client_company(capsys: pytest.CaptureFixture[str]) -> No
     folders = _client_folders(company_kind="self-fpsf")
     drive = _FakeDriveConnector(files=[{"id": "x"}])
     dropbox = _FakeDropboxConnector(entries=[])
-    out = list_files(folders, drive_connector=drive, dropbox_connector=dropbox)
+    out, _notes = list_files(folders, drive_connector=drive, dropbox_connector=dropbox)
     assert out == []
     # Connectors must never be touched for non-client kinds.
     assert drive.calls == []
@@ -366,7 +366,7 @@ def test_list_drive_and_dropbox_merged() -> None:
             )
         ]
     )
-    out = list_files(folders, drive_connector=drive, dropbox_connector=dropbox)
+    out, _notes = list_files(folders, drive_connector=drive, dropbox_connector=dropbox)
     by_source = {f.source for f in out}
     assert by_source == {"drive", "dropbox"}
 
@@ -399,7 +399,7 @@ def test_list_skips_drive_when_no_folder_id(capsys: pytest.CaptureFixture[str]) 
             _FakeDropboxEntry("a", "/p/a", 1, "2026", "id:1"),
         ]
     )
-    out = list_files(folders, drive_connector=drive, dropbox_connector=dropbox)
+    out, _notes = list_files(folders, drive_connector=drive, dropbox_connector=dropbox)
     # Drive skipped (no error), dropbox still listed.
     assert [f.source for f in out] == ["dropbox"]
     assert drive.calls == []
@@ -412,7 +412,7 @@ def test_list_respects_enable_flags() -> None:
     dropbox = _FakeDropboxConnector(
         entries=[_FakeDropboxEntry("a", "/p/a", 1, "2026", "id:1")]
     )
-    out = list_files(folders, drive_connector=drive, dropbox_connector=dropbox)
+    out, _notes = list_files(folders, drive_connector=drive, dropbox_connector=dropbox)
     # Drive connector must not be called when the flag is off, even with a folder id.
     assert drive.calls == []
     assert [f.source for f in out] == ["dropbox"]
@@ -422,7 +422,7 @@ def test_list_skips_dropbox_when_disabled() -> None:
     folders = _client_folders(enable_dropbox=False)
     drive = _FakeDriveConnector(files=[{"id": "d", "name": "n"}])
     dropbox = _FakeDropboxConnector(entries=[_FakeDropboxEntry("a", "/p/a", 1, "2026", "i")])
-    out = list_files(folders, drive_connector=drive, dropbox_connector=dropbox)
+    out, _notes = list_files(folders, drive_connector=drive, dropbox_connector=dropbox)
     assert dropbox.dbx.calls == []
     assert [f.source for f in out] == ["drive"]
 
@@ -447,7 +447,7 @@ def test_list_drive_recurses_into_subfolders() -> None:
         "sub-b": [_drive_file("fb1", "sow.pdf")],
     }
     drive = _FakeDriveConnector(tree=tree)
-    out = list_files(folders, drive_connector=drive, dropbox_connector=None)
+    out, _notes = list_files(folders, drive_connector=drive, dropbox_connector=None)
 
     names = {f.name for f in out}
     assert names == {"narrative.docx", "approach.pdf", "sow.pdf"}
@@ -463,7 +463,7 @@ def test_list_drive_recursion_depth_cap(capsys: pytest.CaptureFixture[str]) -> N
     """Infinitely-nested tree must stop at the depth cap, not hang/recurse forever."""
     folders = _client_folders(enable_dropbox=False, google_drive_folder_id="root")
     drive = _InfiniteDriveConnector()
-    out = list_files(folders, drive_connector=drive, dropbox_connector=None)
+    out, _notes = list_files(folders, drive_connector=drive, dropbox_connector=None)
 
     # It terminated (no hang) and collected the files down to the cap.
     assert len(out) >= 1
@@ -479,7 +479,7 @@ def test_list_drive_cycle_guard() -> None:
     """Folder A→B→A is a cycle; the visited-set must stop the infinite loop."""
     folders = _client_folders(enable_dropbox=False, google_drive_folder_id="A")
     drive = _CycleDriveConnector()
-    out = list_files(folders, drive_connector=drive, dropbox_connector=None)
+    out, _notes = list_files(folders, drive_connector=drive, dropbox_connector=None)
 
     names = {f.name for f in out}
     assert names == {"a.pdf", "b.pdf"}
@@ -505,7 +505,7 @@ def test_list_dropbox_recursive_flag() -> None:
         ),
     ]
     dropbox = _FakeDropboxConnector(entries=entries)
-    out = list_files(folders, drive_connector=None, dropbox_connector=dropbox)
+    out, _notes = list_files(folders, drive_connector=None, dropbox_connector=dropbox)
 
     # recursive=True was passed to the SDK.
     assert dropbox.dbx.recursive_flags == [True]
@@ -524,7 +524,7 @@ def test_list_dropbox_paginates_has_more() -> None:
     page1 = [_FakeDropboxEntry("p1.pdf", "/p/a/p1.pdf", 1, "2026", "id:1")]
     page2 = [_FakeDropboxEntry("p2.pdf", "/p/b/p2.pdf", 2, "2026", "id:2")]
     dropbox = _FakeDropboxConnector(pages=[page1, page2])
-    out = list_files(folders, drive_connector=None, dropbox_connector=dropbox)
+    out, _notes = list_files(folders, drive_connector=None, dropbox_connector=dropbox)
 
     assert {f.name for f in out} == {"p1.pdf", "p2.pdf"}
     # The cursor was drained exactly once (one continue call for the 2nd page).
