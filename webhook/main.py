@@ -610,6 +610,9 @@ async def _run_asset_ingest(run_id: str, code: str) -> None:
     except Exception as exc:  # noqa: BLE001 — record the whole-run failure, never crash the task
         log.warning("asset-ingest run %s failed: %s", run_id, exc, exc_info=True)
         try:
+            # Rebuild a fresh client rather than reuse `client`: the original may be
+            # the thing that failed (transient supabase/network error), so we record
+            # the failure on a clean client instead of a possibly-broken one.
             _asset_runs_table(_create_supabase_client()).update(
                 {"status": "failed", "error": str(exc), "finished_at": _utc_now_iso()}
             ).eq("id", run_id).execute()
