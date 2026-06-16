@@ -4,6 +4,17 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.27.1 — 2026-06-16
+
+### Added — Asset ingest from MC-2 (webhook side)
+
+Asset ingest (Drive/Dropbox docs → embedded `rag_assets`) was CLI-only and aborted the whole run if the first source failed to authenticate — useless from a button where the user can't fix creds. This release adds the webhook half of an MC-2 **Ingest assets** button.
+
+- **`list_files` resilience** (`asset_ingest.py`): each storage source (Drive, Dropbox) is now isolated — a per-source failure (e.g. missing service-account creds) records a `source_note` and continues to the other source instead of aborting the run. The note carries the exception *type* and the full traceback goes to stderr, so a real bug is distinguishable from a dead-creds skip. `list_files` returns `(refs, source_notes)`; `IngestRunResult` carries `source_notes`.
+- **`POST /api/assets/ingest`** (cp-engine-webhook): HMAC-signed, fire-and-forget. Inserts an `asset_ingest_runs` row (`status=running`), returns 202 immediately, runs `ingest_project_assets` in a background task (`asyncio.to_thread`), and updates the row to `done`/`failed` with counts + `source_notes` on completion. No tenant clone, no git push — asset ingest writes only `rag_assets` + the runs table.
+
+Pairs with MC-2 migration 065 (`asset_ingest_runs`) + the MC-2 proxy/status endpoints + the project-page button. The webhook runs where the Drive/Dropbox/embedding creds already live, so the button needs no local credential setup. Requires a webhook redeploy.
+
 ## v0.27.0 — 2026-06-16
 
 ### Added — Spine estimate-binding (the spine is re-founded on the live estimate)
