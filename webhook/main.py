@@ -359,6 +359,186 @@ async def rerun_auto_ingest(run_id: str, request: Request) -> dict:
     )
 
 
+@app.post("/api/spine/promote")
+async def spine_promote(request: Request) -> dict:
+    """Frame + promote a proposed spine_inbox card into a live substance version.
+
+    The server-side equivalent of the `cp spine-frame` CLI: a human in the mc-2
+    web UI clicks "Frame & promote" on a proposed inbox card with a directing
+    framing brief. mc-2 has the Supabase DB but NOT a checkout of the cp tenant
+    filesystem — only this service clones the tenant per-request — so the
+    markdown write (source of truth) + git push happen HERE. mc-2 calls this
+    (signed) as a thin proxy.
+
+    Sequence: verify signature → clone tenant → load card → resolve the target
+    estimate item (name/phase/kind, best-effort) → promote_card (directed
+    re-distillation under the framing → write/append a live `## v<N>` substance
+    version) → mirror that project's substance into spine_substance (so the UI
+    sees it immediately, best-effort) → commit + push → return HEAD sha.
+
+    Request body (JSON):
+        {
+          "card_id": "<project_code>/inbox/<source_ref>",  # required
+          "framing": "the human's directing brief",        # required, non-empty
+          "est_item_id": "<uuid>"|null,   # optional; defaults to card's guess
+          "kind": "deliverable"|"activity"|null,  # optional; defaults to item kind
+          "sources": ["..."],             # optional; defaults to [card.source_ref]
+          "model": "claude-opus-4-7"      # optional; default DEFAULT_MODEL
+        }
+
+    Headers:
+        X-Webhook-Signature: hex(hmac_sha256(...))
+        X-Webhook-Timestamp: (optional, per the phased-rollout gate)
+
+    Response (200):
+        {"ok": true, "commit_sha": ..., "version_label": "v3",
+         "rel_path": "1p/.../messaging-system.md", "mirrored": true}
+    """
+    from cp_engine.estimate import fetch_estimate
+    from cp_engine.plan_from_transcript import _call_claude
+    from cp_engine.spine import find_spine_dir
+    from cp_engine.spine_inbox import load_card, promote_card
+    from cp_engine.spine_substance_sync import sync_spine_substance
+    from cp_engine.substance import parse_substance
+
+    raw_body = await request.body()
+    _verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
+
+    card_id = (payload.get("card_id") or "").strip()
+    framing = (payload.get("framing") or "").strip()
+    if not card_id:
+        raise HTTPException(status_code=400, detail="card_id is required")
+    if not framing:
+        raise HTTPException(status_code=400, detail="framing must be non-empty")
+
+    est_item_id = payload.get("est_item_id")
+    kind = payload.get("kind")
+    sources = payload.get("sources") or []
+    model = payload.get("model") or DEFAULT_MODEL
+
+    client = _create_supabase_client()
+    if client is None:
+        raise HTTPException(
+            status_code=500, detail="Supabase not configured for spine promote"
+        )
+
+    card = load_card(client, card_id)
+    if card is None:
+        raise HTTPException(status_code=404, detail=f"no inbox card '{card_id}'")
+
+    # Resolve the target estimate item. Default to the card's guess; 400 if
+    # there's still nothing to bind to (the binding key is mandatory).
+    target_item_id = est_item_id or card.guessed_est_item_id
+    if not target_item_id:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "no estimate item to bind to: pass est_item_id "
+                "(the card carries no guess)"
+            ),
+        )
+
+    # The estimate gives the item's name + phase for the file path + frontmatter.
+    # Degrade gracefully (unbound-by-name) if the estimator is unreachable —
+    # mirrors the CLI's spine_frame_cmd.
+    name = phase = None
+    resolved_kind = kind
+    estimate = None
+    try:
+        estimate = fetch_estimate(client, card.project_id)
+    except Exception as exc:  # noqa: BLE001 — estimator unreachable
+        log.warning(
+            "spine-promote: estimate fetch failed for %s — proceeding "
+            "unbound-by-name: %s", card.project_code, exc,
+        )
+    if estimate is not None:
+        item = estimate.item_by_id(target_item_id)
+        if item is not None:
+            name = item.name
+            resolved_kind = kind or item.kind
+            for ph in estimate.phases:
+                if any(i.id == target_item_id for i in ph.items):
+                    phase = ph.name
+                    break
+    resolved_kind = resolved_kind or "deliverable"
+
+    with _cloned_tenant() as tenant_root:
+        config = _load_tenant_config(tenant_root)
+        project_dir = find_spine_dir(config.root, card.project_code)
+        src = list(sources) or [card.source_ref]
+
+        # Directed re-distillation + markdown write (source of truth). Let any
+        # failure surface as a 500 — a failed promote must be visible so the
+        # UI can show an error, and nothing was pushed yet.
+        path = promote_card(
+            card,
+            framing=framing,
+            est_item_id=target_item_id,
+            kind=resolved_kind,
+            project_dir=project_dir,
+            sources=src,
+            distiller=_call_claude,
+            model=model,
+            client=client,
+            name=name,
+            phase=phase,
+        )
+
+        # The live version's label, re-parsed off the just-written file.
+        version_label = parse_substance(path).live_version().label
+        rel_path = str(path.relative_to(tenant_root))
+
+        # Mirror the new version into spine_substance so the UI sees it
+        # immediately (idempotent reconcile of ALL of this project's substance,
+        # exactly like `cp sync`). Best-effort: a mirror failure must NOT lose
+        # the click — the markdown + git push still land and the next sync
+        # reconciles. So we record mirrored=false and keep going.
+        mirrored = True
+        try:
+            sync_spine_substance(
+                client,
+                project_id=card.project_id,
+                project_code=card.project_code,
+                project_dir=project_dir,
+                estimate=estimate,
+            )
+        except Exception as exc:  # noqa: BLE001 — never lose a successful write
+            log.warning(
+                "spine-promote: spine_substance mirror failed for %s "
+                "(markdown + push will still land): %s",
+                card.project_code, exc,
+            )
+            mirrored = False
+
+        commit_sha = _commit_and_push_promote(
+            tenant_root=tenant_root,
+            project_code=card.project_code,
+            version_label=version_label,
+            rel_path=rel_path,
+        )
+
+    log.info(
+        "spine-promote: card=%s item=%s %s -> %s (mirrored=%s)",
+        card_id, target_item_id, version_label, commit_sha[:8], mirrored,
+    )
+    return {
+        "ok": True,
+        "commit_sha": commit_sha,
+        "version_label": version_label,
+        "rel_path": rel_path,
+        "mirrored": mirrored,
+    }
+
+
 def _perform_auto_ingest(
     *,
     meeting_id: str,
@@ -2563,6 +2743,45 @@ def _commit_and_push(
             ["git", "branch", "-M", target_branch],
             cwd=tenant_root,
             check=True,
+        )
+    _push_with_retry(tenant_root, target_branch=target_branch, env=env)
+
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=tenant_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _commit_and_push_promote(
+    *, tenant_root: Path, project_code: str, version_label: str, rel_path: str
+) -> str:
+    """Stage + commit + push a spine-promote markdown write. Returns HEAD SHA.
+
+    Sibling of `_commit_and_push` (whose commit message is auto-ingest-shaped).
+    A promote writes exactly one substance file; we stage everything (`git add
+    -A`, in case promote_card also created a parent dir) and commit with a
+    promote-shaped message. Reuses `_ssh_env` + `_push_with_retry` and honors
+    the CP_TENANT_BRANCH override exactly like `_commit_and_push` so tests can
+    push to a throwaway branch.
+    """
+    env = _ssh_env()
+    subprocess.run(["git", "add", "-A"], cwd=tenant_root, check=True)
+
+    message = (
+        f"[spine-promote] {project_code}: {rel_path} {version_label}\n\n"
+        f"Generated by cp-engine-webhook v{cp_engine.__version__}.\n"
+    )
+    subprocess.run(
+        ["git", "commit", "-m", message], cwd=tenant_root, check=True, env=env
+    )
+    target_branch = os.environ.get("CP_TENANT_BRANCH", "main")
+    if target_branch != "main":
+        subprocess.run(
+            ["git", "branch", "-M", target_branch], cwd=tenant_root, check=True
         )
     _push_with_retry(tenant_root, target_branch=target_branch, env=env)
 
