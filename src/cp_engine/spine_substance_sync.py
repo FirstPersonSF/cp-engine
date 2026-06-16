@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cp_engine.spine_context import parse_context
-from cp_engine.spine_sync import _merge_flag, reconcile_field
+from cp_engine.spine_sync import _has_confirmed_field, _merge_flag, reconcile_field
 from cp_engine.substance import WorkItemSubstance, parse_substance
 
 _SUBSTANCE_TABLE = "spine_substance"
@@ -70,7 +70,7 @@ def substance_to_rows(
                 "phase": item.phase,
                 "binding": item.binding,
                 "version_label": v.label,
-                "version_date": v.date or None,
+                "version_date": v.date,
                 "status": v.status,
                 "framing": v.framing,
                 "body": v.body,
@@ -129,12 +129,6 @@ def reconcile_bindings(
 # ---- Task 2.3 + 2.4: per-project reconcile upserts --------------------------
 
 
-def _has_confirmed_field(row, tracked_fields) -> bool:
-    """True if any tracked field on this MC-2 row is human-confirmed."""
-    states = row.get("field_states") or {}
-    return any(states.get(f) == "confirmed" for f in tracked_fields)
-
-
 def _load_substance_items(project_dir: Path) -> list[tuple[WorkItemSubstance, str]]:
     """Parse every work-item substance file under ``spine/<phase>/*.md``.
 
@@ -163,7 +157,6 @@ def sync_spine_substance(
     project_id: str,
     project_code: str,
     project_dir: Path,
-    tenant_root: Path,
     estimate=None,
     now: datetime | None = None,
 ) -> int:
@@ -178,7 +171,11 @@ def sync_spine_substance(
 
     Returns the number of version rows upserted. Reaps rows whose substance file
     vanished, scoped to this project_code; a row with any confirmed tracked field
-    is flagged source-missing rather than deleted."""
+    is flagged source-missing rather than deleted.
+
+    Recovery: a mid-mirror DB error may leave partial state (some reaps/upserts
+    done), but the next ``cp sync`` reconverges because every row is derived from
+    disk (mirrors the element mirror's behavior; Phase 3 writes through here)."""
     now_iso = (now or datetime.now(timezone.utc)).isoformat()
 
     parsed = _load_substance_items(project_dir)
@@ -251,7 +248,7 @@ def sync_spine_substance(
     for row_id, existing in existing_by_id.items():
         if row_id in present_ids:
             continue
-        if _has_confirmed_field(existing, _SUBSTANCE_TRACKED_FIELDS):
+        if _has_confirmed_field(existing, tracked_fields=_SUBSTANCE_TRACKED_FIELDS):
             review_flags = _merge_flag(
                 list(existing.get("review_flags") or []),
                 "source",
@@ -273,7 +270,6 @@ def sync_spine_context(
     project_id: str,
     project_code: str,
     project_dir: Path,
-    tenant_root: Path,
     now: datetime | None = None,
 ) -> int:
     """Reconcile `spine_context` rows for one project to match disk.
@@ -335,7 +331,7 @@ def sync_spine_context(
     for row_id, existing in existing_by_id.items():
         if row_id in present_ids:
             continue
-        if _has_confirmed_field(existing, _CONTEXT_TRACKED_FIELDS):
+        if _has_confirmed_field(existing, tracked_fields=_CONTEXT_TRACKED_FIELDS):
             review_flags = _merge_flag(
                 list(existing.get("review_flags") or []),
                 "source",

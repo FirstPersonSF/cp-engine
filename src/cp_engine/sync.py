@@ -457,7 +457,6 @@ def sync_tenant(
                     project_id=project.mc2_id,
                     project_code=project.code,
                     project_dir=project_dir,
-                    tenant_root=config.root,
                     estimate=estimate,
                     now=sync_clock,
                 )
@@ -472,7 +471,6 @@ def sync_tenant(
                     project_id=project.mc2_id,
                     project_code=project.code,
                     project_dir=project_dir,
-                    tenant_root=config.root,
                     now=sync_clock,
                 )
             except Exception as exc:  # noqa: BLE001 — best-effort context mirror

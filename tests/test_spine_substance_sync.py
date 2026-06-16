@@ -207,7 +207,7 @@ def test_sync_substance_upserts_all_version_rows(tmp_path):
     _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
     client = _FakeClient()
     n = sync_spine_substance(client, project_id="u1", project_code="proj-1",
-                             project_dir=proj, tenant_root=tmp_path,
+                             project_dir=proj,
                              estimate=_FakeEstimate({"d1"}))
     assert n == 2
     ids = {r["id"] for r in client.store["spine_substance"]}
@@ -228,7 +228,7 @@ def test_sync_substance_skips_context_and_snapshots(tmp_path):
     (snap / "frozen.md").write_text("---\nest_item_id: d1\nest_item_kind: deliverable\n---\n## v1 — 2026-01-01 · live\nframing: x\nsources:\n\nb\n")
     client = _FakeClient()
     sync_spine_substance(client, project_id="u1", project_code="proj-1",
-                         project_dir=proj, tenant_root=tmp_path,
+                         project_dir=proj,
                          estimate=_FakeEstimate({"d1"}))
     # Only the two real versions, nothing from _context or .snapshots.
     assert len(client.store["spine_substance"]) == 2
@@ -243,7 +243,7 @@ def test_sync_substance_reaps_vanished_row(tmp_path):
     ]
     _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
     sync_spine_substance(client, project_id="u1", project_code="proj-1",
-                         project_dir=proj, tenant_root=tmp_path,
+                         project_dir=proj,
                          estimate=_FakeEstimate({"d1"}))
     ids = {r["id"] for r in client.store["spine_substance"]}
     assert "proj-1/GONE/v1" not in ids
@@ -259,7 +259,7 @@ def test_sync_substance_reap_scoped_to_project(tmp_path):
     ]
     _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
     sync_spine_substance(client, project_id="u1", project_code="proj-1",
-                         project_dir=proj, tenant_root=tmp_path,
+                         project_dir=proj,
                          estimate=_FakeEstimate({"d1"}))
     ids = {r["id"] for r in client.store["spine_substance"]}
     assert "proj-2/d9/v1" in ids  # sibling survived
@@ -276,7 +276,7 @@ def test_sync_substance_preserves_confirmed_body(tmp_path):
     _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1",
                      live_body="disk body")
     sync_spine_substance(client, project_id="u1", project_code="proj-1",
-                         project_dir=proj, tenant_root=tmp_path,
+                         project_dir=proj,
                          estimate=_FakeEstimate({"d1"}))
     row = next(r for r in client.store["spine_substance"]
                if r["id"] == "proj-1/d1/v2")
@@ -296,7 +296,7 @@ def test_sync_substance_confirmed_orphan_flagged_not_deleted(tmp_path):
     }]
     # No substance file on disk.
     sync_spine_substance(client, project_id="u1", project_code="proj-1",
-                         project_dir=proj, tenant_root=tmp_path, estimate=None)
+                         project_dir=proj, estimate=None)
     row = next(r for r in client.store["spine_substance"]
                if r["id"] == "proj-1/d1/v2")
     assert row["confirmed_by"] == "drew"  # not deleted
@@ -314,7 +314,7 @@ def test_sync_context_upserts_and_reconciles_body(tmp_path):
     }]
     _write_context(tmp_path, "carol", body="disk ctx")
     n = sync_spine_context(client, project_id="u1", project_code="proj-1",
-                           project_dir=proj, tenant_root=tmp_path)
+                           project_dir=proj)
     assert n == 1
     row = next(r for r in client.store["spine_context"]
                if r["id"] == "proj-1/_context/carol")
@@ -330,7 +330,7 @@ def test_sync_substance_live_binding_no_flag(tmp_path):
     _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
     client = _FakeClient()
     sync_spine_substance(client, project_id="u1", project_code="proj-1",
-                         project_dir=proj, tenant_root=tmp_path,
+                         project_dir=proj,
                          estimate=_FakeEstimate({"d1"}))
     for r in client.store["spine_substance"]:
         assert r["binding"] == "live"
@@ -342,7 +342,7 @@ def test_sync_substance_orphaned_binding_flagged_not_deleted(tmp_path):
     _write_substance(tmp_path, "Phase0", "pos", est_item_id="gone")
     client = _FakeClient()
     sync_spine_substance(client, project_id="u1", project_code="proj-1",
-                         project_dir=proj, tenant_root=tmp_path,
+                         project_dir=proj,
                          estimate=_FakeEstimate({"other"}))
     rows = client.store["spine_substance"]
     assert len(rows) == 2  # not deleted
@@ -360,7 +360,7 @@ def test_sync_substance_none_estimate_all_unbound_no_flags(tmp_path):
     _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
     client = _FakeClient()
     sync_spine_substance(client, project_id="u1", project_code="proj-1",
-                         project_dir=proj, tenant_root=tmp_path, estimate=None)
+                         project_dir=proj, estimate=None)
     for r in client.store["spine_substance"]:
         assert r["binding"] == "unbound"
         assert not any(f.get("source") == "binding" for f in r["review_flags"])
@@ -383,8 +383,52 @@ def test_sync_substance_orphan_recovered_prunes_stale_binding_flag(tmp_path):
     }]
     _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
     sync_spine_substance(client, project_id="u1", project_code="proj-1",
-                         project_dir=proj, tenant_root=tmp_path,
+                         project_dir=proj,
                          estimate=_FakeEstimate({"d1"}))  # now found again
     for r in client.store["spine_substance"]:
         assert r["binding"] == "live"
         assert not any(f.get("source") == "binding" for f in r["review_flags"])
+
+
+def test_sync_substance_idempotent_across_two_passes(tmp_path):
+    """Two back-to-back syncs against the same disk + a live estimate that
+    orphans one item must converge: identical row set after pass 2, and the
+    orphaned item's binding flag is REPLACED (not appended) so review_flags
+    length stays put. The healthy item carries zero binding flags throughout.
+    Locks the bounded-growth guarantee `_merge_flag` exists to provide."""
+    proj = tmp_path / "1p/acct/proj-1"
+    # One healthy item (d1) and one orphaned item (gone — not in the estimate).
+    _write_substance(tmp_path, "Phase0", "live", est_item_id="d1")
+    _write_substance(tmp_path, "Phase0", "orph", est_item_id="gone")
+    client = _FakeClient()
+    estimate = _FakeEstimate({"d1"})
+
+    def _do_sync():
+        sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                             project_dir=proj, estimate=estimate)
+
+    _do_sync()
+    after_1 = {r["id"]: dict(r) for r in client.store["spine_substance"]}
+    flags_len_1 = {
+        rid: len(r["review_flags"]) for rid, r in after_1.items()}
+
+    _do_sync()
+    after_2 = {r["id"]: dict(r) for r in client.store["spine_substance"]}
+
+    # (a) identical row set across passes.
+    assert set(after_1) == set(after_2)
+    # (b) the orphaned rows' flag count is unchanged — replaced, not appended.
+    for rid, r in after_2.items():
+        assert len(r["review_flags"]) == flags_len_1[rid]
+
+    orphan_rows = [r for r in after_2.values() if r["est_item_id"] == "gone"]
+    healthy_rows = [r for r in after_2.values() if r["est_item_id"] == "d1"]
+    assert orphan_rows and healthy_rows
+    for r in orphan_rows:
+        binding_flags = [f for f in r["review_flags"]
+                         if f.get("source") == "binding"]
+        assert len(binding_flags) == 1  # exactly one, no accumulation
+        assert binding_flags[0]["now"] == "orphaned"
+    for r in healthy_rows:
+        assert not any(f.get("source") == "binding"
+                       for f in r["review_flags"])
