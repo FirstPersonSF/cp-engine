@@ -82,6 +82,51 @@ def _fake_clone(tmp_path: Path):
     yield tmp_path
 
 
+class _RecordingClient:
+    """Minimal Supabase-client stand-in that records the table().update().eq()
+    .execute() chain the endpoint uses to flip a card to 'promoted'.
+
+    Each fully-executed chain is appended to ``rec["db_updates"]`` as a dict
+    {table, update, eq}. ``rec["update_calls"]`` counts how many times
+    ``.update(...)`` was reached at all (so a test can assert the flip was
+    never even attempted). An optional ``rec["update_raises"]`` (an exception)
+    is raised from ``.execute()`` to simulate a post-push flip failure.
+    """
+
+    def __init__(self, rec: dict):
+        self._rec = rec
+        rec.setdefault("db_updates", [])
+        rec.setdefault("update_calls", 0)
+
+    def table(self, name):
+        return _RecordingTable(self._rec, name)
+
+
+class _RecordingTable:
+    def __init__(self, rec, name):
+        self._rec = rec
+        self._name = name
+        self._update = None
+        self._eq = None
+
+    def update(self, data):
+        self._rec["update_calls"] += 1
+        self._update = data
+        return self
+
+    def eq(self, col, val):
+        self._eq = (col, val)
+        return self
+
+    def execute(self):
+        if self._rec.get("update_raises") is not None:
+            raise self._rec["update_raises"]
+        self._rec["db_updates"].append(
+            {"table": self._name, "update": self._update, "eq": self._eq}
+        )
+        return type("Resp", (), {"data": []})()
+
+
 def _wire_happy(monkeypatch, tmp_path: Path, *, card=None, estimate=None,
                 promote_path=None, mirror=None, sha="deadbeef",
                 version_label="v3", recorder=None):
@@ -95,7 +140,7 @@ def _wire_happy(monkeypatch, tmp_path: Path, *, card=None, estimate=None,
     monkeypatch.setattr(webhook_main, "_cloned_tenant",
                         lambda: _fake_clone(tmp_path))
 
-    sb = object()
+    sb = _RecordingClient(rec)
     monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
     rec["client"] = sb
 
@@ -163,6 +208,7 @@ def test_promote_happy_path(monkeypatch, client, tmp_path):
         "1p/infoblox/ibx-5153/spine/phase-0/messaging-system.md"
     )
     assert data["mirrored"] is True
+    assert data["card_flipped"] is True
 
     # promote_card got the resolved item name/phase/kind + framing.
     kw = rec["promote_kw"]
@@ -173,12 +219,22 @@ def test_promote_happy_path(monkeypatch, client, tmp_path):
     assert kw["phase"] == "Phase 0"
     assert kw["model"] == webhook_main.DEFAULT_MODEL
     assert kw["sources"] == ["mtg-1"]  # falls back to card.source_ref
-    assert kw["client"] is rec["client"]
+    # C1: promote_card must NOT flip the card (client=None). The flip is
+    # deferred to the endpoint, AFTER a successful push.
+    assert kw["client"] is None
 
     # mirror + commit were both called.
     assert "mirror_kw" in rec
     assert rec["commit_kw"]["project_code"] == "ibx-5153"
     assert rec["commit_kw"]["version_label"] == "v3"
+
+    # The card DID get flipped to 'promoted' — issued by the endpoint itself,
+    # separately from promote_card.
+    flips = [u for u in rec["db_updates"]
+             if u["update"] == {"status": "promoted"}]
+    assert len(flips) == 1
+    assert flips[0]["table"] == "spine_inbox"
+    assert flips[0]["eq"] == ("id", "ibx-5153/inbox/mtg-1")
 
 
 # ---------------------------------------------------------------- 404
@@ -248,6 +304,7 @@ def test_promote_mirror_failure_still_200(monkeypatch, client, tmp_path):
     assert data["ok"] is True
     assert data["commit_sha"] == "deadbeef"  # push already succeeded
     assert data["mirrored"] is False
+    assert data["card_flipped"] is True  # mirror failure is independent of flip
 
 
 # ---------------------------------------------------------------- defaults
@@ -305,3 +362,98 @@ def test_promote_estimate_unreachable_degrades(monkeypatch, client, tmp_path):
     assert kw["name"] is None
     assert kw["phase"] is None
     assert kw["kind"] == "deliverable"  # resolved_kind fallback
+
+
+# -------------------------------------------------- C1/C2: push-failure ordering
+
+
+def test_promote_push_failure_does_not_flip_card(monkeypatch, client, tmp_path):
+    """If the commit/push fails, the endpoint 500s AND the card is NEVER flipped
+    to 'promoted' — this is the core C1 guarantee (no silent data loss). The
+    throwaway clone is discarded, but the card stays proposed/framed so the
+    human can safely retry the click.
+    """
+    rec = _wire_happy(monkeypatch, tmp_path)
+
+    def boom(**kw):
+        raise RuntimeError("git push rejected")
+    monkeypatch.setattr(webhook_main, "_commit_and_push_promote", boom)
+
+    # An unhandled error in the endpoint surfaces as a 500; tell the test client
+    # not to re-raise it so we can assert on the response + the DB side effects.
+    noraise = TestClient(webhook_main.app, raise_server_exceptions=False)
+    body = json.dumps(
+        {"card_id": "ibx-5153/inbox/mtg-1", "framing": "brief"}
+    ).encode()
+    resp = noraise.post(
+        "/api/spine/promote",
+        content=body,
+        headers={"x-webhook-signature": _signed(body)},
+    )
+    assert resp.status_code == 500, resp.text
+    # The card was NOT flipped — the endpoint never reached the post-push flip.
+    assert rec["update_calls"] == 0
+    assert rec["db_updates"] == []
+
+
+def test_promote_flip_failure_after_push_still_200(monkeypatch, client, tmp_path):
+    """The benign residual window: push SUCCEEDED but the final card flip raises.
+    The version is durable in the repo, so the endpoint returns 200 with the
+    commit_sha and card_flipped=false (never 500 — that would lose nothing but
+    falsely tell the UI the durable write failed).
+    """
+    rec = _wire_happy(monkeypatch, tmp_path)
+    rec["update_raises"] = RuntimeError("supabase update rejected")
+
+    resp = _post(client, {
+        "card_id": "ibx-5153/inbox/mtg-1", "framing": "brief",
+    })
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["commit_sha"] == "deadbeef"  # push landed
+    assert data["card_flipped"] is False
+    # The flip WAS attempted (it raised), but no successful update was recorded.
+    assert rec["update_calls"] == 1
+    assert rec["db_updates"] == []
+
+
+# ------------------------------------------------- I1: real render→parse round-trip
+
+
+def test_promote_real_round_trip(monkeypatch, client, tmp_path):
+    """Integration-flavored: run the REAL promote_card + REAL parse_substance /
+    render_substance end-to-end against a tmp dir, stubbing ONLY the distiller
+    (so no Claude call) and the git/clone + supabase client. Proves the markdown
+    that promote_card writes re-parses and yields the right version label (v1 for
+    a fresh item) — guarding the render/parse interplay the other tests stub out.
+    """
+    from cp_engine.spine_inbox import promote_card
+    from cp_engine.substance import parse_substance
+
+    monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
+
+    project_dir = tmp_path / "1p" / "infoblox" / "ibx-5153"
+    card = _card()
+
+    path = promote_card(
+        card,
+        framing="the directing brief",
+        est_item_id="d1",
+        kind="deliverable",
+        project_dir=project_dir,
+        sources=["mtg-1"],
+        distiller=lambda prompt, model, api_key=None: "Distilled body text.",
+        model="claude-opus-4-7",
+        client=None,  # no flip — matches the endpoint's C1 contract
+        name="Messaging system",
+        phase="Phase 0",
+    )
+
+    assert path.exists()
+    parsed = parse_substance(path)
+    live = parsed.live_version()
+    assert live.label == "v1"           # fresh item → v1
+    assert live.status == "live"
+    assert parsed.est_item_id == "d1"
+    assert "Distilled body text." in live.body

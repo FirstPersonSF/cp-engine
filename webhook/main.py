@@ -392,12 +392,17 @@ async def spine_promote(request: Request) -> dict:
 
     Response (200):
         {"ok": true, "commit_sha": ..., "version_label": "v3",
-         "rel_path": "1p/.../messaging-system.md", "mirrored": true}
+         "rel_path": "1p/.../messaging-system.md", "mirrored": true,
+         "card_flipped": true}
+
+    The card is flipped to 'promoted' AFTER a successful push (the push is the
+    real commit point). If that final flip fails, the version is still durable
+    in the repo and we return 200 with "card_flipped": false.
     """
     from cp_engine.estimate import fetch_estimate
     from cp_engine.plan_from_transcript import _call_claude
     from cp_engine.spine import find_spine_dir
-    from cp_engine.spine_inbox import load_card, promote_card
+    from cp_engine.spine_inbox import _INBOX_TABLE, load_card, promote_card
     from cp_engine.spine_substance_sync import sync_spine_substance
     from cp_engine.substance import parse_substance
 
@@ -479,6 +484,12 @@ async def spine_promote(request: Request) -> dict:
         # Directed re-distillation + markdown write (source of truth). Let any
         # failure surface as a 500 — a failed promote must be visible so the
         # UI can show an error, and nothing was pushed yet.
+        #
+        # client=None means promote_card does NOT flip the card to 'promoted'
+        # here. The flip is deferred until AFTER a successful push (below): the
+        # git push is the real commit point. If the push fails, the throwaway
+        # clone (and its only copy of the markdown) is discarded — but the card
+        # stays proposed/framed so the human can retry the click. No data loss.
         path = promote_card(
             card,
             framing=framing,
@@ -488,7 +499,7 @@ async def spine_promote(request: Request) -> dict:
             sources=src,
             distiller=_call_claude,
             model=model,
-            client=client,
+            client=None,
             name=name,
             phase=phase,
         )
@@ -519,6 +530,9 @@ async def spine_promote(request: Request) -> dict:
             )
             mirrored = False
 
+        # The push IS the commit point — succeeding here means the version is
+        # durably in the repo. Any failure raises a 500 before the card flips,
+        # so the human can safely retry the click (no data loss).
         commit_sha = _commit_and_push_promote(
             tenant_root=tenant_root,
             project_code=card.project_code,
@@ -526,9 +540,30 @@ async def spine_promote(request: Request) -> dict:
             rel_path=rel_path,
         )
 
+    # NOW that the push succeeded, flip the card to 'promoted' — the last,
+    # cheapest, most-likely-to-succeed step. If THIS fails the durable work is
+    # already done (version is in the repo); worst case the card shows
+    # un-promoted and a retry re-distills a duplicate version (benign, and far
+    # better than losing the write). So we log loudly but STILL return 200 with
+    # the commit_sha, recording card_flipped=false (mirrors the `mirrored` field).
+    card_flipped = True
+    try:
+        client.table(_INBOX_TABLE).update({"status": "promoted"}).eq(
+            "id", card_id
+        ).execute()
+    except Exception as exc:  # noqa: BLE001 — push already landed; never 500 here
+        log.error(
+            "spine-promote: card flip to 'promoted' FAILED for %s after a "
+            "successful push (%s) — version is durable in the repo; card shows "
+            "un-promoted and a retry will re-distill a duplicate version: %s",
+            card_id, commit_sha[:8], exc,
+        )
+        card_flipped = False
+
     log.info(
-        "spine-promote: card=%s item=%s %s -> %s (mirrored=%s)",
-        card_id, target_item_id, version_label, commit_sha[:8], mirrored,
+        "spine-promote: card=%s item=%s %s -> %s (mirrored=%s flipped=%s)",
+        card_id, target_item_id, version_label, commit_sha[:8],
+        mirrored, card_flipped,
     )
     return {
         "ok": True,
@@ -536,6 +571,7 @@ async def spine_promote(request: Request) -> dict:
         "version_label": version_label,
         "rel_path": rel_path,
         "mirrored": mirrored,
+        "card_flipped": card_flipped,
     }
 
 
@@ -2705,28 +2741,17 @@ def _push_with_retry(
             raise last_err
 
 
-def _commit_and_push(
-    *, tenant_root: Path, meeting_id: str, ingested: list[dict]
-) -> str:
-    """Stage + commit + push. Returns the new HEAD SHA."""
+def _commit_with_message_and_push(tenant_root: Path, message: str) -> str:
+    """Stage all, commit with `message`, branch-rename, push, return HEAD SHA.
+
+    The shared mechanical tail used by both `_commit_and_push` (auto-ingest)
+    and `_commit_and_push_promote` (spine-promote). Each caller builds only its
+    own commit message and delegates the `git add -A` / commit / CP_TENANT_BRANCH
+    rename / `_push_with_retry` / `git rev-parse HEAD` sequence here.
+    """
     env = _ssh_env()
 
     subprocess.run(["git", "add", "-A"], cwd=tenant_root, check=True)
-    codes = ", ".join(e["code"] for e in ingested if e["files_written"])
-    summary_lines = []
-    for e in ingested:
-        if not e["files_written"]:
-            continue
-        verbs = ", ".join(f"{k}={v}" for k, v in (e["plan_summary"] or {}).items())
-        summary_lines.append(f"- {e['code']}: {verbs}")
-    body = "\n".join(summary_lines)
-
-    message = (
-        f"[auto-ingest] {codes}: meeting {meeting_id[:8]}\n\n"
-        f"{body}\n\n"
-        f"Generated by cp-engine-webhook v{cp_engine.__version__}.\n"
-    )
-
     subprocess.run(
         ["git", "commit", "-m", message],
         cwd=tenant_root,
@@ -2756,6 +2781,28 @@ def _commit_and_push(
     return result.stdout.strip()
 
 
+def _commit_and_push(
+    *, tenant_root: Path, meeting_id: str, ingested: list[dict]
+) -> str:
+    """Stage + commit + push. Returns the new HEAD SHA."""
+    codes = ", ".join(e["code"] for e in ingested if e["files_written"])
+    summary_lines = []
+    for e in ingested:
+        if not e["files_written"]:
+            continue
+        verbs = ", ".join(f"{k}={v}" for k, v in (e["plan_summary"] or {}).items())
+        summary_lines.append(f"- {e['code']}: {verbs}")
+    body = "\n".join(summary_lines)
+
+    message = (
+        f"[auto-ingest] {codes}: meeting {meeting_id[:8]}\n\n"
+        f"{body}\n\n"
+        f"Generated by cp-engine-webhook v{cp_engine.__version__}.\n"
+    )
+
+    return _commit_with_message_and_push(tenant_root, message)
+
+
 def _commit_and_push_promote(
     *, tenant_root: Path, project_code: str, version_label: str, rel_path: str
 ) -> str:
@@ -2764,35 +2811,15 @@ def _commit_and_push_promote(
     Sibling of `_commit_and_push` (whose commit message is auto-ingest-shaped).
     A promote writes exactly one substance file; we stage everything (`git add
     -A`, in case promote_card also created a parent dir) and commit with a
-    promote-shaped message. Reuses `_ssh_env` + `_push_with_retry` and honors
-    the CP_TENANT_BRANCH override exactly like `_commit_and_push` so tests can
-    push to a throwaway branch.
+    promote-shaped message. Reuses the shared `_commit_with_message_and_push`
+    tail so it honors the CP_TENANT_BRANCH override exactly like
+    `_commit_and_push` and tests can push to a throwaway branch.
     """
-    env = _ssh_env()
-    subprocess.run(["git", "add", "-A"], cwd=tenant_root, check=True)
-
     message = (
         f"[spine-promote] {project_code}: {rel_path} {version_label}\n\n"
         f"Generated by cp-engine-webhook v{cp_engine.__version__}.\n"
     )
-    subprocess.run(
-        ["git", "commit", "-m", message], cwd=tenant_root, check=True, env=env
-    )
-    target_branch = os.environ.get("CP_TENANT_BRANCH", "main")
-    if target_branch != "main":
-        subprocess.run(
-            ["git", "branch", "-M", target_branch], cwd=tenant_root, check=True
-        )
-    _push_with_retry(tenant_root, target_branch=target_branch, env=env)
-
-    result = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=tenant_root,
-        check=True,
-        capture_output=True,
-        text=True,
-    )
-    return result.stdout.strip()
+    return _commit_with_message_and_push(tenant_root, message)
 
 
 def _commit_meeting_artifacts(
