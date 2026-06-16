@@ -8,7 +8,7 @@
 #
 # BUILD AUTH — gh_token (REQUIRED):
 #   cp-engine's deps include private git+https refs to
-#   github.com/Canonic-OS/canonic-component-library, so the build stage
+#   github.com/FirstPersonSF/1p-component-library, so the build stage
 #   needs GitHub read auth. The token is accepted via EITHER of two
 #   mechanisms, the secret being preferred:
 #     1. A BuildKit secret (id=gh_token) — preferred; never appears in
@@ -24,8 +24,11 @@
 #   config (the rewrite is unset at the end of the RUN).
 #
 #   Token scope: a READ-ONLY token is sufficient. Either a fine-grained
-#   PAT scoped to Canonic-OS/canonic-component-library with
+#   PAT scoped to FirstPersonSF/1p-component-library with
 #   "Contents: read", or a machine-user classic PAT with `repo:read`.
+#   NOTE: the library was transferred from Canonic-OS and renamed
+#   (was canonic-component-library); a token scoped to the OLD repo will
+#   403 on the new URL — it must grant read on FirstPersonSF/1p-component-library.
 #
 #   Railway:  Service → Variables → add a service variable named
 #             `gh_token` (lowercase). Railway passes service variables to
