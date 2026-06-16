@@ -234,6 +234,63 @@ def test_sync_substance_skips_context_and_snapshots(tmp_path):
     assert len(client.store["spine_substance"]) == 2
 
 
+def _write_old_element(root: Path, layer_dir: str, name: str):
+    """Write an OLD-style spine element file (capitalized layer dir, NO
+    est_item_id frontmatter) — the shipped `spine_elements` files that coexist
+    in the tree during the transition. parse_substance must never see these."""
+    d = root / "1p/acct/proj-1/spine" / layer_dir
+    d.mkdir(parents=True, exist_ok=True)
+    (d / f"{name}.md").write_text(
+        "---\ntype: deliverable\nstatus: live\n---\n# Old element\nbody\n"
+    )
+
+
+def test_sync_substance_skips_old_element_files(tmp_path):
+    """A transitional tree carries BOTH new substance files (with est_item_id)
+    and old element files (under capitalized layer dirs, no est_item_id). The
+    loader must SKIP the old element files gracefully instead of crashing
+    parse_substance with a missing-est_item_id ValueError (reproduces the live
+    IBX-5153 crash where 30 old files aborted the whole substance mirror)."""
+    proj = tmp_path / "1p/acct/proj-1"
+    _write_substance(tmp_path, "phase-0-message-strategy", "messaging-system",
+                     est_item_id="d1")
+    _write_old_element(tmp_path, "Agreement", "engagement-terms")
+    _write_old_element(tmp_path, "Deliverables", "foundation-pp-doc")
+    _write_context(tmp_path, "carol")  # decoy
+    snap = proj / "spine/phase-0-message-strategy/messaging-system.snapshots"
+    snap.mkdir(parents=True, exist_ok=True)
+    (snap / "frozen.md").write_text(
+        "---\nest_item_id: d1\nest_item_kind: deliverable\n---\n"
+        "## v1 — 2026-01-01 · live\nframing: x\nsources:\n\nb\n"
+    )
+    client = _FakeClient()
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+    # Only the one real substance file's two versions — nothing from the old
+    # element files, _context, or .snapshots.
+    ids = {r["id"] for r in client.store["spine_substance"]}
+    assert ids == {"proj-1/d1/v2", "proj-1/d1/v1"}
+
+
+def test_sync_substance_malformed_substance_file_still_raises(tmp_path):
+    """The skip-probe must NOT over-swallow: a file that genuinely IS a
+    substance file (has est_item_id) but is otherwise malformed (broken version
+    header) must still raise — only NON-substance files are skipped."""
+    import pytest
+
+    proj = tmp_path / "1p/acct/proj-1"
+    d = proj / "spine/phase-0-message-strategy"
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "broken.md").write_text(
+        "---\nest_item_id: d1\nest_item_kind: deliverable\nbinding: live\n---\n"
+        "## not-a-valid-version-header\nframing: x\nsources:\n\nbody\n"
+    )
+    client = _FakeClient()
+    with pytest.raises(ValueError):
+        sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                             project_dir=proj, estimate=_FakeEstimate({"d1"}))
+
+
 def test_sync_substance_reaps_vanished_row(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()

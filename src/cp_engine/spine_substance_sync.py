@@ -24,6 +24,8 @@ import dataclasses
 from datetime import datetime, timezone
 from pathlib import Path
 
+import frontmatter
+
 from cp_engine.spine_context import parse_context
 from cp_engine.spine_sync import _has_confirmed_field, _merge_flag, reconcile_field
 from cp_engine.substance import WorkItemSubstance, parse_substance
@@ -129,13 +131,34 @@ def reconcile_bindings(
 # ---- Task 2.3 + 2.4: per-project reconcile upserts --------------------------
 
 
+def _is_substance_file(md: Path) -> bool:
+    """Cheap probe: does this ``.md`` have ``est_item_id`` in its frontmatter?
+
+    During the spine transition a project's ``spine/`` tree holds BOTH new
+    substance files (lowercase phase dirs, ``est_item_id`` present) and OLD
+    shipped element files (capitalized layer dirs, no ``est_item_id``). Only the
+    former are substance. A file whose frontmatter can't even be loaded is not
+    ours either → skip it. We do NOT call the full strict `parse_substance`
+    here: a file that IS a substance file but is otherwise malformed must still
+    surface its error from the real parse below.
+    """
+    try:
+        meta = frontmatter.load(str(md)).metadata
+    except Exception:
+        return False
+    return "est_item_id" in meta
+
+
 def _load_substance_items(project_dir: Path) -> list[tuple[WorkItemSubstance, str]]:
     """Parse every work-item substance file under ``spine/<phase>/*.md``.
 
     Skips ``_context/`` (project-level context, not substance) and any
-    ``*.snapshots/`` dir (frozen snapshots have their own mirror). Returns
-    ``(item, rel_path)`` pairs, rel_path relative to the project dir's parent
-    chain — we keep it relative to project_dir for stable, portable storage.
+    ``*.snapshots/`` dir (frozen snapshots have their own mirror). Also skips
+    OLD-style element files that coexist in the tree during the spine
+    transition — identified by the absence of ``est_item_id`` in frontmatter —
+    so the shipped `spine_elements` files don't crash the substance mirror.
+    Returns ``(item, rel_path)`` pairs, rel_path kept relative to project_dir
+    for stable, portable storage.
     """
     out: list[tuple[WorkItemSubstance, str]] = []
     spine_root = project_dir / "spine"
@@ -145,6 +168,10 @@ def _load_substance_items(project_dir: Path) -> list[tuple[WorkItemSubstance, st
         parts = md.relative_to(spine_root).parts
         # parts[0] is the phase dir; skip _context and snapshot dirs.
         if parts[0] == "_context" or any(p.endswith(".snapshots") for p in parts):
+            continue
+        # Skip non-substance files (old element files, unrelated .md). A genuine
+        # substance file that fails the full parse still raises below.
+        if not _is_substance_file(md):
             continue
         item = parse_substance(md)
         out.append((item, str(md.relative_to(project_dir))))
