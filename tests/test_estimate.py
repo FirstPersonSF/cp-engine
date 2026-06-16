@@ -27,6 +27,31 @@ def test_estimate_from_rows_builds_ordered_items():
     assert est.item_by_id("nope") is None
 
 
+def test_from_rows_missing_required_key_raises_value_error():
+    import pytest
+
+    project_row = {"id": "est-1", "mc_project_id": "mc-1", "name": "Estimate 1"}
+    phases = [{"id": "ph-0", "name": "Phase 0", "overview": "…", "position": 0}]
+    # Activity row missing the required "name" key.
+    activities = [{"id": "a-0", "phase_id": "ph-0", "position": 0}]
+    with pytest.raises(ValueError) as exc:
+        Estimate.from_rows(project_row, phases, activities, [])
+    assert "name" in str(exc.value)
+
+
+def test_from_rows_drops_item_with_unknown_phase_id():
+    project_row = {"id": "est-1", "mc_project_id": "mc-1", "name": "Estimate 1"}
+    phases = [{"id": "ph-0", "name": "Phase 0", "overview": "…", "position": 0}]
+    activities = [
+        {"id": "a-0", "phase_id": "ph-0", "name": "Known", "position": 0, "library_item_id": None},
+        {"id": "a-orphan", "phase_id": "ph-ghost", "name": "Orphan", "position": 0, "library_item_id": None},
+    ]
+    est = Estimate.from_rows(project_row, phases, activities, [])
+    # Orphan dropped, not crashed on, and no phantom phase created.
+    assert [p.id for p in est.phases] == ["ph-0"]
+    assert {i.id for i in est.all_items()} == {"a-0"}
+
+
 # ── Fake Supabase client for fetch_estimate (no network) ──────────────────
 
 
@@ -140,3 +165,26 @@ def test_fetch_estimate_returns_built_default_estimate():
 def test_fetch_estimate_returns_none_when_no_default():
     client = _FakeClient(_canned_tables())
     assert fetch_estimate(client, "mc-nonexistent") is None
+
+
+def test_fetch_estimate_with_zero_phases_skips_child_queries():
+    # A default estimate that has no phases at all → the `if phase_ids:` else
+    # branch: empty phases, and NO child-table queries fired.
+    tables = {
+        "projects": [
+            {"id": "est-empty", "mc_project_id": "mc-empty", "name": "Estimate 1", "is_default": True},
+        ],
+        "phases": [],
+        "phase_activities": [],
+        "phase_deliverables": [],
+    }
+    client = _FakeClient(tables)
+    est = fetch_estimate(client, "mc-empty")
+
+    assert isinstance(est, Estimate)
+    assert est.id == "est-empty"
+    assert est.phases == ()
+    # No child (activities/deliverables) query was ever recorded.
+    queried_tables = {q.table for q in client.queries}
+    assert "phase_activities" not in queried_tables
+    assert "phase_deliverables" not in queried_tables

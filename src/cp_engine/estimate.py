@@ -26,6 +26,21 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# Default estimate name when the estimator row carries no `name` (mirrors the
+# portal's "Estimate 1" default).
+_DEFAULT_ESTIMATE_NAME = "Estimate 1"
+
+
+def _required(row, key: str, what: str):
+    """Read a required column from an estimator row, raising a clear domain
+    error (not a bare KeyError) naming the missing key and its context."""
+    try:
+        return row[key]
+    except KeyError:
+        raise ValueError(
+            f"estimator {what} row missing required key '{key}'"
+        ) from None
+
 
 @dataclass(frozen=True)
 class EstimateItem:
@@ -56,35 +71,49 @@ class Estimate:
 
     @classmethod
     def from_rows(cls, project_row, phases, activities, deliverables) -> "Estimate":
-        by_phase: dict[str, list[EstimateItem]] = {p["id"]: [] for p in phases}
+        by_phase: dict[str, list[EstimateItem]] = {
+            _required(p, "id", "phase"): [] for p in phases
+        }
         for kind, rows in (("activity", activities), ("deliverable", deliverables)):
             for r in rows:
-                by_phase.setdefault(r["phase_id"], []).append(
+                phase_id = _required(r, "phase_id", "item")
+                # Orphan guard: an item pointing at a phase we weren't given is
+                # dropped explicitly (not bucketed into a phantom key that the
+                # phase loop below would silently discard).
+                if phase_id not in by_phase:
+                    continue
+                by_phase[phase_id].append(
                     EstimateItem(
-                        id=r["id"], phase_id=r["phase_id"], kind=kind,
-                        name=r["name"], short_description=r.get("short_description"),
+                        id=_required(r, "id", "item"), phase_id=phase_id, kind=kind,
+                        name=_required(r, "name", "item"),
+                        short_description=r.get("short_description"),
                         position=r.get("position", 0), library_item_id=r.get("library_item_id"),
                     )
                 )
         ordered_phases = tuple(
             EstimatePhase(
-                id=p["id"], name=p["name"], overview=p.get("overview"),
+                id=_required(p, "id", "phase"), name=_required(p, "name", "phase"),
+                overview=p.get("overview"),
                 position=p.get("position", 0),
                 items=tuple(sorted(by_phase.get(p["id"], []), key=lambda i: i.position)),
             )
             for p in sorted(phases, key=lambda p: p.get("position", 0))
         )
-        return cls(id=project_row["id"], mc_project_id=project_row["mc_project_id"],
-                   name=project_row.get("name", "Estimate 1"), phases=ordered_phases)
+        return cls(
+            id=_required(project_row, "id", "project"),
+            mc_project_id=_required(project_row, "mc_project_id", "project"),
+            name=project_row.get("name", _DEFAULT_ESTIMATE_NAME),
+            phases=ordered_phases,
+        )
 
-    def item_by_id(self, item_id):
+    def item_by_id(self, item_id) -> EstimateItem | None:
         for p in self.phases:
             for i in p.items:
                 if i.id == item_id:
                     return i
         return None
 
-    def all_items(self):
+    def all_items(self) -> tuple[EstimateItem, ...]:
         return tuple(i for p in self.phases for i in p.items)
 
 
@@ -94,7 +123,7 @@ _PHASE_COLUMNS = "id, name, overview, position"
 _ITEM_COLUMNS = "id, phase_id, name, short_description, library_item_id, position"
 
 
-def fetch_estimate(client, mc_project_id):
+def fetch_estimate(client, mc_project_id) -> Estimate | None:
     """Read the live default estimate for an MC project, or `None` if none.
 
     Pure read against the `estimator` schema (drives the client portal). Four
