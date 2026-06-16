@@ -38,6 +38,7 @@ and exactly one must be `live`.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -182,3 +183,53 @@ def parse_substance(path: Path) -> WorkItemSubstance:
     )
 
 
+def _render_version(v: SubstanceVersion) -> str:
+    """Render one version back to the canonical `## v<N> …` shape."""
+    lines = [f"## {v.label} — {v.date} · {v.status}"]
+    lines.append(f"framing: {v.framing}")
+    lines.append("sources:")
+    for s in v.sources:
+        lines.append(f"  - {s}")
+    lines.append("")
+    lines.append(v.body)
+    return "\n".join(lines)
+
+
+def render_substance(item: WorkItemSubstance) -> str:
+    """Serialize a WorkItemSubstance back to canonical markdown.
+
+    Round-trips `parse_substance` output byte-for-byte modulo a single trailing
+    newline (compare with `.rstrip("\\n")`). Frontmatter keys are emitted in the
+    canonical order; `phase` is omitted when absent.
+    """
+    fm_lines = [
+        f"est_item_id: {item.est_item_id}",
+        f"est_item_kind: {item.est_item_kind}",
+    ]
+    if item.phase is not None:
+        fm_lines.append(f"phase: {item.phase}")
+    fm_lines.append(f"binding: {item.binding}")
+
+    parts = ["---", "\n".join(fm_lines), "---"]
+    body = "\n\n".join(_render_version(v) for v in item.versions)
+    return "\n".join(parts) + "\n" + body + "\n"
+
+
+def add_version(
+    item: WorkItemSubstance, version: SubstanceVersion
+) -> WorkItemSubstance:
+    """Return a new item with `version` prepended (newest-first).
+
+    When the new version is `live`, any prior `live` version is demoted to
+    `superseded`, preserving the exactly-one-live invariant. Frozen dataclasses
+    → returns fresh instances via `dataclasses.replace`.
+    """
+    prior = item.versions
+    if version.status == "live":
+        prior = tuple(
+            dataclasses.replace(v, status="superseded")
+            if v.status == "live"
+            else v
+            for v in prior
+        )
+    return dataclasses.replace(item, versions=(version, *prior))
