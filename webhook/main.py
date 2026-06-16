@@ -579,7 +579,9 @@ def _asset_runs_table(client):
     return client.table("asset_ingest_runs")
 
 
-async def _run_asset_ingest(run_id: str, code: str) -> None:
+async def _run_asset_ingest(
+    run_id: str, code: str, mc_project_id: str | None = None
+) -> None:
     """Background: run the (sync, slow) asset ingest off the event loop, then
     record the outcome on the asset_ingest_runs row. Never raises — a failure is
     recorded as status=failed (this is the fire-and-forget tail of
@@ -606,6 +608,7 @@ async def _run_asset_ingest(run_id: str, code: str) -> None:
         run = await asyncio.to_thread(
             asset_ingest.ingest_project_assets,
             code,
+            mc_project_id=mc_project_id,
             supabase_url=supabase_url,
             supabase_key=supabase_key,
         )
@@ -655,7 +658,13 @@ async def asset_ingest_endpoint(request: Request) -> Response:
     ingest writes only to rag_assets + the asset_ingest_runs row.
 
     Request body (JSON):
-        {"code": "<project_code>", "run_id": "<uuid>"}  # both required
+        {"code": "<project_code>", "run_id": "<uuid>",
+         "mc_project_id": "<projects.id>"}  # code+run_id required; mc_project_id optional
+
+    `mc_project_id` (= `projects.id`) is the authoritative resolution key. When
+    present we resolve by it directly, sidestepping the by-number path that
+    mis-reads slug codes (e.g. a year in `SAP-vision-update-2026`). When absent
+    we fall back to by-code resolution for back-compat (CLI callers).
 
     Response (202):
         {"run_id": ..., "status": "running"}
@@ -669,6 +678,7 @@ async def asset_ingest_endpoint(request: Request) -> Response:
     payload = json.loads(raw_body)
     code = (payload.get("code") or "").strip()
     run_id = (payload.get("run_id") or "").strip()
+    mc_project_id = (payload.get("mc_project_id") or "").strip() or None
     if not code or not run_id:
         raise HTTPException(status_code=400, detail="code and run_id are required")
     client = _create_supabase_client()
@@ -676,15 +686,18 @@ async def asset_ingest_endpoint(request: Request) -> Response:
         raise HTTPException(
             status_code=500, detail="Supabase not configured for asset ingest"
         )
-    # Best-effort row enrichment with the resolved MC-2 project_id; the
-    # background ingest re-resolves anyway, so a failure here is non-fatal.
-    project_id = None
-    try:
-        from cp_engine import asset_ingest
-        folders = asset_ingest.resolve_project_folders(client, code)
-        project_id = folders.project_id if folders else None
-    except Exception:  # noqa: BLE001 — best-effort enrichment; ingest re-resolves
-        pass
+    # Best-effort row enrichment with the MC-2 project_id. When the caller gave
+    # us the authoritative id, use it directly — skip the by-code resolve, which
+    # would fail for slug codes anyway. Otherwise fall back to by-code resolve;
+    # the background ingest re-resolves regardless, so a miss here is non-fatal.
+    project_id = mc_project_id
+    if project_id is None:
+        try:
+            from cp_engine import asset_ingest
+            folders = asset_ingest.resolve_project_folders(client, code)
+            project_id = folders.project_id if folders else None
+        except Exception:  # noqa: BLE001 — best-effort enrichment; ingest re-resolves
+            pass
     from cp_engine.asset_ingest import _utc_now_iso
     _asset_runs_table(client).insert({
         "id": run_id,
@@ -693,7 +706,7 @@ async def asset_ingest_endpoint(request: Request) -> Response:
         "status": "running",
         "started_at": _utc_now_iso(),
     }).execute()
-    _spawn_background(_run_asset_ingest(run_id, code))
+    _spawn_background(_run_asset_ingest(run_id, code, mc_project_id))
     return Response(
         content=json.dumps({"run_id": run_id, "status": "running"}),
         status_code=202,

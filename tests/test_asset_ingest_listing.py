@@ -18,6 +18,7 @@ from cp_engine.asset_ingest import (
     ProjectFolders,
     list_files,
     resolve_project_folders,
+    resolve_project_folders_by_id,
 )
 
 
@@ -309,6 +310,89 @@ def test_resolve_coerces_enable_flags_to_bool() -> None:
     assert folders is not None
     assert folders.enable_google_drive is False
     assert folders.enable_dropbox is True
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  resolve_project_folders_by_id
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_resolve_by_id_returns_folders() -> None:
+    # The authoritative path: resolve by projects.id, no number parsing. This is
+    # what fixes slug codes like SAP-vision-update-2026 (number=5174) where the
+    # by-number regex grabs the YEAR (2026) and resolution fails.
+    client = _FakeClient(
+        [
+            {
+                "id": "proj-uuid-5174",
+                "company_id": "co-uuid",
+                "google_drive_folder_id": "drive-456",
+                "mc_dropbox_folder_id": "/Clients/SAP/5174",
+                "enable_google_drive": True,
+                "enable_dropbox": True,
+                "companies": {"kind": "client"},
+            }
+        ]
+    )
+    folders = resolve_project_folders_by_id(client, "proj-uuid-5174")
+    assert folders is not None
+    assert folders.project_id == "proj-uuid-5174"
+    assert folders.company_id == "co-uuid"
+    assert folders.company_kind == "client"
+    assert folders.google_drive_folder_id == "drive-456"
+    assert folders.mc_dropbox_folder_id == "/Clients/SAP/5174"
+    # Resolved by row id — never by number, never SELECT *.
+    assert client.recorder["eq"] == ("id", "proj-uuid-5174")
+    assert "*" not in client.recorder["select"]
+
+
+def test_resolve_by_id_returns_none_and_notes_when_no_row(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    client = _FakeClient([])
+    assert resolve_project_folders_by_id(client, "missing-id") is None
+    err = capsys.readouterr().err
+    assert "no MC-2 project with id=missing-id" in err
+
+
+def test_resolve_by_id_handles_companies_as_list() -> None:
+    # Same companies-embed guard (dict OR single-element list) as the by-number
+    # path — they share _row_to_folders, so this proves the shared helper holds.
+    client = _FakeClient(
+        [
+            {
+                "id": "p",
+                "company_id": "c",
+                "google_drive_folder_id": "drive-1",
+                "mc_dropbox_folder_id": "/p",
+                "enable_google_drive": True,
+                "enable_dropbox": True,
+                "companies": [{"kind": "client"}],  # list, not dict
+            }
+        ]
+    )
+    folders = resolve_project_folders_by_id(client, "p")
+    assert folders is not None
+    assert folders.company_kind == "client"
+
+
+def test_resolve_by_id_handles_companies_as_dict() -> None:
+    client = _FakeClient(
+        [
+            {
+                "id": "p",
+                "company_id": "c",
+                "google_drive_folder_id": None,
+                "mc_dropbox_folder_id": None,
+                "enable_google_drive": False,
+                "enable_dropbox": False,
+                "companies": {"kind": "client"},  # dict shape
+            }
+        ]
+    )
+    folders = resolve_project_folders_by_id(client, "p")
+    assert folders is not None
+    assert folders.company_kind == "client"
 
 
 # ──────────────────────────────────────────────────────────────────────

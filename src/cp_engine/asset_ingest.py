@@ -91,11 +91,41 @@ def _project_number(project_code: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _row_to_folders(row: dict) -> ProjectFolders:
+    """Map one MC-2 `projects` row (selected via `_PROJECT_COLUMNS`) to a
+    ProjectFolders. Shared by both resolve paths (by-number and by-id) so the
+    companies-embed guard + field mapping live in exactly one place."""
+    # PostgREST returns the to-one `companies` embed as either a dict or a
+    # single-element list (shape varies); defend against both — see the same
+    # guard in sync_mc2._engagement_canonical_id / _repo_row_to_state.
+    companies = row.get("companies") or {}
+    if isinstance(companies, list):
+        companies = companies[0] if companies else {}
+    company_kind = (companies.get("kind") if isinstance(companies, dict) else "") or ""
+
+    return ProjectFolders(
+        project_id=row.get("id"),
+        company_id=row.get("company_id"),
+        company_kind=company_kind,
+        google_drive_folder_id=row.get("google_drive_folder_id") or None,
+        mc_dropbox_folder_id=row.get("mc_dropbox_folder_id") or None,
+        enable_google_drive=bool(row.get("enable_google_drive")),
+        enable_dropbox=bool(row.get("enable_dropbox")),
+    )
+
+
 def resolve_project_folders(client, project_code: str) -> ProjectFolders | None:
     """Look up the Drive/Dropbox folders for `project_code` from MC-2.
 
     `client` is a Supabase client (the same `create_client(url, key)` MC2Backend
     uses). Returns None when the code has no number or no matching project row.
+
+    NOTE: this resolves by `projects.number` parsed out of the code. That works
+    for bare-numeric / `<co>-<number>` codes, but NOT for slug-style codes
+    (`SAP-vision-update-2026`, `IBX-ai-campaign`) which carry no number — and
+    worse, a year embedded in the slug (`…-2026`) would be mis-parsed as the
+    project number. When the caller has the MC-2 row id (e.g. the mc-2 button),
+    prefer `resolve_project_folders_by_id`, which is authoritative.
     """
     number = _project_number(project_code)
     if number is None:
@@ -122,24 +152,36 @@ def resolve_project_folders(client, project_code: str) -> ProjectFolders | None:
         )
         return None
 
-    row = rows[0]
-    # PostgREST returns the to-one `companies` embed as either a dict or a
-    # single-element list (shape varies); defend against both — see the same
-    # guard in sync_mc2._engagement_canonical_id / _repo_row_to_state.
-    companies = row.get("companies") or {}
-    if isinstance(companies, list):
-        companies = companies[0] if companies else {}
-    company_kind = (companies.get("kind") if isinstance(companies, dict) else "") or ""
+    return _row_to_folders(rows[0])
 
-    return ProjectFolders(
-        project_id=row.get("id"),
-        company_id=row.get("company_id"),
-        company_kind=company_kind,
-        google_drive_folder_id=row.get("google_drive_folder_id") or None,
-        mc_dropbox_folder_id=row.get("mc_dropbox_folder_id") or None,
-        enable_google_drive=bool(row.get("enable_google_drive")),
-        enable_dropbox=bool(row.get("enable_dropbox")),
+
+def resolve_project_folders_by_id(
+    client, mc_project_id: str
+) -> ProjectFolders | None:
+    """Look up the Drive/Dropbox folders for an MC-2 project by its row `id`.
+
+    This is the authoritative resolution path: `mc_project_id` is `projects.id`,
+    so there is no number-parsing and no risk of mis-reading a year embedded in
+    a slug code (`SAP-vision-update-2026`). The mc-2 "Ingest assets" button
+    already has this id; prefer it over `resolve_project_folders` (by-number)
+    whenever available. Returns None when no row matches.
+    """
+    rows = (
+        client.table("projects")
+        .select(_PROJECT_COLUMNS)
+        .eq("id", mc_project_id)
+        .execute()
+        .data
+        or []
     )
+    if not rows:
+        print(
+            f"[asset-ingest] no MC-2 project with id={mc_project_id}",
+            file=sys.stderr,
+        )
+        return None
+
+    return _row_to_folders(rows[0])
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -537,6 +579,7 @@ def _source_url(file_ref: FileRef) -> str | None:
 def ingest_project_assets(
     project_code: str,
     *,
+    mc_project_id: str | None = None,
     client=None,
     drive_connector=None,
     dropbox_connector=None,
@@ -581,10 +624,18 @@ def ingest_project_assets(
 
         client = create_client(supabase_url, supabase_key)
 
-    folders = resolve_project_folders(client, project_code)
+    # Prefer the authoritative by-id resolution when the caller supplies the
+    # MC-2 row id (the mc-2 button does). Fall back to the by-code (by-number)
+    # path for callers that only have a code — e.g. the CLI `cp ingest-assets
+    # <code>`, where bare-numeric codes still resolve by number.
+    folders = (
+        resolve_project_folders_by_id(client, mc_project_id)
+        if mc_project_id
+        else resolve_project_folders(client, project_code)
+    )
     if folders is None:
-        # No numbered/matching MC-2 project — asset ingest doesn't apply.
-        # resolve_project_folders already printed the reason to stderr.
+        # No matching MC-2 project — asset ingest doesn't apply. The resolver
+        # already printed the reason to stderr.
         return IngestRunResult(project_found=False)
 
     files, source_notes = list_files(folders, drive_connector, dropbox_connector)
