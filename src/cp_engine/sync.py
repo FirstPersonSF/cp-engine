@@ -401,6 +401,11 @@ def sync_tenant(
         # surrounds it. Only this block is wrapped — the surrounding sync is
         # NOT best-effort.
         if project.mc2_id:
+            from cp_engine.estimate import fetch_estimate
+            from cp_engine.spine_substance_sync import (
+                sync_spine_context,
+                sync_spine_substance,
+            )
             from cp_engine.spine_sync import (
                 sync_spine_elements,
                 sync_spine_snapshots,
@@ -430,6 +435,49 @@ def sync_tenant(
             except Exception as exc:  # noqa: BLE001 — best-effort snapshot mirror
                 logger.warning(
                     "spine-snapshot mirror skipped for %s: %s",
+                    project.code, exc, exc_info=True,
+                )
+            # Substance + context mirror (Phase 2). Fetch the live estimate
+            # once per project to bind substance versions; if the estimator
+            # schema is unreachable, pass estimate=None so substance still
+            # mirrors as `unbound` rather than failing the whole sync. A
+            # genuinely missing estimate (returns None) flows through the same
+            # unbound path. Best-effort like the element/snapshot mirrors.
+            try:
+                try:
+                    estimate = fetch_estimate(client, project.mc2_id)
+                except Exception as exc:  # noqa: BLE001 — estimator unreachable
+                    logger.warning(
+                        "estimate fetch failed for %s (substance → unbound): %s",
+                        project.code, exc, exc_info=True,
+                    )
+                    estimate = None
+                sync_spine_substance(
+                    client,
+                    project_id=project.mc2_id,
+                    project_code=project.code,
+                    project_dir=project_dir,
+                    tenant_root=config.root,
+                    estimate=estimate,
+                    now=sync_clock,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort substance mirror
+                logger.warning(
+                    "spine-substance mirror skipped for %s: %s",
+                    project.code, exc, exc_info=True,
+                )
+            try:
+                sync_spine_context(
+                    client,
+                    project_id=project.mc2_id,
+                    project_code=project.code,
+                    project_dir=project_dir,
+                    tenant_root=config.root,
+                    now=sync_clock,
+                )
+            except Exception as exc:  # noqa: BLE001 — best-effort context mirror
+                logger.warning(
+                    "spine-context mirror skipped for %s: %s",
                     project.code, exc, exc_info=True,
                 )
 
