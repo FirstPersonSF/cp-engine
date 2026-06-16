@@ -86,3 +86,74 @@ class Estimate:
 
     def all_items(self):
         return tuple(i for p in self.phases for i in p.items)
+
+
+# Explicit column lists (never `*`, per the global Supabase rule).
+_PROJECT_COLUMNS = "id, mc_project_id, name, is_default"
+_PHASE_COLUMNS = "id, name, overview, position"
+_ITEM_COLUMNS = "id, phase_id, name, short_description, library_item_id, position"
+
+
+def fetch_estimate(client, mc_project_id):
+    """Read the live default estimate for an MC project, or `None` if none.
+
+    Pure read against the `estimator` schema (drives the client portal). Four
+    queries, all explicit-column:
+      1. estimator.projects — the one default estimate for `mc_project_id`.
+      2. estimator.phases — its phases (by project_id).
+      3/4. estimator.phase_activities / phase_deliverables — scoped to those
+         phase ids via `.in_("phase_id", [...])`. These child tables carry no
+         project_id, only phase_id, so filtering by the estimate's phase ids is
+         the precise scope (and avoids over-fetching across estimates).
+
+    Returns `None` when there is no default estimate row yet — the
+    "no-estimate-yet" fallback the binder treats as "nothing to bind to".
+    """
+    proj_rows = (
+        client.schema("estimator")
+        .table("projects")
+        .select(_PROJECT_COLUMNS)
+        .eq("mc_project_id", mc_project_id)
+        .eq("is_default", True)
+        .execute()
+        .data
+        or []
+    )
+    if not proj_rows:
+        return None
+    project_row = proj_rows[0]
+
+    phases = (
+        client.schema("estimator")
+        .table("phases")
+        .select(_PHASE_COLUMNS)
+        .eq("project_id", project_row["id"])
+        .execute()
+        .data
+        or []
+    )
+    phase_ids = [p["id"] for p in phases]
+
+    if phase_ids:
+        activities = (
+            client.schema("estimator")
+            .table("phase_activities")
+            .select(_ITEM_COLUMNS)
+            .in_("phase_id", phase_ids)
+            .execute()
+            .data
+            or []
+        )
+        deliverables = (
+            client.schema("estimator")
+            .table("phase_deliverables")
+            .select(_ITEM_COLUMNS)
+            .in_("phase_id", phase_ids)
+            .execute()
+            .data
+            or []
+        )
+    else:
+        activities, deliverables = [], []
+
+    return Estimate.from_rows(project_row, phases, activities, deliverables)
