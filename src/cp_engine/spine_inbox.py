@@ -306,30 +306,41 @@ def promote_card(
     ``est_item_id``/``est_item_kind``/``phase``. If ``client`` is given, the
     card's ``spine_inbox`` status flips to ``promoted``. Returns the written Path.
 
-    CARRY-FORWARD GUARD: exactly one substance file per ``est_item_id`` within a
-    project. If a DIFFERENT existing file already binds this ``est_item_id``,
-    raise ValueError rather than silently creating a second file that would
-    collide on the mirror's ``<project_code>/<est_item_id>/<version>`` id.
+    TARGETING (one substance file per ``est_item_id`` within a project): the
+    binding key is ``est_item_id``, not the slug-derived path. So we FIRST scan
+    for an existing substance file already bound to ``est_item_id`` and, if one
+    exists, append a version *into that file* — regardless of what slug the
+    card's name would derive. Only when NO file binds the id yet do we derive a
+    fresh ``_target_path`` and create v1. If MORE THAN ONE existing file binds
+    the same id (a pre-existing corrupt state), raise ValueError — that's the
+    only genuinely-ambiguous case left.
     """
     today_iso = today if isinstance(today, str) else (today or date.today()).isoformat()
     spine_root = project_dir / "spine"
-    target = _target_path(spine_root, phase=phase, name=name, est_item_id=est_item_id)
 
-    # Carry-forward guard: scan for any OTHER file already bound to est_item_id.
+    # Route by binding key, not by slug: find any existing file bound to this id.
+    bound = []
     for md in _iter_substance_files(spine_root):
-        if md.resolve() == target.resolve():
-            continue
         try:
             other = parse_substance(md)
         except Exception:
             continue
         if other.est_item_id == est_item_id:
-            raise ValueError(
-                f"est_item_id {est_item_id!r} already bound by a different "
-                f"substance file ({md}); refusing to create a second file "
-                f"that would collide in the spine_substance mirror. Promote "
-                f"into the existing file instead."
-            )
+            bound.append(md)
+
+    if len(bound) > 1:
+        raise ValueError(
+            f"est_item_id {est_item_id!r} is bound by {len(bound)} substance "
+            f"files ({', '.join(str(p) for p in bound)}); the one-file-per-item "
+            f"invariant is already violated on disk. Refusing to promote into an "
+            f"ambiguous binding — reconcile the duplicate files first."
+        )
+
+    target = (
+        bound[0]
+        if bound
+        else _target_path(spine_root, phase=phase, name=name, est_item_id=est_item_id)
+    )
 
     body = distiller(
         _FRAME_PROMPT.format(framing=framing, raw=card.raw_distillation),

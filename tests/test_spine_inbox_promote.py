@@ -151,23 +151,87 @@ def test_promote_sets_card_status_promoted(tmp_path: Path):
     assert row["status"] == "promoted"
 
 
-# ---- carry-forward guard: one substance file per est_item_id ----------------
+# ---- one substance file per est_item_id: route to existing, never split -----
 
 
-def test_promote_rejects_duplicate_est_item_id_in_different_file(tmp_path: Path):
-    # First item d1 lands a file.
-    promote_card(
+def test_promote_appends_to_existing_file_under_different_slug(tmp_path: Path):
+    # First item d1 lands a file at the "Alpha" slug.
+    first = promote_card(
         _card(est_item_id="d1"), framing="f1", est_item_id="d1",
         kind="deliverable", project_dir=tmp_path, sources=[],
         distiller=_distiller("b1"), model="m",
-        name="Alpha", phase="P0", today="2026-06-15",
+        name="Alpha", phase="P0", today="2026-04-23",
     )
-    # A DIFFERENT slug/name but SAME est_item_id must be rejected (would create
-    # a second file colliding in the mirror's composite id).
+    # A DIFFERENT name/slug but SAME est_item_id must APPEND a version to the
+    # existing file — promoting into the existing item is exactly the intent.
+    second = promote_card(
+        _card(est_item_id="d1"), framing="f2", est_item_id="d1",
+        kind="deliverable", project_dir=tmp_path, sources=[],
+        distiller=_distiller("b2"), model="m",
+        name="Beta different name", phase="P0", today="2026-06-15",
+    )
+    # Same file, no second file created.
+    assert second.resolve() == first.resolve()
+    spine_files = list(tmp_path.glob("spine/*/*.md"))
+    assert len(spine_files) == 1
+    item = parse_substance(second)
+    assert len(item.versions) == 2
+    live = item.live_version()
+    assert live.label == "v2"
+    assert live.body == "b2"
+    superseded = [v for v in item.versions if v.status == "superseded"]
+    assert len(superseded) == 1 and superseded[0].label == "v1"
+
+
+def test_promote_preserves_existing_binding_metadata(tmp_path: Path):
+    # Existing file declares its own phase; a promote with different phase args
+    # must not overwrite the file's authoritative binding metadata.
+    first = promote_card(
+        _card(est_item_id="d1"), framing="f1", est_item_id="d1",
+        kind="deliverable", project_dir=tmp_path, sources=[],
+        distiller=_distiller("b1"), model="m",
+        name="Alpha", phase="Phase 0 Discovery", today="2026-04-23",
+    )
+    promote_card(
+        _card(est_item_id="d1"), framing="f2", est_item_id="d1",
+        kind="output", project_dir=tmp_path, sources=[],
+        distiller=_distiller("b2"), model="m",
+        name="Beta", phase="Phase 9 Wrong", today="2026-06-15",
+    )
+    item = parse_substance(first)
+    assert item.est_item_id == "d1"
+    assert item.est_item_kind == "deliverable"
+    assert item.phase == "Phase 0 Discovery"
+
+
+def test_promote_raises_on_two_existing_files_binding_same_id(tmp_path: Path):
+    # Manufacture a genuinely-corrupt state: TWO existing substance files both
+    # binding the same est_item_id. promote must refuse (invariant violation).
+    from cp_engine.substance import (
+        SubstanceVersion,
+        WorkItemSubstance,
+        render_substance,
+    )
+
+    p0 = tmp_path / "spine" / "p0"
+    p0.mkdir(parents=True, exist_ok=True)
+    for slug in ("alpha", "beta"):
+        path = p0 / f"{slug}.md"
+        item = WorkItemSubstance(
+            est_item_id="d1", est_item_kind="deliverable", phase="P0",
+            binding="live",
+            versions=(SubstanceVersion(
+                label="v1", date="2026-06-15", status="live",
+                framing="f", sources=(), body="b",
+            ),),
+            path=path,
+        )
+        path.write_text(render_substance(item))
+
     with pytest.raises(ValueError, match="d1"):
         promote_card(
             _card(est_item_id="d1"), framing="f2", est_item_id="d1",
             kind="deliverable", project_dir=tmp_path, sources=[],
             distiller=_distiller("b2"), model="m",
-            name="Beta different name", phase="P0", today="2026-06-15",
+            name="Gamma", phase="P0", today="2026-06-15",
         )
