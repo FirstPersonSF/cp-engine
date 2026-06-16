@@ -143,6 +143,55 @@ def test_ingest_202_inserts_running_and_spawns(monkeypatch, client):
     assert len(rec["spawned"]) == 1
 
 
+def test_ingest_202_threads_mc_project_id(monkeypatch, client):
+    """When the body carries mc_project_id, the endpoint uses it directly for the
+    run row's project_id (skipping the by-code resolve, which would fail for slug
+    codes) AND threads it to the spawned runner coroutine."""
+    rec = _wire(monkeypatch)
+
+    # The by-code resolver MUST NOT be called when mc_project_id is present.
+    def _should_not_resolve(c, code):  # pragma: no cover - must not be called
+        raise AssertionError("by-code resolve must be skipped when mc_project_id given")
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.resolve_project_folders", _should_not_resolve
+    )
+
+    # Capture the coro spawned by the endpoint (the default _wire spawn closes
+    # it; here we keep + run it so we can prove mc_project_id flows all the way
+    # through the runner into ingest_project_assets).
+    spawned = {}
+    monkeypatch.setattr(
+        webhook_main, "_spawn_background",
+        lambda coro: spawned.__setitem__("coro", coro),
+    )
+    captured = {}
+
+    def _capture(code, **kwargs):
+        captured["code"] = code
+        captured.update(kwargs)
+        return IngestRunResult(project_found=True)
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.ingest_project_assets", _capture
+    )
+
+    resp = _post(
+        client,
+        {"code": "SAP-vision-update-2026", "run_id": "run-1",
+         "mc_project_id": "proj-uuid-5174"},
+    )
+    assert resp.status_code == 202, resp.text
+
+    inserted = [i for i in rec["inserts"]
+                if i["table"] == "asset_ingest_runs"][0]["data"]
+    # Row project_id is the authoritative mc_project_id, not a by-code resolve.
+    assert inserted["project_id"] == "proj-uuid-5174"
+
+    # Drive the spawned runner coroutine to completion and assert the threading.
+    asyncio.run(spawned["coro"])
+    assert captured["code"] == "SAP-vision-update-2026"
+    assert captured["mc_project_id"] == "proj-uuid-5174"
+
+
 def test_ingest_202_when_folders_unresolved(monkeypatch, client):
     """resolve_project_folders returning None → row enrichment project_id is
     None, but the endpoint still 202s and spawns (ingest re-resolves)."""
@@ -326,6 +375,60 @@ def test_runner_passes_env_supabase_creds_as_kwargs(monkeypatch):
     assert captured["code"] == "ibx-5153"
     assert captured["supabase_url"] == "https://env-url.supabase.co"
     assert captured["supabase_key"] == "env-service-key"
+
+
+def test_runner_threads_mc_project_id_to_ingest(monkeypatch):
+    """The runner MUST pass mc_project_id through to ingest_project_assets so the
+    authoritative by-id resolution is used (fixes slug-code mis-resolution)."""
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
+    rec = {}
+    sb = _RecordingClient(rec)
+    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+
+    captured = {}
+
+    def _capture(code, **kwargs):
+        captured["code"] = code
+        captured.update(kwargs)
+        return IngestRunResult(project_found=True)
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.ingest_project_assets", _capture
+    )
+
+    asyncio.run(
+        webhook_main._run_asset_ingest(
+            "run-1", "SAP-vision-update-2026", "proj-uuid-5174"
+        )
+    )
+
+    assert captured["code"] == "SAP-vision-update-2026"
+    assert captured["mc_project_id"] == "proj-uuid-5174"
+
+
+def test_runner_threads_none_mc_project_id_by_default(monkeypatch):
+    """Back-compat: without an mc_project_id, the runner passes mc_project_id=None
+    so ingest_project_assets falls back to by-code resolution (CLI behavior)."""
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
+    rec = {}
+    sb = _RecordingClient(rec)
+    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+
+    captured = {}
+
+    def _capture(code, **kwargs):
+        captured.update(kwargs)
+        return IngestRunResult(project_found=True)
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.ingest_project_assets", _capture
+    )
+
+    asyncio.run(webhook_main._run_asset_ingest("run-1", "ibx-5153"))
+
+    assert captured["mc_project_id"] is None
 
 
 def test_runner_fails_fast_when_env_creds_missing(monkeypatch):

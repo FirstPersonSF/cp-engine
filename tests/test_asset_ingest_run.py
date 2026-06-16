@@ -412,6 +412,57 @@ def test_run_project_not_found(monkeypatch, tmp_path):
     assert result.project_found is False
 
 
+def test_run_uses_by_id_resolver_when_mc_project_id_given(monkeypatch, tmp_path):
+    # When mc_project_id is supplied, resolution MUST go through the by-id path
+    # (authoritative) and MUST NOT touch the by-number path (which mis-reads
+    # slug codes). We return None from by-id to short-circuit before listing.
+    calls = {"by_id": None, "by_code": False}
+
+    def _by_id(client, mc_project_id):
+        calls["by_id"] = mc_project_id
+        return None
+
+    def _by_code(client, code):  # pragma: no cover - must not be called
+        calls["by_code"] = True
+        raise AssertionError("by-number resolver must not be called when id given")
+
+    monkeypatch.setattr("cp_engine.asset_ingest.resolve_project_folders_by_id", _by_id)
+    monkeypatch.setattr("cp_engine.asset_ingest.resolve_project_folders", _by_code)
+
+    result = ingest_project_assets(
+        "SAP-vision-update-2026",
+        mc_project_id="proj-uuid-5174",
+        client=object(),
+        tmp_root=tmp_path,
+    )
+
+    assert calls["by_id"] == "proj-uuid-5174"
+    assert calls["by_code"] is False
+    assert result.project_found is False
+
+
+def test_run_uses_by_code_resolver_when_no_mc_project_id(monkeypatch, tmp_path):
+    # Back-compat: no mc_project_id → by-number path (the CLI by-code behavior).
+    calls = {"by_code": None, "by_id": False}
+
+    def _by_code(client, code):
+        calls["by_code"] = code
+        return None
+
+    def _by_id(client, mc_project_id):  # pragma: no cover - must not be called
+        calls["by_id"] = True
+        raise AssertionError("by-id resolver must not be called without an id")
+
+    monkeypatch.setattr("cp_engine.asset_ingest.resolve_project_folders", _by_code)
+    monkeypatch.setattr("cp_engine.asset_ingest.resolve_project_folders_by_id", _by_id)
+
+    result = ingest_project_assets("acme-1", client=object(), tmp_root=tmp_path)
+
+    assert calls["by_code"] == "acme-1"
+    assert calls["by_id"] is False
+    assert result.project_found is False
+
+
 def test_run_cleans_temp_files(monkeypatch, tmp_path):
     files = [_ref("a.docx"), _ref("b.docx")]
     _patch_resolve_and_list(monkeypatch, _FOLDERS, files)
