@@ -4,6 +4,14 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.27.4 — 2026-06-16
+
+### Changed — component-library deps moved to FirstPersonSF + Drive auth from env
+
+The three pinned component-library deps (`document-ingest`, `cloud-storage`, `resilience`) now point at **`FirstPersonSF/1p-component-library`** (the repo was transferred out of Canonic-OS and renamed) and are unified on a single release commit, so the `resilience` cloud-storage depends on matches the `resilience` cp-engine installs directly (the prior mismatched commits — `5efa7e1` vs `714acd9` — were a latent install hazard).
+
+The bump also carries a Drive-connector fix: `GoogleDriveConnector` now reads the service-account JSON from a `GOOGLE_SERVICE_ACCOUNT_JSON` env var (via `from_service_account_info`), so Drive auth works on the webhook's Railway deploy where there's no file to point `GOOGLE_SERVICE_ACCOUNT_FILE` at. This unblocks the asset-ingest button's Drive source. The library also gained proper editable-package test setup + CI for the cp-engine-consumed surface (no behavior change to cp-engine). Requires a webhook redeploy.
+
 ## v0.27.3 — 2026-06-16
 
 ### Fixed — asset ingest resolves the project by id, not a parsed code-number
