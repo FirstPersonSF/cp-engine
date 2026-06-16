@@ -587,8 +587,28 @@ async def _run_asset_ingest(run_id: str, code: str) -> None:
     from cp_engine import asset_ingest
     from cp_engine.asset_ingest import _utc_now_iso
     client = _create_supabase_client()
+    # Pass Supabase coords explicitly from the webhook ENV. The webhook runs in a
+    # Railway container whose cwd is /app (the webhook app — NOT a tenant
+    # checkout), so ingest_project_assets's lazy _resolve_creds() ->
+    # cp_config.load(Path.cwd()) would throw "No .cp-engine.toml at /app". When
+    # both url+key are supplied, that cwd-config path is never reached.
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_key = os.environ.get("SUPABASE_SERVICE_KEY")
     try:
-        run = await asyncio.to_thread(asset_ingest.ingest_project_assets, code)
+        if not supabase_url or not supabase_key:
+            # Fail fast with a clear message rather than letting the cwd-config
+            # error surface from deep inside _resolve_creds(). In practice the
+            # endpoint already 500s earlier when _create_supabase_client() is
+            # None (same env vars), so this is a belt-and-suspenders guard.
+            raise RuntimeError(
+                "webhook missing SUPABASE_URL/SUPABASE_SERVICE_KEY env"
+            )
+        run = await asyncio.to_thread(
+            asset_ingest.ingest_project_assets,
+            code,
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+        )
         if not run.project_found:
             patch = {
                 "status": "failed",

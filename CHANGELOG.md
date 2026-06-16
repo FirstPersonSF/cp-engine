@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.27.2 — 2026-06-16
+
+### Fixed — asset ingest from the webhook (cwd-config crash)
+
+The v0.27.1 webhook `/api/assets/ingest` crashed in prod with `No .cp-engine.toml at /app. Not a tenant repo?`. `ingest_project_assets` resolves Supabase creds lazily via `cp_config.load(Path.cwd())`, but the webhook's container cwd (`/app`) holds no tenant checkout. The webhook already has `SUPABASE_URL`/`SUPABASE_SERVICE_KEY` in its environment, so `_run_asset_ingest` now passes them straight through as `supabase_url`/`supabase_key` — the cwd-config path is never reached. Adds a fast-fail guard (missing env → run recorded `failed` with a clear message instead of the opaque config error). Requires a webhook redeploy.
+
 ## v0.27.1 — 2026-06-16
 
 ### Added — Asset ingest from MC-2 (webhook side)

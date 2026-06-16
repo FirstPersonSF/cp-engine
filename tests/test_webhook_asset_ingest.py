@@ -95,6 +95,8 @@ class _RecordingClient:
 def _wire(monkeypatch, *, rec=None, project_id="u-123", spawn=True):
     rec = rec if rec is not None else {}
     monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
     sb = _RecordingClient(rec)
     monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
     rec["client"] = sb
@@ -230,6 +232,8 @@ def test_ingest_500_when_supabase_unconfigured(monkeypatch, client):
 
 
 def test_runner_records_done(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
     rec = {}
     sb = _RecordingClient(rec)
     monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
@@ -241,7 +245,7 @@ def test_runner_records_done(monkeypatch):
     )
     monkeypatch.setattr(
         "cp_engine.asset_ingest.ingest_project_assets",
-        lambda code: result,
+        lambda code, **kwargs: result,
     )
 
     asyncio.run(webhook_main._run_asset_ingest("run-1", "ibx-5153"))
@@ -263,6 +267,8 @@ def test_runner_records_done(monkeypatch):
 
 
 def test_runner_maps_failures(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
     rec = {}
     sb = _RecordingClient(rec)
     monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
@@ -274,7 +280,7 @@ def test_runner_maps_failures(monkeypatch):
     )
     monkeypatch.setattr(
         "cp_engine.asset_ingest.ingest_project_assets",
-        lambda code: result,
+        lambda code, **kwargs: result,
     )
 
     asyncio.run(webhook_main._run_asset_ingest("run-1", "ibx-5153"))
@@ -289,15 +295,80 @@ def test_runner_maps_failures(monkeypatch):
     ]
 
 
-# ------------------------------------------------- background runner: failure
+# ------------------------------------ background runner: env creds passthrough
 
 
-def test_runner_records_failed_on_exception(monkeypatch):
+def test_runner_passes_env_supabase_creds_as_kwargs(monkeypatch):
+    """Regression guard for the cwd-config prod bug: the runner MUST pass the
+    webhook ENV's Supabase coords as supabase_url/supabase_key kwargs. Without
+    them, ingest_project_assets falls into _resolve_creds() ->
+    cp_config.load(Path.cwd()), which dies on the webhook container
+    ('No .cp-engine.toml at /app')."""
+    monkeypatch.setenv("SUPABASE_URL", "https://env-url.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "env-service-key")
     rec = {}
     sb = _RecordingClient(rec)
     monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
 
-    def boom(code):
+    captured = {}
+
+    def _capture(code, **kwargs):
+        captured["code"] = code
+        captured.update(kwargs)
+        return IngestRunResult(project_found=True)
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.ingest_project_assets", _capture
+    )
+
+    asyncio.run(webhook_main._run_asset_ingest("run-1", "ibx-5153"))
+
+    assert captured["code"] == "ibx-5153"
+    assert captured["supabase_url"] == "https://env-url.supabase.co"
+    assert captured["supabase_key"] == "env-service-key"
+
+
+def test_runner_fails_fast_when_env_creds_missing(monkeypatch):
+    """If the webhook env lacks SUPABASE_URL/SUPABASE_SERVICE_KEY, the runner
+    records status=failed with a clear message rather than letting the deep
+    cwd-config error surface (and never calls ingest_project_assets)."""
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    rec = {}
+    sb = _RecordingClient(rec)
+    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+
+    called = {"n": 0}
+
+    def _should_not_run(code, **kwargs):
+        called["n"] += 1
+        return IngestRunResult(project_found=True)
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.ingest_project_assets", _should_not_run
+    )
+
+    asyncio.run(webhook_main._run_asset_ingest("run-1", "ibx-5153"))
+
+    assert called["n"] == 0
+    patch = [u for u in rec["updates"]
+             if u["table"] == "asset_ingest_runs"][0]["update"]
+    assert patch["status"] == "failed"
+    assert "SUPABASE_URL" in patch["error"]
+    assert "finished_at" in patch
+
+
+# ------------------------------------------------- background runner: failure
+
+
+def test_runner_records_failed_on_exception(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
+    rec = {}
+    sb = _RecordingClient(rec)
+    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+
+    def boom(code, **kwargs):
         raise RuntimeError("ingest exploded")
     monkeypatch.setattr(
         "cp_engine.asset_ingest.ingest_project_assets", boom
@@ -315,13 +386,15 @@ def test_runner_records_failed_on_exception(monkeypatch):
 
 
 def test_runner_records_failed_when_project_not_found(monkeypatch):
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
     rec = {}
     sb = _RecordingClient(rec)
     monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
 
     monkeypatch.setattr(
         "cp_engine.asset_ingest.ingest_project_assets",
-        lambda code: IngestRunResult(project_found=False),
+        lambda code, **kwargs: IngestRunResult(project_found=False),
     )
 
     asyncio.run(webhook_main._run_asset_ingest("run-1", "ibx-5153"))
