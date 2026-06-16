@@ -133,6 +133,57 @@ def test_inbox_card_never_raises_on_unresolvable_project(
     assert status == "skipped"
 
 
+def test_inbox_card_skipped_when_disabled_by_env(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """The SPINE_INBOX_ENABLED kill-switch returns 'skipped' early and never
+    touches supabase or the distiller — a single env var disables the live
+    path without a redeploy."""
+    import cp_engine.plan_from_transcript as pft
+
+    tp = tmp_path / "t.md"
+    tp.write_text("transcript")
+
+    # Wire these so that, IF the gate failed to short-circuit, the test would
+    # observe a call. They must NOT be reached.
+    def must_not_call_client():
+        raise AssertionError("kill-switch did not short-circuit: client created")
+
+    def must_not_distill(prompt, *, model, api_key=None):
+        raise AssertionError("kill-switch did not short-circuit: distiller called")
+
+    monkeypatch.setattr(webhook_main, "_create_supabase_client", must_not_call_client)
+    monkeypatch.setattr(pft, "_call_claude", must_not_distill)
+
+    monkeypatch.setenv("SPINE_INBOX_ENABLED", "0")
+    status = webhook_main._append_inbox_card(
+        code="ibx-5153", transcript_path=tp, meeting_id="mtg-1",
+    )
+    assert status == "skipped"
+
+
+def test_inbox_card_enabled_by_default(tmp_path: Path, monkeypatch) -> None:
+    """With SPINE_INBOX_ENABLED unset, the gate is OPEN (prod behavior
+    unchanged) — it proceeds past the gate to the supabase check."""
+    tp = tmp_path / "t.md"
+    tp.write_text("transcript")
+    monkeypatch.delenv("SPINE_INBOX_ENABLED", raising=False)
+    # No supabase → "skipped" comes from the EXISTING gate, not the kill-switch.
+    # The point is that we got past the kill-switch to reach that check.
+    called = {"client": False}
+
+    def client_factory():
+        called["client"] = True
+        return None
+
+    monkeypatch.setattr(webhook_main, "_create_supabase_client", client_factory)
+    status = webhook_main._append_inbox_card(
+        code="ibx-5153", transcript_path=tp, meeting_id="mtg-1",
+    )
+    assert status == "skipped"
+    assert called["client"] is True  # proceeded past the kill-switch
+
+
 def test_inbox_card_never_raises_on_distiller_error(
     tmp_path: Path, monkeypatch
 ) -> None:

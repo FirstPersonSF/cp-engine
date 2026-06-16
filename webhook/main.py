@@ -2115,8 +2115,8 @@ def _append_inbox_card(
     """Distill the meeting into a *proposed* ``spine_inbox`` card (Phase 3).
 
     The spine no longer gets un-framed substance stubs written straight from a
-    transcript: instead a human frames+promotes a proposed card (`cp spine
-    frame`). This step writes that proposed card — a raw-faithful first-pass
+    transcript: instead a human frames+promotes a proposed card (`cp
+    spine-frame`). This step writes that proposed card — a raw-faithful first-pass
     distillation + a best-guess estimate work item — for one project.
 
     Best-effort, never raises. Returns one of:
@@ -2127,6 +2127,11 @@ def _append_inbox_card(
     Writes ONLY to ``spine_inbox`` (one ANTHROPIC call). Does NOT write spine
     substance — that is the human-directed frame→promote step.
     """
+    # Env-gated kill-switch. Default ON (prod unchanged), but a single env var
+    # can disable the live inbox write — and its ANTHROPIC call — without a
+    # redeploy. Short-circuits BEFORE any supabase/distiller work.
+    if os.environ.get("SPINE_INBOX_ENABLED", "1") not in ("1", "true", "True"):
+        return "skipped"
     source_ref = str(meeting_id or "").strip()
     if not source_ref:
         return "skipped"
@@ -2246,7 +2251,7 @@ def _ingest_one_project(
 
     # Spine ingestion inbox (Phase 3). Best-effort, never raises: write a
     # PROPOSED card (raw distillation + guessed estimate item) for a human to
-    # frame+promote via `cp spine frame`. Never writes spine substance.
+    # frame+promote via `cp spine-frame`. Never writes spine substance.
     entry["inbox_card"] = _append_inbox_card(
         code=code,
         transcript_path=transcript_path,

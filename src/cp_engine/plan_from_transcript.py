@@ -605,7 +605,10 @@ def _call_claude(prompt: str, *, model: str, api_key: str | None) -> str:
             "ANTHROPIC_API_KEY not set. Export it or pass --api-key."
         )
 
-    client = Anthropic(api_key=key)
+    # Explicit timeout: the SDK default is ~10min, long enough for a wedged
+    # call to hang ingest. 120s is ample for a 16k-token completion and
+    # bounds the worst case. Hardens every caller of _call_claude.
+    client = Anthropic(api_key=key, timeout=120)
     try:
         response = client.messages.create(
             model=model,
