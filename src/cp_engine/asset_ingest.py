@@ -39,7 +39,7 @@ from pathlib import Path
 # nested `companies(kind)` embed gives us the scope guard (client vs self-*).
 _PROJECT_COLUMNS = (
     "id, company_id, google_drive_folder_id, mc_dropbox_folder_id, "
-    "enable_google_drive, enable_dropbox, companies(kind)"
+    "enable_google_drive, enable_dropbox, asset_ingest_folders, companies(kind)"
 )
 
 
@@ -54,6 +54,11 @@ class ProjectFolders:
     mc_dropbox_folder_id: str | None
     enable_google_drive: bool
     enable_dropbox: bool
+    # Per-project folder allowlist: folder-name strings a file's ancestry must
+    # CONTAIN to be ingested (see `_matches_allowlist`). NULL / missing / [] →
+    # `()` → no filter (ingest the whole tree, today's behavior). Defaults to ()
+    # so existing construction sites are unaffected.
+    asset_ingest_folders: tuple[str, ...] = ()
 
 
 @dataclass
@@ -116,6 +121,11 @@ def _row_to_folders(row: dict) -> ProjectFolders:
         mc_dropbox_folder_id=row.get("mc_dropbox_folder_id") or None,
         enable_google_drive=bool(row.get("enable_google_drive")),
         enable_dropbox=bool(row.get("enable_dropbox")),
+        # `row.get(...) or ()` is NULL-safe AND forward-deploy-safe: a NULL value,
+        # an empty array, OR a MISSING key (the mc-2 column lands in a later
+        # migration) all collapse to `()` → no filter. So cp-engine can ship
+        # before the column exists without crashing.
+        asset_ingest_folders=tuple(row.get("asset_ingest_folders") or ()),
     )
 
 
@@ -731,7 +741,12 @@ def ingest_project_assets(
         # already printed the reason to stderr.
         return IngestRunResult(project_found=False)
 
-    files, source_notes = list_files(folders, drive_connector, dropbox_connector)
+    files, source_notes = list_files(
+        folders,
+        drive_connector,
+        dropbox_connector,
+        allowlist=folders.asset_ingest_folders,
+    )
     if not files:
         # Nothing to ingest (non-client company, disabled sources, empty folder,
         # missing folder ids, OR a dead source — all handled + noted inside

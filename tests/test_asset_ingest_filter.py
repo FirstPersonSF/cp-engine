@@ -17,16 +17,20 @@ from __future__ import annotations
 
 from cp_engine.asset_ingest import (
     FileRef,
+    IngestRunResult,
     ProjectFolders,
     _folder_segments,
     _matches_allowlist,
+    ingest_project_assets,
     list_files,
+    resolve_project_folders_by_id,
 )
 
-# Reuse the Dropbox/Drive connector fakes from the listing tests so the
-# list_files-level allowlist tests build their connectors exactly like the
-# existing list_files tests do.
+# Reuse the Supabase + Dropbox/Drive connector fakes from the listing tests so
+# the list_files-level allowlist tests + the resolve test build their fakes
+# exactly like the existing tests do.
 from tests.test_asset_ingest_listing import (
+    _FakeClient,
     _FakeDriveConnector,
     _FakeDropboxConnector,
     _FakeDropboxEntry,
@@ -257,3 +261,75 @@ def test_list_files_empty_allowlist_is_noop() -> None:
     # ALL files returned, and NO filter source_note (true no-op / back-compat).
     assert {f.name for f in out} == {"brief.pdf", "final.pdf", "sow.pdf", "notes.docx"}
     assert [n for n in notes if n["source"] == "filter"] == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  resolve reads asset_ingest_folders from the project row
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _project_row(asset_ingest_folders) -> dict:
+    return {
+        "id": "proj-uuid",
+        "company_id": "co-uuid",
+        "google_drive_folder_id": "drive-1",
+        "mc_dropbox_folder_id": "/p",
+        "enable_google_drive": True,
+        "enable_dropbox": True,
+        "asset_ingest_folders": asset_ingest_folders,
+        "companies": {"kind": "client"},
+    }
+
+
+def test_resolve_reads_asset_ingest_folders() -> None:
+    client = _FakeClient([_project_row(["Client Assets"])])
+    folders = resolve_project_folders_by_id(client, "proj-uuid")
+    assert folders is not None
+    assert folders.asset_ingest_folders == ("Client Assets",)
+    # Still never SELECT *; the column is in the explicit select.
+    assert "asset_ingest_folders" in client.recorder["select"]
+    assert "*" not in client.recorder["select"]
+
+
+def test_resolve_null_asset_ingest_folders_is_empty() -> None:
+    client = _FakeClient([_project_row(None)])  # NULL in DB
+    folders = resolve_project_folders_by_id(client, "proj-uuid")
+    assert folders is not None
+    assert folders.asset_ingest_folders == ()
+
+
+def test_resolve_missing_column_is_empty() -> None:
+    # Forward-deploy safety: cp-engine may run BEFORE the mc-2 migration adds the
+    # column, so the key is absent from the row entirely. Must not crash → ().
+    row = _project_row(["x"])
+    del row["asset_ingest_folders"]
+    client = _FakeClient([row])
+    folders = resolve_project_folders_by_id(client, "proj-uuid")
+    assert folders is not None
+    assert folders.asset_ingest_folders == ()
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  ingest_project_assets threads the allowlist into list_files
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_ingest_passes_allowlist_to_list_files(monkeypatch) -> None:
+    folders = _client_folders(asset_ingest_folders=("Client Assets",))
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.resolve_project_folders",
+        lambda client, code: folders,
+    )
+
+    captured: dict = {}
+
+    def _fake_list_files(f, drive_connector=None, dropbox_connector=None, allowlist=()):
+        captured["allowlist"] = allowlist
+        return [], []  # empty → short-circuits before any pipeline construction
+
+    monkeypatch.setattr("cp_engine.asset_ingest.list_files", _fake_list_files)
+
+    result = ingest_project_assets("acme-1", client=object())
+
+    assert isinstance(result, IngestRunResult)
+    assert captured["allowlist"] == ("Client Assets",)

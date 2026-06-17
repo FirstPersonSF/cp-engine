@@ -185,7 +185,10 @@ def _patch_resolve_and_list(monkeypatch, folders, files):
     )
     monkeypatch.setattr(
         "cp_engine.asset_ingest.list_files",
-        lambda f, drive_connector=None, dropbox_connector=None: (list(files), []),
+        lambda f, drive_connector=None, dropbox_connector=None, allowlist=(): (
+            list(files),
+            [],
+        ),
     )
 
 
