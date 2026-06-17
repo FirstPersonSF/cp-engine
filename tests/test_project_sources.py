@@ -117,7 +117,9 @@ def test_list_sources_returns_active_newest_first():
 
     assert [r["id"] for r in out] == ["a-new", "a-old"]
     first = out[0]
-    assert set(first.keys()) == {"id", "title", "source_type", "created_at"}
+    assert set(first.keys()) == {
+        "id", "title", "source_type", "created_at", "file_hash"
+    }
     assert first["title"] == "Concur Storybook"
     assert first["source_type"] == "drive"
     assert "summary" not in first
