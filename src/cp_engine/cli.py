@@ -2682,6 +2682,14 @@ def unarchive_project_assets_cmd(code: str) -> None:
     click.echo(f"Restored {n} archived assets for {code}")
 
 
+@main.command("mcp")
+def mcp_cmd() -> None:
+    """Run the local stdio MCP server exposing this tenant's project sources."""
+    from cp_engine.mcp_server import run_stdio
+
+    run_stdio()
+
+
 def _load_config_or_die() -> "TenantConfig":  # noqa: F821
     """Load tenant config from cwd; exit with a friendly error on failure."""
     try:
