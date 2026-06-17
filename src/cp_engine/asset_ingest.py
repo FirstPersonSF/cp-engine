@@ -477,6 +477,29 @@ def list_files(
             source_notes.append({"source": "dropbox", "note": note})
             print(f"[asset-ingest] {note} — skipping Dropbox", file=sys.stderr)
 
+    # ── Folder allowlist ──
+    # Applied AFTER both sources have built `results`, so a single segment-CONTAINS
+    # rule covers Drive + Dropbox uniformly. An EMPTY allowlist is a true no-op —
+    # no filtering, no filter note — so existing callers (which pass nothing) are
+    # unaffected and a project with no configured folders ingests its whole tree.
+    if allowlist:
+        total = len(results)
+        kept = [r for r in results if _matches_allowlist(r, allowlist)]
+        excluded = total - len(kept)
+        names = ", ".join(allowlist)
+        if kept:
+            note = (
+                f"allowlist [{names}] matched {len(kept)} of {total} files "
+                f"({excluded} excluded by folder filter)"
+            )
+        else:
+            note = (
+                f"allowlist [{names}] matched 0 of {total} files "
+                "(check folder names)"
+            )
+        source_notes.append({"source": "filter", "note": note})
+        results = kept
+
     return results, source_notes
 
 
