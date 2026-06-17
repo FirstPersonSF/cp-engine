@@ -24,6 +24,7 @@ dependencies = [
     "cloud-storage[all] @ git+https://github.com/FirstPersonSF/1p-component-library.git@0b5928b#subdirectory=integrations/cloud-storage",
     "resilience @ git+https://github.com/FirstPersonSF/1p-component-library.git@94eb35a#subdirectory=patterns/resilience",
     "voyageai>=0.4",
+    "mcp>=1.2",
 ]
 
 [project.optional-dependencies]
