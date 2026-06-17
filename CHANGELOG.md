@@ -4,6 +4,19 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.28.0 — 2026-06-16
+
+### Added — ambient project sources (`_sources.md` manifest + `cp-sources` MCP server)
+
+A project's ingested source documents (Drive/Dropbox briefs, decks, research pulled into the `rag_assets` store) were reachable only by hand-written queries. This release makes them ambient — visible to a session and pullable into reasoning during strategy/deliverable work.
+
+- **`_sources.md` manifest** — `cp sync` regenerates an auto-managed manifest in each project working dir listing every ingested doc with a one-line summary. A glance tells a session what source material exists for the project. Both project-scoped and shared account-scoped docs (company-wide, promoted via `cp promote-asset`) are listed.
+- **`cp-sources` MCP server** (`cp mcp`, stdio FastMCP) — two tools:
+  - `list_project_sources(project_code)` — the live list of a project's ingested docs.
+  - `pull_project_source(project_code, doc_title, query?)` — a doc's full text + citation by title; pass `query` to rank chunks by relevance instead of full-doc order.
+- **Engine-managed `.mcp.json`** — sync now installs a tenant-root `.mcp.json` registering the `cp-sources` server (idempotent merge that preserves any tenant-added servers, same discipline as the `.claude/settings.json` SessionStart-hook merge). The CLAUDE.md template gains a "Project sources" section so sessions know the manifest + tools exist.
+- Adds the `mcp` dependency.
+
 ## v0.27.6 — 2026-06-16
 
 ### Fixed — asset ingest skips non-ingestable shortcut files

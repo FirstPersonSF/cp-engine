@@ -91,6 +91,36 @@ def merge_settings(existing: dict | None) -> tuple[dict, bool]:
     return settings, changed
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  .mcp.json — registers the `cp-sources` stdio MCP server (`cp mcp`)
+# ──────────────────────────────────────────────────────────────────────
+
+# Name of the engine's MCP server entry in a tenant's `.mcp.json`. Stable so
+# re-syncs recognize + update our entry rather than appending duplicates.
+_MCP_SERVER_NAME = "cp-sources"
+
+
+def _mcp_server_entry() -> dict:
+    """The engine's `cp-sources` server entry, in Claude Code's `.mcp.json` schema."""
+    return {"command": "cp", "args": ["mcp"]}
+
+
+def merge_mcp_config(existing: dict | None) -> tuple[dict, bool]:
+    """Return (merged `.mcp.json`, changed) ensuring the `cp-sources` server.
+
+    Preserves every other server the tenant registered and any other keys.
+    `changed` is False iff the `cp-sources` entry was already present and current.
+    """
+    config: dict = dict(existing) if isinstance(existing, dict) else {}
+
+    servers = dict(config.get("mcpServers") or {})
+    desired = _mcp_server_entry()
+    changed = servers.get(_MCP_SERVER_NAME) != desired
+    servers[_MCP_SERVER_NAME] = desired
+    config["mcpServers"] = servers
+    return config, changed
+
+
 def install_into_tenant(tenant_root: Path) -> list[Path]:
     """Install the hook script + settings entry. Returns files written.
 
@@ -129,5 +159,24 @@ def install_into_tenant(tenant_root: Path) -> list[Path]:
         claude_dir.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(json.dumps(merged, indent=2) + "\n")
         written.append(settings_path)
+
+    # 3. .mcp.json — at the TENANT ROOT (not under .claude/), registering the
+    #    `cp-sources` stdio MCP server. Same best-effort discipline as
+    #    settings.json: a malformed existing file is left in place, not
+    #    clobbered (a tenant may have hand-registered other servers).
+    mcp_path = tenant_root / ".mcp.json"
+    existing_mcp: dict | None = None
+    if mcp_path.exists():
+        try:
+            existing_mcp = json.loads(mcp_path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return written
+        if not isinstance(existing_mcp, dict):
+            return written
+
+    merged_mcp, mcp_changed = merge_mcp_config(existing_mcp)
+    if mcp_changed:
+        mcp_path.write_text(json.dumps(merged_mcp, indent=2) + "\n")
+        written.append(mcp_path)
 
     return written
