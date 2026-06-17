@@ -21,6 +21,7 @@ from cp_engine.asset_ingest import (
     ProjectFolders,
     _folder_segments,
     _matches_allowlist,
+    _row_to_folders,
     ingest_project_assets,
     list_files,
     resolve_project_folders_by_id,
@@ -170,6 +171,31 @@ def test_match_empty_allowlist_is_false() -> None:
     assert _matches_allowlist(ref, ()) is False
 
 
+def test_match_empty_string_allowlist_is_false() -> None:
+    # CRITICAL FOOTGUN: a stored empty allowed name would make `"" in seg`
+    # always True → every file matches → re-ingest the whole tree, defeating the
+    # filter. The matcher's belt-and-suspenders guard skips empty/whitespace
+    # allowed names, so a normal file does NOT match.
+    ref = _dbx_ref("/x/Internal/y.pdf")
+    assert _matches_allowlist(ref, ("",)) is False
+    assert _matches_allowlist(ref, ("   ",)) is False
+
+
+def test_match_padded_allowlist_still_matches() -> None:
+    # A properly-stripped allowlist of "Client Assets" matches "01 Client
+    # Assets"; the matcher itself doesn't strip, so the real defense is the
+    # boundary strip in `_row_to_folders` (covered below). Here we confirm the
+    # stripped name works.
+    ref = _dbx_ref("/SAP 5174/01 Client Assets/brief.pdf")
+    assert _matches_allowlist(ref, ("Client Assets",)) is True
+
+
+def test_segments_dropbox_bare_filename_no_folder() -> None:
+    # A bare-filename path with NO folder → no folder segments at all.
+    ref = _dbx_ref("/brief.pdf", name="brief.pdf")
+    assert _folder_segments(ref) == []
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  list_files allowlist integration
 # ──────────────────────────────────────────────────────────────────────
@@ -296,6 +322,25 @@ def test_resolve_null_asset_ingest_folders_is_empty() -> None:
     folders = resolve_project_folders_by_id(client, "proj-uuid")
     assert folders is not None
     assert folders.asset_ingest_folders == ()
+
+
+def test_row_to_folders_drops_empty_allowed_name() -> None:
+    # FOOTGUN DEFENSE at the service boundary: a stored ['Client Assets', '']
+    # must drop the empty name → ('Client Assets',), NOT match-everything.
+    folders = _row_to_folders(_project_row(["Client Assets", ""]))
+    assert folders.asset_ingest_folders == ("Client Assets",)
+
+
+def test_row_to_folders_strips_padded_allowed_name() -> None:
+    # A padded ' Client Assets ' gets stripped at resolve time so it matches
+    # folder 'Client Assets' (otherwise a surprising silent no-match).
+    folders = _row_to_folders(_project_row([" Client Assets "]))
+    assert folders.asset_ingest_folders == ("Client Assets",)
+
+
+def test_row_to_folders_drops_whitespace_only_allowed_name() -> None:
+    folders = _row_to_folders(_project_row(["   ", "Deliverables"]))
+    assert folders.asset_ingest_folders == ("Deliverables",)
 
 
 def test_resolve_missing_column_is_empty() -> None:

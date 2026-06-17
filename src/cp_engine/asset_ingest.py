@@ -125,7 +125,20 @@ def _row_to_folders(row: dict) -> ProjectFolders:
         # an empty array, OR a MISSING key (the mc-2 column lands in a later
         # migration) all collapse to `()` → no filter. So cp-engine can ship
         # before the column exists without crashing.
-        asset_ingest_folders=tuple(row.get("asset_ingest_folders") or ()),
+        #
+        # `.strip()`-and-drop-empties defends the SERVICE BOUNDARY: cp-engine
+        # takes whatever is in the DB column and must NOT assume mc-2 sanitized
+        # it. An empty/whitespace-only allowed name is a CRITICAL footgun —
+        # `"" in seg` is always True in `_matches_allowlist`, so a stored
+        # ['Client Assets', ''] would silently match EVERY file and re-ingest the
+        # whole tree, defeating the filter. Dropping empties here kills that; the
+        # strip also fixes a surprising silent no-match where a padded
+        # ' Client Assets ' failed to match folder 'Client Assets'. After this,
+        # ['Client Assets', ''] → ('Client Assets',) and [' Client Assets '] →
+        # ('Client Assets',). NULL/[]/missing still → ().
+        asset_ingest_folders=tuple(
+            s.strip() for s in (row.get("asset_ingest_folders") or ()) if s and s.strip()
+        ),
     )
 
 
@@ -303,10 +316,15 @@ def _list_drive(connector, folder_id: str) -> list[FileRef]:
             if item.get("mimeType") == _DRIVE_FOLDER_MIME:
                 child_id = item.get("id")
                 if child_id:
+                    # A Drive folder item missing `name` would thread `None` into
+                    # the breadcrumb → a later `None.lower()` AttributeError in
+                    # `_matches_allowlist`. Coerce to "" so the segment is just
+                    # harmless empty noise.
+                    name = item.get("name") or ""
                     _walk(
                         child_id,
                         depth + 1,
-                        path_segments + (item.get("name"),),
+                        path_segments + (name,),
                     )
             else:
                 refs.append(_drive_file_ref(item, path_segments))
@@ -391,10 +409,16 @@ def _matches_allowlist(ref: FileRef, allowlist: tuple[str, ...]) -> bool:
     suffix ("Client Assets v2"). Tested against folder segments ONLY (never the
     filename, which `_folder_segments` drops).
     """
+    # `if allowed and allowed.strip()` is belt-and-suspenders: `_row_to_folders`
+    # already strips + drops empty allowed names at the service boundary, but
+    # this is a pure, public-ish function that could be called with unsanitized
+    # input directly. An empty/whitespace allowed name must NOT match every
+    # segment (`"" in seg` is always True) — skip it.
     return any(
         allowed.lower() in seg.lower()
         for seg in _folder_segments(ref)
         for allowed in allowlist
+        if allowed and allowed.strip()
     )
 
 
