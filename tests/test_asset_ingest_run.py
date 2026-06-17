@@ -383,6 +383,63 @@ def test_run_versioned_is_stamped(monkeypatch, tmp_path):
     assert len(client.updates) == 1
 
 
+def test_run_skips_shortcut_files_before_download(monkeypatch, tmp_path):
+    """A .url/.lnk/.webloc file is skipped BEFORE download — never handed to the
+    pipeline, never counted as `failed`. The real file alongside it still ingests,
+    and a single `source: "skip"` note surfaces the skip."""
+    files = [_ref("sapnam-my.sharepoint.com.url"), _ref("real.docx")]
+    _patch_resolve_and_list(monkeypatch, _FOLDERS, files)
+
+    # download_file must NEVER be called for the shortcut; record every call.
+    downloaded = []
+
+    def _fake_download(file_ref, tmp_dir, drive_connector=None, dropbox_connector=None):
+        downloaded.append(file_ref.name)
+        p = Path(tmp_dir) / file_ref.name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"content-of-" + file_ref.name.encode())
+        return p
+
+    monkeypatch.setattr("cp_engine.asset_ingest.download_file", _fake_download)
+    pipeline = _FakePipeline({"real.docx": "created"})
+    client = _FakeClient()
+
+    result = ingest_project_assets(
+        "acme-1", client=client, pipeline=pipeline, tmp_root=tmp_path
+    )
+
+    # only the real file was downloaded + ingested; the .url was never touched
+    assert downloaded == ["real.docx"]
+    assert [c["title"] for c in pipeline.calls] == ["real.docx"]
+    assert result.created == 1
+    assert result.failed == 0
+    assert result.failures == []
+    # counted distinctly from skipped (dedup) and failed (real failure)
+    assert result.skipped_shortcuts == 1
+    assert result.skipped == 0
+    # exactly one skip note surfacing the shortcut skip
+    skip_notes = [n for n in result.source_notes if n["source"] == "skip"]
+    assert len(skip_notes) == 1
+    assert "shortcut" in skip_notes[0]["note"]
+
+
+def test_run_no_shortcut_files_emits_no_skip_note(monkeypatch, tmp_path):
+    """Back-compat: a run with no shortcut files has skipped_shortcuts == 0 and
+    no `source: "skip"` note."""
+    _patch_resolve_and_list(monkeypatch, _FOLDERS, [_ref("a.docx")])
+    _patch_download_writes(monkeypatch)
+    pipeline = _FakePipeline({"a.docx": "created"})
+    client = _FakeClient()
+
+    result = ingest_project_assets(
+        "acme-1", client=client, pipeline=pipeline, tmp_root=tmp_path
+    )
+
+    assert result.created == 1
+    assert result.skipped_shortcuts == 0
+    assert [n for n in result.source_notes if n["source"] == "skip"] == []
+
+
 def test_run_empty_file_list_returns_zero_counts(monkeypatch, tmp_path):
     _patch_resolve_and_list(monkeypatch, _FOLDERS, [])
 
