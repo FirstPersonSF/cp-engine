@@ -111,10 +111,23 @@ def pull_source(
         lazily (runtime-only import, keeping this module transport-agnostic) and
         can be injected via `embedder` for tests.
 
-    Returns `{title, citation_url, scope, chunks: [text, ...]}` for the matched
-    doc (title / citation_url / scope taken from the first matched row; `chunks`
-    is every matched row's text in returned order). If NO rows match the title,
-    returns `{title: doc_title, chunks: [], note: "..."}`.
+    Resolution to ONE document (never merge distinct docs):
+
+      1. Exact-title (the manifest's machine path): if any matched row's title
+         case-insensitively EQUALS `doc_title`, return ONLY that doc's chunks.
+         The manifest names docs by full title, so the MCP pull passes the exact
+         title — this is the common, correct, cheap path.
+      2. Single distinct title: exactly one document's title matched the
+         substring → return that doc's chunks.
+      3. Ambiguous (2+ distinct titles match, none exact): do NOT merge —
+         distinct titles must never collapse under one citation (provenance
+         corruption). Return `{title: doc_title, chunks: [], note: "ambiguous:
+         ... matched N sources: [...]"}` listing the candidate titles.
+      4. No match: `{title: doc_title, chunks: [], note: "no source named ..."}`.
+
+    For 1 and 2, title / citation_url / scope come from the first surviving row
+    (all surviving rows are the same document), and `chunks` is every surviving
+    row's text in returned order.
     """
     query_embedding = None
     if query is not None:
@@ -142,10 +155,39 @@ def pull_source(
             "note": f"no source named '{doc_title}' found in this project's assets",
         }
 
-    first = matched[0]
+    # Resolve to a SINGLE document. Group matched rows by their (case-
+    # insensitive) title while preserving each title's original casing for
+    # output and the first-seen order for the ambiguity note.
+    distinct: dict[str, str] = {}
+    for r in matched:
+        title = r.get("title") or ""
+        key = title.lower()
+        if key not in distinct:
+            distinct[key] = title
+
+    target = doc_title.lower()
+    if target in distinct:
+        # 1. Exact-title preference (the manifest's machine path).
+        selected = [r for r in matched if (r.get("title") or "").lower() == target]
+    elif len(distinct) == 1:
+        # 2. Single distinct title matched — that one doc is unambiguous.
+        selected = matched
+    else:
+        # 3. Ambiguous: 2+ distinct titles, none exact. Never merge.
+        candidates = ", ".join(distinct.values())
+        return {
+            "title": doc_title,
+            "chunks": [],
+            "note": (
+                f"ambiguous: '{doc_title}' matched {len(distinct)} sources: "
+                f"[{candidates}]; pass a more specific title"
+            ),
+        }
+
+    first = selected[0]
     return {
         "title": first.get("title"),
         "citation_url": first.get("citation_url"),
         "scope": first.get("scope"),
-        "chunks": [r.get("text") for r in matched],
+        "chunks": [r.get("text") for r in selected],
     }

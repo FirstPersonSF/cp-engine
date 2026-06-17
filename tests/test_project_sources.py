@@ -231,6 +231,70 @@ def test_pull_source_respects_limit():
     assert client.calls[0]["params"]["p_limit"] == 12
 
 
+# Two DISTINCT documents whose titles both CONTAIN the substring "Brief".
+# A substring query of "Brief" must NOT merge their chunks under one title.
+_AMBIGUOUS_BRIEF_ROWS = [
+    {
+        "text": "creative brief chunk",
+        "citation_url": "https://drive/u1",
+        "title": "Creative Brief",
+        "scope": "project",
+    },
+    {
+        "text": "brief v2 chunk",
+        "citation_url": "https://drive/u2",
+        "title": "Brief v2",
+        "scope": "account",
+    },
+]
+
+
+def test_pull_source_ambiguous_title_does_not_merge():
+    # "Brief" is a substring of BOTH "Creative Brief" and "Brief v2", with no
+    # exact match. The two distinct docs must NOT collapse into one result.
+    client = _FakeRpcClient(_AMBIGUOUS_BRIEF_ROWS)
+    out = pull_source(client, "proj-1", "co-9", doc_title="Brief")
+
+    # No merged chunks, no mislabeling — just an ambiguity note.
+    assert out["chunks"] == []
+    assert "ambiguous" in out["note"]
+    assert "Creative Brief" in out["note"]
+    assert "Brief v2" in out["note"]
+    # Provenance is never corrupted: neither doc's content/citation is returned.
+    assert "creative brief chunk" not in out.get("chunks", [])
+    assert "brief v2 chunk" not in out.get("chunks", [])
+
+
+# "Brief" is BOTH an exact title AND a substring of its sibling "Creative
+# Brief". Exact-title preference must win — return only the exact doc.
+_EXACT_PLUS_SIBLING_ROWS = [
+    {
+        "text": "exact brief chunk",
+        "citation_url": "https://drive/exact",
+        "title": "Brief",
+        "scope": "project",
+    },
+    {
+        "text": "creative brief chunk",
+        "citation_url": "https://drive/creative",
+        "title": "Creative Brief",
+        "scope": "account",
+    },
+]
+
+
+def test_pull_source_exact_title_wins_over_substring_siblings():
+    client = _FakeRpcClient(_EXACT_PLUS_SIBLING_ROWS)
+    out = pull_source(client, "proj-1", "co-9", doc_title="Brief")
+
+    # Only the EXACT "Brief" doc — not "Creative Brief".
+    assert out["chunks"] == ["exact brief chunk"]
+    assert out["title"] == "Brief"
+    assert out["citation_url"] == "https://drive/exact"
+    assert out["scope"] == "project"
+    assert "note" not in out
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  pull_source — query mode (Voyage embed wired)
 # ──────────────────────────────────────────────────────────────────────
