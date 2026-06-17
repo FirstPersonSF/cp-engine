@@ -71,6 +71,11 @@ class FileRef:
     size: int | None
     modified: str | None
     path: str | None = None  # dropbox path_display; None for drive
+    # Ordered folder NAMES from the project root down to (but NOT including) the
+    # file itself. Recorded so a later per-project folder allowlist can match a
+    # file when any folder in its path matches an allowed name. Defaults to ()
+    # so other FileRef construction sites are unaffected.
+    folder_path: tuple[str, ...] = ()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -210,8 +215,13 @@ _DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
 _DRIVE_MAX_DEPTH = 10
 
 
-def _drive_file_ref(item: dict) -> FileRef:
-    """Map one non-folder Drive child dict to a FileRef (download is by id)."""
+def _drive_file_ref(item: dict, folder_path: tuple[str, ...] = ()) -> FileRef:
+    """Map one non-folder Drive child dict to a FileRef (download is by id).
+
+    `folder_path` is the breadcrumb of folder names from the project root down to
+    this file's parent (see `_list_drive._walk`); the FileRef-mapping for Drive
+    lives here in one place.
+    """
     return FileRef(
         source="drive",
         id=item.get("id"),
@@ -220,6 +230,7 @@ def _drive_file_ref(item: dict) -> FileRef:
         size=_coerce_size(item.get("size")),
         modified=item.get("modifiedTime"),
         path=None,
+        folder_path=folder_path,
     )
 
 
@@ -243,7 +254,25 @@ def _list_drive(connector, folder_id: str) -> list[FileRef]:
     refs: list[FileRef] = []
     visited: set[str] = set()
 
-    def _walk(fid: str, depth: int) -> None:
+    def _walk(fid: str, depth: int, path_segments: tuple[str, ...]) -> None:
+        # `path_segments` is the breadcrumb of folder NAMES accumulated so far,
+        # from the project root down to `fid` (exclusive of `fid`'s own name
+        # until we descend INTO a folder child). The top-level call starts with
+        # `()` — the project ROOT folder's own name is deliberately NOT a
+        # segment.
+        #
+        # WHY start empty: this keeps Drive CONSISTENT with how Dropbox presents
+        # paths so the SAME allowlist (a later task) matches both sources. For
+        # Dropbox, `mc_dropbox_folder_id` is the project root and `path_display`
+        # includes that whole prefix — but the filter tests segment-CONTAINS
+        # against allowed names like "Client Assets"; the root-prefix segments
+        # ("1P Active Projects", "SAP 5174 …") simply won't contain that name,
+        # so they're harmless noise. For Drive, starting empty at the root means
+        # a file at root/"01 Client Assets"/brief.pdf gets
+        # folder_path=("01 Client Assets",) — the SUBFOLDER name, which is what
+        # the allowlist matches. So Drive records folders BELOW the root;
+        # Dropbox happens to include the root prefix too but it doesn't matter
+        # for matching.
         if fid in visited:
             return  # cycle guard — Drive shortcuts can point back up the tree
         visited.add(fid)
@@ -264,11 +293,15 @@ def _list_drive(connector, folder_id: str) -> list[FileRef]:
             if item.get("mimeType") == _DRIVE_FOLDER_MIME:
                 child_id = item.get("id")
                 if child_id:
-                    _walk(child_id, depth + 1)
+                    _walk(
+                        child_id,
+                        depth + 1,
+                        path_segments + (item.get("name"),),
+                    )
             else:
-                refs.append(_drive_file_ref(item))
+                refs.append(_drive_file_ref(item, path_segments))
 
-    _walk(folder_id, 0)
+    _walk(folder_id, 0, ())
     return refs
 
 
