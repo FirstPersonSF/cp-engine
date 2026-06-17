@@ -352,10 +352,47 @@ def _list_dropbox(connector, folder: str) -> list[FileRef]:
     return refs
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  Folder allowlist (per-project filter)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _folder_segments(ref: FileRef) -> list[str]:
+    """The FOLDER name segments of a ref — its ancestry, NOT the filename.
+
+    Drive: the recorded breadcrumb (`folder_path`) already excludes the file.
+    Dropbox: split `path_display` on `/`, drop empties, and DROP THE LAST
+    element (which is the filename) so only folder names remain. A None/empty
+    Dropbox path yields `[]`.
+    """
+    if ref.source == "drive":
+        return list(ref.folder_path)
+    if not ref.path:
+        return []
+    parts = [seg for seg in ref.path.split("/") if seg]
+    return parts[:-1]  # drop the filename
+
+
+def _matches_allowlist(ref: FileRef, allowlist: tuple[str, ...]) -> bool:
+    """True if ANY folder segment CONTAINS any allowed name, case-insensitive.
+
+    Segment-CONTAINS (not equality) so the common agency convention of a numbered
+    prefix — "01 Client Assets" — still matches allowed "Client Assets", as does a
+    suffix ("Client Assets v2"). Tested against folder segments ONLY (never the
+    filename, which `_folder_segments` drops).
+    """
+    return any(
+        allowed.lower() in seg.lower()
+        for seg in _folder_segments(ref)
+        for allowed in allowlist
+    )
+
+
 def list_files(
     folders: ProjectFolders,
     drive_connector=None,
     dropbox_connector=None,
+    allowlist: tuple[str, ...] = (),
 ) -> tuple[list[FileRef], list[dict[str, str]]]:
     """Enumerate the files in a project's enabled Drive + Dropbox folders.
 
