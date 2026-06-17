@@ -105,7 +105,10 @@ def _patch(monkeypatch, folders, files):
     )
     monkeypatch.setattr(
         "cp_engine.asset_ingest.list_files",
-        lambda f, drive_connector=None, dropbox_connector=None: (list(files), []),
+        lambda f, drive_connector=None, dropbox_connector=None, allowlist=(): (
+            list(files),
+            [],
+        ),
     )
 
     def _fake_download(file_ref, tmp_dir, drive_connector=None, dropbox_connector=None):

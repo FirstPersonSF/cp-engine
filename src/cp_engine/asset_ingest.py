@@ -39,7 +39,7 @@ from pathlib import Path
 # nested `companies(kind)` embed gives us the scope guard (client vs self-*).
 _PROJECT_COLUMNS = (
     "id, company_id, google_drive_folder_id, mc_dropbox_folder_id, "
-    "enable_google_drive, enable_dropbox, companies(kind)"
+    "enable_google_drive, enable_dropbox, asset_ingest_folders, companies(kind)"
 )
 
 
@@ -54,6 +54,11 @@ class ProjectFolders:
     mc_dropbox_folder_id: str | None
     enable_google_drive: bool
     enable_dropbox: bool
+    # Per-project folder allowlist: folder-name strings a file's ancestry must
+    # CONTAIN to be ingested (see `_matches_allowlist`). NULL / missing / [] →
+    # `()` → no filter (ingest the whole tree, today's behavior). Defaults to ()
+    # so existing construction sites are unaffected.
+    asset_ingest_folders: tuple[str, ...] = ()
 
 
 @dataclass
@@ -71,6 +76,11 @@ class FileRef:
     size: int | None
     modified: str | None
     path: str | None = None  # dropbox path_display; None for drive
+    # Ordered folder NAMES from the project root down to (but NOT including) the
+    # file itself. Recorded so a later per-project folder allowlist can match a
+    # file when any folder in its path matches an allowed name. Defaults to ()
+    # so other FileRef construction sites are unaffected.
+    folder_path: tuple[str, ...] = ()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -111,6 +121,24 @@ def _row_to_folders(row: dict) -> ProjectFolders:
         mc_dropbox_folder_id=row.get("mc_dropbox_folder_id") or None,
         enable_google_drive=bool(row.get("enable_google_drive")),
         enable_dropbox=bool(row.get("enable_dropbox")),
+        # `row.get(...) or ()` is NULL-safe AND forward-deploy-safe: a NULL value,
+        # an empty array, OR a MISSING key (the mc-2 column lands in a later
+        # migration) all collapse to `()` → no filter. So cp-engine can ship
+        # before the column exists without crashing.
+        #
+        # `.strip()`-and-drop-empties defends the SERVICE BOUNDARY: cp-engine
+        # takes whatever is in the DB column and must NOT assume mc-2 sanitized
+        # it. An empty/whitespace-only allowed name is a CRITICAL footgun —
+        # `"" in seg` is always True in `_matches_allowlist`, so a stored
+        # ['Client Assets', ''] would silently match EVERY file and re-ingest the
+        # whole tree, defeating the filter. Dropping empties here kills that; the
+        # strip also fixes a surprising silent no-match where a padded
+        # ' Client Assets ' failed to match folder 'Client Assets'. After this,
+        # ['Client Assets', ''] → ('Client Assets',) and [' Client Assets '] →
+        # ('Client Assets',). NULL/[]/missing still → ().
+        asset_ingest_folders=tuple(
+            s.strip() for s in (row.get("asset_ingest_folders") or ()) if s and s.strip()
+        ),
     )
 
 
@@ -210,8 +238,13 @@ _DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
 _DRIVE_MAX_DEPTH = 10
 
 
-def _drive_file_ref(item: dict) -> FileRef:
-    """Map one non-folder Drive child dict to a FileRef (download is by id)."""
+def _drive_file_ref(item: dict, folder_path: tuple[str, ...] = ()) -> FileRef:
+    """Map one non-folder Drive child dict to a FileRef (download is by id).
+
+    `folder_path` is the breadcrumb of folder names from the project root down to
+    this file's parent (see `_list_drive._walk`); the FileRef-mapping for Drive
+    lives here in one place.
+    """
     return FileRef(
         source="drive",
         id=item.get("id"),
@@ -220,6 +253,7 @@ def _drive_file_ref(item: dict) -> FileRef:
         size=_coerce_size(item.get("size")),
         modified=item.get("modifiedTime"),
         path=None,
+        folder_path=folder_path,
     )
 
 
@@ -243,7 +277,25 @@ def _list_drive(connector, folder_id: str) -> list[FileRef]:
     refs: list[FileRef] = []
     visited: set[str] = set()
 
-    def _walk(fid: str, depth: int) -> None:
+    def _walk(fid: str, depth: int, path_segments: tuple[str, ...]) -> None:
+        # `path_segments` is the breadcrumb of folder NAMES accumulated so far,
+        # from the project root down to `fid` (exclusive of `fid`'s own name
+        # until we descend INTO a folder child). The top-level call starts with
+        # `()` — the project ROOT folder's own name is deliberately NOT a
+        # segment.
+        #
+        # WHY start empty: this keeps Drive CONSISTENT with how Dropbox presents
+        # paths so the SAME allowlist (a later task) matches both sources. For
+        # Dropbox, `mc_dropbox_folder_id` is the project root and `path_display`
+        # includes that whole prefix — but the filter tests segment-CONTAINS
+        # against allowed names like "Client Assets"; the root-prefix segments
+        # ("1P Active Projects", "SAP 5174 …") simply won't contain that name,
+        # so they're harmless noise. For Drive, starting empty at the root means
+        # a file at root/"01 Client Assets"/brief.pdf gets
+        # folder_path=("01 Client Assets",) — the SUBFOLDER name, which is what
+        # the allowlist matches. So Drive records folders BELOW the root;
+        # Dropbox happens to include the root prefix too but it doesn't matter
+        # for matching.
         if fid in visited:
             return  # cycle guard — Drive shortcuts can point back up the tree
         visited.add(fid)
@@ -264,11 +316,20 @@ def _list_drive(connector, folder_id: str) -> list[FileRef]:
             if item.get("mimeType") == _DRIVE_FOLDER_MIME:
                 child_id = item.get("id")
                 if child_id:
-                    _walk(child_id, depth + 1)
+                    # A Drive folder item missing `name` would thread `None` into
+                    # the breadcrumb → a later `None.lower()` AttributeError in
+                    # `_matches_allowlist`. Coerce to "" so the segment is just
+                    # harmless empty noise.
+                    name = item.get("name") or ""
+                    _walk(
+                        child_id,
+                        depth + 1,
+                        path_segments + (name,),
+                    )
             else:
-                refs.append(_drive_file_ref(item))
+                refs.append(_drive_file_ref(item, path_segments))
 
-    _walk(folder_id, 0)
+    _walk(folder_id, 0, ())
     return refs
 
 
@@ -319,10 +380,53 @@ def _list_dropbox(connector, folder: str) -> list[FileRef]:
     return refs
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  Folder allowlist (per-project filter)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _folder_segments(ref: FileRef) -> list[str]:
+    """The FOLDER name segments of a ref — its ancestry, NOT the filename.
+
+    Drive: the recorded breadcrumb (`folder_path`) already excludes the file.
+    Dropbox: split `path_display` on `/`, drop empties, and DROP THE LAST
+    element (which is the filename) so only folder names remain. A None/empty
+    Dropbox path yields `[]`.
+    """
+    if ref.source == "drive":
+        return list(ref.folder_path)
+    if not ref.path:
+        return []
+    parts = [seg for seg in ref.path.split("/") if seg]
+    return parts[:-1]  # drop the filename
+
+
+def _matches_allowlist(ref: FileRef, allowlist: tuple[str, ...]) -> bool:
+    """True if ANY folder segment CONTAINS any allowed name, case-insensitive.
+
+    Segment-CONTAINS (not equality) so the common agency convention of a numbered
+    prefix — "01 Client Assets" — still matches allowed "Client Assets", as does a
+    suffix ("Client Assets v2"). Tested against folder segments ONLY (never the
+    filename, which `_folder_segments` drops).
+    """
+    # `if allowed and allowed.strip()` is belt-and-suspenders: `_row_to_folders`
+    # already strips + drops empty allowed names at the service boundary, but
+    # this is a pure, public-ish function that could be called with unsanitized
+    # input directly. An empty/whitespace allowed name must NOT match every
+    # segment (`"" in seg` is always True) — skip it.
+    return any(
+        allowed.lower() in seg.lower()
+        for seg in _folder_segments(ref)
+        for allowed in allowlist
+        if allowed and allowed.strip()
+    )
+
+
 def list_files(
     folders: ProjectFolders,
     drive_connector=None,
     dropbox_connector=None,
+    allowlist: tuple[str, ...] = (),
 ) -> tuple[list[FileRef], list[dict[str, str]]]:
     """Enumerate the files in a project's enabled Drive + Dropbox folders.
 
@@ -406,6 +510,29 @@ def list_files(
             note = "enable_dropbox set but no mc_dropbox_folder_id"
             source_notes.append({"source": "dropbox", "note": note})
             print(f"[asset-ingest] {note} — skipping Dropbox", file=sys.stderr)
+
+    # ── Folder allowlist ──
+    # Applied AFTER both sources have built `results`, so a single segment-CONTAINS
+    # rule covers Drive + Dropbox uniformly. An EMPTY allowlist is a true no-op —
+    # no filtering, no filter note — so existing callers (which pass nothing) are
+    # unaffected and a project with no configured folders ingests its whole tree.
+    if allowlist:
+        total = len(results)
+        kept = [r for r in results if _matches_allowlist(r, allowlist)]
+        excluded = total - len(kept)
+        names = ", ".join(allowlist)
+        if kept:
+            note = (
+                f"allowlist [{names}] matched {len(kept)} of {total} files "
+                f"({excluded} excluded by folder filter)"
+            )
+        else:
+            note = (
+                f"allowlist [{names}] matched 0 of {total} files "
+                "(check folder names)"
+            )
+        source_notes.append({"source": "filter", "note": note})
+        results = kept
 
     return results, source_notes
 
@@ -638,7 +765,12 @@ def ingest_project_assets(
         # already printed the reason to stderr.
         return IngestRunResult(project_found=False)
 
-    files, source_notes = list_files(folders, drive_connector, dropbox_connector)
+    files, source_notes = list_files(
+        folders,
+        drive_connector,
+        dropbox_connector,
+        allowlist=folders.asset_ingest_folders,
+    )
     if not files:
         # Nothing to ingest (non-client company, disabled sources, empty folder,
         # missing folder ids, OR a dead source — all handled + noted inside

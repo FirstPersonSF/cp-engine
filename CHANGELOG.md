@@ -4,6 +4,19 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.27.5 — 2026-06-16
+
+### Added — per-project asset-ingest folder allowlist
+
+Asset ingest swept every file in a project's Drive + Dropbox tree (SAP-5174's first run found 68 files, mostly internal docs). Projects can now restrict ingest to curated subfolders via a `projects.asset_ingest_folders text[]` allowlist (added by an MC-2 migration; cp-engine reads it NULL-safely).
+
+- **Match rule:** a file is ingested if any FOLDER segment in its path contains an allowed name (case-insensitive substring), so `['Client Assets']` matches `01 Client Assets`, `Client Assets v2`, etc., but never a file merely *named* "Client Assets". Empty/whitespace allowed names are stripped on read (an empty string can't silently match everything).
+- **Back-compat:** an unset/empty allowlist ingests the whole tree (today's behavior).
+- **Zero-match flags loudly:** if a non-empty allowlist matches nothing, the run completes with 0 created and a `source_note` ("matched 0 of N — check folder names") rather than silently ingesting everything.
+- **Drive support:** the Drive tree-walk now records each file's folder breadcrumb (it previously discarded it — only Dropbox carried a path). The filter applies to both sources.
+
+Resolved server-side in `resolve_project_folders_by_id`, so the webhook contract is unchanged. The filter outcome rides the existing `source_notes` channel (the Ingest-assets button already renders it). Requires a webhook redeploy + the MC-2 migration.
+
 ## v0.27.4 — 2026-06-16
 
 ### Changed — component-library deps moved to FirstPersonSF + Drive auth from env

@@ -16,6 +16,7 @@ import pytest
 from cp_engine.asset_ingest import (
     FileRef,
     ProjectFolders,
+    _list_drive,
     list_files,
     resolve_project_folders,
     resolve_project_folders_by_id,
@@ -541,6 +542,35 @@ def test_list_drive_recurses_into_subfolders() -> None:
     # It actually queried the two subfolders' ids (proof it recursed).
     queried_parents = {_parent_id_from_query(c["query"]) for c in drive.calls}
     assert {"root", "sub-a", "sub-b"} <= queried_parents
+
+
+def test_list_drive_records_folder_path_breadcrumb() -> None:
+    """Each Drive file records the folder NAMES from root down to its parent.
+
+    The root folder's OWN name is not a segment (walk starts with ()); a file
+    one level down records just its subfolder name, and a deeper nest records the
+    full chain of subfolder names below the root.
+    """
+    tree = {
+        "root": [
+            _drive_folder("ca", "01 Client Assets"),
+            _drive_folder("int", "Internal"),
+            _drive_folder("ca2", "Client Assets"),
+        ],
+        "ca": [_drive_file("f1", "brief.pdf")],
+        "int": [_drive_file("f2", "notes.docx")],
+        # Deeper nest: root → "Client Assets" → "sub" → deep.pdf
+        "ca2": [_drive_folder("sub", "sub")],
+        "sub": [_drive_file("f3", "deep.pdf")],
+    }
+    drive = _FakeDriveConnector(tree=tree)
+    refs = _list_drive(drive, "root")
+
+    by_name = {r.name: r for r in refs}
+    assert by_name["brief.pdf"].folder_path == ("01 Client Assets",)
+    assert by_name["notes.docx"].folder_path == ("Internal",)
+    # Deeper nest records the full subfolder chain below the root.
+    assert by_name["deep.pdf"].folder_path == ("Client Assets", "sub")
 
 
 def test_list_drive_recursion_depth_cap(capsys: pytest.CaptureFixture[str]) -> None:
