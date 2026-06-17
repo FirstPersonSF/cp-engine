@@ -14,6 +14,13 @@ without rewriting any tool logic.
 Imports of config / supabase / the pure functions live INSIDE the tool bodies on
 purpose: `import cp_engine.mcp_server` stays light (no config load, no network)
 so the module is cheap to import and easy to test.
+
+Error contract: an MCP tool is called by Claude mid-conversation, so it must
+ALWAYS return a structured result and NEVER raise a protocol error to the
+client. Each tool returns one of: real data, a not-found/empty result, or an
+`{"error": ...}` note carrying an actionable message. Every failure path
+(missing/bad config, absent Supabase creds, RPC errors, embedding failures) is
+caught and converted to that note rather than propagated.
 """
 
 from __future__ import annotations
@@ -33,12 +40,18 @@ def _resolve(project_code: str):
 
     Returns ``None`` when the code matches no project (or its folders can't be
     resolved); callers degrade gracefully on ``None`` rather than crashing.
+
+    Uses the non-exiting ``cp_engine.config.load`` loader (NOT the CLI's
+    ``_load_config_or_die``, which calls ``sys.exit``) so a config problem
+    raises a normal exception the tool wrappers can catch — never a SystemExit
+    that would tear down the stdio transport.
     """
     from cp_engine.asset_ingest import resolve_project_folders_by_id
-    from cp_engine.cli import _load_config_or_die
+    from cp_engine.config import load as load_config
     from cp_engine.sync_mc2 import MC2Backend
+    from pathlib import Path
 
-    config = _load_config_or_die()
+    config = load_config(Path.cwd())
     client = MC2Backend().connect(config)
 
     rows = (
@@ -65,11 +78,16 @@ def list_project_sources(project_code: str) -> list[dict]:
     """List a project's ingested source documents (title, type) for this tenant."""
     from cp_engine.project_sources import list_sources
 
-    resolved = _resolve(project_code)
-    if resolved is None:
-        return []
-    client, pid, cid = resolved
-    return list_sources(client, pid, cid)
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return []
+        client, pid, cid = resolved
+        return list_sources(client, pid, cid)
+    except Exception as exc:  # noqa: BLE001
+        # An MCP tool must never throw to the client: return a structured,
+        # actionable error note instead of propagating a protocol error.
+        return [{"error": f"failed to list sources for '{project_code}': {exc}"}]
 
 
 @mcp.tool()
@@ -82,15 +100,24 @@ def pull_project_source(
     """
     from cp_engine.project_sources import pull_source
 
-    resolved = _resolve(project_code)
-    if resolved is None:
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {
+                "title": doc_title,
+                "chunks": [],
+                "note": f"project '{project_code}' not found",
+            }
+        client, pid, cid = resolved
+        return pull_source(client, pid, cid, doc_title, query=query)
+    except Exception as exc:  # noqa: BLE001
+        # An MCP tool must never throw to the client: return a structured,
+        # actionable error note instead of propagating a protocol error.
         return {
             "title": doc_title,
             "chunks": [],
-            "note": f"project '{project_code}' not found",
+            "error": f"failed to pull '{doc_title}' from '{project_code}': {exc}",
         }
-    client, pid, cid = resolved
-    return pull_source(client, pid, cid, doc_title, query=query)
 
 
 def run_stdio() -> None:

@@ -71,6 +71,65 @@ def test_pull_project_source_unresolved_returns_note(monkeypatch):
     assert "not found" in out["note"]
 
 
+def test_list_project_sources_resolve_raises_returns_error(monkeypatch):
+    """A raising _resolve (e.g. bad config / no creds) yields a structured error."""
+    def boom(code):
+        raise RuntimeError("supabase creds missing")
+
+    monkeypatch.setattr(srv, "_resolve", boom)
+
+    out = srv.list_project_sources("IBX-5153")
+    assert isinstance(out, list) and len(out) == 1
+    assert "IBX-5153" in out[0]["error"]
+    assert "supabase creds missing" in out[0]["error"]
+
+
+def test_pull_project_source_resolve_raises_returns_error(monkeypatch):
+    """A raising _resolve yields a structured error, not a propagation."""
+    def boom(code):
+        raise RuntimeError("supabase creds missing")
+
+    monkeypatch.setattr(srv, "_resolve", boom)
+
+    out = srv.pull_project_source("IBX-5153", "Storybook")
+    assert out["title"] == "Storybook"
+    assert out["chunks"] == []
+    assert "Storybook" in out["error"]
+    assert "IBX-5153" in out["error"]
+    assert "supabase creds missing" in out["error"]
+
+
+def test_list_project_sources_pure_fn_raises_returns_error(monkeypatch):
+    """A raising pure fn (RPC error) is caught and returned as a structured error."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+
+    def boom(client, project_id, company_id):
+        raise RuntimeError("rpc failed")
+
+    monkeypatch.setattr("cp_engine.project_sources.list_sources", boom)
+
+    out = srv.list_project_sources("IBX-5153")
+    assert isinstance(out, list) and len(out) == 1
+    assert "IBX-5153" in out[0]["error"]
+    assert "rpc failed" in out[0]["error"]
+
+
+def test_pull_project_source_pure_fn_raises_returns_error(monkeypatch):
+    """A raising pure fn (Voyage embedding error) is caught and returned structured."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+
+    def boom(client, project_id, company_id, doc_title, query=None):
+        raise RuntimeError("voyage embed failed")
+
+    monkeypatch.setattr("cp_engine.project_sources.pull_source", boom)
+
+    out = srv.pull_project_source("IBX-5153", "Storybook", query="risks")
+    assert out["title"] == "Storybook"
+    assert out["chunks"] == []
+    assert "Storybook" in out["error"]
+    assert "voyage embed failed" in out["error"]
+
+
 def test_exactly_two_tools_registered():
     """The server registers exactly the two project-source tools."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
