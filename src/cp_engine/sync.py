@@ -478,6 +478,28 @@ def sync_tenant(
                     "spine-context mirror skipped for %s: %s",
                     project.code, exc, exc_info=True,
                 )
+            # Regenerate the project's `_sources.md` manifest from its ingested
+            # assets (ambient-project-sources). Best-effort like the spine
+            # mirrors — a manifest failure must never abort sync. The written
+            # `_sources.md`/`.cache.json` are picked up by sync's normal
+            # `git add -A` commit.
+            try:
+                from cp_engine.asset_ingest import resolve_project_folders_by_id
+                from cp_engine.project_sources import write_sources_manifest
+
+                folders = resolve_project_folders_by_id(client, project.mc2_id)
+                if folders is not None:
+                    write_sources_manifest(
+                        client,
+                        project_dir,
+                        folders.project_id,
+                        folders.company_id,
+                    )
+            except Exception as exc:  # noqa: BLE001 — best-effort sources manifest
+                logger.warning(
+                    "sources manifest skipped for %s: %s",
+                    project.code, exc, exc_info=True,
+                )
 
     # Account CP scaffolding (v0.8.17+, 1p-only) — for every account that
     # has ≥1 active client project, scaffold `1p/<company-slug>/cp.md`

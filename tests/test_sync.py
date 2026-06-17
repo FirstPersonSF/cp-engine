@@ -145,11 +145,12 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     # sprint-index README.md is generated alongside the sprint file.
     # v0.8.5 adds `_week.md` for week-scope handwritten notes.
     # The engine-managed `.claude/` SessionStart hook adds settings.json +
-    # the hook script on first sync (self-heals a stale `cp` CLI).
+    # the hook script on first sync (self-heals a stale `cp` CLI), and a
+    # `.mcp.json` registering the `cp-sources` MCP server.
     assert written_names == {
         "master-cp.md", "CLAUDE.md", ".gitignore",
         "cp.md", "mc-2.md", "README.md", "_week.md",
-        "settings.json", "check-cp-engine-version.py",
+        "settings.json", "check-cp-engine-version.py", ".mcp.json",
     }
 
     # Files actually exist + reference the project

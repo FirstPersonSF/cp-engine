@@ -174,6 +174,26 @@ of the corresponding cp working dir — `cd` there to read the project's `cp.md`
 session history, and decisions. The `/cp-summarize` slash command writes a
 session summary back to the cp working dir at the end of a development session.
 
+## Project sources (ingested Drive/Dropbox docs)
+
+Each project's ingested source documents (briefs, decks, research — pulled from
+Drive/Dropbox into the asset store) are surfaced two ways:
+
+- **`_sources.md`** in the project working dir — an auto-generated manifest
+  (regenerated on `cp sync`) listing each ingested doc with a one-line summary.
+  Glance at it to know what source material exists for the project.
+
+- **MCP tools** (`cp-sources` server, local stdio):
+  - `list_project_sources(project_code)` — the live list of a project's ingested docs.
+  - `pull_project_source(project_code, doc_title, query?)` — a doc's full text +
+    citation by title; pass `query` to rank by relevance instead of full-doc order.
+
+  Use these to pull source material into reasoning during strategy/deliverable
+  work — e.g. `pull_project_source("{{ example_code }}", "Carol AI Story Framework")`. The
+  manifest names the docs; the tool fetches content. Both project-scoped docs and
+  shared account-scoped docs (company-wide, promoted via `cp promote-asset`) are
+  surfaced.
+
 ---
 
 # Part 2 — How to read and edit it
