@@ -30,6 +30,24 @@ from mcp.server.fastmcp import FastMCP
 mcp = FastMCP("cp-sources")
 
 
+def _tenant_root():
+    """Resolve the tenant root by walking UP from the current working dir.
+
+    Claude Code launches `cp mcp` with its cwd set to whatever directory the
+    session opened in — frequently a project subdir (e.g.
+    ``1p/infoblox/ibx-5153-ai-campaign``), not the tenant root. The committed
+    config (``.cp-engine.toml``) lives only at the root, so we ascend until we
+    find it. Falls back to cwd when no config is found in any ancestor, so the
+    downstream config load raises its own clear NotATenantRepo error rather than
+    this helper crashing.
+    """
+    from pathlib import Path
+
+    from cp_engine.capture_session import find_tenant_root
+
+    return find_tenant_root(Path.cwd()) or Path.cwd().resolve()
+
+
 def _resolve(project_code: str):
     """Resolve a project CODE to `(client, project_id, company_id)`.
 
@@ -49,9 +67,8 @@ def _resolve(project_code: str):
     from cp_engine.asset_ingest import resolve_project_folders_by_id
     from cp_engine.config import load as load_config
     from cp_engine.sync_mc2 import MC2Backend
-    from pathlib import Path
 
-    config = load_config(Path.cwd())
+    config = load_config(_tenant_root())
     client = MC2Backend().connect(config)
 
     rows = (

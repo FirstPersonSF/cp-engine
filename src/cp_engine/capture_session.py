@@ -381,7 +381,7 @@ def _resolve_destination(
         # Self-heal: target is stale. Look for the cp tenant by walking up
         # the *recorded* (now-missing) path's ancestors. The closest existing
         # ancestor that contains `.cp-engine.toml` is the tenant root.
-        tenant_root = _find_existing_tenant_root(target)
+        tenant_root = find_tenant_root(target)
         if tenant_root is None and cp_tenant is not None:
             tenant_root = cp_tenant
         if tenant_root is None:
@@ -429,10 +429,14 @@ def _resolve_destination(
     return None, True, False
 
 
-def _find_existing_tenant_root(start: Path) -> Path | None:
+def find_tenant_root(start: Path) -> Path | None:
     """Walk up from `start` (which may not exist) looking for an ancestor
     that exists and contains `.cp-engine.toml`. Returns None if nothing
     found before the filesystem root.
+
+    Public because `cp_engine.mcp_server` also relies on this walk-up to
+    resolve the tenant root from whatever subdir the MCP server was launched
+    in — keep it stable.
     """
     current: Path | None = start
     while current is not None and str(current) not in ("/", current.anchor):
@@ -447,7 +451,7 @@ def _find_existing_tenant_root(start: Path) -> Path | None:
 
 def _walk_to_cp_tenant_root(working_dir: Path) -> Path:
     """Walk up from a cp working dir to its tenant root."""
-    root = _find_existing_tenant_root(working_dir)
+    root = find_tenant_root(working_dir)
     if root is None:
         raise CpTenantInvalid(
             f"Couldn't locate cp tenant root from working dir {working_dir}."

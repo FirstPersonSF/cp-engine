@@ -4,6 +4,14 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.28.1 — 2026-06-16
+
+### Fixed — `cp mcp` couldn't find the tenant root from a project subdir
+
+The `cp-sources` MCP server (`cp mcp`, launched by Claude Code via the tenant-root `.mcp.json`) inherits the cwd of whatever directory the session opened in — frequently a project subdir like `1p/infoblox/ibx-5153-ai-campaign`, not the tenant root. `_resolve()` loaded config from `Path.cwd()`, and `config.load()` requires `.cp-engine.toml` to sit exactly in that dir (no upward walk), so every source-listing/pull call from a project subdir failed with `No .cp-engine.toml at <subdir>. Not a tenant repo?`.
+
+The server now resolves the tenant root by walking UP from cwd (reusing the existing tenant-root walk-up, promoted from `capture_session._find_existing_tenant_root` to the public `find_tenant_root`), falling back to cwd when no config is found so the downstream loader still raises its own clear error. The MCP source tools now work from any working dir within the tenant.
+
 ## v0.28.0 — 2026-06-16
 
 ### Added — ambient project sources (`_sources.md` manifest + `cp-sources` MCP server)

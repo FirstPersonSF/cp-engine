@@ -130,6 +130,32 @@ def test_pull_project_source_pure_fn_raises_returns_error(monkeypatch):
     assert "voyage embed failed" in out["error"]
 
 
+def test_tenant_root_walks_up_from_subdir(tmp_path, monkeypatch):
+    """The server resolves the tenant root by walking UP from cwd.
+
+    Claude Code launches `cp mcp` with its cwd set to whatever dir the session
+    opened in — often a project subdir like `1p/infoblox/ibx-5153-ai-campaign`,
+    not the tenant root. The tenant config (`.cp-engine.toml`) lives only at the
+    root, so resolving the root from cwd must ascend until it finds the config.
+    """
+    (tmp_path / ".cp-engine.toml").write_text("# tenant\n")
+    subdir = tmp_path / "1p" / "infoblox" / "ibx-5153-ai-campaign"
+    subdir.mkdir(parents=True)
+    monkeypatch.chdir(subdir)
+
+    assert srv._tenant_root() == tmp_path.resolve()
+
+
+def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
+    """With no `.cp-engine.toml` in any ancestor, fall back to cwd.
+
+    The downstream config load then raises its own clear NotATenantRepo error;
+    `_tenant_root` itself must not crash on a non-tenant cwd.
+    """
+    monkeypatch.chdir(tmp_path)
+    assert srv._tenant_root() == tmp_path.resolve()
+
+
 def test_exactly_two_tools_registered():
     """The server registers exactly the two project-source tools."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
