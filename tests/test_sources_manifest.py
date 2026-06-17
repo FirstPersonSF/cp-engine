@@ -142,8 +142,9 @@ def test_first_run_writes_manifest_and_cache(tmp_path):
     assert llm.calls == 2  # one per asset
 
     manifest = _read_manifest(tmp_path)
-    assert "<!-- cp-engine:start sources -->" in manifest
-    assert "<!-- cp-engine:end sources -->" in manifest
+    # M5: whole file is engine-owned and fully regenerated — no region markers.
+    assert "cp-engine:start sources" not in manifest
+    assert "cp-engine:end sources" not in manifest
     assert "2 ingested document(s)" in manifest
     assert "**Alpha Doc** · drive — Summary of prompt #1." in manifest
     assert "**Beta Doc** · drive — Summary of prompt #2." in manifest
@@ -266,3 +267,90 @@ def test_corrupt_cache_tolerated(tmp_path):
 
     assert n == 1
     assert llm.calls == 1  # corrupt cache → re-summarized, no crash
+
+
+def test_failed_summary_is_not_cached_and_retries(tmp_path):
+    """I1: a failed summary must NOT be cached → next sync retries it.
+
+    Caching the `(summary unavailable)` sentinel would poison the doc forever
+    (hash unchanged → cache HIT → never re-summarized even after the API is
+    fixed). So a failure leaves NO cache entry, and the next run is a cache MISS
+    that re-summarizes.
+    """
+    assets = _assets(("a", "Alpha Doc", "h-a"))
+    chunks = [_chunk("Alpha Doc", "alpha text")]
+    client = _FakeClient(assets, chunks)
+
+    # First run: llm raises for Alpha → manifest shows unavailable, no cache entry.
+    failing_llm = _FakeLLM(raise_on_title="Alpha Doc")
+    write_sources_manifest(client, tmp_path, "proj-1", "co-9", llm=failing_llm)
+
+    manifest = _read_manifest(tmp_path)
+    assert "**Alpha Doc** · drive — (summary unavailable)" in manifest
+    cache = _read_cache(tmp_path)
+    assert "a" not in cache  # failure NOT cached
+
+    # Second run, SAME hash, llm now succeeds → cache MISS → re-summarized.
+    ok_llm = _FakeLLM()
+    write_sources_manifest(client, tmp_path, "proj-1", "co-9", llm=ok_llm)
+
+    assert ok_llm.calls == 1  # retried despite unchanged hash
+    manifest = _read_manifest(tmp_path)
+    assert "**Alpha Doc** · drive — Summary of prompt #1." in manifest
+    cache = _read_cache(tmp_path)
+    assert cache["a"]["summary"] == "Summary of prompt #1."
+
+
+def test_summary_cap_limits_new_calls(tmp_path):
+    """M1: at most `max_new_summaries` fresh summaries per call; rest deferred.
+
+    Deferred (uncached, over-cap) docs show `(summary unavailable)` and are NOT
+    cached, so the next sync picks them up — a cold project fills over several
+    syncs instead of one thundering herd.
+    """
+    specs = [(f"id{i}", f"Doc {i}", f"h-{i}") for i in range(30)]
+    assets = _assets(*specs)
+    chunks = [_chunk(f"Doc {i}", f"text {i}") for i in range(30)]
+    client = _FakeClient(assets, chunks)
+
+    llm = _FakeLLM()
+    n = write_sources_manifest(
+        client, tmp_path, "proj-1", "co-9", llm=llm, max_new_summaries=10
+    )
+
+    assert n == 30
+    assert llm.calls == 10  # capped
+    cache = _read_cache(tmp_path)
+    assert len(cache) == 10  # only the summarized ones cached
+    manifest = _read_manifest(tmp_path)
+    assert manifest.count("(summary unavailable)") == 20  # the deferred 20
+
+    # Second run: the 10 cached are HITS (free); the next 10 deferred get done.
+    llm2 = _FakeLLM()
+    write_sources_manifest(
+        client, tmp_path, "proj-1", "co-9", llm=llm2, max_new_summaries=10
+    )
+    assert llm2.calls == 10  # next batch
+    cache = _read_cache(tmp_path)
+    assert len(cache) == 20
+
+
+def test_summary_cap_does_not_affect_cache_hits(tmp_path):
+    """M1: cache hits are always free — a fully-cached run makes 0 calls."""
+    specs = [(f"id{i}", f"Doc {i}", f"h-{i}") for i in range(30)]
+    assets = _assets(*specs)
+    chunks = [_chunk(f"Doc {i}", f"text {i}") for i in range(30)]
+    client = _FakeClient(assets, chunks)
+
+    # Warm the cache fully (cap above the asset count).
+    write_sources_manifest(
+        client, tmp_path, "proj-1", "co-9", llm=_FakeLLM(), max_new_summaries=100
+    )
+    assert len(_read_cache(tmp_path)) == 30
+
+    # All cached → 0 calls regardless of a tiny cap.
+    llm = _FakeLLM()
+    write_sources_manifest(
+        client, tmp_path, "proj-1", "co-9", llm=llm, max_new_summaries=1
+    )
+    assert llm.calls == 0
