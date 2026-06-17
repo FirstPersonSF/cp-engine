@@ -624,6 +624,7 @@ async def _run_asset_ingest(
                 "created": run.created,
                 "versioned": run.versioned,
                 "skipped": run.skipped,
+                "deduped": run.deduped,
                 "failed": run.failed,
                 "failures": [{"file": f, "error": e} for f, e in run.failures],
                 "source_notes": run.source_notes,

@@ -4,6 +4,19 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.28.2 — 2026-06-17
+
+### Fixed — asset ingest created duplicate rows for the same file across sources
+
+The asset-ingest pipeline dedups only on `(project_id, file_path)`, so the *same file content* arriving at a different path created a duplicate `rag_assets` row. Two real cases hit this: a doc present in both the project's Google Drive AND Dropbox folder (ingested once per source), and a file copied within a single Dropbox folder. Live audit found 12 such pairs on IBX-5153 and 1 on sap-5174.
+
+`ingest_project_assets` now runs a content-hash pre-check before parse/embed/insert: it computes the file's SHA-256 (matching the pipeline's own `file_hash`) and, if an active asset with that hash already exists in the project **at a different path**, skips the file and counts it as `deduped`. Same-path matches are left to the pipeline (its skip-vs-new_version province). The pre-check fails safe — any query error degrades to the prior behavior (ingest anyway), logged to stderr.
+
+- New `IngestRunResult.deduped` counter, distinct from `skipped` (pipeline's same-path unchanged-file skip) and `skipped_shortcuts`. Surfaced in the `cp ingest-assets` summary lines, the `--all` aggregate, and the webhook's `asset_ingest_runs` patch.
+- Requires mc-2 migration **067** (`asset_ingest_runs.deduped` column + a partial index on `rag_assets (project_id, file_hash) WHERE status='active'` so the per-file pre-check is a direct lookup). Applied live.
+
+This prevents *new* cross-path duplicates; pre-existing duplicate rows are cleaned up separately.
+
 ## v0.28.1 — 2026-06-16
 
 ### Fixed — `cp mcp` couldn't find the tenant root from a project subdir

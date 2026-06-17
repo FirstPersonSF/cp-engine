@@ -93,23 +93,69 @@ class _FakeUpdateChain:
         return None
 
 
+class _FakeSelectChain:
+    """Captures a .select(...).eq(...).eq(...)...execute() read chain.
+
+    Returns the rows the client was seeded with for the matching
+    (project_id, file_hash) filter; an empty list otherwise.
+    """
+
+    def __init__(self, rows_by_hash, filters_seen):
+        self._rows_by_hash = rows_by_hash
+        self._filters_seen = filters_seen
+        self._filters = {}
+
+    def select(self, cols):
+        self._cols = cols
+        return self
+
+    def eq(self, col, val):
+        self._filters[col] = val
+        return self
+
+    def execute(self):
+        self._filters_seen.append(dict(self._filters))
+        rows = self._rows_by_hash.get(self._filters.get("file_hash"), [])
+        # honour the status='active' filter the pre-check applies
+        if self._filters.get("status") == "active":
+            rows = [r for r in rows if r.get("status", "active") == "active"]
+        return _Resp(list(rows))
+
+
+class _Resp:
+    def __init__(self, data):
+        self.data = data
+
+
 class _FakeTable:
-    def __init__(self, recorder):
+    def __init__(self, recorder, rows_by_hash, selects_seen):
         self._recorder = recorder
+        self._rows_by_hash = rows_by_hash
+        self._selects_seen = selects_seen
 
     def update(self, payload):
         return _FakeUpdateChain(self._recorder).update(payload)
 
+    def select(self, cols):
+        return _FakeSelectChain(self._rows_by_hash, self._selects_seen).select(cols)
+
 
 class _FakeClient:
-    """Fake Supabase client; only `.table('rag_assets').update(...)` is exercised."""
+    """Fake Supabase client supporting `.table('rag_assets')` update + select.
 
-    def __init__(self):
+    `existing_by_hash` seeds the dedup pre-check: file_hash -> list of existing
+    active rows (each a dict with at least `file_path`). Default empty = nothing
+    pre-exists, so every file is treated as new.
+    """
+
+    def __init__(self, existing_by_hash=None):
         self.updates = []  # each: {payload, filters}
+        self.selects = []  # each: the filter dict the pre-check applied
+        self._existing_by_hash = existing_by_hash or {}
 
     def table(self, name):
         assert name == "rag_assets", f"unexpected table {name!r}"
-        return _FakeTable(self.updates)
+        return _FakeTable(self.updates, self._existing_by_hash, self.selects)
 
 
 class _RaisingOnceUpdateChain:
@@ -153,6 +199,68 @@ class _StampRaisesOnceClient:
 # ──────────────────────────────────────────────────────────────────────
 #  Helpers
 # ──────────────────────────────────────────────────────────────────────
+
+
+def _content_hash_of(data: bytes) -> str:
+    import hashlib
+
+    return hashlib.sha256(data).hexdigest()
+
+
+def _boom():
+    raise AssertionError("a deduped file must never reach the pipeline")
+
+
+class _RecordingDedupClient:
+    """Fake client where a stamp 'registers' the written row's hash.
+
+    Models the real flow for the within-run dedup test: the first file is
+    created + stamped; the stamp makes its (file_hash) findable so the second,
+    identical-content file is deduped by the pre-check. Every downloaded file in
+    the test carries the same bytes, hence the single `content_hash`.
+    """
+
+    def __init__(self, content_hash):
+        self._hash = content_hash
+        self._rows = {}  # file_hash -> [rows]
+        self.updates = []
+        self.selects = []
+
+    def table(self, name):
+        assert name == "rag_assets"
+        return _RecordingTable(self)
+
+
+class _RecordingTable:
+    def __init__(self, client):
+        self._c = client
+        self._mode = None
+        self._filters = {}
+
+    def update(self, payload):
+        self._mode = ("update", payload)
+        return self
+
+    def select(self, cols):
+        self._mode = ("select", cols)
+        return self
+
+    def eq(self, col, val):
+        self._filters[col] = val
+        return self
+
+    def execute(self):
+        kind = self._mode[0]
+        if kind == "select":
+            self._c.selects.append(dict(self._filters))
+            rows = self._c._rows.get(self._filters.get("file_hash"), [])
+            return _Resp(list(rows))
+        # update == the scope stamp; treat it as "row now exists with this hash"
+        self._c.updates.append({"payload": self._mode[1], "filters": dict(self._filters)})
+        self._c._rows.setdefault(self._c._hash, []).append(
+            {"id": "written", "file_path": self._filters.get("file_path"), "status": "active"}
+        )
+        return None
 
 
 _FOLDERS = ProjectFolders(
@@ -421,6 +529,111 @@ def test_run_skips_shortcut_files_before_download(monkeypatch, tmp_path):
     skip_notes = [n for n in result.source_notes if n["source"] == "skip"]
     assert len(skip_notes) == 1
     assert "shortcut" in skip_notes[0]["note"]
+
+
+def test_run_dedupes_same_content_at_different_path(monkeypatch, tmp_path):
+    """A file whose content hash already exists active in this project — at a
+    DIFFERENT file_path — is deduped: never ingested, counted as `deduped`.
+
+    This is the Drive-vs-Dropbox (and intra-Dropbox copy) bug: the pipeline's
+    own dedup keys on file_path, so identical content at a new path slips through
+    and creates a duplicate row. The pre-check on (project_id, file_hash) catches
+    it before the parse/embed/insert.
+    """
+    _patch_resolve_and_list(monkeypatch, _FOLDERS, [_ref("dup.docx")])
+    _patch_download_writes(monkeypatch)  # writes b"content-of-dup.docx"
+
+    # The same bytes already live in this project under a different path.
+    content_hash = _content_hash_of(b"content-of-dup.docx")
+    client = _FakeClient(
+        existing_by_hash={
+            content_hash: [
+                {"id": "existing-1", "file_path": "/some/other/drive-path/dup.docx",
+                 "status": "active"}
+            ]
+        }
+    )
+    # Pipeline that explodes if called — proves the dedup'd file is never ingested.
+    pipeline = _FakePipeline({"dup.docx": _boom})
+
+    result = ingest_project_assets(
+        "acme-1", client=client, pipeline=pipeline, tmp_root=tmp_path
+    )
+
+    assert result.deduped == 1
+    assert result.created == 0
+    assert result.skipped == 0
+    assert result.failed == 0
+    assert pipeline.calls == []  # never ingested
+    assert client.updates == []  # nothing stamped
+    # the pre-check queried (project_id, file_hash, status='active')
+    assert len(client.selects) == 1
+    sel = client.selects[0]
+    assert sel["project_id"] == "proj-1"
+    assert sel["file_hash"] == content_hash
+    assert sel["status"] == "active"
+
+
+def test_run_same_path_existing_is_not_dedupe_skipped(monkeypatch, tmp_path):
+    """If the only existing row with this hash is at the SAME file_path, the
+    pre-check does NOT skip — that's the pipeline's own province (skip vs
+    new_version). The file is handed to the pipeline as normal."""
+    _patch_resolve_and_list(monkeypatch, _FOLDERS, [_ref("a.docx")])
+    _patch_download_writes(monkeypatch)
+
+    content_hash = _content_hash_of(b"content-of-a.docx")
+    from cp_engine.asset_ingest import _stable_dir_for
+
+    stable = _stable_dir_for(tmp_path, _ref("a.docx")) / "a.docx"
+    client = _FakeClient(
+        existing_by_hash={
+            content_hash: [
+                {"id": "existing-same", "file_path": str(stable), "status": "active"}
+            ]
+        }
+    )
+    pipeline = _FakePipeline({"a.docx": "skipped"})
+
+    result = ingest_project_assets(
+        "acme-1", client=client, pipeline=pipeline, tmp_root=tmp_path
+    )
+
+    # NOT deduped by the pre-check: handed to the pipeline (which here skips it).
+    assert result.deduped == 0
+    assert len(pipeline.calls) == 1
+    assert pipeline.calls[0]["file_path"] == str(stable)
+
+
+def test_run_dedupes_identical_files_within_one_run(monkeypatch, tmp_path):
+    """Two files with identical content but different names/paths in the SAME
+    run: the first ingests, the second is deduped (the just-written row is found
+    by the pre-check)."""
+
+    # Both files carry identical bytes.
+    def _fake_download(file_ref, tmp_dir, drive_connector=None, dropbox_connector=None):
+        p = Path(tmp_dir) / file_ref.name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"identical-bytes")
+        return p
+
+    monkeypatch.setattr("cp_engine.asset_ingest.download_file", _fake_download)
+    _patch_resolve_and_list(monkeypatch, _FOLDERS, [_ref("first.docx"), _ref("second.docx")])
+
+    content_hash = _content_hash_of(b"identical-bytes")
+
+    # Stateful fake: starts empty; after the first file is "created" + stamped,
+    # the pre-check for the second file must find a row with this hash. We model
+    # that by having the stamp insert the row into existing_by_hash.
+    client = _RecordingDedupClient(content_hash)
+    pipeline = _FakePipeline({"first.docx": "created", "second.docx": _boom})
+
+    result = ingest_project_assets(
+        "acme-1", client=client, pipeline=pipeline, tmp_root=tmp_path
+    )
+
+    assert result.created == 1
+    assert result.deduped == 1
+    assert [c["title"] for c in pipeline.calls] == ["first.docx"]
 
 
 def test_run_no_shortcut_files_emits_no_skip_note(monkeypatch, tmp_path):

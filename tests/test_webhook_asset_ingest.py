@@ -288,7 +288,7 @@ def test_runner_records_done(monkeypatch):
     monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
 
     result = IngestRunResult(
-        created=3, versioned=0, skipped=32, failed=0, failures=[],
+        created=3, versioned=0, skipped=32, deduped=7, failed=0, failures=[],
         source_notes=[{"source": "drive", "note": "RuntimeError: x"}],
         project_found=True,
     )
@@ -306,6 +306,7 @@ def test_runner_records_done(monkeypatch):
     assert patch["created"] == 3
     assert patch["versioned"] == 0
     assert patch["skipped"] == 32
+    assert patch["deduped"] == 7
     assert patch["failed"] == 0
     assert patch["failures"] == []
     assert patch["source_notes"] == [

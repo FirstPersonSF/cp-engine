@@ -77,6 +77,7 @@ class _ProjectOutcome:
     created: int = 0
     versioned: int = 0
     skipped: int = 0
+    deduped: int = 0
     failed: int = 0
     failures: list[tuple[str, str]] = field(default_factory=list)
     error: str | None = None  # whole-project error (resolve/run blew up)
@@ -99,6 +100,10 @@ class FanOutResult:
     @property
     def total_skipped(self) -> int:
         return sum(o.skipped for o in self.outcomes)
+
+    @property
+    def total_deduped(self) -> int:
+        return sum(o.deduped for o in self.outcomes)
 
     @property
     def total_failed(self) -> int:
@@ -127,6 +132,7 @@ def fan_out_ingest(client, codes: list[str]) -> FanOutResult:
             outcome.created = run.created
             outcome.versioned = run.versioned
             outcome.skipped = run.skipped
+            outcome.deduped = run.deduped
             outcome.failed = run.failed
             outcome.failures = list(run.failures)
         except Exception as exc:  # noqa: BLE001 — collect, keep going

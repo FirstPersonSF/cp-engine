@@ -2522,7 +2522,7 @@ def _echo_run_summary(code: str, run) -> None:
     """Print one project's ingest summary line + any per-file failures."""
     click.echo(
         f"{code}: created={run.created} versioned={run.versioned} "
-        f"skipped={run.skipped} failed={run.failed}"
+        f"skipped={run.skipped} deduped={run.deduped} failed={run.failed}"
     )
     for name, err in run.failures:
         click.echo(f"  FAIL {name}: {err}", err=True)
@@ -2592,7 +2592,8 @@ def ingest_assets_cmd(code: str | None, all_: bool, scope: str | None) -> None:
     click.echo(
         f"TOTAL ({len(result.outcomes)} projects): "
         f"created={result.total_created} versioned={result.total_versioned} "
-        f"skipped={result.total_skipped} failed={result.total_failed}"
+        f"skipped={result.total_skipped} deduped={result.total_deduped} "
+        f"failed={result.total_failed}"
     )
     if result.any_failures:
         sys.exit(1)

@@ -23,6 +23,7 @@ returns `[]` for them.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import shutil
@@ -615,6 +616,13 @@ class IngestRunResult:
     versioned: int = 0
     skipped: int = 0
     failed: int = 0
+    # Cross-path content duplicates skipped by the (project_id, file_hash)
+    # pre-check: the same bytes already live in this project under a DIFFERENT
+    # file_path (same file in Drive AND Dropbox, or a copy within one source).
+    # The pipeline's own dedup keys on file_path and can't see these, so we catch
+    # them before parse/embed/insert. Distinct from `skipped` (pipeline's
+    # same-path unchanged-file skip) and `skipped_shortcuts` (pointer files).
+    deduped: int = 0
     # Non-ingestable shortcut/pointer files (.url/.lnk/.webloc) skipped BEFORE
     # download. Kept distinct from `skipped` (dedup) and `failed` (real failure)
     # so the counts stay semantically clean; surfaced via a source_note.
@@ -827,6 +835,25 @@ def ingest_project_assets(
             # re-derives identically on the next run → dedup → skip.
             file_path = str(local)
 
+            # Cross-path content-duplicate guard. The pipeline dedups on
+            # file_path only, so the SAME bytes at a new path (same file in Drive
+            # AND Dropbox, or a copy within one source) would create a duplicate
+            # row. If this content hash is already active in the project under a
+            # DIFFERENT path, skip the file entirely — no parse/embed/insert.
+            try:
+                file_hash = _content_hash(local)
+                if _existing_dup_at_other_path(
+                    client, folders.project_id, file_hash, file_path
+                ):
+                    result.deduped += 1
+                    continue
+            except Exception as exc:  # hashing failed — fall through to ingest
+                # A hash failure must not lose the file: record it and let the
+                # pipeline handle it (worst case a duplicate, the prior behavior).
+                result.failures.append(
+                    (file_ref.name, f"dedup pre-check failed: {exc}")
+                )
+
             # The whole post-download body (ingest + action handling + stamp) is
             # guarded so a raise from ingest_file OR the stamp UPDATE is collected
             # and the loop continues — same collect-and-continue contract as the
@@ -890,6 +917,64 @@ def ingest_project_assets(
         )
 
     return result
+
+
+def _content_hash(path: Path | str) -> str:
+    """SHA-256 of a file's raw bytes, hex-encoded.
+
+    MUST match the document-ingest pipeline's own `compute_file_hash`
+    (`hashlib.sha256` over the bytes, hexdigest) so the value we pre-check
+    against `rag_assets.file_hash` is the SAME string the pipeline would store.
+    Read in chunks so a large deck/PDF doesn't load fully into memory.
+    """
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for block in iter(lambda: f.read(65536), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
+def _existing_dup_at_other_path(
+    client, project_id: str, file_hash: str, current_path: str
+) -> bool:
+    """True if this project already has an ACTIVE asset with `file_hash` at a
+    DIFFERENT `file_path` than `current_path`.
+
+    This is the cross-path content-duplicate guard. The pipeline's own dedup
+    keys strictly on `(project_id, file_path)`, so the SAME bytes arriving at a
+    new path — the same file present in both Drive and Dropbox, or copied within
+    one source — looks brand-new to it and creates a duplicate row. We catch that
+    here by content hash BEFORE the parse/embed/insert.
+
+    Crucially we exclude a same-path match: that case is the pipeline's province
+    (it decides skip vs new_version), so we must not pre-empt it. Only a hash
+    match at a DIFFERENT path means "this exact content is already ingested
+    elsewhere in the project" → skip.
+
+    Returns False on any query error — a dedup pre-check must never abort a run;
+    worst case we fall back to the prior behavior (the pipeline ingests it).
+    """
+    try:
+        resp = (
+            client.table("rag_assets")
+            .select("id, file_path")
+            .eq("project_id", project_id)
+            .eq("file_hash", file_hash)
+            .eq("status", "active")
+            .execute()
+        )
+        rows = getattr(resp, "data", None) or []
+    except Exception as exc:  # noqa: BLE001 — never let the pre-check abort the run
+        # Visible, not silent: a query error here degrades to the prior behavior
+        # (the pipeline ingests the file), but we surface it on stderr so a real
+        # regression — e.g. a renamed column — doesn't masquerade as "no dup".
+        print(
+            f"[asset-ingest] dedup pre-check query failed ({exc}); "
+            "ingesting without it",
+            file=sys.stderr,
+        )
+        return False
+    return any(r.get("file_path") != current_path for r in rows)
 
 
 def _stamp_scope(client, folders: ProjectFolders, file_path: str) -> None:

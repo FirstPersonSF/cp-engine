@@ -46,7 +46,7 @@ def test_ingest_assets_single_summary(monkeypatch):
 
     def fake_ingest(code, **kwargs):
         assert code == "ibx-5153"
-        return IngestRunResult(created=2, versioned=1, skipped=3, failed=0)
+        return IngestRunResult(created=2, versioned=1, skipped=3, deduped=4, failed=0)
 
     monkeypatch.setattr(asset_ingest, "ingest_project_assets", fake_ingest)
 
@@ -56,6 +56,7 @@ def test_ingest_assets_single_summary(monkeypatch):
     assert "created=2" in out
     assert "versioned=1" in out
     assert "skipped=3" in out
+    assert "deduped=4" in out
     assert "failed=0" in out
 
 
@@ -113,7 +114,7 @@ def test_ingest_assets_all_fans_out(monkeypatch):
 
     def fake_ingest(code, **kwargs):
         called.append(code)
-        return IngestRunResult(created=1, skipped=1)
+        return IngestRunResult(created=1, skipped=1, deduped=1)
 
     monkeypatch.setattr(asset_ingest, "ingest_project_assets", fake_ingest)
 
@@ -124,8 +125,9 @@ def test_ingest_assets_all_fans_out(monkeypatch):
     assert "ibx-5153" in result.output
     assert "ggl-5168" in result.output
     assert "peb-5170" in result.output
-    # Aggregate created across 3 projects = 3.
+    # Aggregate created across 3 projects = 3; deduped likewise rolls up.
     assert "created=3" in result.output
+    assert "deduped=3" in result.output
 
 
 def test_ingest_assets_all_one_project_failing_does_not_stop_others(monkeypatch):
