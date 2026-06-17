@@ -237,6 +237,11 @@ _DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
 # silent truncation.
 _DRIVE_MAX_DEPTH = 10
 
+# Shortcut / pointer files carry no ingestable content (a .url is a link, not a
+# document). Skip them before download so they don't churn the pipeline or get
+# miscounted as ingest "failures".
+_NON_INGESTABLE_EXTENSIONS = (".url", ".lnk", ".webloc")
+
 
 def _drive_file_ref(item: dict, folder_path: tuple[str, ...] = ()) -> FileRef:
     """Map one non-folder Drive child dict to a FileRef (download is by id).
@@ -610,6 +615,10 @@ class IngestRunResult:
     versioned: int = 0
     skipped: int = 0
     failed: int = 0
+    # Non-ingestable shortcut/pointer files (.url/.lnk/.webloc) skipped BEFORE
+    # download. Kept distinct from `skipped` (dedup) and `failed` (real failure)
+    # so the counts stay semantically clean; surfaced via a source_note.
+    skipped_shortcuts: int = 0
     failures: list[tuple[str, str]] = field(default_factory=list)
     project_found: bool = True
     # Per-source listing notes from list_files: a dead/skipped source records a
@@ -792,6 +801,12 @@ def ingest_project_assets(
     run_root.mkdir(parents=True, exist_ok=True)
 
     for file_ref in files:
+        name = file_ref.name or ""
+        if name.lower().endswith(_NON_INGESTABLE_EXTENSIONS):
+            # Shortcut/pointer file — nothing to embed. Skip before download so
+            # it doesn't churn the pipeline or get miscounted as a `failed`.
+            result.skipped_shortcuts += 1
+            continue
         # Stable, per-source temp dir so the download path (== dedup key) is
         # identical across runs. Cleaned in `finally` regardless of outcome.
         file_dir = _stable_dir_for(run_root, file_ref)
@@ -860,6 +875,19 @@ def ingest_project_assets(
             # Bytes are never persisted: drop the per-file temp dir whatever
             # happened (success, skip, or failure).
             shutil.rmtree(file_dir, ignore_errors=True)
+
+    if result.skipped_shortcuts > 0:
+        # Surface the skip so the row + button UI show why these files produced
+        # nothing — without polluting the `failed`/`skipped` counts.
+        result.source_notes.append(
+            {
+                "source": "skip",
+                "note": (
+                    f"skipped {result.skipped_shortcuts} non-ingestable "
+                    "shortcut file(s) (.url/.lnk/.webloc)"
+                ),
+            }
+        )
 
     return result
 

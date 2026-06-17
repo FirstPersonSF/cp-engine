@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.27.6 — 2026-06-16
+
+### Fixed — asset ingest skips non-ingestable shortcut files
+
+Shortcut/pointer files (`.url`, `.lnk`, `.webloc`) carry no ingestable content — a `.url` is a link, not a document. They were downloaded, handed to the parser, rejected ("No parser available"), and counted as ingest *failures* (noise). They're now skipped BEFORE download and counted in a new `skipped_shortcuts` field, surfaced via a `source: "skip"` source_note ("skipped N non-ingestable shortcut file(s)") rather than polluting the failure count. No DB/migration change — the note rides the existing `source_notes` channel. Requires a webhook redeploy.
+
 ## v0.27.5 — 2026-06-16
 
 ### Added — per-project asset-ingest folder allowlist
