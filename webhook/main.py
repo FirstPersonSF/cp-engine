@@ -55,6 +55,7 @@ import inspect
 import json
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -768,7 +769,32 @@ def _perform_auto_ingest(
                 meeting=meeting,
             )
             ingested.append(entry)
-            if entry["files_written"]:
+
+            # Persist the FULL verbatim transcript into this project's
+            # meeting-transcripts/ dir. It's the input for the
+            # workshop-synthesis pipeline and a durable project source.
+            # Best-effort: a persist failure must NEVER abort the ingest
+            # or break the commit. Only persist when we actually have a
+            # transcript. The write lands BEFORE _commit_and_push so its
+            # `git add -A` sweeps it into this project's commit.
+            transcript_persisted = False
+            if transcript_text:
+                try:
+                    project_dir = find_spine_dir(config.root, code)
+                    _persist_transcript(
+                        project_dir,
+                        str((meeting or {}).get("meeting_date") or ""),
+                        str((meeting or {}).get("title") or ""),
+                        transcript_text,
+                    )
+                    transcript_persisted = True
+                except Exception:  # noqa: BLE001 — never break auto-ingest
+                    log.warning(
+                        "transcript-persist failed for %s (meeting %s)",
+                        code, meeting_id, exc_info=True,
+                    )
+
+            if entry["files_written"] or transcript_persisted:
                 commit_sha = _commit_and_push(
                     tenant_root=tenant_root,
                     meeting_id=meeting_id,
@@ -2756,6 +2782,53 @@ def _stage_transcript(tenant_root: Path, meeting_id: str, text: str) -> Path:
     incoming.mkdir(parents=True, exist_ok=True)
     filename = f"auto-ingest-{datetime.utcnow().strftime('%Y%m%d-%H%M%S')}-{meeting_id[:8]}.txt"
     path = incoming / filename
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
+def _sanitize_transcript_title(title: str) -> str:
+    """Make a meeting title filesystem-safe but still human-readable.
+
+    Matches the existing hand-added transcript style (e.g.
+    "Sync on AI workshop Agenda and Plan") — readable words, NOT a
+    hyphen-slug. Path separators and control chars become spaces;
+    repeated whitespace collapses; leading/trailing whitespace strips.
+    """
+    title = title or ""
+    # Replace path separators and any control chars (incl. newlines/tabs)
+    # with a space; these would either break the path or render unreadably.
+    title = re.sub(r"[\x00-\x1f/\\]", " ", title)
+    # Collapse runs of whitespace into a single space.
+    title = re.sub(r"\s+", " ", title).strip()
+    return title
+
+
+def _persist_transcript(
+    project_dir: Path, meeting_date: str, title: str, text: str
+) -> Path:
+    """Persist the FULL verbatim transcript into a project's tree.
+
+    Writes `<project_dir>/meeting-transcripts/<date> <safe-title>.txt`,
+    matching the readable filename style of the existing hand-added
+    transcripts. Overwrites if it exists (re-ingest backfills/updates).
+    The file is committed by the caller's normal `git add -A` commit.
+
+    Returns the written Path.
+    """
+    safe_title = _sanitize_transcript_title(title)
+    date_part = (meeting_date or "").strip()
+    if date_part and safe_title:
+        stem = f"{date_part} {safe_title}"
+    elif date_part:
+        stem = date_part
+    elif safe_title:
+        stem = safe_title
+    else:
+        stem = "Untitled meeting"
+
+    out_dir = project_dir / "meeting-transcripts"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = out_dir / f"{stem}.txt"
     path.write_text(text, encoding="utf-8")
     return path
 
