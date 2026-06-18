@@ -1163,7 +1163,12 @@ def spine_migrate_cmd(code: str, dry_run: bool) -> None:
         )
         sys.exit(1)
 
-    elements = fetch_legacy_elements(client, project_id=project_id)
+    # Dry-run shows titles/placement only and needs no bodies, so skip disk
+    # access; the real write path hydrates each element's body from its on-disk
+    # file (the MC-2 row carries no body — see fetch_legacy_elements).
+    elements = fetch_legacy_elements(
+        client, project_id=project_id, tenant_root=None if dry_run else config.root
+    )
     if not elements:
         click.echo(f"No legacy spine_elements for '{code}' (project_id={project_id}).")
         return

@@ -9,6 +9,7 @@ from cp_engine.estimate import Estimate, EstimateItem, EstimatePhase
 from cp_engine.spine import SpineElement
 from cp_engine.spine_migrate import (
     element_to_substance_row,
+    fetch_legacy_elements,
     plan_migration,
     run_migration,
 )
@@ -169,3 +170,143 @@ def test_dry_run_path_writes_nothing():
     assert len(plan) == 1
     # dry-run: deliberately do NOT call run_migration
     assert client.calls == []
+
+
+# ---- body hydration (the write-path bug) ------------------------------------
+#
+# The real write path goes through fetch_legacy_elements → row_to_element, which
+# hardcodes body="". These tests exercise that fetch path end-to-end (NOT a
+# directly-constructed SpineElement) to prove the body is hydrated from disk.
+
+
+class _FakeSelectTable:
+    """A fake `spine_elements` table that returns a fixed set of legacy rows
+    from `.select(...).eq(...).execute().data`."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def select(self, *_a, **_k):
+        return self
+
+    def eq(self, *_a, **_k):
+        return self
+
+    def execute(self):
+        return self
+
+    @property
+    def data(self):
+        return self._rows
+
+
+class _FakeSelectClient:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def table(self, _name):
+        return _FakeSelectTable(self._rows)
+
+
+def _legacy_row(*, element_id, rel_path, layer="Decisions", title="Two-track story"):
+    """A legacy spine_elements row shaped like the real _ELEMENT_COLUMNS read
+    (the MC-2 row has NO body column — the body lives on disk at rel_path)."""
+    return {
+        "element_id": element_id,
+        "project_code": "ibx-5153",
+        "layer": layer,
+        "type": None,
+        "title": title,
+        "stage": None,
+        "fidelity": None,
+        "target_date": None,
+        "status": "active",
+        "last_touched": "2026-06-11",
+        "depends_on": [],
+        "serves": [],
+        "source": [],
+        "target_history": [],
+        "author": None,
+        "rel_path": rel_path,
+        "project_id": PID,
+    }
+
+
+def _write_element_file(root: Path, rel_path: str, *, element_id, body):
+    """Write a real spine element markdown file (frontmatter + body) at
+    <root>/<rel_path> so parse_element can read it back."""
+    abs_path = root / rel_path
+    abs_path.parent.mkdir(parents=True, exist_ok=True)
+    abs_path.write_text(
+        "---\n"
+        f"id: {element_id}\n"
+        "project: ibx-5153\n"
+        "layer: Decisions\n"
+        "title: Two-track story\n"
+        "status: active\n"
+        "---\n"
+        f"{body}\n"
+    )
+    return abs_path
+
+
+def test_fetch_legacy_elements_hydrates_body_from_rel_path(tmp_path):
+    """The missing test: go through the REAL fetch/hydrate path and assert the
+    resulting element carries the NON-EMPTY body from its on-disk file."""
+    rel = "1p/infoblox/ibx-5153-ai-campaign/spine/Decisions/two-track-story.md"
+    eid = "ibx-5153/decisions/two-track-story"
+    real_body = (
+        "The two-track AI story (IQ + MCP/APIs) is locked. This prose is the "
+        "distilled memory that must survive the migration."
+    )
+    _write_element_file(tmp_path, rel, element_id=eid, body=real_body)
+    client = _FakeSelectClient([_legacy_row(element_id=eid, rel_path=rel)])
+
+    elements = fetch_legacy_elements(client, project_id=PID, tenant_root=tmp_path)
+
+    assert len(elements) == 1
+    assert elements[0].body.strip() == real_body
+    assert elements[0].body != ""
+
+
+def test_migrated_row_carries_non_empty_body(tmp_path):
+    """End-to-end: hydrate → plan → the upserted substance row body is non-empty."""
+    rel = "1p/infoblox/ibx-5153-ai-campaign/spine/Decisions/two-track-story.md"
+    eid = "ibx-5153/decisions/two-track-story"
+    real_body = "Distilled decision prose."
+    _write_element_file(tmp_path, rel, element_id=eid, body=real_body)
+    client = _FakeSelectClient([_legacy_row(element_id=eid, rel_path=rel)])
+
+    elements = fetch_legacy_elements(client, project_id=PID, tenant_root=tmp_path)
+    plan = plan_migration(elements, None, canonical_code=CANON, project_id=PID, today=TODAY)
+
+    assert plan[0].row["body"].strip() == real_body
+
+
+def test_dry_run_fetch_skips_body_hydration(tmp_path):
+    """Dry-run (tenant_root=None) must not require disk access — body stays empty
+    and no file read happens even if rel_path points nowhere."""
+    rel = "1p/infoblox/ibx-5153-ai-campaign/spine/Decisions/missing.md"
+    eid = "ibx-5153/decisions/missing"
+    client = _FakeSelectClient([_legacy_row(element_id=eid, rel_path=rel)])
+
+    elements = fetch_legacy_elements(client, project_id=PID, tenant_root=None)
+
+    assert len(elements) == 1
+    assert elements[0].body == ""
+
+
+def test_missing_file_warns_and_falls_back_to_empty_body(tmp_path, capsys):
+    """A missing/unreadable file must NOT crash the migration — warn to stderr
+    and fall back to an empty body for that one element."""
+    rel = "1p/infoblox/ibx-5153-ai-campaign/spine/Decisions/does-not-exist.md"
+    eid = "ibx-5153/decisions/does-not-exist"
+    client = _FakeSelectClient([_legacy_row(element_id=eid, rel_path=rel)])
+
+    elements = fetch_legacy_elements(client, project_id=PID, tenant_root=tmp_path)
+
+    assert len(elements) == 1
+    assert elements[0].body == ""
+    err = capsys.readouterr().err
+    assert "WARNING" in err
+    assert eid in err

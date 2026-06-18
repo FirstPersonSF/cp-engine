@@ -26,11 +26,14 @@ Per the global Supabase rule: every read uses explicit columns, never `*`.
 
 from __future__ import annotations
 
+import dataclasses
+import sys
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 
 from cp_engine.placement_rule import PlacementProposal, propose_placement
-from cp_engine.spine import row_to_element
+from cp_engine.spine import parse_element, row_to_element
 
 # Columns we read off legacy spine_elements (explicit; never `*`).
 _ELEMENT_COLUMNS = (
@@ -208,9 +211,40 @@ def run_migration(client, rows: list[dict]) -> None:
         client.table(_SUBSTANCE_TABLE).upsert(rows, on_conflict="id").execute()
 
 
-def fetch_legacy_elements(client, *, project_id: str):
+def _hydrate_body(element, tenant_root: Path):
+    """Return `element` with its `body` read from the on-disk file at
+    `<tenant_root>/<element.path>` (the legacy `spine_elements` row carries the
+    body only on disk — `row_to_element` hardcodes `body=""`).
+
+    Reuses `spine.parse_element` (frontmatter + body) — does NOT hand-roll the
+    frontmatter split. Resilient: a missing/unreadable file falls back to the
+    empty body and logs a warning to stderr, so one bad file doesn't abort the
+    whole migration."""
+    rel = element.path
+    if rel is None or str(rel) in ("", "."):
+        return element
+    abs_path = tenant_root / rel
+    try:
+        parsed = parse_element(abs_path)
+    except (OSError, ValueError) as exc:
+        print(
+            f"[spine-migrate] WARNING: could not read body for "
+            f"'{element.id}' at {abs_path}: {exc} — migrating empty body",
+            file=sys.stderr,
+        )
+        return element
+    return dataclasses.replace(element, body=parsed.body)
+
+
+def fetch_legacy_elements(client, *, project_id: str, tenant_root: Path | None = None):
     """Read legacy `spine_elements` for a project BY project_id (the cross-store
-    join key — see module docstring on the slug gotcha). Returns SpineElements."""
+    join key — see module docstring on the slug gotcha). Returns SpineElements.
+
+    `row_to_element` hardcodes `body=""` (the MC-2 row has no body column — the
+    body lives on disk at `rel_path`). When `tenant_root` is given (the real
+    write path), each element's body is hydrated from `<tenant_root>/<rel_path>`
+    via `_hydrate_body`. Pass `tenant_root=None` (the dry-run path) to skip disk
+    access — dry-run shows titles/placement only and never needs bodies."""
     data = (
         client.table("spine_elements")
         .select(_ELEMENT_COLUMNS)
@@ -218,7 +252,10 @@ def fetch_legacy_elements(client, *, project_id: str):
         .execute()
         .data
     ) or []
-    return tuple(row_to_element(r) for r in data)
+    elements = tuple(row_to_element(r) for r in data)
+    if tenant_root is None:
+        return elements
+    return tuple(_hydrate_body(el, tenant_root) for el in elements)
 
 
 def resolve_project_id(client, canonical_code: str) -> str | None:
