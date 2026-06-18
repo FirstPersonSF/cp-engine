@@ -4,6 +4,32 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.30.0 — 2026-06-18
+
+### Estimate-as-spine: a grounded "where are we / what's next"
+
+The goal: when you work in CP, get a grounded answer about where a project stands and what's next — every claim traceable to its source, not a muddy synthesis. This release makes the live MC-2 **estimate** (the SOW: phases → activities/deliverables, drawn from the `estimator` schema) the project's trustworthy execution spine, and re-founds the spine's distilled substance on it.
+
+#### Added — `cp where CODE`
+
+A grounded where-are-we/what's-next answer in the terminal. Reads the project's default estimate, its schedule, and its bound substance; for each work-item shows its derived execution status + a one-line basis + a `[source]` marker, grouped by phase, with schedule-native events (milestones/holidays) listed separately. Every factual clause is source-tagged — the target conversation made runnable.
+
+#### Added — derived execution status (`execution_status.py`)
+
+`derive_status` computes a work-item's status — **done · active · next · flag · done?** — from signals the spine already has, so it can't rot: the project's maintained schedule bars (kept current as work happens), whether the item has live substance, and recent substance activity. The only non-derived signal is an explicit one-click `done` toggle on the Gantt bar. A past-ended bar with nothing captured surfaces as **flag** ("ended but nothing captured") — the honest answer where a naive system would guess "done".
+
+#### Added — the schedule reader (`estimate.py`)
+
+The estimate is now time-aware: reads `public.projects.start_date` and the `estimator.schedule_items` bars, maps relative weeks → calendar dates (`week_to_date`), and joins bars to their work-items (`schedule_for_item` / `native_schedule_events`). Schedule bars carry a nullable link to the scope work-item they place in time; milestones/holidays/markers stay schedule-native.
+
+#### Changed — the spine is one store now (the merge)
+
+The legacy layer-organized `spine_elements` store is **merged into `spine_substance` and retired.** `spine_substance` gains two axes: `placement` (`item` = nests under an estimate work-item · `context` = the cross-cutting rail) and `layer` (the artifact-kind axis powering a by-layer view). `cp spine` now reads `spine_substance`. `cp spine-migrate CODE [--dry-run] [--mc-project-id UUID]` converts legacy elements into substance with proposed placement (cross-cutting → context; deliverables → best-guess binding for human confirm), hydrating each body from its on-disk `rel_path`.
+
+#### Companion MC-2 changes (migrations 068–072)
+
+Schema + UI shipped alongside in MC-2: schedule↔work-item link + `done` flag, `placement`/`layer`/`serves` on substance, the `/spine` outline endpoint computing status + scheduled dates (a parity-verified mirror of `derive_status`), the status-badge + by-layer + native-events UI, and the `spine_elements` drop. Tenants should run migrations 068–072.
+
 ## v0.29.0 — 2026-06-17
 
 ### Added — `cp workshop-synth`: workshop synthesis pipeline
