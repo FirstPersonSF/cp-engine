@@ -28,10 +28,18 @@ _STATUS_COL = 8
 _NAME_COL = 38
 
 
-def fetch_substance_status(client, project_code: str) -> dict[str, dict]:
+def fetch_substance_status(
+    client, project_code: str
+) -> tuple[dict[str, dict], str | None]:
     """Read `spine_substance` rows for one project and fold them per est-item.
 
-    Returns ``{est_item_id: {"has_live": bool, "version_dates": [iso, ...]}}``.
+    Returns ``(substance_by_item, project_id)`` where ``substance_by_item`` is
+    ``{est_item_id: {"has_live": bool, "version_dates": [iso, ...]}}`` and
+    ``project_id`` is the project's mc_project_id lifted from the rows (the same
+    value for every row of this project_code), or ``None`` when there are no rows.
+
+    Folding both out of one read avoids a second `spine_substance` round-trip just
+    to resolve the slug → mc_project_id.
 
     ``has_live`` is True when ANY version row for that item has
     ``status == "live"``; ``version_dates`` collects every version's date (for
@@ -41,13 +49,18 @@ def fetch_substance_status(client, project_code: str) -> dict[str, dict]:
     """
     rows = (
         client.table("spine_substance")
-        .select("est_item_id, status, version_date, version_label, binding")
+        .select(
+            "est_item_id, status, version_date, version_label, binding, project_id"
+        )
         .eq("project_code", project_code)
         .execute()
         .data
     ) or []
     out: dict[str, dict] = {}
+    project_id: str | None = None
     for r in rows:
+        if project_id is None and r.get("project_id"):
+            project_id = r["project_id"]
         item_id = str(r.get("est_item_id"))
         slot = out.setdefault(item_id, {"has_live": False, "version_dates": []})
         if (r.get("status") or "") == "live":
@@ -55,7 +68,7 @@ def fetch_substance_status(client, project_code: str) -> dict[str, dict]:
         vd = r.get("version_date")
         if vd:
             slot["version_dates"].append(str(vd))
-    return out
+    return out, project_id
 
 
 def _week_of_n(estimate, schedule, today: date) -> tuple[int, int, str] | None:
@@ -111,7 +124,7 @@ def _item_basis_and_source(item, bars, sub, *, start_date, today) -> tuple[str, 
     return st.status, st.basis, src
 
 
-def build_where_report(estimate, schedule, substance_by_item, today=None) -> str:
+def build_where_report(estimate, schedule, substance_by_item, today: date) -> str:
     """Compose the grounded where-are-we / what's-next answer (PURE).
 
     `estimate` is an `Estimate`; `schedule` a list of `ScheduleItem`;
@@ -122,7 +135,6 @@ def build_where_report(estimate, schedule, substance_by_item, today=None) -> str
       - each work-item line ends with the signal that grounded its status;
       - native events are listed under their own heading with their type.
     """
-    today = today or date.today()
     lines: list[str] = []
 
     # ---- Header: project, week-of-N, start date --------------------------

@@ -160,14 +160,18 @@ def test_fetch_substance_status():
     pc = "ibx-5153-ai-campaign"
     rows = [
         {"est_item_id": "d-0", "status": "live", "version_date": "2026-06-12",
-         "version_label": "v3", "binding": "live", "project_code": pc},
+         "version_label": "v3", "binding": "live", "project_code": pc,
+         "project_id": "mc-1"},
         {"est_item_id": "d-0", "status": "superseded", "version_date": "2026-05-01",
-         "version_label": "v1", "binding": "live", "project_code": pc},
+         "version_label": "v1", "binding": "live", "project_code": pc,
+         "project_id": "mc-1"},
         {"est_item_id": "a-1", "status": "draft", "version_date": "2026-05-10",
-         "version_label": "v1", "binding": "live", "project_code": pc},
+         "version_label": "v1", "binding": "live", "project_code": pc,
+         "project_id": "mc-1"},
     ]
     client = _FakeClient(rows)
-    out = fetch_substance_status(client, "ibx-5153-ai-campaign")
+    out, project_id = fetch_substance_status(client, "ibx-5153-ai-campaign")
+    assert project_id == "mc-1"
     assert out["d-0"]["has_live"] is True
     assert "2026-06-12" in out["d-0"]["version_dates"]
     assert "2026-05-01" in out["d-0"]["version_dates"]

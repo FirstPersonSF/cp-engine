@@ -916,17 +916,10 @@ def where_cmd(code: str) -> None:
 
     # Resolve the dir-slug code → mc_project_id slug-natively: read the project's
     # substance rows by project_code (the slug) and lift project_id (which IS
-    # the mc_project_id). The number-parsing resolvers fail on slug codes.
-    substance_by_item = fetch_substance_status(client, code)
-    rows = (
-        client.table("spine_substance")
-        .select("project_id")
-        .eq("project_code", code)
-        .limit(1)
-        .execute()
-        .data
-    ) or []
-    if not rows:
+    # the mc_project_id) out of the same read. The number-parsing resolvers fail
+    # on slug codes.
+    substance_by_item, mc_project_id = fetch_substance_status(client, code)
+    if mc_project_id is None:
         click.echo(
             f"No spine substance for '{code}'. `cp where` resolves the project "
             f"via its substance rows — frame at least one work item "
@@ -934,7 +927,6 @@ def where_cmd(code: str) -> None:
             err=True,
         )
         sys.exit(1)
-    mc_project_id = rows[0]["project_id"]
 
     estimate = fetch_estimate(client, mc_project_id)
     if estimate is None:
