@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.29.0 — 2026-06-17
+
+### Added — `cp workshop-synth`: workshop synthesis pipeline
+
+The strategist's post-workshop move — combine the filled-in Miro worksheets with the meeting transcript into "what we now understand" — made into a 3-stage pipeline, each stage a reviewable artifact:
+
+1. **Capture** — each worksheet PDF is read by Claude *natively as a document* (vision), preserving columns, section headers, every sticky's text, color/selection (green = chosen), and author tags — a faithful transcription, not an interpretation. A multi-page Miro export is split per page (each page = one board → its own artifact).
+2. **Hypotheses** — per board, the patterns/learnings it reveals.
+3. **Narrative** — across all hypotheses, the cross-workshop synthesis (through-lines, tensions, decided vs open).
+
+The full workshop transcript is ambient context at every stage (read directly — not the vector store), and is prompt-cached so a multi-board run pays for it once rather than per call. Per-worksheet best-effort: one bad board doesn't abort the run. Outputs land in `<project>/workshop-synthesis/<date>/`.
+
+`cp workshop-synth CODE [--worksheets PATH...] [--transcript PATH] [--out PATH]` — defaults to the project's `workshop-worksheets/` dir and the newest persisted transcript (see v0.28.3). Adds a direct `pypdf` dependency. The completed-worksheet captures double as reusable gold-standard exemplars.
+
 ## v0.28.3 — 2026-06-17
 
 ### Added — full meeting transcripts persisted per project
