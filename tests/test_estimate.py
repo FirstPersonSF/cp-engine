@@ -284,6 +284,25 @@ def test_fetch_schedule_coerces_numeric_and_reads_present_work_item():
     assert it.done is True
 
 
+def test_fetch_schedule_none_position_sorts_as_zero():
+    # A row with an explicit NULL position (position: None) alongside a normal
+    # row must not crash sorted() with a TypeError — None is treated as 0.
+    tables = {
+        "schedule_items": [
+            {"id": "s-nullpos", "project_id": "est-1", "phase_id": "ph-1",
+             "label": "Null pos", "start_week": 1.0, "duration": 1.0,
+             "position": None, "item_type": "activity", "emphasis": None},
+            {"id": "s-onepos", "project_id": "est-1", "phase_id": "ph-1",
+             "label": "Pos one", "start_week": 1.0, "duration": 1.0,
+             "position": 1, "item_type": "activity", "emphasis": None},
+        ],
+    }
+    client = _FakeClient(tables)
+    items = fetch_schedule(client, "est-1")
+    # Sorts without raising; the None-position row orders as position 0 → first.
+    assert [i.id for i in items] == ["s-nullpos", "s-onepos"]
+
+
 def test_fetch_estimate_returns_none_when_no_default():
     client = _FakeClient(_canned_tables())
     assert fetch_estimate(client, "mc-nonexistent") is None

@@ -260,7 +260,7 @@ def fetch_schedule(client, estimate_id) -> list[ScheduleItem]:
     # Order by (start_week, position) on the raw rows — position is a DB ordering
     # hint we don't carry onto the dataclass.
     ordered = sorted(
-        rows, key=lambda r: (float(r.get("start_week") or 0), r.get("position", 0))
+        rows, key=lambda r: (float(r.get("start_week") or 0), r.get("position") or 0)
     )
     return [
         ScheduleItem(
