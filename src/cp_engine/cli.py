@@ -882,6 +882,75 @@ def spine_cmd(code: str) -> None:
             click.echo(f"(source-documents facet skipped: {exc})", err=True)
 
 
+@main.command("where")
+@click.argument("code")
+def where_cmd(code: str) -> None:
+    """Print a grounded "where are we / what's next" answer for a project.
+
+    Composes the live estimate, schedule, derived execution status, and
+    substance into one terminal summary where every factual clause carries a
+    `[source]` marker. `code` is the project's DIR-SLUG (e.g.
+    `ibx-5153-ai-campaign`).
+
+    Needs MC-2 — this reads the live estimate + schedule + substance, so there
+    is NO offline fallback (unlike `cp spine`). If MC-2 is unreachable this
+    prints a clear error and exits non-zero.
+    """
+    from datetime import date
+
+    from cp_engine.estimate import fetch_estimate, fetch_schedule
+    from cp_engine.sync import BackendUnavailable
+    from cp_engine.sync_mc2 import MC2Backend
+    from cp_engine.where import build_where_report, fetch_substance_status
+
+    config = _load_config_or_die()
+    try:
+        client = MC2Backend().connect(config)
+    except BackendUnavailable as exc:
+        click.echo(
+            f"cp where needs MC-2 (no offline mode — it reads the live "
+            f"estimate + schedule + substance): {exc}",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Resolve the dir-slug code → mc_project_id slug-natively: read the project's
+    # substance rows by project_code (the slug) and lift project_id (which IS
+    # the mc_project_id). The number-parsing resolvers fail on slug codes.
+    substance_by_item = fetch_substance_status(client, code)
+    rows = (
+        client.table("spine_substance")
+        .select("project_id")
+        .eq("project_code", code)
+        .limit(1)
+        .execute()
+        .data
+    ) or []
+    if not rows:
+        click.echo(
+            f"No spine substance for '{code}'. `cp where` resolves the project "
+            f"via its substance rows — frame at least one work item "
+            f"(cp spine-frame) first, or check the dir-slug code.",
+            err=True,
+        )
+        sys.exit(1)
+    mc_project_id = rows[0]["project_id"]
+
+    estimate = fetch_estimate(client, mc_project_id)
+    if estimate is None:
+        click.echo(
+            f"No default estimate for '{code}' (mc_project_id={mc_project_id}). "
+            f"The estimate is the spine's backbone — nothing to ground against.",
+            err=True,
+        )
+        sys.exit(1)
+    schedule = fetch_schedule(client, estimate.id)
+
+    click.echo(
+        build_where_report(estimate, schedule, substance_by_item, today=date.today())
+    )
+
+
 @main.command("spine-stats")
 @click.option(
     "--type", "type_filter", default=None, help="Narrow to one deliverable type."
