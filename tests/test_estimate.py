@@ -1,10 +1,22 @@
+from datetime import date
+
 from cp_engine.estimate import (
     Estimate,
     EstimateItem,
     ScheduleItem,
     fetch_estimate,
     fetch_schedule,
+    week_to_date,
 )
+
+
+def test_week_to_date():
+    assert week_to_date("2026-04-27", 0) == date(2026, 4, 27)
+    assert week_to_date("2026-04-27", 7) == date(2026, 6, 15)  # +49 days
+    assert week_to_date(None, 7) is None
+    assert week_to_date("2026-04-27", None) is None
+    # start_week may arrive as a float (numeric DB column).
+    assert week_to_date("2026-04-27", 7.0) == date(2026, 6, 15)
 
 
 def test_estimate_from_rows_builds_ordered_items():

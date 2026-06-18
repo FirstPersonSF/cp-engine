@@ -25,6 +25,7 @@ GLOBAL RULE: never `.select("*")` — always explicit columns.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 # Default estimate name when the estimator row carries no `name` (mirrors the
 # portal's "Estimate 1" default).
@@ -276,3 +277,13 @@ def fetch_schedule(client, estimate_id) -> list[ScheduleItem]:
         )
         for r in ordered
     ]
+
+
+def week_to_date(start_date, start_week) -> date | None:
+    """Map a schedule bar's `start_week` (weeks-from-kickoff) to a calendar date,
+    given the project's `start_date` (ISO string). Returns None if either is
+    None — the start_date is nullable until Drew sets it at kickoff. `start_week`
+    may arrive as a float (numeric DB column), so it's `int()`-ed."""
+    if start_date is None or start_week is None:
+        return None
+    return date.fromisoformat(start_date) + timedelta(days=7 * int(start_week))
