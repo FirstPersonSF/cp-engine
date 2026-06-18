@@ -6,6 +6,8 @@ from cp_engine.estimate import (
     ScheduleItem,
     fetch_estimate,
     fetch_schedule,
+    native_schedule_events,
+    schedule_for_item,
     week_to_date,
 )
 
@@ -301,6 +303,75 @@ def test_fetch_schedule_none_position_sorts_as_zero():
     items = fetch_schedule(client, "est-1")
     # Sorts without raising; the None-position row orders as position 0 → first.
     assert [i.id for i in items] == ["s-nullpos", "s-onepos"]
+
+
+# ── Pure schedule-bar ↔ work-item joins (Task 2.3) ────────────────────────
+
+
+def _mixed_schedule():
+    """A schedule list mixing linked bars (work_item_id set) and schedule-native
+    events (work_item_id None: a milestone + a holiday), deliberately out of
+    start_week order. One work-item ("wi-A") owns TWO bars (1:N is allowed)."""
+    return [
+        ScheduleItem(
+            id="bar-A-late", label="A continued", phase_id="ph-0",
+            start_week=4.0, duration=2.0, item_type="activity", emphasis=None,
+            work_item_id="wi-A", work_item_kind="activity",
+        ),
+        ScheduleItem(
+            id="bar-holiday", label="Holiday", phase_id=None,
+            start_week=2.0, duration=1.0, item_type="holiday", emphasis=None,
+            work_item_id=None, work_item_kind=None,
+        ),
+        ScheduleItem(
+            id="bar-A-early", label="A start", phase_id="ph-0",
+            start_week=1.0, duration=2.0, item_type="activity", emphasis=None,
+            work_item_id="wi-A", work_item_kind="activity",
+        ),
+        ScheduleItem(
+            id="bar-B", label="B", phase_id="ph-1",
+            start_week=3.0, duration=1.0, item_type="deliverable", emphasis=None,
+            work_item_id="wi-B", work_item_kind="deliverable",
+        ),
+        ScheduleItem(
+            id="bar-milestone", label="Kickoff", phase_id=None,
+            start_week=0.0, duration=0.0, item_type="milestone", emphasis=None,
+            work_item_id=None, work_item_kind=None,
+        ),
+    ]
+
+
+def test_schedule_for_item_returns_multiple_bars_ordered_by_start_week():
+    bars = schedule_for_item(_mixed_schedule(), "wi-A")
+    # Both wi-A bars, ordered by start_week (early before late).
+    assert [b.id for b in bars] == ["bar-A-early", "bar-A-late"]
+    assert all(b.work_item_id == "wi-A" for b in bars)
+
+
+def test_schedule_for_item_single_bar():
+    bars = schedule_for_item(_mixed_schedule(), "wi-B")
+    assert [b.id for b in bars] == ["bar-B"]
+
+
+def test_schedule_for_item_empty_when_no_bar():
+    # An item with no schedule bar → empty (not an error).
+    assert schedule_for_item(_mixed_schedule(), "wi-nope") == ()
+    # Native events (work_item_id None) are never returned for a real item_id.
+    assert schedule_for_item(_mixed_schedule(), None) == ()
+
+
+def test_native_schedule_events_returns_only_unlinked_ordered():
+    events = native_schedule_events(_mixed_schedule())
+    # Only the work_item_id-None bars (milestone + holiday), ordered by start_week.
+    assert [e.id for e in events] == ["bar-milestone", "bar-holiday"]
+    assert all(e.work_item_id is None for e in events)
+    # Linked bars are excluded.
+    assert "bar-A-early" not in {e.id for e in events}
+
+
+def test_native_schedule_events_empty_when_all_linked():
+    linked_only = [b for b in _mixed_schedule() if b.work_item_id is not None]
+    assert native_schedule_events(linked_only) == ()
 
 
 def test_fetch_estimate_returns_none_when_no_default():

@@ -279,6 +279,37 @@ def fetch_schedule(client, estimate_id) -> list[ScheduleItem]:
     ]
 
 
+def schedule_for_item(schedule, item_id) -> tuple[ScheduleItem, ...]:
+    """The schedule bars that belong to a work item, ordered by `start_week`.
+
+    Pure filter over a `ScheduleItem` list — no DB. Returns an empty tuple when
+    the item has no bar, and may return >1 bar: a single work item can own
+    multiple bars (1:N is allowed by design). Native events (work_item_id None)
+    never match a real item_id; a `None` item_id matches nothing (use
+    `native_schedule_events` for the unlinked bars)."""
+    if item_id is None:
+        return ()
+    return tuple(
+        sorted(
+            (s for s in schedule if s.work_item_id == item_id),
+            key=lambda s: s.start_week,
+        )
+    )
+
+
+def native_schedule_events(schedule) -> tuple[ScheduleItem, ...]:
+    """The schedule-native events — bars with no work item (milestones, holidays,
+    process markers) — ordered by `start_week`.
+
+    Pure filter over a `ScheduleItem` list; the complement of the linked bars."""
+    return tuple(
+        sorted(
+            (s for s in schedule if s.work_item_id is None),
+            key=lambda s: s.start_week,
+        )
+    )
+
+
 def week_to_date(start_date, start_week) -> date | None:
     """Map a schedule bar's `start_week` (weeks-from-kickoff) to a calendar date,
     given the project's `start_date` (ISO string). Returns None if either is
