@@ -270,21 +270,78 @@ def row_to_element(row: dict[str, object]) -> SpineElement:
     )
 
 
+# Substance version status → Lens status. The `spine_substance` store has a
+# narrow lifecycle vocabulary (`live | superseded`); the Lens scores on the
+# richer `active | reference | dormant | final` axis. A `live` version maps to
+# `active` (its floor) — `derive_status` then auto-demotes it from the
+# deliverable graph during the sweep, exactly as for the legacy element path.
+# `superseded` versions never reach the sweep (filtered before mapping), so they
+# need no Lens status.
+_SUBSTANCE_STATUS_MAP: dict[str, str] = {"live": "active"}
+
+# Item-placement substance rows that carry no explicit `layer` are estimate
+# work-item deliverables — they ARE the project's spine of buildable outputs.
+_DEFAULT_SUBSTANCE_LAYER = "Deliverables"
+
+
+def substance_row_to_element(row: dict[str, object]) -> SpineElement:
+    """Reconstruct a SpineElement from a `spine_substance` MC-2 row.
+
+    `spine_substance` hangs distilled, versioned memory off estimate work items
+    (and project-level context). Its schema differs from the legacy
+    `spine_elements` table, so the fields the Lens reads are remapped:
+
+      * id           ← row `id` (``<code>/<item>/<version>`` or ``…/_context/…``)
+      * title        ← `framing` (the framing line IS the element's title)
+      * body         ← `body`
+      * layer        ← `layer` (defaults to Deliverables when null — native
+                       item rows often omit it; migrated rows always carry it)
+      * status       ← `status` mapped live→active (see `_SUBSTANCE_STATUS_MAP`);
+                       `derive_status` demotes from there during the sweep
+      * last_touched ← `version_date` (substance has no separate last_touched)
+      * serves       ← `serves`
+
+    Columns the legacy element model had but substance does not (type/stage/
+    fidelity/target_date/depends_on/source/verification metadata) default to
+    None/empty — the Lens tolerates their absence (stage gates only the
+    `active_deliverable_ids` set, which still works off layer+status).
+    """
+    raw_status = str(row.get("status") or "live")
+    return SpineElement(
+        id=str(row["id"]),
+        project=str(row.get("project_code") or ""),
+        layer=str(row.get("layer") or _DEFAULT_SUBSTANCE_LAYER),
+        title=str(row.get("framing") or row["id"]),
+        status=_SUBSTANCE_STATUS_MAP.get(raw_status, raw_status),
+        last_touched=str(row.get("version_date") or ""),
+        path=Path(str(row.get("rel_path") or row["id"])),
+        body=str(row.get("body") or ""),
+        serves=tuple(str(x) for x in (row.get("serves") or [])),
+        source=_as_source(row.get("sources")),
+    )
+
+
 def load_spine_from_mc2(client, project_code: str) -> tuple[SpineElement, ...]:
-    """Load a project's spine elements from MC-2 (canonical read path)."""
+    """Load a project's spine elements from `spine_substance` (canonical read).
+
+    One sweep entry per element: substance is versioned (an item row can hold
+    v1/v2/v3), so we filter to the single ``live`` version per item — context
+    rows are single-version and also ``live``. Superseded versions are excluded
+    so the sweep shows the current state of each work item, not its history.
+    """
     data = (
-        client.table("spine_elements")
+        client.table("spine_substance")
         .select(
-            "element_id, project_code, layer, type, title, stage, fidelity, "
-            "target_date, status, last_touched, depends_on, serves, source, "
-            "target_history, author, rel_path, "
-            "field_states, review_flags, confirmed_by, confirmed_at"
+            "id, project_code, est_item_id, layer, placement, status, "
+            "version_label, version_date, framing, body, serves, sources, "
+            "rel_path"
         )
         .eq("project_code", project_code)
+        .eq("status", "live")
         .execute()
         .data
     ) or []
-    return tuple(row_to_element(r) for r in data)
+    return tuple(substance_row_to_element(r) for r in data)
 
 
 def _recency_term(last_touched: str, today: date) -> float:
