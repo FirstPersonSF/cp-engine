@@ -69,6 +69,35 @@ def test_substance_to_rows_sources_are_json_safe_lists():
     json.dumps(live)
 
 
+def test_substance_to_rows_carries_layer_placement_serves():
+    versions = (
+        SubstanceVersion(label="v1", date="2026-06-12", status="live",
+                         framing="f", sources=(), body="b"),
+    )
+    item = WorkItemSubstance(
+        est_item_id="d1", est_item_kind="deliverable", phase="Phase 0",
+        binding="live", versions=versions, path=Path("x.md"),
+        layer="Decisions", placement="context", serves=("abc",),
+    )
+    rows = substance_to_rows(item, project_id="u1", project_code="proj-1",
+                             rel_path="r.md")
+    for r in rows:
+        assert r["layer"] == "Decisions"
+        assert r["placement"] == "context"
+        assert r["serves"] == ["abc"]
+        assert isinstance(r["serves"], list)
+        json.dumps(r)
+
+
+def test_substance_to_rows_layer_placement_serves_defaults():
+    rows = substance_to_rows(_item(), project_id="u1", project_code="proj-1",
+                             rel_path="r.md")
+    for r in rows:
+        assert r["layer"] is None
+        assert r["placement"] == "item"
+        assert r["serves"] == []
+
+
 def test_substance_to_rows_no_field_states_or_flags():
     rows = substance_to_rows(_item(), project_id="u1", project_code="proj-1",
                              rel_path="r.md")
