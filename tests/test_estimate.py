@@ -60,9 +60,10 @@ class _FakeQuery:
     returns canned `.data` on .execute(). Mirrors the supabase-py builder
     chain used in sync_mc2.py: schema().table().select().eq()/.in_().execute()."""
 
-    def __init__(self, client, table):
+    def __init__(self, client, table, schema_name="estimator"):
         self.client = client
         self.table = table
+        self.schema_name = schema_name
         self.columns = None
         self.eq_filters = {}
         self.in_filters = {}
@@ -81,7 +82,13 @@ class _FakeQuery:
 
     def execute(self):
         self.client.queries.append(self)
-        rows = self.client.tables.get(self.table, [])
+        # Prefer a schema-qualified key ("public.projects") so the estimator and
+        # public `projects` tables don't collide; fall back to the bare table
+        # name for the existing estimator canned tables.
+        rows = self.client.tables.get(
+            f"{self.schema_name}.{self.table}",
+            self.client.tables.get(self.table, []),
+        )
         # Apply eq + in filters so the fake behaves like PostgREST.
         out = []
         for r in rows:
@@ -104,7 +111,7 @@ class _FakeSchema:
     def table(self, name):
         # Record (schema, table) so tests can assert the estimator schema.
         self.client.schemas_used.add(self.schema_name)
-        return _FakeQuery(self.client, name)
+        return _FakeQuery(self.client, name, self.schema_name)
 
 
 class _FakeClient:
@@ -136,6 +143,10 @@ def _canned_tables():
         "phase_deliverables": [
             {"id": "d-0", "phase_id": "ph-1", "name": "Del 0", "short_description": "s", "position": 0, "library_item_id": None},
         ],
+        # public.projects — keyed by mc_project_id, carries the kickoff start_date.
+        "public.projects": [
+            {"id": "mc-1", "start_date": "2026-04-27"},
+        ],
     }
 
 
@@ -152,14 +163,49 @@ def test_fetch_estimate_returns_built_default_estimate():
     assert est.item_by_id("a-0").kind == "activity"
     assert est.item_by_id("d-0").kind == "deliverable"
 
-    # All queries hit the estimator schema, never `*`.
-    assert client.schemas_used == {"estimator"}
+    # Queries hit the estimator schema (+ public for start_date), never `*`.
+    assert client.schemas_used == {"estimator", "public"}
     for q in client.queries:
         assert q.columns is not None and "*" not in q.columns
 
-    # The projects query filtered to default for this mc_project_id.
-    proj_q = next(q for q in client.queries if q.table == "projects")
+    # The estimator projects query filtered to default for this mc_project_id.
+    proj_q = next(
+        q for q in client.queries
+        if q.table == "projects" and q.schema_name == "estimator"
+    )
     assert proj_q.eq_filters == {"mc_project_id": "mc-1", "is_default": True}
+
+
+def test_from_rows_accepts_start_date_kwarg():
+    project_row = {"id": "est-1", "mc_project_id": "mc-1", "name": "Estimate 1"}
+    est = Estimate.from_rows(project_row, [], [], [], start_date="2026-04-27")
+    assert est.start_date == "2026-04-27"
+    # Defaults to None when not passed.
+    est2 = Estimate.from_rows(project_row, [], [], [])
+    assert est2.start_date is None
+
+
+def test_fetch_estimate_reads_start_date():
+    client = _FakeClient(_canned_tables())
+    est = fetch_estimate(client, "mc-1")
+    assert est.start_date == "2026-04-27"
+
+    # The start_date read hit public.projects by mc_project_id, explicit columns.
+    sd_q = next(
+        q for q in client.queries
+        if q.table == "projects" and q.schema_name == "public"
+    )
+    assert sd_q.eq_filters == {"id": "mc-1"}
+    assert sd_q.columns is not None and "*" not in sd_q.columns
+
+
+def test_fetch_estimate_start_date_none_when_absent():
+    # public.projects has no row / no start_date for this project → None.
+    tables = _canned_tables()
+    tables["public.projects"] = []
+    client = _FakeClient(tables)
+    est = fetch_estimate(client, "mc-1")
+    assert est.start_date is None
 
 
 def test_fetch_estimate_returns_none_when_no_default():

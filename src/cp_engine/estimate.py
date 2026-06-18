@@ -68,9 +68,12 @@ class Estimate:
     mc_project_id: str
     name: str
     phases: tuple[EstimatePhase, ...] = ()
+    # The project's kickoff date (public.projects.start_date), origin for
+    # schedule-bar calendar math. Nullable — Drew sets it manually at kickoff.
+    start_date: str | None = None
 
     @classmethod
-    def from_rows(cls, project_row, phases, activities, deliverables) -> "Estimate":
+    def from_rows(cls, project_row, phases, activities, deliverables, start_date=None) -> "Estimate":
         by_phase: dict[str, list[EstimateItem]] = {
             _required(p, "id", "phase"): [] for p in phases
         }
@@ -104,6 +107,7 @@ class Estimate:
             mc_project_id=_required(project_row, "mc_project_id", "project"),
             name=project_row.get("name", _DEFAULT_ESTIMATE_NAME),
             phases=ordered_phases,
+            start_date=start_date,
         )
 
     def item_by_id(self, item_id) -> EstimateItem | None:
@@ -121,6 +125,9 @@ class Estimate:
 _PROJECT_COLUMNS = "id, mc_project_id, name, is_default"
 _PHASE_COLUMNS = "id, name, overview, position"
 _ITEM_COLUMNS = "id, phase_id, name, short_description, library_item_id, position"
+# public.projects carries the kickoff start_date, keyed by the MC project id
+# (public.projects.id === estimator.projects.mc_project_id).
+_PUBLIC_PROJECT_COLUMNS = "id, start_date"
 
 
 def fetch_estimate(client, mc_project_id) -> Estimate | None:
@@ -151,6 +158,19 @@ def fetch_estimate(client, mc_project_id) -> Estimate | None:
     if not proj_rows:
         return None
     project_row = proj_rows[0]
+
+    # Kickoff date for calendar math — lives on public.projects, keyed by the
+    # MC project id (nullable; Drew sets it manually at kickoff).
+    public_rows = (
+        client.schema("public")
+        .table("projects")
+        .select(_PUBLIC_PROJECT_COLUMNS)
+        .eq("id", mc_project_id)
+        .execute()
+        .data
+        or []
+    )
+    start_date = public_rows[0].get("start_date") if public_rows else None
 
     phases = (
         client.schema("estimator")
@@ -185,4 +205,6 @@ def fetch_estimate(client, mc_project_id) -> Estimate | None:
     else:
         activities, deliverables = [], []
 
-    return Estimate.from_rows(project_row, phases, activities, deliverables)
+    return Estimate.from_rows(
+        project_row, phases, activities, deliverables, start_date=start_date
+    )
