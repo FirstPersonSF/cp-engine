@@ -148,13 +148,13 @@ _ITEM_COLUMNS = "id, phase_id, name, short_description, library_item_id, positio
 # public.projects carries the kickoff start_date, keyed by the MC project id
 # (public.projects.id === estimator.projects.mc_project_id).
 _PUBLIC_PROJECT_COLUMNS = "id, start_date"
-# Only columns known to exist in the live schema. The work_item_id /
-# work_item_kind / done columns arrive in a later phase; selecting them now
-# would 400 if absent, so we read them from the row via `.get()` (defaulting
-# None/False) once they ship rather than naming them here.
+# work_item_id / work_item_kind / done shipped in migration 069 (the
+# schedule↔work-item link), so they are selected here. They are still read via
+# `.get()` in the row mapper, defaulting None/None/False, so an older schema
+# without them degrades gracefully rather than 400-ing.
 _SCHEDULE_COLUMNS = (
     "id, project_id, phase_id, label, start_week, duration, "
-    "position, item_type, emphasis"
+    "position, item_type, emphasis, work_item_id, work_item_kind, done"
 )
 
 

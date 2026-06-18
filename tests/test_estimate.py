@@ -284,6 +284,14 @@ def test_fetch_schedule_coerces_numeric_and_reads_present_work_item():
     assert it.work_item_id == "wi-9"
     assert it.work_item_kind == "deliverable"
     assert it.done is True
+    # Regression: the link columns MUST be named in the SELECT (migration 069
+    # shipped them). A fake client ignores projection, so the only way to catch
+    # "column exists in DB but not in the SELECT" — which silently nulled every
+    # bar's work_item_id in prod — is to assert the column list itself.
+    q = next(q for q in client.queries if q.table == "schedule_items")
+    assert "work_item_id" in q.columns
+    assert "work_item_kind" in q.columns
+    assert "done" in q.columns
 
 
 def test_fetch_schedule_none_position_sorts_as_zero():
