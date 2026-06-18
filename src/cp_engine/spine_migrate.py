@@ -108,7 +108,14 @@ def element_to_substance_row(
         "binding": binding,
         "layer": element.layer,
         "placement": proposal.placement,
-        "serves": list(element.serves),
+        # Legacy `serves` (and `depends_on`) are element→element graph edges:
+        # they point at OTHER spine_elements by element-id. New substance `serves`
+        # is a different namespace — context→estimate-item links, keyed by estimate
+        # work-item uuids. A legacy element-id is not an estimate uuid, so there's
+        # no valid automatic translation; copying it verbatim yields dangling refs.
+        # Migration drops them and starts clean — real context→work-item links are
+        # set deliberately later (by a human / a future mapping step).
+        "serves": [],
         "version_label": "v1",
         "version_date": version_date,
         "status": "live",

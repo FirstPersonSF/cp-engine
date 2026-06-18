@@ -63,6 +63,24 @@ def test_context_element_converts_to_context_row():
     assert row["version_date"] == "2026-06-11"  # from last_touched
 
 
+def test_legacy_element_id_serves_are_dropped():
+    """Legacy `serves` are element→element graph edges (other element-ids), a
+    different namespace than new substance `serves` (context→estimate-item uuids).
+    There's no valid automatic translation, so migration starts clean: serves=[]."""
+    el = _element(
+        "Decisions", "Two-track AI story locked",
+        eid="ibx-5153/decisions/two-track",
+        serves=("ibx-5153/deliverable/foo",),  # a LEGACY element-id, not an est uuid
+    )
+    est = _estimate([("d-0", "Perspectives Report", "deliverable")])
+    proposal = propose_placement(el, est)
+    row = element_to_substance_row(
+        el, proposal, canonical_code=CANON, project_id=PID,
+        est_item_kind=None, today=TODAY,
+    )
+    assert row["serves"] == []  # NOT the legacy element-id
+
+
 def test_deliverable_binding_converts_to_proposed_item_row():
     el = _element(
         "Deliverables", "Perspectives and Possibilities Report",
