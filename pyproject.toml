@@ -19,6 +19,7 @@ dependencies = [
     "pyyaml>=6.0",
     "python-frontmatter>=1.1",
     "anthropic>=0.40",
+    "pypdf>=4.0",
     "slack-sdk>=3.27",
     "document-ingest[llm,docx,pptx,pdf,spreadsheet,supabase,web,voyage] @ git+https://github.com/FirstPersonSF/1p-component-library.git@0b5928b#subdirectory=starters/document-ingest",
     "cloud-storage[all] @ git+https://github.com/FirstPersonSF/1p-component-library.git@0b5928b#subdirectory=integrations/cloud-storage",

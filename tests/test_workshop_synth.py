@@ -38,7 +38,7 @@ class _FakeMessages:
 
     def create(self, **kwargs):
         self._recorder["kwargs"] = kwargs
-        return _FakeResponse("VISION-OUTPUT")
+        return _FakeResponse("CALL-OUTPUT")
 
 
 class _FakeClient:
@@ -50,33 +50,70 @@ class _FakeClient:
 
 
 # --------------------------------------------------------------------------- #
-# TASK 3 — _call_claude_pdf
+# Anthropic call helper + prompt-cache content layout
 # --------------------------------------------------------------------------- #
 
 
-def test_call_claude_pdf_block_shape(tmp_path: Path) -> None:
-    """The PDF call sends `[document(base64 of pdf bytes), text(prompt)]` and
-    returns the response's text."""
-    pdf = tmp_path / "tiny.pdf"
-    raw = b"%PDF-1.4 tiny bytes"
-    pdf.write_bytes(raw)
-
+def test_call_messages_passes_content_and_returns_text() -> None:
+    """`_call_messages` forwards a prebuilt content list and returns the text."""
     client = _FakeClient()
-    out = ws._call_claude_pdf(pdf, "READ THIS BOARD", client=client)
+    content = [{"type": "text", "text": "HELLO"}]
+    out = ws._call_messages(content, client=client)
 
-    assert out == "VISION-OUTPUT"
+    assert out == "CALL-OUTPUT"
     msgs = client.recorder["kwargs"]["messages"]
     assert len(msgs) == 1
-    content = msgs[0]["content"]
-    assert content[0] == {
+    assert msgs[0]["content"] == content
+
+
+def test_transcript_block_is_cached_and_identical() -> None:
+    """The transcript block carries `cache_control: ephemeral` and is a pure
+    fn of the transcript text — byte-identical across calls (cache-prefix req)."""
+    block = ws._transcript_block("THE TRANSCRIPT")
+    assert block["cache_control"] == {"type": "ephemeral"}
+    assert block["type"] == "text"
+    assert "THE TRANSCRIPT" in block["text"]
+    # Identical bytes for the same input → stable cache prefix.
+    assert ws._transcript_block("THE TRANSCRIPT") == block
+
+
+def test_capture_content_layout(tmp_path: Path) -> None:
+    """Capture content = [cached transcript, per-page PDF, capture instruction].
+
+    Transcript is block 0 (the cached prefix, same position as the text stages);
+    the per-page PDF differs per call and sits AFTER the cache marker."""
+    raw = b"%PDF-1.4 tiny bytes"
+    b64 = base64.standard_b64encode(raw).decode("ascii")
+    content = ws._capture_content(b64, "THE TRANSCRIPT")
+
+    assert len(content) == 3
+    # Block 0 = cached transcript.
+    assert content[0]["cache_control"] == {"type": "ephemeral"}
+    assert "THE TRANSCRIPT" in content[0]["text"]
+    # Block 1 = the PDF (NOT cached — differs per page).
+    assert content[1] == {
         "type": "document",
         "source": {
             "type": "base64",
             "media_type": "application/pdf",
-            "data": base64.standard_b64encode(raw).decode("ascii"),
+            "data": b64,
         },
     }
-    assert content[1] == {"type": "text", "text": "READ THIS BOARD"}
+    # Block 2 = the capture instruction.
+    assert content[2]["type"] == "text"
+    assert "cache_control" not in content[2]
+    assert "faithful" in content[2]["text"].lower()
+
+
+def test_transcript_block_position_stable_across_stages() -> None:
+    """Block 0 is the cached transcript across capture/hypotheses/narrative so
+    the cached prefix is byte-identical (and shareable) across all calls."""
+    t = "SHARED TRANSCRIPT"
+    cap = ws._capture_content("ZmFrZQ==", t)
+    hyp = ws._hypotheses_content("CAP", t)
+    nar = ws._narrative_content(["H1"], t)
+    assert cap[0] == hyp[0] == nar[0]
+    assert cap[0]["cache_control"] == {"type": "ephemeral"}
 
 
 # --------------------------------------------------------------------------- #
@@ -84,18 +121,24 @@ def test_call_claude_pdf_block_shape(tmp_path: Path) -> None:
 # --------------------------------------------------------------------------- #
 
 
+def _flatten(content: list[dict]) -> str:
+    """Concatenate all text blocks' text — for substring assertions over the
+    content-list shape the injectable seams now receive."""
+    return "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
+
+
 def _recording_vision(store: dict):
-    def _vision(pdf_path: Path, prompt: str) -> str:
+    def _vision(pdf_path: Path, content: list[dict]) -> str:
         store["pdf_path"] = pdf_path
-        store["prompt"] = prompt
+        store["content"] = content
         return "CAPTURE-TEXT"
 
     return _vision
 
 
 def _recording_llm(store: dict):
-    def _llm(prompt: str) -> str:
-        store["prompt"] = prompt
+    def _llm(content: list[dict]) -> str:
+        store["content"] = content
         return "LLM-OUTPUT"
 
     return _llm
@@ -114,13 +157,18 @@ def test_capture_worksheet_passes_faithful_prompt_and_transcript(
 
     assert out == "CAPTURE-TEXT"
     assert store["pdf_path"] == pdf
-    prompt = store["prompt"]
+    content = store["content"]
+    text = _flatten(content)
     # Faithful-capture instructions present.
-    assert "faithful" in prompt.lower()
-    assert "do not interpret" in prompt.lower() or "transcribe it exactly" in prompt.lower()
-    assert "color" in prompt.lower()
-    # Transcript reached the vision call as context.
-    assert "THE WHOLE TRANSCRIPT TEXT" in prompt
+    assert "faithful" in text.lower()
+    assert "do not interpret" in text.lower() or "transcribe it exactly" in text.lower()
+    assert "color" in text.lower()
+    # Transcript reached the vision call — in its own cached block.
+    assert "THE WHOLE TRANSCRIPT TEXT" in text
+    assert content[0]["cache_control"] == {"type": "ephemeral"}
+    assert "THE WHOLE TRANSCRIPT TEXT" in content[0]["text"]
+    # The board PDF is present too.
+    assert any(b.get("type") == "document" for b in content)
 
 
 def test_worksheet_hypotheses_passes_capture_and_transcript() -> None:
@@ -132,10 +180,14 @@ def test_worksheet_hypotheses_passes_capture_and_transcript() -> None:
     )
 
     assert out == "LLM-OUTPUT"
-    prompt = store["prompt"]
-    assert "FAITHFUL CAPTURE BODY" in prompt
-    assert "THE WHOLE TRANSCRIPT TEXT" in prompt
-    assert "hypotheses" in prompt.lower()
+    content = store["content"]
+    text = _flatten(content)
+    assert "FAITHFUL CAPTURE BODY" in text
+    assert "THE WHOLE TRANSCRIPT TEXT" in text
+    assert "hypotheses" in text.lower()
+    # Transcript is its own cached block.
+    assert content[0]["cache_control"] == {"type": "ephemeral"}
+    assert "THE WHOLE TRANSCRIPT TEXT" in content[0]["text"]
 
 
 def test_workshop_narrative_passes_all_hypotheses_and_transcript() -> None:
@@ -147,11 +199,15 @@ def test_workshop_narrative_passes_all_hypotheses_and_transcript() -> None:
     )
 
     assert out == "LLM-OUTPUT"
-    prompt = store["prompt"]
-    assert "HYPO BOARD ONE" in prompt
-    assert "HYPO BOARD TWO" in prompt
-    assert "THE WHOLE TRANSCRIPT TEXT" in prompt
-    assert "synthesi" in prompt.lower()
+    content = store["content"]
+    text = _flatten(content)
+    assert "HYPO BOARD ONE" in text
+    assert "HYPO BOARD TWO" in text
+    assert "THE WHOLE TRANSCRIPT TEXT" in text
+    assert "synthesi" in text.lower()
+    # Transcript is its own cached block.
+    assert content[0]["cache_control"] == {"type": "ephemeral"}
+    assert "THE WHOLE TRANSCRIPT TEXT" in content[0]["text"]
 
 
 # --------------------------------------------------------------------------- #
@@ -189,16 +245,16 @@ def test_run_workshop_synth_writes_artifacts(tmp_path: Path) -> None:
     transcript.write_text("FULL TRANSCRIPT", encoding="utf-8")
     out_dir = tmp_path / "out"
 
-    captures: list[str] = []
     narrative_inputs: dict = {}
 
-    def _vision(p: Path, prompt: str) -> str:
+    def _vision(p: Path, content: list[dict]) -> str:
         return f"CAPTURE for {p.name}"
 
-    def _llm(prompt: str) -> str:
-        # Stage 3 narrative prompt mentions "synthesi"; stage 2 mentions hypotheses.
-        if "synthesi" in prompt.lower():
-            narrative_inputs["prompt"] = prompt
+    def _llm(content: list[dict]) -> str:
+        text = _flatten(content)
+        # Stage 3 narrative mentions "synthesi"; stage 2 mentions hypotheses.
+        if "synthesi" in text.lower():
+            narrative_inputs["text"] = text
             return "NARRATIVE"
         return "HYPOTHESES"
 
@@ -223,10 +279,13 @@ def test_run_workshop_synth_writes_artifacts(tmp_path: Path) -> None:
     assert (out_dir / "board-a-capture.md").exists()
     assert (out_dir / "board-b-capture.md").exists()
 
+    # out_dir holds ONLY .md artifacts — no leaked intermediate split PDFs.
+    assert sorted(p.name for p in out_dir.glob("*.pdf")) == []
+
     # The narrative saw BOTH hypotheses bodies.
-    assert "HYPOTHESES" in narrative_inputs["prompt"]
+    assert "HYPOTHESES" in narrative_inputs["text"]
     # The transcript reaches the narrative.
-    assert "FULL TRANSCRIPT" in narrative_inputs["prompt"]
+    assert "FULL TRANSCRIPT" in narrative_inputs["text"]
 
 
 def test_run_workshop_synth_skips_failed_worksheet(tmp_path: Path) -> None:
@@ -238,18 +297,13 @@ def test_run_workshop_synth_skips_failed_worksheet(tmp_path: Path) -> None:
     transcript.write_text("T", encoding="utf-8")
     out_dir = tmp_path / "out"
 
-    def _vision(p: Path, prompt: str) -> str:
+    def _vision(p: Path, content: list[dict]) -> str:
         if p.read_bytes() == _ONE_PAGE_PDF and "bad" in str(p):
             raise RuntimeError("vision boom")
         return f"CAP {p.name}"
 
-    narrative_seen: dict = {}
-
-    def _llm(prompt: str) -> str:
-        if "synthesi" in prompt.lower():
-            narrative_seen["prompt"] = prompt
-            return "NARRATIVE"
-        return "HYPO"
+    def _llm(content: list[dict]) -> str:
+        return "NARRATIVE" if "synthesi" in _flatten(content).lower() else "HYPO"
 
     result = ws.run_workshop_synth(
         worksheet_pdfs=[pdf_good, pdf_bad],
@@ -266,6 +320,44 @@ def test_run_workshop_synth_skips_failed_worksheet(tmp_path: Path) -> None:
     assert Path(result["narrative"]).exists()
     assert len(result["skipped"]) == 1
     assert "bad.pdf" in str(result["skipped"][0])
+
+
+def test_run_workshop_synth_all_failed(tmp_path: Path) -> None:
+    """Degenerate path: EVERY capture raises → narrative is None, all boards
+    skipped, no narrative file written, no crash."""
+    pdf_a = tmp_path / "a.pdf"
+    pdf_b = tmp_path / "b.pdf"
+    _make_pdf(pdf_a)
+    _make_pdf(pdf_b)
+    transcript = tmp_path / "t.txt"
+    transcript.write_text("T", encoding="utf-8")
+    out_dir = tmp_path / "out"
+
+    def _vision(p: Path, content: list[dict]) -> str:
+        raise RuntimeError("vision always boom")
+
+    llm_called: dict = {"count": 0}
+
+    def _llm(content: list[dict]) -> str:
+        llm_called["count"] += 1
+        return "SHOULD-NOT-RUN"
+
+    result = ws.run_workshop_synth(
+        worksheet_pdfs=[pdf_a, pdf_b],
+        transcript_path=transcript,
+        out_dir=out_dir,
+        vision=_vision,
+        llm=_llm,
+    )
+
+    assert result["narrative"] is None
+    assert result["captures"] == []
+    assert result["hypotheses"] == []
+    assert len(result["skipped"]) == 2
+    assert all("boom" in s for s in result["skipped"])
+    # No narrative file written; narrative stage never ran.
+    assert not (out_dir / "workshop-synthesis.md").exists()
+    assert llm_called["count"] == 0
 
 
 def test_run_workshop_synth_multipage_splits_per_page(
@@ -289,11 +381,11 @@ def test_run_workshop_synth_multipage_splits_per_page(
     transcript.write_text("T", encoding="utf-8")
     out_dir = tmp_path / "out"
 
-    def _vision(p: Path, prompt: str) -> str:
+    def _vision(p: Path, content: list[dict]) -> str:
         return "CAP"
 
-    def _llm(prompt: str) -> str:
-        return "NARRATIVE" if "synthesi" in prompt.lower() else "HYPO"
+    def _llm(content: list[dict]) -> str:
+        return "NARRATIVE" if "synthesi" in _flatten(content).lower() else "HYPO"
 
     result = ws.run_workshop_synth(
         worksheet_pdfs=[pdf],
@@ -307,6 +399,8 @@ def test_run_workshop_synth_multipage_splits_per_page(
     assert (out_dir / "multi-page1-capture.md").exists()
     assert (out_dir / "multi-page2-capture.md").exists()
     assert (out_dir / "multi-page3-capture.md").exists()
+    # The intermediate split PDFs did NOT leak into out_dir.
+    assert list(out_dir.glob("*.pdf")) == []
 
 
 # --------------------------------------------------------------------------- #

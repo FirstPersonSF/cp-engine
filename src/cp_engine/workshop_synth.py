@@ -34,70 +34,67 @@ from __future__ import annotations
 import base64
 import io
 import os
+import tempfile
 from datetime import date
 from pathlib import Path
 from typing import Callable
 
-from cp_engine.plan_from_transcript import PlanGenerationError, _call_claude
+from cp_engine.plan_from_transcript import PlanGenerationError
 
 # Model pinned codebase-wide (do NOT bump).
 DEFAULT_MODEL = "claude-opus-4-7"
 
-VisionFn = Callable[[Path, str], str]
-LLMFn = Callable[[str], str]
+# The injectable seams now receive a *content list* (a list of Anthropic
+# content blocks), not a flat string — so prompt-caching's block boundary is
+# visible at the seam and tests can find the transcript in its own block.
+ContentList = list[dict]
+VisionFn = Callable[[Path, ContentList], str]
+LLMFn = Callable[[ContentList], str]
 
 
 # --------------------------------------------------------------------------- #
-# TASK 3 — vision Claude helper (native PDF)
+# Anthropic call helpers (own client construction + validation, local to this
+# module so plan_from_transcript._call_claude and its callers stay untouched)
 # --------------------------------------------------------------------------- #
 
 
-def _call_claude_pdf(
-    pdf_path: Path,
-    prompt: str,
+def _resolve_client(api_key: str | None):
+    """Build a real Anthropic client (timeout=120) — mirrors `_call_claude`."""
+    try:
+        from anthropic import Anthropic
+    except ImportError as exc:
+        raise PlanGenerationError(
+            "anthropic package not installed. Run: pip install 'anthropic>=0.40'"
+        ) from exc
+
+    key = api_key or os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        raise PlanGenerationError(
+            "ANTHROPIC_API_KEY not set. Export it or pass --api-key."
+        )
+    return Anthropic(api_key=key, timeout=120)
+
+
+def _call_messages(
+    content: ContentList,
     *,
     model: str = DEFAULT_MODEL,
     api_key: str | None = None,
     client=None,
+    kind: str = "call",
 ) -> str:
-    """Single Anthropic call that reads a PDF natively (visual layout + color).
+    """Single Anthropic call over a prebuilt content-block list.
 
-    Builds a content list of `[document(base64 of the PDF), text(prompt)]` so
-    Claude reads the board's 2D structure directly. Mirrors `_call_claude`'s
-    client construction (timeout=120), API-key resolution, and error wrapping.
+    Owns client construction + API-key resolution + error/empty/truncation
+    validation for BOTH the text stages (hypotheses, narrative) and the PDF
+    capture stage — they differ only in which blocks they put in `content`.
+    Kept LOCAL to workshop_synth on purpose; `_call_claude` and its callers
+    are not touched.
 
     `client` is injectable for tests (default None → build a real Anthropic).
     """
-    raw = Path(pdf_path).read_bytes()
-    b64 = base64.standard_b64encode(raw).decode("ascii")
-
-    content = [
-        {
-            "type": "document",
-            "source": {
-                "type": "base64",
-                "media_type": "application/pdf",
-                "data": b64,
-            },
-        },
-        {"type": "text", "text": prompt},
-    ]
-
     if client is None:
-        try:
-            from anthropic import Anthropic
-        except ImportError as exc:
-            raise PlanGenerationError(
-                "anthropic package not installed. Run: pip install 'anthropic>=0.40'"
-            ) from exc
-
-        key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not key:
-            raise PlanGenerationError(
-                "ANTHROPIC_API_KEY not set. Export it or pass --api-key."
-            )
-        # Explicit 120s timeout — same hardening as _call_claude.
-        client = Anthropic(api_key=key, timeout=120)
+        client = _resolve_client(api_key)
 
     try:
         response = client.messages.create(
@@ -110,7 +107,7 @@ def _call_claude_pdf(
         body = getattr(exc, "body", None) or getattr(exc, "response", None)
         if body is not None:
             detail = f"{detail} | body={body!r}"
-        raise PlanGenerationError(f"Anthropic PDF call failed: {detail}") from exc
+        raise PlanGenerationError(f"Anthropic {kind} call failed: {detail}") from exc
 
     if not response.content:
         raise PlanGenerationError("Anthropic returned empty content")
@@ -121,8 +118,8 @@ def _call_claude_pdf(
     stop_reason = getattr(response, "stop_reason", None)
     if stop_reason == "max_tokens":
         raise PlanGenerationError(
-            "Anthropic response truncated at max_tokens — the worksheet may be "
-            f"very dense. Got {len(text)} chars before truncation."
+            "Anthropic response truncated at max_tokens — the input may be very "
+            f"dense. Got {len(text)} chars before truncation."
         )
     return text
 
@@ -132,15 +129,43 @@ def _call_claude_pdf(
 # --------------------------------------------------------------------------- #
 
 
-def _transcript_block(transcript: str) -> str:
-    return (
-        "\n\n--- WORKSHOP TRANSCRIPT (context only) ---\n"
-        f"{transcript}\n"
-        "--- END TRANSCRIPT ---\n"
-    )
+# --- prompt-caching layout -------------------------------------------------- #
+#
+# The whole transcript is ambient context at EVERY stage (capture per page,
+# hypotheses per page, narrative once) — for a large workshop that's ~17 calls
+# each carrying the full ~35k-word transcript. The transcript text is IDENTICAL
+# across all calls, so it is the obvious Anthropic prompt-cache breakpoint:
+# a content block tagged `cache_control: {"type": "ephemeral"}` causes Anthropic
+# to cache the message prefix up to (and including) that block for ~5 min, so
+# calls 2..N pay ~10% to re-read it.
+#
+# Caching keys on the EXACT bytes AND position of the cached prefix. So the
+# transcript block must be:
+#   (a) byte-identical across calls — `_transcript_block` is a pure fn of the
+#       transcript text, called the same way everywhere, and
+#   (b) in the SAME position (block index 0) across capture / hypotheses /
+#       narrative — hence every content list below puts the transcript block
+#       FIRST, then the stage-specific instruction (and, for capture, the
+#       per-page PDF block) AFTER it.
+# Putting the cache marker on block 0 means the cached prefix is exactly the
+# transcript; the per-page PDF (capture) and the per-stage instruction stay
+# outside the cache, which is correct — only the transcript is the big repeat.
 
 
-def _capture_prompt(transcript: str) -> str:
+def _transcript_block(transcript: str) -> dict:
+    """The cached transcript content block (identical bytes across all stages)."""
+    return {
+        "type": "text",
+        "text": (
+            "--- WORKSHOP TRANSCRIPT (context only) ---\n"
+            f"{transcript}\n"
+            "--- END TRANSCRIPT ---\n"
+        ),
+        "cache_control": {"type": "ephemeral"},
+    }
+
+
+def _capture_instruction() -> str:
     return (
         "You are reading a completed workshop worksheet (a Miro board exported "
         "to PDF). Transcribe it EXACTLY and faithfully — do NOT interpret, "
@@ -152,12 +177,28 @@ def _capture_prompt(transcript: str) -> str:
         "which column/section and which were emphasized. The workshop "
         "transcript is provided for context only — the WORKSHEET is what you "
         "transcribe."
-        + _transcript_block(transcript)
     )
 
 
-def _hypotheses_prompt(capture_text: str, transcript: str) -> str:
-    return (
+def _capture_content(pdf_b64: str, transcript: str) -> ContentList:
+    """Capture call: [cached transcript, per-page PDF, capture instruction]."""
+    return [
+        _transcript_block(transcript),
+        {
+            "type": "document",
+            "source": {
+                "type": "base64",
+                "media_type": "application/pdf",
+                "data": pdf_b64,
+            },
+        },
+        {"type": "text", "text": _capture_instruction()},
+    ]
+
+
+def _hypotheses_content(capture_text: str, transcript: str) -> ContentList:
+    """Hypotheses call: [cached transcript, hypotheses instruction]."""
+    instruction = (
         "Here is a faithful reading of ONE workshop worksheet, plus the full "
         "workshop transcript. What patterns and learnings does THIS board "
         "reveal? Produce a set of hypotheses — what the board suggests, what "
@@ -167,16 +208,20 @@ def _hypotheses_prompt(capture_text: str, transcript: str) -> str:
         "--- WORKSHEET CAPTURE (the subject) ---\n"
         f"{capture_text}\n"
         "--- END CAPTURE ---"
-        + _transcript_block(transcript)
     )
+    return [
+        _transcript_block(transcript),
+        {"type": "text", "text": instruction},
+    ]
 
 
-def _narrative_prompt(all_hypotheses: list[str], transcript: str) -> str:
+def _narrative_content(all_hypotheses: list[str], transcript: str) -> ContentList:
+    """Narrative call: [cached transcript, narrative instruction]."""
     joined = "\n\n".join(
         f"=== WORKSHEET {i + 1} HYPOTHESES ===\n{h}"
         for i, h in enumerate(all_hypotheses)
     )
-    return (
+    instruction = (
         "Across ALL these per-worksheet hypotheses and the full workshop "
         "transcript, synthesize what we learned from the workshop — the "
         "through-lines that span boards, the tensions surfaced, what's decided "
@@ -185,8 +230,11 @@ def _narrative_prompt(all_hypotheses: list[str], transcript: str) -> str:
         "--- PER-WORKSHEET HYPOTHESES (the subject) ---\n"
         f"{joined}\n"
         "--- END HYPOTHESES ---"
-        + _transcript_block(transcript)
     )
+    return [
+        _transcript_block(transcript),
+        {"type": "text", "text": instruction},
+    ]
 
 
 # --------------------------------------------------------------------------- #
@@ -202,11 +250,16 @@ def capture_worksheet(
     model: str = DEFAULT_MODEL,
     api_key: str | None = None,
 ) -> str:
-    """Stage 1 — faithful vision capture of ONE worksheet PDF (page)."""
-    prompt = _capture_prompt(transcript)
+    """Stage 1 — faithful vision capture of ONE worksheet PDF (page).
+
+    Content list = [cached transcript, per-page PDF, capture instruction].
+    """
+    raw = Path(pdf_path).read_bytes()
+    b64 = base64.standard_b64encode(raw).decode("ascii")
+    content = _capture_content(b64, transcript)
     if vision is not None:
-        return vision(pdf_path, prompt)
-    return _call_claude_pdf(pdf_path, prompt, model=model, api_key=api_key)
+        return vision(pdf_path, content)
+    return _call_messages(content, model=model, api_key=api_key, kind="capture")
 
 
 def worksheet_hypotheses(
@@ -218,10 +271,10 @@ def worksheet_hypotheses(
     api_key: str | None = None,
 ) -> str:
     """Stage 2 — patterns/learnings from one board's capture + the transcript."""
-    prompt = _hypotheses_prompt(capture_text, transcript)
+    content = _hypotheses_content(capture_text, transcript)
     if llm is not None:
-        return llm(prompt)
-    return _call_claude(prompt, model=model, api_key=api_key)
+        return llm(content)
+    return _call_messages(content, model=model, api_key=api_key, kind="hypotheses")
 
 
 def workshop_narrative(
@@ -233,10 +286,10 @@ def workshop_narrative(
     api_key: str | None = None,
 ) -> str:
     """Stage 3 — cross-workshop synthesis over all per-board hypotheses."""
-    prompt = _narrative_prompt(all_hypotheses, transcript)
+    content = _narrative_content(all_hypotheses, transcript)
     if llm is not None:
-        return llm(prompt)
-    return _call_claude(prompt, model=model, api_key=api_key)
+        return llm(content)
+    return _call_messages(content, model=model, api_key=api_key, kind="narrative")
 
 
 # --------------------------------------------------------------------------- #
@@ -324,41 +377,51 @@ def run_workshop_synth(
     hypotheses_texts: list[str] = []
     skipped: list[str] = []
 
-    for pdf in worksheet_pdfs:
-        pdf = Path(pdf)
-        try:
-            board_pages = _split_pdf_pages(pdf, out_dir)
-        except Exception as exc:  # noqa: BLE001 — corrupt/unreadable PDF
-            skipped.append(f"{pdf} (split failed: {exc})")
-            continue
+    # Intermediate single-page PDFs go to a tempdir that spans the whole run
+    # (so each page survives long enough for its capture call to read it), and
+    # is cleaned up on exit — out_dir then contains ONLY the .md artifacts.
+    with tempfile.TemporaryDirectory(prefix="cp-workshop-split-") as split_dir_str:
+        split_dir = Path(split_dir_str)
 
-        for page_pdf, label in board_pages:
-            astem = _artifact_stem(pdf.stem, label)
+        for pdf in worksheet_pdfs:
+            pdf = Path(pdf)
             try:
-                capture_text = capture_worksheet(
-                    page_pdf, transcript, vision=vision, model=model, api_key=api_key
-                )
-                hypo_text = worksheet_hypotheses(
-                    capture_text, transcript, llm=llm, model=model, api_key=api_key
-                )
-            except Exception as exc:  # noqa: BLE001 — LLM/transport per board
-                skipped.append(f"{page_pdf} ({exc})")
+                board_pages = _split_pdf_pages(pdf, split_dir)
+            except Exception as exc:  # noqa: BLE001 — corrupt/unreadable PDF
+                skipped.append(f"{pdf} (split failed: {exc})")
                 continue
 
-            cap_path = out_dir / f"{astem}-capture.md"
-            cap_path.write_text(
-                _header("stage 1 capture", subject) + capture_text + "\n",
-                encoding="utf-8",
-            )
-            captures.append(cap_path)
+            for page_pdf, label in board_pages:
+                astem = _artifact_stem(pdf.stem, label)
+                try:
+                    capture_text = capture_worksheet(
+                        page_pdf,
+                        transcript,
+                        vision=vision,
+                        model=model,
+                        api_key=api_key,
+                    )
+                    hypo_text = worksheet_hypotheses(
+                        capture_text, transcript, llm=llm, model=model, api_key=api_key
+                    )
+                except Exception as exc:  # noqa: BLE001 — LLM/transport per board
+                    skipped.append(f"{page_pdf} ({exc})")
+                    continue
 
-            hyp_path = out_dir / f"{astem}-hypotheses.md"
-            hyp_path.write_text(
-                _header("stage 2 hypotheses", subject) + hypo_text + "\n",
-                encoding="utf-8",
-            )
-            hypotheses_paths.append(hyp_path)
-            hypotheses_texts.append(hypo_text)
+                cap_path = out_dir / f"{astem}-capture.md"
+                cap_path.write_text(
+                    _header("stage 1 capture", subject) + capture_text + "\n",
+                    encoding="utf-8",
+                )
+                captures.append(cap_path)
+
+                hyp_path = out_dir / f"{astem}-hypotheses.md"
+                hyp_path.write_text(
+                    _header("stage 2 hypotheses", subject) + hypo_text + "\n",
+                    encoding="utf-8",
+                )
+                hypotheses_paths.append(hyp_path)
+                hypotheses_texts.append(hypo_text)
 
     narrative_path: Path | None = None
     if hypotheses_texts:

@@ -2777,6 +2777,16 @@ def workshop_synth_cmd(
     if out is None:
         out = project_dir / "workshop-synthesis" / date.today().isoformat()
 
+    # Up-front feedback: the vision/LLM calls take minutes and cost money, so
+    # show what's being processed before going quiet.
+    click.echo(
+        f"Synthesizing {code}: {len(pdfs)} worksheet PDF(s), "
+        f"transcript {transcript.name} → {out}"
+    )
+    for pdf in pdfs:
+        click.echo(f"  worksheet: {pdf.name}")
+    click.echo("Running vision + synthesis (this can take several minutes)…")
+
     try:
         result = workshop_synth.run_workshop_synth(
             worksheet_pdfs=pdfs,
