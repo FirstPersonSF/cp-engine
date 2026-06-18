@@ -266,6 +266,138 @@ def test_whitespace_preamble_ok(tmp_path):
     assert len(item.versions) == 1
 
 
+# --- Task 3.2: layer + placement + serves ----------------------------------
+
+
+def test_parse_layer_and_placement_item(tmp_path):
+    content = (
+        "---\n"
+        "est_item_id: abc-123\n"
+        "est_item_kind: deliverable\n"
+        "phase: Message Strategy & Campaign Framing\n"
+        "binding: live\n"
+        "layer: Deliverables\n"
+        "placement: item\n"
+        "---\n"
+        "## v1 — 2026-06-12 · live\n"
+        "framing: x\n"
+        "sources:\n"
+        "  - a\n"
+        "\n"
+        "body\n"
+    )
+    p = tmp_path / "layer.md"
+    p.write_text(content)
+    item = parse_substance(p)
+    assert item.layer == "Deliverables"
+    assert item.placement == "item"
+    assert item.serves == ()
+    # round-trips
+    assert render_substance(parse_substance(p)) == render_substance(item)
+    p.write_text(render_substance(item))
+    reparsed = parse_substance(p)
+    assert reparsed.layer == "Deliverables"
+    assert reparsed.placement == "item"
+
+
+def test_parse_placement_context_with_serves(tmp_path):
+    content = (
+        "---\n"
+        "est_item_id: ctx-1\n"
+        "est_item_kind: deliverable\n"
+        "binding: live\n"
+        "layer: Decisions\n"
+        "placement: context\n"
+        "serves:\n"
+        "  - abc-123\n"
+        "  - def-456\n"
+        "---\n"
+        "## v1 — 2026-06-12 · live\n"
+        "framing: x\n"
+        "sources:\n"
+        "  - a\n"
+        "\n"
+        "body\n"
+    )
+    p = tmp_path / "ctx.md"
+    p.write_text(content)
+    item = parse_substance(p)
+    assert item.placement == "context"
+    assert item.serves == ("abc-123", "def-456")
+    assert isinstance(item.serves, tuple)
+    assert item.layer == "Decisions"
+
+
+def test_defaults_when_new_fields_absent(tmp_path):
+    item = parse_substance(FIXTURE)
+    assert item.placement == "item"
+    assert item.layer is None
+    assert item.serves == ()
+
+
+def test_new_fields_not_duplicated_in_extra(tmp_path):
+    """layer/placement/serves are real fields now, NOT in extra — render must
+    not double-emit them."""
+    content = (
+        "---\n"
+        "est_item_id: abc-123\n"
+        "est_item_kind: deliverable\n"
+        "binding: live\n"
+        "layer: Deliverables\n"
+        "placement: context\n"
+        "serves:\n"
+        "  - abc-123\n"
+        "---\n"
+        "## v1 — 2026-06-12 · live\n"
+        "framing: x\n"
+        "sources:\n"
+        "  - a\n"
+        "\n"
+        "body\n"
+    )
+    p = tmp_path / "noextra.md"
+    p.write_text(content)
+    item = parse_substance(p)
+    assert "layer" not in item.extra
+    assert "placement" not in item.extra
+    assert "serves" not in item.extra
+    rendered = render_substance(item)
+    # each new key appears exactly once in the frontmatter
+    assert rendered.count("layer:") == 1
+    assert rendered.count("placement:") == 1
+    assert rendered.count("serves:") == 1
+
+
+def test_new_fields_round_trip_with_serves(tmp_path):
+    content = (
+        "---\n"
+        "est_item_id: ctx-1\n"
+        "est_item_kind: deliverable\n"
+        "binding: live\n"
+        "layer: Decisions\n"
+        "placement: context\n"
+        "serves:\n"
+        "  - abc-123\n"
+        "---\n"
+        "## v1 — 2026-06-12 · live\n"
+        "framing: x\n"
+        "sources:\n"
+        "  - a\n"
+        "\n"
+        "body\n"
+    )
+    p = tmp_path / "rt.md"
+    p.write_text(content)
+    item = parse_substance(p)
+    rendered = render_substance(item)
+    p.write_text(rendered)
+    reparsed = parse_substance(p)
+    assert render_substance(reparsed) == rendered
+    assert reparsed.serves == ("abc-123",)
+    assert reparsed.placement == "context"
+    assert reparsed.layer == "Decisions"
+
+
 def test_add_version_demotes_prior_live():
     item = parse_substance(FIXTURE)
     new = SubstanceVersion(
