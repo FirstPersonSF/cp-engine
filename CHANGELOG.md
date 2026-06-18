@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.28.3 — 2026-06-17
+
+### Added — full meeting transcripts persisted per project
+
+The webhook already fetched the full transcript (and staged it to a temp path to ingest from), but only the distilled Retrospective was persisted — the verbatim text lived only in Fathom. Now every meeting ingest also writes the full transcript to `<project>/meeting-transcripts/<date> <title>.txt`, committed with the auto-ingest. Best-effort (a persist failure never aborts ingest). A meeting that writes no sprint-file bullets but persists a transcript now produces an attributed `transcript only` commit rather than a no-op. Filenames slice the date off the ISO timestamp and walk to a ` (N)` suffix on a same-day/same-title collision (distinct meetings never clobber; re-ingest of the same meeting is idempotent). This makes full transcripts durable local project sources — and is the input for the forthcoming workshop-synthesis pipeline.
+
 ## v0.28.2 — 2026-06-17
 
 ### Fixed — asset ingest created duplicate rows for the same file across sources
