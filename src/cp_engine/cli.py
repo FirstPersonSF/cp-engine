@@ -882,6 +882,67 @@ def spine_cmd(code: str) -> None:
             click.echo(f"(source-documents facet skipped: {exc})", err=True)
 
 
+@main.command("where")
+@click.argument("code")
+def where_cmd(code: str) -> None:
+    """Print a grounded "where are we / what's next" answer for a project.
+
+    Composes the live estimate, schedule, derived execution status, and
+    substance into one terminal summary where every factual clause carries a
+    `[source]` marker. `code` is the project's DIR-SLUG (e.g.
+    `ibx-5153-ai-campaign`).
+
+    Needs MC-2 — this reads the live estimate + schedule + substance, so there
+    is NO offline fallback (unlike `cp spine`). If MC-2 is unreachable this
+    prints a clear error and exits non-zero.
+    """
+    from datetime import date
+
+    from cp_engine.estimate import fetch_estimate, fetch_schedule
+    from cp_engine.sync import BackendUnavailable
+    from cp_engine.sync_mc2 import MC2Backend
+    from cp_engine.where import build_where_report, fetch_substance_status
+
+    config = _load_config_or_die()
+    try:
+        client = MC2Backend().connect(config)
+    except BackendUnavailable as exc:
+        click.echo(
+            f"cp where needs MC-2 (no offline mode — it reads the live "
+            f"estimate + schedule + substance): {exc}",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Resolve the dir-slug code → mc_project_id slug-natively: read the project's
+    # substance rows by project_code (the slug) and lift project_id (which IS
+    # the mc_project_id) out of the same read. The number-parsing resolvers fail
+    # on slug codes.
+    substance_by_item, mc_project_id = fetch_substance_status(client, code)
+    if mc_project_id is None:
+        click.echo(
+            f"No spine substance for '{code}'. `cp where` resolves the project "
+            f"via its substance rows — frame at least one work item "
+            f"(cp spine-frame) first, or check the dir-slug code.",
+            err=True,
+        )
+        sys.exit(1)
+
+    estimate = fetch_estimate(client, mc_project_id)
+    if estimate is None:
+        click.echo(
+            f"No default estimate for '{code}' (mc_project_id={mc_project_id}). "
+            f"The estimate is the spine's backbone — nothing to ground against.",
+            err=True,
+        )
+        sys.exit(1)
+    schedule = fetch_schedule(client, estimate.id)
+
+    click.echo(
+        build_where_report(estimate, schedule, substance_by_item, today=date.today())
+    )
+
+
 @main.command("spine-stats")
 @click.option(
     "--type", "type_filter", default=None, help="Narrow to one deliverable type."
@@ -1048,6 +1109,106 @@ def spine_frame_cmd(card_id, framing, est_item_id, kind, sources, model) -> None
         phase=phase,
     )
     click.echo(f"Wrote {path}")
+
+
+@main.command("spine-migrate")
+@click.argument("code")
+@click.option(
+    "--dry-run", is_flag=True,
+    help="Show the proposed conversion table; write nothing.",
+)
+@click.option(
+    "--mc-project-id", "mc_project_id", default=None,
+    help="MC project_id (UUID) to migrate. Bypasses substance-based resolution "
+    "for fresh projects that have no spine_substance rows yet (their only spine "
+    "data is legacy spine_elements, keyed on this id).",
+)
+def spine_migrate_cmd(code: str, dry_run: bool, mc_project_id: str | None) -> None:
+    """Migrate legacy `spine_elements` → `spine_substance` with proposed placement.
+
+    Reads the project's legacy elements, proposes a placement for each
+    (cross-cutting → context rail; Deliverables → best-guess estimate binding for
+    a human to confirm), and upserts them as v1 substance rows. `code` is the
+    CANONICAL dir-slug (e.g. `ibx-5153-ai-campaign`).
+
+    Legacy rows use the short project_code (`ibx-5153`) but share the MC
+    `project_id` with the canonical substance rows, so we resolve the canonical
+    slug → project_id and read the legacy rows by that shared key.
+
+    Needs MC-2 (reads both stores + the live estimate). `--dry-run` prints the
+    proposed table and writes nothing. Without it, rows are upserted; nothing is
+    deleted and nothing is auto-confirmed.
+    """
+    from datetime import date
+
+    from cp_engine.estimate import fetch_estimate
+    from cp_engine.spine_migrate import (
+        fetch_legacy_elements,
+        plan_migration,
+        render_dry_run,
+        resolve_project_id,
+        run_migration,
+    )
+    from cp_engine.sync import BackendUnavailable
+    from cp_engine.sync_mc2 import MC2Backend
+
+    config = _load_config_or_die()
+    try:
+        client = MC2Backend().connect(config)
+    except BackendUnavailable as exc:
+        click.echo(f"cp spine-migrate needs MC-2: {exc}", err=True)
+        sys.exit(1)
+
+    # Resolution order: explicit --mc-project-id wins (the clean fallback for a
+    # fresh project with no substance rows), else resolve via existing substance
+    # rows (the cross-store join key). Both reads downstream key on project_id, so
+    # the explicit id reads the legacy elements + estimate exactly the same way.
+    project_id = mc_project_id or resolve_project_id(client, code)
+    if project_id is None:
+        click.echo(
+            f"No project_id for '{code}'. spine-migrate resolves the project via "
+            f"its existing spine_substance rows (the cross-store join key). For a "
+            f"fresh project with no substance rows yet, pass the known id with "
+            f"--mc-project-id <uuid>. Or frame a work item (cp spine-frame) first, "
+            f"or check the dir-slug.",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Dry-run shows titles/placement only and needs no bodies, so skip disk
+    # access; the real write path hydrates each element's body from its on-disk
+    # file (the MC-2 row carries no body — see fetch_legacy_elements).
+    elements = fetch_legacy_elements(
+        client, project_id=project_id, tenant_root=None if dry_run else config.root
+    )
+    if not elements:
+        click.echo(f"No legacy spine_elements for '{code}' (project_id={project_id}).")
+        return
+
+    # The estimate is the binding backbone; None → Deliverables can't bind and
+    # fall to context (the migration still runs, just all-context).
+    try:
+        estimate = fetch_estimate(client, project_id)
+    except Exception as exc:  # noqa: BLE001 — estimator unreachable; degrade to context-only
+        click.echo(f"(estimate fetch failed — Deliverables fall to context: {exc})", err=True)
+        estimate = None
+
+    plan = plan_migration(
+        elements, estimate, canonical_code=code, project_id=project_id, today=date.today()
+    )
+
+    if dry_run:
+        click.echo(render_dry_run(code, plan))
+        return
+
+    rows = [m.row for m in plan]
+    run_migration(client, rows)
+    n_context = sum(1 for m in plan if m.proposal.placement == "context")
+    n_item = sum(1 for m in plan if m.proposal.placement == "item")
+    click.echo(
+        f"Migrated {len(rows)} elements → {n_context} context, "
+        f"{n_item} proposed-bindings (spine_elements left intact; none confirmed)."
+    )
 
 
 @main.command("sweep")

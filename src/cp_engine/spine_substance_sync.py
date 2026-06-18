@@ -53,10 +53,11 @@ def substance_to_rows(
 ) -> list[dict]:
     """Map one substance file to ONE row per version.
 
-    id = ``<project_code>/<est_item_id>/<version_label>``. The estimate-binding
-    columns (est_item_id/est_item_kind/phase/binding) are constant across the
-    item's versions; version_label/version_date/status/framing/body/sources vary
-    per version. `sources` is emitted as a plain JSON-serializable list.
+    id = ``<project_code>/<est_item_id>/<version_label>``. The item-level
+    columns (est_item_id/est_item_kind/phase/binding/layer/placement/serves) are
+    constant across the item's versions; version_label/version_date/status/
+    framing/body/sources vary per version. `sources` and `serves` are each
+    emitted as a plain JSON-serializable list.
 
     field_states/review_flags are NOT set here — the sync fn owns reconcile.
     """
@@ -71,6 +72,9 @@ def substance_to_rows(
                 "est_item_kind": item.est_item_kind,
                 "phase": item.phase,
                 "binding": item.binding,
+                "layer": item.layer,
+                "placement": item.placement,
+                "serves": list(item.serves),
                 "version_label": v.label,
                 "version_date": v.date,
                 "status": v.status,

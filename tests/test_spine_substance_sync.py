@@ -69,6 +69,35 @@ def test_substance_to_rows_sources_are_json_safe_lists():
     json.dumps(live)
 
 
+def test_substance_to_rows_carries_layer_placement_serves():
+    versions = (
+        SubstanceVersion(label="v1", date="2026-06-12", status="live",
+                         framing="f", sources=(), body="b"),
+    )
+    item = WorkItemSubstance(
+        est_item_id="d1", est_item_kind="deliverable", phase="Phase 0",
+        binding="live", versions=versions, path=Path("x.md"),
+        layer="Decisions", placement="context", serves=("abc",),
+    )
+    rows = substance_to_rows(item, project_id="u1", project_code="proj-1",
+                             rel_path="r.md")
+    for r in rows:
+        assert r["layer"] == "Decisions"
+        assert r["placement"] == "context"
+        assert r["serves"] == ["abc"]
+        assert isinstance(r["serves"], list)
+        json.dumps(r)
+
+
+def test_substance_to_rows_layer_placement_serves_defaults():
+    rows = substance_to_rows(_item(), project_id="u1", project_code="proj-1",
+                             rel_path="r.md")
+    for r in rows:
+        assert r["layer"] is None
+        assert r["placement"] == "item"
+        assert r["serves"] == []
+
+
 def test_substance_to_rows_no_field_states_or_flags():
     rows = substance_to_rows(_item(), project_id="u1", project_code="proj-1",
                              rel_path="r.md")
@@ -489,3 +518,34 @@ def test_sync_substance_idempotent_across_two_passes(tmp_path):
     for r in healthy_rows:
         assert not any(f.get("source") == "binding"
                        for f in r["review_flags"])
+
+
+def test_resyncing_same_item_is_idempotent(tmp_path):
+    """Re-syncing the SAME substance item must leave exactly one row per version
+    (no duplicates). Regression guard for the prod issue that prompted the DB
+    unique constraint on (project_code, est_item_id, version_label): the sync
+    upserts on the stable id `<project_code>/<est_item_id>/<version_label>`, it
+    does not append. A 2nd sync of the same disk converges to the same row set."""
+    proj = tmp_path / "1p/acct/proj-1"
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")  # 2 versions
+    client = _FakeClient()
+    estimate = _FakeEstimate({"d1"})
+
+    n1 = sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                              project_dir=proj, estimate=estimate)
+    assert n1 == 2
+    rows_after_1 = client.store["spine_substance"]
+    assert len(rows_after_1) == 2
+    ids_1 = [r["id"] for r in rows_after_1]
+    assert sorted(ids_1) == ["proj-1/d1/v1", "proj-1/d1/v2"]
+
+    n2 = sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                              project_dir=proj, estimate=estimate)
+    assert n2 == 2
+    rows_after_2 = client.store["spine_substance"]
+    # Exactly one row per version — the 2nd sync upserted, did not duplicate.
+    assert len(rows_after_2) == 2
+    assert ids_1 == [r["id"] for r in rows_after_2]
+    # Each (est_item_id, version_label) pair is unique — the constraint's key.
+    keys = [(r["est_item_id"], r["version_label"]) for r in rows_after_2]
+    assert len(keys) == len(set(keys))

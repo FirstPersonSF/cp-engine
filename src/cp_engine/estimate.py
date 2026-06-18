@@ -25,6 +25,7 @@ GLOBAL RULE: never `.select("*")` — always explicit columns.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 # Default estimate name when the estimator row carries no `name` (mirrors the
 # portal's "Estimate 1" default).
@@ -68,9 +69,12 @@ class Estimate:
     mc_project_id: str
     name: str
     phases: tuple[EstimatePhase, ...] = ()
+    # The project's kickoff date (public.projects.start_date), origin for
+    # schedule-bar calendar math. Nullable — Drew sets it manually at kickoff.
+    start_date: str | None = None
 
     @classmethod
-    def from_rows(cls, project_row, phases, activities, deliverables) -> "Estimate":
+    def from_rows(cls, project_row, phases, activities, deliverables, start_date=None) -> "Estimate":
         by_phase: dict[str, list[EstimateItem]] = {
             _required(p, "id", "phase"): [] for p in phases
         }
@@ -104,6 +108,7 @@ class Estimate:
             mc_project_id=_required(project_row, "mc_project_id", "project"),
             name=project_row.get("name", _DEFAULT_ESTIMATE_NAME),
             phases=ordered_phases,
+            start_date=start_date,
         )
 
     def item_by_id(self, item_id) -> EstimateItem | None:
@@ -117,10 +122,40 @@ class Estimate:
         return tuple(i for p in self.phases for i in p.items)
 
 
+@dataclass(frozen=True)
+class ScheduleItem:
+    """A schedule bar (Gantt row) from estimator.schedule_items. `start_week`
+    is weeks-from-kickoff (numeric); pair with the estimate's start_date for a
+    calendar date. `work_item_id`/`work_item_kind`/`done` link a bar back to its
+    estimate work item — those columns arrive in a later phase, so they default
+    to None/False until then."""
+    id: str
+    label: str
+    phase_id: str | None
+    start_week: float
+    duration: float
+    item_type: str | None      # activity | milestone | feedback | holiday
+    emphasis: str | None       # important | blocker | external | null
+    work_item_id: str | None = None
+    work_item_kind: str | None = None
+    done: bool = False
+
+
 # Explicit column lists (never `*`, per the global Supabase rule).
 _PROJECT_COLUMNS = "id, mc_project_id, name, is_default"
 _PHASE_COLUMNS = "id, name, overview, position"
 _ITEM_COLUMNS = "id, phase_id, name, short_description, library_item_id, position"
+# public.projects carries the kickoff start_date, keyed by the MC project id
+# (public.projects.id === estimator.projects.mc_project_id).
+_PUBLIC_PROJECT_COLUMNS = "id, start_date"
+# work_item_id / work_item_kind / done shipped in migration 069 (the
+# schedule↔work-item link), so they are selected here. They are still read via
+# `.get()` in the row mapper, defaulting None/None/False, so an older schema
+# without them degrades gracefully rather than 400-ing.
+_SCHEDULE_COLUMNS = (
+    "id, project_id, phase_id, label, start_week, duration, "
+    "position, item_type, emphasis, work_item_id, work_item_kind, done"
+)
 
 
 def fetch_estimate(client, mc_project_id) -> Estimate | None:
@@ -151,6 +186,19 @@ def fetch_estimate(client, mc_project_id) -> Estimate | None:
     if not proj_rows:
         return None
     project_row = proj_rows[0]
+
+    # Kickoff date for calendar math — lives on public.projects, keyed by the
+    # MC project id (nullable; Drew sets it manually at kickoff).
+    public_rows = (
+        client.schema("public")
+        .table("projects")
+        .select(_PUBLIC_PROJECT_COLUMNS)
+        .eq("id", mc_project_id)
+        .execute()
+        .data
+        or []
+    )
+    start_date = public_rows[0].get("start_date") if public_rows else None
 
     phases = (
         client.schema("estimator")
@@ -185,4 +233,88 @@ def fetch_estimate(client, mc_project_id) -> Estimate | None:
     else:
         activities, deliverables = [], []
 
-    return Estimate.from_rows(project_row, phases, activities, deliverables)
+    return Estimate.from_rows(
+        project_row, phases, activities, deliverables, start_date=start_date
+    )
+
+
+def fetch_schedule(client, estimate_id) -> list[ScheduleItem]:
+    """Read the schedule bars (Gantt rows) for an estimate, ordered by
+    (start_week, position).
+
+    `estimator.schedule_items.project_id` references the ESTIMATE id
+    (estimator.projects.id), NOT the mc_project_id — so we filter by
+    `estimate_id` directly. Explicit-column read (per the global Supabase rule);
+    the not-yet-shipped work_item_id / work_item_kind / done columns are read via
+    `.get()` defaulting None/False so this tolerates their absence.
+    """
+    rows = (
+        client.schema("estimator")
+        .table("schedule_items")
+        .select(_SCHEDULE_COLUMNS)
+        .eq("project_id", estimate_id)
+        .execute()
+        .data
+        or []
+    )
+    # Order by (start_week, position) on the raw rows — position is a DB ordering
+    # hint we don't carry onto the dataclass.
+    ordered = sorted(
+        rows, key=lambda r: (float(r.get("start_week") or 0), r.get("position") or 0)
+    )
+    return [
+        ScheduleItem(
+            id=_required(r, "id", "schedule_item"),
+            label=_required(r, "label", "schedule_item"),
+            phase_id=r.get("phase_id"),
+            start_week=float(r.get("start_week") or 0),
+            duration=float(r.get("duration") or 0),
+            item_type=r.get("item_type"),
+            emphasis=r.get("emphasis"),
+            work_item_id=r.get("work_item_id"),
+            work_item_kind=r.get("work_item_kind"),
+            done=bool(r.get("done", False)),
+        )
+        for r in ordered
+    ]
+
+
+def schedule_for_item(schedule, item_id) -> tuple[ScheduleItem, ...]:
+    """The schedule bars that belong to a work item, ordered by `start_week`.
+
+    Pure filter over a `ScheduleItem` list — no DB. Returns an empty tuple when
+    the item has no bar, and may return >1 bar: a single work item can own
+    multiple bars (1:N is allowed by design). Native events (work_item_id None)
+    never match a real item_id; a `None` item_id matches nothing (use
+    `native_schedule_events` for the unlinked bars)."""
+    if item_id is None:
+        return ()
+    return tuple(
+        sorted(
+            (s for s in schedule if s.work_item_id == item_id),
+            key=lambda s: s.start_week,
+        )
+    )
+
+
+def native_schedule_events(schedule) -> tuple[ScheduleItem, ...]:
+    """The schedule-native events — bars with no work item (milestones, holidays,
+    process markers) — ordered by `start_week`.
+
+    Pure filter over a `ScheduleItem` list; the complement of the linked bars."""
+    return tuple(
+        sorted(
+            (s for s in schedule if s.work_item_id is None),
+            key=lambda s: s.start_week,
+        )
+    )
+
+
+def week_to_date(start_date, start_week) -> date | None:
+    """Map a schedule bar's `start_week` (weeks-from-kickoff) to a calendar date,
+    given the project's `start_date` (ISO string). Returns None if either is
+    None — the start_date is nullable until Drew sets it at kickoff. `start_week`
+    may arrive as a float (numeric DB column), so it's `int()`-ed."""
+    if start_date is None or start_week is None:
+        return None
+    return date.fromisoformat(start_date) + timedelta(days=7 * int(start_week))

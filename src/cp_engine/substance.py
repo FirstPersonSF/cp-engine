@@ -78,6 +78,13 @@ class WorkItemSubstance:
     binding: str        # live | unbound
     versions: tuple[SubstanceVersion, ...]
     path: Path
+    # Spine placement axis — SEPARATE from `binding` (estimate-resolution). A
+    # substance file sits either on its estimate work item (`item`) or in the
+    # project's context shelf (`context`), in which case `serves` names the
+    # est_item_ids it informs. `layer` is the spine layer label (free text).
+    layer: str | None = None
+    placement: str = "item"  # item | context
+    serves: tuple[str, ...] = ()
     # Unknown frontmatter keys (Phase 2: mc2 row id, confirmed_at, …) preserved
     # verbatim across parse->render so a render pass never wipes them.
     extra: dict = dataclasses.field(default_factory=dict)
@@ -175,8 +182,14 @@ def parse_substance(path: Path) -> WorkItemSubstance:
     est_item_kind = _required("est_item_kind")
     binding = str(meta.get("binding", "live"))
     phase = None if meta.get("phase") is None else str(meta["phase"])
+    layer = None if meta.get("layer") is None else str(meta["layer"])
+    placement = str(meta.get("placement", "item"))
+    serves = tuple(str(s) for s in _as_tuple(meta.get("serves")))
 
-    _KNOWN = {"est_item_id", "est_item_kind", "binding", "phase"}
+    _KNOWN = {
+        "est_item_id", "est_item_kind", "binding", "phase",
+        "layer", "placement", "serves",
+    }
     extra = {k: v for k, v in meta.items() if k not in _KNOWN}
 
     # Split the body into version sections on version-header lines ONLY. Bodies
@@ -206,6 +219,9 @@ def parse_substance(path: Path) -> WorkItemSubstance:
         binding=binding,
         versions=versions,
         path=path,
+        layer=layer,
+        placement=placement,
+        serves=serves,
         extra=extra,
     )
 
@@ -253,6 +269,14 @@ def render_substance(item: WorkItemSubstance) -> str:
     if item.phase is not None:
         fm["phase"] = item.phase
     fm["binding"] = item.binding
+    if item.layer is not None:
+        fm["layer"] = item.layer
+    # Omit the default placement so files that never set it round-trip byte-for-
+    # byte (mirrors how `phase` is omitted when absent). `context` is emitted.
+    if item.placement != "item":
+        fm["placement"] = item.placement
+    if item.serves:
+        fm["serves"] = list(item.serves)
     for k in sorted(item.extra):
         fm[k] = item.extra[k]
 
