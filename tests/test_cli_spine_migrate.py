@@ -152,3 +152,50 @@ def test_missing_project_id_errors(tmp_path, monkeypatch):
     res = CliRunner().invoke(main, ["spine-migrate", "unknown-proj"])
     assert res.exit_code == 1
     assert "No project_id" in res.output
+
+
+def _store_no_substance():
+    """Legacy elements present (keyed on project_id) but NO substance rows yet —
+    the fresh-project case that substance-based resolution can't handle."""
+    s = _store()
+    s["spine_substance"] = []
+    return s
+
+
+def test_explicit_mc_project_id_with_no_substance(tmp_path, monkeypatch):
+    """A project with no substance rows still migrates when the human passes the
+    known project_id via --mc-project-id: it bypasses substance resolution, reads
+    the legacy elements by that id, and upserts substance rows."""
+    _tenant(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    store = _store_no_substance()
+    client = _FakeClient(store)
+    _patch(monkeypatch, client, _estimate())
+
+    res = CliRunner().invoke(
+        main, ["spine-migrate", CANON, "--mc-project-id", PID]
+    )
+    assert res.exit_code == 0, res.output
+    upserts = store.get("_upserts", [])
+    assert len(upserts) == 1
+    name, rows, on_conflict = upserts[0]
+    assert name == "spine_substance"
+    ids = {r["id"] for r in rows}
+    assert f"{CANON}/_context/two-track" in ids
+    assert f"{CANON}/a-0/audit" in ids
+    # The explicit id is the project_id stamped on every migrated row.
+    assert all(r["project_id"] == PID for r in rows)
+
+
+def test_no_substance_no_flag_errors(tmp_path, monkeypatch):
+    """No substance rows AND no --mc-project-id → clear error, no writes."""
+    _tenant(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    store = _store_no_substance()
+    client = _FakeClient(store)
+    _patch(monkeypatch, client, _estimate())
+
+    res = CliRunner().invoke(main, ["spine-migrate", CANON])
+    assert res.exit_code == 1
+    assert "No project_id" in res.output
+    assert "_upserts" not in store

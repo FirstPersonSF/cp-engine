@@ -1117,7 +1117,13 @@ def spine_frame_cmd(card_id, framing, est_item_id, kind, sources, model) -> None
     "--dry-run", is_flag=True,
     help="Show the proposed conversion table; write nothing.",
 )
-def spine_migrate_cmd(code: str, dry_run: bool) -> None:
+@click.option(
+    "--mc-project-id", "mc_project_id", default=None,
+    help="MC project_id (UUID) to migrate. Bypasses substance-based resolution "
+    "for fresh projects that have no spine_substance rows yet (their only spine "
+    "data is legacy spine_elements, keyed on this id).",
+)
+def spine_migrate_cmd(code: str, dry_run: bool, mc_project_id: str | None) -> None:
     """Migrate legacy `spine_elements` → `spine_substance` with proposed placement.
 
     Reads the project's legacy elements, proposes a placement for each
@@ -1153,12 +1159,18 @@ def spine_migrate_cmd(code: str, dry_run: bool) -> None:
         click.echo(f"cp spine-migrate needs MC-2: {exc}", err=True)
         sys.exit(1)
 
-    project_id = resolve_project_id(client, code)
+    # Resolution order: explicit --mc-project-id wins (the clean fallback for a
+    # fresh project with no substance rows), else resolve via existing substance
+    # rows (the cross-store join key). Both reads downstream key on project_id, so
+    # the explicit id reads the legacy elements + estimate exactly the same way.
+    project_id = mc_project_id or resolve_project_id(client, code)
     if project_id is None:
         click.echo(
             f"No project_id for '{code}'. spine-migrate resolves the project via "
-            f"its existing spine_substance rows (the cross-store join key). Frame "
-            f"at least one work item (cp spine-frame) first, or check the dir-slug.",
+            f"its existing spine_substance rows (the cross-store join key). For a "
+            f"fresh project with no substance rows yet, pass the known id with "
+            f"--mc-project-id <uuid>. Or frame a work item (cp spine-frame) first, "
+            f"or check the dir-slug.",
             err=True,
         )
         sys.exit(1)
