@@ -1111,6 +1111,89 @@ def spine_frame_cmd(card_id, framing, est_item_id, kind, sources, model) -> None
     click.echo(f"Wrote {path}")
 
 
+@main.command("spine-migrate")
+@click.argument("code")
+@click.option(
+    "--dry-run", is_flag=True,
+    help="Show the proposed conversion table; write nothing.",
+)
+def spine_migrate_cmd(code: str, dry_run: bool) -> None:
+    """Migrate legacy `spine_elements` → `spine_substance` with proposed placement.
+
+    Reads the project's legacy elements, proposes a placement for each
+    (cross-cutting → context rail; Deliverables → best-guess estimate binding for
+    a human to confirm), and upserts them as v1 substance rows. `code` is the
+    CANONICAL dir-slug (e.g. `ibx-5153-ai-campaign`).
+
+    Legacy rows use the short project_code (`ibx-5153`) but share the MC
+    `project_id` with the canonical substance rows, so we resolve the canonical
+    slug → project_id and read the legacy rows by that shared key.
+
+    Needs MC-2 (reads both stores + the live estimate). `--dry-run` prints the
+    proposed table and writes nothing. Without it, rows are upserted; nothing is
+    deleted and nothing is auto-confirmed.
+    """
+    from datetime import date
+
+    from cp_engine.estimate import fetch_estimate
+    from cp_engine.spine_migrate import (
+        fetch_legacy_elements,
+        plan_migration,
+        render_dry_run,
+        resolve_project_id,
+        run_migration,
+    )
+    from cp_engine.sync import BackendUnavailable
+    from cp_engine.sync_mc2 import MC2Backend
+
+    config = _load_config_or_die()
+    try:
+        client = MC2Backend().connect(config)
+    except BackendUnavailable as exc:
+        click.echo(f"cp spine-migrate needs MC-2: {exc}", err=True)
+        sys.exit(1)
+
+    project_id = resolve_project_id(client, code)
+    if project_id is None:
+        click.echo(
+            f"No project_id for '{code}'. spine-migrate resolves the project via "
+            f"its existing spine_substance rows (the cross-store join key). Frame "
+            f"at least one work item (cp spine-frame) first, or check the dir-slug.",
+            err=True,
+        )
+        sys.exit(1)
+
+    elements = fetch_legacy_elements(client, project_id=project_id)
+    if not elements:
+        click.echo(f"No legacy spine_elements for '{code}' (project_id={project_id}).")
+        return
+
+    # The estimate is the binding backbone; None → Deliverables can't bind and
+    # fall to context (the migration still runs, just all-context).
+    try:
+        estimate = fetch_estimate(client, project_id)
+    except Exception as exc:  # noqa: BLE001 — estimator unreachable; degrade to context-only
+        click.echo(f"(estimate fetch failed — Deliverables fall to context: {exc})", err=True)
+        estimate = None
+
+    plan = plan_migration(
+        elements, estimate, canonical_code=code, project_id=project_id, today=date.today()
+    )
+
+    if dry_run:
+        click.echo(render_dry_run(code, plan))
+        return
+
+    rows = [m.row for m in plan]
+    run_migration(client, rows)
+    n_context = sum(1 for m in plan if m.proposal.placement == "context")
+    n_item = sum(1 for m in plan if m.proposal.placement == "item")
+    click.echo(
+        f"Migrated {len(rows)} elements → {n_context} context, "
+        f"{n_item} proposed-bindings (spine_elements left intact; none confirmed)."
+    )
+
+
 @main.command("sweep")
 @click.argument("code")
 @click.option(
