@@ -794,6 +794,11 @@ def _perform_auto_ingest(
                         code, meeting_id, exc_info=True,
                     )
 
+            # Record per-entry whether a transcript landed so the commit
+            # message can attribute a transcript-only commit and a result
+            # consumer can tell "transcript only" from "wrote bullets".
+            entry["transcript_persisted"] = transcript_persisted
+
             if entry["files_written"] or transcript_persisted:
                 commit_sha = _commit_and_push(
                     tenant_root=tenant_root,
@@ -2810,13 +2815,29 @@ def _persist_transcript(
 
     Writes `<project_dir>/meeting-transcripts/<date> <safe-title>.txt`,
     matching the readable filename style of the existing hand-added
-    transcripts. Overwrites if it exists (re-ingest backfills/updates).
+    transcripts. `meeting_date` may be a full ISO timestamp (the
+    `fathom_meetings.meeting_date` column is); only the `YYYY-MM-DD`
+    prefix is used for the stem — matching the sibling `meetings/`
+    artifact writer (`write_meeting_artifacts`, which slices `[:10]`),
+    and keeping the colon-laden time out of the filename.
+
+    Re-ingesting the SAME meeting overwrites (idempotent backfill).
+    A DIFFERENT meeting that would sanitize to the same stem (two
+    same-day meetings with the same title — this happens; cf. the
+    `2026-05-12 impromptu zoom meeting -2/-3/...` files in the tenant)
+    is disambiguated with a ` (2)`, ` (3)`, … suffix rather than
+    silently clobbering the earlier meeting's transcript. Same-stem +
+    same-body is treated as the idempotent case and overwritten in
+    place.
+
     The file is committed by the caller's normal `git add -A` commit.
 
     Returns the written Path.
     """
     safe_title = _sanitize_transcript_title(title)
-    date_part = (meeting_date or "").strip()
+    # `meeting_date` is an ISO timestamp; keep only the date, matching
+    # the sibling meetings/ artifact convention. Guards a bare date too.
+    date_part = (meeting_date or "").strip()[:10]
     if date_part and safe_title:
         stem = f"{date_part} {safe_title}"
     elif date_part:
@@ -2828,7 +2849,17 @@ def _persist_transcript(
 
     out_dir = project_dir / "meeting-transcripts"
     out_dir.mkdir(parents=True, exist_ok=True)
+
     path = out_dir / f"{stem}.txt"
+    # Collision guard: never silently overwrite a *different* meeting's
+    # transcript. If the stem is taken by a file with different content,
+    # walk to the next free ` (N)` suffix. Identical content = the same
+    # meeting re-ingested → overwrite in place (idempotent).
+    counter = 2
+    while path.exists() and path.read_text(encoding="utf-8") != text:
+        path = out_dir / f"{stem} ({counter}).txt"
+        counter += 1
+
     path.write_text(text, encoding="utf-8")
     return path
 
@@ -2998,13 +3029,25 @@ def _commit_and_push(
     *, tenant_root: Path, meeting_id: str, ingested: list[dict]
 ) -> str:
     """Stage + commit + push. Returns the new HEAD SHA."""
-    codes = ", ".join(e["code"] for e in ingested if e["files_written"])
+    # Subject attribution: prefer the codes that actually wrote files. If
+    # NONE did (a transcript-only commit — persisted a transcript but wrote
+    # no bullets), fall back to ALL entries' codes so the project is still
+    # named in the subject rather than leaving a blank `[auto-ingest] :`.
+    codes = ", ".join(e["code"] for e in ingested if e["files_written"]) or ", ".join(
+        e["code"] for e in ingested
+    )
     summary_lines = []
     for e in ingested:
-        if not e["files_written"]:
-            continue
-        verbs = ", ".join(f"{k}={v}" for k, v in (e["plan_summary"] or {}).items())
-        summary_lines.append(f"- {e['code']}: {verbs}")
+        if e["files_written"]:
+            verbs = ", ".join(
+                f"{k}={v}" for k, v in (e["plan_summary"] or {}).items()
+            )
+            summary_lines.append(f"- {e['code']}: {verbs}")
+        elif e.get("transcript_persisted"):
+            # No bullets but a transcript landed. `.get` keeps this safe for
+            # the account/sprint-planning/slack callers whose entries never
+            # set `transcript_persisted` (missing key → falsy → skipped).
+            summary_lines.append(f"- {e['code']}: transcript only")
     body = "\n".join(summary_lines)
 
     message = (
