@@ -489,3 +489,34 @@ def test_sync_substance_idempotent_across_two_passes(tmp_path):
     for r in healthy_rows:
         assert not any(f.get("source") == "binding"
                        for f in r["review_flags"])
+
+
+def test_resyncing_same_item_is_idempotent(tmp_path):
+    """Re-syncing the SAME substance item must leave exactly one row per version
+    (no duplicates). Regression guard for the prod issue that prompted the DB
+    unique constraint on (project_code, est_item_id, version_label): the sync
+    upserts on the stable id `<project_code>/<est_item_id>/<version_label>`, it
+    does not append. A 2nd sync of the same disk converges to the same row set."""
+    proj = tmp_path / "1p/acct/proj-1"
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")  # 2 versions
+    client = _FakeClient()
+    estimate = _FakeEstimate({"d1"})
+
+    n1 = sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                              project_dir=proj, estimate=estimate)
+    assert n1 == 2
+    rows_after_1 = client.store["spine_substance"]
+    assert len(rows_after_1) == 2
+    ids_1 = [r["id"] for r in rows_after_1]
+    assert sorted(ids_1) == ["proj-1/d1/v1", "proj-1/d1/v2"]
+
+    n2 = sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                              project_dir=proj, estimate=estimate)
+    assert n2 == 2
+    rows_after_2 = client.store["spine_substance"]
+    # Exactly one row per version — the 2nd sync upserted, did not duplicate.
+    assert len(rows_after_2) == 2
+    assert ids_1 == [r["id"] for r in rows_after_2]
+    # Each (est_item_id, version_label) pair is unique — the constraint's key.
+    keys = [(r["est_item_id"], r["version_label"]) for r in rows_after_2]
+    assert len(keys) == len(set(keys))
