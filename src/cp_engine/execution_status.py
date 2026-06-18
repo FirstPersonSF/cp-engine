@@ -21,8 +21,12 @@ Pure functions: plain data in, a `Status` out. No DB, no supabase client.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 
 from cp_engine.estimate import week_to_date
+
+# How recent a substance version must be to count as "recent activity".
+_RECENT_ACTIVITY_DAYS = 21
 
 
 @dataclass(frozen=True)
@@ -136,3 +140,22 @@ def derive_status(bars, *, has_live_substance, recent_activity, start_date, toda
     if has_live_substance:
         return Status("active", "live substance exists", 0.5)
     return Status("next", "no schedule signal yet and nothing captured", 0.5)
+
+
+def item_has_recent_activity(version_dates, *, today, days=_RECENT_ACTIVITY_DAYS):
+    """True when any substance version date is within `days` of `today`.
+
+    `version_dates` is a list of ISO date strings (substance `version_date`
+    values). Tolerant of None/empty entries. Returns False when nothing
+    qualifies (including an empty list)."""
+    cutoff = today.toordinal() - days
+    for raw in version_dates or []:
+        if not raw:
+            continue
+        try:
+            d = date.fromisoformat(raw)
+        except (ValueError, TypeError):
+            continue
+        if d.toordinal() >= cutoff:
+            return True
+    return False

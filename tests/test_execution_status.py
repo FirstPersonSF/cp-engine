@@ -1,6 +1,6 @@
 from datetime import date
 
-from cp_engine.execution_status import derive_status
+from cp_engine.execution_status import derive_status, item_has_recent_activity
 
 
 # --- Task 4.1: derive_status -------------------------------------------------
@@ -52,3 +52,22 @@ def test_no_bars_no_substance_is_next():
     s = derive_status([], has_live_substance=False, recent_activity=False,
                       start_date="2026-04-27", today=date(2026, 6, 18))
     assert s.status == "next"
+
+
+# --- Task 4.2: item_has_recent_activity --------------------------------------
+
+def test_recent_activity_true_within_window():
+    assert item_has_recent_activity(["2026-06-13"], today=date(2026, 6, 18)) is True
+
+
+def test_recent_activity_false_outside_window():
+    assert item_has_recent_activity(["2026-04-19"], today=date(2026, 6, 18)) is False
+
+
+def test_recent_activity_false_when_empty():
+    assert item_has_recent_activity([], today=date(2026, 6, 18)) is False
+
+
+def test_recent_activity_tolerates_none_entries():
+    assert item_has_recent_activity([None, "", "2026-06-13"], today=date(2026, 6, 18)) is True
+    assert item_has_recent_activity([None, ""], today=date(2026, 6, 18)) is False
