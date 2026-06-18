@@ -121,6 +121,25 @@ class Estimate:
         return tuple(i for p in self.phases for i in p.items)
 
 
+@dataclass(frozen=True)
+class ScheduleItem:
+    """A schedule bar (Gantt row) from estimator.schedule_items. `start_week`
+    is weeks-from-kickoff (numeric); pair with the estimate's start_date for a
+    calendar date. `work_item_id`/`work_item_kind`/`done` link a bar back to its
+    estimate work item — those columns arrive in a later phase, so they default
+    to None/False until then."""
+    id: str
+    label: str
+    phase_id: str | None
+    start_week: float
+    duration: float
+    item_type: str | None      # activity | milestone | feedback | holiday
+    emphasis: str | None       # important | blocker | external | null
+    work_item_id: str | None = None
+    work_item_kind: str | None = None
+    done: bool = False
+
+
 # Explicit column lists (never `*`, per the global Supabase rule).
 _PROJECT_COLUMNS = "id, mc_project_id, name, is_default"
 _PHASE_COLUMNS = "id, name, overview, position"
@@ -128,6 +147,14 @@ _ITEM_COLUMNS = "id, phase_id, name, short_description, library_item_id, positio
 # public.projects carries the kickoff start_date, keyed by the MC project id
 # (public.projects.id === estimator.projects.mc_project_id).
 _PUBLIC_PROJECT_COLUMNS = "id, start_date"
+# Only columns known to exist in the live schema. The work_item_id /
+# work_item_kind / done columns arrive in a later phase; selecting them now
+# would 400 if absent, so we read them from the row via `.get()` (defaulting
+# None/False) once they ship rather than naming them here.
+_SCHEDULE_COLUMNS = (
+    "id, project_id, phase_id, label, start_week, duration, "
+    "position, item_type, emphasis"
+)
 
 
 def fetch_estimate(client, mc_project_id) -> Estimate | None:
@@ -208,3 +235,44 @@ def fetch_estimate(client, mc_project_id) -> Estimate | None:
     return Estimate.from_rows(
         project_row, phases, activities, deliverables, start_date=start_date
     )
+
+
+def fetch_schedule(client, estimate_id) -> list[ScheduleItem]:
+    """Read the schedule bars (Gantt rows) for an estimate, ordered by
+    (start_week, position).
+
+    `estimator.schedule_items.project_id` references the ESTIMATE id
+    (estimator.projects.id), NOT the mc_project_id — so we filter by
+    `estimate_id` directly. Explicit-column read (per the global Supabase rule);
+    the not-yet-shipped work_item_id / work_item_kind / done columns are read via
+    `.get()` defaulting None/False so this tolerates their absence.
+    """
+    rows = (
+        client.schema("estimator")
+        .table("schedule_items")
+        .select(_SCHEDULE_COLUMNS)
+        .eq("project_id", estimate_id)
+        .execute()
+        .data
+        or []
+    )
+    # Order by (start_week, position) on the raw rows — position is a DB ordering
+    # hint we don't carry onto the dataclass.
+    ordered = sorted(
+        rows, key=lambda r: (float(r.get("start_week") or 0), r.get("position", 0))
+    )
+    return [
+        ScheduleItem(
+            id=_required(r, "id", "schedule_item"),
+            label=_required(r, "label", "schedule_item"),
+            phase_id=r.get("phase_id"),
+            start_week=float(r.get("start_week") or 0),
+            duration=float(r.get("duration") or 0),
+            item_type=r.get("item_type"),
+            emphasis=r.get("emphasis"),
+            work_item_id=r.get("work_item_id"),
+            work_item_kind=r.get("work_item_kind"),
+            done=bool(r.get("done", False)),
+        )
+        for r in ordered
+    ]

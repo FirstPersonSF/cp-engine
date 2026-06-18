@@ -1,4 +1,10 @@
-from cp_engine.estimate import Estimate, EstimateItem, fetch_estimate
+from cp_engine.estimate import (
+    Estimate,
+    EstimateItem,
+    ScheduleItem,
+    fetch_estimate,
+    fetch_schedule,
+)
 
 
 def test_estimate_from_rows_builds_ordered_items():
@@ -206,6 +212,64 @@ def test_fetch_estimate_start_date_none_when_absent():
     client = _FakeClient(tables)
     est = fetch_estimate(client, "mc-1")
     assert est.start_date is None
+
+
+def test_fetch_schedule_orders_and_defaults_absent_columns():
+    # Two bars, out of order; one milestone. The work_item_*/done columns are
+    # absent from the rows (not yet in the live schema) → default None/False.
+    tables = {
+        "schedule_items": [
+            {"id": "s-late", "project_id": "est-1", "phase_id": "ph-1",
+             "label": "Storybuilding", "start_week": 3.0, "duration": 2.0,
+             "position": 0, "item_type": "activity", "emphasis": "important"},
+            {"id": "s-early", "project_id": "est-1", "phase_id": "ph-0",
+             "label": "Kickoff", "start_week": 0.0, "duration": 1.0,
+             "position": 0, "item_type": "milestone", "emphasis": None},
+            {"id": "s-other", "project_id": "est-other", "phase_id": "ph-x",
+             "label": "Not ours", "start_week": 0.0, "duration": 1.0,
+             "position": 0, "item_type": "activity", "emphasis": None},
+        ],
+    }
+    client = _FakeClient(tables)
+    items = fetch_schedule(client, "est-1")
+
+    # Scoped to est-1, ordered by (start_week, position).
+    assert [i.id for i in items] == ["s-early", "s-late"]
+    early = items[0]
+    assert isinstance(early, ScheduleItem)
+    assert early.item_type == "milestone"
+    assert early.start_week == 0.0 and early.duration == 1.0
+    # Not-yet-existing columns default safely.
+    assert early.work_item_id is None
+    assert early.work_item_kind is None
+    assert early.done is False
+
+    # Filtered by project_id == estimate_id, estimator schema, explicit cols.
+    assert client.schemas_used == {"estimator"}
+    q = next(q for q in client.queries if q.table == "schedule_items")
+    assert q.eq_filters == {"project_id": "est-1"}
+    assert q.columns is not None and "*" not in q.columns
+
+
+def test_fetch_schedule_coerces_numeric_and_reads_present_work_item():
+    tables = {
+        "schedule_items": [
+            {"id": "s-1", "project_id": "est-1", "phase_id": "ph-0",
+             "label": "Bar", "start_week": "2", "duration": "1",
+             "position": 0, "item_type": "activity", "emphasis": None,
+             "work_item_id": "wi-9", "work_item_kind": "deliverable", "done": True},
+        ],
+    }
+    client = _FakeClient(tables)
+    items = fetch_schedule(client, "est-1")
+    assert len(items) == 1
+    it = items[0]
+    # numeric coercion from string-y numerics.
+    assert it.start_week == 2.0 and it.duration == 1.0
+    # present work-item columns are read through.
+    assert it.work_item_id == "wi-9"
+    assert it.work_item_kind == "deliverable"
+    assert it.done is True
 
 
 def test_fetch_estimate_returns_none_when_no_default():
