@@ -359,6 +359,28 @@ def test_sync_substance_reap_scoped_to_project(tmp_path):
     assert "proj-2/d9/v1" in ids  # sibling survived
 
 
+def test_sync_substance_never_reaps_authored_row(tmp_path):
+    """An origin='authored' row with NO confirmed field whose disk file is
+    absent must be neither deleted nor flagged — MC-2 owns authored rows, the
+    disk markdown is downstream and may not exist yet."""
+    proj = tmp_path / "1p/acct/proj-1"; proj.mkdir(parents=True)
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "proj-1/auth/v1", "project_code": "proj-1",
+        "framing": "f", "body": "b", "status": "live",
+        "field_states": {}, "review_flags": [], "origin": "authored",
+    }]
+    # No substance file on disk; a distilled unconfirmed row here would be
+    # deleted by the reap.
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=None)
+    ids = {r["id"] for r in client.store["spine_substance"]}
+    assert "proj-1/auth/v1" in ids  # not deleted
+    row = next(r for r in client.store["spine_substance"]
+               if r["id"] == "proj-1/auth/v1")
+    assert row["review_flags"] == []  # not flagged
+
+
 def test_sync_substance_preserves_confirmed_body(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()

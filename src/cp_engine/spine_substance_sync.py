@@ -248,7 +248,7 @@ def sync_spine_substance(
         client.table(_SUBSTANCE_TABLE)
         .select(
             "id, framing, body, status, layer, serves, archived, "
-            "field_states, review_flags"
+            "field_states, review_flags, origin"
         )
         .eq("project_code", project_code)
         .execute()
@@ -304,6 +304,8 @@ def sync_spine_substance(
     for row_id, existing in existing_by_id.items():
         if row_id in present_ids:
             continue
+        if existing.get("origin") == "authored":
+            continue  # MC-2 owns authored rows; disk is downstream — never reap.
         if _has_confirmed_field(existing, tracked_fields=_SUBSTANCE_TRACKED_FIELDS):
             review_flags = _merge_flag(
                 list(existing.get("review_flags") or []),
