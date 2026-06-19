@@ -406,25 +406,14 @@ def sync_tenant(
                 sync_spine_context,
                 sync_spine_substance,
             )
-            from cp_engine.spine_sync import (
-                sync_spine_elements,
-                sync_spine_snapshots,
-            )
+            from cp_engine.spine_sync import sync_spine_snapshots
 
             client = backend.spine_client()
-            try:
-                sync_spine_elements(
-                    client,
-                    project_id=project.mc2_id,
-                    project_dir=project_dir,
-                    tenant_root=config.root,
-                    now=sync_clock,
-                )
-            except Exception as exc:  # noqa: BLE001 — best-effort element mirror
-                logger.warning(
-                    "spine-element mirror skipped for %s: %s",
-                    project.code, exc, exc_info=True,
-                )
+            # NOTE: the legacy `spine_elements` mirror was removed here — the
+            # spine_elements → spine_substance merge is complete and the table
+            # was dropped (mc-2 migration 072). Calling it logged a PGRST205
+            # "table not found" warning on every project of every sync. The
+            # substance + context mirror below is its replacement.
             try:
                 sync_spine_snapshots(
                     client,
