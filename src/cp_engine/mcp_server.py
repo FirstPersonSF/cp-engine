@@ -71,6 +71,35 @@ def _resolve(project_code: str):
     config = load_config(_tenant_root())
     client = MC2Backend().connect(config)
 
+    project_id = _resolve_project_id(client, project_code)
+    if project_id is None:
+        return None
+
+    folders = resolve_project_folders_by_id(client, project_id)
+    if folders is None:
+        return None
+    return client, folders.project_id, folders.company_id
+
+
+def _resolve_project_id(client, project_code: str) -> str | None:
+    """Resolve a project identifier to its `projects.id`, bridging two id forms.
+
+    The canonical key everything in MC-2 joins on is `projects.code`, which for
+    nearly every project is a company-prefixed SLUG (``IBX-platform-sales-
+    readiness-summit``, ``GGL-activation``) — NOT ``<company>-<number>``. But
+    cp-engine's working-dir slug and ``cp.md`` Facts derive a ``<company>-
+    <number>`` id (``ibx-5192``) that does NOT match ``projects.code``. So an
+    exact-code lookup misses for any caller passing the working-dir form.
+
+    Resolution order:
+      1. Exact ``projects.code`` match (handles a caller that passes the real
+         slug code, e.g. from MC-2 directly).
+      2. Fallback: parse ``<companyprefix>-<number>`` and match
+         ``companies.code`` (case-insensitive) + ``projects.number``. This is
+         what bridges ``ibx-5192`` → the row whose code is the slug.
+
+    Returns the project id, or ``None`` when nothing resolves.
+    """
     rows = (
         client.table("projects")
         .select("id")
@@ -80,14 +109,40 @@ def _resolve(project_code: str):
         .data
         or []
     )
-    if not rows:
-        return None
-    project_id = rows[0]["id"]
+    if rows:
+        return rows[0]["id"]
 
-    folders = resolve_project_folders_by_id(client, project_id)
-    if folders is None:
+    # Fallback: <companyprefix>-<number> (the working-dir / cp.md Facts form).
+    prefix, sep, tail = project_code.rpartition("-")
+    if not sep or not tail.isdigit():
         return None
-    return client, folders.project_id, folders.company_id
+    number = int(tail)
+    # companies.code is stored UPPERCASE (e.g. `IBX`) while the working-dir
+    # prefix is lowercase (`ibx`); match case-insensitively. The prefix has no
+    # %/_ (it's a slugified company code), so ilike treats it as a literal.
+    companies = (
+        client.table("companies")
+        .select("id")
+        .ilike("code", prefix)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not companies:
+        return None
+    company_id = companies[0]["id"]
+    rows = (
+        client.table("projects")
+        .select("id")
+        .eq("company_id", company_id)
+        .eq("number", number)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    return rows[0]["id"] if rows else None
 
 
 @mcp.tool()

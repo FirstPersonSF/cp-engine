@@ -162,6 +162,91 @@ def test_exactly_two_tools_registered():
     assert names == {"list_project_sources", "pull_project_source"}
 
 
+class _FakeQuery:
+    """Records filters and returns seeded rows for a (table, filters) key.
+
+    `eq` is case-sensitive (mirrors PostgREST). `ilike` is case-insensitive:
+    its filter is keyed as ``(col, "ilike", value.lower())`` so a seeded row's
+    company code (`IBX`) matches a lowercased lookup pattern — the real bug was
+    using a case-sensitive `eq` against an UPPERCASE `companies.code`.
+    """
+
+    def __init__(self, table, store, log):
+        self._table = table
+        self._store = store
+        self._log = log
+        self._filters = set()
+
+    def select(self, *_a, **_k):
+        return self
+
+    def eq(self, col, val):
+        self._filters.add((col, val))
+        return self
+
+    def ilike(self, col, val):
+        self._filters.add((col, "ilike", str(val).lower()))
+        return self
+
+    def limit(self, _n):
+        return self
+
+    def execute(self):
+        key = (self._table, frozenset(self._filters))
+        self._log.append(key)
+        rows = self._store.get(key, [])
+        return type("R", (), {"data": list(rows)})()
+
+
+class _FakeClient:
+    def __init__(self, store):
+        self._store = store
+        self.log = []
+
+    def table(self, name):
+        return _FakeQuery(name, self._store, self.log)
+
+
+def test_resolve_project_id_by_exact_code():
+    """A real slug code resolves directly via projects.code."""
+    store = {
+        ("projects", frozenset([("code", "IBX-platform-sales-readiness-summit")])): [
+            {"id": "pid-slug"}
+        ],
+    }
+    client = _FakeClient(store)
+    assert srv._resolve_project_id(client, "IBX-platform-sales-readiness-summit") == "pid-slug"
+
+
+def test_resolve_project_id_falls_back_to_company_prefix_and_number():
+    """The working-dir form `ibx-5192` (company prefix + number) resolves to the
+    project even though projects.code is the slug `IBX-platform-sales-readiness-summit`.
+
+    This is the bridge: cp-engine's synthesized <company>-<number> id is NOT the
+    canonical projects.code, so an exact-code lookup misses; we fall back to
+    matching companies.code (case-insensitive) + projects.number.
+    """
+    store = {
+        # exact-code lookup MISSES (ibx-5192 is not a real code)
+        ("projects", frozenset([("code", "ibx-5192")])): [],
+        # company prefix resolves CASE-INSENSITIVELY: stored code is UPPERCASE
+        # `IBX`, the working-dir prefix is lowercase `ibx` — must match via ilike.
+        ("companies", frozenset([("code", "ilike", "ibx")])): [{"id": "co-ibx"}],
+        # company_id + number resolves to the project
+        ("projects", frozenset([("company_id", "co-ibx"), ("number", 5192)])): [
+            {"id": "pid-5192"}
+        ],
+    }
+    client = _FakeClient(store)
+    assert srv._resolve_project_id(client, "ibx-5192") == "pid-5192"
+
+
+def test_resolve_project_id_unknown_returns_none():
+    """A code that matches nothing (and isn't a company-number form) → None."""
+    client = _FakeClient({})
+    assert srv._resolve_project_id(client, "totally-unknown") is None
+
+
 def test_module_import_is_light():
     """Importing the server must NOT pull in config / supabase at module load.
 
