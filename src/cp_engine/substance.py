@@ -85,6 +85,10 @@ class WorkItemSubstance:
     layer: str | None = None
     placement: str = "item"  # item | context
     serves: tuple[str, ...] = ()
+    # UI archive flag (Phase 3): a human can archive a substance item from the
+    # MC-2 spine card-dashboard. Default False; omitted from frontmatter when
+    # False so untouched files round-trip byte-for-byte.
+    archived: bool = False
     # Unknown frontmatter keys (Phase 2: mc2 row id, confirmed_at, …) preserved
     # verbatim across parse->render so a render pass never wipes them.
     extra: dict = dataclasses.field(default_factory=dict)
@@ -185,10 +189,11 @@ def parse_substance(path: Path) -> WorkItemSubstance:
     layer = None if meta.get("layer") is None else str(meta["layer"])
     placement = str(meta.get("placement", "item"))
     serves = tuple(str(s) for s in _as_tuple(meta.get("serves")))
+    archived = bool(meta.get("archived", False))
 
     _KNOWN = {
         "est_item_id", "est_item_kind", "binding", "phase",
-        "layer", "placement", "serves",
+        "layer", "placement", "serves", "archived",
     }
     extra = {k: v for k, v in meta.items() if k not in _KNOWN}
 
@@ -222,6 +227,7 @@ def parse_substance(path: Path) -> WorkItemSubstance:
         layer=layer,
         placement=placement,
         serves=serves,
+        archived=archived,
         extra=extra,
     )
 
@@ -277,6 +283,10 @@ def render_substance(item: WorkItemSubstance) -> str:
         fm["placement"] = item.placement
     if item.serves:
         fm["serves"] = list(item.serves)
+    # Omit the default False so untouched files round-trip byte-for-byte
+    # (mirrors how `placement` is omitted when "item").
+    if item.archived:
+        fm["archived"] = True
     for k in sorted(item.extra):
         fm[k] = item.extra[k]
 

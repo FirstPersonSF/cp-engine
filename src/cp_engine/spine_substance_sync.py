@@ -33,9 +33,24 @@ from cp_engine.substance import WorkItemSubstance, parse_substance
 _SUBSTANCE_TABLE = "spine_substance"
 _CONTEXT_TABLE = "spine_context"
 
-# The distilled content a human verifies on a substance version. Same one-way
-# door as elements: sync proposes, a confirmed value wins and divergence flags.
-_SUBSTANCE_TRACKED_FIELDS = ("framing", "body", "status")
+# The fields a human verifies on a substance version. Same one-way door as
+# elements: sync proposes, a confirmed value wins and divergence flags. The
+# distilled content (framing/body/status) plus the UI-set spine placement
+# fields (layer/serves) and the UI archive flag — a confirmed edit in the MC-2
+# card-dashboard must survive sync rather than being clobbered from disk.
+_SUBSTANCE_TRACKED_FIELDS = (
+    "framing", "body", "status", "layer", "serves", "archived",
+)
+
+
+def _normalize_serves(value) -> list[str]:
+    """Normalize a `serves` value to a sorted list of strings for comparison.
+
+    `serves` arrives as a tuple/list on disk and a JSON array from the DB; a
+    confirmed `["b","a"]` and a disk `("a","b")` name the same set and must
+    reconcile as EQUAL (no false drift flag). Sorting + str-coercion makes the
+    equality check order- and list-vs-tuple-insensitive."""
+    return sorted(str(x) for x in (value or []))
 
 # A human can confirm a distilled context body.
 _CONTEXT_TRACKED_FIELDS = ("body",)
@@ -75,6 +90,7 @@ def substance_to_rows(
                 "layer": item.layer,
                 "placement": item.placement,
                 "serves": list(item.serves),
+                "archived": item.archived,
                 "version_label": v.label,
                 "version_date": v.date,
                 "status": v.status,
@@ -231,7 +247,8 @@ def sync_spine_substance(
     prior = (
         client.table(_SUBSTANCE_TABLE)
         .select(
-            "id, framing, body, status, field_states, review_flags"
+            "id, framing, body, status, layer, serves, archived, "
+            "field_states, review_flags"
         )
         .eq("project_code", project_code)
         .execute()
@@ -248,11 +265,19 @@ def sync_spine_substance(
             field_states = dict(existing.get("field_states") or {})
             review_flags = list(existing.get("review_flags") or [])
             for field in _SUBSTANCE_TRACKED_FIELDS:
+                cur = existing.get(field)
+                new = row.get(field)
+                # `serves` is a list; compare order- and type-insensitively so a
+                # reordered/retyped-but-equal set doesn't false-flag drift. The
+                # comparison logic lives here so `reconcile_field` stays generic.
+                if field == "serves":
+                    cur = _normalize_serves(cur)
+                    new = _normalize_serves(new)
                 value, state, flag = reconcile_field(
                     field,
-                    existing.get(field),
+                    cur,
                     field_states.get(field),
-                    row.get(field),
+                    new,
                     now_iso,
                 )
                 row[field] = value
