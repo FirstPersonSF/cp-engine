@@ -1,9 +1,12 @@
-"""Integration test for the spine-spine mirror folded into `cp sync`.
+"""Integration test for the spine mirror's gating inside `cp sync`.
 
-Drives `sync_tenant` with a fake backend that returns one engagement
-ProjectState (with `mc2_id` set) and exposes a fake Supabase client via
-`spine_client()`. After sync, the fake client's `spine_elements` store must
-contain the elements found on disk under that project's `spine/` dir.
+Drives `sync_tenant` with a fake backend and asserts the spine mirror is only
+consulted for projects that have an `mc2_id` (the `if project.mc2_id:` gate).
+
+The legacy `spine_elements` mirror this file originally exercised was removed
+once the spine_elements → spine_substance merge completed (mc-2 migration 072
+dropped the table); the substance/context mirror's own behavior is covered in
+`test_spine_substance_sync.py`.
 
 Reuses the established fixtures from `test_sync.py` (make_config) and the
 `_FakeClient`/`_FakeTable` fake-Supabase pattern from `test_spine_sync.py`.
@@ -79,36 +82,15 @@ def _make_engagement(code: str, mc2_id: str | None = "x") -> ProjectState:
     )
 
 
-def test_sync_mirrors_spine_into_backend_client(tmp_path: Path) -> None:
-    config = make_config(tmp_path)
-
-    # The engagement scaffolds at 1p/google/<code>/. Pre-create its spine/
-    # elements on disk there so the mirror has something to reconcile.
-    code = "ggl-5168"
-    proj_dir = tmp_path / "1p/google" / code
-    _write_spine_el(proj_dir, "Deliverables", "pos", f"{code}/deliverable/pos",
-                    project=code)
-    _write_spine_el(proj_dir, "Research", "iv1", f"{code}/research/iv1",
-                    project=code)
-
-    client = _FakeClient()
-    state = _make_engagement(code, mc2_id="uuid-ggl-5168")
-    backend = _SpineBackend((state,), client)
-
-    sync_tenant(config, backend_factory=lambda _: backend)
-
-    rows = client.store.get("spine_elements", [])
-    assert {r["element_id"] for r in rows} == {
-        f"{code}/deliverable/pos",
-        f"{code}/research/iv1",
-    }
-    # Every mirrored row is keyed to this project's MC-2 uuid.
-    assert all(r["project_id"] == "uuid-ggl-5168" for r in rows)
-
-
 def test_sync_skips_mirror_when_no_mc2_id(tmp_path: Path) -> None:
-    """A project without an mc2_id (default None) must skip the mirror
-    entirely — spine_client() should never be consulted."""
+    """A project without an mc2_id (default None) must skip the spine mirror
+    entirely — `spine_client()` should never be consulted.
+
+    This guards the `if project.mc2_id:` gate around the substance/context/
+    snapshot mirrors in `cp sync`. (The legacy `spine_elements` mirror that
+    this file originally covered was removed once the spine_elements →
+    spine_substance merge completed and mc-2 migration 072 dropped the table.)
+    """
     config = make_config(tmp_path)
     code = "ggl-5168"
     proj_dir = tmp_path / "1p/google" / code
@@ -123,5 +105,3 @@ def test_sync_skips_mirror_when_no_mc2_id(tmp_path: Path) -> None:
 
     # Completes without error ⇒ spine_client()/`.table()` was never consulted.
     sync_tenant(config, backend_factory=lambda _: backend)
-
-    assert client.store.get("spine_elements", []) == []
