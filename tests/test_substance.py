@@ -333,6 +333,41 @@ def test_defaults_when_new_fields_absent(tmp_path):
     assert item.placement == "item"
     assert item.layer is None
     assert item.serves == ()
+    assert item.archived is False
+
+
+def test_archived_true_parses_and_round_trips(tmp_path):
+    """A UI-archived element carries `archived: true` in frontmatter; it must
+    parse to True, emit the `archived: true` line (the True side of the emit
+    conditional — the default-False omit is covered by the round-trip fixture),
+    and round-trip idempotently (render → re-parse → re-render is stable)."""
+    content = (
+        "---\n"
+        "est_item_id: ctx-1\n"
+        "est_item_kind: deliverable\n"
+        "binding: live\n"
+        "layer: Decisions\n"
+        "placement: context\n"
+        "serves:\n"
+        "- abc-123\n"
+        "archived: true\n"
+        "---\n"
+        "## v1 — 2026-06-12 · live\n"
+        "framing: x\n"
+        "sources:\n"
+        "  - a\n"
+        "\n"
+        "body\n"
+    )
+    p = tmp_path / "archived.md"
+    p.write_text(content)
+    item = parse_substance(p)
+    assert item.archived is True
+    rendered = render_substance(item)
+    assert "archived: true" in rendered
+    # Idempotent: parsing the rendered output and re-rendering is byte-stable.
+    p.write_text(rendered)
+    assert render_substance(parse_substance(p)) == rendered
 
 
 def test_new_fields_not_duplicated_in_extra(tmp_path):

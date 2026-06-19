@@ -210,13 +210,21 @@ class _FakeClient:
 
 def _write_substance(root: Path, phase_dir: str, name: str, *, est_item_id,
                      kind="deliverable", binding="live", live_body="live body",
-                     framing="framing"):
+                     framing="framing", layer=None, serves=()):
     d = root / "1p/acct/proj-1/spine" / phase_dir
     d.mkdir(parents=True, exist_ok=True)
-    text = (
+    fm = (
         f"---\nest_item_id: {est_item_id}\nest_item_kind: {kind}\n"
-        f"phase: Phase 0\nbinding: {binding}\n---\n"
-        f"## v2 — 2026-06-11 · live\nframing: {framing}\nsources:\n  - tx\n\n"
+        f"phase: Phase 0\nbinding: {binding}\n"
+    )
+    if layer is not None:
+        fm += f"layer: {layer}\n"
+    if serves:
+        fm += "serves:\n" + "".join(f"  - {s}\n" for s in serves)
+    fm += "---\n"
+    text = (
+        fm
+        + f"## v2 — 2026-06-11 · live\nframing: {framing}\nsources:\n  - tx\n\n"
         f"{live_body}\n\n"
         f"## v1 — 2026-04-23 · superseded\nframing: old\nsources:\n\nold body\n"
     )
@@ -406,6 +414,142 @@ def test_sync_context_upserts_and_reconciles_body(tmp_path):
                if r["id"] == "proj-1/_context/carol")
     assert row["body"] == "CONFIRMED ctx"  # confirmed not clobbered
     assert any(f["field"] == "body" for f in row["review_flags"])
+
+
+# ---- Phase 3: layer / serves / archived reconcile (confirmed-wins) ----------
+
+
+def test_sync_substance_preserves_confirmed_layer(tmp_path):
+    """A UI-set, confirmed `layer` must survive sync: the DB value stays and the
+    disk-derived value is recorded as a review_flag, never clobbered."""
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "framing": "framing", "body": "live body", "status": "live",
+        "layer": "Research", "serves": [], "archived": False,
+        "field_states": {"layer": "confirmed"}, "review_flags": [],
+    }]
+    # Disk frontmatter classifies it under a different layer.
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1",
+                     layer="Decisions")
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+    row = next(r for r in client.store["spine_substance"]
+               if r["id"] == "proj-1/d1/v2")
+    assert row["layer"] == "Research"  # confirmed value wins, not clobbered
+    assert any(f["field"] == "layer" and f["was"] == "Research"
+               and f["now"] == "Decisions" for f in row["review_flags"])
+
+
+def test_sync_substance_serves_confirmed_order_insensitive(tmp_path):
+    """A confirmed `serves` that differs from disk ONLY in order/type must be
+    treated as equal — no review_flag, value preserved. Equality must not be
+    order- or list-vs-tuple-sensitive."""
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "framing": "framing", "body": "live body", "status": "live",
+        "layer": None, "serves": ["b", "a"], "archived": False,
+        "field_states": {"serves": "confirmed"}, "review_flags": [],
+    }]
+    # Disk serves is the same set, different order, written as a YAML list.
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1",
+                     serves=("a", "b"))
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+    row = next(r for r in client.store["spine_substance"]
+               if r["id"] == "proj-1/d1/v2")
+    # Same set → no drift flag at all.
+    assert not any(f["field"] == "serves" for f in row["review_flags"])
+    assert sorted(row["serves"]) == ["a", "b"]
+
+
+def test_sync_substance_serves_confirmed_genuine_diff_flagged(tmp_path):
+    """A genuinely different confirmed `serves` (DB ['a'] vs disk ['a','b'])
+    keeps the DB value and flags drift."""
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "framing": "framing", "body": "live body", "status": "live",
+        "layer": None, "serves": ["a"], "archived": False,
+        "field_states": {"serves": "confirmed"}, "review_flags": [],
+    }]
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1",
+                     serves=("a", "b"))
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+    row = next(r for r in client.store["spine_substance"]
+               if r["id"] == "proj-1/d1/v2")
+    assert row["serves"] == ["a"]  # confirmed value preserved
+    assert any(f["field"] == "serves" for f in row["review_flags"])
+
+
+def test_sync_substance_preserves_confirmed_archived(tmp_path):
+    """A confirmed `archived=true` (UI archive action) survives a sync where the
+    disk file has no `archived` key (parses to False)."""
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "framing": "framing", "body": "live body", "status": "live",
+        "layer": None, "serves": [], "archived": True,
+        "field_states": {"archived": "confirmed"}, "review_flags": [],
+    }]
+    # Disk has no archived key → parses False.
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+    row = next(r for r in client.store["spine_substance"]
+               if r["id"] == "proj-1/d1/v2")
+    assert row["archived"] is True  # confirmed archive not undone by disk
+    assert any(f["field"] == "archived" for f in row["review_flags"])
+
+
+def test_sync_substance_unconfirmed_layer_tracks_disk(tmp_path):
+    """When a field has no confirmed state, the disk-derived value wins (proposed
+    path). Guards the default behavior — UI hasn't touched it, sync proceeds
+    normally with no spurious flag."""
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "framing": "framing", "body": "live body", "status": "live",
+        "layer": "Research", "serves": [], "archived": False,
+        "field_states": {}, "review_flags": [],
+    }]
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1",
+                     layer="Decisions")
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+    row = next(r for r in client.store["spine_substance"]
+               if r["id"] == "proj-1/d1/v2")
+    assert row["layer"] == "Decisions"  # disk wins (proposed)
+    assert not any(f["field"] == "layer" for f in row["review_flags"])
+
+
+def test_sync_substance_confirmed_layer_orphan_flagged_not_deleted(tmp_path):
+    """A row confirmed ONLY on `layer` whose disk file vanished must be flagged
+    source-missing (not deleted) — the reap path must protect the new fields."""
+    proj = tmp_path / "1p/acct/proj-1"; proj.mkdir(parents=True)
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "framing": "f", "body": "b", "status": "live",
+        "layer": "Research", "serves": [], "archived": False,
+        "field_states": {"layer": "confirmed"}, "review_flags": [],
+        "confirmed_by": "drew",
+    }]
+    # No substance file on disk.
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=None)
+    row = next(r for r in client.store["spine_substance"]
+               if r["id"] == "proj-1/d1/v2")
+    assert row["confirmed_by"] == "drew"  # not deleted
+    assert any(f["field"] == "source" and f["now"] == "missing"
+               for f in row["review_flags"])
 
 
 # ---- Task 2.4: binding flags wired into sync --------------------------------
