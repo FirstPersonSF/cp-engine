@@ -4,6 +4,22 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.31.0 — 2026-06-19
+
+### Spine UI edits survive `cp sync`
+
+The MC-2 `/spine` card dashboard lets a human reclassify an element's **layer**, bind its **serves** (which work-item it feeds), and **archive** it. Those edits write the `spine_substance` row *and* mark the field `confirmed` in `field_states`. Before this release, the next `cp sync` clobbered `layer`/`serves` from the markdown frontmatter and reset `archived` to its disk default — silently reverting the human's correction.
+
+#### Changed — `layer` / `serves` / `archived` are now confirmed-wins tracked fields
+
+`_SUBSTANCE_TRACKED_FIELDS` extends from `(framing, body, status)` to also include `layer`, `serves`, and `archived`. Sync now runs them through the same one-way reconcile door as the distilled content: a **confirmed** MC-2 value wins and a divergence raises a `review_flag` instead of being overwritten; an **unconfirmed** field still tracks disk as before (normal sync is unchanged). The orphan-reap path also protects a row confirmed only on one of these fields — it is flagged source-missing, never deleted.
+
+`serves` compares **order- and type-insensitively** (both sides normalized to a sorted string list) so a reordered or list-vs-tuple representation never raises a false drift flag.
+
+#### Added — `archived` on the substance model
+
+`WorkItemSubstance` gains `archived: bool` (default `False`), parsed from frontmatter and emitted on round-trip **only when `True`** (default-false files round-trip byte-for-byte). Requires the companion MC-2 migration `073` (`spine_substance.archived`).
+
 ## v0.30.0 — 2026-06-18
 
 ### Estimate-as-spine: a grounded "where are we / what's next"
