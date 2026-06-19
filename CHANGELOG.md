@@ -4,6 +4,25 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.32.0 — 2026-06-19
+
+### Spine capture loop — author elements into the spine from anywhere
+
+You (or an LLM, or the MC-2 UI) can now author a spine element **directly into MC-2** instead of writing a local markdown file. The element is live immediately, versioned, and reachable by any LLM that reads the spine; the repo `spine/` markdown becomes a generated mirror. This ships steps 1–3 of the capture-loop design (the LLM-writes-to-spine loop).
+
+#### Added — the write engine + MCP write tools
+
+- `authored_element.build_create_rows` / `build_version_rows` — pure row-builders for authored spine elements. Authored elements live in `spine_substance` with `origin='authored'`, `placement='context'`, the element type in `layer`, and a synthetic `_authored/<slug>` `est_item_id` so an unbound element (an Email, a free Synthesis) still carries full version history. `serves` optionally binds it to estimate work-items.
+- `create_spine_element(project_code, label, type, body, serves)` and `add_spine_version(project_code, element_id, body, version_note)` — MCP tools (alongside the existing `list_project_sources` / `pull_project_source`) so Claude writes elements from any session. `create` guards against silently clobbering an existing element; `add_spine_version` supersedes the prior live version via a targeted status update (never rebuilding the prior row) and carries a `version_note` ("what changed").
+
+#### Added — origin-aware bidirectional `cp sync` (the reverse-mirror)
+
+`cp sync` is now bidirectional by origin. `distilled` rows mirror disk→DB and reap-if-missing as before. `authored` rows mirror **DB→disk**: sync renders each authored element to `spine/_authored/<slug>.md` (round-trip-parseable, idempotent), **never reaps** an authored row for a missing file (MC-2 owns it), and **read-skips** `spine/_authored/` so generated mirrors never flow back disk→DB. A shared `is_skipped_spine_dir` predicate keeps the substance loader and the inbox iterator from drifting.
+
+#### Companion MC-2 changes (migrations 074 + 075)
+
+`spine_substance.origin` (`distilled` | `authored`) and `spine_substance.version_note`. A `POST /api/spine/{code}/element` endpoint authors/versions elements from the UI (mirrors the pure builder locally, per the `execution_status.py` convention, to avoid coupling the backend to a fresh cp-engine release).
+
 ## v0.31.1 — 2026-06-19
 
 ### Fixed — cp-sources MCP resolves the working-dir id to the canonical project

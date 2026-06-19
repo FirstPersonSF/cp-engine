@@ -159,7 +159,7 @@ class _FakeTable:
     def __init__(self, store, name):
         self.store, self.name = store, name
         self._op = None
-        self._filter = None
+        self._filters = []
 
     def upsert(self, rows, on_conflict=None):
         self._op = ("upsert", rows); return self
@@ -175,7 +175,12 @@ class _FakeTable:
         self._op = ("select", cols); return self
 
     def eq(self, col, val):
-        self._filter = (col, val); return self
+        # Chained .eq() calls AND together (the authored reverse-mirror select
+        # filters on project_code AND origin).
+        self._filters.append((col, val)); return self
+
+    def _matches(self, x):
+        return all(x.get(col) == val for col, val in self._filters)
 
     def execute(self):
         op, payload = self._op
@@ -189,17 +194,14 @@ class _FakeTable:
                     rows.append(dict(r))
             return type("R", (), {"data": payload})()
         if op == "select":
-            col, val = self._filter
-            return type("R", (), {"data": [x for x in rows if x.get(col) == val]})()
+            return type("R", (), {"data": [x for x in rows if self._matches(x)]})()
         if op == "update":
-            col, val = self._filter
             for x in rows:
-                if x.get(col) == val:
+                if self._matches(x):
                     x.update(payload)
             return type("R", (), {"data": []})()
         if op == "delete":
-            col, val = self._filter
-            rows[:] = [x for x in rows if x.get(col) != val]
+            rows[:] = [x for x in rows if not self._matches(x)]
             return type("R", (), {"data": []})()
 
 
@@ -357,6 +359,28 @@ def test_sync_substance_reap_scoped_to_project(tmp_path):
                          estimate=_FakeEstimate({"d1"}))
     ids = {r["id"] for r in client.store["spine_substance"]}
     assert "proj-2/d9/v1" in ids  # sibling survived
+
+
+def test_sync_substance_never_reaps_authored_row(tmp_path):
+    """An origin='authored' row with NO confirmed field whose disk file is
+    absent must be neither deleted nor flagged — MC-2 owns authored rows, the
+    disk markdown is downstream and may not exist yet."""
+    proj = tmp_path / "1p/acct/proj-1"; proj.mkdir(parents=True)
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "proj-1/auth/v1", "project_code": "proj-1",
+        "framing": "f", "body": "b", "status": "live",
+        "field_states": {}, "review_flags": [], "origin": "authored",
+    }]
+    # No substance file on disk; a distilled unconfirmed row here would be
+    # deleted by the reap.
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=None)
+    ids = {r["id"] for r in client.store["spine_substance"]}
+    assert "proj-1/auth/v1" in ids  # not deleted
+    row = next(r for r in client.store["spine_substance"]
+               if r["id"] == "proj-1/auth/v1")
+    assert row["review_flags"] == []  # not flagged
 
 
 def test_sync_substance_preserves_confirmed_body(tmp_path):
@@ -693,3 +717,65 @@ def test_resyncing_same_item_is_idempotent(tmp_path):
     # Each (est_item_id, version_label) pair is unique — the constraint's key.
     keys = [(r["est_item_id"], r["version_label"]) for r in rows_after_2]
     assert len(keys) == len(set(keys))
+
+
+# ---- Task 2.3: reverse-mirror (DB→disk) of authored elements ----------------
+
+
+def _authored_row(est_item_id, label, *, status, project_code="proj-1"):
+    return {
+        "id": f"{project_code}/{est_item_id}/{label}",
+        "project_code": project_code,
+        "est_item_id": est_item_id, "est_item_kind": None, "phase": None,
+        "binding": "unbound", "layer": "synthesis", "placement": "context",
+        "serves": ["wi-1"], "version_label": label, "version_date": "2026-06-19",
+        "status": status, "framing": "authored note", "body": f"{label} body",
+        "sources": [], "origin": "authored",
+    }
+
+
+def test_sync_generates_authored_file(tmp_path):
+    """An origin='authored' DB row with no disk file is reverse-mirrored to
+    spine/_authored/<slug>.md by sync (DB→disk), and the generated file parses."""
+    from cp_engine.substance import parse_substance
+
+    proj = tmp_path / "1p/acct/proj-1"; proj.mkdir(parents=True)
+    client = _FakeClient()
+    client.store["spine_substance"] = [
+        _authored_row("_authored/note-1", "v2", status="live"),
+        _authored_row("_authored/note-1", "v1", status="superseded"),
+    ]
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=None)
+    out = proj / "spine/_authored/note-1.md"
+    assert out.exists()
+    item = parse_substance(out)            # must NOT raise
+    assert len(item.versions) == 2
+
+
+def test_sync_skips_authored_dir_on_read(tmp_path):
+    """Second-sync idempotency: a generated spine/_authored/<slug>.md file on
+    disk must NOT be read as disk input — the loader skips _authored/ entirely so
+    authored files never flow disk→DB (no sentinel kind write-back, no drift)."""
+    from cp_engine.spine_substance_sync import _load_substance_items
+
+    proj = tmp_path / "1p/acct/proj-1"
+    d = proj / "spine/_authored"
+    d.mkdir(parents=True)
+    (d / "note-1.md").write_text(
+        "---\nest_item_id: _authored/note-1\nest_item_kind: context\n"
+        "binding: unbound\nplacement: context\n---\n"
+        "## v1 — 2026-06-19 · live\nframing: authored note\nsources:\n\nbody\n"
+    )
+    items = _load_substance_items(proj)
+    assert not any(it.est_item_id.startswith("_authored/") for it, _ in items)
+
+
+def test_load_substance_still_loads_phase_dir_file(tmp_path):
+    """Don't over-skip: a normal phase-dir substance file is still loaded."""
+    from cp_engine.spine_substance_sync import _load_substance_items
+
+    proj = tmp_path / "1p/acct/proj-1"
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
+    items = _load_substance_items(proj)
+    assert any(it.est_item_id == "d1" for it, _ in items)

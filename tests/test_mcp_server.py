@@ -156,10 +156,164 @@ def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
     assert srv._tenant_root() == tmp_path.resolve()
 
 
-def test_exactly_two_tools_registered():
-    """The server registers exactly the two project-source tools."""
+def test_exactly_four_tools_registered():
+    """The server registers exactly the two read tools + two spine write tools."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
-    assert names == {"list_project_sources", "pull_project_source"}
+    assert names == {
+        "list_project_sources",
+        "pull_project_source",
+        "create_spine_element",
+        "add_spine_version",
+    }
+
+
+# ---------------------------------------------------------------------------
+# Spine write tools (create_spine_element / add_spine_version)
+# ---------------------------------------------------------------------------
+
+
+class _FakeWriteQuery:
+    """A chainable query that records upserts/updates and serves seeded selects.
+
+    Supports the chains the write tools use:
+      - .select(...).eq(...).eq(...).limit(...).execute()  (create existing-check)
+      - .select(...).eq(...).eq(...).execute()             (version prior-fetch)
+      - .upsert(rows, on_conflict=...).execute()           (write)
+      - .update({...}).eq(...).execute()                   (demote prior live)
+    `select_rows` is the seeded `.data` for any select that runs on this table.
+    """
+
+    def __init__(self, table, client):
+        self._table = table
+        self._client = client
+        self._mode = None  # "select" | "upsert" | "update"
+        self._payload = None
+
+    def select(self, *_a, **_k):
+        self._mode = "select"
+        return self
+
+    def eq(self, _col, _val):
+        return self
+
+    def limit(self, _n):
+        return self
+
+    def upsert(self, rows, on_conflict=None):
+        self._mode = "upsert"
+        self._payload = rows
+        self._client.upserts.append((self._table, rows, on_conflict))
+        return self
+
+    def update(self, patch):
+        self._mode = "update"
+        self._payload = patch
+        return self
+
+    def execute(self):
+        if self._mode == "update":
+            self._client.updates.append((self._table, self._payload))
+            return type("R", (), {"data": []})()
+        if self._mode == "upsert":
+            return type("R", (), {"data": list(self._payload)})()
+        # select
+        return type("R", (), {"data": list(self._client.select_rows)})()
+
+
+class _FakeWriteClient:
+    def __init__(self, select_rows=None):
+        self.select_rows = select_rows or []
+        self.upserts = []  # list of (table, rows, on_conflict)
+        self.updates = []  # list of (table, patch)
+
+    def table(self, name):
+        return _FakeWriteQuery(name, self)
+
+
+def test_create_spine_element_writes_authored_v1(monkeypatch):
+    """Creates a live v1 authored row and writes it via upsert."""
+    client = _FakeWriteClient(select_rows=[])  # existing-check finds nothing
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+
+    out = srv.create_spine_element("ibx-5192", "Email from Janet", "email", "Hi", [])
+
+    assert out == {"element_id": "_authored/email-from-janet", "version_label": "v1"}
+    assert len(client.upserts) == 1
+    table, rows, _ = client.upserts[0]
+    assert table == "spine_substance"
+    row = rows[0]
+    assert row["origin"] == "authored"
+    assert row["project_code"] == "ibx-5192"
+    assert row["status"] == "live"
+    assert row["version_label"] == "v1"
+
+
+def test_create_spine_element_conflict(monkeypatch):
+    """An existing element with the same slug → error, no clobbering upsert."""
+    client = _FakeWriteClient(select_rows=[{"id": "ibx-5192/_authored/email-from-janet/v1"}])
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+
+    out = srv.create_spine_element("ibx-5192", "Email from Janet", "email", "Hi", [])
+
+    assert "already exists" in out["error"]
+    assert client.upserts == []
+
+
+def test_create_spine_element_unresolved(monkeypatch):
+    """An unresolvable code → structured error containing 'not found'."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: None)
+    out = srv.create_spine_element("nope", "X", "note")
+    assert "not found" in out["error"]
+
+
+def test_add_spine_version(monkeypatch):
+    """Demotes the prior live v1 then upserts a new live v2 with the note."""
+    prior = [{
+        "id": "ibx-5192/_authored/hyp/v1",
+        "est_item_id": "_authored/hyp",
+        "est_item_kind": None,
+        "phase": None,
+        "binding": "unbound",
+        "layer": "note",
+        "placement": "context",
+        "serves": [],
+        "version_label": "v1",
+        "version_date": "2026-06-18",
+        "status": "live",
+        "framing": "Latest hypothesis",
+        "body": "old",
+        "sources": [],
+        "origin": "authored",
+    }]
+    client = _FakeWriteClient(select_rows=prior)
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+
+    out = srv.add_spine_version("ibx-5192", "_authored/hyp", "new", "changed")
+
+    assert out == {"element_id": "_authored/hyp", "version_label": "v2"}
+    # prior live v1 demoted via targeted update
+    assert client.updates == [("spine_substance", {"status": "superseded"})]
+    # new live v2 upserted carrying the version_note
+    assert len(client.upserts) == 1
+    _, rows, _ = client.upserts[0]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["version_label"] == "v2"
+    assert row["status"] == "live"
+    assert row["version_note"] == "changed"
+    assert row["body"] == "new"
+
+
+def test_add_spine_version_unknown_element(monkeypatch):
+    """No prior versions for the element → error, no writes."""
+    client = _FakeWriteClient(select_rows=[])
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+
+    out = srv.add_spine_version("ibx-5192", "_authored/missing", "new", "changed")
+
+    assert "no authored element" in out["error"]
+    assert client.upserts == []
+    assert client.updates == []
 
 
 class _FakeQuery:

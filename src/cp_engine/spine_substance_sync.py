@@ -21,17 +21,31 @@ never deleting them.
 from __future__ import annotations
 
 import dataclasses
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
 import frontmatter
 
+from cp_engine.authored_mirror import write_authored_element
 from cp_engine.spine_context import parse_context
 from cp_engine.spine_sync import _has_confirmed_field, _merge_flag, reconcile_field
-from cp_engine.substance import WorkItemSubstance, parse_substance
+from cp_engine.substance import (
+    WorkItemSubstance,
+    is_skipped_spine_dir,
+    parse_substance,
+)
+
+logger = logging.getLogger(__name__)
 
 _SUBSTANCE_TABLE = "spine_substance"
 _CONTEXT_TABLE = "spine_context"
+
+# Columns `write_authored_element` reads off each authored DB row.
+_AUTHORED_SELECT = (
+    "id, est_item_id, est_item_kind, phase, binding, layer, placement, "
+    "serves, version_label, version_date, status, framing, body, sources, origin"
+)
 
 # The fields a human verifies on a substance version. Same one-way door as
 # elements: sync proposes, a confirmed value wins and divergence flags. The
@@ -186,8 +200,12 @@ def _load_substance_items(project_dir: Path) -> list[tuple[WorkItemSubstance, st
         return out
     for md in sorted(spine_root.glob("*/*.md")):
         parts = md.relative_to(spine_root).parts
-        # parts[0] is the phase dir; skip _context and snapshot dirs.
-        if parts[0] == "_context" or any(p.endswith(".snapshots") for p in parts):
+        # Skip _context, _authored, and snapshot dirs (shared predicate so this
+        # and `spine_inbox._iter_substance_files` can't drift). _authored/ files
+        # are a generated DB→disk MIRROR of authored (MC-2-owned) rows — reading
+        # them back would flow disk→DB and flip the DB's est_item_kind=None to
+        # the file's sentinel kind on the next sync.
+        if is_skipped_spine_dir(parts):
             continue
         # Skip non-substance files (old element files, unrelated .md). A genuine
         # substance file that fails the full parse still raises below.
@@ -248,7 +266,7 @@ def sync_spine_substance(
         client.table(_SUBSTANCE_TABLE)
         .select(
             "id, framing, body, status, layer, serves, archived, "
-            "field_states, review_flags"
+            "field_states, review_flags, origin"
         )
         .eq("project_code", project_code)
         .execute()
@@ -304,6 +322,8 @@ def sync_spine_substance(
     for row_id, existing in existing_by_id.items():
         if row_id in present_ids:
             continue
+        if existing.get("origin") == "authored":
+            continue  # MC-2 owns authored rows; disk is downstream — never reap.
         if _has_confirmed_field(existing, tracked_fields=_SUBSTANCE_TRACKED_FIELDS):
             review_flags = _merge_flag(
                 list(existing.get("review_flags") or []),
@@ -316,6 +336,34 @@ def sync_spine_substance(
             ).eq("id", row_id).execute()
         else:
             client.table(_SUBSTANCE_TABLE).delete().eq("id", row_id).execute()
+
+    # Reverse-mirror (DB→disk): regenerate spine/_authored/<slug>.md for every
+    # origin='authored' element. Authored rows are MC-2-owned and may have no
+    # disk file; this materializes them so they surface in the tree (the caller's
+    # `git add -A` picks the files up). Best-effort: a mirror failure must NEVER
+    # abort sync — the rows persist in MC-2 regardless.
+    try:
+        authored = (
+            client.table(_SUBSTANCE_TABLE)
+            .select(_AUTHORED_SELECT)
+            .eq("project_code", project_code)
+            .eq("origin", "authored")
+            .execute()
+            .data
+        ) or []
+        groups: dict[str, list[dict]] = {}
+        for r in authored:
+            groups.setdefault(r["est_item_id"], []).append(r)
+        for est_item_id, group in groups.items():
+            write_authored_element(
+                project_dir, project_code=project_code,
+                est_item_id=est_item_id, rows=group,
+            )
+    except Exception as exc:  # noqa: BLE001 — best-effort authored reverse-mirror
+        logger.warning(
+            "authored reverse-mirror skipped for %s: %s",
+            project_code, exc, exc_info=True,
+        )
 
     return len(rows)
 
