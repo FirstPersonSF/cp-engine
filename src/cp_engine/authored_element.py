@@ -1,0 +1,87 @@
+"""The write engine for AUTHORED spine elements (the capture loop).
+
+Pure row-builders shared by the mc-2 endpoint (POST /api/spine/{code}/element)
+and the cp MCP write tools. No DB client here — callers upsert the returned
+rows. Authored elements live in `spine_substance` with origin='authored':
+- bound (serves a work-item) -> binding='live'
+- unbound (an Email, a free Synthesis) -> a synthetic est_item_id `_authored/<slug>`,
+  binding='unbound'. Either way they carry full version history.
+
+`type` maps onto the `layer` column (the artifact-kind axis) so the existing
+by-layer view + reconcile work unchanged; placement is always 'context' for
+authored elements (they're project-level, optionally serving work-items).
+"""
+from __future__ import annotations
+
+import re
+
+_SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+
+def slugify(text: str) -> str:
+    s = _SLUG_RE.sub("-", (text or "").lower()).strip("-")
+    return s or "untitled"
+
+
+def authored_est_item_id(slug: str) -> str:
+    return f"_authored/{slug}"
+
+
+def _row(*, project_id, project_code, est_item_id, label, type_, body, serves,
+         version_label, version_date, status, version_note=None):
+    return {
+        "id": f"{project_code}/{est_item_id}/{version_label}",
+        "project_id": project_id,
+        "project_code": project_code,
+        "est_item_id": est_item_id,
+        "est_item_kind": None,
+        "phase": None,
+        "binding": "live" if serves else "unbound",
+        "layer": type_,
+        "placement": "context",
+        "serves": list(serves or []),
+        "version_label": version_label,
+        "version_date": version_date,
+        "status": status,
+        "framing": label,           # the human-facing label/framing line
+        "body": body,
+        "sources": [],
+        "origin": "authored",
+        "version_note": version_note,
+        "rel_path": None,
+    }
+
+
+def build_create_rows(*, project_id, project_code, label, type_, body, serves, now_iso):
+    """v1 of a new authored element."""
+    slug = slugify(label)
+    est_item_id = authored_est_item_id(slug)
+    date = now_iso[:10]
+    return [_row(
+        project_id=project_id, project_code=project_code, est_item_id=est_item_id,
+        label=label, type_=type_, body=body, serves=serves,
+        version_label="v1", version_date=date, status="live",
+    )]
+
+
+def build_version_rows(*, project_id, project_code, est_item_id, prior_versions,
+                       body, version_note, now_iso, label=None, type_=None, serves=None):
+    """The NEW live version row for an authored element. The caller is
+    responsible for demoting the prior live row to 'superseded' (a targeted
+    status update) — we do NOT rebuild prior rows here (that would clobber
+    their sources/version_note/any column we forget to carry).
+
+    Note: passing serves=[] on a version drops the binding on the NEW live row;
+    history keeps whatever binding its own prior rows already carry.
+    """
+    nums = [int(v["version_label"][1:]) for v in prior_versions
+            if str(v.get("version_label", "")).startswith("v")]
+    next_n = (max(nums) + 1) if nums else 1
+    base = prior_versions[0] if prior_versions else {}
+    return [_row(
+        project_id=project_id, project_code=project_code, est_item_id=est_item_id,
+        label=label or base.get("framing"), type_=type_ or base.get("layer"),
+        body=body, serves=serves if serves is not None else (base.get("serves") or []),
+        version_label=f"v{next_n}", version_date=now_iso[:10], status="live",
+        version_note=version_note,
+    )]
