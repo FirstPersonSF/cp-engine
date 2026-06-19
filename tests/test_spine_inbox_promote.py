@@ -6,8 +6,50 @@ from pathlib import Path
 
 import pytest
 
-from cp_engine.spine_inbox import promote_card, proposed_card
-from cp_engine.substance import parse_substance
+from cp_engine.spine_inbox import (
+    _iter_substance_files,
+    promote_card,
+    proposed_card,
+)
+from cp_engine.substance import (
+    SubstanceVersion,
+    WorkItemSubstance,
+    parse_substance,
+    render_substance,
+)
+
+
+def _write_item(spine_root: Path, subdir: str, slug: str, *, est_item_id="d1"):
+    d = spine_root / subdir
+    d.mkdir(parents=True, exist_ok=True)
+    path = d / f"{slug}.md"
+    item = WorkItemSubstance(
+        est_item_id=est_item_id, est_item_kind="deliverable", phase="P0",
+        binding="live",
+        versions=(SubstanceVersion(
+            label="v1", date="2026-06-15", status="live",
+            framing="f", sources=(), body="b",
+        ),),
+        path=path,
+    )
+    path.write_text(render_substance(item))
+    return path
+
+
+def test_iter_substance_files_skips_authored_mirror(tmp_path: Path):
+    """A generated authored mirror file (spine/_authored/<slug>.md) is DB-owned
+    and must NEVER be yielded as a real disk substance candidate — otherwise the
+    promote path could route into / count it. Real phase-dir files still yield."""
+    spine_root = tmp_path / "spine"
+    real = _write_item(spine_root, "phase-0", "messaging-system")
+    _write_item(spine_root, "_authored", "note-1")        # DB-owned mirror
+    _write_item(spine_root, "_context", "carol")          # project context
+    snap = spine_root / "phase-0" / "messaging-system.snapshots"
+    snap.mkdir(parents=True, exist_ok=True)
+    _write_item(snap.parent, "messaging-system.snapshots", "frozen")
+
+    yielded = list(_iter_substance_files(spine_root))
+    assert yielded == [real]
 
 
 class _FakeTable:

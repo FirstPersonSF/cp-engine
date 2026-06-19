@@ -30,7 +30,11 @@ import frontmatter
 from cp_engine.authored_mirror import write_authored_element
 from cp_engine.spine_context import parse_context
 from cp_engine.spine_sync import _has_confirmed_field, _merge_flag, reconcile_field
-from cp_engine.substance import WorkItemSubstance, parse_substance
+from cp_engine.substance import (
+    WorkItemSubstance,
+    is_skipped_spine_dir,
+    parse_substance,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -196,13 +200,12 @@ def _load_substance_items(project_dir: Path) -> list[tuple[WorkItemSubstance, st
         return out
     for md in sorted(spine_root.glob("*/*.md")):
         parts = md.relative_to(spine_root).parts
-        # parts[0] is the phase dir; skip _context, _authored, and snapshot
-        # dirs. _authored/ files are a generated DB→disk MIRROR of authored
-        # (MC-2-owned) rows — reading them back would flow disk→DB and flip the
-        # DB's est_item_kind=None to the file's sentinel kind on the next sync.
-        if parts[0] in ("_context", "_authored") or any(
-            p.endswith(".snapshots") for p in parts
-        ):
+        # Skip _context, _authored, and snapshot dirs (shared predicate so this
+        # and `spine_inbox._iter_substance_files` can't drift). _authored/ files
+        # are a generated DB→disk MIRROR of authored (MC-2-owned) rows — reading
+        # them back would flow disk→DB and flip the DB's est_item_kind=None to
+        # the file's sentinel kind on the next sync.
+        if is_skipped_spine_dir(parts):
             continue
         # Skip non-substance files (old element files, unrelated .md). A genuine
         # substance file that fails the full parse still raises below.

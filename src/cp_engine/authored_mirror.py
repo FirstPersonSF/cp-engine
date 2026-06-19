@@ -47,6 +47,16 @@ def write_authored_element(project_dir: Path, *, project_code: str,
         )
         for r in ordered
     )
+    # Exactly one version must be live (parse_substance enforces this on read).
+    # A malformed DB state (zero/two live — e.g. an upstream caller skipped the
+    # prior-live demote) must fail loud, caught by sync's best-effort wrapper
+    # (logged warning), rather than silently writing a corrupt mirror file.
+    n_live = sum(1 for v in versions if v.status == "live")
+    if n_live != 1:
+        raise ValueError(
+            f"authored element {est_item_id!r} has {n_live} live versions "
+            f"(expected 1); refusing to mirror"
+        )
     item = WorkItemSubstance(
         est_item_id=est_item_id,
         est_item_kind=_AUTHORED_KIND,         # sentinel

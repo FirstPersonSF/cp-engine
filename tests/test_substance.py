@@ -6,9 +6,25 @@ from cp_engine.substance import (
     SubstanceVersion,
     WorkItemSubstance,
     add_version,
+    is_skipped_spine_dir,
     parse_substance,
     render_substance,
 )
+
+
+@pytest.mark.parametrize(
+    "parts, expected",
+    [
+        (("_context", "carol.md"), True),
+        (("_authored", "note-1.md"), True),
+        (("Phase0", "pos.snapshots", "frozen.md"), True),
+        (("pos.snapshots",), True),
+        (("Phase 0", "foo.md"), False),
+        (("phase-0-message-strategy", "messaging-system.md"), False),
+    ],
+)
+def test_is_skipped_spine_dir(parts, expected):
+    assert is_skipped_spine_dir(parts) is expected
 
 FIXTURE = (
     Path(__file__).parent

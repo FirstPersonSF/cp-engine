@@ -33,6 +33,7 @@ from cp_engine.substance import (
     SubstanceVersion,
     WorkItemSubstance,
     add_version,
+    is_skipped_spine_dir,
     parse_substance,
     render_substance,
 )
@@ -257,13 +258,16 @@ def _slugify(text: str) -> str:
 
 
 def _iter_substance_files(spine_root: Path):
-    """Yield every substance ``.md`` under ``spine/<phase>/`` (skips _context
-    and *.snapshots dirs), same scoping as the Phase-2 mirror."""
+    """Yield every substance ``.md`` under ``spine/<phase>/`` (skips ``_context``,
+    ``_authored``, and ``*.snapshots`` dirs), same scoping as the Phase-2 mirror
+    via the shared `is_skipped_spine_dir` predicate. ``_authored/`` files are a
+    generated DB→disk mirror of MC-2-owned rows and must NEVER be treated as a
+    real disk substance candidate (e.g. by the promote path)."""
     if not spine_root.is_dir():
         return
     for md in sorted(spine_root.glob("*/*.md")):
         parts = md.relative_to(spine_root).parts
-        if parts[0] == "_context" or any(p.endswith(".snapshots") for p in parts):
+        if is_skipped_spine_dir(parts):
             continue
         yield md
 
