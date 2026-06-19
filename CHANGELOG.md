@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.32.1 — 2026-06-19
+
+### Fixed — dropped the dead `spine_elements` mirror call (PGRST205 log noise)
+
+`cp sync` called `sync_spine_elements` on every project, but the `spine_elements` table was dropped (mc-2 migration 072) once the `spine_elements` → `spine_substance` merge completed. The call hit a missing table, threw a `PGRST205` error caught by the best-effort wrapper, and logged a `spine-element mirror skipped` warning per project on every sync. Removed the call + import; the substance/context mirror is its replacement. (No behavior change — the mirror was already a no-op-via-exception.)
+
 ## v0.32.0 — 2026-06-19
 
 ### Spine capture loop — author elements into the spine from anywhere
