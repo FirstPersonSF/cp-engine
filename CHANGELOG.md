@@ -4,6 +4,14 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.31.1 — 2026-06-19
+
+### Fixed — cp-sources MCP resolves the working-dir id to the canonical project
+
+`list_project_sources("ibx-5192")` returned `[]` even when the project's assets were correctly ingested. cp-engine derives a project's working-dir slug + `cp.md` Facts id as `<company>-<number>` (`ibx-5192`), but `projects.code` is a company-prefixed SLUG for nearly every project (`IBX-platform-sales-readiness-summit`, `GGL-activation`). The MCP `_resolve` did an exact `projects.code` lookup, so the working-dir form never matched.
+
+`_resolve_project_id` now bridges both forms: exact `projects.code` first, then a `<companyprefix>-<number>` fallback matching `companies.code` (case-insensitive — `companies.code` is stored uppercase) + `projects.number`. So `ibx-5192`, `IBX-5192`, and the slug code all resolve to the same project. The `_sources.md` manifest path already keyed on `project_id` correctly; its stale "0 docs" simply needed a re-sync.
+
 ## v0.31.0 — 2026-06-19
 
 ### Spine UI edits survive `cp sync`
