@@ -192,6 +192,87 @@ def pull_project_source(
         }
 
 
+@mcp.tool()
+def create_spine_element(project_code: str, label: str, type: str,
+                         body: str = "", serves: list[str] | None = None) -> dict:
+    """Create a new AUTHORED spine element (live v1) in MC-2.
+
+    `type` is the element kind (email|note|source|brief|decision|stakeholder|
+    agreement|synthesis|output|activity). `serves` optionally binds it to
+    work-item ids. Returns {element_id, version_label}. The element is live
+    immediately and mirrors to the repo on the next cp sync.
+    """
+    from datetime import datetime, timezone
+
+    from cp_engine.authored_element import build_create_rows
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, _cid = resolved
+        rows = build_create_rows(
+            project_id=pid, project_code=project_code, label=label, type_=type,
+            body=body, serves=serves or [],
+            now_iso=datetime.now(timezone.utc).isoformat(),
+        )
+        # Guard against silently clobbering an existing element with this slug.
+        eid = rows[0]["est_item_id"]
+        existing = (client.table("spine_substance").select("id")
+                    .eq("project_code", project_code).eq("est_item_id", eid)
+                    .limit(1).execute().data or [])
+        if existing:
+            return {"error": f"an element '{eid}' already exists; add a version instead"}
+        client.table("spine_substance").upsert(rows, on_conflict="id").execute()
+        live = next(r for r in rows if r["status"] == "live")
+        return {"element_id": live["est_item_id"], "version_label": live["version_label"]}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to create element in {project_code!r}: {exc}"}
+
+
+@mcp.tool()
+def add_spine_version(project_code: str, element_id: str, body: str,
+                      version_note: str | None = None) -> dict:
+    """Add a new version to an existing AUTHORED spine element.
+
+    Supersedes the prior live version (a targeted status update) and creates a
+    new live version carrying the `version_note` ("what changed"). Returns
+    {element_id, version_label}. `element_id` is the element's est_item_id
+    (e.g. `_authored/latest-hypothesis`).
+    """
+    from datetime import datetime, timezone
+
+    from cp_engine.authored_element import build_version_rows
+
+    _SEL = ("id, est_item_id, est_item_kind, phase, binding, layer, placement, "
+            "serves, version_label, version_date, status, framing, body, sources, origin")
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, _cid = resolved
+        prior = (client.table("spine_substance").select(_SEL)
+                 .eq("project_code", project_code).eq("est_item_id", element_id)
+                 .execute().data or [])
+        if not prior:
+            return {"error": f"no authored element {element_id!r} in {project_code!r}"}
+        # Demote prior live row(s) via targeted update (no full-row rebuild —
+        # mirrors the mc-2 endpoint; avoids clobbering prior sources/version_note).
+        for v in prior:
+            if v.get("status") == "live":
+                client.table("spine_substance").update({"status": "superseded"}).eq("id", v["id"]).execute()
+        rows = build_version_rows(
+            project_id=pid, project_code=project_code, est_item_id=element_id,
+            prior_versions=prior, body=body, version_note=version_note,
+            now_iso=datetime.now(timezone.utc).isoformat(),
+        )
+        client.table("spine_substance").upsert(rows, on_conflict="id").execute()
+        live = next(r for r in rows if r["status"] == "live")
+        return {"element_id": live["est_item_id"], "version_label": live["version_label"]}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to add version in {project_code!r}: {exc}"}
+
+
 def run_stdio() -> None:
     """Run the server over stdio (what Claude Code launches via .mcp.json)."""
     mcp.run(transport="stdio")
