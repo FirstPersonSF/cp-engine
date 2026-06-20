@@ -95,3 +95,29 @@ def plan_element(el, assets: list[dict]) -> RecoveryAction:
         mode="carry", layer=el.layer, label=el.title, body=el.body,
         serves=tuple(el.serves),
     )
+
+
+_REDISTILL_PROMPT = """\
+You are distilling project source material into a single buildable spine element,
+UNDER a directing framing line. Stay faithful to the source material — do not
+invent — but organize and emphasize it to serve the framing. Write 200-450 words
+of dense, buildable prose (no preamble, no headers, no meta-commentary). Output
+ONLY the distilled body.
+
+## Framing (the element this becomes)
+{framing}
+
+## Source material
+{raw}
+"""
+
+
+def redistill_body(action, *, asset_text: str, distiller) -> str:
+    """Re-distill a source-backed element's body from its matched asset text.
+
+    Builds a directed-distillation prompt (the element's `label` as the framing +
+    the asset text as raw material) and returns the injected `distiller`'s output
+    (stripped). `distiller` is a callable str->str; the orchestrator passes a real
+    LLM wrapper, tests pass a fake."""
+    prompt = _REDISTILL_PROMPT.format(framing=action.label, raw=asset_text)
+    return distiller(prompt).strip()

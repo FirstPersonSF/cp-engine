@@ -1,10 +1,12 @@
 from pathlib import Path
 
 from cp_engine.spine_recover import (
+    RecoveryAction,
     classify_element,
     load_legacy_elements,
     match_source_asset,
     plan_element,
+    redistill_body,
     source_basename,
 )
 
@@ -135,3 +137,27 @@ def test_load_legacy_elements_returns_only_legacy_layer_files(tmp_path: Path):
     assert els[0].layer == "Decisions"
     assert els[0].title == "Two-track AI story"
     assert els[0].id == "ibx-5153/decisions/two-track"
+
+
+# ---- redistill_body ---------------------------------------------------------
+
+def test_redistill_body_calls_distiller_with_framing_and_source():
+    captured = {}
+    def fake_distiller(prompt):
+        captured["prompt"] = prompt
+        return "fresh distilled body"
+    action = RecoveryAction(
+        mode="redistill", layer="SourceMaterial", label="Infoblox v6 deck",
+        body="", serves=(), asset_id="a1", source_basename="Infoblox_v6.pptx",
+    )
+    out = redistill_body(action, asset_text="...51-slide deck text about IQ...", distiller=fake_distiller)
+    assert out == "fresh distilled body"
+    assert "Infoblox v6 deck" in captured["prompt"]          # the framing/label
+    assert "51-slide deck text about IQ" in captured["prompt"]  # the source text
+
+
+def test_redistill_body_strips_distiller_output():
+    action = RecoveryAction(mode="redistill", layer="Research", label="X", body="",
+                            serves=(), asset_id="a1", source_basename="x.pdf")
+    out = redistill_body(action, asset_text="src", distiller=lambda p: "  body with spaces  \n")
+    assert out == "body with spaces"
