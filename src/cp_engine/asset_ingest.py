@@ -709,15 +709,33 @@ def _stable_dir_for(tmp_root: Path, file_ref: FileRef) -> Path:
     return tmp_root / safe_id
 
 
-def _source_url(file_ref: FileRef) -> str | None:
-    """Stub: source view-URLs deferred; returns None for now.
+def _source_url(file_ref: FileRef, drive_connector=None, dropbox_connector=None) -> str | None:
+    """Return a durable, human-clickable web link for a source file, or None.
 
-    Dropbox/Drive list responses here don't carry a public webViewLink, so we
-    pass None rather than fabricate one. (The pipeline stores url verbatim and
-    builds citation deep-links from it; a wrong url is worse than no url.) Kept
-    as a named seam so the future real lookup has an obvious home.
+    - Drive: a `/file/d/<id>/view` link built from the file id — no API call.
+    - Dropbox: a TEAM-ONLY shared link via the connector. This is CLIENT source
+      material (decks, emails, briefs), so the link is requested team-only
+      (members of the Dropbox team), never "anyone with the link" public. If a
+      team-only link can't be obtained, return None rather than risk a public
+      link.
+    - Any other source, missing connector, or any exception → None. A link is a
+      nice-to-have; it must never block or fail ingest.
+
+    The pipeline stores this verbatim as `rag_assets.url` and builds citation
+    deep-links from it, so a missing url is strictly safer than a wrong one.
     """
-    return None
+    try:
+        if file_ref.source == "drive":
+            return f"https://drive.google.com/file/d/{file_ref.id}/view"
+        if file_ref.source == "dropbox":
+            # Need both a connector and the dropbox path_display to resolve.
+            if dropbox_connector is None or not file_ref.path:
+                return None
+            return dropbox_connector.get_shareable_link(file_ref.path, team_only=True)
+        return None
+    except Exception:
+        # Never let a link lookup abort ingest of the file.
+        return None
 
 
 def ingest_project_assets(
@@ -781,6 +799,28 @@ def ingest_project_assets(
         # No matching MC-2 project — asset ingest doesn't apply. The resolver
         # already printed the reason to stderr.
         return IngestRunResult(project_found=False)
+
+    # Build the connectors ONCE up front (when their source is enabled) so the
+    # same instance is reused for listing, downloading, AND link generation.
+    # list_files/download_file otherwise construct their own *local* connectors,
+    # which never propagate back here — so without this, _source_url below would
+    # always see dropbox_connector=None and never emit a Dropbox link. A
+    # construction failure is swallowed: list_files re-attempts and records its
+    # own per-source note, and a missing connector just yields url=None.
+    if drive_connector is None and getattr(folders, "enable_google_drive", False):
+        try:
+            from cloud_storage.google_drive_connector import GoogleDriveConnector
+
+            drive_connector = GoogleDriveConnector(service_account_file=None)
+        except Exception:  # noqa: BLE001 — list_files handles + notes the failure
+            drive_connector = None
+    if dropbox_connector is None and getattr(folders, "enable_dropbox", False):
+        try:
+            from cloud_storage.dropbox_connector import DropboxConnector
+
+            dropbox_connector = DropboxConnector()
+        except Exception:  # noqa: BLE001 — list_files handles + notes the failure
+            dropbox_connector = None
 
     files, source_notes = list_files(
         folders,
@@ -864,7 +904,7 @@ def ingest_project_assets(
                 ingest_result = pipeline.ingest_file(
                     file_path,
                     title=file_ref.name,
-                    url=_source_url(file_ref),
+                    url=_source_url(file_ref, drive_connector, dropbox_connector),
                 )
 
                 action = getattr(ingest_result, "action", "failed")
