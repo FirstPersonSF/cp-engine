@@ -924,7 +924,7 @@ def ingest_project_assets(
                     # failure in `failures` so it's visible and re-runnable,
                     # while still leaving created/versioned incremented.
                     try:
-                        _stamp_scope(client, folders, file_path)
+                        _stamp_scope(client, folders, file_path, file_ref)
                     except Exception as exc:
                         result.failures.append(
                             (file_ref.name, f"scope-stamp failed: {exc}")
@@ -1018,8 +1018,10 @@ def _existing_dup_at_other_path(
     return any(r.get("file_path") != current_path for r in rows)
 
 
-def _stamp_scope(client, folders: ProjectFolders, file_path: str) -> None:
-    """Apply the 1P scope stamp to the just-ingested active asset row.
+def _stamp_scope(
+    client, folders: ProjectFolders, file_path: str, file_ref: FileRef
+) -> None:
+    """Apply the 1P scope stamp + source re-fetch coords to the just-ingested row.
 
     The spec wanted `UPDATE rag_assets SET scope, company_id WHERE id=<asset_id>`,
     but IngestResult exposes NO asset_id (the pipeline computes it internally and
@@ -1029,11 +1031,20 @@ def _stamp_scope(client, folders: ProjectFolders, file_path: str) -> None:
     the same value passed to `ingest_file` (it is: both come from `local`). The
     pipeline already set project_id; what the stamp adds is company_id (and it
     re-affirms scope='project', which is also the column default).
+
+    The same UPDATE also persists the durable re-fetch coords from the `FileRef`
+    (`source_provider`/`source_file_id`/`source_path`): these can't flow through
+    `pipeline.ingest_file`, whose signature only takes (file_path, title, url), so
+    this post-ingest stamp is where they land. `source_path` is the Dropbox
+    path_display, `None` for Drive files (which re-fetch by id).
     """
     client.table("rag_assets").update(
         {
             "scope": "project",
             "company_id": folders.company_id,
+            "source_provider": file_ref.source,
+            "source_file_id": file_ref.id,
+            "source_path": file_ref.path,
         }
     ).eq("project_id", folders.project_id).eq("file_path", file_path).eq(
         "status", "active"
