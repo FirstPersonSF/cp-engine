@@ -25,6 +25,7 @@ from cp_engine import (
 from cp_engine.sync import (
     Backend,
     _collect_sprint_per_project_data,
+    _find_project_dir,
     _last_week_monday,
     _read_mc_id,
 )
@@ -2069,3 +2070,50 @@ def test_read_mc_id_roundtrips_rendered_template(tmp_path: Path) -> None:
     cp = tmp_path / "cp.md"
     cp.write_text(render_project_cp(config, state))
     assert _read_mc_id(cp) == "render-uuid-123"
+
+
+# --- _find_project_dir (uuid-first lookup) ---------------------------------
+
+
+def _make_dir_with_cp(parent: Path, name: str, mc_id: str | None = None) -> Path:
+    """Create parent/name/cp.md with a real frontmatter block, optional MC-id."""
+    d = parent / name
+    d.mkdir(parents=True)
+    mc_id_line = f"MC-id: {mc_id}\n" if mc_id else ""
+    (d / "cp.md").write_text(_CP_MD_TEMPLATE.format(mc_id_line=mc_id_line))
+    return d
+
+
+def test_find_project_dir_by_uuid_despite_name_mismatch(tmp_path: Path) -> None:
+    """A dir whose name no longer matches the code is still found via its
+    MC-id stamp — drift becomes a rename, not an orphan."""
+    drifted = _make_dir_with_cp(tmp_path, "oldname", mc_id="U")
+    assert _find_project_dir(tmp_path, code="new-code", mc2_id="U") == drifted
+
+
+def test_find_project_dir_fallback_for_unstamped_dir(tmp_path: Path) -> None:
+    """An unstamped dir is found by the legacy code match even when a uuid is
+    passed (uuid pass misses, fallback hits)."""
+    legacy = _make_dir_with_cp(tmp_path, "ggl-5168-activation", mc_id=None)
+    assert (
+        _find_project_dir(tmp_path, "ggl-5168-activation", mc2_id="U") == legacy
+    )
+
+
+def test_find_project_dir_none_uuid_is_legacy_behavior(tmp_path: Path) -> None:
+    """mc2_id=None → only code match (bare + slugged), no uuid pass."""
+    bare = tmp_path / "abc"
+    bare.mkdir()
+    slugged = tmp_path / "xyz-thing"
+    slugged.mkdir()
+    assert _find_project_dir(tmp_path, "abc") == bare
+    assert _find_project_dir(tmp_path, "xyz") == slugged
+    assert _find_project_dir(tmp_path, "missing") is None
+
+
+def test_find_project_dir_uuid_beats_code_sibling(tmp_path: Path) -> None:
+    """uuid-first: a stamped dir (under a different name) wins over a same-parent
+    dir whose name matches the code but carries no stamp."""
+    stamped = _make_dir_with_cp(tmp_path, "aaa", mc_id="U")
+    (tmp_path / "new-code").mkdir()  # name matches code, but no stamp
+    assert _find_project_dir(tmp_path, code="new-code", mc2_id="U") == stamped

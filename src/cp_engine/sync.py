@@ -280,9 +280,9 @@ def sync_tenant(
         # Find an existing dir for this project, even if its slug has drifted
         # from the current name (or hasn't been slugged yet — legacy
         # bare-code dirs from v0.3.0/v0.3.1).
-        existing_live = _find_project_dir(scope_dir, project.code)
+        existing_live = _find_project_dir(scope_dir, project.code, project.mc2_id)
         existing_inactive = _find_project_dir(
-            inactive_root(config.root, scope), project.code
+            inactive_root(config.root, scope), project.code, project.mc2_id
         )
 
         if dry_run:
@@ -1418,7 +1418,9 @@ def _derive_summary(config: TenantConfig, project: ProjectState) -> str | None:
     from cp_engine.summary import derive_from_project_cp
 
     scope = account_scope_for(project)
-    existing = _find_project_dir(scope_root(config.root, scope), project.code)
+    existing = _find_project_dir(
+        scope_root(config.root, scope), project.code, project.mc2_id
+    )
     if existing is None:
         return None
     return derive_from_project_cp(existing / "cp.md")
@@ -1495,17 +1497,26 @@ def _read_mc_id(cp_path: Path) -> str | None:
     return fm.get("MC-id") or None
 
 
-def _find_project_dir(parent: Path, code: str) -> Path | None:
-    """Locate the working dir for a given project code under `parent`.
+def _find_project_dir(
+    parent: Path, code: str, mc2_id: str | None = None
+) -> Path | None:
+    """Locate the working dir for a given project under `parent`.
 
     `parent` is either a scope root (`<tenant>/<scope>/`) for live dirs
     or an inactive root (`<tenant>/<scope>/inactive/`) for inactive dirs.
 
-    Matches any of:
+    UUID-first: when `mc2_id` is given, a dir whose cp.md carries this
+    project's `MC-id` stamp matches regardless of its (possibly drifted)
+    name — this is what lets a full_job_name/code change become a rename
+    instead of an orphan. This pass precedes the name match so a stamped
+    drifted dir wins over an unstamped same-parent sibling.
+
+    Falls back to the legacy bare-`code` / `code-<slug>` name match for
+    unstamped/legacy dirs and uuid-less items (repos). Matches any of:
       - <parent>/<code>            (legacy v0.3.0/v0.3.1, bare code)
       - <parent>/<code>-<slug>     (current, slugged)
 
-    Returns the first match found, or None. If multiple matches exist
+    Returns the first match found, or None. If multiple name matches exist
     (shouldn't happen but defensive), prefers the bare-code form so the
     rename logic in sync_tenant moves it to the slugged form.
 
@@ -1514,6 +1525,12 @@ def _find_project_dir(parent: Path, code: str) -> Path | None:
     """
     if not parent.exists():
         return None
+
+    if mc2_id:
+        for path in parent.iterdir():
+            if path.is_dir() and path.name != INACTIVE_DIR_NAME:
+                if _read_mc_id(path / "cp.md") == mc2_id:
+                    return path
 
     bare = parent / code
     if bare.is_dir():
