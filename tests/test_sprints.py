@@ -503,7 +503,8 @@ def test_ensure_sprint_file_counts_meetings_from_project_dir(tmp_path) -> None:
     # Project dir lives at <tenant>/1p/<company-slug>/<dir_slug>/ under
     # the account-nested layout; sprint_root is <tenant>/sprints.
     # _fixture_project keeps company_name "Pebble Foods" → account slug
-    # `pebble-foods`, and code `ggl-5136` → dir_slug `ggl-5136-pebble-foods`.
+    # `pebble-foods`, and code `ggl-5136` → dir_slug `ggl-5136` (the dir is
+    # the slugified code; the name no longer contributes a tail).
     project = _fixture_project(code="ggl-5136")
     slug = dir_slug(project.code, project.name)
     meetings = tmp_path / "1p" / "pebble-foods" / slug / "meetings"
@@ -847,8 +848,8 @@ def test_count_sprint_meetings_ignores_txt_and_unparseable_names(
 
 
 def _scaffold_project() -> ProjectState:
-    # Real-shaped code (`ggl-5136`) so dir_slug → `ggl-5136-go-safety`,
-    # matching how production project codes look.
+    # Real-shaped code (`ggl-5136`) so dir_slug → `ggl-5136` (dir is the
+    # slugified code; the name no longer contributes a tail).
     return ProjectState(
         code="ggl-5136",
         name="Go Safety",
@@ -893,8 +894,9 @@ def test_sprint_facts_shows_meetings_row_when_count_positive() -> None:
     assert "| Meetings |" in body
     # Account-nested layout: client projects live at 1p/<company>/<dir>/,
     # so the link from the sprint file walks up two and back down through
-    # the account dir. _scaffold_project's company_name is "Google".
-    assert "[2 this sprint](../../1p/google/ggl-5136-go-safety/meetings/)" in body
+    # the account dir. _scaffold_project's company_name is "Google"; the
+    # dir is the slugified code (`ggl-5136`), name no longer appended.
+    assert "[2 this sprint](../../1p/google/ggl-5136/meetings/)" in body
 
 
 def test_sprint_facts_omits_meetings_row_when_count_zero() -> None:

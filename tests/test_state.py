@@ -22,6 +22,7 @@ from cp_engine.state import (
     company_slug,
     dir_slug,
     scope_for,
+    slug_full_job_name,
 )
 
 # ──────────────────────────────────────────────────────────────────────
@@ -121,49 +122,88 @@ def test_account_scope_for_non_client_is_unchanged() -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_dir_slug_engagement_strips_code_prefix() -> None:
-    """`GGL 5177 Event Safety Playbook` should produce a clean tail
-    without doubling the code."""
-    assert dir_slug("ggl-5177", "GGL 5177 Event Safety Playbook") == "ggl-5177-event-safety-playbook"
+# New contract (Task 3): `code` is now the canonical full_job_name slug, so
+# the dir IS the slugified code. `name` is ignored — it no longer contributes
+# a tail (the code already carries the description). These tests assert the
+# slugified-code contract.
 
 
-def test_dir_slug_lowercase_normalized() -> None:
-    assert dir_slug("ggl-5177", "Event Safety Playbook") == "ggl-5177-event-safety-playbook"
+def test_dir_slug_descriptive_code_no_doubling() -> None:
+    """A descriptive code passes through unchanged; the name does NOT get
+    appended (which would double the description)."""
+    assert (
+        dir_slug(
+            "ibx-5192-platform-sales-readiness-summit",
+            "Platform Sales Readiness Summit",
+        )
+        == "ibx-5192-platform-sales-readiness-summit"
+    )
+
+
+def test_dir_slug_lowercases_and_trims() -> None:
+    assert dir_slug("GGL-5168-Activation", "Activation") == "ggl-5168-activation"
+
+
+def test_dir_slug_collapses_nonalnum() -> None:
+    assert dir_slug("tel-5113-2025-collateral", None) == "tel-5113-2025-collateral"
+
+
+def test_dir_slug_name_ignored() -> None:
+    # name no longer affects output
+    assert dir_slug("ggl-5168-activation", "totally different name") == "ggl-5168-activation"
 
 
 def test_dir_slug_punctuation_collapsed_to_hyphens() -> None:
-    """Apostrophes, slashes, parens, etc. become hyphens; runs collapse."""
-    assert dir_slug("ggl-5168", "Playbooks (Activation) — Phase II") == "ggl-5168-playbooks-activation-phase-ii"
+    """Apostrophes, slashes, parens, em-dashes, etc. in the code become
+    hyphens; runs collapse; leading/trailing hyphens trim."""
+    assert dir_slug("GGL-5168 Playbooks (Activation) — Phase II") == "ggl-5168-playbooks-activation-phase-ii"
 
 
-def test_dir_slug_repo_with_name_equal_to_code() -> None:
-    """When name matches the code, slug is just the code (no doubling)."""
+def test_dir_slug_repo_code() -> None:
+    """A bare repo slug passes straight through."""
     assert dir_slug("mc-2", "mc-2") == "mc-2"
-    assert dir_slug("storyos", "storyos") == "storyos"
+    assert dir_slug("storyos") == "storyos"
 
 
-def test_dir_slug_empty_name() -> None:
-    assert dir_slug("ggl-5177", "") == "ggl-5177"
+def test_dir_slug_name_defaults_to_none() -> None:
+    """`name` is now optional (defaults to None)."""
+    assert dir_slug("ggl-5177") == "ggl-5177"
     assert dir_slug("ggl-5177", None) == "ggl-5177"
-
-
-def test_dir_slug_name_starts_with_hyphenated_code() -> None:
-    """`ggl-5177-something` should not double the code prefix."""
-    assert dir_slug("ggl-5177", "ggl-5177-something") == "ggl-5177-something"
-
-
-def test_dir_slug_strips_trailing_punctuation() -> None:
-    assert dir_slug("ggl-5168", "Playbooks!!!") == "ggl-5168-playbooks"
+    assert dir_slug("ggl-5177", "") == "ggl-5177"
 
 
 def test_dir_slug_ascii_only() -> None:
-    """Non-ASCII characters get collapsed to hyphens (we don't transliterate)."""
-    # No Unicode handling — keep it simple; non-ASCII becomes hyphens.
-    result = dir_slug("xyz-1", "café résumé")
-    # The exact form depends on the regex; we just confirm it stays ASCII-safe
-    # and starts with the code prefix.
-    assert result.startswith("xyz-1-")
+    """Non-ASCII characters in the code get collapsed to hyphens (we don't
+    transliterate)."""
+    result = dir_slug("café-résumé")
+    assert result.startswith("caf")
     assert all(c.isascii() for c in result)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  slug_full_job_name
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_slug_basic() -> None:
+    assert (
+        slug_full_job_name("IBX 5192 Platform Sales Readiness Summit")
+        == "ibx-5192-platform-sales-readiness-summit"
+    )
+
+
+def test_slug_punctuation_and_plus() -> None:
+    assert slug_full_job_name("GGL 5188 Calendar + Maintenance") == "ggl-5188-calendar-maintenance"
+    assert slug_full_job_name("GGL 5136 go/safety website") == "ggl-5136-go-safety-website"
+
+
+def test_slug_trims_and_collapses() -> None:
+    assert slug_full_job_name("  SAP   5171   Display Ads 26 ") == "sap-5171-display-ads-26"
+
+
+def test_slug_empty_returns_empty() -> None:
+    assert slug_full_job_name("") == ""
+    assert slug_full_job_name(None) == ""
 
 
 def test_client_ask_constructs_with_defaults() -> None:

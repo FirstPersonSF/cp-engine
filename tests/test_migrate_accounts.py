@@ -129,10 +129,13 @@ def test_migration_moves_flat_dirs_to_account_subdirs(tmp_path: Path) -> None:
     _scaffold_flat_project(root, "tel-2001-bold-2-0")
     _commit_all(root, "scaffold flat projects")
 
+    # Codes are now the canonical full_job_name slugs (matching the dir
+    # names), so the trailing `cp sync` finds the dirs already at their
+    # canonical slug and performs no rename.
     fake = _FakeBackend((
-        _state("ggl-5168", "GGL", "Google", name="Playbooks"),
-        _state("ibx-5153", "IBX", "Infoblox", name="AI Campaign"),
-        _state("tel-2001", "TEL", "Teleflex", name="Bold 2.0"),
+        _state("ggl-5168-playbooks", "GGL", "Google", name="Playbooks"),
+        _state("ibx-5153-ai-campaign", "IBX", "Infoblox", name="AI Campaign"),
+        _state("tel-2001-bold-2-0", "TEL", "Teleflex", name="Bold 2.0"),
     ))
 
     result = migrate_accounts(root, backend_factory=lambda _: fake)
@@ -167,7 +170,7 @@ def test_migration_preserves_git_history(tmp_path: Path) -> None:
     _commit_all(root, "scaffold")
 
     fake = _FakeBackend((
-        _state("ggl-5168", "GGL", "Google", name="Playbooks"),
+        _state("ggl-5168-playbooks", "GGL", "Google", name="Playbooks"),
     ))
     migrate_accounts(root, backend_factory=lambda _: fake)
     # Migration stages but doesn't commit; real workflow commits next.
@@ -249,8 +252,8 @@ def test_migration_skips_already_nested_account_dirs(tmp_path: Path) -> None:
     _commit_all(root, "mixed state")
 
     fake = _FakeBackend((
-        _state("ggl-5168", "GGL", "Google", name="Playbooks"),
-        _state("ibx-5153", "IBX", "Infoblox", name="AI Campaign"),
+        _state("ggl-5168-playbooks", "GGL", "Google", name="Playbooks"),
+        _state("ibx-5153-ai-campaign", "IBX", "Infoblox", name="AI Campaign"),
     ))
     result = migrate_accounts(root, backend_factory=lambda _: fake)
 
@@ -338,7 +341,7 @@ def test_migration_skips_dirs_that_dont_look_like_project_codes(tmp_path: Path) 
     _commit_all(root, "scaffold + hand-created account")
 
     fake = _FakeBackend((
-        _state("ggl-5168", "GGL", "Google", name="Playbooks"),
+        _state("ggl-5168-playbooks", "GGL", "Google", name="Playbooks"),
     ))
     result = migrate_accounts(root, backend_factory=lambda _: fake)
 

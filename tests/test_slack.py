@@ -240,3 +240,123 @@ def test_post_dm_wraps_underlying_exceptions_as_slack_error() -> None:
 
     with pytest.raises(SlackError, match="chat_postMessage failed"):
         post_dm(_FakeClient(), user_id="U", text="hi")
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Channel map — canonical id
+# ──────────────────────────────────────────────────────────────────────
+
+
+class _FakeQuery:
+    """Minimal stand-in for the supabase query-builder chain. Returns
+    canned rows for the named table; every chained method returns self."""
+
+    def __init__(self, rows_by_table: dict[str, list[dict]]) -> None:
+        self._rows_by_table = rows_by_table
+        self._rows: list[dict] = []
+
+    def schema(self, _name):
+        return self
+
+    def table(self, name):
+        self._rows = self._rows_by_table.get(name, [])
+        return self
+
+    def select(self, *_a, **_k):
+        return self
+
+    def neq(self, *_a, **_k):
+        return self
+
+    def order(self, *_a, **_k):
+        return self
+
+    def execute(self):
+        class _Resp:
+            def __init__(self, data):
+                self.data = data
+
+        return _Resp(self._rows)
+
+
+def _patch_channel_map(monkeypatch, rows_by_table: dict[str, list[dict]]) -> None:
+    import cp_engine.slack as slack_mod
+    import cp_engine.sync_mc2 as sync_mod
+
+    monkeypatch.setattr(
+        sync_mod, "_load_supabase_creds", lambda config: ("http://x", "key")
+    )
+    fake = _FakeQuery(rows_by_table)
+    import supabase
+
+    monkeypatch.setattr(supabase, "create_client", lambda url, key: fake)
+    # `from supabase import create_client` resolves at call time inside
+    # list_channel_map, so patching the module attribute is sufficient.
+    _ = slack_mod  # keep import side effect explicit
+
+
+def test_channel_map_code_is_slugified_full_job_name(monkeypatch) -> None:
+    """An engagement row with full_job_name produces a ChannelMapRow whose
+    code is the slugified full_job_name — matching _engagement_canonical_id,
+    NOT the legacy <company>-<number> form."""
+    from cp_engine.slack import list_channel_map
+
+    _patch_channel_map(
+        monkeypatch,
+        {
+            "projects": [
+                {
+                    "number": 5192,
+                    "name": "Platform Sales Readiness Summit",
+                    "mc_status": "Open",
+                    "is_internal": False,
+                    "enable_slack": True,
+                    "slack_channel_id": "C999",
+                    "slack_channel_name": "ibx-srs",
+                    "slack_channel_ids": ["C999"],
+                    "full_job_name": "IBX 5192 Platform Sales Readiness Summit",
+                    "companies": {"code": "IBX"},
+                }
+            ],
+            "initiatives": [],
+        },
+    )
+
+    rows = list_channel_map(config=None)  # type: ignore[arg-type]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row.code == "ibx-5192-platform-sales-readiness-summit"
+    assert row.company_code == "IBX"
+    assert row.enable_slack is True
+    assert row.channel_ids == ("C999",)
+
+
+def test_channel_map_code_falls_back_when_no_full_job_name(monkeypatch) -> None:
+    """Defensive: a row missing full_job_name falls back to the legacy
+    <company>-<number> form via _engagement_canonical_id."""
+    from cp_engine.slack import list_channel_map
+
+    _patch_channel_map(
+        monkeypatch,
+        {
+            "projects": [
+                {
+                    "number": 5168,
+                    "name": "Activation",
+                    "mc_status": "Open",
+                    "is_internal": False,
+                    "enable_slack": True,
+                    "slack_channel_id": "C111",
+                    "slack_channel_name": "ggl",
+                    "slack_channel_ids": ["C111"],
+                    "full_job_name": None,
+                    "companies": {"code": "GGL"},
+                }
+            ],
+            "initiatives": [],
+        },
+    )
+
+    rows = list_channel_map(config=None)  # type: ignore[arg-type]
+    assert len(rows) == 1
+    assert rows[0].code == "ggl-5168"
