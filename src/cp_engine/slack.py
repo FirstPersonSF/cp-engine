@@ -14,11 +14,13 @@ public entry points:
   and resolving user mentions to display names. Backing data for
   `cp slack-fetch` and the digest pipeline.
 
-The canonical CP code (`ggl-5168`, `tel-5113`, ...) is constructed
-exactly the same way as `sync_mc2._engagement_canonical_id`:
-`<companies.code.lower()>-<projects.number>`. MC-2's `projects.code`
-column is unreliable (mixed legacy `5113` and newer `GGL-activation`
-strings) and explicitly not used.
+The canonical CP code is `sync_mc2._engagement_canonical_id(row)` —
+the slugified `full_job_name`
+(`ibx-5192-platform-sales-readiness-summit`). Using the shared function
+guarantees the Slack channel-map keys match the project codes used
+everywhere else in the tenant. MC-2's `projects.code` column is
+unreliable (mixed legacy `5113` and newer `GGL-activation` strings) and
+explicitly not used.
 
 Slack credentials come from `SLACK_BOT_TOKEN` in:
   1. `os.environ` (CI / explicit shell exports)
@@ -108,7 +110,7 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
     because the Slack-mapping columns aren't part of the standard project
     sync — they're only relevant to this pipeline.
     """
-    from cp_engine.sync_mc2 import _load_supabase_creds
+    from cp_engine.sync_mc2 import _engagement_canonical_id, _load_supabase_creds
     from supabase import create_client
 
     url, key = _load_supabase_creds(config)
@@ -121,7 +123,7 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
         .select(
             "number, name, mc_status, is_internal, enable_slack, "
             "slack_channel_id, slack_channel_name, slack_channel_ids, "
-            "companies!inner(code)"
+            "full_job_name, companies!inner(code)"
         )
         .neq("mc_status", "Archived")
         .order("mc_status")
@@ -139,7 +141,7 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
         number = row.get("number")
         if not company_code or number is None:
             continue
-        code = f"{company_code.lower()}-{number}"
+        code = _engagement_canonical_id(row)
 
         # `slack_channel_ids` is the source of truth; fall back to the
         # legacy scalar for safety if the array is empty but the scalar
