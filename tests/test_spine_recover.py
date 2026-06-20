@@ -412,3 +412,59 @@ def test_recover_without_distiller_carries_everything(tmp_path):
     # the source-backed element falls back to its verbatim body
     deck = next(r for r in rows if r["framing"] == "Infoblox Platform v6 deck")
     assert deck["body"] == "stale deck summary"
+
+
+def test_recover_empty_redistill_falls_back_to_verbatim_body(tmp_path):
+    # FIX 1 (data-loss BLOCKER): a source-backed element that MATCHES (so it
+    # plans redistill) but whose distiller/pull yields empty/whitespace must
+    # NOT be emptied — fall back to the element's verbatim body and report
+    # mode="carry" (honest).
+    assets = [{"id": "a1", "title": "Infoblox_Platform_v6.pptx",
+               "source_type": "deck", "status": "active", "created_at": "2026-05-01"}]
+    client = _FakeClient(assets)
+    _seed_two_elements(tmp_path)
+
+    report, rows = recover(
+        client=client, project_id="pid", company_id="cid", project_dir=tmp_path,
+        canonical_code="ibx-5153", now_iso=NOW,
+        # distiller returns whitespace-only → empty redistilled body
+        distiller=lambda p: "   \n  ", pull_text=lambda a: "",
+        apply=False,
+    )
+
+    deck_row = next(r for r in rows if r["framing"] == "Infoblox Platform v6 deck")
+    # ORIGINAL verbatim body preserved — never emptied.
+    assert deck_row["body"] == "stale deck summary"
+    deck_report = next(r for r in report if r["label"] == "Infoblox Platform v6 deck")
+    assert deck_report["mode"] == "carry"  # honest — it was NOT re-distilled
+
+
+def test_recover_flags_estimate_bound_elements_for_rebind(tmp_path):
+    # FIX 2: Deliverables-layer elements and any element with non-empty `serves`
+    # were estimate-bound; recovery re-homes them as context, so the operator
+    # must SEE them to decide whether to re-bind. Plain notes/decisions don't flag.
+    _write_legacy(
+        tmp_path, "Deliverables", "foundation-doc",
+        title="Foundation positioning doc", body="the deliverable body",
+    )
+    _write_legacy(
+        tmp_path, "Decisions", "served-decision",
+        title="A served decision", body="body",
+        serves=("ibx-5153/deliverable/foundation-pp-doc",),
+    )
+    _write_legacy(
+        tmp_path, "Decisions", "plain-decision",
+        title="A plain decision", body="body",
+    )
+    client = _FakeClient([])
+
+    report, rows = recover(
+        client=client, project_id="pid", company_id="cid", project_dir=tmp_path,
+        canonical_code="ibx-5153", now_iso=NOW,
+        distiller=None, pull_text=None, apply=False,
+    )
+
+    flags = {r["label"]: r["needs_rebind"] for r in report}
+    assert flags["Foundation positioning doc"] is True   # Deliverables layer
+    assert flags["A served decision"] is True            # non-empty serves
+    assert flags["A plain decision"] is False            # neither

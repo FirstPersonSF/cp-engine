@@ -5,8 +5,9 @@ Background: a project whose `spine_substance` rows are split across two
 project_codes (the slug-drift introduced by the now-retired `cp spine-migrate`,
 which wrote under the dir-slug while `cp sync` keys on `<company>-<number>`) has
 its real memory stranded in legacy capitalized-layer disk files. This recovers
-them via the shipped write engine. See
-docs/plans/2026-06-19-spine-code-drift-recovery-design.md.
+them via the shipped write engine. (design doc: cp tenant
+docs/plans/2026-06-19-spine-code-drift-recovery-design.md — a different repo,
+not cp-engine.)
 """
 from __future__ import annotations
 
@@ -197,8 +198,16 @@ def recover(*, client, project_id, company_id, project_dir, canonical_code,
         action = plan_element(el, assets)
         if action.mode == "redistill" and can_redistill:
             asset_text = pull_text(action.source_basename)
-            body = redistill_body(action, asset_text=asset_text, distiller=distiller)
-            effective_modes.append("redistill")
+            redistilled = redistill_body(action, asset_text=asset_text, distiller=distiller)
+            if redistilled.strip():
+                body = redistilled
+                effective_modes.append("redistill")
+            else:
+                # Empty/whitespace re-distill output would EMPTY the element — its
+                # verbatim `el.body` is the only copy. Never empty an element: fall
+                # back to the verbatim body and report mode="carry" (honest).
+                body = el.body
+                effective_modes.append("carry")
         else:
             # carry, OR a planned redistill we can't fulfil (no distiller/pull).
             # For a carry action `action.body` already IS the verbatim body; for
@@ -216,6 +225,11 @@ def recover(*, client, project_id, company_id, project_dir, canonical_code,
     )
 
     # 4. Report — one entry per element, aligned with rows (1 row per element).
+    #    `needs_rebind`: Deliverables-layer elements and any element with
+    #    non-empty `serves` were estimate-bound (placement=item). Recovery
+    #    re-homes EVERYTHING as context — serves links are preserved and
+    #    re-bindable later, but the operator must SEE these to decide whether to
+    #    re-bind them in the estimate.
     report = [
         {
             "label": action.label,
@@ -224,6 +238,7 @@ def recover(*, client, project_id, company_id, project_dir, canonical_code,
             "asset": action.source_basename,
             "body_len": len(body),
             "est_item_id": row["est_item_id"],
+            "needs_rebind": action.layer == "Deliverables" or bool(action.serves),
         }
         for action, mode, body, row in zip(actions, effective_modes, bodies, rows)
     ]

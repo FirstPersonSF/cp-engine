@@ -1231,6 +1231,10 @@ def spine_recover_cmd(code: str, apply_: bool, model: str) -> None:
     pulls asset text). Dry-run by default; `--apply` writes.
 
     `code` is the canonical `<company>-<number>` (the working-dir form).
+
+    Note: re-running `--apply` re-distills source-backed elements afresh
+    (overwriting their v1 body with new LLM output — not a content no-op);
+    carried elements are fully idempotent.
     """
     import os
     from datetime import datetime, timezone
@@ -1318,6 +1322,13 @@ def spine_recover_cmd(code: str, apply_: bool, model: str) -> None:
         click.echo(
             f"{r['mode']:<9} {r['layer']:<16} {r['body_len']:>5}  "
             f"{r['label']}{asset}"
+        )
+
+    rebind_count = sum(1 for r in report if r.get("needs_rebind"))
+    if rebind_count:
+        click.echo(
+            f"\n{rebind_count} element(s) flagged needs-rebind "
+            "(re-homed as context; re-bind in the estimate if needed)."
         )
 
     if apply_:
