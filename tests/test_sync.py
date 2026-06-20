@@ -26,6 +26,7 @@ from cp_engine.sync import (
     Backend,
     _collect_sprint_per_project_data,
     _deactivate_stale_cps,
+    _ensure_mc_id_stamp,
     _find_project_dir,
     _last_week_monday,
     _read_mc_id,
@@ -2072,6 +2073,156 @@ def test_read_mc_id_roundtrips_rendered_template(tmp_path: Path) -> None:
     cp = tmp_path / "cp.md"
     cp.write_text(render_project_cp(config, state))
     assert _read_mc_id(cp) == "render-uuid-123"
+
+
+# --- _ensure_mc_id_stamp (self-healing backfill) ---------------------------
+
+# A legacy cp.md: real frontmatter (NO MC-id) + engine regions + hand content.
+_LEGACY_CP_MD = (
+    "---\n"
+    "Project: Acme Thing\n"
+    "Provenance: Version 0.20.0 | 2026-01-01\n"
+    "Filename: cp.md\n"
+    "Author: cp-engine (initial scaffold)\n"
+    "---\n"
+    "\n"
+    "# Acme Thing — Project CP\n"
+    "\n"
+    "<!-- cp-engine:start project-facts -->\n"
+    "| Code | acme-1 |\n"
+    "<!-- cp-engine:end project-facts -->\n"
+    "\n"
+    "## My notes\n"
+    "\n"
+    "Hand-written content that MUST survive byte-for-byte.\n"
+    "Second line, with trailing spaces here:   \n"
+)
+
+
+def test_ensure_mc_id_stamp_stamps_legacy_cp(tmp_path: Path) -> None:
+    """A legacy cp.md (no MC-id) gets the stamp after `Filename:`; the entire
+    body (engine regions + hand notes) is preserved byte-for-byte."""
+    cp = tmp_path / "cp.md"
+    cp.write_text(_LEGACY_CP_MD)
+    body_before = _LEGACY_CP_MD.split("\n---\n", 1)[1]
+
+    assert _ensure_mc_id_stamp(cp, "U") is True
+
+    text = cp.read_text()
+    # Stamp placed immediately after the Filename line.
+    assert "Filename: cp.md\nMC-id: U\n" in text
+    assert _read_mc_id(cp) == "U"
+    # Body after the closing `---` unchanged, byte-for-byte.
+    assert text.split("\n---\n", 1)[1] == body_before
+
+
+def test_ensure_mc_id_stamp_idempotent(tmp_path: Path) -> None:
+    """Calling again when the stamp is already correct → no write, byte-identical."""
+    cp = tmp_path / "cp.md"
+    cp.write_text(_LEGACY_CP_MD)
+    _ensure_mc_id_stamp(cp, "U")
+    after_first = cp.read_text()
+
+    assert _ensure_mc_id_stamp(cp, "U") is False
+    assert cp.read_text() == after_first
+
+
+def test_ensure_mc_id_stamp_replaces_wrong_value(tmp_path: Path) -> None:
+    """An existing MC-id with the wrong value is replaced in place; only that
+    one line changes, body untouched."""
+    cp = tmp_path / "cp.md"
+    stamped_old = _LEGACY_CP_MD.replace(
+        "Filename: cp.md\n", "Filename: cp.md\nMC-id: OLD\n"
+    )
+    cp.write_text(stamped_old)
+    body_before = stamped_old.split("\n---\n", 1)[1]
+
+    assert _ensure_mc_id_stamp(cp, "NEW") is True
+
+    text = cp.read_text()
+    assert "MC-id: NEW\n" in text
+    assert "MC-id: OLD" not in text
+    assert text.split("\n---\n", 1)[1] == body_before
+    # Exactly one line differs.
+    diff = [
+        (a, b)
+        for a, b in zip(stamped_old.splitlines(), text.splitlines())
+        if a != b
+    ]
+    assert diff == [("MC-id: OLD", "MC-id: NEW")]
+
+
+def test_ensure_mc_id_stamp_no_filename_line(tmp_path: Path) -> None:
+    """Frontmatter without a Filename line → MC-id still inserted (as the last
+    frontmatter line before the closing `---`), body preserved."""
+    no_filename = (
+        "---\n"
+        "Project: Acme Thing\n"
+        "Author: cp-engine\n"
+        "---\n"
+        "\n"
+        "# body\n"
+        "## My notes\n"
+        "keep me\n"
+    )
+    cp = tmp_path / "cp.md"
+    cp.write_text(no_filename)
+    body_before = no_filename.split("\n---\n", 1)[1]
+
+    assert _ensure_mc_id_stamp(cp, "U") is True
+
+    text = cp.read_text()
+    assert _read_mc_id(cp) == "U"
+    # Inserted as last frontmatter line (after Author, before closing ---).
+    assert text.startswith(
+        "---\nProject: Acme Thing\nAuthor: cp-engine\nMC-id: U\n---\n"
+    )
+    assert text.split("\n---\n", 1)[1] == body_before
+
+
+def test_ensure_mc_id_stamp_no_frontmatter_returns_false(tmp_path: Path) -> None:
+    """A file with no parseable frontmatter is left entirely untouched."""
+    cp = tmp_path / "cp.md"
+    cp.write_text("# hello\n\nno frontmatter.\n")
+    before = cp.read_text()
+    assert _ensure_mc_id_stamp(cp, "U") is False
+    assert cp.read_text() == before
+
+
+def test_sync_backfills_mc_id_into_existing_unstamped_cp(tmp_path: Path) -> None:
+    """Self-healing path: an existing unstamped cp.md for a live project (mc2_id
+    set) gets the stamp after a full sync, and hand content survives."""
+    from dataclasses import replace
+
+    config = make_config(tmp_path)
+    code = "acme-legacy"
+    # First sync scaffolds the dir, THEN we strip the stamp + add hand content
+    # to simulate a pre-feature legacy cp.md on disk.
+    state = replace(make_state(code=code, name=code), mc2_id="U-backfill")
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+    cp = tmp_path / "1p" / "google" / code / "cp.md"
+    legacy = cp.read_text().replace("MC-id: U-backfill\n", "")
+    legacy += "\n## My notes\n\nhand content survives\n"
+    cp.write_text(legacy)
+    assert _read_mc_id(cp) is None  # genuinely unstamped now
+
+    # Re-sync → the backfill stamps it.
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+
+    assert _read_mc_id(cp) == "U-backfill"
+    assert "## My notes\n\nhand content survives\n" in cp.read_text()
+
+
+def test_sync_skips_mc_id_stamp_for_uuidless_repo(tmp_path: Path) -> None:
+    """A project with mc2_id=None (e.g. a standalone repo) → no stamp attempt,
+    no error; its cp.md carries no MC-id."""
+    config = make_config(tmp_path)
+    state = make_state(code="cp-engine", name="cp-engine")  # mc2_id defaults None
+    assert state.mc2_id is None
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+    cp = tmp_path / "1p" / "google" / "cp-engine" / "cp.md"
+    assert cp.exists()
+    assert _read_mc_id(cp) is None
 
 
 # --- _find_project_dir (uuid-first lookup) ---------------------------------

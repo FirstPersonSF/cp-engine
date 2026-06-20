@@ -345,6 +345,17 @@ def sync_tenant(
             cp_path.write_text(body)
             files_written.append(cp_path)
 
+        # MC-id stamp backfill (uuid-anchored dir location). NEW scaffolds
+        # already carry the stamp from the template, so this is a no-op for
+        # them (the value matches → no write). LEGACY cp.md files (created
+        # before this feature) lack it — splice it in so the uuid-first dir
+        # lookup can anchor on them on the next sync (self-healing). Skipped
+        # for uuid-less items (repos: mc2_id is None) and under dry_run.
+        if project.mc2_id and cp_path.exists():
+            if _ensure_mc_id_stamp(cp_path, project.mc2_id):
+                if cp_path not in files_written:
+                    files_written.append(cp_path)
+
         # Quick Resume engine-region migration (v0.11.0+, Lever 5).
         # Wrap any unwrapped `## Quick Resume` section in markers so the
         # ingest verbs (current_work / next_up / blockers) have a region
@@ -1511,6 +1522,63 @@ def _read_mc_id(cp_path: Path) -> str | None:
     except (ValueError, OSError):
         return None
     return fm.get("MC-id") or None
+
+
+def _ensure_mc_id_stamp(cp_path: Path, mc2_id: str) -> bool:
+    """Ensure cp.md frontmatter carries `MC-id: <mc2_id>`. Edits ONLY the
+    frontmatter block — never the body/regions. Returns True if it wrote.
+
+    Self-healing backfill: existing (pre-feature) cp.md files lack the stamp
+    that NEW scaffolds emit via the template, so the uuid-first dir lookup
+    can't anchor on them. On sync we splice the line in.
+
+    Safety: the entire body after the closing `---` is preserved
+    byte-for-byte. Only the frontmatter block is reconstructed, and only
+    when its content actually changes.
+    """
+    from cp_engine.sprints import _FRONTMATTER_RE
+
+    try:
+        text = cp_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        # No parseable frontmatter block — refuse to touch the body.
+        return False
+
+    fm_block = m.group(1)  # inner text between the opening/closing `---\n`
+    body = text[m.end() :]  # everything after the closing `---\n`, verbatim
+    lines = fm_block.split("\n")
+
+    new_line = f"MC-id: {mc2_id}"
+    out: list[str] = []
+    replaced = False
+    for line in lines:
+        if line.startswith("MC-id:"):
+            if line.strip() == new_line:
+                return False  # already correct → no write
+            out.append(new_line)  # wrong value → replace just this line
+            replaced = True
+        else:
+            out.append(line)
+
+    if not replaced:
+        # Absent: insert after the `Filename:` line, or (defensive) as the
+        # last frontmatter line before the closing `---`.
+        insert_at = len(out)
+        for i, line in enumerate(out):
+            if line.startswith("Filename:"):
+                insert_at = i + 1
+                break
+        out.insert(insert_at, new_line)
+
+    new_text = "---\n" + "\n".join(out) + "\n---\n" + body
+    if new_text == text:
+        return False
+    cp_path.write_text(new_text, encoding="utf-8")
+    return True
 
 
 def _find_project_dir(
