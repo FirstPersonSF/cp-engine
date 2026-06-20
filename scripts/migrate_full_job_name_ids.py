@@ -56,6 +56,7 @@ sys.path.insert(0, str(_HERE))
 from full_job_name_id_map import build_id_map  # noqa: E402
 
 from cp_engine.state import dir_slug  # noqa: E402
+from cp_engine.sync import plan_sprint_renames  # noqa: E402
 
 logger = logging.getLogger("migrate_full_job_name_ids")
 
@@ -90,10 +91,10 @@ def plan_moves(tenant_root: Path, id_map: dict[str, str]) -> list[tuple[Path, Pa
             continue
         new_slug = dir_slug(new)
 
-        # 1) Sprint files, all weeks.
-        for src in sorted((tenant_root / "sprints").glob(f"*/{old}.md")):
-            dst = src.with_name(f"{new}.md")
-            moves.append((src, dst))
+        # 1) Sprint files, all weeks. Reuse the shared planner in cp_engine.sync
+        # so the sprint-file glob lives in exactly one place (also used by
+        # sync's drift/reactivation rename).
+        moves.extend(plan_sprint_renames(tenant_root, old, new))
 
         # 2) Working dir under 1p/<company>/. The old dir name was
         # dir_slug(old, name); since dir_slug now ignores name, that is

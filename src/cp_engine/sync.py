@@ -295,7 +295,11 @@ def sync_tenant(
             continue
 
         if existing_live is not None and existing_live != project_dir:
-            # Slug drift: rename live dir to current slug.
+            # Slug/code drift: rename live dir to current slug. The OLD code
+            # == the OLD dir's name (the uuid-found dir, still at its old
+            # slug); the NEW code == the target dir name. Rename the
+            # project's sprint files to follow so they aren't orphaned.
+            old_code = existing_live.name
             project_dir.parent.mkdir(parents=True, exist_ok=True)
             existing_live.rename(project_dir)
             logger.info(
@@ -303,19 +307,27 @@ def sync_tenant(
                 existing_live.relative_to(config.root),
                 project_dir.relative_to(config.root),
             )
+            files_written.extend(
+                _rename_sprint_files(config.root, old_code, project_dir.name)
+            )
             for path in sorted(project_dir.rglob("*")):
                 if path.is_file():
                     files_written.append(path)
         elif existing_live is None:
             if existing_inactive is not None:
                 # Reactivate: project came back to live. Restore the dir
-                # (and apply any slug drift while we're at it).
+                # (and apply any slug drift while we're at it). Reactivation
+                # can carry drift too, so the sprint files must follow.
+                old_code = existing_inactive.name
                 project_dir.parent.mkdir(parents=True, exist_ok=True)
                 existing_inactive.rename(project_dir)
                 logger.info(
                     "Reactivated inactive project %s (%s).",
                     project.code,
                     project_dir.relative_to(config.root),
+                )
+                files_written.extend(
+                    _rename_sprint_files(config.root, old_code, project_dir.name)
                 )
                 for path in sorted(project_dir.rglob("*")):
                     if path.is_file():
@@ -1541,6 +1553,66 @@ def _find_project_dir(
         if path.is_dir() and path.name != INACTIVE_DIR_NAME and path.name.startswith(prefix):
             return path
     return None
+
+
+def plan_sprint_renames(
+    tenant_root: Path, old_code: str, new_code: str
+) -> list[tuple[Path, Path]]:
+    """Pure planner: the `(src, dst)` renames for `sprints/*/<old_code>.md`
+    → `<new_code>.md` across all weeks. Reads the filesystem (the glob) but
+    mutates nothing. Destinations that already exist are skipped.
+
+    This is THE single home of the sprint-file glob — both `_rename_sprint_files`
+    (sync's drift / reactivation rename) and `migrate_full_job_name_ids`'s
+    one-time tree migration call it, so the glob is never duplicated.
+    """
+    if old_code == new_code:
+        return []
+    sprints_root = tenant_root / "sprints"
+    moves: list[tuple[Path, Path]] = []
+    for src in sorted(sprints_root.glob(f"*/{old_code}.md")):
+        dst = src.with_name(f"{new_code}.md")
+        if dst.exists():
+            continue
+        moves.append((src, dst))
+    return moves
+
+
+def _rename_sprint_files(
+    tenant_root: Path, old_code: str, new_code: str
+) -> list[Path]:
+    """Rename `sprints/*/<old_code>.md` → `<new_code>.md` across all weeks.
+
+    When a project's dir is renamed for code/slug drift, its per-sprint
+    working files (`sprints/<YYYY-W##>/<code>.md`) must follow — otherwise
+    the old-named sprint files are orphaned and sync scaffolds fresh ones
+    under the new name, stranding the prior sprint content.
+
+    Uses `git mv` when the tenant is a git repo (so history follows the
+    file), falling back to a plain rename otherwise. Returns the list of new
+    paths written (empty when there are no matching sprint files yet).
+    """
+    new_paths: list[Path] = []
+    for src, dst in plan_sprint_renames(tenant_root, old_code, new_code):
+        rel_src = src.relative_to(tenant_root).as_posix()
+        rel_dst = dst.relative_to(tenant_root).as_posix()
+        moved = False
+        try:
+            result = subprocess.run(
+                ["git", "mv", rel_src, rel_dst],
+                cwd=str(tenant_root),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            moved = result.returncode == 0
+        except (FileNotFoundError, OSError):
+            moved = False
+        if not moved:
+            src.rename(dst)
+        logger.info("Renamed sprint file %s → %s.", rel_src, rel_dst)
+        new_paths.append(dst)
+    return new_paths
 
 
 def _deactivate_stale_cps(

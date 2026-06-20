@@ -28,6 +28,7 @@ from cp_engine.sync import (
     _find_project_dir,
     _last_week_monday,
     _read_mc_id,
+    _rename_sprint_files,
 )
 
 
@@ -2117,3 +2118,118 @@ def test_find_project_dir_uuid_beats_code_sibling(tmp_path: Path) -> None:
     stamped = _make_dir_with_cp(tmp_path, "aaa", mc_id="U")
     (tmp_path / "new-code").mkdir()  # name matches code, but no stamp
     assert _find_project_dir(tmp_path, code="new-code", mc2_id="U") == stamped
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  _rename_sprint_files (sprint files follow a dir drift rename)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_rename_sprint_files_renames_all_weeks(tmp_path: Path) -> None:
+    """The helper renames `sprints/*/<old>.md` → `<new>.md` across every
+    week, preserving content, returns the new paths, leaves no old file,
+    and never touches an unrelated sprint file."""
+    for week, body in (("2026-W01", "w1 content"), ("2026-W02", "w2 content")):
+        d = tmp_path / "sprints" / week
+        d.mkdir(parents=True)
+        (d / "old.md").write_text(body)
+    # An unrelated sprint file that must stay put.
+    (tmp_path / "sprints" / "2026-W01" / "other.md").write_text("untouched")
+
+    new_paths = _rename_sprint_files(tmp_path, "old", "new")
+
+    assert len(new_paths) == 2
+    assert (tmp_path / "sprints" / "2026-W01" / "new.md").read_text() == "w1 content"
+    assert (tmp_path / "sprints" / "2026-W02" / "new.md").read_text() == "w2 content"
+    assert not (tmp_path / "sprints" / "2026-W01" / "old.md").exists()
+    assert not (tmp_path / "sprints" / "2026-W02" / "old.md").exists()
+    # Unrelated file untouched.
+    assert (tmp_path / "sprints" / "2026-W01" / "other.md").read_text() == "untouched"
+
+
+def test_rename_sprint_files_no_files_returns_empty(tmp_path: Path) -> None:
+    """No matching sprint files (none scaffolded yet) → returns [], no error."""
+    (tmp_path / "sprints").mkdir()
+    assert _rename_sprint_files(tmp_path, "old", "new") == []
+
+
+def _stamped_old_project_tree(
+    tmp_path: Path, *, old_code: str, mc_id: str
+) -> "TenantConfig":
+    """First-sync a project under `old_code` (stamping MC-id=<mc_id> into its
+    cp.md), then hand-add sprint files for it across two weeks. Returns the
+    config to re-sync with a drifted code."""
+    config = make_config(tmp_path)
+    from dataclasses import replace
+
+    state = replace(
+        make_state(code=old_code, name=old_code),
+        mc2_id=mc_id,
+    )
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+    # Sanity: dir exists and cp.md carries the stamp.
+    old_dir = tmp_path / "1p" / "google" / old_code
+    assert old_dir.exists()
+    assert _read_mc_id(old_dir / "cp.md") == mc_id
+    # Hand-add sprint files for OLD weeks (well before the current sync week
+    # so they aren't pulled in as the prior-sprint for carry-forward, which
+    # would try to parse our minimal bodies as full sprint files). The first
+    # sync also scaffolds the current-week file; these past-week ones are what
+    # we assert content on.
+    for week, body in (("2026-W10", "old sprint W10"), ("2026-W11", "old sprint W11")):
+        d = tmp_path / "sprints" / week
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{old_code}.md").write_text(body)
+    return config
+
+
+def test_drift_rename_moves_sprint_files(tmp_path: Path) -> None:
+    """When a code/slug drift renames the working dir, the project's sprint
+    files are renamed to the new code too — old-named files vanish, new-named
+    files carry the original content."""
+    old_code = "ggl-5177-old-slug"
+    new_code = "ggl-5177-new-slug"
+    config = _stamped_old_project_tree(tmp_path, old_code=old_code, mc_id="U-drift")
+
+    # Re-sync with the SAME mc2_id but a drifted code → uuid-anchored rename.
+    from dataclasses import replace
+
+    new_state = replace(make_state(code=new_code, name=new_code), mc2_id="U-drift")
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((new_state,)))
+
+    # Dir moved.
+    assert (tmp_path / "1p" / "google" / new_code).exists()
+    assert not (tmp_path / "1p" / "google" / old_code).exists()
+
+    # Sprint files moved with content preserved.
+    for week, body in (("2026-W10", "old sprint W10"), ("2026-W11", "old sprint W11")):
+        new_sf = tmp_path / "sprints" / week / f"{new_code}.md"
+        old_sf = tmp_path / "sprints" / week / f"{old_code}.md"
+        assert new_sf.read_text() == body
+        assert not old_sf.exists()
+
+
+def test_drift_rename_with_no_sprint_files_is_fine(tmp_path: Path) -> None:
+    """Drift rename when the project has no hand-added sprint files at the old
+    name still renames the dir cleanly (helper returns [])."""
+    config = make_config(tmp_path)
+    from dataclasses import replace
+
+    old_state = replace(
+        make_state(code="ggl-5177-old", name="ggl-5177-old"), mc2_id="U-empty"
+    )
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((old_state,)))
+    old_dir = tmp_path / "1p" / "google" / "ggl-5177-old"
+    assert old_dir.exists()
+    # Remove any auto-scaffolded current-week sprint file so there are NO
+    # old-named sprint files to move.
+    for sf in (tmp_path / "sprints").glob("*/ggl-5177-old.md"):
+        sf.unlink()
+
+    new_state = replace(
+        make_state(code="ggl-5177-new", name="ggl-5177-new"), mc2_id="U-empty"
+    )
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((new_state,)))
+
+    assert (tmp_path / "1p" / "google" / "ggl-5177-new").exists()
+    assert not (tmp_path / "1p" / "google" / "ggl-5177-old").exists()
