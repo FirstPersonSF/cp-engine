@@ -8,6 +8,7 @@ engine. See docs/plans/2026-06-19-spine-code-drift-recovery-design.md.
 """
 from __future__ import annotations
 
+import dataclasses
 import os
 
 # Layers whose elements summarize ONE identifiable source → re-distill from it.
@@ -46,3 +47,37 @@ def match_source_asset(sources: tuple, assets: list[dict]) -> dict | None:
             if hit:
                 return hit
     return None
+
+
+@dataclasses.dataclass(frozen=True)
+class RecoveryAction:
+    mode: str                  # "redistill" | "carry"
+    layer: str
+    label: str                 # the element's title → becomes the authored label
+    body: str                  # existing body (carry) or "" placeholder (redistill fills it)
+    serves: tuple              # legacy cross-links, preserved
+    asset_id: str | None = None        # the matched rag_asset id (redistill only)
+    source_basename: str | None = None # the matched source filename (redistill only, for the report)
+
+
+def plan_element(el, assets: list[dict]) -> RecoveryAction:
+    """Decide one legacy element's recovery path (pure — no I/O/LLM/DB).
+
+    Source-backed layer WITH a confident rag_asset match → 'redistill' (record
+    asset_id). Otherwise → 'carry' the existing body verbatim. `serves` and
+    `layer`/`label` are preserved either way."""
+    has_source = bool(el.source)
+    kind = classify_element(el.layer, has_source=has_source)
+    if kind == "source-backed":
+        asset = match_source_asset(el.source, assets)
+        if asset is not None:
+            return RecoveryAction(
+                mode="redistill", layer=el.layer, label=el.title, body="",
+                serves=tuple(el.serves), asset_id=asset["id"],
+                source_basename=asset["title"],
+            )
+    # synthesis, or source-backed with no confident asset → carry verbatim
+    return RecoveryAction(
+        mode="carry", layer=el.layer, label=el.title, body=el.body,
+        serves=tuple(el.serves),
+    )

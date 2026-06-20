@@ -1,4 +1,42 @@
-from cp_engine.spine_recover import classify_element, match_source_asset, source_basename
+from cp_engine.spine_recover import classify_element, match_source_asset, plan_element, source_basename
+
+
+class _El:  # minimal stand-in for SpineElement (plan_element reads only these)
+    def __init__(self, layer, title, body, source=(), serves=()):
+        self.layer, self.title, self.body = layer, title, body
+        self.source, self.serves = source, serves
+
+
+def test_plan_source_backed_element_marks_redistill():
+    el = _El("SourceMaterial", "Infoblox Platform v6 deck", "old body",
+             source=("Reference Materials/Infoblox_Platform_v6_Synthesized_CB.pptx",))
+    assets = [{"id": "a1", "title": "Infoblox_Platform_v6_Synthesized_CB.pptx"}]
+    action = plan_element(el, assets)
+    assert action.mode == "redistill"
+    assert action.asset_id == "a1"
+    assert action.layer == "SourceMaterial"
+    assert action.label == "Infoblox Platform v6 deck"
+
+
+def test_plan_synthesis_element_marks_carry():
+    el = _El("Decisions", "DECISION: two-track", "the decision body")
+    action = plan_element(el, [])
+    assert action.mode == "carry"
+    assert action.body == "the decision body"   # verbatim
+    assert action.layer == "Decisions"
+    assert action.label == "DECISION: two-track"
+
+
+def test_plan_source_backed_without_asset_match_carries():
+    el = _El("SourceMaterial", "X", "body", source=("Missing.pptx",))
+    action = plan_element(el, [{"id": "a1", "title": "Other.docx"}])
+    assert action.mode == "carry"   # no confident source → carry over
+
+
+def test_plan_carries_serves_cross_links():
+    el = _El("Decisions", "D", "b", serves=("ibx-5153/deliverable/foundation-pp-doc",))
+    action = plan_element(el, [])
+    assert action.serves == ("ibx-5153/deliverable/foundation-pp-doc",)
 
 
 def test_classify_source_backed_layers():
