@@ -12,6 +12,7 @@ import dataclasses
 import os
 from pathlib import Path
 
+from cp_engine.authored_element import build_create_rows, slugify
 from cp_engine.spine import SpineElement, load_spine
 
 
@@ -121,3 +122,32 @@ def redistill_body(action, *, asset_text: str, distiller) -> str:
     LLM wrapper, tests pass a fake."""
     prompt = _REDISTILL_PROMPT.format(framing=action.label, raw=asset_text)
     return distiller(prompt).strip()
+
+
+def recovered_rows(actions, *, project_id, project_code, bodies, now_iso):
+    """Build authored spine_substance rows for the recovered elements.
+
+    `bodies[i]` is the FINAL body for actions[i] (re-distilled or carried).
+    Each action → one authored row via `build_create_rows` (origin=authored,
+    placement=context, layer=action.layer, est_item_id=_authored/<slug>).
+
+    Slug-collision guard: `build_create_rows` slugifies the label, so two
+    elements whose labels slugify identically would collide on est_item_id (the
+    second clobbering the first on upsert). We disambiguate by appending a short
+    suffix to the LABEL when a slug repeats, so every element keeps a distinct id.
+    """
+    rows = []
+    seen_slugs: dict[str, int] = {}
+    for action, body in zip(actions, bodies):
+        base_slug = slugify(action.label)
+        n = seen_slugs.get(base_slug, 0)
+        seen_slugs[base_slug] = n + 1
+        # First occurrence keeps the label as-is; repeats get a numeric suffix
+        # appended to the LABEL so build_create_rows derives a distinct slug.
+        label = action.label if n == 0 else f"{action.label} {n + 1}"
+        new = build_create_rows(
+            project_id=project_id, project_code=project_code, label=label,
+            type_=action.layer, body=body, serves=list(action.serves), now_iso=now_iso,
+        )
+        rows.extend(new)
+    return rows

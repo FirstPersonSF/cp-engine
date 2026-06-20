@@ -6,6 +6,7 @@ from cp_engine.spine_recover import (
     load_legacy_elements,
     match_source_asset,
     plan_element,
+    recovered_rows,
     redistill_body,
     source_basename,
 )
@@ -161,3 +162,47 @@ def test_redistill_body_strips_distiller_output():
                             serves=(), asset_id="a1", source_basename="x.pdf")
     out = redistill_body(action, asset_text="src", distiller=lambda p: "  body with spaces  \n")
     assert out == "body with spaces"
+
+
+# ---- recovered_rows ---------------------------------------------------------
+
+def _action(layer, label, body="b", serves=()):
+    return RecoveryAction(mode="carry", layer=layer, label=label, body=body, serves=tuple(serves))
+
+
+def test_recovered_rows_maps_actions_to_authored_rows():
+    actions = [_action("Decisions", "Two-track story", body="the decision", serves=("ibx-5153/deliverable/foundation-pp-doc",))]
+    bodies = ["the decision"]
+    rows = recovered_rows(actions, project_id="pid", project_code="ibx-5153",
+                          bodies=bodies, now_iso="2026-06-19T00:00:00+00:00")
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["origin"] == "authored"
+    assert r["placement"] == "context"
+    assert r["layer"] == "Decisions"
+    assert r["project_code"] == "ibx-5153"
+    assert r["est_item_id"] == "_authored/two-track-story"
+    assert r["body"] == "the decision"
+    assert r["serves"] == ["ibx-5153/deliverable/foundation-pp-doc"]
+    assert r["status"] == "live"
+    assert r["version_label"] == "v1"
+
+
+def test_recovered_rows_disambiguates_colliding_slugs():
+    # two DIFFERENT elements whose labels slugify the same must get distinct ids
+    actions = [_action("Decisions", "Two-track story"), _action("Synthesis", "Two-track story")]
+    bodies = ["b1", "b2"]
+    rows = recovered_rows(actions, project_id="pid", project_code="ibx-5153",
+                          bodies=bodies, now_iso="2026-06-19T00:00:00+00:00")
+    ids = {r["est_item_id"] for r in rows}
+    assert len(ids) == 2   # NO collision — two distinct est_item_ids
+    # the row ids are also distinct (no clobber on upsert)
+    assert len({r["id"] for r in rows}) == 2
+
+
+def test_recovered_rows_uses_provided_body_not_action_body():
+    # the body passed in `bodies` (re-distilled) is used, not action.body
+    actions = [_action("Research", "X", body="OLD")]
+    rows = recovered_rows(actions, project_id="pid", project_code="ibx-5153",
+                          bodies=["FRESH redistilled"], now_iso="2026-06-19T00:00:00+00:00")
+    assert rows[0]["body"] == "FRESH redistilled"
