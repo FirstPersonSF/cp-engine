@@ -156,12 +156,13 @@ def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
     assert srv._tenant_root() == tmp_path.resolve()
 
 
-def test_exactly_four_tools_registered():
-    """The server registers exactly the two read tools + two spine write tools."""
+def test_exactly_five_tools_registered():
+    """The server registers the three read tools + two spine write tools."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
         "list_project_sources",
         "pull_project_source",
+        "fetch_project_source",
         "create_spine_element",
         "add_spine_version",
     }

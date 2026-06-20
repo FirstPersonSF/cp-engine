@@ -19,7 +19,7 @@ import logging
 import os
 from pathlib import Path
 
-from cp_engine.asset_ingest import read_scoped_chunks
+from cp_engine.asset_ingest import FileRef, download_file, read_scoped_chunks
 
 logger = logging.getLogger(__name__)
 
@@ -201,6 +201,76 @@ def pull_source(
         "citation_url": first.get("citation_url"),
         "scope": first.get("scope"),
         "chunks": [r.get("text") for r in selected],
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Re-fetch the ORIGINAL binary via persisted coords
+# ──────────────────────────────────────────────────────────────────────
+
+# Re-fetch coords persisted on `rag_assets` (Task 3) + display fields. NEVER `*`
+# / `meta` (large blobs) — only what's needed to reconstruct a FileRef and cite.
+_REFETCH_COLUMNS = "title, source_provider, source_file_id, source_path, url"
+
+
+def fetch_source(client, project_id: str, doc_title: str, dest_dir) -> dict:
+    """Download an ingested source's ORIGINAL binary to `dest_dir`.
+
+    Looks up the asset's persisted re-fetch coords (`source_provider`,
+    `source_file_id`, `source_path` — stamped on ingest), reconstructs a
+    `FileRef`, and reuses `asset_ingest.download_file` to fetch the original from
+    Drive/Dropbox. Title resolution mirrors `pull_source`: case-insensitive
+    contains-or-equal match (`_title_matches`), with exact-title preferred over a
+    substring match.
+
+    Returns `{local_path, title, provider, url}` on success, or a structured
+    `{error}` on any failure (no match, missing coords on a pre-live-link row,
+    lookup error, or download error). NEVER raises — this is called by an MCP
+    tool, which must surface a message rather than crash.
+    """
+    try:
+        rows = (
+            client.table("rag_assets")
+            .select(_REFETCH_COLUMNS)
+            .eq("project_id", project_id)
+            .execute()
+        ).data or []
+    except Exception as exc:  # noqa: BLE001 — MCP tool boundary, never raise
+        return {"error": f"lookup failed: {exc}"}
+
+    target = doc_title.strip().lower()
+    matched = [r for r in rows if _title_matches(doc_title, r.get("title"))]
+    exact = [r for r in matched if (r.get("title") or "").lower() == target]
+    selected = exact or matched
+    if not selected:
+        return {"error": f"no source titled {doc_title!r} in project"}
+    row = selected[0]
+
+    if not row.get("source_provider") or not row.get("source_file_id"):
+        return {
+            "error": f"{row.get('title')!r} has no re-fetch coords "
+            f"(ingested before the live-link layer; re-ingest to enable)"
+        }
+
+    file_ref = FileRef(
+        source=row["source_provider"],
+        id=row["source_file_id"],
+        name=row.get("title") or "source",
+        mime_type=None,
+        size=None,
+        modified=None,
+        path=row.get("source_path"),
+    )
+    try:
+        local = download_file(file_ref, Path(dest_dir))
+    except Exception as exc:  # noqa: BLE001 — MCP tool boundary, never raise
+        return {"error": f"download failed: {exc}"}
+
+    return {
+        "local_path": str(local),
+        "title": row.get("title"),
+        "provider": row["source_provider"],
+        "url": row.get("url"),
     }
 
 

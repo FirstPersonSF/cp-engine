@@ -24,6 +24,7 @@ returns `[]` for them.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 import re
 import shutil
@@ -586,8 +587,22 @@ def download_file(
         # download_file. Fetch by path_display (the value `list_files` stored on
         # the FileRef); Dropbox returns (metadata, response) and the bytes live
         # on response.content.
+        # Dropbox's `path` arg accepts a literal `/path`, an `id:<id>`, or a
+        # `rev:<rev>`. Normal ingest fetches by path_display. Backfilled historic
+        # rows recover source_file_id (already the `id:<body>` form) but never the
+        # dead temp path_display, so their FileRef has path=None — fall back to
+        # fetching by the id-form path, which Dropbox accepts as-is.
+        if file_ref.path:
+            download_arg = file_ref.path
+        elif file_ref.id:
+            download_arg = file_ref.id
+        else:
+            raise ValueError(
+                "[asset-ingest] cannot download Dropbox FileRef with neither "
+                f"path nor id (name={file_ref.name!r})"
+            )
         local_path = tmp_dir / file_ref.name
-        _metadata, response = dropbox_connector.dbx.files_download(path=file_ref.path)
+        _metadata, response = dropbox_connector.dbx.files_download(path=download_arg)
         local_path.write_bytes(response.content)
         return local_path
 
@@ -709,15 +724,54 @@ def _stable_dir_for(tmp_root: Path, file_ref: FileRef) -> Path:
     return tmp_root / safe_id
 
 
-def _source_url(file_ref: FileRef) -> str | None:
-    """Stub: source view-URLs deferred; returns None for now.
+def _source_url(file_ref: FileRef, drive_connector=None, dropbox_connector=None) -> str | None:
+    """Return a durable, human-clickable web link for a source file, or None.
 
-    Dropbox/Drive list responses here don't carry a public webViewLink, so we
-    pass None rather than fabricate one. (The pipeline stores url verbatim and
-    builds citation deep-links from it; a wrong url is worse than no url.) Kept
-    as a named seam so the future real lookup has an obvious home.
+    - Drive: a `/file/d/<id>/view` link built from the file id — no API call.
+    - Dropbox: a TEAM-ONLY shared link via the connector. This is CLIENT source
+      material (decks, emails, briefs), so the link is requested team-only
+      (members of the Dropbox team), never "anyone with the link" public. We FAIL
+      CLOSED: the connector must prove it can honor team-only (its
+      `get_shareable_link` signature must include a `team_only` parameter) before
+      we call it; a connector that can't enforce team-only yields None rather than
+      risk a public link.
+    - Any other source, missing connector, or any exception → None. A link is a
+      nice-to-have; it must never block or fail ingest.
+
+    The pipeline stores this verbatim as `rag_assets.url` and builds citation
+    deep-links from it, so a missing url is strictly safer than a wrong one.
     """
-    return None
+    try:
+        if file_ref.source == "drive":
+            return f"https://drive.google.com/file/d/{file_ref.id}/view"
+        if file_ref.source == "dropbox":
+            # Need both a connector and the dropbox path_display to resolve.
+            if dropbox_connector is None or not file_ref.path:
+                return None
+            # FAIL CLOSED on the team-only guarantee. This is CLIENT material;
+            # a public "anyone with the link" Dropbox URL would leak it. The
+            # team-only enforcement lives in a SEPARATELY-deployed connector
+            # (social-builder-app). We cannot tell a team-only link from a public
+            # one by inspecting the URL string (both are dropbox.com/s|scl/...).
+            # So instead of trusting the URL, we require the connector to PROVE it
+            # can honor team-only: its get_shareable_link must accept a `team_only`
+            # parameter. If an old/intermediate connector is deployed whose
+            # signature LACKS that param, we must NOT call it / must NOT trust any
+            # link it returns — we return None. Only when the param exists do we
+            # call with team_only=True and trust the connector's own internal
+            # verification (Task 2: it raises rather than return a public link).
+            try:
+                sig = inspect.signature(dropbox_connector.get_shareable_link)
+            except (TypeError, ValueError):
+                # Can't introspect the connector → can't prove team-only → bail.
+                return None
+            if "team_only" not in sig.parameters:
+                return None
+            return dropbox_connector.get_shareable_link(file_ref.path, team_only=True)
+        return None
+    except Exception:
+        # Never let a link lookup abort ingest of the file.
+        return None
 
 
 def ingest_project_assets(
@@ -781,6 +835,29 @@ def ingest_project_assets(
         # No matching MC-2 project — asset ingest doesn't apply. The resolver
         # already printed the reason to stderr.
         return IngestRunResult(project_found=False)
+
+    # Build the connectors ONCE up front (when their source is enabled) so the
+    # same instance is reused for listing, downloading, AND link generation.
+    # list_files/download_file otherwise construct their own *local* connectors,
+    # which never propagate back here — so without this, _source_url below would
+    # always see dropbox_connector=None and never emit a Dropbox link. A
+    # construction failure is swallowed: list_files constructs its OWN connector
+    # (it does not reuse this instance) and records its own per-source note, and
+    # here a missing connector just yields url=None for link generation.
+    if drive_connector is None and getattr(folders, "enable_google_drive", False):
+        try:
+            from cloud_storage.google_drive_connector import GoogleDriveConnector
+
+            drive_connector = GoogleDriveConnector(service_account_file=None)
+        except Exception:  # noqa: BLE001 — list_files handles + notes the failure
+            drive_connector = None
+    if dropbox_connector is None and getattr(folders, "enable_dropbox", False):
+        try:
+            from cloud_storage.dropbox_connector import DropboxConnector
+
+            dropbox_connector = DropboxConnector()
+        except Exception:  # noqa: BLE001 — list_files handles + notes the failure
+            dropbox_connector = None
 
     files, source_notes = list_files(
         folders,
@@ -864,7 +941,7 @@ def ingest_project_assets(
                 ingest_result = pipeline.ingest_file(
                     file_path,
                     title=file_ref.name,
-                    url=_source_url(file_ref),
+                    url=_source_url(file_ref, drive_connector, dropbox_connector),
                 )
 
                 action = getattr(ingest_result, "action", "failed")
@@ -883,7 +960,7 @@ def ingest_project_assets(
                     # failure in `failures` so it's visible and re-runnable,
                     # while still leaving created/versioned incremented.
                     try:
-                        _stamp_scope(client, folders, file_path)
+                        _stamp_scope(client, folders, file_path, file_ref)
                     except Exception as exc:
                         result.failures.append(
                             (file_ref.name, f"scope-stamp failed: {exc}")
@@ -977,8 +1054,10 @@ def _existing_dup_at_other_path(
     return any(r.get("file_path") != current_path for r in rows)
 
 
-def _stamp_scope(client, folders: ProjectFolders, file_path: str) -> None:
-    """Apply the 1P scope stamp to the just-ingested active asset row.
+def _stamp_scope(
+    client, folders: ProjectFolders, file_path: str, file_ref: FileRef
+) -> None:
+    """Apply the 1P scope stamp + source re-fetch coords to the just-ingested row.
 
     The spec wanted `UPDATE rag_assets SET scope, company_id WHERE id=<asset_id>`,
     but IngestResult exposes NO asset_id (the pipeline computes it internally and
@@ -988,11 +1067,20 @@ def _stamp_scope(client, folders: ProjectFolders, file_path: str) -> None:
     the same value passed to `ingest_file` (it is: both come from `local`). The
     pipeline already set project_id; what the stamp adds is company_id (and it
     re-affirms scope='project', which is also the column default).
+
+    The same UPDATE also persists the durable re-fetch coords from the `FileRef`
+    (`source_provider`/`source_file_id`/`source_path`): these can't flow through
+    `pipeline.ingest_file`, whose signature only takes (file_path, title, url), so
+    this post-ingest stamp is where they land. `source_path` is the Dropbox
+    path_display, `None` for Drive files (which re-fetch by id).
     """
     client.table("rag_assets").update(
         {
             "scope": "project",
             "company_id": folders.company_id,
+            "source_provider": file_ref.source,
+            "source_file_id": file_ref.id,
+            "source_path": file_ref.path,
         }
     ).eq("project_id", folders.project_id).eq("file_path", file_path).eq(
         "status", "active"
