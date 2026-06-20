@@ -805,8 +805,9 @@ def ingest_project_assets(
     # list_files/download_file otherwise construct their own *local* connectors,
     # which never propagate back here — so without this, _source_url below would
     # always see dropbox_connector=None and never emit a Dropbox link. A
-    # construction failure is swallowed: list_files re-attempts and records its
-    # own per-source note, and a missing connector just yields url=None.
+    # construction failure is swallowed: list_files constructs its OWN connector
+    # (it does not reuse this instance) and records its own per-source note, and
+    # here a missing connector just yields url=None for link generation.
     if drive_connector is None and getattr(folders, "enable_google_drive", False):
         try:
             from cloud_storage.google_drive_connector import GoogleDriveConnector
