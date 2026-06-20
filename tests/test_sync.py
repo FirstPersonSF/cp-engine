@@ -22,7 +22,12 @@ from cp_engine import (
     UnknownBackend,
     sync_tenant,
 )
-from cp_engine.sync import Backend, _collect_sprint_per_project_data, _last_week_monday
+from cp_engine.sync import (
+    Backend,
+    _collect_sprint_per_project_data,
+    _last_week_monday,
+    _read_mc_id,
+)
 
 
 class FakeBackend(Backend):
@@ -2013,3 +2018,54 @@ def test_collect_sprint_per_project_data_handles_unicode_subject(
     assert "🚀" in commits[0].subject
     assert "résumé" in commits[0].subject
     assert "café" in commits[0].subject
+
+
+# --- _read_mc_id (uuid stamp reader) ---------------------------------------
+
+_CP_MD_TEMPLATE = (
+    "---\n"
+    "Project: Acme Thing\n"
+    "Provenance: Version 0.35.1 | 2026-06-20\n"
+    "Filename: cp.md\n"
+    "{mc_id_line}"
+    "Author: cp-engine (initial scaffold)\n"
+    "---\n"
+    "\n"
+    "# Acme Thing — Project CP\n"
+)
+
+
+def test_read_mc_id_returns_stamp(tmp_path: Path) -> None:
+    cp = tmp_path / "cp.md"
+    cp.write_text(_CP_MD_TEMPLATE.format(mc_id_line="MC-id: abc-uuid\n"))
+    assert _read_mc_id(cp) == "abc-uuid"
+
+
+def test_read_mc_id_none_when_frontmatter_has_no_stamp(tmp_path: Path) -> None:
+    cp = tmp_path / "cp.md"
+    cp.write_text(_CP_MD_TEMPLATE.format(mc_id_line=""))
+    assert _read_mc_id(cp) is None
+
+
+def test_read_mc_id_none_when_file_missing(tmp_path: Path) -> None:
+    assert _read_mc_id(tmp_path / "does-not-exist.md") is None
+
+
+def test_read_mc_id_none_when_no_frontmatter_block(tmp_path: Path) -> None:
+    cp = tmp_path / "cp.md"
+    cp.write_text("# hello\n\nno frontmatter here.\n")
+    assert _read_mc_id(cp) is None
+
+
+def test_read_mc_id_roundtrips_rendered_template(tmp_path: Path) -> None:
+    """Task1 (stamp) + Task2 (read) compose: a cp.md rendered with mc2_id set
+    yields that uuid back through _read_mc_id."""
+    from dataclasses import replace
+
+    from cp_engine.render import render_project_cp
+
+    config = make_config(tmp_path)
+    state = replace(make_state(code="acme-1", name="Acme Thing"), mc2_id="render-uuid-123")
+    cp = tmp_path / "cp.md"
+    cp.write_text(render_project_cp(config, state))
+    assert _read_mc_id(cp) == "render-uuid-123"

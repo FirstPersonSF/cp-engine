@@ -1482,6 +1482,19 @@ def _dir_code(name: str) -> str:
     return name
 
 
+def _read_mc_id(cp_path: Path) -> str | None:
+    """Read the `MC-id:` uuid stamp from a project cp.md frontmatter, or None
+    when the file is missing, has no frontmatter, or carries no stamp."""
+    if not cp_path.is_file():
+        return None
+    try:
+        from cp_engine.sprints import _parse_frontmatter
+        fm = _parse_frontmatter(cp_path.read_text())
+    except (ValueError, OSError):
+        return None
+    return fm.get("MC-id") or None
+
+
 def _find_project_dir(parent: Path, code: str) -> Path | None:
     """Locate the working dir for a given project code under `parent`.
 
