@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.35.1 — 2026-06-20
+
+### Fixed — `cp sync` re-splices the `project-facts` region (cp-engine#15, for real)
+
+The project `cp.md` Facts table (Code / Status / Stage / Budget / Owner / Client /
+Last touched) was written once at scaffold and never refreshed — so after v0.35.0
+changed the canonical id, the Facts `Code` still showed the old `ibx-5192`. `cp sync`
+now re-renders and re-splices `project-facts` from the live `ProjectState` on every
+sync (the region is purely engine-managed). Guarded to skip files lacking the
+region marker, so legacy/hand-crafted CPs are never full-rewritten. Keeps Status /
+Stage / Budget etc. fresh too, not just Code.
+
 ## v0.35.0 — 2026-06-20
 
 ### Changed — canonical project id now derives from MC-2 `full_job_name`
