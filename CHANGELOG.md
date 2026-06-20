@@ -4,6 +4,22 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.33.0 — 2026-06-19
+
+### Added — `cp spine-recover` (project_code drift recovery)
+
+`cp spine-recover CODE` re-homes a project's legacy spine elements into the current capture-loop authored format under the canonical `<company>-<number>` code. It exists because a slug-drift — the now-retired `cp spine-migrate` wrote rows under the working-dir slug while `cp sync`/`cp where` use the canonical code — could strand a project's real distilled memory in a dead transitional shape under a second `project_code`.
+
+The command reads the legacy capitalized-layer disk files (the authoritative copy), **re-distills source-backed elements from their original `rag_assets`** (a fresh, full-fidelity refresh — matched by the `source:` filename), **carries synthesis elements verbatim** (re-distilling cross-cutting work degrades it), and authors them as `origin='authored'` context rows. **Dry-run by default**; `--apply` writes; a failed/empty re-distill falls back to the verbatim body (never empties an element); estimate-bound elements are flagged `needs_rebind` in the report. Used to recover IBX-5153 (32 elements) end-to-end.
+
+### Removed — `cp spine-migrate`
+
+Retired — it could no longer run (read the `spine_elements` table, dropped in mc-2 migration 072) and was the source of the drift above. Replaced by `cp spine-recover`. The `placement_rule` helper (used only by it) was removed too.
+
+### Companion MC-2 changes
+
+The `/api/spine/projects` list now flags each summary with `split: true` when one `project_id` has `spine_substance` rows under more than one `project_code` — the early warning the IBX drift lacked. Canonical-code docstrings corrected (`<company>-<number>`, not the dir-slug).
+
 ## v0.32.1 — 2026-06-19
 
 ### Fixed — dropped the dead `spine_elements` mirror call (PGRST205 log noise)

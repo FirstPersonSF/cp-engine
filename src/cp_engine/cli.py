@@ -1111,106 +1111,6 @@ def spine_frame_cmd(card_id, framing, est_item_id, kind, sources, model) -> None
     click.echo(f"Wrote {path}")
 
 
-@main.command("spine-migrate")
-@click.argument("code")
-@click.option(
-    "--dry-run", is_flag=True,
-    help="Show the proposed conversion table; write nothing.",
-)
-@click.option(
-    "--mc-project-id", "mc_project_id", default=None,
-    help="MC project_id (UUID) to migrate. Bypasses substance-based resolution "
-    "for fresh projects that have no spine_substance rows yet (their only spine "
-    "data is legacy spine_elements, keyed on this id).",
-)
-def spine_migrate_cmd(code: str, dry_run: bool, mc_project_id: str | None) -> None:
-    """Migrate legacy `spine_elements` → `spine_substance` with proposed placement.
-
-    Reads the project's legacy elements, proposes a placement for each
-    (cross-cutting → context rail; Deliverables → best-guess estimate binding for
-    a human to confirm), and upserts them as v1 substance rows. `code` is the
-    CANONICAL dir-slug (e.g. `ibx-5153-ai-campaign`).
-
-    Legacy rows use the short project_code (`ibx-5153`) but share the MC
-    `project_id` with the canonical substance rows, so we resolve the canonical
-    slug → project_id and read the legacy rows by that shared key.
-
-    Needs MC-2 (reads both stores + the live estimate). `--dry-run` prints the
-    proposed table and writes nothing. Without it, rows are upserted; nothing is
-    deleted and nothing is auto-confirmed.
-    """
-    from datetime import date
-
-    from cp_engine.estimate import fetch_estimate
-    from cp_engine.spine_migrate import (
-        fetch_legacy_elements,
-        plan_migration,
-        render_dry_run,
-        resolve_project_id,
-        run_migration,
-    )
-    from cp_engine.sync import BackendUnavailable
-    from cp_engine.sync_mc2 import MC2Backend
-
-    config = _load_config_or_die()
-    try:
-        client = MC2Backend().connect(config)
-    except BackendUnavailable as exc:
-        click.echo(f"cp spine-migrate needs MC-2: {exc}", err=True)
-        sys.exit(1)
-
-    # Resolution order: explicit --mc-project-id wins (the clean fallback for a
-    # fresh project with no substance rows), else resolve via existing substance
-    # rows (the cross-store join key). Both reads downstream key on project_id, so
-    # the explicit id reads the legacy elements + estimate exactly the same way.
-    project_id = mc_project_id or resolve_project_id(client, code)
-    if project_id is None:
-        click.echo(
-            f"No project_id for '{code}'. spine-migrate resolves the project via "
-            f"its existing spine_substance rows (the cross-store join key). For a "
-            f"fresh project with no substance rows yet, pass the known id with "
-            f"--mc-project-id <uuid>. Or frame a work item (cp spine-frame) first, "
-            f"or check the dir-slug.",
-            err=True,
-        )
-        sys.exit(1)
-
-    # Dry-run shows titles/placement only and needs no bodies, so skip disk
-    # access; the real write path hydrates each element's body from its on-disk
-    # file (the MC-2 row carries no body — see fetch_legacy_elements).
-    elements = fetch_legacy_elements(
-        client, project_id=project_id, tenant_root=None if dry_run else config.root
-    )
-    if not elements:
-        click.echo(f"No legacy spine_elements for '{code}' (project_id={project_id}).")
-        return
-
-    # The estimate is the binding backbone; None → Deliverables can't bind and
-    # fall to context (the migration still runs, just all-context).
-    try:
-        estimate = fetch_estimate(client, project_id)
-    except Exception as exc:  # noqa: BLE001 — estimator unreachable; degrade to context-only
-        click.echo(f"(estimate fetch failed — Deliverables fall to context: {exc})", err=True)
-        estimate = None
-
-    plan = plan_migration(
-        elements, estimate, canonical_code=code, project_id=project_id, today=date.today()
-    )
-
-    if dry_run:
-        click.echo(render_dry_run(code, plan))
-        return
-
-    rows = [m.row for m in plan]
-    run_migration(client, rows)
-    n_context = sum(1 for m in plan if m.proposal.placement == "context")
-    n_item = sum(1 for m in plan if m.proposal.placement == "item")
-    click.echo(
-        f"Migrated {len(rows)} elements → {n_context} context, "
-        f"{n_item} proposed-bindings (spine_elements left intact; none confirmed)."
-    )
-
-
 @main.command("sweep")
 @click.argument("code")
 @click.option(
@@ -1309,6 +1209,132 @@ def sweep_cmd(code: str, model: str) -> None:
         else:
             n = _write_drift_flags(client, result.drift_items, today.isoformat())
             click.echo(f"Flagged {n} drifted element(s) for review.")
+
+
+@main.command("spine-recover")
+@click.argument("code")
+@click.option(
+    "--apply", "apply_", is_flag=True,
+    help="Write the recovered rows. Without it, dry-run (prints the plan only).",
+)
+@click.option(
+    "--model", default="claude-opus-4-7",
+    help="LLM model for re-distilling source-backed elements.",
+)
+def spine_recover_cmd(code: str, apply_: bool, model: str) -> None:
+    """Re-home a project's LEGACY spine elements into authored rows.
+
+    Reads the project's legacy capitalized-layer disk files, re-distills the
+    source-backed ones from their matched rag_assets (carries synthesis
+    elements verbatim), and writes them back as AUTHORED `spine_substance` rows
+    under the CANONICAL code (`ibx-5153`). Needs MC-2 (resolves the project +
+    pulls asset text). Dry-run by default; `--apply` writes.
+
+    `code` is the canonical `<company>-<number>` (the working-dir form).
+
+    Note: re-running `--apply` re-distills source-backed elements afresh
+    (overwriting their v1 body with new LLM output — not a content no-op);
+    carried elements are fully idempotent.
+    """
+    import os
+    from datetime import datetime, timezone
+
+    from cp_engine.asset_ingest import resolve_project_folders_by_id
+    from cp_engine.mcp_server import _resolve_project_id
+    from cp_engine.spine import SpineDirNotFound, find_spine_dir
+    from cp_engine.spine_recover import load_legacy_elements, plan_element, recover
+    from cp_engine.sync import BackendUnavailable
+    from cp_engine.sync_mc2 import MC2Backend
+
+    config = _load_config_or_die()
+
+    # The canonical code drives both the disk working dir AND the recovered rows'
+    # project_code — recovery re-homes EVERYTHING under this one code.
+    canonical_code = code
+    try:
+        project_dir = find_spine_dir(config.root, canonical_code)
+    except SpineDirNotFound as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+
+    try:
+        client = MC2Backend().connect(config)
+    except BackendUnavailable as exc:
+        click.echo(f"cp spine-recover needs MC-2: {exc}", err=True)
+        sys.exit(1)
+
+    project_id = _resolve_project_id(client, canonical_code)
+    if project_id is None:
+        click.echo(f"No project_id for '{canonical_code}'. Check the code.", err=True)
+        sys.exit(1)
+    folders = resolve_project_folders_by_id(client, project_id)
+    if folders is None:
+        click.echo(f"Could not resolve company for '{canonical_code}'.", err=True)
+        sys.exit(1)
+    company_id = folders.company_id
+
+    # ANTHROPIC_API_KEY is only needed if some element actually needs re-distill.
+    # Decide up front so we fail clearly rather than silently carrying everything.
+    from cp_engine.project_sources import list_sources
+
+    assets = [a for a in list_sources(client, project_id, company_id) if a.get("title")]
+    elements = load_legacy_elements(project_dir)
+    if not elements:
+        click.echo(f"No legacy spine elements for '{canonical_code}'.")
+        return
+    needs_redistill = any(
+        plan_element(el, assets).mode == "redistill" for el in elements
+    )
+    api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if needs_redistill and not api_key:
+        click.echo(
+            "Some elements are source-backed and need re-distilling, but "
+            "ANTHROPIC_API_KEY is not set. Set it and re-run.",
+            err=True,
+        )
+        sys.exit(1)
+
+    # Real distiller + pull_text wrappers (only used when needs_redistill).
+    distiller = None
+    pull_text = None
+    if needs_redistill:
+        from cp_engine.plan_from_transcript import _call_claude
+        from cp_engine.project_sources import pull_source
+
+        def distiller(prompt: str) -> str:  # noqa: F811 — local wrapper
+            return _call_claude(prompt, model=model, api_key=api_key)
+
+        def pull_text(doc_title: str) -> str:  # noqa: F811 — local wrapper
+            pulled = pull_source(client, project_id, company_id, doc_title)
+            return "\n\n".join(c for c in (pulled.get("chunks") or []) if c)
+
+    report, rows = recover(
+        client=client, project_id=project_id, company_id=company_id,
+        project_dir=project_dir, canonical_code=canonical_code,
+        now_iso=datetime.now(timezone.utc).isoformat(),
+        distiller=distiller, pull_text=pull_text, apply=apply_,
+    )
+
+    # Readable per-element table.
+    click.echo(f"{'mode':<9} {'layer':<16} {'len':>5}  label · asset")
+    for r in report:
+        asset = f" · {r['asset']}" if r.get("asset") else ""
+        click.echo(
+            f"{r['mode']:<9} {r['layer']:<16} {r['body_len']:>5}  "
+            f"{r['label']}{asset}"
+        )
+
+    rebind_count = sum(1 for r in report if r.get("needs_rebind"))
+    if rebind_count:
+        click.echo(
+            f"\n{rebind_count} element(s) flagged needs-rebind "
+            "(re-homed as context; re-bind in the estimate if needed)."
+        )
+
+    if apply_:
+        click.echo(f"\nWrote {len(rows)} rows under {canonical_code}.")
+    else:
+        click.echo("\nDRY RUN — no rows written; pass --apply to write.")
 
 
 def _write_drift_flags(client, drift_items, today: str) -> int:
