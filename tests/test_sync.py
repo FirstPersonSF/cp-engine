@@ -2458,6 +2458,59 @@ def test_drift_rename_moves_sprint_files(tmp_path: Path) -> None:
         assert not old_sf.exists()
 
 
+def test_e2e_full_job_name_edit_uuid_anchored_drift(tmp_path: Path) -> None:
+    """End-to-end proof of the whole UUID-anchored fix, simulating the real
+    `full_job_name` edit gotcha:
+
+    1. First sync lands a project at `ggl-9001-old-name/` with a stamped cp.md.
+    2. Hand content (research.md) + a sprint file are added under the old name.
+    3. The full_job_name is edited → second sync sees the SAME mc2_id but a new
+       code/slug (`ggl-9001-new-name`).
+    4. The dir + sprint file are renamed (found by uuid), hand content survives,
+       NOTHING is swept to inactive/, and the stamp persists.
+    """
+    from dataclasses import replace
+
+    old_code = "ggl-9001-old-name"
+    new_code = "ggl-9001-new-name"
+    config = make_config(tmp_path)
+
+    # 1. Initial sync — project lands at its old-named working dir, stamped.
+    old_state = replace(make_state(code=old_code, name=old_code), mc2_id="U-e2e")
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((old_state,)))
+    old_dir = tmp_path / "1p" / "google" / old_code
+    assert (old_dir / "cp.md").exists()
+    assert _read_mc_id(old_dir / "cp.md") == "U-e2e"
+
+    # 2. Hand content + a sprint file under the old name. Use a past week for the
+    #    sprint file so it isn't pulled in as the prior-sprint carry-forward
+    #    source (whose minimal body would fail to parse as a real sprint file).
+    (old_dir / "research.md").write_text("important notes")
+    sprint_week = "2026-W10"
+    sprint_dir = tmp_path / "sprints" / sprint_week
+    sprint_dir.mkdir(parents=True, exist_ok=True)
+    (sprint_dir / f"{old_code}.md").write_text("old sprint body")
+
+    # 3. The full_job_name edit: same uuid, new code/slug.
+    new_state = replace(make_state(code=new_code, name=new_code), mc2_id="U-e2e")
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((new_state,)))
+
+    new_dir = tmp_path / "1p" / "google" / new_code
+
+    # 4a. Working dir renamed (found by uuid), old dir gone.
+    assert (new_dir / "cp.md").exists()
+    assert not old_dir.exists()
+    # 4b. Old dir was NOT swept to inactive/ (uuid-aware staleness check).
+    assert not (tmp_path / "1p" / "google" / "inactive" / old_code).exists()
+    # 4c. Hand content rode along, content intact.
+    assert (new_dir / "research.md").read_text() == "important notes"
+    # 4d. Sprint file renamed to the new code, content intact, old one gone.
+    assert (sprint_dir / f"{new_code}.md").read_text() == "old sprint body"
+    assert not (sprint_dir / f"{old_code}.md").exists()
+    # 4e. The stamp survives the rename.
+    assert _read_mc_id(new_dir / "cp.md") == "U-e2e"
+
+
 def test_drift_rename_with_no_sprint_files_is_fine(tmp_path: Path) -> None:
     """Drift rename when the project has no hand-added sprint files at the old
     name still renames the dir cleanly (helper returns [])."""
