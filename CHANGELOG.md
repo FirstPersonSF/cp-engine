@@ -4,6 +4,44 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.35.0 — 2026-06-20
+
+### Changed — canonical project id now derives from MC-2 `full_job_name`
+
+A project's canonical id (`ProjectState.code`) was a derived `<company>-<number>`
+(`ibx-5192`). It is now the slugified MC-2 `full_job_name`
+(`ibx-5192-platform-sales-readiness-summit`) — company + number + description in
+one id, sourced from MC-2's human-authored field rather than a derivation.
+
+- **`slug_full_job_name`** (state.py) — `"IBX 5192 Platform Sales Readiness Summit"`
+  → `ibx-5192-platform-sales-readiness-summit`. Verified unique + filename-safe
+  across all active projects.
+- **`_engagement_canonical_id`** (sync_mc2.py) now slugifies `full_job_name`,
+  falling back to `<company>-<number>` only when it's empty. Also fixed the
+  sprint-allocations join SELECT, which lacked `full_job_name` (would have silently
+  mis-joined capacity data).
+- **`slack.py` channel-map** now uses the same `_engagement_canonical_id` (it had
+  independently built the old `<company>-<number>` form) — keeps the weekly Slack
+  digest routing to the right projects.
+- **`dir_slug`** returns the slugified code only (the code is now the full
+  descriptive slug, so appending the name would double it).
+- Resolves cp-engine#15 (Facts `Code` showed a number-derived id, not the
+  canonical one).
+
+**`projects.code` and `full_job_name` in MC-2 are read-only** — never written. The
+asset layer is untouched (resolves by `projects.number`, still in the slug).
+
+### Migration
+
+Companion one-time tenant migration renames sprint files
+(`ibx-5192.md` → `ibx-5192-platform-sales-readiness-summit.md`) across all weeks
+for active projects; working dirs already match the new slug. **Note:** after this
+ships, editing a project's `full_job_name` in MC-2 changes its id, which sync's
+dir-locate (keyed on the code) can't bridge — the old dir with any hand-added
+content is swept to `inactive/<old-slug>/` (non-destructive; needs a manual
+`git mv`). Same class as the existing company-rename resync gotcha. Future fix:
+key dir-location on the stable MC-2 row uuid.
+
 ## v0.34.0 — 2026-06-20
 
 ### Added — Source live-link layer (re-fetch any ingested source on demand)
