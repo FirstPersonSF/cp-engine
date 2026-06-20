@@ -331,24 +331,32 @@ def test_resync_refreshes_stale_provenance_header(tmp_path: Path) -> None:
     assert "2026-05-18" not in final
 
 
-def test_resync_with_changed_status_updates_master_only(tmp_path: Path) -> None:
+def test_resync_with_changed_status_updates_master_and_project_facts(
+    tmp_path: Path,
+) -> None:
+    """A status change updates master-cp.md AND the project CP's Facts row.
+    (Pre-cp-engine#15 the Facts table was scaffold-only and went stale; sync
+    now re-splices the `project-facts` region from the current ProjectState,
+    so Status flips Open→Holding in the project cp.md too — while every
+    hand-written section stays put.)"""
     config = make_config(tmp_path)
     fake1 = FakeBackend((make_state(status="Open"),))
     sync_tenant(config, backend_factory=lambda _: fake1)
 
-    project_cp_before = (tmp_path / "1p" / "google" / "mc-2" / "cp.md").read_text()
-    project_cp_mtime_before = (tmp_path / "1p" / "google" / "mc-2" / "cp.md").stat().st_mtime_ns
+    cp_path = tmp_path / "1p" / "google" / "mc-2" / "cp.md"
+    project_cp_before = cp_path.read_text()
+    assert "| **Status** | Open |" in _facts_region(project_cp_before)
 
     fake2 = FakeBackend((make_state(status="Holding"),))
     result = sync_tenant(config, backend_factory=lambda _: fake2)
 
-    # master-cp.md changed; the project CP did NOT (still scaffolded, untouched)
+    # Both master-cp.md and the project CP changed.
     assert (tmp_path / "master-cp.md") in result.files_written
-    assert (tmp_path / "1p" / "google" / "mc-2" / "cp.md") not in result.files_written
+    assert cp_path in result.files_written
 
-    project_cp_after = (tmp_path / "1p" / "google" / "mc-2" / "cp.md").read_text()
-    assert project_cp_before == project_cp_after
-    assert (tmp_path / "1p" / "google" / "mc-2" / "cp.md").stat().st_mtime_ns == project_cp_mtime_before
+    facts_after = _facts_region(cp_path.read_text())
+    assert "| **Status** | Holding |" in facts_after
+    assert "| **Status** | Open |" not in facts_after
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -399,6 +407,96 @@ def test_resync_preserves_hand_edits_outside_engine_regions(tmp_path: Path) -> N
     final = project_path.read_text()
     assert "## My hand notes" in final
     assert "Should survive." in final
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  project-facts re-splice (cp-engine#15)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _facts_region(cp_body: str) -> str:
+    start = cp_body.index("<!-- cp-engine:start project-facts -->")
+    end = cp_body.index("<!-- cp-engine:end project-facts -->")
+    return cp_body[start:end]
+
+
+def test_resync_resplices_stale_project_facts_code(tmp_path: Path) -> None:
+    """cp-engine#15: the Facts table's `Code` row is re-spliced on every sync
+    from the current ProjectState. A cp.md scaffolded under an old short code
+    gets its Facts Code updated to the new canonical full slug — without
+    touching hand-written content elsewhere."""
+    config = make_config(tmp_path)
+    fake = FakeBackend((make_state(),))
+    sync_tenant(config, backend_factory=lambda _: fake)
+
+    cp_path = tmp_path / "1p" / "google" / "mc-2" / "cp.md"
+    original = cp_path.read_text()
+    assert "| **Code** | `mc-2` |" in _facts_region(original)
+
+    # Simulate a stale Facts region carrying an OLD code, plus a hand-written
+    # tail outside any engine region that must survive the re-splice.
+    stale = original.replace("| **Code** | `mc-2` |", "| **Code** | `old-short` |")
+    stale += "\n## My hand notes\n\nMust survive the facts re-splice.\n"
+    cp_path.write_text(stale)
+
+    sync_tenant(config, backend_factory=lambda _: fake)
+
+    final = cp_path.read_text()
+    facts = _facts_region(final)
+    # Code row re-spliced back to the canonical code from ProjectState.
+    assert "| **Code** | `mc-2` |" in facts
+    assert "old-short" not in facts
+    # Hand-written content outside the region untouched.
+    assert "## My hand notes" in final
+    assert "Must survive the facts re-splice." in final
+
+
+def test_resync_facts_carries_all_rows_from_project_state(tmp_path: Path) -> None:
+    """All seven Facts rows render from ProjectState, not just Code. An
+    engagement with stage/budget/owner/client/last-touched populated produces
+    each row with the value sourced from the state."""
+    config = make_config(tmp_path)
+    state = make_state(
+        code="ibx-5192-platform-sales-readiness-summit",
+        name="Platform Sales Readiness Summit",
+        status="Deal",
+        company_code="IBX",
+        company_name="Infoblox",
+    )
+    # Populate engagement-only fields the default factory leaves bare.
+    import dataclasses
+    state = dataclasses.replace(state, deal_stage="Proposal", budget=38450.0)
+    fake = FakeBackend((state,))
+    sync_tenant(config, backend_factory=lambda _: fake)
+
+    slug = "ibx-5192-platform-sales-readiness-summit"
+    cp_path = tmp_path / "1p" / "infoblox" / slug / "cp.md"
+    facts = _facts_region(cp_path.read_text())
+
+    assert "| **Code** | `ibx-5192-platform-sales-readiness-summit` |" in facts
+    assert "| **Status** | Deal |" in facts
+    assert "| **Stage** | Proposal |" in facts
+    assert "| **Budget** | $38k |" in facts
+    assert "| **Owner** | drew |" in facts
+    assert "| **Client** | Infoblox (IBX) |" in facts
+    assert "| **Last touched** | 2026-05-07 |" in facts
+
+
+def test_resync_facts_idempotent_when_unchanged(tmp_path: Path) -> None:
+    """Re-rendering an already-correct facts region is a no-op: the cp.md is
+    byte-stable across a second sync with the same ProjectState."""
+    config = make_config(tmp_path)
+    fake = FakeBackend((make_state(),))
+    sync_tenant(config, backend_factory=lambda _: fake)
+
+    cp_path = tmp_path / "1p" / "google" / "mc-2" / "cp.md"
+    before = cp_path.read_text()
+
+    result = sync_tenant(config, backend_factory=lambda _: fake)
+
+    after = cp_path.read_text()
+    assert after == before
+    assert cp_path not in result.files_written
 
 
 # ──────────────────────────────────────────────────────────────────────
