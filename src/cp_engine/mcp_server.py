@@ -209,6 +209,8 @@ def fetch_project_source(project_code: str, doc_title: str) -> dict:
         if resolved is None:
             return {"error": f"project {project_code!r} not found"}
         client, pid, _cid = resolved
+        # TODO: cp-fetch-* temp dirs accumulate (never cleaned up); a periodic
+        # sweep of stale cp-fetch-* dirs would reclaim the space. Left as-is.
         dest = tempfile.mkdtemp(prefix="cp-fetch-")
         return fetch_source(client, pid, doc_title, dest)
     except Exception as exc:  # noqa: BLE001

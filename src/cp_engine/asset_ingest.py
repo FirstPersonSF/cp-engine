@@ -24,6 +24,7 @@ returns `[]` for them.
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 import re
 import shutil
@@ -729,9 +730,11 @@ def _source_url(file_ref: FileRef, drive_connector=None, dropbox_connector=None)
     - Drive: a `/file/d/<id>/view` link built from the file id — no API call.
     - Dropbox: a TEAM-ONLY shared link via the connector. This is CLIENT source
       material (decks, emails, briefs), so the link is requested team-only
-      (members of the Dropbox team), never "anyone with the link" public. If a
-      team-only link can't be obtained, return None rather than risk a public
-      link.
+      (members of the Dropbox team), never "anyone with the link" public. We FAIL
+      CLOSED: the connector must prove it can honor team-only (its
+      `get_shareable_link` signature must include a `team_only` parameter) before
+      we call it; a connector that can't enforce team-only yields None rather than
+      risk a public link.
     - Any other source, missing connector, or any exception → None. A link is a
       nice-to-have; it must never block or fail ingest.
 
@@ -744,6 +747,25 @@ def _source_url(file_ref: FileRef, drive_connector=None, dropbox_connector=None)
         if file_ref.source == "dropbox":
             # Need both a connector and the dropbox path_display to resolve.
             if dropbox_connector is None or not file_ref.path:
+                return None
+            # FAIL CLOSED on the team-only guarantee. This is CLIENT material;
+            # a public "anyone with the link" Dropbox URL would leak it. The
+            # team-only enforcement lives in a SEPARATELY-deployed connector
+            # (social-builder-app). We cannot tell a team-only link from a public
+            # one by inspecting the URL string (both are dropbox.com/s|scl/...).
+            # So instead of trusting the URL, we require the connector to PROVE it
+            # can honor team-only: its get_shareable_link must accept a `team_only`
+            # parameter. If an old/intermediate connector is deployed whose
+            # signature LACKS that param, we must NOT call it / must NOT trust any
+            # link it returns — we return None. Only when the param exists do we
+            # call with team_only=True and trust the connector's own internal
+            # verification (Task 2: it raises rather than return a public link).
+            try:
+                sig = inspect.signature(dropbox_connector.get_shareable_link)
+            except (TypeError, ValueError):
+                # Can't introspect the connector → can't prove team-only → bail.
+                return None
+            if "team_only" not in sig.parameters:
                 return None
             return dropbox_connector.get_shareable_link(file_ref.path, team_only=True)
         return None

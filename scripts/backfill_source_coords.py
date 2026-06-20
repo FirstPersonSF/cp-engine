@@ -11,11 +11,13 @@ back, one UPDATE per recoverable row.
 IMPORTANT — read `cp_engine.source_backfill`'s module docstring on the LOSSY-ID
 question before trusting the results:
   * DRIVE rows recover LOSSLESSLY and re-fetch works (Drive fetches by id).
-  * DROPBOX rows recover the provider + a convention-reconstructed id, but
-    Dropbox re-fetch needs `source_path` (path_display), which the temp path
-    does NOT encode. Backfilled Dropbox rows are only PARTIALLY recovered; true
-    re-fetch still requires a re-ingest. The summary breaks counts out by
-    provider so you can see this.
+  * DROPBOX rows recover the provider + a convention-reconstructed id. Dropbox
+    re-fetch now uses that id when `source_path` is absent (`download_file`'s
+    fetch-by-id fallback passes `id:<body>` to `files_download`), so backfilled
+    Dropbox rows ARE re-fetchable. The caveat: the id was recovered by reversing
+    the `:`→`_` sanitization by convention, so a re-ingest (which re-derives
+    `path_display` from a live Dropbox listing) is the gold-standard — but it is
+    no longer required. The summary breaks counts out by provider.
 
 Safety: `--dry-run` is the DEFAULT. It selects + plans + prints but writes
 NOTHING. Pass `--apply` to actually run the UPDATEs. Idempotent: it only ever
@@ -54,6 +56,27 @@ def _resolve_creds() -> tuple[str, str]:
     return _load_supabase_creds(cp_config.load(Path.cwd()))
 
 
+def _preflight_columns(client) -> None:
+    """Probe that migration 077's columns exist before the real select.
+
+    Without this, running the script before `077` adds `source_provider` makes the
+    first real SELECT throw a raw PostgREST `42703 column does not exist` stack
+    trace. Probe with a tiny select and turn a column-missing error into a clear
+    message + clean non-zero exit. Any OTHER error is left to propagate normally.
+    """
+    try:
+        client.table("rag_assets").select("source_provider").limit(1).execute()
+    except Exception as exc:  # noqa: BLE001
+        msg = str(exc).lower()
+        if "source_provider" in msg or "42703" in msg or "does not exist" in msg:
+            print(
+                "rag_assets.source_provider missing — apply migration 077 first.",
+                file=sys.stderr,
+            )
+            raise SystemExit(2) from None
+        raise
+
+
 def _select_null_rows(client) -> list[dict]:
     """Every active-ish rag_assets row missing source_provider, with file_path/title."""
     return (
@@ -73,6 +96,7 @@ def _apply_update(client, row_id: str, provider: str, file_id: str) -> None:
 
 def run(client, *, apply: bool) -> int:
     """Plan (and, if apply, execute) the backfill. Returns recovered-row count."""
+    _preflight_columns(client)
     rows = _select_null_rows(client)
     print(f"Found {len(rows)} rag_assets row(s) with source_provider IS NULL.")
 
@@ -106,7 +130,8 @@ def run(client, *, apply: bool) -> int:
         note = (
             " (LOSSLESS — re-fetch enabled)"
             if provider == "drive"
-            else " (PARTIAL — id only; Dropbox re-fetch needs source_path, re-ingest)"
+            else " (re-fetchable via id fallback; id recovered by convention, "
+            "re-ingest is gold-standard but not required)"
         )
         print(f"      {provider:<8}: {recovered_by_provider[provider]}{note}")
     print(f"  unrecoverable     : {len(unrecoverable)}")

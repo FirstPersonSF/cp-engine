@@ -31,23 +31,21 @@ Dropbox coords)
   transform is reversible *by convention*: we rebuild `id:<body>` from
   `id_<body>`. We do that below so `source_file_id` holds the true id.
 
-  HOWEVER — and this is the important part — Dropbox re-fetch does NOT use the
-  id at all. `asset_ingest.download_file` fetches Dropbox originals by
-  `file_ref.path` (the Dropbox `path_display`, stored in `source_path`), not by
-  id. The temp path encodes ONLY the id and the leaf filename, never the full
-  `path_display`. So backfilling `source_file_id` for a Dropbox row does NOT by
-  itself make `fetch_source` work — `source_path` stays NULL and the download
-  step has nothing to fetch by.
+  Normal Dropbox ingest fetches by `file_ref.path` (the `path_display`, stored
+  in `source_path`), and the temp path encodes ONLY the id + leaf filename, never
+  the full `path_display` — so this backfill recovers `source_file_id` but not
+  `source_path`. That used to mean backfilled Dropbox rows couldn't re-fetch.
+  NO LONGER: `asset_ingest.download_file` now has a fetch-by-id FALLBACK — when
+  `path_display` is absent it passes the `id:<body>` form to Dropbox's
+  `files_download(path=...)`, which accepts it. So a backfilled Dropbox row (id
+  but no path) IS re-fetchable via that fallback.
 
-  => For Dropbox, this backfill recovers the provider + (reconstructed) id, but
-  CANNOT recover the re-fetch path. Task 7 should treat Dropbox rows as only
-  partially recovered: the provider tag is correct, but to truly re-enable
-  Dropbox re-fetch the asset must be RE-INGESTED (which re-derives path_display
-  from a live Dropbox listing). Drive rows are the clean win.
-
-  (If the `:`-reversal convention ever proves wrong for some exotic id, the
-  recovered Dropbox id would be slightly off — another reason to prefer
-  re-ingest over trusting backfilled Dropbox ids for actual fetches.)
+  => For Dropbox, this backfill recovers the provider + (reconstructed) id, which
+  is enough to re-fetch via the id fallback. The caveat: the id was recovered by
+  reversing the `:`→`_` sanitization BY CONVENTION (see `_restore_dropbox_id`),
+  so a RE-INGEST — which re-derives `path_display` from a live Dropbox listing —
+  remains the gold-standard. But it is no longer REQUIRED. Drive rows recover the
+  true id verbatim, so they need no caveat at all.
 """
 
 from __future__ import annotations
@@ -79,9 +77,10 @@ def parse_source_coords_from_file_path(file_path: str | None) -> tuple[str, str]
 
     `provider` is `"dropbox"` or `"drive"`. `file_id` is the source's file id —
     the TRUE Drive id (lossless), or the convention-reconstructed Dropbox
-    `id:<body>` (see module docstring; note Dropbox re-fetch needs `source_path`,
-    which this CANNOT recover). Returns `None` when the path has no recognizable
-    `<source>-<id>/` temp segment.
+    `id:<body>` (see module docstring; the Dropbox id re-enables re-fetch via
+    `download_file`'s fetch-by-id fallback — re-ingest is gold-standard but not
+    required). Returns `None` when the path has no recognizable `<source>-<id>/`
+    temp segment.
     """
     if not file_path:
         return None

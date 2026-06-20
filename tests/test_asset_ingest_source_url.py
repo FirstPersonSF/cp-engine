@@ -25,9 +25,11 @@ def test_drive_url_built_from_id_no_connector_call():
 def test_dropbox_url_uses_get_shareable_link():
     calls = {}
 
-    def fake_link(path, **kw):
+    # Realistic team-only-capable signature: `team_only` is a named parameter, so
+    # _source_url's capability check passes and it calls through.
+    def fake_link(path, team_only=False):
         calls["path"] = path
-        calls["kw"] = kw
+        calls["team_only"] = team_only
         return f"https://www.dropbox.com/s/abc?dl=0::{path}"
 
     dbx = SimpleNamespace(get_shareable_link=fake_link)
@@ -38,16 +40,41 @@ def test_dropbox_url_uses_get_shareable_link():
 
 
 def test_dropbox_link_requests_team_only():
-    """Client material must never get a public link — team_only=True is passed."""
+    """Client material must never get a public link — team_only=True is passed.
+
+    The connector's signature genuinely declares `team_only` (not absorbed by
+    **kwargs), so this both exercises the capability check AND verifies the
+    kwarg is passed as True when supported.
+    """
     calls = {}
 
-    def fake_link(path, **kw):
-        calls["kw"] = kw
+    def fake_link(path, team_only=False):
+        calls["team_only"] = team_only
         return "https://www.dropbox.com/s/abc?dl=0"
 
     dbx = SimpleNamespace(get_shareable_link=fake_link)
     _source_url(_dropbox_ref(), drive_connector=None, dropbox_connector=dbx)
-    assert calls["kw"].get("team_only") is True
+    assert calls["team_only"] is True
+
+
+def test_dropbox_connector_lacking_team_only_returns_none():
+    """FAIL CLOSED: a connector that can't enforce team-only yields no link.
+
+    If get_shareable_link's signature lacks a `team_only` parameter (an old or
+    intermediate connector deploy), _source_url must NOT call it / must NOT trust
+    a link it returns — it returns None rather than risk a public client link.
+    """
+    called = {"hit": False}
+
+    def gsl(path):  # NO team_only param → not team-only-capable
+        called["hit"] = True
+        return "https://www.dropbox.com/s/abc?dl=0"  # would be public
+
+    dbx = SimpleNamespace(get_shareable_link=gsl)
+    assert _source_url(_dropbox_ref(), drive_connector=None,
+                       dropbox_connector=dbx) is None
+    # We must not even call a connector that can't prove team-only enforcement.
+    assert called["hit"] is False
 
 
 def test_dropbox_no_connector_returns_none():
@@ -63,7 +90,9 @@ def test_dropbox_no_path_returns_none():
 
 
 def test_dropbox_link_failure_returns_none_not_raise():
-    def boom(path, **kw):
+    # team_only declared so the capability check passes and we reach the call,
+    # exercising the exception → None path (not the capability-check None path).
+    def boom(path, team_only=False):
         raise RuntimeError("dropbox down")
 
     dbx = SimpleNamespace(get_shareable_link=boom)
