@@ -139,7 +139,8 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     # Account-nested layout: project working dir at
     # <scope>/<company-slug>/<dir_slug>/cp.md. Default make_state has
     # company_kind="client" + company_name="Google" → scope "1p/google".
-    # With name set, the project slug is `mc-2-mission-control-v2`.
+    # The code is now the canonical full slug, so dir_slug IS the slugified
+    # code: bare `mc-2` (the name no longer contributes a tail).
     # Sprint file is `mc-2.md` under sprints/<YYYY-W##>/ since
     # make_state defaults to status="Open" (active subset). The per-week
     # sprint-index README.md is generated alongside the sprint file.
@@ -158,7 +159,7 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     assert "mc-2" in master
     assert "Mission Control v2" in master
 
-    cp_path = tmp_path / "1p" / "google" / "mc-2-mission-control-v2" / "cp.md"
+    cp_path = tmp_path / "1p" / "google" / "mc-2" / "cp.md"
     project_cp = cp_path.read_text()
     assert "Mission Control v2" in project_cp
     assert "<!-- cp-engine:start tracked-issues -->" in project_cp
@@ -433,13 +434,13 @@ def test_sync_with_mixed_statuses_renders_correct_subtables(tmp_path: Path) -> N
     # Project CP scaffolding matches master-CP visibility: internal projects
     # are NOT scaffolded into client/public tenants. They belong in their
     # own (cp-firstpersonsf) tenant. v0.3: each project is a working dir
-    # under <scope>/<code>-<slugified-name>/. Under the account-nested
-    # layout (v0.8.17+), client projects live one level deeper at
-    # `1p/<company-slug>/<dir>/` — these test states all default to
-    # company_name="Google", so they nest under `1p/google/`.
+    # under <scope>/<dir_slug>/, where dir_slug is now the slugified code.
+    # Under the account-nested layout (v0.8.17+), client projects live one
+    # level deeper at `1p/<company-slug>/<dir>/` — these test states all
+    # default to company_name="Google", so they nest under `1p/google/`.
     account_dir = tmp_path / "1p" / "google"
     dirs = sorted(p.name for p in account_dir.iterdir() if p.is_dir())
-    assert dirs == ["closed-1-closed-one", "hold-1-held-one", "open-1-open-one"]
+    assert dirs == ["closed-1", "hold-1", "open-1"]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -626,7 +627,7 @@ def test_mixed_scopes_land_under_correct_dirs(tmp_path: Path) -> None:
     config = make_config(tmp_path)
     fake = FakeBackend(
         (
-            make_state(code="ggl-5168", name="Playbooks", company_kind="client"),
+            make_state(code="ggl-5168-playbooks", name="Playbooks", company_kind="client"),
             make_state(
                 code="mc-2",
                 name="MC-2",
@@ -646,9 +647,10 @@ def test_mixed_scopes_land_under_correct_dirs(tmp_path: Path) -> None:
 
     sync_tenant(config, backend_factory=lambda _: fake)
 
-    # Working dirs use slugged names (code + slugified project name).
-    # Client projects nest under their account (1p/<company>/) per the
-    # account-nested layout; ggl-5168's company defaults to "Google".
+    # Working dirs use the slugified code (the code is now the canonical
+    # full slug, so the dir IS the code). Client projects nest under their
+    # account (1p/<company>/) per the account-nested layout; the company
+    # defaults to "Google".
     # FPSF/Canonic projects are unchanged — they already nest by self-
     # company at the scope level.
     assert (tmp_path / "1p" / "google" / "ggl-5168-playbooks" / "cp.md").exists()
@@ -701,7 +703,7 @@ def test_dropbox_md_scaffolded_when_url_present(tmp_path: Path) -> None:
     """Engagements with a dropbox_folder_url get a _dropbox.md file."""
     config = make_config(tmp_path)
     state = ProjectState(
-        code="ggl-5168",
+        code="ggl-5168-playbooks",
         name="Playbooks",
         source="engagement",  # type: ignore[arg-type]
         company_kind="client",  # type: ignore[arg-type]
@@ -851,8 +853,8 @@ def test_account_cp_lists_all_active_projects_for_the_account(tmp_path: Path) ->
         config,
         backend_factory=lambda _: FakeBackend(
             (
-                make_state(code="ggl-5168", name="Playbooks"),
-                make_state(code="ggl-5177", name="Event Safety"),
+                make_state(code="ggl-5168-playbooks", name="Playbooks"),
+                make_state(code="ggl-5177-event-safety", name="Event Safety"),
                 # Different company → different account file, not listed here.
                 make_state(
                     code="ibx-5153", name="AI Campaign",
@@ -956,10 +958,15 @@ def test_account_cp_preserves_hand_written_content_on_resync(tmp_path: Path) -> 
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_working_dir_uses_slugged_name(tmp_path: Path) -> None:
-    """Engagement with a multi-word name lands at <code>-<slugified-name>/."""
+def test_working_dir_uses_slugged_code(tmp_path: Path) -> None:
+    """An engagement with a descriptive code (the canonical full_job_name
+    slug) lands at <slugified-code>/. The dir IS the slugified code; the
+    name no longer contributes a tail."""
     config = make_config(tmp_path)
-    state = make_state(code="ggl-5177", name="GGL 5177 Event Safety Playbook")
+    state = make_state(
+        code="ggl-5177-event-safety-playbook",
+        name="Event Safety Playbook",
+    )
 
     sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
 
@@ -980,37 +987,38 @@ def test_working_dir_falls_back_to_bare_code(tmp_path: Path) -> None:
     assert (tmp_path / "firstpersonsf" / "mc-2" / "cp.md").exists()
 
 
-def test_name_drift_renames_existing_dir(tmp_path: Path) -> None:
-    """When MC-2's name changes, next sync renames the working dir to the
-    new slug. Hand-written content survives the move."""
+def test_name_drift_does_not_move_dir(tmp_path: Path) -> None:
+    """The working dir is keyed on the (now-descriptive) code, so a change
+    to MC-2's `name` alone leaves the dir in place — no rename, and
+    hand-written content stays put. (Under the new canonical-id contract
+    the dir IS the slugified code; the name no longer affects the path.)"""
     config = make_config(tmp_path)
 
-    # First sync: scaffold at ggl-5177-event-safety-playbook/
+    # First sync: scaffold at ggl-5177-event-safety-playbook/ (the dir is
+    # the slugified code).
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend(
-            (make_state(code="ggl-5177", name="GGL 5177 Event Safety Playbook"),)
+            (make_state(code="ggl-5177-event-safety-playbook", name="Event Safety Playbook"),)
         ),
     )
-    # Account-nested layout: both old and new slugs sit under 1p/google/.
-    old_dir = tmp_path / "1p" / "google" / "ggl-5177-event-safety-playbook"
-    assert old_dir.exists()
+    work_dir = tmp_path / "1p" / "google" / "ggl-5177-event-safety-playbook"
+    assert work_dir.exists()
 
-    # Hand-add a transcript so we can verify content survives the rename
-    (old_dir / "transcript.md").write_text("# call notes\n")
+    # Hand-add a transcript so we can verify content survives.
+    (work_dir / "transcript.md").write_text("# call notes\n")
 
-    # Sync again with a renamed project
+    # Sync again with the SAME code but a drifted name.
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend(
-            (make_state(code="ggl-5177", name="GGL 5177 Activation Playbook"),)
+            (make_state(code="ggl-5177-event-safety-playbook", name="Activation Playbook"),)
         ),
     )
 
-    new_dir = tmp_path / "1p" / "google" / "ggl-5177-activation-playbook"
-    assert new_dir.exists()
-    assert (new_dir / "transcript.md").read_text() == "# call notes\n"
-    assert not old_dir.exists()
+    # Dir is unchanged and content survives — the name change is inert.
+    assert work_dir.exists()
+    assert (work_dir / "transcript.md").read_text() == "# call notes\n"
 
 
 def test_repo_md_scaffolded_for_repo_source_projects(tmp_path: Path) -> None:
@@ -1207,37 +1215,36 @@ def test_exceptions_readme_not_created_when_no_exceptions_dir(tmp_path: Path) ->
     assert not (tmp_path / "exceptions").exists()
 
 
-def test_legacy_bare_code_dir_renamed_to_slug(tmp_path: Path) -> None:
-    """A working dir created at the bare code (legacy v0.3.0/v0.3.1 format)
-    gets renamed to the slugged form on the next sync."""
+def test_existing_canonical_slug_dir_is_reused(tmp_path: Path) -> None:
+    """A working dir already at the canonical slugified code is reused on the
+    next sync (not re-scaffolded), and hand-written content survives.
+
+    Under the canonical-id contract the dir IS the slugified code, so a code
+    like `ggl-5177-event-safety-playbook` already sits at its final path —
+    sync is idempotent over it. (The old `<bare-code> → <code>-<name-slug>`
+    rename no longer applies: the descriptive code already carries the
+    name.)"""
     config = make_config(tmp_path)
 
-    # Pre-create a legacy bare-code dir with hand content. The flat-to-
-    # account migration is the job of `cp migrate-accounts`, not regular
-    # sync — this test covers a different drift case (bare-code →
-    # slugged), so the legacy pre-position already sits inside the per-
-    # account dir.
-    legacy_dir = tmp_path / "1p" / "google" / "ggl-5177"
-    legacy_dir.mkdir(parents=True)
-    (legacy_dir / "cp.md").write_text("# legacy content\n")
-    (legacy_dir / "notes.md").write_text("# preserved\n")
+    # Pre-create the canonical-slug dir with hand content.
+    work_dir = tmp_path / "1p" / "google" / "ggl-5177-event-safety-playbook"
+    work_dir.mkdir(parents=True)
+    (work_dir / "cp.md").write_text("# legacy content\n")
+    (work_dir / "notes.md").write_text("# preserved\n")
 
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend(
-            (make_state(code="ggl-5177", name="GGL 5177 Event Safety Playbook"),)
+            (make_state(code="ggl-5177-event-safety-playbook", name="Event Safety Playbook"),)
         ),
     )
 
-    new_dir = tmp_path / "1p" / "google" / "ggl-5177-event-safety-playbook"
-    # Legacy hand-written content outside engine-managed regions survives the
-    # rename. The active sync may splice in a `current-sprint` block (active
-    # status + sprint window), so we assert the original line is still
-    # present rather than full-body equality.
-    cp_body = (new_dir / "cp.md").read_text()
+    # Same dir, content preserved. The active sync may splice in a
+    # `current-sprint` block (active status + sprint window), so we assert
+    # the original line is still present rather than full-body equality.
+    cp_body = (work_dir / "cp.md").read_text()
     assert "# legacy content" in cp_body
-    assert (new_dir / "notes.md").read_text() == "# preserved\n"
-    assert not legacy_dir.exists()
+    assert (work_dir / "notes.md").read_text() == "# preserved\n"
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1570,7 +1577,8 @@ def test_new_project_scaffold_includes_quick_resume_markers(tmp_path: Path) -> N
         ),
     )
 
-    cp_path = tmp_path / "1p" / "google" / "new-brand-new" / "cp.md"
+    # Dir is the slugified code (the name no longer contributes a tail).
+    cp_path = tmp_path / "1p" / "google" / "new" / "cp.md"
     body = cp_path.read_text()
     assert "<!-- cp-engine:start quick-resume -->" in body
     assert "<!-- cp-engine:end quick-resume -->" in body

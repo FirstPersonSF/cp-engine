@@ -113,42 +113,14 @@ def inactive_root(tenant_root: Path, scope: str) -> Path:
 _SLUG_NON_ALPHANUM = re.compile(r"[^a-z0-9]+")
 
 
-def dir_slug(code: str, name: str | None) -> str:
-    """Build a working-directory name from a project's code and full name.
+def dir_slug(code: str, name: str | None = None) -> str:
+    """Working-directory name for a project = its slugified `code`.
 
-    Returns `<code>-<name-tail-slugified>` so working dirs are readable in
-    a directory listing (`ggl-5177-event-safety-playbook` rather than
-    `ggl-5177`). When the name doesn't add information beyond the code
-    (empty, or just the code itself), returns the bare code.
-
-    Slugification:
-      - lowercase
-      - strip a leading occurrence of the code (in any case, with spaces
-        for hyphens) so "GGL 5177 Event Safety Playbook" doesn't become
-        "ggl-5177-ggl-5177-event-safety-playbook"
-      - collapse non-alphanumeric runs to single hyphens
-      - trim leading/trailing hyphens
-    """
-    code_lc = code.lower().strip()
-    if not name:
-        return code_lc
-
-    # Normalize spaces/hyphens so "GGL 5177" and "ggl-5177" both match.
-    work = name.lower().strip()
-
-    # Strip a leading code occurrence so the tail is just the human name.
-    # Try the hyphenated form first ("ggl-5177"), then the spaced form
-    # ("ggl 5177"). The replacement happens in lowercase space.
-    code_with_spaces = code_lc.replace("-", " ")
-    for prefix in (code_lc, code_with_spaces):
-        if work.startswith(prefix):
-            work = work[len(prefix) :].lstrip(" -")
-            break
-
-    tail = _SLUG_NON_ALPHANUM.sub("-", work).strip("-")
-    if not tail:
-        return code_lc
-    return f"{code_lc}-{tail}"
+    Since `code` is now the canonical full_job_name slug
+    ("ibx-5192-platform-sales-readiness-summit"), the dir IS the code. `name`
+    is retained for signature compatibility with existing call sites but no
+    longer affects the result (the code already carries the description)."""
+    return _SLUG_NON_ALPHANUM.sub("-", code.lower().strip()).strip("-")
 
 
 def slug_full_job_name(full_job_name: str | None) -> str:
