@@ -25,6 +25,7 @@ from cp_engine import (
 from cp_engine.sync import (
     Backend,
     _collect_sprint_per_project_data,
+    _deactivate_stale_cps,
     _find_project_dir,
     _last_week_monday,
     _read_mc_id,
@@ -2118,6 +2119,103 @@ def test_find_project_dir_uuid_beats_code_sibling(tmp_path: Path) -> None:
     stamped = _make_dir_with_cp(tmp_path, "aaa", mc_id="U")
     (tmp_path / "new-code").mkdir()  # name matches code, but no stamp
     assert _find_project_dir(tmp_path, code="new-code", mc2_id="U") == stamped
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  _deactivate_stale_cps — uuid-aware staleness (don't sweep drifted dirs)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _client_parent(tmp_path: Path) -> Path:
+    """The per-account live parent dir for a Google client project
+    (`1p/google/`). Must exist for the deactivation sweep to scan it."""
+    parent = tmp_path / "1p" / "google"
+    parent.mkdir(parents=True)
+    return parent
+
+
+def test_deactivate_keeps_drifted_dir_recognised_by_uuid(tmp_path: Path) -> None:
+    """Core fix: a dir whose name matches no live code but whose cp.md
+    is stamped with a live uuid is NOT swept to inactive/."""
+    parent = _client_parent(tmp_path)
+    drifted = _make_dir_with_cp(parent, "oldslug", mc_id="U")
+    # Live set: new code + the same uuid U (oldslug matches no live code).
+    live_dirs = {("1p/google", "ggl-new-code", "U")}
+
+    moved = _deactivate_stale_cps(tmp_path, live_dirs)
+
+    assert moved == []
+    assert drifted.exists()
+    assert not (parent / "inactive" / "oldslug").exists()
+
+
+def test_deactivate_sweeps_genuinely_gone_uuid_and_name(tmp_path: Path) -> None:
+    """A dir whose stamped uuid is NOT in the live set AND whose name
+    matches no live code IS moved to inactive/."""
+    parent = _client_parent(tmp_path)
+    gone = _make_dir_with_cp(parent, "going-away", mc_id="DEAD-UUID")
+    live_dirs = {("1p/google", "ggl-still-here", "LIVE-UUID")}
+
+    moved = _deactivate_stale_cps(tmp_path, live_dirs)
+
+    assert not gone.exists()
+    target = parent / "inactive" / "going-away"
+    assert target.exists()
+    assert moved == [target]
+
+
+def test_deactivate_sweeps_unstamped_stale_dir(tmp_path: Path) -> None:
+    """Fallback unchanged: a dir with NO MC-id and a name matching no live
+    code is still swept (legacy behaviour)."""
+    parent = _client_parent(tmp_path)
+    stale = _make_dir_with_cp(parent, "no-stamp-stale", mc_id=None)
+    live_dirs = {("1p/google", "ggl-live", "LIVE-UUID")}
+
+    moved = _deactivate_stale_cps(tmp_path, live_dirs)
+
+    assert not stale.exists()
+    assert (parent / "inactive" / "no-stamp-stale").exists()
+    assert moved == [parent / "inactive" / "no-stamp-stale"]
+
+
+def test_deactivate_keeps_unstamped_dir_matching_live_code(tmp_path: Path) -> None:
+    """Fallback unchanged: a dir with NO MC-id but a name matching a live
+    code (bare or slugged) is kept."""
+    parent = _client_parent(tmp_path)
+    bare = _make_dir_with_cp(parent, "ggl-5168", mc_id=None)
+    slugged = _make_dir_with_cp(parent, "ggl-5177-activation", mc_id=None)
+    live_dirs = {
+        ("1p/google", "ggl-5168", "U1"),
+        ("1p/google", "ggl-5177", "U2"),
+    }
+
+    moved = _deactivate_stale_cps(tmp_path, live_dirs)
+
+    assert moved == []
+    assert bare.exists()
+    assert slugged.exists()
+
+
+def test_full_sync_does_not_sweep_drifted_dir(tmp_path: Path) -> None:
+    """End-to-end: a project whose code drifts (same mc2_id) is renamed in
+    place, NOT swept to inactive/, even though its old-named dir matches no
+    live code at the moment the deactivation sweep runs."""
+    from dataclasses import replace
+
+    config = make_config(tmp_path)
+    old = replace(make_state(code="ggl-5177-old", name="ggl-5177-old"), mc2_id="U-x")
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((old,)))
+    old_dir = tmp_path / "1p" / "google" / "ggl-5177-old"
+    assert (old_dir / "cp.md").exists()
+
+    # Re-sync: same uuid, drifted code.
+    new = replace(make_state(code="ggl-5177-new", name="ggl-5177-new"), mc2_id="U-x")
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((new,)))
+
+    # Dir was renamed, content preserved, and nothing landed in inactive/.
+    assert not old_dir.exists()
+    assert (tmp_path / "1p" / "google" / "ggl-5177-new" / "cp.md").exists()
+    assert not (tmp_path / "1p" / "google" / "inactive" / "ggl-5177-old").exists()
 
 
 # ──────────────────────────────────────────────────────────────────────

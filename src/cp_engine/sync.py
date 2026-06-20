@@ -263,8 +263,12 @@ def sync_tenant(
     # `account_scope_for` gives the full parent path including the account
     # layer for clients (e.g. "1p/google"), so live_dirs reflect where the
     # project actually lives on disk.
-    live_dirs: set[tuple[str, str]] = {
-        (account_scope_for(p), p.code)
+    # Each entry carries the project's mc2_id (or "" when uuid-less, e.g.
+    # repos) alongside (scope, code) so the deactivation sweep can recognise
+    # a drifted working dir by its stamped uuid even when its name no longer
+    # matches any live code.
+    live_dirs: set[tuple[str, str, str]] = {
+        (account_scope_for(p), p.code, p.mc2_id or "")
         for p in projects
         if not p.is_internal
     }
@@ -1617,7 +1621,7 @@ def _rename_sprint_files(
 
 def _deactivate_stale_cps(
     tenant_root: Path,
-    live_dirs: set[tuple[str, str]],
+    live_dirs: set[tuple[str, str, str]],
 ) -> list[Path]:
     """Move whole working dirs for stale projects into <scope>/inactive/.
 
@@ -1628,24 +1632,32 @@ def _deactivate_stale_cps(
     live state has its dir restored from inactive/ on the next sync.
 
     Walks each `<scope>/` for top-level subdirs (skipping the `inactive/`
-    subdir itself). A dir whose embedded code isn't in `live_dirs[scope]`
-    is moved to `<scope>/inactive/<dir_name>/`, preserving the slug
-    suffix.
+    subdir itself). A dir is treated as LIVE (kept) when EITHER:
 
-    Working-dir naming is `<code>` (legacy) or `<code>-<slug>` (current);
-    we extract the code by checking each known-live code against the dir
-    name. Anything that doesn't match a live code is treated as stale.
+      - its cp.md is stamped with an `MC-id` that is in this scope's set of
+        live uuids — recognises a working dir whose name has drifted away
+        from any current code (uuid-anchored), or
+      - its name matches a live code in bare (`<code>`) or slugged
+        (`<code>-<slug>`) form — the legacy fallback for unstamped/legacy
+        dirs and uuid-less items.
+
+    Only a dir that fails BOTH checks is moved to
+    `<scope>/inactive/<dir_name>/`, preserving the slug suffix.
 
     Returns the list of new inactive directory paths.
     """
     moved: list[Path] = []
     # `live_dirs` is keyed by the FULL account scope ("1p/google" for
     # clients, "firstpersonsf"/"canonic" for self-companies) — the same
-    # path returned by account_scope_for(). Group live codes by that key
-    # so each project parent dir below can match against its own slice.
+    # path returned by account_scope_for(). Group live codes AND live uuids
+    # by that key so each project parent dir below matches against its own
+    # slice on either axis.
     live_codes_by_account_scope: dict[str, set[str]] = {}
-    for scope, code in live_dirs:
+    live_uuids_by_account_scope: dict[str, set[str]] = {}
+    for scope, code, mc2_id in live_dirs:
         live_codes_by_account_scope.setdefault(scope, set()).add(code)
+        if mc2_id:
+            live_uuids_by_account_scope.setdefault(scope, set()).add(mc2_id)
 
     for scope in _SCOPE_DIRS:
         for parent in _project_parent_dirs(tenant_root, scope):
@@ -1654,6 +1666,7 @@ def _deactivate_stale_cps(
             # a self-company scope root.
             account_scope = str(parent.relative_to(tenant_root))
             live_codes = live_codes_by_account_scope.get(account_scope, set())
+            live_uuids = live_uuids_by_account_scope.get(account_scope, set())
             # Per-project inactive bin sits next to the live dirs — for
             # clients, that's `1p/<company>/inactive/`; for self-company
             # scopes, `firstpersonsf/inactive/` (unchanged).
@@ -1665,8 +1678,14 @@ def _deactivate_stale_cps(
                 if path.name == INACTIVE_DIR_NAME:
                     continue
 
-                # A dir is "live" if its name matches a known live project
-                # code in either form (bare or `<code>-<slug>`).
+                # uuid-anchored: a dir whose stamped MC-id is in the live
+                # set is live regardless of its (possibly drifted) name.
+                stamped = _read_mc_id(path / "cp.md")
+                if stamped and stamped in live_uuids:
+                    continue
+
+                # Fallback: a dir is "live" if its name matches a known
+                # live project code in either form (bare or `<code>-<slug>`).
                 if any(
                     path.name == code or path.name.startswith(f"{code}-")
                     for code in live_codes
