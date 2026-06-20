@@ -193,6 +193,33 @@ def pull_project_source(
 
 
 @mcp.tool()
+def fetch_project_source(project_code: str, doc_title: str) -> dict:
+    """Download an ingested source's ORIGINAL file to a local path and return it.
+
+    Use when the embedded text isn't enough and you need the actual binary
+    (e.g. a .pptx to inspect hidden slides, an image, original layout). The
+    returned `local_path` is on this machine — Read it directly.
+    """
+    import tempfile
+
+    from cp_engine.project_sources import fetch_source
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, _cid = resolved
+        dest = tempfile.mkdtemp(prefix="cp-fetch-")
+        return fetch_source(client, pid, doc_title, dest)
+    except Exception as exc:  # noqa: BLE001
+        # An MCP tool must never throw to the client: return a structured,
+        # actionable error note instead of propagating a protocol error.
+        return {
+            "error": f"failed to fetch '{doc_title}' from '{project_code}': {exc}"
+        }
+
+
+@mcp.tool()
 def create_spine_element(project_code: str, label: str, type: str,
                          body: str = "", serves: list[str] | None = None) -> dict:
     """Create a new AUTHORED spine element (live v1) in MC-2.
