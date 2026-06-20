@@ -2,9 +2,11 @@
 current capture-loop authored format under the canonical code.
 
 Background: a project whose `spine_substance` rows are split across two
-project_codes (the cp spine-migrate slug-drift) has its real memory stranded in
-legacy capitalized-layer disk files. This recovers them via the shipped write
-engine. See docs/plans/2026-06-19-spine-code-drift-recovery-design.md.
+project_codes (the slug-drift introduced by the now-retired `cp spine-migrate`,
+which wrote under the dir-slug while `cp sync` keys on `<company>-<number>`) has
+its real memory stranded in legacy capitalized-layer disk files. This recovers
+them via the shipped write engine. See
+docs/plans/2026-06-19-spine-code-drift-recovery-design.md.
 """
 from __future__ import annotations
 
