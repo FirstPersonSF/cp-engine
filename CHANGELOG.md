@@ -4,6 +4,23 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.34.0 — 2026-06-20
+
+### Added — Source live-link layer (re-fetch any ingested source on demand)
+
+Asset ingest used to embed a source doc's text and then discard any way back to the original binary (`rag_assets.file_path` was a dead `/tmp` scratch path; `url` was null). This release makes every ingested source re-fetchable on demand and gives it a durable web link.
+
+- **New `rag_assets` columns** (mc-2 migration 077): `source_provider` (`drive`|`dropbox`), `source_file_id`, `source_path`. Stamped at ingest time in the existing post-`ingest_file` UPDATE (`_stamp_scope`), read back to reconstruct a `FileRef`.
+- **`_source_url`** now returns a durable link instead of `None` — Drive `/file/d/<id>/view`, Dropbox a **team-only** shared link. **Fail-closed**: if the deployed Dropbox connector can't prove team-only support (no `team_only` param in its signature), the link is dropped rather than risk publishing a public link to client material.
+- **`fetch_source` + `fetch_project_source` MCP tool** — download an ingested source's original binary to a local path Claude can `Read` (e.g. a `.pptx` to inspect hidden slides). Wiring-only tool over the pure function; never throws.
+- **Backfill** (`scripts/backfill_source_coords.py`) recovers coords from legacy dead temp paths (the Dropbox/Drive id is encoded in the `dropbox-id_<id>`/`drive-<id>` temp dir). Drive recovers losslessly; Dropbox recovers the id (re-fetchable via the fallback below). Dry-run by default, column-existence preflight, no silent caps.
+- **Dropbox fetch-by-id fallback** in `download_file` — when a Dropbox `FileRef` has an id but no `path_display` (backfilled rows), fetch via `files_download(path="id:<id>")`. Lets historic Dropbox rows re-fetch without re-ingest.
+
+Verified end-to-end live on IBX-5192: backfilled rows → `fetch_source` pulled the real 7.4 MB v6 `.pptx` from Dropbox by id and exposed its hidden/visible slide flags.
+
+### Companion changes
+mc-2 migration 077 (columns); social-builder-app `DropboxConnector.get_shareable_link` gained an optional `team_only` param (members-only links, re-verified on both create and reuse paths).
+
 ## v0.33.0 — 2026-06-19
 
 ### Added — `cp spine-recover` (project_code drift recovery)
