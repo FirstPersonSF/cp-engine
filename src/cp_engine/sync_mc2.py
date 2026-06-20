@@ -177,7 +177,7 @@ class MC2Backend:
             .select(
                 "hours, "
                 "entities!inner(name), "
-                "projects!inner(number, is_internal, companies(code))"
+                "projects!inner(number, full_job_name, is_internal, companies(code))"
             )
             .eq("week_start", week_start)
             .execute()
@@ -452,7 +452,15 @@ def _parse_linked_repos(repos_payload: object) -> tuple[LinkedRepo, ...]:
 
 
 def _engagement_canonical_id(row: dict) -> str:
-    """`<prefix>-<number>` or just `<number>` if no company_id."""
+    """Canonical project id = slugified `full_job_name`
+    ("ibx-5192-platform-sales-readiness-summit"). Falls back to the legacy
+    `<company>-<number>` form only when `full_job_name` is empty (defensive;
+    all live rows have it)."""
+    from cp_engine.state import slug_full_job_name
+
+    slug = slug_full_job_name(row.get("full_job_name"))
+    if slug:
+        return slug
     number = row["number"]
     company = row.get("companies") or {}
     prefix = (company.get("code") or "").strip().lower() if isinstance(company, dict) else ""

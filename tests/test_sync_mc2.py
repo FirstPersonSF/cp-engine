@@ -34,6 +34,42 @@ from cp_engine.sync_mc2 import (
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _eng_row(**kw):
+    base = {
+        "number": 5192,
+        "full_job_name": "IBX 5192 Platform Sales Readiness Summit",
+        "companies": {"code": "IBX"},
+    }
+    base.update(kw)
+    return base
+
+
+def test_canonical_id_from_full_job_name() -> None:
+    assert _engagement_canonical_id(_eng_row()) == "ibx-5192-platform-sales-readiness-summit"
+
+
+def test_canonical_id_bare_number_code_still_clean() -> None:
+    assert (
+        _engagement_canonical_id(
+            _eng_row(
+                number=5136,
+                full_job_name="GGL 5136 go/safety website",
+                companies={"code": "GGL"},
+            )
+        )
+        == "ggl-5136-go-safety-website"
+    )
+
+
+def test_canonical_id_falls_back_when_full_job_name_empty() -> None:
+    assert _engagement_canonical_id(_eng_row(full_job_name="")) == "ibx-5192"
+    assert _engagement_canonical_id(_eng_row(full_job_name=None)) == "ibx-5192"
+
+
+def test_canonical_id_fallback_no_company() -> None:
+    assert _engagement_canonical_id({"number": 9, "full_job_name": "", "companies": {}}) == "9"
+
+
 def test_engagement_canonical_id_with_company_prefix() -> None:
     assert _engagement_canonical_id({"number": 5188, "companies": {"code": "GGL"}}) == "ggl-5188"
     assert _engagement_canonical_id({"number": 5168, "companies": {"code": "ibx"}}) == "ibx-5168"
@@ -78,7 +114,7 @@ def test_engagement_row_to_state_happy_path() -> None:
     }
     state = _engagement_row_to_state(row)
 
-    assert state.code == "ggl-5168"
+    assert state.code == "ggl-5168-playbooks"
     assert state.source == "engagement"
     assert state.company_kind == "client"
     assert state.company_code == "GGL"
@@ -494,7 +530,7 @@ def test_engagement_row_to_state_populates_linked_repos() -> None:
         ],
     }
     state = _engagement_row_to_state(row)
-    assert state.code == "ggl-5136"
+    assert state.code == "ggl-5136-go-safety-website"
     assert len(state.linked_repos) == 1
     assert state.linked_repos[0].repo_name == "ggl-5136-events-calendar"
 
