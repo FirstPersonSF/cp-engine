@@ -71,6 +71,7 @@ def make_state(
     summary: str | None = "Storyboards in flight; client review Wed.",
     source: str = "engagement",
     company_kind: str = "client",
+    mc2_id: str | None = None,
 ) -> ProjectState:
     last_touched = (
         datetime.now(timezone.utc).replace(hour=12, minute=0, second=0, microsecond=0)
@@ -92,6 +93,7 @@ def make_state(
         last_touched=last_touched,
         deadline=None,
         one_line_summary=summary,
+        mc2_id=mc2_id,
     )
 
 
@@ -208,6 +210,60 @@ def test_project_cp_renders_with_no_issues() -> None:
     assert "## Quick Resume" in out
     assert "## Decisions" in out
     assert "## Stakeholders" in out
+
+
+def test_project_cp_stamps_mc_id_when_set() -> None:
+    """When mc2_id is set, frontmatter carries a clean `MC-id: <uuid>` line."""
+    tenant = make_tenant()
+    project = make_state(mc2_id="abc-123-uuid")
+    out = render_project_cp(tenant, project)
+
+    lines = out.splitlines()
+    assert "MC-id: abc-123-uuid" in lines
+
+
+def test_project_cp_omits_mc_id_when_none() -> None:
+    """When mc2_id is None, no `MC-id:` line and no stray blank line."""
+    tenant = make_tenant()
+    project = make_state(mc2_id=None)
+    out = render_project_cp(tenant, project)
+
+    assert "MC-id:" not in out
+    # Frontmatter stays well-formed: Filename line is directly followed by
+    # the Author line, with no blank line wedged between them.
+    assert "Filename: cp.md\nAuthor:" in out
+
+
+def test_initiative_cp_stamps_mc_id_when_set() -> None:
+    """Initiative template carries the same MC-id stamp when set."""
+    tenant = make_tenant()
+    project = make_state(
+        code="mission-control",
+        name="Mission Control",
+        source="initiative",
+        company_kind="self-fpsf",
+        mc2_id="init-456-uuid",
+    )
+    out = render_project_cp(tenant, project)
+
+    lines = out.splitlines()
+    assert "MC-id: init-456-uuid" in lines
+
+
+def test_initiative_cp_omits_mc_id_when_none() -> None:
+    """Initiative template: no MC-id line and no stray blank when None."""
+    tenant = make_tenant()
+    project = make_state(
+        code="mission-control",
+        name="Mission Control",
+        source="initiative",
+        company_kind="self-fpsf",
+        mc2_id=None,
+    )
+    out = render_project_cp(tenant, project)
+
+    assert "MC-id:" not in out
+    assert "Filename: cp.md\nAuthor:" in out
 
 
 def test_project_cp_renders_with_issues() -> None:

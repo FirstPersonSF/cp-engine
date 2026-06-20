@@ -1234,6 +1234,9 @@ def _project_view(p: ProjectState) -> dict:
     return {
         "code": p.code,
         "name": p.name,
+        # MC-2 row uuid — stamped into cp.md frontmatter so dir-location
+        # can anchor on the stable id instead of the (renameable) code.
+        "mc2_id": p.mc2_id,
         "source": p.source,
         "company_kind": p.company_kind,
         # Path-building scope (includes account layer for clients).
