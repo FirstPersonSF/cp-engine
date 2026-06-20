@@ -1,4 +1,12 @@
-from cp_engine.spine_recover import classify_element, match_source_asset, plan_element, source_basename
+from pathlib import Path
+
+from cp_engine.spine_recover import (
+    classify_element,
+    load_legacy_elements,
+    match_source_asset,
+    plan_element,
+    source_basename,
+)
 
 
 class _El:  # minimal stand-in for SpineElement (plan_element reads only these)
@@ -84,3 +92,46 @@ def test_match_skips_typed_rag_asset_dict_sources():
 
 def test_match_empty_sources_returns_none():
     assert match_source_asset((), [{"id": "a1", "title": "X.docx"}]) is None
+
+
+# ---- load_legacy_elements ---------------------------------------------------
+
+def test_load_legacy_elements_returns_only_legacy_layer_files(tmp_path: Path):
+    spine = tmp_path / "spine"
+
+    # A LEGACY element in a capitalized LAYER dir → should load.
+    legacy = spine / "Decisions" / "two-track.md"
+    legacy.parent.mkdir(parents=True, exist_ok=True)
+    legacy.write_text(
+        "---\n"
+        "id: ibx-5153/decisions/two-track\n"
+        "project: ibx-5153\n"
+        "layer: Decisions\n"
+        'title: "Two-track AI story"\n'
+        "status: active\n"
+        "last_touched: 2026-05-27\n"
+        "---\n"
+        "The two-track decision body.\n",
+        encoding="utf-8",
+    )
+
+    # A NEW-substance file in a lowercase phase dir → NOT a LAYER → skipped.
+    new = spine / "phase-0" / "messaging.md"
+    new.parent.mkdir(parents=True, exist_ok=True)
+    new.write_text(
+        "---\n"
+        "est_item_id: 11111111-2222-3333-4444-555555555555\n"
+        "est_item_kind: deliverable\n"
+        "phase: phase-0\n"
+        "binding: live\n"
+        "---\n"
+        "## v1 — 2026-06-19 · live\n\nmessaging substance\n",
+        encoding="utf-8",
+    )
+
+    els = load_legacy_elements(tmp_path)
+
+    assert len(els) == 1
+    assert els[0].layer == "Decisions"
+    assert els[0].title == "Two-track AI story"
+    assert els[0].id == "ibx-5153/decisions/two-track"

@@ -10,6 +10,20 @@ from __future__ import annotations
 
 import dataclasses
 import os
+from pathlib import Path
+
+from cp_engine.spine import SpineElement, load_spine
+
+
+def load_legacy_elements(project_dir: Path) -> tuple[SpineElement, ...]:
+    """Parse a project's LEGACY spine elements (capitalized-layer dirs) off disk.
+
+    Thin wrapper over `cp_engine.spine.load_spine`, which iterates the 11 fixed
+    capitalized LAYERS under `<project_dir>/spine/` — naturally skipping the new
+    lowercase phase dirs (substance), `_context/`, `_authored/`, and snapshots,
+    which are not LAYERS. These legacy files are the recovery's authoritative
+    source."""
+    return load_spine(project_dir)
 
 # Layers whose elements summarize ONE identifiable source → re-distill from it.
 _SOURCE_BACKED_LAYERS = frozenset({
