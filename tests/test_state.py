@@ -22,6 +22,7 @@ from cp_engine.state import (
     company_slug,
     dir_slug,
     scope_for,
+    slug_full_job_name,
 )
 
 # ──────────────────────────────────────────────────────────────────────
@@ -164,6 +165,32 @@ def test_dir_slug_ascii_only() -> None:
     # and starts with the code prefix.
     assert result.startswith("xyz-1-")
     assert all(c.isascii() for c in result)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  slug_full_job_name
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_slug_basic() -> None:
+    assert (
+        slug_full_job_name("IBX 5192 Platform Sales Readiness Summit")
+        == "ibx-5192-platform-sales-readiness-summit"
+    )
+
+
+def test_slug_punctuation_and_plus() -> None:
+    assert slug_full_job_name("GGL 5188 Calendar + Maintenance") == "ggl-5188-calendar-maintenance"
+    assert slug_full_job_name("GGL 5136 go/safety website") == "ggl-5136-go-safety-website"
+
+
+def test_slug_trims_and_collapses() -> None:
+    assert slug_full_job_name("  SAP   5171   Display Ads 26 ") == "sap-5171-display-ads-26"
+
+
+def test_slug_empty_returns_empty() -> None:
+    assert slug_full_job_name("") == ""
+    assert slug_full_job_name(None) == ""
 
 
 def test_client_ask_constructs_with_defaults() -> None:

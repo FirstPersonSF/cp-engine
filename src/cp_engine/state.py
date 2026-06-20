@@ -151,6 +151,16 @@ def dir_slug(code: str, name: str | None) -> str:
     return f"{code_lc}-{tail}"
 
 
+def slug_full_job_name(full_job_name: str | None) -> str:
+    """Slugify MC-2's `full_job_name` ("IBX 5192 Platform Sales Readiness
+    Summit") into the canonical, filesystem/LLM-friendly project id
+    ("ibx-5192-platform-sales-readiness-summit"). Returns "" for empty input
+    (caller decides the fallback)."""
+    if not full_job_name:
+        return ""
+    return _SLUG_NON_ALPHANUM.sub("-", full_job_name.lower()).strip("-")
+
+
 @dataclass(frozen=True)
 class ProjectState:
     """One trackable item in cp-engine's master CP.
