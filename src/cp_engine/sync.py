@@ -344,6 +344,40 @@ def sync_tenant(
                 if cp_path not in files_written:
                     files_written.append(cp_path)
 
+        # project-facts re-splice (cp-engine#15). The Facts table
+        # (Code/Status/Stage/Budget/Owner/Client/Last touched) was written
+        # ONCE at scaffold and never refreshed, so a value change in MC-2 —
+        # most visibly the canonical id changing to the full_job_name slug —
+        # left the table stale (Code showed the old short code forever).
+        #
+        # The region is purely engine-managed (no human content lives between
+        # its markers), so it's safe to re-splice on every sync from the
+        # current ProjectState. We render the full project-cp template (same
+        # _project_view mapping the scaffold uses → byte-identical markup and
+        # the exact engagement/initiative field branching) and let
+        # `_write_if_changed` splice only the `project-facts` region in place,
+        # leaving every hand-written section untouched. No-op when the facts
+        # already match (idempotent).
+        # Only re-splice when the region markers already exist. A cp.md that
+        # predates project-facts (or a hand-crafted file) must NOT be treated
+        # as a schema-evolution boundary and full-rewritten — that would clobber
+        # hand-written content outside the engine regions. Scaffolded files
+        # always carry the markers, so this guard only skips genuinely-legacy
+        # files (leaving them as-is, same as the current-sprint/strip splices,
+        # which seed-or-skip rather than rewrite).
+        if cp_path.exists() and "<!-- cp-engine:start project-facts -->" in (
+            cp_path.read_text()
+        ):
+            facts_full_body = render_project_cp(config, project, tracked_issues=())
+            # (Unreachable under dry_run — the loop `continue`s above before
+            # any filesystem mutation — so no dry_run plumbing needed here.)
+            if _write_if_changed(
+                cp_path,
+                facts_full_body,
+                splice_regions=("project-facts",),
+            ) and cp_path not in files_written:
+                files_written.append(cp_path)
+
         # _dropbox.md — re-render on every sync so a URL change in MC-2
         # propagates without manual intervention. The renderer returns
         # None for projects without a Dropbox URL (most repos); skip those.
