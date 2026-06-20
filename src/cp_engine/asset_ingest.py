@@ -586,8 +586,22 @@ def download_file(
         # download_file. Fetch by path_display (the value `list_files` stored on
         # the FileRef); Dropbox returns (metadata, response) and the bytes live
         # on response.content.
+        # Dropbox's `path` arg accepts a literal `/path`, an `id:<id>`, or a
+        # `rev:<rev>`. Normal ingest fetches by path_display. Backfilled historic
+        # rows recover source_file_id (already the `id:<body>` form) but never the
+        # dead temp path_display, so their FileRef has path=None — fall back to
+        # fetching by the id-form path, which Dropbox accepts as-is.
+        if file_ref.path:
+            download_arg = file_ref.path
+        elif file_ref.id:
+            download_arg = file_ref.id
+        else:
+            raise ValueError(
+                "[asset-ingest] cannot download Dropbox FileRef with neither "
+                f"path nor id (name={file_ref.name!r})"
+            )
         local_path = tmp_dir / file_ref.name
-        _metadata, response = dropbox_connector.dbx.files_download(path=file_ref.path)
+        _metadata, response = dropbox_connector.dbx.files_download(path=download_arg)
         local_path.write_bytes(response.content)
         return local_path
 

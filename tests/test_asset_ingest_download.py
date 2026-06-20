@@ -106,6 +106,56 @@ def test_download_dropbox_sdk_gapfill_writes_bytes(tmp_path):
     assert captured["path"] == "/Clients/Acme/notes.txt"
 
 
+def test_download_dropbox_fetch_by_id_when_path_absent(tmp_path):
+    # Backfilled historic rows recover source_file_id (id:<body>) but never the
+    # dead temp path_display, so fetch_source yields a FileRef with path=None.
+    # Dropbox accepts the id-form as a path arg, so we fetch by file_ref.id.
+    captured = {}
+
+    def _files_download(path):
+        captured["path"] = path
+        return (SimpleNamespace(), SimpleNamespace(content=b"by-id"))
+
+    connector = SimpleNamespace(dbx=SimpleNamespace(files_download=_files_download))
+    ref = FileRef(
+        source="dropbox",
+        id="id:abc123",
+        name="notes.txt",
+        mime_type=None,
+        size=5,
+        modified="2026-06-13T00:00:00Z",
+        path=None,  # backfilled row: no path_display
+    )
+
+    result = download_file(ref, tmp_path, dropbox_connector=connector)
+
+    assert result == tmp_path / "notes.txt"
+    assert result.read_bytes() == b"by-id"
+    assert captured["path"] == "id:abc123"  # fetched by the id-form path
+
+
+def test_download_dropbox_no_path_no_id_raises(tmp_path):
+    # A Dropbox FileRef with neither path nor id cannot be fetched.
+    connector = SimpleNamespace(
+        dbx=SimpleNamespace(
+            files_download=lambda path: (_ for _ in ()).throw(
+                AssertionError("files_download should not be called")
+            )
+        )
+    )
+    ref = FileRef(
+        source="dropbox",
+        id=None,
+        name="notes.txt",
+        mime_type=None,
+        size=5,
+        modified=None,
+        path=None,
+    )
+    with pytest.raises(ValueError):
+        download_file(ref, tmp_path, dropbox_connector=connector)
+
+
 def test_download_unknown_source_raises(tmp_path):
     ref = FileRef(
         source="weird",
