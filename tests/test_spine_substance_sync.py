@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from cp_engine.spine_substance_sync import (
+    _rehome_authored_codes,
     context_to_row,
     reconcile_bindings,
     substance_to_rows,
@@ -470,6 +471,113 @@ def test_sync_substance_never_reaps_authored_row(tmp_path):
     row = next(r for r in client.store["spine_substance"]
                if r["id"] == "proj-1/auth/v1")
     assert row["review_flags"] == []  # not flagged
+
+
+# ---- authored re-home on code change ----------------------------------------
+
+
+def test_rehome_authored_row_renamed_not_deleted(tmp_path):
+    """An authored row under an OLD code is RENAMED to the current code: its
+    project_code + id prefix are rewritten, the old id is gone, the body
+    survives, and the function returns a count of 1."""
+    proj = tmp_path / "1p/acct/new"; proj.mkdir(parents=True)
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "OLD/_authored/x/v1", "project_id": "P", "project_code": "OLD",
+        "origin": "authored", "framing": "f", "body": "AUTHORED body",
+        "status": "live", "field_states": {}, "review_flags": [],
+    }]
+    n = _rehome_authored_codes(client, project_id="P", project_code="NEW")
+    assert n == 1
+    rows = client.store["spine_substance"]
+    ids = {r["id"] for r in rows}
+    assert "OLD/_authored/x/v1" not in ids
+    assert "NEW/_authored/x/v1" in ids
+    row = next(r for r in rows if r["id"] == "NEW/_authored/x/v1")
+    assert row["project_code"] == "NEW"
+    assert row["body"] == "AUTHORED body"  # body preserved
+
+
+def test_rehome_authored_multiple_old_codes(tmp_path):
+    """Two authored rows under two different old codes (same project_id) are both
+    re-homed to the current code."""
+    client = _FakeClient()
+    client.store["spine_substance"] = [
+        {"id": "OLD1/_authored/x/v1", "project_id": "P", "project_code": "OLD1",
+         "origin": "authored", "body": "b1"},
+        {"id": "OLD2/_authored/y/v1", "project_id": "P", "project_code": "OLD2",
+         "origin": "authored", "body": "b2"},
+    ]
+    n = _rehome_authored_codes(client, project_id="P", project_code="NEW")
+    assert n == 2
+    ids = {r["id"] for r in client.store["spine_substance"]}
+    assert ids == {"NEW/_authored/x/v1", "NEW/_authored/y/v1"}
+    assert all(r["project_code"] == "NEW" for r in client.store["spine_substance"])
+
+
+def test_rehome_authored_already_current_no_op(tmp_path):
+    """An authored row already at the current code is not touched; count 0."""
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "NEW/_authored/x/v1", "project_id": "P", "project_code": "NEW",
+        "origin": "authored", "body": "b",
+    }]
+    n = _rehome_authored_codes(client, project_id="P", project_code="NEW")
+    assert n == 0
+    ids = {r["id"] for r in client.store["spine_substance"]}
+    assert ids == {"NEW/_authored/x/v1"}
+
+
+def test_rehome_authored_collision_drops_stale_keeps_new(tmp_path):
+    """When both OLD and NEW ids already exist (same project_id), the stale OLD
+    row is dropped and the existing NEW row is kept; count 1."""
+    client = _FakeClient()
+    client.store["spine_substance"] = [
+        {"id": "OLD/_authored/x/v1", "project_id": "P", "project_code": "OLD",
+         "origin": "authored", "body": "stale"},
+        {"id": "NEW/_authored/x/v1", "project_id": "P", "project_code": "NEW",
+         "origin": "authored", "body": "current"},
+    ]
+    n = _rehome_authored_codes(client, project_id="P", project_code="NEW")
+    assert n == 1
+    rows = client.store["spine_substance"]
+    ids = {r["id"] for r in rows}
+    assert ids == {"NEW/_authored/x/v1"}
+    assert next(r for r in rows if r["id"] == "NEW/_authored/x/v1")["body"] == "current"
+
+
+def test_rehome_authored_ignores_non_authored(tmp_path):
+    """A non-authored (estimate-bound) row under the OLD code is left untouched —
+    the reap, not this function, handles those."""
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "OLD/d1/v2", "project_id": "P", "project_code": "OLD",
+        "origin": "estimate", "body": "b",
+    }]
+    n = _rehome_authored_codes(client, project_id="P", project_code="NEW")
+    assert n == 0
+    ids = {r["id"] for r in client.store["spine_substance"]}
+    assert ids == {"OLD/d1/v2"}
+
+
+def test_sync_substance_rehomes_authored_on_code_change(tmp_path):
+    """sync_spine_substance re-homes a drifted authored row to the current code.
+    The authored row survives (never reaped) and now carries the new code."""
+    proj = tmp_path / "1p/acct/new"; proj.mkdir(parents=True)
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "OLD/_authored/x/v1", "project_id": "u1", "project_code": "OLD",
+        "origin": "authored", "framing": "f", "body": "b", "status": "live",
+        "est_item_id": "x", "field_states": {}, "review_flags": [],
+    }]
+    sync_spine_substance(client, project_id="u1", project_code="NEW",
+                         project_dir=proj, estimate=None)
+    ids = {r["id"] for r in client.store["spine_substance"]}
+    assert "OLD/_authored/x/v1" not in ids
+    assert "NEW/_authored/x/v1" in ids
+    row = next(r for r in client.store["spine_substance"]
+               if r["id"] == "NEW/_authored/x/v1")
+    assert row["project_code"] == "NEW"
 
 
 def test_sync_substance_preserves_confirmed_body(tmp_path):

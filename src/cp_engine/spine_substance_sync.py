@@ -216,6 +216,38 @@ def _load_substance_items(project_dir: Path) -> list[tuple[WorkItemSubstance, st
     return out
 
 
+def _rehome_authored_codes(client, *, project_id, project_code):
+    """Re-home origin='authored' rows whose project_code drifted from the current
+    code: update project_code + rewrite the id prefix. A rename, not a delete —
+    authored bodies are MC-2-owned and must survive a code change. Returns the
+    number of rows re-homed."""
+    rows = (client.table(_SUBSTANCE_TABLE)
+        .select("id, project_code")
+        .eq("project_id", project_id).eq("origin", "authored").execute().data) or []
+    n = 0
+    for r in rows:
+        if r.get("project_code") == project_code:
+            continue
+        old_id = r["id"]
+        rest = old_id.split("/", 1)[1] if "/" in old_id else old_id  # strip leading "<old_code>/"
+        new_id = f"{project_code}/{rest}"
+        if new_id == old_id:
+            continue
+        # collision guard: a row already at the target id (shouldn't happen for
+        # authored) — prefer the existing new-code row, drop the stale old one.
+        exists = (client.table(_SUBSTANCE_TABLE).select("id").eq("id", new_id).execute().data)
+        if exists:
+            logger.warning("spine authored re-home collision; dropping stale %s (kept %s)", old_id, new_id)
+            client.table(_SUBSTANCE_TABLE).delete().eq("id", old_id).execute()
+            n += 1
+            continue
+        client.table(_SUBSTANCE_TABLE).update(
+            {"id": new_id, "project_code": project_code}
+        ).eq("id", old_id).execute()
+        n += 1
+    return n
+
+
 def sync_spine_substance(
     client,
     *,
@@ -242,6 +274,14 @@ def sync_spine_substance(
     done), but the next ``cp sync`` reconverges because every row is derived from
     disk (mirrors the element mirror's behavior; Phase 3 writes through here)."""
     now_iso = (now or datetime.now(timezone.utc)).isoformat()
+
+    # Re-home authored rows whose project_code drifted from the current code
+    # FIRST — before the disk-load + reap. The reap deliberately never touches
+    # authored rows (MC-2 owns them), so on a code change their stale-code id
+    # would otherwise strand forever. Renaming them here means by the time the
+    # reap and the authored reverse-mirror run, authored rows already carry the
+    # current code.
+    _rehome_authored_codes(client, project_id=project_id, project_code=project_code)
 
     parsed = _load_substance_items(project_dir)
     items = [p[0] for p in parsed]
