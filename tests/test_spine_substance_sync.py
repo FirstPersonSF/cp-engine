@@ -515,7 +515,7 @@ def test_sync_context_upserts_and_reconciles_body(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
     client.store["spine_context"] = [{
-        "id": "proj-1/_context/carol", "project_code": "proj-1",
+        "id": "proj-1/_context/carol", "project_id": "u1", "project_code": "proj-1",
         "body": "CONFIRMED ctx",
         "field_states": {"body": "confirmed"}, "review_flags": [],
     }]
@@ -527,6 +527,74 @@ def test_sync_context_upserts_and_reconciles_body(tmp_path):
                if r["id"] == "proj-1/_context/carol")
     assert row["body"] == "CONFIRMED ctx"  # confirmed not clobbered
     assert any(f["field"] == "body" for f in row["review_flags"])
+
+
+def test_sync_context_reaps_old_code_row_on_code_change(tmp_path):
+    """Parallel to the substance reap: when a project's code changes, prior
+    spine_context rows still carry the OLD-code id (`OLD/_context/foo`) while
+    disk re-homes them under the NEW code. The reap must find the orphan via the
+    STABLE project_id, not the mutable project_code — otherwise the old-code row
+    is invisible to a project_code-scoped query and strands. Context rows have no
+    authored/origin split, so the project_id reap simply deletes the old-code row
+    and the disk write upserts the new-code row."""
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    # Prior DB row under the OLD code, same stable project_id="P".
+    client.store["spine_context"] = [
+        {"id": "OLD/_context/foo", "project_id": "P", "project_code": "OLD",
+         "body": "old ctx", "field_states": {}, "review_flags": []},
+    ]
+    # Disk produces a context row under the NEW code (same project_id="P").
+    _write_context(tmp_path, "foo", body="disk ctx")
+
+    # Capture the filters on each spine_context select to prove the prior-query
+    # keyed on project_id, not project_code.
+    selects: list[list] = []
+    orig_table = client.table
+
+    def _spy_table(name):
+        t = orig_table(name)
+        if name == "spine_context":
+            orig_execute = t.execute
+
+            def _execute():
+                if t._op and t._op[0] == "select":
+                    selects.append(list(t._filters))
+                return orig_execute()
+            t.execute = _execute
+        return t
+
+    client.table = _spy_table
+
+    sync_spine_context(client, project_id="P", project_code="NEW",
+                       project_dir=proj)
+
+    ids = {r["id"] for r in client.store["spine_context"]}
+    # Old-code orphan reaped; new-code row upserted.
+    assert "OLD/_context/foo" not in ids
+    assert "NEW/_context/foo" in ids
+    # The context reap's prior-query filtered on project_id="P", never on the new
+    # project_code.
+    assert any(("project_id", "P") in f for f in selects)
+    assert not any(("project_code", "NEW") in f for f in selects)
+
+
+def test_sync_context_no_drift_reaps_as_before(tmp_path):
+    """Common path (code unchanged): a vanished prior context row under the SAME
+    code/project_id is reaped, and the present disk row is kept — proving the
+    project_id reap-key doesn't change behavior when the code is stable."""
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    client.store["spine_context"] = [
+        {"id": "proj-1/_context/gone", "project_id": "u1",
+         "project_code": "proj-1", "field_states": {}, "review_flags": []},
+    ]
+    _write_context(tmp_path, "carol", body="disk ctx")
+    sync_spine_context(client, project_id="u1", project_code="proj-1",
+                       project_dir=proj)
+    ids = {r["id"] for r in client.store["spine_context"]}
+    assert "proj-1/_context/gone" not in ids        # vanished row reaped
+    assert ids == {"proj-1/_context/carol"}         # exactly the disk row
 
 
 # ---- Phase 3: layer / serves / archived reconcile (confirmed-wins) ----------

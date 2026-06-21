@@ -405,7 +405,7 @@ def sync_spine_context(
     prior = (
         client.table(_CONTEXT_TABLE)
         .select("id, body, field_states, review_flags")
-        .eq("project_code", project_code)
+        .eq("project_id", project_id)
         .execute()
         .data
     ) or []
