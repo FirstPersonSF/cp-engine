@@ -481,6 +481,7 @@ def sync_tenant(
                     project_code=project.code,
                     project_dir=project_dir,
                     tenant_root=config.root,
+                    project_id=project.mc2_id,
                 )
             except Exception as exc:  # noqa: BLE001 — best-effort snapshot mirror
                 logger.warning(

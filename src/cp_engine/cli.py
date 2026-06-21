@@ -1424,6 +1424,11 @@ def snapshot_cmd(ref: str, label: str, reason: str | None) -> None:
     working_text = working_file.read_text()
     commit = git_head_commit(config.root)
     dirty = working_copy_is_dirty(working_file, config.root)
+    # Resolve the stable MC-2 project uuid off the cp.md `MC-id:` stamp so the
+    # row can be code-rehomed later (mig 078). None for an unstamped project —
+    # project_id is nullable.
+    from cp_engine.sync import _read_mc_id
+    project_id = _read_mc_id(project_dir / "cp.md")
     snap = build_snapshot(
         working_text=working_text,
         deliverable_id=deliverable_id,
@@ -1433,6 +1438,7 @@ def snapshot_cmd(ref: str, label: str, reason: str | None) -> None:
         commit=commit,
         working_copy_dirty=dirty,
         created=date.today(),
+        project_id=project_id,
     )
 
     snap_dir = working_file.parent / f"{working_file.stem}.snapshots"

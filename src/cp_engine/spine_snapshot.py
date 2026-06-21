@@ -40,6 +40,7 @@ def build_snapshot(
     commit: str | None,
     working_copy_dirty: bool,
     created: date,
+    project_id: str | None = None,
 ) -> Snapshot:
     """Freeze `working_text` into a named snapshot (content + index row)."""
     slug = slugify_label(label)
@@ -64,6 +65,7 @@ def build_snapshot(
     row = {
         "id": snap_id,
         "deliverable_id": deliverable_id,
+        "project_id": project_id,
         "project_code": project_code,
         "label": label,
         "reason": reason,
@@ -75,12 +77,18 @@ def build_snapshot(
     return Snapshot(filename=filename, frozen_text=frozen_text, row=row)
 
 
-def row_from_frozen(path: Path, *, tenant_root: Path) -> dict | None:
+def row_from_frozen(
+    path: Path, *, tenant_root: Path, project_id: str | None = None
+) -> dict | None:
     """Build a spine_snapshots row from a frozen snapshot file's frontmatter.
 
     Returns None if the file lacks a `snapshot:` block (not a snapshot file).
     The row shape MUST match what `build_snapshot` produces (minus rel_path,
-    which is computed here from the file's actual location)."""
+    which is computed here from the file's actual location).
+
+    `project_id` is the stable MC-2 uuid (not stored in the frozen frontmatter);
+    the sync resolves it once per project and threads it in so every mirrored
+    row carries the code-rehome key (mig 078)."""
     try:
         meta = frontmatter.load(str(path)).metadata
     except yaml.YAMLError:
@@ -98,6 +106,7 @@ def row_from_frozen(path: Path, *, tenant_root: Path) -> dict | None:
     return {
         "id": f"{deliverable_id}@{stem}",
         "deliverable_id": deliverable_id,
+        "project_id": project_id,
         # project_code is the deliverable id's first segment, matching the
         # freeze path so both write the same row (and reap stays scoped).
         "project_code": deliverable_id.split("/", 1)[0] if deliverable_id else "",

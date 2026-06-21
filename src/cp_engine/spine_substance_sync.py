@@ -216,6 +216,71 @@ def _load_substance_items(project_dir: Path) -> list[tuple[WorkItemSubstance, st
     return out
 
 
+def _rehome_authored_codes(client, *, project_id, project_code):
+    """Re-home origin='authored' rows whose project_code drifted from the current
+    code: update project_code + rewrite the id prefix. A rename, not a delete —
+    authored bodies are MC-2-owned and must survive a code change. Returns the
+    number of rows re-homed."""
+    rows = (client.table(_SUBSTANCE_TABLE)
+        .select("id, project_code")
+        .eq("project_id", project_id).eq("origin", "authored").execute().data) or []
+    n = 0
+    for r in rows:
+        if r.get("project_code") == project_code:
+            continue
+        old_id = r["id"]
+        rest = old_id.split("/", 1)[1] if "/" in old_id else old_id  # strip leading "<old_code>/"
+        new_id = f"{project_code}/{rest}"
+        if new_id == old_id:
+            continue
+        # collision guard: a row already at the target id (shouldn't happen for
+        # authored) — prefer the existing new-code row, drop the stale old one.
+        exists = (client.table(_SUBSTANCE_TABLE).select("id").eq("id", new_id).execute().data)
+        if exists:
+            logger.warning("spine authored re-home collision; dropping stale %s (kept %s)", old_id, new_id)
+            client.table(_SUBSTANCE_TABLE).delete().eq("id", old_id).execute()
+            n += 1
+            continue
+        client.table(_SUBSTANCE_TABLE).update(
+            {"id": new_id, "project_code": project_code}
+        ).eq("id", old_id).execute()
+        n += 1
+    return n
+
+
+_SNAPSHOT_TABLE = "spine_snapshots"
+
+
+def _rehome_snapshot_codes(client, *, project_id, project_code):
+    """Re-home spine_snapshots rows whose project_code drifted: rewrite the code
+    prefix in id + deliverable_id, and project_code. A rename, not a delete.
+    Returns count. Keyed on project_id (added in mig 078)."""
+    rows = (client.table(_SNAPSHOT_TABLE)
+        .select("id, deliverable_id, project_code")
+        .eq("project_id", project_id).execute().data) or []
+    n = 0
+    for r in rows:
+        if r.get("project_code") == project_code:
+            continue
+        old_id = r["id"]
+        new_id = f"{project_code}/{old_id.split('/',1)[1]}" if "/" in old_id else old_id
+        old_dlv = r.get("deliverable_id") or ""
+        new_dlv = f"{project_code}/{old_dlv.split('/',1)[1]}" if "/" in old_dlv else old_dlv
+        if new_id == old_id:
+            continue
+        exists = client.table(_SNAPSHOT_TABLE).select("id").eq("id", new_id).execute().data
+        if exists:
+            logger.warning("spine snapshot re-home collision; dropping stale %s (kept %s)", old_id, new_id)
+            client.table(_SNAPSHOT_TABLE).delete().eq("id", old_id).execute()
+            n += 1
+            continue
+        client.table(_SNAPSHOT_TABLE).update(
+            {"id": new_id, "deliverable_id": new_dlv, "project_code": project_code}
+        ).eq("id", old_id).execute()
+        n += 1
+    return n
+
+
 def sync_spine_substance(
     client,
     *,
@@ -243,6 +308,17 @@ def sync_spine_substance(
     disk (mirrors the element mirror's behavior; Phase 3 writes through here)."""
     now_iso = (now or datetime.now(timezone.utc)).isoformat()
 
+    # Re-home authored rows whose project_code drifted from the current code
+    # FIRST — before the disk-load + reap. The reap deliberately never touches
+    # authored rows (MC-2 owns them), so on a code change their stale-code id
+    # would otherwise strand forever. Renaming them here means by the time the
+    # reap and the authored reverse-mirror run, authored rows already carry the
+    # current code.
+    _rehome_authored_codes(client, project_id=project_id, project_code=project_code)
+    # Snapshots are CLI-written and code-prefixed too; re-home them on the same
+    # project_id key so a code change doesn't strand them (mig 078).
+    _rehome_snapshot_codes(client, project_id=project_id, project_code=project_code)
+
     parsed = _load_substance_items(project_dir)
     items = [p[0] for p in parsed]
     rel_paths = [p[1] for p in parsed]
@@ -268,7 +344,11 @@ def sync_spine_substance(
             "id, framing, body, status, layer, serves, archived, "
             "field_states, review_flags, origin"
         )
-        .eq("project_code", project_code)
+        # Scope the reap on the STABLE project_id (uuid), not the mutable
+        # project_code: the row id embeds the code, so a canonical-id rename
+        # leaves old-code rows invisible to a code-scoped query — they strand
+        # and double. project_id is on every row and never changes.
+        .eq("project_id", project_id)
         .execute()
         .data
     ) or []
@@ -346,7 +426,7 @@ def sync_spine_substance(
         authored = (
             client.table(_SUBSTANCE_TABLE)
             .select(_AUTHORED_SELECT)
-            .eq("project_code", project_code)
+            .eq("project_id", project_id)
             .eq("origin", "authored")
             .execute()
             .data
@@ -401,7 +481,7 @@ def sync_spine_context(
     prior = (
         client.table(_CONTEXT_TABLE)
         .select("id, body, field_states, review_flags")
-        .eq("project_code", project_code)
+        .eq("project_id", project_id)
         .execute()
         .data
     ) or []

@@ -46,6 +46,20 @@ def test_build_snapshot_filename_and_row():
     assert snap.row["commit"] == "c812f9a"
     assert snap.row["working_copy_dirty"] is False
     assert snap.row["created"] == "2026-06-10"
+    # project_id defaults to None when the project is unstamped (mig 078 col).
+    assert snap.row["project_id"] is None
+
+
+def test_build_snapshot_includes_project_id_when_passed():
+    """The stable MC-2 project uuid is carried onto the row so a later code
+    re-home can key on it (mig 078)."""
+    working = "---\nid: p/deliverable/d\nproject: p\nlayer: Deliverables\n---\nbody\n"
+    snap = build_snapshot(
+        working_text=working, deliverable_id="p/deliverable/d", project_code="p",
+        label="shipped", reason=None, commit=None, working_copy_dirty=False,
+        created=date(2026, 6, 20), project_id="uuid-123",
+    )
+    assert snap.row["project_id"] == "uuid-123"
 
 
 def test_build_snapshot_preserves_original_frontmatter():
