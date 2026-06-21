@@ -268,7 +268,11 @@ def sync_spine_substance(
             "id, framing, body, status, layer, serves, archived, "
             "field_states, review_flags, origin"
         )
-        .eq("project_code", project_code)
+        # Scope the reap on the STABLE project_id (uuid), not the mutable
+        # project_code: the row id embeds the code, so a canonical-id rename
+        # leaves old-code rows invisible to a code-scoped query — they strand
+        # and double. project_id is on every row and never changes.
+        .eq("project_id", project_id)
         .execute()
         .data
     ) or []

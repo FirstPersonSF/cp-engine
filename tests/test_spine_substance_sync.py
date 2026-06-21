@@ -334,7 +334,7 @@ def test_sync_substance_reaps_vanished_row(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
     client.store["spine_substance"] = [
-        {"id": "proj-1/GONE/v1", "project_code": "proj-1",
+        {"id": "proj-1/GONE/v1", "project_id": "u1", "project_code": "proj-1",
          "field_states": {}, "review_flags": []},
     ]
     _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
@@ -361,6 +361,95 @@ def test_sync_substance_reap_scoped_to_project(tmp_path):
     assert "proj-2/d9/v1" in ids  # sibling survived
 
 
+def test_sync_substance_reaps_old_code_row_on_code_change(tmp_path):
+    """When a project's code changes (canonical-id rename), the disk substance
+    re-homes to NEW-CODE ids while the prior DB row still carries the OLD-CODE
+    id. The reap must find that orphan via the STABLE project_id (uuid), not the
+    mutable project_code — otherwise the old row is invisible to the reap and
+    strands (doubling rows). Asserts: prior-query keyed on project_id, old-code
+    row deleted, new-code rows upserted."""
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    # Prior DB row under the OLD code, but the SAME stable project_id.
+    client.store["spine_substance"] = [
+        {"id": "OLD-CODE/d1/v1", "project_id": "P", "project_code": "OLD-CODE",
+         "field_states": {}, "review_flags": []},
+    ]
+    # Disk produces rows under the NEW code (same project_id="P").
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
+
+    # Capture the filters used on each spine_substance select so we can prove the
+    # prior-query keyed on project_id, not project_code.
+    selects: list[list] = []
+    orig_table = client.table
+
+    def _spy_table(name):
+        t = orig_table(name)
+        if name == "spine_substance":
+            orig_execute = t.execute
+
+            def _execute():
+                if t._op and t._op[0] == "select":
+                    selects.append(list(t._filters))
+                return orig_execute()
+            t.execute = _execute
+        return t
+
+    client.table = _spy_table
+
+    sync_spine_substance(client, project_id="P", project_code="NEW-CODE",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+
+    ids = {r["id"] for r in client.store["spine_substance"]}
+    # Old-code orphan reaped; new-code rows present.
+    assert "OLD-CODE/d1/v1" not in ids
+    assert "NEW-CODE/d1/v2" in ids
+    assert "NEW-CODE/d1/v1" in ids
+    # The estimate-substance reap's prior-query filtered on project_id="P", never
+    # on the new project_code.
+    assert any(("project_id", "P") in f for f in selects)
+    assert not any(("project_code", "NEW-CODE") in f for f in selects
+                   if "origin" not in [c for c, _ in f])
+
+
+def test_sync_substance_no_drift_reaps_as_before(tmp_path):
+    """Common path (code unchanged): seeding a vanished prior row under the SAME
+    code/project_id reaps it, and a present row is kept — proving the project_id
+    refactor doesn't change behavior when the code is stable."""
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    client.store["spine_substance"] = [
+        {"id": "proj-1/GONE/v1", "project_id": "u1", "project_code": "proj-1",
+         "field_states": {}, "review_flags": []},
+    ]
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+    ids = {r["id"] for r in client.store["spine_substance"]}
+    assert "proj-1/GONE/v1" not in ids       # vanished row reaped
+    assert ids == {"proj-1/d1/v2", "proj-1/d1/v1"}  # exactly the disk rows
+
+
+def test_sync_substance_authored_never_reaped_under_project_id_query(tmp_path):
+    """The origin='authored' reap-skip holds even with the project_id-keyed
+    prior-query: an authored row (same project_id) absent from disk is neither
+    deleted nor flagged."""
+    proj = tmp_path / "1p/acct/proj-1"; proj.mkdir(parents=True)
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "proj-1/auth/v1", "project_id": "u1", "project_code": "proj-1",
+        "framing": "f", "body": "b", "status": "live",
+        "field_states": {}, "review_flags": [], "origin": "authored",
+    }]
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=None)
+    ids = {r["id"] for r in client.store["spine_substance"]}
+    assert "proj-1/auth/v1" in ids  # not deleted
+    row = next(r for r in client.store["spine_substance"]
+               if r["id"] == "proj-1/auth/v1")
+    assert row["review_flags"] == []  # not flagged
+
+
 def test_sync_substance_never_reaps_authored_row(tmp_path):
     """An origin='authored' row with NO confirmed field whose disk file is
     absent must be neither deleted nor flagged — MC-2 owns authored rows, the
@@ -368,7 +457,7 @@ def test_sync_substance_never_reaps_authored_row(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"; proj.mkdir(parents=True)
     client = _FakeClient()
     client.store["spine_substance"] = [{
-        "id": "proj-1/auth/v1", "project_code": "proj-1",
+        "id": "proj-1/auth/v1", "project_id": "u1", "project_code": "proj-1",
         "framing": "f", "body": "b", "status": "live",
         "field_states": {}, "review_flags": [], "origin": "authored",
     }]
@@ -387,7 +476,7 @@ def test_sync_substance_preserves_confirmed_body(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
     client.store["spine_substance"] = [{
-        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
         "framing": "framing", "body": "CONFIRMED body", "status": "live",
         "field_states": {"body": "confirmed"}, "review_flags": [],
     }]
@@ -407,7 +496,7 @@ def test_sync_substance_confirmed_orphan_flagged_not_deleted(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"; proj.mkdir(parents=True)
     client = _FakeClient()
     client.store["spine_substance"] = [{
-        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
         "framing": "f", "body": "b", "status": "live",
         "field_states": {"body": "confirmed"}, "review_flags": [],
         "confirmed_by": "drew",
@@ -449,7 +538,7 @@ def test_sync_substance_preserves_confirmed_layer(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
     client.store["spine_substance"] = [{
-        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
         "framing": "framing", "body": "live body", "status": "live",
         "layer": "Research", "serves": [], "archived": False,
         "field_states": {"layer": "confirmed"}, "review_flags": [],
@@ -473,7 +562,7 @@ def test_sync_substance_serves_confirmed_order_insensitive(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
     client.store["spine_substance"] = [{
-        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
         "framing": "framing", "body": "live body", "status": "live",
         "layer": None, "serves": ["b", "a"], "archived": False,
         "field_states": {"serves": "confirmed"}, "review_flags": [],
@@ -496,7 +585,7 @@ def test_sync_substance_serves_confirmed_genuine_diff_flagged(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
     client.store["spine_substance"] = [{
-        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
         "framing": "framing", "body": "live body", "status": "live",
         "layer": None, "serves": ["a"], "archived": False,
         "field_states": {"serves": "confirmed"}, "review_flags": [],
@@ -517,7 +606,7 @@ def test_sync_substance_preserves_confirmed_archived(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
     client.store["spine_substance"] = [{
-        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
         "framing": "framing", "body": "live body", "status": "live",
         "layer": None, "serves": [], "archived": True,
         "field_states": {"archived": "confirmed"}, "review_flags": [],
@@ -539,7 +628,7 @@ def test_sync_substance_unconfirmed_layer_tracks_disk(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
     client.store["spine_substance"] = [{
-        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
         "framing": "framing", "body": "live body", "status": "live",
         "layer": "Research", "serves": [], "archived": False,
         "field_states": {}, "review_flags": [],
@@ -560,7 +649,7 @@ def test_sync_substance_confirmed_layer_orphan_flagged_not_deleted(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"; proj.mkdir(parents=True)
     client = _FakeClient()
     client.store["spine_substance"] = [{
-        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
         "framing": "f", "body": "b", "status": "live",
         "layer": "Research", "serves": [], "archived": False,
         "field_states": {"layer": "confirmed"}, "review_flags": [],
@@ -625,12 +714,12 @@ def test_sync_substance_orphan_recovered_prunes_stale_binding_flag(tmp_path):
     client = _FakeClient()
     # Pre-seed a row that previously carried an orphan binding flag.
     client.store["spine_substance"] = [{
-        "id": "proj-1/d1/v2", "project_code": "proj-1",
+        "id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
         "framing": "framing", "body": "live body", "status": "live",
         "field_states": {}, "review_flags": [
             {"field": "binding", "now": "orphaned", "source": "binding"}],
     }, {
-        "id": "proj-1/d1/v1", "project_code": "proj-1",
+        "id": "proj-1/d1/v1", "project_id": "u1", "project_code": "proj-1",
         "framing": "old", "body": "old body", "status": "superseded",
         "field_states": {}, "review_flags": [
             {"field": "binding", "now": "orphaned", "source": "binding"}],
