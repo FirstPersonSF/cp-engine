@@ -3,6 +3,7 @@ from pathlib import Path
 
 from cp_engine.spine_substance_sync import (
     _rehome_authored_codes,
+    _rehome_snapshot_codes,
     context_to_row,
     reconcile_bindings,
     substance_to_rows,
@@ -558,6 +559,70 @@ def test_rehome_authored_ignores_non_authored(tmp_path):
     assert n == 0
     ids = {r["id"] for r in client.store["spine_substance"]}
     assert ids == {"OLD/d1/v2"}
+
+
+def test_rehome_snapshot_row_renamed_not_deleted(tmp_path):
+    """A snapshot row under an OLD code is RENAMED to the current code: its id,
+    deliverable_id, and project_code are rewritten; the old id is gone; count 1."""
+    client = _FakeClient()
+    client.store["spine_snapshots"] = [{
+        "id": "OLD/deliverable/x@s", "deliverable_id": "OLD/deliverable/x",
+        "project_id": "P", "project_code": "OLD",
+    }]
+    n = _rehome_snapshot_codes(client, project_id="P", project_code="NEW")
+    assert n == 1
+    rows = client.store["spine_snapshots"]
+    ids = {r["id"] for r in rows}
+    assert "OLD/deliverable/x@s" not in ids
+    assert ids == {"NEW/deliverable/x@s"}
+    row = rows[0]
+    assert row["deliverable_id"] == "NEW/deliverable/x"
+    assert row["project_code"] == "NEW"
+
+
+def test_rehome_snapshot_already_current_no_op(tmp_path):
+    """A snapshot row already at the current code is not touched; count 0."""
+    client = _FakeClient()
+    client.store["spine_snapshots"] = [{
+        "id": "NEW/deliverable/x@s", "deliverable_id": "NEW/deliverable/x",
+        "project_id": "P", "project_code": "NEW",
+    }]
+    n = _rehome_snapshot_codes(client, project_id="P", project_code="NEW")
+    assert n == 0
+    ids = {r["id"] for r in client.store["spine_snapshots"]}
+    assert ids == {"NEW/deliverable/x@s"}
+
+
+def test_rehome_snapshot_collision_drops_stale_keeps_new(tmp_path):
+    """When both OLD and NEW snapshot ids exist (same project_id), the stale OLD
+    row is dropped and the existing NEW row is kept; count 1."""
+    client = _FakeClient()
+    client.store["spine_snapshots"] = [
+        {"id": "OLD/deliverable/x@s", "deliverable_id": "OLD/deliverable/x",
+         "project_id": "P", "project_code": "OLD"},
+        {"id": "NEW/deliverable/x@s", "deliverable_id": "NEW/deliverable/x",
+         "project_id": "P", "project_code": "NEW"},
+    ]
+    n = _rehome_snapshot_codes(client, project_id="P", project_code="NEW")
+    assert n == 1
+    ids = {r["id"] for r in client.store["spine_snapshots"]}
+    assert ids == {"NEW/deliverable/x@s"}
+
+
+def test_sync_substance_rehomes_snapshots_on_code_change(tmp_path):
+    """sync_spine_substance re-homes a drifted snapshot row to the current code
+    alongside the authored re-home (wired in at the same call site)."""
+    proj = tmp_path / "1p/acct/new"; proj.mkdir(parents=True)
+    client = _FakeClient()
+    client.store["spine_snapshots"] = [{
+        "id": "OLD/deliverable/x@s", "deliverable_id": "OLD/deliverable/x",
+        "project_id": "u1", "project_code": "OLD",
+    }]
+    sync_spine_substance(client, project_id="u1", project_code="NEW",
+                         project_dir=proj, estimate=None)
+    ids = {r["id"] for r in client.store["spine_snapshots"]}
+    assert ids == {"NEW/deliverable/x@s"}
+    assert client.store["spine_snapshots"][0]["project_code"] == "NEW"
 
 
 def test_sync_substance_rehomes_authored_on_code_change(tmp_path):

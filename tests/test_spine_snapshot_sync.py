@@ -97,10 +97,12 @@ def test_row_from_frozen_with_snapshot_block(tmp_path):
         of="proj-1/deliverable/pos", project="proj-1",
         label="Before workshop", reason="freeze it", commit="deadbee",
     )
+    # project_id defaults to None (not stored in the frozen frontmatter)...
     row = row_from_frozen(p, tenant_root=tmp_path)
     assert row is not None
     assert row["id"] == "proj-1/deliverable/pos@2026-06-13-snap"
     assert row["deliverable_id"] == "proj-1/deliverable/pos"
+    assert row["project_id"] is None
     assert row["project_code"] == "proj-1"
     assert row["label"] == "Before workshop"
     assert row["reason"] == "freeze it"
@@ -108,6 +110,8 @@ def test_row_from_frozen_with_snapshot_block(tmp_path):
     assert row["working_copy_dirty"] is False
     assert row["created"] == "2026-06-13"
     assert row["rel_path"] == str(p.relative_to(tmp_path))
+    # ...but is stamped on when the sync threads the project uuid in.
+    assert row_from_frozen(p, tenant_root=tmp_path, project_id="u1")["project_id"] == "u1"
 
 
 def test_row_from_frozen_without_snapshot_block_is_none(tmp_path):
@@ -137,7 +141,8 @@ def test_sync_upserts_all_snapshots(tmp_path):
                 "2026-06-12-b.md", of="proj-1/deliverable/pos", project="proj-1")
     client = _FakeClient()
     n = sync_spine_snapshots(
-        client, project_code="proj-1", project_dir=proj, tenant_root=tmp_path
+        client, project_code="proj-1", project_dir=proj, tenant_root=tmp_path,
+        project_id="u1",
     )
     assert n == 2
     ids = {r["id"] for r in client.store["spine_snapshots"]}
@@ -145,6 +150,8 @@ def test_sync_upserts_all_snapshots(tmp_path):
         "proj-1/deliverable/pos@2026-06-13-a",
         "proj-1/deliverable/pos@2026-06-12-b",
     }
+    # the stable project uuid is stamped onto every mirrored row (mig 078).
+    assert all(r["project_id"] == "u1" for r in client.store["spine_snapshots"])
 
 
 def test_sync_reaps_orphaned_snapshot_rows(tmp_path):

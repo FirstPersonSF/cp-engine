@@ -171,12 +171,14 @@ def sync_spine_snapshots(
     project_code: str,
     project_dir: Path,
     tenant_root: Path,
+    project_id: str | None = None,
 ) -> int:
     """Reconcile spine_snapshots rows for one project to match disk.
 
     Scans every spine/<Layer>/*.snapshots/*.md, upserts a row per snapshot
     file, reaps rows whose file vanished (scoped per-project). Returns count
-    upserted."""
+    upserted. `project_id` (the stable MC-2 uuid) is stamped onto each mirrored
+    row so code-rehome can key on it (mig 078)."""
     from cp_engine.spine_snapshot import row_from_frozen
 
     rows = []
@@ -184,7 +186,9 @@ def sync_spine_snapshots(
     if spine_root.is_dir():
         for snap_dir in sorted(spine_root.glob("*/*.snapshots")):
             for md in sorted(snap_dir.glob("*.md")):
-                row = row_from_frozen(md, tenant_root=tenant_root)
+                row = row_from_frozen(
+                    md, tenant_root=tenant_root, project_id=project_id
+                )
                 if row is not None:
                     rows.append(row)
     present_ids = {r["id"] for r in rows}

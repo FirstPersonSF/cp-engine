@@ -248,6 +248,39 @@ def _rehome_authored_codes(client, *, project_id, project_code):
     return n
 
 
+_SNAPSHOT_TABLE = "spine_snapshots"
+
+
+def _rehome_snapshot_codes(client, *, project_id, project_code):
+    """Re-home spine_snapshots rows whose project_code drifted: rewrite the code
+    prefix in id + deliverable_id, and project_code. A rename, not a delete.
+    Returns count. Keyed on project_id (added in mig 078)."""
+    rows = (client.table(_SNAPSHOT_TABLE)
+        .select("id, deliverable_id, project_code")
+        .eq("project_id", project_id).execute().data) or []
+    n = 0
+    for r in rows:
+        if r.get("project_code") == project_code:
+            continue
+        old_id = r["id"]
+        new_id = f"{project_code}/{old_id.split('/',1)[1]}" if "/" in old_id else old_id
+        old_dlv = r.get("deliverable_id") or ""
+        new_dlv = f"{project_code}/{old_dlv.split('/',1)[1]}" if "/" in old_dlv else old_dlv
+        if new_id == old_id:
+            continue
+        exists = client.table(_SNAPSHOT_TABLE).select("id").eq("id", new_id).execute().data
+        if exists:
+            logger.warning("spine snapshot re-home collision; dropping stale %s (kept %s)", old_id, new_id)
+            client.table(_SNAPSHOT_TABLE).delete().eq("id", old_id).execute()
+            n += 1
+            continue
+        client.table(_SNAPSHOT_TABLE).update(
+            {"id": new_id, "deliverable_id": new_dlv, "project_code": project_code}
+        ).eq("id", old_id).execute()
+        n += 1
+    return n
+
+
 def sync_spine_substance(
     client,
     *,
@@ -282,6 +315,9 @@ def sync_spine_substance(
     # reap and the authored reverse-mirror run, authored rows already carry the
     # current code.
     _rehome_authored_codes(client, project_id=project_id, project_code=project_code)
+    # Snapshots are CLI-written and code-prefixed too; re-home them on the same
+    # project_id key so a code change doesn't strand them (mig 078).
+    _rehome_snapshot_codes(client, project_id=project_id, project_code=project_code)
 
     parsed = _load_substance_items(project_dir)
     items = [p[0] for p in parsed]
