@@ -4,6 +4,32 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.36.0 — 2026-06-20
+
+### Fixed — `full_job_name` edits no longer strand project content (uuid-anchored dir location)
+
+v0.35.0 keyed working-dir + sprint-file names on the `full_job_name` slug. Editing
+`full_job_name` in MC-2 changed the id, and sync's dir-location (matched by code
+string) couldn't bridge old→new — so the old dir with any hand-added content was
+swept to `inactive/<old-slug>/` and a fresh empty dir scaffolded. That gotcha is
+now fixed.
+
+- **`MC-id:` frontmatter stamp** — each project `cp.md` carries its MC-2 row uuid
+  (the stable identity, immutable across name/code edits). Emitted by the
+  templates for new scaffolds; **auto-stamped into existing CPs on sync**
+  (self-healing — edits frontmatter only, body byte-preserved).
+- **`_find_project_dir` is uuid-first** — locates a project's dir by its `MC-id`
+  stamp regardless of the (possibly drifted) dir name; falls back to the legacy
+  code-name match for unstamped/uuid-less items.
+- **Drift becomes a rename** — a found-but-drifted dir is `git mv`d to the new
+  code-slug, and its sprint files are renamed across all weeks (shared helper with
+  the migration script).
+- **uuid-aware staleness** — `_deactivate_stale_cps` keeps a dir live when its
+  stamped uuid is in the live set, so a drifted dir is never swept to `inactive/`.
+
+Net: editing `full_job_name` now cleanly renames the dir + sprint files, content
+and git history preserved. Closes the gotcha noted in v0.35.0.
+
 ## v0.35.1 — 2026-06-20
 
 ### Fixed — `cp sync` re-splices the `project-facts` region (cp-engine#15, for real)
