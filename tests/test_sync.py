@@ -22,7 +22,16 @@ from cp_engine import (
     UnknownBackend,
     sync_tenant,
 )
-from cp_engine.sync import Backend, _collect_sprint_per_project_data, _last_week_monday
+from cp_engine.sync import (
+    Backend,
+    _collect_sprint_per_project_data,
+    _deactivate_stale_cps,
+    _ensure_mc_id_stamp,
+    _find_project_dir,
+    _last_week_monday,
+    _read_mc_id,
+    _rename_sprint_files,
+)
 
 
 class FakeBackend(Backend):
@@ -2013,3 +2022,516 @@ def test_collect_sprint_per_project_data_handles_unicode_subject(
     assert "🚀" in commits[0].subject
     assert "résumé" in commits[0].subject
     assert "café" in commits[0].subject
+
+
+# --- _read_mc_id (uuid stamp reader) ---------------------------------------
+
+_CP_MD_TEMPLATE = (
+    "---\n"
+    "Project: Acme Thing\n"
+    "Provenance: Version 0.35.1 | 2026-06-20\n"
+    "Filename: cp.md\n"
+    "{mc_id_line}"
+    "Author: cp-engine (initial scaffold)\n"
+    "---\n"
+    "\n"
+    "# Acme Thing — Project CP\n"
+)
+
+
+def test_read_mc_id_returns_stamp(tmp_path: Path) -> None:
+    cp = tmp_path / "cp.md"
+    cp.write_text(_CP_MD_TEMPLATE.format(mc_id_line="MC-id: abc-uuid\n"))
+    assert _read_mc_id(cp) == "abc-uuid"
+
+
+def test_read_mc_id_none_when_frontmatter_has_no_stamp(tmp_path: Path) -> None:
+    cp = tmp_path / "cp.md"
+    cp.write_text(_CP_MD_TEMPLATE.format(mc_id_line=""))
+    assert _read_mc_id(cp) is None
+
+
+def test_read_mc_id_none_when_file_missing(tmp_path: Path) -> None:
+    assert _read_mc_id(tmp_path / "does-not-exist.md") is None
+
+
+def test_read_mc_id_none_when_no_frontmatter_block(tmp_path: Path) -> None:
+    cp = tmp_path / "cp.md"
+    cp.write_text("# hello\n\nno frontmatter here.\n")
+    assert _read_mc_id(cp) is None
+
+
+def test_read_mc_id_roundtrips_rendered_template(tmp_path: Path) -> None:
+    """Task1 (stamp) + Task2 (read) compose: a cp.md rendered with mc2_id set
+    yields that uuid back through _read_mc_id."""
+    from dataclasses import replace
+
+    from cp_engine.render import render_project_cp
+
+    config = make_config(tmp_path)
+    state = replace(make_state(code="acme-1", name="Acme Thing"), mc2_id="render-uuid-123")
+    cp = tmp_path / "cp.md"
+    cp.write_text(render_project_cp(config, state))
+    assert _read_mc_id(cp) == "render-uuid-123"
+
+
+# --- _ensure_mc_id_stamp (self-healing backfill) ---------------------------
+
+# A legacy cp.md: real frontmatter (NO MC-id) + engine regions + hand content.
+_LEGACY_CP_MD = (
+    "---\n"
+    "Project: Acme Thing\n"
+    "Provenance: Version 0.20.0 | 2026-01-01\n"
+    "Filename: cp.md\n"
+    "Author: cp-engine (initial scaffold)\n"
+    "---\n"
+    "\n"
+    "# Acme Thing — Project CP\n"
+    "\n"
+    "<!-- cp-engine:start project-facts -->\n"
+    "| Code | acme-1 |\n"
+    "<!-- cp-engine:end project-facts -->\n"
+    "\n"
+    "## My notes\n"
+    "\n"
+    "Hand-written content that MUST survive byte-for-byte.\n"
+    "Second line, with trailing spaces here:   \n"
+)
+
+
+def test_ensure_mc_id_stamp_stamps_legacy_cp(tmp_path: Path) -> None:
+    """A legacy cp.md (no MC-id) gets the stamp after `Filename:`; the entire
+    body (engine regions + hand notes) is preserved byte-for-byte."""
+    cp = tmp_path / "cp.md"
+    cp.write_text(_LEGACY_CP_MD)
+    body_before = _LEGACY_CP_MD.split("\n---\n", 1)[1]
+
+    assert _ensure_mc_id_stamp(cp, "U") is True
+
+    text = cp.read_text()
+    # Stamp placed immediately after the Filename line.
+    assert "Filename: cp.md\nMC-id: U\n" in text
+    assert _read_mc_id(cp) == "U"
+    # Body after the closing `---` unchanged, byte-for-byte.
+    assert text.split("\n---\n", 1)[1] == body_before
+
+
+def test_ensure_mc_id_stamp_idempotent(tmp_path: Path) -> None:
+    """Calling again when the stamp is already correct → no write, byte-identical."""
+    cp = tmp_path / "cp.md"
+    cp.write_text(_LEGACY_CP_MD)
+    _ensure_mc_id_stamp(cp, "U")
+    after_first = cp.read_text()
+
+    assert _ensure_mc_id_stamp(cp, "U") is False
+    assert cp.read_text() == after_first
+
+
+def test_ensure_mc_id_stamp_replaces_wrong_value(tmp_path: Path) -> None:
+    """An existing MC-id with the wrong value is replaced in place; only that
+    one line changes, body untouched."""
+    cp = tmp_path / "cp.md"
+    stamped_old = _LEGACY_CP_MD.replace(
+        "Filename: cp.md\n", "Filename: cp.md\nMC-id: OLD\n"
+    )
+    cp.write_text(stamped_old)
+    body_before = stamped_old.split("\n---\n", 1)[1]
+
+    assert _ensure_mc_id_stamp(cp, "NEW") is True
+
+    text = cp.read_text()
+    assert "MC-id: NEW\n" in text
+    assert "MC-id: OLD" not in text
+    assert text.split("\n---\n", 1)[1] == body_before
+    # Exactly one line differs.
+    diff = [
+        (a, b)
+        for a, b in zip(stamped_old.splitlines(), text.splitlines())
+        if a != b
+    ]
+    assert diff == [("MC-id: OLD", "MC-id: NEW")]
+
+
+def test_ensure_mc_id_stamp_no_filename_line(tmp_path: Path) -> None:
+    """Frontmatter without a Filename line → MC-id still inserted (as the last
+    frontmatter line before the closing `---`), body preserved."""
+    no_filename = (
+        "---\n"
+        "Project: Acme Thing\n"
+        "Author: cp-engine\n"
+        "---\n"
+        "\n"
+        "# body\n"
+        "## My notes\n"
+        "keep me\n"
+    )
+    cp = tmp_path / "cp.md"
+    cp.write_text(no_filename)
+    body_before = no_filename.split("\n---\n", 1)[1]
+
+    assert _ensure_mc_id_stamp(cp, "U") is True
+
+    text = cp.read_text()
+    assert _read_mc_id(cp) == "U"
+    # Inserted as last frontmatter line (after Author, before closing ---).
+    assert text.startswith(
+        "---\nProject: Acme Thing\nAuthor: cp-engine\nMC-id: U\n---\n"
+    )
+    assert text.split("\n---\n", 1)[1] == body_before
+
+
+def test_ensure_mc_id_stamp_no_frontmatter_returns_false(tmp_path: Path) -> None:
+    """A file with no parseable frontmatter is left entirely untouched."""
+    cp = tmp_path / "cp.md"
+    cp.write_text("# hello\n\nno frontmatter.\n")
+    before = cp.read_text()
+    assert _ensure_mc_id_stamp(cp, "U") is False
+    assert cp.read_text() == before
+
+
+def test_sync_backfills_mc_id_into_existing_unstamped_cp(tmp_path: Path) -> None:
+    """Self-healing path: an existing unstamped cp.md for a live project (mc2_id
+    set) gets the stamp after a full sync, and hand content survives."""
+    from dataclasses import replace
+
+    config = make_config(tmp_path)
+    code = "acme-legacy"
+    # First sync scaffolds the dir, THEN we strip the stamp + add hand content
+    # to simulate a pre-feature legacy cp.md on disk.
+    state = replace(make_state(code=code, name=code), mc2_id="U-backfill")
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+    cp = tmp_path / "1p" / "google" / code / "cp.md"
+    legacy = cp.read_text().replace("MC-id: U-backfill\n", "")
+    legacy += "\n## My notes\n\nhand content survives\n"
+    cp.write_text(legacy)
+    assert _read_mc_id(cp) is None  # genuinely unstamped now
+
+    # Re-sync → the backfill stamps it.
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+
+    assert _read_mc_id(cp) == "U-backfill"
+    assert "## My notes\n\nhand content survives\n" in cp.read_text()
+
+
+def test_sync_skips_mc_id_stamp_for_uuidless_repo(tmp_path: Path) -> None:
+    """A project with mc2_id=None (e.g. a standalone repo) → no stamp attempt,
+    no error; its cp.md carries no MC-id."""
+    config = make_config(tmp_path)
+    state = make_state(code="cp-engine", name="cp-engine")  # mc2_id defaults None
+    assert state.mc2_id is None
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+    cp = tmp_path / "1p" / "google" / "cp-engine" / "cp.md"
+    assert cp.exists()
+    assert _read_mc_id(cp) is None
+
+
+# --- _find_project_dir (uuid-first lookup) ---------------------------------
+
+
+def _make_dir_with_cp(parent: Path, name: str, mc_id: str | None = None) -> Path:
+    """Create parent/name/cp.md with a real frontmatter block, optional MC-id."""
+    d = parent / name
+    d.mkdir(parents=True)
+    mc_id_line = f"MC-id: {mc_id}\n" if mc_id else ""
+    (d / "cp.md").write_text(_CP_MD_TEMPLATE.format(mc_id_line=mc_id_line))
+    return d
+
+
+def test_find_project_dir_by_uuid_despite_name_mismatch(tmp_path: Path) -> None:
+    """A dir whose name no longer matches the code is still found via its
+    MC-id stamp — drift becomes a rename, not an orphan."""
+    drifted = _make_dir_with_cp(tmp_path, "oldname", mc_id="U")
+    assert _find_project_dir(tmp_path, code="new-code", mc2_id="U") == drifted
+
+
+def test_find_project_dir_fallback_for_unstamped_dir(tmp_path: Path) -> None:
+    """An unstamped dir is found by the legacy code match even when a uuid is
+    passed (uuid pass misses, fallback hits)."""
+    legacy = _make_dir_with_cp(tmp_path, "ggl-5168-activation", mc_id=None)
+    assert (
+        _find_project_dir(tmp_path, "ggl-5168-activation", mc2_id="U") == legacy
+    )
+
+
+def test_find_project_dir_none_uuid_is_legacy_behavior(tmp_path: Path) -> None:
+    """mc2_id=None → only code match (bare + slugged), no uuid pass."""
+    bare = tmp_path / "abc"
+    bare.mkdir()
+    slugged = tmp_path / "xyz-thing"
+    slugged.mkdir()
+    assert _find_project_dir(tmp_path, "abc") == bare
+    assert _find_project_dir(tmp_path, "xyz") == slugged
+    assert _find_project_dir(tmp_path, "missing") is None
+
+
+def test_find_project_dir_uuid_beats_code_sibling(tmp_path: Path) -> None:
+    """uuid-first: a stamped dir (under a different name) wins over a same-parent
+    dir whose name matches the code but carries no stamp."""
+    stamped = _make_dir_with_cp(tmp_path, "aaa", mc_id="U")
+    (tmp_path / "new-code").mkdir()  # name matches code, but no stamp
+    assert _find_project_dir(tmp_path, code="new-code", mc2_id="U") == stamped
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  _deactivate_stale_cps — uuid-aware staleness (don't sweep drifted dirs)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _client_parent(tmp_path: Path) -> Path:
+    """The per-account live parent dir for a Google client project
+    (`1p/google/`). Must exist for the deactivation sweep to scan it."""
+    parent = tmp_path / "1p" / "google"
+    parent.mkdir(parents=True)
+    return parent
+
+
+def test_deactivate_keeps_drifted_dir_recognised_by_uuid(tmp_path: Path) -> None:
+    """Core fix: a dir whose name matches no live code but whose cp.md
+    is stamped with a live uuid is NOT swept to inactive/."""
+    parent = _client_parent(tmp_path)
+    drifted = _make_dir_with_cp(parent, "oldslug", mc_id="U")
+    # Live set: new code + the same uuid U (oldslug matches no live code).
+    live_dirs = {("1p/google", "ggl-new-code", "U")}
+
+    moved = _deactivate_stale_cps(tmp_path, live_dirs)
+
+    assert moved == []
+    assert drifted.exists()
+    assert not (parent / "inactive" / "oldslug").exists()
+
+
+def test_deactivate_sweeps_genuinely_gone_uuid_and_name(tmp_path: Path) -> None:
+    """A dir whose stamped uuid is NOT in the live set AND whose name
+    matches no live code IS moved to inactive/."""
+    parent = _client_parent(tmp_path)
+    gone = _make_dir_with_cp(parent, "going-away", mc_id="DEAD-UUID")
+    live_dirs = {("1p/google", "ggl-still-here", "LIVE-UUID")}
+
+    moved = _deactivate_stale_cps(tmp_path, live_dirs)
+
+    assert not gone.exists()
+    target = parent / "inactive" / "going-away"
+    assert target.exists()
+    assert moved == [target]
+
+
+def test_deactivate_sweeps_unstamped_stale_dir(tmp_path: Path) -> None:
+    """Fallback unchanged: a dir with NO MC-id and a name matching no live
+    code is still swept (legacy behaviour)."""
+    parent = _client_parent(tmp_path)
+    stale = _make_dir_with_cp(parent, "no-stamp-stale", mc_id=None)
+    live_dirs = {("1p/google", "ggl-live", "LIVE-UUID")}
+
+    moved = _deactivate_stale_cps(tmp_path, live_dirs)
+
+    assert not stale.exists()
+    assert (parent / "inactive" / "no-stamp-stale").exists()
+    assert moved == [parent / "inactive" / "no-stamp-stale"]
+
+
+def test_deactivate_keeps_unstamped_dir_matching_live_code(tmp_path: Path) -> None:
+    """Fallback unchanged: a dir with NO MC-id but a name matching a live
+    code (bare or slugged) is kept."""
+    parent = _client_parent(tmp_path)
+    bare = _make_dir_with_cp(parent, "ggl-5168", mc_id=None)
+    slugged = _make_dir_with_cp(parent, "ggl-5177-activation", mc_id=None)
+    live_dirs = {
+        ("1p/google", "ggl-5168", "U1"),
+        ("1p/google", "ggl-5177", "U2"),
+    }
+
+    moved = _deactivate_stale_cps(tmp_path, live_dirs)
+
+    assert moved == []
+    assert bare.exists()
+    assert slugged.exists()
+
+
+def test_full_sync_does_not_sweep_drifted_dir(tmp_path: Path) -> None:
+    """End-to-end: a project whose code drifts (same mc2_id) is renamed in
+    place, NOT swept to inactive/, even though its old-named dir matches no
+    live code at the moment the deactivation sweep runs."""
+    from dataclasses import replace
+
+    config = make_config(tmp_path)
+    old = replace(make_state(code="ggl-5177-old", name="ggl-5177-old"), mc2_id="U-x")
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((old,)))
+    old_dir = tmp_path / "1p" / "google" / "ggl-5177-old"
+    assert (old_dir / "cp.md").exists()
+
+    # Re-sync: same uuid, drifted code.
+    new = replace(make_state(code="ggl-5177-new", name="ggl-5177-new"), mc2_id="U-x")
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((new,)))
+
+    # Dir was renamed, content preserved, and nothing landed in inactive/.
+    assert not old_dir.exists()
+    assert (tmp_path / "1p" / "google" / "ggl-5177-new" / "cp.md").exists()
+    assert not (tmp_path / "1p" / "google" / "inactive" / "ggl-5177-old").exists()
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  _rename_sprint_files (sprint files follow a dir drift rename)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_rename_sprint_files_renames_all_weeks(tmp_path: Path) -> None:
+    """The helper renames `sprints/*/<old>.md` → `<new>.md` across every
+    week, preserving content, returns the new paths, leaves no old file,
+    and never touches an unrelated sprint file."""
+    for week, body in (("2026-W01", "w1 content"), ("2026-W02", "w2 content")):
+        d = tmp_path / "sprints" / week
+        d.mkdir(parents=True)
+        (d / "old.md").write_text(body)
+    # An unrelated sprint file that must stay put.
+    (tmp_path / "sprints" / "2026-W01" / "other.md").write_text("untouched")
+
+    new_paths = _rename_sprint_files(tmp_path, "old", "new")
+
+    assert len(new_paths) == 2
+    assert (tmp_path / "sprints" / "2026-W01" / "new.md").read_text() == "w1 content"
+    assert (tmp_path / "sprints" / "2026-W02" / "new.md").read_text() == "w2 content"
+    assert not (tmp_path / "sprints" / "2026-W01" / "old.md").exists()
+    assert not (tmp_path / "sprints" / "2026-W02" / "old.md").exists()
+    # Unrelated file untouched.
+    assert (tmp_path / "sprints" / "2026-W01" / "other.md").read_text() == "untouched"
+
+
+def test_rename_sprint_files_no_files_returns_empty(tmp_path: Path) -> None:
+    """No matching sprint files (none scaffolded yet) → returns [], no error."""
+    (tmp_path / "sprints").mkdir()
+    assert _rename_sprint_files(tmp_path, "old", "new") == []
+
+
+def _stamped_old_project_tree(
+    tmp_path: Path, *, old_code: str, mc_id: str
+) -> "TenantConfig":
+    """First-sync a project under `old_code` (stamping MC-id=<mc_id> into its
+    cp.md), then hand-add sprint files for it across two weeks. Returns the
+    config to re-sync with a drifted code."""
+    config = make_config(tmp_path)
+    from dataclasses import replace
+
+    state = replace(
+        make_state(code=old_code, name=old_code),
+        mc2_id=mc_id,
+    )
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+    # Sanity: dir exists and cp.md carries the stamp.
+    old_dir = tmp_path / "1p" / "google" / old_code
+    assert old_dir.exists()
+    assert _read_mc_id(old_dir / "cp.md") == mc_id
+    # Hand-add sprint files for OLD weeks (well before the current sync week
+    # so they aren't pulled in as the prior-sprint for carry-forward, which
+    # would try to parse our minimal bodies as full sprint files). The first
+    # sync also scaffolds the current-week file; these past-week ones are what
+    # we assert content on.
+    for week, body in (("2026-W10", "old sprint W10"), ("2026-W11", "old sprint W11")):
+        d = tmp_path / "sprints" / week
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{old_code}.md").write_text(body)
+    return config
+
+
+def test_drift_rename_moves_sprint_files(tmp_path: Path) -> None:
+    """When a code/slug drift renames the working dir, the project's sprint
+    files are renamed to the new code too — old-named files vanish, new-named
+    files carry the original content."""
+    old_code = "ggl-5177-old-slug"
+    new_code = "ggl-5177-new-slug"
+    config = _stamped_old_project_tree(tmp_path, old_code=old_code, mc_id="U-drift")
+
+    # Re-sync with the SAME mc2_id but a drifted code → uuid-anchored rename.
+    from dataclasses import replace
+
+    new_state = replace(make_state(code=new_code, name=new_code), mc2_id="U-drift")
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((new_state,)))
+
+    # Dir moved.
+    assert (tmp_path / "1p" / "google" / new_code).exists()
+    assert not (tmp_path / "1p" / "google" / old_code).exists()
+
+    # Sprint files moved with content preserved.
+    for week, body in (("2026-W10", "old sprint W10"), ("2026-W11", "old sprint W11")):
+        new_sf = tmp_path / "sprints" / week / f"{new_code}.md"
+        old_sf = tmp_path / "sprints" / week / f"{old_code}.md"
+        assert new_sf.read_text() == body
+        assert not old_sf.exists()
+
+
+def test_e2e_full_job_name_edit_uuid_anchored_drift(tmp_path: Path) -> None:
+    """End-to-end proof of the whole UUID-anchored fix, simulating the real
+    `full_job_name` edit gotcha:
+
+    1. First sync lands a project at `ggl-9001-old-name/` with a stamped cp.md.
+    2. Hand content (research.md) + a sprint file are added under the old name.
+    3. The full_job_name is edited → second sync sees the SAME mc2_id but a new
+       code/slug (`ggl-9001-new-name`).
+    4. The dir + sprint file are renamed (found by uuid), hand content survives,
+       NOTHING is swept to inactive/, and the stamp persists.
+    """
+    from dataclasses import replace
+
+    old_code = "ggl-9001-old-name"
+    new_code = "ggl-9001-new-name"
+    config = make_config(tmp_path)
+
+    # 1. Initial sync — project lands at its old-named working dir, stamped.
+    old_state = replace(make_state(code=old_code, name=old_code), mc2_id="U-e2e")
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((old_state,)))
+    old_dir = tmp_path / "1p" / "google" / old_code
+    assert (old_dir / "cp.md").exists()
+    assert _read_mc_id(old_dir / "cp.md") == "U-e2e"
+
+    # 2. Hand content + a sprint file under the old name. Use a past week for the
+    #    sprint file so it isn't pulled in as the prior-sprint carry-forward
+    #    source (whose minimal body would fail to parse as a real sprint file).
+    (old_dir / "research.md").write_text("important notes")
+    sprint_week = "2026-W10"
+    sprint_dir = tmp_path / "sprints" / sprint_week
+    sprint_dir.mkdir(parents=True, exist_ok=True)
+    (sprint_dir / f"{old_code}.md").write_text("old sprint body")
+
+    # 3. The full_job_name edit: same uuid, new code/slug.
+    new_state = replace(make_state(code=new_code, name=new_code), mc2_id="U-e2e")
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((new_state,)))
+
+    new_dir = tmp_path / "1p" / "google" / new_code
+
+    # 4a. Working dir renamed (found by uuid), old dir gone.
+    assert (new_dir / "cp.md").exists()
+    assert not old_dir.exists()
+    # 4b. Old dir was NOT swept to inactive/ (uuid-aware staleness check).
+    assert not (tmp_path / "1p" / "google" / "inactive" / old_code).exists()
+    # 4c. Hand content rode along, content intact.
+    assert (new_dir / "research.md").read_text() == "important notes"
+    # 4d. Sprint file renamed to the new code, content intact, old one gone.
+    assert (sprint_dir / f"{new_code}.md").read_text() == "old sprint body"
+    assert not (sprint_dir / f"{old_code}.md").exists()
+    # 4e. The stamp survives the rename.
+    assert _read_mc_id(new_dir / "cp.md") == "U-e2e"
+
+
+def test_drift_rename_with_no_sprint_files_is_fine(tmp_path: Path) -> None:
+    """Drift rename when the project has no hand-added sprint files at the old
+    name still renames the dir cleanly (helper returns [])."""
+    config = make_config(tmp_path)
+    from dataclasses import replace
+
+    old_state = replace(
+        make_state(code="ggl-5177-old", name="ggl-5177-old"), mc2_id="U-empty"
+    )
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((old_state,)))
+    old_dir = tmp_path / "1p" / "google" / "ggl-5177-old"
+    assert old_dir.exists()
+    # Remove any auto-scaffolded current-week sprint file so there are NO
+    # old-named sprint files to move.
+    for sf in (tmp_path / "sprints").glob("*/ggl-5177-old.md"):
+        sf.unlink()
+
+    new_state = replace(
+        make_state(code="ggl-5177-new", name="ggl-5177-new"), mc2_id="U-empty"
+    )
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((new_state,)))
+
+    assert (tmp_path / "1p" / "google" / "ggl-5177-new").exists()
+    assert not (tmp_path / "1p" / "google" / "ggl-5177-old").exists()

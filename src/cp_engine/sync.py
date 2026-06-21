@@ -263,8 +263,12 @@ def sync_tenant(
     # `account_scope_for` gives the full parent path including the account
     # layer for clients (e.g. "1p/google"), so live_dirs reflect where the
     # project actually lives on disk.
-    live_dirs: set[tuple[str, str]] = {
-        (account_scope_for(p), p.code)
+    # Each entry carries the project's mc2_id (or "" when uuid-less, e.g.
+    # repos) alongside (scope, code) so the deactivation sweep can recognise
+    # a drifted working dir by its stamped uuid even when its name no longer
+    # matches any live code.
+    live_dirs: set[tuple[str, str, str]] = {
+        (account_scope_for(p), p.code, p.mc2_id or "")
         for p in projects
         if not p.is_internal
     }
@@ -280,9 +284,9 @@ def sync_tenant(
         # Find an existing dir for this project, even if its slug has drifted
         # from the current name (or hasn't been slugged yet — legacy
         # bare-code dirs from v0.3.0/v0.3.1).
-        existing_live = _find_project_dir(scope_dir, project.code)
+        existing_live = _find_project_dir(scope_dir, project.code, project.mc2_id)
         existing_inactive = _find_project_dir(
-            inactive_root(config.root, scope), project.code
+            inactive_root(config.root, scope), project.code, project.mc2_id
         )
 
         if dry_run:
@@ -295,7 +299,11 @@ def sync_tenant(
             continue
 
         if existing_live is not None and existing_live != project_dir:
-            # Slug drift: rename live dir to current slug.
+            # Slug/code drift: rename live dir to current slug. The OLD code
+            # == the OLD dir's name (the uuid-found dir, still at its old
+            # slug); the NEW code == the target dir name. Rename the
+            # project's sprint files to follow so they aren't orphaned.
+            old_code = existing_live.name
             project_dir.parent.mkdir(parents=True, exist_ok=True)
             existing_live.rename(project_dir)
             logger.info(
@@ -303,19 +311,27 @@ def sync_tenant(
                 existing_live.relative_to(config.root),
                 project_dir.relative_to(config.root),
             )
+            files_written.extend(
+                _rename_sprint_files(config.root, old_code, project_dir.name)
+            )
             for path in sorted(project_dir.rglob("*")):
                 if path.is_file():
                     files_written.append(path)
         elif existing_live is None:
             if existing_inactive is not None:
                 # Reactivate: project came back to live. Restore the dir
-                # (and apply any slug drift while we're at it).
+                # (and apply any slug drift while we're at it). Reactivation
+                # can carry drift too, so the sprint files must follow.
+                old_code = existing_inactive.name
                 project_dir.parent.mkdir(parents=True, exist_ok=True)
                 existing_inactive.rename(project_dir)
                 logger.info(
                     "Reactivated inactive project %s (%s).",
                     project.code,
                     project_dir.relative_to(config.root),
+                )
+                files_written.extend(
+                    _rename_sprint_files(config.root, old_code, project_dir.name)
                 )
                 for path in sorted(project_dir.rglob("*")):
                     if path.is_file():
@@ -328,6 +344,17 @@ def sync_tenant(
             body = render_project_cp(config, project, tracked_issues=())
             cp_path.write_text(body)
             files_written.append(cp_path)
+
+        # MC-id stamp backfill (uuid-anchored dir location). NEW scaffolds
+        # already carry the stamp from the template, so this is a no-op for
+        # them (the value matches → no write). LEGACY cp.md files (created
+        # before this feature) lack it — splice it in so the uuid-first dir
+        # lookup can anchor on them on the next sync (self-healing). Skipped
+        # for uuid-less items (repos: mc2_id is None) and under dry_run.
+        if project.mc2_id and cp_path.exists():
+            if _ensure_mc_id_stamp(cp_path, project.mc2_id):
+                if cp_path not in files_written:
+                    files_written.append(cp_path)
 
         # Quick Resume engine-region migration (v0.11.0+, Lever 5).
         # Wrap any unwrapped `## Quick Resume` section in markers so the
@@ -1418,7 +1445,9 @@ def _derive_summary(config: TenantConfig, project: ProjectState) -> str | None:
     from cp_engine.summary import derive_from_project_cp
 
     scope = account_scope_for(project)
-    existing = _find_project_dir(scope_root(config.root, scope), project.code)
+    existing = _find_project_dir(
+        scope_root(config.root, scope), project.code, project.mc2_id
+    )
     if existing is None:
         return None
     return derive_from_project_cp(existing / "cp.md")
@@ -1482,17 +1511,96 @@ def _dir_code(name: str) -> str:
     return name
 
 
-def _find_project_dir(parent: Path, code: str) -> Path | None:
-    """Locate the working dir for a given project code under `parent`.
+def _read_mc_id(cp_path: Path) -> str | None:
+    """Read the `MC-id:` uuid stamp from a project cp.md frontmatter, or None
+    when the file is missing, has no frontmatter, or carries no stamp."""
+    if not cp_path.is_file():
+        return None
+    try:
+        from cp_engine.sprints import _parse_frontmatter
+        fm = _parse_frontmatter(cp_path.read_text())
+    except (ValueError, OSError):
+        return None
+    return fm.get("MC-id") or None
+
+
+def _ensure_mc_id_stamp(cp_path: Path, mc2_id: str) -> bool:
+    """Ensure cp.md frontmatter carries `MC-id: <mc2_id>`. Edits ONLY the
+    frontmatter block — never the body/regions. Returns True if it wrote.
+
+    Self-healing backfill: existing (pre-feature) cp.md files lack the stamp
+    that NEW scaffolds emit via the template, so the uuid-first dir lookup
+    can't anchor on them. On sync we splice the line in.
+
+    Safety: the entire body after the closing `---` is preserved
+    byte-for-byte. Only the frontmatter block is reconstructed, and only
+    when its content actually changes.
+    """
+    from cp_engine.sprints import _FRONTMATTER_RE
+
+    try:
+        text = cp_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+
+    m = _FRONTMATTER_RE.match(text)
+    if not m:
+        # No parseable frontmatter block — refuse to touch the body.
+        return False
+
+    fm_block = m.group(1)  # inner text between the opening/closing `---\n`
+    body = text[m.end() :]  # everything after the closing `---\n`, verbatim
+    lines = fm_block.split("\n")
+
+    new_line = f"MC-id: {mc2_id}"
+    out: list[str] = []
+    replaced = False
+    for line in lines:
+        if line.startswith("MC-id:"):
+            if line.strip() == new_line:
+                return False  # already correct → no write
+            out.append(new_line)  # wrong value → replace just this line
+            replaced = True
+        else:
+            out.append(line)
+
+    if not replaced:
+        # Absent: insert after the `Filename:` line, or (defensive) as the
+        # last frontmatter line before the closing `---`.
+        insert_at = len(out)
+        for i, line in enumerate(out):
+            if line.startswith("Filename:"):
+                insert_at = i + 1
+                break
+        out.insert(insert_at, new_line)
+
+    new_text = "---\n" + "\n".join(out) + "\n---\n" + body
+    if new_text == text:
+        return False
+    cp_path.write_text(new_text, encoding="utf-8")
+    return True
+
+
+def _find_project_dir(
+    parent: Path, code: str, mc2_id: str | None = None
+) -> Path | None:
+    """Locate the working dir for a given project under `parent`.
 
     `parent` is either a scope root (`<tenant>/<scope>/`) for live dirs
     or an inactive root (`<tenant>/<scope>/inactive/`) for inactive dirs.
 
-    Matches any of:
+    UUID-first: when `mc2_id` is given, a dir whose cp.md carries this
+    project's `MC-id` stamp matches regardless of its (possibly drifted)
+    name — this is what lets a full_job_name/code change become a rename
+    instead of an orphan. This pass precedes the name match so a stamped
+    drifted dir wins over an unstamped same-parent sibling.
+
+    Falls back to the legacy bare-`code` / `code-<slug>` name match for
+    unstamped/legacy dirs and uuid-less items (repos). Matches any of:
       - <parent>/<code>            (legacy v0.3.0/v0.3.1, bare code)
       - <parent>/<code>-<slug>     (current, slugged)
 
-    Returns the first match found, or None. If multiple matches exist
+    Returns the first match found, or None. If multiple name matches exist
     (shouldn't happen but defensive), prefers the bare-code form so the
     rename logic in sync_tenant moves it to the slugged form.
 
@@ -1501,6 +1609,12 @@ def _find_project_dir(parent: Path, code: str) -> Path | None:
     """
     if not parent.exists():
         return None
+
+    if mc2_id:
+        for path in parent.iterdir():
+            if path.is_dir() and path.name != INACTIVE_DIR_NAME:
+                if _read_mc_id(path / "cp.md") == mc2_id:
+                    return path
 
     bare = parent / code
     if bare.is_dir():
@@ -1513,9 +1627,69 @@ def _find_project_dir(parent: Path, code: str) -> Path | None:
     return None
 
 
+def plan_sprint_renames(
+    tenant_root: Path, old_code: str, new_code: str
+) -> list[tuple[Path, Path]]:
+    """Pure planner: the `(src, dst)` renames for `sprints/*/<old_code>.md`
+    → `<new_code>.md` across all weeks. Reads the filesystem (the glob) but
+    mutates nothing. Destinations that already exist are skipped.
+
+    This is THE single home of the sprint-file glob — both `_rename_sprint_files`
+    (sync's drift / reactivation rename) and `migrate_full_job_name_ids`'s
+    one-time tree migration call it, so the glob is never duplicated.
+    """
+    if old_code == new_code:
+        return []
+    sprints_root = tenant_root / "sprints"
+    moves: list[tuple[Path, Path]] = []
+    for src in sorted(sprints_root.glob(f"*/{old_code}.md")):
+        dst = src.with_name(f"{new_code}.md")
+        if dst.exists():
+            continue
+        moves.append((src, dst))
+    return moves
+
+
+def _rename_sprint_files(
+    tenant_root: Path, old_code: str, new_code: str
+) -> list[Path]:
+    """Rename `sprints/*/<old_code>.md` → `<new_code>.md` across all weeks.
+
+    When a project's dir is renamed for code/slug drift, its per-sprint
+    working files (`sprints/<YYYY-W##>/<code>.md`) must follow — otherwise
+    the old-named sprint files are orphaned and sync scaffolds fresh ones
+    under the new name, stranding the prior sprint content.
+
+    Uses `git mv` when the tenant is a git repo (so history follows the
+    file), falling back to a plain rename otherwise. Returns the list of new
+    paths written (empty when there are no matching sprint files yet).
+    """
+    new_paths: list[Path] = []
+    for src, dst in plan_sprint_renames(tenant_root, old_code, new_code):
+        rel_src = src.relative_to(tenant_root).as_posix()
+        rel_dst = dst.relative_to(tenant_root).as_posix()
+        moved = False
+        try:
+            result = subprocess.run(
+                ["git", "mv", rel_src, rel_dst],
+                cwd=str(tenant_root),
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            moved = result.returncode == 0
+        except (FileNotFoundError, OSError):
+            moved = False
+        if not moved:
+            src.rename(dst)
+        logger.info("Renamed sprint file %s → %s.", rel_src, rel_dst)
+        new_paths.append(dst)
+    return new_paths
+
+
 def _deactivate_stale_cps(
     tenant_root: Path,
-    live_dirs: set[tuple[str, str]],
+    live_dirs: set[tuple[str, str, str]],
 ) -> list[Path]:
     """Move whole working dirs for stale projects into <scope>/inactive/.
 
@@ -1526,24 +1700,32 @@ def _deactivate_stale_cps(
     live state has its dir restored from inactive/ on the next sync.
 
     Walks each `<scope>/` for top-level subdirs (skipping the `inactive/`
-    subdir itself). A dir whose embedded code isn't in `live_dirs[scope]`
-    is moved to `<scope>/inactive/<dir_name>/`, preserving the slug
-    suffix.
+    subdir itself). A dir is treated as LIVE (kept) when EITHER:
 
-    Working-dir naming is `<code>` (legacy) or `<code>-<slug>` (current);
-    we extract the code by checking each known-live code against the dir
-    name. Anything that doesn't match a live code is treated as stale.
+      - its cp.md is stamped with an `MC-id` that is in this scope's set of
+        live uuids — recognises a working dir whose name has drifted away
+        from any current code (uuid-anchored), or
+      - its name matches a live code in bare (`<code>`) or slugged
+        (`<code>-<slug>`) form — the legacy fallback for unstamped/legacy
+        dirs and uuid-less items.
+
+    Only a dir that fails BOTH checks is moved to
+    `<scope>/inactive/<dir_name>/`, preserving the slug suffix.
 
     Returns the list of new inactive directory paths.
     """
     moved: list[Path] = []
     # `live_dirs` is keyed by the FULL account scope ("1p/google" for
     # clients, "firstpersonsf"/"canonic" for self-companies) — the same
-    # path returned by account_scope_for(). Group live codes by that key
-    # so each project parent dir below can match against its own slice.
+    # path returned by account_scope_for(). Group live codes AND live uuids
+    # by that key so each project parent dir below matches against its own
+    # slice on either axis.
     live_codes_by_account_scope: dict[str, set[str]] = {}
-    for scope, code in live_dirs:
+    live_uuids_by_account_scope: dict[str, set[str]] = {}
+    for scope, code, mc2_id in live_dirs:
         live_codes_by_account_scope.setdefault(scope, set()).add(code)
+        if mc2_id:
+            live_uuids_by_account_scope.setdefault(scope, set()).add(mc2_id)
 
     for scope in _SCOPE_DIRS:
         for parent in _project_parent_dirs(tenant_root, scope):
@@ -1552,6 +1734,7 @@ def _deactivate_stale_cps(
             # a self-company scope root.
             account_scope = str(parent.relative_to(tenant_root))
             live_codes = live_codes_by_account_scope.get(account_scope, set())
+            live_uuids = live_uuids_by_account_scope.get(account_scope, set())
             # Per-project inactive bin sits next to the live dirs — for
             # clients, that's `1p/<company>/inactive/`; for self-company
             # scopes, `firstpersonsf/inactive/` (unchanged).
@@ -1563,8 +1746,14 @@ def _deactivate_stale_cps(
                 if path.name == INACTIVE_DIR_NAME:
                     continue
 
-                # A dir is "live" if its name matches a known live project
-                # code in either form (bare or `<code>-<slug>`).
+                # uuid-anchored: a dir whose stamped MC-id is in the live
+                # set is live regardless of its (possibly drifted) name.
+                stamped = _read_mc_id(path / "cp.md")
+                if stamped and stamped in live_uuids:
+                    continue
+
+                # Fallback: a dir is "live" if its name matches a known
+                # live project code in either form (bare or `<code>-<slug>`).
                 if any(
                     path.name == code or path.name.startswith(f"{code}-")
                     for code in live_codes

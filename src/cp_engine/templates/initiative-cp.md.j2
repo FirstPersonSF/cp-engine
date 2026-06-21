@@ -2,6 +2,8 @@
 Project: {{ project.name }}
 Provenance: Version {{ engine_version }} | {{ today }}
 Filename: cp.md
+{% if project.mc2_id %}MC-id: {{ project.mc2_id }}
+{% endif -%}
 Author: cp-engine (initial scaffold)
 ---
 
