@@ -4,6 +4,32 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.37.0 — 2026-06-20
+
+### Fixed — spine mirror no longer doubles/strands on a code change
+
+The v0.35.0 canonical-id rename exposed a parallel bug in the spine mirror: rows
+key on `project_code` (which is embedded in the row id), so a `full_job_name`/code
+change **doubled** estimate/context rows (re-mirrored under the new code, old ones
+orphaned) and **stranded** authored rows (MC-2-owned, never reaped, never
+re-written) under the dead code. Result: `cp where <new-canonical-code>` returned
+"No spine substance" — the spine was reachable only by the dead old code.
+
+Fixed by keying the whole spine layer on the stable `project_id` uuid:
+- **Reaps key on `project_id`** — `sync_spine_substance` (estimate) and
+  `sync_spine_context` now see all of a project's rows regardless of code, so
+  old-code duplicates are reaped on rename.
+- **Authored rows re-home** — `_rehome_authored_codes` updates a drifted authored
+  row's `project_code` + `id` prefix (a rename, not a delete; bodies preserved).
+- **Authored reverse-mirror keys on `project_id`** — finds the re-homed rows.
+- **Snapshots re-home too** — `spine_snapshots` gains `project_id` (mig 078) and
+  `_rehome_snapshot_codes` rewrites its `id`/`deliverable_id`/`project_code`.
+
+Running the fixed sync self-heals an already-split project (no separate script).
+
+### Companion
+mc-2 migration 078 (`spine_snapshots.project_id`).
+
 ## v0.36.0 — 2026-06-20
 
 ### Fixed — `full_job_name` edits no longer strand project content (uuid-anchored dir location)
