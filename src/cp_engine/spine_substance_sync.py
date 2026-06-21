@@ -390,7 +390,7 @@ def sync_spine_substance(
         authored = (
             client.table(_SUBSTANCE_TABLE)
             .select(_AUTHORED_SELECT)
-            .eq("project_code", project_code)
+            .eq("project_id", project_id)
             .eq("origin", "authored")
             .execute()
             .data

@@ -987,10 +987,11 @@ def test_resyncing_same_item_is_idempotent(tmp_path):
 # ---- Task 2.3: reverse-mirror (DB→disk) of authored elements ----------------
 
 
-def _authored_row(est_item_id, label, *, status, project_code="proj-1"):
+def _authored_row(est_item_id, label, *, status, project_code="proj-1",
+                  project_id="u1"):
     return {
         "id": f"{project_code}/{est_item_id}/{label}",
-        "project_code": project_code,
+        "project_code": project_code, "project_id": project_id,
         "est_item_id": est_item_id, "est_item_kind": None, "phase": None,
         "binding": "unbound", "layer": "synthesis", "placement": "context",
         "serves": ["wi-1"], "version_label": label, "version_date": "2026-06-19",
@@ -1016,6 +1017,62 @@ def test_sync_generates_authored_file(tmp_path):
     assert out.exists()
     item = parse_substance(out)            # must NOT raise
     assert len(item.versions) == 2
+
+
+def test_authored_reverse_mirror_finds_rows_by_project_id(tmp_path):
+    """The authored reverse-mirror (DB→disk) query is keyed on the STABLE
+    project_id, not the mutable project_code. Authored rows under ANY code (here
+    an OLD code) are found by project_id="P" and materialized to disk — robust
+    even if a code rename re-homing were ever skipped. Asserts: the authored
+    select filtered on ("project_id","P") AND ("origin","authored"), never on the
+    current project_code; and write_authored_element ran (file materialized)."""
+    from cp_engine.substance import parse_substance
+
+    proj = tmp_path / "1p/acct/new"; proj.mkdir(parents=True)
+    client = _FakeClient()
+    # Authored rows live under an OLD code but the SAME stable project_id="P".
+    client.store["spine_substance"] = [
+        _authored_row("_authored/note-1", "v2", status="live",
+                      project_code="OLD", project_id="P"),
+        _authored_row("_authored/note-1", "v1", status="superseded",
+                      project_code="OLD", project_id="P"),
+    ]
+
+    # Spy on the filters used on each authored (origin-bearing) select.
+    authored_selects: list[list] = []
+    orig_table = client.table
+
+    def _spy_table(name):
+        t = orig_table(name)
+        if name == "spine_substance":
+            orig_execute = t.execute
+
+            def _execute():
+                if (t._op and t._op[0] == "select"
+                        and any(c == "origin" for c, _ in t._filters)):
+                    authored_selects.append(list(t._filters))
+                return orig_execute()
+            t.execute = _execute
+        return t
+
+    client.table = _spy_table
+
+    sync_spine_substance(client, project_id="P", project_code="NEW-CODE",
+                         project_dir=proj, estimate=None)
+
+    # The authored reverse-mirror select keyed on project_id="P" + origin, never
+    # on the current project_code.
+    assert authored_selects, "authored reverse-mirror select never issued"
+    assert all(("project_id", "P") in f for f in authored_selects)
+    assert all(("origin", "authored") in f for f in authored_selects)
+    assert not any(("project_code", "NEW-CODE") in f for f in authored_selects)
+    assert not any(("project_code", "OLD") in f for f in authored_selects)
+
+    # write_authored_element ran for the est_item — the file is materialized and
+    # parses, carrying both versions.
+    out = proj / "spine/_authored/note-1.md"
+    assert out.exists()
+    assert len(parse_substance(out).versions) == 2
 
 
 def test_sync_skips_authored_dir_on_read(tmp_path):
