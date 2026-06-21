@@ -580,6 +580,95 @@ def test_sync_substance_rehomes_authored_on_code_change(tmp_path):
     assert row["project_code"] == "NEW"
 
 
+def test_end_to_end_spine_code_rehome_on_sync(tmp_path):
+    """End-to-end proof of the spine code-rehome fix (Tasks 1, 1b, 2, 3).
+
+    Simulates the real bug: a project's canonical code changes (OLD → NEW) while
+    its stable project_id="P" is unchanged. Before the fix, the prior DB rows
+    keyed on the OLD code were invisible to project_code-scoped reaps and stranded
+    (doubling/orphaning the spine). After the fix, a single sync cleanly re-homes
+    the whole spine to NEW.
+
+    Seeds, under project_id="P":
+      - an estimate-bound substance row under the OLD code (OLD/d1/v1)
+      - an authored row under the OLD code (OLD/_authored/x/v1) with a body
+    Provides disk substance for the estimate item d1, so it re-mirrors under NEW.
+    Then asserts the full fixed behavior in one pass.
+    """
+    from cp_engine.substance import parse_substance
+
+    # The disk-writing helpers materialize under .../proj-1/spine; the sync reads
+    # disk from project_dir/spine, so project_dir must point there. The project's
+    # *code* ("NEW") is an independent string — the rename is code-only, not a
+    # change of on-disk location for this test.
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    client.store["spine_substance"] = [
+        # Prior estimate-bound row under the OLD code (same stable project_id).
+        {"id": "OLD/d1/v1", "project_id": "P", "project_code": "OLD",
+         "est_item_id": "d1", "field_states": {}, "review_flags": []},
+        # Prior authored row under the OLD code (carries a body to preserve).
+        _authored_row("_authored/x", "v1", status="live",
+                      project_code="OLD", project_id="P"),
+    ]
+    # Disk produces estimate-item rows under the NEW code (same project_id="P").
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
+
+    sync_spine_substance(client, project_id="P", project_code="NEW",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+
+    rows = client.store["spine_substance"]
+    ids = {r["id"] for r in rows}
+
+    # 1. Authored row re-homed: OLD id gone, NEW id present, body intact.
+    assert "OLD/_authored/x/v1" not in ids
+    assert "NEW/_authored/x/v1" in ids
+    authored = next(r for r in rows if r["id"] == "NEW/_authored/x/v1")
+    assert authored["project_code"] == "NEW"
+    assert authored["origin"] == "authored"
+    assert authored["body"] == "v1 body"  # body preserved through re-home
+
+    # 2. Old-code estimate row reaped (not in the re-homed set).
+    assert "OLD/d1/v1" not in ids
+
+    # 3. New-code estimate rows upserted from disk.
+    assert "NEW/d1/v2" in ids
+    assert "NEW/d1/v1" in ids
+
+    # 4. NO rows remain under project_code="OLD".
+    assert not any(r["project_code"] == "OLD" for r in rows)
+
+    # 5. The authored reverse-mirror materialized spine/_authored/x.md, parseable.
+    out = proj / "spine/_authored/x.md"
+    assert out.exists()
+    assert len(parse_substance(out).versions) == 1
+
+
+def test_end_to_end_spine_context_code_rehome_on_sync(tmp_path):
+    """Sibling end-to-end for sync_spine_context: a prior context row under the
+    OLD code (same project_id="P") is reaped while disk re-homes it under NEW.
+    Context rows have no authored/origin split, so the project_id reap deletes the
+    old-code row and the disk write upserts the new-code row."""
+    # _write_context materializes under .../proj-1/spine/_context; project_dir
+    # must point there. The code rename (OLD → NEW) is code-only.
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    client.store["spine_context"] = [
+        {"id": "OLD/_context/foo", "project_id": "P", "project_code": "OLD",
+         "body": "old ctx", "field_states": {}, "review_flags": []},
+    ]
+    _write_context(tmp_path, "foo", body="disk ctx")
+
+    sync_spine_context(client, project_id="P", project_code="NEW",
+                       project_dir=proj)
+
+    rows = client.store["spine_context"]
+    ids = {r["id"] for r in rows}
+    assert "OLD/_context/foo" not in ids        # old-code row reaped
+    assert "NEW/_context/foo" in ids            # new-code row upserted
+    assert not any(r["project_code"] == "OLD" for r in rows)
+
+
 def test_sync_substance_preserves_confirmed_body(tmp_path):
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
