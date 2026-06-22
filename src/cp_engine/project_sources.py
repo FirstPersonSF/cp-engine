@@ -205,6 +205,131 @@ def pull_source(
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  Read the SPINE — a project's authored/distilled elements
+# ──────────────────────────────────────────────────────────────────────
+#
+# The spine (`spine_substance`) holds a project's distilled memory: authored
+# deliverables, ingested-and-distilled emails/sources, decisions, etc. — keyed
+# on `project_id`. These two pure functions are the read counterpart to the MCP
+# write tools (`create_spine_element` / `add_spine_version`): `list_spine` is the
+# "what's in the spine" index, `pull_spine` returns one element's full body.
+# Both read only LIVE versions (superseded history is excluded). As with the
+# source readers, we never `select *` and never carry the (large) body into the
+# list — only a body LENGTH.
+
+# List columns: metadata + body (so we can derive body_len) but never `*`. The
+# body is selected only to compute its length; it is NOT returned in the list.
+_SPINE_LIST_COLUMNS = "est_item_id, framing, layer, binding, status, serves, body"
+
+# Pull columns: everything needed to return one element with full body + context.
+_SPINE_PULL_COLUMNS = (
+    "est_item_id, framing, layer, binding, status, serves, sources, "
+    "version_label, body"
+)
+
+
+def list_spine(client, project_id: str) -> list[dict]:
+    """List a project's LIVE spine elements (index, not bodies).
+
+    Returns `[{est_item_id, framing, layer, binding, status, serves_count,
+    body_len}]` for every live element of the project. The full body is never
+    returned here (only its length) — call `pull_spine` for one element's text.
+    Never raises: the MCP tool boundary converts failures to a structured note.
+    """
+    resp = (
+        client.table("spine_substance")
+        .select(_SPINE_LIST_COLUMNS)
+        .eq("project_id", project_id)
+        .eq("status", "live")
+        .order("layer", desc=False)
+        .execute()
+    )
+    rows = getattr(resp, "data", None) or []
+    out: list[dict] = []
+    for row in rows:
+        serves = row.get("serves") or []
+        body = row.get("body") or ""
+        out.append(
+            {
+                "est_item_id": row.get("est_item_id"),
+                "framing": row.get("framing"),
+                "layer": row.get("layer"),
+                "binding": row.get("binding"),
+                "status": row.get("status"),
+                "serves_count": len(serves),
+                "body_len": len(body),
+            }
+        )
+    return out
+
+
+def pull_spine(client, project_id: str, key: str) -> dict:
+    """Pull ONE live spine element's full body + context by id or title.
+
+    `key` resolves to a single element, mirroring `pull_source`'s discipline of
+    never merging distinct elements:
+
+      1. Exact `est_item_id` match (the machine path: `list_spine` returns these).
+      2. Title (`framing`) substring, case-insensitive (`_title_matches`):
+         - exactly one distinct element matched → return it,
+         - 2+ distinct elements matched → `{body: "", note: "ambiguous: ..."}`.
+      3. No match → `{body: "", note: "no spine element ..."}`.
+
+    Returns `{est_item_id, framing, layer, binding, status, serves, sources,
+    version_label, body}` on success. Never raises.
+    """
+    resp = (
+        client.table("spine_substance")
+        .select(_SPINE_PULL_COLUMNS)
+        .eq("project_id", project_id)
+        .eq("status", "live")
+        .execute()
+    )
+    rows = getattr(resp, "data", None) or []
+
+    # 1. Exact est_item_id (the machine path).
+    exact = [r for r in rows if r.get("est_item_id") == key]
+    if exact:
+        return _spine_element(exact[0])
+
+    # 2. Title (framing) substring match, resolved to ONE distinct element.
+    matched = [r for r in rows if _title_matches(key, r.get("framing"))]
+    if not matched:
+        return {
+            "body": "",
+            "note": f"no spine element matching '{key}' in this project",
+        }
+    distinct = {r.get("est_item_id"): r for r in matched}
+    if len(distinct) > 1:
+        candidates = ", ".join(
+            (r.get("framing") or r.get("est_item_id") or "?") for r in distinct.values()
+        )
+        return {
+            "body": "",
+            "note": (
+                f"ambiguous: '{key}' matched {len(distinct)} elements: "
+                f"[{candidates}]; pass an est_item_id or a more specific title"
+            ),
+        }
+    return _spine_element(next(iter(distinct.values())))
+
+
+def _spine_element(row: dict) -> dict:
+    """Shape one spine_substance row into the pull_spine return contract."""
+    return {
+        "est_item_id": row.get("est_item_id"),
+        "framing": row.get("framing"),
+        "layer": row.get("layer"),
+        "binding": row.get("binding"),
+        "status": row.get("status"),
+        "serves": row.get("serves") or [],
+        "sources": row.get("sources") or [],
+        "version_label": row.get("version_label"),
+        "body": row.get("body") or "",
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Re-fetch the ORIGINAL binary via persisted coords
 # ──────────────────────────────────────────────────────────────────────
 

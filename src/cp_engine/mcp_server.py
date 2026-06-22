@@ -222,6 +222,57 @@ def fetch_project_source(project_code: str, doc_title: str) -> dict:
 
 
 @mcp.tool()
+def list_spine_elements(project_code: str) -> list[dict]:
+    """List a project's LIVE spine elements (the distilled-memory index).
+
+    Returns one row per element: est_item_id, framing (title), layer, binding,
+    status, serves_count, body_len. Use this to see what's in a project's spine,
+    then `pull_spine_element` to read one element's full body.
+    """
+    from cp_engine.project_sources import list_spine
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return []
+        client, pid, _cid = resolved
+        return list_spine(client, pid)
+    except Exception as exc:  # noqa: BLE001
+        # An MCP tool must never throw to the client: return a structured,
+        # actionable error note instead of propagating a protocol error.
+        return [{"error": f"failed to list spine for '{project_code}': {exc}"}]
+
+
+@mcp.tool()
+def pull_spine_element(project_code: str, key: str) -> dict:
+    """Pull ONE live spine element's full body by est_item_id or title.
+
+    `key` is an est_item_id (e.g. `_authored/email-from-olivia...`, exact, the
+    machine path) or a case-insensitive substring of the element's title
+    (`framing`). Returns the full body + context (layer, binding, serves,
+    sources, version_label), or a `note` when nothing/ambiguously matches.
+    """
+    from cp_engine.project_sources import pull_spine
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {
+                "body": "",
+                "note": f"project '{project_code}' not found",
+            }
+        client, pid, _cid = resolved
+        return pull_spine(client, pid, key)
+    except Exception as exc:  # noqa: BLE001
+        # An MCP tool must never throw to the client: return a structured,
+        # actionable error note instead of propagating a protocol error.
+        return {
+            "body": "",
+            "error": f"failed to pull spine element '{key}' from '{project_code}': {exc}",
+        }
+
+
+@mcp.tool()
 def create_spine_element(project_code: str, label: str, type: str,
                          body: str = "", serves: list[str] | None = None) -> dict:
     """Create a new AUTHORED spine element (live v1) in MC-2.

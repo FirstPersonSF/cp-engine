@@ -156,16 +156,98 @@ def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
     assert srv._tenant_root() == tmp_path.resolve()
 
 
-def test_exactly_five_tools_registered():
-    """The server registers the three read tools + two spine write tools."""
+def test_exactly_seven_tools_registered():
+    """Three source-read tools + two spine-read tools + two spine-write tools."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
         "list_project_sources",
         "pull_project_source",
         "fetch_project_source",
+        "list_spine_elements",
+        "pull_spine_element",
         "create_spine_element",
         "add_spine_version",
     }
+
+
+# ---------------------------------------------------------------------------
+# Spine read tools (list_spine_elements / pull_spine_element)
+# ---------------------------------------------------------------------------
+
+
+def test_list_spine_elements_delegates(monkeypatch):
+    """Resolves ids, delegates to list_spine with the project_id, returns result."""
+    fake_client = object()
+    monkeypatch.setattr(srv, "_resolve", lambda code: (fake_client, "pid", "cid"))
+
+    captured = {}
+
+    def fake_list_spine(client, project_id):
+        captured["args"] = (client, project_id)
+        return [{"est_item_id": "_authored/brief", "framing": "Brief"}]
+
+    monkeypatch.setattr("cp_engine.project_sources.list_spine", fake_list_spine)
+
+    out = srv.list_spine_elements("sap-5171")
+
+    assert captured["args"] == (fake_client, "pid")
+    assert out == [{"est_item_id": "_authored/brief", "framing": "Brief"}]
+
+
+def test_pull_spine_element_delegates(monkeypatch):
+    """Passes the key through to pull_spine and returns its result."""
+    fake_client = object()
+    monkeypatch.setattr(srv, "_resolve", lambda code: (fake_client, "pid", "cid"))
+
+    captured = {}
+
+    def fake_pull_spine(client, project_id, key):
+        captured["args"] = (client, project_id, key)
+        return {"est_item_id": key, "body": "full text"}
+
+    monkeypatch.setattr("cp_engine.project_sources.pull_spine", fake_pull_spine)
+
+    out = srv.pull_spine_element("sap-5171", "_authored/email")
+
+    assert captured["args"] == (fake_client, "pid", "_authored/email")
+    assert out == {"est_item_id": "_authored/email", "body": "full text"}
+
+
+def test_list_spine_elements_unresolved_returns_empty(monkeypatch):
+    """An unresolvable code yields an empty list, not a crash."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: None)
+    assert srv.list_spine_elements("nope") == []
+
+
+def test_pull_spine_element_unresolved_returns_note(monkeypatch):
+    """An unresolvable code yields a not-found note, not a crash."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: None)
+    out = srv.pull_spine_element("nope", "_authored/x")
+    assert out["body"] == ""
+    assert "not found" in out["note"]
+
+
+def test_list_spine_elements_resolve_raises_returns_error(monkeypatch):
+    """A raising _resolve yields a structured error, not a propagation."""
+
+    def boom(_code):
+        raise RuntimeError("no creds")
+
+    monkeypatch.setattr(srv, "_resolve", boom)
+    out = srv.list_spine_elements("sap-5171")
+    assert "error" in out[0]
+
+
+def test_pull_spine_element_pure_fn_raises_returns_error(monkeypatch):
+    """A raising pure fn is caught and returned as a structured error note."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+
+    def boom(*_a, **_k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("cp_engine.project_sources.pull_spine", boom)
+    out = srv.pull_spine_element("sap-5171", "_authored/x")
+    assert "error" in out
 
 
 # ---------------------------------------------------------------------------

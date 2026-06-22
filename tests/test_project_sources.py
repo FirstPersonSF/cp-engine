@@ -7,7 +7,12 @@ No Supabase / Voyage. A small fake supabase client mirrors the PostgREST chain
 
 from __future__ import annotations
 
-from cp_engine.project_sources import list_sources, pull_source
+from cp_engine.project_sources import (
+    list_sources,
+    list_spine,
+    pull_source,
+    pull_spine,
+)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -150,6 +155,123 @@ def test_list_sources_merges_summaries():
 def test_list_sources_empty():
     client = _FakeTableClient([])
     assert list_sources(client, "proj-1", "co-9") == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  list_spine — index of a project's live spine elements
+# ──────────────────────────────────────────────────────────────────────
+
+_SPINE_ROWS = [
+    {
+        "id": "sap-5171/_authored/brief/v1",
+        "est_item_id": "_authored/brief",
+        "framing": "Creative Directions for Jack",
+        "layer": "output",
+        "binding": "live",
+        "status": "live",
+        "serves": ["d-1", "d-2"],
+        "body": "x" * 500,
+    },
+    {
+        "id": "sap-5171/_authored/email/v1",
+        "est_item_id": "_authored/email",
+        "framing": "Email from Olivia",
+        "layer": "Email",
+        "binding": "unbound",
+        "status": "live",
+        "serves": [],
+        "body": "y" * 6769,
+    },
+]
+
+
+def test_list_spine_returns_live_elements_with_metadata():
+    client = _FakeTableClient(_SPINE_ROWS)
+
+    out = list_spine(client, "proj-1")
+
+    assert client.recorder["table"] == "spine_substance"
+    # explicit columns, never the body itself in the list / never `*`
+    select = client.recorder["select"]
+    assert "*" not in select
+    # filtered to this project's LIVE elements
+    assert ("project_id", "proj-1") in client.recorder["eq"]
+    assert ("status", "live") in client.recorder["eq"]
+
+    first = out[0]
+    # the list carries metadata + a body LENGTH, never the full body
+    assert set(first.keys()) == {
+        "est_item_id", "framing", "layer", "binding", "status",
+        "serves_count", "body_len",
+    }
+    assert "body" not in first
+    assert first["est_item_id"] == "_authored/brief"
+    assert first["serves_count"] == 2
+    assert first["body_len"] == 500
+    # an unbound element reports zero served items
+    assert out[1]["serves_count"] == 0
+
+
+def test_list_spine_empty():
+    client = _FakeTableClient([])
+    assert list_spine(client, "proj-1") == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  pull_spine — full body of one live spine element
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_pull_spine_by_exact_est_item_id():
+    client = _FakeTableClient(_SPINE_ROWS)
+
+    out = pull_spine(client, "proj-1", "_authored/email")
+
+    assert client.recorder["table"] == "spine_substance"
+    assert ("project_id", "proj-1") in client.recorder["eq"]
+    assert ("status", "live") in client.recorder["eq"]
+    assert out["est_item_id"] == "_authored/email"
+    assert out["framing"] == "Email from Olivia"
+    assert out["layer"] == "Email"
+    assert out["binding"] == "unbound"
+    assert out["serves"] == []
+    # the WHOLE body comes back (this is the point of the tool)
+    assert out["body"] == "y" * 6769
+
+
+def test_pull_spine_by_title_substring():
+    client = _FakeTableClient(_SPINE_ROWS)
+
+    out = pull_spine(client, "proj-1", "olivia")
+
+    assert out["est_item_id"] == "_authored/email"
+    assert out["body"] == "y" * 6769
+
+
+def test_pull_spine_not_found_returns_note():
+    client = _FakeTableClient(_SPINE_ROWS)
+
+    out = pull_spine(client, "proj-1", "nonexistent-element")
+
+    assert out["body"] == ""
+    assert "no spine element" in out["note"].lower()
+
+
+def test_pull_spine_ambiguous_title_returns_note():
+    client = _FakeTableClient(_SPINE_ROWS)
+
+    # "e" is a substring of both "...for Jack" (no) — pick a token in BOTH framings
+    out = pull_spine(client, "proj-1", "from")  # only matches the email...
+    assert out["est_item_id"] == "_authored/email"
+
+    # a substring matching 2+ distinct elements, none exact → ambiguous note
+    rows = [
+        {**_SPINE_ROWS[0], "framing": "Report draft one"},
+        {**_SPINE_ROWS[1], "framing": "Report draft two"},
+    ]
+    out2 = pull_spine(_FakeTableClient(rows), "proj-1", "report")
+    assert out2["body"] == ""
+    assert "ambiguous" in out2["note"].lower()
 
 
 # ──────────────────────────────────────────────────────────────────────
