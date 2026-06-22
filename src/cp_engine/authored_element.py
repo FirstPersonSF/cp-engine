@@ -28,7 +28,7 @@ def authored_est_item_id(slug: str) -> str:
 
 
 def _row(*, project_id, project_code, est_item_id, label, type_, body, serves,
-         version_label, version_date, status, version_note=None):
+         version_label, version_date, status, version_note=None, sources=None):
     return {
         "id": f"{project_code}/{est_item_id}/{version_label}",
         "project_id": project_id,
@@ -45,14 +45,15 @@ def _row(*, project_id, project_code, est_item_id, label, type_, body, serves,
         "status": status,
         "framing": label,           # the human-facing label/framing line
         "body": body,
-        "sources": [],
+        "sources": list(sources or []),
         "origin": "authored",
         "version_note": version_note,
         "rel_path": None,
     }
 
 
-def build_create_rows(*, project_id, project_code, label, type_, body, serves, now_iso):
+def build_create_rows(*, project_id, project_code, label, type_, body, serves, now_iso,
+                      sources=None):
     """v1 of a new authored element."""
     slug = slugify(label)
     est_item_id = authored_est_item_id(slug)
@@ -61,6 +62,7 @@ def build_create_rows(*, project_id, project_code, label, type_, body, serves, n
         project_id=project_id, project_code=project_code, est_item_id=est_item_id,
         label=label, type_=type_, body=body, serves=serves,
         version_label="v1", version_date=date, status="live",
+        sources=sources,
     )]
 
 

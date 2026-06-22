@@ -95,3 +95,22 @@ def test_build_create_rows_golden_vector():
         "framing": "My Label", "body": "b", "sources": [], "origin": "authored",
         "version_note": None, "rel_path": None,
     }]
+
+
+def test_build_create_rows_carries_sources():
+    """A passed `sources` list lands on the row (parity with mc-2's copy, where
+    document routing records a structured rag_asset source at create time)."""
+    rows = build_create_rows(
+        project_id="P", project_code="c", label="Doc", type_="Source material",
+        body="b", serves=[], now_iso="2026-01-02T00:00:00+00:00",
+        sources=[{"type": "rag_asset", "id": "a1", "title": "Doc"}],
+    )
+    assert rows[0]["sources"] == [{"type": "rag_asset", "id": "a1", "title": "Doc"}]
+
+
+def test_build_create_rows_defaults_sources_to_empty():
+    rows = build_create_rows(
+        project_id="P", project_code="c", label="Doc", type_="note",
+        body="b", serves=[], now_iso="2026-01-02T00:00:00+00:00",
+    )
+    assert rows[0]["sources"] == []

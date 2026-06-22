@@ -4,6 +4,12 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.38.1 — 2026-06-22
+
+### Parity — `build_create_rows` carries `sources`
+
+`authored_element.py` is a behavioral mirror of mc-2's `backend/src/lib/authored_element.py`. mc-2 PR #99 (spine document routing) added an optional `sources` param so a routed `rag_asset` records a structured source on the created element. Synced the same param here (`build_create_rows(..., sources=None)` → `"sources": list(sources or [])`) so the golden-vector parity guard stays valid in both repos. Default `[]` preserves all existing behavior — no functional change in the cp flow.
+
 ## v0.38.0 — 2026-06-22
 
 ### Added — spine-read MCP tools (`list_spine_elements` + `pull_spine_element`)
