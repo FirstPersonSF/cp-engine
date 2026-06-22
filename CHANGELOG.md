@@ -4,6 +4,29 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.38.0 — 2026-06-22
+
+### Added — spine-read MCP tools (`list_spine_elements` + `pull_spine_element`)
+
+The `cp-sources` MCP server could WRITE spine elements (`create_spine_element`,
+`add_spine_version`) and READ ingested sources (`list/pull/fetch_project_source`),
+but had **no way to READ spine elements back** — so reading a project's distilled
+memory (e.g. an ingested client email, an authored deliverable held in
+`spine_substance`) forced a drop to raw Supabase SQL. Two read tools close the gap,
+mirroring the existing thin-wrapper pattern (resolve code → `project_id` → delegate
+to a pure fn → never raise, structured error note on failure):
+
+- **`list_spine_elements(project_code)`** — the live-element index: per element
+  `est_item_id, framing, layer, binding, status, serves_count, body_len`. Never the
+  body itself (only its length), per the no-large-columns-in-lists rule.
+- **`pull_spine_element(project_code, key)`** — one live element's full body +
+  context (layer, binding, serves, sources, version_label). `key` resolves by exact
+  `est_item_id` first, then case-insensitive title (`framing`) substring; refuses to
+  merge distinct elements (ambiguous → note), mirroring `pull_source`'s discipline.
+
+Pure functions `list_spine` / `pull_spine` land in `project_sources.py`
+(transport-agnostic, explicit columns, read LIVE versions only). Tool count 5 → 7.
+
 ## v0.37.0 — 2026-06-20
 
 ### Fixed — spine mirror no longer doubles/strands on a code change
