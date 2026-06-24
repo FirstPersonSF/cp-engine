@@ -4,6 +4,30 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.39.2 — 2026-06-24
+
+### Added — Supabase creds from 1Password (`op://` references)
+
+A second user can now run the engine without cloning the mc-2 backend or pasting
+a service key into a dotfile. The cred resolver (`sync_mc2._load_supabase_creds`)
+gains a middle rung between the environment and the `mc-2/backend/.env` fallback:
+
+- A `[supabase]` block in the gitignored `.cp-engine.local.toml` holds **1Password
+  secret references**, not secrets — `url_ref = "op://<vault>/<item>/url"` and
+  `service_key_ref = "op://<vault>/<item>/service_key"`. They resolve live via the
+  1Password CLI (`op read`) at launch, so the key never lands on disk and the
+  shared, committed `.mcp.json` (`cp mcp`) is untouched — no per-machine `op run`
+  wrapper, no file churn between machines.
+- Resolution order is **env → 1Password refs → mc-2 dotenv**. Environment
+  variables still win (CI/Actions unchanged); a machine with no `[supabase]` block
+  behaves exactly as before.
+- **Configured refs are authoritative.** If `op` is missing, not signed in, or a
+  reference fails to resolve, the resolver raises `BackendUnavailable` loudly
+  (naming the cause) rather than silently falling through to the dotenv path — an
+  explicit 1Password intent that can't be honored is an error, not a fallback.
+  A half-configured block (one ref missing) is likewise a loud misconfig.
+- Works for both `cp mcp` (the MCP server) and `cp sync` — one code path.
+
 ## v0.39.1 — 2026-06-24
 
 ### Fixed — `cp-sources` MCP resolves the canonical on-disk slug

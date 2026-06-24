@@ -31,7 +31,9 @@ hyphenated; no transformation needed.
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
+import tomllib
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -303,18 +305,28 @@ def _load_supabase_creds(config: TenantConfig) -> tuple[str, str]:
 
     Order of preference:
       1. `os.environ` — preserves CI/GitHub Actions and explicit shell exports.
-      2. `<mc-2 clone>/backend/.env` — the canonical local-dev location.
+      2. A `[supabase]` block of `op://` references in `.cp-engine.local.toml`,
+         resolved live via the 1Password CLI (`op read`). This is the
+         second-user path: the secret lives only in a shared 1Password vault,
+         never on disk. Configured refs are authoritative — if `op` can't
+         resolve them we raise, never silently fall through to (3).
+      3. `<mc-2 clone>/backend/.env` — the canonical local-dev location.
          The clone path comes from `TenantConfig.local_repos["mc-2"]`
          (per-machine, gitignored).
 
-    On fallback, prints a one-line note to stderr so the implicit dependency
-    stays visible. Raises `BackendUnavailable` if both sources lack the keys,
-    naming both paths it tried.
+    On fallback (2 or 3), prints a one-line note to stderr so the implicit
+    dependency stays visible. Raises `BackendUnavailable` if no source has the
+    keys, naming what it tried.
     """
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_KEY")
     if url and key:
         return url, key
+
+    op_creds = _resolve_op_creds(config)
+    if op_creds is not None:
+        print("Resolved SUPABASE_* from 1Password (op://)", file=sys.stderr)
+        return op_creds
 
     env_file = _mc2_env_file(config)
     file_creds = _read_dotenv(env_file, _SUPABASE_KEYS) if env_file else {}
@@ -332,9 +344,83 @@ def _load_supabase_creds(config: TenantConfig) -> tuple[str, str]:
     raise BackendUnavailable(
         "MC-2 backend requires SUPABASE_URL and SUPABASE_SERVICE_KEY. "
         f"Tried: {tried}. For local dev, copy mc-2/backend/.env.example "
-        "and ensure [local-repos].\"mc-2\" points to your clone. For the "
-        "GitHub Action, configure repo secrets."
+        "and ensure [local-repos].\"mc-2\" points to your clone. To resolve "
+        "from 1Password, add a [supabase] block with url_ref/service_key_ref "
+        "(op:// references) to .cp-engine.local.toml. For the GitHub Action, "
+        "configure repo secrets."
     )
+
+
+def _resolve_op_creds(config: TenantConfig) -> tuple[str, str] | None:
+    """Resolve creds from a `[supabase]` op:// block in `.cp-engine.local.toml`.
+
+    Returns `(url, key)` when the block is present and resolves, or `None` when
+    no `[supabase]` block is configured (so the caller falls through to the
+    dotenv path). A block that is present but malformed or whose refs fail to
+    resolve raises `BackendUnavailable` — a configured 1Password ref is an
+    explicit intent, so a failure to honor it is a loud error, never a silent
+    fall-through to a different source.
+    """
+    local_path = config.root / ".cp-engine.local.toml"
+    if not local_path.exists():
+        return None
+    try:
+        with local_path.open("rb") as fh:
+            data = tomllib.load(fh)
+    except (tomllib.TOMLDecodeError, OSError):
+        # A broken local toml is config.load's problem to report elsewhere; here
+        # we just decline the op path rather than masking it as a cred error.
+        return None
+
+    block = data.get("supabase")
+    if not isinstance(block, dict):
+        return None
+
+    url_ref = block.get("url_ref")
+    key_ref = block.get("service_key_ref")
+    missing = [
+        name
+        for name, val in (("url_ref", url_ref), ("service_key_ref", key_ref))
+        if not isinstance(val, str) or not val
+    ]
+    if missing:
+        raise BackendUnavailable(
+            f"[supabase] in {local_path} is incomplete: missing {', '.join(missing)}. "
+            "Both url_ref and service_key_ref (op:// references) are required."
+        )
+
+    try:
+        url = _op_read(url_ref)
+        key = _op_read(key_ref)
+    except Exception as exc:  # noqa: BLE001 — surface ANY op failure loudly
+        raise BackendUnavailable(
+            f"Failed to resolve SUPABASE_* from 1Password (op://) refs in "
+            f"{local_path}: {exc}. Is the `op` CLI installed and signed in "
+            "(`op signin`), and do you have access to the referenced vault?"
+        ) from exc
+
+    if not url or not key:
+        raise BackendUnavailable(
+            f"1Password (op://) refs in {local_path} resolved to empty values. "
+            "Check the item field names in url_ref/service_key_ref."
+        )
+    return url, key
+
+
+def _op_read(reference: str) -> str:
+    """Return the secret at an `op://vault/item/field` reference via `op read`.
+
+    Thin wrapper around the 1Password CLI so the resolver stays testable
+    (tests monkeypatch this). Raises on a non-zero exit (e.g. `op` missing,
+    not signed in, or the reference doesn't resolve).
+    """
+    result = subprocess.run(
+        ["op", "read", reference],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return result.stdout.strip()
 
 
 def _mc2_env_file(config: TenantConfig) -> Path | None:

@@ -14,6 +14,7 @@ from types import MappingProxyType
 
 import pytest
 
+import cp_engine.sync_mc2 as sync_mod
 from cp_engine.config import SyncConfig, TenantConfig
 from cp_engine.sync import BackendUnavailable
 from cp_engine.sync_mc2 import (
@@ -413,6 +414,98 @@ def test_load_supabase_creds_falls_back_to_mc2_dotenv(
     config = _make_config(tmp_path, mc2_clone=clone)
     assert _load_supabase_creds(config) == ("https://file.supabase.co", "file-key")
     assert "Loaded SUPABASE_* from" in capsys.readouterr().err
+
+
+def _write_local_toml(tmp_path: Path, body: str) -> None:
+    (tmp_path / ".cp-engine.local.toml").write_text(body)
+
+
+def test_load_supabase_creds_resolves_op_references(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A `[supabase]` block of `op://` refs resolves via the `op` CLI, between
+    the environment and the mc-2 dotenv fallback."""
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    _write_local_toml(
+        tmp_path,
+        "[supabase]\n"
+        'url_ref = "op://cp-engine/MC-2 Supabase/url"\n'
+        'service_key_ref = "op://cp-engine/MC-2 Supabase/service_key"\n',
+    )
+    resolved = {
+        "op://cp-engine/MC-2 Supabase/url": "https://op.supabase.co",
+        "op://cp-engine/MC-2 Supabase/service_key": "op-key",
+    }
+    monkeypatch.setattr(sync_mod, "_op_read", lambda ref: resolved[ref])
+
+    config = _make_config(tmp_path)
+    assert _load_supabase_creds(config) == ("https://op.supabase.co", "op-key")
+    assert "1Password" in capsys.readouterr().err
+
+
+def test_load_supabase_creds_env_wins_over_op_references(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Environment variables still take precedence; `op` is never invoked."""
+    monkeypatch.setenv("SUPABASE_URL", "https://env.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "env-key")
+    _write_local_toml(
+        tmp_path,
+        "[supabase]\n"
+        'url_ref = "op://v/i/url"\n'
+        'service_key_ref = "op://v/i/key"\n',
+    )
+
+    def _boom(ref):  # pragma: no cover - asserts op is not called
+        raise AssertionError("op must not run when env is present")
+
+    monkeypatch.setattr(sync_mod, "_op_read", _boom)
+    config = _make_config(tmp_path)
+    assert _load_supabase_creds(config) == ("https://env.supabase.co", "env-key")
+
+
+def test_load_supabase_creds_op_failure_raises_loud(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A configured ref that fails to resolve raises loudly — it never silently
+    falls through to the dotenv path (the empty-result-masquerade failure mode)."""
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    _write_local_toml(
+        tmp_path,
+        "[supabase]\n"
+        'url_ref = "op://v/i/url"\n'
+        'service_key_ref = "op://v/i/key"\n',
+    )
+
+    def _boom(ref):
+        raise RuntimeError("op not signed in")
+
+    monkeypatch.setattr(sync_mod, "_op_read", _boom)
+    config = _make_config(tmp_path)
+    with pytest.raises(BackendUnavailable) as exc:
+        _load_supabase_creds(config)
+    msg = str(exc.value)
+    assert "1Password" in msg and "op not signed in" in msg
+
+
+def test_load_supabase_creds_partial_op_block_raises(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Half a `[supabase]` block (only one ref) is a misconfig → raise, naming
+    the missing key, rather than silently resolving one and dropping the other."""
+    monkeypatch.delenv("SUPABASE_URL", raising=False)
+    monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
+    _write_local_toml(
+        tmp_path,
+        "[supabase]\nurl_ref = \"op://v/i/url\"\n",  # missing service_key_ref
+    )
+    monkeypatch.setattr(sync_mod, "_op_read", lambda ref: "x")
+    config = _make_config(tmp_path)
+    with pytest.raises(BackendUnavailable) as exc:
+        _load_supabase_creds(config)
+    assert "service_key_ref" in str(exc.value)
 
 
 def test_load_supabase_creds_raises_with_paths_when_neither_source_has_keys(
