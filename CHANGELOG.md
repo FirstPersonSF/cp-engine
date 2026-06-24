@@ -4,6 +4,46 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.39.0 — 2026-06-24
+
+### Added — initiatives are first-class in the spine / sources / ClickUp stack
+
+Initiatives (internal workstreams: `mission-control`, `storyos`, …) live in MC-2's
+`initiatives` table, parallel to `projects` but with no commercial apparatus. The
+spine/sources/ClickUp stack assumed every owner was a `projects` row, so an
+initiative's spine never worked end-to-end (a 2026-06-23 audit found the full gap
+set). This release makes initiatives first-class across the cp-engine surface,
+paired with mc-2 backend/frontend changes and live migrations 079–081.
+
+- **Initiative-code resolution.** The `cp-sources` MCP resolver (`_resolve` /
+  `_resolve_project_id`) falls back to the `initiatives` table and degrades to a
+  `None` company id (initiatives have no Drive/Dropbox folders), so all spine MCP
+  tools resolve an initiative slug. `cp sync` already mirrors initiative spines by
+  uuid, so authoring into an initiative's spine now works end-to-end.
+
+- **Canonical `layer` normalization.** `authored_element.canon_layer()` maps the
+  MCP tool's lowercase `type` vocab to the spine UI's canonical TitleCase `layer`
+  strings (e.g. `email`→`Email`, `source`→`Source material`), so a kind authored
+  via MCP groups under the same layer the dashboard filters on. Mirror of mc-2's
+  `authored_element` (kept in sync by the golden-vector parity test).
+
+- **Owner-aware ClickUp round-trip.** `clickup_task_proposals` now carries either
+  `project_id` OR `initiative_id` (mc-2 migration 081, `num_nonnulls = 1` CHECK).
+  The propose writers (`webhook/clickup_propose._build_proposal_row`,
+  `ingest._write_milestone`, `ingest._write_client_ask_task`) and the close-lookup
+  (`webhook/main._lookup_proposal_by_clickup_task_id`) all select the correct owner
+  column, so an initiative-sourced action item no longer FK-crashes on insert and
+  resolves on close.
+
+- **Source-ingest gate lifted for initiatives.** `active_ingestable_codes` includes
+  active initiatives, and the `rag_assets` owner column is written via
+  `_owner_filter` / `ProjectFolders.is_initiative`. NOTE: the resolve→folders→write
+  half is intentionally inert until a future task adds initiative folder columns +
+  an initiatives-table resolve path; the seam is documented.
+
+- **All 7 `cp-sources` MCP tools documented in the `CLAUDE.md` template** (spine
+  read/write + source list/pull/fetch), not just `list/pull_project_source`.
+
 ## v0.38.1 — 2026-06-22
 
 ### Parity — `build_create_rows` carries `sources`
