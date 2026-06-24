@@ -1330,6 +1330,13 @@ def _resolve_proposal_project(client, code: str) -> dict | None:
     ``webhook/clickup_propose._resolve_project`` because webhook/ isn't
     on cp_engine's import path. Tolerates ``enable_clickup`` being
     absent (some test mocks omit it).
+
+    KEEP IN SYNC with the webhook copy. The two have deliberately diverged
+    on: initiative error handling (here ``APIError``, webhook bare
+    ``Exception``) and absent-``enable_clickup`` semantics (here treated as
+    enabled for test mocks, webhook as disabled). The ``kind`` stamp on both
+    return branches (``"project"`` / ``"initiative"``) MUST stay identical —
+    downstream owner-column selection (``_owner_column``) keys on it.
     """
     tail = code.rsplit("-", 1)[-1]
     number = int(tail) if tail.isdigit() else None
@@ -1351,6 +1358,7 @@ def _resolve_proposal_project(client, code: str) -> dict | None:
             "id": row["id"],
             "clickup_list_id": row.get("clickup_list_id"),
             "code": code,
+            "kind": "project",
         }
 
     # Initiative — slug code. ClickUp columns rolled out incrementally
@@ -1375,7 +1383,24 @@ def _resolve_proposal_project(client, code: str) -> dict | None:
         "id": row["id"],
         "clickup_list_id": row.get("clickup_list_id"),
         "code": code,
+        "kind": "initiative",
     }
+
+
+def _owner_column(project: dict) -> dict:
+    """Return the single owner column for a clickup_task_proposals row.
+
+    ``clickup_task_proposals`` (post-migration 081) carries BOTH
+    ``project_id`` (FK projects) and ``initiative_id`` (FK initiatives)
+    under a ``num_nonnulls(project_id, initiative_id) == 1`` CHECK — exactly
+    one owner. Write whichever matches ``project["kind"]`` (defaulting to
+    ``project`` for back-compat). Writing ``project_id`` for an initiative
+    would FK-crash on insert. Mirrors
+    ``webhook/clickup_propose._build_proposal_row``.
+    """
+    if project.get("kind") == "initiative":
+        return {"initiative_id": project["id"]}
+    return {"project_id": project["id"]}
 
 
 def _write_milestone(
@@ -1440,7 +1465,7 @@ def _write_milestone(
 
     row = {
         "meeting_id": item.get("source_meeting_id") or meeting_id,
-        "project_id": project["id"],
+        **_owner_column(project),
         "clickup_list_id": project["clickup_list_id"],
         "description": description,
         "assignee_email": None,  # owner names are unresolved free text; reviewer assigns
@@ -1507,7 +1532,7 @@ def _write_client_ask_task(
 
     row = {
         "meeting_id": item.get("source_meeting_id") or meeting_id,
-        "project_id": project["id"],
+        **_owner_column(project),
         "clickup_list_id": project["clickup_list_id"],
         "description": description,
         "assignee_email": None,

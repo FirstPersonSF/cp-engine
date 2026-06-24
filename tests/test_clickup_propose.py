@@ -55,3 +55,32 @@ def test_build_proposal_row_handles_missing_assignee():
     project = {"id": "p1", "clickup_list_id": "L1", "code": "ggl-5168"}
     row = _build_proposal_row(meeting_id="m1", project=project, item=item)
     assert row["assignee_email"] is None
+
+
+def test_build_proposal_row_project_owner_sets_project_id():
+    """A project-owned ask writes project_id and leaves initiative_id null —
+    satisfying migration 081's exactly-one-owner CHECK."""
+    item = {"description": "Some ask"}
+    project = {"id": "p1", "clickup_list_id": "L1", "code": "ggl-5168", "kind": "project"}
+    row = _build_proposal_row(meeting_id="m1", project=project, item=item)
+    assert row["project_id"] == "p1"
+    assert row.get("initiative_id") is None
+
+
+def test_build_proposal_row_initiative_owner_sets_initiative_id():
+    """An initiative-owned ask writes initiative_id and leaves project_id null —
+    otherwise the FK→projects insert would crash for an initiative."""
+    item = {"description": "Ship the spine UI"}
+    project = {
+        "id": "i1",
+        "clickup_list_id": "L9",
+        "code": "mission-control",
+        "kind": "initiative",
+    }
+    row = _build_proposal_row(meeting_id="m1", project=project, item=item)
+    assert row["initiative_id"] == "i1"
+    assert row.get("project_id") is None
+    # The hash recipe still keys off the owner code.
+    assert row["cp_ask_hash"] == _content_hash(
+        "mission-control", "record-ask", "Ship the spine UI"
+    )

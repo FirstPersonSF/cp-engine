@@ -1397,12 +1397,148 @@ def _fake_supabase_for_project(*, project_id: str = "p1",
     return client
 
 
+def _fake_supabase_for_initiative(*, initiative_id: str = "i1",
+                                   clickup_list_id: str | None = "L9",
+                                   code: str = "mission-control",
+                                   enable_clickup: bool = True,
+                                   existing_hashes: list[str] | None = None):
+    """Mirror ``_fake_supabase_for_project`` but for an INITIATIVE (slug code).
+
+    ``_resolve_proposal_project`` routes a slug code (no trailing number)
+    through the ``initiatives`` table via ``.eq("code", code)``. The mocked
+    chain endpoint is shared with the project path, so we just hand it an
+    initiative-shaped row (``code`` slug, no ``number``).
+    """
+    from unittest.mock import MagicMock
+
+    initiative_row = {
+        "id": initiative_id,
+        "code": code,
+        "clickup_list_id": clickup_list_id,
+        "enable_clickup": enable_clickup,
+    }
+    existing = set(existing_hashes or [])
+
+    client = MagicMock()
+    select_chain = client.table.return_value.select.return_value.eq.return_value
+    select_chain.execute.return_value.data = [initiative_row]
+
+    in_chain = (
+        client.table.return_value.select.return_value
+        .eq.return_value.in_.return_value
+    )
+
+    def _dedupe_execute(*_args, **_kwargs):
+        eq_calls = client.table.return_value.select.return_value.eq.call_args_list
+        last_hash = None
+        for call in reversed(eq_calls):
+            args = call.args
+            if len(args) >= 2 and args[0] == "cp_ask_hash":
+                last_hash = args[1]
+                break
+        result = MagicMock()
+        result.data = [{"id": "x", "status": "pending"}] if last_hash in existing else []
+        return result
+
+    in_chain.execute.side_effect = _dedupe_execute
+    return client
+
+
 def _last_insert_row(client) -> dict:
     """Pull the dict passed to the most recent ``insert(...)`` call."""
     insert_calls = client.table.return_value.insert.call_args_list
     assert insert_calls, "no insert() was called on the mock"
     args, _kwargs = insert_calls[-1]
     return args[0]
+
+
+def test_resolve_proposal_project_tags_kind_project() -> None:
+    """A numbered code resolves to a projects row tagged kind='project'."""
+    from cp_engine.ingest import _resolve_proposal_project
+    sb = _fake_supabase_for_project(code="ggl-5168")
+    resolved = _resolve_proposal_project(sb, "ggl-5168")
+    assert resolved is not None
+    assert resolved["kind"] == "project"
+
+
+def test_resolve_proposal_project_tags_kind_initiative() -> None:
+    """A slug code resolves to an initiatives row tagged kind='initiative'."""
+    from cp_engine.ingest import _resolve_proposal_project
+    sb = _fake_supabase_for_initiative(code="mission-control")
+    resolved = _resolve_proposal_project(sb, "mission-control")
+    assert resolved is not None
+    assert resolved["kind"] == "initiative"
+
+
+def test_set_milestone_initiative_writes_initiative_id(tmp_path: Path) -> None:
+    """For an initiative-resolved code, the milestone proposal must write
+    initiative_id (not project_id) to satisfy migration 081's
+    num_nonnulls(project_id, initiative_id) == 1 CHECK.
+    """
+    tenant = _make_tenant(tmp_path)
+    _scaffold_minimal_sprint_file(
+        tenant / "sprints" / "2026-W20" / "mission-control.md", "mission-control"
+    )
+    sb = _fake_supabase_for_initiative(code="mission-control")
+    plan = {
+        "projects": {
+            "mission-control": {
+                "set-milestone": [
+                    {
+                        "deliverable": "Ship spine UI",
+                        "date": "2026-06-30",
+                        "owner": "tony",
+                        "confidence": "high",
+                    }
+                ]
+            }
+        }
+    }
+    result = execute_plan(
+        plan,
+        tenant_root=tenant,
+        today=date(2026, 5, 12),
+        supabase=sb,
+        meeting_id="meet-init",
+    )
+    assert result.errors == [], result.errors
+    row = _last_insert_row(sb)
+    assert row["initiative_id"] == "i1"
+    assert row.get("project_id") is None
+
+
+def test_set_client_ask_task_initiative_writes_initiative_id(tmp_path: Path) -> None:
+    """For an initiative-resolved code, the client-ask proposal must write
+    initiative_id (not project_id) to satisfy migration 081's CHECK.
+    """
+    tenant = _make_tenant(tmp_path)
+    _scaffold_minimal_sprint_file(
+        tenant / "sprints" / "2026-W20" / "mission-control.md", "mission-control"
+    )
+    sb = _fake_supabase_for_initiative(code="mission-control")
+    plan = {
+        "projects": {
+            "mission-control": {
+                "set-client-ask-task": [
+                    {
+                        "what": "Confirm spine UI scope",
+                        "from_party": "tony",
+                    }
+                ]
+            }
+        }
+    }
+    result = execute_plan(
+        plan,
+        tenant_root=tenant,
+        today=date(2026, 5, 12),
+        supabase=sb,
+        meeting_id="meet-init",
+    )
+    assert result.errors == [], result.errors
+    row = _last_insert_row(sb)
+    assert row["initiative_id"] == "i1"
+    assert row.get("project_id") is None
 
 
 def test_set_milestone_validates() -> None:

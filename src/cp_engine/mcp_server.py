@@ -75,9 +75,15 @@ def _resolve(project_code: str):
     if project_id is None:
         return None
 
+    # Folders resolve only for engagements (they live in the projects table).
+    # An initiative id has no projects row → folders is None; that is NOT an
+    # unresolvable code. The spine tools need only project_id (company_id is
+    # unused there), so degrade to a None company_id rather than bailing. The
+    # source tools, which DO need folders, return empty for a None company_id —
+    # correct, since initiatives have no ingested Drive/Dropbox sources.
     folders = resolve_project_folders_by_id(client, project_id)
     if folders is None:
-        return None
+        return client, project_id, None
     return client, folders.project_id, folders.company_id
 
 
@@ -113,9 +119,11 @@ def _resolve_project_id(client, project_code: str) -> str | None:
         return rows[0]["id"]
 
     # Fallback: <companyprefix>-<number> (the working-dir / cp.md Facts form).
+    # An initiative slug (`mission-control`) has no trailing number, so this
+    # branch is skipped and we fall through to the initiatives lookup below.
     prefix, sep, tail = project_code.rpartition("-")
     if not sep or not tail.isdigit():
-        return None
+        return _resolve_initiative_id(client, project_code)
     number = int(tail)
     # companies.code is stored UPPERCASE (e.g. `IBX`) while the working-dir
     # prefix is lowercase (`ibx`); match case-insensitively. The prefix has no
@@ -137,6 +145,27 @@ def _resolve_project_id(client, project_code: str) -> str | None:
         .select("id")
         .eq("company_id", company_id)
         .eq("number", number)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    return rows[0]["id"] if rows else None
+
+
+def _resolve_initiative_id(client, code: str) -> str | None:
+    """Resolve an INITIATIVE slug code (`mission-control`, `storyos`) to its id.
+
+    Initiatives live in their own `initiatives` table — parallel to projects but
+    with no client/company side and no Drive/Dropbox folders — so the project
+    bridge in `_resolve_project_id` never matches them. Their id lands in
+    `spine_substance.project_id` exactly like a project's, so spine tools work
+    once we hand it back. Returns the id, or None when nothing matches.
+    """
+    rows = (
+        client.table("initiatives")
+        .select("id")
+        .eq("code", code)
         .limit(1)
         .execute()
         .data
@@ -278,7 +307,10 @@ def create_spine_element(project_code: str, label: str, type: str,
     """Create a new AUTHORED spine element (live v1) in MC-2.
 
     `type` is the element kind (email|note|source|brief|decision|stakeholder|
-    agreement|synthesis|output|activity). `serves` optionally binds it to
+    agreement|synthesis|output|activity). It is normalized to the spine UI's
+    canonical `layer` (e.g. email→Email, source→Source material), so an element
+    you author here groups under the same layer the dashboard shows and its
+    by-layer filters match. `serves` optionally binds it to
     work-item ids. Returns {element_id, version_label}. The element is live
     immediately and mirrors to the repo on the next cp sync.
     """
