@@ -28,7 +28,7 @@ def _stub_config(monkeypatch):
 
     The --all branch calls `_load_config_or_die()` to drive the canonical
     `read_projects`-based enumeration. Tests fake the enumeration itself
-    (`active_client_project_codes`), so the config object only needs to be a
+    (`active_ingestable_codes`), so the config object only needs to be a
     harmless sentinel that never gets touched.
     """
     sentinel = object()

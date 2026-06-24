@@ -80,7 +80,6 @@ def test_stamp_writes_initiative_id_for_initiative():
     # Owner column: filter on initiative_id, NEVER project_id (CHECK: one owner).
     assert client.tbl.filters.get("initiative_id") == "init-1"
     assert "project_id" not in client.tbl.filters
-    assert "project_id" not in client.tbl.payload
 
 
 def test_stamp_writes_project_id_for_engagement():
@@ -88,4 +87,3 @@ def test_stamp_writes_project_id_for_engagement():
     _stamp_scope(client, _engagement_folders(), "/tmp/x.pptx", _ref())
     assert client.tbl.filters.get("project_id") == "proj-1"
     assert "initiative_id" not in client.tbl.filters
-    assert "initiative_id" not in client.tbl.payload

@@ -66,6 +66,15 @@ class ProjectFolders:
     # rag_assets row must be owned via `initiative_id` (migration 081 CHECK:
     # exactly one of project_id/initiative_id). Defaults to False so every
     # existing engagement construction site is unaffected. See `_owner_filter`.
+    #
+    # INERT TODAY: no production resolve path sets this True yet. Initiatives
+    # don't resolve to folders — `resolve_project_folders` bails for slug codes
+    # (no number), and the by-id resolver queries the `projects` table only,
+    # never the initiatives table. So while `active_ingestable_codes` enumerates
+    # initiatives for ingest, the resolve→folders→write half can't fire for them.
+    # This field + `_owner_filter` are staged for a FUTURE task that adds
+    # initiative folder config + an initiatives-table resolve path; until then
+    # the `initiative_id` owner-column write is intentionally unreachable.
     is_initiative: bool = False
 
 
@@ -112,7 +121,13 @@ def _project_number(project_code: str) -> int | None:
 def _row_to_folders(row: dict) -> ProjectFolders:
     """Map one MC-2 `projects` row (selected via `_PROJECT_COLUMNS`) to a
     ProjectFolders. Shared by both resolve paths (by-number and by-id) so the
-    companies-embed guard + field mapping live in exactly one place."""
+    companies-embed guard + field mapping live in exactly one place.
+
+    This is the SOLE ProjectFolders construction site in the resolve path and it
+    never sets `is_initiative` (defaults False) — both resolve paths read the
+    `projects` table, so no initiative ever reaches here. The `is_initiative` /
+    `initiative_id` owner-column seam is therefore inert today; see the field
+    comment on `ProjectFolders.is_initiative`."""
     # PostgREST returns the to-one `companies` embed as either a dict or a
     # single-element list (shape varies); defend against both — see the same
     # guard in sync_mc2._engagement_canonical_id / _repo_row_to_state.

@@ -3,17 +3,22 @@
 Thin helpers the `cp` asset verbs lean on so the command bodies in `cli.py`
 stay declarative. Nothing here re-implements asset logic — it builds the MC-2
 client (reusing the same cred resolver `ingest_project_assets` uses internally),
-enumerates active client projects for `cp ingest-assets --all`, and formats the
+enumerates the ingestable items for `cp ingest-assets --all`, and formats the
 run summaries.
+
+Since Task 8, `--all` routes through `active_ingestable_codes` — the widened
+set of active client engagements UNION active initiatives (the engagement-only
+gate was lifted). See `active_ingestable_codes`.
 
 Scope mapping for `cp ingest-assets --scope <scope>`:
   - `1p`     → all active client engagements (identical to bare `--all`).
   - `fpsf`   → internal initiatives/repos; asset ingest is client-only → no-op.
   - `canonic`→ internal initiatives/repos; asset ingest is client-only → no-op.
 
-"Active client project" reuses the canonical definition the rest of the engine
-uses: an active-status engagement (`is_active_status`) with `is_internal=false`
-and `company_kind == 'client'`. See `active_client_project_codes`.
+"Active client engagement" reuses the canonical definition the rest of the
+engine uses: an active-status engagement (`is_active_status`) with
+`is_internal=false` and `company_kind == 'client'`; "active initiative" gates on
+`is_active_initiative_status`. See `active_ingestable_codes`.
 """
 
 from __future__ import annotations
@@ -96,18 +101,6 @@ def active_ingestable_codes(config) -> list[str]:
         for p in projects
         if _is_active_engagement(p) or _is_active_initiative(p)
     ]
-
-
-def active_client_project_codes(config) -> list[str]:
-    """Back-compat shim: active client engagements only (no initiatives).
-
-    Retained for any caller that specifically wants the engagement-only set.
-    The `cp ingest-assets --all` CLI now routes through the widened
-    `active_ingestable_codes`.
-    """
-    backend = _default_backend_factory(config.sync.backend)
-    projects = backend.read_projects(config)
-    return [p.code for p in projects if _is_active_engagement(p)]
 
 
 @dataclass
