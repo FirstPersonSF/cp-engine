@@ -478,10 +478,61 @@ def test_resolve_project_id_falls_back_to_company_prefix_and_number():
     assert srv._resolve_project_id(client, "ibx-5192") == "pid-5192"
 
 
+def test_resolve_project_id_falls_back_to_initiative_code():
+    """A slug initiative code (`mission-control`) resolves via the initiatives
+    table when it matches no project.
+
+    Initiatives live in their OWN table, not `projects`; without this fallback
+    every cp-sources tool returns empty for an initiative code because both the
+    exact-`projects.code` lookup and the `<prefix>-<number>` bridge miss. The
+    initiative's id goes into spine_substance.project_id exactly like a project's.
+    """
+    store = {
+        # not a project, and `mission-control` has no trailing number to bridge
+        ("projects", frozenset([("code", "mission-control")])): [],
+        # resolves via initiatives.code
+        ("initiatives", frozenset([("code", "mission-control")])): [
+            {"id": "init-mc"}
+        ],
+    }
+    client = _FakeClient(store)
+    assert srv._resolve_project_id(client, "mission-control") == "init-mc"
+
+
 def test_resolve_project_id_unknown_returns_none():
     """A code that matches nothing (and isn't a company-number form) → None."""
     client = _FakeClient({})
     assert srv._resolve_project_id(client, "totally-unknown") is None
+
+
+def test_resolve_initiative_tolerates_missing_folders(monkeypatch):
+    """`_resolve` returns (client, initiative_id, None) for an initiative.
+
+    Initiatives have no Drive/Dropbox folders, so resolve_project_folders_by_id
+    (a projects-table lookup keyed by id) returns None for an initiative id.
+    Pre-fix, `_resolve` treated that None as 'unresolvable' and returned None,
+    making every spine tool empty for an initiative even though its id resolved
+    fine. The spine tools only need project_id (company_id is unused), so
+    `_resolve` must degrade to a None company_id, not bail.
+    """
+    fake_client = object()
+    monkeypatch.setattr(srv, "_tenant_root", lambda: "/tenant")
+    monkeypatch.setattr(
+        "cp_engine.config.load", lambda root: object()
+    )
+    monkeypatch.setattr(
+        "cp_engine.sync_mc2.MC2Backend",
+        lambda: type("B", (), {"connect": lambda self, cfg: fake_client})(),
+    )
+    monkeypatch.setattr(srv, "_resolve_project_id", lambda client, code: "init-mc")
+    # initiative id has no project row → folders resolve to None
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.resolve_project_folders_by_id",
+        lambda client, pid: None,
+    )
+
+    resolved = srv._resolve("mission-control")
+    assert resolved == (fake_client, "init-mc", None)
 
 
 def test_module_import_is_light():

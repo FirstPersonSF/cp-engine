@@ -1,6 +1,38 @@
 from cp_engine.authored_element import (
-    authored_est_item_id, build_create_rows, build_version_rows, slugify,
+    authored_est_item_id, build_create_rows, build_version_rows, canon_layer,
+    slugify,
 )
+
+
+def test_canon_layer_maps_lowercase_mcp_vocab_to_titlecase():
+    """The MCP tool documents a LOWERCASE type vocab; the spine UI (the source of
+    truth, ELEMENT_TYPES) stores TitleCase. canon_layer converges them so a kind
+    authored either way lands under ONE layer string the UI filters can match."""
+    assert canon_layer("email") == "Email"
+    assert canon_layer("note") == "Note"
+    assert canon_layer("decision") == "Decisions"
+    assert canon_layer("source") == "Source material"
+    assert canon_layer("brief") == "Brief"
+    assert canon_layer("stakeholder") == "Stakeholders"
+    assert canon_layer("agreement") == "Agreement"
+    assert canon_layer("synthesis") == "Synthesis"
+    assert canon_layer("output") == "Output"
+
+
+def test_canon_layer_collapses_spelling_and_case_variants():
+    """Case + whitespace are normalized before lookup, so the UI's TitleCase
+    forms are idempotent and the SourceMaterial/Source material split collapses."""
+    assert canon_layer("Email") == "Email"
+    assert canon_layer("Source material") == "Source material"
+    assert canon_layer("SourceMaterial") == "Source material"
+    assert canon_layer("DECISION") == "Decisions"
+
+
+def test_canon_layer_passes_unknown_through_unchanged():
+    """An unmapped value (a future/custom kind) is returned as-is, not mangled —
+    canon only converges KNOWN aliases, it never invents or drops a layer."""
+    assert canon_layer("Retrospective") == "Retrospective"
+    assert canon_layer("ClientFeedback") == "ClientFeedback"
 
 
 def test_slugify_makes_a_safe_slug():
@@ -22,7 +54,7 @@ def test_build_create_rows_unbound_email():
     assert r["id"] == "ibx-5192/_authored/email-from-janet/v1"
     assert r["est_item_id"] == "_authored/email-from-janet"
     assert r["placement"] == "context"
-    assert r["layer"] == "email"          # type -> layer for authored context elements
+    assert r["layer"] == "Email"          # type -> canonical layer (canon_layer)
     assert r["origin"] == "authored"
     assert r["status"] == "live"
     assert r["version_label"] == "v1"
@@ -90,7 +122,7 @@ def test_build_create_rows_golden_vector():
     assert rows == [{
         "id": "c/_authored/my-label/v1", "project_id": "P", "project_code": "c",
         "est_item_id": "_authored/my-label", "est_item_kind": None, "phase": None,
-        "binding": "unbound", "layer": "note", "placement": "context", "serves": [],
+        "binding": "unbound", "layer": "Note", "placement": "context", "serves": [],
         "version_label": "v1", "version_date": "2026-01-02", "status": "live",
         "framing": "My Label", "body": "b", "sources": [], "origin": "authored",
         "version_note": None, "rel_path": None,

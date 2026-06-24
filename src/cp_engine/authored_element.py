@@ -23,6 +23,44 @@ def slugify(text: str) -> str:
     return s or "untitled"
 
 
+# Canonical layer vocabulary. The spine UI (mc-2 `lib/spine/elementTypes.ts`
+# ELEMENT_TYPES) is the source of truth for the stored `layer` strings; the MCP
+# write tool documents a LOWERCASE alias vocab. Without convergence the SAME
+# kind lands under different strings (`Email` vs `email`, `Source material` vs
+# `SourceMaterial`) and the UI's by-layer filters miss whatever the other path
+# wrote. The key is the input lowercased with spaces stripped; the value is the
+# UI's exact canonical form. Unknown inputs pass through unchanged (a future or
+# custom kind is never invented or dropped — only KNOWN aliases converge).
+_LAYER_CANON = {
+    "email": "Email",
+    "note": "Note",
+    "decision": "Decisions",
+    "decisions": "Decisions",
+    "source": "Source material",
+    "sourcematerial": "Source material",
+    "brief": "Brief",
+    "stakeholder": "Stakeholders",
+    "stakeholders": "Stakeholders",
+    "agreement": "Agreement",
+    "synthesis": "Synthesis",
+    "output": "Output",
+    "activity": "Activity",
+}
+
+
+def canon_layer(type_: str) -> str:
+    """Map an element `type` to its canonical `layer` string (see _LAYER_CANON).
+
+    Case- and whitespace-insensitive lookup; an unmapped value is returned
+    unchanged so the UI's already-canonical TitleCase forms are idempotent and
+    any custom/future kind survives.
+    """
+    if not type_:
+        return type_
+    key = type_.lower().replace(" ", "")
+    return _LAYER_CANON.get(key, type_)
+
+
 def authored_est_item_id(slug: str) -> str:
     return f"_authored/{slug}"
 
@@ -37,7 +75,7 @@ def _row(*, project_id, project_code, est_item_id, label, type_, body, serves,
         "est_item_kind": None,
         "phase": None,
         "binding": "live" if serves else "unbound",
-        "layer": type_,
+        "layer": canon_layer(type_),
         "placement": "context",
         "serves": list(serves or []),
         "version_label": version_label,
