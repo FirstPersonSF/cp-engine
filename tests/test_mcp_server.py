@@ -56,10 +56,12 @@ def test_pull_project_source_delegates(monkeypatch):
     assert out == {"title": "Storybook", "chunks": ["c1", "c2"]}
 
 
-def test_list_project_sources_unresolved_returns_empty(monkeypatch):
-    """An unresolvable code yields an empty list, not a crash."""
+def test_list_project_sources_unresolved_returns_note(monkeypatch):
+    """An unresolvable code yields a structured note, not a bare [] (which would
+    be indistinguishable from a project that genuinely has no sources)."""
     monkeypatch.setattr(srv, "_resolve", lambda code: None)
-    assert srv.list_project_sources("nope") == []
+    out = srv.list_project_sources("nope")
+    assert len(out) == 1 and "nope" in out[0]["note"]
 
 
 def test_pull_project_source_unresolved_returns_note(monkeypatch):
@@ -213,10 +215,13 @@ def test_pull_spine_element_delegates(monkeypatch):
     assert out == {"est_item_id": "_authored/email", "body": "full text"}
 
 
-def test_list_spine_elements_unresolved_returns_empty(monkeypatch):
-    """An unresolvable code yields an empty list, not a crash."""
+def test_list_spine_elements_unresolved_returns_note(monkeypatch):
+    """An unresolvable code yields a structured note, NOT a bare [] — the
+    v0.39.0 false-negative where an unresolvable code looked like an empty spine.
+    """
     monkeypatch.setattr(srv, "_resolve", lambda code: None)
-    assert srv.list_spine_elements("nope") == []
+    out = srv.list_spine_elements("nope")
+    assert len(out) == 1 and "nope" in out[0]["note"]
 
 
 def test_pull_spine_element_unresolved_returns_note(monkeypatch):
@@ -476,6 +481,44 @@ def test_resolve_project_id_falls_back_to_company_prefix_and_number():
     }
     client = _FakeClient(store)
     assert srv._resolve_project_id(client, "ibx-5192") == "pid-5192"
+
+
+def test_resolve_project_id_by_full_job_name_slug():
+    """The canonical on-disk id `ibx-5153-ai-campaign` resolves even though
+    projects.code is `IBX-ai-campaign` and the number 5153 lives only in the
+    middle of `full_job_name` ("IBX 5153 AI Campaign").
+
+    Since v0.35.0 `code = slug_full_job_name(full_job_name)` is the canonical id
+    that cp.md Facts, the working-dir name, and CLAUDE.md all use — so it's the
+    natural thing a caller passes. It matches neither the exact-code branch nor
+    the legacy `<prefix>-<number>` bridge (the number isn't the trailing
+    segment), so a third branch must reverse `slug_full_job_name`: scan the
+    company-prefixed candidate rows and compare the slugified full_job_name.
+    """
+    store = {
+        # exact-code lookup MISSES (the on-disk slug is not the real code)
+        ("projects", frozenset([("code", "ibx-5153-ai-campaign")])): [],
+        # the new branch scans company-prefixed candidates by full_job_name
+        ("projects", frozenset([("code", "ilike", "ibx-%")])): [
+            {"id": "pid-other", "full_job_name": "IBX Something Else"},
+            {"id": "pid-5153", "full_job_name": "IBX 5153 AI Campaign"},
+        ],
+    }
+    client = _FakeClient(store)
+    assert srv._resolve_project_id(client, "ibx-5153-ai-campaign") == "pid-5153"
+
+
+def test_resolve_project_id_full_job_name_slug_no_match_falls_through():
+    """When no candidate's slugified full_job_name matches, the branch yields no
+    false positive and resolution falls through to None (not the wrong project)."""
+    store = {
+        ("projects", frozenset([("code", "ibx-5153-ai-campaign")])): [],
+        ("projects", frozenset([("code", "ilike", "ibx-%")])): [
+            {"id": "pid-other", "full_job_name": "IBX Something Else"},
+        ],
+    }
+    client = _FakeClient(store)
+    assert srv._resolve_project_id(client, "ibx-5153-ai-campaign") is None
 
 
 def test_resolve_project_id_falls_back_to_initiative_code():

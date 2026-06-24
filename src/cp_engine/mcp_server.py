@@ -100,12 +100,19 @@ def _resolve_project_id(client, project_code: str) -> str | None:
     Resolution order:
       1. Exact ``projects.code`` match (handles a caller that passes the real
          slug code, e.g. from MC-2 directly).
-      2. Fallback: parse ``<companyprefix>-<number>`` and match
+      2. ``slug_full_job_name(full_job_name) == project_code`` — the canonical
+         on-disk id since v0.35.0 (``ibx-5153-ai-campaign``), what cp.md Facts,
+         the working-dir name, and CLAUDE.md all use. The number lives in the
+         MIDDLE of this slug (inside ``full_job_name``), so branch 3 below can't
+         see it; this branch reverses ``slug_full_job_name`` instead.
+      3. Fallback: parse ``<companyprefix>-<number>`` and match
          ``companies.code`` (case-insensitive) + ``projects.number``. This is
-         what bridges ``ibx-5192`` → the row whose code is the slug.
+         the legacy bridge for the number-last form (``ibx-5192``).
 
     Returns the project id, or ``None`` when nothing resolves.
     """
+    from cp_engine.state import slug_full_job_name
+
     rows = (
         client.table("projects")
         .select("id")
@@ -118,7 +125,25 @@ def _resolve_project_id(client, project_code: str) -> str | None:
     if rows:
         return rows[0]["id"]
 
-    # Fallback: <companyprefix>-<number> (the working-dir / cp.md Facts form).
+    # Match the canonical on-disk id: slug_full_job_name(full_job_name).
+    # Scope the scan to company-prefixed candidates (the slug always starts with
+    # the company prefix) so this stays cheap, then compare the slugified
+    # full_job_name in Python — avoids needing a slugify function in SQL.
+    prefix = project_code.split("-", 1)[0]
+    if prefix:
+        candidates = (
+            client.table("projects")
+            .select("id, full_job_name")
+            .ilike("code", f"{prefix}-%")
+            .execute()
+            .data
+            or []
+        )
+        for row in candidates:
+            if slug_full_job_name(row.get("full_job_name")) == project_code:
+                return row["id"]
+
+    # Fallback: <companyprefix>-<number> (the legacy number-last form).
     # An initiative slug (`mission-control`) has no trailing number, so this
     # branch is skipped and we fall through to the initiatives lookup below.
     prefix, sep, tail = project_code.rpartition("-")
@@ -182,7 +207,7 @@ def list_project_sources(project_code: str) -> list[dict]:
     try:
         resolved = _resolve(project_code)
         if resolved is None:
-            return []
+            return [{"note": f"code '{project_code}' resolved to no project"}]
         client, pid, cid = resolved
         return list_sources(client, pid, cid)
     except Exception as exc:  # noqa: BLE001
@@ -263,7 +288,9 @@ def list_spine_elements(project_code: str) -> list[dict]:
     try:
         resolved = _resolve(project_code)
         if resolved is None:
-            return []
+            # A structured note, NOT a bare [] — an unresolvable code must never
+            # masquerade as a genuinely empty spine (the v0.39.0 false-negative).
+            return [{"note": f"code '{project_code}' resolved to no project"}]
         client, pid, _cid = resolved
         return list_spine(client, pid)
     except Exception as exc:  # noqa: BLE001

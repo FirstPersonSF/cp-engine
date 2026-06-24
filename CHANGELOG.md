@@ -4,6 +4,29 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.39.1 — 2026-06-24
+
+### Fixed — `cp-sources` MCP resolves the canonical on-disk slug
+
+The MCP resolver (`_resolve_project_id`) had no branch for the canonical on-disk
+id since v0.35.0 — `slug_full_job_name(full_job_name)` (e.g. `ibx-5153-ai-campaign`),
+the id `cp.md` Facts, the working-dir name, and `CLAUDE.md` all use. The number
+sits in the *middle* of that slug, so it matched neither the exact-`code` branch
+nor the legacy `<prefix>-<number>` bridge (which assumes the number is the trailing
+segment). It resolved to `None` and the spine/source tools returned a bare `[]`,
+indistinguishable from a genuinely empty spine — a silent false negative that
+misreported IBX-5153's 35-element live spine as empty.
+
+- **New resolution branch.** After the exact-`code` match and before the legacy
+  `<prefix>-<number>` bridge, scan company-prefixed candidate rows and match
+  `slug_full_job_name(full_job_name) == project_code`. Verified live: both
+  `ibx-5153-ai-campaign` and `IBX-ai-campaign` now resolve to the same project id
+  and surface all 35 live spine elements.
+- **No more silent empties.** `list_project_sources` / `list_spine_elements`
+  return a structured `{"note": "code '<x>' resolved to no project"}` on an
+  unresolvable code instead of a bare `[]`, so an empty result can never again
+  masquerade as an empty spine.
+
 ## v0.39.0 — 2026-06-24
 
 ### Added — initiatives are first-class in the spine / sources / ClickUp stack
