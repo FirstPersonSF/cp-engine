@@ -21,6 +21,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from cp_engine.sync import _default_backend_factory
+
 # Scopes that have no client engagements: asset ingest skips them entirely.
 INTERNAL_SCOPES = ("fpsf", "canonic")
 
@@ -41,32 +43,71 @@ def build_mc2_client():
     return create_client(url, key)
 
 
-def active_client_project_codes(config) -> list[str]:
-    """Enumerate cp codes for every active *client* project in MC-2.
+def _is_active_engagement(p) -> bool:
+    """The canonical "active client engagement" predicate.
 
-    Reuses the canonical "active client project" definition rather than
-    re-deriving it: enumerate via the sync backend's `read_projects` and apply
-    the SAME predicate `sync.py` and `list-active-projects` use —
     `source == "engagement"`, active status via `is_active_status` (the single
     source of truth for the active vocabulary, so Holding ever joining the
     active set flows through here for free), `is_internal=False`, and
-    `company_kind == "client"`. Returns each `ProjectState.code` (already the
-    pre-built `<company-lowercase>-<number>` form — no hand-rebuilt string).
+    `company_kind == "client"`. Kept as the SAME predicate `sync.py` and
+    `list-active-projects` use.
     """
     from cp_engine.status import is_active_status
-    from cp_engine.sync import _default_backend_factory
 
+    return (
+        p.source == "engagement"
+        and is_active_status(p.status)
+        and not p.is_internal
+        and p.company_kind == "client"
+    )
+
+
+def _is_active_initiative(p) -> bool:
+    """An ACTIVE initiative — eligible for asset ingest (Task 8).
+
+    Initiatives carry their OWN active-status vocabulary (`Active` only), so we
+    gate on `is_active_initiative_status`, NOT `is_active_status` (which speaks
+    the engagement vocabulary). `is_internal`/`company_kind` don't apply — an
+    initiative is internal by construction.
+    """
+    from cp_engine.status import is_active_initiative_status
+
+    return p.source == "initiative" and is_active_initiative_status(p.status)
+
+
+def active_ingestable_codes(config) -> list[str]:
+    """Enumerate cp codes for every item eligible for asset ingest in MC-2.
+
+    The ingestable set = active client engagements PLUS active initiatives
+    (Task 8 lifted the engagement-only gate). Enumerate via the sync backend's
+    `read_projects` and apply the per-kind predicate. Returns each
+    `ProjectState.code` (already the pre-built canonical form — `<co>-<number>`
+    for engagements, the slug for initiatives — no hand-rebuilt string).
+
+    Initiatives with no ingest folders configured simply list nothing when the
+    per-project run resolves them; widening the SET here is safe and never
+    crashes (see `ingest_project_assets`'s graceful no-folders short-circuit).
+    """
     backend = _default_backend_factory(config.sync.backend)
     projects = backend.read_projects(config)
 
     return [
         p.code
         for p in projects
-        if p.source == "engagement"
-        and is_active_status(p.status)
-        and not p.is_internal
-        and p.company_kind == "client"
+        if _is_active_engagement(p) or _is_active_initiative(p)
     ]
+
+
+def active_client_project_codes(config) -> list[str]:
+    """Back-compat shim: active client engagements only (no initiatives).
+
+    Retained for any caller that specifically wants the engagement-only set.
+    The `cp ingest-assets --all` CLI now routes through the widened
+    `active_ingestable_codes`.
+    """
+    backend = _default_backend_factory(config.sync.backend)
+    projects = backend.read_projects(config)
+    return [p.code for p in projects if _is_active_engagement(p)]
 
 
 @dataclass

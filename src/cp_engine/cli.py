@@ -2769,7 +2769,7 @@ def ingest_assets_cmd(code: str | None, all_: bool, scope: str | None) -> None:
     # Enumeration goes through the canonical read_projects path (config-driven);
     # the per-project fan-out work still needs an MC-2 client.
     config = _load_config_or_die()
-    codes = asset_ingest_cli.active_client_project_codes(config)
+    codes = asset_ingest_cli.active_ingestable_codes(config)
     if not codes:
         click.echo("No active client projects found; nothing to do.")
         return
