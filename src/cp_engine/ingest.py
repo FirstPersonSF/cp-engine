@@ -1330,6 +1330,13 @@ def _resolve_proposal_project(client, code: str) -> dict | None:
     ``webhook/clickup_propose._resolve_project`` because webhook/ isn't
     on cp_engine's import path. Tolerates ``enable_clickup`` being
     absent (some test mocks omit it).
+
+    KEEP IN SYNC with the webhook copy. The two have deliberately diverged
+    on: initiative error handling (here ``APIError``, webhook bare
+    ``Exception``) and absent-``enable_clickup`` semantics (here treated as
+    enabled for test mocks, webhook as disabled). The ``kind`` stamp on both
+    return branches (``"project"`` / ``"initiative"``) MUST stay identical —
+    downstream owner-column selection (``_owner_column``) keys on it.
     """
     tail = code.rsplit("-", 1)[-1]
     number = int(tail) if tail.isdigit() else None

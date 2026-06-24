@@ -44,8 +44,15 @@ def _resolve_project(client, code: str) -> dict | None:
     number is always the trailing segment. Initiative codes are a bare
     slug stored directly on ``initiatives.code`` (e.g. ``mission-control``).
 
-    Returns a dict with ``id``, ``clickup_list_id``, ``code`` — or None if
-    the project can't be resolved or ClickUp routing isn't available.
+    Returns a dict with ``id``, ``clickup_list_id``, ``code``, ``kind``
+    (``"project"`` / ``"initiative"``) — or None if the project can't be
+    resolved or ClickUp routing isn't available.
+
+    KEEP IN SYNC with ``cp_engine.ingest._resolve_proposal_project`` (the two
+    are deliberately duplicated — webhook/ isn't on cp_engine's import path).
+    They have diverged on initiative error handling (bare ``Exception`` here,
+    ``APIError`` there) and absent-``enable_clickup`` semantics; the ``kind``
+    stamp MUST stay identical — owner-column selection keys on it.
     """
     number: int | None = None
     tail = code.rsplit("-", 1)[-1]
