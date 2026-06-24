@@ -2205,32 +2205,33 @@ def _verify_slack_signature(raw_body: bytes, timestamp: str, provided: str) -> N
 
 
 def _lookup_proposal_by_clickup_task_id(task_id: str) -> tuple[str, str] | None:
-    """Return (cp_ask_hash, project_code) for a given ClickUp task_id.
+    """Return (cp_ask_hash, code) for a given ClickUp task_id.
 
-    Joins clickup_task_proposals → projects → companies to reconstruct
-    the `<company>-<number>` code. Returns None if no row matches or
-    Supabase is unavailable. Best-effort: any exception is swallowed
-    and treated as 'not found' (the webhook returns `ingested: false`).
+    Resolves the owning cp code from whichever owner column is set on the
+    ``clickup_task_proposals`` row (post-migration 081 the table carries
+    BOTH ``project_id`` and ``initiative_id`` with a num_nonnulls == 1
+    CHECK — exactly one owner):
 
-    Note: today, this only resolves engagement codes (``<company>-<number>``)
-    because the ``clickup_task_proposals.project_id`` FK targets
-    ``projects.id``, not ``initiatives.id``. The initiative ClickUp path in
-    ``clickup_propose._resolve_project`` is latently broken (would fail FK
-    insert) — when that's fixed in a separate task, this lookup will need
-    a parallel ``initiatives`` fallback.
+      - ``project_id`` set → ``<company>-<number>`` via projects → companies.
+      - ``initiative_id`` set → the initiative's slug ``code`` directly.
+
+    Returns None if no row matches, neither owner resolves, or Supabase is
+    unavailable. Best-effort: any exception is swallowed and treated as
+    'not found' (the webhook returns `ingested: false`).
     """
     url = os.environ.get("SUPABASE_URL")
     key = os.environ.get("SUPABASE_SERVICE_KEY")
     if not url or not key:
         log.warning("clickup-task-closed: Supabase env not set; can't look up task_id")
         return None
+    if create_client is None:
+        log.warning("clickup-task-closed: supabase package not installed")
+        return None
     try:
-        from supabase import create_client
-
         client = create_client(url, key)
         resp = (
             client.table("clickup_task_proposals")
-            .select("cp_ask_hash, projects!inner(number, companies!inner(code))")
+            .select("cp_ask_hash, project_id, initiative_id")
             .eq("clickup_task_id", task_id)
             .limit(1)
             .execute()
@@ -2246,24 +2247,86 @@ def _lookup_proposal_by_clickup_task_id(task_id: str) -> tuple[str, str] | None:
                 task_id,
             )
             return None
-        proj = row.get("projects") or {}
-        # Supabase nested selects can return list-or-dict depending on
-        # how the relationship is declared; normalize both shapes.
-        if isinstance(proj, list):
-            proj = proj[0] if proj else {}
-        companies = proj.get("companies") or {}
-        if isinstance(companies, list):
-            companies = companies[0] if companies else {}
-        company_code = (companies.get("code") or "").lower()
-        number = proj.get("number")
-        if company_code and number is not None:
-            return cp_hash, f"{company_code}-{number}"
+
+        initiative_id = row.get("initiative_id")
+        if initiative_id:
+            code = _resolve_initiative_code(client, initiative_id)
+            if code:
+                return cp_hash, code
+            log.warning(
+                "clickup-task-closed: no initiative code for id=%s (task=%s)",
+                initiative_id, task_id,
+            )
+            return None
+
+        project_id = row.get("project_id")
+        if project_id:
+            code = _resolve_engagement_code(client, project_id)
+            if code:
+                return cp_hash, code
+            log.warning(
+                "clickup-task-closed: no engagement code for project_id=%s (task=%s)",
+                project_id, task_id,
+            )
+            return None
+
+        log.warning(
+            "clickup-task-closed: proposal for task=%s has no owner", task_id
+        )
         return None
     except Exception as exc:  # noqa: BLE001 — best-effort
         log.warning(
             "clickup-task-closed: task lookup failed for %s: %s", task_id, exc
         )
         return None
+
+
+def _resolve_engagement_code(client, project_id: str) -> str | None:
+    """Resolve a projects.id to its ``<company>-<number>`` engagement code."""
+    resp = (
+        client.table("projects")
+        .select("number, company_id")
+        .eq("id", project_id)
+        .limit(1)
+        .execute()
+    )
+    rows = resp.data or []
+    if not rows:
+        return None
+    proj = rows[0]
+    number = proj.get("number")
+    company_id = proj.get("company_id")
+    if number is None or not company_id:
+        return None
+    cresp = (
+        client.table("companies")
+        .select("code")
+        .eq("id", company_id)
+        .limit(1)
+        .execute()
+    )
+    crows = cresp.data or []
+    if not crows:
+        return None
+    company_code = (crows[0].get("code") or "").lower()
+    if not company_code:
+        return None
+    return f"{company_code}-{number}"
+
+
+def _resolve_initiative_code(client, initiative_id: str) -> str | None:
+    """Resolve an initiatives.id to its slug ``code``."""
+    resp = (
+        client.table("initiatives")
+        .select("code")
+        .eq("id", initiative_id)
+        .limit(1)
+        .execute()
+    )
+    rows = resp.data or []
+    if not rows:
+        return None
+    return rows[0].get("code") or None
 
 
 def _commit_clickup_close(

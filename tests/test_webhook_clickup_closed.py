@@ -303,3 +303,113 @@ def test_clickup_task_closed_no_changes_returns_200_not_ingested(
     data = resp.json()
     assert data["ingested"] is False
     assert data["reason"] == "no_change"
+
+
+# ─────────────────────────────────────────────────────────────────────
+#  _lookup_proposal_by_clickup_task_id — owner resolution (Task 7 Part B)
+#
+#  Post-migration-081, clickup_task_proposals carries BOTH project_id and
+#  initiative_id (exactly one set). The lookup must resolve the code from
+#  whichever owner is set: <company>-<number> for projects, the slug code
+#  for initiatives. The old projects!inner join structurally dropped
+#  initiative-owned rows.
+# ─────────────────────────────────────────────────────────────────────
+
+
+class _FakeResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeQuery:
+    """Records the eq() filter and returns the table's matching rows."""
+
+    def __init__(self, rows, filters=None):
+        self._rows = rows
+        self._filters = filters or {}
+
+    def select(self, *_a, **_k):
+        return self
+
+    def eq(self, col, val):
+        f = dict(self._filters)
+        f[col] = val
+        return _FakeQuery(self._rows, f)
+
+    def limit(self, *_a, **_k):
+        return self
+
+    def single(self):
+        return self
+
+    def execute(self):
+        matched = [
+            r
+            for r in self._rows
+            if all(r.get(k) == v for k, v in self._filters.items())
+        ]
+        return _FakeResult(matched)
+
+
+class _FakeSupabase:
+    """Minimal stand-in: one row-list per table, filtered by eq()."""
+
+    def __init__(self, tables):
+        self._tables = tables
+
+    def table(self, name):
+        return _FakeQuery(self._tables.get(name, []))
+
+
+def test_lookup_resolves_project_owned_proposal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A project-owned row resolves to <company>-<number> as before."""
+    monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "k")
+    fake = _FakeSupabase(
+        {
+            "clickup_task_proposals": [
+                {
+                    "clickup_task_id": "T1",
+                    "cp_ask_hash": "abc12345",
+                    "project_id": "p1",
+                    "initiative_id": None,
+                }
+            ],
+            "projects": [{"id": "p1", "number": 5168, "company_id": "c1"}],
+            "companies": [{"id": "c1", "code": "GGL"}],
+        }
+    )
+    monkeypatch.setattr(
+        webhook_main, "create_client", lambda u, k: fake, raising=False
+    )
+    out = webhook_main._lookup_proposal_by_clickup_task_id("T1")
+    assert out == ("abc12345", "ggl-5168")
+
+
+def test_lookup_resolves_initiative_owned_proposal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An initiative-owned row resolves to the initiative's slug code —
+    previously dropped by the projects!inner join (returned None)."""
+    monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "k")
+    fake = _FakeSupabase(
+        {
+            "clickup_task_proposals": [
+                {
+                    "clickup_task_id": "T2",
+                    "cp_ask_hash": "feedface",
+                    "project_id": None,
+                    "initiative_id": "i9",
+                }
+            ],
+            "initiatives": [{"id": "i9", "code": "mission-control"}],
+        }
+    )
+    monkeypatch.setattr(
+        webhook_main, "create_client", lambda u, k: fake, raising=False
+    )
+    out = webhook_main._lookup_proposal_by_clickup_task_id("T2")
+    assert out == ("feedface", "mission-control")
