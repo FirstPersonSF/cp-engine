@@ -62,6 +62,12 @@ class ProjectFolders:
     # so existing construction sites are unaffected.
     asset_ingest_folders: tuple[str, ...] = ()
 
+    # Owner KIND. When True, `project_id` is actually an `initiatives.id` and the
+    # rag_assets row must be owned via `initiative_id` (migration 081 CHECK:
+    # exactly one of project_id/initiative_id). Defaults to False so every
+    # existing engagement construction site is unaffected. See `_owner_filter`.
+    is_initiative: bool = False
+
 
 @dataclass
 class FileRef:
@@ -1073,7 +1079,13 @@ def _stamp_scope(
     `pipeline.ingest_file`, whose signature only takes (file_path, title, url), so
     this post-ingest stamp is where they land. `source_path` is the Dropbox
     path_display, `None` for Drive files (which re-fetch by id).
+
+    OWNER COLUMN (Task 8): the dedup-key WHERE must filter on whichever owner the
+    pipeline wrote — `initiative_id` for an initiative, `project_id` for an
+    engagement (mirrors `ingest._owner_column`). `folders.project_id` carries the
+    owning row's id for BOTH kinds; `is_initiative` selects the column.
     """
+    owner_col, owner_val = _owner_filter(folders)
     client.table("rag_assets").update(
         {
             "scope": "project",
@@ -1082,9 +1094,24 @@ def _stamp_scope(
             "source_file_id": file_ref.id,
             "source_path": file_ref.path,
         }
-    ).eq("project_id", folders.project_id).eq("file_path", file_path).eq(
+    ).eq(owner_col, owner_val).eq("file_path", file_path).eq(
         "status", "active"
     ).execute()
+
+
+def _owner_filter(folders: ProjectFolders) -> tuple[str, str]:
+    """The single (column, value) owner pair for a rag_assets row.
+
+    `rag_assets` (migration 081) carries BOTH `project_id` (FK projects) and
+    `initiative_id` (FK initiatives) under a `num_nonnulls(...) == 1` CHECK —
+    exactly one owner. Filtering/writing the WRONG column for an initiative
+    would miss the row (or FK-crash on insert). `folders.project_id` holds the
+    owning id for both kinds; `is_initiative` picks the column. Mirrors
+    `ingest._owner_column`.
+    """
+    if folders.is_initiative:
+        return "initiative_id", folders.project_id
+    return "project_id", folders.project_id
 
 
 # ──────────────────────────────────────────────────────────────────────
