@@ -594,7 +594,7 @@ toml = [
 
 [[package]]
 name = "cp-engine"
-version = "0.28.0"
+version = "0.39.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -605,6 +605,7 @@ dependencies = [
     { name = "mcp" },
     { name = "packaging" },
     { name = "pygithub" },
+    { name = "pypdf" },
     { name = "python-frontmatter" },
     { name = "pyyaml" },
     { name = "resilience" },
@@ -637,6 +638,7 @@ requires-dist = [
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
     { name = "packaging", specifier = ">=24.0" },
     { name = "pygithub", specifier = ">=2.0" },
+    { name = "pypdf", specifier = ">=4.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
     { name = "python-frontmatter", specifier = ">=1.1" },
