@@ -71,6 +71,7 @@ def _resolve_project(client, code: str) -> dict | None:
             "id": row["id"],
             "clickup_list_id": row.get("clickup_list_id"),
             "code": code,
+            "kind": "project",
         }
 
     # Initiative — slug code. ClickUp columns may not exist on the
@@ -97,6 +98,7 @@ def _resolve_project(client, code: str) -> dict | None:
         "id": row["id"],
         "clickup_list_id": row.get("clickup_list_id"),
         "code": code,
+        "kind": "initiative",
     }
 
 
@@ -130,12 +132,18 @@ def _build_proposal_row(*, meeting_id: str, project: dict, item: dict) -> dict:
     record-ask items. Re-ingest of the same meeting is therefore an
     idempotent no-op: _write_ask's dedupe sees the matching hash and
     skips the row.
+
+    Owner column: ``clickup_task_proposals`` (post-migration 081) carries
+    BOTH ``project_id`` (FK projects) and ``initiative_id`` (FK initiatives)
+    with a ``num_nonnulls(...) == 1`` CHECK — exactly one owner. We write
+    whichever matches ``project["kind"]`` (defaulting to ``project`` for
+    callers that predate the kind field). Writing ``project_id`` for an
+    initiative would FK-crash on insert.
     """
     description = (item.get("description") or "").strip()
     assignee = item.get("assignee") or {}
-    return {
+    row = {
         "meeting_id": meeting_id,
-        "project_id": project["id"],
         "clickup_list_id": project["clickup_list_id"],
         "description": description,
         "assignee_email": assignee.get("email"),
@@ -143,6 +151,11 @@ def _build_proposal_row(*, meeting_id: str, project: dict, item: dict) -> dict:
         "cp_ask_hash": _content_hash(project["code"], "record-ask", description),
         "status": "pending",
     }
+    if project.get("kind") == "initiative":
+        row["initiative_id"] = project["id"]
+    else:
+        row["project_id"] = project["id"]
+    return row
 
 
 def propose_clickup_tasks(meeting_id: str, project_codes: list[str]) -> dict:
