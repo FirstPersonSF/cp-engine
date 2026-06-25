@@ -279,11 +279,12 @@ def pull_spine(client, project_id: str, key: str) -> dict:
       1. Exact `est_item_id` match (the machine path: `list_spine` returns these).
       2. Title (`framing`) substring, case-insensitive (`_title_matches`):
          - exactly one distinct element matched → return it,
-         - 2+ distinct elements matched → `{body: "", note: "ambiguous: ..."}`.
-      3. No match → `{body: "", note: "no spine element ..."}`.
+         - 2+ distinct elements matched → `{body: "", error: "ambiguous: ..."}`.
+      3. No match → `{body: "", error: "no spine element ..."}`.
 
     Returns `{est_item_id, framing, layer, binding, status, serves, sources,
-    version_label, body}` on success. Never raises.
+    version_label, body, important, note}` on success (`note` is the element's
+    importance annotation). Failure paths return an `error` key. Never raises.
     """
     resp = (
         client.table("spine_substance")
@@ -304,7 +305,7 @@ def pull_spine(client, project_id: str, key: str) -> dict:
     if not matched:
         return {
             "body": "",
-            "note": f"no spine element matching '{key}' in this project",
+            "error": f"no spine element matching '{key}' in this project",
         }
     distinct = {r.get("est_item_id"): r for r in matched}
     if len(distinct) > 1:
@@ -313,7 +314,7 @@ def pull_spine(client, project_id: str, key: str) -> dict:
         )
         return {
             "body": "",
-            "note": (
+            "error": (
                 f"ambiguous: '{key}' matched {len(distinct)} elements: "
                 f"[{candidates}]; pass an est_item_id or a more specific title"
             ),

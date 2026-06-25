@@ -224,12 +224,12 @@ def test_list_spine_elements_unresolved_returns_note(monkeypatch):
     assert len(out) == 1 and "nope" in out[0]["note"]
 
 
-def test_pull_spine_element_unresolved_returns_note(monkeypatch):
-    """An unresolvable code yields a not-found note, not a crash."""
+def test_pull_spine_element_unresolved_returns_error(monkeypatch):
+    """An unresolvable code yields a not-found error, not a crash."""
     monkeypatch.setattr(srv, "_resolve", lambda code: None)
     out = srv.pull_spine_element("nope", "_authored/x")
     assert out["body"] == ""
-    assert "not found" in out["note"]
+    assert "not found" in out["error"]
 
 
 def test_list_spine_elements_resolve_raises_returns_error(monkeypatch):

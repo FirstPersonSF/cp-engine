@@ -306,7 +306,8 @@ def pull_spine_element(project_code: str, key: str) -> dict:
     `key` is an est_item_id (e.g. `_authored/email-from-olivia...`, exact, the
     machine path) or a case-insensitive substring of the element's title
     (`framing`). Returns the full body + context (layer, binding, serves,
-    sources, version_label), or a `note` when nothing/ambiguously matches.
+    sources, version_label). Returns an `error` key when nothing/ambiguously
+    matches; a successful element may carry its own importance `note`.
     """
     from cp_engine.project_sources import pull_spine
 
@@ -315,7 +316,7 @@ def pull_spine_element(project_code: str, key: str) -> dict:
         if resolved is None:
             return {
                 "body": "",
-                "note": f"project '{project_code}' not found",
+                "error": f"project '{project_code}' not found",
             }
         client, pid, _cid = resolved
         return pull_spine(client, pid, key)

@@ -254,7 +254,7 @@ def test_pull_spine_not_found_returns_note():
     out = pull_spine(client, "proj-1", "nonexistent-element")
 
     assert out["body"] == ""
-    assert "no spine element" in out["note"].lower()
+    assert "no spine element" in out["error"].lower()
 
 
 def test_pull_spine_ambiguous_title_returns_note():
@@ -271,7 +271,7 @@ def test_pull_spine_ambiguous_title_returns_note():
     ]
     out2 = pull_spine(_FakeTableClient(rows), "proj-1", "report")
     assert out2["body"] == ""
-    assert "ambiguous" in out2["note"].lower()
+    assert "ambiguous" in out2["error"].lower()
 
 
 # ──────────────────────────────────────────────────────────────────────

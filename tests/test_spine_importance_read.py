@@ -45,3 +45,18 @@ def test_pull_spine_returns_important_and_note():
     el = pull_spine(_client(rows, captured), "pid", "a")
     assert el["important"] is True
     assert el["note"] == "why a"
+
+
+def test_pull_spine_success_note_is_annotation_not_error():
+    captured = {}
+    rows = [_row("a", True)]  # _row sets note="why a"
+    el = pull_spine(_client(rows, captured), "pid", "a")
+    assert el["note"] == "why a"      # importance note, not an error
+    assert "error" not in el
+
+
+def test_pull_spine_no_match_returns_error_not_note():
+    captured = {}
+    el = pull_spine(_client([], captured), "pid", "missing")
+    assert "error" in el
+    assert "note" not in el           # failure must not masquerade as an annotation
