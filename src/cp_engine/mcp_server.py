@@ -384,7 +384,8 @@ def add_spine_version(project_code: str, element_id: str, body: str,
     from cp_engine.authored_element import build_version_rows
 
     _SEL = ("id, est_item_id, est_item_kind, phase, binding, layer, placement, "
-            "serves, version_label, version_date, status, framing, body, sources, origin")
+            "serves, version_label, version_date, status, framing, body, sources, "
+            "origin, important, note")
     try:
         resolved = _resolve(project_code)
         if resolved is None:
