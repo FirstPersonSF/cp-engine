@@ -126,6 +126,7 @@ def test_build_create_rows_golden_vector():
         "version_label": "v1", "version_date": "2026-01-02", "status": "live",
         "framing": "My Label", "body": "b", "sources": [], "origin": "authored",
         "version_note": None, "rel_path": None,
+        "important": False, "note": None,
     }]
 
 
