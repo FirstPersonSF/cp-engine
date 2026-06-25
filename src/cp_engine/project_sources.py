@@ -219,12 +219,14 @@ def pull_source(
 
 # List columns: metadata + body (so we can derive body_len) but never `*`. The
 # body is selected only to compute its length; it is NOT returned in the list.
-_SPINE_LIST_COLUMNS = "est_item_id, framing, layer, binding, status, serves, body"
+_SPINE_LIST_COLUMNS = (
+    "est_item_id, framing, layer, binding, status, serves, body, important, note"
+)
 
 # Pull columns: everything needed to return one element with full body + context.
 _SPINE_PULL_COLUMNS = (
     "est_item_id, framing, layer, binding, status, serves, sources, "
-    "version_label, body"
+    "version_label, body, important, note"
 )
 
 
@@ -258,8 +260,13 @@ def list_spine(client, project_id: str) -> list[dict]:
                 "status": row.get("status"),
                 "serves_count": len(serves),
                 "body_len": len(body),
+                "important": bool(row.get("important")),
+                "note": row.get("note"),
             }
         )
+    # Important elements sort first; list.sort is stable so within-group order
+    # (the query's existing layer ordering) is preserved.
+    out.sort(key=lambda r: not r["important"])
     return out
 
 
@@ -326,6 +333,8 @@ def _spine_element(row: dict) -> dict:
         "sources": row.get("sources") or [],
         "version_label": row.get("version_label"),
         "body": row.get("body") or "",
+        "important": bool(row.get("important")),
+        "note": row.get("note"),
     }
 
 
