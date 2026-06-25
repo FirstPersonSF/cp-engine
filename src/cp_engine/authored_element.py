@@ -128,5 +128,7 @@ def build_version_rows(*, project_id, project_code, est_item_id, prior_versions,
         body=body, serves=serves if serves is not None else (base.get("serves") or []),
         version_label=f"v{next_n}", version_date=now_iso[:10], status="live",
         version_note=version_note,
+        # important/note are element-level: carried forward only, never overridden on
+        # a new version. The dedicated set_spine_element path edits them.
         important=base.get("important", False), note=base.get("note"),
     )]
