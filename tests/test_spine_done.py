@@ -56,3 +56,11 @@ def test_fetch_project_done_map_no_estimate_returns_empty(monkeypatch):
     monkeypatch.setattr(spine_done, "fetch_schedule",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not call")))
     assert spine_done.fetch_project_done_map(object(), "pid") == {}
+
+
+def test_fetch_project_done_map_empty_schedule_returns_empty(monkeypatch):
+    class _Est:
+        id = "EST1"
+    monkeypatch.setattr(spine_done, "fetch_estimate", lambda c, pid: _Est())
+    monkeypatch.setattr(spine_done, "fetch_schedule", lambda c, eid: [])
+    assert spine_done.fetch_project_done_map(object(), "pid") == {}
