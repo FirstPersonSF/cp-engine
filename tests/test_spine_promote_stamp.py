@@ -32,4 +32,19 @@ def test_stamp_returns_structured_result():
         def table(self, n): return _T(n)
     out = stamp_promoted_asset(_C(), project_id="pid", est_item_id="w1",
                                title="T", file_path="/tmp/w1/t.txt")
-    assert out.get("stamped") is True or out.get("asset") or out.get("id")  # some success signal
+    assert out == {"stamped": True, "title": "T", "ids": ["a1"]}
+
+
+def test_stamp_zero_match_reports_not_stamped():
+    # update matches no active row at this file_path → stamped:false, ids empty.
+    class _T:
+        def __init__(self, n): pass
+        def update(self, d): return self
+        def eq(self, c, v): return self
+        def execute(self): return type("R", (), {"data": []})()
+    class _C:
+        def table(self, n): return _T(n)
+    out = stamp_promoted_asset(_C(), project_id="pid", est_item_id="w1",
+                               title="T", file_path="/tmp/w1/t.txt")
+    assert out["stamped"] is False
+    assert out["ids"] == []
