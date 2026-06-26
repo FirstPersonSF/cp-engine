@@ -1099,6 +1099,9 @@ def _unchanged_since_last_ingest(client, project_id: str, file_ref) -> bool:
         rows = (
             client.table("rag_assets")
             .select("meta")  # explicit, never *
+            # NOTE: keyed on project_id only. Initiatives (owner via initiative_id,
+            # see _owner_filter) aren't reachable by ingest today; if that changes,
+            # this filter must become owner-aware or initiative caching always-misses.
             .eq("project_id", project_id)
             .eq("source_provider", file_ref.source)
             .eq("source_file_id", file_ref.id)
@@ -1112,7 +1115,16 @@ def _unchanged_since_last_ingest(client, project_id: str, file_ref) -> bool:
             return False
         stored = (rows[0].get("meta") or {}).get("change_token")
         return stored is not None and stored == token
-    except Exception:  # noqa: BLE001 — fail-open: never skip on error
+    except Exception as exc:  # noqa: BLE001 — fail-open: skip-check failure must
+        # never crash the run or wrongly skip; degrade to "ingest normally". But
+        # surface it on stderr (matching _existing_dup_at_other_path) so a real
+        # regression — e.g. a renamed column — doesn't silently make every file
+        # re-ingest with no signal.
+        print(
+            f"[asset-ingest] ingest-cache skip-check failed for "
+            f"{file_ref.id} ({exc}); ingesting without it",
+            file=sys.stderr,
+        )
         return False
 
 

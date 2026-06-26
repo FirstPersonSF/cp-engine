@@ -141,3 +141,5 @@ def test_query_is_provider_scoped():
     assert f["status"] == "active"
     # explicit column, never SELECT *
     assert client.tbl.select_cols == "meta"
+    # single-row contract: we only need to know one active row exists + its token.
+    assert client.tbl.limit_n == 1
