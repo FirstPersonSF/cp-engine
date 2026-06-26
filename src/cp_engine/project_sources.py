@@ -358,8 +358,10 @@ def pull_spine(client, project_id: str, key: str) -> dict:
       3. No match → `{body: "", error: "no spine element ..."}`.
 
     Returns `{est_item_id, framing, layer, binding, status, serves, sources,
-    version_label, body, important, note}` on success (`note` is the element's
-    importance annotation). Failure paths return an `error` key. Never raises.
+    version_label, body, important, note, done}` on success (`note` is the
+    element's importance annotation; `done` is true/false/null where null = n/a /
+    not bound to a real work-item). Failure paths return an `error` key. Never
+    raises.
     """
     resp = (
         client.table("spine_substance")
