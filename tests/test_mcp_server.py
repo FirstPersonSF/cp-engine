@@ -158,8 +158,8 @@ def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
     assert srv._tenant_root() == tmp_path.resolve()
 
 
-def test_exactly_seven_tools_registered():
-    """Three source-read tools + two spine-read tools + two spine-write tools."""
+def test_exactly_nine_tools_registered():
+    """3 source-read + 2 spine-read + 3 spine-write + 1 spine-promote tool."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
         "list_project_sources",
@@ -169,6 +169,8 @@ def test_exactly_seven_tools_registered():
         "pull_spine_element",
         "create_spine_element",
         "add_spine_version",
+        "set_spine_element",
+        "promote_spine_transcript",
     }
 
 
@@ -224,12 +226,12 @@ def test_list_spine_elements_unresolved_returns_note(monkeypatch):
     assert len(out) == 1 and "nope" in out[0]["note"]
 
 
-def test_pull_spine_element_unresolved_returns_note(monkeypatch):
-    """An unresolvable code yields a not-found note, not a crash."""
+def test_pull_spine_element_unresolved_returns_error(monkeypatch):
+    """An unresolvable code yields a not-found error, not a crash."""
     monkeypatch.setattr(srv, "_resolve", lambda code: None)
     out = srv.pull_spine_element("nope", "_authored/x")
     assert out["body"] == ""
-    assert "not found" in out["note"]
+    assert "not found" in out["error"]
 
 
 def test_list_spine_elements_resolve_raises_returns_error(monkeypatch):

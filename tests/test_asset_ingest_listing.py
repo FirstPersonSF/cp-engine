@@ -16,11 +16,24 @@ import pytest
 from cp_engine.asset_ingest import (
     FileRef,
     ProjectFolders,
+    _clear_listing_cache,
     _list_drive,
     list_files,
     resolve_project_folders,
     resolve_project_folders_by_id,
 )
+
+
+@pytest.fixture(autouse=True)
+def _reset_listing_cache():
+    """`list_files` now memoizes folder walks in a process-level cache keyed by
+    `(provider, folder_id)`. Many tests here reuse the SAME default folder ids
+    (`drive-123`, `/Clients/IBX/5153`) with DIFFERENT injected fake connectors, so
+    without clearing, an earlier test's cached listing would leak into a later one.
+    Clear before and after each test so every case re-walks its own fakes."""
+    _clear_listing_cache()
+    yield
+    _clear_listing_cache()
 
 
 # ──────────────────────────────────────────────────────────────────────

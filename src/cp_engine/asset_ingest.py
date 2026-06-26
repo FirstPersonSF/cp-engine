@@ -14,7 +14,11 @@ things and nothing more:
 
 `ingest_project_assets` (Task C5) is the run loop that ties resolve → list →
 download → document-ingest pipeline (with the Voyage embedder) together and
-applies the 1P scope stamp to each freshly-written `rag_assets` row.
+applies the 1P scope stamp to each freshly-written `rag_assets` row. Two caches
+keep re-runs cheap: a per-folder in-process listing cache (shared across an
+`--all` sweep) and a per-file ingest skip — files whose provider content token
+matches the one stamped into `meta.change_token` on a prior run are skipped
+before download. `--no-cache` (`use_cache=False`) disables both.
 
 Scope guard: asset ingest targets *client* companies only. Self-fpsf /
 self-canonic companies are house/framework territory and out of scope; `list_files`
@@ -30,7 +34,9 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -98,6 +104,11 @@ class FileRef:
     # file when any folder in its path matches an allowed name. Defaults to ()
     # so other FileRef construction sites are unaffected.
     folder_path: tuple[str, ...] = ()
+    # Per-file CONTENT change-token captured FROM THE LISTING at zero extra API
+    # cost: Drive `md5Checksum`, Dropbox `content_hash`. Lets a later ingest-cache
+    # step skip unchanged files before download. None when the provider omits it.
+    # Defaulted so all other FileRef construction sites stay valid.
+    change_token: str | None = None
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -266,6 +277,68 @@ _DRIVE_MAX_DEPTH = 10
 _NON_INGESTABLE_EXTENSIONS = (".url", ".lnk", ".webloc")
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  In-process TTL listing cache (the SECOND ingest cache)
+# ──────────────────────────────────────────────────────────────────────
+#
+# The first cache (Tasks 1-4) is a PRE-DOWNLOAD skip: per file, don't re-download
+# bytes unchanged since last ingest. This second cache is coarser and earlier — it
+# memoizes the whole folder LISTING (the recursive tree-walk) so back-to-back
+# scans of the SAME folder within one process don't re-walk it.
+#
+# Module-level + TTL'd: a single `cp ingest-assets` invocation is one process, so
+# this collapses repeated walks of the SAME folder WITHIN one invocation. The big
+# win is `--all`: when several projects share a parent (provider, folder_id), the
+# tree-walk runs ONCE and every later project reuses the cached listing. The clear
+# lives at the CLI entry points (`fan_out_ingest` once before its loop, and the
+# single-project branch) — NOT inside `ingest_project_assets`, which runs once per
+# project, so clearing there would wipe the cache between every project and defeat
+# cross-project sharing. Net effect: clean per CLI invocation, shared across the
+# projects of that invocation, NEVER persisted across separate invocations.
+_LISTING_CACHE: dict[tuple[str, str], tuple[float, list]] = {}
+_LISTING_TTL_SECONDS = 600.0
+
+
+def _cached_listing(
+    provider: str,
+    folder_id: str,
+    lister: Callable[[], list],
+    *,
+    ttl: float = _LISTING_TTL_SECONDS,
+    now: Callable[[], float] = time.monotonic,
+) -> list:
+    """Return a memoized listing for `(provider, folder_id)`.
+
+    Recomputes via `lister()` when the key is absent or its cached entry is older
+    than `ttl`. `now`/`ttl` are injectable for deterministic tests. Pass `ttl=0`
+    (or negative) to disable caching entirely — always recompute, never store.
+
+    The default `now` is `time.monotonic` (a relative, monotonically-increasing
+    clock) — never an arg-less wall clock — both because expiry only needs
+    elapsed-time and because a monotonic source is immune to wall-clock jumps.
+    """
+    key = (provider, folder_id)
+    if ttl > 0:
+        hit = _LISTING_CACHE.get(key)
+        if hit is not None and (now() - hit[0]) < ttl:
+            return hit[1]
+    refs = lister()
+    if ttl > 0:
+        _LISTING_CACHE[key] = (now(), refs)
+    return refs
+
+
+def _clear_listing_cache() -> None:
+    """Reset the in-process listing cache.
+
+    Called ONCE per CLI invocation — `fan_out_ingest` clears before its
+    per-project loop (so the cache is shared across the projects of an `--all`
+    sweep) and the single-project CLI branch clears before its one run. Also
+    called by tests: the module-level dict survives the whole pytest session, so
+    tests must clear it to avoid leaking cached listings into one another."""
+    _LISTING_CACHE.clear()
+
+
 def _drive_file_ref(item: dict, folder_path: tuple[str, ...] = ()) -> FileRef:
     """Map one non-folder Drive child dict to a FileRef (download is by id).
 
@@ -282,6 +355,9 @@ def _drive_file_ref(item: dict, folder_path: tuple[str, ...] = ()) -> FileRef:
         modified=item.get("modifiedTime"),
         path=None,
         folder_path=folder_path,
+        # None for Google-native Docs/Sheets/Slides (Drive omits md5Checksum for
+        # non-binary files) → those have no change token and always re-ingest.
+        change_token=item.get("md5Checksum"),
     )
 
 
@@ -337,7 +413,7 @@ def _list_drive(connector, folder_id: str) -> list[FileRef]:
             return
         items = connector._list_files_with_pagination(
             query=f"'{fid}' in parents and trashed=false",
-            fields="files(id,name,mimeType,size,modifiedTime)",
+            fields="files(id,name,mimeType,size,modifiedTime,md5Checksum)",
             page_size=100,
         )
         for item in items:
@@ -399,6 +475,7 @@ def _list_dropbox(connector, folder: str) -> list[FileRef]:
                     modified=str(getattr(entry, "client_modified", None) or "")
                     or None,
                     path=getattr(entry, "path_display", None),
+                    change_token=getattr(entry, "content_hash", None),
                 )
             )
         # Drain the cursor: recursive results page just like a flat listing.
@@ -450,11 +527,69 @@ def _matches_allowlist(ref: FileRef, allowlist: tuple[str, ...]) -> bool:
     )
 
 
+# A match-nothing sentinel for `_effective_allowlist`. Distinct from `()` — which
+# `list_files` reads as "match ALL" (no filter). When `only_folder` is NOT
+# permitted by the configured allowlist we must scan NOTHING, so we return THIS
+# instead of `()`: it's a string no real folder segment can contain (a NUL byte
+# is never present in a Drive/Dropbox folder name), so `_matches_allowlist`
+# contains-checks it against every segment and always returns False.
+_MATCH_NOTHING: tuple[str, ...] = ("\0__no_folder__",)
+
+
+def _effective_allowlist(
+    only_folder: str | None, configured: tuple[str, ...]
+) -> tuple[str, ...]:
+    """The allowlist to actually scan, NARROWING `configured` by `only_folder`.
+
+    This can RESTRICT the configured per-project allowlist but NEVER widen it: a
+    targeted scan can only reach a folder the project is already configured to
+    ingest. Rules:
+
+    - `only_folder is None` → no narrowing requested → return `configured`
+      unchanged (today's behavior — identical to no `only_folder` at all).
+    - `configured` is empty `()` → "all allowed", so `only_folder` is within
+      scope by definition → narrow to `(only_folder,)`.
+    - otherwise `only_folder` must be PERMITTED by `configured`. only_folder is
+      permitted IFF it is itself matched by the configured allowlist: it may
+      EQUAL an allowed name ("Carol Decks") or be a SUPER-name that CONTAINS one
+      ("Carol Decks Archive" contains allowed "Carol Decks"). It must NOT be a
+      mere FRAGMENT of an allowed name ("Carol" is only a fragment of "Carol
+      Decks" → NOT permitted). The permit direction is ONLY `allowed in
+      only_folder`, which makes the result provably SUBSET-SAFE (never widens):
+        if a real folder segment contains only_folder, AND only_folder contains
+        a configured `allowed`, THEN the segment contains `allowed` → the
+        configured allowlist already matched that segment → effective ⊆ original
+        always holds.
+      The reverse direction (`only_folder in allowed`, i.e. only_folder a mere
+      fragment) is DELIBERATELY EXCLUDED: `("Carol",)` would match "Carol
+      Photos", "Carolina HR", etc. — folders configured `("Carol Decks",)` would
+      never ingest. That would WIDEN the allowlist, defeating the feature.
+        * permitted → narrow to `(only_folder,)`, which `_matches_allowlist`
+          will then contains-match against real folder segments.
+        * NOT permitted → return the match-nothing sentinel `_MATCH_NOTHING`
+          (NOT `()`, which `list_files` reads as "match ALL"; "none" needs a
+          dedicated sentinel that no real folder segment contains).
+    """
+    if only_folder is None:
+        return configured
+    if not configured:
+        return (only_folder,)
+    needle = only_folder.lower()
+    permitted = any(
+        allowed.lower() in needle  # configured entry contained in only_folder
+        for allowed in configured
+        if allowed and allowed.strip()
+    )
+    return (only_folder,) if permitted else _MATCH_NOTHING
+
+
 def list_files(
     folders: ProjectFolders,
     drive_connector=None,
     dropbox_connector=None,
     allowlist: tuple[str, ...] = (),
+    *,
+    use_cache: bool = True,
 ) -> tuple[list[FileRef], list[dict[str, str]]]:
     """Enumerate the files in a project's enabled Drive + Dropbox folders.
 
@@ -474,8 +609,18 @@ def list_files(
     record a note, log to stderr, and CONTINUE to the next source rather than
     propagate. Config gaps (non-client company, disabled source, missing folder
     id) are likewise recorded as notes, not errors.
+
+    `use_cache` (default True) gates the in-process listing cache: when True the
+    recursive Drive/Dropbox tree-walks route through `_cached_listing` keyed by
+    `(provider, folder_id)`, so a second scan of the same folder in one process is
+    a cache hit. When False the walk runs directly (ttl=0) — identical behavior to
+    before this cache existed. Same flag that gates the per-file ingest cache in
+    `ingest_project_assets`, so `--no-cache` disables both layers together.
     """
     source_notes: list[dict[str, str]] = []
+    # ttl=0 makes `_cached_listing` a pure pass-through (always recompute, never
+    # store) so `use_cache=False` reproduces the pre-cache behavior exactly.
+    _listing_ttl = _LISTING_TTL_SECONDS if use_cache else 0.0
 
     if folders.company_kind != "client":
         print(
@@ -497,8 +642,15 @@ def list_files(
                     )
 
                     drive_connector = GoogleDriveConnector(service_account_file=None)
+                _conn = drive_connector
+                _fid = folders.google_drive_folder_id
                 results.extend(
-                    _list_drive(drive_connector, folders.google_drive_folder_id)
+                    _cached_listing(
+                        "drive",
+                        _fid,
+                        lambda: _list_drive(_conn, _fid),
+                        ttl=_listing_ttl,
+                    )
                 )
             except Exception as exc:  # noqa: BLE001 — a dead Drive source must not kill Dropbox; record + continue
                 source_notes.append(
@@ -522,8 +674,15 @@ def list_files(
                     from cloud_storage.dropbox_connector import DropboxConnector
 
                     dropbox_connector = DropboxConnector()
+                _conn = dropbox_connector
+                _fid = folders.mc_dropbox_folder_id
                 results.extend(
-                    _list_dropbox(dropbox_connector, folders.mc_dropbox_folder_id)
+                    _cached_listing(
+                        "dropbox",
+                        _fid,
+                        lambda: _list_dropbox(_conn, _fid),
+                        ttl=_listing_ttl,
+                    )
                 )
             except Exception as exc:  # noqa: BLE001 — a dead Dropbox source must not kill Drive; record + continue
                 source_notes.append(
@@ -663,6 +822,12 @@ class IngestRunResult:
     # download. Kept distinct from `skipped` (dedup) and `failed` (real failure)
     # so the counts stay semantically clean; surfaced via a source_note.
     skipped_shortcuts: int = 0
+    # Files skipped by the ingest cache: an active rag_asset already carries a
+    # meta.change_token equal to the freshly-listed provider token → unchanged →
+    # no download/hash/embed needed (see _unchanged_since_last_ingest). Distinct
+    # from `skipped` (pipeline same-path), `deduped` (cross-path content dup), and
+    # `skipped_shortcuts` (pointer files). Zero when use_cache=False or no hits.
+    skipped_unchanged: int = 0
     failures: list[tuple[str, str]] = field(default_factory=list)
     project_found: bool = True
     # Per-source listing notes from list_files: a dead/skipped source records a
@@ -807,6 +972,8 @@ def ingest_project_assets(
     pipeline_factory=None,
     supabase_url: str | None = None,
     supabase_key: str | None = None,
+    use_cache: bool = True,
+    only_folder: str | None = None,
 ) -> IngestRunResult:
     """Resolve, list, download, ingest, and scope-stamp a project's cloud assets.
 
@@ -826,6 +993,38 @@ def ingest_project_assets(
     Failure policy: a 'failed' IngestResult OR a raising download is recorded in
     `failures` and the loop continues — one bad file never aborts the run, and no
     failure is silently swallowed. Downloaded bytes are always cleaned up.
+
+    INGEST CACHE (per-file skip): each listed file carries a provider content
+    token (`FileRef.change_token` — Drive `md5Checksum`, Dropbox `content_hash`).
+    Before downloading, `_unchanged_since_last_ingest` looks up the active
+    `rag_assets` row for this (owner, provider, file id) and, if its stored
+    `meta.change_token` equals the freshly-listed token, the file is skipped
+    entirely — no download, hash, or embed — and counted in
+    `result.skipped_unchanged` (surfaced in the run summary). The matching token
+    is written by `_stamp_scope` into `meta.change_token` after each successful
+    create/version, so run 1 stamps and run 2+ skips; editing the file changes its
+    provider token → mismatch → re-ingest → the stamp updates the token again.
+    Caveats: Google-native files (Docs/Sheets/Slides) carry no md5 → no token →
+    always re-ingested; the FIRST run after deploying this feature re-ingests once
+    (no token stamped yet) and only then begins skipping. The skip-check is
+    fail-open: a missing row, missing/mismatched/None token, or any error → not
+    skipped. `use_cache=False` (CLI `--no-cache`) bypasses BOTH this per-file skip
+    AND the per-folder listing cache (ttl=0) for a guaranteed full re-scan.
+
+    LISTING CACHE: this function deliberately does NOT clear the in-process
+    listing cache. The clear lives ONE level up, at the CLI entry points
+    (`fan_out_ingest` for `--all`, and the single-project `ingest-assets <code>`
+    branch) — so a single CLI invocation clears ONCE and the cache then persists
+    ACROSS the per-project runs of an `--all` sweep. That is the whole point of
+    the cache: two projects sharing a parent (provider, folder_id) walk it once
+    total. Clearing here (per project) would wipe the cache between every project
+    and make it useless. A new non-CLI caller that needs a guaranteed-fresh cache
+    must call `_clear_listing_cache()` itself before invoking.
+
+    TARGETED SCAN: `only_folder` (default None = today's behavior) NARROWS the
+    listing to a single configured folder via `_effective_allowlist`. It can only
+    RESTRICT the per-project `asset_ingest_folders` allowlist, never widen it — an
+    `only_folder` the allowlist doesn't permit scans NOTHING (scope guard).
     """
     # Resolve creds lazily, and ONLY the pieces actually missing — so the unit-
     # test path (injected client + pipeline) never touches cp config / Supabase.
@@ -884,7 +1083,8 @@ def ingest_project_assets(
         folders,
         drive_connector,
         dropbox_connector,
-        allowlist=folders.asset_ingest_folders,
+        allowlist=_effective_allowlist(only_folder, folders.asset_ingest_folders),
+        use_cache=use_cache,
     )
     if not files:
         # Nothing to ingest (non-client company, disabled sources, empty folder,
@@ -912,6 +1112,19 @@ def ingest_project_assets(
             # Shortcut/pointer file — nothing to embed. Skip before download so
             # it doesn't churn the pipeline or get miscounted as a `failed`.
             result.skipped_shortcuts += 1
+            continue
+        # Ingest cache: if this file is unchanged since its last ingest (active
+        # rag_asset's meta.change_token == the freshly-listed token), skip it
+        # BEFORE any download/hash/embed — the `continue` guarantees none of those
+        # run. `use_cache=False` (CLI --no-cache) forces a full re-scan.
+        # `folders.project_id` is the engagement owner id, which is what
+        # _unchanged_since_last_ingest keys on — correct for engagements. The
+        # initiative-owner case is the SAME owner-keying seam flagged inside
+        # _unchanged_since_last_ingest (initiatives aren't reachable by ingest yet).
+        if use_cache and _unchanged_since_last_ingest(
+            client, folders.project_id, file_ref
+        ):
+            result.skipped_unchanged += 1
             continue
         # Stable, per-source temp dir so the download path (== dedup key) is
         # identical across runs. Cleaned in `finally` regardless of outcome.
@@ -1075,6 +1288,50 @@ def _existing_dup_at_other_path(
     return any(r.get("file_path") != current_path for r in rows)
 
 
+def _unchanged_since_last_ingest(client, project_id: str, file_ref) -> bool:
+    """True iff an active rag_asset for this (provider, file) already carries a
+    meta.change_token equal to the freshly-listed token → unchanged → safe to
+    skip download+embed. Fail-open: missing row / missing or mismatched token /
+    None token / any error → False (ingest normally). Keyed on
+    (project_id, source_provider, source_file_id) so a Drive token is never
+    compared against a Dropbox one (different hash algorithms).
+    """
+    token = getattr(file_ref, "change_token", None)
+    if not token:
+        return False  # no token (e.g. Google-native) → can't prove unchanged
+    try:
+        rows = (
+            client.table("rag_assets")
+            .select("meta")  # explicit, never *
+            # NOTE: keyed on project_id only. Initiatives (owner via initiative_id,
+            # see _owner_filter) aren't reachable by ingest today; if that changes,
+            # this filter must become owner-aware or initiative caching always-misses.
+            .eq("project_id", project_id)
+            .eq("source_provider", file_ref.source)
+            .eq("source_file_id", file_ref.id)
+            .eq("status", "active")
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not rows:
+            return False
+        stored = (rows[0].get("meta") or {}).get("change_token")
+        return stored is not None and stored == token
+    except Exception as exc:  # noqa: BLE001 — fail-open: skip-check failure must
+        # never crash the run or wrongly skip; degrade to "ingest normally". But
+        # surface it on stderr (matching _existing_dup_at_other_path) so a real
+        # regression — e.g. a renamed column — doesn't silently make every file
+        # re-ingest with no signal.
+        print(
+            f"[asset-ingest] ingest-cache skip-check failed for "
+            f"{file_ref.id} ({exc}); ingesting without it",
+            file=sys.stderr,
+        )
+        return False
+
+
 def _stamp_scope(
     client, folders: ProjectFolders, file_path: str, file_ref: FileRef
 ) -> None:
@@ -1101,17 +1358,37 @@ def _stamp_scope(
     owning row's id for BOTH kinds; `is_initiative` selects the column.
     """
     owner_col, owner_val = _owner_filter(folders)
-    client.table("rag_assets").update(
-        {
-            "scope": "project",
-            "company_id": folders.company_id,
-            "source_provider": file_ref.source,
-            "source_file_id": file_ref.id,
-            "source_path": file_ref.path,
+    payload = {
+        "scope": "project",
+        "company_id": folders.company_id,
+        "source_provider": file_ref.source,
+        "source_file_id": file_ref.id,
+        "source_path": file_ref.path,
+    }
+    # Stamp the provider content hash into `meta.change_token` so a LATER run can
+    # compare it and skip an unchanged file (ingest caching). `meta` is a jsonb
+    # column the pipeline may already populate with embedding/chunk keys, so we
+    # MERGE the token in (read-modify-write) rather than clobber the whole column.
+    # No token (e.g. a Google-native file) → leave meta untouched (don't write a
+    # None token), keeping the existing source_* stamp behavior unchanged.
+    if file_ref.change_token is not None:
+        resp = (
+            client.table("rag_assets")
+            .select("meta")
+            .eq(owner_col, owner_val)
+            .eq("file_path", file_path)
+            .eq("status", "active")
+            .execute()
+        )
+        rows = getattr(resp, "data", None) or []
+        current_meta = rows[0].get("meta") if rows else None
+        payload["meta"] = {
+            **(current_meta or {}),
+            "change_token": file_ref.change_token,
         }
-    ).eq(owner_col, owner_val).eq("file_path", file_path).eq(
-        "status", "active"
-    ).execute()
+    client.table("rag_assets").update(payload).eq(owner_col, owner_val).eq(
+        "file_path", file_path
+    ).eq("status", "active").execute()
 
 
 def _owner_filter(folders: ProjectFolders) -> tuple[str, str]:

@@ -408,6 +408,116 @@ def test_runner_threads_mc_project_id_to_ingest(monkeypatch):
     assert captured["mc_project_id"] == "proj-uuid-5174"
 
 
+def test_runner_threads_folder_to_only_folder(monkeypatch):
+    """The runner MUST pass its folder arg through to ingest_project_assets as
+    only_folder= so a targeted single-folder scan reaches the ingest."""
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
+    rec = {}
+    sb = _RecordingClient(rec)
+    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+
+    captured = {}
+
+    def _capture(code, **kwargs):
+        captured["code"] = code
+        captured.update(kwargs)
+        return IngestRunResult(project_found=True)
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.ingest_project_assets", _capture
+    )
+
+    asyncio.run(
+        webhook_main._run_asset_ingest(
+            "run-1", "ibx-5153", "proj-uuid", folder="Strategy"
+        )
+    )
+
+    assert captured["only_folder"] == "Strategy"
+
+
+def test_runner_threads_none_only_folder_by_default(monkeypatch):
+    """Back-compat: without a folder, the runner passes only_folder=None so
+    ingest_project_assets scans all folders (today's behavior)."""
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
+    rec = {}
+    sb = _RecordingClient(rec)
+    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+
+    captured = {}
+
+    def _capture(code, **kwargs):
+        captured.update(kwargs)
+        return IngestRunResult(project_found=True)
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.ingest_project_assets", _capture
+    )
+
+    asyncio.run(webhook_main._run_asset_ingest("run-1", "ibx-5153"))
+
+    assert captured["only_folder"] is None
+
+
+def test_ingest_202_threads_folder(monkeypatch, client):
+    """When the body carries folder, the endpoint threads it through the spawned
+    runner coroutine into ingest_project_assets as only_folder."""
+    rec = _wire(monkeypatch)
+
+    spawned = {}
+    monkeypatch.setattr(
+        webhook_main, "_spawn_background",
+        lambda coro: spawned.__setitem__("coro", coro),
+    )
+    captured = {}
+
+    def _capture(code, **kwargs):
+        captured.update(kwargs)
+        return IngestRunResult(project_found=True)
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.ingest_project_assets", _capture
+    )
+
+    resp = _post(
+        client,
+        {"code": "ibx-5153", "run_id": "run-1", "folder": "Strategy"},
+    )
+    assert resp.status_code == 202, resp.text
+
+    asyncio.run(spawned["coro"])
+    assert captured["only_folder"] == "Strategy"
+
+
+def test_ingest_202_normalizes_empty_folder(monkeypatch, client):
+    """folder: "" behaves like absent → only_folder=None (scan all)."""
+    rec = _wire(monkeypatch)
+
+    spawned = {}
+    monkeypatch.setattr(
+        webhook_main, "_spawn_background",
+        lambda coro: spawned.__setitem__("coro", coro),
+    )
+    captured = {}
+
+    def _capture(code, **kwargs):
+        captured.update(kwargs)
+        return IngestRunResult(project_found=True)
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.ingest_project_assets", _capture
+    )
+
+    resp = _post(
+        client,
+        {"code": "ibx-5153", "run_id": "run-1", "folder": ""},
+    )
+    assert resp.status_code == 202, resp.text
+
+    asyncio.run(spawned["coro"])
+    assert captured["only_folder"] is None
+
+
 def test_runner_threads_none_mc_project_id_by_default(monkeypatch):
     """Back-compat: without an mc_project_id, the runner passes mc_project_id=None
     so ingest_project_assets falls back to by-code resolution (CLI behavior)."""

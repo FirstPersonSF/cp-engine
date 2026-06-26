@@ -200,9 +200,12 @@ def test_list_spine_returns_live_elements_with_metadata():
 
     first = out[0]
     # the list carries metadata + a body LENGTH, never the full body
+    # `done` resolves to None here incidentally — the fake client lacks .schema
+    # so the real fetch fails fail-soft; real done coverage lives in
+    # test_spine_done_read.py
     assert set(first.keys()) == {
         "est_item_id", "framing", "layer", "binding", "status",
-        "serves_count", "body_len",
+        "serves_count", "body_len", "important", "note", "done",
     }
     assert "body" not in first
     assert first["est_item_id"] == "_authored/brief"
@@ -254,7 +257,7 @@ def test_pull_spine_not_found_returns_note():
     out = pull_spine(client, "proj-1", "nonexistent-element")
 
     assert out["body"] == ""
-    assert "no spine element" in out["note"].lower()
+    assert "no spine element" in out["error"].lower()
 
 
 def test_pull_spine_ambiguous_title_returns_note():
@@ -271,7 +274,7 @@ def test_pull_spine_ambiguous_title_returns_note():
     ]
     out2 = pull_spine(_FakeTableClient(rows), "proj-1", "report")
     assert out2["body"] == ""
-    assert "ambiguous" in out2["note"].lower()
+    assert "ambiguous" in out2["error"].lower()
 
 
 # ──────────────────────────────────────────────────────────────────────

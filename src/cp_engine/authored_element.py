@@ -66,7 +66,8 @@ def authored_est_item_id(slug: str) -> str:
 
 
 def _row(*, project_id, project_code, est_item_id, label, type_, body, serves,
-         version_label, version_date, status, version_note=None, sources=None):
+         version_label, version_date, status, version_note=None, sources=None,
+         important=False, note=None):
     return {
         "id": f"{project_code}/{est_item_id}/{version_label}",
         "project_id": project_id,
@@ -87,11 +88,14 @@ def _row(*, project_id, project_code, est_item_id, label, type_, body, serves,
         "origin": "authored",
         "version_note": version_note,
         "rel_path": None,
+        # PARITY: mirror in mc-2 authored_element
+        "important": bool(important),
+        "note": note,
     }
 
 
 def build_create_rows(*, project_id, project_code, label, type_, body, serves, now_iso,
-                      sources=None):
+                      sources=None, important=False, note=None):
     """v1 of a new authored element."""
     slug = slugify(label)
     est_item_id = authored_est_item_id(slug)
@@ -100,7 +104,7 @@ def build_create_rows(*, project_id, project_code, label, type_, body, serves, n
         project_id=project_id, project_code=project_code, est_item_id=est_item_id,
         label=label, type_=type_, body=body, serves=serves,
         version_label="v1", version_date=date, status="live",
-        sources=sources,
+        sources=sources, important=important, note=note,
     )]
 
 
@@ -117,11 +121,19 @@ def build_version_rows(*, project_id, project_code, est_item_id, prior_versions,
     nums = [int(v["version_label"][1:]) for v in prior_versions
             if str(v.get("version_label", "")).startswith("v")]
     next_n = (max(nums) + 1) if nums else 1
-    base = prior_versions[0] if prior_versions else {}
+    # Carry forward from the LIVE row, not prior_versions[0] — the fetch order is
+    # unspecified, and set_spine_element mutates important/note on the live row
+    # alone, so index-0 can be a stale superseded row. Falls back to [0] only if
+    # no row is flagged live (shouldn't happen for a real element).
+    base = next((v for v in prior_versions if v.get("status") == "live"), None) \
+        or (prior_versions[0] if prior_versions else {})
     return [_row(
         project_id=project_id, project_code=project_code, est_item_id=est_item_id,
         label=label or base.get("framing"), type_=type_ or base.get("layer"),
         body=body, serves=serves if serves is not None else (base.get("serves") or []),
         version_label=f"v{next_n}", version_date=now_iso[:10], status="live",
         version_note=version_note,
+        # important/note are element-level: carried forward only, never overridden on
+        # a new version. The dedicated set_spine_element path edits them.
+        important=base.get("important", False), note=base.get("note"),
     )]

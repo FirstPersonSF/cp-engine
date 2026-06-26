@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 
 from cp_engine.asset_ingest import FileRef, download_file, read_scoped_chunks
+from cp_engine.spine_done import derive_done, fetch_project_done_map
 
 logger = logging.getLogger(__name__)
 
@@ -219,22 +220,85 @@ def pull_source(
 
 # List columns: metadata + body (so we can derive body_len) but never `*`. The
 # body is selected only to compute its length; it is NOT returned in the list.
-_SPINE_LIST_COLUMNS = "est_item_id, framing, layer, binding, status, serves, body"
+_SPINE_LIST_COLUMNS = (
+    "est_item_id, framing, layer, binding, status, serves, body, important, note"
+)
 
 # Pull columns: everything needed to return one element with full body + context.
 _SPINE_PULL_COLUMNS = (
     "est_item_id, framing, layer, binding, status, serves, sources, "
-    "version_label, body"
+    "version_label, body, important, note"
 )
+
+# Resolve columns: enough to identify ONE live element AND its row `id` (needed
+# for a targeted update). Includes `id` (which _spine_element does NOT surface,
+# so pull_spine's public return is unaffected). `rel_path` is here for transcript
+# promotion (item 3) — no in-repo caller reads it yet, so don't trim it as unused.
+# Never `*`.
+_SPINE_RESOLVE_COLUMNS = (
+    "id, est_item_id, framing, status, important, note, rel_path"
+)
+
+
+def _match_one_live(rows: list[dict], key: str):
+    """Resolve `key` against already-fetched live rows to ONE element.
+
+    The single source of truth for spine `key` resolution (shared by
+    `pull_spine` and `resolve_live_element`):
+
+      1. Exact `est_item_id` match → that row.
+      2. Title (`framing`) substring (case-insensitive, `_title_matches`):
+         exactly one distinct element matched → that row.
+
+    Returns `(row, reason, distinct)`:
+      - unique resolution → `(row, None, None)`,
+      - no title match     → `(None, "no-match", None)`,
+      - 2+ distinct        → `(None, "ambiguous", distinct)` where `distinct` is
+        the already-computed est_item_id→row map, so the caller can render
+        candidate names WITHOUT re-filtering `rows` (keeps the dedup in one place).
+    """
+    exact = [r for r in rows if r.get("est_item_id") == key]
+    if exact:
+        return exact[0], None, None
+    matched = [r for r in rows if _title_matches(key, r.get("framing"))]
+    if not matched:
+        return None, "no-match", None
+    distinct = {r.get("est_item_id"): r for r in matched}
+    if len(distinct) > 1:
+        return None, "ambiguous", distinct
+    return next(iter(distinct.values())), None, None
+
+
+def resolve_live_element(client, project_id: str, key: str) -> dict | None:
+    """Resolve `key` to the single matching LIVE spine_substance row, or None.
+
+    Same discipline as `pull_spine` (exact est_item_id → single distinct framing
+    substring → else None on no-match OR ambiguity). Returns the raw row dict
+    INCLUDING its `id` column (needed for a targeted update on a callsite that
+    wants to write the row back). Never `SELECT *`.
+    """
+    resp = (
+        client.table("spine_substance")
+        .select(_SPINE_RESOLVE_COLUMNS)
+        .eq("project_id", project_id)
+        .eq("status", "live")
+        .execute()
+    )
+    rows = getattr(resp, "data", None) or []
+    row, _reason, _ = _match_one_live(rows, key)
+    return row
 
 
 def list_spine(client, project_id: str) -> list[dict]:
     """List a project's LIVE spine elements (index, not bodies).
 
     Returns `[{est_item_id, framing, layer, binding, status, serves_count,
-    body_len}]` for every live element of the project. The full body is never
-    returned here (only its length) — call `pull_spine` for one element's text.
-    Never raises: the MCP tool boundary converts failures to a structured note.
+    body_len, important, note, done}]` for every live element of the project.
+    `important`/`note` are the element's importance flag + annotation; `done` is
+    true/false/null (null = n/a, i.e. not bound to a real work-item). The full
+    body is never returned here (only its length) — call `pull_spine` for one
+    element's text. Never raises: the MCP tool boundary converts failures to a
+    structured note.
     """
     resp = (
         client.table("spine_substance")
@@ -245,6 +309,20 @@ def list_spine(client, project_id: str) -> list[dict]:
         .execute()
     )
     rows = getattr(resp, "data", None) or []
+    # Fetch the project's done-map ONCE (not per row — no N+1). `done` is
+    # best-effort: if the estimator schema is unreachable the fetch may raise,
+    # so we fail-soft to an empty map, which makes `derive_done` return None for
+    # every element. Never let a `done` lookup break the listing.
+    try:
+        done_map = fetch_project_done_map(client, project_id)
+    except Exception:  # noqa: BLE001 — done is best-effort; never break the listing
+        logger.warning(
+            "list_spine: done-map fetch failed for project_id=%s; "
+            "degrading `done` to None for all elements",
+            project_id,
+            exc_info=True,
+        )
+        done_map = {}
     out: list[dict] = []
     for row in rows:
         serves = row.get("serves") or []
@@ -258,8 +336,14 @@ def list_spine(client, project_id: str) -> list[dict]:
                 "status": row.get("status"),
                 "serves_count": len(serves),
                 "body_len": len(body),
+                "important": bool(row.get("important")),
+                "note": row.get("note"),
+                "done": derive_done(row.get("est_item_id"), done_map),
             }
         )
+    # Important elements sort first; list.sort is stable so within-group order
+    # (the query's existing layer ordering) is preserved.
+    out.sort(key=lambda r: not r["important"])
     return out
 
 
@@ -272,11 +356,14 @@ def pull_spine(client, project_id: str, key: str) -> dict:
       1. Exact `est_item_id` match (the machine path: `list_spine` returns these).
       2. Title (`framing`) substring, case-insensitive (`_title_matches`):
          - exactly one distinct element matched → return it,
-         - 2+ distinct elements matched → `{body: "", note: "ambiguous: ..."}`.
-      3. No match → `{body: "", note: "no spine element ..."}`.
+         - 2+ distinct elements matched → `{body: "", error: "ambiguous: ..."}`.
+      3. No match → `{body: "", error: "no spine element ..."}`.
 
     Returns `{est_item_id, framing, layer, binding, status, serves, sources,
-    version_label, body}` on success. Never raises.
+    version_label, body, important, note, done}` on success (`note` is the
+    element's importance annotation; `done` is true/false/null where null = n/a /
+    not bound to a real work-item). Failure paths return an `error` key. Never
+    raises.
     """
     resp = (
         client.table("spine_substance")
@@ -287,31 +374,42 @@ def pull_spine(client, project_id: str, key: str) -> dict:
     )
     rows = getattr(resp, "data", None) or []
 
-    # 1. Exact est_item_id (the machine path).
-    exact = [r for r in rows if r.get("est_item_id") == key]
-    if exact:
-        return _spine_element(exact[0])
-
-    # 2. Title (framing) substring match, resolved to ONE distinct element.
-    matched = [r for r in rows if _title_matches(key, r.get("framing"))]
-    if not matched:
+    row, reason, distinct = _match_one_live(rows, key)
+    if row is not None:
+        result = _spine_element(row)
+        # Surface derived `done` only on a successful single-element pull.
+        # Best-effort: if the estimator schema is unreachable the fetch may
+        # raise, so we fail-soft to an empty map (→ derive_done returns None).
+        # Never let a `done` lookup break the pull.
+        try:
+            done_map = fetch_project_done_map(client, project_id)
+        except Exception:  # noqa: BLE001 — done is best-effort; never break the pull
+            logger.warning(
+                "pull_spine: done-map fetch failed for project_id=%s; "
+                "degrading `done` to None",
+                project_id,
+                exc_info=True,
+            )
+            done_map = {}
+        result["done"] = derive_done(row.get("est_item_id"), done_map)
+        return result
+    if reason == "no-match":
         return {
             "body": "",
-            "note": f"no spine element matching '{key}' in this project",
+            "error": f"no spine element matching '{key}' in this project",
         }
-    distinct = {r.get("est_item_id"): r for r in matched}
-    if len(distinct) > 1:
-        candidates = ", ".join(
-            (r.get("framing") or r.get("est_item_id") or "?") for r in distinct.values()
-        )
-        return {
-            "body": "",
-            "note": (
-                f"ambiguous: '{key}' matched {len(distinct)} elements: "
-                f"[{candidates}]; pass an est_item_id or a more specific title"
-            ),
-        }
-    return _spine_element(next(iter(distinct.values())))
+    # ambiguous: 2+ distinct elements matched the title substring. Reuse the
+    # already-computed `distinct` from _match_one_live — do NOT re-filter rows.
+    candidates = ", ".join(
+        (r.get("framing") or r.get("est_item_id") or "?") for r in distinct.values()
+    )
+    return {
+        "body": "",
+        "error": (
+            f"ambiguous: '{key}' matched {len(distinct)} elements: "
+            f"[{candidates}]; pass an est_item_id or a more specific title"
+        ),
+    }
 
 
 def _spine_element(row: dict) -> dict:
@@ -326,6 +424,8 @@ def _spine_element(row: dict) -> dict:
         "sources": row.get("sources") or [],
         "version_label": row.get("version_label"),
         "body": row.get("body") or "",
+        "important": bool(row.get("important")),
+        "note": row.get("note"),
     }
 
 

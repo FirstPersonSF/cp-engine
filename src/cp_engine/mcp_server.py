@@ -306,7 +306,8 @@ def pull_spine_element(project_code: str, key: str) -> dict:
     `key` is an est_item_id (e.g. `_authored/email-from-olivia...`, exact, the
     machine path) or a case-insensitive substring of the element's title
     (`framing`). Returns the full body + context (layer, binding, serves,
-    sources, version_label), or a `note` when nothing/ambiguously matches.
+    sources, version_label). Returns an `error` key when nothing/ambiguously
+    matches; a successful element may carry its own importance `note`.
     """
     from cp_engine.project_sources import pull_spine
 
@@ -315,7 +316,7 @@ def pull_spine_element(project_code: str, key: str) -> dict:
         if resolved is None:
             return {
                 "body": "",
-                "note": f"project '{project_code}' not found",
+                "error": f"project '{project_code}' not found",
             }
         client, pid, _cid = resolved
         return pull_spine(client, pid, key)
@@ -384,7 +385,8 @@ def add_spine_version(project_code: str, element_id: str, body: str,
     from cp_engine.authored_element import build_version_rows
 
     _SEL = ("id, est_item_id, est_item_kind, phase, binding, layer, placement, "
-            "serves, version_label, version_date, status, framing, body, sources, origin")
+            "serves, version_label, version_date, status, framing, body, sources, "
+            "origin, important, note")
     try:
         resolved = _resolve(project_code)
         if resolved is None:
@@ -410,6 +412,106 @@ def add_spine_version(project_code: str, element_id: str, body: str,
         return {"element_id": live["est_item_id"], "version_label": live["version_label"]}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"failed to add version in {project_code!r}: {exc}"}
+
+
+@mcp.tool()
+def set_spine_element(project_code: str, key: str,
+                      important: bool | None = None,
+                      note: str | None = None) -> dict:
+    """Set the `important` flag and/or standing `note` on a live spine element.
+
+    `key` is an est_item_id (exact) or a case-insensitive `framing` (title)
+    substring resolved to ONE live element (same discipline as
+    pull_spine_element). Args left None are not touched (partial update). Marking
+    an element important surfaces it first in list_spine_elements and promotes
+    its source transcript to RAG. Promotion fires only on a false→true
+    transition (not when already important), is engagement-only (initiative
+    elements are deferred), and is non-fatal — its outcome surfaces under
+    `promotion` in the return, never as a tool {error}, so importance is always
+    set. `promote_spine_transcript` is the standalone tool to run/retry promotion
+    on its own. Returns {est_item_id, important, note[, promotion]}, or a
+    structured {note}/{error} on miss.
+    """
+    from cp_engine.project_sources import resolve_live_element
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, company_id = resolved
+        row = resolve_live_element(client, pid, key)
+        if row is None:
+            return {"note": f"no single live element matching '{key}' in {project_code!r}"}
+        # Capture the PRIOR important flag before the patch so we can detect a
+        # genuine false→true transition (which triggers RAG promotion below).
+        prior_important = bool(row.get("important"))
+        patch = {}
+        if important is not None:
+            patch["important"] = bool(important)
+        if note is not None:
+            patch["note"] = note
+        # Importance is ALWAYS set first — promotion never blocks it.
+        if patch:
+            client.table("spine_substance").update(patch).eq("id", row["id"]).execute()
+        result = {
+            "est_item_id": row["est_item_id"],
+            "important": patch.get("important", row.get("important")),
+            "note": patch.get("note", row.get("note")),
+        }
+        # Promote the source transcript to RAG ONLY on a genuine false→true flip
+        # (not when already True — no redundant re-embed — nor when untouched/False).
+        # Promotion is NON-FATAL: a failure surfaces under "promotion", never as a
+        # tool {error}, so importance:True is always returned.
+        if important is True and not prior_important:
+            try:
+                from cp_engine.config import load as load_config
+                from cp_engine.spine_promote import promote_transcript
+                from cp_engine.sync_mc2 import _load_supabase_creds
+                root = _tenant_root()
+                supabase_url, supabase_key = _load_supabase_creds(load_config(root))
+                result["promotion"] = promote_transcript(
+                    client, root, project_code, pid, company_id, row,
+                    supabase_url=supabase_url, supabase_key=supabase_key,
+                )
+            except Exception as exc:  # noqa: BLE001 — promotion is non-fatal
+                result["promotion"] = {"ok": False, "reason": f"promotion error: {exc}"}
+        return result
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to set element '{key}' in {project_code!r}: {exc}"}
+
+
+@mcp.tool()
+def promote_spine_transcript(project_code: str, key: str) -> dict:
+    """Promote a spine element's source transcript into the RAG store.
+
+    Embeds the element's underlying transcript (resolved via its rel_path) into
+    rag_assets so it's retrievable via pull_project_source. Idempotent: calling
+    again re-runs promotion (the retry door for a failed embed). Engagement-only
+    for now — an initiative element returns a 'not yet supported' note.
+    Returns {est_item_id, promotion: {ok, ...}} or a structured {note}/{error}.
+    """
+    from cp_engine.config import load as load_config
+    from cp_engine.project_sources import resolve_live_element
+    from cp_engine.spine_promote import promote_transcript
+    from cp_engine.sync_mc2 import _load_supabase_creds
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, company_id = resolved
+        row = resolve_live_element(client, pid, key)
+        if row is None:
+            return {"note": f"no single live element matching '{key}' in {project_code!r}"}
+        # Same cred source the rest of the engine uses (asset_ingest resolves
+        # creds the identical way: _load_supabase_creds over the loaded config).
+        root = _tenant_root()
+        supabase_url, supabase_key = _load_supabase_creds(load_config(root))
+        result = promote_transcript(
+            client, root, project_code, pid, company_id, row,
+            supabase_url=supabase_url, supabase_key=supabase_key,
+        )
+        return {"est_item_id": row.get("est_item_id"), "promotion": result}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to promote '{key}' in {project_code!r}: {exc}"}
 
 
 def run_stdio() -> None:

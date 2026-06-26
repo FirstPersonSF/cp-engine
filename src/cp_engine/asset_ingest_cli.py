@@ -112,6 +112,8 @@ class _ProjectOutcome:
     versioned: int = 0
     skipped: int = 0
     deduped: int = 0
+    skipped_unchanged: int = 0
+    skipped_shortcuts: int = 0
     failed: int = 0
     failures: list[tuple[str, str]] = field(default_factory=list)
     error: str | None = None  # whole-project error (resolve/run blew up)
@@ -140,6 +142,14 @@ class FanOutResult:
         return sum(o.deduped for o in self.outcomes)
 
     @property
+    def total_skipped_unchanged(self) -> int:
+        return sum(o.skipped_unchanged for o in self.outcomes)
+
+    @property
+    def total_skipped_shortcuts(self) -> int:
+        return sum(o.skipped_shortcuts for o in self.outcomes)
+
+    @property
     def total_failed(self) -> int:
         return sum(o.failed for o in self.outcomes)
 
@@ -149,24 +159,37 @@ class FanOutResult:
         return any(o.failed or o.failures or o.error for o in self.outcomes)
 
 
-def fan_out_ingest(client, codes: list[str]) -> FanOutResult:
+def fan_out_ingest(
+    client, codes: list[str], *, use_cache: bool = True
+) -> FanOutResult:
     """Run `ingest_project_assets` for each code, collecting per-project outcomes.
 
     One project raising (or returning failures) NEVER stops the others — every
     project gets a slot in the result, and whole-project exceptions are captured
-    on `.error` so the caller can surface them and exit non-zero.
+    on `.error` so the caller can surface them and exit non-zero. `use_cache`
+    threads the CLI `--no-cache` bypass through to every per-project run.
     """
-    from cp_engine.asset_ingest import ingest_project_assets
+    from cp_engine.asset_ingest import _clear_listing_cache, ingest_project_assets
+
+    # Clear the in-process folder-listing cache ONCE, before the per-project loop —
+    # NOT per project. This is what lets a shared parent (provider, folder_id) be
+    # walked exactly once across an entire `--all` sweep and reused by every later
+    # project that shares it. Clearing here (rather than inside
+    # ingest_project_assets) keeps the "clean per CLI run, never across runs"
+    # contract while enabling within-run cross-project sharing.
+    _clear_listing_cache()
 
     result = FanOutResult()
     for code in codes:
         outcome = _ProjectOutcome(code=code)
         try:
-            run = ingest_project_assets(code, client=client)
+            run = ingest_project_assets(code, client=client, use_cache=use_cache)
             outcome.created = run.created
             outcome.versioned = run.versioned
             outcome.skipped = run.skipped
             outcome.deduped = run.deduped
+            outcome.skipped_unchanged = run.skipped_unchanged
+            outcome.skipped_shortcuts = run.skipped_shortcuts
             outcome.failed = run.failed
             outcome.failures = list(run.failures)
         except Exception as exc:  # noqa: BLE001 — collect, keep going

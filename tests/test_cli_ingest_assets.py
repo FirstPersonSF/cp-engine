@@ -96,6 +96,92 @@ def test_ingest_assets_unknown_project_exits_nonzero(monkeypatch):
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  ingest-assets --folder (single-project targeted scan)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_ingest_assets_folder_threads_only_folder(monkeypatch):
+    _stub_client(monkeypatch)
+
+    captured: dict = {}
+
+    def fake_ingest(code, **kwargs):
+        captured["code"] = code
+        captured["only_folder"] = kwargs.get("only_folder")
+        return IngestRunResult(created=1)
+
+    monkeypatch.setattr(asset_ingest, "ingest_project_assets", fake_ingest)
+
+    result = CliRunner().invoke(
+        main, ["ingest-assets", "ibx-5153", "--folder", "Strategy"]
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["code"] == "ibx-5153"
+    assert captured["only_folder"] == "Strategy"
+
+
+def test_ingest_assets_no_folder_passes_none(monkeypatch):
+    _stub_client(monkeypatch)
+
+    captured: dict = {}
+
+    def fake_ingest(code, **kwargs):
+        captured["only_folder"] = kwargs.get("only_folder", "MISSING")
+        return IngestRunResult(created=1)
+
+    monkeypatch.setattr(asset_ingest, "ingest_project_assets", fake_ingest)
+
+    result = CliRunner().invoke(main, ["ingest-assets", "ibx-5153"])
+    assert result.exit_code == 0, result.output
+    assert captured["only_folder"] is None
+
+
+def test_ingest_assets_folder_with_all_is_exit_2(monkeypatch):
+    _stub_client(monkeypatch)
+    _stub_config(monkeypatch)
+
+    called: list[str] = []
+    monkeypatch.setattr(
+        asset_ingest,
+        "ingest_project_assets",
+        lambda code, **kw: called.append(code) or IngestRunResult(),
+    )
+
+    result = CliRunner().invoke(
+        main, ["ingest-assets", "--all", "--folder", "Strategy"]
+    )
+    assert result.exit_code == 2, result.output
+    low = result.output.lower()
+    assert "folder" in low and "all" in low
+    assert called == []
+
+
+def test_ingest_assets_folder_does_not_reach_fan_out(monkeypatch):
+    """--folder is single-project only; it must never reach fan_out_ingest."""
+    _stub_client(monkeypatch)
+    _stub_config(monkeypatch)
+
+    captured: dict = {}
+
+    def fake_ingest(code, **kwargs):
+        captured["only_folder"] = kwargs.get("only_folder")
+        return IngestRunResult(created=1)
+
+    monkeypatch.setattr(asset_ingest, "ingest_project_assets", fake_ingest)
+
+    def boom_fan_out(*a, **kw):
+        raise AssertionError("fan_out_ingest must not be called for single project")
+
+    monkeypatch.setattr(asset_ingest_cli, "fan_out_ingest", boom_fan_out)
+
+    result = CliRunner().invoke(
+        main, ["ingest-assets", "ibx-5153", "--folder", "Strategy"]
+    )
+    assert result.exit_code == 0, result.output
+    assert captured["only_folder"] == "Strategy"
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  ingest-assets --all
 # ──────────────────────────────────────────────────────────────────────
 

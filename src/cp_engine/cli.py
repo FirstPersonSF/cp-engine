@@ -2715,7 +2715,9 @@ def _echo_run_summary(code: str, run) -> None:
     """Print one project's ingest summary line + any per-file failures."""
     click.echo(
         f"{code}: created={run.created} versioned={run.versioned} "
-        f"skipped={run.skipped} deduped={run.deduped} failed={run.failed}"
+        f"skipped={run.skipped} deduped={run.deduped} "
+        f"unchanged={run.skipped_unchanged} shortcuts={run.skipped_shortcuts} "
+        f"failed={run.failed}"
     )
     for name, err in run.failures:
         click.echo(f"  FAIL {name}: {err}", err=True)
@@ -2730,7 +2732,26 @@ def _echo_run_summary(code: str, run) -> None:
     help="Narrow --all to a tenant scope. fpsf/canonic are internal "
     "(asset ingest is client-only) → no-op.",
 )
-def ingest_assets_cmd(code: str | None, all_: bool, scope: str | None) -> None:
+@click.option(
+    "--no-cache",
+    "no_cache",
+    is_flag=True,
+    help="Bypass the ingest cache: re-scan every file even if its provider "
+    "change-token is unchanged since the last ingest (a full re-ingest).",
+)
+@click.option(
+    "--folder",
+    default=None,
+    help="Scan only this configured ingest folder (narrows the allowlist; "
+    "must be a configured folder, else scans nothing). Single-project only.",
+)
+def ingest_assets_cmd(
+    code: str | None,
+    all_: bool,
+    scope: str | None,
+    no_cache: bool,
+    folder: str | None,
+) -> None:
     """Ingest a project's Drive/Dropbox assets into the asset store.
 
     `cp ingest-assets ibx-5153` ingests one engagement; `cp ingest-assets
@@ -2743,6 +2764,12 @@ def ingest_assets_cmd(code: str | None, all_: bool, scope: str | None) -> None:
     """
     from cp_engine import asset_ingest, asset_ingest_cli
 
+    use_cache = not no_cache
+    # Normalize empty --folder to None so `--folder ""` behaves identically to
+    # omitting it (an empty string would otherwise reach _effective_allowlist as
+    # a no-op fragment — harmless but surprising).
+    folder = folder or None
+
     if bool(code) == bool(all_):
         click.echo(
             "Error: pass exactly one of CODE or --all (got both or neither).",
@@ -2750,9 +2777,24 @@ def ingest_assets_cmd(code: str | None, all_: bool, scope: str | None) -> None:
         )
         sys.exit(2)
 
+    if folder and all_:
+        click.echo(
+            "Error: --folder is single-project only; cannot combine with --all.",
+            err=True,
+        )
+        sys.exit(2)
+
     # ── Single project ──
     if code:
-        run = asset_ingest.ingest_project_assets(code)
+        # Clear the in-process listing cache once at the start of this CLI run
+        # (matches fan_out_ingest's once-per-invocation clear). For a single
+        # project this is mostly hygiene — the one project walks each folder once
+        # — but it keeps the "clean per CLI run" contract uniform across both
+        # entry points.
+        asset_ingest._clear_listing_cache()
+        run = asset_ingest.ingest_project_assets(
+            code, use_cache=use_cache, only_folder=folder
+        )
         if not run.project_found:
             click.echo(f"Error: no MC-2 project resolved for '{code}'.", err=True)
             sys.exit(1)
@@ -2775,7 +2817,7 @@ def ingest_assets_cmd(code: str | None, all_: bool, scope: str | None) -> None:
         return
 
     client = build_mc2_client()
-    result = asset_ingest_cli.fan_out_ingest(client, codes)
+    result = asset_ingest_cli.fan_out_ingest(client, codes, use_cache=use_cache)
     for outcome in result.outcomes:
         if outcome.error:
             click.echo(f"{outcome.code}: ERROR {outcome.error}", err=True)
@@ -2786,6 +2828,8 @@ def ingest_assets_cmd(code: str | None, all_: bool, scope: str | None) -> None:
         f"TOTAL ({len(result.outcomes)} projects): "
         f"created={result.total_created} versioned={result.total_versioned} "
         f"skipped={result.total_skipped} deduped={result.total_deduped} "
+        f"unchanged={result.total_skipped_unchanged} "
+        f"shortcuts={result.total_skipped_shortcuts} "
         f"failed={result.total_failed}"
     )
     if result.any_failures:
