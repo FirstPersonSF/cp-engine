@@ -26,6 +26,25 @@ def test_build_done_map_ignores_bars_without_work_item():
     assert m["w1"] is False
 
 
+def test_build_done_map_and_derive_done_match_on_uuid_string():
+    uid = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f"
+    m = build_done_map([{"work_item_id": uid, "done": True}])
+    assert derive_done(uid, m) is True          # str↔str uuid match
+
+
+class _UUIDish:
+    # mimics a uuid object: str() gives the canonical form, but != the str
+    def __init__(self, s): self._s = s
+    def __str__(self): return self._s
+
+
+def test_done_join_coerces_uuid_object_to_str():
+    uid = "6f1c2d3e-4a5b-4c6d-8e9f-0a1b2c3d4e5f"
+    # bar carries a uuid-OBJECT, est_item_id is the str form → must still match
+    m = build_done_map([{"work_item_id": _UUIDish(uid), "done": True}])
+    assert derive_done(uid, m) is True
+
+
 def test_derive_done_three_states():
     done_map = {"w1": True, "w2": False}
     assert derive_done("w1", done_map) is True

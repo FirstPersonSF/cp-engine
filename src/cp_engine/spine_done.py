@@ -28,6 +28,8 @@ def build_done_map(bars) -> dict:
         wid = _field(b, "work_item_id")
         if wid is None:
             continue
+        wid = str(wid)   # est_item_id is TEXT in the DB; key on str so the
+                         # uuid-vs-str join lines up (matches where.py's discipline)
         out[wid] = bool(out.get(wid, False) or _field(b, "done", False))
     return out
 
@@ -35,9 +37,12 @@ def build_done_map(bars) -> dict:
 def derive_done(est_item_id, done_map: dict):
     """True/False if `est_item_id` is a real work-item in the schedule map;
     None when it isn't bound to one (unbound/orphaned/_authored → n/a)."""
-    if not est_item_id or est_item_id not in done_map:
+    if not est_item_id:
         return None
-    return done_map[est_item_id]
+    key = str(est_item_id)
+    if key not in done_map:
+        return None
+    return done_map[key]
 
 
 def fetch_project_done_map(client, mc_project_id) -> dict:
