@@ -1110,17 +1110,37 @@ def _stamp_scope(
     owning row's id for BOTH kinds; `is_initiative` selects the column.
     """
     owner_col, owner_val = _owner_filter(folders)
-    client.table("rag_assets").update(
-        {
-            "scope": "project",
-            "company_id": folders.company_id,
-            "source_provider": file_ref.source,
-            "source_file_id": file_ref.id,
-            "source_path": file_ref.path,
+    payload = {
+        "scope": "project",
+        "company_id": folders.company_id,
+        "source_provider": file_ref.source,
+        "source_file_id": file_ref.id,
+        "source_path": file_ref.path,
+    }
+    # Stamp the provider content hash into `meta.change_token` so a LATER run can
+    # compare it and skip an unchanged file (ingest caching). `meta` is a jsonb
+    # column the pipeline may already populate with embedding/chunk keys, so we
+    # MERGE the token in (read-modify-write) rather than clobber the whole column.
+    # No token (e.g. a Google-native file) → leave meta untouched (don't write a
+    # None token), keeping the existing source_* stamp behavior unchanged.
+    if file_ref.change_token is not None:
+        resp = (
+            client.table("rag_assets")
+            .select("meta")
+            .eq(owner_col, owner_val)
+            .eq("file_path", file_path)
+            .eq("status", "active")
+            .execute()
+        )
+        rows = getattr(resp, "data", None) or []
+        current_meta = rows[0].get("meta") if rows else None
+        payload["meta"] = {
+            **(current_meta or {}),
+            "change_token": file_ref.change_token,
         }
-    ).eq(owner_col, owner_val).eq("file_path", file_path).eq(
-        "status", "active"
-    ).execute()
+    client.table("rag_assets").update(payload).eq(owner_col, owner_val).eq(
+        "file_path", file_path
+    ).eq("status", "active").execute()
 
 
 def _owner_filter(folders: ProjectFolders) -> tuple[str, str]:
