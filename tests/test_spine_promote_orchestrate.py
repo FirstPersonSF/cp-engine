@@ -78,6 +78,31 @@ def test_missing_rel_path(tmp_path):
     assert stamp.calls == []
 
 
+def test_missing_est_item_id(tmp_path):
+    # rel_path + company_id are set, but no est_item_id. Must fail BEFORE any
+    # file work (a None est_item_id would corrupt both the path and the stamp
+    # provenance key, silently breaking idempotency).
+    _make_transcript(tmp_path, "ggl-5168", "t.txt")
+    ingest = _Recorder()
+    stamp = _Recorder()
+    result = promote_transcript(
+        client=object(),
+        tenant_root=str(tmp_path),
+        project_code="ggl-5168",
+        project_id="p1",
+        company_id="c1",
+        element_row={"rel_path": "t.txt"},  # no est_item_id
+        supabase_url="u",
+        supabase_key="k",
+        ingest=ingest,
+        stamp=stamp,
+    )
+    assert result["ok"] is False
+    assert "est_item_id" in result["reason"]
+    assert ingest.calls == []
+    assert stamp.calls == []
+
+
 def test_missing_file(tmp_path):
     ingest = _Recorder()
     stamp = _Recorder()
@@ -126,7 +151,9 @@ def test_happy_path_same_stable_path(tmp_path):
     assert ingest_path == stamp_path
 
     # ...and that path is under a stable est_item_id-keyed dir (sanitized).
-    assert ".spine-promote" in ingest_path
+    # The dir lives under the SYSTEM temp dir, not the tenant tree, so we do not
+    # assert it's under tenant_root.
+    assert "spine-promote" in ingest_path
     assert "e1_with_slash" in ingest_path  # est_item_id sanitized
     assert ingest_path.endswith("t.txt")
     # The file was actually copied there.

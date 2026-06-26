@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 import shutil
+import tempfile
 from pathlib import Path
 
 
@@ -96,12 +97,23 @@ def promote_transcript(client, tenant_root, project_code, project_id, company_id
             return {"ok": False, "reason": "element has no source file (rel_path)"}
 
         est_item_id = element_row.get("est_item_id")
+        if not est_item_id:
+            # A None/empty est_item_id would corrupt BOTH the stable path
+            # (`.../None/`) and the stamp provenance key (source_file_id=None),
+            # silently breaking idempotency. Fail before any file work.
+            return {"ok": False, "reason": "element has no est_item_id"}
+
         src = Path(tenant_root) / project_code / rel_path
         if not src.exists():
             return {"ok": False, "reason": f"transcript file not found: {src}"}
 
-        # CONTRACT B step 1 — ONE stable dest path keyed on est_item_id.
-        dest_dir = Path(tenant_root) / ".spine-promote" / _safe(est_item_id)
+        # CONTRACT B step 1 — ONE stable dest path keyed on est_item_id. Rooted
+        # at the SYSTEM temp dir (mirroring asset_ingest._stable_dir_for), NOT
+        # the tenant tree: the file need not be durable, only the path string
+        # deterministic per est_item_id (re-promote → same path → stamp matches
+        # the same row; same content → same hash). Keeping it out of the tenant
+        # repo avoids cluttering the checked-out working tree.
+        dest_dir = Path(tempfile.gettempdir()) / "spine-promote" / _safe(est_item_id)
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / src.name
         shutil.copy2(src, dest)
