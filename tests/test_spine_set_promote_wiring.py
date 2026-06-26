@@ -109,6 +109,75 @@ def test_important_none_note_only_no_promotion(monkeypatch):
     assert "promotion" not in res
 
 
+def test_both_trigger_paths_agree_on_promote_args(monkeypatch):
+    """Both trigger paths call promote_transcript with an equivalent arg shape.
+
+    Item 3 has TWO doors that both delegate to `promote_transcript`:
+      - the standalone `promote_spine_transcript(code, key)` MCP tool, and
+      - `set_spine_element(code, key, important=True)` on a false→true transition.
+
+    They currently pass byte-identical args, but nothing pins that. This test
+    captures the comparable fields on EACH path and asserts they match — so a
+    future edit that drops/reorders an arg on one path (e.g. stops passing
+    company_id) fails here instead of silently diverging.
+    """
+    import cp_engine.mcp_server as m
+
+    row = {
+        "id": "i",
+        "est_item_id": "w1",
+        "framing": "X",
+        "status": "live",
+        "important": False,
+        "note": None,
+        "rel_path": "1p/p/meetings/x.txt",
+    }
+
+    def _wire_common():
+        # A real-ish client: set_spine_element calls client.table(...).update(...)
+        # before promotion, so a bare object() would raise. _C/_T satisfy that.
+        fake_client = _C({"updates": []})
+        monkeypatch.setattr("cp_engine.mcp_server._resolve",
+                            lambda code: (fake_client, "pid", "cid"))
+        monkeypatch.setattr("cp_engine.project_sources.resolve_live_element",
+                            lambda client, pid, key: dict(row))
+        monkeypatch.setattr("cp_engine.mcp_server._tenant_root", lambda: "/tenant")
+        monkeypatch.setattr("cp_engine.config.load", lambda root: {})
+        monkeypatch.setattr("cp_engine.sync_mc2._load_supabase_creds",
+                            lambda cfg: ("https://x.supabase.co", "key"))
+
+    def _capture_promote():
+        calls = []
+
+        def _fake(client, root, project_code, pid, company_id, row,
+                  *, supabase_url, supabase_key):
+            calls.append({
+                "project_code": project_code, "pid": pid,
+                "company_id": company_id, "has_url": bool(supabase_url),
+                "has_key": bool(supabase_key), "kwargs": True,
+            })
+            return {"ok": True, "ids": ["a1"]}
+
+        monkeypatch.setattr("cp_engine.spine_promote.promote_transcript", _fake)
+        return calls
+
+    # Path A — the standalone tool.
+    _wire_common()
+    tool_calls = _capture_promote()
+    m.promote_spine_transcript("code", "key")
+
+    # Path B — set_spine_element on a false→true important transition.
+    _wire_common()
+    set_calls = _capture_promote()
+    m.set_spine_element("code", "key", important=True)
+
+    assert len(tool_calls) == 1
+    assert len(set_calls) == 1
+    # Both paths reached promote_transcript with the SAME comparable arg shape:
+    # project_code, pid, company_id equal, and both pass supabase_url + key.
+    assert tool_calls[0] == set_calls[0]
+
+
 def test_promotion_failure_is_non_fatal(monkeypatch):
     captured, calls = _wire(
         monkeypatch, prior_important=False,
