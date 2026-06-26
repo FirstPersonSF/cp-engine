@@ -4,6 +4,46 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.40.0 — 2026-06-26
+
+### Added — spine importance/note/done, transcript promotion, folder scan, ingest caching, dashboard
+
+A batch of spine + ingest enhancements (cp-enhancements items 1–6), all backward-compatible.
+
+- **Spine importance + note (item 1).** A first-class `important` flag and a standing
+  `note` ("why this matters") on spine elements (`spine_substance.important`/`.note`,
+  mc-2 migration 082). Importance sorts an element first in `list_spine_elements`,
+  badges it, and gates transcript promotion; both carry forward across versions from
+  the live row. New MCP tool `set_spine_element(code, key, important?, note?)`.
+
+- **Derived "done" (item 2).** A read-through `done` on spine elements computed from
+  the Gantt bar's completion (`estimator.schedule_items.done`) — no new state. ANY bar
+  done ⇒ done (reuses `execution_status` Rule 1); three states (true / false / null for
+  unbound). Surfaced read-only in `list_spine_elements` / `pull_spine_element`,
+  fail-soft, no N+1.
+
+- **Promote transcript to RAG (item 3).** Marking an element important embeds its source
+  transcript into `rag_assets` (retrievable via `pull_project_source`). New idempotent
+  MCP tool `promote_spine_transcript(code, key)` doubles as the retry door; importance is
+  always set even if the embed fails. Check-before-write idempotency on
+  `(project_id, source_file_id=est_item_id)`; engagements only (initiatives deferred).
+
+- **Folder targeted scan (item 4).** `ingest_project_assets(..., only_folder=)` +
+  `cp ingest-assets --folder` narrow the per-project allowlist to one folder
+  (provably narrow-only — never reaches an unconfigured folder). The ingest webhook
+  accepts a `folder` param.
+
+- **Ingest caching (item 5).** Repeated `cp ingest-assets` runs skip unchanged files
+  pre-download via a provider content-hash change-token stamped in
+  `rag_assets.meta.change_token`, plus an in-process TTL folder-listing cache.
+  `--no-cache` bypasses both; the `unchanged=N` count is surfaced in the run summary.
+
+- **Spine dashboard webhook (item 6).** `POST /api/spine/promote-transcript` — async,
+  HMAC-verified, run-tracked (`spine_promote_runs`, mc-2 migration 083) — lets the
+  `/spine` dashboard trigger transcript promotion (clones the tenant via the shared
+  `_cloned_tenant`, no leak). The dashboard ★/note/done surfaces + the promote proxy
+  and card UI ship in mc-2.
+
 ## v0.39.2 — 2026-06-24
 
 ### Added — Supabase creds from 1Password (`op://` references)
