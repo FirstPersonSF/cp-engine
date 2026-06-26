@@ -16,6 +16,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import cp_engine.asset_ingest as asset_ingest
+import cp_engine.asset_ingest_cli as asset_ingest_cli
 import cp_engine.cli as cli_mod
 from click.testing import CliRunner
 
@@ -325,3 +326,45 @@ def test_cli_default_uses_cache(monkeypatch):
     result = CliRunner().invoke(main, ["ingest-assets", "ibx-5153"])
     assert result.exit_code == 0, result.output
     assert seen["use_cache"] is True
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Observability: the skip count is actually SHOWN to the user
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_cli_single_shows_unchanged_count(monkeypatch):
+    """`cp ingest-assets <code>` must print `unchanged=N` so a cache-skipped run
+    isn't invisible (the headline feature would otherwise look like a no-op)."""
+    monkeypatch.setattr(cli_mod, "build_mc2_client", lambda: object())
+
+    def fake_ingest(code, **kwargs):
+        return IngestRunResult(created=0, skipped_unchanged=3)
+
+    monkeypatch.setattr(asset_ingest, "ingest_project_assets", fake_ingest)
+
+    result = CliRunner().invoke(main, ["ingest-assets", "ibx-5153"])
+    assert result.exit_code == 0, result.output
+    assert "unchanged=3" in result.output
+
+
+def test_cli_all_shows_unchanged_total(monkeypatch):
+    """`cp ingest-assets --all` must surface per-project + aggregate `unchanged=`."""
+    monkeypatch.setattr(cli_mod, "build_mc2_client", lambda: object())
+    monkeypatch.setattr(cli_mod, "_load_config_or_die", lambda: object())
+    monkeypatch.setattr(
+        asset_ingest_cli,
+        "active_ingestable_codes",
+        lambda config: ["a-1", "b-2"],
+    )
+
+    def fake_ingest(code, **kwargs):
+        return IngestRunResult(created=0, skipped_unchanged=2)
+
+    monkeypatch.setattr(asset_ingest, "ingest_project_assets", fake_ingest)
+
+    result = CliRunner().invoke(main, ["ingest-assets", "--all"])
+    assert result.exit_code == 0, result.output
+    # per-project lines each show unchanged=2; aggregate rolls up to 4
+    assert "unchanged=2" in result.output
+    assert "unchanged=4" in result.output
