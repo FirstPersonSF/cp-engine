@@ -12,6 +12,7 @@ signing/mocking style of test_webhook_asset_ingest.py.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -97,6 +98,26 @@ def _element(est_item_id="_authored/email-1", rel_path="meetings/m1.txt"):
     return {"est_item_id": est_item_id, "rel_path": rel_path, "label": "Email 1"}
 
 
+def _install_fake_clone(monkeypatch, rec, *, root=Path("/tmp/cp")):
+    """Replace _cloned_tenant with a contextmanager that yields a fixed Path and
+    records enter/exit — so tests prove the clone is cleaned up (its __exit__ ran)
+    without doing a real git clone. promote_transcript is mocked, so the yielded
+    root is never actually read from disk."""
+    rec.setdefault("clone_enters", 0)
+    rec.setdefault("clone_exits", 0)
+
+    @contextlib.contextmanager
+    def _fake():
+        rec["clone_enters"] += 1
+        try:
+            yield root
+        finally:
+            rec["clone_exits"] += 1
+
+    monkeypatch.setattr(webhook_main, "_cloned_tenant", _fake)
+    return rec
+
+
 def _wire(
     monkeypatch,
     *,
@@ -146,8 +167,9 @@ def _wire(
         lambda c, pid, key: el,
     )
 
-    # tenant_root — never actually read (promote_transcript is mocked)
-    monkeypatch.setattr(webhook_main, "_tenant_root", lambda: Path("/tmp/cp"))
+    # tenant clone — a fake contextmanager yielding a fixed Path (never read,
+    # since promote_transcript is mocked); records enter/exit for cleanup proof.
+    _install_fake_clone(monkeypatch, rec)
 
     rec.setdefault("spawned", [])
     monkeypatch.setattr(
@@ -312,8 +334,8 @@ def test_runner_records_failed_on_not_ok(monkeypatch):
     """promote_transcript returns ok:false → run row failed with reason."""
     monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
-    monkeypatch.setattr(webhook_main, "_tenant_root", lambda: Path("/tmp/cp"))
     rec = {}
+    _install_fake_clone(monkeypatch, rec)
     sb = _RecordingClient(rec)
     monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
 
@@ -342,8 +364,8 @@ def test_runner_engagement_only_carries_through_as_failed(monkeypatch):
     that reason (NOT a crash)."""
     monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
-    monkeypatch.setattr(webhook_main, "_tenant_root", lambda: Path("/tmp/cp"))
     rec = {}
+    _install_fake_clone(monkeypatch, rec)
     sb = _RecordingClient(rec)
     monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
 
@@ -376,8 +398,8 @@ def test_runner_records_failed_on_exception(monkeypatch):
     """A raising promote_transcript is recorded as failed; never crashes."""
     monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
-    monkeypatch.setattr(webhook_main, "_tenant_root", lambda: Path("/tmp/cp"))
     rec = {}
+    _install_fake_clone(monkeypatch, rec)
     sb = _RecordingClient(rec)
     monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
 
@@ -404,8 +426,8 @@ def test_runner_done_guards_empty_ids(monkeypatch):
     """ok:true with empty ids → done but asset_id None (no IndexError)."""
     monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
-    monkeypatch.setattr(webhook_main, "_tenant_root", lambda: Path("/tmp/cp"))
     rec = {}
+    _install_fake_clone(monkeypatch, rec)
     sb = _RecordingClient(rec)
     monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
 
@@ -424,3 +446,60 @@ def test_runner_done_guards_empty_ids(monkeypatch):
              if u["table"] == "spine_promote_runs"][0]["update"]
     assert patch["status"] == "done"
     assert patch["asset_id"] is None
+
+
+# ----------------------------------------------- clone lifecycle (no disk leak)
+
+
+def test_runner_cleans_up_clone_on_ok(monkeypatch):
+    """The promotion is driven through _cloned_tenant (the shared contextmanager
+    whose finally: rmtree guarantees cleanup). Prove the clone is ENTERED and
+    EXITED for a successful promote — i.e. no per-promote disk leak."""
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
+    rec = {}
+    _install_fake_clone(monkeypatch, rec)
+    sb = _RecordingClient(rec)
+    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+
+    monkeypatch.setattr(
+        "cp_engine.spine_promote.promote_transcript",
+        lambda *a, **k: {"ok": True, "title": "t", "ids": ["a-1"]},
+    )
+
+    asyncio.run(
+        webhook_main._run_promote(
+            "ibx-5153/run-1", "ibx-5153", "u-123", "c-1", _element()
+        )
+    )
+
+    assert rec["clone_enters"] == 1
+    assert rec["clone_exits"] == 1  # __exit__/finally ran → clone removed
+
+
+def test_runner_cleans_up_clone_when_promote_raises(monkeypatch):
+    """Even when promote_transcript raises, the `with _cloned_tenant()` exit runs
+    (finally: rmtree) — the clone is removed on the failure path too."""
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
+    rec = {}
+    _install_fake_clone(monkeypatch, rec)
+    sb = _RecordingClient(rec)
+    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+
+    def boom(*a, **k):
+        raise RuntimeError("promote exploded")
+    monkeypatch.setattr("cp_engine.spine_promote.promote_transcript", boom)
+
+    asyncio.run(
+        webhook_main._run_promote(
+            "ibx-5153/run-1", "ibx-5153", "u-123", "c-1", _element()
+        )
+    )
+
+    assert rec["clone_enters"] == 1
+    assert rec["clone_exits"] == 1
+    # And the failure was still recorded (never-raise contract intact).
+    patch = [u for u in rec["updates"]
+             if u["table"] == "spine_promote_runs"][0]["update"]
+    assert patch["status"] == "failed"

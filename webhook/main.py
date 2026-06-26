@@ -742,33 +742,6 @@ def _resolve_project_id_for_promote(client, code: str) -> str | None:
     return _resolve_project_id(client, code)
 
 
-def _tenant_root() -> Path:
-    """The cp tenant filesystem root the promote reads transcript files from.
-
-    The webhook container's cwd is /app (the webhook app, NOT a tenant
-    checkout), so promote_transcript — which resolves
-    `tenant_root/project_code/rel_path` — needs a real checkout. We clone the
-    tenant shallowly to a temp dir and return its path. Unlike /api/assets/ingest
-    (asset ingest pulls from Drive/Dropbox and never touches the tenant tree),
-    promotion's source IS a file in the tenant tree, so a checkout is required.
-
-    The clone is left on disk for the lifetime of the background task; it lands
-    under the container's ephemeral tmpfs and is reclaimed on restart. (Tests
-    monkeypatch this to a fixed Path — promote_transcript itself is mocked.)
-    """
-    repo_url = os.environ.get("CP_TENANT_REPO_URL")
-    if not repo_url:
-        raise RuntimeError("CP_TENANT_REPO_URL not configured")
-    tmp = Path(tempfile.mkdtemp(prefix="cp-promote-"))
-    subprocess.run(
-        ["git", "clone", "--depth=1", repo_url, str(tmp / "cp")],
-        check=True,
-        env=_ssh_env(),
-        capture_output=True,
-    )
-    return tmp / "cp"
-
-
 async def _run_promote(
     run_id: str, code: str, project_id: str, company_id: str | None,
     element_row: dict,
@@ -777,6 +750,15 @@ async def _run_promote(
     then record the outcome on the spine_promote_runs row. Never raises — a
     failure is recorded as status=failed (this is the fire-and-forget tail of
     /api/spine/promote-transcript, which has already returned 202 to the caller).
+
+    Unlike /api/assets/ingest (asset ingest pulls from Drive/Dropbox and never
+    touches the tenant tree), promotion's source IS a verbatim transcript file
+    committed in the tenant tree — the spine row's body is distilled memory, not
+    the transcript, so there's no DB copy and a checkout is required. We drive
+    the promotion through `_cloned_tenant()` (the shared clone-on-each-request
+    contextmanager that always `rmtree`s in its `finally`), so the clone lives
+    exactly as long as `promote_transcript` needs it and is then removed — no
+    per-promote disk leak.
 
     Engagement-only carries through as a *failed run* (not a crash): an
     initiative has company_id=None, and promote_transcript's CONTRACT A returns
@@ -796,17 +778,20 @@ async def _run_promote(
             raise RuntimeError(
                 "webhook missing SUPABASE_URL/SUPABASE_SERVICE_KEY env"
             )
-        result = await asyncio.to_thread(
-            promote_transcript,
-            client,
-            _tenant_root(),
-            code,
-            project_id,
-            company_id,
-            element_row,
-            supabase_url=supabase_url,
-            supabase_key=supabase_key,
-        )
+        # The clone exists only for the duration of the threaded promote; the
+        # `with` guarantees cleanup (rmtree) on exit, success or failure.
+        with _cloned_tenant() as tenant_root:
+            result = await asyncio.to_thread(
+                promote_transcript,
+                client,
+                tenant_root,
+                code,
+                project_id,
+                company_id,
+                element_row,
+                supabase_url=supabase_url,
+                supabase_key=supabase_key,
+            )
         if result.get("ok"):
             ids = result.get("ids") or []
             patch = {
