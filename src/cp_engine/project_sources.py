@@ -291,9 +291,12 @@ def list_spine(client, project_id: str) -> list[dict]:
     """List a project's LIVE spine elements (index, not bodies).
 
     Returns `[{est_item_id, framing, layer, binding, status, serves_count,
-    body_len}]` for every live element of the project. The full body is never
-    returned here (only its length) — call `pull_spine` for one element's text.
-    Never raises: the MCP tool boundary converts failures to a structured note.
+    body_len, important, note, done}]` for every live element of the project.
+    `important`/`note` are the element's importance flag + annotation; `done` is
+    true/false/null (null = n/a, i.e. not bound to a real work-item). The full
+    body is never returned here (only its length) — call `pull_spine` for one
+    element's text. Never raises: the MCP tool boundary converts failures to a
+    structured note.
     """
     resp = (
         client.table("spine_substance")
@@ -311,6 +314,12 @@ def list_spine(client, project_id: str) -> list[dict]:
     try:
         done_map = fetch_project_done_map(client, project_id)
     except Exception:  # noqa: BLE001 — done is best-effort; never break the listing
+        logger.warning(
+            "list_spine: done-map fetch failed for project_id=%s; "
+            "degrading `done` to None for all elements",
+            project_id,
+            exc_info=True,
+        )
         done_map = {}
     out: list[dict] = []
     for row in rows:
