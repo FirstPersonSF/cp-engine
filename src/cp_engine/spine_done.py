@@ -10,6 +10,8 @@ the Gantt execution-status badge exactly. Three states:
 """
 from __future__ import annotations
 
+from cp_engine.estimate import fetch_estimate, fetch_schedule
+
 
 def _field(bar, key, default=None):
     if isinstance(bar, dict):
@@ -36,3 +38,12 @@ def derive_done(est_item_id, done_map: dict):
     if not est_item_id or est_item_id not in done_map:
         return None
     return done_map[est_item_id]
+
+
+def fetch_project_done_map(client, mc_project_id) -> dict:
+    """The project's work_item_id → done map, or {} when it has no estimate.
+    Two reads against the `estimator` schema (estimate, then its schedule)."""
+    est = fetch_estimate(client, mc_project_id)
+    if est is None:
+        return {}
+    return build_done_map(fetch_schedule(client, est.id))

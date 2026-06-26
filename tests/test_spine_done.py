@@ -32,3 +32,27 @@ def test_derive_done_three_states():
     assert derive_done("w2", done_map) is False
     assert derive_done("_authored/x", done_map) is None
     assert derive_done(None, done_map) is None
+
+
+from cp_engine import spine_done
+
+
+def test_fetch_project_done_map_uses_estimate_then_schedule(monkeypatch):
+    class _Est:
+        id = "EST1"
+    captured = {}
+    monkeypatch.setattr(spine_done, "fetch_estimate", lambda c, pid: (_Est() if pid == "pid" else None))
+    def _fake_schedule(c, estimate_id):
+        captured["estimate_id"] = estimate_id
+        return [{"work_item_id": "w1", "done": True}]
+    monkeypatch.setattr(spine_done, "fetch_schedule", _fake_schedule)
+    m = spine_done.fetch_project_done_map(object(), "pid")
+    assert captured["estimate_id"] == "EST1"   # filtered by ESTIMATE id, not pid
+    assert m == {"w1": True}
+
+
+def test_fetch_project_done_map_no_estimate_returns_empty(monkeypatch):
+    monkeypatch.setattr(spine_done, "fetch_estimate", lambda c, pid: None)
+    monkeypatch.setattr(spine_done, "fetch_schedule",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("should not call")))
+    assert spine_done.fetch_project_done_map(object(), "pid") == {}
