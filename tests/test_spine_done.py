@@ -13,6 +13,12 @@ def test_build_done_map_any_bar_done_wins():
     assert m["w2"] is False     # bound, no bar done → False
 
 
+def test_build_done_map_earlier_done_survives_later_not_done():
+    # True-then-False for the same id must stay True (order-independent OR-fold,
+    # not last-write-wins).
+    assert build_done_map([_bar("w1", True), _bar("w1", False)])["w1"] is True
+
+
 def test_build_done_map_ignores_bars_without_work_item():
     bars = [_bar(None, True), _bar("w1", False)]
     m = build_done_map(bars)
