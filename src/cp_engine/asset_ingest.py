@@ -549,10 +549,21 @@ def _effective_allowlist(
       unchanged (today's behavior — identical to no `only_folder` at all).
     - `configured` is empty `()` → "all allowed", so `only_folder` is within
       scope by definition → narrow to `(only_folder,)`.
-    - otherwise `only_folder` must be PERMITTED by `configured`. We mirror
-      `_matches_allowlist`'s contains-discipline (case-insensitive substring),
-      permitting either direction so `only_folder` may name an allowed folder
-      ("Carol Decks") OR a sub-name of one ("Carol" → "Carol Decks"):
+    - otherwise `only_folder` must be PERMITTED by `configured`. only_folder is
+      permitted IFF it is itself matched by the configured allowlist: it may
+      EQUAL an allowed name ("Carol Decks") or be a SUPER-name that CONTAINS one
+      ("Carol Decks Archive" contains allowed "Carol Decks"). It must NOT be a
+      mere FRAGMENT of an allowed name ("Carol" is only a fragment of "Carol
+      Decks" → NOT permitted). The permit direction is ONLY `allowed in
+      only_folder`, which makes the result provably SUBSET-SAFE (never widens):
+        if a real folder segment contains only_folder, AND only_folder contains
+        a configured `allowed`, THEN the segment contains `allowed` → the
+        configured allowlist already matched that segment → effective ⊆ original
+        always holds.
+      The reverse direction (`only_folder in allowed`, i.e. only_folder a mere
+      fragment) is DELIBERATELY EXCLUDED: `("Carol",)` would match "Carol
+      Photos", "Carolina HR", etc. — folders configured `("Carol Decks",)` would
+      never ingest. That would WIDEN the allowlist, defeating the feature.
         * permitted → narrow to `(only_folder,)`, which `_matches_allowlist`
           will then contains-match against real folder segments.
         * NOT permitted → return the match-nothing sentinel `_MATCH_NOTHING`
@@ -565,7 +576,7 @@ def _effective_allowlist(
         return (only_folder,)
     needle = only_folder.lower()
     permitted = any(
-        (needle in allowed.lower() or allowed.lower() in needle)
+        allowed.lower() in needle  # configured entry contained in only_folder
         for allowed in configured
         if allowed and allowed.strip()
     )

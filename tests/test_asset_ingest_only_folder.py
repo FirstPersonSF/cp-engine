@@ -15,14 +15,51 @@ def test_only_folder_in_allowlist_narrows_to_it():
     )
 
 
-def test_only_folder_partial_match_narrows():
-    # "Carol" should select the "Carol Decks" allowed entry (same contains rule
-    # _matches_allowlist uses), so the scan narrows to that folder.
+def test_only_folder_fragment_not_permitted():
+    # "Carol" is a mere FRAGMENT of allowed "Carol Decks" — permitting it would
+    # WIDEN the allowlist (it would match "Carol Photos", "Carolina HR", …), so
+    # it must NOT be permitted → match-nothing sentinel.
+    from cp_engine.asset_ingest import _matches_allowlist, FileRef
+
     eff = _effective_allowlist("Carol", ("Carol Decks",))
-    # effective allowlist must still MATCH files under Carol Decks but nothing else;
-    # the simplest correct effective value is ("Carol",) which _matches_allowlist
-    # will contains-match against "Carol Decks" segments.
-    assert eff == ("Carol",)
+    assert eff != ()  # NOT () which means "all"
+    f = FileRef(
+        source="drive",
+        id="1",
+        name="x",
+        mime_type=None,
+        size=None,
+        modified=None,
+        folder_path=("Carol Decks",),
+    )
+    assert _matches_allowlist(f, eff) is False
+
+
+def test_only_folder_super_name_permitted():
+    # A super-name that CONTAINS an allowed entry stays subset-safe → permitted.
+    assert _effective_allowlist("Carol Decks Archive", ("Carol Decks",)) == (
+        "Carol Decks Archive",
+    )
+
+
+def test_effective_is_subset_of_original_never_widens():
+    from cp_engine.asset_ingest import _matches_allowlist, FileRef
+
+    configured = ("Carol Decks",)
+    eff = _effective_allowlist("Carol", configured)  # a fragment → must not widen
+    # segments the ORIGINAL allowlist does NOT match must also be unmatched by effective
+    for seg in ("Carol Photos", "Carolina Confidential", "Caroline HR"):
+        f = FileRef(
+            source="drive",
+            id="1",
+            name="x",
+            mime_type=None,
+            size=None,
+            modified=None,
+            folder_path=(seg,),
+        )
+        if not _matches_allowlist(f, configured):
+            assert not _matches_allowlist(f, eff), f"effective widened to {seg!r}"
 
 
 def test_only_folder_not_permitted_scans_nothing():
