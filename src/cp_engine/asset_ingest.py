@@ -282,11 +282,15 @@ _NON_INGESTABLE_EXTENSIONS = (".url", ".lnk", ".webloc")
 # memoizes the whole folder LISTING (the recursive tree-walk) so back-to-back
 # scans of the SAME folder within one process don't re-walk it.
 #
-# Module-level + TTL'd: a single `cp ingest-assets` run is one process, so this
-# only collapses repeated walks of the SAME folder within one run (e.g. `--all`
-# projects sharing a parent folder, or back-to-back calls in one process). It is
-# NEVER meant to persist meaning across runs — `ingest_project_assets` clears it
-# at the start of every run, so a fresh run always re-walks from scratch.
+# Module-level + TTL'd: a single `cp ingest-assets` invocation is one process, so
+# this collapses repeated walks of the SAME folder WITHIN one invocation. The big
+# win is `--all`: when several projects share a parent (provider, folder_id), the
+# tree-walk runs ONCE and every later project reuses the cached listing. The clear
+# lives at the CLI entry points (`fan_out_ingest` once before its loop, and the
+# single-project branch) — NOT inside `ingest_project_assets`, which runs once per
+# project, so clearing there would wipe the cache between every project and defeat
+# cross-project sharing. Net effect: clean per CLI invocation, shared across the
+# projects of that invocation, NEVER persisted across separate invocations.
 _LISTING_CACHE: dict[tuple[str, str], tuple[float, list]] = {}
 _LISTING_TTL_SECONDS = 600.0
 
@@ -323,10 +327,11 @@ def _cached_listing(
 def _clear_listing_cache() -> None:
     """Reset the in-process listing cache.
 
-    Called at the start of every `ingest_project_assets` run (so each run is
-    clean — process-local within a run, never across runs) and by tests (the
-    module-level dict survives the whole pytest session, so tests must clear it
-    to avoid leaking cached listings into one another)."""
+    Called ONCE per CLI invocation — `fan_out_ingest` clears before its
+    per-project loop (so the cache is shared across the projects of an `--all`
+    sweep) and the single-project CLI branch clears before its one run. Also
+    called by tests: the module-level dict survives the whole pytest session, so
+    tests must clear it to avoid leaking cached listings into one another."""
     _LISTING_CACHE.clear()
 
 
@@ -927,14 +932,17 @@ def ingest_project_assets(
     Failure policy: a 'failed' IngestResult OR a raising download is recorded in
     `failures` and the loop continues — one bad file never aborts the run, and no
     failure is silently swallowed. Downloaded bytes are always cleaned up.
-    """
-    # Start every run with a clean in-process listing cache. The cache is a
-    # module-level dict that lives for the whole process; clearing it here means a
-    # fresh `cp ingest-assets` invocation never sees a stale entry from a prior
-    # run in the same process (matching the "never persists across runs" contract)
-    # while still collapsing repeated walks of the same folder WITHIN this run.
-    _clear_listing_cache()
 
+    LISTING CACHE: this function deliberately does NOT clear the in-process
+    listing cache. The clear lives ONE level up, at the CLI entry points
+    (`fan_out_ingest` for `--all`, and the single-project `ingest-assets <code>`
+    branch) — so a single CLI invocation clears ONCE and the cache then persists
+    ACROSS the per-project runs of an `--all` sweep. That is the whole point of
+    the cache: two projects sharing a parent (provider, folder_id) walk it once
+    total. Clearing here (per project) would wipe the cache between every project
+    and make it useless. A new non-CLI caller that needs a guaranteed-fresh cache
+    must call `_clear_listing_cache()` itself before invoking.
+    """
     # Resolve creds lazily, and ONLY the pieces actually missing — so the unit-
     # test path (injected client + pipeline) never touches cp config / Supabase.
     def _resolve_creds() -> tuple[str, str]:

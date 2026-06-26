@@ -169,7 +169,15 @@ def fan_out_ingest(
     on `.error` so the caller can surface them and exit non-zero. `use_cache`
     threads the CLI `--no-cache` bypass through to every per-project run.
     """
-    from cp_engine.asset_ingest import ingest_project_assets
+    from cp_engine.asset_ingest import _clear_listing_cache, ingest_project_assets
+
+    # Clear the in-process folder-listing cache ONCE, before the per-project loop —
+    # NOT per project. This is what lets a shared parent (provider, folder_id) be
+    # walked exactly once across an entire `--all` sweep and reused by every later
+    # project that shares it. Clearing here (rather than inside
+    # ingest_project_assets) keeps the "clean per CLI run, never across runs"
+    # contract while enabling within-run cross-project sharing.
+    _clear_listing_cache()
 
     result = FanOutResult()
     for code in codes:

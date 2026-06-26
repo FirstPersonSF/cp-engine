@@ -2765,6 +2765,12 @@ def ingest_assets_cmd(
 
     # ── Single project ──
     if code:
+        # Clear the in-process listing cache once at the start of this CLI run
+        # (matches fan_out_ingest's once-per-invocation clear). For a single
+        # project this is mostly hygiene — the one project walks each folder once
+        # — but it keeps the "clean per CLI run" contract uniform across both
+        # entry points.
+        asset_ingest._clear_listing_cache()
         run = asset_ingest.ingest_project_assets(code, use_cache=use_cache)
         if not run.project_found:
             click.echo(f"Error: no MC-2 project resolved for '{code}'.", err=True)
