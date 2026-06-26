@@ -98,6 +98,11 @@ class FileRef:
     # file when any folder in its path matches an allowed name. Defaults to ()
     # so other FileRef construction sites are unaffected.
     folder_path: tuple[str, ...] = ()
+    # Per-file CONTENT change-token captured FROM THE LISTING at zero extra API
+    # cost: Drive `md5Checksum`, Dropbox `content_hash`. Lets a later ingest-cache
+    # step skip unchanged files before download. None when the provider omits it.
+    # Defaulted so all other FileRef construction sites stay valid.
+    change_token: str | None = None
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -282,6 +287,9 @@ def _drive_file_ref(item: dict, folder_path: tuple[str, ...] = ()) -> FileRef:
         modified=item.get("modifiedTime"),
         path=None,
         folder_path=folder_path,
+        # None for Google-native Docs/Sheets/Slides (Drive omits md5Checksum for
+        # non-binary files) → those have no change token and always re-ingest.
+        change_token=item.get("md5Checksum"),
     )
 
 
@@ -337,7 +345,7 @@ def _list_drive(connector, folder_id: str) -> list[FileRef]:
             return
         items = connector._list_files_with_pagination(
             query=f"'{fid}' in parents and trashed=false",
-            fields="files(id,name,mimeType,size,modifiedTime)",
+            fields="files(id,name,mimeType,size,modifiedTime,md5Checksum)",
             page_size=100,
         )
         for item in items:
@@ -399,6 +407,7 @@ def _list_dropbox(connector, folder: str) -> list[FileRef]:
                     modified=str(getattr(entry, "client_modified", None) or "")
                     or None,
                     path=getattr(entry, "path_display", None),
+                    change_token=getattr(entry, "content_hash", None),
                 )
             )
         # Drain the cursor: recursive results page just like a flat listing.
