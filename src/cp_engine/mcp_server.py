@@ -423,9 +423,14 @@ def set_spine_element(project_code: str, key: str,
     `key` is an est_item_id (exact) or a case-insensitive `framing` (title)
     substring resolved to ONE live element (same discipline as
     pull_spine_element). Args left None are not touched (partial update). Marking
-    an element important surfaces it first in list_spine_elements (and, later,
-    promotes its source transcript to RAG). Returns
-    {est_item_id, important, note}, or a structured {note}/{error} on miss.
+    an element important surfaces it first in list_spine_elements and promotes
+    its source transcript to RAG. Promotion fires only on a false→true
+    transition (not when already important), is engagement-only (initiative
+    elements are deferred), and is non-fatal — its outcome surfaces under
+    `promotion` in the return, never as a tool {error}, so importance is always
+    set. `promote_spine_transcript` is the standalone tool to run/retry promotion
+    on its own. Returns {est_item_id, important, note[, promotion]}, or a
+    structured {note}/{error} on miss.
     """
     from cp_engine.project_sources import resolve_live_element
     try:

@@ -3,12 +3,17 @@
 A spine element marked important gets its underlying transcript embedded into
 `rag_assets` so it's retrievable via pull_project_source.
 
-This module is built up across item-3's tasks:
-  - `ingest_single_file` (here) — the thin embed wrapper: feed ONE local file
-    to the ingest pipeline. No spine/idempotency logic of its own.
-  - the stamp + orchestration (later tasks) add the spine-promote provenance
-    and the (owner, source_file_id=est_item_id) check-before-write that makes
-    re-promotion update-in-place rather than duplicate.
+Three functions, smallest to largest:
+  - `ingest_single_file` — the thin embed wrapper: feed ONE local file to the
+    ingest pipeline. No spine/idempotency logic of its own.
+  - `stamp_promoted_asset` — stamp the just-ingested row with spine-promote
+    provenance (source_provider='spine-promote', source_file_id=est_item_id),
+    located by (project_id, file_path, status='active').
+  - `promote_transcript` — the orchestrator: resolve rel_path → copy to a
+    stable temp path keyed on est_item_id → ingest → stamp → verify exactly
+    one row matched. Engagement-only and never raises. Because the stable path
+    is deterministic per est_item_id, re-promotion lands on the same row, so
+    the whole path is idempotent (update-in-place, never duplicate).
 """
 from __future__ import annotations
 
