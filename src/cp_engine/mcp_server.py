@@ -432,22 +432,44 @@ def set_spine_element(project_code: str, key: str,
         resolved = _resolve(project_code)
         if resolved is None:
             return {"error": f"project {project_code!r} not found"}
-        client, pid, _cid = resolved
+        client, pid, company_id = resolved
         row = resolve_live_element(client, pid, key)
         if row is None:
             return {"note": f"no single live element matching '{key}' in {project_code!r}"}
+        # Capture the PRIOR important flag before the patch so we can detect a
+        # genuine false→true transition (which triggers RAG promotion below).
+        prior_important = bool(row.get("important"))
         patch = {}
         if important is not None:
             patch["important"] = bool(important)
         if note is not None:
             patch["note"] = note
+        # Importance is ALWAYS set first — promotion never blocks it.
         if patch:
             client.table("spine_substance").update(patch).eq("id", row["id"]).execute()
-        return {
+        result = {
             "est_item_id": row["est_item_id"],
             "important": patch.get("important", row.get("important")),
             "note": patch.get("note", row.get("note")),
         }
+        # Promote the source transcript to RAG ONLY on a genuine false→true flip
+        # (not when already True — no redundant re-embed — nor when untouched/False).
+        # Promotion is NON-FATAL: a failure surfaces under "promotion", never as a
+        # tool {error}, so importance:True is always returned.
+        if important is True and not prior_important:
+            try:
+                from cp_engine.config import load as load_config
+                from cp_engine.spine_promote import promote_transcript
+                from cp_engine.sync_mc2 import _load_supabase_creds
+                root = _tenant_root()
+                supabase_url, supabase_key = _load_supabase_creds(load_config(root))
+                result["promotion"] = promote_transcript(
+                    client, root, project_code, pid, company_id, row,
+                    supabase_url=supabase_url, supabase_key=supabase_key,
+                )
+            except Exception as exc:  # noqa: BLE001 — promotion is non-fatal
+                result["promotion"] = {"ok": False, "reason": f"promotion error: {exc}"}
+        return result
     except Exception as exc:  # noqa: BLE001
         return {"error": f"failed to set element '{key}' in {project_code!r}: {exc}"}
 
