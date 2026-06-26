@@ -452,6 +452,41 @@ def set_spine_element(project_code: str, key: str,
         return {"error": f"failed to set element '{key}' in {project_code!r}: {exc}"}
 
 
+@mcp.tool()
+def promote_spine_transcript(project_code: str, key: str) -> dict:
+    """Promote a spine element's source transcript into the RAG store.
+
+    Embeds the element's underlying transcript (resolved via its rel_path) into
+    rag_assets so it's retrievable via pull_project_source. Idempotent: calling
+    again re-runs promotion (the retry door for a failed embed). Engagement-only
+    for now — an initiative element returns a 'not yet supported' note.
+    Returns {est_item_id, promotion: {ok, ...}} or a structured {note}/{error}.
+    """
+    from cp_engine.config import load as load_config
+    from cp_engine.project_sources import resolve_live_element
+    from cp_engine.spine_promote import promote_transcript
+    from cp_engine.sync_mc2 import _load_supabase_creds
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, company_id = resolved
+        row = resolve_live_element(client, pid, key)
+        if row is None:
+            return {"note": f"no single live element matching '{key}' in {project_code!r}"}
+        # Same cred source the rest of the engine uses (asset_ingest resolves
+        # creds the identical way: _load_supabase_creds over the loaded config).
+        root = _tenant_root()
+        supabase_url, supabase_key = _load_supabase_creds(load_config(root))
+        result = promote_transcript(
+            client, root, project_code, pid, company_id, row,
+            supabase_url=supabase_url, supabase_key=supabase_key,
+        )
+        return {"est_item_id": row.get("est_item_id"), "promotion": result}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to promote '{key}' in {project_code!r}: {exc}"}
+
+
 def run_stdio() -> None:
     """Run the server over stdio (what Claude Code launches via .mcp.json)."""
     mcp.run(transport="stdio")
