@@ -121,7 +121,12 @@ def build_version_rows(*, project_id, project_code, est_item_id, prior_versions,
     nums = [int(v["version_label"][1:]) for v in prior_versions
             if str(v.get("version_label", "")).startswith("v")]
     next_n = (max(nums) + 1) if nums else 1
-    base = prior_versions[0] if prior_versions else {}
+    # Carry forward from the LIVE row, not prior_versions[0] — the fetch order is
+    # unspecified, and set_spine_element mutates important/note on the live row
+    # alone, so index-0 can be a stale superseded row. Falls back to [0] only if
+    # no row is flagged live (shouldn't happen for a real element).
+    base = next((v for v in prior_versions if v.get("status") == "live"), None) \
+        or (prior_versions[0] if prior_versions else {})
     return [_row(
         project_id=project_id, project_code=project_code, est_item_id=est_item_id,
         label=label or base.get("framing"), type_=type_ or base.get("layer"),
