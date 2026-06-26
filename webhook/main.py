@@ -581,7 +581,8 @@ def _asset_runs_table(client):
 
 
 async def _run_asset_ingest(
-    run_id: str, code: str, mc_project_id: str | None = None
+    run_id: str, code: str, mc_project_id: str | None = None,
+    folder: str | None = None,
 ) -> None:
     """Background: run the (sync, slow) asset ingest off the event loop, then
     record the outcome on the asset_ingest_runs row. Never raises — a failure is
@@ -612,6 +613,7 @@ async def _run_asset_ingest(
             mc_project_id=mc_project_id,
             supabase_url=supabase_url,
             supabase_key=supabase_key,
+            only_folder=folder,
         )
         if not run.project_found:
             patch = {
@@ -681,6 +683,7 @@ async def asset_ingest_endpoint(request: Request) -> Response:
     code = (payload.get("code") or "").strip()
     run_id = (payload.get("run_id") or "").strip()
     mc_project_id = (payload.get("mc_project_id") or "").strip() or None
+    folder = (payload.get("folder") or "").strip() or None
     if not code or not run_id:
         raise HTTPException(status_code=400, detail="code and run_id are required")
     client = _create_supabase_client()
@@ -708,7 +711,7 @@ async def asset_ingest_endpoint(request: Request) -> Response:
         "status": "running",
         "started_at": _utc_now_iso(),
     }).execute()
-    _spawn_background(_run_asset_ingest(run_id, code, mc_project_id))
+    _spawn_background(_run_asset_ingest(run_id, code, mc_project_id, folder))
     return Response(
         content=json.dumps({"run_id": run_id, "status": "running"}),
         status_code=202,
