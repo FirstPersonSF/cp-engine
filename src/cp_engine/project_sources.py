@@ -247,20 +247,23 @@ def _match_one_live(rows: list[dict], key: str):
       2. Title (`framing`) substring (case-insensitive, `_title_matches`):
          exactly one distinct element matched → that row.
 
-    Returns `(row, None)` on a unique resolution, or `(None, reason)` where
-    `reason` is `"no-match"` or `"ambiguous"` so callers can craft their own
-    message (or collapse both to None).
+    Returns `(row, reason, distinct)`:
+      - unique resolution → `(row, None, None)`,
+      - no title match     → `(None, "no-match", None)`,
+      - 2+ distinct        → `(None, "ambiguous", distinct)` where `distinct` is
+        the already-computed est_item_id→row map, so the caller can render
+        candidate names WITHOUT re-filtering `rows` (keeps the dedup in one place).
     """
     exact = [r for r in rows if r.get("est_item_id") == key]
     if exact:
-        return exact[0], None
+        return exact[0], None, None
     matched = [r for r in rows if _title_matches(key, r.get("framing"))]
     if not matched:
-        return None, "no-match"
+        return None, "no-match", None
     distinct = {r.get("est_item_id"): r for r in matched}
     if len(distinct) > 1:
-        return None, "ambiguous"
-    return next(iter(distinct.values())), None
+        return None, "ambiguous", distinct
+    return next(iter(distinct.values())), None, None
 
 
 def resolve_live_element(client, project_id: str, key: str) -> dict | None:
@@ -279,7 +282,7 @@ def resolve_live_element(client, project_id: str, key: str) -> dict | None:
         .execute()
     )
     rows = getattr(resp, "data", None) or []
-    row, _reason = _match_one_live(rows, key)
+    row, _reason, _ = _match_one_live(rows, key)
     return row
 
 
@@ -348,7 +351,7 @@ def pull_spine(client, project_id: str, key: str) -> dict:
     )
     rows = getattr(resp, "data", None) or []
 
-    row, reason = _match_one_live(rows, key)
+    row, reason, distinct = _match_one_live(rows, key)
     if row is not None:
         return _spine_element(row)
     if reason == "no-match":
@@ -356,12 +359,8 @@ def pull_spine(client, project_id: str, key: str) -> dict:
             "body": "",
             "error": f"no spine element matching '{key}' in this project",
         }
-    # ambiguous: 2+ distinct elements matched the title substring.
-    distinct = {
-        r.get("est_item_id"): r
-        for r in rows
-        if _title_matches(key, r.get("framing"))
-    }
+    # ambiguous: 2+ distinct elements matched the title substring. Reuse the
+    # already-computed `distinct` from _match_one_live — do NOT re-filter rows.
     candidates = ", ".join(
         (r.get("framing") or r.get("est_item_id") or "?") for r in distinct.values()
     )

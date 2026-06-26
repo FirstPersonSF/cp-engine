@@ -59,3 +59,48 @@ def test_set_spine_element_no_match_returns_note_field(monkeypatch):
     res = m.set_spine_element("p", "missing", important=True)
     assert "note" in res or "error" in res   # structured miss, never throws
     assert "est_item_id" not in res
+
+
+def test_set_spine_element_note_only_does_not_touch_important(monkeypatch):
+    captured = {"updates": []}
+    class _T:
+        def __init__(self, n): pass
+        def select(self, c): return self
+        def eq(self, c, v): return self
+        def order(self, *a, **k): return self
+        def update(self, d): captured["updates"].append(d); return self
+        def execute(self):
+            return type("R", (), {"data": [
+                {"id": "p/_authored/x/v1", "est_item_id": "_authored/x",
+                 "framing": "X", "status": "live", "important": True, "note": None}
+            ]})()
+    class _C:
+        def table(self, n): return _T(n)
+    monkeypatch.setattr("cp_engine.mcp_server._resolve", lambda c: (_C(), "pid", "cid"))
+    import cp_engine.mcp_server as m
+    res = m.set_spine_element("p", "_authored/x", note="why it matters")
+    assert {"note": "why it matters"} in captured["updates"]
+    assert all("important" not in u for u in captured["updates"])  # untouched
+    assert res["important"] is True   # current DB value echoed back, not clobbered
+
+
+def test_set_spine_element_important_false_is_written(monkeypatch):
+    captured = {"updates": []}
+    class _T:
+        def __init__(self, n): pass
+        def select(self, c): return self
+        def eq(self, c, v): return self
+        def order(self, *a, **k): return self
+        def update(self, d): captured["updates"].append(d); return self
+        def execute(self):
+            return type("R", (), {"data": [
+                {"id": "p/_authored/x/v1", "est_item_id": "_authored/x",
+                 "framing": "X", "status": "live", "important": True, "note": None}
+            ]})()
+    class _C:
+        def table(self, n): return _T(n)
+    monkeypatch.setattr("cp_engine.mcp_server._resolve", lambda c: (_C(), "pid", "cid"))
+    import cp_engine.mcp_server as m
+    res = m.set_spine_element("p", "_authored/x", important=False)
+    assert {"important": False} in captured["updates"]  # explicit False IS written
+    assert res["important"] is False
