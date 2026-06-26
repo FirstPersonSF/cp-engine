@@ -232,9 +232,11 @@ _SPINE_PULL_COLUMNS = (
 
 # Resolve columns: enough to identify ONE live element AND its row `id` (needed
 # for a targeted update). Includes `id` (which _spine_element does NOT surface,
-# so pull_spine's public return is unaffected). Never `*`.
+# so pull_spine's public return is unaffected). `rel_path` is here for transcript
+# promotion (item 3) — no in-repo caller reads it yet, so don't trim it as unused.
+# Never `*`.
 _SPINE_RESOLVE_COLUMNS = (
-    "id, est_item_id, framing, status, important, note"
+    "id, est_item_id, framing, status, important, note, rel_path"
 )
 
 
