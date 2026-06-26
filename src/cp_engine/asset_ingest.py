@@ -527,6 +527,51 @@ def _matches_allowlist(ref: FileRef, allowlist: tuple[str, ...]) -> bool:
     )
 
 
+# A match-nothing sentinel for `_effective_allowlist`. Distinct from `()` — which
+# `list_files` reads as "match ALL" (no filter). When `only_folder` is NOT
+# permitted by the configured allowlist we must scan NOTHING, so we return THIS
+# instead of `()`: it's a string no real folder segment can contain (a NUL byte
+# is never present in a Drive/Dropbox folder name), so `_matches_allowlist`
+# contains-checks it against every segment and always returns False.
+_MATCH_NOTHING: tuple[str, ...] = ("\0__no_folder__",)
+
+
+def _effective_allowlist(
+    only_folder: str | None, configured: tuple[str, ...]
+) -> tuple[str, ...]:
+    """The allowlist to actually scan, NARROWING `configured` by `only_folder`.
+
+    This can RESTRICT the configured per-project allowlist but NEVER widen it: a
+    targeted scan can only reach a folder the project is already configured to
+    ingest. Rules:
+
+    - `only_folder is None` → no narrowing requested → return `configured`
+      unchanged (today's behavior — identical to no `only_folder` at all).
+    - `configured` is empty `()` → "all allowed", so `only_folder` is within
+      scope by definition → narrow to `(only_folder,)`.
+    - otherwise `only_folder` must be PERMITTED by `configured`. We mirror
+      `_matches_allowlist`'s contains-discipline (case-insensitive substring),
+      permitting either direction so `only_folder` may name an allowed folder
+      ("Carol Decks") OR a sub-name of one ("Carol" → "Carol Decks"):
+        * permitted → narrow to `(only_folder,)`, which `_matches_allowlist`
+          will then contains-match against real folder segments.
+        * NOT permitted → return the match-nothing sentinel `_MATCH_NOTHING`
+          (NOT `()`, which `list_files` reads as "match ALL"; "none" needs a
+          dedicated sentinel that no real folder segment contains).
+    """
+    if only_folder is None:
+        return configured
+    if not configured:
+        return (only_folder,)
+    needle = only_folder.lower()
+    permitted = any(
+        (needle in allowed.lower() or allowed.lower() in needle)
+        for allowed in configured
+        if allowed and allowed.strip()
+    )
+    return (only_folder,) if permitted else _MATCH_NOTHING
+
+
 def list_files(
     folders: ProjectFolders,
     drive_connector=None,
@@ -917,6 +962,7 @@ def ingest_project_assets(
     supabase_url: str | None = None,
     supabase_key: str | None = None,
     use_cache: bool = True,
+    only_folder: str | None = None,
 ) -> IngestRunResult:
     """Resolve, list, download, ingest, and scope-stamp a project's cloud assets.
 
@@ -963,6 +1009,11 @@ def ingest_project_assets(
     total. Clearing here (per project) would wipe the cache between every project
     and make it useless. A new non-CLI caller that needs a guaranteed-fresh cache
     must call `_clear_listing_cache()` itself before invoking.
+
+    TARGETED SCAN: `only_folder` (default None = today's behavior) NARROWS the
+    listing to a single configured folder via `_effective_allowlist`. It can only
+    RESTRICT the per-project `asset_ingest_folders` allowlist, never widen it — an
+    `only_folder` the allowlist doesn't permit scans NOTHING (scope guard).
     """
     # Resolve creds lazily, and ONLY the pieces actually missing — so the unit-
     # test path (injected client + pipeline) never touches cp config / Supabase.
@@ -1021,7 +1072,7 @@ def ingest_project_assets(
         folders,
         drive_connector,
         dropbox_connector,
-        allowlist=folders.asset_ingest_folders,
+        allowlist=_effective_allowlist(only_folder, folders.asset_ingest_folders),
         use_cache=use_cache,
     )
     if not files:
