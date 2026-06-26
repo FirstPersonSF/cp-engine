@@ -30,7 +30,9 @@ import re
 import shutil
 import sys
 import tempfile
+import time
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -271,6 +273,63 @@ _DRIVE_MAX_DEPTH = 10
 _NON_INGESTABLE_EXTENSIONS = (".url", ".lnk", ".webloc")
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  In-process TTL listing cache (the SECOND ingest cache)
+# ──────────────────────────────────────────────────────────────────────
+#
+# The first cache (Tasks 1-4) is a PRE-DOWNLOAD skip: per file, don't re-download
+# bytes unchanged since last ingest. This second cache is coarser and earlier — it
+# memoizes the whole folder LISTING (the recursive tree-walk) so back-to-back
+# scans of the SAME folder within one process don't re-walk it.
+#
+# Module-level + TTL'd: a single `cp ingest-assets` run is one process, so this
+# only collapses repeated walks of the SAME folder within one run (e.g. `--all`
+# projects sharing a parent folder, or back-to-back calls in one process). It is
+# NEVER meant to persist meaning across runs — `ingest_project_assets` clears it
+# at the start of every run, so a fresh run always re-walks from scratch.
+_LISTING_CACHE: dict[tuple[str, str], tuple[float, list]] = {}
+_LISTING_TTL_SECONDS = 600.0
+
+
+def _cached_listing(
+    provider: str,
+    folder_id: str,
+    lister: Callable[[], list],
+    *,
+    ttl: float = _LISTING_TTL_SECONDS,
+    now: Callable[[], float] = time.monotonic,
+) -> list:
+    """Return a memoized listing for `(provider, folder_id)`.
+
+    Recomputes via `lister()` when the key is absent or its cached entry is older
+    than `ttl`. `now`/`ttl` are injectable for deterministic tests. Pass `ttl=0`
+    (or negative) to disable caching entirely — always recompute, never store.
+
+    The default `now` is `time.monotonic` (a relative, monotonically-increasing
+    clock) — never an arg-less wall clock — both because expiry only needs
+    elapsed-time and because a monotonic source is immune to wall-clock jumps.
+    """
+    key = (provider, folder_id)
+    if ttl > 0:
+        hit = _LISTING_CACHE.get(key)
+        if hit is not None and (now() - hit[0]) < ttl:
+            return hit[1]
+    refs = lister()
+    if ttl > 0:
+        _LISTING_CACHE[key] = (now(), refs)
+    return refs
+
+
+def _clear_listing_cache() -> None:
+    """Reset the in-process listing cache.
+
+    Called at the start of every `ingest_project_assets` run (so each run is
+    clean — process-local within a run, never across runs) and by tests (the
+    module-level dict survives the whole pytest session, so tests must clear it
+    to avoid leaking cached listings into one another)."""
+    _LISTING_CACHE.clear()
+
+
 def _drive_file_ref(item: dict, folder_path: tuple[str, ...] = ()) -> FileRef:
     """Map one non-folder Drive child dict to a FileRef (download is by id).
 
@@ -464,6 +523,8 @@ def list_files(
     drive_connector=None,
     dropbox_connector=None,
     allowlist: tuple[str, ...] = (),
+    *,
+    use_cache: bool = True,
 ) -> tuple[list[FileRef], list[dict[str, str]]]:
     """Enumerate the files in a project's enabled Drive + Dropbox folders.
 
@@ -483,8 +544,18 @@ def list_files(
     record a note, log to stderr, and CONTINUE to the next source rather than
     propagate. Config gaps (non-client company, disabled source, missing folder
     id) are likewise recorded as notes, not errors.
+
+    `use_cache` (default True) gates the in-process listing cache: when True the
+    recursive Drive/Dropbox tree-walks route through `_cached_listing` keyed by
+    `(provider, folder_id)`, so a second scan of the same folder in one process is
+    a cache hit. When False the walk runs directly (ttl=0) — identical behavior to
+    before this cache existed. Same flag that gates the per-file ingest cache in
+    `ingest_project_assets`, so `--no-cache` disables both layers together.
     """
     source_notes: list[dict[str, str]] = []
+    # ttl=0 makes `_cached_listing` a pure pass-through (always recompute, never
+    # store) so `use_cache=False` reproduces the pre-cache behavior exactly.
+    _listing_ttl = _LISTING_TTL_SECONDS if use_cache else 0.0
 
     if folders.company_kind != "client":
         print(
@@ -506,8 +577,15 @@ def list_files(
                     )
 
                     drive_connector = GoogleDriveConnector(service_account_file=None)
+                _conn = drive_connector
+                _fid = folders.google_drive_folder_id
                 results.extend(
-                    _list_drive(drive_connector, folders.google_drive_folder_id)
+                    _cached_listing(
+                        "drive",
+                        _fid,
+                        lambda: _list_drive(_conn, _fid),
+                        ttl=_listing_ttl,
+                    )
                 )
             except Exception as exc:  # noqa: BLE001 — a dead Drive source must not kill Dropbox; record + continue
                 source_notes.append(
@@ -531,8 +609,15 @@ def list_files(
                     from cloud_storage.dropbox_connector import DropboxConnector
 
                     dropbox_connector = DropboxConnector()
+                _conn = dropbox_connector
+                _fid = folders.mc_dropbox_folder_id
                 results.extend(
-                    _list_dropbox(dropbox_connector, folders.mc_dropbox_folder_id)
+                    _cached_listing(
+                        "dropbox",
+                        _fid,
+                        lambda: _list_dropbox(_conn, _fid),
+                        ttl=_listing_ttl,
+                    )
                 )
             except Exception as exc:  # noqa: BLE001 — a dead Dropbox source must not kill Drive; record + continue
                 source_notes.append(
@@ -843,6 +928,13 @@ def ingest_project_assets(
     `failures` and the loop continues — one bad file never aborts the run, and no
     failure is silently swallowed. Downloaded bytes are always cleaned up.
     """
+    # Start every run with a clean in-process listing cache. The cache is a
+    # module-level dict that lives for the whole process; clearing it here means a
+    # fresh `cp ingest-assets` invocation never sees a stale entry from a prior
+    # run in the same process (matching the "never persists across runs" contract)
+    # while still collapsing repeated walks of the same folder WITHIN this run.
+    _clear_listing_cache()
+
     # Resolve creds lazily, and ONLY the pieces actually missing — so the unit-
     # test path (injected client + pipeline) never touches cp config / Supabase.
     def _resolve_creds() -> tuple[str, str]:
@@ -901,6 +993,7 @@ def ingest_project_assets(
         drive_connector,
         dropbox_connector,
         allowlist=folders.asset_ingest_folders,
+        use_cache=use_cache,
     )
     if not files:
         # Nothing to ingest (non-client company, disabled sources, empty folder,

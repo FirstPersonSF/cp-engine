@@ -368,7 +368,9 @@ def test_ingest_passes_allowlist_to_list_files(monkeypatch) -> None:
 
     captured: dict = {}
 
-    def _fake_list_files(f, drive_connector=None, dropbox_connector=None, allowlist=()):
+    def _fake_list_files(
+        f, drive_connector=None, dropbox_connector=None, allowlist=(), **_kw
+    ):
         captured["allowlist"] = allowlist
         return [], []  # empty → short-circuits before any pipeline construction
 
