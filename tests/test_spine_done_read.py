@@ -38,3 +38,26 @@ def test_list_spine_done_degrades_to_none_on_estimate_error(monkeypatch):
     captured = {}
     out = ps.list_spine(_client([_row("w1")], captured), "pid")
     assert out[0].get("done") is None    # graceful: None, not a crash
+
+
+def test_pull_spine_includes_done(monkeypatch):
+    monkeypatch.setattr(ps, "fetch_project_done_map",
+                        lambda client, pid: {"w1": True})
+    captured = {}
+    el = ps.pull_spine(_client([_row("w1")], captured), "pid", "w1")
+    assert el["done"] is True
+
+
+def test_pull_spine_done_none_for_unbound(monkeypatch):
+    monkeypatch.setattr(ps, "fetch_project_done_map", lambda client, pid: {})
+    captured = {}
+    el = ps.pull_spine(_client([_row("_authored/x")], captured), "pid", "_authored/x")
+    assert el["done"] is None
+
+
+def test_pull_spine_done_degrades_to_none_on_error(monkeypatch):
+    def _boom(client, pid): raise RuntimeError("estimator down")
+    monkeypatch.setattr(ps, "fetch_project_done_map", _boom)
+    captured = {}
+    el = ps.pull_spine(_client([_row("w1")], captured), "pid", "w1")
+    assert el.get("done") is None   # fail-soft, not a crash

@@ -372,7 +372,23 @@ def pull_spine(client, project_id: str, key: str) -> dict:
 
     row, reason, distinct = _match_one_live(rows, key)
     if row is not None:
-        return _spine_element(row)
+        result = _spine_element(row)
+        # Surface derived `done` only on a successful single-element pull.
+        # Best-effort: if the estimator schema is unreachable the fetch may
+        # raise, so we fail-soft to an empty map (→ derive_done returns None).
+        # Never let a `done` lookup break the pull.
+        try:
+            done_map = fetch_project_done_map(client, project_id)
+        except Exception:  # noqa: BLE001 — done is best-effort; never break the pull
+            logger.warning(
+                "pull_spine: done-map fetch failed for project_id=%s; "
+                "degrading `done` to None",
+                project_id,
+                exc_info=True,
+            )
+            done_map = {}
+        result["done"] = derive_done(row.get("est_item_id"), done_map)
+        return result
     if reason == "no-match":
         return {
             "body": "",
