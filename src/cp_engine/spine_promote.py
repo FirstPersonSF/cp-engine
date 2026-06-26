@@ -29,3 +29,31 @@ def ingest_single_file(file_path: str, project_id: str, title: str, *,
     touch the real ingest pipeline / Voyage / Supabase."""
     pipeline = pipeline_factory(project_id, supabase_url, supabase_key)
     return pipeline.ingest_file(file_path, title=title, url=None)
+
+
+def stamp_promoted_asset(client, *, project_id: str, est_item_id: str,
+                         title: str, file_path: str) -> dict:
+    """Stamp the just-ingested rag_assets row with spine-promote provenance.
+
+    Locates the active row by (project_id, file_path, status='active') — the
+    same locate-key the folder-scan stamp uses — and writes
+    source_provider='spine-promote', source_file_id=est_item_id. Because the
+    promoted transcript is written to a STABLE file_path keyed on est_item_id,
+    re-promotion lands on the same row, so this update is idempotent (re-stamps,
+    never duplicates). No `SELECT *`.
+    """
+    resp = (
+        client.table("rag_assets")
+        .update({
+            "source_provider": "spine-promote",
+            "source_file_id": est_item_id,
+            "source_path": None,
+            "scope": "project",
+        })
+        .eq("project_id", project_id)
+        .eq("file_path", file_path)
+        .eq("status", "active")
+        .execute()
+    )
+    rows = getattr(resp, "data", None) or []
+    return {"stamped": bool(rows), "title": title, "ids": [r.get("id") for r in rows]}
