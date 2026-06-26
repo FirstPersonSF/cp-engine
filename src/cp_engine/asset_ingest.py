@@ -14,7 +14,11 @@ things and nothing more:
 
 `ingest_project_assets` (Task C5) is the run loop that ties resolve → list →
 download → document-ingest pipeline (with the Voyage embedder) together and
-applies the 1P scope stamp to each freshly-written `rag_assets` row.
+applies the 1P scope stamp to each freshly-written `rag_assets` row. Two caches
+keep re-runs cheap: a per-folder in-process listing cache (shared across an
+`--all` sweep) and a per-file ingest skip — files whose provider content token
+matches the one stamped into `meta.change_token` on a prior run are skipped
+before download. `--no-cache` (`use_cache=False`) disables both.
 
 Scope guard: asset ingest targets *client* companies only. Self-fpsf /
 self-canonic companies are house/framework territory and out of scope; `list_files`
@@ -932,6 +936,23 @@ def ingest_project_assets(
     Failure policy: a 'failed' IngestResult OR a raising download is recorded in
     `failures` and the loop continues — one bad file never aborts the run, and no
     failure is silently swallowed. Downloaded bytes are always cleaned up.
+
+    INGEST CACHE (per-file skip): each listed file carries a provider content
+    token (`FileRef.change_token` — Drive `md5Checksum`, Dropbox `content_hash`).
+    Before downloading, `_unchanged_since_last_ingest` looks up the active
+    `rag_assets` row for this (owner, provider, file id) and, if its stored
+    `meta.change_token` equals the freshly-listed token, the file is skipped
+    entirely — no download, hash, or embed — and counted in
+    `result.skipped_unchanged` (surfaced in the run summary). The matching token
+    is written by `_stamp_scope` into `meta.change_token` after each successful
+    create/version, so run 1 stamps and run 2+ skips; editing the file changes its
+    provider token → mismatch → re-ingest → the stamp updates the token again.
+    Caveats: Google-native files (Docs/Sheets/Slides) carry no md5 → no token →
+    always re-ingested; the FIRST run after deploying this feature re-ingests once
+    (no token stamped yet) and only then begins skipping. The skip-check is
+    fail-open: a missing row, missing/mismatched/None token, or any error → not
+    skipped. `use_cache=False` (CLI `--no-cache`) bypasses BOTH this per-file skip
+    AND the per-folder listing cache (ttl=0) for a guaranteed full re-scan.
 
     LISTING CACHE: this function deliberately does NOT clear the in-process
     listing cache. The clear lives ONE level up, at the CLI entry points
