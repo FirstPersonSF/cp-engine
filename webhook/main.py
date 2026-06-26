@@ -719,6 +719,199 @@ async def asset_ingest_endpoint(request: Request) -> Response:
     )
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  Spine: promote a transcript to RAG (async, run-tracked)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _spine_promote_runs_table(client):
+    return client.table("spine_promote_runs")
+
+
+def _resolve_project_id_for_promote(client, code: str) -> str | None:
+    """Resolve a project_code to its `projects.id` for the promote endpoint.
+
+    Thin wrapper over cp_engine.mcp_server._resolve_project_id (a pure
+    client+code → projects.id resolver: it does the same two-form code bridge
+    the rest of the engine uses, with no MCP/stdio state). Wrapped here as a
+    module-level name so tests can monkeypatch the resolve seam without
+    reaching into mcp_server, mirroring how the asset-ingest tests stub
+    resolve_project_folders.
+    """
+    from cp_engine.mcp_server import _resolve_project_id
+    return _resolve_project_id(client, code)
+
+
+def _tenant_root() -> Path:
+    """The cp tenant filesystem root the promote reads transcript files from.
+
+    The webhook container's cwd is /app (the webhook app, NOT a tenant
+    checkout), so promote_transcript — which resolves
+    `tenant_root/project_code/rel_path` — needs a real checkout. We clone the
+    tenant shallowly to a temp dir and return its path. Unlike /api/assets/ingest
+    (asset ingest pulls from Drive/Dropbox and never touches the tenant tree),
+    promotion's source IS a file in the tenant tree, so a checkout is required.
+
+    The clone is left on disk for the lifetime of the background task; it lands
+    under the container's ephemeral tmpfs and is reclaimed on restart. (Tests
+    monkeypatch this to a fixed Path — promote_transcript itself is mocked.)
+    """
+    repo_url = os.environ.get("CP_TENANT_REPO_URL")
+    if not repo_url:
+        raise RuntimeError("CP_TENANT_REPO_URL not configured")
+    tmp = Path(tempfile.mkdtemp(prefix="cp-promote-"))
+    subprocess.run(
+        ["git", "clone", "--depth=1", repo_url, str(tmp / "cp")],
+        check=True,
+        env=_ssh_env(),
+        capture_output=True,
+    )
+    return tmp / "cp"
+
+
+async def _run_promote(
+    run_id: str, code: str, project_id: str, company_id: str | None,
+    element_row: dict,
+) -> None:
+    """Background: run the (sync, slow) transcript promotion off the event loop,
+    then record the outcome on the spine_promote_runs row. Never raises — a
+    failure is recorded as status=failed (this is the fire-and-forget tail of
+    /api/spine/promote-transcript, which has already returned 202 to the caller).
+
+    Engagement-only carries through as a *failed run* (not a crash): an
+    initiative has company_id=None, and promote_transcript's CONTRACT A returns
+    {ok:false, reason:"initiative…"} without touching any file — which we record
+    as status=failed with that reason, exactly like any other ok:false."""
+    from cp_engine.asset_ingest import _utc_now_iso
+    from cp_engine.spine_promote import promote_transcript
+
+    client = _create_supabase_client()
+    # Pass Supabase coords explicitly from the webhook ENV — same discipline as
+    # _run_asset_ingest: the container cwd is /app, so the ingest pipeline's
+    # lazy cwd-config cred resolution would die ('No .cp-engine.toml at /app').
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_key = os.environ.get("SUPABASE_SERVICE_KEY")
+    try:
+        if not supabase_url or not supabase_key:
+            raise RuntimeError(
+                "webhook missing SUPABASE_URL/SUPABASE_SERVICE_KEY env"
+            )
+        result = await asyncio.to_thread(
+            promote_transcript,
+            client,
+            _tenant_root(),
+            code,
+            project_id,
+            company_id,
+            element_row,
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+        )
+        if result.get("ok"):
+            ids = result.get("ids") or []
+            patch = {
+                "status": "done",
+                "asset_id": ids[0] if ids else None,
+                "finished_at": _utc_now_iso(),
+            }
+        else:
+            patch = {
+                "status": "failed",
+                "error": result.get("reason"),
+                "finished_at": _utc_now_iso(),
+            }
+        _spine_promote_runs_table(client).update(patch).eq("id", run_id).execute()
+    except Exception as exc:  # noqa: BLE001 — record the failure, never crash the task
+        log.warning("spine-promote run %s failed: %s", run_id, exc, exc_info=True)
+        try:
+            # Fresh client on the failure path: the original may be the thing
+            # that failed (transient supabase/network error).
+            _spine_promote_runs_table(_create_supabase_client()).update(
+                {"status": "failed", "error": str(exc), "finished_at": _utc_now_iso()}
+            ).eq("id", run_id).execute()
+        except Exception:  # noqa: BLE001 — best effort; nothing else to do
+            log.error("spine-promote run %s: could not record failure", run_id)
+
+
+@app.post("/api/spine/promote-transcript")
+async def spine_promote_transcript(request: Request) -> Response:
+    """Fire-and-forget promotion of a spine element's transcript into the RAG store.
+
+    The mc-2 spine dashboard's "Promote transcript" click lands here (signed).
+    Promotion embeds the element's underlying transcript into rag_assets so it's
+    retrievable via pull_project_source. The embed takes seconds-to-minutes
+    (Voyage + Supabase), so this endpoint does NOT block on it: it verifies the
+    HMAC, resolves the project + element, inserts a `running` spine_promote_runs
+    row, returns 202 immediately, and runs the promotion in a background task
+    that updates the row to done/failed when it finishes. mc-2 polls a status
+    endpoint keyed on the run_id.
+
+    Mirrors /api/assets/ingest exactly (HMAC, 202-then-background, env creds,
+    best-effort run-row updates). Reuses the already-built promote_transcript
+    (engagement-only carries through as a failed run, never a crash).
+
+    Request body (JSON):
+        {"code": "<project_code>", "key": "<est_item_id>"}  # both required
+
+    Response (202):
+        {"run_id": "<code>/<uuid>", "status": "running"}
+    """
+    from uuid import uuid4
+
+    from cp_engine.asset_ingest import _utc_now_iso, resolve_project_folders_by_id
+    from cp_engine.project_sources import resolve_live_element
+
+    raw_body = await request.body()
+    _verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
+    payload = json.loads(raw_body)
+    code = (payload.get("code") or "").strip()
+    key = (payload.get("key") or "").strip()
+    if not code or not key:
+        raise HTTPException(status_code=400, detail="code and key are required")
+
+    client = _create_supabase_client()
+    if client is None:
+        raise HTTPException(
+            status_code=500, detail="Supabase not configured for spine promote"
+        )
+
+    # Resolve project_id (two-form code bridge), company_id (via folders; None
+    # for initiatives — carries through to a failed run), and the element row.
+    project_id = _resolve_project_id_for_promote(client, code)
+    if project_id is None:
+        raise HTTPException(
+            status_code=404, detail=f"no MC-2 project resolved for '{code}'"
+        )
+    folders = resolve_project_folders_by_id(client, project_id)
+    company_id = folders.company_id if folders else None
+    element_row = resolve_live_element(client, project_id, key)
+    if element_row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no single live element matching '{key}' in '{code}'",
+        )
+
+    run_id = f"{code}/{uuid4()}"
+    _spine_promote_runs_table(client).insert({
+        "id": run_id,
+        "project_id": project_id,
+        "project_code": code,
+        "est_item_id": element_row.get("est_item_id"),
+        "status": "running",
+        "started_at": _utc_now_iso(),
+    }).execute()
+    _spawn_background(_run_promote(run_id, code, project_id, company_id, element_row))
+    return Response(
+        content=json.dumps({"run_id": run_id, "status": "running"}),
+        status_code=202,
+        media_type="application/json",
+    )
+
+
 def _perform_auto_ingest(
     *,
     meeting_id: str,
