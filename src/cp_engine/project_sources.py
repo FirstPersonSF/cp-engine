@@ -20,6 +20,7 @@ import os
 from pathlib import Path
 
 from cp_engine.asset_ingest import FileRef, download_file, read_scoped_chunks
+from cp_engine.spine_done import derive_done, fetch_project_done_map
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +304,14 @@ def list_spine(client, project_id: str) -> list[dict]:
         .execute()
     )
     rows = getattr(resp, "data", None) or []
+    # Fetch the project's done-map ONCE (not per row — no N+1). `done` is
+    # best-effort: if the estimator schema is unreachable the fetch may raise,
+    # so we fail-soft to an empty map, which makes `derive_done` return None for
+    # every element. Never let a `done` lookup break the listing.
+    try:
+        done_map = fetch_project_done_map(client, project_id)
+    except Exception:  # noqa: BLE001 — done is best-effort; never break the listing
+        done_map = {}
     out: list[dict] = []
     for row in rows:
         serves = row.get("serves") or []
@@ -318,6 +327,7 @@ def list_spine(client, project_id: str) -> list[dict]:
                 "body_len": len(body),
                 "important": bool(row.get("important")),
                 "note": row.get("note"),
+                "done": derive_done(row.get("est_item_id"), done_map),
             }
         )
     # Important elements sort first; list.sort is stable so within-group order
