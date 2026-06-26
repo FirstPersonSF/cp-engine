@@ -1084,6 +1084,38 @@ def _existing_dup_at_other_path(
     return any(r.get("file_path") != current_path for r in rows)
 
 
+def _unchanged_since_last_ingest(client, project_id: str, file_ref) -> bool:
+    """True iff an active rag_asset for this (provider, file) already carries a
+    meta.change_token equal to the freshly-listed token → unchanged → safe to
+    skip download+embed. Fail-open: missing row / missing or mismatched token /
+    None token / any error → False (ingest normally). Keyed on
+    (project_id, source_provider, source_file_id) so a Drive token is never
+    compared against a Dropbox one (different hash algorithms).
+    """
+    token = getattr(file_ref, "change_token", None)
+    if not token:
+        return False  # no token (e.g. Google-native) → can't prove unchanged
+    try:
+        rows = (
+            client.table("rag_assets")
+            .select("meta")  # explicit, never *
+            .eq("project_id", project_id)
+            .eq("source_provider", file_ref.source)
+            .eq("source_file_id", file_ref.id)
+            .eq("status", "active")
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not rows:
+            return False
+        stored = (rows[0].get("meta") or {}).get("change_token")
+        return stored is not None and stored == token
+    except Exception:  # noqa: BLE001 — fail-open: never skip on error
+        return False
+
+
 def _stamp_scope(
     client, folders: ProjectFolders, file_path: str, file_ref: FileRef
 ) -> None:
