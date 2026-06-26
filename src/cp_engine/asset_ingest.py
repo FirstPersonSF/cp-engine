@@ -672,6 +672,12 @@ class IngestRunResult:
     # download. Kept distinct from `skipped` (dedup) and `failed` (real failure)
     # so the counts stay semantically clean; surfaced via a source_note.
     skipped_shortcuts: int = 0
+    # Files skipped by the ingest cache: an active rag_asset already carries a
+    # meta.change_token equal to the freshly-listed provider token → unchanged →
+    # no download/hash/embed needed (see _unchanged_since_last_ingest). Distinct
+    # from `skipped` (pipeline same-path), `deduped` (cross-path content dup), and
+    # `skipped_shortcuts` (pointer files). Zero when use_cache=False or no hits.
+    skipped_unchanged: int = 0
     failures: list[tuple[str, str]] = field(default_factory=list)
     project_found: bool = True
     # Per-source listing notes from list_files: a dead/skipped source records a
@@ -816,6 +822,7 @@ def ingest_project_assets(
     pipeline_factory=None,
     supabase_url: str | None = None,
     supabase_key: str | None = None,
+    use_cache: bool = True,
 ) -> IngestRunResult:
     """Resolve, list, download, ingest, and scope-stamp a project's cloud assets.
 
@@ -921,6 +928,19 @@ def ingest_project_assets(
             # Shortcut/pointer file — nothing to embed. Skip before download so
             # it doesn't churn the pipeline or get miscounted as a `failed`.
             result.skipped_shortcuts += 1
+            continue
+        # Ingest cache: if this file is unchanged since its last ingest (active
+        # rag_asset's meta.change_token == the freshly-listed token), skip it
+        # BEFORE any download/hash/embed — the `continue` guarantees none of those
+        # run. `use_cache=False` (CLI --no-cache) forces a full re-scan.
+        # `folders.project_id` is the engagement owner id, which is what
+        # _unchanged_since_last_ingest keys on — correct for engagements. The
+        # initiative-owner case is the SAME owner-keying seam flagged inside
+        # _unchanged_since_last_ingest (initiatives aren't reachable by ingest yet).
+        if use_cache and _unchanged_since_last_ingest(
+            client, folders.project_id, file_ref
+        ):
+            result.skipped_unchanged += 1
             continue
         # Stable, per-source temp dir so the download path (== dedup key) is
         # identical across runs. Cleaned in `finally` regardless of outcome.

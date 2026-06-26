@@ -149,12 +149,15 @@ class FanOutResult:
         return any(o.failed or o.failures or o.error for o in self.outcomes)
 
 
-def fan_out_ingest(client, codes: list[str]) -> FanOutResult:
+def fan_out_ingest(
+    client, codes: list[str], *, use_cache: bool = True
+) -> FanOutResult:
     """Run `ingest_project_assets` for each code, collecting per-project outcomes.
 
     One project raising (or returning failures) NEVER stops the others — every
     project gets a slot in the result, and whole-project exceptions are captured
-    on `.error` so the caller can surface them and exit non-zero.
+    on `.error` so the caller can surface them and exit non-zero. `use_cache`
+    threads the CLI `--no-cache` bypass through to every per-project run.
     """
     from cp_engine.asset_ingest import ingest_project_assets
 
@@ -162,7 +165,7 @@ def fan_out_ingest(client, codes: list[str]) -> FanOutResult:
     for code in codes:
         outcome = _ProjectOutcome(code=code)
         try:
-            run = ingest_project_assets(code, client=client)
+            run = ingest_project_assets(code, client=client, use_cache=use_cache)
             outcome.created = run.created
             outcome.versioned = run.versioned
             outcome.skipped = run.skipped

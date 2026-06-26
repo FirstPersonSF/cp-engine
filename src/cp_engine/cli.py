@@ -2730,7 +2730,16 @@ def _echo_run_summary(code: str, run) -> None:
     help="Narrow --all to a tenant scope. fpsf/canonic are internal "
     "(asset ingest is client-only) → no-op.",
 )
-def ingest_assets_cmd(code: str | None, all_: bool, scope: str | None) -> None:
+@click.option(
+    "--no-cache",
+    "no_cache",
+    is_flag=True,
+    help="Bypass the ingest cache: re-scan every file even if its provider "
+    "change-token is unchanged since the last ingest (a full re-ingest).",
+)
+def ingest_assets_cmd(
+    code: str | None, all_: bool, scope: str | None, no_cache: bool
+) -> None:
     """Ingest a project's Drive/Dropbox assets into the asset store.
 
     `cp ingest-assets ibx-5153` ingests one engagement; `cp ingest-assets
@@ -2743,6 +2752,8 @@ def ingest_assets_cmd(code: str | None, all_: bool, scope: str | None) -> None:
     """
     from cp_engine import asset_ingest, asset_ingest_cli
 
+    use_cache = not no_cache
+
     if bool(code) == bool(all_):
         click.echo(
             "Error: pass exactly one of CODE or --all (got both or neither).",
@@ -2752,7 +2763,7 @@ def ingest_assets_cmd(code: str | None, all_: bool, scope: str | None) -> None:
 
     # ── Single project ──
     if code:
-        run = asset_ingest.ingest_project_assets(code)
+        run = asset_ingest.ingest_project_assets(code, use_cache=use_cache)
         if not run.project_found:
             click.echo(f"Error: no MC-2 project resolved for '{code}'.", err=True)
             sys.exit(1)
@@ -2775,7 +2786,7 @@ def ingest_assets_cmd(code: str | None, all_: bool, scope: str | None) -> None:
         return
 
     client = build_mc2_client()
-    result = asset_ingest_cli.fan_out_ingest(client, codes)
+    result = asset_ingest_cli.fan_out_ingest(client, codes, use_cache=use_cache)
     for outcome in result.outcomes:
         if outcome.error:
             click.echo(f"{outcome.code}: ERROR {outcome.error}", err=True)
