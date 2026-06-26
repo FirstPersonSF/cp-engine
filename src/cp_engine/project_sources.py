@@ -229,6 +229,59 @@ _SPINE_PULL_COLUMNS = (
     "version_label, body, important, note"
 )
 
+# Resolve columns: enough to identify ONE live element AND its row `id` (needed
+# for a targeted update). Includes `id` (which _spine_element does NOT surface,
+# so pull_spine's public return is unaffected). Never `*`.
+_SPINE_RESOLVE_COLUMNS = (
+    "id, est_item_id, framing, status, important, note"
+)
+
+
+def _match_one_live(rows: list[dict], key: str):
+    """Resolve `key` against already-fetched live rows to ONE element.
+
+    The single source of truth for spine `key` resolution (shared by
+    `pull_spine` and `resolve_live_element`):
+
+      1. Exact `est_item_id` match → that row.
+      2. Title (`framing`) substring (case-insensitive, `_title_matches`):
+         exactly one distinct element matched → that row.
+
+    Returns `(row, None)` on a unique resolution, or `(None, reason)` where
+    `reason` is `"no-match"` or `"ambiguous"` so callers can craft their own
+    message (or collapse both to None).
+    """
+    exact = [r for r in rows if r.get("est_item_id") == key]
+    if exact:
+        return exact[0], None
+    matched = [r for r in rows if _title_matches(key, r.get("framing"))]
+    if not matched:
+        return None, "no-match"
+    distinct = {r.get("est_item_id"): r for r in matched}
+    if len(distinct) > 1:
+        return None, "ambiguous"
+    return next(iter(distinct.values())), None
+
+
+def resolve_live_element(client, project_id: str, key: str) -> dict | None:
+    """Resolve `key` to the single matching LIVE spine_substance row, or None.
+
+    Same discipline as `pull_spine` (exact est_item_id → single distinct framing
+    substring → else None on no-match OR ambiguity). Returns the raw row dict
+    INCLUDING its `id` column (needed for a targeted update on a callsite that
+    wants to write the row back). Never `SELECT *`.
+    """
+    resp = (
+        client.table("spine_substance")
+        .select(_SPINE_RESOLVE_COLUMNS)
+        .eq("project_id", project_id)
+        .eq("status", "live")
+        .execute()
+    )
+    rows = getattr(resp, "data", None) or []
+    row, _reason = _match_one_live(rows, key)
+    return row
+
 
 def list_spine(client, project_id: str) -> list[dict]:
     """List a project's LIVE spine elements (index, not bodies).
@@ -295,31 +348,30 @@ def pull_spine(client, project_id: str, key: str) -> dict:
     )
     rows = getattr(resp, "data", None) or []
 
-    # 1. Exact est_item_id (the machine path).
-    exact = [r for r in rows if r.get("est_item_id") == key]
-    if exact:
-        return _spine_element(exact[0])
-
-    # 2. Title (framing) substring match, resolved to ONE distinct element.
-    matched = [r for r in rows if _title_matches(key, r.get("framing"))]
-    if not matched:
+    row, reason = _match_one_live(rows, key)
+    if row is not None:
+        return _spine_element(row)
+    if reason == "no-match":
         return {
             "body": "",
             "error": f"no spine element matching '{key}' in this project",
         }
-    distinct = {r.get("est_item_id"): r for r in matched}
-    if len(distinct) > 1:
-        candidates = ", ".join(
-            (r.get("framing") or r.get("est_item_id") or "?") for r in distinct.values()
-        )
-        return {
-            "body": "",
-            "error": (
-                f"ambiguous: '{key}' matched {len(distinct)} elements: "
-                f"[{candidates}]; pass an est_item_id or a more specific title"
-            ),
-        }
-    return _spine_element(next(iter(distinct.values())))
+    # ambiguous: 2+ distinct elements matched the title substring.
+    distinct = {
+        r.get("est_item_id"): r
+        for r in rows
+        if _title_matches(key, r.get("framing"))
+    }
+    candidates = ", ".join(
+        (r.get("framing") or r.get("est_item_id") or "?") for r in distinct.values()
+    )
+    return {
+        "body": "",
+        "error": (
+            f"ambiguous: '{key}' matched {len(distinct)} elements: "
+            f"[{candidates}]; pass an est_item_id or a more specific title"
+        ),
+    }
 
 
 def _spine_element(row: dict) -> dict:

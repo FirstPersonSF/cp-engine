@@ -414,6 +414,44 @@ def add_spine_version(project_code: str, element_id: str, body: str,
         return {"error": f"failed to add version in {project_code!r}: {exc}"}
 
 
+@mcp.tool()
+def set_spine_element(project_code: str, key: str,
+                      important: bool | None = None,
+                      note: str | None = None) -> dict:
+    """Set the `important` flag and/or standing `note` on a live spine element.
+
+    `key` is an est_item_id (exact) or a case-insensitive `framing` (title)
+    substring resolved to ONE live element (same discipline as
+    pull_spine_element). Args left None are not touched (partial update). Marking
+    an element important surfaces it first in list_spine_elements (and, later,
+    promotes its source transcript to RAG). Returns
+    {est_item_id, important, note}, or a structured {note}/{error} on miss.
+    """
+    from cp_engine.project_sources import resolve_live_element
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, _cid = resolved
+        row = resolve_live_element(client, pid, key)
+        if row is None:
+            return {"note": f"no single live element matching '{key}' in {project_code!r}"}
+        patch = {}
+        if important is not None:
+            patch["important"] = bool(important)
+        if note is not None:
+            patch["note"] = note
+        if patch:
+            client.table("spine_substance").update(patch).eq("id", row["id"]).execute()
+        return {
+            "est_item_id": row["est_item_id"],
+            "important": patch.get("important", row.get("important")),
+            "note": patch.get("note", row.get("note")),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to set element '{key}' in {project_code!r}: {exc}"}
+
+
 def run_stdio() -> None:
     """Run the server over stdio (what Claude Code launches via .mcp.json)."""
     mcp.run(transport="stdio")
