@@ -2739,8 +2739,18 @@ def _echo_run_summary(code: str, run) -> None:
     help="Bypass the ingest cache: re-scan every file even if its provider "
     "change-token is unchanged since the last ingest (a full re-ingest).",
 )
+@click.option(
+    "--folder",
+    default=None,
+    help="Scan only this configured ingest folder (narrows the allowlist; "
+    "must be a configured folder, else scans nothing). Single-project only.",
+)
 def ingest_assets_cmd(
-    code: str | None, all_: bool, scope: str | None, no_cache: bool
+    code: str | None,
+    all_: bool,
+    scope: str | None,
+    no_cache: bool,
+    folder: str | None,
 ) -> None:
     """Ingest a project's Drive/Dropbox assets into the asset store.
 
@@ -2755,10 +2765,21 @@ def ingest_assets_cmd(
     from cp_engine import asset_ingest, asset_ingest_cli
 
     use_cache = not no_cache
+    # Normalize empty --folder to None so `--folder ""` behaves identically to
+    # omitting it (an empty string would otherwise reach _effective_allowlist as
+    # a no-op fragment — harmless but surprising).
+    folder = folder or None
 
     if bool(code) == bool(all_):
         click.echo(
             "Error: pass exactly one of CODE or --all (got both or neither).",
+            err=True,
+        )
+        sys.exit(2)
+
+    if folder and all_:
+        click.echo(
+            "Error: --folder is single-project only; cannot combine with --all.",
             err=True,
         )
         sys.exit(2)
@@ -2771,7 +2792,9 @@ def ingest_assets_cmd(
         # — but it keeps the "clean per CLI run" contract uniform across both
         # entry points.
         asset_ingest._clear_listing_cache()
-        run = asset_ingest.ingest_project_assets(code, use_cache=use_cache)
+        run = asset_ingest.ingest_project_assets(
+            code, use_cache=use_cache, only_folder=folder
+        )
         if not run.project_found:
             click.echo(f"Error: no MC-2 project resolved for '{code}'.", err=True)
             sys.exit(1)
