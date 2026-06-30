@@ -897,6 +897,39 @@ async def spine_promote_transcript(request: Request) -> Response:
     )
 
 
+def _link_meeting_safe(client, meeting, code, supabase_url, supabase_key):
+    """Best-effort: link the meeting to its project + embed its summary into RAG.
+    NEVER raises — a failure here must not abort the primary sprint-file ingest."""
+    try:
+        from cp_engine.asset_ingest import resolve_project_folders_by_id
+        # NOTE: no `assigner=` is threaded — link_meeting's default is a no-op,
+        # so meetings land unassigned ("needs assignment") until the LLM
+        # work-item classifier (a later task) wires a real assigner here.
+        from cp_engine.meetings import link_meeting, rescope_meeting
+        # Resolve company_id for THIS code so rescope (on a retag) preserves
+        # account scope and link's embed lands company-scoped.
+        project_id = _resolve_project_id_for_promote(client, code)
+        folders = resolve_project_folders_by_id(client, project_id) if project_id else None
+        company_id = folders.company_id if folders else None
+
+        # Wire the real rescope (threading company_id) and a no-op assigner for
+        # now (the LLM work-item classifier is a later task; until then, meetings
+        # land unassigned — "needs assignment" — which is the safe default).
+        def _rescope(c, row, new_pid):
+            return rescope_meeting(c, row, new_pid, new_company_id=company_id)
+
+        result = link_meeting(client, meeting,
+                              rescope=_rescope,
+                              supabase_url=supabase_url, supabase_key=supabase_key)
+        log.info("meeting-link: meeting=%s code=%s result=%s",
+                 meeting.get("recording_id"), code, result)
+        return result
+    except Exception as exc:  # noqa: BLE001 — never block primary ingest
+        log.warning("meeting-link failed (non-fatal): meeting=%s code=%s err=%s",
+                    meeting.get("recording_id"), code, exc, exc_info=True)
+        return None
+
+
 def _perform_auto_ingest(
     *,
     meeting_id: str,
@@ -916,6 +949,11 @@ def _perform_auto_ingest(
     log.info(
         "auto-ingest start: meeting=%s projects=%s", meeting_id, project_codes
     )
+
+    # Best-effort Supabase client for the ADDITIVE meeting-link side-step below.
+    # None (env missing / pkg absent) just skips linking — the primary
+    # sprint-file ingest never depends on it.
+    link_client = _create_supabase_client()
 
     with _cloned_tenant() as tenant_root:
         config = _load_tenant_config(tenant_root)
@@ -979,6 +1017,26 @@ def _perform_auto_ingest(
             # message can attribute a transcript-only commit and a result
             # consumer can tell "transcript only" from "wrote bullets".
             entry["transcript_persisted"] = transcript_persisted
+
+            # ADDITIVE, NON-FATAL: link the meeting to its project + embed its
+            # summary into RAG. Runs alongside the per-project sprint-file work;
+            # link_meeting resolves the meeting's OWN project_tags (not `code`)
+            # and is idempotent (embed checks summary_embedded_at, link writes
+            # are by recording_id), so calling it once per code is safe — the
+            # meeting is linked exactly once in effect. A failure here is swallowed
+            # by _link_meeting_safe and must never touch the commit/push below.
+            #
+            # NOTE (retag-trigger gap): re-tagging a meeting to its CURRENT
+            # project does NOT re-fire this webhook (a known fathom-meeting-sync
+            # trigger gap; workaround is unassign-then-reassign). So the retag
+            # re-scope cascade only fires when the webhook actually re-runs —
+            # a deploy-time dependency on fathom-meeting-sync, not fixable here.
+            if meeting and link_client is not None:
+                supabase_url = os.environ.get("SUPABASE_URL")
+                supabase_key = os.environ.get("SUPABASE_SERVICE_KEY")
+                if supabase_url and supabase_key:
+                    _link_meeting_safe(
+                        link_client, meeting, code, supabase_url, supabase_key)
 
             if entry["files_written"] or transcript_persisted:
                 commit_sha = _commit_and_push(
