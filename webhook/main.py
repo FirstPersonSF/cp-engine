@@ -897,6 +897,160 @@ async def spine_promote_transcript(request: Request) -> Response:
     )
 
 
+def _fetch_meeting_by_recording_id(client, recording_id: int) -> dict | None:
+    """Pull the single fathom_meetings row for `recording_id`, INCLUDING the
+    `transcript` jsonb column that promote_meeting_transcript flattens.
+
+    Distinct from `_fetch_meeting` (which keys on the uuid `id` and omits
+    `transcript`). Selects everything promote_meeting_transcript reads
+    (recording_id, transcript, transcript_promoted_at, title) plus the
+    project link/tags used to resolve the project here. Returns the row or
+    None (no match, or any error — best-effort).
+    """
+    try:
+        resp = (
+            client.table("fathom_meetings")
+            .select(
+                "recording_id, title, transcript, transcript_promoted_at, "
+                "project_tags, project_id"
+            )
+            .eq("recording_id", recording_id)
+            .single()
+            .execute()
+        )
+        return resp.data or None
+    except Exception as exc:  # noqa: BLE001 — best-effort; treat as not found
+        log.warning(
+            "meeting-promote: fetch failed for recording_id=%s: %s",
+            recording_id, exc,
+        )
+        return None
+
+
+async def _run_meeting_promote(
+    client, meeting_row: dict, project_id: str, company_id: str | None,
+) -> None:
+    """Background: run the (sync, slow) meeting-transcript promotion off the event
+    loop. Never raises — this is the fire-and-forget tail of
+    /api/meetings/promote-transcript, which has already returned 202.
+
+    There is NO runs table: promote_meeting_transcript sets
+    `fathom_meetings.transcript_promoted_at` on success (the status signal the
+    mc-2 meetings-list `transcript_promoted` flag reflects), so the outcome is
+    only logged here. Unlike _run_promote there is NO tenant clone: the
+    transcript comes off `meeting_row["transcript"]`, not a committed file.
+
+    Engagement-only carries through: an initiative has company_id=None and
+    promote_meeting_transcript's CONTRACT A returns {ok:False, reason:"initiative…"}
+    without work — logged as a warning, not a crash."""
+    from cp_engine.meetings import promote_meeting_transcript
+
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_key = os.environ.get("SUPABASE_SERVICE_KEY")
+    recording_id = meeting_row.get("recording_id")
+    try:
+        result = await asyncio.to_thread(
+            promote_meeting_transcript,
+            client,
+            meeting_row,
+            project_id,
+            company_id,
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+        )
+        if result.get("ok"):
+            log.info(
+                "meeting-promote: recording_id=%s promoted (asset_id=%s)",
+                recording_id, result.get("asset_id"),
+            )
+        else:
+            log.warning(
+                "meeting-promote: recording_id=%s not promoted: %s",
+                recording_id, result.get("reason"),
+            )
+    except Exception as exc:  # noqa: BLE001 — never crash the background task
+        log.warning(
+            "meeting-promote: recording_id=%s run failed: %s",
+            recording_id, exc, exc_info=True,
+        )
+
+
+@app.post("/api/meetings/promote-transcript")
+async def meeting_promote_transcript(request: Request) -> Response:
+    """Fire-and-forget promotion of a meeting's FULL transcript into the RAG store.
+
+    The mc-2 meetings-list "Promote transcript" click is proxied here (signed) as
+    ``{"recording_id": <int>}``. Promotion flattens the meeting's
+    `fathom_meetings.transcript` jsonb → text and embeds it into rag_assets so
+    it's retrievable via pull_project_source. The embed takes seconds-to-minutes
+    (Voyage + Supabase), so this endpoint does NOT block on it: it verifies the
+    HMAC, fetches the meeting row (with transcript), resolves the project +
+    company, returns 202 immediately, and runs the promotion in a background task.
+
+    Simpler than /api/spine/promote-transcript: keyed on recording_id (not
+    code+key); NO tenant clone (transcript is on the DB row); NO runs table
+    (`fathom_meetings.transcript_promoted_at`, set by the engine fn on success, is
+    the status signal — the mc-2 meetings list reflects it). Engagement-only
+    carries through (initiative → company_id None → the engine fn defers).
+
+    Request body (JSON):
+        {"recording_id": <int>}  # required
+
+    Response (202):
+        {"recording_id": <int>, "status": "running"}
+    """
+    from cp_engine.asset_ingest import resolve_project_folders_by_id
+    from cp_engine.meetings import resolve_meeting_project
+
+    raw_body = await request.body()
+    _verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
+    payload = json.loads(raw_body)
+    recording_id = payload.get("recording_id")
+    if recording_id is None:
+        raise HTTPException(status_code=400, detail="recording_id is required")
+
+    client = _create_supabase_client()
+    if client is None:
+        raise HTTPException(
+            status_code=500, detail="Supabase not configured for meeting promote"
+        )
+
+    meeting_row = _fetch_meeting_by_recording_id(client, recording_id)
+    if meeting_row is None:
+        raise HTTPException(
+            status_code=404, detail=f"no meeting with recording_id {recording_id}"
+        )
+
+    # Prefer the link-flow project_id on the row; fall back to resolving the
+    # meeting's project_tags. company_id (None for initiatives → engine gate
+    # defers) comes from the resolved project's folders.
+    project_id = meeting_row.get("project_id")
+    if not project_id:
+        project_id, _matched = resolve_meeting_project(
+            client, meeting_row.get("project_tags")
+        )
+    if not project_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"meeting {recording_id} not linked to a project",
+        )
+    folders = resolve_project_folders_by_id(client, project_id)
+    company_id = folders.company_id if folders else None
+
+    _spawn_background(
+        _run_meeting_promote(client, meeting_row, project_id, company_id)
+    )
+    return Response(
+        content=json.dumps({"recording_id": recording_id, "status": "running"}),
+        status_code=202,
+        media_type="application/json",
+    )
+
+
 def _link_meeting_safe(client, meeting, supabase_url, supabase_key):
     """Best-effort: link the meeting to its project + embed its summary into RAG.
     NEVER raises — a failure here must not abort the primary sprint-file ingest.
