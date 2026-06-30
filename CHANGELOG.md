@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.41.2 — 2026-06-30
+
+### Fixed — backfill counts 'already embedded' as skipped, not failed
+
+`cp meetings-backfill` classified a nested embed `ok:False` as `failed`, but
+`embed_meeting_summary` returns `{ok:False, reason:"summary already embedded"}`
+(and `"meeting has no summary"`) as BENIGN idempotent skips. So a re-run — or
+`--all` after a scoped run — reported every previously-embedded row as a failure
+and exited non-zero, crying wolf at cron/CI (live `--all` reported 25 such
+"failures"). Benign reasons now count as `skipped`; only genuine embed outages
+(Voyage/OpenAI down, "stamp matched no row") are `failed` and trip the exit code.
+
 ## v0.41.1 — 2026-06-30
 
 ### Fixed — resolve a project by its raw full_job_name (meetings tag form)
