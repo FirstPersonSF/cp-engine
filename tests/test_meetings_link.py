@@ -313,6 +313,61 @@ def test_default_assigner_none(monkeypatch):
     assert upd["payload"]["work_item_confidence"] is None
 
 
+def test_initiative_resolved_defers_no_write_no_embed(monkeypatch):
+    """v1 DEFER: a meeting whose tag resolves to a project id, but which is NOT an
+    engagement (is_engagement=False — no company), must DEFER cleanly. An
+    initiative id is not in `projects`, so writing fathom_meetings.project_id would
+    violate the FK (migration 084) and crash; the webhook's best-effort wrapper
+    swallows it → initiative meetings silently never link. Deferring matches the
+    promote path's CONTRACT A (company_id None → ok:False). NO project_id write,
+    NO embed, NO rescope."""
+    _patch_resolver(monkeypatch, "init-1")
+    client = _FakeClient()
+    embed = _Recorder({"ok": True})
+    rescope = _Recorder({"ok": True, "rescoped": False})
+
+    result = link_meeting(
+        client,
+        _row(project_id=None),
+        is_engagement=False,
+        embed=embed,
+        rescope=rescope,
+        supabase_url="u",
+        supabase_key="k",
+    )
+
+    assert result["ok"] is True
+    assert result["linked"] is False
+    assert "initiative" in result["reason"].lower()
+    # NO write, NO embed, NO rescope — same deferral discipline as promote.
+    assert client.updates == []
+    assert embed.calls == []
+    assert rescope.calls == []
+
+
+def test_engagement_explicit_links_and_embeds(monkeypatch):
+    """is_engagement=True is the explicit engagement signal the webhook passes —
+    behaves EXACTLY like the default/unknown path (link + embed)."""
+    _patch_resolver(monkeypatch, "p1")
+    client = _FakeClient()
+    embed = _Recorder({"ok": True, "asset_id": "a1"})
+
+    result = link_meeting(
+        client,
+        _row(project_id=None),
+        is_engagement=True,
+        embed=embed,
+        supabase_url="u",
+        supabase_key="k",
+    )
+
+    assert result["ok"] is True
+    assert result["linked"] is True
+    assert result["project_id"] == "p1"
+    assert len(embed.calls) == 1
+    assert len(client.updates) == 1
+
+
 def test_never_raises_when_embed_raises(monkeypatch):
     _patch_resolver(monkeypatch, "p1")
     client = _FakeClient()

@@ -1092,6 +1092,14 @@ def _link_meeting_safe(client, meeting, supabase_url, supabase_key):
         folders = resolve_project_folders_by_id(client, project_id)
         company_id = folders.company_id if folders else None
 
+        # v1 ENGAGEMENTS ONLY: `company_id is None` is the engagement-vs-initiative
+        # signal (initiatives have no company/folders; promote's CONTRACT A keys
+        # on it too). fathom_meetings.project_id is FK'd to projects(id) (migration
+        # 084), so an initiative id would violate the FK on write; we thread
+        # is_engagement so link_meeting DEFERS initiative meetings cleanly rather
+        # than half-trying and silently crashing inside the best-effort wrapper.
+        is_engagement = company_id is not None
+
         # Wire the real rescope, threading the meeting's-project company_id so a
         # retag preserves the correct account scope.
         def _rescope(c, row, new_pid):
@@ -1099,6 +1107,7 @@ def _link_meeting_safe(client, meeting, supabase_url, supabase_key):
 
         result = link_meeting(client, meeting,
                               rescope=_rescope,
+                              is_engagement=is_engagement,
                               supabase_url=supabase_url, supabase_key=supabase_key)
         log.info("meeting-link: meeting=%s result=%s",
                  meeting.get("recording_id"), result)

@@ -67,9 +67,11 @@ def test_link_meeting_safe_happy_resolves_by_meeting_and_calls_link(monkeypatch)
     monkeypatch.setattr(
         "cp_engine.asset_ingest.resolve_project_folders_by_id", fake_folders)
 
-    def fake_link(client, meeting, *, rescope, supabase_url, supabase_key):
+    def fake_link(client, meeting, *, rescope, is_engagement,
+                  supabase_url, supabase_key):
         captured["link_meeting"] = meeting
         captured["rescope"] = rescope
+        captured["is_engagement"] = is_engagement
         captured["supabase_url"] = supabase_url
         captured["supabase_key"] = supabase_key
         return {"ok": True, "linked": True, "project_id": "proj-uuid-1"}
@@ -87,6 +89,8 @@ def test_link_meeting_safe_happy_resolves_by_meeting_and_calls_link(monkeypatch)
     assert captured["supabase_url"] == "https://db"
     assert captured["supabase_key"] == "service-key"
     assert callable(captured["rescope"])
+    # Engagement (company present) → linked in engagement mode.
+    assert captured["is_engagement"] is True
 
 
 def test_rescope_callable_threads_company_id(monkeypatch):
@@ -94,7 +98,8 @@ def test_rescope_callable_threads_company_id(monkeypatch):
 
     _patch_resolve_to(monkeypatch, project_id="proj-uuid-1", company_id="co-uuid-9")
 
-    def fake_link(client, meeting, *, rescope, supabase_url, supabase_key):
+    def fake_link(client, meeting, *, rescope, is_engagement,
+                  supabase_url, supabase_key):
         captured["rescope"] = rescope
         return {"ok": True}
 
@@ -138,7 +143,8 @@ def test_company_id_is_meetings_project_not_caller_code(monkeypatch):
     monkeypatch.setattr(
         "cp_engine.asset_ingest.resolve_project_folders_by_id", fake_folders)
 
-    def fake_link(client, meeting, *, rescope, supabase_url, supabase_key):
+    def fake_link(client, meeting, *, rescope, is_engagement,
+                  supabase_url, supabase_key):
         captured["rescope"] = rescope
         return {"ok": True, "linked": True}
 
@@ -182,6 +188,58 @@ def test_link_meeting_safe_non_fatal_when_resolve_raises(monkeypatch):
     # Must not propagate even if resolve itself fails.
     assert webhook_main._link_meeting_safe(
         object(), _MEETING, "https://db", "k") is None
+
+
+def test_link_step_defers_initiative_meeting(monkeypatch):
+    """v1 DEFER: a meeting resolving to an INITIATIVE (folders/company None) must
+    be passed to link_meeting in deferred mode (is_engagement=False) so NO
+    FK-violating project_id write is attempted. The initiative id is not in
+    `projects`, so writing fathom_meetings.project_id would violate the FK
+    (migration 084). _link_meeting_safe resolves company_id (None for an
+    initiative) and threads is_engagement=(company_id is not None)=False."""
+    captured = {}
+
+    monkeypatch.setattr(
+        "cp_engine.meetings.resolve_meeting_project",
+        lambda client, tags, **kw: ("init-uuid-1", "Mission Control"))
+    # An initiative has no folders / no company.
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.resolve_project_folders_by_id",
+        lambda client, pid: None)
+
+    def fake_link(client, meeting, *, rescope, is_engagement,
+                  supabase_url, supabase_key):
+        captured["is_engagement"] = is_engagement
+        return {"ok": True, "linked": False,
+                "reason": "initiative meetings are deferred in v1"}
+
+    monkeypatch.setattr("cp_engine.meetings.link_meeting", fake_link)
+
+    result = webhook_main._link_meeting_safe(
+        object(), _MEETING, "https://db", "service-key")
+
+    # link_meeting was called in DEFERRED mode — no engagement.
+    assert captured["is_engagement"] is False
+    assert result["linked"] is False
+    assert "initiative" in result["reason"].lower()
+
+
+def test_link_step_passes_is_engagement_true_for_engagement(monkeypatch):
+    """An engagement (folders/company present) → is_engagement=True is threaded so
+    link_meeting links + embeds exactly as before."""
+    captured = {}
+
+    _patch_resolve_to(monkeypatch, project_id="proj-uuid-1", company_id="co-uuid-9")
+
+    def fake_link(client, meeting, *, rescope, is_engagement,
+                  supabase_url, supabase_key):
+        captured["is_engagement"] = is_engagement
+        return {"ok": True, "linked": True, "project_id": "proj-uuid-1"}
+
+    monkeypatch.setattr("cp_engine.meetings.link_meeting", fake_link)
+
+    webhook_main._link_meeting_safe(object(), _MEETING, "https://db", "k")
+    assert captured["is_engagement"] is True
 
 
 class _FakeFetchChain:

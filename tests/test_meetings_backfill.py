@@ -501,6 +501,59 @@ def test_rescope_closure_threads_meeting_project_company(monkeypatch):
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  initiative rows deferred (no FK-violating project_id write)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_initiative_resolved_row_deferred_not_linked(monkeypatch):
+    """v1 DEFER: a row whose tag resolves to an INITIATIVE (company_resolver →
+    None) must be DEFERRED — link is called with is_engagement=False so no
+    FK-violating fathom_meetings.project_id write is attempted. It counts as a
+    skip (an intentional defer), NOT a hard failure, and is not in `unresolved`
+    (it DID resolve to an id — just not an engagement)."""
+    rows = [
+        _row(1, ["IBX 5167 DDI Platform Video"]),  # engagement → company present
+        _row(2, ["Mission Control"]),  # initiative → company None → defer
+    ]
+    monkeypatch.setattr(
+        meetings,
+        "resolve_meeting_project",
+        _resolver_by_tag(
+            {"IBX 5167 DDI Platform Video": "pid-ibx", "Mission Control": "init-1"}
+        ),
+    )
+
+    captured = {}
+
+    def link(client, meeting_row, **kwargs):
+        captured[meeting_row["recording_id"]] = kwargs.get("is_engagement")
+        if kwargs.get("is_engagement") is False:
+            return {"ok": True, "linked": False,
+                    "reason": "initiative meetings are deferred in v1"}
+        return {"ok": True, "linked": True, "project_id": "pid-ibx"}
+
+    # Engagement project has a company; initiative has none.
+    company_by_pid = {"pid-ibx": "cid-ibx", "init-1": None}
+
+    summary = backfill_meetings(
+        _FakeListClient(rows),
+        supabase_url="u",
+        supabase_key="k",
+        link=link,
+        company_resolver=lambda c, pid: company_by_pid[pid],
+    )
+
+    # Engagement got is_engagement True; initiative got False (deferred).
+    assert captured[1] is True
+    assert captured[2] is False
+    assert summary["total"] == 2
+    assert summary["linked"] == 1
+    assert summary["skipped"] == 1   # the deferred initiative is a skip
+    assert summary["failed"] == 0    # NOT a hard failure
+    assert summary["unresolved"] == []  # it resolved to an id, just not engagement
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  pagination — no silent >page-size cap
 # ──────────────────────────────────────────────────────────────────────
 

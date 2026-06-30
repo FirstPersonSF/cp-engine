@@ -411,6 +411,7 @@ def link_meeting(client, meeting_row, *,
                  assigner=_default_assigner,
                  rescope=_default_rescope,
                  embed=embed_meeting_summary,
+                 is_engagement=None,
                  supabase_url, supabase_key) -> dict:
     """Orchestrate one meeting's link: resolve → assign → write link → embed.
 
@@ -422,6 +423,16 @@ def link_meeting(client, meeting_row, *,
        it carries its own default resolver — `resolver` is threaded through).
     2. Untagged / unresolvable (no project): do NO work — no embed, no link
        write, no rescope. Return `{ok:True, linked:False, reason:...}`.
+    2b. v1 INITIATIVE DEFER: the resolver (`mcp_server._resolve_project_id`)
+       FALLS THROUGH to `_resolve_initiative_id` and can return an INITIATIVE
+       id. But `fathom_meetings.project_id` is FK'd to `projects(id)` (migration
+       084) — an initiative id is NOT in `projects`, so writing it violates the
+       FK and raises (the webhook's best-effort wrapper then SWALLOWS it →
+       initiative meetings silently never link). So the caller signals
+       engagement-ness via `is_engagement`: when it is `False` (no company →
+       initiative, mirroring promote's CONTRACT A), DEFER cleanly with NO write,
+       NO embed, NO rescope. `None` (the DEFAULT, for direct callers/tests that
+       don't determine engagement-ness) means "unknown → proceed as today".
     3. Retag: if a DIFFERENT project was already stored on the row, call
        `rescope(client, meeting_row, new_project_id)` and surface its result
        under `"rescope"`. The cascade owns moving rag_assets; we still write the
@@ -444,6 +455,16 @@ def link_meeting(client, meeting_row, *,
             # and belongs with the rescope cascade task.
             return {"ok": True, "linked": False,
                     "reason": "no resolvable project tag"}
+
+        # v1 INITIATIVE DEFER: the resolver can fall through to an initiative id,
+        # but fathom_meetings.project_id is FK'd to projects(id) — an initiative
+        # id would violate that FK. When the caller has determined this is NOT an
+        # engagement (is_engagement is False — no company), defer cleanly BEFORE
+        # any write/embed/rescope, mirroring promote_transcript's CONTRACT A.
+        # is_engagement None = "unknown → proceed as today" (direct callers/tests).
+        if is_engagement is False:
+            return {"ok": True, "linked": False,
+                    "reason": "initiative meetings are deferred in v1"}
 
         # Once we know we're going to write, a falsy recording_id must fail
         # FIRST: it's the locate key for the link-column UPDATE, and an
@@ -538,7 +559,8 @@ def backfill_meetings(client, *, code=None, supabase_url, supabase_key,
         skip — otherwise a whole-batch embed outage would exit 0.
       - `ok:True & linked:True` → `linked`.
       - `ok:True & linked:False` (a LEGITIMATE skip — "already embedded", "no
-        resolvable project tag") → `skipped`.
+        resolvable project tag", or a v1-DEFERRED initiative row whose company is
+        None) → `skipped`. A deferral is intentional, NOT a hard failure.
       - link itself raising (defence in depth) → `failed`.
 
     Returns a summary dict:
@@ -616,7 +638,14 @@ def backfill_meetings(client, *, code=None, supabase_url, supabase_key,
             def _rescope(c, r, new_pid, _co=company_id):
                 return rescope_meeting(c, r, new_pid, new_company_id=_co)
 
+            # v1 ENGAGEMENTS ONLY: company_id None ⇒ the row resolved to an
+            # INITIATIVE (no company). fathom_meetings.project_id is FK'd to
+            # projects(id) (migration 084), so linking an initiative id would
+            # violate the FK. Thread is_engagement so link_meeting DEFERS those
+            # rows (returns linked:False) instead of attempting the bad write —
+            # they then fall into `skipped`, an intentional defer, NOT `failed`.
             result = link(client, row, rescope=_rescope,
+                          is_engagement=(company_id is not None),
                           supabase_url=supabase_url, supabase_key=supabase_key)
             embed = result.get("embed") if result else None
             if result and result.get("ok") is False:
