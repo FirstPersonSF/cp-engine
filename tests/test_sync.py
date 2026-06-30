@@ -1583,51 +1583,95 @@ def test_last_week_monday_accepts_date_or_datetime() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Quick Resume engine-managed region (v0.11.0+, Lever 5)
+#  Quick Resume → Exec Summary migration (exec-summary cutover)
 #
-# Project cp.md's `## Quick Resume` becomes an engine-managed region
-# wrapped in `<!-- cp-engine:start quick-resume -->` markers. Sync
-# wraps existing un-marked sections on the cutover sync; new
-# scaffolds carry the markers from the template.
+# Project/initiative cp.md's old `## Quick Resume` state box (whether
+# marker-wrapped `quick-resume` region or a marker-less heading) is
+# migrated, on the next sync, into the new engine-managed `exec-summary`
+# region — seeded from the old field values. Account cp.md files, whose
+# `## Quick Resume` is freeform prose with no state-box fields, are left
+# untouched.
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_ensure_quick_resume_markers_wraps_existing_section() -> None:
-    """Pre-cutover cp.md has `## Quick Resume` + body, no markers. The
-    helper inserts markers before the heading and after the section's
-    last line (just before the next `## ` heading)."""
-    from cp_engine.sync import _ensure_quick_resume_markers
+def test_migrate_marker_wrapped_seeds_fields_and_preserves_outside() -> None:
+    """Project shape: marker-wrapped quick-resume with real Current/Next/
+    Blockers values → exec-summary region present, quick-resume gone, each
+    value a bullet, Last session carried verbatim, migration update note
+    present, frontmatter above + `## Project Notes` below preserved."""
+    from cp_engine.sync import _migrate_quick_resume_to_exec_summary
 
     body = (
-        "# Some project\n\n"
+        "---\nProject: peb-1 Pebble\n---\n\n"
         "<!-- cp-engine:end tracked-issues -->\n\n"
+        "<!-- cp-engine:start quick-resume -->\n"
         "## Quick Resume\n\n"
         "**Last session:** 2026-05-25 — Drew\n"
         "**Current work:** Tony shipping playbooks to Rena.\n"
         "**Next up:** EHS pitch deck Tue-Thu.\n"
+        "**Blockers:** Waiting on Rena sign-off.\n"
+        "<!-- cp-engine:end quick-resume -->\n\n"
+        "## Project Notes\n\n"
+        "durable note here.\n"
+    )
+    out = _migrate_quick_resume_to_exec_summary(body, today="2026-06-30")
+
+    assert "<!-- cp-engine:start exec-summary -->" in out
+    assert "<!-- cp-engine:end exec-summary -->" in out
+    # Old region gone entirely.
+    assert "quick-resume" not in out
+    assert "## Quick Resume" not in out
+    # Heading with today's date.
+    assert "## Exec Summary  ·  updated 2026-06-30" in out
+    # Last session carried verbatim.
+    assert "**Last session:** 2026-05-25 — Drew" in out
+    # Real values became bullets under their fields.
+    assert "- Tony shipping playbooks to Rena." in out
+    assert "- EHS pitch deck Tue-Thu." in out
+    assert "- Waiting on Rena sign-off." in out
+    # Migration update note.
+    assert "- 2026-06-30 — migrated from Quick Resume" in out
+    # Objective/Status placeholders present.
+    assert "**Objective:**" in out
+    assert "**Status:**" in out
+    # Content outside preserved.
+    assert "---\nProject: peb-1 Pebble\n---" in out
+    assert "<!-- cp-engine:end tracked-issues -->" in out
+    assert "## Project Notes\n\ndurable note here.\n" in out
+
+
+def test_migrate_marker_less_quick_resume() -> None:
+    """Initiative/legacy shape: `## Quick Resume` heading, no markers, WITH
+    the state-box fields → converted to exec-summary region."""
+    from cp_engine.sync import _migrate_quick_resume_to_exec_summary
+
+    body = (
+        "# Mission Control\n\n"
+        "## Quick Resume\n\n"
+        "**Last session:** 2026-06-01 — Drew\n"
+        "**Current work:** Wiring spine dashboard.\n"
+        "**Next up:** Ship reconcile.\n"
         "**Blockers:** None.\n\n"
         "## Current Work\n\n"
         "_<long-form>_\n"
     )
-    wrapped = _ensure_quick_resume_markers(body)
+    out = _migrate_quick_resume_to_exec_summary(body, today="2026-06-30")
 
-    # Markers present, wrapping the Quick Resume section.
-    assert "<!-- cp-engine:start quick-resume -->" in wrapped
-    assert "<!-- cp-engine:end quick-resume -->" in wrapped
-    # Content preserved verbatim — all four lines still in the body.
-    assert "**Current work:** Tony shipping playbooks to Rena." in wrapped
-    assert "**Next up:** EHS pitch deck Tue-Thu." in wrapped
-    # End marker comes before the next `## ` heading (Current Work stays
-    # outside the region).
-    end_pos = wrapped.find("<!-- cp-engine:end quick-resume -->")
-    cw_pos = wrapped.find("## Current Work")
-    assert end_pos != -1 and cw_pos != -1
-    assert end_pos < cw_pos
+    assert "<!-- cp-engine:start exec-summary -->" in out
+    assert "<!-- cp-engine:end exec-summary -->" in out
+    assert "## Quick Resume" not in out
+    assert "- Wiring spine dashboard." in out
+    assert "- Ship reconcile." in out
+    assert "- None." in out
+    assert "**Last session:** 2026-06-01 — Drew" in out
+    # Content after the section preserved.
+    assert "## Current Work\n\n_<long-form>_\n" in out
 
 
-def test_ensure_quick_resume_markers_is_idempotent() -> None:
-    """Running twice on an already-wrapped body returns it unchanged."""
-    from cp_engine.sync import _ensure_quick_resume_markers
+def test_migrate_is_idempotent() -> None:
+    """Running twice (second with a different `today`) returns the first
+    result unchanged — once the exec-summary region exists, it's a no-op."""
+    from cp_engine.sync import _migrate_quick_resume_to_exec_summary
 
     body = (
         "<!-- cp-engine:start quick-resume -->\n"
@@ -1636,40 +1680,61 @@ def test_ensure_quick_resume_markers_is_idempotent() -> None:
         "<!-- cp-engine:end quick-resume -->\n\n"
         "## Next Section\n"
     )
-    once = _ensure_quick_resume_markers(body)
-    twice = _ensure_quick_resume_markers(once)
-    assert once == twice == body
+    once = _migrate_quick_resume_to_exec_summary(body, today="2026-06-30")
+    twice = _migrate_quick_resume_to_exec_summary(once, today="2026-07-15")
+    assert once == twice
 
 
-def test_ensure_quick_resume_markers_handles_section_at_end_of_file() -> None:
-    """Edge case: Quick Resume is the LAST section. End marker should
-    extend to end-of-file (no following `## ` heading to bound against)."""
-    from cp_engine.sync import _ensure_quick_resume_markers
+def test_migrate_drops_placeholder_seeds() -> None:
+    """A `_<...>_` Current work value does NOT become a literal bullet, but
+    the `**Where it stands:**` header still appears."""
+    from cp_engine.sync import _migrate_quick_resume_to_exec_summary
 
     body = (
         "# Some project\n\n"
         "## Quick Resume\n\n"
         "**Last session:** _<date>_\n"
         "**Current work:** _<what's in flight right now>_\n"
-        "**Next up:** _<next 1-3 concrete actions, dated where possible>_\n"
+        "**Next up:** Real concrete action.\n"
         "**Blockers:** _<or \"None\">_\n"
     )
-    wrapped = _ensure_quick_resume_markers(body)
+    out = _migrate_quick_resume_to_exec_summary(body, today="2026-06-30")
 
-    assert "<!-- cp-engine:start quick-resume -->" in wrapped
-    assert "<!-- cp-engine:end quick-resume -->" in wrapped
-    # End marker is at the end of the file (after the last `**Blockers:**`
-    # line, no following section).
-    assert wrapped.rstrip().endswith("<!-- cp-engine:end quick-resume -->")
+    assert "**Where it stands:**" in out
+    # No literal placeholder bullet for current work.
+    assert "- _<what's in flight right now>_" not in out
+    assert "_<what's in flight right now>_" not in out
+    # The real Next up value still seeds a bullet.
+    assert "- Real concrete action." in out
+    # Placeholder blockers dropped too.
+    assert "_<or \"None\">_" not in out
 
 
-def test_ensure_quick_resume_markers_handles_missing_section() -> None:
-    """Cp.md without a `## Quick Resume` section at all — should pass
-    through unchanged. (Not all CPs have this section; defensive.)"""
-    from cp_engine.sync import _ensure_quick_resume_markers
+def test_migrate_account_style_quick_resume_is_noop() -> None:
+    """Account guard: a marker-less `## Quick Resume` with freeform prose
+    and NONE of the state-box field labels → returned UNCHANGED."""
+    from cp_engine.sync import _migrate_quick_resume_to_exec_summary
+
+    body = (
+        "# Google — Account CP\n\n"
+        "## Quick Resume\n\n"
+        "Google is our largest account. Three active engagements span\n"
+        "activation, playbooks, and the EHS pitch. Relationship is strong.\n\n"
+        "## Active projects\n\n"
+        "- ggl-5168\n"
+    )
+    out = _migrate_quick_resume_to_exec_summary(body, today="2026-06-30")
+    assert out == body
+
+
+def test_migrate_no_region_is_noop() -> None:
+    """Body with neither exec-summary, quick-resume markers, nor a
+    `## Quick Resume` heading → unchanged (defensive)."""
+    from cp_engine.sync import _migrate_quick_resume_to_exec_summary
 
     body = "# Some project\n\n## Something else\n\nbody\n"
-    assert _ensure_quick_resume_markers(body) == body
+    out = _migrate_quick_resume_to_exec_summary(body, today="2026-06-30")
+    assert out == body
 
 
 def test_new_project_scaffold_includes_exec_summary_markers(tmp_path: Path) -> None:
@@ -1702,16 +1767,19 @@ def test_new_project_scaffold_includes_exec_summary_markers(tmp_path: Path) -> N
     assert "**Updates:**" in region_body
 
 
-def test_sync_wraps_quick_resume_in_existing_project_cp(tmp_path: Path) -> None:
-    """Integration: an unwrapped Quick Resume in a pre-existing project
-    cp.md gets wrapped on next sync. Content unchanged; markers added."""
+def test_sync_migrates_quick_resume_to_exec_summary_in_existing_project_cp(
+    tmp_path: Path,
+) -> None:
+    """Integration: an OLD marker-wrapped quick-resume in a pre-existing
+    project cp.md is migrated to the exec-summary region on next sync —
+    old markers gone, exec-summary region present, real values seeded."""
     from cp_engine.state import dir_slug
 
     config = make_config(tmp_path)
     project = make_state(code="peb", name="Pebble Foods", status="Open")
     slug = dir_slug(project.code, project.name)
     # Pre-create the project working dir + cp.md with the OLD shape
-    # (no quick-resume markers).
+    # (marker-wrapped quick-resume region).
     project_dir = tmp_path / "1p" / "google" / slug
     project_dir.mkdir(parents=True)
     cp_path = project_dir / "cp.md"
@@ -1723,11 +1791,13 @@ def test_sync_wraps_quick_resume_in_existing_project_cp(tmp_path: Path) -> None:
         "<!-- cp-engine:start tracked-issues -->\n"
         "## Tracked issues\n"
         "<!-- cp-engine:end tracked-issues -->\n\n"
+        "<!-- cp-engine:start quick-resume -->\n"
         "## Quick Resume\n\n"
         "**Last session:** _<date>_\n"
         "**Current work:** Tony shipping playbooks.\n"
         "**Next up:** _<next 1-3 concrete actions>_\n"
-        "**Blockers:** _<or \"None\">_\n\n"
+        "**Blockers:** _<or \"None\">_\n"
+        "<!-- cp-engine:end quick-resume -->\n\n"
         "## Current Work\n\n"
         "_<2-10 paragraphs>_\n"
     )
@@ -1739,11 +1809,13 @@ def test_sync_wraps_quick_resume_in_existing_project_cp(tmp_path: Path) -> None:
     )
 
     body = cp_path.read_text()
-    assert "<!-- cp-engine:start quick-resume -->" in body
-    assert "<!-- cp-engine:end quick-resume -->" in body
-    # Hand-written `**Current work:**` content preserved verbatim across
-    # the wrap — markers are inserted, content is untouched.
-    assert "**Current work:** Tony shipping playbooks." in body
+    # New region present, old quick-resume markers gone.
+    assert "<!-- cp-engine:start exec-summary -->" in body
+    assert "<!-- cp-engine:end exec-summary -->" in body
+    assert "quick-resume" not in body
+    assert "## Quick Resume" not in body
+    # Hand-written `**Current work:**` content seeded as a bullet.
+    assert "- Tony shipping playbooks." in body
 
 
 # ──────────────────────────────────────────────────────────────────────

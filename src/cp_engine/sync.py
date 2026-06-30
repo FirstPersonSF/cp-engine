@@ -33,6 +33,8 @@ logger = logging.getLogger(__name__)
 from cp_engine.claude_settings import install_into_tenant
 from cp_engine.config import TenantConfig
 from cp_engine.render import (
+    EXEC_SUMMARY_END,
+    EXEC_SUMMARY_START,
     count_exceptions_in_window,
     render_account_cp,
     render_account_facts_body,
@@ -356,18 +358,22 @@ def sync_tenant(
                 if cp_path not in files_written:
                     files_written.append(cp_path)
 
-        # Quick Resume engine-region migration (v0.11.0+, Lever 5).
-        # Wrap any unwrapped `## Quick Resume` section in markers so the
-        # ingest verbs (current_work / next_up / blockers) have a region
-        # to write into. Idempotent: already-wrapped files are unchanged;
-        # files without a Quick Resume section pass through. Cutover-
-        # sync semantic — runs once per project after the v0.11.0 upgrade,
+        # Quick Resume → Exec Summary migration (exec-summary cutover).
+        # Convert any pre-existing `## Quick Resume` state box — whether
+        # marker-wrapped (`quick-resume` region) or a marker-less legacy
+        # heading — into the new engine-managed `exec-summary` region,
+        # seeded from the old field values. Account cp.md files (freeform
+        # `## Quick Resume`, no state-box fields) are left untouched.
+        # Idempotent: files that already carry the exec-summary region
+        # pass through. Cutover-sync semantic — runs once per project,
         # then stays a no-op forever.
         if cp_path.exists():
             existing_qr = cp_path.read_text()
-            wrapped = _ensure_quick_resume_markers(existing_qr)
-            if wrapped != existing_qr:
-                cp_path.write_text(wrapped)
+            migrated = _migrate_quick_resume_to_exec_summary(
+                existing_qr, today=sync_clock.date().isoformat()
+            )
+            if migrated != existing_qr:
+                cp_path.write_text(migrated)
                 if cp_path not in files_written:
                     files_written.append(cp_path)
 
@@ -1234,61 +1240,150 @@ def _ensure_strip_markers(body: str) -> str:
 _QUICK_RESUME_START = "<!-- cp-engine:start quick-resume -->"
 _QUICK_RESUME_END = "<!-- cp-engine:end quick-resume -->"
 
+# Old state-box field labels, in the order they appear in the new region.
+_QR_LAST_SESSION = "**Last session:**"
+_QR_CURRENT_WORK = "**Current work:**"
+_QR_NEXT_UP = "**Next up:**"
+_QR_BLOCKERS = "**Blockers:**"
 
-def _ensure_quick_resume_markers(body: str) -> str:
-    """Wrap the project cp.md's `## Quick Resume` section in engine
-    markers if absent.
 
-    Pre-v0.11.0 the Quick Resume section was hand-written and had no
-    markers. v0.11.0 makes the section engine-managed: auto-ingest
-    writes `**Current work:**`, `**Next up:**`, `**Blockers:**` lines
-    inside the region on every meeting that touches the project. The
-    write functions require the markers to exist; this helper inserts
-    them on the cutover sync.
+def _qr_field(source: str, label: str) -> str | None:
+    """Return the value following a `**Label:**` line inside `source`, or
+    None if the label isn't present. Value is stripped of surrounding
+    whitespace."""
+    m = re.search(rf"^{re.escape(label)}\s*(.*)$", source, re.MULTILINE)
+    if not m:
+        return None
+    return m.group(1).strip()
+
+
+def _qr_is_placeholder(value: str | None) -> bool:
+    """Placeholder convention: a `_<...>_` form (matches prep_planning's
+    ``"_<" in text`` check). Absent values count as placeholder for
+    bullet-emission purposes."""
+    return value is None or "_<" in value
+
+
+def _build_exec_summary_region(source: str, *, today: str) -> str:
+    """Build the exec-summary region body (markers included), seeded from
+    the old quick-resume `source` text. Real Current/Next/Blockers values
+    become single seed bullets; placeholder/absent values leave the field
+    header with no bullet. Last session is carried verbatim (or a date
+    placeholder if absent); Objective/Status are always placeholders."""
+    last_session = _qr_field(source, _QR_LAST_SESSION)
+    if not last_session:
+        last_session = "_<date>_"
+    current_work = _qr_field(source, _QR_CURRENT_WORK)
+    next_up = _qr_field(source, _QR_NEXT_UP)
+    blockers = _qr_field(source, _QR_BLOCKERS)
+
+    lines: list[str] = [
+        EXEC_SUMMARY_START,
+        f"## Exec Summary  ·  updated {today}",
+        "",
+        f"{_QR_LAST_SESSION} {last_session}",
+        "**Objective:** _<one line — what this project delivers>_",
+        "**Status:** _<current state in a phrase>_",
+        "",
+        "**Where it stands:**",
+    ]
+    if not _qr_is_placeholder(current_work):
+        lines.append(f"- {current_work}")
+    lines.append("")
+    lines.append("**Next up:**")
+    if not _qr_is_placeholder(next_up):
+        lines.append(f"- {next_up}")
+    lines.append("")
+    lines.append("**Blockers:**")
+    if not _qr_is_placeholder(blockers):
+        lines.append(f"- {blockers}")
+    lines.append("")
+    lines.append("**Updates:**")
+    lines.append(f"- {today} — migrated from Quick Resume")
+    lines.append(EXEC_SUMMARY_END)
+    return "\n".join(lines) + "\n"
+
+
+def _migrate_quick_resume_to_exec_summary(body: str, *, today: str) -> str:
+    """Migrate an existing cp.md's old `## Quick Resume` state box into the
+    new engine-managed `exec-summary` region, seeded from the old values.
+
+    Cutover-sync semantic: runs once per file, then stays a no-op forever.
+    Pure function — `today` is passed in (never `date.today()`), for
+    testability.
 
     Behavior:
-      - Body already has the start marker → return unchanged (idempotent).
-      - Body has `## Quick Resume` heading → insert start marker on the
-        line BEFORE the heading and end marker on the line BEFORE the
-        next `## ` heading (or at end of file).
-      - Body has no `## Quick Resume` heading → return unchanged
-        (defensive; not all CPs have this section).
+      1. Body already has the exec-summary start marker → unchanged
+         (idempotent).
+      2. Marker-wrapped quick-resume region present → replace the whole
+         region (markers included) with the exec-summary region.
+      3. Marker-less `## Quick Resume` heading WITH at least one state-box
+         field label (`**Current work:**`/`**Next up:**`/`**Blockers:**`)
+         → replace the section (heading to next `## ` heading or EOF) with
+         the exec-summary region. The field-label requirement is the
+         ACCOUNT-CP GUARD: account cp.md files carry a freeform-prose
+         `## Quick Resume` with none of these labels, so they no-op.
+      4. Neither shape → unchanged (defensive).
 
-    The section's content (the four `**Label:**` lines) is preserved
-    verbatim across the wrap. Subsequent auto-ingest plans rewrite
-    individual lines inside the region.
+    Content outside the replaced region/section is byte-preserved.
     """
-    if _QUICK_RESUME_START in body:
+    # 1 — already migrated.
+    if EXEC_SUMMARY_START in body:
         return body
+
+    region = _build_exec_summary_region
+
+    # 2 — marker-wrapped quick-resume region.
+    if _QUICK_RESUME_START in body and _QUICK_RESUME_END in body:
+        start_pos = body.find(_QUICK_RESUME_START)
+        end_pos = body.find(_QUICK_RESUME_END) + len(_QUICK_RESUME_END)
+        source = body[start_pos:end_pos]
+        before = body[:start_pos]
+        after = body[end_pos:]
+        # The new region ends with exactly one newline; normalise the
+        # following content to a single blank line before it (the old end
+        # marker line was followed by `\n\n` → strip leading blanks and
+        # re-add exactly one) so we don't double the spacing. If nothing
+        # of substance follows, drop trailing blank lines entirely.
+        if after.strip():
+            after = "\n" + after.lstrip("\n")
+        else:
+            after = ""
+        return before + region(source, today=today) + after
+
+    # 3 — marker-less `## Quick Resume` heading.
     heading = "## Quick Resume"
     heading_pos = body.find(heading)
     if heading_pos == -1:
-        return body
-    # Find the end of the section: next `## ` heading after the Quick
-    # Resume heading, or end-of-file.
+        return body  # 4 — neither shape.
+
     search_from = heading_pos + len(heading)
     next_heading_match = re.search(r"^## ", body[search_from:], re.MULTILINE)
     if next_heading_match:
         section_end = search_from + next_heading_match.start()
-        # Trim trailing blank lines just before the next heading so the
-        # end marker sits flush with the section content.
-        before_next = body[:section_end].rstrip("\n") + "\n"
-        after_next = body[section_end:]
-        return (
-            before_next[:heading_pos]
-            + f"{_QUICK_RESUME_START}\n"
-            + before_next[heading_pos:]
-            + f"{_QUICK_RESUME_END}\n\n"
-            + after_next
-        )
-    # Quick Resume is the last section → end marker at end of file.
-    trimmed = body.rstrip("\n") + "\n"
-    return (
-        trimmed[:heading_pos]
-        + f"{_QUICK_RESUME_START}\n"
-        + trimmed[heading_pos:]
-        + f"{_QUICK_RESUME_END}\n"
+    else:
+        section_end = len(body)
+    source = body[heading_pos:section_end]
+
+    # Account-CP guard: only migrate a state-box-shaped section (one with
+    # at least one of the field labels). Freeform-prose Quick Resume → 4.
+    has_field = any(
+        label in source
+        for label in (_QR_CURRENT_WORK, _QR_NEXT_UP, _QR_BLOCKERS)
     )
+    if not has_field:
+        return body
+
+    before = body[:heading_pos]
+    after = body[section_end:]
+    # Normalise the gap between the region and following content: the
+    # region ends with exactly one newline; ensure a single blank line
+    # before the next heading (if any), or drop trailing blanks at EOF.
+    if after.strip():
+        after = "\n" + after.lstrip("\n")
+    else:
+        after = ""
+    return before + region(source, today=today) + after
 
 
 _WEEKLY_STRIP_REGIONS = (
