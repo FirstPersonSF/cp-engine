@@ -184,6 +184,77 @@ def test_link_meeting_safe_non_fatal_when_resolve_raises(monkeypatch):
         object(), _MEETING, "https://db", "k") is None
 
 
+class _FakeFetchChain:
+    """Records the `.select(...)` column string for a fathom_meetings fetch."""
+
+    def __init__(self, recorder, row):
+        self._recorder = recorder
+        self._row = row
+
+    def select(self, cols):
+        self._recorder["select_cols"] = cols
+        return self
+
+    def eq(self, *a, **k):
+        return self
+
+    def single(self):
+        return self
+
+    def execute(self):
+        class _Resp:
+            pass
+
+        resp = _Resp()
+        resp.data = self._row
+        return resp
+
+
+class _FakeFetchClient:
+    def __init__(self, recorder, row):
+        self._recorder = recorder
+        self._row = row
+
+    def table(self, name):
+        assert name == "fathom_meetings"
+        return _FakeFetchChain(self._recorder, self._row)
+
+
+def test_fetch_meeting_selects_link_and_embed_columns(monkeypatch):
+    """CONTRACT (fetch↔consume seam): `_fetch_meeting` must SELECT every column
+    the downstream link/embed path reads off the same row. `_link_meeting_safe`
+    → resolve_meeting_project(meeting["project_tags"]) → link_meeting reads
+    project_id + recording_id; embed_meeting_summary reads recording_id +
+    summary_embedded_at. If the select omits any of these, EVERY production
+    webhook meeting resolves to no project and silently no-ops. Pins the seam
+    so it can't reopen."""
+    recorder: dict = {}
+    fake_row = {"id": "uuid-1", "recording_id": 42,
+                "project_tags": ["IBX 5153 AI Campaign"], "project_id": None,
+                "summary_embedded_at": None}
+
+    monkeypatch.setenv("SUPABASE_URL", "https://db")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "service-key")
+    # `_fetch_meeting` does `from supabase import create_client` then
+    # create_client(url, key) — patch the factory to hand back our fake client.
+    import supabase as _supabase
+    monkeypatch.setattr(
+        _supabase, "create_client",
+        lambda url, key: _FakeFetchClient(recorder, fake_row))
+
+    result = webhook_main._fetch_meeting("uuid-1")
+    assert result is fake_row
+
+    cols = recorder["select_cols"]
+    # Columns the link/embed path consumes — the seam this test guards.
+    for needed in ("recording_id", "project_tags", "project_id",
+                   "summary_embedded_at"):
+        assert needed in cols, f"_fetch_meeting select missing {needed!r}: {cols}"
+    # Pre-existing consumers (artifact write + action_items merge) preserved.
+    for kept in ("summary", "action_items", "title"):
+        assert kept in cols, f"_fetch_meeting select dropped {kept!r}: {cols}"
+
+
 def test_link_step_skips_untagged_meeting(monkeypatch):
     """Untagged / unresolvable meeting: no folder lookup, no link call — pure skip."""
     calls = {"folders": 0, "link": 0}

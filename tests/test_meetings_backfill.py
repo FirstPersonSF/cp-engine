@@ -215,6 +215,65 @@ def test_link_ok_false_counts_as_failed_not_skipped(monkeypatch):
     assert summary["failed"] == 1
 
 
+def test_nested_embed_failure_counts_as_failed_not_linked(monkeypatch):
+    # link_meeting returns top-level {ok:True, linked:True} once the link WRITE
+    # succeeds, nesting the embed outcome under `out["embed"]`. A genuine embed
+    # outage (Voyage/OpenAI down, stamp matched 0 rows) surfaces as
+    # embed.ok==False. The backfill MUST classify that row as FAILED — counting
+    # it as `linked` defeats the embed-outage alarm and lets the CLI exit 0.
+    rows = [_row(1, ["T"]), _row(9, ["T"])]
+    monkeypatch.setattr(meetings, "resolve_meeting_project", _resolver_by_tag({"T": "pid"}))
+    link = _LinkRecorder(
+        results={
+            1: {"ok": True, "linked": True, "project_id": "pid",
+                "embed": {"ok": True}},
+            9: {"ok": True, "linked": True, "project_id": "pid",
+                "embed": {"ok": False, "reason": "voyage down"}},
+        }
+    )
+
+    summary = backfill_meetings(
+        _FakeListClient(rows),
+        supabase_url="u",
+        supabase_key="k",
+        link=link,
+        company_resolver=lambda c, pid: "cid",
+    )
+    assert summary["total"] == 2
+    assert summary["linked"] == 1
+    assert summary["skipped"] == 0
+    assert summary["failed"] == 1
+    # The embed sub-failure is surfaced in `failures` with the embed reason.
+    assert any(rid == 9 and "voyage down" in (reason or "")
+               for rid, reason in summary["failures"])
+
+
+def test_untagged_linked_false_no_embed_key_stays_skipped(monkeypatch):
+    # An untagged / unresolvable meeting returns {ok:True, linked:False} with NO
+    # `embed` key. The new embed-failure check must NOT over-trigger on the
+    # ABSENCE of an embed key — this row must stay `skipped`, not `failed`.
+    rows = [_row(1, ["T"]), _row(2, ["T"])]
+    monkeypatch.setattr(meetings, "resolve_meeting_project", _resolver_by_tag({"T": "pid"}))
+    link = _LinkRecorder(
+        results={
+            1: {"ok": True, "linked": True, "project_id": "pid"},
+            2: {"ok": True, "linked": False, "reason": "no resolvable project tag"},
+        }
+    )
+
+    summary = backfill_meetings(
+        _FakeListClient(rows),
+        supabase_url="u",
+        supabase_key="k",
+        link=link,
+        company_resolver=lambda c, pid: "cid",
+    )
+    assert summary["total"] == 2
+    assert summary["linked"] == 1
+    assert summary["skipped"] == 1
+    assert summary["failed"] == 0
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  untagged rows skipped (never passed to link)
 # ──────────────────────────────────────────────────────────────────────

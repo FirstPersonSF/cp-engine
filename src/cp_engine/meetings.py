@@ -618,11 +618,22 @@ def backfill_meetings(client, *, code=None, supabase_url, supabase_key,
 
             result = link(client, row, rescope=_rescope,
                           supabase_url=supabase_url, supabase_key=supabase_key)
+            embed = result.get("embed") if result else None
             if result and result.get("ok") is False:
                 # link self-wrapped a genuine error — count it, surface it.
                 failed += 1
                 failures.append((row.get("recording_id") or row.get("title"),
                                  result.get("reason")))
+            elif embed is not None and embed.get("ok") is False:
+                # Link WRITE succeeded (top-level ok:True) but the nested embed
+                # FAILED (Voyage/OpenAI down, stamp matched 0 rows). link_meeting
+                # always reports linked:True once the write lands; counting this
+                # as `linked` would defeat the backfill's embed-outage alarm.
+                # Only a PRESENT embed with ok:False is a failure — an untagged
+                # row ({ok:True, linked:False}) has NO embed key and stays a skip.
+                failed += 1
+                failures.append((row.get("recording_id") or row.get("title"),
+                                 embed.get("reason")))
             elif result and result.get("linked"):
                 linked += 1
             else:

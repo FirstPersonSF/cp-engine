@@ -3092,7 +3092,13 @@ def _fetch_meeting(meeting_id: str) -> dict | None:
             client.table("fathom_meetings")
             .select(
                 "id, title, meeting_date, summary, action_items, "
-                "participants, duration_minutes, fathom_url"
+                "participants, duration_minutes, fathom_url, "
+                # Link/embed path reads these off the SAME row:
+                # resolve_meeting_project(project_tags) → link_meeting
+                # (project_id, recording_id) → embed_meeting_summary
+                # (recording_id, summary_embedded_at). Omitting them made
+                # every webhook meeting resolve to no project and no-op.
+                "recording_id, project_tags, project_id, summary_embedded_at"
             )
             .eq("id", meeting_id)
             .single()
