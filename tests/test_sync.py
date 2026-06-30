@@ -1672,9 +1672,9 @@ def test_ensure_quick_resume_markers_handles_missing_section() -> None:
     assert _ensure_quick_resume_markers(body) == body
 
 
-def test_new_project_scaffold_includes_quick_resume_markers(tmp_path: Path) -> None:
+def test_new_project_scaffold_includes_exec_summary_markers(tmp_path: Path) -> None:
     """Fresh project scaffold (first sync after a project lands in MC-2)
-    carries the `quick-resume` markers from the template. New projects
+    carries the `exec-summary` markers from the template. New projects
     don't need the migration wrap — markers are there from the start."""
     config = make_config(tmp_path)
     sync_tenant(
@@ -1687,16 +1687,19 @@ def test_new_project_scaffold_includes_quick_resume_markers(tmp_path: Path) -> N
     # Dir is the slugified code (the name no longer contributes a tail).
     cp_path = tmp_path / "1p" / "google" / "new" / "cp.md"
     body = cp_path.read_text()
-    assert "<!-- cp-engine:start quick-resume -->" in body
-    assert "<!-- cp-engine:end quick-resume -->" in body
-    # The four scaffolded lines live inside the region.
-    start_pos = body.find("<!-- cp-engine:start quick-resume -->")
-    end_pos = body.find("<!-- cp-engine:end quick-resume -->")
+    assert "<!-- cp-engine:start exec-summary -->" in body
+    assert "<!-- cp-engine:end exec-summary -->" in body
+    # The scaffolded Exec Summary fields live inside the region.
+    start_pos = body.find("<!-- cp-engine:start exec-summary -->")
+    end_pos = body.find("<!-- cp-engine:end exec-summary -->")
     region_body = body[start_pos:end_pos]
     assert "**Last session:**" in region_body
-    assert "**Current work:**" in region_body
+    assert "**Objective:**" in region_body
+    assert "**Status:**" in region_body
+    assert "**Where it stands:**" in region_body
     assert "**Next up:**" in region_body
     assert "**Blockers:**" in region_body
+    assert "**Updates:**" in region_body
 
 
 def test_sync_wraps_quick_resume_in_existing_project_cp(tmp_path: Path) -> None:
