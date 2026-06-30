@@ -302,6 +302,7 @@ def test_initiative_template_scaffolds_exec_summary_region() -> None:
     assert "**Next up:**" in body
     assert "**Blockers:**" in body
     assert "**Updates:**" in body
+    assert "<!-- cp-engine:start quick-resume -->" not in body
     assert "## Quick Resume" not in body
 
 
