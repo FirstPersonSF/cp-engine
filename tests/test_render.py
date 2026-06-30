@@ -939,3 +939,15 @@ def test_slack_rollup_takes_last_bullet_when_multiple_for_same_week(
     rollup = _compute_slack_rollup(tmp_path, projects, "2026-W20")
     assert rollup is not None
     assert rollup[0]["text"] == "Second version."
+
+
+def test_exec_summary_marker_constants():
+    from cp_engine.render import (
+        EXEC_SUMMARY_REGION,
+        EXEC_SUMMARY_START,
+        EXEC_SUMMARY_END,
+    )
+
+    assert EXEC_SUMMARY_REGION == "exec-summary"
+    assert EXEC_SUMMARY_START == "<!-- cp-engine:start exec-summary -->"
+    assert EXEC_SUMMARY_END == "<!-- cp-engine:end exec-summary -->"

@@ -963,6 +963,11 @@ def render_claude_md(config: TenantConfig) -> str:
 # ──────────────────────────────────────────────────────────────────────
 
 
+EXEC_SUMMARY_REGION = "exec-summary"
+EXEC_SUMMARY_START = f"<!-- cp-engine:start {EXEC_SUMMARY_REGION} -->"
+EXEC_SUMMARY_END = f"<!-- cp-engine:end {EXEC_SUMMARY_REGION} -->"
+
+
 def splice_managed_region(file_contents: str, region: str, new_body: str) -> str:
     """Replace the body between
     `<!-- cp-engine:start <region> -->` and the matching end marker.
