@@ -138,16 +138,18 @@ def flatten_transcript(transcript) -> str:
     field may be absent. Each kept segment becomes a line
     ``[<timestamp>] <speaker>: <text>`` — the ``[<timestamp>]`` bracket is
     omitted when there's no timestamp, and the speaker degrades to ``"Unknown"``
-    when there's no ``speaker.display_name``. Segments with no ``text`` are
-    skipped. Lines are joined with newlines; ``None``/empty → ``""``.
+    when there's no ``speaker.display_name``. Segments with no ``text`` (or
+    whitespace-only ``text``) are skipped; kept text is stripped. Lines are
+    joined with newlines; ``None``/empty → ``""``.
     """
     lines = []
     for seg in transcript or []:
         if not isinstance(seg, dict):
             continue
         text = seg.get("text")
-        if not text:
+        if not text or not text.strip():
             continue
+        text = text.strip()
         speaker = (seg.get("speaker") or {}).get("display_name") or "Unknown"
         ts = seg.get("timestamp")
         prefix = f"[{ts}] " if ts else ""
@@ -183,6 +185,12 @@ def promote_meeting_transcript(client, meeting_row, project_id, company_id, *,
 
     The `meta={'kind':'meeting_transcript'}` discriminator is load-bearing: it
     separates deep transcript chunks from summary recall.
+
+    NOTE: near-identical to `embed_meeting_summary` (stable path → ingest → stamp
+    → verify-one → write-back → never-raises). Two copies is acceptable; if a
+    THIRD meeting-asset variant lands (e.g. action-items, chapters), extract a
+    shared `_promote_meeting_asset(..., source_text, subdir, meta_kind, column)`
+    helper rather than adding another near-copy.
     """
     try:
         # CONTRACT A — engagement gate, before any work.
@@ -193,12 +201,14 @@ def promote_meeting_transcript(client, meeting_row, project_id, company_id, *,
         if not recording_id:
             return {"ok": False, "reason": "meeting has no recording_id"}
 
+        # Check the already-promoted flag BEFORE flattening, so a re-promote-skip
+        # pays no flatten cost (mirrors embed_meeting_summary's ordering).
+        if meeting_row.get("transcript_promoted_at") and not force:
+            return {"ok": False, "reason": "transcript already promoted"}
+
         text = flatten_transcript(meeting_row.get("transcript"))
         if not text:
             return {"ok": False, "reason": "meeting has no transcript"}
-
-        if meeting_row.get("transcript_promoted_at") and not force:
-            return {"ok": False, "reason": "transcript already promoted"}
 
         title = meeting_row.get("title") or "Meeting transcript"
 
