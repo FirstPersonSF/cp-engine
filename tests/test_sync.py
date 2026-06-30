@@ -1737,6 +1737,36 @@ def test_migrate_no_region_is_noop() -> None:
     assert out == body
 
 
+def test_migrate_collapses_extra_blank_lines_after_region() -> None:
+    """Spacing contract: extra blank lines following the old region collapse
+    to a single blank line before the next heading (no doubled blanks), and
+    a region at EOF leaves a single clean trailing newline."""
+    from cp_engine.sync import _migrate_quick_resume_to_exec_summary
+
+    # Three blank lines after the old end marker → exactly one in the output.
+    body = (
+        "<!-- cp-engine:start quick-resume -->\n"
+        "## Quick Resume\n\n"
+        "**Current work:** doing the thing.\n"
+        "<!-- cp-engine:end quick-resume -->\n\n\n\n"
+        "## Project Notes\n\nnote.\n"
+    )
+    out = _migrate_quick_resume_to_exec_summary(body, today="2026-06-30")
+    assert "<!-- cp-engine:end exec-summary -->\n\n## Project Notes" in out
+    assert "\n\n\n" not in out
+
+    # Region at EOF (nothing of substance follows) → single trailing newline.
+    eof_body = (
+        "<!-- cp-engine:start quick-resume -->\n"
+        "## Quick Resume\n\n"
+        "**Current work:** doing the thing.\n"
+        "<!-- cp-engine:end quick-resume -->\n\n\n"
+    )
+    eof_out = _migrate_quick_resume_to_exec_summary(eof_body, today="2026-06-30")
+    assert eof_out.endswith("<!-- cp-engine:end exec-summary -->\n")
+    assert not eof_out.endswith("\n\n")
+
+
 def test_new_project_scaffold_includes_exec_summary_markers(tmp_path: Path) -> None:
     """Fresh project scaffold (first sync after a project lands in MC-2)
     carries the `exec-summary` markers from the template. New projects

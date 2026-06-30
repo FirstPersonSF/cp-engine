@@ -1269,7 +1269,16 @@ def _build_exec_summary_region(source: str, *, today: str) -> str:
     the old quick-resume `source` text. Real Current/Next/Blockers values
     become single seed bullets; placeholder/absent values leave the field
     header with no bullet. Last session is carried verbatim (or a date
-    placeholder if absent); Objective/Status are always placeholders."""
+    placeholder if absent); Objective/Status are always placeholders.
+
+    The canonical fresh-scaffold shape of this region lives in
+    `templates/project-cp.md.j2` (and `initiative-cp.md.j2`). This builder
+    INTENTIONALLY diverges from it: the template emits fixed placeholder
+    bullets and an empty Updates section, whereas this seeds conditional
+    bullets from old values plus a dated migration note. The two are kept
+    separate on purpose — this is a one-time cutover seed, not the live
+    template — so if you edit the template's field labels, update them here
+    too."""
     last_session = _qr_field(source, _QR_LAST_SESSION)
     if not last_session:
         last_session = "_<date>_"
@@ -1304,6 +1313,17 @@ def _build_exec_summary_region(source: str, *, today: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _normalise_after(after: str) -> str:
+    """Normalise the content that follows the replaced region. The new
+    region ends with exactly one newline, so this yields a single blank
+    line before the following content, or an empty string (clean EOF) when
+    nothing of substance follows. Shared by both splice branches so the
+    spacing policy lives in one place."""
+    if after.strip():
+        return "\n" + after.lstrip("\n")
+    return ""
+
+
 def _migrate_quick_resume_to_exec_summary(body: str, *, today: str) -> str:
     """Migrate an existing cp.md's old `## Quick Resume` state box into the
     new engine-managed `exec-summary` region, seeded from the old values.
@@ -1331,25 +1351,14 @@ def _migrate_quick_resume_to_exec_summary(body: str, *, today: str) -> str:
     if EXEC_SUMMARY_START in body:
         return body
 
-    region = _build_exec_summary_region
-
     # 2 — marker-wrapped quick-resume region.
     if _QUICK_RESUME_START in body and _QUICK_RESUME_END in body:
         start_pos = body.find(_QUICK_RESUME_START)
         end_pos = body.find(_QUICK_RESUME_END) + len(_QUICK_RESUME_END)
         source = body[start_pos:end_pos]
         before = body[:start_pos]
-        after = body[end_pos:]
-        # The new region ends with exactly one newline; normalise the
-        # following content to a single blank line before it (the old end
-        # marker line was followed by `\n\n` → strip leading blanks and
-        # re-add exactly one) so we don't double the spacing. If nothing
-        # of substance follows, drop trailing blank lines entirely.
-        if after.strip():
-            after = "\n" + after.lstrip("\n")
-        else:
-            after = ""
-        return before + region(source, today=today) + after
+        after = _normalise_after(body[end_pos:])
+        return before + _build_exec_summary_region(source, today=today) + after
 
     # 3 — marker-less `## Quick Resume` heading.
     heading = "## Quick Resume"
@@ -1375,15 +1384,8 @@ def _migrate_quick_resume_to_exec_summary(body: str, *, today: str) -> str:
         return body
 
     before = body[:heading_pos]
-    after = body[section_end:]
-    # Normalise the gap between the region and following content: the
-    # region ends with exactly one newline; ensure a single blank line
-    # before the next heading (if any), or drop trailing blanks at EOF.
-    if after.strip():
-        after = "\n" + after.lstrip("\n")
-    else:
-        after = ""
-    return before + region(source, today=today) + after
+    after = _normalise_after(body[section_end:])
+    return before + _build_exec_summary_region(source, today=today) + after
 
 
 _WEEKLY_STRIP_REGIONS = (
