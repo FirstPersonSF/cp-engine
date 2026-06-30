@@ -295,8 +295,21 @@ def link_meeting(client, meeting_row, *,
             client, meeting_row.get("project_tags"), resolver=resolver)
 
         if new_project_id is None:
+            # NOTE: this branch treats "never tagged" and "tag removed"
+            # identically — a meeting previously linked to a project that gets
+            # UN-tagged keeps its stale project_id/work_item_id/summary link. We
+            # do NOT clear a prior link here; the un-link/clear path is deferred
+            # and belongs with the rescope cascade task.
             return {"ok": True, "linked": False,
                     "reason": "no resolvable project tag"}
+
+        # Once we know we're going to write, a falsy recording_id must fail
+        # FIRST: it's the locate key for the link-column UPDATE, and an
+        # `.eq("recording_id", None)` would be a silent no-op / broad match.
+        # Mirrors the sibling guards in embed_meeting_summary / promote_transcript.
+        recording_id = meeting_row.get("recording_id")
+        if not recording_id:
+            return {"ok": False, "reason": "meeting has no recording_id"}
 
         out = {"ok": True, "linked": True, "project_id": new_project_id,
                "matched_tag": matched_tag}
@@ -319,7 +332,7 @@ def link_meeting(client, meeting_row, *,
                 "work_item_id": work_item_id,
                 "work_item_confidence": confidence,
             })
-            .eq("recording_id", meeting_row.get("recording_id"))
+            .eq("recording_id", recording_id)
             .execute()
         )
 

@@ -53,6 +53,7 @@ class _FakeUpdateChain:
         self._recorder.updates.append(
             {"payload": self._payload, "filters": self._filters}
         )
+        self._recorder.events.append("update")
 
         class _Resp:
             data = [{"id": "ignored"}]
@@ -61,10 +62,15 @@ class _FakeUpdateChain:
 
 
 class _FakeClient:
-    """Captures fathom_meetings UPDATE calls; no real Supabase touched."""
+    """Captures fathom_meetings UPDATE calls; no real Supabase touched.
 
-    def __init__(self):
+    `events` is a shared ordered log so tests can assert relative ordering of
+    the link-column write against other side effects (e.g. the rescope cascade).
+    """
+
+    def __init__(self, events=None):
         self.updates = []
+        self.events = events if events is not None else []
 
     def table(self, name):
         assert name == "fathom_meetings"
@@ -152,9 +158,21 @@ def test_untagged_unresolvable(monkeypatch):
 
 def test_retag_triggers_rescope(monkeypatch):
     _patch_resolver(monkeypatch, "p2")
-    client = _FakeClient()
+    events = []
+    client = _FakeClient(events=events)
     embed = _Recorder({"ok": True, "asset_id": "a1"})
-    rescope = _Recorder({"ok": True, "rescoped": True})
+
+    # rescope appends to the SAME ordered events log as the client's update.
+    class _Rescope:
+        def __init__(self):
+            self.calls = []
+
+        def __call__(self, *args, **kwargs):
+            self.calls.append({"args": args, "kwargs": kwargs})
+            events.append("rescope")
+            return {"ok": True, "rescoped": True}
+
+    rescope = _Rescope()
 
     row = _row(project_id="p1")  # stored p1, resolves to p2 → retag
     result = link_meeting(
@@ -174,6 +192,61 @@ def test_retag_triggers_rescope(monkeypatch):
     assert result["rescope"] == {"ok": True, "rescoped": True}
     # embed still happens.
     assert len(embed.calls) == 1
+    # ORDERING: rescope cascade runs BEFORE the link-column write.
+    assert events.index("rescope") < events.index("update")
+
+
+def test_retag_assigns_new_project_work_item_never_stale(monkeypatch):
+    """A retag (p1→p2) with a non-default assigner: the write payload carries
+    the NEW project + the assigner's NEW work item — never a carried/stale old
+    value. Locks in that assigner output (against new_project_id) unconditionally
+    overwrites the link columns."""
+    _patch_resolver(monkeypatch, "p2")
+    client = _FakeClient()
+    embed = _Recorder({"ok": True})
+    assigner = _Recorder(("wi-new", 0.9))
+
+    result = link_meeting(
+        client,
+        _row(project_id="p1", work_item_id="wi-old"),  # stale old link present
+        assigner=assigner,
+        embed=embed,
+        supabase_url="u",
+        supabase_key="k",
+    )
+
+    assert result["project_id"] == "p2"
+    assert result["work_item_id"] == "wi-new"
+    upd = client.updates[0]
+    assert upd["payload"]["project_id"] == "p2"
+    assert upd["payload"]["work_item_id"] == "wi-new"
+    assert upd["payload"]["work_item_confidence"] == 0.9
+
+
+def test_guard_missing_recording_id_when_about_to_write(monkeypatch):
+    """A tagged meeting with a falsy recording_id must fail BEFORE any write —
+    otherwise `.eq("recording_id", None)` is a silent no-op / broad match.
+    Mirrors the sibling guards in embed_meeting_summary / promote_transcript."""
+    _patch_resolver(monkeypatch, "p1")
+    client = _FakeClient()
+    embed = _Recorder({"ok": True})
+    rescope = _Recorder({"ok": True, "rescoped": False})
+
+    result = link_meeting(
+        client,
+        _row(recording_id=None),  # tagged (resolves to p1) but no recording_id
+        embed=embed,
+        rescope=rescope,
+        supabase_url="u",
+        supabase_key="k",
+    )
+
+    assert result["ok"] is False
+    assert "recording_id" in result["reason"]
+    # No write attempted, no embed, no rescope.
+    assert client.updates == []
+    assert embed.calls == []
+    assert rescope.calls == []
 
 
 def test_same_project_relink_no_rescope(monkeypatch):
