@@ -35,6 +35,9 @@ def stamp_meeting_asset(client, *, project_id: str, source_file_id: str,
     so this update is idempotent (re-stamps, never duplicates). No `SELECT *`;
     fields set directly via `.update()` (matching stamp_promoted_asset).
     """
+    # Full `meta` overwrite is safe here: the row is freshly ingested by the
+    # caller immediately before this stamp, so there is no prior caller-set meta
+    # (e.g. a change_token) to clobber.
     resp = (
         client.table("rag_assets")
         .update({
@@ -99,7 +102,7 @@ def embed_meeting_summary(client, meeting_row, project_id, *,
         dest_dir = Path(tempfile.gettempdir()) / "meeting-embed" / _safe(recording_id)
         dest_dir.mkdir(parents=True, exist_ok=True)
         dest = dest_dir / "summary.md"
-        dest.write_text(summary)
+        dest.write_text(summary, encoding="utf-8")
         stable_path = str(dest)
 
         ingest(stable_path, project_id, title,
