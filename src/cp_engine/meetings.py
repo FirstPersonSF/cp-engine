@@ -252,6 +252,60 @@ def _default_resolver(client, code):
     return _resolve_project_id(client, code)
 
 
+# Minimum classifier confidence to AUTO-attach a meeting to a work item. At or
+# above this we assign; below it we leave the work item unassigned (the UI shows
+# "needs assignment") for later manual classification — always reclassifiable.
+WORK_ITEM_ASSIGN_THRESHOLD = 0.75
+
+
+def assign_work_item(meeting_row, project_id, *, classifier,
+                     threshold=WORK_ITEM_ASSIGN_THRESHOLD):
+    """Confidence-gate a meeting's work-item assignment via an injected classifier.
+
+    The real classifier (an LLM routing a meeting to one of the project's
+    estimator work items) is a separate webhook-layer task; here it is always
+    INJECTED. This function is a PURE gate: NO LLM, NO Supabase, NO network.
+
+    Returns `(work_item_id, confidence)`:
+      - Auto-assign only on HIGH confidence (`confidence >= threshold`, inclusive)
+        → `(work_item_id, confidence)`.
+      - Below threshold → `(None, confidence)`: the work item is dropped (left
+        unassigned for manual classification) but the best-guess confidence is
+        RETAINED so a caller/UI can show "best guess 0.6, not auto-assigned".
+      - No candidate (classifier returns None), no work_item_id, or a None
+        confidence → `(None, None)`.
+
+    The classifier returns either `None` (no candidate) or a candidate in one of
+    two shapes, both supported defensively:
+      - a 2-tuple `(work_item_id, confidence)`, or
+      - a dict with keys `work_item_id` + `confidence`.
+    Both are normalized to `(work_item_id, confidence)` before gating.
+
+    NEVER raises — any exception (including a misbehaving classifier) is wrapped
+    and yields `(None, None)`.
+    """
+    try:
+        candidate = classifier(meeting_row, project_id)
+        if candidate is None:
+            return None, None
+
+        if isinstance(candidate, dict):
+            work_item_id = candidate.get("work_item_id")
+            confidence = candidate.get("confidence")
+        else:
+            work_item_id, confidence = candidate
+
+        if not work_item_id or confidence is None:
+            return None, None
+
+        if confidence >= threshold:
+            return work_item_id, confidence
+        # Below threshold: leave unassigned but surface the best-guess confidence.
+        return None, confidence
+    except Exception:  # never raises
+        return None, None
+
+
 def _default_assigner(meeting_row, project_id):
     """Default work-item assigner: no auto-assign. The real high-confidence
     classifier is a separate task; this seam keeps `link_meeting` testable."""
