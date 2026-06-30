@@ -28,25 +28,48 @@ from cp_engine.meetings import backfill_meetings
 
 
 class _FakeSelectChain:
-    """Records the columns passed to `.select(...)` and returns canned rows."""
+    """Records `.select(...)` columns + every `.range(...)` and serves the rows
+    for the requested half-open PostgREST range (inclusive start, inclusive end).
+
+    A client with no `.range()` call returns ALL rows on a single `.execute()`
+    (so the OLD single-fetch driver, were it still in place, would see every row
+    — the pagination test instead asserts via the recorded ranges that the new
+    driver actually paginated)."""
 
     def __init__(self, rows, recorder):
         self._rows = rows
         self._recorder = recorder
+        self._range = None
 
     def select(self, cols):
         self._recorder["select_cols"] = cols
         return self
 
-    def execute(self):
-        class _Resp:
-            data = list(self._rows)
+    def range(self, start, end):
+        self._recorder.setdefault("ranges", []).append((start, end))
+        self._range = (start, end)
+        return self
 
-        return _Resp()
+    def execute(self):
+        if self._range is None:
+            data = list(self._rows)
+        else:
+            start, end = self._range
+            data = list(self._rows[start:end + 1])  # PostgREST end is inclusive
+
+        class _Resp:
+            pass
+
+        resp = _Resp()
+        resp.data = data
+        return resp
 
 
 class _FakeListClient:
-    """Fake client whose only job is to serve the fathom_meetings listing."""
+    """Fake client whose only job is to serve the fathom_meetings listing.
+
+    A fresh chain per `.table()` call so each paginated fetch gets its own
+    `.range()` state, but all share one `recorder` dict."""
 
     def __init__(self, rows):
         self.rows = rows
@@ -142,12 +165,14 @@ def test_all_rows_backfill_links_each_tagged_row(monkeypatch):
 
 
 def test_link_result_not_linked_counts_as_skipped(monkeypatch):
+    # ok:True, linked:False is a LEGITIMATE skip (e.g. "already embedded"),
+    # distinct from an ok:False ERROR (which counts as failed — see below).
     rows = [_row(1, ["T"]), _row(2, ["T"])]
     monkeypatch.setattr(meetings, "resolve_meeting_project", _resolver_by_tag({"T": "pid"}))
     link = _LinkRecorder(
         results={
             1: {"ok": True, "linked": True, "project_id": "pid"},
-            2: {"ok": True, "linked": False, "reason": "already"},
+            2: {"ok": True, "linked": False, "reason": "already embedded"},
         }
     )
 
@@ -161,6 +186,33 @@ def test_link_result_not_linked_counts_as_skipped(monkeypatch):
     assert summary["total"] == 2
     assert summary["linked"] == 1
     assert summary["skipped"] == 1
+    assert summary["failed"] == 0
+
+
+def test_link_ok_false_counts_as_failed_not_skipped(monkeypatch):
+    # link_meeting NEVER raises — it self-wraps errors as {"ok": False, ...}.
+    # A genuine ERROR must count as FAILED (so the CLI exits non-zero), NOT be
+    # silently swallowed as a skip.
+    rows = [_row(1, ["T"]), _row(7, ["T"])]
+    monkeypatch.setattr(meetings, "resolve_meeting_project", _resolver_by_tag({"T": "pid"}))
+    link = _LinkRecorder(
+        results={
+            1: {"ok": True, "linked": True, "project_id": "pid"},
+            7: {"ok": False, "reason": "embed exploded"},
+        }
+    )
+
+    summary = backfill_meetings(
+        _FakeListClient(rows),
+        supabase_url="u",
+        supabase_key="k",
+        link=link,
+        company_resolver=lambda c, pid: "cid",
+    )
+    assert summary["total"] == 2
+    assert summary["linked"] == 1
+    assert summary["skipped"] == 0
+    assert summary["failed"] == 1
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -387,3 +439,91 @@ def test_rescope_closure_threads_meeting_project_company(monkeypatch):
     # Each meeting's rescope closure threaded its OWN project's company.
     assert captured_rescope[1] == "cid-ibx"
     assert captured_rescope[2] == "cid-ggl"
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  pagination — no silent >page-size cap
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_listing_paginates_no_silent_cap(monkeypatch):
+    # 5 rows with a page size of 2 → 3 fetches (2, 2, 1). All 5 must process;
+    # nothing is capped at the first PostgREST page.
+    monkeypatch.setattr(meetings, "_BACKFILL_PAGE_SIZE", 2)
+    rows = [_row(i, ["T"]) for i in range(1, 6)]
+    monkeypatch.setattr(meetings, "resolve_meeting_project", _resolver_by_tag({"T": "pid"}))
+    link = _LinkRecorder()
+    client = _FakeListClient(rows)
+
+    summary = backfill_meetings(
+        client,
+        supabase_url="u",
+        supabase_key="k",
+        link=link,
+        company_resolver=lambda c, pid: "cid",
+    )
+
+    assert summary["total"] == 5
+    assert summary["linked"] == 5
+    assert [c["row"]["recording_id"] for c in link.calls] == [1, 2, 3, 4, 5]
+    # Pagination actually happened: ranges walked 0-1, 2-3, 4-5 (last short page
+    # of 1 row < page size stops the loop).
+    assert client.recorder["ranges"] == [(0, 1), (2, 3), (4, 5)]
+
+
+def test_listing_stops_when_page_exactly_fills_then_empties(monkeypatch):
+    # 4 rows, page size 2 → 2 full pages then an empty third page stops it.
+    monkeypatch.setattr(meetings, "_BACKFILL_PAGE_SIZE", 2)
+    rows = [_row(i, ["T"]) for i in range(1, 5)]
+    monkeypatch.setattr(meetings, "resolve_meeting_project", _resolver_by_tag({"T": "pid"}))
+    client = _FakeListClient(rows)
+
+    summary = backfill_meetings(
+        client,
+        supabase_url="u",
+        supabase_key="k",
+        link=_LinkRecorder(),
+        company_resolver=lambda c, pid: "cid",
+    )
+    assert summary["total"] == 4
+    # 0-1 (full), 2-3 (full), 4-5 (empty → stop).
+    assert client.recorder["ranges"] == [(0, 1), (2, 3), (4, 5)]
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  company memoization — one lookup per distinct project
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_company_resolver_memoized_per_project(monkeypatch):
+    # 3 rows, two distinct projects → resolver called once PER PROJECT, not
+    # once per row.
+    rows = [
+        _row(1, ["IBX 5167 DDI Platform Video"]),  # pid-ibx
+        _row(2, ["IBX 5167 DDI Platform Video"]),  # pid-ibx (memo hit)
+        _row(3, ["GGL 5168 Activation"]),  # pid-ggl
+    ]
+    monkeypatch.setattr(
+        meetings,
+        "resolve_meeting_project",
+        _resolver_by_tag(
+            {"IBX 5167 DDI Platform Video": "pid-ibx", "GGL 5168 Activation": "pid-ggl"}
+        ),
+    )
+
+    seen = []
+
+    def counting_resolver(client, pid):
+        seen.append(pid)
+        return f"cid-{pid}"
+
+    backfill_meetings(
+        _FakeListClient(rows),
+        supabase_url="u",
+        supabase_key="k",
+        link=_LinkRecorder(),
+        company_resolver=counting_resolver,
+    )
+
+    # Exactly one lookup per distinct project (pid-ibx once, pid-ggl once).
+    assert sorted(seen) == ["pid-ggl", "pid-ibx"]

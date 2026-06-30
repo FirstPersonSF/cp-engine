@@ -496,6 +496,13 @@ def _default_company_resolver(client, project_id):
     return folders.company_id if folders else None
 
 
+# PostgREST returns at most this many rows per request (its default page
+# ceiling). The listing MUST paginate past it, or a tenant with more meetings
+# than this silently backfills only the first page — a silent cap the plan
+# forbids.
+_BACKFILL_PAGE_SIZE = 1000
+
+
 def backfill_meetings(client, *, code=None, supabase_url, supabase_key,
                       link=link_meeting, company_resolver=None) -> dict:
     """Backfill: run `link_meeting` over already-tagged `fathom_meetings` rows.
@@ -524,14 +531,22 @@ def backfill_meetings(client, *, code=None, supabase_url, supabase_key,
     IDEMPOTENT: rows already linked + embedded are naturally skipped downstream
     (embed checks `summary_embedded_at`); re-running is safe.
 
-    NEVER raises on a single row: each row is wrapped; a row whose `link` raises
-    increments `failed` and the batch continues.
+    Per-row outcome classification (`link_meeting` NEVER raises — it self-wraps
+    errors as `{"ok": False, "reason": ...}`):
+      - `ok:False` (a genuine ERROR, e.g. a systematic embed outage) → `failed`,
+        with its reason surfaced in the returned `failures` list. NOT a silent
+        skip — otherwise a whole-batch embed outage would exit 0.
+      - `ok:True & linked:True` → `linked`.
+      - `ok:True & linked:False` (a LEGITIMATE skip — "already embedded", "no
+        resolvable project tag") → `skipped`.
+      - link itself raising (defence in depth) → `failed`.
 
     Returns a summary dict:
-        {"total", "linked", "skipped", "failed", "unresolved": [recording_id/title…]}
+        {"total", "linked", "skipped", "failed",
+         "unresolved": [recording_id/title…], "failures": [(rid, reason)…]}
     where `unresolved` LISTS the tagged rows whose tags didn't resolve to any
-    project (surfaced, never silently dropped). Untagged rows count as `skipped`
-    but are NOT `unresolved`.
+    project (surfaced, never silently dropped — untagged rows count as `skipped`
+    but are NOT `unresolved`), and `failures` LISTS the errored rows.
     """
     if company_resolver is None:
         company_resolver = _default_company_resolver
@@ -541,8 +556,24 @@ def backfill_meetings(client, *, code=None, supabase_url, supabase_key,
     # promote, which this driver does not do).
     columns = ("recording_id, title, project_tags, project_id, "
                "summary, summary_embedded_at")
-    resp = client.table("fathom_meetings").select(columns).execute()
-    rows = getattr(resp, "data", None) or []
+
+    # Paginate the FETCH past PostgREST's per-request page ceiling, then filter
+    # in Python — so a tenant with more meetings than one page is never silently
+    # capped. Stop when a page returns fewer rows than the page size.
+    rows: list = []
+    offset = 0
+    while True:
+        resp = (
+            client.table("fathom_meetings")
+            .select(columns)
+            .range(offset, offset + _BACKFILL_PAGE_SIZE - 1)
+            .execute()
+        )
+        page = getattr(resp, "data", None) or []
+        rows.extend(page)
+        if len(page) < _BACKFILL_PAGE_SIZE:
+            break
+        offset += _BACKFILL_PAGE_SIZE
 
     target_pid = None
     if code:
@@ -553,6 +584,10 @@ def backfill_meetings(client, *, code=None, supabase_url, supabase_key,
     skipped = 0
     failed = 0
     unresolved: list = []
+    failures: list = []
+    # Memoize project_id → company_id so each distinct project's company is
+    # resolved once, not once per row (24 same-project meetings = 1 lookup).
+    company_by_pid: dict = {}
 
     for row in rows:
         total += 1
@@ -574,22 +609,31 @@ def backfill_meetings(client, *, code=None, supabase_url, supabase_key,
             continue
 
         try:
-            company_id = company_resolver(client, pid)
+            if pid not in company_by_pid:
+                company_by_pid[pid] = company_resolver(client, pid)
+            company_id = company_by_pid[pid]
 
             def _rescope(c, r, new_pid, _co=company_id):
                 return rescope_meeting(c, r, new_pid, new_company_id=_co)
 
             result = link(client, row, rescope=_rescope,
                           supabase_url=supabase_url, supabase_key=supabase_key)
-            if result and result.get("linked"):
+            if result and result.get("ok") is False:
+                # link self-wrapped a genuine error — count it, surface it.
+                failed += 1
+                failures.append((row.get("recording_id") or row.get("title"),
+                                 result.get("reason")))
+            elif result and result.get("linked"):
                 linked += 1
             else:
                 skipped += 1
-        except Exception:  # never abort the batch on one row
+        except Exception as exc:  # never abort the batch on one row
             failed += 1
+            failures.append((row.get("recording_id") or row.get("title"),
+                             str(exc)))
 
     return {"total": total, "linked": linked, "skipped": skipped,
-            "failed": failed, "unresolved": unresolved}
+            "failed": failed, "unresolved": unresolved, "failures": failures}
 
 
 def resolve_meeting_project(

@@ -2881,6 +2881,11 @@ def meetings_backfill_cmd(code: str | None, all_: bool) -> None:
         click.echo(f"  unresolved ({len(unresolved)}):", err=True)
         for item in unresolved:
             click.echo(f"    - {item}", err=True)
+    failures = summary.get("failures") or []
+    if failures:
+        click.echo(f"  failures ({len(failures)}):", err=True)
+        for rid, reason in failures:
+            click.echo(f"    - {rid}: {reason}", err=True)
     if summary["failed"]:
         sys.exit(1)
 
