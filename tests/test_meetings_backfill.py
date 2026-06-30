@@ -248,6 +248,61 @@ def test_nested_embed_failure_counts_as_failed_not_linked(monkeypatch):
                for rid, reason in summary["failures"])
 
 
+def test_nested_embed_already_embedded_counts_as_skipped_not_failed(monkeypatch):
+    # The PRODUCTION idempotent-rerun case: link_meeting returns
+    # {ok:True, linked:True, embed:{ok:False, reason:"summary already embedded"}}
+    # when the meeting's summary is ALREADY in RAG (summary_embedded_at set). That
+    # is a benign idempotent SKIP, NOT an embed outage — a re-run of backfill (or
+    # --all after a scoped run) must NOT report it as `failed` / exit non-zero, or
+    # every re-run cries wolf. Only GENUINE embed failures (voyage down, stamp
+    # matched no row) are `failed`.
+    rows = [_row(1, ["T"]), _row(9, ["T"])]
+    monkeypatch.setattr(meetings, "resolve_meeting_project", _resolver_by_tag({"T": "pid"}))
+    link = _LinkRecorder(
+        results={
+            1: {"ok": True, "linked": True, "project_id": "pid",
+                "embed": {"ok": True}},
+            9: {"ok": True, "linked": True, "project_id": "pid",
+                "embed": {"ok": False, "reason": "summary already embedded"}},
+        }
+    )
+
+    summary = backfill_meetings(
+        _FakeListClient(rows),
+        supabase_url="u",
+        supabase_key="k",
+        link=link,
+        company_resolver=lambda c, pid: "cid",
+    )
+    assert summary["total"] == 2
+    assert summary["linked"] == 1
+    assert summary["skipped"] == 1   # the already-embedded row
+    assert summary["failed"] == 0    # NOT a failure
+    assert summary["failures"] == []
+
+
+def test_nested_embed_no_summary_counts_as_skipped_not_failed(monkeypatch):
+    # A meeting with no summary text returns embed {ok:False, reason:"meeting has
+    # no summary"} — also benign (nothing to embed), a SKIP not a failure.
+    rows = [_row(9, ["T"])]
+    monkeypatch.setattr(meetings, "resolve_meeting_project", _resolver_by_tag({"T": "pid"}))
+    link = _LinkRecorder(
+        results={
+            9: {"ok": True, "linked": True, "project_id": "pid",
+                "embed": {"ok": False, "reason": "meeting has no summary"}},
+        }
+    )
+    summary = backfill_meetings(
+        _FakeListClient(rows),
+        supabase_url="u",
+        supabase_key="k",
+        link=link,
+        company_resolver=lambda c, pid: "cid",
+    )
+    assert summary["skipped"] == 1
+    assert summary["failed"] == 0
+
+
 def test_untagged_linked_false_no_embed_key_stays_skipped(monkeypatch):
     # An untagged / unresolvable meeting returns {ok:True, linked:False} with NO
     # `embed` key. The new embed-failure check must NOT over-trigger on the

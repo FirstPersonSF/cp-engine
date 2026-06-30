@@ -524,6 +524,18 @@ def _default_company_resolver(client, project_id):
 _BACKFILL_PAGE_SIZE = 1000
 
 
+# Embed `ok:False` reasons that are BENIGN idempotent skips, not failures. These
+# are the exact reasons `embed_meeting_summary` returns when there's nothing to
+# do (already done / nothing to embed) — a backfill re-run hits "already
+# embedded" for every previously-done row, so classifying them as `failed` would
+# make every re-run exit non-zero (false alarm). Keep in sync with
+# embed_meeting_summary's skip reasons.
+_BENIGN_EMBED_SKIPS = frozenset({
+    "summary already embedded",
+    "meeting has no summary",
+})
+
+
 def backfill_meetings(client, *, code=None, supabase_url, supabase_key,
                       link=link_meeting, company_resolver=None) -> dict:
     """Backfill: run `link_meeting` over already-tagged `fathom_meetings` rows.
@@ -655,14 +667,20 @@ def backfill_meetings(client, *, code=None, supabase_url, supabase_key,
                                  result.get("reason")))
             elif embed is not None and embed.get("ok") is False:
                 # Link WRITE succeeded (top-level ok:True) but the nested embed
-                # FAILED (Voyage/OpenAI down, stamp matched 0 rows). link_meeting
-                # always reports linked:True once the write lands; counting this
-                # as `linked` would defeat the backfill's embed-outage alarm.
-                # Only a PRESENT embed with ok:False is a failure — an untagged
-                # row ({ok:True, linked:False}) has NO embed key and stays a skip.
-                failed += 1
-                failures.append((row.get("recording_id") or row.get("title"),
-                                 embed.get("reason")))
+                # returned ok:False. Two cases — DISTINGUISH them:
+                #   - BENIGN idempotent skips: "summary already embedded" (the
+                #     row was embedded on a prior run — a re-run / --all after a
+                #     scoped run hits this for every done row) and "meeting has no
+                #     summary" (nothing to embed). These are NOT failures; a re-run
+                #     must NOT exit non-zero or it cries wolf at cron/CI.
+                #   - GENUINE failures: Voyage/OpenAI outage, "stamp matched no
+                #     row", etc. These ARE failures (the embed-outage alarm).
+                if embed.get("reason") in _BENIGN_EMBED_SKIPS:
+                    skipped += 1
+                else:
+                    failed += 1
+                    failures.append((row.get("recording_id") or row.get("title"),
+                                     embed.get("reason")))
             elif result and result.get("linked"):
                 linked += 1
             else:
