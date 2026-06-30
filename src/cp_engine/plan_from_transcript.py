@@ -13,8 +13,8 @@ Design constraints:
   different workflow with different prompting.
 - Project context is bounded — we don't dump the entire `cp.md` and
   every sprint file. The model needs enough to recognize ongoing
-  threads (Quick Resume, current sprint's Open asks, recent decisions)
-  without being buried in history.
+  threads (the project cp.md's exec-summary, the current sprint's Open
+  asks, recent decisions) without being buried in history.
 """
 
 from __future__ import annotations
@@ -351,18 +351,6 @@ transcript:
 
 projects:
   {project_code}:
-    # Quick Resume scalar fields (v0.11.0+) — single line each, OR null
-    # to leave the project cp.md's existing line alone. The current
-    # state of these lines is shown in "What's already known about
-    # this project" above (inside ## Quick Resume in the project cp.md).
-    # EVOLVE the prior text with new signal from this meeting; if the
-    # prior line still accurately describes state, set the field to
-    # `null`. If the prior is a template placeholder (e.g.
-    # "_<what's in flight right now>_"), write a fresh value.
-    current_work: "..."           # ≤120 chars, no markdown; or null
-    next_up: "..."                # ≤120 chars; semicolon-separated 1–3 actions with dates; or null
-    blockers: "..."               # ≤120 chars; "None" if no blockers; or null
-
     inbound:        # things the client said/did to/at us
       - text: "..."
         date: "YYYY-MM-DD"
@@ -496,16 +484,6 @@ transcript:
 
 projects:
   {project_code}:
-    # Quick Resume scalar fields (v0.11.0+) — single line each, OR null
-    # to leave the project cp.md's existing line alone. See the
-    # "What's already known about this initiative" block above for the
-    # prior values. EVOLVE them with new signal from this meeting; set
-    # to `null` if the prior is still accurate. If the prior is a
-    # template placeholder, write a fresh value.
-    current_work: "..."           # ≤120 chars, no markdown; or null
-    next_up: "..."                # ≤120 chars; semicolon-separated 1–3 actions with dates; or null
-    blockers: "..."               # ≤120 chars; "None" if no blockers; or null
-
     asks:           # open loops between team members or teams
       - text: "..."
         who: "<who we're asking>"

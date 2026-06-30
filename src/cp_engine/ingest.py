@@ -202,13 +202,11 @@ _SUPPORTED_VERBS = (
     "record-stakeholder",  # → sprint file's ### Stakeholders under ## Client communication
     "record-theme",        # → sprints/<W##>/_week.md's ## Themes
     "record-slack-digest", # → sprint file's ### Slack digest under ## Client communication
-    # Quick Resume scalar verbs (v0.11.0+, Lever 5). Each takes a single
-    # string value (not a list of dicts) and writes one line in the
-    # project cp.md's engine-managed `quick-resume` region. `None` value
-    # means LLM declined to refresh — leave prior line alone.
-    "current_work",        # → project cp.md's **Current work:** line
-    "next_up",             # → project cp.md's **Next up:** line
-    "blockers",            # → project cp.md's **Blockers:** line
+    # NOTE: the Quick Resume scalar verbs (current_work / next_up /
+    # blockers) were RETIRED in the exec-summary cutover. Auto-ingest no
+    # longer writes project cp.md state — the model authors an
+    # exec-summary at wrap-up instead. The verbs live in _RETIRED_VERBS
+    # below (recognized-and-ignored), NOT here.
     # Forward-looking sprint-planning verbs (v0.15+, Task 2).
     # These do NOT touch sprint markdown — they insert proposal rows
     # into the existing `clickup_task_proposals` Supabase table for the
@@ -229,20 +227,15 @@ _SUPPORTED_VERBS = (
 _CLICKUP_PROPOSAL_VERBS = frozenset({"set-milestone", "set-client-ask-task"})
 
 
-# Quick Resume scalar verbs are typed differently than the list-typed
-# verbs above — they take a single string (or None), not a list of dicts.
-# Plan validator + execute_plan branch on this set.
-_QUICK_RESUME_VERBS = frozenset({"current_work", "next_up", "blockers"})
-
-
-# Maps each Quick Resume verb to its `**Label:**` prefix in the project
-# cp.md. The writer locates the line by this prefix inside the engine
-# region and replaces its content.
-_QUICK_RESUME_VERB_TO_LABEL = {
-    "current_work": "**Current work:**",
-    "next_up": "**Next up:**",
-    "blockers": "**Blockers:**",
-}
+# Retired verbs (exec-summary cutover). These USED to write scalar lines
+# into the project cp.md's `quick-resume` region; auto-ingest no longer
+# writes project cp.md state at all. They are kept OUT of _SUPPORTED_VERBS
+# (no longer advertised to the model) but recognized here so that a stale
+# in-flight or retried webhook plan — produced by the OLD prompt before
+# the deploy lands — is silently skipped rather than hard-failing the
+# whole ingest on an "unknown verb" error. This is a deploy-window
+# tolerance; once no old plans are in flight the set can be dropped.
+_RETIRED_VERBS = frozenset({"current_work", "next_up", "blockers"})
 
 
 @dataclass
@@ -343,27 +336,15 @@ def execute_plan(
             )
         for verb, items in entries.items():
             normalized = _normalize_verb(verb)
-            # Quick Resume verbs (v0.11.0+) are scalar and write to
-            # project cp.md, not the sprint file. Branch here so we
-            # don't iterate over a string.
-            if normalized in _QUICK_RESUME_VERBS:
-                project_cp_path = _resolve_project_cp_path(tenant_root, code)
-                if project_cp_path is None:
-                    result.errors.append(
-                        f"{code}/{verb}: project cp.md not found under tenant root"
-                    )
-                    continue
-                try:
-                    written = _write_quick_resume_verb(
-                        normalized, items, project_cp_path
-                    )
-                    if written:
-                        if project_cp_path not in result.files_written:
-                            result.files_written.append(project_cp_path)
-                    else:
-                        result.skipped_duplicate += 1
-                except Exception as exc:
-                    result.errors.append(f"{code}/{verb}: {exc}")
+            # Retired Quick Resume verbs (exec-summary cutover): recognized
+            # but ignored. Auto-ingest no longer writes project cp.md state.
+            # Skip silently so a stale in-flight plan doesn't break ingest.
+            if normalized in _RETIRED_VERBS:
+                logger.debug(
+                    "ingest: ignoring retired verb %s for %s "
+                    "(auto-ingest no longer writes cp.md state)",
+                    normalized, code,
+                )
                 continue
             # ClickUp proposal verbs (v0.15+, Task 2) write rows into
             # Supabase, not files. Skip silently if no client supplied —
@@ -494,21 +475,18 @@ def _validate_plan(plan: dict) -> None:
                 )
             for verb, items in entries.items():
                 normalized = _normalize_verb(verb)
+                # Retired verbs (exec-summary cutover) are tolerated, not
+                # rejected: a stale in-flight plan carrying current_work /
+                # next_up / blockers must not hard-fail validation. They're
+                # skipped (no write) by execute_plan; here we just don't
+                # treat them as "unknown". Accept any payload shape.
+                if normalized in _RETIRED_VERBS:
+                    continue
                 if normalized not in _SUPPORTED_VERBS:
                     raise IngestPlanError(
                         f"plan.projects[{code!r}]: unknown verb {verb!r}; "
                         f"expected one of {sorted(_SUPPORTED_VERBS)}"
                     )
-                # Quick Resume verbs (current_work / next_up / blockers)
-                # are scalar — a single string or None, not a list of
-                # dicts. Validated as either a non-empty string (write
-                # this value) or None (LLM declined; leave prior alone).
-                if normalized in _QUICK_RESUME_VERBS:
-                    if items is not None and not isinstance(items, str):
-                        raise IngestPlanError(
-                            f"plan.projects[{code!r}][{verb!r}] must be a string or null"
-                        )
-                    continue
                 if not isinstance(items, list):
                     raise IngestPlanError(
                         f"plan.projects[{code!r}][{verb!r}] must be a list of items"
@@ -1078,64 +1056,6 @@ def _resolve_project_cp_path(tenant_root: Path, code: str) -> Path | None:
                     if candidate.is_file():
                         return candidate
     return None
-
-
-_QUICK_RESUME_REGION_START = "<!-- cp-engine:start quick-resume -->"
-_QUICK_RESUME_REGION_END = "<!-- cp-engine:end quick-resume -->"
-
-
-def _write_quick_resume_verb(
-    verb: str, value: str | None, cp_path: Path
-) -> bool:
-    """Rewrite the `**<Label>:**` line for a Quick Resume verb.
-
-    Behavior:
-      - `value` is None → leave the existing line alone (LLM declined to
-        refresh; prior content still describes state). Returns False.
-      - Engine region markers absent → log warning + skip. Returns False.
-      - Existing line text already equals the new value → no-op (returns
-        False so the file doesn't appear in files_written).
-      - Otherwise → replace the line's content, preserve the
-        `**Label:** ` prefix, write file, return True.
-
-    The region markers must already exist on disk; sync's
-    `_ensure_quick_resume_markers` runs on the cutover sync to add them
-    to existing project cp.md files.
-    """
-    if value is None:
-        return False
-    new_value = " ".join(str(value).split()).strip()
-    if not new_value:
-        return False
-    label = _QUICK_RESUME_VERB_TO_LABEL[verb]
-    body = cp_path.read_text(encoding="utf-8")
-    if _QUICK_RESUME_REGION_START not in body or _QUICK_RESUME_REGION_END not in body:
-        logger.warning(
-            "Skipping %s on %s: quick-resume engine region markers not found",
-            verb,
-            cp_path,
-        )
-        return False
-    start_pos = body.find(_QUICK_RESUME_REGION_START)
-    end_pos = body.find(_QUICK_RESUME_REGION_END)
-    region = body[start_pos:end_pos]
-    # Find the line inside the region beginning with `**Label:**`.
-    line_pattern = re.compile(rf"^{re.escape(label)}\s*(.*)$", re.MULTILINE)
-    match = line_pattern.search(region)
-    if match is None:
-        logger.warning(
-            "Skipping %s on %s: %r line not found inside quick-resume region",
-            verb, cp_path, label,
-        )
-        return False
-    existing_value = match.group(1).strip()
-    if existing_value == new_value:
-        return False
-    new_line = f"{label} {new_value}"
-    new_region = region[:match.start()] + new_line + region[match.end():]
-    new_body = body[:start_pos] + new_region + body[end_pos:]
-    cp_path.write_text(new_body, encoding="utf-8")
-    return True
 
 
 def _write_theme(item: dict, week_path: Path) -> bool:
