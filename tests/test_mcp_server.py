@@ -510,6 +510,30 @@ def test_resolve_project_id_by_exact_code():
     assert srv._resolve_project_id(client, "IBX-platform-sales-readiness-summit") == "pid-slug"
 
 
+def test_resolve_project_id_by_raw_full_job_name():
+    """A RAW full_job_name (the display form, e.g. "IBX 5167 DDI Platform Video")
+    resolves directly via projects.full_job_name.
+
+    Fathom stores this exact display string in fathom_meetings.project_tags, so
+    the meetings flow passes it to the resolver verbatim — it is neither the
+    slug code (`IBX-ddi-platform-video`) nor the slugified on-disk id
+    (`ibx-5167-ddi-platform-video`), so without this branch every tagged meeting
+    fails to resolve and the backfill links nothing.
+    """
+    store = {
+        # exact-code lookup MISSES (the raw display name is not the code)
+        ("projects", frozenset([("code", "IBX 5167 DDI Platform Video")])): [],
+        # NEW branch: exact full_job_name match
+        ("projects", frozenset([("full_job_name", "IBX 5167 DDI Platform Video")])): [
+            {"id": "pid-5167"}
+        ],
+    }
+    client = _FakeClient(store)
+    assert (
+        srv._resolve_project_id(client, "IBX 5167 DDI Platform Video") == "pid-5167"
+    )
+
+
 def test_resolve_project_id_falls_back_to_company_prefix_and_number():
     """The working-dir form `ibx-5192` (company prefix + number) resolves to the
     project even though projects.code is the slug `IBX-platform-sales-readiness-summit`.

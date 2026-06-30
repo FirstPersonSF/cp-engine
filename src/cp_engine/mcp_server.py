@@ -125,6 +125,23 @@ def _resolve_project_id(client, project_code: str) -> str | None:
     if rows:
         return rows[0]["id"]
 
+    # Exact RAW full_job_name match (the display form, e.g.
+    # "IBX 5167 DDI Platform Video"). Fathom stores this verbatim in
+    # fathom_meetings.project_tags, so the meetings flow passes it here directly
+    # — it is neither the slug code nor the slugified on-disk id, so without this
+    # branch every tagged meeting fails to resolve.
+    rows = (
+        client.table("projects")
+        .select("id")
+        .eq("full_job_name", project_code)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if rows:
+        return rows[0]["id"]
+
     # Match the canonical on-disk id: slug_full_job_name(full_job_name).
     # Scope the scan to company-prefixed candidates (the slug always starts with
     # the company prefix) so this stays cheap, then compare the slugified
