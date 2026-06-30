@@ -36,6 +36,7 @@ from cp_engine.aggregators import (
     aggregate_tenant_strips,
 )
 from cp_engine.config import TenantConfig
+from cp_engine.render import EXEC_SUMMARY_END, EXEC_SUMMARY_START
 from cp_engine.sprints import (
     current_sprint_week_iso,
     parse_sprint_file,
@@ -52,6 +53,7 @@ from cp_engine.state import (
     scope_for,
 )
 from cp_engine.status import is_active_status
+from cp_engine.sync import EXEC_SUMMARY_MIGRATION_SUFFIX
 
 # How many cross-referenced weekly-cp decisions to surface per project.
 # Caps to keep the agenda block readable; ordered newest-first.
@@ -189,32 +191,73 @@ def decisions_for_project(
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Quick Resume parsing
+#  Exec-summary parsing (formerly Quick Resume)
 # ──────────────────────────────────────────────────────────────────────
+
+# Auto-stamped migration bullet — not human-authored content, so it's
+# dropped from the excerpt the same way placeholder lines are. The suffix
+# is owned by sync (single source of truth); re.escape keeps the two from
+# drifting.
+_EXEC_SUMMARY_MIGRATION_BULLET_RE = re.compile(
+    r"^- \d{4}-\d{2}-\d{2}" + re.escape(EXEC_SUMMARY_MIGRATION_SUFFIX) + r"\s*$"
+)
 
 
 def extract_quick_resume(cp_md_body: str) -> str | None:
-    """Pull the first content paragraph after `## Quick Resume`.
+    """Pull the cleaned content of the engine-managed `exec-summary` region.
 
-    Returns None when the section is missing OR contains only the template
-    placeholder lines (e.g. `**Last session:** _<date>_`). The placeholder
-    detection is fuzzy on purpose — we don't want to surface 'Last session: <date>'
-    as if it's real content.
+    (Formerly read the `## Quick Resume` heading; that region was replaced by
+    the model-authored exec-summary region. Name kept to minimize churn in
+    this deprecated module — callers + the `quick_resume_excerpt` field and
+    `quick_resume_coverage` metric still reference it.)
+
+    Returns None when the region is missing OR contains only template
+    placeholder lines (`_<...>_`) / the auto-stamped migration bullet. The
+    placeholder detection is fuzzy on purpose — we don't want to surface
+    'Last session: <date>' or 'migrated from Quick Resume' as real content.
     """
-    m = re.search(
-        r"^## Quick Resume\s*\n(.+?)(?=^## |\Z)",
-        cp_md_body,
-        re.MULTILINE | re.DOTALL,
-    )
-    if not m:
+    start = cp_md_body.find(EXEC_SUMMARY_START)
+    if start == -1:
         return None
-    raw = m.group(1).strip()
-    if not raw:
+    end = cp_md_body.find(EXEC_SUMMARY_END, start)
+    if end == -1:
         return None
-    # Strip placeholder template lines (containing `_<...>_` markers).
-    lines = [ln for ln in raw.splitlines() if "_<" not in ln]
+    inner = cp_md_body[start + len(EXEC_SUMMARY_START) : end].strip()
+    if not inner or not _exec_summary_is_authored(inner):
+        return None
+    # Drop placeholder template lines (`_<...>_`) and the auto migration bullet.
+    lines = [
+        ln
+        for ln in inner.splitlines()
+        if "_<" not in ln and not _EXEC_SUMMARY_MIGRATION_BULLET_RE.match(ln.strip())
+    ]
     cleaned = "\n".join(lines).strip()
     return cleaned or None
+
+
+def _exec_summary_is_authored(region: str) -> bool:
+    """True when an exec-summary region carries any real content. A region is
+    UNAUTHORED when every `**Label:**` field value is a `_<...>_` placeholder
+    and the only bullets are the auto-stamped migration line. (Mirrors
+    prep_planning._exec_summary_is_authored — kept local to avoid a circular
+    import, since prep_planning imports this module.)"""
+    for raw in region.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        field = re.match(r"^\*\*[^*]+:\*\*\s*(?P<value>.*)$", line)
+        if field is not None:
+            value = field.group("value").strip()
+            if value and "_<" not in value:
+                return True
+            continue
+        if line.startswith("- "):
+            if "_<" in line:  # placeholder seed bullet — not authored
+                continue
+            if _EXEC_SUMMARY_MIGRATION_BULLET_RE.match(line):
+                continue
+            return True
+    return False
 
 
 # ──────────────────────────────────────────────────────────────────────
