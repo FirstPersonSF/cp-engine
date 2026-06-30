@@ -44,3 +44,22 @@ def test_skips_unresolvable_tag_and_tries_next():
         ["  ", "Unknown Meeting", "IBX 5167 DDI Platform Video"],
         resolver=fake,
     ) == ("pid-5167", "IBX 5167 DDI Platform Video")
+
+
+def test_untagged_marker_is_case_insensitive():
+    # The `.lower()` in the skip check is load-bearing: an "UNTAGGED"/"Untagged"
+    # marker must be skipped (and the resolver never consulted for it).
+    def fake(client, code):  # pragma: no cover - should never be called
+        raise AssertionError("resolver should not be called for an untagged marker")
+
+    assert resolve_meeting_project(object(), ["UNTAGGED"], resolver=fake) == (None, None)
+    assert resolve_meeting_project(object(), ["Untagged"], resolver=fake) == (None, None)
+
+
+def test_whitespace_only_tag_returns_none():
+    # A lone whitespace tag is skipped on its own (not just when masked by a
+    # later resolvable tag) → (None, None), resolver never called.
+    def fake(client, code):  # pragma: no cover - should never be called
+        raise AssertionError("resolver should not be called for a whitespace tag")
+
+    assert resolve_meeting_project(object(), ["   "], resolver=fake) == (None, None)
