@@ -187,6 +187,15 @@ def test_promote_400_when_recording_id_none(monkeypatch, client):
     assert resp.status_code == 400
 
 
+def test_promote_400_when_recording_id_not_an_int(monkeypatch, client):
+    # A non-int recording_id must be an honest 400, not a misleading "no meeting"
+    # 404 from a bigint-column miss.
+    _wire(monkeypatch)
+    resp = _post(client, {"recording_id": "not-a-number"})
+    assert resp.status_code == 400
+    assert "recording_id" in resp.text.lower()
+
+
 # -------------------------------------------------------------------- 404s
 
 

@@ -1012,6 +1012,13 @@ async def meeting_promote_transcript(request: Request) -> Response:
     recording_id = payload.get("recording_id")
     if recording_id is None:
         raise HTTPException(status_code=400, detail="recording_id is required")
+    # Coerce to int (the column is bigint). A stringly/float id would otherwise
+    # flow into `.eq("recording_id", ...)`, miss, and surface as a misleading
+    # "no meeting" 404 instead of an honest 400 for a malformed request.
+    try:
+        recording_id = int(recording_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="recording_id must be an int")
 
     client = _create_supabase_client()
     if client is None:
