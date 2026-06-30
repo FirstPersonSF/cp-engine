@@ -207,9 +207,26 @@ def test_project_cp_renders_with_no_issues() -> None:
     assert "<!-- cp-engine:start tracked-issues -->" in out
     assert "<!-- cp-engine:end tracked-issues -->" in out
     # Hand-written sections present in skeleton
-    assert "## Quick Resume" in out
     assert "## Decisions" in out
     assert "## Stakeholders" in out
+
+
+def test_project_template_scaffolds_exec_summary_region() -> None:
+    tenant = make_tenant()
+    project = make_state()
+    body = render_project_cp(tenant, project)
+
+    assert "<!-- cp-engine:start exec-summary -->" in body
+    assert "## Exec Summary" in body
+    assert "**Last session:**" in body
+    assert "**Objective:**" in body
+    assert "**Status:**" in body
+    assert "**Where it stands:**" in body
+    assert "**Next up:**" in body
+    assert "**Blockers:**" in body
+    assert "**Updates:**" in body
+    assert "<!-- cp-engine:start quick-resume -->" not in body
+    assert "## Quick Resume" not in body
 
 
 def test_project_cp_stamps_mc_id_when_set() -> None:
