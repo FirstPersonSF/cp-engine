@@ -49,6 +49,7 @@ from cp_engine.agenda import (
 )
 from cp_engine.config import TenantConfig
 from cp_engine.render import EXEC_SUMMARY_END, EXEC_SUMMARY_START
+from cp_engine.sync import EXEC_SUMMARY_MIGRATION_SUFFIX
 from cp_engine.sprints import (
     bullets,
     current_sprint_week_iso,
@@ -494,9 +495,12 @@ def _resolve_clickup_list_for_project(
 
 # Auto-generated Updates bullet stamped by the Quick-Resume→Exec-Summary
 # migration. It is NOT human-authored content, so an otherwise-blank region
-# carrying only this line still reads as "unauthored".
+# carrying only this line still reads as "unauthored". The wording suffix is
+# owned by sync.EXEC_SUMMARY_MIGRATION_SUFFIX (single source of truth); we
+# re.escape it here so the two can't drift. A parity test in
+# tests/test_prep_planning.py asserts this regex matches sync's real output.
 _EXEC_SUMMARY_MIGRATION_BULLET_RE = re.compile(
-    r"^- \d{4}-\d{2}-\d{2} — migrated from Quick Resume\s*$"
+    r"^- \d{4}-\d{2}-\d{2}" + re.escape(EXEC_SUMMARY_MIGRATION_SUFFIX) + r"\s*$"
 )
 
 

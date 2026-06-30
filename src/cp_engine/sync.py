@@ -1246,6 +1246,15 @@ _QR_CURRENT_WORK = "**Current work:**"
 _QR_NEXT_UP = "**Next up:**"
 _QR_BLOCKERS = "**Blockers:**"
 
+# The migration stamps one Updates bullet of the form
+# ``- <date> — migrated from Quick Resume``. This SUFFIX is the shared
+# source of truth for that wording: prep_planning's
+# ``_EXEC_SUMMARY_MIGRATION_BULLET_RE`` matches it (via re.escape) to treat
+# a freshly-migrated-but-unauthored region as "no content". If you change
+# this wording, that regex follows automatically — and a parity test in
+# tests/test_prep_planning.py guards the two against drift.
+EXEC_SUMMARY_MIGRATION_SUFFIX = " — migrated from Quick Resume"
+
 
 def _qr_field(source: str, label: str) -> str | None:
     """Return the value following a `**Label:**` line inside `source`, or
@@ -1308,7 +1317,7 @@ def _build_exec_summary_region(source: str, *, today: str) -> str:
         lines.append(f"- {blockers}")
     lines.append("")
     lines.append("**Updates:**")
-    lines.append(f"- {today} — migrated from Quick Resume")
+    lines.append(f"- {today}{EXEC_SUMMARY_MIGRATION_SUFFIX}")
     lines.append(EXEC_SUMMARY_END)
     return "\n".join(lines) + "\n"
 

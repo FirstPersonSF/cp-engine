@@ -37,6 +37,8 @@ from cp_engine.prep_planning import (
     render_planning_doc,
     render_planning_summary,
 )
+from cp_engine.render import EXEC_SUMMARY_END, EXEC_SUMMARY_START
+from cp_engine.sync import EXEC_SUMMARY_MIGRATION_SUFFIX
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1174,8 +1176,6 @@ def test_render_planning_doc_full_walk(tmp_path):
 
 def _exec_summary_region(*, objective, status, where, next_up, blockers):
     """Build an exec-summary region body (markers + fields) for tests."""
-    from cp_engine.render import EXEC_SUMMARY_END, EXEC_SUMMARY_START
-
     lines = [
         EXEC_SUMMARY_START,
         "## Exec Summary  ·  updated 2026-06-30",
@@ -1198,7 +1198,7 @@ def _exec_summary_region(*, objective, status, where, next_up, blockers):
         lines.append(f"- {blockers}")
     lines.append("")
     lines.append("**Updates:**")
-    lines.append("- 2026-06-30 — migrated from Quick Resume")
+    lines.append(f"- 2026-06-30{EXEC_SUMMARY_MIGRATION_SUFFIX}")
     lines.append(EXEC_SUMMARY_END)
     return "\n".join(lines) + "\n"
 
@@ -1256,7 +1256,38 @@ def test_extract_exec_summary_partial_real_content_returns_region():
     assert "Pop-up R3 in review." in out
 
 
-def test_render_quick_resume_when_present(tmp_path):
+def test_migration_bullet_regex_matches_syncs_real_output():
+    """Anti-drift parity guard: prep_planning's migration-bullet regex must
+    match the EXACT Updates bullet that sync's migration stamps. The two live
+    in different modules sharing only EXEC_SUMMARY_MIGRATION_SUFFIX; if either
+    side's wording drifts, a freshly-migrated region would wrongly read as
+    authored and pollute the planning doc. This test fails loudly on drift."""
+    from cp_engine.prep_planning import _EXEC_SUMMARY_MIGRATION_BULLET_RE
+    from cp_engine.sync import _build_exec_summary_region
+
+    # An all-placeholder migrated region: its only Updates content is the
+    # auto-stamped migration bullet. sync builds it; prep_planning must read
+    # it as unauthored.
+    region = _build_exec_summary_region("", today="2026-06-30")
+    migration_lines = [
+        line
+        for line in region.splitlines()
+        if _EXEC_SUMMARY_MIGRATION_BULLET_RE.match(line)
+    ]
+    assert len(migration_lines) == 1, (
+        "prep_planning regex did not match sync's migration bullet — the two "
+        "drifted; check EXEC_SUMMARY_MIGRATION_SUFFIX usage in both modules"
+    )
+    # End-to-end: the unauthored migrated region reads as None.
+    full = (
+        "<!-- cp-engine:start exec-summary -->\n"
+        + region
+        + "<!-- cp-engine:end exec-summary -->\n"
+    ) if EXEC_SUMMARY_START not in region else region
+    assert _extract_exec_summary(full) is None
+
+
+def test_render_exec_summary_when_present(tmp_path):
     """When cp.md has a filled exec-summary region, the block reflects it."""
     config = make_config(tmp_path)
     state = make_state("ggl-5168", name="GGL 5168 Activation", company_name="Google")
