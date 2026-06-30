@@ -252,6 +252,84 @@ def _default_resolver(client, code):
     return _resolve_project_id(client, code)
 
 
+def _default_assigner(meeting_row, project_id):
+    """Default work-item assigner: no auto-assign. The real high-confidence
+    classifier is a separate task; this seam keeps `link_meeting` testable."""
+    return None, None
+
+
+def _default_rescope(client, meeting_row, new_project_id):
+    """Default re-scope cascade: a no-op. The real cascade (moving rag_assets +
+    the meeting's project_id on a retag) is a separate task."""
+    return {"ok": True, "rescoped": False}
+
+
+def link_meeting(client, meeting_row, *,
+                 resolver=_default_resolver,
+                 assigner=_default_assigner,
+                 rescope=_default_rescope,
+                 embed=embed_meeting_summary,
+                 supabase_url, supabase_key) -> dict:
+    """Orchestrate one meeting's link: resolve → assign → write link → embed.
+
+    The webhook flow calls this per meeting. NEVER raises — any exception is
+    wrapped as `{"ok": False, "reason": ...}`.
+
+    1. Resolve `meeting_row["project_tags"]` to a project via
+       `resolve_meeting_project` (module-level name, so it's monkeypatchable;
+       it carries its own default resolver — `resolver` is threaded through).
+    2. Untagged / unresolvable (no project): do NO work — no embed, no link
+       write, no rescope. Return `{ok:True, linked:False, reason:...}`.
+    3. Retag: if a DIFFERENT project was already stored on the row, call
+       `rescope(client, meeting_row, new_project_id)` and surface its result
+       under `"rescope"`. The cascade owns moving rag_assets; we still write the
+       link columns below (AFTER the cascade) so the final project_id is
+       consistent and the write stays idempotent.
+    4. Assign: `assigner(meeting_row, new_project_id) -> (work_item_id, conf)`.
+    5. Write the three link columns on `fathom_meetings` (located by
+       recording_id): project_id, work_item_id, work_item_confidence.
+    6. Embed the summary via the injected `embed`; surface under `"embed"`.
+    """
+    try:
+        new_project_id, matched_tag = resolve_meeting_project(
+            client, meeting_row.get("project_tags"), resolver=resolver)
+
+        if new_project_id is None:
+            return {"ok": True, "linked": False,
+                    "reason": "no resolvable project tag"}
+
+        out = {"ok": True, "linked": True, "project_id": new_project_id,
+               "matched_tag": matched_tag}
+
+        # Retag: stored project differs from the freshly resolved one. Run the
+        # cascade FIRST so our link-column write below lands the final state.
+        stored = meeting_row.get("project_id")
+        if stored and stored != new_project_id:
+            out["rescope"] = rescope(client, meeting_row, new_project_id)
+
+        work_item_id, confidence = assigner(meeting_row, new_project_id)
+        out["work_item_id"] = work_item_id
+        out["confidence"] = confidence
+
+        # Write the link columns by recording_id (idempotent).
+        (
+            client.table("fathom_meetings")
+            .update({
+                "project_id": new_project_id,
+                "work_item_id": work_item_id,
+                "work_item_confidence": confidence,
+            })
+            .eq("recording_id", meeting_row.get("recording_id"))
+            .execute()
+        )
+
+        out["embed"] = embed(client, meeting_row, new_project_id,
+                             supabase_url=supabase_url, supabase_key=supabase_key)
+        return out
+    except Exception as exc:  # never raises
+        return {"ok": False, "reason": str(exc)}
+
+
 def resolve_meeting_project(
     client,
     project_tags,
