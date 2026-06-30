@@ -1403,37 +1403,51 @@ def _render_commitments_table(block: ProjectPlanningBlock) -> list[str]:
     return out
 
 
+# Shared sub-blocks used by both the human-doc and bundle project renderers,
+# so the identical surface (header collapse, urgent loop, the unauthored
+# sentinel) stays single-sourced and the two renderers can't drift.
+
+# Emitted for a block whose exec_summary was never authored. Single-sourced
+# so the wording matches across the doc + bundle renderers.
+_EXEC_SUMMARY_UNAUTHORED_MARKER = (
+    "_(Exec Summary not yet authored — fill in at wrap up before "
+    "sprint planning)_"
+)
+
+
+def _render_block_header(p: ProjectState) -> list[str]:
+    """The `### <code> <name> — <owner>` header + blank line. Standalone repos
+    (and some initiatives) carry name == code, which used to render as a
+    duplicated header like "### cp cp — Drew and Tony"; collapse to one slug in
+    that case — cosmetic only, exact em-dash and spacing preserved."""
+    owner = p.owner or "—"
+    if p.code == p.name:
+        return [f"### {p.code} — {owner}", ""]
+    return [f"### {p.code} {p.name} — {owner}", ""]
+
+
+def _render_urgent(block: ProjectPlanningBlock) -> list[str]:
+    """The urgent-flags sub-block (or the no-urgent-items placeholder)."""
+    if not block.urgent:
+        return ["_(no urgent items)_", ""]
+    out = ["**Urgent:**"]
+    for item in block.urgent:
+        severity = item.get("severity", "warn")
+        marker = "ALERT" if severity == "alert" else "WARN"
+        out.append(f"- [{marker}] {item.get('text', '(no text)')}")
+    out.append("")
+    return out
+
+
 def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
     """Render one project's section: urgent → Where → Forward → Commitments."""
-    p = block.project
-    owner = p.owner or "—"
-    # Standalone repos (and some initiatives) carry name == code, which used
-    # to render as a duplicated header like "### cp cp — Drew and Tony".
-    # Collapse to one slug in that case — cosmetic only, exact em-dash and
-    # spacing preserved.
-    if p.code == p.name:
-        out = [f"### {p.code} — {owner}", ""]
-    else:
-        out = [f"### {p.code} {p.name} — {owner}", ""]
-
-    if block.urgent:
-        out.append("**Urgent:**")
-        for item in block.urgent:
-            severity = item.get("severity", "warn")
-            marker = "ALERT" if severity == "alert" else "WARN"
-            out.append(f"- [{marker}] {item.get('text', '(no text)')}")
-        out.append("")
-    else:
-        out.append("_(no urgent items)_")
-        out.append("")
+    out = _render_block_header(block.project)
+    out.extend(_render_urgent(block))
 
     if block.exec_summary:
         out.append(block.exec_summary)
     else:
-        out.append(
-            "_(Exec Summary not yet authored — fill in at wrap up before "
-            "sprint planning)_"
-        )
+        out.append(_EXEC_SUMMARY_UNAUTHORED_MARKER)
     out.append("")
 
     # Whole-project sweep synthesis (Project Spine slice 3, Phase B). Only
@@ -1455,14 +1469,21 @@ def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
 def _render_account_section(
     account_name: str,
     blocks: list[ProjectPlanningBlock],
+    *,
+    project_renderer=_render_project_block,
 ) -> list[str]:
-    """Render one account's section: header + every project block."""
+    """Render one account's section: header + every project block.
+
+    ``project_renderer`` selects the per-project block shape — the default
+    human-doc block, or ``_render_bundle_project_block`` for ``--bundle``. The
+    account framing (header + ``---`` separators) is identical either way, so
+    it lives here once."""
     out = [f"## {account_name} ({len(blocks)} projects)", ""]
     for i, block in enumerate(blocks):
         if i:
             out.append("---")
             out.append("")
-        out.extend(_render_project_block(block))
+        out.extend(project_renderer(block))
     return out
 
 
@@ -1493,28 +1514,18 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
     """Render one project's bundle section: header → urgent → FULL exec
     summary → forward calendar → commitments → fetch_error.
 
-    Differs from ``_render_project_block`` in exactly one way: it emits the
-    FULL ``exec_summary`` verbatim (the human doc trims it) and surfaces
-    ``fetch_error`` so the model sees gaps in the source material. Every other
-    sub-block reuses the same render helpers.
+    Shares the header + urgent sub-blocks with ``_render_project_block`` (via
+    ``_render_block_header`` / ``_render_urgent``). Diverges from it in three
+    intentional ways: (1) labels the exec summary with a `**Exec Summary:**`
+    heading; (2) OMITS the ``sweep_synthesis`` block (the bundle is raw source
+    material — sweep is a doc-only synthesis, mirroring the bundle entry
+    point's "minus sweep_llm"); (3) appends the ``fetch_error`` note so the
+    model sees gaps in the source material. The exec_summary body itself is
+    emitted verbatim in BOTH renderers — the difference is the surrounding
+    framing, not truncation.
     """
-    p = block.project
-    owner = p.owner or "—"
-    if p.code == p.name:
-        out = [f"### {p.code} — {owner}", ""]
-    else:
-        out = [f"### {p.code} {p.name} — {owner}", ""]
-
-    if block.urgent:
-        out.append("**Urgent:**")
-        for item in block.urgent:
-            severity = item.get("severity", "warn")
-            marker = "ALERT" if severity == "alert" else "WARN"
-            out.append(f"- [{marker}] {item.get('text', '(no text)')}")
-        out.append("")
-    else:
-        out.append("_(no urgent items)_")
-        out.append("")
+    out = _render_block_header(block.project)
+    out.extend(_render_urgent(block))
 
     # FULL exec summary verbatim — every project, including unauthored ones
     # (explicit marker, never silently omitted).
@@ -1523,10 +1534,7 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
     if block.exec_summary:
         out.append(block.exec_summary)
     else:
-        out.append(
-            "_(Exec Summary not yet authored — fill in at wrap up before "
-            "sprint planning)_"
-        )
+        out.append(_EXEC_SUMMARY_UNAUTHORED_MARKER)
     out.append("")
 
     out.extend(_render_forward_calendar(block))
@@ -1537,20 +1545,6 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
     if block.fetch_error:
         out.append(f"_(fetch note: {block.fetch_error})_")
         out.append("")
-    return out
-
-
-def _render_bundle_account_section(
-    account_name: str,
-    blocks: list[ProjectPlanningBlock],
-) -> list[str]:
-    """Render one account's bundle section: header + every project block."""
-    out = [f"## {account_name} ({len(blocks)} projects)", ""]
-    for i, block in enumerate(blocks):
-        if i:
-            out.append("---")
-            out.append("")
-        out.extend(_render_bundle_project_block(block))
     return out
 
 
@@ -1604,7 +1598,11 @@ def render_planning_bundle(result: PlanningResult) -> str:
     lines.append("---")
     lines.append("")
     for account_name, blocks in result.blocks_by_account.items():
-        lines.extend(_render_bundle_account_section(account_name, blocks))
+        lines.extend(
+            _render_account_section(
+                account_name, blocks, project_renderer=_render_bundle_project_block
+            )
+        )
         lines.append("---")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
