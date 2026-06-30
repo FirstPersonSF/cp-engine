@@ -93,3 +93,20 @@ def test_never_raises_when_classifier_raises():
         raise RuntimeError("classifier exploded")
 
     assert assign_work_item(_ROW, "p1", classifier=_boom) == (None, None)
+
+
+def test_confidence_zero_reaches_gate():
+    # 0.0 is falsy but a VALID confidence: the guard is `confidence is None`,
+    # not `not confidence`, so a zero-confidence candidate must reach the gate
+    # and return (None, 0.0) — id dropped (below threshold) but confidence
+    # retained, NOT misclassified as "no candidate". A refactor to
+    # `if not confidence:` would break this while passing every other test.
+    clf = _classifier(("wi-1", 0.0))
+    assert assign_work_item(_ROW, "p1", classifier=clf) == (None, 0.0)
+
+
+def test_malformed_tuple_is_swallowed():
+    # A non-2-element tuple raises on destructure; the never-raises wrapper
+    # turns it into (None, None) rather than propagating.
+    clf = _classifier(("wi-1", 0.9, "extra"))
+    assert assign_work_item(_ROW, "p1", classifier=clf) == (None, None)
