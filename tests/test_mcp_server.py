@@ -586,11 +586,24 @@ def test_module_import_is_light():
     The config + supabase imports live inside the tool bodies on purpose, so a
     fresh `import cp_engine.mcp_server` leaves them out of sys.modules.
     """
-    for mod in ("cp_engine.mcp_server", "cp_engine.sync_mc2", "cp_engine.cli"):
-        sys.modules.pop(mod, None)
+    evicted = ("cp_engine.mcp_server", "cp_engine.sync_mc2", "cp_engine.cli")
+    # Snapshot so we can RESTORE after asserting. Without this, evicting
+    # cp_engine.sync_mc2 leaves a later test's `monkeypatch.setattr(
+    # "cp_engine.sync_mc2.<fn>", ...)` patching a different module object than
+    # the one a tool body re-imports — silent cross-test pollution.
+    saved = {mod: sys.modules.get(mod) for mod in evicted}
+    try:
+        for mod in evicted:
+            sys.modules.pop(mod, None)
 
-    import cp_engine.mcp_server  # noqa: F401  (re-import after eviction)
+        import cp_engine.mcp_server  # noqa: F401  (re-import after eviction)
 
-    assert "cp_engine.mcp_server" in sys.modules
-    assert "cp_engine.sync_mc2" not in sys.modules
-    assert "cp_engine.cli" not in sys.modules
+        assert "cp_engine.mcp_server" in sys.modules
+        assert "cp_engine.sync_mc2" not in sys.modules
+        assert "cp_engine.cli" not in sys.modules
+    finally:
+        for mod, obj in saved.items():
+            if obj is not None:
+                sys.modules[mod] = obj
+            else:
+                sys.modules.pop(mod, None)

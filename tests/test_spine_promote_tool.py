@@ -29,6 +29,11 @@ def _patch_creds(monkeypatch):
         lambda config: ("https://u", "key"),
         raising=False,
     )
+    monkeypatch.setattr(
+        "cp_engine.sync_mc2._load_ingest_creds",
+        lambda config: None,
+        raising=False,
+    )
 
 
 def test_promote_happy(monkeypatch):

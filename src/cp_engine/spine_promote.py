@@ -27,7 +27,16 @@ def _default_pipeline_factory(project_id: str, supabase_url: str, supabase_key: 
     # Lazy import: the real `ingest` package is optional and may be absent
     # (e.g. in tests / minimal envs). Importing it here, not at module top,
     # keeps this module importable without `ingest` installed.
-    from cp_engine.asset_ingest import _build_pipeline
+    from cp_engine.asset_ingest import _build_pipeline, _configure_pipeline_once
+
+    # Install document-ingest's settings + OpenAI client factory BEFORE building.
+    # `_build_pipeline` -> `IngestPipeline.__init__` eagerly constructs an
+    # AudioParser whose default client reads OPENAI_API_KEY from the raw env; the
+    # configure step replaces that with cp's own factory. The regular ingest path
+    # (`ingest_project_assets`) does this; the promote path must too, or pipeline
+    # construction raises `OpenAIError: Missing credentials` where the key isn't
+    # in env (the Railway webhook) — masked downstream as "stamp matched no row".
+    _configure_pipeline_once()
     return _build_pipeline(project_id, supabase_url, supabase_key)
 
 

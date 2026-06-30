@@ -4,6 +4,32 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.40.2 — 2026-06-30
+
+### Fixed — spine transcript promotion could not build the ingest pipeline
+
+Two coupled defects made every transcript promotion fail with the misleading
+downstream reason `stamp matched no row` (ingest never wrote a row, so the stamp
+correctly matched nothing):
+
+- **Promote path skipped pipeline configuration.** `_default_pipeline_factory`
+  called `_build_pipeline` without first calling `_configure_pipeline_once`, so
+  document-ingest's OpenAI client factory was never installed. The normal ingest
+  path (`ingest_project_assets`) always configures first; the promote path now
+  does too.
+- **Ingest creds were never loaded into the environment.** The pipeline reads
+  `OPENAI_API_KEY` / `VOYAGE_API_KEY` via `os.getenv`, but `_load_supabase_creds`
+  loads only the SUPABASE_* keys. New `_load_ingest_creds(config)` exports the
+  ingest keys (env first, then `<mc-2 clone>/backend/.env`; never clobbers an
+  existing env value; no-op when no clone is configured). The MCP `set_spine_element`
+  and `promote_spine_transcript` tools now call it before promoting. (The Railway
+  webhook already has both keys in its container env, the same way it has the
+  SUPABASE_* keys.)
+
+Also fixes a latent test-isolation bug: `test_module_import_is_light` evicted
+`cp_engine.sync_mc2` from `sys.modules` without restoring it, polluting later
+tests that monkeypatch that module.
+
 ## v0.40.1 — 2026-06-29
 
 ### Fixed — transcript promotion on account-nested engagements

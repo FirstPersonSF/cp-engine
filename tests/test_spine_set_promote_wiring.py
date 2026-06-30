@@ -59,6 +59,7 @@ def _wire(monkeypatch, *, prior_important, promote_result=None):
     monkeypatch.setattr("cp_engine.config.load", lambda root: {})
     monkeypatch.setattr("cp_engine.sync_mc2._load_supabase_creds",
                         lambda cfg: ("https://x.supabase.co", "key"))
+    monkeypatch.setattr("cp_engine.sync_mc2._load_ingest_creds", lambda cfg: None)
 
     def _fake_promote(client, root, project_code, pid, company_id, row, **kw):
         calls.append({"company_id": company_id, "row": row, "kw": kw})
@@ -145,6 +146,7 @@ def test_both_trigger_paths_agree_on_promote_args(monkeypatch):
         monkeypatch.setattr("cp_engine.config.load", lambda root: {})
         monkeypatch.setattr("cp_engine.sync_mc2._load_supabase_creds",
                             lambda cfg: ("https://x.supabase.co", "key"))
+        monkeypatch.setattr("cp_engine.sync_mc2._load_ingest_creds", lambda cfg: None)
 
     def _capture_promote():
         calls = []

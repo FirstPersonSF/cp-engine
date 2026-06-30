@@ -465,9 +465,11 @@ def set_spine_element(project_code: str, key: str,
             try:
                 from cp_engine.config import load as load_config
                 from cp_engine.spine_promote import promote_transcript
-                from cp_engine.sync_mc2 import _load_supabase_creds
+                from cp_engine.sync_mc2 import _load_ingest_creds, _load_supabase_creds
                 root = _tenant_root()
-                supabase_url, supabase_key = _load_supabase_creds(load_config(root))
+                config = load_config(root)
+                supabase_url, supabase_key = _load_supabase_creds(config)
+                _load_ingest_creds(config)
                 result["promotion"] = promote_transcript(
                     client, root, project_code, pid, company_id, row,
                     supabase_url=supabase_url, supabase_key=supabase_key,
@@ -492,7 +494,7 @@ def promote_spine_transcript(project_code: str, key: str) -> dict:
     from cp_engine.config import load as load_config
     from cp_engine.project_sources import resolve_live_element
     from cp_engine.spine_promote import promote_transcript
-    from cp_engine.sync_mc2 import _load_supabase_creds
+    from cp_engine.sync_mc2 import _load_ingest_creds, _load_supabase_creds
     try:
         resolved = _resolve(project_code)
         if resolved is None:
@@ -504,7 +506,12 @@ def promote_spine_transcript(project_code: str, key: str) -> dict:
         # Same cred source the rest of the engine uses (asset_ingest resolves
         # creds the identical way: _load_supabase_creds over the loaded config).
         root = _tenant_root()
-        supabase_url, supabase_key = _load_supabase_creds(load_config(root))
+        config = load_config(root)
+        supabase_url, supabase_key = _load_supabase_creds(config)
+        # Also export OPENAI/VOYAGE keys so the ingest pipeline's client factory
+        # finds them (a local MCP session resolves these from the mc-2 .env, not
+        # the process env — unlike the webhook, whose container env has them).
+        _load_ingest_creds(config)
         result = promote_transcript(
             client, root, project_code, pid, company_id, row,
             supabase_url=supabase_url, supabase_key=supabase_key,

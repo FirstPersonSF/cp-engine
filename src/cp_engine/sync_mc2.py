@@ -298,6 +298,32 @@ class MC2Backend:
 
 
 _SUPABASE_KEYS = ("SUPABASE_URL", "SUPABASE_SERVICE_KEY")
+_INGEST_KEYS = ("OPENAI_API_KEY", "VOYAGE_API_KEY")
+
+
+def _load_ingest_creds(config: TenantConfig) -> None:
+    """Export OPENAI_API_KEY / VOYAGE_API_KEY into `os.environ` for the pipeline.
+
+    The asset-ingest pipeline (and the spine transcript-promotion path that
+    reuses it) reads these keys via `os.getenv`, but `_load_supabase_creds`
+    loads only the SUPABASE_* keys. Without this, a process that has the MC-2
+    `.env` on disk but no OPENAI/VOYAGE in its environment (the Railway promote
+    webhook) builds a pipeline whose OpenAI client gets `None` and raises
+    `OpenAIError: Missing credentials` — masked downstream as "stamp matched no
+    row".
+
+    Source order mirrors `_load_supabase_creds`: an already-set env var WINS
+    (preserves CI / explicit shell exports); otherwise fill from
+    `<mc-2 clone>/backend/.env`. No clone configured → no-op (never raises): the
+    keys may legitimately come from the real process environment in production.
+    """
+    env_file = _mc2_env_file(config)
+    if env_file is None:
+        return
+    file_creds = _read_dotenv(env_file, _INGEST_KEYS)
+    for key in _INGEST_KEYS:
+        if not os.environ.get(key) and file_creds.get(key):
+            os.environ[key] = file_creds[key]
 
 
 def _load_supabase_creds(config: TenantConfig) -> tuple[str, str]:
