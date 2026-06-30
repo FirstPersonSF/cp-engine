@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.41.1 — 2026-06-30
+
+### Fixed — resolve a project by its raw full_job_name (meetings tag form)
+
+Fathom stores the raw `full_job_name` display string (e.g.
+`"IBX 5167 DDI Platform Video"`) in `fathom_meetings.project_tags`.
+`_resolve_project_id` matched only the slug code, the slugified on-disk id, or
+the `<prefix>-<number>` form — so every tagged meeting failed to resolve and
+`cp meetings-backfill` linked nothing (caught by live verification: ibx-5167's
+24 meetings resolved 0). Adds an exact `projects.full_job_name` match branch.
+Additive — all existing resolution forms still work.
+
 ## v0.41.0 — 2026-06-30
 
 ### Added — meetings as first-class, work-item-scoped sources (Phase 1: cp-engine backend)
