@@ -2836,6 +2836,60 @@ def ingest_assets_cmd(
         sys.exit(1)
 
 
+@main.command(name="meetings-backfill")
+@click.argument("code", required=False)
+@click.option("--all", "all_", is_flag=True,
+              help="Backfill every tagged meeting across all projects.")
+def meetings_backfill_cmd(code: str | None, all_: bool) -> None:
+    """Link + embed already-tagged Fathom meetings into the project/RAG world.
+
+    `cp meetings-backfill ibx-5167` backfills one project's tagged meetings;
+    `cp meetings-backfill --all` backfills every tagged meeting. Exactly one of
+    CODE or --all is required. These meetings already exist as rows in MC-2 (no
+    Fathom API call) — this runs `link_meeting` over them, embedding each
+    meeting's SUMMARY. Exits non-zero if any row failed, so cron/CI notices.
+    """
+    from cp_engine import meetings as meetings_mod
+    from cp_engine import sync_mc2
+
+    if bool(code) == bool(all_):
+        click.echo(
+            "Error: pass exactly one of CODE or --all (got both or neither).",
+            err=True,
+        )
+        sys.exit(2)
+
+    config = _load_config_or_die()
+    # SUPABASE_* for the MC-2 client; OPENAI/VOYAGE for the embed pipeline
+    # (without _load_ingest_creds the embed's OpenAI/Voyage client gets None —
+    # the v0.40.2 fix).
+    url, key = sync_mc2._load_supabase_creds(config)
+    sync_mc2._load_ingest_creds(config)
+
+    client = build_mc2_client()
+    summary = meetings_mod.backfill_meetings(
+        client, code=code or None, supabase_url=url, supabase_key=key
+    )
+
+    click.echo(
+        f"meetings-backfill: total={summary['total']} "
+        f"linked={summary['linked']} skipped={summary['skipped']} "
+        f"failed={summary['failed']}"
+    )
+    unresolved = summary.get("unresolved") or []
+    if unresolved:
+        click.echo(f"  unresolved ({len(unresolved)}):", err=True)
+        for item in unresolved:
+            click.echo(f"    - {item}", err=True)
+    failures = summary.get("failures") or []
+    if failures:
+        click.echo(f"  failures ({len(failures)}):", err=True)
+        for rid, reason in failures:
+            click.echo(f"    - {rid}: {reason}", err=True)
+    if summary["failed"]:
+        sys.exit(1)
+
+
 def _resolve_project_id_or_die(client, code: str) -> str:
     """Resolve a cp code to its MC-2 project_id; exit non-zero on miss."""
     from cp_engine import asset_ingest

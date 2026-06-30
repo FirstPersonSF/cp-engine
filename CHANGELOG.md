@@ -4,6 +4,55 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.41.0 — 2026-06-30
+
+### Added — meetings as first-class, work-item-scoped sources (Phase 1: cp-engine backend)
+
+Tagged Fathom meetings become a queryable, work-item-scoped inventory whose
+summaries are always embedded into RAG and whose full transcripts can be promoted
+on demand. Built on the existing mc-2 `fathom_meetings` table (no new table); the
+substrate gap was *resolution + linkage*, not storage. Engagements only in v1
+(initiative promotion is cleanly deferred). **Pairs with an mc-2 PR (migration 084
++ meeting-list UI) — co-merge, then release.** Migration 084 (adds `project_id`,
+`initiative_id`, `work_item_id`, `work_item_confidence`, `summary_embedded_at`,
+`transcript_promoted_at` to `fathom_meetings`) applies at deploy.
+
+- **Resolution + linkage** (`cp_engine.meetings`). `resolve_meeting_project`
+  maps a meeting's display-string `project_tags` to a `projects.id`;
+  `link_meeting` orchestrates resolve → work-item assign → write link columns →
+  embed summary, triggering the retag cascade when the project changes.
+- **Two RAG fidelities, kept distinct by a `meta.kind` discriminator.**
+  `embed_meeting_summary` embeds the summary (`kind=meeting_summary`, always,
+  cheap); `promote_meeting_transcript` embeds the full transcript flattened from
+  the `transcript` jsonb (`kind=meeting_transcript`, on demand, engagement-gated).
+  Both reuse the v0.40.2-fixed ingest path; idempotent via a stable temp path
+  keyed on `recording_id`.
+- **Retag re-scope cascade** (`rescope_meeting`). Re-tagging a meeting moves its
+  `fathom_meetings` row and its `rag_assets` rows to the new project by the
+  scope-independent `(source_provider='fathom', source_file_id=recording_id)`
+  key — no re-embed (chunks follow by `asset_id`), no ghosts, idempotent.
+  `company_id` is only rewritten when provided (never nulled).
+- **Work-item auto-assign** (`assign_work_item`). A confidence gate
+  (threshold 0.75, inclusive) behind an injected classifier; below threshold the
+  meeting lands unassigned ("needs assignment"). The LLM classifier is a later
+  task — meetings currently land unassigned by default.
+- **Flow change** (webhook `_perform_auto_ingest`). After the existing sprint-file
+  ingest, each meeting is also linked + its summary embedded — once per meeting,
+  additive and non-fatal (a failure never aborts the primary ingest), with
+  `company_id` resolved from the meeting's own project.
+- **Backfill** (`cp meetings-backfill [<code>] | --all`). Links + embeds existing
+  tagged meetings (no Fathom API — reads existing rows); paginated (no silent
+  >1000-row cap), per-row failure isolation, surfaces unresolved/failed rows,
+  exits non-zero on failure.
+- **Read tool** (`list_project_meetings` MCP tool + `cp_engine.project_sources`
+  helper). Lists a project's meetings with `summary_embedded`/`transcript_promoted`
+  flags; never returns the heavy transcript blob.
+
+Note: re-tagging a meeting to its *current* project does not re-fire the webhook
+(a fathom-meeting-sync trigger gap; workaround is unassign-then-reassign), so the
+retag cascade fires only when the webhook actually re-runs — a deploy-time
+dependency, not fixable in the engine.
+
 ## v0.40.2 — 2026-06-30
 
 ### Fixed — spine transcript promotion could not build the ingest pipeline

@@ -897,6 +897,227 @@ async def spine_promote_transcript(request: Request) -> Response:
     )
 
 
+def _fetch_meeting_by_recording_id(client, recording_id: int) -> dict | None:
+    """Pull the single fathom_meetings row for `recording_id`, INCLUDING the
+    `transcript` jsonb column that promote_meeting_transcript flattens.
+
+    Distinct from `_fetch_meeting` (which keys on the uuid `id` and omits
+    `transcript`). Selects everything promote_meeting_transcript reads
+    (recording_id, transcript, transcript_promoted_at, title) plus the
+    project link/tags used to resolve the project here. Returns the row or
+    None (no match, or any error — best-effort).
+    """
+    try:
+        resp = (
+            client.table("fathom_meetings")
+            .select(
+                "recording_id, title, transcript, transcript_promoted_at, "
+                "project_tags, project_id"
+            )
+            .eq("recording_id", recording_id)
+            .single()
+            .execute()
+        )
+        return resp.data or None
+    except Exception as exc:  # noqa: BLE001 — best-effort; treat as not found
+        log.warning(
+            "meeting-promote: fetch failed for recording_id=%s: %s",
+            recording_id, exc,
+        )
+        return None
+
+
+async def _run_meeting_promote(
+    client, meeting_row: dict, project_id: str, company_id: str | None,
+) -> None:
+    """Background: run the (sync, slow) meeting-transcript promotion off the event
+    loop. Never raises — this is the fire-and-forget tail of
+    /api/meetings/promote-transcript, which has already returned 202.
+
+    There is NO runs table: promote_meeting_transcript sets
+    `fathom_meetings.transcript_promoted_at` on success (the status signal the
+    mc-2 meetings-list `transcript_promoted` flag reflects), so the outcome is
+    only logged here. Unlike _run_promote there is NO tenant clone: the
+    transcript comes off `meeting_row["transcript"]`, not a committed file.
+
+    Engagement-only carries through: an initiative has company_id=None and
+    promote_meeting_transcript's CONTRACT A returns {ok:False, reason:"initiative…"}
+    without work — logged as a warning, not a crash."""
+    from cp_engine.meetings import promote_meeting_transcript
+
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_key = os.environ.get("SUPABASE_SERVICE_KEY")
+    recording_id = meeting_row.get("recording_id")
+    try:
+        result = await asyncio.to_thread(
+            promote_meeting_transcript,
+            client,
+            meeting_row,
+            project_id,
+            company_id,
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+        )
+        if result.get("ok"):
+            log.info(
+                "meeting-promote: recording_id=%s promoted (asset_id=%s)",
+                recording_id, result.get("asset_id"),
+            )
+        else:
+            log.warning(
+                "meeting-promote: recording_id=%s not promoted: %s",
+                recording_id, result.get("reason"),
+            )
+    except Exception as exc:  # noqa: BLE001 — never crash the background task
+        log.warning(
+            "meeting-promote: recording_id=%s run failed: %s",
+            recording_id, exc, exc_info=True,
+        )
+
+
+@app.post("/api/meetings/promote-transcript")
+async def meeting_promote_transcript(request: Request) -> Response:
+    """Fire-and-forget promotion of a meeting's FULL transcript into the RAG store.
+
+    The mc-2 meetings-list "Promote transcript" click is proxied here (signed) as
+    ``{"recording_id": <int>}``. Promotion flattens the meeting's
+    `fathom_meetings.transcript` jsonb → text and embeds it into rag_assets so
+    it's retrievable via pull_project_source. The embed takes seconds-to-minutes
+    (Voyage + Supabase), so this endpoint does NOT block on it: it verifies the
+    HMAC, fetches the meeting row (with transcript), resolves the project +
+    company, returns 202 immediately, and runs the promotion in a background task.
+
+    Simpler than /api/spine/promote-transcript: keyed on recording_id (not
+    code+key); NO tenant clone (transcript is on the DB row); NO runs table
+    (`fathom_meetings.transcript_promoted_at`, set by the engine fn on success, is
+    the status signal — the mc-2 meetings list reflects it). Engagement-only
+    carries through (initiative → company_id None → the engine fn defers).
+
+    Request body (JSON):
+        {"recording_id": <int>}  # required
+
+    Response (202):
+        {"recording_id": <int>, "status": "running"}
+    """
+    from cp_engine.asset_ingest import resolve_project_folders_by_id
+    from cp_engine.meetings import resolve_meeting_project
+
+    raw_body = await request.body()
+    _verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
+    payload = json.loads(raw_body)
+    recording_id = payload.get("recording_id")
+    if recording_id is None:
+        raise HTTPException(status_code=400, detail="recording_id is required")
+    # Coerce to int (the column is bigint). A stringly/float id would otherwise
+    # flow into `.eq("recording_id", ...)`, miss, and surface as a misleading
+    # "no meeting" 404 instead of an honest 400 for a malformed request.
+    try:
+        recording_id = int(recording_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="recording_id must be an int")
+
+    client = _create_supabase_client()
+    if client is None:
+        raise HTTPException(
+            status_code=500, detail="Supabase not configured for meeting promote"
+        )
+
+    meeting_row = _fetch_meeting_by_recording_id(client, recording_id)
+    if meeting_row is None:
+        raise HTTPException(
+            status_code=404, detail=f"no meeting with recording_id {recording_id}"
+        )
+
+    # Prefer the link-flow project_id on the row; fall back to resolving the
+    # meeting's project_tags. company_id (None for initiatives → engine gate
+    # defers) comes from the resolved project's folders.
+    project_id = meeting_row.get("project_id")
+    if not project_id:
+        project_id, _matched = resolve_meeting_project(
+            client, meeting_row.get("project_tags")
+        )
+    if not project_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"meeting {recording_id} not linked to a project",
+        )
+    folders = resolve_project_folders_by_id(client, project_id)
+    company_id = folders.company_id if folders else None
+
+    _spawn_background(
+        _run_meeting_promote(client, meeting_row, project_id, company_id)
+    )
+    return Response(
+        content=json.dumps({"recording_id": recording_id, "status": "running"}),
+        status_code=202,
+        media_type="application/json",
+    )
+
+
+def _link_meeting_safe(client, meeting, supabase_url, supabase_key):
+    """Best-effort: link the meeting to its project + embed its summary into RAG.
+    NEVER raises — a failure here must not abort the primary sprint-file ingest.
+
+    Resolves company_id from the MEETING'S OWN resolved project (the first
+    resolvable tag in `meeting["project_tags"]`), NOT from any caller-supplied
+    `code`. This is load-bearing for cross-company fan-outs (sprint-planning /
+    account meetings span projects under DIFFERENT companies): the rescope
+    cascade must write the company of the project the meeting is actually linked
+    to, never the company of whichever project happened to be iterating. The
+    meeting links to exactly ONE project, so this runs exactly once per meeting.
+    """
+    try:
+        from cp_engine.asset_ingest import resolve_project_folders_by_id
+        # NOTE: no `assigner=` is threaded — link_meeting's default is a no-op,
+        # so meetings land unassigned ("needs assignment") until the LLM
+        # work-item classifier (a later task) wires a real assigner here.
+        from cp_engine.meetings import (link_meeting, rescope_meeting,
+                                         resolve_meeting_project)
+
+        # Resolve the meeting's OWN project once. Untagged / unresolvable → no
+        # work (link_meeting would no-op too, but resolving here lets us also
+        # skip the company lookup). This is the SAME project link_meeting will
+        # resolve internally, so company_id below matches the linked project.
+        project_id, _matched = resolve_meeting_project(
+            client, meeting.get("project_tags"))
+        if project_id is None:
+            log.info("meeting-link: meeting=%s no resolvable project tag — skip",
+                     meeting.get("recording_id"))
+            return {"ok": True, "linked": False, "reason": "no resolvable project tag"}
+
+        folders = resolve_project_folders_by_id(client, project_id)
+        company_id = folders.company_id if folders else None
+
+        # v1 ENGAGEMENTS ONLY: `company_id is None` is the engagement-vs-initiative
+        # signal (initiatives have no company/folders; promote's CONTRACT A keys
+        # on it too). fathom_meetings.project_id is FK'd to projects(id) (migration
+        # 084), so an initiative id would violate the FK on write; we thread
+        # is_engagement so link_meeting DEFERS initiative meetings cleanly rather
+        # than half-trying and silently crashing inside the best-effort wrapper.
+        is_engagement = company_id is not None
+
+        # Wire the real rescope, threading the meeting's-project company_id so a
+        # retag preserves the correct account scope.
+        def _rescope(c, row, new_pid):
+            return rescope_meeting(c, row, new_pid, new_company_id=company_id)
+
+        result = link_meeting(client, meeting,
+                              rescope=_rescope,
+                              is_engagement=is_engagement,
+                              supabase_url=supabase_url, supabase_key=supabase_key)
+        log.info("meeting-link: meeting=%s result=%s",
+                 meeting.get("recording_id"), result)
+        return result
+    except Exception as exc:  # noqa: BLE001 — never block primary ingest
+        log.warning("meeting-link failed (non-fatal): meeting=%s err=%s",
+                    meeting.get("recording_id"), exc, exc_info=True)
+        return None
+
+
 def _perform_auto_ingest(
     *,
     meeting_id: str,
@@ -916,6 +1137,15 @@ def _perform_auto_ingest(
     log.info(
         "auto-ingest start: meeting=%s projects=%s", meeting_id, project_codes
     )
+
+    # Best-effort Supabase coords for the ADDITIVE meeting-link side-step below
+    # (resolved once — loop-invariant). A None client (env missing / pkg absent)
+    # or missing creds just skips linking — the primary sprint-file ingest never
+    # depends on it. Cred split mirrors _run_promote: client via the factory,
+    # url/key from env.
+    link_client = _create_supabase_client()
+    link_url = os.environ.get("SUPABASE_URL")
+    link_key = os.environ.get("SUPABASE_SERVICE_KEY")
 
     with _cloned_tenant() as tenant_root:
         config = _load_tenant_config(tenant_root)
@@ -992,6 +1222,25 @@ def _perform_auto_ingest(
                     "auto-ingest commit: meeting=%s project=%s commit=%s",
                     meeting_id, code, commit_sha,
                 )
+
+        # ADDITIVE, NON-FATAL: link the meeting to its project + embed its
+        # summary into RAG. Runs ONCE per meeting, AFTER the per-project loop —
+        # the meeting links to exactly one project (the first resolvable tag),
+        # so company_id is derived from THAT project, never from a loop `code`
+        # (which on a cross-company fan-out could be a different company and
+        # corrupt account-scoped retrieval on a retag). Independent side-work:
+        # it does not gate the commit/push above and a failure is swallowed by
+        # _link_meeting_safe. Cred split mirrors _run_promote intentionally:
+        # link_client via _create_supabase_client(), url/key from env — these
+        # match in the Railway env.
+        #
+        # NOTE (retag-trigger gap): re-tagging a meeting to its CURRENT project
+        # does NOT re-fire this webhook (a known fathom-meeting-sync trigger
+        # gap; workaround is unassign-then-reassign). So the retag re-scope
+        # cascade only fires when the webhook actually re-runs — a deploy-time
+        # dependency on fathom-meeting-sync, not fixable here.
+        if meeting and link_client is not None and link_url and link_key:
+            _link_meeting_safe(link_client, meeting, link_url, link_key)
 
         # Stage A — propose ClickUp tasks from the meeting's Fathom action
         # items. Independent of whether the transcript produced cp bullets;
@@ -3013,7 +3262,13 @@ def _fetch_meeting(meeting_id: str) -> dict | None:
             client.table("fathom_meetings")
             .select(
                 "id, title, meeting_date, summary, action_items, "
-                "participants, duration_minutes, fathom_url"
+                "participants, duration_minutes, fathom_url, "
+                # Link/embed path reads these off the SAME row:
+                # resolve_meeting_project(project_tags) → link_meeting
+                # (project_id, recording_id) → embed_meeting_summary
+                # (recording_id, summary_embedded_at). Omitting them made
+                # every webhook meeting resolve to no project and no-op.
+                "recording_id, project_tags, project_id, summary_embedded_at"
             )
             .eq("id", meeting_id)
             .single()

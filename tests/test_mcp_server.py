@@ -158,8 +158,9 @@ def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
     assert srv._tenant_root() == tmp_path.resolve()
 
 
-def test_exactly_nine_tools_registered():
-    """3 source-read + 2 spine-read + 3 spine-write + 1 spine-promote tool."""
+def test_exactly_ten_tools_registered():
+    """3 source-read + 2 spine-read + 3 spine-write + 1 spine-promote +
+    1 meetings-read tool."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
         "list_project_sources",
@@ -171,6 +172,7 @@ def test_exactly_nine_tools_registered():
         "add_spine_version",
         "set_spine_element",
         "promote_spine_transcript",
+        "list_project_meetings",
     }
 
 
@@ -255,6 +257,52 @@ def test_pull_spine_element_pure_fn_raises_returns_error(monkeypatch):
     monkeypatch.setattr("cp_engine.project_sources.pull_spine", boom)
     out = srv.pull_spine_element("sap-5171", "_authored/x")
     assert "error" in out
+
+
+# ---------------------------------------------------------------------------
+# Meetings read tool (list_project_meetings)
+# ---------------------------------------------------------------------------
+
+
+def test_list_project_meetings_delegates(monkeypatch):
+    """Resolves ids, delegates to the helper with the project_id, returns it."""
+    fake_client = object()
+    monkeypatch.setattr(srv, "_resolve", lambda code: (fake_client, "pid", "cid"))
+
+    captured = {}
+
+    def fake_helper(client, project_id):
+        captured["args"] = (client, project_id)
+        return [{"recording_id": "rec-1", "summary_embedded": True}]
+
+    monkeypatch.setattr(
+        "cp_engine.project_sources.list_project_meetings", fake_helper
+    )
+
+    out = srv.list_project_meetings("sap-5171")
+
+    assert captured["args"] == (fake_client, "pid")
+    assert out == [{"recording_id": "rec-1", "summary_embedded": True}]
+
+
+def test_list_project_meetings_unresolved_returns_note(monkeypatch):
+    """An unresolvable code yields a structured note, NOT a bare [] — the
+    v0.39.0 false-negative where an unresolvable code looked like empty."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: None)
+    out = srv.list_project_meetings("nope")
+    assert len(out) == 1 and "nope" in out[0]["note"]
+
+
+def test_list_project_meetings_pure_fn_raises_returns_error(monkeypatch):
+    """A raising helper is caught and returned as a structured error note."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+
+    def boom(*_a, **_k):
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr("cp_engine.project_sources.list_project_meetings", boom)
+    out = srv.list_project_meetings("sap-5171")
+    assert "error" in out[0]
 
 
 # ---------------------------------------------------------------------------
