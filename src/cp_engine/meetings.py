@@ -485,6 +485,113 @@ def link_meeting(client, meeting_row, *,
         return {"ok": False, "reason": str(exc)}
 
 
+def _default_company_resolver(client, project_id):
+    """Default company resolver: project_id → its company_id via the
+    authoritative by-id folder lookup (mirrors `_link_meeting_safe`). Returns
+    None when the project has no folders / no company. Imported lazily so the
+    batch driver stays importable without the asset_ingest stack."""
+    from cp_engine.asset_ingest import resolve_project_folders_by_id
+
+    folders = resolve_project_folders_by_id(client, project_id)
+    return folders.company_id if folders else None
+
+
+def backfill_meetings(client, *, code=None, supabase_url, supabase_key,
+                      link=link_meeting, company_resolver=None) -> dict:
+    """Backfill: run `link_meeting` over already-tagged `fathom_meetings` rows.
+
+    These meetings ALREADY exist as rows in MC-2 (tagged via the dashboard) but
+    were never linked to a project / embedded into RAG. This driver reads the
+    existing rows (NO Fathom API) and links + embeds the SUMMARY for each — it
+    does NOT promote transcripts, so it never selects the heavy `transcript`
+    jsonb column.
+
+    Behavior:
+      - Lists candidate rows from `fathom_meetings` with EXPLICIT columns only
+        (never `select *`, never `transcript`).
+      - `code` given → resolve it to a project_id (via the module-level
+        `_default_resolver`) and process only rows whose tags resolve to that
+        SAME project_id. `project_tags` are display strings, so we resolve each
+        row's tags through `resolve_meeting_project` and compare resolved
+        project_ids — an exact post-resolution id match is the reliable filter.
+      - `code` None → process every row whose tags resolve to a project; skip
+        untagged/unresolvable rows.
+      - Per row: derive the company from the MEETING's OWN resolved project
+        (mirrors `_link_meeting_safe` — company of the linked project, never a
+        caller-supplied code), thread it through a `rescope` closure, and call
+        `link(client, row, rescope=..., supabase_url=, supabase_key=)`.
+
+    IDEMPOTENT: rows already linked + embedded are naturally skipped downstream
+    (embed checks `summary_embedded_at`); re-running is safe.
+
+    NEVER raises on a single row: each row is wrapped; a row whose `link` raises
+    increments `failed` and the batch continues.
+
+    Returns a summary dict:
+        {"total", "linked", "skipped", "failed", "unresolved": [recording_id/title…]}
+    where `unresolved` LISTS the tagged rows whose tags didn't resolve to any
+    project (surfaced, never silently dropped). Untagged rows count as `skipped`
+    but are NOT `unresolved`.
+    """
+    if company_resolver is None:
+        company_resolver = _default_company_resolver
+
+    # Listing: EXPLICIT columns only — NEVER the heavy `transcript` jsonb, NEVER
+    # `select *` (backfill links + embeds the SUMMARY only; transcript is for
+    # promote, which this driver does not do).
+    columns = ("recording_id, title, project_tags, project_id, "
+               "summary, summary_embedded_at")
+    resp = client.table("fathom_meetings").select(columns).execute()
+    rows = getattr(resp, "data", None) or []
+
+    target_pid = None
+    if code:
+        target_pid = _default_resolver(client, code)
+
+    total = 0
+    linked = 0
+    skipped = 0
+    failed = 0
+    unresolved: list = []
+
+    for row in rows:
+        total += 1
+        # Resolve this row's own tags → project_id.
+        pid, _matched = resolve_meeting_project(client, row.get("project_tags"))
+
+        if pid is None:
+            # Distinguish "tagged but unresolvable" (surface it) from "untagged".
+            tags = [t for t in (row.get("project_tags") or [])
+                    if t and t.strip().lower() not in _SKIP_TAGS]
+            if tags:
+                unresolved.append(row.get("recording_id") or row.get("title"))
+            skipped += 1
+            continue
+
+        # code filter: only rows resolving to the target project.
+        if target_pid is not None and pid != target_pid:
+            skipped += 1
+            continue
+
+        try:
+            company_id = company_resolver(client, pid)
+
+            def _rescope(c, r, new_pid, _co=company_id):
+                return rescope_meeting(c, r, new_pid, new_company_id=_co)
+
+            result = link(client, row, rescope=_rescope,
+                          supabase_url=supabase_url, supabase_key=supabase_key)
+            if result and result.get("linked"):
+                linked += 1
+            else:
+                skipped += 1
+        except Exception:  # never abort the batch on one row
+            failed += 1
+
+    return {"total": total, "linked": linked, "skipped": skipped,
+            "failed": failed, "unresolved": unresolved}
+
+
 def resolve_meeting_project(
     client,
     project_tags,
