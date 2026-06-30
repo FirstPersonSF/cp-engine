@@ -131,6 +131,111 @@ def embed_meeting_summary(client, meeting_row, project_id, *,
         return {"ok": False, "reason": str(exc)}
 
 
+def flatten_transcript(transcript) -> str:
+    """Flatten a Fathom JSONB transcript (array of segment objects) to text.
+
+    Each segment is ``{"text", "speaker": {"display_name"}, "timestamp"}``; any
+    field may be absent. Each kept segment becomes a line
+    ``[<timestamp>] <speaker>: <text>`` — the ``[<timestamp>]`` bracket is
+    omitted when there's no timestamp, and the speaker degrades to ``"Unknown"``
+    when there's no ``speaker.display_name``. Segments with no ``text`` are
+    skipped. Lines are joined with newlines; ``None``/empty → ``""``.
+    """
+    lines = []
+    for seg in transcript or []:
+        if not isinstance(seg, dict):
+            continue
+        text = seg.get("text")
+        if not text:
+            continue
+        speaker = (seg.get("speaker") or {}).get("display_name") or "Unknown"
+        ts = seg.get("timestamp")
+        prefix = f"[{ts}] " if ts else ""
+        lines.append(f"{prefix}{speaker}: {text}")
+    return "\n".join(lines)
+
+
+def promote_meeting_transcript(client, meeting_row, project_id, company_id, *,
+                               ingest=ingest_single_file,
+                               stamp=stamp_meeting_asset,
+                               supabase_url, supabase_key, force=False) -> dict:
+    """Promote a tagged meeting's FULL transcript into rag_assets for `project_id`.
+
+    Mirrors `embed_meeting_summary` + `spine_promote.promote_transcript`. Returns
+    `{"ok": True, "asset_id": ...}` on success, else `{"ok": False, "reason": ...}`.
+    NEVER raises — any exception is wrapped.
+
+    CONTRACT A — engagement gate FIRST (before any work): if `company_id is None`
+    (an initiative) return ok:False with NO file/ingest work; initiative promotion
+    is deferred in v1.
+
+    Skip guards (return ok:False, no ingest/stamp work):
+      - `recording_id` missing/falsy → it's the stable-path + provenance key; a
+        None would corrupt both, so fail first.
+      - `transcript` None or no segments → "meeting has no transcript".
+      - `transcript_promoted_at` set and not `force` → "transcript already promoted".
+
+    The flattened transcript is written to a STABLE temp path keyed on
+    recording_id (`<tmp>/meeting-promote/<recording_id>/transcript.md`), so a
+    re-promote lands on the same rag_assets row (idempotent). The SAME path goes
+    to BOTH `ingest` and `stamp`; after stamping we VERIFY exactly one row matched
+    (stamped True, len(ids)==1) before the write-back, else ok:False.
+
+    The `meta={'kind':'meeting_transcript'}` discriminator is load-bearing: it
+    separates deep transcript chunks from summary recall.
+    """
+    try:
+        # CONTRACT A — engagement gate, before any work.
+        if company_id is None:
+            return {"ok": False, "reason": "initiative promotion not yet supported"}
+
+        recording_id = meeting_row.get("recording_id")
+        if not recording_id:
+            return {"ok": False, "reason": "meeting has no recording_id"}
+
+        text = flatten_transcript(meeting_row.get("transcript"))
+        if not text:
+            return {"ok": False, "reason": "meeting has no transcript"}
+
+        if meeting_row.get("transcript_promoted_at") and not force:
+            return {"ok": False, "reason": "transcript already promoted"}
+
+        title = meeting_row.get("title") or "Meeting transcript"
+
+        # STABLE dest path keyed on recording_id, under the SYSTEM temp dir:
+        # deterministic per recording_id, so a re-promote lands on the same row.
+        dest_dir = Path(tempfile.gettempdir()) / "meeting-promote" / _safe(recording_id)
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        dest = dest_dir / "transcript.md"
+        dest.write_text(text, encoding="utf-8")
+        stable_path = str(dest)
+
+        ingest(stable_path, project_id, title,
+               supabase_url=supabase_url, supabase_key=supabase_key)
+
+        # SAME stable_path to stamp, then verify exactly one match.
+        st = stamp(client, project_id=project_id, source_file_id=str(recording_id),
+                   title=title, file_path=stable_path,
+                   meta={"kind": "meeting_transcript"})
+        ids = st.get("ids") or []
+        if not st.get("stamped") or len(ids) != 1:
+            reason = ("stamp matched no row" if not st.get("stamped")
+                      else f"stamp matched {len(ids)} rows")
+            return {"ok": False, "reason": reason}
+
+        # Mark the meeting promoted (located by the stable recording_id key).
+        (
+            client.table("fathom_meetings")
+            .update({"transcript_promoted_at": _utc_now_iso()})
+            .eq("recording_id", recording_id)
+            .execute()
+        )
+
+        return {"ok": True, "asset_id": ids[0]}
+    except Exception as exc:  # never raises
+        return {"ok": False, "reason": str(exc)}
+
+
 def _default_resolver(client, code):
     from cp_engine.mcp_server import _resolve_project_id
 
