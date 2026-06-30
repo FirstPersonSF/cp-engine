@@ -29,6 +29,7 @@ from cp_engine.prep_planning import (
     _CLICKUP_MAX_PAGES,
     _CLICKUP_PAGE_SIZE,
     _detect_urgent,
+    _extract_exec_summary,
     _fetch_clickup_milestones,
     _group_by_account,
     _normalize_clickup_task,
@@ -316,7 +317,7 @@ def test_render_planning_doc_groups_by_account():
     blocks = (
         ProjectPlanningBlock(
             project=make_state("ggl-1", company_name="Google"),
-            quick_resume_line=None,
+            exec_summary=None,
             milestones=(),
             client_asks=(),
             sprint_open_asks=(),
@@ -325,7 +326,7 @@ def test_render_planning_doc_groups_by_account():
         ),
         ProjectPlanningBlock(
             project=make_state("ibx-1", company_code="IBX", company_name="Infoblox"),
-            quick_resume_line=None,
+            exec_summary=None,
             milestones=(),
             client_asks=(),
             sprint_open_asks=(),
@@ -336,7 +337,7 @@ def test_render_planning_doc_groups_by_account():
             project=make_state(
                 "snt-1", company_code="SNT", company_name="Sentinel One"
             ),
-            quick_resume_line=None,
+            exec_summary=None,
             milestones=(),
             client_asks=(),
             sprint_open_asks=(),
@@ -369,7 +370,7 @@ def test_render_planning_doc_renders_forward_calendar():
     )
     block = ProjectPlanningBlock(
         project=state,
-        quick_resume_line="we are here",
+        exec_summary="we are here",
         # Build expects pre-sorted; build_project_block sorts inside.
         milestones=tuple(sorted([ms1, ms2], key=lambda m: m["date"])),
         client_asks=(),
@@ -412,7 +413,7 @@ def test_render_planning_doc_renders_open_commitments_table():
     }
     block = ProjectPlanningBlock(
         project=state,
-        quick_resume_line=None,
+        exec_summary=None,
         milestones=(ms,),
         client_asks=(ask,),
         sprint_open_asks=(sprint_ask,),  # type: ignore[arg-type]
@@ -463,7 +464,7 @@ def test_commitments_table_escapes_pipes_in_milestone_deliverable():
     )
     block = ProjectPlanningBlock(
         project=state,
-        quick_resume_line=None,
+        exec_summary=None,
         milestones=(ms,),
         client_asks=(),
         sprint_open_asks=(),
@@ -498,7 +499,7 @@ def test_commitments_table_escapes_newlines_in_client_ask():
     )
     block = ProjectPlanningBlock(
         project=state,
-        quick_resume_line=None,
+        exec_summary=None,
         milestones=(),
         client_asks=(ask,),
         sprint_open_asks=(),
@@ -1166,8 +1167,97 @@ def test_render_planning_doc_full_walk(tmp_path):
     assert "ibx-5153" in doc
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  _extract_exec_summary
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _exec_summary_region(*, objective, status, where, next_up, blockers):
+    """Build an exec-summary region body (markers + fields) for tests."""
+    from cp_engine.render import EXEC_SUMMARY_END, EXEC_SUMMARY_START
+
+    lines = [
+        EXEC_SUMMARY_START,
+        "## Exec Summary  ·  updated 2026-06-30",
+        "",
+        "**Last session:** _<date>_",
+        f"**Objective:** {objective}",
+        f"**Status:** {status}",
+        "",
+        "**Where it stands:**",
+    ]
+    if where:
+        lines.append(f"- {where}")
+    lines.append("")
+    lines.append("**Next up:**")
+    if next_up:
+        lines.append(f"- {next_up}")
+    lines.append("")
+    lines.append("**Blockers:**")
+    if blockers:
+        lines.append(f"- {blockers}")
+    lines.append("")
+    lines.append("**Updates:**")
+    lines.append("- 2026-06-30 — migrated from Quick Resume")
+    lines.append(EXEC_SUMMARY_END)
+    return "\n".join(lines) + "\n"
+
+
+def test_extract_exec_summary_returns_full_region():
+    """A filled region returns its inner text (no cp-engine markers)."""
+    body = (
+        "# CP\n\n"
+        + _exec_summary_region(
+            objective="Ship the activation playbooks.",
+            status="Pop-up R3 in review.",
+            where="Pop-up R3 with Rena since 5/22.",
+            next_up="Wait for Rena feedback.",
+            blockers="",
+        )
+        + "\n## Project Notes\n"
+    )
+    out = _extract_exec_summary(body)
+    assert out is not None
+    assert "Ship the activation playbooks." in out
+    assert "Pop-up R3 in review." in out
+    assert "Pop-up R3 with Rena since 5/22." in out
+    assert "<!-- cp-engine" not in out
+
+
+def test_extract_exec_summary_missing_returns_none():
+    """No exec-summary region → None."""
+    body = "# CP\n\n## Quick Resume\n\n**Current work:** something.\n"
+    assert _extract_exec_summary(body) is None
+
+
+def test_extract_exec_summary_all_placeholder_returns_none():
+    """A freshly-scaffolded, never-authored region reads as no content."""
+    body = "# CP\n\n" + _exec_summary_region(
+        objective="_<one line — what this project delivers>_",
+        status="_<current state in a phrase>_",
+        where="",
+        next_up="",
+        blockers="",
+    )
+    assert _extract_exec_summary(body) is None
+
+
+def test_extract_exec_summary_partial_real_content_returns_region():
+    """A real Status with placeholders elsewhere still returns the region."""
+    body = "# CP\n\n" + _exec_summary_region(
+        objective="_<one line — what this project delivers>_",
+        status="Pop-up R3 in review.",
+        where="",
+        next_up="",
+        blockers="",
+    )
+    out = _extract_exec_summary(body)
+    assert out is not None
+    assert "Pop-up R3 in review." in out
+
+
 def test_render_quick_resume_when_present(tmp_path):
-    """When cp.md has a real **Current work:** line, the Where block reflects it."""
+    """When cp.md has a filled exec-summary region, the block reflects it."""
     config = make_config(tmp_path)
     state = make_state("ggl-5168", name="GGL 5168 Activation", company_name="Google")
     # Lay down a real cp.md at the account-scoped path.
@@ -1177,12 +1267,15 @@ def test_render_quick_resume_when_present(tmp_path):
     cp_md = tmp_path / scope / slug / "cp.md"
     cp_md.parent.mkdir(parents=True, exist_ok=True)
     cp_md.write_text(
-        "## Quick Resume\n\n"
-        "**Last session:** _<date>_\n"
-        "**Current work:** Pop-up R3 with Rena since 5/22.\n"
-        "**Next up:** Wait for Rena feedback.\n"
-        "**Blockers:** Awaiting Rena.\n\n"
-        "## Next\n"
+        "# CP\n\n"
+        + _exec_summary_region(
+            objective="Ship the activation playbooks.",
+            status="Pop-up R3 in review.",
+            where="Pop-up R3 with Rena since 5/22.",
+            next_up="Wait for Rena feedback.",
+            blockers="Awaiting Rena.",
+        )
+        + "\n## Next\n"
     )
     block = prep_planning.build_project_block(
         state,
@@ -1194,8 +1287,8 @@ def test_render_quick_resume_when_present(tmp_path):
         clickup_token=None,
         list_id_override=None,
     )
-    assert block.quick_resume_line is not None
-    assert "Pop-up R3 with Rena" in block.quick_resume_line
+    assert block.exec_summary is not None
+    assert "Pop-up R3 with Rena" in block.exec_summary
 
 
 def test_summary_counts_errors_for_failed_fetch(tmp_path):
@@ -1498,7 +1591,7 @@ def test_project_header_dedupes_when_code_equals_name():
     )
     block = ProjectPlanningBlock(
         project=state,
-        quick_resume_line=None,
+        exec_summary=None,
         milestones=(),
         client_asks=(),
         sprint_open_asks=(),
@@ -1521,7 +1614,7 @@ def test_project_header_keeps_both_when_code_differs_from_name():
     )
     block = ProjectPlanningBlock(
         project=state,
-        quick_resume_line=None,
+        exec_summary=None,
         milestones=(),
         client_asks=(),
         sprint_open_asks=(),

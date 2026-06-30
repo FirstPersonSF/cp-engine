@@ -48,6 +48,7 @@ from cp_engine.agenda import (
     to_datetime,
 )
 from cp_engine.config import TenantConfig
+from cp_engine.render import EXEC_SUMMARY_END, EXEC_SUMMARY_START
 from cp_engine.sprints import (
     bullets,
     current_sprint_week_iso,
@@ -119,7 +120,7 @@ class ProjectPlanningBlock:
     """Per-project rendered content."""
 
     project: ProjectState
-    quick_resume_line: str | None
+    exec_summary: str | None
     milestones: tuple[Milestone, ...]
     client_asks: tuple[Milestone, ...]
     sprint_open_asks: tuple[SprintAsk, ...]
@@ -491,22 +492,68 @@ def _resolve_clickup_list_for_project(
 # ──────────────────────────────────────────────────────────────────────
 
 
-_QR_CURRENT_RE = re.compile(
-    r"\*\*Current work:\*\*\s*(?P<text>.+?)(?=\n\s*\*\*|\n##|\Z)",
-    re.DOTALL,
+# Auto-generated Updates bullet stamped by the Quick-Resume→Exec-Summary
+# migration. It is NOT human-authored content, so an otherwise-blank region
+# carrying only this line still reads as "unauthored".
+_EXEC_SUMMARY_MIGRATION_BULLET_RE = re.compile(
+    r"^- \d{4}-\d{2}-\d{2} — migrated from Quick Resume\s*$"
 )
 
 
-def _extract_current_work(cp_md_body: str) -> str | None:
-    """Pull the ``**Current work:**`` line from a project's cp.md Quick Resume."""
-    m = _QR_CURRENT_RE.search(cp_md_body)
-    if not m:
+def _extract_exec_summary(cp_md_body: str) -> str | None:
+    """Return the inner text of a project cp.md's engine-managed
+    ``exec-summary`` region — the model-authored 6-field state box (Objective,
+    Status, Where it stands, Next up, Blockers, Updates + Last session).
+
+    The marker lines themselves are stripped; leading/trailing blank lines are
+    trimmed. Returns ``None`` when:
+
+      * the region markers are absent, or
+      * the region is entirely UNAUTHORED — every ``**Label:**`` field value is
+        still a ``_<...>_`` placeholder AND there are no real seed bullets (the
+        only bullet allowed to count as "no content" is the auto-stamped
+        ``- <date> — migrated from Quick Resume`` migration line).
+
+    Pure function on the body string.
+    """
+    start = cp_md_body.find(EXEC_SUMMARY_START)
+    if start == -1:
         return None
-    text = m.group("text").strip()
-    # Drop the engine placeholder so an unfilled QR doesn't surface as content.
-    if not text or "_<" in text:
+    end = cp_md_body.find(EXEC_SUMMARY_END, start)
+    if end == -1:
         return None
-    return text
+    # Inner text between (but not including) the marker lines.
+    inner = cp_md_body[start + len(EXEC_SUMMARY_START) : end]
+    region = inner.strip("\n")
+
+    if not _exec_summary_is_authored(region):
+        return None
+    return region
+
+
+def _exec_summary_is_authored(region: str) -> bool:
+    """True when an exec-summary region carries any real content. A region is
+    UNAUTHORED when every ``**Label:**`` field value is a ``_<...>_``
+    placeholder and the only bullets are the auto-stamped migration line."""
+    for raw in region.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        # Field line: `**Label:** value` — real iff value is a non-placeholder.
+        field = re.match(r"^\*\*[^*]+:\*\*\s*(?P<value>.*)$", line)
+        if field is not None:
+            value = field.group("value").strip()
+            if value and "_<" not in value:
+                return True
+            continue
+        # Bullet line — real unless it's the auto migration stamp.
+        if line.startswith("- "):
+            if _EXEC_SUMMARY_MIGRATION_BULLET_RE.match(line):
+                continue
+            return True
+        # Anything else (headings, stray prose) is not treated as authored
+        # content on its own — fields + bullets are the authored surface.
+    return False
 
 
 # Open-ask bullet shape from sprint files. Mirrors attention_digest._OPEN_ASK_RE.
@@ -819,14 +866,14 @@ def build_project_block(
     unchanged and free. Best-effort: a sweep failure (or a project with no
     backfilled spine) logs + leaves ``sweep_synthesis=None`` without aborting.
     """
-    # Quick Resume line from the project's cp.md
+    # Exec Summary region from the project's cp.md
     scope = account_scope_for(project)
     slug = dir_slug(project.code, project.name)
     cp_md_path = config.root / scope / slug / "cp.md"
-    current_work: str | None = None
+    exec_summary: str | None = None
     if cp_md_path.is_file():
         try:
-            current_work = _extract_current_work(
+            exec_summary = _extract_exec_summary(
                 cp_md_path.read_text(encoding="utf-8")
             )
         except OSError as exc:
@@ -919,7 +966,7 @@ def build_project_block(
 
     return ProjectPlanningBlock(
         project=project,
-        quick_resume_line=current_work,
+        exec_summary=exec_summary,
         milestones=milestones,
         client_asks=client_asks,
         sprint_open_asks=sprint_asks,
@@ -1376,10 +1423,13 @@ def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
         out.append("_(no urgent items)_")
         out.append("")
 
-    if block.quick_resume_line:
-        out.append(f"**Where:** {block.quick_resume_line}")
+    if block.exec_summary:
+        out.append(block.exec_summary)
     else:
-        out.append("**Where:** _(Quick Resume empty — fill in before sprint planning)_")
+        out.append(
+            "_(Exec Summary not yet authored — fill in at wrap up before "
+            "sprint planning)_"
+        )
     out.append("")
 
     # Whole-project sweep synthesis (Project Spine slice 3, Phase B). Only
