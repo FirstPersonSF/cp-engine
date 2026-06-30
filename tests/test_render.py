@@ -283,6 +283,28 @@ def test_initiative_cp_omits_mc_id_when_none() -> None:
     assert "Filename: cp.md\nAuthor:" in out
 
 
+def test_initiative_template_scaffolds_exec_summary_region() -> None:
+    tenant = make_tenant()
+    project = make_state(
+        code="mission-control",
+        name="Mission Control",
+        source="initiative",
+        company_kind="self-fpsf",
+    )
+    body = render_project_cp(tenant, project)
+
+    assert "<!-- cp-engine:start exec-summary -->" in body
+    assert "## Exec Summary" in body
+    assert "**Last session:**" in body
+    assert "**Objective:**" in body
+    assert "**Status:**" in body
+    assert "**Where it stands:**" in body
+    assert "**Next up:**" in body
+    assert "**Blockers:**" in body
+    assert "**Updates:**" in body
+    assert "## Quick Resume" not in body
+
+
 def test_project_cp_renders_with_issues() -> None:
     tenant = make_tenant()
     project = make_state()
