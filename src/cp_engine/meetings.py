@@ -264,6 +264,82 @@ def _default_rescope(client, meeting_row, new_project_id):
     return {"ok": True, "rescoped": False}
 
 
+def rescope_meeting(client, meeting_row, new_project_id, *,
+                    new_company_id=None) -> dict:
+    """RETAG re-scope cascade: move a meeting + its RAG rows to `new_project_id`.
+
+    This is the real implementation behind the `rescope` seam that `link_meeting`
+    defaults to a no-op (`_default_rescope`). NEVER raises — any exception is
+    wrapped as `{"ok": False, "reason": ...}`.
+
+    1. Guard: falsy `recording_id` → `{"ok": False, "reason": ...}`, no work
+       (it's the locate key for both UPDATEs; a None would silently no-op / match
+       broadly, mirroring the sibling guards in this module).
+    2. No-op: if the stored `project_id` already equals `new_project_id` this is
+       not actually a retag → `{"ok": True, "rescoped": False, "reason":
+       "project unchanged"}`, no UPDATEs.
+    3. ONE UPDATE on `rag_assets` (project_id=new, company_id=new) located by
+       (source_provider='fathom', source_file_id=str(recording_id)) — NOT by
+       project_id. The summary + transcript rows SHARE that source_file_id, so a
+       single UPDATE moves both kinds; `asset_chunks` reference their parent by
+       `asset_id` and carry no project scope of their own, so they follow
+       automatically — NO re-embedding is ever needed on a retag.
+
+       The locate key deliberately EXCLUDES project_id: that's what makes the
+       cascade idempotent / no-ghost. Re-running with the same target (even with
+       a stale row still showing the old project) re-finds the rows and
+       harmlessly re-sets the same new project_id; after a success no rag_assets
+       row for this recording_id remains pointing at the old project.
+    4. ONE UPDATE on `fathom_meetings` (project_id=new, work_item_id=None,
+       work_item_confidence=None) located by recording_id. The OLD project's
+       work item is invalid for the new project, so we CLEAR it — the new
+       project's work item is unknown until re-assigned.
+
+       NOTE: `link_meeting` ALSO writes project_id/work_item_id after calling
+       this; that's fine and idempotent. Clearing work_item_id here is the
+       correct default — `link_meeting`'s assigner re-derives it for the new
+       project (or leaves it None) on the subsequent write.
+    """
+    try:
+        recording_id = meeting_row.get("recording_id")
+        if not recording_id:
+            return {"ok": False, "reason": "meeting has no recording_id"}
+
+        old = meeting_row.get("project_id")
+        if old == new_project_id:
+            return {"ok": True, "rescoped": False, "reason": "project unchanged"}
+
+        # Move BOTH rag_assets rows (summary + transcript) in one UPDATE. Located
+        # by the scope-INDEPENDENT fathom source key so already-moved rows are
+        # still found (idempotent / no-ghost). Chunks follow by asset_id.
+        resp = (
+            client.table("rag_assets")
+            .update({"project_id": new_project_id, "company_id": new_company_id})
+            .eq("source_provider", "fathom")
+            .eq("source_file_id", str(recording_id))
+            .execute()
+        )
+        rows = getattr(resp, "data", None)
+        assets_moved = len(rows) if rows is not None else None
+
+        # Re-scope the meeting row; clear the now-invalid old work item.
+        (
+            client.table("fathom_meetings")
+            .update({
+                "project_id": new_project_id,
+                "work_item_id": None,
+                "work_item_confidence": None,
+            })
+            .eq("recording_id", recording_id)
+            .execute()
+        )
+
+        return {"ok": True, "rescoped": True, "old_project_id": old,
+                "new_project_id": new_project_id, "assets_moved": assets_moved}
+    except Exception as exc:  # never raises
+        return {"ok": False, "reason": str(exc)}
+
+
 def link_meeting(client, meeting_row, *,
                  resolver=_default_resolver,
                  assigner=_default_assigner,
