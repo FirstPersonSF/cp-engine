@@ -34,6 +34,7 @@ from cp_engine.prep_planning import (
     _group_by_account,
     _normalize_clickup_task,
     build_planning_result,
+    render_planning_bundle,
     render_planning_doc,
     render_planning_summary,
 )
@@ -2050,3 +2051,111 @@ def test_sweep_best_effort_one_fails_one_succeeds(tmp_path):
     }
     assert by_code["ggl-5168"].sweep_synthesis is None
     assert by_code["ibx-5153"].sweep_synthesis == "GOOD SYNTHESIS"
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Task 6 — render_planning_bundle (model-facing structured dump)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _bundle_block(code, *, company_name, company_code, exec_summary):
+    return ProjectPlanningBlock(
+        project=make_state(
+            code, name=f"{code} Name",
+            company_code=company_code, company_name=company_name,
+        ),
+        exec_summary=exec_summary,
+        milestones=(),
+        client_asks=(),
+        sprint_open_asks=(),
+        urgent=(),
+        fetch_error=None,
+    )
+
+
+def _bundle_result(blocks, **kw):
+    by_account = prep_planning._group_by_account(tuple(blocks))
+    return prep_planning.PlanningResult(
+        week_iso="2026-W23",
+        week_dates="Jun 1 – Jun 7",
+        project_count=len(blocks),
+        estimated_minutes=60,
+        tenant_hours_last_week=kw.get("tenant_hours", {}),
+        blocks_by_account=by_account,
+        milestone_counts={"total": 0, "fetched": 0, "errored": 0},
+        urgent_counts={"slip_risk": 0, "decision_due": 0,
+                       "past_due_ask": 0, "escalated_risk": 0},
+        capacity_binding=kw.get("capacity_binding", ()),
+        cross_cutting_decisions=kw.get("cross_cutting_decisions", ()),
+        generated_at="2026-06-01T00:00:00Z",
+    )
+
+
+def test_render_planning_bundle_includes_each_exec_summary():
+    """Two projects in different accounts → both codes + both FULL exec
+    summaries appear verbatim in the bundle."""
+    blocks = (
+        _bundle_block(
+            "ggl-5168", company_name="Google", company_code="GGL",
+            exec_summary="GGL DISTINCT — pop-up R3 with Rena, decision on tiering due.",
+        ),
+        _bundle_block(
+            "ibx-5153", company_name="Infoblox", company_code="IBX",
+            exec_summary="IBX DISTINCT — Carol framework two-track thesis blocked on Janet.",
+        ),
+    )
+    result = _bundle_result(blocks)
+    out = prep_planning.render_planning_bundle(result)
+    assert "ggl-5168" in out
+    assert "ibx-5153" in out
+    assert "GGL DISTINCT — pop-up R3 with Rena, decision on tiering due." in out
+    assert "IBX DISTINCT — Carol framework two-track thesis blocked on Janet." in out
+    # Both accounts surface as section headers.
+    assert "Google" in out
+    assert "Infoblox" in out
+
+
+def test_render_planning_bundle_includes_metrics():
+    """Capacity binding (Brandon@10 signal) + cross-cutting decisions appear."""
+    from cp_engine.agenda import WeeklyDecision
+
+    decisions = (
+        WeeklyDecision(
+            number=1,
+            text="**Brandon hidden-load** — re-attribute owner on implicit projects.",
+            date="2026-05-28",
+            sources=("sprint planning",),
+        ),
+    )
+    blocks = (
+        _bundle_block(
+            "ggl-5168", company_name="Google", company_code="GGL",
+            exec_summary="placeholder",
+        ),
+    )
+    result = _bundle_result(
+        blocks,
+        tenant_hours={"Drew": 40, "Tony": 30},
+        capacity_binding=({"owner": "brandon", "count": 10},),
+        cross_cutting_decisions=decisions,
+    )
+    out = prep_planning.render_planning_bundle(result)
+    assert "**brandon** — owner-of-record on 10 projects" in out
+    assert "Brandon hidden-load" in out
+    # Tenant hours flow through the tenant strip.
+    assert "Drew 40h" in out
+
+
+def test_render_planning_bundle_marks_unauthored():
+    """A block with exec_summary=None is NOT silently omitted — it surfaces
+    with an explicit not-authored marker."""
+    blocks = (
+        _bundle_block(
+            "fps-1", company_name="First Person", company_code="FPS",
+            exec_summary=None,
+        ),
+    )
+    result = _bundle_result(blocks)
+    out = prep_planning.render_planning_bundle(result)
+    assert "fps-1" in out
+    assert "Exec Summary not yet authored" in out

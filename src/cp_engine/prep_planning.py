@@ -1489,6 +1489,127 @@ def render_planning_doc_markdown(result: PlanningResult) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
+    """Render one project's bundle section: header → urgent → FULL exec
+    summary → forward calendar → commitments → fetch_error.
+
+    Differs from ``_render_project_block`` in exactly one way: it emits the
+    FULL ``exec_summary`` verbatim (the human doc trims it) and surfaces
+    ``fetch_error`` so the model sees gaps in the source material. Every other
+    sub-block reuses the same render helpers.
+    """
+    p = block.project
+    owner = p.owner or "—"
+    if p.code == p.name:
+        out = [f"### {p.code} — {owner}", ""]
+    else:
+        out = [f"### {p.code} {p.name} — {owner}", ""]
+
+    if block.urgent:
+        out.append("**Urgent:**")
+        for item in block.urgent:
+            severity = item.get("severity", "warn")
+            marker = "ALERT" if severity == "alert" else "WARN"
+            out.append(f"- [{marker}] {item.get('text', '(no text)')}")
+        out.append("")
+    else:
+        out.append("_(no urgent items)_")
+        out.append("")
+
+    # FULL exec summary verbatim — every project, including unauthored ones
+    # (explicit marker, never silently omitted).
+    out.append("**Exec Summary:**")
+    out.append("")
+    if block.exec_summary:
+        out.append(block.exec_summary)
+    else:
+        out.append(
+            "_(Exec Summary not yet authored — fill in at wrap up before "
+            "sprint planning)_"
+        )
+    out.append("")
+
+    out.extend(_render_forward_calendar(block))
+    out.append("")
+    out.extend(_render_commitments_table(block))
+    out.append("")
+
+    if block.fetch_error:
+        out.append(f"_(fetch note: {block.fetch_error})_")
+        out.append("")
+    return out
+
+
+def _render_bundle_account_section(
+    account_name: str,
+    blocks: list[ProjectPlanningBlock],
+) -> list[str]:
+    """Render one account's bundle section: header + every project block."""
+    out = [f"## {account_name} ({len(blocks)} projects)", ""]
+    for i, block in enumerate(blocks):
+        if i:
+            out.append("---")
+            out.append("")
+        out.extend(_render_bundle_project_block(block))
+    return out
+
+
+def render_planning_bundle(result: PlanningResult) -> str:
+    """Render the model-facing structured bundle.
+
+    This is NOT a polished human doc — it is the consistent, current raw
+    material the model reads to synthesize ``_planning.md`` in-session
+    (Task 8 skill). It mirrors ``render_planning_doc_markdown``'s structure
+    (header → cross-cutting metrics → per-account project blocks) and reuses
+    the same render helpers, but emits each project's FULL ``exec_summary``
+    verbatim and surfaces every project (incl. unauthored ones) with an
+    explicit marker rather than a trimmed view.
+
+    All data is READ from ``result`` — nothing is recomputed. ``build_planning_
+    result`` already populated ``exec_summary`` per block and all the tenant
+    metrics (capacity binding, cross-cutting decisions, milestone/urgent
+    counts).
+    """
+    lines: list[str] = []
+    lines.append(
+        f"# Sprint {result.week_iso} Planning Bundle — {result.week_dates}"
+    )
+    lines.append(
+        f"_Generated {result.generated_at} by `cp prep-planning --bundle` · "
+        f"{result.project_count} active projects · "
+        f"{result.estimated_minutes} min target_"
+    )
+    lines.append(
+        "_Raw material for in-session synthesis — full per-project exec "
+        "summaries + deterministic metrics. Not a finished doc._"
+    )
+    lines.append("")
+    # Tenant-level deterministic metrics (capacity binding, cross-cutting
+    # decisions, tenant hours) — reuse the cross-cutting renderer verbatim.
+    lines.extend(_render_cross_cutting(result))
+    lines.append("")
+    # Milestone / urgent counts — read straight from result.
+    mc = result.milestone_counts
+    uc = result.urgent_counts
+    lines.append(
+        "**Milestones:** "
+        f"{mc.get('total', 0)} total · {mc.get('fetched', 0)} fetched · "
+        f"{mc.get('errored', 0)} errored"
+    )
+    lines.append(
+        "**Urgent flags:** "
+        + " · ".join(f"{k} {v}" for k, v in uc.items())
+    )
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    for account_name, blocks in result.blocks_by_account.items():
+        lines.extend(_render_bundle_account_section(account_name, blocks))
+        lines.append("---")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Top-level entry point
 # ──────────────────────────────────────────────────────────────────────
@@ -1738,3 +1859,43 @@ def render_planning_summary(
         if client is not None:
             client.close()
     return json.dumps(result.to_summary_dict(), indent=2)
+
+
+def render_planning_bundle_doc(
+    config: TenantConfig,
+    projects: tuple[ProjectState, ...],
+    *,
+    today: date,
+    project_filter: tuple[str, ...] | None = None,
+    tenant_hours_last_week: dict[str, int] | None = None,
+    supabase_client=None,
+    clickup_token: str | None = None,
+    list_id_lookup: dict[str, str] | None = None,
+    clickup_task_ids: dict[str, str] | None = None,
+) -> str:
+    """Assemble + render the model-facing planning bundle as markdown.
+
+    Mirrors ``render_planning_doc`` minus ``sweep_llm`` — the bundle emits
+    raw material for in-session synthesis and does not run the per-project
+    spine sweep (keep it simple + free).
+    """
+    client: httpx.Client | None = None
+    if clickup_token or _clickup_token():
+        client = httpx.Client(timeout=_CLICKUP_TIMEOUT)
+    try:
+        result = build_planning_result(
+            config,
+            projects,
+            today=today,
+            project_filter=project_filter,
+            tenant_hours_last_week=tenant_hours_last_week,
+            supabase_client=supabase_client,
+            clickup_token=clickup_token,
+            clickup_client=client,
+            list_id_lookup=list_id_lookup,
+            clickup_task_ids=clickup_task_ids,
+        )
+    finally:
+        if client is not None:
+            client.close()
+    return render_planning_bundle(result)

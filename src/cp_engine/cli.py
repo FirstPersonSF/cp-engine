@@ -2415,6 +2415,13 @@ def prep_agenda_cmd(
     "instead of the rendered markdown. The /cp-prep-planning plugin uses this.",
 )
 @click.option(
+    "--bundle",
+    is_flag=True,
+    help="Emit the structured per-project exec-summary + metrics bundle for "
+    "in-session synthesis (the /cp-prep skill reads this) instead of the "
+    "rendered doc.",
+)
+@click.option(
     "--sweep",
     is_flag=True,
     help="Attach a whole-project spine sweep synthesis to each active "
@@ -2432,6 +2439,7 @@ def prep_planning_cmd(
     project_filter: str,
     out: Path | None,
     summary: bool,
+    bundle: bool,
     sweep: bool,
     sweep_model: str,
 ) -> None:
@@ -2451,6 +2459,7 @@ def prep_planning_cmd(
     from datetime import datetime, timedelta
 
     from cp_engine.prep_planning import (
+        render_planning_bundle_doc,
         render_planning_doc,
         render_planning_summary,
     )
@@ -2541,6 +2550,30 @@ def prep_planning_cmd(
             clickup_task_ids=clickup_task_ids,
         )
         click.echo(out_str)
+        return
+
+    # --bundle: emit the model-facing exec-summary + metrics dump. Placed
+    # AFTER --summary so that path wins if both are passed (matching its
+    # earlier position). Like --summary, the bundle ignores --sweep — it emits
+    # raw material, not a swept synthesis. Respects --out / stdout exactly like
+    # the default doc path below.
+    if bundle:
+        out_str = render_planning_bundle_doc(
+            config,
+            tuple(projects),
+            today=today,
+            project_filter=code_filter,
+            tenant_hours_last_week=tenant_hours,
+            supabase_client=supabase_client,
+            clickup_token=clickup_token,
+            clickup_task_ids=clickup_task_ids,
+        )
+        if out:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(out_str)
+            click.echo(f"wrote {out}")
+        else:
+            click.echo(out_str)
         return
 
     # --sweep: build the real LLM wrapper and pass it to the renderer. Off by
