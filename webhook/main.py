@@ -897,36 +897,54 @@ async def spine_promote_transcript(request: Request) -> Response:
     )
 
 
-def _link_meeting_safe(client, meeting, code, supabase_url, supabase_key):
+def _link_meeting_safe(client, meeting, supabase_url, supabase_key):
     """Best-effort: link the meeting to its project + embed its summary into RAG.
-    NEVER raises — a failure here must not abort the primary sprint-file ingest."""
+    NEVER raises — a failure here must not abort the primary sprint-file ingest.
+
+    Resolves company_id from the MEETING'S OWN resolved project (the first
+    resolvable tag in `meeting["project_tags"]`), NOT from any caller-supplied
+    `code`. This is load-bearing for cross-company fan-outs (sprint-planning /
+    account meetings span projects under DIFFERENT companies): the rescope
+    cascade must write the company of the project the meeting is actually linked
+    to, never the company of whichever project happened to be iterating. The
+    meeting links to exactly ONE project, so this runs exactly once per meeting.
+    """
     try:
         from cp_engine.asset_ingest import resolve_project_folders_by_id
         # NOTE: no `assigner=` is threaded — link_meeting's default is a no-op,
         # so meetings land unassigned ("needs assignment") until the LLM
         # work-item classifier (a later task) wires a real assigner here.
-        from cp_engine.meetings import link_meeting, rescope_meeting
-        # Resolve company_id for THIS code so rescope (on a retag) preserves
-        # account scope and link's embed lands company-scoped.
-        project_id = _resolve_project_id_for_promote(client, code)
-        folders = resolve_project_folders_by_id(client, project_id) if project_id else None
+        from cp_engine.meetings import (link_meeting, rescope_meeting,
+                                         resolve_meeting_project)
+
+        # Resolve the meeting's OWN project once. Untagged / unresolvable → no
+        # work (link_meeting would no-op too, but resolving here lets us also
+        # skip the company lookup). This is the SAME project link_meeting will
+        # resolve internally, so company_id below matches the linked project.
+        project_id, _matched = resolve_meeting_project(
+            client, meeting.get("project_tags"))
+        if project_id is None:
+            log.info("meeting-link: meeting=%s no resolvable project tag — skip",
+                     meeting.get("recording_id"))
+            return {"ok": True, "linked": False, "reason": "no resolvable project tag"}
+
+        folders = resolve_project_folders_by_id(client, project_id)
         company_id = folders.company_id if folders else None
 
-        # Wire the real rescope (threading company_id) and a no-op assigner for
-        # now (the LLM work-item classifier is a later task; until then, meetings
-        # land unassigned — "needs assignment" — which is the safe default).
+        # Wire the real rescope, threading the meeting's-project company_id so a
+        # retag preserves the correct account scope.
         def _rescope(c, row, new_pid):
             return rescope_meeting(c, row, new_pid, new_company_id=company_id)
 
         result = link_meeting(client, meeting,
                               rescope=_rescope,
                               supabase_url=supabase_url, supabase_key=supabase_key)
-        log.info("meeting-link: meeting=%s code=%s result=%s",
-                 meeting.get("recording_id"), code, result)
+        log.info("meeting-link: meeting=%s result=%s",
+                 meeting.get("recording_id"), result)
         return result
     except Exception as exc:  # noqa: BLE001 — never block primary ingest
-        log.warning("meeting-link failed (non-fatal): meeting=%s code=%s err=%s",
-                    meeting.get("recording_id"), code, exc, exc_info=True)
+        log.warning("meeting-link failed (non-fatal): meeting=%s err=%s",
+                    meeting.get("recording_id"), exc, exc_info=True)
         return None
 
 
@@ -950,10 +968,14 @@ def _perform_auto_ingest(
         "auto-ingest start: meeting=%s projects=%s", meeting_id, project_codes
     )
 
-    # Best-effort Supabase client for the ADDITIVE meeting-link side-step below.
-    # None (env missing / pkg absent) just skips linking — the primary
-    # sprint-file ingest never depends on it.
+    # Best-effort Supabase coords for the ADDITIVE meeting-link side-step below
+    # (resolved once — loop-invariant). A None client (env missing / pkg absent)
+    # or missing creds just skips linking — the primary sprint-file ingest never
+    # depends on it. Cred split mirrors _run_promote: client via the factory,
+    # url/key from env.
     link_client = _create_supabase_client()
+    link_url = os.environ.get("SUPABASE_URL")
+    link_key = os.environ.get("SUPABASE_SERVICE_KEY")
 
     with _cloned_tenant() as tenant_root:
         config = _load_tenant_config(tenant_root)
@@ -1018,26 +1040,6 @@ def _perform_auto_ingest(
             # consumer can tell "transcript only" from "wrote bullets".
             entry["transcript_persisted"] = transcript_persisted
 
-            # ADDITIVE, NON-FATAL: link the meeting to its project + embed its
-            # summary into RAG. Runs alongside the per-project sprint-file work;
-            # link_meeting resolves the meeting's OWN project_tags (not `code`)
-            # and is idempotent (embed checks summary_embedded_at, link writes
-            # are by recording_id), so calling it once per code is safe — the
-            # meeting is linked exactly once in effect. A failure here is swallowed
-            # by _link_meeting_safe and must never touch the commit/push below.
-            #
-            # NOTE (retag-trigger gap): re-tagging a meeting to its CURRENT
-            # project does NOT re-fire this webhook (a known fathom-meeting-sync
-            # trigger gap; workaround is unassign-then-reassign). So the retag
-            # re-scope cascade only fires when the webhook actually re-runs —
-            # a deploy-time dependency on fathom-meeting-sync, not fixable here.
-            if meeting and link_client is not None:
-                supabase_url = os.environ.get("SUPABASE_URL")
-                supabase_key = os.environ.get("SUPABASE_SERVICE_KEY")
-                if supabase_url and supabase_key:
-                    _link_meeting_safe(
-                        link_client, meeting, code, supabase_url, supabase_key)
-
             if entry["files_written"] or transcript_persisted:
                 commit_sha = _commit_and_push(
                     tenant_root=tenant_root,
@@ -1050,6 +1052,25 @@ def _perform_auto_ingest(
                     "auto-ingest commit: meeting=%s project=%s commit=%s",
                     meeting_id, code, commit_sha,
                 )
+
+        # ADDITIVE, NON-FATAL: link the meeting to its project + embed its
+        # summary into RAG. Runs ONCE per meeting, AFTER the per-project loop —
+        # the meeting links to exactly one project (the first resolvable tag),
+        # so company_id is derived from THAT project, never from a loop `code`
+        # (which on a cross-company fan-out could be a different company and
+        # corrupt account-scoped retrieval on a retag). Independent side-work:
+        # it does not gate the commit/push above and a failure is swallowed by
+        # _link_meeting_safe. Cred split mirrors _run_promote intentionally:
+        # link_client via _create_supabase_client(), url/key from env — these
+        # match in the Railway env.
+        #
+        # NOTE (retag-trigger gap): re-tagging a meeting to its CURRENT project
+        # does NOT re-fire this webhook (a known fathom-meeting-sync trigger
+        # gap; workaround is unassign-then-reassign). So the retag re-scope
+        # cascade only fires when the webhook actually re-runs — a deploy-time
+        # dependency on fathom-meeting-sync, not fixable here.
+        if meeting and link_client is not None and link_url and link_key:
+            _link_meeting_safe(link_client, meeting, link_url, link_key)
 
         # Stage A — propose ClickUp tasks from the meeting's Fathom action
         # items. Independent of whether the transcript produced cp bullets;
