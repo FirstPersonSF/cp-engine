@@ -278,12 +278,19 @@ def rescope_meeting(client, meeting_row, new_project_id, *,
     2. No-op: if the stored `project_id` already equals `new_project_id` this is
        not actually a retag → `{"ok": True, "rescoped": False, "reason":
        "project unchanged"}`, no UPDATEs.
-    3. ONE UPDATE on `rag_assets` (project_id=new, company_id=new) located by
+    3. ONE UPDATE on `rag_assets` (project_id=new) located by
        (source_provider='fathom', source_file_id=str(recording_id)) — NOT by
        project_id. The summary + transcript rows SHARE that source_file_id, so a
        single UPDATE moves both kinds; `asset_chunks` reference their parent by
        `asset_id` and carry no project scope of their own, so they follow
        automatically — NO re-embedding is ever needed on a retag.
+
+       `company_id` is rewritten ONLY when `new_company_id` is provided. A None
+       `new_company_id` (the default — and what `link_meeting` passes, calling
+       this seam positionally with no company arg) leaves the existing company
+       association INTACT: re-scoping the project must never erase company_id,
+       which is load-bearing for account-scoped retrieval (the read RPC matches
+       `a.company_id = p_company_id`).
 
        The locate key deliberately EXCLUDES project_id: that's what makes the
        cascade idempotent / no-ghost. Re-running with the same target (even with
@@ -311,10 +318,15 @@ def rescope_meeting(client, meeting_row, new_project_id, *,
 
         # Move BOTH rag_assets rows (summary + transcript) in one UPDATE. Located
         # by the scope-INDEPENDENT fathom source key so already-moved rows are
-        # still found (idempotent / no-ghost). Chunks follow by asset_id.
+        # still found (idempotent / no-ghost). Chunks follow by asset_id. Only
+        # rewrite company_id when actually provided — a None must NOT erase the
+        # existing company association (load-bearing for account-scoped recall).
+        ra_payload = {"project_id": new_project_id}
+        if new_company_id is not None:
+            ra_payload["company_id"] = new_company_id
         resp = (
             client.table("rag_assets")
-            .update({"project_id": new_project_id, "company_id": new_company_id})
+            .update(ra_payload)
             .eq("source_provider", "fathom")
             .eq("source_file_id", str(recording_id))
             .execute()

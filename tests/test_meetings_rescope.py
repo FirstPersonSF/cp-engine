@@ -149,12 +149,18 @@ def test_company_id_threaded_into_rag_assets_payload():
     assert ra[0]["payload"]["company_id"] == "co-xyz"
 
 
-def test_company_id_defaults_to_none():
+def test_company_id_omitted_when_not_provided():
+    """When no new_company_id is passed, company_id must be OMITTED from the
+    rag_assets payload entirely — re-scoping the project must NEVER erase a
+    pre-existing company association by writing None over it. The eventual
+    caller, link_meeting, calls the seam positionally with NO company arg, so a
+    None write would silently degrade account-scoped retrieval (the read RPC
+    matches on a.company_id = p_company_id)."""
     client = _FakeClient()
     rescope_meeting(client, _row(project_id="p1"), "p2")
 
     ra = _by_table(client.updates, "rag_assets")
-    assert ra[0]["payload"]["company_id"] is None
+    assert "company_id" not in ra[0]["payload"]
 
 
 def test_single_rag_assets_update_covers_both_kinds():
