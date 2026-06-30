@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.40.1 — 2026-06-29
+
+### Fixed — transcript promotion on account-nested engagements
+
+- **Spine transcript promotion now resolves the real working dir.** `promote_transcript`
+  joined the bare project code onto the tenant root (`<tenant>/<code>/<rel_path>`), which
+  misses every engagement — engagements live account-nested at `<tenant>/1p/<company>/<code>/`.
+  Every `set_spine_element(..., important=True)` and `promote_spine_transcript` call on a real
+  engagement therefore failed with `transcript file not found`, leaving the `important` flag set
+  but nothing embedded into RAG. Promotion now locates the project's working dir via
+  `_resolve_project_cp_path` (walking `1p/<company>/`, `firstpersonsf/`, `canonic/`) and roots
+  `rel_path` there, falling back to the flat layout when no `cp.md` resolves. Regression test
+  added.
+
 ## v0.40.0 — 2026-06-26
 
 ### Added — spine importance/note/done, transcript promotion, folder scan, ingest caching, dashboard

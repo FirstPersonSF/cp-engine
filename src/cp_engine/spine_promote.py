@@ -108,7 +108,18 @@ def promote_transcript(client, tenant_root, project_code, project_id, company_id
             # silently breaking idempotency. Fail before any file work.
             return {"ok": False, "reason": "element has no est_item_id"}
 
-        src = Path(tenant_root) / project_code / rel_path
+        # Resolve the project's REAL on-disk working dir. Engagements are
+        # account-nested (`<tenant>/1p/<company>/<code>/`), not flat under the
+        # tenant root, so joining the bare code onto tenant_root misses every
+        # real engagement. `_resolve_project_cp_path` walks all scopes (1p/<co>,
+        # firstpersonsf/, canonic/) and returns the cp.md; its parent is the
+        # working dir rel_path is relative to. Fall back to the flat layout when
+        # no cp.md resolves (keeps minimal/test trees working).
+        from cp_engine.ingest import _resolve_project_cp_path
+
+        cp_path = _resolve_project_cp_path(Path(tenant_root), project_code)
+        work_dir = cp_path.parent if cp_path else Path(tenant_root) / project_code
+        src = work_dir / rel_path
         if not src.exists():
             return {"ok": False, "reason": f"transcript file not found: {src}"}
 

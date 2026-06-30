@@ -160,6 +160,50 @@ def test_happy_path_same_stable_path(tmp_path):
     assert Path(ingest_path).exists()
 
 
+def _make_nested_transcript(tenant_root: Path, scope_rel: str, rel_path: str) -> Path:
+    """Build a transcript under an account-nested working dir (e.g.
+    `1p/infoblox/<code>/<rel_path>`) plus the sibling cp.md the dir-resolver
+    keys on."""
+    work_dir = tenant_root / scope_rel
+    (work_dir / Path(rel_path).parent).mkdir(parents=True, exist_ok=True)
+    (work_dir / "cp.md").write_text("# cp\n")
+    src = work_dir / rel_path
+    src.write_text("transcript body")
+    return src
+
+
+def test_resolves_account_nested_working_dir(tmp_path):
+    # Engagements live at <tenant>/1p/<company>/<code>/, NOT <tenant>/<code>/.
+    # The transcript exists only under the nested path; promotion must find it
+    # there rather than joining the bare code onto the tenant root.
+    _make_nested_transcript(
+        tmp_path, "1p/infoblox/ibx-5167-ddi-platform-video",
+        "spine/animation/editorial-finishing.md",
+    )
+    ingest = _Recorder({"ok": True})
+    stamp = _Recorder({"stamped": True, "ids": ["a1"], "title": "T"})
+    result = promote_transcript(
+        client=object(),
+        tenant_root=str(tmp_path),
+        project_code="ibx-5167-ddi-platform-video",
+        project_id="p1",
+        company_id="c1",
+        element_row={"est_item_id": "e1",
+                     "rel_path": "spine/animation/editorial-finishing.md",
+                     "framing": "Record voice over"},
+        supabase_url="u",
+        supabase_key="k",
+        ingest=ingest,
+        stamp=stamp,
+    )
+    assert result["ok"] is True, result
+    assert result["title"] == "Record voice over"
+    # The file was actually located and copied into the stable promote dir.
+    ingest_path = ingest.calls[0]["args"][0]
+    assert Path(ingest_path).exists()
+    assert ingest_path.endswith("editorial-finishing.md")
+
+
 def test_stamp_zero_match_is_failure(tmp_path):
     _make_transcript(tmp_path, "ggl-5168", "t.txt")
     ingest = _Recorder({"ok": True})
