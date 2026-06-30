@@ -430,6 +430,56 @@ def _spine_element(row: dict) -> dict:
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  List a project's linked MEETINGS (fathom_meetings)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Fathom meetings are linked to a project via `fathom_meetings.project_id`
+# (migration 084). This is the read counterpart for a cp session: "what
+# meetings does this project have, and which are in RAG?" — without a RAG call.
+# We NEVER select the heavy `transcript` (jsonb) blob and NEVER the large full
+# `summary` text into a list view — only explicit scalar columns + the two
+# *_at timestamps we collapse to booleans.
+_MEETING_LIST_COLUMNS = (
+    "recording_id, title, meeting_date, work_item_id, "
+    "summary_embedded_at, transcript_promoted_at, fathom_url"
+)
+
+
+def list_project_meetings(client, project_id: str) -> list[dict]:
+    """List a project's linked Fathom meetings, newest first (index, not bodies).
+
+    Returns `[{recording_id, title, meeting_date, work_item_id, fathom_url,
+    summary_embedded, transcript_promoted}]` for every meeting linked to the
+    project via `fathom_meetings.project_id`. The two booleans are derived from
+    the `summary_embedded_at` / `transcript_promoted_at` timestamps (each is
+    True iff its `*_at` field is non-null) — they tell a caller "is this meeting
+    in RAG" without surfacing the timestamps or the heavy `transcript`/`summary`
+    payloads. NEVER `select *` and NEVER the `transcript` column. Ordered by
+    `meeting_date` descending (most recent first).
+    """
+    resp = (
+        client.table("fathom_meetings")
+        .select(_MEETING_LIST_COLUMNS)
+        .eq("project_id", project_id)
+        .order("meeting_date", desc=True)
+        .execute()
+    )
+    rows = getattr(resp, "data", None) or []
+    return [
+        {
+            "recording_id": row.get("recording_id"),
+            "title": row.get("title"),
+            "meeting_date": row.get("meeting_date"),
+            "work_item_id": row.get("work_item_id"),
+            "fathom_url": row.get("fathom_url"),
+            "summary_embedded": row.get("summary_embedded_at") is not None,
+            "transcript_promoted": row.get("transcript_promoted_at") is not None,
+        }
+        for row in rows
+    ]
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Re-fetch the ORIGINAL binary via persisted coords
 # ──────────────────────────────────────────────────────────────────────
 

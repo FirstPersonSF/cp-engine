@@ -330,6 +330,39 @@ def pull_spine_element(project_code: str, key: str) -> dict:
 
 
 @mcp.tool()
+def list_project_meetings(project_code: str) -> list[dict]:
+    """List a project's linked Fathom meetings (works for engagements + initiatives).
+
+    Returns one row per meeting linked to the project: recording_id, title,
+    meeting_date, work_item_id, fathom_url, plus two RAG-state flags —
+    `summary_embedded` (the meeting summary is embedded into the RAG store) and
+    `transcript_promoted` (its transcript has been promoted into the spine).
+    Newest first. This is the read surface so a cp session can see a project's
+    meetings and whether each is in RAG without a RAG call; the heavy transcript
+    and full summary text are never returned here.
+    """
+    # Aliased import: the MCP tool and the pure helper share the name
+    # `list_project_meetings` but live in different modules.
+    from cp_engine.project_sources import (
+        list_project_meetings as _list_project_meetings,
+    )
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            # A structured note, NOT a bare [] — an unresolvable code must never
+            # masquerade as a project with genuinely no meetings (the v0.39.0
+            # false-negative).
+            return [{"note": f"code '{project_code}' resolved to no project"}]
+        client, pid, _cid = resolved
+        return _list_project_meetings(client, pid)
+    except Exception as exc:  # noqa: BLE001
+        # An MCP tool must never throw to the client: return a structured,
+        # actionable error note instead of propagating a protocol error.
+        return [{"error": f"failed to list meetings for '{project_code}': {exc}"}]
+
+
+@mcp.tool()
 def create_spine_element(project_code: str, label: str, type: str,
                          body: str = "", serves: list[str] | None = None) -> dict:
     """Create a new AUTHORED spine element (live v1) in MC-2.
