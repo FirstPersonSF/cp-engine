@@ -4,6 +4,67 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.42.0 — 2026-06-30
+
+### Changed — sprint planning reads a structured, model-authored Exec Summary (replaces the stale Quick Resume scrape)
+
+Sprint planning was "disappointingly vague" because the roll-up
+(`cp prep-planning`) represented each project by scraping the *first
+`**Current work:**` line* of `cp.md`'s Quick Resume — a field that was often
+stale, empty/template, or thin. This release replaces that lossy *pull* with a
+fresh *push*: each project's state is captured as a structured **Exec Summary**
+authored by the model at wrap up (when the truth is freshest), and the roll-up
+synthesizes across those.
+
+**The Exec Summary region.** Project `cp.md` now carries an engine-managed
+`## Exec Summary` region (markers `<!-- cp-engine:start exec-summary -->` /
+`end`) with six fields — Objective / Status / Where it stands / Next up /
+Blockers / Updates — plus `**Last session:**` and a dated `· updated <date>`
+header. It replaces the old `## Quick Resume` state box in both the project and
+initiative templates. The tenant-wide `weekly-cp.md` Quick Resume is a separate
+surface and is unchanged.
+
+**Migration is automatic on `cp sync`.** Every existing project/initiative
+`cp.md` converts its old `quick-resume` region (marker-wrapped or the older
+marker-less `## Quick Resume`) to the new `exec-summary` region in place, seeded
+from the old Current work / Next up / Blockers values plus a dated
+"migrated from Quick Resume" Update. Idempotent (runs once, then a no-op) and
+content-preserving. Account `cp.md` files — whose Quick Resume is freeform
+relationship prose, not a state box — are left untouched.
+
+**The model authors; the engine plumbs.** The engine scaffolds, migrates, and
+reads the region; the model writes the prose at `wrap up` (read the prior
+summary → merge this session's changes → rewrite the six fields → append one
+dated Update → roll off Updates older than ~4 weeks). **Auto-ingest no longer
+writes project `cp.md` state at all** — per-meeting truth lands in the sprint
+file only. Retired ingest verbs (`current_work` / `next_up` / `blockers`) are
+recognized-and-ignored (not errored) so in-flight webhook plans during the
+deploy window degrade gracefully.
+
+### Added — `cp prep-planning --bundle`
+
+A new output mode that emits the structured per-project material — each
+project's full Exec Summary plus the deterministic metrics the engine already
+computes (capacity binding, urgent flags, forward calendar, cross-cutting
+decisions) — as raw material for the model to synthesize `_planning.md`
+in-session (Focus list / decisions & blockers / cross-cutting patterns /
+per-owner commitments) rather than a pre-rendered inventory. `/cp-prep` now
+drives this bundle → in-session-synthesis flow. `--summary` and the default
+doc render are unchanged.
+
+### Fixed — exec-summary "authored" detection unified (prevents placeholder leakage)
+
+The region readers (`prep_planning`, `agenda`, `summary`) each need to tell an
+authored region from a fresh scaffold or a just-migrated one. The shared
+primitives — region slice, "is authored" check (a `_<…>_` placeholder field or
+bullet does not count, nor does the auto-migration bullet), and the
+migration-bullet regex — now live once in `render.py`, sourced from a single
+`EXEC_SUMMARY_MIGRATION_SUFFIX` constant. This eliminated two latent bugs a
+duplicated implementation had hidden: a fresh-scaffold region reading as
+"authored" (which would have spliced `- _<2-4 dense bullets…>_` placeholder text
+into the planning doc), and `summary.py`'s Status extraction leaking the
+`**Where it stands:**` label when the Status field was empty.
+
 ## v0.41.2 — 2026-06-30
 
 ### Fixed — backfill counts 'already embedded' as skipped, not failed
