@@ -98,6 +98,12 @@ def _extract_exec_summary_status_or_where(contents: str) -> str | None:
     If Status is absent or a `_<...>_` placeholder, fall back to the first
     real (non-placeholder) `Where it stands` bullet. Returns None when the
     region is absent or both candidates are placeholders.
+
+    Note: this extracts a SPECIFIC field for the master-cp one-liner, so it
+    uses per-candidate `_PLACEHOLDER_PATTERN` checks rather than the shared
+    ``render.exec_summary_is_authored`` boolean (which the region-slicing
+    readers in ``prep_planning`` / ``agenda`` use). The two agree on what
+    counts as real content — a value that trips one trips the other.
     """
     start = contents.find(EXEC_SUMMARY_START)
     if start == -1:

@@ -54,12 +54,14 @@ doc render are unchanged.
 
 ### Fixed — exec-summary "authored" detection unified (prevents placeholder leakage)
 
-The region readers (`prep_planning`, `agenda`, `summary`) each need to tell an
-authored region from a fresh scaffold or a just-migrated one. The shared
-primitives — region slice, "is authored" check (a `_<…>_` placeholder field or
-bullet does not count, nor does the auto-migration bullet), and the
-migration-bullet regex — now live once in `render.py`, sourced from a single
-`EXEC_SUMMARY_MIGRATION_SUFFIX` constant. This eliminated two latent bugs a
+The region readers need to tell an authored region from a fresh scaffold or a
+just-migrated one. The shared primitives — region slice, "is authored" check
+(a `_<…>_` placeholder field or bullet does not count, nor does the
+auto-migration bullet), and the migration-bullet regex — now live once in
+`render.py`, sourced from a single `EXEC_SUMMARY_MIGRATION_SUFFIX` constant, and
+are used by `prep_planning` and `agenda`. (`summary.py` extracts a specific
+field for the master-cp one-liner and keeps an equivalent per-field placeholder
+check.) This eliminated two latent bugs a
 duplicated implementation had hidden: a fresh-scaffold region reading as
 "authored" (which would have spliced `- _<2-4 dense bullets…>_` placeholder text
 into the planning doc), and `summary.py`'s Status extraction leaking the
