@@ -113,18 +113,30 @@ def test_decisions_for_project_is_case_insensitive() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  extract_quick_resume
+#  extract_quick_resume (now reads the exec-summary region)
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_extract_quick_resume_pulls_first_paragraph() -> None:
+def test_extract_quick_resume_reads_exec_summary() -> None:
+    """Sourced from the exec-summary region: real content returned cleaned,
+    with no marker lines and no `_<...>_` placeholder lines."""
     body = """
-## Quick Resume
+<!-- cp-engine:start exec-summary -->
+## Exec Summary  ·  updated 2026-06-30
 
-**Last meeting:** 2026-05-08 — Maria/Brandon weekly account meeting.
-**Current work:** Pop-up Round 3 shared with Rena.
-**Next up:** Wait for Rena Round 3 feedback.
-**Blockers:** Awaiting Rena.
+**Last session:** 2026-06-28
+**Objective:** _<one line>_
+**Status:** Round 3 with Rena, awaiting feedback.
+
+**Where it stands:**
+- Pop-up Round 3 shared with Rena.
+
+**Next up:**
+- _<concrete near-term moves>_
+
+**Blockers:**
+- None
+<!-- cp-engine:end exec-summary -->
 
 ## Current Work
 
@@ -132,21 +144,37 @@ Other content.
 """
     out = extract_quick_resume(body)
     assert out is not None
-    assert "Last meeting" in out
-    assert "Pop-up Round 3" in out
-    assert "Other content" not in out  # next H2 not included
+    assert "Round 3 with Rena" in out
+    assert "Pop-up Round 3 shared with Rena." in out
+    # No marker lines and no placeholder lines survive.
+    assert "cp-engine:start" not in out
+    assert "cp-engine:end" not in out
+    assert "_<" not in out
+    assert "Other content" not in out  # outside the region
 
 
-def test_extract_quick_resume_returns_none_for_template_placeholders() -> None:
-    """Project cp.md files scaffolded but not yet deepened have only the
-    template placeholders (`_<date>_`, etc.). Don't surface those."""
+def test_extract_quick_resume_none_when_unauthored() -> None:
+    """All-placeholder region (incl. only the migration bullet) → None."""
     body = """
-## Quick Resume
+<!-- cp-engine:start exec-summary -->
+## Exec Summary  ·  updated 2026-06-30
 
 **Last session:** _<date>_
-**Current work:** _<what's in flight right now>_
-**Next up:** _<next 1-3 concrete actions>_
-**Blockers:** _<or "None">_
+**Objective:** _<one line>_
+**Status:** _<current state in a phrase>_
+
+**Where it stands:**
+- _<2-4 dense bullets of current reality>_
+
+**Next up:**
+- _<concrete near-term moves>_
+
+**Blockers:**
+- _<or "None">_
+
+**Updates:**
+- 2026-06-30 — migrated from Quick Resume
+<!-- cp-engine:end exec-summary -->
 """
     assert extract_quick_resume(body) is None
 
@@ -169,14 +197,16 @@ def test_strip_hash_marker_removes_trailing_idempotency_comment() -> None:
 
 
 def test_extract_quick_resume_strips_template_lines_when_mixed() -> None:
-    """If the section has both real content AND placeholder lines, keep
-    the real content and drop the placeholders."""
+    """If the exec-summary region has both real content AND placeholder lines,
+    keep the real content and drop the placeholders."""
     body = """
-## Quick Resume
+<!-- cp-engine:start exec-summary -->
+## Exec Summary  ·  updated 2026-06-30
 
-**Current work:** Real ongoing work here.
+**Status:** Real ongoing work here.
 **Last session:** _<date>_
 **Blockers:** _<or "None">_
+<!-- cp-engine:end exec-summary -->
 
 ## Next Section
 """

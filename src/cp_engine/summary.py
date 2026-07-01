@@ -1,19 +1,20 @@
 """One-line summary derivation for the master-CP.
 
-Strategy (v0.2.3 onwards): the master-CP one-liner is derived from the
-project CP's hand-written content during sync. Specifically:
+Strategy: the master-CP one-liner is derived from the project CP's
+model-authored ``exec-summary`` region during sync. Specifically:
 
-1. Look at the `## Quick Resume` section's "Current work:" line. If a
-   human has written something there, use it.
-2. Otherwise, look at the `## Current Work` section's first non-placeholder
-   paragraph.
-3. Otherwise, return None — the master-CP shows an empty cell. The column
-   activates the moment a human writes content; until then, it's inert.
+1. Look at the exec-summary region's `**Status:**` field (the one-phrase
+   field, ideal for a one-line summary). If authored, use it.
+2. Otherwise, the first real `Where it stands` bullet in that region.
+3. Otherwise, the `## Current Work` section's first non-placeholder
+   paragraph (legit fallback while the exec-summary is unauthored).
+4. Otherwise, return None — the master-CP shows an empty cell. The column
+   activates the moment content exists; until then, it's inert.
 
 Hard cap: ≤120 characters, single sentence, no markdown. Truncates with `…`.
 
 Pure-Python heuristic; no LLM call. Deterministic, free, fast. If the
-heuristic proves too crude, swap in an LLM call in v0.3 without changing
+heuristic proves too crude, swap in an LLM call later without changing
 the public function shape.
 """
 
@@ -22,6 +23,8 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+
+from cp_engine.render import EXEC_SUMMARY_END, EXEC_SUMMARY_START
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +53,11 @@ def derive_from_project_cp(file_path: Path) -> str | None:
     """Read a project CP and derive its one-line summary.
 
     Tries (in order):
-    1. `## Quick Resume`'s "Current work:" line content
-    2. First non-placeholder paragraph in `## Current Work`
+    1. The exec-summary region's `**Status:**` field value
+    2. The first real `Where it stands` bullet in the exec-summary region
+    3. First non-placeholder paragraph in `## Current Work`
 
-    Returns None if neither yields content. The master CP renders an
+    Returns None if none yields content. The master CP renders an
     empty cell when None.
     """
     if not file_path.exists():
@@ -66,7 +70,7 @@ def derive_from_project_cp(file_path: Path) -> str | None:
         return None
 
     summary = (
-        _extract_quick_resume_current_work(contents)
+        _extract_exec_summary_status_or_where(contents)
         or _extract_current_work_first_paragraph(contents)
     )
     if summary is None:
@@ -79,34 +83,58 @@ def derive_from_project_cp(file_path: Path) -> str | None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _extract_quick_resume_current_work(contents: str) -> str | None:
-    """Pull the "Current work:" line out of the `## Quick Resume` section.
+def _extract_exec_summary_status_or_where(contents: str) -> str | None:
+    """Derive a one-liner from the model-authored ``exec-summary`` region.
 
-    Quick Resume's body is structured as:
+    The region (between EXEC_SUMMARY_START/END markers) is structured as:
         **Last session:** <date>
-        **Current work:** <one-line>
-        **Next up:** <list>
-        **Blockers:** <or "None">
+        **Objective:** <one line>
+        **Status:** <current state in a phrase>
+        **Where it stands:**
+        - <bullets of current reality>
+        ...
 
-    We want just the current-work value. Returns None if section absent,
-    line absent, or value is the template placeholder.
+    Prefer the `**Status:**` field value (a designed one-phrase field).
+    If Status is absent or a `_<...>_` placeholder, fall back to the first
+    real (non-placeholder) `Where it stands` bullet. Returns None when the
+    region is absent or both candidates are placeholders.
+
+    Note: this extracts a SPECIFIC field for the master-cp one-liner, so it
+    uses per-candidate `_PLACEHOLDER_PATTERN` checks rather than the shared
+    ``render.exec_summary_is_authored`` boolean (which the region-slicing
+    readers in ``prep_planning`` / ``agenda`` use). The two agree on what
+    counts as real content — a value that trips one trips the other.
     """
-    section = _section_body(contents, "Quick Resume")
-    if section is None:
+    start = contents.find(EXEC_SUMMARY_START)
+    if start == -1:
         return None
+    end = contents.find(EXEC_SUMMARY_END, start)
+    if end == -1:
+        return None
+    region = contents[start + len(EXEC_SUMMARY_START) : end]
 
-    match = re.search(
-        r"\*\*Current work:\*\*\s*(.+?)(?:\n\*\*|\n\n|\Z)",
-        section,
-        re.DOTALL,
+    # 1. Status field — the designed one-phrase summary.
+    status = re.search(r"^\*\*Status:\*\*[ \t]*(.+?)[ \t]*$", region, re.MULTILINE)
+    if status:
+        value = status.group(1).strip()
+        if value and not _PLACEHOLDER_PATTERN.search(value):
+            return value
+
+    # 2. First real bullet under `**Where it stands:**`.
+    where = re.search(
+        r"^\*\*Where it stands:\*\*\s*\n(.+?)(?=^\*\*|\Z)",
+        region,
+        re.DOTALL | re.MULTILINE,
     )
-    if not match:
-        return None
-
-    value = match.group(1).strip()
-    if not value or _PLACEHOLDER_PATTERN.search(value):
-        return None
-    return value
+    if where:
+        for line in where.group(1).splitlines():
+            bullet = line.strip()
+            if not bullet.startswith("- "):
+                continue
+            value = bullet[2:].strip()
+            if value and not _PLACEHOLDER_PATTERN.search(value):
+                return value
+    return None
 
 
 def _extract_current_work_first_paragraph(contents: str) -> str | None:

@@ -29,13 +29,17 @@ from cp_engine.prep_planning import (
     _CLICKUP_MAX_PAGES,
     _CLICKUP_PAGE_SIZE,
     _detect_urgent,
+    _extract_exec_summary,
     _fetch_clickup_milestones,
     _group_by_account,
     _normalize_clickup_task,
     build_planning_result,
+    render_planning_bundle,
     render_planning_doc,
     render_planning_summary,
 )
+from cp_engine.render import EXEC_SUMMARY_END, EXEC_SUMMARY_START
+from cp_engine.sync import EXEC_SUMMARY_MIGRATION_SUFFIX
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -316,7 +320,7 @@ def test_render_planning_doc_groups_by_account():
     blocks = (
         ProjectPlanningBlock(
             project=make_state("ggl-1", company_name="Google"),
-            quick_resume_line=None,
+            exec_summary=None,
             milestones=(),
             client_asks=(),
             sprint_open_asks=(),
@@ -325,7 +329,7 @@ def test_render_planning_doc_groups_by_account():
         ),
         ProjectPlanningBlock(
             project=make_state("ibx-1", company_code="IBX", company_name="Infoblox"),
-            quick_resume_line=None,
+            exec_summary=None,
             milestones=(),
             client_asks=(),
             sprint_open_asks=(),
@@ -336,7 +340,7 @@ def test_render_planning_doc_groups_by_account():
             project=make_state(
                 "snt-1", company_code="SNT", company_name="Sentinel One"
             ),
-            quick_resume_line=None,
+            exec_summary=None,
             milestones=(),
             client_asks=(),
             sprint_open_asks=(),
@@ -369,7 +373,7 @@ def test_render_planning_doc_renders_forward_calendar():
     )
     block = ProjectPlanningBlock(
         project=state,
-        quick_resume_line="we are here",
+        exec_summary="we are here",
         # Build expects pre-sorted; build_project_block sorts inside.
         milestones=tuple(sorted([ms1, ms2], key=lambda m: m["date"])),
         client_asks=(),
@@ -412,7 +416,7 @@ def test_render_planning_doc_renders_open_commitments_table():
     }
     block = ProjectPlanningBlock(
         project=state,
-        quick_resume_line=None,
+        exec_summary=None,
         milestones=(ms,),
         client_asks=(ask,),
         sprint_open_asks=(sprint_ask,),  # type: ignore[arg-type]
@@ -463,7 +467,7 @@ def test_commitments_table_escapes_pipes_in_milestone_deliverable():
     )
     block = ProjectPlanningBlock(
         project=state,
-        quick_resume_line=None,
+        exec_summary=None,
         milestones=(ms,),
         client_asks=(),
         sprint_open_asks=(),
@@ -498,7 +502,7 @@ def test_commitments_table_escapes_newlines_in_client_ask():
     )
     block = ProjectPlanningBlock(
         project=state,
-        quick_resume_line=None,
+        exec_summary=None,
         milestones=(),
         client_asks=(ask,),
         sprint_open_asks=(),
@@ -1166,8 +1170,128 @@ def test_render_planning_doc_full_walk(tmp_path):
     assert "ibx-5153" in doc
 
 
-def test_render_quick_resume_when_present(tmp_path):
-    """When cp.md has a real **Current work:** line, the Where block reflects it."""
+# ──────────────────────────────────────────────────────────────────────
+#  _extract_exec_summary
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _exec_summary_region(*, objective, status, where, next_up, blockers):
+    """Build an exec-summary region body (markers + fields) for tests."""
+    lines = [
+        EXEC_SUMMARY_START,
+        "## Exec Summary  ·  updated 2026-06-30",
+        "",
+        "**Last session:** _<date>_",
+        f"**Objective:** {objective}",
+        f"**Status:** {status}",
+        "",
+        "**Where it stands:**",
+    ]
+    if where:
+        lines.append(f"- {where}")
+    lines.append("")
+    lines.append("**Next up:**")
+    if next_up:
+        lines.append(f"- {next_up}")
+    lines.append("")
+    lines.append("**Blockers:**")
+    if blockers:
+        lines.append(f"- {blockers}")
+    lines.append("")
+    lines.append("**Updates:**")
+    lines.append(f"- 2026-06-30{EXEC_SUMMARY_MIGRATION_SUFFIX}")
+    lines.append(EXEC_SUMMARY_END)
+    return "\n".join(lines) + "\n"
+
+
+def test_extract_exec_summary_returns_full_region():
+    """A filled region returns its inner text (no cp-engine markers)."""
+    body = (
+        "# CP\n\n"
+        + _exec_summary_region(
+            objective="Ship the activation playbooks.",
+            status="Pop-up R3 in review.",
+            where="Pop-up R3 with Rena since 5/22.",
+            next_up="Wait for Rena feedback.",
+            blockers="",
+        )
+        + "\n## Project Notes\n"
+    )
+    out = _extract_exec_summary(body)
+    assert out is not None
+    assert "Ship the activation playbooks." in out
+    assert "Pop-up R3 in review." in out
+    assert "Pop-up R3 with Rena since 5/22." in out
+    assert "<!-- cp-engine" not in out
+
+
+def test_extract_exec_summary_missing_returns_none():
+    """No exec-summary region → None."""
+    body = "# CP\n\n## Quick Resume\n\n**Current work:** something.\n"
+    assert _extract_exec_summary(body) is None
+
+
+def test_extract_exec_summary_all_placeholder_returns_none():
+    """A freshly-scaffolded, never-authored region reads as no content."""
+    body = "# CP\n\n" + _exec_summary_region(
+        objective="_<one line — what this project delivers>_",
+        status="_<current state in a phrase>_",
+        where="",
+        next_up="",
+        blockers="",
+    )
+    assert _extract_exec_summary(body) is None
+
+
+def test_extract_exec_summary_partial_real_content_returns_region():
+    """A real Status with placeholders elsewhere still returns the region."""
+    body = "# CP\n\n" + _exec_summary_region(
+        objective="_<one line — what this project delivers>_",
+        status="Pop-up R3 in review.",
+        where="",
+        next_up="",
+        blockers="",
+    )
+    out = _extract_exec_summary(body)
+    assert out is not None
+    assert "Pop-up R3 in review." in out
+
+
+def test_migration_bullet_regex_matches_syncs_real_output():
+    """Anti-drift parity guard: prep_planning's migration-bullet regex must
+    match the EXACT Updates bullet that sync's migration stamps. The two live
+    in different modules sharing only EXEC_SUMMARY_MIGRATION_SUFFIX; if either
+    side's wording drifts, a freshly-migrated region would wrongly read as
+    authored and pollute the planning doc. This test fails loudly on drift."""
+    from cp_engine.render import (
+        EXEC_SUMMARY_MIGRATION_BULLET_RE as _EXEC_SUMMARY_MIGRATION_BULLET_RE,
+    )
+    from cp_engine.sync import _build_exec_summary_region
+
+    # An all-placeholder migrated region: its only Updates content is the
+    # auto-stamped migration bullet. sync builds it; prep_planning must read
+    # it as unauthored.
+    region = _build_exec_summary_region("", today="2026-06-30")
+    migration_lines = [
+        line
+        for line in region.splitlines()
+        if _EXEC_SUMMARY_MIGRATION_BULLET_RE.match(line)
+    ]
+    assert len(migration_lines) == 1, (
+        "prep_planning regex did not match sync's migration bullet — the two "
+        "drifted; check EXEC_SUMMARY_MIGRATION_SUFFIX usage in both modules"
+    )
+    # End-to-end: the unauthored migrated region reads as None.
+    full = (
+        "<!-- cp-engine:start exec-summary -->\n"
+        + region
+        + "<!-- cp-engine:end exec-summary -->\n"
+    ) if EXEC_SUMMARY_START not in region else region
+    assert _extract_exec_summary(full) is None
+
+
+def test_render_exec_summary_when_present(tmp_path):
+    """When cp.md has a filled exec-summary region, the block reflects it."""
     config = make_config(tmp_path)
     state = make_state("ggl-5168", name="GGL 5168 Activation", company_name="Google")
     # Lay down a real cp.md at the account-scoped path.
@@ -1177,12 +1301,15 @@ def test_render_quick_resume_when_present(tmp_path):
     cp_md = tmp_path / scope / slug / "cp.md"
     cp_md.parent.mkdir(parents=True, exist_ok=True)
     cp_md.write_text(
-        "## Quick Resume\n\n"
-        "**Last session:** _<date>_\n"
-        "**Current work:** Pop-up R3 with Rena since 5/22.\n"
-        "**Next up:** Wait for Rena feedback.\n"
-        "**Blockers:** Awaiting Rena.\n\n"
-        "## Next\n"
+        "# CP\n\n"
+        + _exec_summary_region(
+            objective="Ship the activation playbooks.",
+            status="Pop-up R3 in review.",
+            where="Pop-up R3 with Rena since 5/22.",
+            next_up="Wait for Rena feedback.",
+            blockers="Awaiting Rena.",
+        )
+        + "\n## Next\n"
     )
     block = prep_planning.build_project_block(
         state,
@@ -1194,8 +1321,8 @@ def test_render_quick_resume_when_present(tmp_path):
         clickup_token=None,
         list_id_override=None,
     )
-    assert block.quick_resume_line is not None
-    assert "Pop-up R3 with Rena" in block.quick_resume_line
+    assert block.exec_summary is not None
+    assert "Pop-up R3 with Rena" in block.exec_summary
 
 
 def test_summary_counts_errors_for_failed_fetch(tmp_path):
@@ -1498,7 +1625,7 @@ def test_project_header_dedupes_when_code_equals_name():
     )
     block = ProjectPlanningBlock(
         project=state,
-        quick_resume_line=None,
+        exec_summary=None,
         milestones=(),
         client_asks=(),
         sprint_open_asks=(),
@@ -1521,7 +1648,7 @@ def test_project_header_keeps_both_when_code_differs_from_name():
     )
     block = ProjectPlanningBlock(
         project=state,
-        quick_resume_line=None,
+        exec_summary=None,
         milestones=(),
         client_asks=(),
         sprint_open_asks=(),
@@ -1926,3 +2053,111 @@ def test_sweep_best_effort_one_fails_one_succeeds(tmp_path):
     }
     assert by_code["ggl-5168"].sweep_synthesis is None
     assert by_code["ibx-5153"].sweep_synthesis == "GOOD SYNTHESIS"
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Task 6 — render_planning_bundle (model-facing structured dump)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _bundle_block(code, *, company_name, company_code, exec_summary):
+    return ProjectPlanningBlock(
+        project=make_state(
+            code, name=f"{code} Name",
+            company_code=company_code, company_name=company_name,
+        ),
+        exec_summary=exec_summary,
+        milestones=(),
+        client_asks=(),
+        sprint_open_asks=(),
+        urgent=(),
+        fetch_error=None,
+    )
+
+
+def _bundle_result(blocks, **kw):
+    by_account = prep_planning._group_by_account(tuple(blocks))
+    return prep_planning.PlanningResult(
+        week_iso="2026-W23",
+        week_dates="Jun 1 – Jun 7",
+        project_count=len(blocks),
+        estimated_minutes=60,
+        tenant_hours_last_week=kw.get("tenant_hours", {}),
+        blocks_by_account=by_account,
+        milestone_counts={"total": 0, "fetched": 0, "errored": 0},
+        urgent_counts={"slip_risk": 0, "decision_due": 0,
+                       "past_due_ask": 0, "escalated_risk": 0},
+        capacity_binding=kw.get("capacity_binding", ()),
+        cross_cutting_decisions=kw.get("cross_cutting_decisions", ()),
+        generated_at="2026-06-01T00:00:00Z",
+    )
+
+
+def test_render_planning_bundle_includes_each_exec_summary():
+    """Two projects in different accounts → both codes + both FULL exec
+    summaries appear verbatim in the bundle."""
+    blocks = (
+        _bundle_block(
+            "ggl-5168", company_name="Google", company_code="GGL",
+            exec_summary="GGL DISTINCT — pop-up R3 with Rena, decision on tiering due.",
+        ),
+        _bundle_block(
+            "ibx-5153", company_name="Infoblox", company_code="IBX",
+            exec_summary="IBX DISTINCT — Carol framework two-track thesis blocked on Janet.",
+        ),
+    )
+    result = _bundle_result(blocks)
+    out = prep_planning.render_planning_bundle(result)
+    assert "ggl-5168" in out
+    assert "ibx-5153" in out
+    assert "GGL DISTINCT — pop-up R3 with Rena, decision on tiering due." in out
+    assert "IBX DISTINCT — Carol framework two-track thesis blocked on Janet." in out
+    # Both accounts surface as section headers.
+    assert "Google" in out
+    assert "Infoblox" in out
+
+
+def test_render_planning_bundle_includes_metrics():
+    """Capacity binding (Brandon@10 signal) + cross-cutting decisions appear."""
+    from cp_engine.agenda import WeeklyDecision
+
+    decisions = (
+        WeeklyDecision(
+            number=1,
+            text="**Brandon hidden-load** — re-attribute owner on implicit projects.",
+            date="2026-05-28",
+            sources=("sprint planning",),
+        ),
+    )
+    blocks = (
+        _bundle_block(
+            "ggl-5168", company_name="Google", company_code="GGL",
+            exec_summary="placeholder",
+        ),
+    )
+    result = _bundle_result(
+        blocks,
+        tenant_hours={"Drew": 40, "Tony": 30},
+        capacity_binding=({"owner": "brandon", "count": 10},),
+        cross_cutting_decisions=decisions,
+    )
+    out = prep_planning.render_planning_bundle(result)
+    assert "**brandon** — owner-of-record on 10 projects" in out
+    assert "Brandon hidden-load" in out
+    # Tenant hours flow through the tenant strip.
+    assert "Drew 40h" in out
+
+
+def test_render_planning_bundle_marks_unauthored():
+    """A block with exec_summary=None is NOT silently omitted — it surfaces
+    with an explicit not-authored marker."""
+    blocks = (
+        _bundle_block(
+            "fps-1", company_name="First Person", company_code="FPS",
+            exec_summary=None,
+        ),
+    )
+    result = _bundle_result(blocks)
+    out = prep_planning.render_planning_bundle(result)
+    assert "fps-1" in out
+    assert "Exec Summary not yet authored" in out

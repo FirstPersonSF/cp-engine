@@ -36,6 +36,11 @@ from cp_engine.aggregators import (
     aggregate_tenant_strips,
 )
 from cp_engine.config import TenantConfig
+from cp_engine.render import (
+    EXEC_SUMMARY_MIGRATION_BULLET_RE,
+    exec_summary_is_authored,
+    slice_exec_summary_region,
+)
 from cp_engine.sprints import (
     current_sprint_week_iso,
     parse_sprint_file,
@@ -189,30 +194,31 @@ def decisions_for_project(
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Quick Resume parsing
+#  Exec-summary parsing (formerly Quick Resume)
 # ──────────────────────────────────────────────────────────────────────
 
-
 def extract_quick_resume(cp_md_body: str) -> str | None:
-    """Pull the first content paragraph after `## Quick Resume`.
+    """Pull the cleaned content of the engine-managed `exec-summary` region.
 
-    Returns None when the section is missing OR contains only the template
-    placeholder lines (e.g. `**Last session:** _<date>_`). The placeholder
-    detection is fuzzy on purpose — we don't want to surface 'Last session: <date>'
-    as if it's real content.
+    (Formerly read the `## Quick Resume` heading; that region was replaced by
+    the model-authored exec-summary region. Name kept to minimize churn in
+    this deprecated module — callers + the `quick_resume_excerpt` field and
+    `quick_resume_coverage` metric still reference it.)
+
+    Returns None when the region is missing OR contains only template
+    placeholder lines (`_<...>_`) / the auto-stamped migration bullet. The
+    placeholder detection is fuzzy on purpose — we don't want to surface
+    'Last session: <date>' or 'migrated from Quick Resume' as real content.
     """
-    m = re.search(
-        r"^## Quick Resume\s*\n(.+?)(?=^## |\Z)",
-        cp_md_body,
-        re.MULTILINE | re.DOTALL,
-    )
-    if not m:
+    region = slice_exec_summary_region(cp_md_body)
+    if region is None or not exec_summary_is_authored(region):
         return None
-    raw = m.group(1).strip()
-    if not raw:
-        return None
-    # Strip placeholder template lines (containing `_<...>_` markers).
-    lines = [ln for ln in raw.splitlines() if "_<" not in ln]
+    # Drop placeholder template lines (`_<...>_`) and the auto migration bullet.
+    lines = [
+        ln
+        for ln in region.splitlines()
+        if "_<" not in ln and not EXEC_SUMMARY_MIGRATION_BULLET_RE.match(ln.strip())
+    ]
     cleaned = "\n".join(lines).strip()
     return cleaned or None
 

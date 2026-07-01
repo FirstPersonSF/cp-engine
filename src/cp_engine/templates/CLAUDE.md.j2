@@ -296,7 +296,7 @@ conversation is about.
 | `also load <code>` | additive | Layer that project's `cp.md` onto the current mode. |
 | `switch to <code>` | replace → 2 | Discard previous mode; load that project's `cp.md`. |
 | `deepen from transcript` | (during weekly review) | Begin deepening pass. |
-| `wrap up` | (during weekly review) | Finalize: word-count checks, master-CP roll-up, commit, push. |
+| `wrap up` | (during weekly review) | Finalize: author each touched project's Exec Summary, word-count checks, master-CP roll-up, commit, push. |
 | `rotate the CP` | any | Manually trigger archive rotation on the focused CP. |
 
 ## Reference style
@@ -331,14 +331,26 @@ auto-appended bullets in known sections.
 
 When the user asks to prep an agenda for sprint planning ("run weekly
 sprint planning", "prep sprint planning agenda", or similar), run
-`/cp-prep` (the engine-managed slash command). It generates
-`sprints/<W##>/_planning.md` — the partners' sprint-planning doc with:
+`/cp-prep` (the engine-managed slash command). The engine emits a
+**bundle** (`cp prep-planning --bundle`) — every active project's full
+Exec Summary plus deterministic metrics — and **you synthesize**
+`sprints/<W##>/_planning.md` from it in-session (you author and write the
+doc; the engine does not render it). The synthesized plan contains:
 
-- Tenant strip + cross-cutting capacity binding + cross-cutting
-  decisions from `weekly-cp.md`
-- Per-account project blocks, urgent flags leading each block
-- Forward calendar of dated ClickUp milestones per project
-- Two-way Open Commitments table (us → them + them → us)
+- A **Focus list** — the 5–8 projects that need the room, each with a
+  one-line reason (decision due / blocker / deadline / slipping); steady
+  projects named but not dwelt on
+- **Decisions & blockers needing the partners**, deduped across projects
+- **Cross-cutting patterns** — capacity binding, competing deadlines,
+  shared blockers (visible only when you read all the Exec Summaries at
+  once)
+- **Per-owner commitments** rolled up across each partner's projects
+  (us → them + them → us)
+
+Because you author it in-session, you can defend and revise it live in
+the meeting. The bundle also carries the forward calendar of dated
+ClickUp milestones and the tenant capacity/hours metrics as raw
+material.
 
 For ad-hoc scoped prep (e.g. one client meeting): `/cp-prep <code>
 [<code> ...]`.
@@ -350,6 +362,37 @@ per-project routing + a tenant-wide summary in `weekly-cp.md`'s
 `## Account summaries`. Don't hand-write per-project bullets when the
 auto-ingest path is available.
 
+## Authoring the Exec Summary at wrap up
+
+Each project `cp.md` carries a model-authored `## Exec Summary` region
+(between `<!-- cp-engine:start exec-summary -->` and
+`<!-- cp-engine:end exec-summary -->`) with six fields — **Objective /
+Status / Where it stands / Next up / Blockers / Updates** — plus a
+`**Last session:**` line. **You author this; the engine does not.** The
+engine only scaffolds the region, migrates the old Quick Resume into it
+on `cp sync`, and reads it for `/cp-prep`. Auto-ingest no longer writes
+project `cp.md` state at all — per-meeting truth lands in the sprint file
+only, and the Exec Summary is refreshed by you at `wrap up`.
+
+At `wrap up`, for **each project the session touched**, refresh its Exec
+Summary by editing directly between the `exec-summary` markers (Edit
+tool). It's a **merge, not a regenerate** — a session that touched one
+aspect must not wipe the rest:
+
+1. **Read the prior Exec Summary** — its six fields and the full Updates
+   history.
+2. **Read this session's changes** — the sprint-file edits, spine
+   updates, and any recent meeting ingests for this project.
+3. **Rewrite the six fields against current reality**, carrying forward
+   everything that's still true and revising only what changed.
+4. **Append ONE dated Update** capturing this session's delta:
+   `- <today> — <what changed>`.
+5. **Roll off Updates older than ~4 weeks** so the history stays tight.
+6. **Stamp `· updated <today>`** on the `## Exec Summary` heading line.
+
+This is the durable project-state surface; transient weekly material
+belongs in the sprint file, not the Exec Summary.
+
 ## Deepening from transcript
 
 During `deepen from transcript`, write meeting notes, decisions, new client
@@ -357,9 +400,9 @@ asks, outbound drafts, and risk updates into the *sprint file's* hand-written
 sections. Engine-managed regions inside the sprint file (`sprint-facts`,
 `where-it-stands`, `carry-forward`) MUST NOT be edited — sync owns them.
 
-Project `cp.md` still receives durable updates (Quick Resume, Project Notes,
-Stakeholders); transient weekly material belongs in the sprint file, not in
-`cp.md`.
+Project `cp.md` still receives durable updates — the **Exec Summary**
+(authored at `wrap up`, above), plus Project Notes and Stakeholders;
+transient weekly material belongs in the sprint file, not in `cp.md`.
 
 `wrap up` extends to commit the entire `sprints/<YYYY-W##>/` directory alongside
 the master roll-up and to run word-count discipline on each sprint file.

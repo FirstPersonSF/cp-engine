@@ -48,6 +48,10 @@ from cp_engine.agenda import (
     to_datetime,
 )
 from cp_engine.config import TenantConfig
+from cp_engine.render import (
+    exec_summary_is_authored,
+    slice_exec_summary_region,
+)
 from cp_engine.sprints import (
     bullets,
     current_sprint_week_iso,
@@ -119,7 +123,7 @@ class ProjectPlanningBlock:
     """Per-project rendered content."""
 
     project: ProjectState
-    quick_resume_line: str | None
+    exec_summary: str | None
     milestones: tuple[Milestone, ...]
     client_asks: tuple[Milestone, ...]
     sprint_open_asks: tuple[SprintAsk, ...]
@@ -491,22 +495,29 @@ def _resolve_clickup_list_for_project(
 # ──────────────────────────────────────────────────────────────────────
 
 
-_QR_CURRENT_RE = re.compile(
-    r"\*\*Current work:\*\*\s*(?P<text>.+?)(?=\n\s*\*\*|\n##|\Z)",
-    re.DOTALL,
-)
+def _extract_exec_summary(cp_md_body: str) -> str | None:
+    """Return the inner text of a project cp.md's engine-managed
+    ``exec-summary`` region — the model-authored 6-field state box (Objective,
+    Status, Where it stands, Next up, Blockers, Updates + Last session).
 
+    The marker lines themselves are stripped; leading/trailing blank lines are
+    trimmed. Returns ``None`` when:
 
-def _extract_current_work(cp_md_body: str) -> str | None:
-    """Pull the ``**Current work:**`` line from a project's cp.md Quick Resume."""
-    m = _QR_CURRENT_RE.search(cp_md_body)
-    if not m:
+      * the region markers are absent, or
+      * the region is entirely UNAUTHORED — every ``**Label:**`` field value is
+        still a ``_<...>_`` placeholder AND there are no real seed bullets (the
+        only bullet allowed to count as "no content" is the auto-stamped
+        ``- <date> — migrated from Quick Resume`` migration line).
+
+    Pure function on the body string. Region slicing + the authored-check
+    are shared with agenda.py via render.py's authoritative copies.
+    """
+    region = slice_exec_summary_region(cp_md_body)
+    if region is None:
         return None
-    text = m.group("text").strip()
-    # Drop the engine placeholder so an unfilled QR doesn't surface as content.
-    if not text or "_<" in text:
+    if not exec_summary_is_authored(region):
         return None
-    return text
+    return region
 
 
 # Open-ask bullet shape from sprint files. Mirrors attention_digest._OPEN_ASK_RE.
@@ -819,14 +830,14 @@ def build_project_block(
     unchanged and free. Best-effort: a sweep failure (or a project with no
     backfilled spine) logs + leaves ``sweep_synthesis=None`` without aborting.
     """
-    # Quick Resume line from the project's cp.md
+    # Exec Summary region from the project's cp.md
     scope = account_scope_for(project)
     slug = dir_slug(project.code, project.name)
     cp_md_path = config.root / scope / slug / "cp.md"
-    current_work: str | None = None
+    exec_summary: str | None = None
     if cp_md_path.is_file():
         try:
-            current_work = _extract_current_work(
+            exec_summary = _extract_exec_summary(
                 cp_md_path.read_text(encoding="utf-8")
             )
         except OSError as exc:
@@ -919,7 +930,7 @@ def build_project_block(
 
     return ProjectPlanningBlock(
         project=project,
-        quick_resume_line=current_work,
+        exec_summary=exec_summary,
         milestones=milestones,
         client_asks=client_asks,
         sprint_open_asks=sprint_asks,
@@ -1352,34 +1363,51 @@ def _render_commitments_table(block: ProjectPlanningBlock) -> list[str]:
     return out
 
 
+# Shared sub-blocks used by both the human-doc and bundle project renderers,
+# so the identical surface (header collapse, urgent loop, the unauthored
+# sentinel) stays single-sourced and the two renderers can't drift.
+
+# Emitted for a block whose exec_summary was never authored. Single-sourced
+# so the wording matches across the doc + bundle renderers.
+_EXEC_SUMMARY_UNAUTHORED_MARKER = (
+    "_(Exec Summary not yet authored — fill in at wrap up before "
+    "sprint planning)_"
+)
+
+
+def _render_block_header(p: ProjectState) -> list[str]:
+    """The `### <code> <name> — <owner>` header + blank line. Standalone repos
+    (and some initiatives) carry name == code, which used to render as a
+    duplicated header like "### cp cp — Drew and Tony"; collapse to one slug in
+    that case — cosmetic only, exact em-dash and spacing preserved."""
+    owner = p.owner or "—"
+    if p.code == p.name:
+        return [f"### {p.code} — {owner}", ""]
+    return [f"### {p.code} {p.name} — {owner}", ""]
+
+
+def _render_urgent(block: ProjectPlanningBlock) -> list[str]:
+    """The urgent-flags sub-block (or the no-urgent-items placeholder)."""
+    if not block.urgent:
+        return ["_(no urgent items)_", ""]
+    out = ["**Urgent:**"]
+    for item in block.urgent:
+        severity = item.get("severity", "warn")
+        marker = "ALERT" if severity == "alert" else "WARN"
+        out.append(f"- [{marker}] {item.get('text', '(no text)')}")
+    out.append("")
+    return out
+
+
 def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
     """Render one project's section: urgent → Where → Forward → Commitments."""
-    p = block.project
-    owner = p.owner or "—"
-    # Standalone repos (and some initiatives) carry name == code, which used
-    # to render as a duplicated header like "### cp cp — Drew and Tony".
-    # Collapse to one slug in that case — cosmetic only, exact em-dash and
-    # spacing preserved.
-    if p.code == p.name:
-        out = [f"### {p.code} — {owner}", ""]
-    else:
-        out = [f"### {p.code} {p.name} — {owner}", ""]
+    out = _render_block_header(block.project)
+    out.extend(_render_urgent(block))
 
-    if block.urgent:
-        out.append("**Urgent:**")
-        for item in block.urgent:
-            severity = item.get("severity", "warn")
-            marker = "ALERT" if severity == "alert" else "WARN"
-            out.append(f"- [{marker}] {item.get('text', '(no text)')}")
-        out.append("")
+    if block.exec_summary:
+        out.append(block.exec_summary)
     else:
-        out.append("_(no urgent items)_")
-        out.append("")
-
-    if block.quick_resume_line:
-        out.append(f"**Where:** {block.quick_resume_line}")
-    else:
-        out.append("**Where:** _(Quick Resume empty — fill in before sprint planning)_")
+        out.append(_EXEC_SUMMARY_UNAUTHORED_MARKER)
     out.append("")
 
     # Whole-project sweep synthesis (Project Spine slice 3, Phase B). Only
@@ -1401,14 +1429,21 @@ def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
 def _render_account_section(
     account_name: str,
     blocks: list[ProjectPlanningBlock],
+    *,
+    project_renderer=_render_project_block,
 ) -> list[str]:
-    """Render one account's section: header + every project block."""
+    """Render one account's section: header + every project block.
+
+    ``project_renderer`` selects the per-project block shape — the default
+    human-doc block, or ``_render_bundle_project_block`` for ``--bundle``. The
+    account framing (header + ``---`` separators) is identical either way, so
+    it lives here once."""
     out = [f"## {account_name} ({len(blocks)} projects)", ""]
     for i, block in enumerate(blocks):
         if i:
             out.append("---")
             out.append("")
-        out.extend(_render_project_block(block))
+        out.extend(project_renderer(block))
     return out
 
 
@@ -1430,6 +1465,104 @@ def render_planning_doc_markdown(result: PlanningResult) -> str:
     lines.append("")
     for account_name, blocks in result.blocks_by_account.items():
         lines.extend(_render_account_section(account_name, blocks))
+        lines.append("---")
+        lines.append("")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
+    """Render one project's bundle section: header → urgent → FULL exec
+    summary → forward calendar → commitments → fetch_error.
+
+    Shares the header + urgent sub-blocks with ``_render_project_block`` (via
+    ``_render_block_header`` / ``_render_urgent``). Diverges from it in three
+    intentional ways: (1) labels the exec summary with a `**Exec Summary:**`
+    heading; (2) OMITS the ``sweep_synthesis`` block (the bundle is raw source
+    material — sweep is a doc-only synthesis, mirroring the bundle entry
+    point's "minus sweep_llm"); (3) appends the ``fetch_error`` note so the
+    model sees gaps in the source material. The exec_summary body itself is
+    emitted verbatim in BOTH renderers — the difference is the surrounding
+    framing, not truncation.
+    """
+    out = _render_block_header(block.project)
+    out.extend(_render_urgent(block))
+
+    # FULL exec summary verbatim — every project, including unauthored ones
+    # (explicit marker, never silently omitted).
+    out.append("**Exec Summary:**")
+    out.append("")
+    if block.exec_summary:
+        out.append(block.exec_summary)
+    else:
+        out.append(_EXEC_SUMMARY_UNAUTHORED_MARKER)
+    out.append("")
+
+    out.extend(_render_forward_calendar(block))
+    out.append("")
+    out.extend(_render_commitments_table(block))
+    out.append("")
+
+    if block.fetch_error:
+        out.append(f"_(fetch note: {block.fetch_error})_")
+        out.append("")
+    return out
+
+
+def render_planning_bundle(result: PlanningResult) -> str:
+    """Render the model-facing structured bundle.
+
+    This is NOT a polished human doc — it is the consistent, current raw
+    material the model reads to synthesize ``_planning.md`` in-session
+    (Task 8 skill). It mirrors ``render_planning_doc_markdown``'s structure
+    (header → cross-cutting metrics → per-account project blocks) and reuses
+    the same render helpers, but emits each project's FULL ``exec_summary``
+    verbatim and surfaces every project (incl. unauthored ones) with an
+    explicit marker rather than a trimmed view.
+
+    All data is READ from ``result`` — nothing is recomputed. ``build_planning_
+    result`` already populated ``exec_summary`` per block and all the tenant
+    metrics (capacity binding, cross-cutting decisions, milestone/urgent
+    counts).
+    """
+    lines: list[str] = []
+    lines.append(
+        f"# Sprint {result.week_iso} Planning Bundle — {result.week_dates}"
+    )
+    lines.append(
+        f"_Generated {result.generated_at} by `cp prep-planning --bundle` · "
+        f"{result.project_count} active projects · "
+        f"{result.estimated_minutes} min target_"
+    )
+    lines.append(
+        "_Raw material for in-session synthesis — full per-project exec "
+        "summaries + deterministic metrics. Not a finished doc._"
+    )
+    lines.append("")
+    # Tenant-level deterministic metrics (capacity binding, cross-cutting
+    # decisions, tenant hours) — reuse the cross-cutting renderer verbatim.
+    lines.extend(_render_cross_cutting(result))
+    lines.append("")
+    # Milestone / urgent counts — read straight from result.
+    mc = result.milestone_counts
+    uc = result.urgent_counts
+    lines.append(
+        "**Milestones:** "
+        f"{mc.get('total', 0)} total · {mc.get('fetched', 0)} fetched · "
+        f"{mc.get('errored', 0)} errored"
+    )
+    lines.append(
+        "**Urgent flags:** "
+        + " · ".join(f"{k} {v}" for k, v in uc.items())
+    )
+    lines.append("")
+    lines.append("---")
+    lines.append("")
+    for account_name, blocks in result.blocks_by_account.items():
+        lines.extend(
+            _render_account_section(
+                account_name, blocks, project_renderer=_render_bundle_project_block
+            )
+        )
         lines.append("---")
         lines.append("")
     return "\n".join(lines).rstrip() + "\n"
@@ -1684,3 +1817,43 @@ def render_planning_summary(
         if client is not None:
             client.close()
     return json.dumps(result.to_summary_dict(), indent=2)
+
+
+def render_planning_bundle_doc(
+    config: TenantConfig,
+    projects: tuple[ProjectState, ...],
+    *,
+    today: date,
+    project_filter: tuple[str, ...] | None = None,
+    tenant_hours_last_week: dict[str, int] | None = None,
+    supabase_client=None,
+    clickup_token: str | None = None,
+    list_id_lookup: dict[str, str] | None = None,
+    clickup_task_ids: dict[str, str] | None = None,
+) -> str:
+    """Assemble + render the model-facing planning bundle as markdown.
+
+    Mirrors ``render_planning_doc`` minus ``sweep_llm`` — the bundle emits
+    raw material for in-session synthesis and does not run the per-project
+    spine sweep (keep it simple + free).
+    """
+    client: httpx.Client | None = None
+    if clickup_token or _clickup_token():
+        client = httpx.Client(timeout=_CLICKUP_TIMEOUT)
+    try:
+        result = build_planning_result(
+            config,
+            projects,
+            today=today,
+            project_filter=project_filter,
+            tenant_hours_last_week=tenant_hours_last_week,
+            supabase_client=supabase_client,
+            clickup_token=clickup_token,
+            clickup_client=client,
+            list_id_lookup=list_id_lookup,
+            clickup_task_ids=clickup_task_ids,
+        )
+    finally:
+        if client is not None:
+            client.close()
+    return render_planning_bundle(result)

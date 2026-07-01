@@ -207,9 +207,26 @@ def test_project_cp_renders_with_no_issues() -> None:
     assert "<!-- cp-engine:start tracked-issues -->" in out
     assert "<!-- cp-engine:end tracked-issues -->" in out
     # Hand-written sections present in skeleton
-    assert "## Quick Resume" in out
     assert "## Decisions" in out
     assert "## Stakeholders" in out
+
+
+def test_project_template_scaffolds_exec_summary_region() -> None:
+    tenant = make_tenant()
+    project = make_state()
+    body = render_project_cp(tenant, project)
+
+    assert "<!-- cp-engine:start exec-summary -->" in body
+    assert "## Exec Summary" in body
+    assert "**Last session:**" in body
+    assert "**Objective:**" in body
+    assert "**Status:**" in body
+    assert "**Where it stands:**" in body
+    assert "**Next up:**" in body
+    assert "**Blockers:**" in body
+    assert "**Updates:**" in body
+    assert "<!-- cp-engine:start quick-resume -->" not in body
+    assert "## Quick Resume" not in body
 
 
 def test_project_cp_stamps_mc_id_when_set() -> None:
@@ -264,6 +281,29 @@ def test_initiative_cp_omits_mc_id_when_none() -> None:
 
     assert "MC-id:" not in out
     assert "Filename: cp.md\nAuthor:" in out
+
+
+def test_initiative_template_scaffolds_exec_summary_region() -> None:
+    tenant = make_tenant()
+    project = make_state(
+        code="mission-control",
+        name="Mission Control",
+        source="initiative",
+        company_kind="self-fpsf",
+    )
+    body = render_project_cp(tenant, project)
+
+    assert "<!-- cp-engine:start exec-summary -->" in body
+    assert "## Exec Summary" in body
+    assert "**Last session:**" in body
+    assert "**Objective:**" in body
+    assert "**Status:**" in body
+    assert "**Where it stands:**" in body
+    assert "**Next up:**" in body
+    assert "**Blockers:**" in body
+    assert "**Updates:**" in body
+    assert "<!-- cp-engine:start quick-resume -->" not in body
+    assert "## Quick Resume" not in body
 
 
 def test_project_cp_renders_with_issues() -> None:
@@ -939,3 +979,119 @@ def test_slack_rollup_takes_last_bullet_when_multiple_for_same_week(
     rollup = _compute_slack_rollup(tmp_path, projects, "2026-W20")
     assert rollup is not None
     assert rollup[0]["text"] == "Second version."
+
+
+def test_exec_summary_marker_constants():
+    from cp_engine.render import (
+        EXEC_SUMMARY_REGION,
+        EXEC_SUMMARY_START,
+        EXEC_SUMMARY_END,
+    )
+
+    assert EXEC_SUMMARY_REGION == "exec-summary"
+    assert EXEC_SUMMARY_START == "<!-- cp-engine:start exec-summary -->"
+    assert EXEC_SUMMARY_END == "<!-- cp-engine:end exec-summary -->"
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Exec-summary region primitives (hoisted from agenda/prep_planning)
+# ──────────────────────────────────────────────────────────────────────
+
+from cp_engine.render import (  # noqa: E402
+    EXEC_SUMMARY_END,
+    EXEC_SUMMARY_MIGRATION_BULLET_RE,
+    EXEC_SUMMARY_MIGRATION_SUFFIX,
+    EXEC_SUMMARY_START,
+    exec_summary_is_authored,
+    slice_exec_summary_region,
+)
+
+_FRESH_SCAFFOLD = """\
+## Exec Summary  ·  updated 2026-06-30
+
+**Last session:** _<date>_
+**Objective:** _<one line — what this project delivers>_
+**Status:** _<current state in a phrase>_
+
+**Where it stands:**
+- _<2-4 dense bullets of current reality>_
+
+**Next up:**
+- _<concrete near-term moves, dated where possible>_
+
+**Blockers:**
+- _<what's stuck / needed, with who — or "None">_
+
+**Updates:**
+- _<dated — first wrap up authors this>_"""
+
+
+def test_exec_summary_is_authored_fresh_scaffold_is_false():
+    """A fresh scaffold (all placeholder fields + placeholder bullets) is NOT
+    authored. This is the Bug-B regression: prep_planning's old copy returned
+    True here and would splice placeholder junk into the planning doc."""
+    assert exec_summary_is_authored(_FRESH_SCAFFOLD) is False
+
+
+def test_exec_summary_is_authored_migration_bullet_only_is_false():
+    """A region whose only real bullet is the auto-stamped migration line
+    reads as unauthored."""
+    region = (
+        "**Objective:** _<one line>_\n"
+        "**Status:** _<current state in a phrase>_\n"
+        "**Updates:**\n"
+        f"- 2026-06-30{EXEC_SUMMARY_MIGRATION_SUFFIX}"
+    )
+    assert exec_summary_is_authored(region) is False
+
+
+def test_exec_summary_is_authored_real_status_is_true():
+    """A real (non-placeholder) field value counts as authored."""
+    region = (
+        "**Objective:** _<one line>_\n"
+        "**Status:** Pop-up R3 in review.\n"
+    )
+    assert exec_summary_is_authored(region) is True
+
+
+def test_exec_summary_is_authored_real_bullet_is_true():
+    """A real (non-placeholder, non-migration) bullet counts as authored."""
+    region = (
+        "**Status:** _<current state in a phrase>_\n"
+        "**Where it stands:**\n"
+        "- Pop-up R3 with Rena since 5/22."
+    )
+    assert exec_summary_is_authored(region) is True
+
+
+def test_slice_exec_summary_region():
+    """Markers are excluded; blank lines trimmed; None when a marker absent."""
+    body = (
+        "# CP\n\n"
+        f"{EXEC_SUMMARY_START}\n"
+        "**Status:** Real state.\n"
+        f"{EXEC_SUMMARY_END}\n"
+        "## Next\n"
+    )
+    sliced = slice_exec_summary_region(body)
+    assert sliced == "**Status:** Real state."
+    assert EXEC_SUMMARY_START not in sliced
+    assert EXEC_SUMMARY_END not in sliced
+    # Missing markers → None.
+    assert slice_exec_summary_region("# CP\n\nno markers here\n") is None
+    assert slice_exec_summary_region(f"{EXEC_SUMMARY_START}\nonly start\n") is None
+
+
+def test_migration_bullet_re_matches_syncs_output():
+    """Anti-drift parity guard: render's migration-bullet regex must match the
+    EXACT Updates bullet sync's migration stamps. Producer + reader share only
+    EXEC_SUMMARY_MIGRATION_SUFFIX; this fails loudly on drift."""
+    from cp_engine.sync import _build_exec_summary_region
+
+    region = _build_exec_summary_region("", today="2026-06-30")
+    matches = [
+        line
+        for line in region.splitlines()
+        if EXEC_SUMMARY_MIGRATION_BULLET_RE.match(line)
+    ]
+    assert len(matches) == 1

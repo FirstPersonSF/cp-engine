@@ -786,187 +786,75 @@ def test_account_summary_validates_required_fields(tmp_path: Path) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Quick Resume verbs (v0.11.0+, Lever 5)
+#  Retired Quick Resume verbs (exec-summary cutover)
 #
-# `current_work`, `next_up`, `blockers` are scalar per-project verbs
-# that write a single line each into the project cp.md's engine-managed
-# `quick-resume` region.
+# `current_work`, `next_up`, `blockers` USED to write scalar lines into
+# the project cp.md's `quick-resume` region. Auto-ingest no longer writes
+# project cp.md state at all (the model authors an exec-summary at wrap-up
+# instead). These verbs are now RETIRED: recognized-and-ignored so stale
+# in-flight webhook plans don't hard-fail during the deploy window, but
+# they perform NO write. Per-meeting truth still flows to the sprint file.
 # ──────────────────────────────────────────────────────────────────────
-
-
-def _scaffold_minimal_project_cp(
-    path: Path,
-    *,
-    current_work: str = "_<what's in flight right now>_",
-    next_up: str = "_<next 1-3 concrete actions, dated where possible>_",
-    blockers: str = '_<or "None">_',
-) -> None:
-    """Write a minimal project cp.md with the engine-managed quick-resume region."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        "# Test Project — Project CP\n\n"
-        "<!-- cp-engine:start quick-resume -->\n"
-        "## Quick Resume\n\n"
-        "**Last session:** _<date>_\n"
-        f"**Current work:** {current_work}\n"
-        f"**Next up:** {next_up}\n"
-        f"**Blockers:** {blockers}\n"
-        "<!-- cp-engine:end quick-resume -->\n"
-    )
 
 
 def _make_tenant_with_project_cp(
     tmp_path: Path,
     *,
     code: str = "ggl-5168",
-    current_work: str = "_<what's in flight right now>_",
-    next_up: str = "_<next 1-3 concrete actions, dated where possible>_",
-    blockers: str = '_<or "None">_',
 ) -> Path:
-    """Build a tenant with both a sprint file AND a project cp.md (with
-    quick-resume region) for the given code under 1p/google/<slug>/.
-    Slug is the code itself (no name-suffix), so the project dir is
-    1p/google/<code>/cp.md."""
+    """Build a tenant with both a sprint file AND a project cp.md (with an
+    engine-managed exec-summary region) for the given code under
+    1p/google/<slug>/. Slug is the code itself (no name-suffix), so the
+    project dir is 1p/google/<code>/cp.md."""
     tenant = _make_tenant(tmp_path)
     project_cp = tenant / "1p" / "google" / code / "cp.md"
-    _scaffold_minimal_project_cp(
-        project_cp, current_work=current_work, next_up=next_up, blockers=blockers
+    project_cp.parent.mkdir(parents=True, exist_ok=True)
+    project_cp.write_text(
+        "# Test Project — Project CP\n\n"
+        "<!-- cp-engine:start exec-summary -->\n"
+        "## Exec Summary\n\n"
+        "_(authored at wrap-up)_\n"
+        "<!-- cp-engine:end exec-summary -->\n"
     )
     return tenant
 
 
-def test_current_work_verb_overwrites_placeholder(tmp_path: Path) -> None:
-    """A `current_work` value in the plan overwrites the template
-    placeholder in the project cp.md's quick-resume region."""
+def test_auto_ingest_ignores_retired_quick_resume_verbs(tmp_path: Path) -> None:
+    """A plan containing the retired `current_work`/`next_up`/`blockers`
+    verbs is silently ignored: no error, and the project cp.md is left
+    byte-identical (auto-ingest no longer writes cp.md state)."""
     tenant = _make_tenant_with_project_cp(tmp_path)
+    cp_path = tenant / "1p" / "google" / "ggl-5168" / "cp.md"
+    before = cp_path.read_bytes()
     plan = {
         "projects": {
             "ggl-5168": {
-                "current_work": "Tony+Geoff shipped 5 playbooks to Rena; awaiting feedback.",
+                "current_work": "Tony+Geoff shipped 5 playbooks; awaiting feedback.",
+                "next_up": "Draft chapter 2 by 5/20.",
+                "blockers": "None.",
             },
         },
     }
     result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    # (a) No error raised or recorded.
     assert result.errors == []
-    cp_path = tenant / "1p" / "google" / "ggl-5168" / "cp.md"
-    assert cp_path in result.files_written
-    body = cp_path.read_text()
-    assert "**Current work:** Tony+Geoff shipped 5 playbooks to Rena; awaiting feedback." in body
-    # Template placeholder is gone.
-    assert "_<what's in flight right now>_" not in body
-    # Region markers preserved.
-    assert "<!-- cp-engine:start quick-resume -->" in body
-    assert "<!-- cp-engine:end quick-resume -->" in body
+    # (b) cp.md is byte-identical — nothing was written.
+    assert cp_path.read_bytes() == before
+    # (c) cp.md never even appears in files_written.
+    assert cp_path not in result.files_written
 
 
-def test_current_work_verb_overwrites_existing_value(tmp_path: Path) -> None:
-    """A new `current_work` overwrites prior non-placeholder content
-    (auto-ingest is the source of truth)."""
-    tenant = _make_tenant_with_project_cp(
-        tmp_path, current_work="Prior summary that's now stale."
-    )
-    plan = {
-        "projects": {
-            "ggl-5168": {"current_work": "Fresh summary from today's meeting."},
-        },
-    }
-    execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
-    body = (tenant / "1p" / "google" / "ggl-5168" / "cp.md").read_text()
-    assert "**Current work:** Fresh summary from today's meeting." in body
-    assert "Prior summary" not in body
-
-
-def test_current_work_verb_null_preserves_existing(tmp_path: Path) -> None:
-    """A `current_work: null` in the plan means 'LLM declined to refresh' —
-    leave the prior line alone."""
-    tenant = _make_tenant_with_project_cp(
-        tmp_path, current_work="Existing summary stays put."
-    )
-    plan = {
-        "projects": {
-            "ggl-5168": {"current_work": None},
-        },
-    }
-    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
-    assert result.errors == []
-    body = (tenant / "1p" / "google" / "ggl-5168" / "cp.md").read_text()
-    assert "**Current work:** Existing summary stays put." in body
-
-
-def test_current_work_verb_idempotent_same_value(tmp_path: Path) -> None:
-    """Running the same plan twice — second run is a no-op for the verb."""
+def test_retired_verb_does_not_poison_sprint_file_verbs(tmp_path: Path) -> None:
+    """A mixed plan with a retired QR verb AND a normal sprint-file verb
+    (record-inbound) still processes the sprint-file verb correctly. The
+    retired verb is ignored; the sprint file IS written; cp.md is not."""
     tenant = _make_tenant_with_project_cp(tmp_path)
-    plan = {
-        "projects": {
-            "ggl-5168": {"current_work": "Same value both runs."},
-        },
-    }
-    first = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
-    second = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     cp_path = tenant / "1p" / "google" / "ggl-5168" / "cp.md"
-    # First run writes the value.
-    assert cp_path in first.files_written
-    # Second run is a no-op (same value already on disk).
-    assert cp_path not in second.files_written
-    assert second.skipped_duplicate >= 1
-
-
-def test_current_work_verb_skips_when_no_quick_resume_markers(tmp_path: Path) -> None:
-    """Project cp.md without the quick-resume markers (pre-cutover
-    legacy file): skip + log warning rather than write garbage."""
-    tenant = _make_tenant(tmp_path)
-    # cp.md with `## Quick Resume` but no engine markers around it.
-    project_cp = tenant / "1p" / "google" / "ggl-5168" / "cp.md"
-    project_cp.parent.mkdir(parents=True, exist_ok=True)
-    project_cp.write_text(
-        "# Test Project — Project CP\n\n"
-        "## Quick Resume\n\n"
-        "**Current work:** _<what's in flight right now>_\n"
-    )
-    plan = {
-        "projects": {
-            "ggl-5168": {"current_work": "Should not land — no markers."},
-        },
-    }
-    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
-    # Error surfaces (or at least, no successful write).
-    body = project_cp.read_text()
-    assert "Should not land" not in body
-    assert "**Current work:** _<what's in flight right now>_" in body
-
-
-def test_next_up_and_blockers_verbs_work_same_as_current_work(tmp_path: Path) -> None:
-    """Parametrized check: all three QR verbs write their corresponding
-    `**Label:**` line and leave the others alone."""
-    tenant = _make_tenant_with_project_cp(tmp_path)
+    before = cp_path.read_bytes()
     plan = {
         "projects": {
             "ggl-5168": {
-                "current_work": "CW value.",
-                "next_up": "NU value.",
-                "blockers": "None for now.",
-            },
-        },
-    }
-    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
-    assert result.errors == []
-    body = (tenant / "1p" / "google" / "ggl-5168" / "cp.md").read_text()
-    assert "**Current work:** CW value." in body
-    assert "**Next up:** NU value." in body
-    assert "**Blockers:** None for now." in body
-    # Last session line is untouched.
-    assert "**Last session:** _<date>_" in body
-
-
-def test_quick_resume_verbs_preserve_sprint_file_writes(tmp_path: Path) -> None:
-    """A plan with both QR verbs AND traditional list-typed verbs
-    (record-inbound) writes to both the project cp.md AND the sprint
-    file. Both files appear in files_written."""
-    tenant = _make_tenant_with_project_cp(tmp_path)
-    plan = {
-        "projects": {
-            "ggl-5168": {
-                "current_work": "QR update from today.",
+                "current_work": "Should be ignored entirely.",
                 "record-inbound": [
                     {"text": "Inbound bullet", "date": "2026-05-13", "who": "Jane"},
                 ],
@@ -975,11 +863,39 @@ def test_quick_resume_verbs_preserve_sprint_file_writes(tmp_path: Path) -> None:
     }
     result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert result.errors == []
-    # Both files appear in files_written.
-    cp_path = tenant / "1p" / "google" / "ggl-5168" / "cp.md"
     sprint_path = tenant / "sprints" / "2026-W20" / "ggl-5168.md"
-    assert cp_path in result.files_written
+    # Sprint-file verb processed.
     assert sprint_path in result.files_written
+    assert "Inbound bullet" in sprint_path.read_text()
+    # cp.md untouched (byte-identical) and absent from files_written.
+    assert cp_path.read_bytes() == before
+    assert cp_path not in result.files_written
+
+
+def test_retired_verbs_validate_without_error(tmp_path: Path) -> None:
+    """The validation pass tolerates the retired verbs — they don't raise
+    IngestPlanError even though they're not advertised in _SUPPORTED_VERBS."""
+    tenant = _make_tenant_with_project_cp(tmp_path)
+    plan = {
+        "projects": {
+            # Retired verb carrying its old scalar shape (a string).
+            "ggl-5168": {"current_work": "stale string value"},
+        },
+    }
+    # Should not raise; should not record an error.
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    assert result.errors == []
+
+
+def test_retired_verbs_not_advertised_but_recognized() -> None:
+    """The retired verbs are OUT of _SUPPORTED_VERBS (no longer advertised)
+    but live in _RETIRED_VERBS so the consumer recognizes-and-ignores them
+    rather than hard-failing a stale in-flight plan."""
+    from cp_engine.ingest import _RETIRED_VERBS, _SUPPORTED_VERBS
+
+    for verb in ("current_work", "next_up", "blockers"):
+        assert verb not in _SUPPORTED_VERBS
+        assert verb in _RETIRED_VERBS
 
 
 def _make_tenant_w22(tmp_path: Path) -> Path:

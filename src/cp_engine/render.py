@@ -963,6 +963,75 @@ def render_claude_md(config: TenantConfig) -> str:
 # ──────────────────────────────────────────────────────────────────────
 
 
+EXEC_SUMMARY_REGION = "exec-summary"
+EXEC_SUMMARY_START = f"<!-- cp-engine:start {EXEC_SUMMARY_REGION} -->"
+EXEC_SUMMARY_END = f"<!-- cp-engine:end {EXEC_SUMMARY_REGION} -->"
+
+# The migration seeds an Updates bullet `- <date> — migrated from Quick
+# Resume`. This SUFFIX is the single source of truth for that wording,
+# shared by the producer (sync's `_build_exec_summary_region`) and every
+# reader that must treat a freshly-migrated-but-unauthored region as "no
+# content". It lives here (not in sync) because render.py owns the region
+# markers and is imported by sync/agenda/prep_planning/summary while
+# importing none of them — the one place all copies can share without a
+# circular import. `sync` re-exports it for backward compatibility.
+EXEC_SUMMARY_MIGRATION_SUFFIX = " — migrated from Quick Resume"
+
+# The migration stamps `- <date> — migrated from Quick Resume` under
+# Updates. Built from the suffix (via re.escape) so producer + readers
+# can't drift.
+EXEC_SUMMARY_MIGRATION_BULLET_RE = re.compile(
+    r"^- \d{4}-\d{2}-\d{2}" + re.escape(EXEC_SUMMARY_MIGRATION_SUFFIX) + r"\s*$"
+)
+
+
+def slice_exec_summary_region(cp_md_body: str) -> str | None:
+    """Return the inner text between the exec-summary markers (markers
+    excluded, leading/trailing blank lines trimmed), or None if either
+    marker is absent. Pure function on the body string."""
+    start = cp_md_body.find(EXEC_SUMMARY_START)
+    if start == -1:
+        return None
+    end = cp_md_body.find(EXEC_SUMMARY_END, start)
+    if end == -1:
+        return None
+    return cp_md_body[start + len(EXEC_SUMMARY_START):end].strip("\n")
+
+
+def exec_summary_is_authored(region: str) -> bool:
+    """True if the exec-summary region carries real human content — i.e. any
+    `**Label:**` field has a non-placeholder value OR any bullet is real.
+
+    A `_<...>_` placeholder value or bullet does NOT count, and the
+    auto-stamped migration bullet (`- <date> — migrated from Quick Resume`)
+    does NOT count. So a fresh scaffold (all placeholders) and a freshly-
+    migrated-but-unauthored region both read as unauthored.
+
+    This is the single authoritative copy; agenda + prep_planning both call
+    it so their authored-checks can't silently diverge.
+    """
+    for raw in region.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        # Field line: `**Label:** value` — real iff value is a non-placeholder.
+        field = re.match(r"^\*\*[^*]+:\*\*\s*(?P<value>.*)$", line)
+        if field is not None:
+            value = field.group("value").strip()
+            if value and "_<" not in value:
+                return True
+            continue
+        # Bullet line — real unless it's a placeholder seed or the migration stamp.
+        if line.startswith("- "):
+            if "_<" in line:  # placeholder seed bullet — not authored
+                continue
+            if EXEC_SUMMARY_MIGRATION_BULLET_RE.match(line):
+                continue
+            return True
+        # Anything else (headings, stray prose) is not authored on its own.
+    return False
+
+
 def splice_managed_region(file_contents: str, region: str, new_body: str) -> str:
     """Replace the body between
     `<!-- cp-engine:start <region> -->` and the matching end marker.
