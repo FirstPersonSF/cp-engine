@@ -4,6 +4,26 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.42.2 — 2026-07-01
+
+### Fixed — Slack digest close/resolve buttons resolve against the right sprint week
+
+The attention-digest Slack buttons (close-ask / resolve-risk / snooze-*)
+embedded only `verb|code|hash` in their payload — no sprint week. At click
+time the webhook defaulted the sprint week to `date.today()`'s and searched
+that week's sprint file for the hash. When a digest was rendered in one sprint
+week and clicked in another (any rollover between render and click — e.g. a
+Sunday digest clicked Monday, or a mid-week sprint cutover), the item lived in
+the digest's week's file, not today's, so the hash wasn't found and the click
+returned **"No matching item (already resolved or moved sprint)"** for a live
+item. The button now carries the digest's `week_iso` as a 4th payload part
+(threaded through the snooze-modal `private_metadata` round-trip too), and the
+handler passes it to `execute_plan(week_iso=)` — which already supported it.
+Buttons still in Slack with the old 3-part payload fall back to the current
+week (unchanged behavior). The digest reports the week its items were actually
+read from, including the previous-week fallback, so the embedded week always
+matches the searched file.
+
 ## v0.42.1 — 2026-07-01
 
 ### Fixed — Exec Summary migration preserves all Quick Resume content
