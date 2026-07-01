@@ -1,19 +1,26 @@
 ---
-allowed-tools: Bash(cp:*), Bash(cat:*), Bash(ls:*), Bash(mkdir:*), Bash(date:*), Bash(test:*), Bash(jq:*), Bash(echo:*), Read
+allowed-tools: Bash(cp:*), Bash(cat:*), Bash(ls:*), Bash(mkdir:*), Bash(date:*), Bash(test:*), Bash(jq:*), Bash(echo:*), Read, Write
 description: Prepare a forward-looking sprint planning doc from current cp tenant state.
 ---
 
 # /cp-prep
 
-Generate a forward-looking, account-grouped sprint-planning doc for the
-upcoming sprint. Pulls per-project milestones from ClickUp + open
-commitments + urgent flags + capacity-binding constraints + decisions
-partners owe each other into one document partners can read before
-(or scroll during) sprint planning.
+Generate a forward-looking, prioritized sprint-planning doc for the
+upcoming sprint. The engine emits a **bundle** — every active project's
+full Exec Summary plus deterministic metrics (capacity binding, urgent
+flags, forward calendar, open commitments) — and **you (the model)
+synthesize** that bundle into `_planning.md` in-session: a Focus list of
+the projects that need the room, the decisions & blockers the partners
+must resolve, cross-cutting patterns, and per-owner commitments.
+
+The doc is a synthesized plan you author and can defend live ("why is
+ggl-5168 on the focus list?"), not a pre-rendered inventory. The engine
+supplies the raw material; you do the prioritization.
 
 Replaces the older backward-looking agenda generator. As of cp-engine
 v0.15.0 the engine command is `cp prep-planning`. `cp prep-agenda`
-still works but is deprecated.
+still works but is deprecated. The `--bundle` synthesis flow supersedes
+the earlier `--out`-renders-the-doc flow.
 
 **Arguments (optional):**
 - (no args) → full planning doc for all active projects.
@@ -50,14 +57,19 @@ echo "Planning week: $WEEK_ISO"
 The engine resolves the planning week itself — the skill just reads it
 back. `$SUMMARY` (the full JSON object) is also reused in Step 4 below.
 
-### 3. Generate the planning doc
+### 3. Generate the planning doc (bundle → in-session synthesis)
+
+The engine no longer renders the final doc. It emits a **bundle** — the
+structured raw material — and **you synthesize `_planning.md` from it**.
+
+**3a. Get the bundle.**
 
 If invoked with no args:
 
 ```bash
 mkdir -p "sprints/$WEEK_ISO"
 PLANNING_PATH="sprints/$WEEK_ISO/_planning.md"
-cp prep-planning --out "$PLANNING_PATH"
+BUNDLE=$(cp prep-planning --bundle)
 ```
 
 If invoked with project codes (e.g. `/cp-prep ggl-5168 ibx-5167`):
@@ -67,17 +79,53 @@ mkdir -p "sprints/$WEEK_ISO"
 # Sanitize args into a comma-separated string.
 CODES=$(echo "$@" | tr ' ' ',')
 PLANNING_PATH="sprints/$WEEK_ISO/_planning-${CODES//,/-}.md"
-cp prep-planning --projects "$CODES" --out "$PLANNING_PATH"
+BUNDLE=$(cp prep-planning --bundle --projects "$CODES")
 ```
 
-The engine's `cp prep-planning` does the heavy lifting (ClickUp milestone
-fetch per project, urgent-flag detection, capacity-binding analysis,
-cross-cutting decisions parse from weekly-cp.md, account grouping,
-markdown rendering). The plugin just orchestrates.
+The bundle contains, per project: code + name, the **full Exec Summary**
+(Objective / Status / Where it stands / Next up / Blockers / Updates),
+urgent flags, the forward calendar (dated ClickUp milestones), and open
+commitments — plus tenant-level metrics (capacity binding, hours,
+cross-cutting decisions). The engine still does the deterministic heavy
+lifting (ClickUp milestone fetch, urgent-flag detection, capacity-binding
+analysis, cross-cutting decisions parse from weekly-cp.md); it just hands
+you the material instead of pre-formatting a doc.
+
+(If you prefer, `cp prep-planning --bundle --out <path>` writes the
+bundle to a scratch file you can Read; capturing into `$BUNDLE` and
+reading it directly is fine too.)
+
+**3b. Synthesize `_planning.md` and write it.**
+
+Read the bundle — roughly one Exec Summary per active project (~29 of
+them tenant-wide) — and synthesize **across** them into a prioritized
+plan. Then write it to `$PLANNING_PATH` with the **Write** tool. Do NOT
+just transcribe the bundle; the value is in the synthesis. The doc
+should contain:
+
+- **Focus list** — the 5–8 projects that need the room this sprint,
+  each with a one-line reason: a decision is due, there's a blocker,
+  a deadline is close, or it's slipping. Everything else is "steady";
+  name it briefly but don't spend meeting time on it. Lead with this —
+  it's the agenda.
+- **Decisions & blockers needing the partners** — pulled from the Exec
+  Summaries' Blockers/Next-up fields and the cross-cutting decisions,
+  **deduped across projects** (the same shared blocker shouldn't appear
+  three times). Say who's needed for each.
+- **Cross-cutting patterns** — capacity binding (an owner on 5+
+  projects), competing deadlines in the same week, blockers shared
+  across projects. These are the things only visible when you read all
+  the summaries at once.
+- **Per-owner commitments** — what each partner owes going into the
+  sprint, rolled up across their projects (us → them and them → us).
+
+Because you author this in-session, you can defend and revise it live in
+the meeting ("why is ggl-5168 on the focus list — what's the blocker?").
 
 Note: a sync of an existing tenant may still have an `_agenda.md` from
-prior runs of the older `cp prep-agenda` command. Both files can
-coexist; `_planning.md` is the current source of truth.
+prior runs of the older `cp prep-agenda` command, or a `_planning.md`
+from the pre-`--bundle` engine-rendered flow. `_planning.md` is the
+current source of truth; overwrite it.
 
 ### 4. Surface highlights via the engine's summary mode
 
@@ -114,7 +162,7 @@ The JSON shape:
 Render to the user:
 
 ```
-Generated planning doc → sprints/$WEEK_ISO/_planning.md
+Synthesized planning doc → sprints/$WEEK_ISO/_planning.md
   30 active projects · est. 60 min target
   Tenant hours last sprint: Drew 52, Tony 52, Marcello 42, Derek 28
   Milestones: 84 fetched (3 ClickUp errors)
@@ -222,17 +270,26 @@ in ClickUp).
 
 ## What good looks like
 
-- The doc surfaces **everything you'd need to walk into the meeting prepared**:
-  per-project Where → Forward calendar → Open commitments.
+- The doc is a **synthesized, prioritized plan**, not an inventory. The
+  old engine-rendered doc was a ~426-line account-grouped dump of every
+  project; the new one is a short plan you built by reading across all
+  the Exec Summaries — and can defend live ("why is ggl-5168 on the
+  focus list?").
+- **A real Focus list** leads: 5–8 projects that need the room, each
+  with a one-line reason (decision due / blocker / deadline / slipping).
+  Steady projects are named but don't consume meeting time.
+- **Decisions & blockers are deduped** across projects — a shared blocker
+  appears once, with who's needed to clear it.
+- **Cross-cutting patterns** (capacity binding, competing deadlines,
+  shared blockers) surface because you read all the summaries at once —
+  the thing no single project block shows.
+- **Per-owner commitments** roll up what each partner owes across their
+  projects, both directions.
 - **Urgency flags only when real**: slip risk, decision due, past-due ask,
   or escalated risk. A quiet project doesn't draw attention.
-- **Capacity binding** ensures the meeting addresses workload imbalance
-  before someone's projects silently get skipped.
-- **Cross-cutting decisions** appear at the top so partners arrive
-  knowing what they owe each other.
-- **Forward calendar** (from ClickUp milestones) is the load-bearing
-  shift from the old prep-agenda — it makes the doc forward-looking
-  instead of backward-looking.
+- **Forward calendar** (from ClickUp milestones) still grounds the
+  timeline — it's the material behind the deadline reasons in the Focus
+  list.
 
 ## Failure modes
 
@@ -264,13 +321,22 @@ in ClickUp).
 - **Planning doc is mostly empty.** Likely a fresh tenant or a sprint
   with no recent ingest activity. The structure is right; data flows
   in as `/cp-ingest` runs against transcripts.
-- **Quick Resume / Where blocks show as missing.** Project cp.md files
-  have only template placeholders. Need durable cp.md updates from
-  prior `/cp-ingest` runs to populate them.
+- **Exec Summary not yet authored.** A project's Exec Summary region in
+  its cp.md still has only template placeholders (`_<...>_`) — the model
+  hasn't authored it at a wrap up yet, or the region was just migrated
+  from the old Quick Resume and seeded from stale content. The bundle
+  shows that project as thin. Fix: author its Exec Summary at the next
+  `wrap up` (that's the model's job — see the wrap-up authoring
+  instructions in the tenant CLAUDE.md), then re-run `/cp-prep`.
 
 ## What this command doesn't do
 
-- Doesn't write to project cp.md files. Pure read.
+- Doesn't write to project cp.md files. It reads their Exec Summaries
+  (via the bundle); it doesn't author them. The Exec Summary is authored
+  at `wrap up`, not here.
+- The engine doesn't render `_planning.md` — **you** do (from the
+  bundle, with the Write tool). The engine only emits the bundle and the
+  deterministic metrics.
 - Doesn't write to ClickUp. Pure read on the ClickUp side too — never
   creates, updates, or completes tasks.
 - Doesn't ingest transcripts (that's `/cp-ingest`).
