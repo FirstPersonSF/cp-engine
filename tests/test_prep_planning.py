@@ -1263,7 +1263,9 @@ def test_migration_bullet_regex_matches_syncs_real_output():
     in different modules sharing only EXEC_SUMMARY_MIGRATION_SUFFIX; if either
     side's wording drifts, a freshly-migrated region would wrongly read as
     authored and pollute the planning doc. This test fails loudly on drift."""
-    from cp_engine.prep_planning import _EXEC_SUMMARY_MIGRATION_BULLET_RE
+    from cp_engine.render import (
+        EXEC_SUMMARY_MIGRATION_BULLET_RE as _EXEC_SUMMARY_MIGRATION_BULLET_RE,
+    )
     from cp_engine.sync import _build_exec_summary_region
 
     # An all-placeholder migrated region: its only Updates content is the

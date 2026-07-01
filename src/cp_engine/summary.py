@@ -108,7 +108,7 @@ def _extract_exec_summary_status_or_where(contents: str) -> str | None:
     region = contents[start + len(EXEC_SUMMARY_START) : end]
 
     # 1. Status field — the designed one-phrase summary.
-    status = re.search(r"^\*\*Status:\*\*\s*(.+?)\s*$", region, re.MULTILINE)
+    status = re.search(r"^\*\*Status:\*\*[ \t]*(.+?)[ \t]*$", region, re.MULTILINE)
     if status:
         value = status.group(1).strip()
         if value and not _PLACEHOLDER_PATTERN.search(value):

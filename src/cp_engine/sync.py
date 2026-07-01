@@ -34,6 +34,7 @@ from cp_engine.claude_settings import install_into_tenant
 from cp_engine.config import TenantConfig
 from cp_engine.render import (
     EXEC_SUMMARY_END,
+    EXEC_SUMMARY_MIGRATION_SUFFIX,
     EXEC_SUMMARY_START,
     count_exceptions_in_window,
     render_account_cp,
@@ -1247,13 +1248,11 @@ _QR_NEXT_UP = "**Next up:**"
 _QR_BLOCKERS = "**Blockers:**"
 
 # The migration stamps one Updates bullet of the form
-# ``- <date> — migrated from Quick Resume``. This SUFFIX is the shared
-# source of truth for that wording: prep_planning's
-# ``_EXEC_SUMMARY_MIGRATION_BULLET_RE`` matches it (via re.escape) to treat
-# a freshly-migrated-but-unauthored region as "no content". If you change
-# this wording, that regex follows automatically — and a parity test in
-# tests/test_prep_planning.py guards the two against drift.
-EXEC_SUMMARY_MIGRATION_SUFFIX = " — migrated from Quick Resume"
+# ``- <date> — migrated from Quick Resume``. The SUFFIX now lives in
+# render.py (the single source of truth shared by producer + all readers)
+# and is re-exported here via the render import above, so existing
+# ``from cp_engine.sync import EXEC_SUMMARY_MIGRATION_SUFFIX`` callers keep
+# working. `_build_exec_summary_region` below uses it.
 
 
 def _qr_field(source: str, label: str) -> str | None:

@@ -145,3 +145,28 @@ _<2-10 paragraphs of substantive notes.>_
 """
     out = derive_from_project_cp(_write(tmp_path, body))
     assert out is None
+
+
+def test_derive_falls_through_on_empty_status(tmp_path: Path) -> None:
+    """Bug-A regression: an EMPTY (non-placeholder) ``**Status:**`` line must
+    NOT let the Status regex cross into the next line and return the literal
+    ``**Where it stands:**`` label. With an empty Status, derivation falls
+    through to the first real Where-it-stands bullet.
+
+    Before the fix (``\\s*`` in the Status regex, which matches newlines) this
+    returned ``'**Where it stands:**'``.
+    """
+    body = """\
+<!-- cp-engine:start exec-summary -->
+## Exec Summary  ·  updated 2026-06-30
+
+**Objective:** Ship the activation playbooks.
+**Status:**
+**Where it stands:**
+- Pop-up R3 with Rena since 5/22.
+<!-- cp-engine:end exec-summary -->
+"""
+    cp = _write(tmp_path, body)
+    out = derive_from_project_cp(cp)
+    assert out == "Pop-up R3 with Rena since 5/22."
+    assert out != "**Where it stands:**"

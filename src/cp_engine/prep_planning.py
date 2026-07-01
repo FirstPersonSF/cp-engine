@@ -48,8 +48,10 @@ from cp_engine.agenda import (
     to_datetime,
 )
 from cp_engine.config import TenantConfig
-from cp_engine.render import EXEC_SUMMARY_END, EXEC_SUMMARY_START
-from cp_engine.sync import EXEC_SUMMARY_MIGRATION_SUFFIX
+from cp_engine.render import (
+    exec_summary_is_authored,
+    slice_exec_summary_region,
+)
 from cp_engine.sprints import (
     bullets,
     current_sprint_week_iso,
@@ -493,17 +495,6 @@ def _resolve_clickup_list_for_project(
 # ──────────────────────────────────────────────────────────────────────
 
 
-# Auto-generated Updates bullet stamped by the Quick-Resume→Exec-Summary
-# migration. It is NOT human-authored content, so an otherwise-blank region
-# carrying only this line still reads as "unauthored". The wording suffix is
-# owned by sync.EXEC_SUMMARY_MIGRATION_SUFFIX (single source of truth); we
-# re.escape it here so the two can't drift. A parity test in
-# tests/test_prep_planning.py asserts this regex matches sync's real output.
-_EXEC_SUMMARY_MIGRATION_BULLET_RE = re.compile(
-    r"^- \d{4}-\d{2}-\d{2}" + re.escape(EXEC_SUMMARY_MIGRATION_SUFFIX) + r"\s*$"
-)
-
-
 def _extract_exec_summary(cp_md_body: str) -> str | None:
     """Return the inner text of a project cp.md's engine-managed
     ``exec-summary`` region — the model-authored 6-field state box (Objective,
@@ -518,46 +509,15 @@ def _extract_exec_summary(cp_md_body: str) -> str | None:
         only bullet allowed to count as "no content" is the auto-stamped
         ``- <date> — migrated from Quick Resume`` migration line).
 
-    Pure function on the body string.
+    Pure function on the body string. Region slicing + the authored-check
+    are shared with agenda.py via render.py's authoritative copies.
     """
-    start = cp_md_body.find(EXEC_SUMMARY_START)
-    if start == -1:
+    region = slice_exec_summary_region(cp_md_body)
+    if region is None:
         return None
-    end = cp_md_body.find(EXEC_SUMMARY_END, start)
-    if end == -1:
-        return None
-    # Inner text between (but not including) the marker lines.
-    inner = cp_md_body[start + len(EXEC_SUMMARY_START) : end]
-    region = inner.strip("\n")
-
-    if not _exec_summary_is_authored(region):
+    if not exec_summary_is_authored(region):
         return None
     return region
-
-
-def _exec_summary_is_authored(region: str) -> bool:
-    """True when an exec-summary region carries any real content. A region is
-    UNAUTHORED when every ``**Label:**`` field value is a ``_<...>_``
-    placeholder and the only bullets are the auto-stamped migration line."""
-    for raw in region.splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        # Field line: `**Label:** value` — real iff value is a non-placeholder.
-        field = re.match(r"^\*\*[^*]+:\*\*\s*(?P<value>.*)$", line)
-        if field is not None:
-            value = field.group("value").strip()
-            if value and "_<" not in value:
-                return True
-            continue
-        # Bullet line — real unless it's the auto migration stamp.
-        if line.startswith("- "):
-            if _EXEC_SUMMARY_MIGRATION_BULLET_RE.match(line):
-                continue
-            return True
-        # Anything else (headings, stray prose) is not treated as authored
-        # content on its own — fields + bullets are the authored surface.
-    return False
 
 
 # Open-ask bullet shape from sprint files. Mirrors attention_digest._OPEN_ASK_RE.
