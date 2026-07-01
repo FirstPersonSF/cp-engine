@@ -1285,16 +1285,6 @@ def _qr_parse_fields(source: str) -> list[tuple[str, str, list[str]]]:
     return fields
 
 
-def _qr_field(source: str, label: str) -> str | None:
-    """Return the value following a `**Label:**` line inside `source`, or
-    None if the label isn't present. Value is stripped of surrounding
-    whitespace."""
-    m = re.search(rf"^{re.escape(label)}\s*(.*)$", source, re.MULTILINE)
-    if not m:
-        return None
-    return m.group(1).strip()
-
-
 def _qr_is_placeholder(value: str | None) -> bool:
     """Placeholder convention: a `_<...>_` form (matches prep_planning's
     ``"_<" in text`` check). Absent values count as placeholder for
