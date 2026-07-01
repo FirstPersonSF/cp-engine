@@ -4,6 +4,30 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.42.1 — 2026-07-01
+
+### Fixed — Exec Summary migration preserves all Quick Resume content
+
+The v0.42.0 Quick Resume → Exec Summary migration read only the *single value
+after each* of the four canonical labels (`**Last session:**`,
+`**Current work:**`, `**Next up:**`, `**Blockers:**`) via a one-line regex. Real
+tenant regions carry more than that, and the extra content was silently dropped
+on migration: a fifth hand-added `**Last meeting:** <text>` field disappeared
+entirely, and multi-line bullets under `**Next up:**` (dated commitments, owner
+assignments — e.g. "share Round 2 with Infoblox", "email Dan Pearl") were
+truncated to just the label-line value. Across the live tenant, 11 of 36
+projects lost real active content this way.
+
+The migration now parses the full region and preserves every line. Extra bullets
+under any canonical field carry as additional bullets under that field (Next-up
+continuation bullets stay under **Next up**). Non-canonical fields such as
+`**Last meeting:**` fold into **Where it stands** as labeled bullets
+(`- Last meeting: <text>`) rather than being dropped. Placeholder canonical
+values still drop to header-only, so a region that had only placeholders and no
+extra content still reads as unauthored. The migration remains idempotent (runs
+once, then a no-op) and account-CP-guarded; only the currently-dropped content
+is now retained.
+
 ## v0.42.0 — 2026-06-30
 
 ### Changed — sprint planning reads a structured, model-authored Exec Summary (replaces the stale Quick Resume scrape)

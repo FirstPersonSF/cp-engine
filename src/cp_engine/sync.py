@@ -1255,6 +1255,36 @@ _QR_BLOCKERS = "**Blockers:**"
 # working. `_build_exec_summary_region` below uses it.
 
 
+_QR_FIELD_RE = re.compile(r"^(\*\*[^*]+:\*\*)\s*(.*)$")
+
+
+def _qr_parse_fields(source: str) -> list[tuple[str, str, list[str]]]:
+    """Parse the old quick-resume region into an ordered list of
+    ``(label, value, extra_bullets)`` tuples — one per `**Label:**` line.
+
+    `label` includes the `**…:**` markup (e.g. ``"**Next up:**"``). `value`
+    is the remainder of the label line, stripped. `extra_bullets` are the
+    continuation lines that start with ``- `` following the label line, up
+    to the next `**Label:**` line — these belong to the preceding field and
+    are otherwise silently dropped by the single-line reader. Blank lines
+    between a field and its bullets are tolerated; any line that is neither
+    a field nor a bullet ends the current field's bullet run.
+
+    Markers, the `## Quick Resume` heading, and other non-field/non-bullet
+    lines are ignored (their content lives in the canonical fields).
+    """
+    fields: list[tuple[str, str, list[str]]] = []
+    for raw in source.splitlines():
+        line = raw.strip()
+        m = _QR_FIELD_RE.match(line)
+        if m is not None:
+            fields.append((m.group(1), m.group(2).strip(), []))
+            continue
+        if line.startswith("- ") and fields:
+            fields[-1][2].append(line[2:].strip())
+    return fields
+
+
 def _qr_field(source: str, label: str) -> str | None:
     """Return the value following a `**Label:**` line inside `source`, or
     None if the label isn't present. Value is stripped of surrounding
@@ -1287,12 +1317,63 @@ def _build_exec_summary_region(source: str, *, today: str) -> str:
     separate on purpose — this is a one-time cutover seed, not the live
     template — so if you edit the template's field labels, update them here
     too."""
-    last_session = _qr_field(source, _QR_LAST_SESSION)
-    if not last_session:
-        last_session = "_<date>_"
-    current_work = _qr_field(source, _QR_CURRENT_WORK)
-    next_up = _qr_field(source, _QR_NEXT_UP)
-    blockers = _qr_field(source, _QR_BLOCKERS)
+    # Parse the whole region into ordered fields, each carrying its
+    # label-line value AND any continuation bullets (which the old
+    # single-line reader dropped).
+    parsed = _qr_parse_fields(source)
+    by_label: dict[str, tuple[str, list[str]]] = {}
+    for label, value, extras in parsed:
+        # First occurrence of a label wins for the value; merge extras.
+        if label in by_label:
+            prev_val, prev_extras = by_label[label]
+            by_label[label] = (prev_val, prev_extras + extras)
+        else:
+            by_label[label] = (value, list(extras))
+
+    def field(label: str) -> tuple[str | None, list[str]]:
+        """Value + extra bullets for a canonical field (None value if absent)."""
+        if label in by_label:
+            return by_label[label]
+        return None, []
+
+    def real_bullets(label: str) -> list[str]:
+        """Seed bullet (label-line value, if real) + all extra bullets, with
+        placeholder bullets dropped. Extra bullets are kept verbatim — they
+        are real hand-added content, not placeholders."""
+        value, extras = field(label)
+        out: list[str] = []
+        if not _qr_is_placeholder(value):
+            out.append(value or "")
+        for extra in extras:
+            if extra and "_<" not in extra:
+                out.append(extra)
+        return out
+
+    last_session_value, last_session_extras = field(_QR_LAST_SESSION)
+    last_session = last_session_value if last_session_value else "_<date>_"
+
+    # Non-canonical fields (e.g. hand-added `**Last meeting:**`) are NOT one
+    # of the four the new region models. Preserve them as labeled bullets
+    # under "Where it stands" — a stable, readable home that loses nothing.
+    # (The model tidies at first wrap up; the migration's job is not to drop.)
+    _canonical = {_QR_LAST_SESSION, _QR_CURRENT_WORK, _QR_NEXT_UP, _QR_BLOCKERS}
+    non_canonical_bullets: list[str] = []
+    for label, value, extras in parsed:
+        if label in _canonical:
+            continue
+        name = label.strip("*").rstrip(":").strip()
+        if value and "_<" not in value:
+            non_canonical_bullets.append(f"{name}: {value}")
+        for extra in extras:
+            if extra and "_<" not in extra:
+                non_canonical_bullets.append(f"{name}: {extra}")
+
+    # Extra bullets under Last session are real content but Last session has
+    # no bullet list in the new region — fold them under "Where it stands"
+    # so nothing is lost.
+    where_extra_from_last_session = [
+        b for b in last_session_extras if b and "_<" not in b
+    ]
 
     lines: list[str] = [
         EXEC_SUMMARY_START,
@@ -1304,16 +1385,20 @@ def _build_exec_summary_region(source: str, *, today: str) -> str:
         "",
         "**Where it stands:**",
     ]
-    if not _qr_is_placeholder(current_work):
-        lines.append(f"- {current_work}")
+    for bullet in real_bullets(_QR_CURRENT_WORK):
+        lines.append(f"- {bullet}")
+    for bullet in where_extra_from_last_session:
+        lines.append(f"- {bullet}")
+    for bullet in non_canonical_bullets:
+        lines.append(f"- {bullet}")
     lines.append("")
     lines.append("**Next up:**")
-    if not _qr_is_placeholder(next_up):
-        lines.append(f"- {next_up}")
+    for bullet in real_bullets(_QR_NEXT_UP):
+        lines.append(f"- {bullet}")
     lines.append("")
     lines.append("**Blockers:**")
-    if not _qr_is_placeholder(blockers):
-        lines.append(f"- {blockers}")
+    for bullet in real_bullets(_QR_BLOCKERS):
+        lines.append(f"- {bullet}")
     lines.append("")
     lines.append("**Updates:**")
     lines.append(f"- {today}{EXEC_SUMMARY_MIGRATION_SUFFIX}")
