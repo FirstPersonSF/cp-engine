@@ -1767,6 +1767,96 @@ def test_migrate_collapses_extra_blank_lines_after_region() -> None:
     assert not eof_out.endswith("\n\n")
 
 
+# --- The real-world region shape that loses content today (ibx-5167). -------
+# The old region carries MORE than the four single-line canonical fields:
+# a fifth **Last meeting:** field and several continuation bullets under
+# **Next up:**. The migration must preserve every line.
+_IBX_5167_REGION = (
+    "<!-- cp-engine:start quick-resume -->\n"
+    "## Quick Resume\n\n"
+    "**Last session:** 2026-05-09 — Drew: rebuilt cp.md from May 7 review notes.\n"
+    "**Last meeting:** 2026-05-07 — Round 1 animation review with Janet, Marcello.\n"
+    "**Current work:** v8 cut assembled with audio synced; Marcello restored.\n"
+    "**Next up:** Drew reviews v8 timing today (2026-06-19); Drew drafts $40K SOW.\n"
+    "- 2026-05-12 Drew: brief Jared on IQ fire-drill + AI-campaign next steps.\n"
+    "- 2026-05-18 share Round 2 with Infoblox (Drew out 5/14–5/17 for graduation).\n"
+    "- Drew: email Dan Pearl re: business-outcome examples; follow up with Janet.\n"
+    "- Marcello: deliver synthesis from input brief + framing ideas to Janet.\n"
+    "- Book 2026-06-08: 11:30 1:1 w/ Jamie; 13:30 w/ Jamie + Mahul.\n\n"
+    "**Blockers:** None\n"
+    "<!-- cp-engine:end quick-resume -->\n\n"
+    "## Project Notes\n\ndurable note.\n"
+)
+
+
+def test_migrate_preserves_extra_next_up_bullets() -> None:
+    """Continuation bullets under `**Next up:**` are real dated commitments;
+    the migration must carry ALL of them into the new region, not just the
+    label-line value."""
+    from cp_engine.sync import _migrate_quick_resume_to_exec_summary
+
+    out = _migrate_quick_resume_to_exec_summary(_IBX_5167_REGION, today="2026-06-30")
+
+    for phrase in (
+        "brief Jared",
+        "share Round 2 with Infoblox",
+        "email Dan Pearl",
+        "Marcello: deliver synthesis",
+        "Book 2026-06-08",
+    ):
+        assert phrase in out, f"lost extra Next-up bullet: {phrase!r}"
+    # The label-line value still lands as the first Next-up bullet.
+    assert "- Drew reviews v8 timing today (2026-06-19); Drew drafts $40K SOW." in out
+
+
+def test_migrate_preserves_non_canonical_last_meeting_field() -> None:
+    """A hand-added `**Last meeting:**` field is not one of the four
+    canonical fields but is real content — the migration must preserve it."""
+    from cp_engine.sync import _migrate_quick_resume_to_exec_summary
+
+    out = _migrate_quick_resume_to_exec_summary(_IBX_5167_REGION, today="2026-06-30")
+
+    assert "Round 1 animation review with Janet, Marcello" in out
+
+
+def test_migrate_still_idempotent_with_extra_content() -> None:
+    """The richer region still migrates exactly once: a second run (with a
+    different `today`) sees the exec-summary markers already present and
+    no-ops, returning the first result unchanged."""
+    from cp_engine.sync import _migrate_quick_resume_to_exec_summary
+
+    once = _migrate_quick_resume_to_exec_summary(_IBX_5167_REGION, today="2026-06-30")
+    twice = _migrate_quick_resume_to_exec_summary(once, today="2026-07-15")
+    assert once == twice
+
+
+def test_migrate_all_placeholder_no_extra_still_unauthored() -> None:
+    """A region whose canonical fields are ALL placeholders and which has no
+    extra bullets/fields must migrate to a region that reads UNAUTHORED —
+    preserving-extra-content must not accidentally author everything."""
+    from cp_engine.render import exec_summary_is_authored
+    from cp_engine.sync import (
+        EXEC_SUMMARY_END,
+        EXEC_SUMMARY_START,
+        _migrate_quick_resume_to_exec_summary,
+    )
+
+    body = (
+        "# Some project\n\n"
+        "## Quick Resume\n\n"
+        "**Last session:** _<date>_\n"
+        "**Current work:** _<what's in flight right now>_\n"
+        "**Next up:** _<the next concrete action>_\n"
+        "**Blockers:** _<or \"None\">_\n"
+    )
+    out = _migrate_quick_resume_to_exec_summary(body, today="2026-06-30")
+
+    start = out.index(EXEC_SUMMARY_START)
+    end = out.index(EXEC_SUMMARY_END) + len(EXEC_SUMMARY_END)
+    region = out[start:end]
+    assert exec_summary_is_authored(region) is False
+
+
 def test_new_project_scaffold_includes_exec_summary_markers(tmp_path: Path) -> None:
     """Fresh project scaffold (first sync after a project lands in MC-2)
     carries the `exec-summary` markers from the template. New projects
