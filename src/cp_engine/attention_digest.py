@@ -213,6 +213,7 @@ def attention_digest(
     from cp_engine.sprints import current_sprint_week_iso
     week_iso = current_sprint_week_iso(datetime(today.year, today.month, today.day))
     sprint_dir = config.root / "sprints" / week_iso
+    resolved_week_iso = week_iso  # the week the items actually come from (see fallback below)
     if not sprint_dir.is_dir():
         # Fallback: try the previous ISO week. Mondays-after-fresh-week-start
         # mean today's W## dir often doesn't exist yet — no meeting has scaffolded
@@ -225,9 +226,10 @@ def attention_digest(
             datetime(today.year, today.month, today.day) - timedelta(days=7)
         )
         sprint_dir = config.root / "sprints" / prev_iso
+        resolved_week_iso = prev_iso
         if not sprint_dir.is_dir():
             log.warning("attention-digest: previous week %s also missing; empty digest", sprint_dir)
-            return {"past_due": [], "escalated": [], "allocation": []}
+            return {"past_due": [], "escalated": [], "allocation": [], "week_iso": None}
     sprint_files = sorted(sprint_dir.glob("*.md"))
     # Exclude tenant-level scaffolding files; only per-project sprint files matter.
     sprint_files = [p for p in sprint_files if not p.name.startswith("_")]
@@ -241,6 +243,10 @@ def attention_digest(
             window_days=escalated_window_days,
         ),
         "allocation": [],
+        # The sprint week these items were read from (may be the fallback
+        # previous week). Embedded into action-button payloads so a click
+        # resolves against THIS file even after a sprint rollover.
+        "week_iso": resolved_week_iso,
     }
 
 
@@ -346,6 +352,9 @@ def _render_digest_blocks(
     past_due = digest.get("past_due") or []
     escalated = digest.get("escalated") or []
     allocation = digest.get("allocation") or []
+    # Sprint week the items were read from; embedded into button payloads so
+    # a click resolves against the right sprint file after a rollover.
+    week_iso = digest.get("week_iso")
 
     if not past_due and not escalated and not allocation:
         return [{
@@ -417,7 +426,9 @@ def _render_digest_blocks(
             else:
                 blocks.append({
                     "type": "actions",
-                    "elements": _ask_action_buttons(code=ask.code, cp_hash=ask.hash),
+                    "elements": _ask_action_buttons(
+                        code=ask.code, cp_hash=ask.hash, week_iso=week_iso
+                    ),
                 })
         if dropped > 0:
             blocks.append({
@@ -462,7 +473,9 @@ def _render_digest_blocks(
             })
             blocks.append({
                 "type": "actions",
-                "elements": _risk_action_buttons(code=risk.code, cp_hash=risk.hash),
+                "elements": _risk_action_buttons(
+                    code=risk.code, cp_hash=risk.hash, week_iso=week_iso
+                ),
             })
         if dropped_risks > 0:
             blocks.append({
@@ -508,50 +521,69 @@ def _render_digest_blocks(
     return blocks
 
 
-def _ask_action_buttons(*, code: str, cp_hash: str) -> list[dict]:
-    """Three buttons for a non-ClickUp ask: Mark closed, Snooze 7d, Snooze until..."""
+def _pipe(verb: str, code: str, cp_hash: str, week_iso: str | None) -> str:
+    """Button `value` payload: `verb|code|hash` plus an optional 4th
+    `|week_iso` part so the click handler resolves against the sprint
+    file for the week the digest was rendered for (not the click's week).
+
+    Omitting week_iso when None keeps the 3-part shape old buttons had —
+    but every live render now passes it, so this is belt-and-suspenders.
+    """
+    base = f"{verb}|{code}|{cp_hash}"
+    return f"{base}|{week_iso}" if week_iso else base
+
+
+def _ask_action_buttons(*, code: str, cp_hash: str, week_iso: str | None = None) -> list[dict]:
+    """Three buttons for a non-ClickUp ask: Mark closed, Snooze 7d, Snooze until...
+
+    The digest's sprint week (`week_iso`) is embedded ONLY in the button
+    `value` (which the click handler parses), not in `action_id`. The
+    action_id keys the surgical response-URL update to the clicked block
+    and must stay stable/short; the week doesn't belong there.
+    """
     return [
         {
             "type": "button",
             "text": {"type": "plain_text", "text": "✅ Mark closed"},
             "style": "primary",
-            "value": f"close-ask|{code}|{cp_hash}",
+            "value": _pipe("close-ask", code, cp_hash, week_iso),
             "action_id": f"close-ask_{code}_{cp_hash}",
         },
         {
             "type": "button",
             "text": {"type": "plain_text", "text": "💤 Snooze 7d"},
-            "value": f"snooze-ask-7d|{code}|{cp_hash}",
+            "value": _pipe("snooze-ask-7d", code, cp_hash, week_iso),
             "action_id": f"snooze-ask-7d_{code}_{cp_hash}",
         },
         {
             "type": "button",
             "text": {"type": "plain_text", "text": "📅 Snooze until…"},
-            "value": f"snooze-ask-pick|{code}|{cp_hash}",
+            "value": _pipe("snooze-ask-pick", code, cp_hash, week_iso),
             "action_id": f"snooze-ask-pick_{code}_{cp_hash}",
         },
     ]
 
 
-def _risk_action_buttons(*, code: str, cp_hash: str) -> list[dict]:
+def _risk_action_buttons(*, code: str, cp_hash: str, week_iso: str | None = None) -> list[dict]:
+    """See `_ask_action_buttons` — week_iso threaded into `value` only."""
     return [
         {
             "type": "button",
             "text": {"type": "plain_text", "text": "✅ Resolve"},
             "style": "primary",
-            "value": f"resolve-risk|{code}|{cp_hash}",
+            "value": _pipe("resolve-risk", code, cp_hash, week_iso),
             "action_id": f"resolve-risk_{code}_{cp_hash}",
         },
         {
             "type": "button",
             "text": {"type": "plain_text", "text": "💤 Snooze 7d"},
-            "value": f"snooze-risk-7d|{code}|{cp_hash}",
+            "value": _pipe("snooze-risk-7d", code, cp_hash, week_iso),
             "action_id": f"snooze-risk-7d_{code}_{cp_hash}",
         },
         {
             "type": "button",
             "text": {"type": "plain_text", "text": "📅 Snooze until…"},
-            "value": f"snooze-risk-pick|{code}|{cp_hash}",
+            "value": _pipe("snooze-risk-pick", code, cp_hash, week_iso),
             "action_id": f"snooze-risk-pick_{code}_{cp_hash}",
         },
     ]

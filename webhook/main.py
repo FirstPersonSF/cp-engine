@@ -2110,9 +2110,13 @@ async def _handle_block_action(payload: dict) -> dict:
     original_message = payload.get("message", {})
 
     parts = value.split("|")
-    if len(parts) != 3:
+    if len(parts) not in (3, 4):
         raise HTTPException(400, f"malformed value: {value!r}")
-    verb, code, cp_hash = parts
+    verb, code, cp_hash = parts[0], parts[1], parts[2]
+    # 4th part (added fix/slack-close-week-context): the sprint week the
+    # digest was rendered for. Old 3-part buttons still in Slack → None →
+    # execute_plan defaults to the current week (unchanged behavior).
+    week_iso = parts[3] if len(parts) > 3 else None
 
     # Snooze-pick: modal must open NOW (trigger_id expires in 3s). views.open
     # is one API call (~200-400ms); within budget. Run via asyncio.to_thread
@@ -2127,6 +2131,7 @@ async def _handle_block_action(payload: dict) -> dict:
             code=code,
             cp_hash=cp_hash,
             response_url=response_url,
+            week_iso=week_iso,
         )
         return {"ok": True}
 
@@ -2155,7 +2160,7 @@ async def _handle_block_action(payload: dict) -> dict:
     _spawn_background(_run_action_in_background(
         verb=verb, code=code, cp_hash=cp_hash, extras=extras,
         response_url=response_url, original_message=original_message,
-        clicked_action_id=action_id,
+        clicked_action_id=action_id, week_iso=week_iso,
     ))
     return {"ok": True, "queued": True}
 
@@ -2180,6 +2185,7 @@ async def _handle_view_submission(payload: dict) -> dict:
     code = meta.get("code")
     cp_hash = meta.get("hash")
     response_url = meta.get("response_url", "")
+    week_iso = meta.get("week_iso")  # None for old modals; execute_plan defaults
     # Schema-drift / replay guard: missing fields → inline modal error rather
     # than silently dispatching a nonsense plan (verb=None, code=None, …).
     if not (verb and code and cp_hash):
@@ -2213,6 +2219,7 @@ async def _handle_view_submission(payload: dict) -> dict:
         extras={"until": until},  # No closed_by — only meaningful for close/resolve verbs
         response_url=response_url,
         original_message={},  # modal submission has no original to splice into
+        week_iso=week_iso,
     ))
     return {"response_action": "clear"}
 
@@ -2222,6 +2229,7 @@ async def _run_action_in_background(
     verb: str, code: str, cp_hash: str, extras: dict,
     response_url: str, original_message: dict,
     clicked_action_id: str = "",
+    week_iso: str | None = None,
 ) -> None:
     """Background coroutine: run the cp plan via to_thread, update Slack.
 
@@ -2240,7 +2248,7 @@ async def _run_action_in_background(
     try:
         result = await asyncio.to_thread(
             _run_plan_for_one_item,
-            verb=verb, code=code, cp_hash=cp_hash, **extras,
+            verb=verb, code=code, cp_hash=cp_hash, week_iso=week_iso, **extras,
         )
     except Exception as exc:  # noqa: BLE001 — background must not crash
         log.exception(
@@ -2277,7 +2285,7 @@ async def _run_action_in_background(
 
 
 def _run_plan_for_one_item(
-    *, verb: str, code: str, cp_hash: str, **extras
+    *, verb: str, code: str, cp_hash: str, week_iso: str | None = None, **extras
 ) -> dict:
     """Clone tenant, run a 1-item plan for the given verb, commit, push.
 
@@ -2300,6 +2308,10 @@ def _run_plan_for_one_item(
             plan,
             tenant_root=tenant_root,
             today=date.today(),
+            # The digest embedded the week it was rendered for; route the
+            # close/resolve/snooze to THAT week's sprint file. None (old
+            # 3-part buttons) → execute_plan defaults to the current week.
+            week_iso=week_iso,
             supabase=_create_supabase_client(),
             meeting_id=None,
         )
@@ -2436,6 +2448,7 @@ def _confirmation_text(*, verb: str, extras: dict, result: dict) -> str:
 
 def _open_snooze_modal(
     *, trigger_id: str, verb: str, code: str, cp_hash: str, response_url: str,
+    week_iso: str | None = None,
 ) -> None:
     """Open a Slack modal with a date picker; the actual snooze happens
     on the subsequent view_submission callback.
@@ -2453,6 +2466,10 @@ def _open_snooze_modal(
     client = WebClient(token=token)
     private_metadata = json.dumps({
         "verb": verb, "code": code, "hash": cp_hash, "response_url": response_url,
+        # Carry the digest's sprint week through the modal round-trip so the
+        # snoozed item resolves against the right sprint file (see
+        # fix/slack-close-week-context). None for old buttons.
+        "week_iso": week_iso,
     })
     client.views_open(trigger_id=trigger_id, view={
         "type": "modal",

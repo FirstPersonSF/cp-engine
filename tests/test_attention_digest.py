@@ -356,7 +356,7 @@ def test_attention_digest_returns_empty_when_neither_week_exists(tmp_path):
     class _Cfg:
         def __init__(self, root): self.root = root
     digest = attention_digest(config=_Cfg(tmp_path), today=date(2026, 5, 27))
-    assert digest == {"past_due": [], "escalated": [], "allocation": []}
+    assert digest == {"past_due": [], "escalated": [], "allocation": [], "week_iso": None}
 
 
 def test_attention_digest_respects_thresholds(tmp_path):
@@ -781,3 +781,87 @@ def test_render_digest_blocks_past_due_sorted_by_urgency_descending() -> None:
     # The first 10 (most urgent) asks have days_past = 100..91 →
     # codes prj-0000..prj-0009 (highest days_past corresponds to lowest i).
     assert rendered_codes == [f"prj-{i:04d}" for i in range(10)]
+
+
+# ─────────────────────────────────────────────────────────────
+#  Sprint-week threading through action buttons
+#  (fix/slack-close-week-context)
+# ─────────────────────────────────────────────────────────────
+
+
+def test_ask_action_buttons_embed_week_iso_in_value():
+    """Close/snooze ask buttons carry the digest's sprint week as a 4th
+    pipe-part so the click handler resolves against the right sprint file."""
+    from cp_engine.attention_digest import _ask_action_buttons
+    btns = _ask_action_buttons(code="storyos", cp_hash="2fcbd862", week_iso="2026-W27")
+    values = [b["value"] for b in btns]
+    assert "close-ask|storyos|2fcbd862|2026-W27" in values
+    assert "snooze-ask-7d|storyos|2fcbd862|2026-W27" in values
+    assert "snooze-ask-pick|storyos|2fcbd862|2026-W27" in values
+
+
+def test_risk_action_buttons_embed_week_iso_in_value():
+    from cp_engine.attention_digest import _risk_action_buttons
+    btns = _risk_action_buttons(code="ibx-5167", cp_hash="09e3d0c7", week_iso="2026-W27")
+    values = [b["value"] for b in btns]
+    assert "resolve-risk|ibx-5167|09e3d0c7|2026-W27" in values
+    assert "snooze-risk-7d|ibx-5167|09e3d0c7|2026-W27" in values
+    assert "snooze-risk-pick|ibx-5167|09e3d0c7|2026-W27" in values
+
+
+def test_attention_digest_reports_week_iso_used(tmp_path):
+    """The digest dict carries the sprint week its items were read from so
+    the button renderer can embed it in click payloads."""
+    from cp_engine.attention_digest import attention_digest
+    from cp_engine.sprints import current_sprint_week_iso
+    from datetime import datetime
+
+    today = date(2026, 5, 27)
+    week_iso = current_sprint_week_iso(datetime(today.year, today.month, today.day))
+    sprint_dir = tmp_path / "sprints" / week_iso
+    sprint_dir.mkdir(parents=True)
+    (sprint_dir / "ggl-5168.md").write_text("### Open asks\n\n")
+
+    class _Cfg:
+        def __init__(self, root): self.root = root
+
+    digest = attention_digest(config=_Cfg(tmp_path), today=today)
+    assert digest["week_iso"] == week_iso
+
+
+def test_attention_digest_reports_fallback_week_iso(tmp_path):
+    """When falling back to the previous week, week_iso reflects the PREVIOUS
+    week (where the items actually live), not today's."""
+    from cp_engine.attention_digest import attention_digest
+    from cp_engine.sprints import current_sprint_week_iso
+    from datetime import datetime, timedelta as td
+
+    today = date(2026, 5, 27)
+    prev_iso = current_sprint_week_iso(datetime(today.year, today.month, today.day) - td(days=7))
+    prev_dir = tmp_path / "sprints" / prev_iso
+    prev_dir.mkdir(parents=True)
+    (prev_dir / "ggl-5168.md").write_text("### Open asks\n\n")
+
+    class _Cfg:
+        def __init__(self, root): self.root = root
+
+    digest = attention_digest(config=_Cfg(tmp_path), today=today)
+    assert digest["week_iso"] == prev_iso
+
+
+def test_render_digest_blocks_threads_week_into_ask_buttons(tmp_path):
+    """_render_digest_blocks passes the digest's week_iso down to the ask
+    buttons so the rendered value carries |<week>."""
+    from cp_engine.attention_digest import _render_digest_blocks, PastDueAsk
+
+    ask = PastDueAsk(
+        code="storyos", text="Review the plan", who="Drew",
+        asked=date(2026, 6, 24), by=None, days_past=10, hash="2fcbd862",
+    )
+    digest = {"past_due": [ask], "escalated": [], "allocation": [], "week_iso": "2026-W27"}
+    blocks = _render_digest_blocks(digest, recipient_name="Drew")
+    values = []
+    for b in blocks:
+        if b.get("type") == "actions":
+            values.extend(e.get("value", "") for e in b.get("elements", []))
+    assert any(v == "close-ask|storyos|2fcbd862|2026-W27" for v in values), values
