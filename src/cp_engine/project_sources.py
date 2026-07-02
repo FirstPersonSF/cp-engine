@@ -31,6 +31,12 @@ logger = logging.getLogger(__name__)
 # and skips the LLM call. It's a short scalar, not a blob, so it's safe to list.
 _SOURCE_COLUMNS = "id, title, source_type, status, created_at, file_hash"
 
+# Widened window for the no-query pull's second attempt. The recency-ordered
+# read is scoped to the WHOLE project+account chunk pool, so an older doc can
+# sit entirely below the caller's `limit`. 2000 chunks comfortably covers a
+# project's full corpus while still bounding the transfer.
+_MISS_RETRY_LIMIT = 2000
+
 
 def list_sources(
     client,
@@ -148,6 +154,15 @@ def pull_source(
             # dependency at import time and free of any transport coupling.
             from ingest.embedding_service import IngestEmbeddingService
 
+            from cp_engine.asset_ingest import _configure_pipeline_once
+
+            # The embedder reads voyage_api_key off document-ingest's settings
+            # singleton. Unconfigured, that singleton is DefaultIngestSettings,
+            # which has NO voyage_api_key field — the key is invisible even when
+            # VOYAGE_API_KEY is in the environment. Wire AssetIngestSettings
+            # (env-backed) in first, exactly as the ingest pipeline does.
+            _configure_pipeline_once()
+
             embedder = IngestEmbeddingService(model="voyage-3-large")
         query_embedding = embedder.embed(query)
 
@@ -160,6 +175,20 @@ def pull_source(
     )
 
     matched = [r for r in rows if _title_matches(doc_title, r.get("title"))]
+    if not matched and query is None and limit < _MISS_RETRY_LIMIT:
+        # The no-query read is recency-ordered ACROSS the whole scope, then
+        # title-filtered here — a doc older than the newest `limit` chunks is
+        # invisible at the default window even though it exists. Before
+        # declaring "no source", widen once to a window big enough to cover
+        # every doc a project realistically holds.
+        rows = read_scoped_chunks(
+            client,
+            project_id,
+            company_id,
+            query_embedding=None,
+            limit=_MISS_RETRY_LIMIT,
+        )
+        matched = [r for r in rows if _title_matches(doc_title, r.get("title"))]
     if not matched:
         return {
             "title": doc_title,
@@ -201,7 +230,9 @@ def pull_source(
         "title": first.get("title"),
         "citation_url": first.get("citation_url"),
         "scope": first.get("scope"),
-        "chunks": [r.get("text") for r in selected],
+        # Cap at the caller's `limit` so the widened-window retry can't return
+        # more chunks than the primary path ever would.
+        "chunks": [r.get("text") for r in selected[:limit]],
     }
 
 

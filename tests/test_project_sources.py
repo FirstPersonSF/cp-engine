@@ -8,6 +8,7 @@ No Supabase / Voyage. A small fake supabase client mirrors the PostgREST chain
 from __future__ import annotations
 
 from cp_engine.project_sources import (
+    _MISS_RETRY_LIMIT,
     list_sources,
     list_spine,
     pull_source,
@@ -455,3 +456,62 @@ def test_pull_source_query_mode_passes_embedding():
     assert client.calls[0]["params"]["p_query_embedding"] == [0.1, 0.2, 0.3]
     # Title filtering still applies on top of the vector-ranked rows.
     assert out["chunks"] == ["Concur chunk one", "Concur chunk two"]
+
+
+class _SequencedRpcClient:
+    """Like _FakeRpcClient but returns a different canned row-set per call."""
+
+    def __init__(self, row_sets):
+        self._row_sets = list(row_sets)
+        self.calls: list[dict] = []
+
+    def rpc(self, name, params):
+        self.calls.append({"name": name, "params": params})
+        return self
+
+    def execute(self):
+        return _FakeExecute(list(self._row_sets[len(self.calls) - 1]))
+
+
+def test_pull_source_miss_widens_window_and_finds_older_doc():
+    # The recency window is scoped to ALL of the project's chunks, so a doc
+    # older than the newest `limit` chunks is invisible on the first read.
+    # The pull must widen once (to _MISS_RETRY_LIMIT) before giving up.
+    old_doc_rows = [
+        {
+            "text": "Old doc chunk",
+            "citation_url": "https://drive/old#p1",
+            "title": "Older Strategy Doc.pdf",
+            "scope": "project",
+        }
+    ]
+    client = _SequencedRpcClient([_CHUNK_ROWS, _CHUNK_ROWS + old_doc_rows])
+
+    out = pull_source(client, "proj-1", "co-9", doc_title="Older Strategy Doc.pdf")
+
+    assert len(client.calls) == 2
+    assert client.calls[0]["params"]["p_limit"] == 50
+    retry = client.calls[1]["params"]
+    assert retry["p_limit"] == _MISS_RETRY_LIMIT
+    assert retry["p_query_embedding"] is None
+    assert out["chunks"] == ["Old doc chunk"]
+    assert "note" not in out
+
+
+def test_pull_source_query_mode_miss_does_not_retry():
+    # Query mode already ranks the whole scope by similarity — a miss there is
+    # a real miss, and a second (recency) read would not be an improvement.
+    client = _FakeRpcClient(_CHUNK_ROWS)
+    embedder = _FakeEmbedder([0.1, 0.2, 0.3])
+
+    out = pull_source(
+        client,
+        "proj-1",
+        "co-9",
+        doc_title="Nonexistent Doc",
+        query="anything",
+        embedder=embedder,
+    )
+
+    assert len(client.calls) == 1
+    assert "no source named 'Nonexistent Doc'" in out["note"]
