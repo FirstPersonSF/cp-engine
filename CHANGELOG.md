@@ -4,6 +4,42 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.43.0 — 2026-07-02
+
+### Added — Deep multimodal meeting synthesis (the `meeting_synthesis` fidelity)
+
+A third RAG fidelity above `meeting_summary` and `meeting_transcript`: a deep
+synthesis produced by the meeting-synthesizer service, which reads the meeting's
+video (slides/whiteboards off the frames) and — new — the **documents presented
+in the meeting** (decks, Miro/whiteboard PDF exports), reconciling deck content
+against what the room actually said.
+
+- **`cp_engine/meeting_synthesis.py`** — `synthesize_meeting()` mirrors
+  `promote_meeting_transcript` (engagement gate → guard → produce → ingest →
+  stamp `meta.kind=meeting_synthesis` → stamp `fathom_meetings.synthesis_generated_at`
+  → never-raises). Plus `discover_recording()` (best media candidate from the
+  project's mc-2 ingest folder, human-confirmed — never silent), `call_synth_service()`
+  (POST meeting-synth `/api/analyze` with X-API-Key + poll), and
+  `synthesis_to_markdown()`.
+- **Webhook `POST /api/meetings/synthesize`** — signed proxy target mirroring
+  promote-transcript; optional `{media_url, documents}` body; falls back to a
+  transcript-only synthesis when no video is supplied.
+
+### Changed — workshop-synth Stage 1 uses the shared visual-document-capture module
+
+`capture_worksheet` now delegates its native-PDF faithful-capture mechanics to
+the reusable `visual-document-capture` component (extracted to
+1p-component-library), passing workshop-synth's own transcript block as ambient
+context so the cross-stage prompt-cache prefix stays byte-identical. Behavior-
+preserving; the two synthesis stages (hypotheses, narrative) stay local.
+
+### Deploy note
+
+The webhook needs two new env vars at deploy: `SYNTH_SERVICE_URL` (default
+`meeting-synth.1p.is`) and `SYNTH_SERVICE_API_KEY` (the synthesizer's
+service X-API-Key). mc-2 migration 085 (`fathom_meetings.synthesis_generated_at`)
+is already applied to prod.
+
 ## v0.42.2 — 2026-07-01
 
 ### Fixed — Slack digest close/resolve buttons resolve against the right sprint week
