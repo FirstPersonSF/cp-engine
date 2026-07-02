@@ -80,11 +80,19 @@ def test_transcript_block_is_cached_and_identical() -> None:
 def test_capture_content_layout(tmp_path: Path) -> None:
     """Capture content = [cached transcript, per-page PDF, capture instruction].
 
-    Transcript is block 0 (the cached prefix, same position as the text stages);
-    the per-page PDF differs per call and sits AFTER the cache marker."""
+    Stage-1 capture now delegates its mechanics to the shared
+    ``visual_document_capture`` component; this asserts the delegation still
+    produces the same content layout — transcript is block 0 (the cached prefix,
+    same position as the text stages), the per-page PDF sits AFTER the cache
+    marker, then the faithful instruction."""
+    pdf = tmp_path / "board.pdf"
     raw = b"%PDF-1.4 tiny bytes"
+    pdf.write_bytes(raw)
     b64 = base64.standard_b64encode(raw).decode("ascii")
-    content = ws._capture_content(b64, "THE TRANSCRIPT")
+
+    store: dict = {}
+    ws.capture_worksheet(pdf, "THE TRANSCRIPT", vision=_recording_vision(store))
+    content = store["content"]
 
     assert len(content) == 3
     # Block 0 = cached transcript.
@@ -105,15 +113,23 @@ def test_capture_content_layout(tmp_path: Path) -> None:
     assert "faithful" in content[2]["text"].lower()
 
 
-def test_transcript_block_position_stable_across_stages() -> None:
+def test_transcript_block_position_stable_across_stages(tmp_path: Path) -> None:
     """Block 0 is the cached transcript across capture/hypotheses/narrative so
-    the cached prefix is byte-identical (and shareable) across all calls."""
+    the cached prefix is byte-identical (and shareable) across all calls. Capture
+    now delegates to the component, but must still emit workshop-synth's OWN
+    transcript block at position 0 so the cross-stage cache prefix holds."""
     t = "SHARED TRANSCRIPT"
-    cap = ws._capture_content("ZmFrZQ==", t)
+    pdf = tmp_path / "b.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+
+    store: dict = {}
+    ws.capture_worksheet(pdf, t, vision=_recording_vision(store))
+    cap0 = store["content"][0]
+
     hyp = ws._hypotheses_content("CAP", t)
     nar = ws._narrative_content(["H1"], t)
-    assert cap[0] == hyp[0] == nar[0]
-    assert cap[0]["cache_control"] == {"type": "ephemeral"}
+    assert cap0 == hyp[0] == nar[0]
+    assert cap0["cache_control"] == {"type": "ephemeral"}
 
 
 # --------------------------------------------------------------------------- #

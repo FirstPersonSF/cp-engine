@@ -612,6 +612,7 @@ dependencies = [
     { name = "slack-sdk" },
     { name = "supabase" },
     { name = "tomlkit" },
+    { name = "visual-document-capture" },
     { name = "voyageai" },
 ]
 
@@ -648,6 +649,7 @@ requires-dist = [
     { name = "slack-sdk", specifier = ">=3.27" },
     { name = "supabase", specifier = ">=2.0" },
     { name = "tomlkit", specifier = ">=0.13" },
+    { name = "visual-document-capture", git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=processors%2Fvisual-document-capture&rev=976dc34" },
     { name = "voyageai", specifier = ">=0.4" },
 ]
 provides-extras = ["dev"]
@@ -3699,6 +3701,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c4/1f/fa18009dea8469069cca78a4e877a008ab78f08b064bfc9ab891579077ff/uvicorn-0.49.0.tar.gz", hash = "sha256:ebf4271aa580d9de97f93192d4595176df6e91f9aae919ca73e4fc07df1e66a3", size = 91284, upload-time = "2026-06-03T22:01:30.448Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/88/fa/e1388bbcf24ef3274f45c0c1c7b501fd14971037c1b6ee23610553307497/uvicorn-0.49.0-py3-none-any.whl", hash = "sha256:ba3d14c3ee7e41c6c654c46c9eb489d33213cdd30aa1696eab1374337c13f68f", size = 71376, upload-time = "2026-06-03T22:01:29.037Z" },
+]
+
+[[package]]
+name = "visual-document-capture"
+version = "0.1.0"
+source = { git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=processors%2Fvisual-document-capture&rev=976dc34#976dc34ac0dd16b08d00d1d2703cff4370021a3b" }
+dependencies = [
+    { name = "anthropic" },
+    { name = "pypdf" },
 ]
 
 [[package]]
