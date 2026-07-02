@@ -4,6 +4,28 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.43.3 — 2026-07-02
+
+### Fixed — `pull_project_source` query pulls actually see the Voyage key; plain pulls find older docs
+
+Two follow-ups to v0.43.2's attempt at the same symptom:
+
+- **Query-ranked pulls still failed with `VOYAGE_API_KEY environment variable
+  not set`** even after v0.43.2 loaded the key into the environment. The
+  embedder doesn't read the environment — it reads document-ingest's settings
+  singleton, and unconfigured that falls back to `DefaultIngestSettings`, which
+  has **no `voyage_api_key` field at all**. `pull_source` now wires
+  `AssetIngestSettings` in via `_configure_pipeline_once()` (exactly as the
+  ingest pipeline does) before constructing the embedder.
+- **Plain (no-query) pulls returned "no source named …" for docs that exist.**
+  The recency-ordered RPC read spans the whole project+account chunk pool, so a
+  doc older than the newest `limit` (50) chunks never surfaced. On a miss the
+  pull now widens once to 2000 chunks before giving up; returned chunks stay
+  capped at the caller's `limit`.
+
+Both verified live against `sap-5174`'s "Concur and SAP - All in with AI.docx"
+(a Jun-17 ingest sitting below the top-50 recency window).
+
 ## v0.43.2 — 2026-07-02
 
 ### Fixed — `pull_project_source` resolves Voyage creds for query-ranked pulls
