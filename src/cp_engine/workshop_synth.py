@@ -31,13 +31,14 @@ whatever succeeded).
 
 from __future__ import annotations
 
-import base64
 import io
 import os
 import tempfile
 from datetime import date
 from pathlib import Path
 from typing import Callable
+
+from visual_document_capture import FAITHFUL_CAPTURE, capture_page
 
 from cp_engine.plan_from_transcript import PlanGenerationError
 
@@ -165,37 +166,6 @@ def _transcript_block(transcript: str) -> dict:
     }
 
 
-def _capture_instruction() -> str:
-    return (
-        "You are reading a completed workshop worksheet (a Miro board exported "
-        "to PDF). Transcribe it EXACTLY and faithfully — do NOT interpret, "
-        "summarize, or add. Preserve: every column and its header, every "
-        "section/sub-section header, every sticky note's full text, the "
-        "COLOR/selection state of each sticky (e.g. green = chosen/emphasized "
-        "vs blue = standard), and any author tags/initials. Reproduce the "
-        "board's structure in markdown so a reader knows which item sits in "
-        "which column/section and which were emphasized. The workshop "
-        "transcript is provided for context only — the WORKSHEET is what you "
-        "transcribe."
-    )
-
-
-def _capture_content(pdf_b64: str, transcript: str) -> ContentList:
-    """Capture call: [cached transcript, per-page PDF, capture instruction]."""
-    return [
-        _transcript_block(transcript),
-        {
-            "type": "document",
-            "source": {
-                "type": "base64",
-                "media_type": "application/pdf",
-                "data": pdf_b64,
-            },
-        },
-        {"type": "text", "text": _capture_instruction()},
-    ]
-
-
 def _hypotheses_content(capture_text: str, transcript: str) -> ContentList:
     """Hypotheses call: [cached transcript, hypotheses instruction]."""
     instruction = (
@@ -252,14 +222,23 @@ def capture_worksheet(
 ) -> str:
     """Stage 1 — faithful vision capture of ONE worksheet PDF (page).
 
-    Content list = [cached transcript, per-page PDF, capture instruction].
+    Delegates the reusable capture mechanics (native-PDF document block, the
+    faithful-transcription prompt, base64 + Anthropic call) to the shared
+    ``visual_document_capture`` component. The workshop transcript is passed as
+    the module's ambient ``context_blocks`` using workshop-synth's OWN
+    ``_transcript_block`` — so the cached transcript block is byte-identical to
+    the one the hypotheses/narrative stages use (block 0, same position), keeping
+    the cross-stage prompt-cache prefix shared. The resulting content list is
+    exactly [cached transcript, per-page PDF, faithful instruction] as before.
     """
-    raw = Path(pdf_path).read_bytes()
-    b64 = base64.standard_b64encode(raw).decode("ascii")
-    content = _capture_content(b64, transcript)
-    if vision is not None:
-        return vision(pdf_path, content)
-    return _call_messages(content, model=model, api_key=api_key, kind="capture")
+    return capture_page(
+        pdf_path,
+        instruction=FAITHFUL_CAPTURE,
+        context_blocks=[_transcript_block(transcript)],
+        vision=vision,
+        model=model,
+        api_key=api_key,
+    )
 
 
 def worksheet_hypotheses(
