@@ -125,8 +125,17 @@ def call_synth_service(
         r = http.get(f"{base_url}/api/analyze/{job_id}/result", headers=headers, timeout=60.0)
         if r.status_code == 200:
             return r.json()
-        if r.status_code == 400:
-            # not ready yet (endpoint returns 400 until completed)
+        # The result endpoint returns 409 ("Job status: <status>") until the job
+        # is completed. Distinguish a still-running job (keep polling) from a
+        # terminally-failed one (stop and surface it) by the status in the body.
+        if r.status_code == 409:
+            detail = ""
+            try:
+                detail = (r.json() or {}).get("detail", "")
+            except Exception:  # noqa: BLE001 — non-JSON body, treat as still running
+                detail = ""
+            if "failed" in detail.lower():
+                raise RuntimeError(f"synth job {job_id} failed: {detail}")
             time.sleep(poll_interval)
             continue
         r.raise_for_status()

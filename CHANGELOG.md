@@ -4,6 +4,25 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.43.1 — 2026-07-02
+
+### Fixed — deep-synthesis service poll handles the running/failed job states
+
+Live smoke-testing the `meeting_synthesis` chain end-to-end (the first run with
+the synthesizer's X-API-Key bypass actually live) surfaced a client-contract
+mismatch: `call_synth_service` treated HTTP `400` as "job not ready" while
+polling `/api/analyze/{job}/result`, but the service returns **`409`** ("Job
+status: running") until completion — so every poll raised instead of waiting.
+It now treats `409` as not-ready and keeps polling, AND distinguishes a
+terminally **failed** job (409 with `"failed"` in the detail) — raising promptly
+instead of spinning until the timeout. Verified end-to-end against the live
+service: a transcript-only synthesis now completes and returns decisions,
+segments, and open questions.
+
+(Companion fix in the meeting-synthesizer service: `/api/analyze` now accepts a
+`supplied_transcript` so the no-video "Deep synthesis" fallback works — that's a
+service deploy, not a cp-engine change.)
+
 ## v0.43.0 — 2026-07-02
 
 ### Added — Deep multimodal meeting synthesis (the `meeting_synthesis` fidelity)

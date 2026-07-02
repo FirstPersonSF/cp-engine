@@ -132,7 +132,7 @@ class _FakeHttp:
 def test_call_synth_service_posts_and_polls(monkeypatch):
     monkeypatch.setattr("time.sleep", lambda *_: None)
     http = _FakeHttp([
-        _FakeResp(400, None),                                   # not ready
+        _FakeResp(409, {"detail": "Job status: running"}),      # not ready
         _FakeResp(200, {"synthesis": {"tldr": "done"}}),        # ready
     ])
     out = call_synth_service(
@@ -159,6 +159,21 @@ def test_call_synth_service_requires_api_key(monkeypatch):
         assert False, "expected RuntimeError"
     except RuntimeError as e:
         assert "API_KEY" in str(e)
+
+
+def test_call_synth_service_raises_on_failed_job(monkeypatch):
+    # 409 with a "failed" status must stop polling and surface the failure,
+    # not spin until timeout.
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    http = _FakeHttp([
+        _FakeResp(409, {"detail": "Job status: running"}),   # still going
+        _FakeResp(409, {"detail": "Job status: failed"}),    # terminal failure
+    ])
+    try:
+        call_synth_service(media_url="x", api_key="k", http=http, poll_interval=0)
+        assert False, "expected RuntimeError on failed job"
+    except RuntimeError as e:
+        assert "failed" in str(e).lower()
 
 
 # --------------------------------------------------------------------------- #
