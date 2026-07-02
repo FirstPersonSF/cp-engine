@@ -904,15 +904,17 @@ def _fetch_meeting_by_recording_id(client, recording_id: int) -> dict | None:
     Distinct from `_fetch_meeting` (which keys on the uuid `id` and omits
     `transcript`). Selects everything promote_meeting_transcript reads
     (recording_id, transcript, transcript_promoted_at, title) plus the
-    project link/tags used to resolve the project here. Returns the row or
-    None (no match, or any error — best-effort).
+    project link/tags used to resolve the project here, and the fields the
+    deep-synthesis path reads (`synthesis_generated_at` skip guard, `meeting_date`
+    for recording auto-discovery). Returns the row or None (no match, or any
+    error — best-effort).
     """
     try:
         resp = (
             client.table("fathom_meetings")
             .select(
                 "recording_id, title, transcript, transcript_promoted_at, "
-                "project_tags, project_id"
+                "synthesis_generated_at, meeting_date, project_tags, project_id"
             )
             .eq("recording_id", recording_id)
             .single()
@@ -1050,6 +1052,143 @@ async def meeting_promote_transcript(request: Request) -> Response:
 
     _spawn_background(
         _run_meeting_promote(client, meeting_row, project_id, company_id)
+    )
+    return Response(
+        content=json.dumps({"recording_id": recording_id, "status": "running"}),
+        status_code=202,
+        media_type="application/json",
+    )
+
+
+async def _run_meeting_synthesize(
+    client, meeting_row: dict, project_id: str, company_id: str | None,
+    *, media_url: str | None, documents,
+) -> None:
+    """Background: run the (slow) deep synthesis off the event loop. Never raises.
+
+    Mirrors _run_meeting_promote but calls the synthesizer service (Gemini video +
+    the §4b document channel) and stamps `fathom_meetings.synthesis_generated_at`
+    on success. If no media_url was supplied/confirmed, falls back to a supplied
+    transcript so the service still produces a (text-only) synthesis."""
+    from cp_engine.meeting_synthesis import synthesize_meeting
+    from cp_engine.meetings import flatten_transcript
+
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_key = os.environ.get("SUPABASE_SERVICE_KEY")
+    recording_id = meeting_row.get("recording_id")
+
+    # No video → hand the service the transcript we already hold, so "Deep
+    # synthesis" degrades to a text synthesis rather than failing (design §2).
+    supplied_transcript = None
+    if not media_url:
+        supplied_transcript = _transcript_segments_for_service(meeting_row)
+
+    try:
+        result = await asyncio.to_thread(
+            synthesize_meeting,
+            client,
+            meeting_row,
+            project_id,
+            company_id,
+            media_url=media_url,
+            documents=documents,
+            supplied_transcript=supplied_transcript,
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+        )
+        if result.get("ok"):
+            log.info("meeting-synthesize: recording_id=%s done (asset_id=%s)",
+                     recording_id, result.get("asset_id"))
+        else:
+            log.warning("meeting-synthesize: recording_id=%s not done: %s",
+                        recording_id, result.get("reason"))
+    except Exception as exc:  # noqa: BLE001 — never crash the background task
+        log.warning("meeting-synthesize: recording_id=%s run failed: %s",
+                    recording_id, exc, exc_info=True)
+
+
+def _transcript_segments_for_service(meeting_row: dict) -> list | None:
+    """Shape `fathom_meetings.transcript` jsonb into the synth service's
+    supplied_transcript form ([{timestamp, speaker, text}, ...]), or None."""
+    segs = meeting_row.get("transcript")
+    if not segs:
+        return None
+    out = []
+    for s in segs:
+        out.append({
+            "timestamp": s.get("timestamp") or "",
+            "speaker": (s.get("speaker") or {}).get("display_name") or "Speaker",
+            "text": s.get("text") or "",
+        })
+    return out or None
+
+
+@app.post("/api/meetings/synthesize")
+async def meeting_synthesize(request: Request) -> Response:
+    """Fire-and-forget DEEP synthesis of a meeting (design §2, the third fidelity).
+
+    Proxied (signed) from mc-2's "Deep synthesis" action as
+    ``{"recording_id": <int>, "media_url"?: <str>, "documents"?: [...]}``.
+    ``media_url`` is the dashboard's confirmed/overridden recording (auto-
+    discovered from the project's ingest folder, human-confirmed); omit it to fall
+    back to a transcript-only synthesis. ``documents`` is the optional §4b channel
+    (each ``{title, pdf_b64}``).
+
+    Like promote-transcript: verify HMAC, fetch the meeting, resolve project +
+    company, return 202, run in the background. Status signal is
+    ``fathom_meetings.synthesis_generated_at`` (no runs table).
+    """
+    from cp_engine.asset_ingest import resolve_project_folders_by_id
+    from cp_engine.meetings import resolve_meeting_project
+
+    raw_body = await request.body()
+    _verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
+    payload = json.loads(raw_body)
+    recording_id = payload.get("recording_id")
+    if recording_id is None:
+        raise HTTPException(status_code=400, detail="recording_id is required")
+    try:
+        recording_id = int(recording_id)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="recording_id must be an int")
+
+    media_url = payload.get("media_url")
+    documents = payload.get("documents")
+
+    client = _create_supabase_client()
+    if client is None:
+        raise HTTPException(
+            status_code=500, detail="Supabase not configured for meeting synthesize"
+        )
+
+    meeting_row = _fetch_meeting_by_recording_id(client, recording_id)
+    if meeting_row is None:
+        raise HTTPException(
+            status_code=404, detail=f"no meeting with recording_id {recording_id}"
+        )
+
+    project_id = meeting_row.get("project_id")
+    if not project_id:
+        project_id, _matched = resolve_meeting_project(
+            client, meeting_row.get("project_tags")
+        )
+    if not project_id:
+        raise HTTPException(
+            status_code=404,
+            detail=f"meeting {recording_id} not linked to a project",
+        )
+    folders = resolve_project_folders_by_id(client, project_id)
+    company_id = folders.company_id if folders else None
+
+    _spawn_background(
+        _run_meeting_synthesize(
+            client, meeting_row, project_id, company_id,
+            media_url=media_url, documents=documents,
+        )
     )
     return Response(
         content=json.dumps({"recording_id": recording_id, "status": "running"}),
