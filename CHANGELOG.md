@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.43.2 — 2026-07-02
+
+### Fixed — `pull_project_source` resolves Voyage creds for query-ranked pulls
+
+A query-ranked source pull embeds the query via Voyage, but the MCP tool
+`pull_project_source` never loaded `VOYAGE_API_KEY` from the mc-2 `.env` the way
+the spine-promote path does — so a local MCP session's ranked pull failed with
+`VOYAGE_API_KEY environment variable not set` (surfaced while reading a
+`meeting_synthesis` source back). It now calls `_load_ingest_creds` before
+`pull_source` when a `query` is present (no-op without a query, since no
+embedding happens then). Plain full-doc pulls were unaffected.
+
 ## v0.43.1 — 2026-07-02
 
 ### Fixed — deep-synthesis service poll handles the running/failed job states

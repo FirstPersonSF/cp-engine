@@ -241,7 +241,9 @@ def pull_project_source(
 
     Optionally rank by a query for relevance instead of full-doc recency.
     """
+    from cp_engine.config import load as load_config
     from cp_engine.project_sources import pull_source
+    from cp_engine.sync_mc2 import _load_ingest_creds
 
     try:
         resolved = _resolve(project_code)
@@ -252,6 +254,12 @@ def pull_project_source(
                 "note": f"project '{project_code}' not found",
             }
         client, pid, cid = resolved
+        # A query-ranked pull embeds the query (Voyage), so VOYAGE_API_KEY must be
+        # in the environment. A local MCP session resolves it from the mc-2 .env,
+        # not the process env (mirrors the spine-promote path). Harmless when
+        # `query` is None (no embedding happens).
+        if query:
+            _load_ingest_creds(load_config(_tenant_root()))
         return pull_source(client, pid, cid, doc_title, query=query)
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,

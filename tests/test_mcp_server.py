@@ -38,9 +38,19 @@ def test_list_project_sources_delegates(monkeypatch):
 
 
 def test_pull_project_source_delegates(monkeypatch):
-    """Passes title + query through to the pure fn and returns its result."""
+    """Passes title + query through to the pure fn and returns its result.
+
+    A query-ranked pull first resolves the ingest creds (Voyage) so the embed
+    works; that resolution is stubbed here."""
     fake_client = object()
     monkeypatch.setattr(srv, "_resolve", lambda code: (fake_client, "pid", "cid"))
+    monkeypatch.setattr(srv, "_tenant_root", lambda: "/tenant")
+    monkeypatch.setattr("cp_engine.config.load", lambda root: object())
+    creds_loaded = {}
+    monkeypatch.setattr(
+        "cp_engine.sync_mc2._load_ingest_creds",
+        lambda config: creds_loaded.setdefault("called", True),
+    )
 
     captured = {}
 
@@ -54,6 +64,8 @@ def test_pull_project_source_delegates(monkeypatch):
 
     assert captured["args"] == (fake_client, "pid", "cid", "Storybook", "risks")
     assert out == {"title": "Storybook", "chunks": ["c1", "c2"]}
+    # a query-ranked pull loaded the ingest (Voyage) creds first
+    assert creds_loaded.get("called") is True
 
 
 def test_list_project_sources_unresolved_returns_note(monkeypatch):
@@ -119,6 +131,9 @@ def test_list_project_sources_pure_fn_raises_returns_error(monkeypatch):
 def test_pull_project_source_pure_fn_raises_returns_error(monkeypatch):
     """A raising pure fn (Voyage embedding error) is caught and returned structured."""
     monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+    monkeypatch.setattr(srv, "_tenant_root", lambda: "/tenant")
+    monkeypatch.setattr("cp_engine.config.load", lambda root: object())
+    monkeypatch.setattr("cp_engine.sync_mc2._load_ingest_creds", lambda config: None)
 
     def boom(client, project_id, company_id, doc_title, query=None):
         raise RuntimeError("voyage embed failed")
