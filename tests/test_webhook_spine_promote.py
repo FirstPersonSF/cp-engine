@@ -457,3 +457,42 @@ def test_promote_real_round_trip(monkeypatch, client, tmp_path):
     assert live.status == "live"
     assert parsed.est_item_id == "d1"
     assert "Distilled body text." in live.body
+    # Layer stamps from the card's kind so the mirrored row never lands NULL.
+    assert parsed.layer == "Deliverables"
+
+
+def test_promote_backfills_layer_on_existing_unstamped_file(tmp_path):
+    """A file promoted before layer stamping existed has no `layer` in its
+    frontmatter. Promoting into it again (the add_version path) stamps the
+    layer from the card's kind instead of leaving it NULL forever.
+    """
+    from cp_engine.spine_inbox import promote_card
+    from cp_engine.substance import parse_substance
+
+    project_dir = tmp_path / "1p" / "infoblox" / "ibx-5153"
+    card = _card()
+
+    common = dict(
+        est_item_id="a7",
+        kind="activity",
+        project_dir=project_dir,
+        sources=["mtg-1"],
+        distiller=lambda prompt, model, api_key=None: "Distilled body text.",
+        model="claude-opus-4-7",
+        client=None,
+        name="Kickoff workshop",
+        phase="Phase 1",
+    )
+
+    path = promote_card(card, framing="first framing", **common)
+    # Simulate a pre-stamping file: strip the layer line from the frontmatter.
+    stripped = "\n".join(
+        line for line in path.read_text().splitlines() if not line.startswith("layer:")
+    )
+    path.write_text(stripped + "\n")
+    assert parse_substance(path).layer is None
+
+    promote_card(card, framing="second framing", **common)
+    parsed = parse_substance(path)
+    assert parsed.layer == "Activity"
+    assert parsed.live_version().label == "v2"

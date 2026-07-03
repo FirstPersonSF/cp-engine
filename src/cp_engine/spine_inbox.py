@@ -24,11 +24,12 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
 from typing import Callable
 
+from cp_engine.authored_element import canon_layer
 from cp_engine.substance import (
     SubstanceVersion,
     WorkItemSubstance,
@@ -394,6 +395,10 @@ def promote_card(
         item = add_version(existing, version)
         # add_version preserves the existing item's binding/phase/extra; only
         # versions change. (phase/kind stay as the file already declared them.)
+        # One repair: files promoted before layer stamping existed carry no
+        # layer (mirrors to a NULL row the UI can't file) — stamp on re-promote.
+        if item.layer is None:
+            item = replace(item, layer=canon_layer(kind))
     else:
         version = SubstanceVersion(
             label="v1", date=today_iso, status="live",
@@ -401,7 +406,8 @@ def promote_card(
         )
         item = WorkItemSubstance(
             est_item_id=est_item_id, est_item_kind=kind, phase=phase,
-            binding="live", versions=(version,), path=target,
+            binding="live", layer=canon_layer(kind),
+            versions=(version,), path=target,
         )
 
     target.parent.mkdir(parents=True, exist_ok=True)
