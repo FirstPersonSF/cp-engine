@@ -4,6 +4,37 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.45.0 — 2026-07-03
+
+### Spine MCP: layer control + retrospective/research kinds
+
+From Drew's ibx-5153 spine-report review — two write-path gaps that forced
+direct SQL on `spine_substance`:
+
+- `set_spine_element` gains a `layer` argument: re-file an element under any
+  spine layer (retrospective, research, synthesis, decisions, client
+  feedback, timeline, …). The value is canonicalized and applied to every
+  version of the element so its history stays in one layer.
+- The layer canon (`authored_element._LAYER_CANON`, mirrored byte-identical
+  in mc-2) gains `retrospective`, `research`, `deliverable(s)`, `timeline`,
+  and `clientfeedback` aliases — layers the spine UI already renders but the
+  write vocabulary was missing. `create_spine_element` can now author a
+  retrospective in one call.
+
+### Inbox: re-ingest retires stale wrong-job cards
+
+`build_inbox_card_from_transcript` now calls `retire_stale_cards`: when a
+meeting ingests under a project, actionable (proposed|framed) inbox cards for
+the same source_ref in OTHER projects auto-dismiss — the fix for "meeting
+tagged to the wrong job leaves a stale Frame & promote card". Promoted cards
+are never touched. Pairs with mc-2's new manual Dismiss button (PR #120).
+
+### document-ingest repin (@7cd7b18)
+
+The visual fallback now triggers on NEGLIGIBLE extracted text (default <200
+chars, `INGEST_VISUAL_MIN_TEXT_CHARS`), not exactly-zero — designed decks
+often leak a single colophon line. Page-cap default raised 60→100.
+
 ## v0.44.0 — 2026-07-03
 
 ### Asset ingest: image-only PDFs now RAG (visual-capture fallback)

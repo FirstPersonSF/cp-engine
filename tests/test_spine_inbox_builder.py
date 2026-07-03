@@ -22,6 +22,7 @@ class _FakeTable:
     def __init__(self, store, name):
         self.store, self.name = store, name
         self._op = None
+        self._filters = []
 
     def upsert(self, rows, on_conflict=None):
         self._op = ("upsert", rows)
@@ -31,6 +32,25 @@ class _FakeTable:
         assert "*" not in cols, "never select('*')"
         self._op = ("select", cols)
         return self
+
+    def update(self, patch):
+        self._op = ("update", dict(patch))
+        return self
+
+    def eq(self, col, val):
+        self._filters.append(lambda r, c=col, v=val: r.get(c) == v)
+        return self
+
+    def neq(self, col, val):
+        self._filters.append(lambda r, c=col, v=val: r.get(c) != v)
+        return self
+
+    def in_(self, col, vals):
+        self._filters.append(lambda r, c=col, v=tuple(vals): r.get(c) in v)
+        return self
+
+    def _matching(self, rows):
+        return [r for r in rows if all(f(r) for f in self._filters)]
 
     def execute(self):
         op, payload = self._op
@@ -43,7 +63,12 @@ class _FakeTable:
                 else:
                     rows.append(dict(r))
             return type("R", (), {"data": payload})()
-        return type("R", (), {"data": list(rows)})()
+        if op == "update":
+            hit = self._matching(rows)
+            for r in hit:
+                r.update(payload)
+            return type("R", (), {"data": hit})()
+        return type("R", (), {"data": self._matching(rows)})()
 
 
 class _FakeClient:
@@ -268,3 +293,34 @@ def test_build_card_rejects_json_array_distiller_output():
             transcript="t", estimate=est, distiller=distiller, model="m",
         )
     assert "spine_inbox" not in client.store
+
+
+def test_reingest_retires_stale_cards_in_other_projects():
+    """The re-route path: a meeting re-homed to a new project auto-dismisses
+    the actionable cards it left in its OLD project's Frame & promote inbox.
+    Promoted cards (human-confirmed substance) are never touched."""
+    client = _FakeClient()
+    client.store["spine_inbox"] = [
+        {"id": "old-code/inbox/mtg-42", "project_id": "OLD", "source_ref": "mtg-42",
+         "status": "proposed"},
+        {"id": "old-code/inbox/mtg-42-framed", "project_id": "OLD2", "source_ref": "mtg-42",
+         "status": "framed"},
+        {"id": "old-code/inbox/mtg-42-promoted", "project_id": "OLD", "source_ref": "mtg-42",
+         "status": "promoted"},
+        {"id": "old-code/inbox/mtg-7", "project_id": "OLD", "source_ref": "mtg-7",
+         "status": "proposed"},
+    ]
+    distiller = _distiller({"distillation": "moved", "matched_item_name": None})
+    build_inbox_card_from_transcript(
+        client, project_id="NEW", project_code="ibx-5153", source_ref="mtg-42",
+        transcript="t", estimate=None, distiller=distiller, model="m",
+    )
+    by_id = {r["id"]: r for r in client.store["spine_inbox"]}
+    assert by_id["old-code/inbox/mtg-42"]["status"] == "dismissed"
+    assert by_id["old-code/inbox/mtg-42-framed"]["status"] == "dismissed"
+    assert by_id["old-code/inbox/mtg-42-promoted"]["status"] == "promoted"  # untouched
+    assert by_id["old-code/inbox/mtg-7"]["status"] == "proposed"            # other meeting
+    # And the new project's card exists, proposed.
+    new_cards = [r for r in client.store["spine_inbox"]
+                 if r["project_id"] == "NEW" and r["source_ref"] == "mtg-42"]
+    assert len(new_cards) == 1 and new_cards[0]["status"] == "proposed"

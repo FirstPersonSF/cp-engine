@@ -25,6 +25,7 @@ class _FakeTable:
     def __init__(self, store, name):
         self.store, self.name = store, name
         self._op = None
+        self._filters = []
 
     def upsert(self, rows, on_conflict=None):
         self._op = ("upsert", rows)
@@ -35,14 +36,35 @@ class _FakeTable:
         self._op = ("select", cols)
         return self
 
+    def update(self, patch):
+        self._op = ("update", dict(patch))
+        return self
+
+    def eq(self, col, val):
+        self._filters.append(lambda r, c=col, v=val: r.get(c) == v)
+        return self
+
+    def neq(self, col, val):
+        self._filters.append(lambda r, c=col, v=val: r.get(c) != v)
+        return self
+
+    def in_(self, col, vals):
+        self._filters.append(lambda r, c=col, v=tuple(vals): r.get(c) in v)
+        return self
+
     def execute(self):
         op, payload = self._op
         rows = self.store.setdefault(self.name, [])
+        matching = [r for r in rows if all(f(r) for f in self._filters)]
         if op == "upsert":
             for r in payload:
                 rows.append(dict(r))
             return type("R", (), {"data": payload})()
-        return type("R", (), {"data": list(rows)})()
+        if op == "update":
+            for r in matching:
+                r.update(payload)
+            return type("R", (), {"data": matching})()
+        return type("R", (), {"data": matching})()
 
 
 class _FakeClient:

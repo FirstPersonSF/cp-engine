@@ -31,8 +31,20 @@ def test_canon_layer_collapses_spelling_and_case_variants():
 def test_canon_layer_passes_unknown_through_unchanged():
     """An unmapped value (a future/custom kind) is returned as-is, not mangled —
     canon only converges KNOWN aliases, it never invents or drops a layer."""
-    assert canon_layer("Retrospective") == "Retrospective"
-    assert canon_layer("ClientFeedback") == "ClientFeedback"
+    assert canon_layer("Retrospective") == "Retrospective"  # canonical = idempotent
+    assert canon_layer("Moodboard") == "Moodboard"          # genuinely unknown
+
+
+def test_canon_layer_new_aliases_converge():
+    """The 2026-07-03 additions: layers the UI already renders (LAYER_ORDER)
+    but the write vocab was missing — incl. the exact divergence found live
+    (`ClientFeedback` vs the UI's `Client feedback`)."""
+    assert canon_layer("retrospective") == "Retrospective"
+    assert canon_layer("research") == "Research"
+    assert canon_layer("deliverable") == "Deliverables"
+    assert canon_layer("ClientFeedback") == "Client feedback"
+    assert canon_layer("client feedback") == "Client feedback"
+    assert canon_layer("timeline") == "Timeline"
 
 
 def test_slugify_makes_a_safe_slug():

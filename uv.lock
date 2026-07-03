@@ -594,7 +594,7 @@ toml = [
 
 [[package]]
 name = "cp-engine"
-version = "0.43.3"
+version = "0.44.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -631,7 +631,7 @@ requires-dist = [
     { name = "anthropic", specifier = ">=0.40" },
     { name = "click", specifier = ">=8.1" },
     { name = "cloud-storage", extras = ["all"], git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=integrations%2Fcloud-storage&rev=0b5928b" },
-    { name = "document-ingest", extras = ["llm", "docx", "pptx", "pdf", "spreadsheet", "supabase", "web", "voyage"], git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=starters%2Fdocument-ingest&rev=8dc32a8" },
+    { name = "document-ingest", extras = ["llm", "docx", "pptx", "pdf", "spreadsheet", "supabase", "web", "voyage"], git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=starters%2Fdocument-ingest&rev=7cd7b18" },
     { name = "fastapi", marker = "extra == 'dev'", specifier = ">=0.115" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.27" },
     { name = "jinja2", specifier = ">=3.1" },
@@ -746,7 +746,7 @@ wheels = [
 [[package]]
 name = "document-ingest"
 version = "2.0.0"
-source = { git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=starters%2Fdocument-ingest&rev=8dc32a8#8dc32a8b5c46f72348cfbb163d158f29e1b9990e" }
+source = { git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=starters%2Fdocument-ingest&rev=7cd7b18#7cd7b188adaf07a49240588740c880e66b312767" }
 dependencies = [
     { name = "pyyaml" },
 ]

@@ -230,7 +230,38 @@ def build_inbox_card_from_transcript(
     client.table(_INBOX_TABLE).upsert(
         [card_to_row(card)], on_conflict="id"
     ).execute()
+    # A meeting re-homed to THIS project must not keep offering itself for
+    # framing under its old job — retire the actionable cards it left behind.
+    # (Card ids embed the project, so re-ingest alone never touches them.)
+    retire_stale_cards(client, source_ref=source_ref, keep_project_id=project_id)
     return card
+
+
+def retire_stale_cards(client, *, source_ref: str, keep_project_id: str) -> int:
+    """Dismiss actionable (proposed|framed) cards for ``source_ref`` in every
+    project EXCEPT ``keep_project_id``.
+
+    The re-route path: a meeting tagged to the wrong job leaves a card in that
+    job's Frame & promote inbox; when it re-ingests under the right job, the
+    stale cards auto-dismiss. Promoted cards are untouched — a human confirmed
+    that substance, so retiring it is a human call (dismiss it in the UI).
+    Returns the number of cards dismissed.
+    """
+    rows = (
+        client.table(_INBOX_TABLE)
+        .select("id, project_id, status")
+        .eq("source_ref", source_ref)
+        .neq("project_id", keep_project_id)
+        .in_("status", ["proposed", "framed"])
+        .execute()
+        .data
+        or []
+    )
+    for r in rows:
+        client.table(_INBOX_TABLE).update({"status": "dismissed"}).eq(
+            "id", r["id"]
+        ).execute()
+    return len(rows)
 
 
 # ---- Task 3.3: frame + promote (directed re-distill → version) --------------

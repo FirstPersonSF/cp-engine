@@ -45,6 +45,12 @@ _LAYER_CANON = {
     "synthesis": "Synthesis",
     "output": "Output",
     "activity": "Activity",
+    "retrospective": "Retrospective",
+    "research": "Research",
+    "deliverable": "Deliverables",
+    "deliverables": "Deliverables",
+    "clientfeedback": "Client feedback",
+    "timeline": "Timeline",
 }
 
 

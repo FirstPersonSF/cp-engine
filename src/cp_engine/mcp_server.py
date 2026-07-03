@@ -393,7 +393,8 @@ def create_spine_element(project_code: str, label: str, type: str,
     """Create a new AUTHORED spine element (live v1) in MC-2.
 
     `type` is the element kind (email|note|source|brief|decision|stakeholder|
-    agreement|synthesis|output|activity). It is normalized to the spine UI's
+    agreement|synthesis|output|activity|retrospective|research|deliverable|
+    timeline|clientfeedback). It is normalized to the spine UI's
     canonical `layer` (e.g. email→Email, source→Source material), so an element
     you author here groups under the same layer the dashboard shows and its
     by-layer filters match. `serves` optionally binds it to
@@ -475,8 +476,9 @@ def add_spine_version(project_code: str, element_id: str, body: str,
 @mcp.tool()
 def set_spine_element(project_code: str, key: str,
                       important: bool | None = None,
-                      note: str | None = None) -> dict:
-    """Set the `important` flag and/or standing `note` on a live spine element.
+                      note: str | None = None,
+                      layer: str | None = None) -> dict:
+    """Set the `important` flag, standing `note`, and/or `layer` on a spine element.
 
     `key` is an est_item_id (exact) or a case-insensitive `framing` (title)
     substring resolved to ONE live element (same discipline as
@@ -487,9 +489,13 @@ def set_spine_element(project_code: str, key: str,
     elements are deferred), and is non-fatal — its outcome surfaces under
     `promotion` in the return, never as a tool {error}, so importance is always
     set. `promote_spine_transcript` is the standalone tool to run/retry promotion
-    on its own. Returns {est_item_id, important, note[, promotion]}, or a
-    structured {note}/{error} on miss.
+    on its own. `layer` re-files the element under a spine layer (retrospective,
+    research, synthesis, decisions, client feedback, timeline, …) — the value is
+    normalized to the UI's canonical string and applied to EVERY version of the
+    element so its history stays in one layer. Returns {est_item_id, important,
+    note[, layer][, promotion]}, or a structured {note}/{error} on miss.
     """
+    from cp_engine.authored_element import canon_layer
     from cp_engine.project_sources import resolve_live_element
     try:
         resolved = _resolve(project_code)
@@ -510,11 +516,21 @@ def set_spine_element(project_code: str, key: str,
         # Importance is ALWAYS set first — promotion never blocks it.
         if patch:
             client.table("spine_substance").update(patch).eq("id", row["id"]).execute()
+        canonical_layer = None
+        if layer is not None:
+            # Layer describes the element KIND, so every version row moves
+            # together — a partial move would scatter one element's history
+            # across layers.
+            canonical_layer = canon_layer(layer)
+            (client.table("spine_substance").update({"layer": canonical_layer})
+             .eq("project_id", pid).eq("est_item_id", row["est_item_id"]).execute())
         result = {
             "est_item_id": row["est_item_id"],
             "important": patch.get("important", row.get("important")),
             "note": patch.get("note", row.get("note")),
         }
+        if canonical_layer is not None:
+            result["layer"] = canonical_layer
         # Promote the source transcript to RAG ONLY on a genuine false→true flip
         # (not when already True — no redundant re-embed — nor when untouched/False).
         # Promotion is NON-FATAL: a failure surfaces under "promotion", never as a
