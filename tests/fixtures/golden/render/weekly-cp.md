@@ -1,0 +1,50 @@
+---
+Project: 1P Test
+Provenance: Version 0.0.0-golden | 2026-05-13
+Filename: weekly-cp.md
+Author: 1P Test partners
+---
+
+# 1P Test — Weekly CP
+
+> Meeting-state surface for the partners' review. Loaded only in mode 4
+> (`run weekly review`). Quick Resume, themes, decisions, and active research
+> live here so non-Monday sessions don't carry the weight.
+>
+> This file is mostly hand-written. cp-engine maintains three engine-managed
+> regions inside (decisions-strip, themes-strip, carry-forward-strip — added
+> in v0.8.5) which aggregate sprint-file content automatically. Everything
+> outside the cp-engine markers is sacred handwritten territory.
+
+## Quick Resume
+
+**Last partners' review:** _<date>_
+**This week's themes:** _<one-line meeting takeaway>_
+
+<!-- cp-engine:start themes-strip -->
+## Themes (auto-aggregated from sprints/<W##>/_week.md, last 2 weeks)
+
+- _Themes are populated by `cp record-theme` (v0.8.6) writing to `## Themes` in `sprints/<W##>/_week.md`. Empty until then._
+<!-- cp-engine:end themes-strip -->
+
+<!-- cp-engine:start decisions-strip -->
+## Decisions (cross-cutting, auto-aggregated from sprint files, last 4 weeks)
+
+- _Decisions are populated by `cp add-decision --cross-cutting` (v0.8.6). Empty until then._
+<!-- cp-engine:end decisions-strip -->
+
+## Decisions (cross-cutting, last 4 weeks — handwritten / historical)
+
+1. _<decision>_ (_<date>_, source: _<project code or "partners' review">_)
+
+<!-- cp-engine:start carry-forward-strip -->
+## Carry-forward across the tenant (auto-aggregated)
+
+- _Open asks aged > 7 days, escalated risks, and decisions due in the next +2 sprints. Same data as master-cp.md's `agenda` region; presented here for the weekly review surface._
+<!-- cp-engine:end carry-forward-strip -->
+
+## Active research
+
+_<pointers to Perplexity / Claude Research artifacts per bootstrap v2 discipline.
+Pointers only — never raw research dumps. Always include "Do NOT auto-apply
+any recommendations.">_
