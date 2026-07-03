@@ -50,6 +50,7 @@ PYPROJECT = REPO_ROOT / "pyproject.toml"
 PLUGIN_JSON = REPO_ROOT / "plugin" / "plugin.json"
 MARKETPLACE_JSON = REPO_ROOT / ".claude-plugin" / "marketplace.json"
 INIT_PY = REPO_ROOT / "src" / "cp_engine" / "__init__.py"
+WEBHOOK_PYPROJECT = REPO_ROOT / "webhook" / "pyproject.toml"
 CHANGELOG = REPO_ROOT / "CHANGELOG.md"
 
 # Match only the version literal, not trailing whitespace — `\s*$` in
@@ -178,6 +179,22 @@ def bump_init_py(new: str) -> None:
     INIT_PY.write_text(new_text)
 
 
+def bump_webhook_pin(new: str) -> None:
+    """Update the exact `cp-engine==X` pin in webhook/pyproject.toml.
+
+    The webhook installs cp-engine from the repo checkout; the pin is a
+    build-time gate against version skew (arch-phase-0 issue #20). Regex
+    on raw text to preserve formatting, same rationale as bump_json.
+    """
+    text = WEBHOOK_PYPROJECT.read_text()
+    pattern = re.compile(r'"cp-engine==[^"]+"')
+    if not pattern.search(text):
+        raise ReleaseError(
+            f'{WEBHOOK_PYPROJECT} has no `"cp-engine==..."` pin to update.'
+        )
+    WEBHOOK_PYPROJECT.write_text(pattern.sub(f'"cp-engine=={new}"', text, count=1))
+
+
 def bump_json(path: Path, new: str) -> None:
     """Bump the top-level `"version"` field in a JSON file.
 
@@ -249,6 +266,7 @@ def main() -> int:
     bump_init_py(args.version)
     bump_json(PLUGIN_JSON, args.version)
     bump_json(MARKETPLACE_JSON, args.version)
+    bump_webhook_pin(args.version)
 
     if not args.skip_tests:
         print("[release] running pytest...")
@@ -271,7 +289,7 @@ def main() -> int:
     summary = changelog_oneline(args.version)
     commit_msg = f"v{args.version}: {summary}"
     print(f"[release] committing: {commit_msg}")
-    run(["git", "add", str(PYPROJECT), str(INIT_PY), str(PLUGIN_JSON), str(MARKETPLACE_JSON)])
+    run(["git", "add", str(PYPROJECT), str(INIT_PY), str(PLUGIN_JSON), str(MARKETPLACE_JSON), str(WEBHOOK_PYPROJECT)])
     run(["git", "commit", "-m", commit_msg])
 
     tag = f"v{args.version}"
