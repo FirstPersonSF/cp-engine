@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 
+from cp_engine.clickup_routing import resolve_clickup_project
 from cp_engine.ingest import _content_hash
 
 log = logging.getLogger("cp-engine-webhook")
@@ -38,75 +39,18 @@ def _supabase_client():
 
 
 def _resolve_project(client, code: str) -> dict | None:
-    """Resolve a cp project code to its MC-2 project row.
+    """Resolve a cp project code to its MC-2 ClickUp routing row.
 
-    Engagement codes are ``<company>-<number>`` (e.g. ``ggl-5136``); the
-    number is always the trailing segment. Initiative codes are a bare
-    slug stored directly on ``initiatives.code`` (e.g. ``mission-control``).
-
-    Returns a dict with ``id``, ``clickup_list_id``, ``code``, ``kind``
-    (``"project"`` / ``"initiative"``) — or None if the project can't be
-    resolved or ClickUp routing isn't available.
-
-    KEEP IN SYNC with ``cp_engine.ingest._resolve_proposal_project`` (the two
-    are deliberately duplicated — webhook/ isn't on cp_engine's import path).
-    They have diverged on initiative error handling (bare ``Exception`` here,
-    ``APIError`` there) and absent-``enable_clickup`` semantics; the ``kind``
-    stamp MUST stay identical — owner-column selection keys on it.
+    Thin wrapper over :func:`cp_engine.clickup_routing.resolve_clickup_project`
+    — the single implementation, also wrapped by
+    ``cp_engine.ingest._resolve_proposal_project`` (ends the "KEEP IN SYNC"
+    duplication, arch-phase-2). Behavior notes vs the old local copy: absent
+    ``enable_clickup`` still means disabled here, and initiative lookups now
+    swallow only ``postgrest.APIError`` (missing ClickUp columns) — genuine
+    network failures propagate instead of being silently treated as
+    "no routing".
     """
-    number: int | None = None
-    tail = code.rsplit("-", 1)[-1]
-    if tail.isdigit():
-        number = int(tail)
-
-    if number is not None:
-        resp = (
-            client.table("projects")
-            .select("id, number, clickup_list_id, enable_clickup")
-            .eq("number", number)
-            .execute()
-        )
-        rows = resp.data or []
-        if not rows:
-            log.info("clickup-propose: no project row for code=%s", code)
-            return None
-        row = rows[0]
-        if not row.get("enable_clickup"):
-            log.info("clickup-propose: ClickUp disabled for code=%s", code)
-            return None
-        return {
-            "id": row["id"],
-            "clickup_list_id": row.get("clickup_list_id"),
-            "code": code,
-            "kind": "project",
-        }
-
-    # Initiative — slug code. ClickUp columns may not exist on the
-    # initiatives table yet; degrade gracefully if the select errors.
-    try:
-        resp = (
-            client.table("initiatives")
-            .select("id, code, clickup_list_id, enable_clickup")
-            .eq("code", code)
-            .execute()
-        )
-    except Exception as exc:  # noqa: BLE001 — initiatives may lack ClickUp cols
-        log.info("clickup-propose: initiative ClickUp lookup unavailable (%s)", exc)
-        return None
-    rows = resp.data or []
-    if not rows:
-        log.info("clickup-propose: no initiative row for code=%s", code)
-        return None
-    row = rows[0]
-    if not row.get("enable_clickup"):
-        log.info("clickup-propose: ClickUp disabled for initiative=%s", code)
-        return None
-    return {
-        "id": row["id"],
-        "clickup_list_id": row.get("clickup_list_id"),
-        "code": code,
-        "kind": "initiative",
-    }
+    return resolve_clickup_project(client, code, missing_enable_clickup_ok=False)
 
 
 def _existing_descriptions(client, meeting_id: str) -> set[str]:
