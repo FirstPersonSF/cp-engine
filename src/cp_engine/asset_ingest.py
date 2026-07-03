@@ -41,6 +41,8 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from cp_engine.mc2_db import Tables
+
 # Columns we read from MC-2's `projects` table. Explicit list (never `*`) per
 # Drew's global Supabase rule — the projects table carries multi-megabyte JSONB
 # cache columns (`cached_messages`, `cached_analysis`) we must not pull. The
@@ -199,7 +201,7 @@ def resolve_project_folders(client, project_code: str) -> ProjectFolders | None:
         return None
 
     rows = (
-        client.table("projects")
+        client.table(Tables.PROJECTS)
         .select(_PROJECT_COLUMNS)
         .eq("number", number)
         .execute()
@@ -229,7 +231,7 @@ def resolve_project_folders_by_id(
     whenever available. Returns None when no row matches.
     """
     rows = (
-        client.table("projects")
+        client.table(Tables.PROJECTS)
         .select(_PROJECT_COLUMNS)
         .eq("id", mc_project_id)
         .execute()
@@ -1028,19 +1030,16 @@ def ingest_project_assets(
     """
     # Resolve creds lazily, and ONLY the pieces actually missing — so the unit-
     # test path (injected client + pipeline) never touches cp config / Supabase.
-    def _resolve_creds() -> tuple[str, str]:
-        from cp_engine import config as cp_config
-        from cp_engine.sync_mc2 import _load_supabase_creds
-
-        return _load_supabase_creds(cp_config.load(Path.cwd()))
-
     # Build the MC-2 client up front (needed for resolve + the scope stamp).
     if client is None:
-        if supabase_url is None or supabase_key is None:
-            supabase_url, supabase_key = _resolve_creds()
-        from supabase import create_client
+        from cp_engine import mc2_db
 
-        client = create_client(supabase_url, supabase_key)
+        if supabase_url is not None and supabase_key is not None:
+            client = mc2_db.get_client(url=supabase_url, key=supabase_key)
+        else:
+            from cp_engine import config as cp_config
+
+            client = mc2_db.get_client(cp_config.load(Path.cwd()))
 
     # Prefer the authoritative by-id resolution when the caller supplies the
     # MC-2 row id (the mc-2 button does). Fall back to the by-code (by-number)
@@ -1097,7 +1096,9 @@ def ingest_project_assets(
     if pipeline is None:
         # Only now (real files, no injected pipeline) do we need Supabase coords.
         if supabase_url is None or supabase_key is None:
-            supabase_url, supabase_key = _resolve_creds()
+            supabase_url, supabase_key = mc2_db.load_supabase_creds(
+                cp_config.load(Path.cwd())
+            )
         _configure_pipeline_once()
         factory = pipeline_factory or _build_pipeline
         pipeline = factory(folders.project_id, supabase_url, supabase_key)
@@ -1267,7 +1268,7 @@ def _existing_dup_at_other_path(
     """
     try:
         resp = (
-            client.table("rag_assets")
+            client.table(Tables.RAG_ASSETS)
             .select("id, file_path")
             .eq("project_id", project_id)
             .eq("file_hash", file_hash)
@@ -1301,7 +1302,7 @@ def _unchanged_since_last_ingest(client, project_id: str, file_ref) -> bool:
         return False  # no token (e.g. Google-native) → can't prove unchanged
     try:
         rows = (
-            client.table("rag_assets")
+            client.table(Tables.RAG_ASSETS)
             .select("meta")  # explicit, never *
             # NOTE: keyed on project_id only. Initiatives (owner via initiative_id,
             # see _owner_filter) aren't reachable by ingest today; if that changes,
@@ -1373,7 +1374,7 @@ def _stamp_scope(
     # None token), keeping the existing source_* stamp behavior unchanged.
     if file_ref.change_token is not None:
         resp = (
-            client.table("rag_assets")
+            client.table(Tables.RAG_ASSETS)
             .select("meta")
             .eq(owner_col, owner_val)
             .eq("file_path", file_path)
@@ -1386,7 +1387,7 @@ def _stamp_scope(
             **(current_meta or {}),
             "change_token": file_ref.change_token,
         }
-    client.table("rag_assets").update(payload).eq(owner_col, owner_val).eq(
+    client.table(Tables.RAG_ASSETS).update(payload).eq(owner_col, owner_val).eq(
         "file_path", file_path
     ).eq("status", "active").execute()
 
@@ -1454,7 +1455,7 @@ def promote_asset(client, asset_id: str) -> bool:
     no-op.
     """
     resp = (
-        client.table("rag_assets")
+        client.table(Tables.RAG_ASSETS)
         .update({"scope": "account", "promoted_at": _utc_now_iso()})
         .eq("id", asset_id)
         .eq("scope", "project")
@@ -1473,7 +1474,7 @@ def demote_asset(client, asset_id: str) -> bool:
     not found).
     """
     resp = (
-        client.table("rag_assets")
+        client.table(Tables.RAG_ASSETS)
         .update({"scope": "project", "promoted_at": None})
         .eq("id", asset_id)
         .eq("scope", "account")
@@ -1495,7 +1496,7 @@ def archive_project_assets(client, project_id: str) -> int:
     Returns the count of assets archived.
     """
     resp = (
-        client.table("rag_assets")
+        client.table(Tables.RAG_ASSETS)
         .update({"scope": "archived", "archived_at": _utc_now_iso()})
         .eq("project_id", project_id)
         .eq("scope", "project")
@@ -1513,7 +1514,7 @@ def unarchive_project_assets(client, project_id: str) -> int:
     Returns the count of assets restored.
     """
     resp = (
-        client.table("rag_assets")
+        client.table(Tables.RAG_ASSETS)
         .update({"scope": "project", "archived_at": None})
         .eq("project_id", project_id)
         .eq("scope", "archived")
@@ -1534,7 +1535,7 @@ def list_promotable(client, project_id: str) -> list[dict]:
     caller wants more context.
     """
     resp = (
-        client.table("rag_assets")
+        client.table(Tables.RAG_ASSETS)
         .select(_PROMOTABLE_COLUMNS)
         .eq("scope", "project")
         .eq("status", "active")

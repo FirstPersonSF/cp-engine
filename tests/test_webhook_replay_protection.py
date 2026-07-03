@@ -227,7 +227,7 @@ def test_rerun_body_run_id_matching_url_accepted(
     sb_client = MagicMock()
     sb_client.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = failed_row
     monkeypatch.setattr(
-        webhook_main, "create_client", lambda u, k: sb_client, raising=False
+        "supabase.create_client", lambda u, k: sb_client, raising=False
     )
 
     monkeypatch.setattr(
@@ -338,7 +338,7 @@ def test_rerun_body_without_run_id_allowed_when_gate_off(
     sb_client = MagicMock()
     sb_client.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = failed_row
     monkeypatch.setattr(
-        webhook_main, "create_client", lambda u, k: sb_client, raising=False
+        "supabase.create_client", lambda u, k: sb_client, raising=False
     )
     monkeypatch.setattr(
         webhook_main,

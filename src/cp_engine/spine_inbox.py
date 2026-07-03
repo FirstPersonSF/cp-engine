@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Callable
 
 from cp_engine.authored_element import canon_layer
+from cp_engine.mc2_db import Tables
 from cp_engine.substance import (
     SubstanceVersion,
     WorkItemSubstance,
@@ -39,7 +40,7 @@ from cp_engine.substance import (
     render_substance,
 )
 
-_INBOX_TABLE = "spine_inbox"
+_INBOX_TABLE = Tables.SPINE_INBOX
 
 # Columns we read back from spine_inbox (never "*").
 _CARD_COLUMNS = (

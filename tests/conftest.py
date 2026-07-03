@@ -1,13 +1,22 @@
-"""Shared fixtures. Only golden-test plumbing lives here so far — the
-`golden_clock` fixture is opt-in (not autouse) and has no effect on the
-rest of the suite.
+"""Shared fixtures: golden-test plumbing (opt-in) and the mc2_db
+client-cache reset (autouse — `mc2_db.get_client` caches per (url, key),
+so without a per-test reset a fake client patched in one test would leak
+into the next).
 """
 
 from __future__ import annotations
 
 import pytest
 
+from cp_engine import mc2_db
 from tests.golden_utils import GOLDEN_ENGINE_VERSION, FrozenDate
+
+
+@pytest.fixture(autouse=True)
+def _reset_mc2_client_cache() -> None:
+    mc2_db.reset_client_cache()
+    yield
+    mc2_db.reset_client_cache()
 
 
 @pytest.fixture

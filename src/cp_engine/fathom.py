@@ -22,7 +22,7 @@ Idempotency: per-tenant state file at `.cp-engine/state.json` (gitignored)
 tracks `last_polled_at` + `processed_ids`. Fast lookup; survives by being
 in the cp tenant root.
 
-Auth reuses `_load_supabase_creds` from sync_mc2 — same project, same keys.
+Auth goes through `mc2_db.get_client` — same project, same keys.
 """
 
 from __future__ import annotations
@@ -33,10 +33,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from supabase import Client, create_client
+from supabase import Client
 
+from cp_engine import mc2_db
 from cp_engine.config import TenantConfig
-from cp_engine.sync_mc2 import _load_supabase_creds
+from cp_engine.mc2_db import Tables
 
 # Where the bridge stages transcripts before/after ingest.
 INCOMING_DIR = "transcripts/incoming"
@@ -110,22 +111,14 @@ class FathomStateFile:
 # ──────────────────────────────────────────────────────────────────────
 
 
-_client_cache: Client | None = None
-
-
 def get_client(config: TenantConfig) -> Client:
-    """Construct (and cache) a Supabase client for the fathom_meetings table.
+    """Return the (cached) MC-2 Supabase client for the fathom_meetings table.
 
-    Reuses the MC-2 credential resolution path: env vars first, then
-    `<mc-2 clone>/backend/.env`. Same Supabase project as MC-2 (verified
-    in the W19 retro), so no separate auth surface.
+    Same Supabase project as MC-2 (verified in the W19 retro), so no separate
+    auth surface — this is just `mc2_db.get_client` (arch-phase-3: the one
+    constructor; caching lives there too).
     """
-    global _client_cache
-    if _client_cache is not None:
-        return _client_cache
-    url, key = _load_supabase_creds(config)
-    _client_cache = create_client(url, key)
-    return _client_cache
+    return mc2_db.get_client(config)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -157,10 +150,8 @@ def list_meetings(
     """
     client = get_client(config)
     query = (
-        client.table("fathom_meetings")
-        .select(
-            "id, title, meeting_date, project_tags, duration_minutes, meeting_type"
-        )
+        client.table(Tables.FATHOM_MEETINGS)
+        .select(mc2_db.FATHOM_LIST_COLUMNS)
         .order("meeting_date", desc=True)
         .limit(limit)
     )
@@ -191,11 +182,8 @@ def fetch_meeting(config: TenantConfig, meeting_id: str) -> FathomMeetingFull:
     """Pull a single meeting row by id, including the full transcript."""
     client = get_client(config)
     rows = (
-        client.table("fathom_meetings")
-        .select(
-            "id, title, meeting_date, project_tags, transcript, summary, "
-            "duration_minutes, meeting_type"
-        )
+        client.table(Tables.FATHOM_MEETINGS)
+        .select(mc2_db.FATHOM_FULL_COLUMNS)
         .eq("id", meeting_id)
         .limit(1)
         .execute()

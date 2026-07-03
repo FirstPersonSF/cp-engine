@@ -29,6 +29,7 @@ import httpx
 from cp_engine.asset_ingest import _utc_now_iso
 from cp_engine.meetings import _safe, stamp_meeting_asset
 from cp_engine.spine_promote import ingest_single_file
+from cp_engine.mc2_db import Tables
 
 # The deployed synthesizer service (Cloudflare Worker → Railway). Overridable for
 # tests / alternate deploys.
@@ -266,7 +267,7 @@ def synthesize_meeting(
             return {"ok": False, "reason": reason}
 
         (
-            client.table("fathom_meetings")
+            client.table(Tables.FATHOM_MEETINGS)
             .update({"synthesis_generated_at": _utc_now_iso()})
             .eq("recording_id", recording_id)
             .execute()

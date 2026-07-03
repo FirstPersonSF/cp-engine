@@ -41,6 +41,8 @@ from pathlib import Path
 
 from cp_engine.config import TenantConfig
 from cp_engine.sync_mc2 import _read_dotenv
+from cp_engine import mc2_db
+from cp_engine.mc2_db import Tables
 
 _SLACK_TOKEN_KEYS = ("SLACK_BOT_TOKEN",)
 
@@ -110,21 +112,16 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
     because the Slack-mapping columns aren't part of the standard project
     sync — they're only relevant to this pipeline.
     """
-    from cp_engine.sync_mc2 import _engagement_canonical_id, _load_supabase_creds
-    from supabase import create_client
+    from cp_engine import mc2_db
+    from cp_engine.sync_mc2 import _engagement_canonical_id
 
-    url, key = _load_supabase_creds(config)
-    client = create_client(url, key)
+    client = mc2_db.get_client(config)
 
     # Stream A: engagement projects.
     engagement_rows = (
         client.schema("public")
-        .table("projects")
-        .select(
-            "number, name, mc_status, is_internal, enable_slack, "
-            "slack_channel_id, slack_channel_name, slack_channel_ids, "
-            "full_job_name, companies!inner(code)"
-        )
+        .table(Tables.PROJECTS)
+        .select(mc2_db.PROJECTS_SLACK_COLUMNS)
         .neq("mc_status", "Archived")
         .order("mc_status")
         .execute()
@@ -174,11 +171,8 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
     # initiative vocabulary ("Active", "On hold", "Done", "Archived").
     initiative_rows = (
         client.schema("public")
-        .table("initiatives")
-        .select(
-            "code, name, status, enable_slack, slack_channel_ids, "
-            "companies!inner(code)"
-        )
+        .table(Tables.INITIATIVES)
+        .select(mc2_db.INITIATIVES_SLACK_COLUMNS)
         .neq("status", "Archived")
         .order("status")
         .execute()

@@ -15,6 +15,7 @@ from types import MappingProxyType
 import pytest
 
 import cp_engine.sync_mc2 as sync_mod
+from cp_engine import mc2_db
 from cp_engine.config import SyncConfig, TenantConfig
 from cp_engine.sync import BackendUnavailable
 from cp_engine.sync_mc2 import (
@@ -437,7 +438,7 @@ def test_load_supabase_creds_resolves_op_references(
         "op://cp-engine/MC-2 Supabase/url": "https://op.supabase.co",
         "op://cp-engine/MC-2 Supabase/service_key": "op-key",
     }
-    monkeypatch.setattr(sync_mod, "_op_read", lambda ref: resolved[ref])
+    monkeypatch.setattr(mc2_db, "_op_read", lambda ref: resolved[ref])
 
     config = _make_config(tmp_path)
     assert _load_supabase_creds(config) == ("https://op.supabase.co", "op-key")
@@ -460,7 +461,7 @@ def test_load_supabase_creds_env_wins_over_op_references(
     def _boom(ref):  # pragma: no cover - asserts op is not called
         raise AssertionError("op must not run when env is present")
 
-    monkeypatch.setattr(sync_mod, "_op_read", _boom)
+    monkeypatch.setattr(mc2_db, "_op_read", _boom)
     config = _make_config(tmp_path)
     assert _load_supabase_creds(config) == ("https://env.supabase.co", "env-key")
 
@@ -482,7 +483,7 @@ def test_load_supabase_creds_op_failure_raises_loud(
     def _boom(ref):
         raise RuntimeError("op not signed in")
 
-    monkeypatch.setattr(sync_mod, "_op_read", _boom)
+    monkeypatch.setattr(mc2_db, "_op_read", _boom)
     config = _make_config(tmp_path)
     with pytest.raises(BackendUnavailable) as exc:
         _load_supabase_creds(config)
@@ -501,7 +502,7 @@ def test_load_supabase_creds_partial_op_block_raises(
         tmp_path,
         "[supabase]\nurl_ref = \"op://v/i/url\"\n",  # missing service_key_ref
     )
-    monkeypatch.setattr(sync_mod, "_op_read", lambda ref: "x")
+    monkeypatch.setattr(mc2_db, "_op_read", lambda ref: "x")
     config = _make_config(tmp_path)
     with pytest.raises(BackendUnavailable) as exc:
         _load_supabase_creds(config)

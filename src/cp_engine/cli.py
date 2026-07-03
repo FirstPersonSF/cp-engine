@@ -20,6 +20,7 @@ from cp_engine.config import CommittedConfigMissing
 from cp_engine.init import InitAborted, run_init
 from cp_engine.spine_sources import fetch_project_assets
 from cp_engine.sync import SyncError, sync_tenant
+from cp_engine.mc2_db import Tables
 
 
 @click.group()
@@ -1350,7 +1351,7 @@ def _write_drift_flags(client, drift_items, today: str) -> int:
         field = item["field"]
         try:
             prior = (
-                client.table("spine_elements")
+                client.table(Tables.SPINE_ELEMENTS)
                 .select("review_flags")
                 .eq("element_id", element_id)
                 .limit(1)
@@ -1370,7 +1371,7 @@ def _write_drift_flags(client, drift_items, today: str) -> int:
                 "source": "sweep",
             }
             merged = _merge_flag(existing, field, flag)
-            client.table("spine_elements").update(
+            client.table(Tables.SPINE_ELEMENTS).update(
                 {"review_flags": merged}
             ).eq("element_id", element_id).execute()
             written += 1
@@ -1461,7 +1462,7 @@ def snapshot_cmd(ref: str, label: str, reason: str | None) -> None:
 
     try:
         client = MC2Backend().connect(config)
-        client.table("spine_snapshots").upsert(row, on_conflict="id").execute()
+        client.table(Tables.SPINE_SNAPSHOTS).upsert(row, on_conflict="id").execute()
     except BackendUnavailable as exc:
         # Expected when offline / no creds — the file is the source of truth.
         click.echo(f"(snapshot saved to disk; MC-2 index skipped — {exc})", err=True)
@@ -2702,15 +2703,14 @@ def _fetch_clickup_task_ids_for_hashes(config, hashes: list[str]) -> dict[str, s
     if not hashes:
         return {}
     try:
-        from supabase import create_client
-        url = os.environ.get("SUPABASE_URL")
-        key = os.environ.get("SUPABASE_SERVICE_KEY") or os.environ.get("SUPABASE_KEY")
-        if not url or not key:
+        from cp_engine import mc2_db
+
+        client = mc2_db.get_client(required=False)
+        if client is None:
             log.info("clickup task-id lookup skipped: SUPABASE env not set")
             return {}
-        client = create_client(url, key)
         resp = (
-            client.table("clickup_task_proposals")
+            client.table(Tables.CLICKUP_TASK_PROPOSALS)
             .select("cp_ask_hash, clickup_task_id")
             .in_("cp_ask_hash", hashes)
             .not_.is_("clickup_task_id", "null")

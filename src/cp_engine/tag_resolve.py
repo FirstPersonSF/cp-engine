@@ -23,6 +23,7 @@ The ``untagged`` sentinel and malformed strings resolve to ``None``.
 """
 from __future__ import annotations
 
+from cp_engine.mc2_db import Tables
 import re
 from typing import Any
 
@@ -116,7 +117,7 @@ def _load_indexes(client: Any) -> tuple[dict, set]:
 
     try:
         resp = (
-            client.table("projects")
+            client.table(Tables.PROJECTS)
             .select("number, companies(code)")
             .execute()
         )
@@ -130,7 +131,7 @@ def _load_indexes(client: Any) -> tuple[dict, set]:
         codes_by_number = {}
 
     try:
-        resp = client.table("initiatives").select("code").execute()
+        resp = client.table(Tables.INITIATIVES).select("code").execute()
         initiative_codes = {
             row["code"] for row in (resp.data or []) if row.get("code")
         }

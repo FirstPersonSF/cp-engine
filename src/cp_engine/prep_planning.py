@@ -1584,17 +1584,12 @@ def _make_supabase_client(config: TenantConfig):
     project's clickup_list_id, and renders "(ClickUp list not set)" for
     every project — killing the v0.15 Forward Calendar feature.
     """
-    try:
-        from supabase import create_client
-    except ImportError:  # pragma: no cover
-        return None
-    try:
-        from cp_engine.sync_mc2 import _load_supabase_creds
-        url, key = _load_supabase_creds(config)
-    except Exception:  # noqa: BLE001 — sync_mc2 raises BackendUnavailable
+    from cp_engine import mc2_db
+
+    client = mc2_db.get_client(config, required=False)
+    if client is None:
         log.info("Supabase env not set; ClickUp list resolution disabled.")
-        return None
-    return create_client(url, key)
+    return client
 
 
 def build_planning_result(

@@ -7,6 +7,7 @@ future sweep can follow back to the embedded original. Linkage only — no
 semantic matching (a design Non-goal)."""
 from __future__ import annotations
 
+from cp_engine.mc2_db import Tables
 import os
 
 
@@ -67,7 +68,7 @@ def fetch_project_assets(client, project_code):
     `meta jsonb` we must never pull)."""
     try:
         rows = (
-            client.table("spine_elements")
+            client.table(Tables.SPINE_ELEMENTS)
             .select("project_id")
             .eq("project_code", project_code)
             .limit(1)
@@ -80,7 +81,7 @@ def fetch_project_assets(client, project_code):
         if not pid:
             return []
         return (
-            client.table("rag_assets")
+            client.table(Tables.RAG_ASSETS)
             .select("id, title, source_type, scope")
             .eq("project_id", pid)
             .eq("status", "active")

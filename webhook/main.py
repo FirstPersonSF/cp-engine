@@ -67,11 +67,6 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response
 
-try:
-    from supabase import create_client
-except ImportError:
-    create_client = None  # type: ignore[assignment]
-
 import cp_engine
 from cp_engine.config import TenantConfig
 from cp_engine.ingest import IngestPlanError, execute_plan
@@ -88,6 +83,8 @@ from cp_engine.plan_from_transcript import (
 )
 from cp_engine.retrospective import append_entry, build_entry
 from cp_engine.spine import SpineDirNotFound, find_spine_dir
+from cp_engine import mc2_db
+from cp_engine.mc2_db import Tables
 
 from clickup_propose import propose_clickup_tasks
 from meeting_artifact import write_meeting_artifacts
@@ -135,19 +132,13 @@ def _create_supabase_client():
     falling into ingest.py's "no client → silent skip" branch, which is
     what made the v0.15.0 headline feature dead code in prod).
     """
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_KEY")
-    if not url or not key or create_client is None:
+    client = mc2_db.get_client(required=False)
+    if client is None:
         log.warning(
             "execute_plan supabase client unavailable: "
             "SUPABASE_URL/SUPABASE_SERVICE_KEY env missing OR supabase pkg not installed"
         )
-        return None
-    try:
-        return create_client(url, key)
-    except Exception as exc:  # noqa: BLE001 — never block primary ingest
-        log.warning("execute_plan supabase client failed to build: %s", exc)
-        return None
+    return client
 
 
 app = FastAPI(title="cp-engine-webhook", version=cp_engine.__version__)
@@ -363,16 +354,13 @@ async def rerun_auto_ingest(run_id: str, request: Request) -> dict:
             ),
         )
 
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_KEY")
-    if not url or not key or create_client is None:
+    client = mc2_db.get_client(required=False)
+    if client is None:
         raise HTTPException(
             status_code=500, detail="Supabase not configured for rerun"
         )
-
-    client = create_client(url, key)
     resp = (
-        client.table("auto_ingest_runs")
+        client.table(Tables.AUTO_INGEST_RUNS)
         .select("meeting_id, project_codes, status")
         .eq("id", run_id)
         .single()
@@ -625,7 +613,7 @@ async def spine_promote(request: Request) -> dict:
 
 
 def _asset_runs_table(client):
-    return client.table("asset_ingest_runs")
+    return client.table(Tables.ASSET_INGEST_RUNS)
 
 
 async def _run_asset_ingest(
@@ -773,7 +761,7 @@ async def asset_ingest_endpoint(request: Request) -> Response:
 
 
 def _spine_promote_runs_table(client):
-    return client.table("spine_promote_runs")
+    return client.table(Tables.SPINE_PROMOTE_RUNS)
 
 
 def _resolve_project_id_for_promote(client, code: str) -> str | None:
@@ -959,7 +947,7 @@ def _fetch_meeting_by_recording_id(client, recording_id: int) -> dict | None:
     """
     try:
         resp = (
-            client.table("fathom_meetings")
+            client.table(Tables.FATHOM_MEETINGS)
             .select(
                 "recording_id, title, transcript, transcript_promoted_at, "
                 "synthesis_generated_at, meeting_date, project_tags, project_id"
@@ -2853,18 +2841,16 @@ def _lookup_proposal_by_clickup_task_id(task_id: str) -> tuple[str, str] | None:
     unavailable. Best-effort: any exception is swallowed and treated as
     'not found' (the webhook returns `ingested: false`).
     """
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_KEY")
-    if not url or not key:
-        log.warning("clickup-task-closed: Supabase env not set; can't look up task_id")
-        return None
-    if create_client is None:
-        log.warning("clickup-task-closed: supabase package not installed")
+    client = mc2_db.get_client(required=False)
+    if client is None:
+        log.warning(
+            "clickup-task-closed: Supabase unavailable (env not set or "
+            "supabase package not installed); can't look up task_id"
+        )
         return None
     try:
-        client = create_client(url, key)
         resp = (
-            client.table("clickup_task_proposals")
+            client.table(Tables.CLICKUP_TASK_PROPOSALS)
             .select("cp_ask_hash, project_id, initiative_id")
             .eq("clickup_task_id", task_id)
             .limit(1)
@@ -2918,7 +2904,7 @@ def _lookup_proposal_by_clickup_task_id(task_id: str) -> tuple[str, str] | None:
 def _resolve_engagement_code(client, project_id: str) -> str | None:
     """Resolve a projects.id to its ``<company>-<number>`` engagement code."""
     resp = (
-        client.table("projects")
+        client.table(Tables.PROJECTS)
         .select("number, company_id")
         .eq("id", project_id)
         .limit(1)
@@ -2933,7 +2919,7 @@ def _resolve_engagement_code(client, project_id: str) -> str | None:
     if number is None or not company_id:
         return None
     cresp = (
-        client.table("companies")
+        client.table(Tables.COMPANIES)
         .select("code")
         .eq("id", company_id)
         .limit(1)
@@ -2951,7 +2937,7 @@ def _resolve_engagement_code(client, project_id: str) -> str | None:
 def _resolve_initiative_code(client, initiative_id: str) -> str | None:
     """Resolve an initiatives.id to its slug ``code``."""
     resp = (
-        client.table("initiatives")
+        client.table(Tables.INITIATIVES)
         .select("code")
         .eq("id", initiative_id)
         .limit(1)
@@ -3406,24 +3392,15 @@ def _segments_to_text(segments: list) -> str:
 
 def _fetch_transcript(meeting_id: str) -> str:
     """Pull a transcript from Supabase fathom_meetings table."""
-    try:
-        from supabase import create_client
-    except ImportError as exc:
+    client = mc2_db.get_client(required=False)
+    if client is None:
         raise HTTPException(
-            status_code=500, detail="supabase package not installed"
-        ) from exc
-
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_KEY")
-    if not url or not key:
-        raise HTTPException(
-            status_code=500, detail="SUPABASE_URL or SUPABASE_SERVICE_KEY not set"
+            status_code=500,
+            detail="Supabase unavailable (env not set or package not installed)",
         )
-
-    client = create_client(url, key)
     resp = (
-        client.table("fathom_meetings")
-        .select("id, title, meeting_date, transcript, participants")
+        client.table(Tables.FATHOM_MEETINGS)
+        .select(mc2_db.FATHOM_TRANSCRIPT_COLUMNS)
         .eq("id", meeting_id)
         .single()
         .execute()
@@ -3453,27 +3430,18 @@ def _fetch_meeting(meeting_id: str) -> dict | None:
     None on any failure so artifact generation degrades gracefully
     without breaking auto-ingest.
     """
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_KEY")
-    if not url or not key:
+    client = mc2_db.get_client(required=False)
+    if client is None:
         log.warning("meeting-artifact: Supabase env not set; skipping fetch")
         return None
     try:
-        from supabase import create_client
-
-        client = create_client(url, key)
         resp = (
-            client.table("fathom_meetings")
-            .select(
-                "id, title, meeting_date, summary, action_items, "
-                "participants, duration_minutes, fathom_url, "
-                # Link/embed path reads these off the SAME row:
-                # resolve_meeting_project(project_tags) → link_meeting
-                # (project_id, recording_id) → embed_meeting_summary
-                # (recording_id, summary_embedded_at). Omitting them made
-                # every webhook meeting resolve to no project and no-op.
-                "recording_id, project_tags, project_id, summary_embedded_at"
-            )
+            client.table(Tables.FATHOM_MEETINGS)
+            # Link/embed path reads recording_id/project_tags/project_id/
+            # summary_embedded_at off the SAME row: resolve_meeting_project →
+            # link_meeting → embed_meeting_summary. Omitting them made every
+            # webhook meeting resolve to no project and no-op.
+            .select(mc2_db.FATHOM_ARTIFACT_COLUMNS)
             .eq("id", meeting_id)
             .single()
             .execute()
@@ -3938,19 +3906,17 @@ def _find_successful_duplicate_run(
     independent of the caller's ordering — Fathom may not preserve
     array order between retries.
     """
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_KEY")
-    if not url or not key or create_client is None:
+    client = mc2_db.get_client(required=False)
+    if client is None:
         return None
     sorted_codes = sorted(project_codes)
     try:
-        client = create_client(url, key)
         # Filter to status='success' — a previous failure should NOT
         # block a fresh attempt. Limit 20 lets us tolerate a handful
         # of past runs against the same meeting while still being a
         # single-page query.
         resp = (
-            client.table("auto_ingest_runs")
+            client.table(Tables.AUTO_INGEST_RUNS)
             .select("id, project_codes")
             .eq("meeting_id", meeting_id)
             .eq("status", "success")
@@ -3991,9 +3957,8 @@ def _log_run_to_supabase(
     auto_ingest_runs as status=failed but errors=null, leaving the
     dashboard unable to show what actually went wrong.
     """
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_KEY")
-    if not url or not key:
+    client = mc2_db.get_client(required=False)
+    if client is None:
         log.warning("auto_ingest_runs insert skipped: Supabase env not set")
         return
 
@@ -4007,10 +3972,7 @@ def _log_run_to_supabase(
             errors_flat.append(f"{entry['code']}: {err}")
 
     try:
-        from supabase import create_client
-
-        client = create_client(url, key)
-        client.table("auto_ingest_runs").insert({
+        client.table(Tables.AUTO_INGEST_RUNS).insert({
             "meeting_id": meeting_id,
             "project_codes": project_codes,
             "status": status,

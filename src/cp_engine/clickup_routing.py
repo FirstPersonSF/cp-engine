@@ -19,6 +19,7 @@ Reconciled divergences (documented so the history isn't mysterious):
 """
 from __future__ import annotations
 
+from cp_engine.mc2_db import Tables
 import logging
 from typing import Any
 
@@ -53,7 +54,7 @@ def resolve_clickup_project(
 
     if number is not None:
         resp = (
-            client.table("projects")
+            client.table(Tables.PROJECTS)
             .select("id, number, clickup_list_id, enable_clickup")
             .eq("number", number)
             .execute()
@@ -78,7 +79,7 @@ def resolve_clickup_project(
     # not that the network is down. Anything else propagates.
     try:
         resp = (
-            client.table("initiatives")
+            client.table(Tables.INITIATIVES)
             .select("id, code, clickup_list_id, enable_clickup")
             .eq("code", code)
             .execute()

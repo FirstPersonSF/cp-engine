@@ -382,7 +382,7 @@ def test_lookup_resolves_project_owned_proposal(
         }
     )
     monkeypatch.setattr(
-        webhook_main, "create_client", lambda u, k: fake, raising=False
+        "supabase.create_client", lambda u, k: fake, raising=False
     )
     out = webhook_main._lookup_proposal_by_clickup_task_id("T1")
     assert out == ("abc12345", "ggl-5168")
@@ -409,7 +409,7 @@ def test_lookup_resolves_initiative_owned_proposal(
         }
     )
     monkeypatch.setattr(
-        webhook_main, "create_client", lambda u, k: fake, raising=False
+        "supabase.create_client", lambda u, k: fake, raising=False
     )
     out = webhook_main._lookup_proposal_by_clickup_task_id("T2")
     assert out == ("feedface", "mission-control")

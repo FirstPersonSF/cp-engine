@@ -19,23 +19,21 @@ import os
 
 from cp_engine.clickup_routing import resolve_clickup_project
 from cp_engine.ingest import _content_hash
+from cp_engine import mc2_db
+from cp_engine.mc2_db import Tables
 
 log = logging.getLogger("cp-engine-webhook")
 
 
 def _supabase_client():
     """Return a Supabase client, or None if env/package is unavailable."""
-    url = os.environ.get("SUPABASE_URL")
-    key = os.environ.get("SUPABASE_SERVICE_KEY")
-    if not url or not key:
-        log.warning("clickup-propose skipped: Supabase env not set")
-        return None
-    try:
-        from supabase import create_client
-    except ImportError:
-        log.warning("clickup-propose skipped: supabase package not installed")
-        return None
-    return create_client(url, key)
+    client = mc2_db.get_client(required=False)
+    if client is None:
+        log.warning(
+            "clickup-propose skipped: Supabase unavailable "
+            "(env not set or supabase package not installed)"
+        )
+    return client
 
 
 def _resolve_project(client, code: str) -> dict | None:
@@ -60,7 +58,7 @@ def _existing_descriptions(client, meeting_id: str) -> set[str]:
     re-appears in Fathom's action items should NOT be re-proposed.
     """
     resp = (
-        client.table("clickup_task_proposals")
+        client.table(Tables.CLICKUP_TASK_PROPOSALS)
         .select("description")
         .eq("meeting_id", meeting_id)
         .in_("status", ["pending", "approved", "rejected"])
@@ -129,7 +127,7 @@ def propose_clickup_tasks(meeting_id: str, project_codes: list[str]) -> dict:
 
         # Fathom's inline action_items JSONB lives on the meeting row.
         resp = (
-            client.table("fathom_meetings")
+            client.table(Tables.FATHOM_MEETINGS)
             .select("id, action_items")
             .eq("id", meeting_id)
             .single()
@@ -178,7 +176,7 @@ def propose_clickup_tasks(meeting_id: str, project_codes: list[str]) -> dict:
             ))
 
         if rows:
-            client.table("clickup_task_proposals").insert(rows).execute()
+            client.table(Tables.CLICKUP_TASK_PROPOSALS).insert(rows).execute()
             summary["proposed"] = len(rows)
             log.info(
                 "clickup-propose: %d proposal(s) for meeting=%s project=%s",
