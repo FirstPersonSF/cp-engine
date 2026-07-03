@@ -4,6 +4,22 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.45.1 — 2026-07-03
+
+### promote_card stamps `layer` from the card's kind
+
+Frame-promoted meeting distillations landed with `layer` NULL at the source:
+`promote_card` built the substance file without a layer, so the mirrored
+`spine_substance` row couldn't be filed by layer in the MC-2 UI (Drew's
+v0.45.0 residual). Now:
+
+- Fresh promotes stamp `layer = canon_layer(kind)` (activity → `Activity`,
+  deliverable → `Deliverables`) into the file's frontmatter.
+- Re-promotes into a pre-stamping file (the `add_version` path) backfill the
+  missing layer the same way instead of preserving NULL forever.
+- The ~10 existing NULL rows across 6 projects were repaired directly in
+  MC-2; `layer` is MC-2-owned in reconcile, so the repair is durable.
+
 ## v0.45.0 — 2026-07-03
 
 ### Spine MCP: layer control + retrospective/research kinds
