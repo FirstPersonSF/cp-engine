@@ -163,6 +163,54 @@ def health() -> dict:
     }
 
 
+@app.post("/api/resolve-tags")
+async def resolve_tags_endpoint(request: Request) -> dict:
+    """Resolve fathom display tags to canonical cp project codes.
+
+    THE resolution authority (arch-phase-2): fathom-meeting-sync calls this
+    at dispatch time instead of maintaining its own ``projectTagToCode``
+    parse. Wraps :func:`cp_engine.tag_resolve.resolve_tags` — the parse
+    heuristic plus a DB-backed verification against MC-2
+    ``projects``/``initiatives``.
+
+    Request body (JSON):
+        { "tags": ["GGL 5136 go/safety website", "mission-control", ...] }
+
+    Headers:
+        X-Webhook-Signature: hex(hmac_sha256(body, WEBHOOK_HMAC_SECRET))
+        X-Webhook-Timestamp: optional, same scheme as the ingest routes
+
+    Response:
+        { "resolutions": [ {"tag", "code", "kind", "matched"}, ... ] }
+
+    ``code`` is None for unresolvable tags; ``matched=False`` means the
+    code came from the string parse without a live MC-2 row (historical /
+    archived projects — still routable, same as fathom's old local parse).
+    """
+    raw_body = await request.body()
+    _verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
+
+    tags = payload.get("tags")
+    if not isinstance(tags, list):
+        raise HTTPException(status_code=400, detail="tags must be a list")
+    if len(tags) > 200:
+        raise HTTPException(status_code=400, detail="too many tags (max 200)")
+
+    from cp_engine.tag_resolve import resolve_tags
+
+    client = _create_supabase_client()
+    return {"resolutions": resolve_tags(client, tags)}
+
+
 @app.post("/api/auto-ingest")
 async def auto_ingest(request: Request) -> dict:
     """Generate + apply an ingest plan for one meeting against one or more projects.
