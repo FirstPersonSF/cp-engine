@@ -4,6 +4,28 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.44.0 — 2026-07-03
+
+### Asset ingest: image-only PDFs now RAG (visual-capture fallback)
+
+Designed decks, Miro exports, and scans exported without a text layer used
+to fail asset ingest with "No chunks generated (empty document?)" — hit
+live on two IBX-5153 Keynote-exported decks. document-ingest's PDF parser
+(repinned to 1p-component-library@8dc32a8) now falls back to faithful
+per-page visual transcription via `visual-document-capture` (the module
+already powering `cp workshop-synth` Stage 1) whenever pypdf extracts no
+text; the transcriptions flow through the normal page-aware chunker, and
+chunks carry `metadata.visual_capture = true`.
+
+Requirements + knobs (all env, read at parse time):
+
+- `ANTHROPIC_API_KEY` must be set in the ingest environment — without it
+  (or with `INGEST_VISUAL_CAPTURE=0`) behavior is exactly as before.
+- `INGEST_VISUAL_MODEL` — default `claude-sonnet-5` (validated faithful on
+  the failing IBX-5153 deck).
+- `INGEST_VISUAL_MAX_PAGES` — cost guard, default 60 (one vision call per
+  page).
+
 ## v0.43.3 — 2026-07-02
 
 ### Fixed — `pull_project_source` query pulls actually see the Voyage key; plain pulls find older docs
