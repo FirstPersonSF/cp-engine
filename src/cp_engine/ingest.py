@@ -30,7 +30,6 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from postgrest.exceptions import APIError
 
 logger = logging.getLogger(__name__)
 
@@ -1246,65 +1245,17 @@ def _write_account_summary(item: dict, weekly_cp_path: Path) -> bool:
 
 
 def _resolve_proposal_project(client, code: str) -> dict | None:
-    """Resolve a cp code to an MC-2 routing row. Duplicates
-    ``webhook/clickup_propose._resolve_project`` because webhook/ isn't
-    on cp_engine's import path. Tolerates ``enable_clickup`` being
-    absent (some test mocks omit it).
+    """Resolve a cp code to an MC-2 routing row.
 
-    KEEP IN SYNC with the webhook copy. The two have deliberately diverged
-    on: initiative error handling (here ``APIError``, webhook bare
-    ``Exception``) and absent-``enable_clickup`` semantics (here treated as
-    enabled for test mocks, webhook as disabled). The ``kind`` stamp on both
-    return branches (``"project"`` / ``"initiative"``) MUST stay identical —
-    downstream owner-column selection (``_owner_column``) keys on it.
+    Thin wrapper over :func:`cp_engine.clickup_routing.resolve_clickup_project`
+    — the single implementation, also wrapped by the webhook's
+    ``_resolve_project`` (ends the "KEEP IN SYNC" duplication, arch-phase-2).
+    ``missing_enable_clickup_ok=True`` preserves this path's historical
+    tolerance of test mocks that omit the ``enable_clickup`` key.
     """
-    tail = code.rsplit("-", 1)[-1]
-    number = int(tail) if tail.isdigit() else None
+    from cp_engine.clickup_routing import resolve_clickup_project
 
-    if number is not None:
-        resp = (
-            client.table("projects")
-            .select("id, number, clickup_list_id, enable_clickup")
-            .eq("number", number)
-            .execute()
-        )
-        rows = resp.data or []
-        if not rows:
-            return None
-        row = rows[0]
-        if "enable_clickup" in row and not row.get("enable_clickup"):
-            return None
-        return {
-            "id": row["id"],
-            "clickup_list_id": row.get("clickup_list_id"),
-            "code": code,
-            "kind": "project",
-        }
-
-    # Initiative — slug code. ClickUp columns rolled out incrementally
-    # on initiatives; a PostgREST APIError here means the column is
-    # missing, not that the network is down.
-    try:
-        resp = (
-            client.table("initiatives")
-            .select("id, code, clickup_list_id, enable_clickup")
-            .eq("code", code)
-            .execute()
-        )
-    except APIError:
-        return None
-    rows = resp.data or []
-    if not rows:
-        return None
-    row = rows[0]
-    if "enable_clickup" in row and not row.get("enable_clickup"):
-        return None
-    return {
-        "id": row["id"],
-        "clickup_list_id": row.get("clickup_list_id"),
-        "code": code,
-        "kind": "initiative",
-    }
+    return resolve_clickup_project(client, code, missing_enable_clickup_ok=True)
 
 
 def _owner_column(project: dict) -> dict:
