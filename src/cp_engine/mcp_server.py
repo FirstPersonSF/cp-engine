@@ -25,6 +25,7 @@ caught and converted to that note rather than propagated.
 
 from __future__ import annotations
 
+from cp_engine.mc2_db import Tables
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("cp-sources")
@@ -114,7 +115,7 @@ def _resolve_project_id(client, project_code: str) -> str | None:
     from cp_engine.state import slug_full_job_name
 
     rows = (
-        client.table("projects")
+        client.table(Tables.PROJECTS)
         .select("id")
         .eq("code", project_code)
         .limit(1)
@@ -131,7 +132,7 @@ def _resolve_project_id(client, project_code: str) -> str | None:
     # — it is neither the slug code nor the slugified on-disk id, so without this
     # branch every tagged meeting fails to resolve.
     rows = (
-        client.table("projects")
+        client.table(Tables.PROJECTS)
         .select("id")
         .eq("full_job_name", project_code)
         .limit(1)
@@ -149,7 +150,7 @@ def _resolve_project_id(client, project_code: str) -> str | None:
     prefix = project_code.split("-", 1)[0]
     if prefix:
         candidates = (
-            client.table("projects")
+            client.table(Tables.PROJECTS)
             .select("id, full_job_name")
             .ilike("code", f"{prefix}-%")
             .execute()
@@ -171,7 +172,7 @@ def _resolve_project_id(client, project_code: str) -> str | None:
     # prefix is lowercase (`ibx`); match case-insensitively. The prefix has no
     # %/_ (it's a slugified company code), so ilike treats it as a literal.
     companies = (
-        client.table("companies")
+        client.table(Tables.COMPANIES)
         .select("id")
         .ilike("code", prefix)
         .limit(1)
@@ -183,7 +184,7 @@ def _resolve_project_id(client, project_code: str) -> str | None:
         return None
     company_id = companies[0]["id"]
     rows = (
-        client.table("projects")
+        client.table(Tables.PROJECTS)
         .select("id")
         .eq("company_id", company_id)
         .eq("number", number)
@@ -205,7 +206,7 @@ def _resolve_initiative_id(client, code: str) -> str | None:
     once we hand it back. Returns the id, or None when nothing matches.
     """
     rows = (
-        client.table("initiatives")
+        client.table(Tables.INITIATIVES)
         .select("id")
         .eq("code", code)
         .limit(1)
@@ -417,12 +418,12 @@ def create_spine_element(project_code: str, label: str, type: str,
         )
         # Guard against silently clobbering an existing element with this slug.
         eid = rows[0]["est_item_id"]
-        existing = (client.table("spine_substance").select("id")
+        existing = (client.table(Tables.SPINE_SUBSTANCE).select("id")
                     .eq("project_code", project_code).eq("est_item_id", eid)
                     .limit(1).execute().data or [])
         if existing:
             return {"error": f"an element '{eid}' already exists; add a version instead"}
-        client.table("spine_substance").upsert(rows, on_conflict="id").execute()
+        client.table(Tables.SPINE_SUBSTANCE).upsert(rows, on_conflict="id").execute()
         live = next(r for r in rows if r["status"] == "live")
         return {"element_id": live["est_item_id"], "version_label": live["version_label"]}
     except Exception as exc:  # noqa: BLE001
@@ -451,7 +452,7 @@ def add_spine_version(project_code: str, element_id: str, body: str,
         if resolved is None:
             return {"error": f"project {project_code!r} not found"}
         client, pid, _cid = resolved
-        prior = (client.table("spine_substance").select(_SEL)
+        prior = (client.table(Tables.SPINE_SUBSTANCE).select(_SEL)
                  .eq("project_code", project_code).eq("est_item_id", element_id)
                  .execute().data or [])
         if not prior:
@@ -460,13 +461,13 @@ def add_spine_version(project_code: str, element_id: str, body: str,
         # mirrors the mc-2 endpoint; avoids clobbering prior sources/version_note).
         for v in prior:
             if v.get("status") == "live":
-                client.table("spine_substance").update({"status": "superseded"}).eq("id", v["id"]).execute()
+                client.table(Tables.SPINE_SUBSTANCE).update({"status": "superseded"}).eq("id", v["id"]).execute()
         rows = build_version_rows(
             project_id=pid, project_code=project_code, est_item_id=element_id,
             prior_versions=prior, body=body, version_note=version_note,
             now_iso=datetime.now(timezone.utc).isoformat(),
         )
-        client.table("spine_substance").upsert(rows, on_conflict="id").execute()
+        client.table(Tables.SPINE_SUBSTANCE).upsert(rows, on_conflict="id").execute()
         live = next(r for r in rows if r["status"] == "live")
         return {"element_id": live["est_item_id"], "version_label": live["version_label"]}
     except Exception as exc:  # noqa: BLE001
@@ -515,14 +516,14 @@ def set_spine_element(project_code: str, key: str,
             patch["note"] = note
         # Importance is ALWAYS set first — promotion never blocks it.
         if patch:
-            client.table("spine_substance").update(patch).eq("id", row["id"]).execute()
+            client.table(Tables.SPINE_SUBSTANCE).update(patch).eq("id", row["id"]).execute()
         canonical_layer = None
         if layer is not None:
             # Layer describes the element KIND, so every version row moves
             # together — a partial move would scatter one element's history
             # across layers.
             canonical_layer = canon_layer(layer)
-            (client.table("spine_substance").update({"layer": canonical_layer})
+            (client.table(Tables.SPINE_SUBSTANCE).update({"layer": canonical_layer})
              .eq("project_id", pid).eq("est_item_id", row["est_item_id"]).execute())
         result = {
             "est_item_id": row["est_item_id"],

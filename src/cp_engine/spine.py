@@ -18,6 +18,7 @@ import yaml
 
 from cp_engine.state import INACTIVE_DIR_NAME
 from cp_engine.sync import _SCOPE_DIRS, _find_project_dir, _project_parent_dirs
+from cp_engine.mc2_db import Tables
 
 # The 11 fixed layers (dir names == `layer:` values).
 LAYERS: tuple[str, ...] = (
@@ -330,7 +331,7 @@ def load_spine_from_mc2(client, project_code: str) -> tuple[SpineElement, ...]:
     so the sweep shows the current state of each work item, not its history.
     """
     data = (
-        client.table("spine_substance")
+        client.table(Tables.SPINE_SUBSTANCE)
         .select(
             "id, project_code, est_item_id, layer, placement, status, "
             "version_label, version_date, framing, body, serves, sources, "

@@ -26,7 +26,10 @@ import subprocess
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol
+
+if TYPE_CHECKING:  # pragma: no cover — typing only
+    from supabase import Client
 
 logger = logging.getLogger(__name__)
 
@@ -112,12 +115,17 @@ class Backend(Protocol):
         """
         ...
 
-    def spine_client(self) -> object:
+    def spine_client(self) -> "Client":
         """Return the Supabase client used to read projects.
 
         Used by the spine mirror (slice 2) to reconcile a project's
         `spine/` frontmatter into MC-2's `spine_elements` table without
         re-resolving credentials. Returns the live client instance.
+
+        This is deliberately the ONLY raw-client door in the protocol.
+        Code that needs ad-hoc MC-2 access outside a Backend should go
+        through `cp_engine.mc2_db.get_client` (the single constructor)
+        rather than growing new leaks here.
         """
         ...
 

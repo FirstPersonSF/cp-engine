@@ -13,6 +13,7 @@ from pathlib import Path
 
 from cp_engine.asset_ingest import _utc_now_iso
 from cp_engine.spine_promote import ingest_single_file
+from cp_engine.mc2_db import Tables
 
 _SKIP_TAGS = {"untagged", ""}
 
@@ -39,7 +40,7 @@ def stamp_meeting_asset(client, *, project_id: str, source_file_id: str,
     # caller immediately before this stamp, so there is no prior caller-set meta
     # (e.g. a change_token) to clobber.
     resp = (
-        client.table("rag_assets")
+        client.table(Tables.RAG_ASSETS)
         .update({
             "source_provider": "fathom",
             "source_file_id": source_file_id,
@@ -120,7 +121,7 @@ def embed_meeting_summary(client, meeting_row, project_id, *,
 
         # Mark the meeting embedded (located by the stable recording_id key).
         (
-            client.table("fathom_meetings")
+            client.table(Tables.FATHOM_MEETINGS)
             .update({"summary_embedded_at": _utc_now_iso()})
             .eq("recording_id", recording_id)
             .execute()
@@ -235,7 +236,7 @@ def promote_meeting_transcript(client, meeting_row, project_id, company_id, *,
 
         # Mark the meeting promoted (located by the stable recording_id key).
         (
-            client.table("fathom_meetings")
+            client.table(Tables.FATHOM_MEETINGS)
             .update({"transcript_promoted_at": _utc_now_iso()})
             .eq("recording_id", recording_id)
             .execute()
@@ -379,7 +380,7 @@ def rescope_meeting(client, meeting_row, new_project_id, *,
         if new_company_id is not None:
             ra_payload["company_id"] = new_company_id
         resp = (
-            client.table("rag_assets")
+            client.table(Tables.RAG_ASSETS)
             .update(ra_payload)
             .eq("source_provider", "fathom")
             .eq("source_file_id", str(recording_id))
@@ -390,7 +391,7 @@ def rescope_meeting(client, meeting_row, new_project_id, *,
 
         # Re-scope the meeting row; clear the now-invalid old work item.
         (
-            client.table("fathom_meetings")
+            client.table(Tables.FATHOM_MEETINGS)
             .update({
                 "project_id": new_project_id,
                 "work_item_id": None,
@@ -489,7 +490,7 @@ def link_meeting(client, meeting_row, *,
 
         # Write the link columns by recording_id (idempotent).
         (
-            client.table("fathom_meetings")
+            client.table(Tables.FATHOM_MEETINGS)
             .update({
                 "project_id": new_project_id,
                 "work_item_id": work_item_id,
@@ -598,7 +599,7 @@ def backfill_meetings(client, *, code=None, supabase_url, supabase_key,
     offset = 0
     while True:
         resp = (
-            client.table("fathom_meetings")
+            client.table(Tables.FATHOM_MEETINGS)
             .select(columns)
             .range(offset, offset + _BACKFILL_PAGE_SIZE - 1)
             .execute()

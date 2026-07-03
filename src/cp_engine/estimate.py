@@ -24,6 +24,8 @@ GLOBAL RULE: never `.select("*")` — always explicit columns.
 
 from __future__ import annotations
 
+from cp_engine import mc2_db
+from cp_engine.mc2_db import Tables
 from dataclasses import dataclass
 from datetime import date, timedelta
 
@@ -142,20 +144,17 @@ class ScheduleItem:
 
 
 # Explicit column lists (never `*`, per the global Supabase rule).
-_PROJECT_COLUMNS = "id, mc_project_id, name, is_default"
-_PHASE_COLUMNS = "id, name, overview, position"
-_ITEM_COLUMNS = "id, phase_id, name, short_description, library_item_id, position"
+_PROJECT_COLUMNS = mc2_db.EST_PROJECT_COLUMNS
+_PHASE_COLUMNS = mc2_db.EST_PHASE_COLUMNS
+_ITEM_COLUMNS = mc2_db.EST_ITEM_COLUMNS
 # public.projects carries the kickoff start_date, keyed by the MC project id
 # (public.projects.id === estimator.projects.mc_project_id).
-_PUBLIC_PROJECT_COLUMNS = "id, start_date"
+_PUBLIC_PROJECT_COLUMNS = mc2_db.PROJECTS_ESTIMATE_COLUMNS
 # work_item_id / work_item_kind / done shipped in migration 069 (the
 # schedule↔work-item link), so they are selected here. They are still read via
 # `.get()` in the row mapper, defaulting None/None/False, so an older schema
 # without them degrades gracefully rather than 400-ing.
-_SCHEDULE_COLUMNS = (
-    "id, project_id, phase_id, label, start_week, duration, "
-    "position, item_type, emphasis, work_item_id, work_item_kind, done"
-)
+_SCHEDULE_COLUMNS = mc2_db.EST_SCHEDULE_COLUMNS
 
 
 def fetch_estimate(client, mc_project_id) -> Estimate | None:
@@ -175,7 +174,7 @@ def fetch_estimate(client, mc_project_id) -> Estimate | None:
     """
     proj_rows = (
         client.schema("estimator")
-        .table("projects")
+        .table(Tables.EST_PROJECTS)
         .select(_PROJECT_COLUMNS)
         .eq("mc_project_id", mc_project_id)
         .eq("is_default", True)
@@ -191,7 +190,7 @@ def fetch_estimate(client, mc_project_id) -> Estimate | None:
     # MC project id (nullable; Drew sets it manually at kickoff).
     public_rows = (
         client.schema("public")
-        .table("projects")
+        .table(Tables.PROJECTS)
         .select(_PUBLIC_PROJECT_COLUMNS)
         .eq("id", mc_project_id)
         .execute()
@@ -202,7 +201,7 @@ def fetch_estimate(client, mc_project_id) -> Estimate | None:
 
     phases = (
         client.schema("estimator")
-        .table("phases")
+        .table(Tables.EST_PHASES)
         .select(_PHASE_COLUMNS)
         .eq("project_id", project_row["id"])
         .execute()
@@ -214,7 +213,7 @@ def fetch_estimate(client, mc_project_id) -> Estimate | None:
     if phase_ids:
         activities = (
             client.schema("estimator")
-            .table("phase_activities")
+            .table(Tables.EST_PHASE_ACTIVITIES)
             .select(_ITEM_COLUMNS)
             .in_("phase_id", phase_ids)
             .execute()
@@ -223,7 +222,7 @@ def fetch_estimate(client, mc_project_id) -> Estimate | None:
         )
         deliverables = (
             client.schema("estimator")
-            .table("phase_deliverables")
+            .table(Tables.EST_PHASE_DELIVERABLES)
             .select(_ITEM_COLUMNS)
             .in_("phase_id", phase_ids)
             .execute()
@@ -250,7 +249,7 @@ def fetch_schedule(client, estimate_id) -> list[ScheduleItem]:
     """
     rows = (
         client.schema("estimator")
-        .table("schedule_items")
+        .table(Tables.EST_SCHEDULE_ITEMS)
         .select(_SCHEDULE_COLUMNS)
         .eq("project_id", estimate_id)
         .execute()

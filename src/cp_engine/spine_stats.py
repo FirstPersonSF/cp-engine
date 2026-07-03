@@ -9,11 +9,12 @@ from collections import Counter
 from datetime import date, timedelta
 
 from cp_engine.spine import _parse_date
+from cp_engine.mc2_db import Tables
 
 
 def _deliverable_rows(client, cols: str) -> list[dict]:
     return (
-        client.table("spine_elements")
+        client.table(Tables.SPINE_ELEMENTS)
         .select(cols).eq("layer", "Deliverables").execute().data
     ) or []
 

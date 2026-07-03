@@ -11,8 +11,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from cp_engine.spine import element_to_row, load_spine
+from cp_engine.mc2_db import Tables
 
-_TABLE = "spine_elements"
+_TABLE = Tables.SPINE_ELEMENTS
 
 # The only fields a human can confirm in MC-2; sync reconciles these rather
 # than overwriting. Everything else on the row is proposed/overwrite.
@@ -162,7 +163,7 @@ def sync_spine_elements(
     return len(rows)
 
 
-_SNAPSHOTS_TABLE = "spine_snapshots"
+_SNAPSHOTS_TABLE = Tables.SPINE_SNAPSHOTS
 
 
 def sync_spine_snapshots(

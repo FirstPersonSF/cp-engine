@@ -283,15 +283,17 @@ def _patch_channel_map(monkeypatch, rows_by_table: dict[str, list[dict]]) -> Non
     import cp_engine.slack as slack_mod
     import cp_engine.sync_mc2 as sync_mod
 
+    from cp_engine import mc2_db
+
     monkeypatch.setattr(
-        sync_mod, "_load_supabase_creds", lambda config: ("http://x", "key")
+        mc2_db, "load_supabase_creds", lambda config=None: ("http://x", "key")
     )
     fake = _FakeQuery(rows_by_table)
     import supabase
 
     monkeypatch.setattr(supabase, "create_client", lambda url, key: fake)
-    # `from supabase import create_client` resolves at call time inside
-    # list_channel_map, so patching the module attribute is sufficient.
+    # mc2_db.get_client does `from supabase import create_client` at call
+    # time, so patching the module attribute is sufficient.
     _ = slack_mod  # keep import side effect explicit
 
 

@@ -17,6 +17,7 @@ from pathlib import Path
 
 from cp_engine.authored_element import build_create_rows, slugify
 from cp_engine.spine import SpineElement, load_spine
+from cp_engine.mc2_db import Tables
 
 
 def load_legacy_elements(project_dir: Path) -> tuple[SpineElement, ...]:
@@ -245,6 +246,6 @@ def recover(*, client, project_id, company_id, project_dir, canonical_code,
 
     # 5. Apply boundary — the ONLY write. Dry-run returns before this.
     if apply and rows:
-        client.table("spine_substance").upsert(rows, on_conflict="id").execute()
+        client.table(Tables.SPINE_SUBSTANCE).upsert(rows, on_conflict="id").execute()
 
     return report, rows

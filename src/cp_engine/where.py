@@ -22,6 +22,7 @@ from cp_engine.estimate import (
     week_to_date,
 )
 from cp_engine.execution_status import derive_status, item_has_recent_activity
+from cp_engine.mc2_db import SPINE_STATUS_COLUMNS, SpineSubstanceRow, Tables
 
 # Status word → fixed-width label so the per-item lines align in a terminal.
 _STATUS_COL = 8
@@ -48,26 +49,24 @@ def fetch_substance_status(
     string. Explicit-column read per the global Supabase rule.
     """
     rows = (
-        client.table("spine_substance")
-        .select(
-            "est_item_id, status, version_date, version_label, binding, project_id"
-        )
+        client.table(Tables.SPINE_SUBSTANCE)
+        .select(SPINE_STATUS_COLUMNS)
         .eq("project_code", project_code)
         .execute()
         .data
     ) or []
     out: dict[str, dict] = {}
     project_id: str | None = None
-    for r in rows:
-        if project_id is None and r.get("project_id"):
-            project_id = r["project_id"]
-        item_id = str(r.get("est_item_id"))
+    for raw in rows:
+        r = SpineSubstanceRow.from_row(raw)
+        if project_id is None and r.project_id:
+            project_id = r.project_id
+        item_id = str(r.est_item_id)
         slot = out.setdefault(item_id, {"has_live": False, "version_dates": []})
-        if (r.get("status") or "") == "live":
+        if (r.status or "") == "live":
             slot["has_live"] = True
-        vd = r.get("version_date")
-        if vd:
-            slot["version_dates"].append(str(vd))
+        if r.version_date:
+            slot["version_dates"].append(r.version_date)
     return out, project_id
 
 

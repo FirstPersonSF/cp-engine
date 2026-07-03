@@ -21,6 +21,8 @@ from pathlib import Path
 
 from cp_engine.asset_ingest import FileRef, download_file, read_scoped_chunks
 from cp_engine.spine_done import derive_done, fetch_project_done_map
+from cp_engine import mc2_db
+from cp_engine.mc2_db import RagAssetRow, Tables
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +31,7 @@ logger = logging.getLogger(__name__)
 # `file_hash` is the cache key for the manifest's per-doc summaries: it changes
 # when the doc's content changes, so an unchanged doc keeps its cached summary
 # and skips the LLM call. It's a short scalar, not a blob, so it's safe to list.
-_SOURCE_COLUMNS = "id, title, source_type, status, created_at, file_hash"
+_SOURCE_COLUMNS = mc2_db.RAG_ASSET_LIST_COLUMNS
 
 # Widened window for the no-query pull's second attempt. The recency-ordered
 # read is scoped to the WHOLE project+account chunk pool, so an older doc can
@@ -64,7 +66,7 @@ def list_sources(
     Returns `[{id, title, source_type, created_at[, summary]}]`, newest first.
     """
     resp = (
-        client.table("rag_assets")
+        client.table(Tables.RAG_ASSETS)
         .select(_SOURCE_COLUMNS)
         .eq("project_id", project_id)
         .eq("status", "active")
@@ -73,16 +75,17 @@ def list_sources(
     )
     rows = getattr(resp, "data", None) or []
     out: list[dict] = []
-    for row in rows:
+    for raw in rows:
+        row = RagAssetRow.from_row(raw)
         entry = {
-            "id": row.get("id"),
-            "title": row.get("title"),
-            "source_type": row.get("source_type"),
-            "created_at": row.get("created_at"),
-            "file_hash": row.get("file_hash"),
+            "id": row.id,
+            "title": row.title,
+            "source_type": row.source_type,
+            "created_at": row.created_at,
+            "file_hash": row.file_hash,
         }
         if summaries is not None:
-            summary = summaries.get(row.get("id"))
+            summary = summaries.get(row.id)
             if summary is not None:
                 entry["summary"] = summary
         out.append(entry)
@@ -251,24 +254,17 @@ def pull_source(
 
 # List columns: metadata + body (so we can derive body_len) but never `*`. The
 # body is selected only to compute its length; it is NOT returned in the list.
-_SPINE_LIST_COLUMNS = (
-    "est_item_id, framing, layer, binding, status, serves, body, important, note"
-)
+_SPINE_LIST_COLUMNS = mc2_db.SPINE_LIST_COLUMNS
 
 # Pull columns: everything needed to return one element with full body + context.
-_SPINE_PULL_COLUMNS = (
-    "est_item_id, framing, layer, binding, status, serves, sources, "
-    "version_label, body, important, note"
-)
+_SPINE_PULL_COLUMNS = mc2_db.SPINE_PULL_COLUMNS
 
 # Resolve columns: enough to identify ONE live element AND its row `id` (needed
 # for a targeted update). Includes `id` (which _spine_element does NOT surface,
 # so pull_spine's public return is unaffected). `rel_path` is here for transcript
 # promotion (item 3) — no in-repo caller reads it yet, so don't trim it as unused.
 # Never `*`.
-_SPINE_RESOLVE_COLUMNS = (
-    "id, est_item_id, framing, status, important, note, rel_path"
-)
+_SPINE_RESOLVE_COLUMNS = mc2_db.SPINE_RESOLVE_COLUMNS
 
 
 def _match_one_live(rows: list[dict], key: str):
@@ -309,7 +305,7 @@ def resolve_live_element(client, project_id: str, key: str) -> dict | None:
     wants to write the row back). Never `SELECT *`.
     """
     resp = (
-        client.table("spine_substance")
+        client.table(Tables.SPINE_SUBSTANCE)
         .select(_SPINE_RESOLVE_COLUMNS)
         .eq("project_id", project_id)
         .eq("status", "live")
@@ -332,7 +328,7 @@ def list_spine(client, project_id: str) -> list[dict]:
     structured note.
     """
     resp = (
-        client.table("spine_substance")
+        client.table(Tables.SPINE_SUBSTANCE)
         .select(_SPINE_LIST_COLUMNS)
         .eq("project_id", project_id)
         .eq("status", "live")
@@ -397,7 +393,7 @@ def pull_spine(client, project_id: str, key: str) -> dict:
     raises.
     """
     resp = (
-        client.table("spine_substance")
+        client.table(Tables.SPINE_SUBSTANCE)
         .select(_SPINE_PULL_COLUMNS)
         .eq("project_id", project_id)
         .eq("status", "live")
@@ -489,7 +485,7 @@ def list_project_meetings(client, project_id: str) -> list[dict]:
     `meeting_date` descending (most recent first).
     """
     resp = (
-        client.table("fathom_meetings")
+        client.table(Tables.FATHOM_MEETINGS)
         .select(_MEETING_LIST_COLUMNS)
         .eq("project_id", project_id)
         .order("meeting_date", desc=True)
@@ -516,7 +512,7 @@ def list_project_meetings(client, project_id: str) -> list[dict]:
 
 # Re-fetch coords persisted on `rag_assets` (Task 3) + display fields. NEVER `*`
 # / `meta` (large blobs) — only what's needed to reconstruct a FileRef and cite.
-_REFETCH_COLUMNS = "title, source_provider, source_file_id, source_path, url"
+_REFETCH_COLUMNS = mc2_db.RAG_ASSET_REFETCH_COLUMNS
 
 
 def fetch_source(client, project_id: str, doc_title: str, dest_dir) -> dict:
@@ -536,7 +532,7 @@ def fetch_source(client, project_id: str, doc_title: str, dest_dir) -> dict:
     """
     try:
         rows = (
-            client.table("rag_assets")
+            client.table(Tables.RAG_ASSETS)
             .select(_REFETCH_COLUMNS)
             .eq("project_id", project_id)
             .execute()

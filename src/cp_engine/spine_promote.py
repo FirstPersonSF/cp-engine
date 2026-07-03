@@ -17,6 +17,7 @@ Three functions, smallest to largest:
 """
 from __future__ import annotations
 
+from cp_engine.mc2_db import Tables
 import re
 import shutil
 import tempfile
@@ -62,7 +63,7 @@ def stamp_promoted_asset(client, *, project_id: str, est_item_id: str,
     never duplicates). No `SELECT *`.
     """
     resp = (
-        client.table("rag_assets")
+        client.table(Tables.RAG_ASSETS)
         .update({
             "source_provider": "spine-promote",
             "source_file_id": est_item_id,

@@ -52,7 +52,7 @@ def test_rerun_endpoint_loads_failed_row_and_refires(
     }
     sb_client = MagicMock()
     sb_client.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = failed_row
-    monkeypatch.setattr(webhook_main, "create_client", lambda url, key: sb_client, raising=False)
+    monkeypatch.setattr("supabase.create_client", lambda url, key: sb_client, raising=False)
 
     # Stub _perform_auto_ingest to record the call without actually running.
     called_with: dict = {}
@@ -87,7 +87,7 @@ def test_rerun_endpoint_404_when_row_not_found(
 
     sb_client = MagicMock()
     sb_client.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = None
-    monkeypatch.setattr(webhook_main, "create_client", lambda url, key: sb_client, raising=False)
+    monkeypatch.setattr("supabase.create_client", lambda url, key: sb_client, raising=False)
 
     body = b""
     sig = _signed(body)
@@ -114,7 +114,7 @@ def test_rerun_endpoint_rejects_non_failed_status(
         "project_codes": ["ggl-5168"],
         "status": "success",
     }
-    monkeypatch.setattr(webhook_main, "create_client", lambda url, key: sb_client, raising=False)
+    monkeypatch.setattr("supabase.create_client", lambda url, key: sb_client, raising=False)
 
     body = b""
     sig = _signed(body)

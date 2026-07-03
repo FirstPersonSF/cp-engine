@@ -35,17 +35,13 @@ INTERNAL_SCOPES = ("fpsf", "canonic")
 def build_mc2_client():
     """Build a Supabase client using the same cred resolution the glue uses.
 
-    Mirrors `ingest_project_assets`'s internal `_resolve_creds` so the CLI and
-    glue always agree on which creds win (env first, then mc-2/backend/.env via
-    `_load_supabase_creds`).
+    Same resolution as `ingest_project_assets` — both go through
+    `mc2_db.get_client` (env first, then op://, then mc-2/backend/.env).
     """
-    from supabase import create_client
-
     from cp_engine import config as cp_config
-    from cp_engine.sync_mc2 import _load_supabase_creds
+    from cp_engine import mc2_db
 
-    url, key = _load_supabase_creds(cp_config.load(Path.cwd()))
-    return create_client(url, key)
+    return mc2_db.get_client(cp_config.load(Path.cwd()))
 
 
 def _is_active_engagement(p) -> bool:

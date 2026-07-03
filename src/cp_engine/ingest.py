@@ -22,6 +22,7 @@ See cp/docs/plans/2026-05-12-tier-1-design.md for full design.
 
 from __future__ import annotations
 
+from cp_engine.mc2_db import Tables
 import hashlib
 import logging
 import re
@@ -1349,7 +1350,7 @@ def _write_milestone(
         "milestone_depends_on": list(item.get("depends_on") or []),
         "milestone_linked_to": list(item.get("linked_to") or []),
     }
-    supabase.table("clickup_task_proposals").insert(row).execute()
+    supabase.table(Tables.CLICKUP_TASK_PROPOSALS).insert(row).execute()
 
 
 def _write_client_ask_task(
@@ -1413,7 +1414,7 @@ def _write_client_ask_task(
         "task_type": "client_ask",
         "is_milestone": False,
     }
-    supabase.table("clickup_task_proposals").insert(row).execute()
+    supabase.table(Tables.CLICKUP_TASK_PROPOSALS).insert(row).execute()
 
 
 def _proposal_already_present(client, cp_ask_hash: str) -> bool:
@@ -1434,7 +1435,7 @@ def _proposal_already_present(client, cp_ask_hash: str) -> bool:
     """
     try:
         resp = (
-            client.table("clickup_task_proposals")
+            client.table(Tables.CLICKUP_TASK_PROPOSALS)
             .select("id, status")
             .eq("cp_ask_hash", cp_ask_hash)
             .in_("status", ["pending", "approved"])

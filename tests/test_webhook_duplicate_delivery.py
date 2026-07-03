@@ -124,7 +124,7 @@ def test_dedupe_lookup_sorts_project_codes(
         captured_args["key"] = key
         return sb_client
 
-    monkeypatch.setattr(webhook_main, "create_client", fake_create, raising=False)
+    monkeypatch.setattr("supabase.create_client", fake_create, raising=False)
 
     # Query order is reversed from stored order; sort should normalize.
     found = webhook_main._find_successful_duplicate_run(
@@ -145,7 +145,7 @@ def test_dedupe_returns_none_when_codes_differ(
         {"id": "uuid-1", "project_codes": ["ggl-5168"]}
     ]
     monkeypatch.setattr(
-        webhook_main, "create_client", lambda u, k: sb_client, raising=False
+        "supabase.create_client", lambda u, k: sb_client, raising=False
     )
 
     # Different code -> not a duplicate
@@ -164,7 +164,7 @@ def test_dedupe_lookup_failure_degrades_to_no_duplicate(
     def boom(url, key):
         raise RuntimeError("supabase down")
 
-    monkeypatch.setattr(webhook_main, "create_client", boom, raising=False)
+    monkeypatch.setattr("supabase.create_client", boom, raising=False)
 
     assert webhook_main._find_successful_duplicate_run("m1", ["ggl-5168"]) is None
 
@@ -197,7 +197,7 @@ def test_rerun_endpoint_does_not_dedupe(
     sb_client = MagicMock()
     sb_client.table.return_value.select.return_value.eq.return_value.single.return_value.execute.return_value.data = failed_row
     monkeypatch.setattr(
-        webhook_main, "create_client", lambda u, k: sb_client, raising=False
+        "supabase.create_client", lambda u, k: sb_client, raising=False
     )
 
     # Wire a dedupe match — the rerun MUST still run, ignoring it.

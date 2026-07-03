@@ -29,6 +29,7 @@ import frontmatter
 
 from cp_engine.authored_mirror import write_authored_element
 from cp_engine.spine_context import parse_context
+from cp_engine.mc2_db import Tables
 from cp_engine.spine_sync import _has_confirmed_field, _merge_flag, reconcile_field
 from cp_engine.substance import (
     WorkItemSubstance,
@@ -38,8 +39,8 @@ from cp_engine.substance import (
 
 logger = logging.getLogger(__name__)
 
-_SUBSTANCE_TABLE = "spine_substance"
-_CONTEXT_TABLE = "spine_context"
+_SUBSTANCE_TABLE = Tables.SPINE_SUBSTANCE
+_CONTEXT_TABLE = Tables.SPINE_CONTEXT
 
 # Columns `write_authored_element` reads off each authored DB row.
 _AUTHORED_SELECT = (
@@ -248,7 +249,7 @@ def _rehome_authored_codes(client, *, project_id, project_code):
     return n
 
 
-_SNAPSHOT_TABLE = "spine_snapshots"
+_SNAPSHOT_TABLE = Tables.SPINE_SNAPSHOTS
 
 
 def _rehome_snapshot_codes(client, *, project_id, project_code):
