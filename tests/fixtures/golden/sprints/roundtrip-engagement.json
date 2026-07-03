@@ -1,0 +1,72 @@
+{
+  "allocation": [],
+  "carry_forward": {
+    "asks": [
+      {
+        "asked_date": "2026-05-04",
+        "status": "open",
+        "text": "Volume forecast from ops team",
+        "who": "Maria"
+      }
+    ],
+    "horizon": [
+      {
+        "bucket": "decision",
+        "note": null,
+        "target_date": "by W21",
+        "text": "Whether to staff a third on Pebble for Q3"
+      }
+    ],
+    "risks": [
+      {
+        "category": "contract",
+        "raised_date": "2026-05-04",
+        "severity": "escalated",
+        "text": "Legal turnaround may slip past May 22",
+        "why_it_matters": null
+      }
+    ]
+  },
+  "client_inbound": [],
+  "client_open_asks": [],
+  "client_outbound": [],
+  "decisions": [],
+  "definition_of_done": "_<short prose paragraph>_",
+  "deliverables": [
+    {
+      "position": 1,
+      "text": "_<top deliverable>_"
+    }
+  ],
+  "facts": {
+    "budget_short": "$45k",
+    "last_sprint_hours_line": "Drew 6.5h \u00b7 Tony 2h",
+    "last_touched_short": "2026-05-12",
+    "open_issues": 1,
+    "owner": "Drew",
+    "sessions_this_week": 3,
+    "stage": "Negotiation"
+  },
+  "horizon": [],
+  "meeting_notes": {
+    "attendees": null,
+    "decisions": [],
+    "discussion_prose": "",
+    "duration": null,
+    "source": null
+  },
+  "prior_sprint": "2026-W19",
+  "project_code": "peb-5100",
+  "risks": [],
+  "stakeholders": [],
+  "week_end": "2026-05-17",
+  "week_iso": "2026-W20",
+  "week_start": "2026-05-11",
+  "where_it_stands": {
+    "last_session_date": null,
+    "last_session_summary": null,
+    "last_session_who": null,
+    "open_tracked_issues": [],
+    "recent_commits": []
+  }
+}
