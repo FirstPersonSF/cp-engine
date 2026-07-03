@@ -24,6 +24,7 @@ htmlcov/
 dist/
 build/
 .venv/
+.venv-webhook/
 .uv-cache/
 
 # Tooling
