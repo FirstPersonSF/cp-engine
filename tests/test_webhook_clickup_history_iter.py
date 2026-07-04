@@ -27,6 +27,9 @@ if str(_WEBHOOK) not in sys.path:
 from fastapi.testclient import TestClient
 
 import main as webhook_main
+from routers import integrations as integrations_router
+import git_ops
+import pipeline
 
 
 @pytest.fixture
@@ -45,17 +48,14 @@ def _wire_close_pipeline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     drive the endpoint with minimal scaffolding."""
     monkeypatch.setenv("CLICKUP_WEBHOOK_SECRET", "test-secret")
     monkeypatch.setattr(
-        webhook_main,
+        integrations_router,
         "_lookup_proposal_by_clickup_task_id",
         lambda tid: ("abc12345", "ggl-5168"),
     )
-    monkeypatch.setattr(
-        webhook_main, "_commit_clickup_close",
+    monkeypatch.setattr(git_ops, "_commit_clickup_close",
         lambda **kw: "deadbeef",
     )
-    monkeypatch.setattr(
-        webhook_main,
-        "execute_plan",
+    monkeypatch.setattr(integrations_router, "execute_plan",
         lambda plan, **kw: type(
             "R", (), {"files_written": [tmp_path / "fake.md"], "errors": []}
         )(),
@@ -65,9 +65,8 @@ def _wire_close_pipeline(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> Non
     def _fake_clone():
         yield tmp_path
 
-    monkeypatch.setattr(webhook_main, "_cloned_tenant", _fake_clone)
-    monkeypatch.setattr(
-        webhook_main, "_load_tenant_config", lambda root: MagicMock(root=root)
+    monkeypatch.setattr(git_ops, "_cloned_tenant", _fake_clone)
+    monkeypatch.setattr(pipeline, "_load_tenant_config", lambda root: MagicMock(root=root)
     )
 
 

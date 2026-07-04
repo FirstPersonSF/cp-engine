@@ -27,7 +27,10 @@ if str(_WEBHOOK) not in sys.path:
 
 from fastapi.testclient import TestClient
 
-import main as webhook_main  # the module is `main.py`
+import main as webhook_main
+from routers import integrations as integrations_router
+import git_ops
+import pipeline  # the module is `main.py`
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -92,7 +95,7 @@ def test_clickup_task_closed_with_valid_payload_runs_close_ask(
     commits, returns 200 with code+commit_sha+ingested=True."""
     monkeypatch.setenv("CLICKUP_WEBHOOK_SECRET", "test-secret")
     monkeypatch.setattr(
-        webhook_main,
+        integrations_router,
         "_lookup_proposal_by_clickup_task_id",
         lambda tid: ("abc12345", "ggl-5168"),
     )
@@ -103,7 +106,7 @@ def test_clickup_task_closed_with_valid_payload_runs_close_ask(
         captured.update(code=code, cp_hash=cp_hash, tenant_root=tenant_root)
         return "deadbeef"
 
-    monkeypatch.setattr(webhook_main, "_commit_clickup_close", _fake_commit)
+    monkeypatch.setattr(git_ops, "_commit_clickup_close", _fake_commit)
 
     captured_plan: dict = {}
 
@@ -113,15 +116,14 @@ def test_clickup_task_closed_with_valid_payload_runs_close_ask(
             "R", (), {"files_written": [tmp_path / "fake.md"], "errors": []}
         )()
 
-    monkeypatch.setattr(webhook_main, "execute_plan", _fake_execute)
+    monkeypatch.setattr(integrations_router, "execute_plan", _fake_execute)
 
     @contextlib.contextmanager
     def _fake_clone():
         yield tmp_path
 
-    monkeypatch.setattr(webhook_main, "_cloned_tenant", _fake_clone)
-    monkeypatch.setattr(
-        webhook_main, "_load_tenant_config", lambda root: MagicMock(root=root)
+    monkeypatch.setattr(git_ops, "_cloned_tenant", _fake_clone)
+    monkeypatch.setattr(pipeline, "_load_tenant_config", lambda root: MagicMock(root=root)
     )
 
     body, sig = _signed_post(_closed_payload(task_id="abc123"))
@@ -241,7 +243,7 @@ def test_clickup_task_closed_orphan_task_id_returns_200_not_ingested(
     must be best-effort."""
     monkeypatch.setenv("CLICKUP_WEBHOOK_SECRET", "test-secret")
     monkeypatch.setattr(
-        webhook_main,
+        integrations_router,
         "_lookup_proposal_by_clickup_task_id",
         lambda tid: None,
     )
@@ -272,13 +274,11 @@ def test_clickup_task_closed_no_changes_returns_200_not_ingested(
     can stop retrying."""
     monkeypatch.setenv("CLICKUP_WEBHOOK_SECRET", "test-secret")
     monkeypatch.setattr(
-        webhook_main,
+        integrations_router,
         "_lookup_proposal_by_clickup_task_id",
         lambda tid: ("feedface", "ggl-5168"),
     )
-    monkeypatch.setattr(
-        webhook_main,
-        "execute_plan",
+    monkeypatch.setattr(integrations_router, "execute_plan",
         lambda plan, **kw: type(
             "R", (), {"files_written": [], "errors": []}
         )(),
@@ -288,9 +288,8 @@ def test_clickup_task_closed_no_changes_returns_200_not_ingested(
     def _fake_clone():
         yield tmp_path
 
-    monkeypatch.setattr(webhook_main, "_cloned_tenant", _fake_clone)
-    monkeypatch.setattr(
-        webhook_main, "_load_tenant_config", lambda root: MagicMock(root=root)
+    monkeypatch.setattr(git_ops, "_cloned_tenant", _fake_clone)
+    monkeypatch.setattr(pipeline, "_load_tenant_config", lambda root: MagicMock(root=root)
     )
 
     body, sig = _signed_post(_closed_payload())

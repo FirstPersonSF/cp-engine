@@ -26,6 +26,8 @@ if str(_WEBHOOK) not in sys.path:
 from fastapi.testclient import TestClient
 
 import main as webhook_main
+import git_ops
+import pipeline
 
 from cp_engine.estimate import Estimate, EstimateItem, EstimatePhase
 from cp_engine.spine_inbox import InboxCard
@@ -137,15 +139,15 @@ def _wire_happy(monkeypatch, tmp_path: Path, *, card=None, estimate=None,
 
     monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
 
-    monkeypatch.setattr(webhook_main, "_cloned_tenant",
+    monkeypatch.setattr(git_ops, "_cloned_tenant",
                         lambda: _fake_clone(tmp_path))
 
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
     rec["client"] = sb
 
     cfg = type("Cfg", (), {"root": tmp_path})()
-    monkeypatch.setattr(webhook_main, "_load_tenant_config", lambda root: cfg)
+    monkeypatch.setattr(pipeline, "_load_tenant_config", lambda root: cfg)
 
     monkeypatch.setattr("cp_engine.spine_inbox.load_card",
                         lambda c, cid: card)
@@ -185,7 +187,7 @@ def _wire_happy(monkeypatch, tmp_path: Path, *, card=None, estimate=None,
             version_label=version_label, rel_path=rel_path,
         )
         return sha
-    monkeypatch.setattr(webhook_main, "_commit_and_push_promote", fake_commit)
+    monkeypatch.setattr(git_ops, "_commit_and_push_promote", fake_commit)
 
     return rec
 
@@ -377,7 +379,7 @@ def test_promote_push_failure_does_not_flip_card(monkeypatch, client, tmp_path):
 
     def boom(**kw):
         raise RuntimeError("git push rejected")
-    monkeypatch.setattr(webhook_main, "_commit_and_push_promote", boom)
+    monkeypatch.setattr(git_ops, "_commit_and_push_promote", boom)
 
     # An unhandled error in the endpoint surfaces as a 500; tell the test client
     # not to re-raise it so we can assert on the response + the DB side effects.

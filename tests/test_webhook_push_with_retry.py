@@ -23,7 +23,8 @@ _WEBHOOK = Path(__file__).resolve().parent.parent / "webhook"
 if str(_WEBHOOK) not in sys.path:
     sys.path.insert(0, str(_WEBHOOK))
 
-import main as webhook_main
+import main as webhook_main  # noqa: F401 — path shim side effect
+import git_ops
 
 
 def _result(returncode: int = 0, stdout: str = "", stderr: str = "") -> MagicMock:
@@ -38,9 +39,9 @@ def _result(returncode: int = 0, stdout: str = "", stderr: str = "") -> MagicMoc
 
 def test_push_succeeds_first_try(tmp_path: Path) -> None:
     """No rebase loop: a single successful push returns immediately."""
-    with patch.object(webhook_main.subprocess, "run") as run:
+    with patch.object(git_ops.subprocess, "run") as run:
         run.return_value = _result(returncode=0)
-        webhook_main._push_with_retry(tmp_path, target_branch="main", env={})
+        git_ops._push_with_retry(tmp_path, target_branch="main", env={})
     assert run.call_count == 1
     args = run.call_args_list[0].args[0]
     assert args == ["git", "push", "origin", "main"]
@@ -55,9 +56,9 @@ def test_push_retries_after_non_fast_forward(tmp_path: Path) -> None:
     rebase_ok = _result(returncode=0)
     push_ok = _result(returncode=0)
 
-    with patch.object(webhook_main.subprocess, "run") as run:
+    with patch.object(git_ops.subprocess, "run") as run:
         run.side_effect = [push_reject, rebase_ok, push_ok]
-        webhook_main._push_with_retry(tmp_path, target_branch="main", env={})
+        git_ops._push_with_retry(tmp_path, target_branch="main", env={})
 
     assert run.call_count == 3
     cmds = [c.args[0] for c in run.call_args_list]
@@ -74,7 +75,7 @@ def test_push_gives_up_after_max_attempts(tmp_path: Path) -> None:
     )
     rebase_ok = _result(returncode=0)
 
-    with patch.object(webhook_main.subprocess, "run") as run:
+    with patch.object(git_ops.subprocess, "run") as run:
         # attempt 1: push reject -> rebase ok
         # attempt 2: push reject -> rebase ok
         # attempt 3: push reject -> give up
@@ -84,7 +85,7 @@ def test_push_gives_up_after_max_attempts(tmp_path: Path) -> None:
             push_reject,
         ]
         with pytest.raises(subprocess.CalledProcessError):
-            webhook_main._push_with_retry(tmp_path, target_branch="main", env={})
+            git_ops._push_with_retry(tmp_path, target_branch="main", env={})
 
     assert run.call_count == 5
 
@@ -100,10 +101,10 @@ def test_push_aborts_rebase_on_conflict_and_raises(tmp_path: Path) -> None:
         stderr="CONFLICT (content): Merge conflict in sprints/2026-W22/ggl-5168.md",
     )
 
-    with patch.object(webhook_main.subprocess, "run") as run:
+    with patch.object(git_ops.subprocess, "run") as run:
         run.side_effect = [push_reject, rebase_fail, _result(returncode=0)]
         with pytest.raises(subprocess.CalledProcessError):
-            webhook_main._push_with_retry(tmp_path, target_branch="main", env={})
+            git_ops._push_with_retry(tmp_path, target_branch="main", env={})
 
     # 1 push, 1 rebase, 1 abort. NOT a second push attempt.
     cmds = [c.args[0] for c in run.call_args_list]
@@ -122,10 +123,10 @@ def test_push_non_recoverable_error_raises_without_rebase(tmp_path: Path) -> Non
         stderr="ERROR: Permission to FirstPersonSF/cp.git denied to deploy key.",
     )
 
-    with patch.object(webhook_main.subprocess, "run") as run:
+    with patch.object(git_ops.subprocess, "run") as run:
         run.side_effect = [push_auth_fail]
         with pytest.raises(subprocess.CalledProcessError):
-            webhook_main._push_with_retry(tmp_path, target_branch="main", env={})
+            git_ops._push_with_retry(tmp_path, target_branch="main", env={})
 
     assert run.call_count == 1  # no rebase attempted
 
@@ -151,10 +152,10 @@ def test_push_auth_failure_with_rejected_word_does_not_retry(tmp_path: Path) -> 
         ),
     )
 
-    with patch.object(webhook_main.subprocess, "run") as run:
+    with patch.object(git_ops.subprocess, "run") as run:
         run.side_effect = [push_auth_fail]
         with pytest.raises(subprocess.CalledProcessError):
-            webhook_main._push_with_retry(tmp_path, target_branch="main", env={})
+            git_ops._push_with_retry(tmp_path, target_branch="main", env={})
 
     # ONE push attempt, NO rebase, NO retry. The bug would have produced
     # 5 calls (push, rebase, push, rebase, push).
@@ -185,11 +186,11 @@ def test_push_warns_when_rebase_abort_itself_fails(
 
     import logging
 
-    with patch.object(webhook_main.subprocess, "run") as run:
+    with patch.object(git_ops.subprocess, "run") as run:
         run.side_effect = [push_reject, rebase_fail, abort_fail]
         with caplog.at_level(logging.WARNING, logger="cp-engine-webhook"):
             with pytest.raises(subprocess.CalledProcessError):
-                webhook_main._push_with_retry(
+                git_ops._push_with_retry(
                     tmp_path, target_branch="main", env={}
                 )
 

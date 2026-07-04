@@ -18,7 +18,8 @@ _WEBHOOK = Path(__file__).resolve().parent.parent / "webhook"
 if str(_WEBHOOK) not in sys.path:
     sys.path.insert(0, str(_WEBHOOK))
 
-import main as webhook_main  # the module is `main.py`
+import main as webhook_main
+import pipeline  # the module is `main.py`
 
 
 class _FakeTable:
@@ -87,7 +88,7 @@ def test_inbox_card_skipped_when_no_source_ref(tmp_path: Path) -> None:
 def test_inbox_card_skipped_when_no_supabase(tmp_path: Path, monkeypatch) -> None:
     tp = tmp_path / "t.md"
     tp.write_text("transcript")
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: None)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: None)
     status = webhook_main._append_inbox_card(
         code="ibx-5153", transcript_path=tp, meeting_id="mtg-1",
     )
@@ -103,7 +104,7 @@ def test_inbox_card_proposed_happy_path(tmp_path: Path, monkeypatch) -> None:
     tp.write_text("We discussed the messaging system.")
 
     client = _FakeClient()
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: client)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: client)
 
     folders = type("F", (), {"project_id": "u-123"})()
     monkeypatch.setattr(
@@ -145,7 +146,7 @@ def test_inbox_card_never_raises_on_unresolvable_project(
 
     tp = tmp_path / "t.md"
     tp.write_text("transcript")
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: _FakeClient())
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: _FakeClient())
     monkeypatch.setattr(
         asset_ingest, "resolve_project_folders", lambda c, code: None
     )
@@ -174,7 +175,7 @@ def test_inbox_card_skipped_when_disabled_by_env(
     def must_not_distill(prompt, *, model, api_key=None):
         raise AssertionError("kill-switch did not short-circuit: distiller called")
 
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", must_not_call_client)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", must_not_call_client)
     monkeypatch.setattr(pft, "_call_claude", must_not_distill)
 
     monkeypatch.setenv("SPINE_INBOX_ENABLED", "0")
@@ -198,7 +199,7 @@ def test_inbox_card_enabled_by_default(tmp_path: Path, monkeypatch) -> None:
         called["client"] = True
         return None
 
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", client_factory)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", client_factory)
     status = webhook_main._append_inbox_card(
         code="ibx-5153", transcript_path=tp, meeting_id="mtg-1",
     )
@@ -214,7 +215,7 @@ def test_inbox_card_never_raises_on_distiller_error(
 
     tp = tmp_path / "t.md"
     tp.write_text("transcript")
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: _FakeClient())
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: _FakeClient())
     monkeypatch.setattr(
         asset_ingest, "resolve_project_folders",
         lambda c, code: type("F", (), {"project_id": "u1"})(),

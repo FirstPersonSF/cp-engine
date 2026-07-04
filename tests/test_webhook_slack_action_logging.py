@@ -24,6 +24,8 @@ if str(_WEBHOOK) not in sys.path:
     sys.path.insert(0, str(_WEBHOOK))
 
 import main as webhook_main
+from routers import slack as slack_router
+import pipeline
 
 
 def test_block_action_logs_spawn_with_correlation_fields(
@@ -43,8 +45,7 @@ def test_block_action_logs_spawn_with_correlation_fields(
         "message": {},
     }
     # Don't actually spawn the background coroutine.
-    monkeypatch.setattr(
-        webhook_main, "_spawn_background", lambda coro: coro.close()
+    monkeypatch.setattr(pipeline, "_spawn_background", lambda coro: coro.close()
     )
 
     with caplog.at_level(logging.INFO, logger="cp-engine-webhook"):
@@ -82,8 +83,7 @@ def test_view_submission_logs_spawn(
             }},
         },
     }
-    monkeypatch.setattr(
-        webhook_main, "_spawn_background", lambda coro: coro.close()
+    monkeypatch.setattr(pipeline, "_spawn_background", lambda coro: coro.close()
     )
 
     with caplog.at_level(logging.INFO, logger="cp-engine-webhook"):
@@ -104,9 +104,7 @@ def test_run_action_logs_completion_success(
     """After the plan runs, log `slack_action_complete` with committed,
     commit_sha (short), and errors count — enough to correlate with the
     spawn line and decide whether to replay."""
-    monkeypatch.setattr(
-        webhook_main,
-        "_run_plan_for_one_item",
+    monkeypatch.setattr(slack_router, "_run_plan_for_one_item",
         lambda **kw: {
             "committed": True,
             "commit_sha": "deadbeef12345678",
@@ -114,8 +112,7 @@ def test_run_action_logs_completion_success(
         },
     )
     # _post_response_url_update writes to Slack; stub it out.
-    monkeypatch.setattr(
-        webhook_main, "_post_response_url_update", lambda **kw: None
+    monkeypatch.setattr(slack_router, "_post_response_url_update", lambda **kw: None
     )
 
     with caplog.at_level(logging.INFO, logger="cp-engine-webhook"):
@@ -150,9 +147,8 @@ def test_run_action_logs_completion_failure(
     def boom(**_kw):
         raise RuntimeError("git push failed")
 
-    monkeypatch.setattr(webhook_main, "_run_plan_for_one_item", boom)
-    monkeypatch.setattr(
-        webhook_main, "_post_response_url_update", lambda **kw: None
+    monkeypatch.setattr(slack_router, "_run_plan_for_one_item", boom)
+    monkeypatch.setattr(slack_router, "_post_response_url_update", lambda **kw: None
     )
 
     with caplog.at_level(logging.INFO, logger="cp-engine-webhook"):
