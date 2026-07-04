@@ -4,6 +4,31 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.49.0 — 2026-07-03
+
+### MC-2 integration ids resolve from project_integrations bindings (read-flip)
+
+- New `mc2_bindings` module: batch-fetch a project's/initiative's
+  `project_integrations` rows and hydrate the legacy dict keys
+  (`slack_channel_id`/`slack_channel_ids`, `clickup_list_id`,
+  `google_drive_folder_id`, `mc_dropbox_folder_id`) from the normalized
+  `external_ref` bindings. MC-2's flat integration columns are being
+  retired (mc-2 PR #146 is the mc-2-side read-flip); cp-engine no longer
+  selects them anywhere:
+  - **ClickUp routing** (`clickup_routing.resolve_clickup_project`) — list
+    ids come from the owner's `''` clickup binding. Covers ingest
+    set-milestone / set-client-ask-task, prep-planning ClickUp allocation,
+    and the webhook's clickup-propose via their existing wrappers.
+  - **Slack channel map** (`cp slack-channels`, weekly digest) — channel
+    ids come from slack bindings: the `''` singleton is the primary,
+    labeled rows are related channels. `slack_channel_name` was never
+    populated in MC-2 and is now always `None` on `ChannelMapRow`.
+  - **Asset ingest** — Drive folder id and Dropbox folder path hydrate
+    from the `google_drive` / `dropbox` bindings.
+- Ship THIS version everywhere (webhook + local CLIs) before MC-2's
+  Phase-C migration drops the flat columns — older engines still SELECT
+  those columns and will 500 against a post-drop schema.
+
 ## v0.48.1 — 2026-07-03
 
 ### spine_substance column guard — writer identity (mc-2 #130)
