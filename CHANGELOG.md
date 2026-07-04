@@ -4,6 +4,38 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.46.0 — 2026-07-03
+
+### Architecture Phase 3: DAL + observability (issues #26–#28)
+
+**Golden-markdown tests** (#26, PR #29). Byte-exact golden fixtures for
+`render.py` and `sprints.py` outputs (`UPDATE_GOLDENS=1` to regenerate),
+plus first coverage for `plan_from_account_meeting.py`. 45 new tests.
+
+**Supabase DAL — `cp_engine.mc2_db`** (#27, PR #30). One client
+constructor (`get_client`) replaces 15 divergent construction sites;
+3-tier credential resolution (env → 1Password `op://` → mc-2
+`backend/.env`) moved from `sync_mc2` with a resolved-creds memo (one
+`op read` per process, not per query); `required=False` fail-soft logs
+what it swallows. `Tables` registry names every MC-2 table (17 public +
+5 estimator); no raw `.table("...")` literal remains in `src/` or
+`webhook/`, enforced permanently by a test. Column-set constants
+consolidated; typed row mappers where adopted. Fixed along the way: the
+asset-ingest pipeline branch called a deleted helper (`NameError` on
+real, non-injected runs).
+
+**Webhook observability + self-heal consolidation** (#28, PR #31).
+Sentry on the webhook — env-gated on `SENTRY_DSN`, no-op otherwise;
+14 formerly-silent swallow-and-continue sites now alert. A correlation
+id per delivery (honors `X-Correlation-ID`) flows through every log
+line (`[cid:...]`), pushed commit messages (`Correlation-Id:` trailer),
+the `auto_ingest_runs` row (new `correlation_id` column, applied via
+the mc-2 migration ledger; insert is column-tolerant either way), and
+Sentry tags — one grep reconstructs one delivery end-to-end. The
+plugin's SessionStart self-heal hook now defers inside any tenant
+(ancestor `.cp-engine.toml`) so the tenant pin is the single version
+truth; the two hooks can no longer disagree.
+
 ## v0.45.1 — 2026-07-03
 
 ### promote_card stamps `layer` from the card's kind
