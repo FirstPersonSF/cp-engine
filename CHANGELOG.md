@@ -4,6 +4,23 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.50.1 — 2026-07-04
+
+### Account / sprint-planning ingest: transcript cap, model, timeout
+
+- Transcript ceiling for account + sprint-planning plan generation raised
+  60k → 400k chars. The old cap sat exactly at a one-hour meeting's
+  length, silently cutting the END of longer 1P sprint-planning sessions
+  — the projects discussed last got nothing routed. Truncation (now
+  effectively unreachable) logs a warning instead of being invisible.
+- Both multi-project plan generators default to `claude-opus-4-8`
+  (was `claude-opus-4-7`) — the 1P scope is the hardest routing job the
+  pipeline has (~20 projects in one call). Other model pins untouched
+  (incl. project_sources' explicit do-NOT-bump pin).
+- `_call_claude` gains a `timeout` param (default 120s unchanged);
+  account/sprint-planning callers pass 300s — their prompts are ~6× larger
+  now and their responses routinely 8k+ tokens.
+
 ## v0.50.0 — 2026-07-04
 
 ### Sprint-planning accuracy: MC-2 schedule milestones, freshness verdicts, decision ages

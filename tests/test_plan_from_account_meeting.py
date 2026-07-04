@@ -88,7 +88,8 @@ def _stub_backend(monkeypatch: pytest.MonkeyPatch, projects: list[ProjectState])
 
 
 def _stub_claude(monkeypatch: pytest.MonkeyPatch, yaml_body: str) -> None:
-    def fake_call_claude(prompt: str, *, model: str, api_key: str | None) -> str:
+    def fake_call_claude(prompt: str, *, model: str, api_key: str | None,
+                         timeout: float = 120) -> str:
         return f"```yaml\n{yaml_body}\n```"
 
     monkeypatch.setattr(
@@ -398,7 +399,8 @@ def test_generate_account_plan_truncates_long_transcript(
 ) -> None:
     seen: dict[str, str] = {}
 
-    def fake_call_claude(prompt: str, *, model: str, api_key: str | None) -> str:
+    def fake_call_claude(prompt: str, *, model: str, api_key: str | None,
+                         timeout: float = 120) -> str:
         seen["prompt"] = prompt
         return f"```yaml\n{_VALID_PLAN_YAML}\n```"
 
@@ -409,7 +411,9 @@ def test_generate_account_plan_truncates_long_transcript(
         config=make_tenant(tmp_path),
         company_code="GGL",
         meeting_id="mtg-1",
-        transcript_text="x" * 70_000,
+        # Cap is 400k chars now (a one-hour meeting is ~60k — the old 60k
+        # cap silently cut real sprint-planning meetings).
+        transcript_text="x" * 450_000,
         active_projects=[make_project("ggl-5168", "Playbooks")],
         week_iso="2026-W20",
     )

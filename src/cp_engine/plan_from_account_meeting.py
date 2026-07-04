@@ -22,6 +22,7 @@ import os
 import re
 from dataclasses import dataclass
 from datetime import datetime
+import logging
 from pathlib import Path
 
 import yaml
@@ -39,12 +40,34 @@ from cp_engine.plan_from_transcript import (
 from cp_engine.sprints import current_sprint_week_iso
 from cp_engine.state import ProjectState
 
+log = logging.getLogger(__name__)
+
 # Conservative ceiling for the multi-project context block. Each project's
 # cp.md gets a hard truncation; we don't try to fit ALL sprint files in
 # the prompt (they'd blow past Anthropic's context for an account with
 # 6+ active projects).
 _MAX_PER_PROJECT_CP_CHARS = 2500
-_MAX_TRANSCRIPT_CHARS = 60_000
+# Transcript ceiling: ~100k tokens — far past any real meeting. The old
+# 60k-char cap sat exactly at a one-hour meeting's length, silently cutting
+# the END of longer 1P sprint-planning sessions — the projects discussed
+# last got nothing routed. Truncation (now effectively unreachable) logs a
+# warning instead of being invisible.
+_MAX_TRANSCRIPT_CHARS = 400_000
+
+
+def _truncate_transcript(transcript_text: str, *, context: str) -> str:
+    """Cap the transcript at _MAX_TRANSCRIPT_CHARS, loudly."""
+    if len(transcript_text) <= _MAX_TRANSCRIPT_CHARS:
+        return transcript_text
+    log.warning(
+        "%s: transcript truncated %d -> %d chars — content near the end "
+        "of the meeting will NOT be routed",
+        context, len(transcript_text), _MAX_TRANSCRIPT_CHARS,
+    )
+    return (
+        transcript_text[:_MAX_TRANSCRIPT_CHARS]
+        + "\n\n[... transcript truncated ...]\n"
+    )
 
 
 class AccountPlanError(Exception):
@@ -69,7 +92,7 @@ def generate_account_plan(
     transcript_text: str,
     active_projects: list[ProjectState],
     week_iso: str | None = None,
-    model: str = "claude-opus-4-7",
+    model: str = "claude-opus-4-8",
     api_key: str | None = None,
 ) -> GeneratedAccountPlan:
     """Generate the account-meeting plan via one Claude call.
@@ -90,13 +113,8 @@ def generate_account_plan(
 
     week = week_iso or current_sprint_week_iso(datetime.now())
 
-    # Truncate transcript at the same cap as plan_from_transcript so a
-    # large account meeting doesn't blow the prompt budget.
-    transcript = (
-        transcript_text
-        if len(transcript_text) <= _MAX_TRANSCRIPT_CHARS
-        else transcript_text[:_MAX_TRANSCRIPT_CHARS]
-        + "\n\n[... transcript truncated ...]\n"
+    transcript = _truncate_transcript(
+        transcript_text, context=f"account-plan {company_code}"
     )
 
     project_block = _format_active_projects(config, active_projects)
@@ -112,7 +130,9 @@ def generate_account_plan(
         team=config.team,
     )
 
-    response_text = _call_claude(prompt, model=model, api_key=api_key)
+    response_text = _call_claude(
+        prompt, model=model, api_key=api_key, timeout=300
+    )
     yaml_text = _extract_yaml(response_text)
 
     try:
@@ -531,7 +551,7 @@ def generate_sprint_planning_plan(
     transcript_text: str,
     active_projects: list[ProjectState],
     week_iso: str | None = None,
-    model: str = "claude-opus-4-7",
+    model: str = "claude-opus-4-8",
     api_key: str | None = None,
 ) -> GeneratedAccountPlan:
     """Generate a sprint-planning plan via one Claude call.
@@ -557,11 +577,8 @@ def generate_sprint_planning_plan(
     pseudo_company = _SCOPE_TO_PSEUDO_COMPANY[scope]
     scope_label = _SCOPE_LABEL[scope]
 
-    transcript = (
-        transcript_text
-        if len(transcript_text) <= _MAX_TRANSCRIPT_CHARS
-        else transcript_text[:_MAX_TRANSCRIPT_CHARS]
-        + "\n\n[... transcript truncated ...]\n"
+    transcript = _truncate_transcript(
+        transcript_text, context=f"sprint-planning {scope}"
     )
 
     project_block = _format_active_projects(config, active_projects)
@@ -577,7 +594,9 @@ def generate_sprint_planning_plan(
         team=config.team,
     )
 
-    response_text = _call_claude(prompt, model=model, api_key=api_key)
+    response_text = _call_claude(
+        prompt, model=model, api_key=api_key, timeout=300
+    )
     yaml_text = _extract_yaml(response_text)
 
     try:
