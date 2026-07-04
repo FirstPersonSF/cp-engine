@@ -149,7 +149,7 @@ def test_cli_spine_empty_mc2_does_not_fall_back_to_disk(tmp_path, monkeypatch) -
     fall through to disk and mask it. No unverified banner; no disk content."""
     _tenant_with_ibx(tmp_path)
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr("cp_engine.sync_mc2.MC2Backend.connect", lambda self, cfg: object())
+    monkeypatch.setattr("cp_engine.mc2_db.get_client", lambda config=None, **kw: object())
     monkeypatch.setattr("cp_engine.spine.load_spine_from_mc2", lambda client, code: ())
     result = CliRunner().invoke(main, ["spine", "ibx-5153"])
     assert result.exit_code == 0, result.output
@@ -179,7 +179,7 @@ def test_cli_spine_prefers_mc2_rows(tmp_path, monkeypatch) -> None:
             ),
         )
 
-    monkeypatch.setattr("cp_engine.sync_mc2.MC2Backend.connect", lambda self, cfg: object())
+    monkeypatch.setattr("cp_engine.mc2_db.get_client", lambda config=None, **kw: object())
     monkeypatch.setattr("cp_engine.spine.load_spine_from_mc2", _fake_load_from_mc2)
     result = CliRunner().invoke(main, ["spine", "ibx-5153"])
     assert result.exit_code == 0, result.output
@@ -209,7 +209,7 @@ def test_cli_spine_shows_source_documents_facet(tmp_path, monkeypatch) -> None:
             ),
         )
 
-    monkeypatch.setattr("cp_engine.sync_mc2.MC2Backend.connect", lambda self, cfg: object())
+    monkeypatch.setattr("cp_engine.mc2_db.get_client", lambda config=None, **kw: object())
     monkeypatch.setattr("cp_engine.spine.load_spine_from_mc2", _fake_load_from_mc2)
     monkeypatch.setattr(
         "cp_engine.cli.fetch_project_assets",

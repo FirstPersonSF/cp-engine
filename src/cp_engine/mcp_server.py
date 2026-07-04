@@ -67,10 +67,10 @@ def _resolve(project_code: str):
     """
     from cp_engine.asset_ingest import resolve_project_folders_by_id
     from cp_engine.config import load as load_config
-    from cp_engine.sync_mc2 import MC2Backend
+    from cp_engine import mc2_db
 
     config = load_config(_tenant_root())
-    client = MC2Backend().connect(config)
+    client = mc2_db.get_client(config)
 
     project_id = _resolve_project_id(client, project_code)
     if project_id is None:

@@ -653,8 +653,7 @@ def test_resolve_initiative_tolerates_missing_folders(monkeypatch):
         "cp_engine.config.load", lambda root: object()
     )
     monkeypatch.setattr(
-        "cp_engine.sync_mc2.MC2Backend",
-        lambda: type("B", (), {"connect": lambda self, cfg: fake_client})(),
+        "cp_engine.mc2_db.get_client", lambda config=None, **kw: fake_client
     )
     monkeypatch.setattr(srv, "_resolve_project_id", lambda client, code: "init-mc")
     # initiative id has no project row → folders resolve to None

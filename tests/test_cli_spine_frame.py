@@ -75,7 +75,7 @@ def test_spine_frame_promotes_and_prints_path(tmp_path, monkeypatch):
 
     # MC-2 connect → our fake client.
     monkeypatch.setattr(
-        "cp_engine.sync_mc2.MC2Backend.connect", lambda self, config: client
+        "cp_engine.mc2_db.get_client", lambda config=None, **kw: client
     )
 
     # Estimate resolves the item name + phase.
@@ -129,7 +129,7 @@ def test_spine_frame_errors_on_missing_card(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     client = _FakeClient({"spine_inbox": []})
     monkeypatch.setattr(
-        "cp_engine.sync_mc2.MC2Backend.connect", lambda self, config: client
+        "cp_engine.mc2_db.get_client", lambda config=None, **kw: client
     )
     runner = CliRunner()
     result = runner.invoke(

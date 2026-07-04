@@ -977,12 +977,10 @@ def _run_project_sweep(
         elements: tuple = ()
         client = supabase_client
         if client is None:
-            try:
-                from cp_engine.sync_mc2 import MC2Backend
+            from cp_engine import mc2_db
 
-                client = MC2Backend().connect(config)
-            except Exception:  # noqa: BLE001 — offline / no creds → disk path
-                client = None
+            # offline / no creds → None → disk path (fail-soft by contract)
+            client = mc2_db.get_client(config, required=False)
         if client is not None:
             try:
                 elements = load_spine_from_mc2(client, project.code)
