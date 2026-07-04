@@ -86,11 +86,22 @@ from cp_engine.spine import SpineDirNotFound, find_spine_dir
 from cp_engine import mc2_db
 from cp_engine.mc2_db import Tables
 
+import observability
 from clickup_propose import propose_clickup_tasks
 from meeting_artifact import write_meeting_artifacts
 
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+# [cid:...] is the per-delivery correlation id (observability.py). "-" outside
+# a request context (startup, background tasks spawned without one).
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [cid:%(cid)s] %(message)s",
+)
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(observability.CorrelationIdFilter())
 log = logging.getLogger("cp-engine-webhook")
+
+# Error alerting (issue #28): strict no-op without SENTRY_DSN in the env.
+observability.init_sentry(release=cp_engine.__version__)
 
 # The Anthropic model used for spine-inbox distillation. Derived from
 # generate_plan's own default so this webhook never drifts from the engine's
@@ -142,6 +153,23 @@ def _create_supabase_client():
 
 
 app = FastAPI(title="cp-engine-webhook", version=cp_engine.__version__)
+
+
+@app.middleware("http")
+async def _correlation_id_middleware(request: Request, call_next):
+    """One correlation id per delivery, set before any handler code runs.
+
+    Honors an incoming ``X-Correlation-ID`` (fathom-meeting-sync can
+    originate the id and grep both services' logs with it); generates a
+    short unique id otherwise. Echoed back in the response header and
+    tagged onto Sentry's per-request scope so unhandled route exceptions
+    carry it too.
+    """
+    cid = observability.new_correlation_id(request.headers.get("x-correlation-id"))
+    observability.tag_request_scope()
+    response = await call_next(request)
+    response.headers["X-Correlation-ID"] = cid
+    return response
 
 
 @app.get("/health")
@@ -565,6 +593,7 @@ async def spine_promote(request: Request) -> dict:
                 "(markdown + push will still land): %s",
                 card.project_code, exc,
             )
+            observability.capture(exc, area="spine_promote_mirror")
             mirrored = False
 
         # The push IS the commit point — succeeding here means the version is
@@ -595,6 +624,7 @@ async def spine_promote(request: Request) -> dict:
             "un-promoted and a retry will re-distill a duplicate version: %s",
             card_id, commit_sha[:8], exc,
         )
+        observability.capture(exc, area="spine_promote_card_flip")
         card_flipped = False
 
     log.info(
@@ -672,6 +702,7 @@ async def _run_asset_ingest(
         _asset_runs_table(client).update(patch).eq("id", run_id).execute()
     except Exception as exc:  # noqa: BLE001 — record the whole-run failure, never crash the task
         log.warning("asset-ingest run %s failed: %s", run_id, exc, exc_info=True)
+        observability.capture(exc, area="asset_ingest_run")
         try:
             # Rebuild a fresh client rather than reuse `client`: the original may be
             # the thing that failed (transient supabase/network error), so we record
@@ -844,6 +875,7 @@ async def _run_promote(
         _spine_promote_runs_table(client).update(patch).eq("id", run_id).execute()
     except Exception as exc:  # noqa: BLE001 — record the failure, never crash the task
         log.warning("spine-promote run %s failed: %s", run_id, exc, exc_info=True)
+        observability.capture(exc, area="spine_promote_run")
         try:
             # Fresh client on the failure path: the original may be the thing
             # that failed (transient supabase/network error).
@@ -1011,6 +1043,7 @@ async def _run_meeting_promote(
             "meeting-promote: recording_id=%s run failed: %s",
             recording_id, exc, exc_info=True,
         )
+        observability.capture(exc, area="meeting_promote_run")
 
 
 @app.post("/api/meetings/promote-transcript")
@@ -1141,6 +1174,7 @@ async def _run_meeting_synthesize(
     except Exception as exc:  # noqa: BLE001 — never crash the background task
         log.warning("meeting-synthesize: recording_id=%s run failed: %s",
                     recording_id, exc, exc_info=True)
+        observability.capture(exc, area="meeting_synthesize_run")
 
 
 def _transcript_segments_for_service(meeting_row: dict) -> list | None:
@@ -1290,6 +1324,7 @@ def _link_meeting_safe(client, meeting, supabase_url, supabase_key):
     except Exception as exc:  # noqa: BLE001 — never block primary ingest
         log.warning("meeting-link failed (non-fatal): meeting=%s err=%s",
                     meeting.get("recording_id"), exc, exc_info=True)
+        observability.capture(exc, area="meeting_link")
         return None
 
 
@@ -1374,11 +1409,12 @@ def _perform_auto_ingest(
                         transcript_text,
                     )
                     transcript_persisted = True
-                except Exception:  # noqa: BLE001 — never break auto-ingest
+                except Exception as exc:  # noqa: BLE001 — never break auto-ingest
                     log.warning(
                         "transcript-persist failed for %s (meeting %s)",
                         code, meeting_id, exc_info=True,
                     )
+                    observability.capture(exc, area="transcript_persist")
 
             # Record per-entry whether a transcript landed so the commit
             # message can attribute a transcript-only commit and a result
@@ -2429,6 +2465,7 @@ async def _run_action_in_background(
         log.exception(
             "slack-action background failed: %s/%s/%s", verb, code, cp_hash
         )
+        observability.capture(exc, area="slack_action_background")
         result = {"committed": False, "commit_sha": None, "errors": [str(exc)]}
 
     # Pairs with `slack_action_spawn` so postmortem can correlate spawns
@@ -2976,6 +3013,7 @@ def _commit_clickup_close(
     message = (
         f"[clickup-close] {code}: hash {cp_hash}\n\n"
         f"Generated by cp-engine-webhook v{cp_engine.__version__}.\n"
+        f"{_correlation_trailer()}"
     )
     subprocess.run(
         ["git", "commit", "-m", message],
@@ -3173,6 +3211,7 @@ def _append_retrospective(
         return "no-spine-dir"
     except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
         log.warning("retrospective: append failed for %s: %s", code, exc)
+        observability.capture(exc, area="retrospective_append")
         return "error"
 
 
@@ -3242,6 +3281,7 @@ def _append_inbox_card(
         return "proposed"
     except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
         log.warning("inbox: proposed-card write failed for %s: %s", code, exc)
+        observability.capture(exc, area="inbox_card_write")
         return "error"
 
 
@@ -3725,9 +3765,21 @@ def _commit_and_push(
         f"[auto-ingest] {codes}: meeting {meeting_id[:8]}\n\n"
         f"{body}\n\n"
         f"Generated by cp-engine-webhook v{cp_engine.__version__}.\n"
+        f"{_correlation_trailer()}"
     )
 
     return _commit_with_message_and_push(tenant_root, message)
+
+
+def _correlation_trailer() -> str:
+    """`Correlation-Id: <cid>` trailer line for pushed commit messages.
+
+    Lets `git log --grep 'Correlation-Id: <cid>'` on the tenant repo find
+    the commits one webhook delivery produced. Empty string outside a
+    request context so non-request callers don't grow a `Correlation-Id: -`.
+    """
+    cid = observability.current_correlation_id()
+    return f"Correlation-Id: {cid}\n" if cid else ""
 
 
 def _commit_and_push_promote(
@@ -3745,6 +3797,7 @@ def _commit_and_push_promote(
     message = (
         f"[spine-promote] {project_code}: {rel_path} {version_label}\n\n"
         f"Generated by cp-engine-webhook v{cp_engine.__version__}.\n"
+        f"{_correlation_trailer()}"
     )
     return _commit_with_message_and_push(tenant_root, message)
 
@@ -3780,6 +3833,7 @@ def _commit_meeting_artifacts(
             f"[auto-ingest] meeting artifacts: meeting {meeting_id[:8]}\n\n"
             f"Per-meeting synthesis + transcript for {len(rels)} file(s).\n"
             f"Generated by cp-engine-webhook v{cp_engine.__version__}.\n"
+            f"{_correlation_trailer()}"
         )
         subprocess.run(
             ["git", "commit", "-m", message], cwd=tenant_root, check=True, env=env
@@ -3798,6 +3852,7 @@ def _commit_meeting_artifacts(
         log.warning(
             "meeting-artifact: commit failed for meeting=%s: %s", meeting_id, exc
         )
+        observability.capture(exc, area="meeting_artifact_commit")
         return None
 
 
@@ -3844,6 +3899,7 @@ def _generate_meeting_artifacts(
             summary["commit_sha"] = sha
     except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
         log.warning("meeting-artifact: generation step failed: %s", exc)
+        observability.capture(exc, area="meeting_artifact_generation")
     return summary
 
 
@@ -3971,17 +4027,32 @@ def _log_run_to_supabase(
         for err in entry.get("errors") or []:
             errors_flat.append(f"{entry['code']}: {err}")
 
+    row = {
+        "meeting_id": meeting_id,
+        "project_codes": project_codes,
+        "status": status,
+        "plan_summary": plan_summary,
+        "commit_sha": commit_sha,
+        "errors": errors_flat or None,
+    }
+    cid = observability.current_correlation_id()
+    if cid:
+        row["correlation_id"] = cid
     try:
-        client.table(Tables.AUTO_INGEST_RUNS).insert({
-            "meeting_id": meeting_id,
-            "project_codes": project_codes,
-            "status": status,
-            "plan_summary": plan_summary,
-            "commit_sha": commit_sha,
-            "errors": errors_flat or None,
-        }).execute()
+        try:
+            client.table(Tables.AUTO_INGEST_RUNS).insert(row).execute()
+        except Exception as exc:  # noqa: BLE001 — column-tolerant retry below
+            # Pre-migration tolerance: until the `correlation_id` column
+            # lands in the shared DB (mc-2 ledger), a PostgREST unknown-
+            # column error must not cost us the whole run row.
+            if "correlation_id" in row and "correlation_id" in str(exc):
+                row.pop("correlation_id")
+                client.table(Tables.AUTO_INGEST_RUNS).insert(row).execute()
+            else:
+                raise
     except Exception as exc:  # noqa: BLE001 — observability must never throw
         log.warning("auto_ingest_runs insert failed for %s: %s", meeting_id, exc)
+        observability.capture(exc, area="auto_ingest_runs_insert")
 
 
 if __name__ == "__main__":

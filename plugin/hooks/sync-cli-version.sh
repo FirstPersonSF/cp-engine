@@ -22,6 +22,23 @@ set -uo pipefail
 PLUGIN_JSON="${CLAUDE_PLUGIN_ROOT}/plugin.json"
 REPO_URL="https://github.com/FirstPersonSF/cp-engine.git"
 
+# ── Tenant deferral (arch-phase-3, issue #28) ────────────────────────
+# Inside a cp tenant, the TENANT PIN (.cp-engine.toml [engine].version)
+# is the single truth source for the cp CLI version, enforced by the
+# tenant's own SessionStart hook (check-cp-engine-version.py, installed
+# by `cp sync`). Two hooks keyed off different truths (plugin version
+# vs tenant pin) can disagree and fight over the installed CLI — so
+# when a session starts anywhere under a tenant root, this hook defers
+# entirely. Outside a tenant there is no pin, and plugin-version
+# matching below remains the right (only) behavior.
+_dir="$PWD"
+while [ "$_dir" != "/" ] && [ -n "$_dir" ]; do
+    if [ -f "$_dir/.cp-engine.toml" ]; then
+        exit 0
+    fi
+    _dir=$(dirname "$_dir")
+done
+
 if [ ! -f "$PLUGIN_JSON" ]; then
     # Plugin is malformed; nothing we can do. Stay silent — surfacing
     # this on every session would be noise the user can't act on.
