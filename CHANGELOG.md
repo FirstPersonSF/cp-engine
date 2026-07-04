@@ -4,6 +4,26 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.48.0 — 2026-07-03
+
+### Sprint-planning pipeline fixes (#16 + assessment findings)
+
+- Bare `cp prep-planning` no longer renders the deprecated 426-line
+  inventory — it exits with a pointer to `--bundle` / `--summary`; the
+  dump moved behind an explicit `--legacy-render` with a provenance
+  stamp in its header.
+- Cross-cutting decisions parser rewritten: hash-marked auto-ingest
+  entries and date-only entries never matched the old end-of-line
+  regex, so planning docs carried a stale, arbitrary subset. The
+  28-day window now applies to everything; `--summary` reports
+  stale/undated counts.
+- Planning-week `sprint_allocations` now flow into the bundle and
+  summary (`tenant_hours_planned`, "Planned (this sprint)" strip) —
+  forward capacity, not just last week's actuals (#16).
+- `capacity_binding` reshaped to `{basis, owners}` — planned-hours
+  based (≥40h or ≥5 allocated projects, hours shown) when allocations
+  exist; owner-of-record fallback labeled as such.
+
 ## v0.47.0 — 2026-07-03
 
 ### Architecture Phase 4 (cp-engine portion): god-module splits + bypass retirement
