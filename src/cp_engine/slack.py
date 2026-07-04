@@ -113,6 +113,11 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
     sync — they're only relevant to this pipeline.
     """
     from cp_engine import mc2_db
+    from cp_engine.mc2_bindings import (
+        fetch_binding_rows,
+        hydrate_initiative_row,
+        hydrate_project_row,
+    )
     from cp_engine.sync_mc2 import _engagement_canonical_id
 
     client = mc2_db.get_client(config)
@@ -128,6 +133,15 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
         .data
         or []
     )
+    # Channel ids live in project_integrations bindings (read-flip): the ''
+    # singleton is the primary channel, labeled rows are related channels.
+    # One batch fetch, then overlay the legacy slack keys onto each row.
+    project_bindings = fetch_binding_rows(
+        client.schema("public"),
+        project_ids=[r["id"] for r in engagement_rows if r.get("id")],
+    )
+    for row in engagement_rows:
+        hydrate_project_row(row, project_bindings.get(row.get("id"), []))
 
     out: list[ChannelMapRow] = []
     for row in engagement_rows:
@@ -140,10 +154,6 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
             continue
         code = _engagement_canonical_id(row)
 
-        # `slack_channel_ids` is the source of truth; fall back to the
-        # legacy scalar for safety if the array is empty but the scalar
-        # is set (e.g. a row inserted by an admin path that hasn't been
-        # updated for the new column yet).
         primary = row.get("slack_channel_id") or None
         raw_ids = row.get("slack_channel_ids") or []
         if not isinstance(raw_ids, list):
@@ -166,9 +176,9 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
             )
         )
 
-    # Stream B: initiatives (internal workstreams). No legacy scalar
-    # column — slack_channel_ids is the only source. Status uses the
-    # initiative vocabulary ("Active", "On hold", "Done", "Archived").
+    # Stream B: initiatives (internal workstreams). Channel ids come from
+    # initiative-owned bindings ('' singleton + labeled extras). Status uses
+    # the initiative vocabulary ("Active", "On hold", "Done", "Archived").
     initiative_rows = (
         client.schema("public")
         .table(Tables.INITIATIVES)
@@ -179,6 +189,12 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
         .data
         or []
     )
+    initiative_bindings = fetch_binding_rows(
+        client.schema("public"),
+        initiative_ids=[r["id"] for r in initiative_rows if r.get("id")],
+    )
+    for row in initiative_rows:
+        hydrate_initiative_row(row, initiative_bindings.get(row.get("id"), []))
 
     for row in initiative_rows:
         company = row.get("companies") or {}

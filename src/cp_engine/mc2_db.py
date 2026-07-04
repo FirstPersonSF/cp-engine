@@ -98,9 +98,10 @@ PROJECTS_SYNC_COLUMNS = (
 )
 
 # projects — the Slack channel-map read (mapping columns aren't part of sync).
+# Channel ids come from project_integrations bindings (read-flip; the flat
+# slack columns are being retired) — `id` is here so the map can join them.
 PROJECTS_SLACK_COLUMNS = (
-    "number, name, mc_status, is_internal, enable_slack, "
-    "slack_channel_id, slack_channel_name, slack_channel_ids, "
+    "id, number, name, mc_status, is_internal, enable_slack, "
     "full_job_name, companies!inner(code)"
 )
 
@@ -114,17 +115,18 @@ REPOS_SYNC_COLUMNS = (
     "companies!inner(code, name, kind)"
 )
 
-# initiatives — the sync read.
+# initiatives — the sync read. (slack_channel_ids dropped in the read-flip;
+# sync never consumed it.)
 INITIATIVES_SYNC_COLUMNS = (
     "id, code, name, description, status, owner, updated_at, "
-    "enable_slack, slack_channel_ids, "
+    "enable_slack, "
     "companies!inner(code, name, kind), "
     "repos!initiative_id(repo_name, status, description, github_orgs!inner(name))"
 )
 
-# initiatives — the Slack channel-map read.
+# initiatives — the Slack channel-map read (channel ids come from bindings).
 INITIATIVES_SLACK_COLUMNS = (
-    "code, name, status, enable_slack, slack_channel_ids, companies!inner(code)"
+    "id, code, name, status, enable_slack, companies!inner(code)"
 )
 
 # fathom_meetings — list vs full-fetch vs webhook artifact/transcript shapes.

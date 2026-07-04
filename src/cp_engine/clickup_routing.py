@@ -20,12 +20,27 @@ Reconciled divergences (documented so the history isn't mysterious):
 from __future__ import annotations
 
 from cp_engine.mc2_db import Tables
+from cp_engine.mc2_bindings import _clickup_list_id, fetch_binding_rows
 import logging
 from typing import Any
 
 from postgrest.exceptions import APIError
 
 log = logging.getLogger(__name__)
+
+
+def _list_id_from_bindings(
+    client: Any, *, project_id: str | None = None, initiative_id: str | None = None
+) -> str | None:
+    """The owner's ClickUp list id from its ``''`` binding (read-flip: the
+    flat ``clickup_list_id`` columns are being retired)."""
+    owner_id = project_id or initiative_id
+    grouped = fetch_binding_rows(
+        client,
+        project_ids=[project_id] if project_id else (),
+        initiative_ids=[initiative_id] if initiative_id else (),
+    )
+    return _clickup_list_id(grouped.get(owner_id))
 
 
 def resolve_clickup_project(
@@ -55,7 +70,7 @@ def resolve_clickup_project(
     if number is not None:
         resp = (
             client.table(Tables.PROJECTS)
-            .select("id, number, clickup_list_id, enable_clickup")
+            .select("id, number, enable_clickup")
             .eq("number", number)
             .execute()
         )
@@ -69,7 +84,7 @@ def resolve_clickup_project(
             return None
         return {
             "id": row["id"],
-            "clickup_list_id": row.get("clickup_list_id"),
+            "clickup_list_id": _list_id_from_bindings(client, project_id=row["id"]),
             "code": code,
             "kind": "project",
         }
@@ -80,7 +95,7 @@ def resolve_clickup_project(
     try:
         resp = (
             client.table(Tables.INITIATIVES)
-            .select("id, code, clickup_list_id, enable_clickup")
+            .select("id, code, enable_clickup")
             .eq("code", code)
             .execute()
         )
@@ -97,7 +112,7 @@ def resolve_clickup_project(
         return None
     return {
         "id": row["id"],
-        "clickup_list_id": row.get("clickup_list_id"),
+        "clickup_list_id": _list_id_from_bindings(client, initiative_id=row["id"]),
         "code": code,
         "kind": "initiative",
     }

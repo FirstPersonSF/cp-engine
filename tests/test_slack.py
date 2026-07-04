@@ -268,6 +268,9 @@ class _FakeQuery:
     def neq(self, *_a, **_k):
         return self
 
+    def in_(self, *_a, **_k):
+        return self
+
     def order(self, *_a, **_k):
         return self
 
@@ -308,19 +311,24 @@ def test_channel_map_code_is_slugified_full_job_name(monkeypatch) -> None:
         {
             "projects": [
                 {
+                    "id": "p-5192",
                     "number": 5192,
                     "name": "Platform Sales Readiness Summit",
                     "mc_status": "Open",
                     "is_internal": False,
                     "enable_slack": True,
-                    "slack_channel_id": "C999",
-                    "slack_channel_name": "ibx-srs",
-                    "slack_channel_ids": ["C999"],
                     "full_job_name": "IBX 5192 Platform Sales Readiness Summit",
                     "companies": {"code": "IBX"},
                 }
             ],
             "initiatives": [],
+            # Read-flip: channel ids come from project_integrations bindings.
+            "project_integrations": [
+                {
+                    "project_id": "p-5192", "initiative_id": None,
+                    "service": "slack", "external_ref": {"id": "C999"}, "label": "",
+                }
+            ],
         },
     )
 

@@ -61,18 +61,45 @@ class _FakeQuery:
         self._recorder["eq"] = (col, val)
         return self
 
+    def in_(self, col, vals):
+        self._recorder["in_"] = (col, vals)
+        return self
+
     def execute(self):
         return _FakeExecute(self._data)
 
 
 class _FakeClient:
-    def __init__(self, data):
+    def __init__(self, data, bindings=None):
         self._data = data
+        self._bindings = bindings or []
         self.recorder: dict = {}
 
     def table(self, name):
+        # project_integrations serves the bindings set (read-flip: folder ids
+        # hydrate from bindings, not flat columns); everything else serves the
+        # project rows. The recorder only tracks the PROJECT query shape —
+        # the "never SELECT *" assertions target that select.
+        if name == "project_integrations":
+            return _FakeQuery(self._bindings, {})
         self.recorder["table"] = name
         return _FakeQuery(self._data, self.recorder)
+
+
+def _folder_bindings(project_id, drive_id=None, dropbox_path=None):
+    """Binding rows carrying a project's Drive/Dropbox coordinates."""
+    rows = []
+    if drive_id:
+        rows.append({
+            "project_id": project_id, "initiative_id": None,
+            "service": "google_drive", "external_ref": {"id": drive_id}, "label": "",
+        })
+    if dropbox_path:
+        rows.append({
+            "project_id": project_id, "initiative_id": None,
+            "service": "dropbox", "external_ref": {"url": dropbox_path}, "label": "",
+        })
+    return rows
 
 
 _DRIVE_FOLDER_MIME = "application/vnd.google-apps.folder"
@@ -232,13 +259,12 @@ def test_resolve_parses_number_and_returns_folders() -> None:
             {
                 "id": "proj-uuid",
                 "company_id": "co-uuid",
-                "google_drive_folder_id": "drive-123",
-                "mc_dropbox_folder_id": "/Clients/IBX/5153",
                 "enable_google_drive": True,
                 "enable_dropbox": True,
                 "companies": {"kind": "client"},
             }
-        ]
+        ],
+        bindings=_folder_bindings("proj-uuid", "drive-123", "/Clients/IBX/5153"),
     )
     folders = resolve_project_folders(client, "ibx-5153")
     assert folders is not None
@@ -273,8 +299,6 @@ def test_resolve_handles_companies_as_list() -> None:
             {
                 "id": "p",
                 "company_id": "c",
-                "google_drive_folder_id": "drive-1",
-                "mc_dropbox_folder_id": "/p",
                 "enable_google_drive": True,
                 "enable_dropbox": True,
                 "companies": [{"kind": "client"}],  # list, not dict
@@ -293,8 +317,6 @@ def test_resolve_handles_companies_as_empty_list() -> None:
             {
                 "id": "p",
                 "company_id": "c",
-                "google_drive_folder_id": None,
-                "mc_dropbox_folder_id": None,
                 "enable_google_drive": False,
                 "enable_dropbox": False,
                 "companies": [],  # empty list
@@ -312,8 +334,6 @@ def test_resolve_coerces_enable_flags_to_bool() -> None:
             {
                 "id": "p",
                 "company_id": "c",
-                "google_drive_folder_id": None,
-                "mc_dropbox_folder_id": None,
                 "enable_google_drive": None,  # null in DB → False
                 "enable_dropbox": 1,  # truthy int → True
                 "companies": {"kind": "client"},
@@ -340,13 +360,12 @@ def test_resolve_by_id_returns_folders() -> None:
             {
                 "id": "proj-uuid-5174",
                 "company_id": "co-uuid",
-                "google_drive_folder_id": "drive-456",
-                "mc_dropbox_folder_id": "/Clients/SAP/5174",
                 "enable_google_drive": True,
                 "enable_dropbox": True,
                 "companies": {"kind": "client"},
             }
-        ]
+        ],
+        bindings=_folder_bindings("proj-uuid-5174", "drive-456", "/Clients/SAP/5174"),
     )
     folders = resolve_project_folders_by_id(client, "proj-uuid-5174")
     assert folders is not None
@@ -377,8 +396,6 @@ def test_resolve_by_id_handles_companies_as_list() -> None:
             {
                 "id": "p",
                 "company_id": "c",
-                "google_drive_folder_id": "drive-1",
-                "mc_dropbox_folder_id": "/p",
                 "enable_google_drive": True,
                 "enable_dropbox": True,
                 "companies": [{"kind": "client"}],  # list, not dict
