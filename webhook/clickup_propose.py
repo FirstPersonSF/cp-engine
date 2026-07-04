@@ -22,6 +22,8 @@ from cp_engine.ingest import _content_hash
 from cp_engine import mc2_db
 from cp_engine.mc2_db import Tables
 
+import observability
+
 log = logging.getLogger("cp-engine-webhook")
 
 
@@ -184,5 +186,6 @@ def propose_clickup_tasks(meeting_id: str, project_codes: list[str]) -> dict:
             )
     except Exception as exc:  # noqa: BLE001 — must never break auto-ingest
         log.warning("clickup-propose failed for meeting=%s: %s", meeting_id, exc)
+        observability.capture(exc, area="clickup_propose")
 
     return summary

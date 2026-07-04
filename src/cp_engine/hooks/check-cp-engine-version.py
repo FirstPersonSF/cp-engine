@@ -11,6 +11,14 @@ This hook runs on SessionStart, compares the installed `cp` version against
 the tenant pin, and if they don't satisfy each other, reinstalls `cp` from
 the local cp-engine clone (path from `.cp-engine.local.toml [local-repos]`).
 
+THE AUTHORITATIVE SELF-HEAL (arch-phase-3, issue #28): inside a tenant, the
+tenant pin is the single truth source for the cp CLI version. The cp-engine
+plugin's own SessionStart hook (plugin/hooks/sync-cli-version.sh, keyed off
+the plugin version) detects tenant context and defers to this hook, so the
+two can never disagree about the target version in one session. Distributed
+into tenants by `cp sync` (claude_settings.install_into_tenant) — edit the
+packaged copy at src/cp_engine/hooks/, never the tenant-side mirror.
+
 Design notes:
 - Reads from the local repo, NOT remote tags — so dev work is reflected
   immediately and there's no network call at session start. (The CI runner's
