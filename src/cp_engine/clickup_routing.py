@@ -64,8 +64,7 @@ def resolve_clickup_project(
     None means: no row, or ClickUp routing disabled/unavailable for this
     code. Skip reasons are logged at INFO.
     """
-    tail = code.rsplit("-", 1)[-1]
-    number = int(tail) if tail.isdigit() else None
+    number = engagement_number(code)
 
     if number is not None:
         resp = (
@@ -116,6 +115,26 @@ def resolve_clickup_project(
         "code": code,
         "kind": "initiative",
     }
+
+
+def engagement_number(code: str) -> int | None:
+    """Extract the MC-2 project number from a cp engagement code.
+
+    Two canonical shapes:
+      - short form ``<co>-<number>`` ("ggl-5168") — the tail is the number;
+      - full slug ``<co>-<number>-<name-slug>`` ("ggl-5136-go-safety-website",
+        the slugified full_job_name that became the canonical id in v0.35) —
+        the number is the SECOND dash-segment.
+
+    The second-segment rule deliberately ignores digits deeper in the slug
+    (a year like "…-update-2026" is not the project number). Initiative
+    slugs ("mission-control") have no numeric segment → None.
+    """
+    segments = code.split("-")
+    if len(segments) >= 2 and segments[1].isdigit():
+        return int(segments[1])
+    tail = segments[-1]
+    return int(tail) if tail.isdigit() else None
 
 
 def _clickup_enabled(row: dict, missing_ok: bool) -> bool:

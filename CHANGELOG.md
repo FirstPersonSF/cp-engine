@@ -4,6 +4,39 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.50.0 — 2026-07-04
+
+### Sprint-planning accuracy: MC-2 schedule milestones, freshness verdicts, decision ages
+
+- **Forward Calendar reads MC-2's estimator schedule as the PRIMARY
+  milestone source** (`_fetch_mc2_schedule_milestones`): day-granular
+  milestones + feedback windows from `estimator.schedule_items`
+  (start_date + start_week*7 + day_offset — the Gantt's date math),
+  skipping `done` items. ClickUp `milestone` tags remain the secondary
+  source. The ClickUp-centric empty-state sentinels were rewritten and
+  only fire when neither source has anything.
+- **`engagement_number()` slug fix in clickup_routing** — engagement
+  codes have been full slugs ("ggl-5136-go-safety-website") since the
+  v0.35 canonical-id change, but the resolver only checked the TAIL
+  segment for digits, so prep-planning silently failed to resolve the
+  ClickUp list for every slug-coded engagement ("ClickUp list not set"
+  even when it was). The number is now taken from the second dash-segment
+  (short "ggl-5168" still works; embedded years like "…-update-2026"
+  are not mis-parsed). Live effect: 17 more engagements resolve.
+- **Exec-summary freshness verdicts in the bundle** — each block's
+  `**Exec Summary:**` heading carries `(updated <date> · <n>d ago)`
+  parsed from the wrap-up stamp; >14 days renders a ⚠ STALE warning so
+  the in-session synthesis knows which project states to distrust.
+  Unstamped summaries are flagged as freshness-unknown.
+- **Cross-cutting decisions are aged** — each entry renders
+  `(<n>d old · <date>)`, with an "aging: resolve or re-affirm" nudge at
+  14+ days and an explicit note on undated entries. The tenant CLAUDE.md
+  wrap-up protocol gains a weekly-cp.md decisions sweep (append
+  `[resolved: …]` markers for done/expired entries — the planner already
+  drops resolved ones).
+- `/cp-prep` skill updated for all of the above (milestone sources,
+  STALE handling in the Focus list, new empty-state guidance).
+
 ## v0.49.0 — 2026-07-03
 
 ### MC-2 integration ids resolve from project_integrations bindings (read-flip)

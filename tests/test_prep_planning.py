@@ -557,8 +557,7 @@ def test_render_planning_doc_handles_empty_clickup_list(tmp_path):
     assert block.fetch_error == "no_milestones_tagged"
     assert block.milestones == ()
     rendered = "\n".join(prep_planning._render_forward_calendar(block))
-    assert "no milestones tagged in ClickUp yet" in rendered
-    assert "Task 29" in rendered
+    assert "tagged in ClickUp" in rendered
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -582,7 +581,8 @@ def test_render_planning_doc_handles_project_without_clickup_list(tmp_path):
     )
     assert block.fetch_error == "no_clickup_list"
     rendered = "\n".join(prep_planning._render_forward_calendar(block))
-    assert "ClickUp list not set in MC-2" in rendered
+    assert "no ClickUp list set" in rendered
+    assert "no milestones in the MC-2 schedule" in rendered
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -597,9 +597,11 @@ def test_render_planning_doc_distinguishes_list_unset_vs_list_empty(tmp_path):
     tracked)_", which confused users into thinking they needed to set a
     list-id that was already set. After #36:
 
-      - No clickup_list_id at all → "ClickUp list not set in MC-2"
-      - List set but ClickUp returned 0 tasks → "no milestones tagged
-        in ClickUp yet" + a pointer to Task 29 back-population.
+      - No clickup_list_id at all → "no ClickUp list set"
+      - List set but ClickUp returned 0 tasks → "no milestones … tagged
+        in ClickUp".
+    (Message text updated in v0.50 — MC-2's estimator schedule is now the
+    primary milestone source, so both sentinels mention it.)
     """
     config = make_config(tmp_path)
     state_unset = make_state("ggl-9999", name="No List Yet")
@@ -618,8 +620,7 @@ def test_render_planning_doc_distinguishes_list_unset_vs_list_empty(tmp_path):
     )
     assert block_unset.fetch_error == "no_clickup_list"
     rendered_unset = "\n".join(prep_planning._render_forward_calendar(block_unset))
-    assert "ClickUp list not set in MC-2" in rendered_unset
-    assert "Task 29" not in rendered_unset
+    assert "no ClickUp list set" in rendered_unset
 
     # Branch B — list_id present, fetch returns 0 tasks.
     list_id = "EMPTY"
@@ -642,8 +643,7 @@ def test_render_planning_doc_distinguishes_list_unset_vs_list_empty(tmp_path):
     )
     assert block_empty.fetch_error == "no_milestones_tagged"
     rendered_empty = "\n".join(prep_planning._render_forward_calendar(block_empty))
-    assert "no milestones tagged in ClickUp yet" in rendered_empty
-    assert "Task 29" in rendered_empty
+    assert "tagged in ClickUp" in rendered_empty
     # And critically — the two messages do NOT collide.
     assert rendered_unset != rendered_empty
 
@@ -2164,3 +2164,208 @@ def test_render_planning_bundle_marks_unauthored():
     out = prep_planning.render_planning_bundle(result)
     assert "fps-1" in out
     assert "Exec Summary not yet authored" in out
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  v0.50 planning-accuracy: MC-2 schedule milestones, exec-summary
+#  freshness, cross-cutting decision ages
+# ──────────────────────────────────────────────────────────────────────
+
+
+class _Mc2Query:
+    """Chainable fake for the three MC-2 schedule queries."""
+
+    def __init__(self, data):
+        self._data = data
+
+    def select(self, *_a):
+        return self
+
+    def eq(self, *_a):
+        return self
+
+    def in_(self, *_a):
+        return self
+
+    def execute(self):
+        class _R:
+            def __init__(self, data):
+                self.data = data
+
+        return _R(self._data)
+
+
+class _Mc2ScheduleClient:
+    """Serves: public projects → estimator projects → schedule_items."""
+
+    def __init__(self, *, start_date="2026-06-01", items=None,
+                 has_estimate=True, project_row=True):
+        self._start_date = start_date
+        self._items = items or []
+        self._has_estimate = has_estimate
+        self._project_row = project_row
+        self._schema = "public"
+
+    def schema(self, name):
+        self._schema = name
+        return self
+
+    def table(self, name):
+        if self._schema == "estimator" and name == "schedule_items":
+            return _Mc2Query(self._items)
+        if self._schema == "estimator" and name == "projects":
+            self._schema = "public"
+            return _Mc2Query([{"id": "est-1"}] if self._has_estimate else [])
+        # public projects
+        return _Mc2Query(
+            [{"id": "mc-1", "start_date": self._start_date}]
+            if self._project_row
+            else []
+        )
+
+
+def _sched_item(**kw):
+    base = {
+        "id": "si-1", "label": "Rough cut", "item_type": "milestone",
+        "start_week": 2, "day_offset": 3, "duration": 1,
+        "duration_days": None, "done": False,
+    }
+    base.update(kw)
+    return base
+
+
+def test_mc2_schedule_milestone_date_math():
+    """due = start_date + start_week*7 + day_offset (Gantt convention)."""
+    client = _Mc2ScheduleClient(start_date="2026-06-01", items=[_sched_item()])
+    ms = prep_planning._fetch_mc2_schedule_milestones(
+        client, make_state("ggl-5168"),
+    )
+    assert len(ms) == 1
+    assert ms[0]["date"] == "2026-06-18"  # Jun 1 + 14 + 3
+    assert ms[0]["deliverable"] == "Rough cut"
+    assert ms[0]["source"] == "mc2_schedule"
+
+
+def test_mc2_schedule_feedback_window_and_week_anchor():
+    items = [
+        _sched_item(id="si-2", label="Client review", item_type="feedback",
+                    start_week=1, day_offset=0, duration_days=3),
+        _sched_item(id="si-3", label="Final delivery", day_offset=None,
+                    start_week=4),
+        _sched_item(id="si-4", label="Shipped already", done=True),
+    ]
+    client = _Mc2ScheduleClient(start_date="2026-06-01", items=items)
+    ms = prep_planning._fetch_mc2_schedule_milestones(
+        client, make_state("ggl-5168"),
+    )
+    by_id = {m["id"]: m for m in ms}
+    assert "si-4" not in by_id  # done items are not forward-looking
+    fb = by_id["si-2"]
+    assert fb["date"] == "2026-06-08"
+    assert "feedback window through 2026-06-10" in fb["deliverable"]
+    wk = by_id["si-3"]
+    assert wk["date"] == "2026-06-29"  # week start when day not set
+    assert "week-anchored" in wk["deliverable"]
+
+
+def test_mc2_schedule_skips_initiatives_and_missing_anchor():
+    client = _Mc2ScheduleClient(items=[_sched_item()])
+    # Slug code (initiative) → no estimator schedule.
+    assert prep_planning._fetch_mc2_schedule_milestones(
+        client, make_state("mission-control"),
+    ) == ()
+    # No start_date → week math has no anchor.
+    client2 = _Mc2ScheduleClient(start_date=None, items=[_sched_item()])
+    assert prep_planning._fetch_mc2_schedule_milestones(
+        client2, make_state("ggl-5168"),
+    ) == ()
+    # No client at all.
+    assert prep_planning._fetch_mc2_schedule_milestones(
+        None, make_state("ggl-5168"),
+    ) == ()
+
+
+def test_forward_calendar_renders_mc2_source_and_clears_sentinel():
+    """MC-2 schedule milestones render even when ClickUp has no list."""
+    block = ProjectPlanningBlock(
+        project=make_state("ggl-5168"),
+        exec_summary=None,
+        milestones=(
+            prep_planning.Milestone(
+                id="si-1", task_type="milestone", deliverable="Rough cut",
+                date="2026-06-18", owner="", confidence="", depends_on=[],
+                status="open", linked_to=[], source="mc2_schedule",
+            ),
+        ),
+        client_asks=(),
+        sprint_open_asks=(),
+        urgent=(),
+        fetch_error=None,  # build_project_block clears the sentinel
+    )
+    rendered = "\n".join(prep_planning._render_forward_calendar(block))
+    assert "Rough cut (MC-2 schedule)" in rendered
+    assert "ClickUp list" not in rendered
+
+
+# --- exec-summary freshness --------------------------------------------------
+
+
+def test_exec_summary_updated_stamp_parses_with_suffix():
+    region = "## Exec Summary  ·  updated 2026-07-03 (night)\n\n**Objective:** x"
+    assert prep_planning._exec_summary_updated(region) == "2026-07-03"
+    assert prep_planning._exec_summary_updated("## Exec Summary\n\nx") is None
+    assert prep_planning._exec_summary_updated(None) is None
+
+
+def test_bundle_block_flags_stale_exec_summary():
+    fresh = _bundle_block(
+        "ggl-5168", company_name="Google", company_code="GGL",
+        exec_summary="## Exec Summary · updated 2026-05-01\n\n**Objective:** x",
+    )
+    fresh.exec_summary_updated = "2026-05-01"
+    fresh.exec_summary_age_days = 31
+    out = "\n".join(prep_planning._render_bundle_project_block(fresh))
+    assert "updated 2026-05-01 · 31d ago" in out
+    assert "STALE" in out
+
+    current = _bundle_block(
+        "ggl-5169", company_name="Google", company_code="GGL",
+        exec_summary="## Exec Summary · updated 2026-06-01\n\n**Objective:** x",
+    )
+    current.exec_summary_updated = "2026-06-01"
+    current.exec_summary_age_days = 2
+    out2 = "\n".join(prep_planning._render_bundle_project_block(current))
+    assert "2d ago" in out2
+    assert "STALE" not in out2
+
+    unstamped = _bundle_block(
+        "ggl-5170", company_name="Google", company_code="GGL",
+        exec_summary="**Objective:** x",
+    )
+    out3 = "\n".join(prep_planning._render_bundle_project_block(unstamped))
+    assert "freshness unknown" in out3
+
+
+# --- cross-cutting decision ages ----------------------------------------------
+
+
+def test_cross_cutting_decisions_render_ages():
+    from cp_engine.agenda import WeeklyDecision
+
+    decisions = (
+        WeeklyDecision(number=1, text="Old one.", date="2026-05-10",
+                       sources=()),
+        WeeklyDecision(number=2, text="Fresh one.", date="2026-05-30",
+                       sources=()),
+        WeeklyDecision(number=3, text="Undated one.", date="", sources=()),
+    )
+    result = _bundle_result(
+        (_bundle_block("ggl-5168", company_name="Google",
+                       company_code="GGL", exec_summary="x"),),
+        cross_cutting_decisions=decisions,
+    )
+    # generated_at in the helper is 2026-06-01.
+    out = "\n".join(prep_planning._render_cross_cutting(result))
+    assert "Old one. _(22d old · 2026-05-10 — aging: resolve or re-affirm)_" in out
+    assert "Fresh one. _(2d old · 2026-05-30)_" in out
+    assert "Undated one. _(undated — stamp or resolve at next wrap up)_" in out
