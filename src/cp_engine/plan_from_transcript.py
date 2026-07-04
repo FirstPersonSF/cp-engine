@@ -568,7 +568,9 @@ projects: {{}}
 """
 
 
-def _call_claude(prompt: str, *, model: str, api_key: str | None) -> str:
+def _call_claude(
+    prompt: str, *, model: str, api_key: str | None, timeout: float = 120
+) -> str:
     """Single Anthropic API call. Raises PlanGenerationError on transport failure."""
     try:
         from anthropic import Anthropic
@@ -584,9 +586,11 @@ def _call_claude(prompt: str, *, model: str, api_key: str | None) -> str:
         )
 
     # Explicit timeout: the SDK default is ~10min, long enough for a wedged
-    # call to hang ingest. 120s is ample for a 16k-token completion and
-    # bounds the worst case. Hardens every caller of _call_claude.
-    client = Anthropic(api_key=key, timeout=120)
+    # call to hang ingest. The 120s default is ample for a single-project
+    # 16k-token completion; multi-project callers (account / sprint-planning
+    # plans, which carry a much larger prompt and routinely 8k+ token
+    # responses) pass a larger budget.
+    client = Anthropic(api_key=key, timeout=timeout)
     try:
         response = client.messages.create(
             model=model,
