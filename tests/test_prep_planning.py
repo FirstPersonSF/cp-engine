@@ -2087,7 +2087,10 @@ def _bundle_result(blocks, **kw):
         milestone_counts={"total": 0, "fetched": 0, "errored": 0},
         urgent_counts={"slip_risk": 0, "decision_due": 0,
                        "past_due_ask": 0, "escalated_risk": 0},
-        capacity_binding=kw.get("capacity_binding", ()),
+        capacity_binding={
+            "basis": "owner_of_record",
+            "owners": list(kw.get("capacity_binding", ())),
+        },
         cross_cutting_decisions=kw.get("cross_cutting_decisions", ()),
         generated_at="2026-06-01T00:00:00Z",
     )
@@ -2138,7 +2141,7 @@ def test_render_planning_bundle_includes_metrics():
     result = _bundle_result(
         blocks,
         tenant_hours={"Drew": 40, "Tony": 30},
-        capacity_binding=({"owner": "brandon", "count": 10},),
+        capacity_binding=({"owner": "brandon", "count": 10},),  # normalized by _mk
         cross_cutting_decisions=decisions,
     )
     out = prep_planning.render_planning_bundle(result)

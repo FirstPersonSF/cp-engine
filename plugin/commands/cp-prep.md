@@ -148,16 +148,37 @@ The JSON shape:
   "project_count": 30,
   "estimated_minutes": 60,
   "tenant_hours_last_week": {"Drew": 52, "Tony": 52, "Marcello": 42, "Derek": 28},
+  "tenant_hours_planned": {"Drew": 40, "Tony": 46},
   "milestone_counts": {"total": 87, "fetched": 84, "errored": 3},
   "urgent_counts": {"slip_risk": 0, "decision_due": 0, "past_due_ask": 0, "escalated_risk": 0},
-  "capacity_binding": [
-    {"owner": "Tony", "count": 6},
-    {"owner": "Marcello", "count": 5}
-  ],
+  "capacity_binding": {
+    "basis": "planned_allocations",
+    "owners": [
+      {"owner": "Tony", "planned_hours": 46, "project_count": 6}
+    ]
+  },
   "cross_cutting_decisions_count": 3,
+  "cross_cutting_decisions_stale_count": 0,
+  "cross_cutting_decisions_undated_count": 1,
   "errors": []
 }
 ```
+
+`tenant_hours_planned` is the PLANNING week's allocations (forward
+capacity) — `{}` means no allocation rows are entered for the planning
+week yet; surface that as its own line ("planned allocations not entered
+yet"), it's a planning signal, not an error. `capacity_binding.basis`
+says which fact the owners list is built on: `planned_allocations`
+(owners with ≥40 planned hours or ≥5 allocated projects that week —
+entries carry `planned_hours` + `project_count`) or `owner_of_record`
+(fallback when no planning-week allocations exist — entries carry
+`count`, a projects-of-record tally, an account-management fact rather
+than a capacity fact; say so when rendering it).
+`cross_cutting_decisions_stale_count` > 0 means weekly-cp.md's decisions
+section holds entries older than the 4-week window (they're filtered
+out of the doc, but the section needs a roll-off pass at the next wrap
+up — mention it). `..._undated_count` counts entries with no date stamp
+(kept, but worth dating at the next pass).
 
 Render to the user:
 
@@ -204,8 +225,15 @@ Conditional rendering rules:
   '
   ```
 
-- If `capacity_binding` is empty, render
-  `Capacity binding: none flagged (no owner ≥ 5 projects)`.
+- Capacity binding rendering depends on `capacity_binding.basis`:
+  - `planned_allocations` + owners → `Capacity binding: Tony (46h planned,
+    6 projects)`.
+  - `planned_allocations` + empty owners → `Capacity binding: none flagged
+    (no owner ≥ 40h planned or ≥ 5 allocated projects)`.
+  - `owner_of_record` (fallback) → `Capacity binding (owner-of-record
+    fallback — planning-week allocations not entered): Brandon (10
+    projects of record)`; with empty owners render
+    `Capacity binding: none flagged (no owner ≥ 5 projects of record)`.
 - If `cross_cutting_decisions_count` is 0, render
   `Cross-cutting decisions partners owe each other: none in last 4 weeks`.
 - If `milestone_counts.errored` is 0, drop the parenthetical and render
@@ -293,6 +321,12 @@ in ClickUp).
 
 ## Failure modes
 
+- **Bare `cp prep-planning` exits non-zero.** Intentional (the deprecated
+  engine-rendered inventory used to be the default and kept overwriting
+  `_planning.md` with the pre-synthesis dump). The supported flows are
+  `--bundle` and `--summary` — this skill already uses them. The old dump
+  remains available behind `--legacy-render` if someone explicitly wants
+  it.
 - **`cp prep-planning` fails with config error.** Run `cp init` if
   `.cp-engine.toml` is missing. Otherwise check the error and resolve.
 - **`CLICKUP_API_TOKEN` unset or invalid.** `cp prep-planning --summary`
