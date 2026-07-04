@@ -64,13 +64,23 @@ def _fake_supabase_for_project(
     project_row = {
         "id": project_id,
         "number": number,
-        "clickup_list_id": clickup_list_id,
         "enable_clickup": True,
     }
     client = MagicMock()
     client.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
         project_row
     ]
+    # Bindings lookup (read-flip): .select(...).in_(...).execute().data → the
+    # clickup '' binding carrying the list id.
+    client.table.return_value.select.return_value.in_.return_value.execute.return_value.data = (
+        [{
+            "project_id": project_id, "initiative_id": None, "service": "clickup",
+            "external_ref": {"id": clickup_list_id, "extra": {"list_id": clickup_list_id}},
+            "label": "",
+        }]
+        if clickup_list_id
+        else []
+    )
     # Dedupe lookup: .eq("cp_ask_hash", h).in_("status", [...]).execute().data → []
     client.table.return_value.select.return_value.eq.return_value.in_.return_value.execute.return_value.data = []
     return client

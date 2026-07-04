@@ -1274,7 +1274,6 @@ def _fake_supabase_for_project(*, project_id: str = "p1",
     project_row = {
         "id": project_id,
         "number": number,
-        "clickup_list_id": clickup_list_id,
         "enable_clickup": enable_clickup,
     }
     existing = set(existing_hashes or [])
@@ -1283,6 +1282,19 @@ def _fake_supabase_for_project(*, project_id: str = "p1",
     # Project SELECT chain → list of rows.
     select_chain = client.table.return_value.select.return_value.eq.return_value
     select_chain.execute.return_value.data = [project_row]
+
+    # Bindings chain (read-flip: clickup_list_id resolves from
+    # project_integrations via .select(...).in_(...).execute()).
+    bindings_chain = client.table.return_value.select.return_value.in_.return_value
+    bindings_chain.execute.return_value.data = (
+        [{
+            "project_id": project_id, "initiative_id": None, "service": "clickup",
+            "external_ref": {"id": clickup_list_id, "extra": {"list_id": clickup_list_id}},
+            "label": "",
+        }]
+        if clickup_list_id
+        else []
+    )
 
     # Dedupe SELECT chain (extra `.in_(...)` step) → list of rows when the
     # cp_ask_hash matches `existing_hashes`, else []. We dynamically inspect
@@ -1330,7 +1342,6 @@ def _fake_supabase_for_initiative(*, initiative_id: str = "i1",
     initiative_row = {
         "id": initiative_id,
         "code": code,
-        "clickup_list_id": clickup_list_id,
         "enable_clickup": enable_clickup,
     }
     existing = set(existing_hashes or [])
@@ -1338,6 +1349,18 @@ def _fake_supabase_for_initiative(*, initiative_id: str = "i1",
     client = MagicMock()
     select_chain = client.table.return_value.select.return_value.eq.return_value
     select_chain.execute.return_value.data = [initiative_row]
+
+    # Bindings chain (read-flip): initiative-owned clickup binding.
+    bindings_chain = client.table.return_value.select.return_value.in_.return_value
+    bindings_chain.execute.return_value.data = (
+        [{
+            "project_id": None, "initiative_id": initiative_id, "service": "clickup",
+            "external_ref": {"id": clickup_list_id, "extra": {"list_id": clickup_list_id}},
+            "label": "",
+        }]
+        if clickup_list_id
+        else []
+    )
 
     in_chain = (
         client.table.return_value.select.return_value

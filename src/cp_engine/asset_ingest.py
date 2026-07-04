@@ -47,8 +47,11 @@ from cp_engine.mc2_db import Tables
 # Drew's global Supabase rule — the projects table carries multi-megabyte JSONB
 # cache columns (`cached_messages`, `cached_analysis`) we must not pull. The
 # nested `companies(kind)` embed gives us the scope guard (client vs self-*).
+# Folder ids (google_drive_folder_id / mc_dropbox_folder_id) come from
+# project_integrations bindings (read-flip) — hydrated onto the row by the
+# resolve functions before `_row_to_folders` maps it.
 _PROJECT_COLUMNS = (
-    "id, company_id, google_drive_folder_id, mc_dropbox_folder_id, "
+    "id, company_id, "
     "enable_google_drive, enable_dropbox, asset_ingest_folders, companies(kind)"
 )
 
@@ -216,7 +219,7 @@ def resolve_project_folders(client, project_code: str) -> ProjectFolders | None:
         )
         return None
 
-    return _row_to_folders(rows[0])
+    return _row_to_folders(_hydrate(client, rows[0]))
 
 
 def resolve_project_folders_by_id(
@@ -245,7 +248,15 @@ def resolve_project_folders_by_id(
         )
         return None
 
-    return _row_to_folders(rows[0])
+    return _row_to_folders(_hydrate(client, rows[0]))
+
+
+def _hydrate(client, row: dict) -> dict:
+    """Overlay bindings-derived folder ids (read-flip) onto the project row."""
+    from cp_engine.mc2_bindings import fetch_binding_rows, hydrate_project_row
+
+    grouped = fetch_binding_rows(client, project_ids=[row["id"]])
+    return hydrate_project_row(row, grouped.get(row["id"], []))
 
 
 # ──────────────────────────────────────────────────────────────────────
