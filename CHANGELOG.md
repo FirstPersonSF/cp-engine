@@ -4,6 +4,27 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.47.0 — 2026-07-03
+
+### Architecture Phase 4 (cp-engine portion): god-module splits + bypass retirement
+
+**webhook/main.py split** (#32, PR #35). 4,062 → 217 LOC:
+`signatures.py` (three HMAC schemes + replay window), `git_ops.py`
+(clone→commit→push, Correlation-Id trailer), `pipeline.py` (shared
+auto-ingest pipeline), and six domain routers. All 13 route paths,
+response shapes, and error strings identical; `main` re-exports the
+historical names.
+
+**cli.py split** (#33, PR #36). 3,162 → 188 LOC; implementations in
+`cp_engine/cli_cmds/` (11 modules). The command surface is
+byte-identical — `cp --help` unchanged; every flat command name
+preserved.
+
+**Raw-client bypass retirement** (#34, PR #36). Every
+`MC2Backend().connect()` callsite now acquires its client via
+`mc2_db.get_client`; `connect()` deleted. `spine_client()` remains the
+one protocol-sanctioned raw access (sync.py's spine mirror).
+
 ## v0.46.0 — 2026-07-03
 
 ### Architecture Phase 3: DAL + observability (issues #26–#28)
