@@ -550,6 +550,11 @@ def get_client(
             file=sys.stderr,
         )
         return None
+    # Writer identity for the spine_substance column guard (mc-2 #130): the
+    # DB trigger rejects UPDATEs to engine-owned columns (body/status/origin)
+    # unless this header names an authorized writer. cp-engine owns those
+    # columns, so every client we build carries it.
+    client.postgrest.session.headers["X-Spine-Writer"] = "cp-engine"
     _client_cache[(url, key)] = client
     return client
 

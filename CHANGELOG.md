@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.48.1 — 2026-07-03
+
+### spine_substance column guard — writer identity (mc-2 #130)
+
+- Every MC-2 Supabase client built by `mc2_db.get_client` now sends
+  `X-Spine-Writer: cp-engine`. MC-2 migration 092 installs a BEFORE
+  UPDATE trigger on `spine_substance` that rejects changes to the
+  engine-owned columns (`body`/`status`/`origin`) unless the request
+  carries an authorized writer identity (this header via PostgREST's
+  `request.headers` GUC, or the `app.spine_writer` GUC for direct SQL
+  sessions). Curation-column writes are unaffected. Ship THIS version
+  everywhere cp-engine writes to MC-2 (webhook, local CLIs) before the
+  trigger migration is applied.
+
 ## v0.48.0 — 2026-07-03
 
 ### Sprint-planning pipeline fixes (#16 + assessment findings)
