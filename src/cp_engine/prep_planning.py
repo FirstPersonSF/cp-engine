@@ -94,6 +94,9 @@ class Milestone(TypedDict, total=False):
     depends_on: list[str]
     status: str
     linked_to: list[str]
+    # "mc2_schedule" when sourced from MC-2's estimator schedule (the
+    # primary source since v0.50); absent/"" for ClickUp-tagged tasks.
+    source: str
 
 
 class SprintAsk(TypedDict):
@@ -147,6 +150,13 @@ class ProjectPlanningBlock:
     # Best-effort per project: a sweep failure leaves this None and the block
     # still renders. See ``build_project_block``'s ``sweep_llm`` handling.
     sweep_synthesis: str | None = None
+    # Freshness of the exec summary (parsed from its `· updated <date>`
+    # heading stamp): ISO date + age in days at build time. None/None when
+    # the region is absent or unstamped. The bundle renderer flags blocks
+    # whose age exceeds _EXEC_SUMMARY_STALE_DAYS so the synthesis knows
+    # which project states to distrust.
+    exec_summary_updated: str | None = None
+    exec_summary_age_days: int | None = None
     # ``fetch_error`` carries three distinct sentinels alongside genuine
     # network/4xx error strings — keep the rendering branches in
     # ``_render_forward_calendar`` and the error-aggregation guard in
@@ -530,6 +540,120 @@ def _resolve_clickup_list_for_project(
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _fetch_mc2_schedule_milestones(
+    supabase_client,
+    project: ProjectState,
+) -> tuple[Milestone, ...]:
+    """Milestones + feedback windows from MC-2's estimator schedule.
+
+    This is the PRIMARY milestone source: the Jobs workspace maintains
+    day-granular ``schedule_items`` (item_type milestone/feedback,
+    start_week + day_offset against the project's start_date — mirrors the
+    Gantt's date math: start_date + start_week*7 + day_offset). ClickUp
+    milestone TAGS (the original v0.15 source) were never back-populated
+    and are empty for most projects, which left the Forward Calendar blank
+    even for projects with fully maintained MC-2 schedules.
+
+    Only ENGAGEMENTS have estimates (initiatives return ()). Skips ``done``
+    items (forward-looking surface) and projects with no start_date (week
+    math has no anchor without it). Best-effort: any Supabase error logs
+    and returns () — ClickUp milestones still render.
+    """
+    if supabase_client is None:
+        return ()
+    from cp_engine.clickup_routing import engagement_number
+    from cp_engine.mc2_db import Tables
+
+    number = engagement_number(project.code)
+    if number is None:
+        return ()  # initiative slug — no estimator schedule
+
+    try:
+        rows = (
+            supabase_client.table(Tables.PROJECTS)
+            .select("id, start_date")
+            .eq("number", number)
+            .execute()
+            .data
+            or []
+        )
+        if not rows or not rows[0].get("start_date"):
+            return ()
+        mc_project_id = rows[0]["id"]
+        start = date.fromisoformat(str(rows[0]["start_date"])[:10])
+        est_rows = (
+            supabase_client.schema("estimator")
+            .table(Tables.EST_PROJECTS)
+            .select("id")
+            .eq("mc_project_id", mc_project_id)
+            .eq("is_default", True)
+            .execute()
+            .data
+            or []
+        )
+        if not est_rows:
+            return ()
+        items = (
+            supabase_client.schema("estimator")
+            .table(Tables.EST_SCHEDULE_ITEMS)
+            .select(
+                "id, label, item_type, start_week, day_offset, "
+                "duration, duration_days, done"
+            )
+            .eq("project_id", est_rows[0]["id"])
+            .in_("item_type", ["milestone", "feedback"])
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade to ClickUp-only
+        log.warning(
+            "MC-2 schedule milestone fetch failed for %s: %s",
+            project.code, exc,
+        )
+        return ()
+
+    out: list[Milestone] = []
+    for item in items:
+        if item.get("done"):
+            continue
+        try:
+            week = int(float(item.get("start_week") or 0))
+        except (TypeError, ValueError):
+            continue
+        day_offset = item.get("day_offset")
+        anchored = day_offset is not None
+        due = start + timedelta(days=week * 7 + int(day_offset or 0))
+        label = (item.get("label") or "").strip() or "(untitled)"
+        if item.get("item_type") == "feedback":
+            # Windows render as "<label> (feedback window through <end>)".
+            span_days = item.get("duration_days")
+            if span_days is None:
+                try:
+                    span_days = int(float(item.get("duration") or 1)) * 7
+                except (TypeError, ValueError):
+                    span_days = 7
+            end = due + timedelta(days=max(int(span_days) - 1, 0))
+            label = f"{label} (feedback window through {end.isoformat()})"
+        elif not anchored:
+            label = f"{label} (week-anchored — day not set)"
+        out.append(
+            Milestone(
+                id=str(item.get("id") or ""),
+                task_type="milestone",
+                deliverable=label,
+                date=due.isoformat(),
+                owner="",
+                confidence="",
+                depends_on=[],
+                status="open",
+                linked_to=[],
+                source="mc2_schedule",
+            )
+        )
+    return tuple(out)
+
+
 def _extract_exec_summary(cp_md_body: str) -> str | None:
     """Return the inner text of a project cp.md's engine-managed
     ``exec-summary`` region — the model-authored 6-field state box (Objective,
@@ -553,6 +677,29 @@ def _extract_exec_summary(cp_md_body: str) -> str | None:
     if not exec_summary_is_authored(region):
         return None
     return region
+
+
+# The `· updated YYYY-MM-DD` stamp the wrap-up protocol puts on the
+# `## Exec Summary` heading line (free-text suffixes like "(night)" allowed).
+_EXEC_SUMMARY_STAMP_RE = re.compile(
+    r"^##\s+Exec Summary\s*·\s*updated\s+(?P<date>\d{4}-\d{2}-\d{2})",
+    re.MULTILINE,
+)
+
+# Summaries older than this are flagged stale in the bundle: anything not
+# refreshed within two weeks predates the prior sprint's wrap-ups, so its
+# Status/Next-up/Blockers can no longer be trusted for planning without a
+# verbal check.
+_EXEC_SUMMARY_STALE_DAYS = 14
+
+
+def _exec_summary_updated(exec_summary: str | None) -> str | None:
+    """The ISO date from the region's `· updated <date>` heading stamp,
+    or None when the region is absent/unstamped (pre-stamp summaries)."""
+    if not exec_summary:
+        return None
+    m = _EXEC_SUMMARY_STAMP_RE.search(exec_summary)
+    return m.group("date") if m else None
 
 
 # Open-ask bullet shape from sprint files. Mirrors attention_digest._OPEN_ASK_RE.
@@ -899,7 +1046,12 @@ def build_project_block(
     if sprint_file_path.is_file():
         sprint_file_body = sprint_file_path.read_text(encoding="utf-8")
 
-    # ClickUp fetch — milestones + client-asks.
+    # MC-2 schedule milestones — the PRIMARY source (day-granular
+    # milestones + feedback windows maintained in the Jobs workspace).
+    mc2_milestones = _fetch_mc2_schedule_milestones(supabase_client, project)
+
+    # ClickUp fetch — tag-sourced milestones + client-asks (secondary
+    # milestone source; sole source for the "them → us" client-asks).
     list_id = list_id_override or _resolve_clickup_list_for_project(
         project, supabase_client=supabase_client
     )
@@ -934,6 +1086,14 @@ def build_project_block(
             fetch_error = str(exc)
             log.warning("ClickUp fetch failed for %s: %s", project.code, exc)
 
+    # Merge sources; MC-2 schedule entries first at equal dates. When the
+    # schedule supplies milestones, the ClickUp empty-state sentinels no
+    # longer describe reality — clear them so the calendar renders (real
+    # ClickUp ERRORS are kept: they still matter for the client-asks side).
+    milestones = mc2_milestones + milestones
+    if milestones and fetch_error in ("no_clickup_list", "no_milestones_tagged"):
+        fetch_error = None
+
     # Stable, oldest-first ordering by date for the forward calendar.
     milestones = tuple(
         sorted(milestones, key=lambda m: (m.get("date") or "9999-99-99"))
@@ -963,6 +1123,14 @@ def build_project_block(
             sweep_llm=sweep_llm,
         )
 
+    updated = _exec_summary_updated(exec_summary)
+    age_days: int | None = None
+    if updated:
+        try:
+            age_days = (today - date.fromisoformat(updated)).days
+        except ValueError:
+            updated = None
+
     return ProjectPlanningBlock(
         project=project,
         exec_summary=exec_summary,
@@ -972,6 +1140,8 @@ def build_project_block(
         urgent=tuple(urgent_list),
         fetch_error=fetch_error,
         sweep_synthesis=sweep_synthesis,
+        exec_summary_updated=updated,
+        exec_summary_age_days=age_days,
     )
 
 
@@ -1135,6 +1305,11 @@ _CAPACITY_BINDING_PLANNED_HOURS = 40
 # scopes to "last 4 weeks", and we mirror that bound here so old hand-
 # written entries don't bleed forward indefinitely.
 _CROSS_CUTTING_LOOKBACK_DAYS = 28
+
+# In-window decisions at least this old get an "aging: resolve or re-affirm"
+# nudge in the rendered list — old enough to have been through two planning
+# meetings without resolution.
+_DECISION_AGING_DAYS = 14
 
 # Decisions tagged with this inline marker have already been resolved and
 # should drop out of the planning surface. Matches forms like
@@ -1352,35 +1527,63 @@ def _render_cross_cutting(
         if binding:
             out.append("")
         out.append("**Decisions partners owe each other this week:**")
+        # Age each entry so the room can kill stale ones live — the section
+        # accretes auto-ingested items that never get [resolved:] markers,
+        # and an unaged list reads as uniformly current when it isn't.
+        today = _generated_date(result.generated_at)
         for i, d in enumerate(decisions, 1):
-            out.append(f"{i}. {d.text}")
+            suffix = ""
+            if d.date and today is not None:
+                try:
+                    age = (today - date.fromisoformat(d.date)).days
+                except ValueError:
+                    age = None
+                if age is not None:
+                    suffix = f" _({age}d old · {d.date}"
+                    if age >= _DECISION_AGING_DAYS:
+                        suffix += " — aging: resolve or re-affirm"
+                    suffix += ")_"
+            elif not d.date:
+                suffix = " _(undated — stamp or resolve at next wrap up)_"
+            out.append(f"{i}. {d.text}{suffix}")
 
     return out
+
+
+def _generated_date(generated_at: str) -> date | None:
+    """The date component of PlanningResult.generated_at ('%Y-%m-%d %H:%M')."""
+    try:
+        return date.fromisoformat((generated_at or "")[:10])
+    except ValueError:
+        return None
 
 
 def _render_forward_calendar(block: ProjectPlanningBlock) -> list[str]:
     """Render a per-project Forward calendar bullet list.
 
-    Skips milestones with no date (no anchor to render). Falls back to a
-    placeholder when nothing remains.
+    Milestones come from two sources — MC-2's estimator schedule (primary;
+    entries carry ``source="mc2_schedule"``) and ClickUp milestone tags.
+    Skips milestones with no date (no anchor to render). The empty-state
+    sentinels only fire when NEITHER source produced anything.
     """
-    if block.fetch_error == "no_clickup_list":
-        return [
-            "**Forward calendar:**",
-            "_(ClickUp list not set in MC-2 — milestones not tracked)_",
-        ]
-    if block.fetch_error == "no_milestones_tagged":
-        return [
-            "**Forward calendar:**",
-            "_(no milestones tagged in ClickUp yet — see Task 29 back-population)_",
-        ]
-    if block.fetch_error:
-        return [
-            "**Forward calendar:**",
-            "_Could not fetch milestones — check ClickUp connection._",
-        ]
     dated = [m for m in block.milestones if m.get("date")]
     if not dated:
+        if block.fetch_error == "no_clickup_list":
+            return [
+                "**Forward calendar:**",
+                "_(no milestones in the MC-2 schedule; no ClickUp list set)_",
+            ]
+        if block.fetch_error == "no_milestones_tagged":
+            return [
+                "**Forward calendar:**",
+                "_(no milestones in the MC-2 schedule or tagged in ClickUp)_",
+            ]
+        if block.fetch_error:
+            return [
+                "**Forward calendar:**",
+                "_No MC-2 schedule milestones; ClickUp fetch failed — "
+                "check ClickUp connection._",
+            ]
         return [
             "**Forward calendar:**",
             "_(no milestones tracked yet)_",
@@ -1388,9 +1591,14 @@ def _render_forward_calendar(block: ProjectPlanningBlock) -> list[str]:
     out = ["**Forward calendar:**"]
     for m in dated:
         date_short = short_iso_date(m["date"]) or m["date"]
+        deliverable = m.get("deliverable") or "(untitled)"
+        if m.get("source") == "mc2_schedule":
+            # Schedule entries carry no owner/confidence — the date IS the
+            # fact; label the source instead of rendering empty meta.
+            out.append(f"- {date_short} — {deliverable} (MC-2 schedule)")
+            continue
         owner = m.get("owner") or "—"
         confidence = m.get("confidence") or "medium"
-        deliverable = m.get("deliverable") or "(untitled)"
         deps = m.get("depends_on") or []
         meta = [f"{owner}", f"{confidence} confidence"]
         if deps:
@@ -1598,8 +1806,27 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
     out.extend(_render_urgent(block))
 
     # FULL exec summary verbatim — every project, including unauthored ones
-    # (explicit marker, never silently omitted).
-    out.append("**Exec Summary:**")
+    # (explicit marker, never silently omitted). The heading carries the
+    # freshness verdict so the synthesis knows which states to distrust.
+    if block.exec_summary and block.exec_summary_age_days is not None:
+        age = block.exec_summary_age_days
+        line = (
+            f"**Exec Summary:** _(updated {block.exec_summary_updated} · "
+            f"{age}d ago)_"
+        )
+        if age > _EXEC_SUMMARY_STALE_DAYS:
+            line += (
+                " ⚠ **STALE — predates the last sprint; treat Status/"
+                "Next-up/Blockers as unverified and confirm verbally.**"
+            )
+        out.append(line)
+    elif block.exec_summary:
+        out.append(
+            "**Exec Summary:** _(no `· updated` stamp — freshness unknown; "
+            "stamp it at the next wrap up)_"
+        )
+    else:
+        out.append("**Exec Summary:**")
     out.append("")
     if block.exec_summary:
         out.append(block.exec_summary)

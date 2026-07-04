@@ -83,13 +83,17 @@ BUNDLE=$(cp prep-planning --bundle --projects "$CODES")
 ```
 
 The bundle contains, per project: code + name, the **full Exec Summary**
-(Objective / Status / Where it stands / Next up / Blockers / Updates),
-urgent flags, the forward calendar (dated ClickUp milestones), and open
-commitments — plus tenant-level metrics (capacity binding, hours,
-cross-cutting decisions). The engine still does the deterministic heavy
-lifting (ClickUp milestone fetch, urgent-flag detection, capacity-binding
-analysis, cross-cutting decisions parse from weekly-cp.md); it just hands
-you the material instead of pre-formatting a doc.
+(Objective / Status / Where it stands / Next up / Blockers / Updates)
+with a **freshness verdict** on its heading line (parsed from the
+`· updated <date>` stamp; >14 days old renders a ⚠ STALE warning),
+urgent flags, the forward calendar, and open commitments — plus
+tenant-level metrics (capacity binding, hours, cross-cutting decisions,
+each decision aged in days). Milestones come from TWO sources: **MC-2's
+estimator schedule is primary** (day-granular milestones + feedback
+windows maintained in the Jobs workspace — entries labeled
+`(MC-2 schedule)`), with ClickUp `milestone`-tagged tasks as the
+secondary source. The engine still does the deterministic heavy lifting;
+it just hands you the material instead of pre-formatting a doc.
 
 (If you prefer, `cp prep-planning --bundle --out <path>` writes the
 bundle to a scratch file you can Read; capturing into `$BUNDLE` and
@@ -107,7 +111,11 @@ should contain:
   each with a one-line reason: a decision is due, there's a blocker,
   a deadline is close, or it's slipping. Everything else is "steady";
   name it briefly but don't spend meeting time on it. Lead with this —
-  it's the agenda.
+  it's the agenda. **Respect the freshness verdicts**: a project whose
+  Exec Summary is flagged ⚠ STALE must not be planned from its written
+  Status/Next-up — either put it on the Focus list with the reason
+  "state unverified — confirm verbally" or mark its line "(state as of
+  <date>, unconfirmed)".
 - **Decisions & blockers needing the partners** — pulled from the Exec
   Summaries' Blockers/Next-up fields and the cross-cutting decisions,
   **deduped across projects** (the same shared blocker shouldn't appear
@@ -315,9 +323,9 @@ in ClickUp).
   projects, both directions.
 - **Urgency flags only when real**: slip risk, decision due, past-due ask,
   or escalated risk. A quiet project doesn't draw attention.
-- **Forward calendar** (from ClickUp milestones) still grounds the
-  timeline — it's the material behind the deadline reasons in the Focus
-  list.
+- **Forward calendar** (MC-2 schedule milestones first, ClickUp tags
+  second) grounds the timeline — it's the material behind the deadline
+  reasons in the Focus list.
 
 ## Failure modes
 
@@ -337,21 +345,14 @@ in ClickUp).
   ClickUp connection._` for affected projects, verify the token:
   `echo $CLICKUP_API_TOKEN | head -c 20` should start with `pk_`. Set it
   in your shell or `mc-2/backend/.env`.
-- **Forward calendar shows `_(ClickUp list not set — milestones not
-  tracked)_`.**
-  <!-- TODO(v0.16): split this rendering at the engine level so the
-       skill can disambiguate the two cases without guessing. -->
-  The message is ambiguous — either:
-  (a) the project genuinely has no `clickup_list_id` in MC-2 (fix: set
-      one via MC-2 dashboard or a migration), OR
-  (b) the list IS set but has zero tasks tagged `milestone` (fix: back-
-      populate milestones via Task 29's pipeline, OR add a milestone
-      task directly in ClickUp).
-  Today's first runs of `cp prep-planning` will see (b) for every
-  project until back-population happens; that's normal.
-- **Forward calendar empty for all projects.** No milestones have been
-  added to ClickUp yet. Fresh tenants and the first run after v0.15
-  ships look thin until back-population happens.
+- **Forward calendar shows `_(no milestones in the MC-2 schedule …)_`.**
+  As of v0.50 the calendar's primary source is MC-2's estimator schedule
+  (day-granular milestones + feedback windows on the Gantt), with ClickUp
+  `milestone` tags secondary. An empty calendar now means the project has
+  neither — fix it where the work is planned: add milestones to the
+  project's Schedule in the MC-2 Jobs workspace (and set the project
+  `start_date` — without it the week math has no anchor and schedule
+  items can't resolve to dates).
 - **Planning doc is mostly empty.** Likely a fresh tenant or a sprint
   with no recent ingest activity. The structure is right; data flows
   in as `/cp-ingest` runs against transcripts.
