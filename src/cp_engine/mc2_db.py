@@ -554,7 +554,10 @@ def get_client(
     # DB trigger rejects UPDATEs to engine-owned columns (body/status/origin)
     # unless this header names an authorized writer. cp-engine owns those
     # columns, so every client we build carries it.
-    client.postgrest.session.headers["X-Spine-Writer"] = "cp-engine"
+    try:
+        client.postgrest.session.headers["X-Spine-Writer"] = "cp-engine"
+    except AttributeError:
+        pass  # test stubs without a postgrest session; real clients have one
     _client_cache[(url, key)] = client
     return client
 
