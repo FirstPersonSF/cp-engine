@@ -106,16 +106,28 @@ class SprintAsk(TypedDict):
     hash: str
 
 
-class CapacityBindingOwner(TypedDict):
-    """A single owner-of-record entry surfaced as capacity-binding.
+class CapacityBindingOwner(TypedDict, total=False):
+    """A single capacity-binding owner entry.
 
-    Emitted by ``_detect_capacity_binding`` and rendered by
-    ``_render_cross_cutting``. Serializing to JSON for ``--summary`` is
-    a no-op since the entries are already dicts.
+    Two shapes, distinguished by ``CapacityBinding["basis"]``:
+      - ``planned_allocations`` → ``{"owner", "planned_hours", "project_count"}``
+        (from the planning week's MC-2 sprint_allocations);
+      - ``owner_of_record`` → ``{"owner", "count"}`` (fallback when the
+        planning week has no allocation rows: projects-of-record count,
+        an account-management fact, labeled honestly as such).
     """
 
     owner: str
     count: int
+    planned_hours: int
+    project_count: int
+
+
+class CapacityBinding(TypedDict):
+    """Capacity-binding block: which fact it's based on + the owners."""
+
+    basis: str  # "planned_allocations" | "owner_of_record"
+    owners: list[CapacityBindingOwner]
 
 
 @dataclass
@@ -159,12 +171,23 @@ class PlanningResult:
     blocks_by_account: dict[str, list[ProjectPlanningBlock]]
     milestone_counts: dict[str, int]  # {"total", "fetched", "errored"}
     urgent_counts: dict[str, int]
+    # Planning-week allocations (forward capacity, issue #16). Empty dict =
+    # no allocation rows entered for the planning week yet — that absence is
+    # itself signal and renders as an explicit note.
+    tenant_hours_planned: dict[str, int] = field(default_factory=dict)
     # Task 8: capacity-binding owners + cross-cutting decisions partners owe
     # each other. Populated by build_planning_result; consumed by
     # _render_cross_cutting. Both default to empty so the renderer can
     # safely skip the corresponding sub-blocks.
-    capacity_binding: tuple[CapacityBindingOwner, ...] = ()
+    capacity_binding: CapacityBinding = field(
+        default_factory=lambda: {"basis": "owner_of_record", "owners": []}
+    )
     cross_cutting_decisions: tuple[WeeklyDecision, ...] = ()
+    # Window-filter accounting for the decisions surface: how many entries
+    # were dropped as stale (older than the 28-day lookback) and how many
+    # carry no date at all (kept, but flagged so the rot stays visible).
+    cross_cutting_decisions_stale_count: int = 0
+    cross_cutting_decisions_undated_count: int = 0
     errors: list[str] = field(default_factory=list)
     generated_at: str = ""
 
@@ -175,10 +198,22 @@ class PlanningResult:
             "project_count": self.project_count,
             "estimated_minutes": self.estimated_minutes,
             "tenant_hours_last_week": self.tenant_hours_last_week,
+            "tenant_hours_planned": self.tenant_hours_planned,
             "milestone_counts": self.milestone_counts,
             "urgent_counts": self.urgent_counts,
-            "capacity_binding": [dict(b) for b in self.capacity_binding],
+            "capacity_binding": {
+                "basis": self.capacity_binding.get("basis", "owner_of_record"),
+                "owners": [
+                    dict(b) for b in self.capacity_binding.get("owners", [])
+                ],
+            },
             "cross_cutting_decisions_count": len(self.cross_cutting_decisions),
+            "cross_cutting_decisions_stale_count": (
+                self.cross_cutting_decisions_stale_count
+            ),
+            "cross_cutting_decisions_undated_count": (
+                self.cross_cutting_decisions_undated_count
+            ),
             "errors": self.errors,
         }
 
@@ -1053,18 +1088,29 @@ def _group_by_account(
 def _render_tenant_strip(
     project_count: int,
     tenant_hours: dict[str, int],
+    tenant_hours_planned: dict[str, int] | None = None,
 ) -> str:
-    """One-line ``**Active:** N · **Last sprint:** ...`` strip.
+    """The ``**Active:** N · **Last sprint:** ...`` strip, plus the
+    planning-week allocations line (forward capacity, issue #16).
 
-    This piece IS in Task 6's scope. Task 8 adds escalated-risk and
-    past-due-ask aggregates around it.
+    An empty planned dict is rendered as an explicit note rather than
+    omitted — "allocations not entered yet" is itself a planning signal.
     """
-    if tenant_hours:
-        ordered = sorted(tenant_hours.items(), key=lambda kv: -kv[1])
-        hours_str = ", ".join(f"{name} {h}h" for name, h in ordered)
+
+    def _fmt(hours: dict[str, int]) -> str:
+        ordered = sorted(hours.items(), key=lambda kv: -kv[1])
+        return ", ".join(f"{name} {h}h" for name, h in ordered)
+
+    hours_str = _fmt(tenant_hours) if tenant_hours else "—"
+    strip = f"**Active:** {project_count} · **Last sprint:** {hours_str}"
+    if tenant_hours_planned:
+        strip += f"\n**Planned (this sprint):** {_fmt(tenant_hours_planned)}"
     else:
-        hours_str = "—"
-    return f"**Active:** {project_count} · **Last sprint:** {hours_str}"
+        strip += (
+            "\n**Planned (this sprint):** _(no allocations entered for the "
+            "planning week yet)_"
+        )
+    return strip
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1076,6 +1122,13 @@ def _render_tenant_strip(
 # The retro pegged 5 as the floor at which an owner stops being able to
 # context-switch cleanly between projects in a single sprint.
 _CAPACITY_BINDING_FLOOR = 5
+
+# Planned-allocations basis (issue #16 follow-through): an owner is
+# capacity-binding when their PLANNED hours for the planning week reach
+# this floor, or when they're allocated across >= _CAPACITY_BINDING_FLOOR
+# projects that week. 40h = a full week already committed before the
+# sprint starts.
+_CAPACITY_BINDING_PLANNED_HOURS = 40
 
 # Cross-cutting decisions are surfaced when their parser date is within
 # this many days of `today` — the weekly-cp.md section header itself
@@ -1126,6 +1179,36 @@ def _detect_capacity_binding(
     return tuple(binding)
 
 
+def _detect_capacity_binding_planned(planned_allocations) -> list[CapacityBindingOwner]:
+    """Capacity binding from the planning week's actual allocations.
+
+    An owner binds when their planned hours reach
+    ``_CAPACITY_BINDING_PLANNED_HOURS`` OR they're allocated on >=
+    ``_CAPACITY_BINDING_FLOOR`` projects that week. Reads a
+    ``state.WeeklyAllocations`` (rollup for hours; by_project for the
+    per-owner project spread). Ordered by planned hours desc, then name.
+    """
+    project_counts: Counter[str] = Counter()
+    for alloc in (planned_allocations.by_project or {}).values():
+        for entry in alloc.entries:
+            name = (entry.person_name or "").strip()
+            if name:
+                project_counts[name] += 1
+    out: list[CapacityBindingOwner] = []
+    for r in planned_allocations.rollup or ():
+        name = (r.person_name or "").strip()
+        if not name:
+            continue
+        hours = int(round(r.total_hours))
+        count = project_counts.get(name, 0)
+        if hours >= _CAPACITY_BINDING_PLANNED_HOURS or count >= _CAPACITY_BINDING_FLOOR:
+            out.append(
+                {"owner": name, "planned_hours": hours, "project_count": count}
+            )
+    out.sort(key=lambda b: (-b["planned_hours"], b["owner"].lower()))
+    return out
+
+
 def _is_resolved_decision(text: str) -> bool:
     """True if the decision text carries a ``[decided: ...]`` or
     ``[resolved: ...]`` marker — partners use the two verbs interchangeably
@@ -1139,15 +1222,20 @@ def _load_cross_cutting_decisions(
     *,
     today: date,
     lookback_days: int = _CROSS_CUTTING_LOOKBACK_DAYS,
-) -> tuple[tuple[WeeklyDecision, ...], list[str]]:
+) -> tuple[tuple[WeeklyDecision, ...], list[str], int, int]:
     """Read ``weekly-cp.md`` and return decisions still owed across partners.
 
-    Returns ``(decisions, errors)`` — caller appends ``errors`` to the
-    PlanningResult so malformed-date entries surface in ``--summary``.
+    Returns ``(decisions, errors, stale_count, undated_count)`` — caller
+    appends ``errors`` to the PlanningResult and surfaces the two counts
+    in ``--summary`` so section rot is visible instead of silent.
 
     Filters:
-      - Section absent or empty → ``((), [])``.
-      - Entry's date older than ``lookback_days`` → dropped.
+      - Section absent or empty → ``((), [], 0, 0)``.
+      - Entry's date older than ``lookback_days`` → dropped, counted in
+        ``stale_count``.
+      - Entry has NO date at all → KEPT (safe default — an undated entry
+        is more likely fresh-and-unstamped than ancient) and counted in
+        ``undated_count``.
       - Entry text contains a ``[decided: ...]`` or ``[resolved: ...]``
         marker → dropped.
       - Entry's date is malformed (not ISO-8601) → SKIPPED entirely +
@@ -1162,15 +1250,23 @@ def _load_cross_cutting_decisions(
     """
     weekly_path = tenant_root / "weekly-cp.md"
     if not weekly_path.is_file():
-        return (), []
+        return (), [], 0, 0
     body = weekly_path.read_text(encoding="utf-8")
     decisions = parse_weekly_decisions(body)
     if not decisions:
-        return (), []
+        return (), [], 0, 0
     cutoff = today - timedelta(days=lookback_days)
     out: list[WeeklyDecision] = []
     errors: list[str] = []
+    stale_count = 0
+    undated_count = 0
     for d in decisions:
+        if _is_resolved_decision(d.text):
+            continue
+        if not d.date:
+            undated_count += 1
+            out.append(d)
+            continue
         try:
             d_date = date.fromisoformat(d.date)
         except (ValueError, TypeError):
@@ -1184,11 +1280,10 @@ def _load_cross_cutting_decisions(
             )
             continue
         if d_date < cutoff:
-            continue
-        if _is_resolved_decision(d.text):
+            stale_count += 1
             continue
         out.append(d)
-    return tuple(out), errors
+    return tuple(out), errors, stale_count, undated_count
 
 
 def _render_cross_cutting(
@@ -1215,12 +1310,17 @@ def _render_cross_cutting(
     """
     out = ["## Tenant strip"]
     out.append(
-        _render_tenant_strip(result.project_count, result.tenant_hours_last_week)
+        _render_tenant_strip(
+            result.project_count,
+            result.tenant_hours_last_week,
+            result.tenant_hours_planned,
+        )
     )
     out.append("")
     out.append("## Cross-cutting (read before walking projects)")
 
-    binding = result.capacity_binding
+    basis = result.capacity_binding.get("basis", "owner_of_record")
+    binding = result.capacity_binding.get("owners", [])
     decisions = result.cross_cutting_decisions
 
     if not binding and not decisions:
@@ -1231,11 +1331,22 @@ def _render_cross_cutting(
         out.append("**Capacity binding constraints:**")
         for entry in binding:
             name = entry["owner"]
-            count = entry["count"]
-            suffix = "" if count == 1 else "s"
-            out.append(
-                f"- **{name}** — owner-of-record on {count} project{suffix}"
-            )
+            if basis == "planned_allocations":
+                hours = entry.get("planned_hours", 0)
+                count = entry.get("project_count", 0)
+                suffix = "" if count == 1 else "s"
+                out.append(
+                    f"- **{name}** — {hours}h planned across "
+                    f"{count} project{suffix} this sprint"
+                )
+            else:
+                count = entry.get("count", 0)
+                suffix = "" if count == 1 else "s"
+                out.append(
+                    f"- **{name}** — owner-of-record on {count} "
+                    f"project{suffix} _(no planning-week allocations yet — "
+                    "count is projects of record, not planned hours)_"
+                )
 
     if decisions:
         if binding:
@@ -1452,7 +1563,8 @@ def render_planning_doc_markdown(result: PlanningResult) -> str:
         f"# Sprint {result.week_iso} Planning — {result.week_dates}"
     )
     lines.append(
-        f"_Generated {result.generated_at} by `cp prep-planning` · "
+        f"_Generated {result.generated_at} by `cp prep-planning "
+        f"--legacy-render` · "
         f"{result.project_count} active projects · "
         f"{result.estimated_minutes} min target_"
     )
@@ -1603,6 +1715,7 @@ def build_planning_result(
     list_id_lookup: dict[str, str] | None = None,
     clickup_task_ids: dict[str, str] | None = None,
     sweep_llm: Callable[[str], str] | None = None,
+    planned_allocations=None,
 ) -> PlanningResult:
     """Build a full PlanningResult. Pure-ish: passes all dependencies in.
 
@@ -1625,6 +1738,10 @@ def build_planning_result(
             slice 3, Phase B). None (default) = no sweep, no LLM call, the
             fast path is unchanged. When provided, each project's block gets
             a best-effort sweep synthesis attached (failures log + continue).
+        planned_allocations: the PLANNING week's ``state.WeeklyAllocations``
+            (issue #16). Drives ``tenant_hours_planned`` and the
+            planned-allocations capacity-binding basis; None or empty falls
+            back to the owner-of-record count (labeled as such).
     """
     list_id_lookup = list_id_lookup or {}
 
@@ -1712,10 +1829,32 @@ def build_planning_result(
                 urgent_counts[t] += 1
 
     # Task 8: cross-cutting capacity binding + partner-owed decisions.
-    capacity_binding = _detect_capacity_binding(active_sorted)
-    cross_cutting_decisions, cross_cutting_errors = (
-        _load_cross_cutting_decisions(config.root, today=today)
-    )
+    # Binding basis (issue #16 follow-through): planning-week allocations
+    # when they exist; owner-of-record count as the labeled fallback.
+    tenant_hours_planned: dict[str, int] = {}
+    if planned_allocations is not None:
+        for r in planned_allocations.rollup or ():
+            name = (r.person_name or "").split()
+            if name:
+                tenant_hours_planned[name[0]] = int(round(r.total_hours))
+    if planned_allocations is not None and (
+        planned_allocations.rollup or planned_allocations.by_project
+    ):
+        capacity_binding: CapacityBinding = {
+            "basis": "planned_allocations",
+            "owners": _detect_capacity_binding_planned(planned_allocations),
+        }
+    else:
+        capacity_binding = {
+            "basis": "owner_of_record",
+            "owners": list(_detect_capacity_binding(active_sorted)),
+        }
+    (
+        cross_cutting_decisions,
+        cross_cutting_errors,
+        stale_count,
+        undated_count,
+    ) = _load_cross_cutting_decisions(config.root, today=today)
     errors.extend(cross_cutting_errors)
 
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -1725,6 +1864,7 @@ def build_planning_result(
         project_count=len(active_sorted),
         estimated_minutes=60,
         tenant_hours_last_week=tenant_hours_last_week or {},
+        tenant_hours_planned=tenant_hours_planned,
         blocks_by_account=blocks_by_account,
         milestone_counts={
             "total": total,
@@ -1734,6 +1874,8 @@ def build_planning_result(
         urgent_counts=urgent_counts,
         capacity_binding=capacity_binding,
         cross_cutting_decisions=cross_cutting_decisions,
+        cross_cutting_decisions_stale_count=stale_count,
+        cross_cutting_decisions_undated_count=undated_count,
         errors=errors,
         generated_at=generated_at,
     )
@@ -1750,6 +1892,7 @@ def render_planning_doc(
     clickup_token: str | None = None,
     list_id_lookup: dict[str, str] | None = None,
     clickup_task_ids: dict[str, str] | None = None,
+    planned_allocations=None,
     sweep_llm: Callable[[str], str] | None = None,
 ) -> str:
     """Top-level entry: assemble + render the planning doc as markdown."""
@@ -1770,6 +1913,7 @@ def render_planning_doc(
             list_id_lookup=list_id_lookup,
             clickup_task_ids=clickup_task_ids,
             sweep_llm=sweep_llm,
+            planned_allocations=planned_allocations,
         )
     finally:
         if client is not None:
@@ -1788,6 +1932,7 @@ def render_planning_summary(
     clickup_token: str | None = None,
     list_id_lookup: dict[str, str] | None = None,
     clickup_task_ids: dict[str, str] | None = None,
+    planned_allocations=None,
 ) -> str:
     """Return the summary JSON as a string (matches ``--summary`` mode)."""
     client: httpx.Client | None = None
@@ -1805,6 +1950,7 @@ def render_planning_summary(
             clickup_client=client,
             list_id_lookup=list_id_lookup,
             clickup_task_ids=clickup_task_ids,
+            planned_allocations=planned_allocations,
         )
     finally:
         if client is not None:
@@ -1823,6 +1969,7 @@ def render_planning_bundle_doc(
     clickup_token: str | None = None,
     list_id_lookup: dict[str, str] | None = None,
     clickup_task_ids: dict[str, str] | None = None,
+    planned_allocations=None,
 ) -> str:
     """Assemble + render the model-facing planning bundle as markdown.
 
@@ -1845,6 +1992,7 @@ def render_planning_bundle_doc(
             clickup_client=client,
             list_id_lookup=list_id_lookup,
             clickup_task_ids=clickup_task_ids,
+            planned_allocations=planned_allocations,
         )
     finally:
         if client is not None:

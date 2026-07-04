@@ -146,7 +146,7 @@ def test_cross_cutting_decisions_renders_from_weekly_cp(tmp_path):
         "1. **Tony hidden-load** — re-attribute owner on implicit projects. "
         "(2026-05-25, source: weekly account meeting)\n",
     )
-    decisions, errors = _load_cross_cutting_decisions(
+    decisions, errors, _stale, _undated = _load_cross_cutting_decisions(
         tmp_path, today=date(2026, 6, 2)
     )
     assert len(decisions) == 3
@@ -160,7 +160,7 @@ def test_cross_cutting_decisions_renders_from_weekly_cp(tmp_path):
 def test_cross_cutting_decisions_empty_section_omitted(tmp_path):
     """weekly-cp.md with the header but no entries → empty tuple."""
     _write_weekly_cp(tmp_path, _DECISIONS_HEADER + "\n## Account summaries\n")
-    decisions, errors = _load_cross_cutting_decisions(
+    decisions, errors, _stale, _undated = _load_cross_cutting_decisions(
         tmp_path, today=date(2026, 6, 2)
     )
     assert decisions == ()
@@ -169,7 +169,7 @@ def test_cross_cutting_decisions_empty_section_omitted(tmp_path):
 
 def test_cross_cutting_decisions_missing_file_returns_empty(tmp_path):
     """No weekly-cp.md at all → empty tuple, not a crash."""
-    decisions, errors = _load_cross_cutting_decisions(
+    decisions, errors, _stale, _undated = _load_cross_cutting_decisions(
         tmp_path, today=date(2026, 6, 2)
     )
     assert decisions == ()
@@ -186,7 +186,7 @@ def test_cross_cutting_decisions_resolved_marker_filtered(tmp_path):
         "1. **Already settled** — [decided: 2026-05-29] partners agreed Y. "
         "(2026-05-28, source: sprint planning)\n",
     )
-    decisions, _errors = _load_cross_cutting_decisions(
+    decisions, _errors, _stale, _undated = _load_cross_cutting_decisions(
         tmp_path, today=date(2026, 6, 2)
     )
     assert len(decisions) == 1
@@ -203,7 +203,7 @@ def test_cross_cutting_decisions_old_entries_filtered(tmp_path):
         "1. **Stale** — older than 4 weeks. "
         "(2026-04-15, source: weekly account meeting)\n",
     )
-    decisions, _errors = _load_cross_cutting_decisions(
+    decisions, _errors, _stale, _undated = _load_cross_cutting_decisions(
         tmp_path, today=date(2026, 6, 2)
     )
     assert len(decisions) == 1
@@ -220,7 +220,7 @@ def test_cross_cutting_decisions_resolved_marker_filtered_with_resolved_verb(tmp
         "1. **Already settled** — [resolved: 2026-05-29] partners agreed Y. "
         "(2026-05-28, source: sprint planning)\n",
     )
-    decisions, _errors = _load_cross_cutting_decisions(
+    decisions, _errors, _stale, _undated = _load_cross_cutting_decisions(
         tmp_path, today=date(2026, 6, 2)
     )
     assert len(decisions) == 1
@@ -242,7 +242,7 @@ def test_cross_cutting_decisions_included_at_exactly_28_days(tmp_path):
         + f"1. **On the boundary** — exactly 28 days back. "
         f"({boundary.isoformat()}, source: sprint planning)\n",
     )
-    decisions, _errors = _load_cross_cutting_decisions(tmp_path, today=today)
+    decisions, _errors, _stale, _undated = _load_cross_cutting_decisions(tmp_path, today=today)
     assert len(decisions) == 1
     assert "On the boundary" in decisions[0].text
 
@@ -257,7 +257,7 @@ def test_cross_cutting_decisions_excluded_at_29_days(tmp_path):
         + f"1. **Just past** — 29 days back. "
         f"({past_boundary.isoformat()}, source: sprint planning)\n",
     )
-    decisions, _errors = _load_cross_cutting_decisions(tmp_path, today=today)
+    decisions, _errors, _stale, _undated = _load_cross_cutting_decisions(tmp_path, today=today)
     assert decisions == ()
 
 
@@ -282,7 +282,7 @@ def test_cross_cutting_decisions_malformed_date_skipped_with_warning(
     import logging
 
     with caplog.at_level(logging.WARNING, logger="cp_engine.prep_planning"):
-        decisions, errors = _load_cross_cutting_decisions(
+        decisions, errors, _stale, _undated = _load_cross_cutting_decisions(
             tmp_path, today=date(2026, 6, 2)
         )
 
@@ -311,7 +311,7 @@ def test_cross_cutting_decisions_valid_date_no_error(tmp_path, caplog):
     import logging
 
     with caplog.at_level(logging.WARNING, logger="cp_engine.prep_planning"):
-        decisions, errors = _load_cross_cutting_decisions(
+        decisions, errors, _stale, _undated = _load_cross_cutting_decisions(
             tmp_path, today=date(2026, 6, 2)
         )
 
@@ -347,7 +347,10 @@ def _make_result(
         milestone_counts={"total": 0, "fetched": 0, "errored": 0},
         urgent_counts={"slip_risk": 0, "decision_due": 0,
                        "past_due_ask": 0, "escalated_risk": 0},
-        capacity_binding=capacity_binding,
+        capacity_binding={
+            "basis": "owner_of_record",
+            "owners": list(capacity_binding),
+        },
         cross_cutting_decisions=cross_cutting_decisions,
     )
 
@@ -487,8 +490,10 @@ def test_build_planning_result_populates_capacity_and_decisions(tmp_path):
         tenant_hours_last_week={"Tony": 40},
         supabase_client=None,
     )
-    # Owner "tony" has 5 of 5 projects → clears floor.
-    assert {"owner": "tony", "count": 5} in result.capacity_binding
+    # Owner "tony" has 5 of 5 projects → clears floor (owner-of-record
+    # basis — no planning-week allocations were provided).
+    assert result.capacity_binding["basis"] == "owner_of_record"
+    assert {"owner": "tony", "count": 5} in result.capacity_binding["owners"]
     # Decision parsed from weekly-cp.md.
     assert len(result.cross_cutting_decisions) == 1
     assert "Open partners decision" in result.cross_cutting_decisions[0].text
@@ -538,5 +543,8 @@ def test_summary_dict_exposes_cross_cutting_counts(tmp_path):
         supabase_client=None,
     )
     summary = result.to_summary_dict()
-    assert summary["capacity_binding"] == [{"owner": "drew", "count": 5}]
+    assert summary["capacity_binding"] == {
+        "basis": "owner_of_record",
+        "owners": [{"owner": "drew", "count": 5}],
+    }
     assert summary["cross_cutting_decisions_count"] == 1

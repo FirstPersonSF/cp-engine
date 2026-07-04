@@ -165,6 +165,14 @@ def prep_agenda_cmd(
     "rendered doc.",
 )
 @click.option(
+    "--legacy-render",
+    is_flag=True,
+    help="Render the DEPRECATED engine-formatted planning doc (the "
+    "account-grouped inventory the --bundle synthesis flow replaced). "
+    "Kept as an explicit escape hatch only; /cp-prep is the supported "
+    "path.",
+)
+@click.option(
     "--sweep",
     is_flag=True,
     help="Attach a whole-project spine sweep synthesis to each active "
@@ -183,22 +191,36 @@ def prep_planning_cmd(
     out: Path | None,
     summary: bool,
     bundle: bool,
+    legacy_render: bool,
     sweep: bool,
     sweep_model: str,
 ) -> None:
-    """Render a forward-looking sprint-planning doc.
+    """Emit sprint-planning raw material (--bundle) or metrics (--summary).
 
-    Pulls per-project milestones from ClickUp (matched to each project's
-    ``clickup_list_id`` in MC-2) and assembles an account-grouped doc with
-    Where / Forward calendar / Open commitments per project. Replaces
-    ``cp prep-agenda`` for sprint planning.
+    The supported flows are ``--bundle`` (the structured exec-summary +
+    metrics bundle that /cp-prep synthesizes into ``_planning.md``
+    in-session) and ``--summary`` (JSON metrics). The old engine-rendered
+    account-grouped doc is DEPRECATED — it's the ~426-line inventory the
+    bundle flow replaced — and now requires an explicit
+    ``--legacy-render``. A bare invocation exits non-zero with a pointer
+    so habit can't silently regenerate the deprecated dump over
+    ``_planning.md``.
 
-    Default: full doc across all active engagements + initiatives.
     With ``--projects <code>,<code>``: scoped to those projects only.
-
-    Default writes markdown to stdout. ``--out sprints/<W##>/_planning.md``
-    persists it; ``--summary`` emits JSON instead.
+    ``--out <path>`` persists the bundle or legacy doc; default stdout.
     """
+    if not (summary or bundle or legacy_render):
+        click.echo(
+            "cp prep-planning no longer renders the planning doc directly.\n"
+            "Supported flows:\n"
+            "  cp prep-planning --bundle    # raw material for /cp-prep "
+            "in-session synthesis\n"
+            "  cp prep-planning --summary   # JSON metrics\n"
+            "The deprecated engine-rendered inventory is available behind "
+            "--legacy-render (works with --out).",
+            err=True,
+        )
+        sys.exit(2)
     from datetime import datetime, timedelta
 
     from cp_engine.prep_planning import (
@@ -228,6 +250,20 @@ def prep_planning_cmd(
             name = entry.person_name.split()[0] if entry.person_name else None
             if name:
                 tenant_hours[name] = int(round(entry.total_hours))
+
+    # PLANNING-week allocations (forward capacity, issue #16): what's
+    # committed for the sprint being planned, not just last week's actuals.
+    # Uses the same Mon/Tue-vs-Wed-Sun planning-week rule as week_iso.
+    from cp_engine.sprints import _planning_monday
+
+    planning_monday = _planning_monday(datetime.now())
+    planned_allocations = None
+    try:
+        planned_allocations = backend.read_allocations(
+            config, planning_monday.isoformat()
+        )
+    except Exception:
+        planned_allocations = None
 
     # MC-2 Supabase client for clickup_list_id resolution. Silent degrade if
     # creds aren't set — per-project blocks will render "(ClickUp list not set)".
@@ -291,6 +327,7 @@ def prep_planning_cmd(
             supabase_client=supabase_client,
             clickup_token=clickup_token,
             clickup_task_ids=clickup_task_ids,
+            planned_allocations=planned_allocations,
         )
         click.echo(out_str)
         return
@@ -310,6 +347,7 @@ def prep_planning_cmd(
             supabase_client=supabase_client,
             clickup_token=clickup_token,
             clickup_task_ids=clickup_task_ids,
+            planned_allocations=planned_allocations,
         )
         if out:
             out.parent.mkdir(parents=True, exist_ok=True)
@@ -349,6 +387,7 @@ def prep_planning_cmd(
         clickup_token=clickup_token,
         clickup_task_ids=clickup_task_ids,
         sweep_llm=sweep_llm,
+        planned_allocations=planned_allocations,
     )
 
     if out:

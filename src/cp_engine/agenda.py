@@ -139,9 +139,30 @@ class TenantAgendaHeader:
 #   19. **Marcello hours triage for W19** — drop ... (2026-05-11, source: sprint planning)
 #   3. **Drew handles Firebase...** for Go Safety; ... (2026-05-08, source: ggl-5136)
 #   8. **Infoblox AI-campaign workshop...** ... (2026-05-07, source: ibx-5167 / ibx-5153)
-_DECISION_RE = re.compile(
-    r"^\s*(?P<num>\d+)\.\s+(?P<body>.+?)\s*\((?P<date>\d{4}-\d{2}-\d{2}),\s*source:\s*(?P<source>[^)]+)\)\s*$",
+#
+# Real-world tolerance (arch-phase-3 follow-up — the strict form missed
+# 42 of the live tenant's 62 entries):
+#   - auto-ingest appends a trailing `<!-- cp:hash=XXXXXXXX -->` marker;
+#   - some entries carry a date but no `source:` field — `(2026-05-08)`;
+#   - some entries have NO trailing meta at all (undated — kept by the
+#     planner, counted separately so the rot is visible in --summary).
+# Split on the numbered-item boundary, then extract the optional trailing
+# meta from each item, instead of demanding the full suffix in one regex.
+_DECISION_ITEM_RE = re.compile(
+    r"^\s*(?P<num>\d+)\.\s+(?P<body>.*?)(?=^\s*\d+\.\s|\Z)",
     re.MULTILINE | re.DOTALL,
+)
+_DECISION_META_RE = re.compile(
+    r"\((?P<date>\d{4}-\d{2}-\d{2})(?:,\s*source:\s*(?P<source>[^)]+))?\)"
+    r"(?:\s*\*\*)?\s*(?:<!--[^>]*-->\s*)*$",
+)
+_TRAILING_HASH_RE = re.compile(r"\s*(?:<!--[^>]*-->\s*)+$")
+# The handwritten decisions heading — tolerate the exact "(cross-cutting,
+# last 4 weeks)" suffix drifting, but require the "Decisions (cross-" stem
+# so the engine-managed decisions-strip (inside markers, already truncated
+# above) can't match.
+_DECISIONS_HEADING_RE = re.compile(
+    r"^## Decisions \(cross-cutting[^)]*\)\s*$", re.MULTILINE
 )
 
 # Project-code shape: 2-4 alphanumeric chars + optional hyphen + 1-5 digits.
@@ -159,14 +180,38 @@ def parse_weekly_decisions(weekly_cp_body: str) -> tuple[WeeklyDecision, ...]:
     # Truncate to before the first engine marker so we only parse handwritten.
     marker = weekly_cp_body.find("<!-- cp-engine:start")
     body = weekly_cp_body if marker == -1 else weekly_cp_body[:marker]
+    # Scope to the handwritten decisions section. The item-boundary split
+    # below matches ANY numbered list, so without this the Quick Resume's
+    # numbered bullets would parse as decisions. Falls back to the whole
+    # pre-marker body when no decisions heading exists (older fixtures).
+    section = _DECISIONS_HEADING_RE.search(body)
+    if section:
+        rest = body[section.end():]
+        next_heading = re.search(r"^## ", rest, re.MULTILINE)
+        body = rest[: next_heading.start()] if next_heading else rest
     out: list[WeeklyDecision] = []
-    for m in _DECISION_RE.finditer(body):
-        sources = _parse_sources(m.group("source"))
+    for m in _DECISION_ITEM_RE.finditer(body):
+        item_body = m.group("body").strip()
+        if not item_body:
+            continue
+        meta = _DECISION_META_RE.search(item_body)
+        if meta:
+            date = meta.group("date")
+            sources = _parse_sources(meta.group("source") or "")
+            text = item_body[: meta.start()].strip()
+        else:
+            # Undated entry — keep it (text minus any trailing hash marker);
+            # the planner counts these separately so the gap is visible.
+            date = ""
+            sources = ()
+            text = _TRAILING_HASH_RE.sub("", item_body).strip()
+        if not text:
+            continue
         out.append(
             WeeklyDecision(
                 number=int(m.group("num")),
-                text=m.group("body").strip(),
-                date=m.group("date"),
+                text=text,
+                date=date,
                 sources=sources,
             )
         )
