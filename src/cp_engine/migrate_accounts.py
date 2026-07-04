@@ -358,7 +358,7 @@ def _compute_residue(
     return tuple(hints)
 
 
-def _default_backend_factory(name: str) -> Backend:
-    """Default backend resolver — same logic as sync's _default_backend_factory."""
-    from cp_engine.sync import _default_backend_factory as _real
-    return _real(name)
+# Single backend resolver lives in sync (arch-phase-4, #34); the module-level
+# name is kept so callers/tests patching `migrate_accounts._default_backend_factory`
+# keep working.
+from cp_engine.sync import _default_backend_factory  # noqa: E402

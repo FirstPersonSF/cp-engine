@@ -68,8 +68,8 @@ def _seed_rows(today_iso: str, soon_iso: str, far_iso: str):
 
 def _patch_connect(monkeypatch, rows):
     monkeypatch.setattr(
-        "cp_engine.sync_mc2.MC2Backend.connect",
-        lambda self, cfg: _FakeClient(rows),
+        "cp_engine.mc2_db.get_client",
+        lambda config=None, **kw: _FakeClient(rows),
     )
 
 
@@ -148,10 +148,10 @@ def test_spine_stats_offline_errors_no_fallback(tmp_path, monkeypatch):
     _tenant(tmp_path)
     monkeypatch.chdir(tmp_path)
 
-    def _raise(self, cfg):
+    def _raise(config=None, **kw):
         raise BackendUnavailable("no SUPABASE creds")
 
-    monkeypatch.setattr("cp_engine.sync_mc2.MC2Backend.connect", _raise)
+    monkeypatch.setattr("cp_engine.mc2_db.get_client", _raise)
 
     result = CliRunner().invoke(main, ["spine-stats"])
     assert result.exit_code != 0

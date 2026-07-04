@@ -84,7 +84,7 @@ def test_snapshot_writes_file_and_row(tmp_path, monkeypatch) -> None:
 
     fake = _FakeClient()
     monkeypatch.setattr(
-        "cp_engine.sync_mc2.MC2Backend.connect", lambda self, cfg: fake
+        "cp_engine.mc2_db.get_client", lambda config=None, **kw: fake
     )
 
     result = CliRunner().invoke(
@@ -130,7 +130,7 @@ def test_snapshot_same_day_collision_appends_suffix(tmp_path, monkeypatch) -> No
 
     fake = _FakeClient()
     monkeypatch.setattr(
-        "cp_engine.sync_mc2.MC2Backend.connect", lambda self, cfg: fake
+        "cp_engine.mc2_db.get_client", lambda config=None, **kw: fake
     )
 
     args = [

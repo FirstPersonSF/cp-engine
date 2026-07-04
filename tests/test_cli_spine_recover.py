@@ -105,7 +105,7 @@ class _FakeClient:
 
 def _patch(monkeypatch, client, assets=None):
     monkeypatch.setattr(
-        "cp_engine.sync_mc2.MC2Backend.connect", lambda self, config: client
+        "cp_engine.mc2_db.get_client", lambda config=None, **kw: client
     )
     monkeypatch.setattr(
         "cp_engine.mcp_server._resolve_project_id", lambda c, code: PID
@@ -174,7 +174,7 @@ def test_unknown_project_errors(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     client = _FakeClient({})
     monkeypatch.setattr(
-        "cp_engine.sync_mc2.MC2Backend.connect", lambda self, config: client
+        "cp_engine.mc2_db.get_client", lambda config=None, **kw: client
     )
     monkeypatch.setattr(
         "cp_engine.mcp_server._resolve_project_id", lambda c, code: None
