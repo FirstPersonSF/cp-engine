@@ -24,6 +24,7 @@ if str(_WEBHOOK) not in sys.path:
 from fastapi.testclient import TestClient
 
 import main as webhook_main
+import pipeline
 
 
 @pytest.fixture
@@ -63,7 +64,7 @@ def test_rerun_endpoint_loads_failed_row_and_refires(
         called_with["transcript_text"] = transcript_text
         return {"ingested": [], "commit_sha": None, "skipped_no_op": True}
 
-    monkeypatch.setattr(webhook_main, "_perform_auto_ingest", fake_perform)
+    monkeypatch.setattr(pipeline, "_perform_auto_ingest", fake_perform)
 
     body = b""
     sig = _signed(body)

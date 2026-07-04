@@ -28,6 +28,9 @@ if str(_WEBHOOK) not in sys.path:
 from fastapi.testclient import TestClient
 
 import main as webhook_main
+from routers import spine as spine_router
+import git_ops
+import pipeline
 
 from cp_engine.asset_ingest import ProjectFolders
 
@@ -114,7 +117,7 @@ def _install_fake_clone(monkeypatch, rec, *, root=Path("/tmp/cp")):
         finally:
             rec["clone_exits"] += 1
 
-    monkeypatch.setattr(webhook_main, "_cloned_tenant", _fake)
+    monkeypatch.setattr(git_ops, "_cloned_tenant", _fake)
     return rec
 
 
@@ -134,12 +137,11 @@ def _wire(
     monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
     rec["client"] = sb
 
     # Resolve project_code -> projects.id
-    monkeypatch.setattr(
-        webhook_main, "_resolve_project_id_for_promote",
+    monkeypatch.setattr(spine_router, "_resolve_project_id_for_promote",
         lambda c, code: project_id,
     )
 
@@ -172,8 +174,7 @@ def _wire(
     _install_fake_clone(monkeypatch, rec)
 
     rec.setdefault("spawned", [])
-    monkeypatch.setattr(
-        webhook_main, "_spawn_background",
+    monkeypatch.setattr(pipeline, "_spawn_background",
         lambda coro: (rec["spawned"].append(coro), coro.close())[0],
     )
     return rec
@@ -273,7 +274,7 @@ def test_promote_401_when_signature_missing(monkeypatch, client):
 
 def test_promote_500_when_supabase_unconfigured(monkeypatch, client):
     monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: None)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: None)
     resp = _post(client, {"code": "ibx-5153", "key": "k"})
     assert resp.status_code == 500
     assert "supabase" in resp.text.lower()
@@ -290,8 +291,7 @@ def test_promote_202_runner_records_done_on_ok(monkeypatch, client):
     el = _element()
 
     spawned = {}
-    monkeypatch.setattr(
-        webhook_main, "_spawn_background",
+    monkeypatch.setattr(pipeline, "_spawn_background",
         lambda coro: spawned.__setitem__("coro", coro),
     )
 
@@ -337,7 +337,7 @@ def test_runner_records_failed_on_not_ok(monkeypatch):
     rec = {}
     _install_fake_clone(monkeypatch, rec)
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     monkeypatch.setattr(
         "cp_engine.spine_promote.promote_transcript",
@@ -367,7 +367,7 @@ def test_runner_engagement_only_carries_through_as_failed(monkeypatch):
     rec = {}
     _install_fake_clone(monkeypatch, rec)
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     captured = {}
 
@@ -401,7 +401,7 @@ def test_runner_records_failed_on_exception(monkeypatch):
     rec = {}
     _install_fake_clone(monkeypatch, rec)
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     def boom(*a, **k):
         raise RuntimeError("promote exploded")
@@ -429,7 +429,7 @@ def test_runner_done_guards_empty_ids(monkeypatch):
     rec = {}
     _install_fake_clone(monkeypatch, rec)
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     monkeypatch.setattr(
         "cp_engine.spine_promote.promote_transcript",
@@ -460,7 +460,7 @@ def test_runner_cleans_up_clone_on_ok(monkeypatch):
     rec = {}
     _install_fake_clone(monkeypatch, rec)
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     monkeypatch.setattr(
         "cp_engine.spine_promote.promote_transcript",
@@ -485,7 +485,7 @@ def test_runner_cleans_up_clone_when_promote_raises(monkeypatch):
     rec = {}
     _install_fake_clone(monkeypatch, rec)
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     def boom(*a, **k):
         raise RuntimeError("promote exploded")

@@ -26,6 +26,7 @@ if str(_WEBHOOK) not in sys.path:
 from fastapi.testclient import TestClient
 
 import main as webhook_main
+import pipeline
 
 from cp_engine.asset_ingest import IngestRunResult, ProjectFolders
 
@@ -98,7 +99,7 @@ def _wire(monkeypatch, *, rec=None, project_id="u-123", spawn=True):
     monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
     rec["client"] = sb
 
     folders = ProjectFolders(
@@ -112,8 +113,7 @@ def _wire(monkeypatch, *, rec=None, project_id="u-123", spawn=True):
     )
 
     rec.setdefault("spawned", [])
-    monkeypatch.setattr(
-        webhook_main, "_spawn_background",
+    monkeypatch.setattr(pipeline, "_spawn_background",
         lambda coro: (rec["spawned"].append(coro), coro.close())[0],
     )
     return rec
@@ -160,8 +160,7 @@ def test_ingest_202_threads_mc_project_id(monkeypatch, client):
     # it; here we keep + run it so we can prove mc_project_id flows all the way
     # through the runner into ingest_project_assets).
     spawned = {}
-    monkeypatch.setattr(
-        webhook_main, "_spawn_background",
+    monkeypatch.setattr(pipeline, "_spawn_background",
         lambda coro: spawned.__setitem__("coro", coro),
     )
     captured = {}
@@ -271,7 +270,7 @@ def test_ingest_401_when_signature_missing(monkeypatch, client):
 
 def test_ingest_500_when_supabase_unconfigured(monkeypatch, client):
     monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: None)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: None)
     resp = _post(client, {"code": "ibx-5153", "run_id": "run-1"})
     assert resp.status_code == 500
     assert "supabase" in resp.text.lower()
@@ -285,7 +284,7 @@ def test_runner_records_done(monkeypatch):
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
     rec = {}
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     result = IngestRunResult(
         created=3, versioned=0, skipped=32, deduped=7, failed=0, failures=[],
@@ -321,7 +320,7 @@ def test_runner_maps_failures(monkeypatch):
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
     rec = {}
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     result = IngestRunResult(
         created=1, versioned=0, skipped=0, failed=2,
@@ -358,7 +357,7 @@ def test_runner_passes_env_supabase_creds_as_kwargs(monkeypatch):
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "env-service-key")
     rec = {}
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     captured = {}
 
@@ -385,7 +384,7 @@ def test_runner_threads_mc_project_id_to_ingest(monkeypatch):
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
     rec = {}
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     captured = {}
 
@@ -415,7 +414,7 @@ def test_runner_threads_folder_to_only_folder(monkeypatch):
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
     rec = {}
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     captured = {}
 
@@ -444,7 +443,7 @@ def test_runner_threads_none_only_folder_by_default(monkeypatch):
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
     rec = {}
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     captured = {}
 
@@ -467,8 +466,7 @@ def test_ingest_202_threads_folder(monkeypatch, client):
     rec = _wire(monkeypatch)
 
     spawned = {}
-    monkeypatch.setattr(
-        webhook_main, "_spawn_background",
+    monkeypatch.setattr(pipeline, "_spawn_background",
         lambda coro: spawned.__setitem__("coro", coro),
     )
     captured = {}
@@ -495,8 +493,7 @@ def test_ingest_202_normalizes_empty_folder(monkeypatch, client):
     rec = _wire(monkeypatch)
 
     spawned = {}
-    monkeypatch.setattr(
-        webhook_main, "_spawn_background",
+    monkeypatch.setattr(pipeline, "_spawn_background",
         lambda coro: spawned.__setitem__("coro", coro),
     )
     captured = {}
@@ -525,7 +522,7 @@ def test_runner_threads_none_mc_project_id_by_default(monkeypatch):
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
     rec = {}
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     captured = {}
 
@@ -550,7 +547,7 @@ def test_runner_fails_fast_when_env_creds_missing(monkeypatch):
     monkeypatch.delenv("SUPABASE_SERVICE_KEY", raising=False)
     rec = {}
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     called = {"n": 0}
 
@@ -580,7 +577,7 @@ def test_runner_records_failed_on_exception(monkeypatch):
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
     rec = {}
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     def boom(code, **kwargs):
         raise RuntimeError("ingest exploded")
@@ -604,7 +601,7 @@ def test_runner_records_failed_when_project_not_found(monkeypatch):
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
     rec = {}
     sb = _RecordingClient(rec)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     monkeypatch.setattr(
         "cp_engine.asset_ingest.ingest_project_assets",

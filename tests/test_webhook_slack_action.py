@@ -20,6 +20,9 @@ _WEBHOOK = Path(__file__).resolve().parent.parent / "webhook"
 if str(_WEBHOOK) not in sys.path:
     sys.path.insert(0, str(_WEBHOOK))
 
+import git_ops
+from routers import slack as slack_router
+
 
 @pytest.fixture
 def client() -> TestClient:
@@ -117,8 +120,8 @@ def test_slack_action_resolve_risk_acks_immediately_and_queues_work(
     def fake_update(*, response_url, original_message, confirmation, clicked_action_id=""):
         update_calls.append({"url": response_url, "confirmation": confirmation})
 
-    monkeypatch.setattr(webhook_main, "_run_plan_for_one_item", fake_run)
-    monkeypatch.setattr(webhook_main, "_post_response_url_update", fake_update)
+    monkeypatch.setattr(slack_router, "_run_plan_for_one_item", fake_run)
+    monkeypatch.setattr(slack_router, "_post_response_url_update", fake_update)
 
     payload = {
         "type": "block_actions",
@@ -169,9 +172,8 @@ def test_slack_action_snooze_7d_passes_until_date(monkeypatch, client):
         called["extras"] = extras
         return {"committed": True, "commit_sha": "def456", "errors": []}
 
-    monkeypatch.setattr(webhook_main, "_run_plan_for_one_item", fake_run)
-    monkeypatch.setattr(
-        webhook_main, "_post_response_url_update", lambda **_kw: None
+    monkeypatch.setattr(slack_router, "_run_plan_for_one_item", fake_run)
+    monkeypatch.setattr(slack_router, "_post_response_url_update", lambda **_kw: None
     )
 
     payload = {
@@ -281,8 +283,8 @@ def test_run_plan_for_one_item_dispatches_close_ask_with_hash(monkeypatch, tmp_p
         captured["ingested"] = ingested
         return "fakesha1"
 
-    monkeypatch.setattr(webhook_main, "_cloned_tenant", fake_cloned)
-    monkeypatch.setattr(webhook_main, "_commit_and_push", fake_commit)
+    monkeypatch.setattr(git_ops, "_cloned_tenant", fake_cloned)
+    monkeypatch.setattr(git_ops, "_commit_and_push", fake_commit)
 
     # Freeze today to a W20 weekday so execute_plan writes into the seeded
     # 2026-W20 sprint file (not a future week that would need scaffolding).
@@ -293,7 +295,7 @@ def test_run_plan_for_one_item_dispatches_close_ask_with_hash(monkeypatch, tmp_p
         def today(cls):
             return _date(2026, 5, 12)
 
-    monkeypatch.setattr(webhook_main, "date", _FrozenDate)
+    monkeypatch.setattr(slack_router, "date", _FrozenDate)
 
     result = _run_plan_for_one_item(
         verb="close-ask", code="ggl-5168", cp_hash=ask_hash, closed_by="slack",
@@ -445,8 +447,8 @@ def test_view_submission_dispatches_snooze_with_picked_date(monkeypatch, client)
         called["until"] = extras.get("until")
         return {"committed": True, "commit_sha": "ghi789", "errors": []}
 
-    monkeypatch.setattr(webhook_main, "_run_plan_for_one_item", fake_run)
-    monkeypatch.setattr(webhook_main, "_post_response_url_update", lambda **_kw: None)
+    monkeypatch.setattr(slack_router, "_run_plan_for_one_item", fake_run)
+    monkeypatch.setattr(slack_router, "_post_response_url_update", lambda **_kw: None)
 
     payload = {
         "type": "view_submission",
@@ -485,7 +487,7 @@ def test_view_submission_returns_field_error_when_no_date_picked(monkeypatch, cl
     def fake_run(*, verb, code, cp_hash, **extras):
         called["fired"] = True
         return {}
-    monkeypatch.setattr(webhook_main, "_run_plan_for_one_item", fake_run)
+    monkeypatch.setattr(slack_router, "_run_plan_for_one_item", fake_run)
 
     payload = {
         "type": "view_submission",
@@ -559,7 +561,7 @@ def test_view_submission_returns_field_error_when_metadata_missing_fields(monkey
     def fake_run(*, verb, code, cp_hash, **extras):
         called["fired"] = True
         return {}
-    monkeypatch.setattr(webhook_main, "_run_plan_for_one_item", fake_run)
+    monkeypatch.setattr(slack_router, "_run_plan_for_one_item", fake_run)
 
     payload = {
         "type": "view_submission",
@@ -589,8 +591,8 @@ def test_view_submission_does_not_set_closed_by_on_snooze_extras(monkeypatch, cl
     def fake_run(*, verb, code, cp_hash, **extras):
         captured["extras"] = extras
         return {"committed": True, "commit_sha": "abc", "errors": []}
-    monkeypatch.setattr(webhook_main, "_run_plan_for_one_item", fake_run)
-    monkeypatch.setattr(webhook_main, "_post_response_url_update", lambda **_: None)
+    monkeypatch.setattr(slack_router, "_run_plan_for_one_item", fake_run)
+    monkeypatch.setattr(slack_router, "_post_response_url_update", lambda **_: None)
 
     payload = {
         "type": "view_submission",
@@ -635,8 +637,8 @@ def test_block_action_parses_week_iso_from_4th_value_part(monkeypatch, client):
         called["extras"] = extras
         return {"committed": True, "commit_sha": "abc123", "errors": []}
 
-    monkeypatch.setattr(webhook_main, "_run_plan_for_one_item", fake_run)
-    monkeypatch.setattr(webhook_main, "_post_response_url_update", lambda **_kw: None)
+    monkeypatch.setattr(slack_router, "_run_plan_for_one_item", fake_run)
+    monkeypatch.setattr(slack_router, "_post_response_url_update", lambda **_kw: None)
 
     payload = {
         "type": "block_actions",
@@ -674,8 +676,8 @@ def test_block_action_three_part_value_still_valid_no_week(monkeypatch, client):
         called["extras"] = extras
         return {"committed": True, "commit_sha": "abc123", "errors": []}
 
-    monkeypatch.setattr(webhook_main, "_run_plan_for_one_item", fake_run)
-    monkeypatch.setattr(webhook_main, "_post_response_url_update", lambda **_kw: None)
+    monkeypatch.setattr(slack_router, "_run_plan_for_one_item", fake_run)
+    monkeypatch.setattr(slack_router, "_post_response_url_update", lambda **_kw: None)
 
     payload = {
         "type": "block_actions",
@@ -727,8 +729,8 @@ def test_run_plan_for_one_item_closes_ask_in_digest_week_not_today(monkeypatch, 
     def fake_commit(*, tenant_root, meeting_id, ingested):
         return "fakesha1"
 
-    monkeypatch.setattr(webhook_main, "_cloned_tenant", fake_cloned)
-    monkeypatch.setattr(webhook_main, "_commit_and_push", fake_commit)
+    monkeypatch.setattr(git_ops, "_cloned_tenant", fake_cloned)
+    monkeypatch.setattr(git_ops, "_commit_and_push", fake_commit)
 
     # Freeze today into a LATER week (W28) so the default-current-week path
     # would search the wrong file. Only the threaded week_iso saves it.
@@ -739,7 +741,7 @@ def test_run_plan_for_one_item_closes_ask_in_digest_week_not_today(monkeypatch, 
         def today(cls):
             return _date(2026, 7, 8)  # ISO week 28
 
-    monkeypatch.setattr(webhook_main, "date", _FrozenDate)
+    monkeypatch.setattr(slack_router, "date", _FrozenDate)
 
     result = _run_plan_for_one_item(
         verb="close-ask", code="storyos", cp_hash=ask_hash,
@@ -771,8 +773,8 @@ def test_run_plan_for_one_item_defaults_current_week_when_no_week_iso(monkeypatc
     def fake_cloned():
         yield tmp_path
 
-    monkeypatch.setattr(webhook_main, "_cloned_tenant", fake_cloned)
-    monkeypatch.setattr(webhook_main, "_commit_and_push",
+    monkeypatch.setattr(git_ops, "_cloned_tenant", fake_cloned)
+    monkeypatch.setattr(git_ops, "_commit_and_push",
                         lambda **kw: "fakesha1")
 
     from datetime import date as _date
@@ -782,7 +784,7 @@ def test_run_plan_for_one_item_defaults_current_week_when_no_week_iso(monkeypatc
         def today(cls):
             return _date(2026, 5, 12)  # ISO week 20
 
-    monkeypatch.setattr(webhook_main, "date", _FrozenDate)
+    monkeypatch.setattr(slack_router, "date", _FrozenDate)
 
     result = _run_plan_for_one_item(
         verb="close-ask", code="ggl-5168", cp_hash=ask_hash,

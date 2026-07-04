@@ -33,6 +33,8 @@ if str(_WEBHOOK) not in sys.path:
 from fastapi.testclient import TestClient
 
 import main as webhook_main
+from routers import meetings as meetings_router
+import pipeline
 
 from cp_engine.asset_ingest import ProjectFolders
 
@@ -84,14 +86,13 @@ def _wire(
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
 
     sb = object()  # opaque; the endpoint only passes it through (fetch is stubbed)
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
     rec["client"] = sb
 
     # by-recording_id fetch (the endpoint's new helper)
     row = meeting if meeting is not None else _meeting(project_id=project_id)
     rec["row"] = row
-    monkeypatch.setattr(
-        webhook_main, "_fetch_meeting_by_recording_id",
+    monkeypatch.setattr(meetings_router, "_fetch_meeting_by_recording_id",
         lambda c, rid: row if (row is not None and rid == row["recording_id"]) else None,
     )
 
@@ -132,8 +133,7 @@ def _wire(
 
     # capture spawned coros (run them by hand)
     rec.setdefault("spawned", [])
-    monkeypatch.setattr(
-        webhook_main, "_spawn_background",
+    monkeypatch.setattr(pipeline, "_spawn_background",
         lambda coro: rec["spawned"].append(coro),
     )
     return rec
@@ -201,8 +201,7 @@ def test_promote_400_when_recording_id_not_an_int(monkeypatch, client):
 
 def test_promote_404_when_no_meeting(monkeypatch, client):
     rec = _wire(monkeypatch)
-    monkeypatch.setattr(
-        webhook_main, "_fetch_meeting_by_recording_id", lambda c, rid: None
+    monkeypatch.setattr(meetings_router, "_fetch_meeting_by_recording_id", lambda c, rid: None
     )
     resp = _post(client, {"recording_id": 9999})
     assert resp.status_code == 404
@@ -244,7 +243,7 @@ def test_promote_401_when_signature_missing(monkeypatch, client):
 
 def test_promote_500_when_supabase_unconfigured(monkeypatch, client):
     monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: None)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: None)
     resp = _post(client, {"recording_id": 4242})
     assert resp.status_code == 500
     assert "supabase" in resp.text.lower()

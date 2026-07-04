@@ -23,6 +23,7 @@ if str(_WEBHOOK) not in sys.path:
     sys.path.insert(0, str(_WEBHOOK))
 
 import main as webhook_main
+import git_ops
 import observability
 from fastapi.testclient import TestClient
 
@@ -121,7 +122,7 @@ def test_commit_message_carries_correlation_trailer(
         captured["message"] = message
         return "deadbeef"
 
-    monkeypatch.setattr(webhook_main, "_commit_with_message_and_push", fake_push)
+    monkeypatch.setattr(git_ops, "_commit_with_message_and_push", fake_push)
     observability.new_correlation_id("cid-777")
     sha = webhook_main._commit_and_push(
         tenant_root=tmp_path,
@@ -136,9 +137,7 @@ def test_commit_message_no_trailer_outside_request_context(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     captured: dict = {}
-    monkeypatch.setattr(
-        webhook_main,
-        "_commit_with_message_and_push",
+    monkeypatch.setattr(git_ops, "_commit_with_message_and_push",
         lambda root, message: captured.setdefault("message", message) and "sha" or "sha",
     )
     webhook_main._commit_and_push(

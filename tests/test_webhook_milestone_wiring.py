@@ -26,7 +26,8 @@ _WEBHOOK = Path(__file__).resolve().parent.parent / "webhook"
 if str(_WEBHOOK) not in sys.path:
     sys.path.insert(0, str(_WEBHOOK))
 
-import main as webhook_main  # the module is `main.py`
+import main as webhook_main
+import pipeline  # the module is `main.py`
 
 
 def _scaffold_sprint_file(tenant: Path, *, week: str, code: str) -> Path:
@@ -126,8 +127,7 @@ def test_ingest_one_project_passes_supabase_and_meeting_id_to_execute_plan(
             }
         },
     }
-    monkeypatch.setattr(
-        webhook_main, "generate_plan",
+    monkeypatch.setattr(pipeline, "generate_plan",
         lambda **kw: GeneratedPlan(
             plan=fake_plan,
             raw_response="",
@@ -139,7 +139,7 @@ def test_ingest_one_project_passes_supabase_and_meeting_id_to_execute_plan(
 
     # Stub _create_supabase_client to return our recording mock.
     sb = _fake_supabase_for_project(code="ggl-5168")
-    monkeypatch.setattr(webhook_main, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
 
     transcript_path = tmp_path / "transcript.txt"
     transcript_path.write_text("x\n")

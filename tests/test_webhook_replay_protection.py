@@ -32,6 +32,7 @@ if str(_WEBHOOK) not in sys.path:
 from fastapi.testclient import TestClient
 
 import main as webhook_main
+import pipeline
 
 
 @pytest.fixture
@@ -61,9 +62,7 @@ def test_auto_ingest_valid_timestamp_and_hmac_accepted(
     """Fresh timestamp + matching ts-bound HMAC = 200 path runs."""
     monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
     monkeypatch.delenv("WEBHOOK_REQUIRE_TIMESTAMP", raising=False)
-    monkeypatch.setattr(
-        webhook_main,
-        "_perform_auto_ingest",
+    monkeypatch.setattr(pipeline, "_perform_auto_ingest",
         lambda **kw: {"ingested": [], "commit_sha": None, "skipped_no_op": True},
     )
 
@@ -131,9 +130,7 @@ def test_auto_ingest_missing_timestamp_accepted_with_warning_when_gate_off(
     keeps working — backwards compat during the rollout window."""
     monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
     monkeypatch.delenv("WEBHOOK_REQUIRE_TIMESTAMP", raising=False)
-    monkeypatch.setattr(
-        webhook_main,
-        "_perform_auto_ingest",
+    monkeypatch.setattr(pipeline, "_perform_auto_ingest",
         lambda **kw: {"ingested": [], "commit_sha": None, "skipped_no_op": True},
     )
 
@@ -230,9 +227,7 @@ def test_rerun_body_run_id_matching_url_accepted(
         "supabase.create_client", lambda u, k: sb_client, raising=False
     )
 
-    monkeypatch.setattr(
-        webhook_main,
-        "_perform_auto_ingest",
+    monkeypatch.setattr(pipeline, "_perform_auto_ingest",
         lambda **kw: {"ingested": [], "commit_sha": None, "skipped_no_op": True},
     )
 
@@ -284,9 +279,7 @@ def test_rerun_body_without_run_id_rejected_when_gate_enabled(
 
     # Sentinel: if _perform_auto_ingest ever runs, the test will fail
     # (because we don't expect to get past the guard).
-    monkeypatch.setattr(
-        webhook_main,
-        "_perform_auto_ingest",
+    monkeypatch.setattr(pipeline, "_perform_auto_ingest",
         lambda **kw: pytest.fail("_perform_auto_ingest should not run"),
     )
 
@@ -340,9 +333,7 @@ def test_rerun_body_without_run_id_allowed_when_gate_off(
     monkeypatch.setattr(
         "supabase.create_client", lambda u, k: sb_client, raising=False
     )
-    monkeypatch.setattr(
-        webhook_main,
-        "_perform_auto_ingest",
+    monkeypatch.setattr(pipeline, "_perform_auto_ingest",
         lambda **kw: {"ingested": [], "commit_sha": None, "skipped_no_op": True},
     )
 

@@ -31,6 +31,7 @@ if str(_WEBHOOK) not in sys.path:
 from fastapi.testclient import TestClient
 
 import main as webhook_main
+import pipeline
 
 
 @pytest.fixture
@@ -47,8 +48,7 @@ def test_first_delivery_runs_pipeline(
 ) -> None:
     """No prior success row -> _perform_auto_ingest is called normally."""
     monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
-    monkeypatch.setattr(
-        webhook_main, "_find_successful_duplicate_run", lambda mid, codes: None
+    monkeypatch.setattr(pipeline, "_find_successful_duplicate_run", lambda mid, codes: None
     )
     called: dict = {}
 
@@ -56,7 +56,7 @@ def test_first_delivery_runs_pipeline(
         called["yes"] = True
         return {"ingested": [], "commit_sha": None, "skipped_no_op": True}
 
-    monkeypatch.setattr(webhook_main, "_perform_auto_ingest", fake_perform)
+    monkeypatch.setattr(pipeline, "_perform_auto_ingest", fake_perform)
 
     body = json.dumps({"meeting_id": "m1", "project_codes": ["ggl-5168"]}).encode()
     resp = client.post(
@@ -75,9 +75,7 @@ def test_duplicate_delivery_short_circuits(
     200 with status=duplicate_delivery_skipped and the existing run_id —
     no clone, no LLM, no second auto_ingest_runs row."""
     monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
-    monkeypatch.setattr(
-        webhook_main,
-        "_find_successful_duplicate_run",
+    monkeypatch.setattr(pipeline, "_find_successful_duplicate_run",
         lambda mid, codes: "existing-run-id-uuid",
     )
     perform_called: dict = {}
@@ -86,7 +84,7 @@ def test_duplicate_delivery_short_circuits(
         perform_called["yes"] = True
         return {"ingested": [], "commit_sha": None, "skipped_no_op": True}
 
-    monkeypatch.setattr(webhook_main, "_perform_auto_ingest", fake_perform)
+    monkeypatch.setattr(pipeline, "_perform_auto_ingest", fake_perform)
 
     body = json.dumps({"meeting_id": "m1", "project_codes": ["ggl-5168"]}).encode()
     resp = client.post(
@@ -201,9 +199,7 @@ def test_rerun_endpoint_does_not_dedupe(
     )
 
     # Wire a dedupe match — the rerun MUST still run, ignoring it.
-    monkeypatch.setattr(
-        webhook_main,
-        "_find_successful_duplicate_run",
+    monkeypatch.setattr(pipeline, "_find_successful_duplicate_run",
         lambda mid, codes: "would-be-skipped-uuid",
     )
     called: dict = {}
@@ -212,7 +208,7 @@ def test_rerun_endpoint_does_not_dedupe(
         called["yes"] = True
         return {"ingested": [], "commit_sha": None, "skipped_no_op": True}
 
-    monkeypatch.setattr(webhook_main, "_perform_auto_ingest", fake_perform)
+    monkeypatch.setattr(pipeline, "_perform_auto_ingest", fake_perform)
 
     body = b""
     sig = hmac.new(b"test-secret", body, hashlib.sha256).hexdigest()

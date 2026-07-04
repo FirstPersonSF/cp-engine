@@ -22,7 +22,9 @@ _WEBHOOK = Path(__file__).resolve().parent.parent / "webhook"
 if str(_WEBHOOK) not in sys.path:
     sys.path.insert(0, str(_WEBHOOK))
 
-import main as webhook_main  # the module is `main.py`
+import main as webhook_main
+import git_ops
+import pipeline  # the module is `main.py`
 
 
 # ─────────────────────────────────────────────────────────────
@@ -168,14 +170,12 @@ def test_persist_failure_is_swallowed_and_ingest_continues(
     def fake_cloned_tenant():
         yield tenant
 
-    monkeypatch.setattr(webhook_main, "_cloned_tenant", fake_cloned_tenant)
-    monkeypatch.setattr(webhook_main, "_load_tenant_config", lambda root: _config_for(tenant))
-    monkeypatch.setattr(
-        webhook_main, "_stage_transcript",
+    monkeypatch.setattr(git_ops, "_cloned_tenant", fake_cloned_tenant)
+    monkeypatch.setattr(pipeline, "_load_tenant_config", lambda root: _config_for(tenant))
+    monkeypatch.setattr(pipeline, "_stage_transcript",
         lambda root, mid, text: tenant / "staged.txt",
     )
-    monkeypatch.setattr(
-        webhook_main, "_fetch_meeting",
+    monkeypatch.setattr(pipeline, "_fetch_meeting",
         lambda mid: {"id": mid, "title": "Workshop", "meeting_date": "2026-06-16", "action_items": []},
     )
 
@@ -189,7 +189,7 @@ def test_persist_failure_is_swallowed_and_ingest_continues(
             "status": "ok",
         }
 
-    monkeypatch.setattr(webhook_main, "_ingest_one_project", fake_ingest_one)
+    monkeypatch.setattr(pipeline, "_ingest_one_project", fake_ingest_one)
 
     commits: list[str] = []
 
@@ -197,19 +197,19 @@ def test_persist_failure_is_swallowed_and_ingest_continues(
         commits.append("deadbeef")
         return "deadbeef"
 
-    monkeypatch.setattr(webhook_main, "_commit_and_push", fake_commit)
+    monkeypatch.setattr(git_ops, "_commit_and_push", fake_commit)
 
     # The persist itself blows up — the loop must swallow it.
     def boom(*args, **kwargs):
         raise RuntimeError("disk on fire")
 
-    monkeypatch.setattr(webhook_main, "_persist_transcript", boom)
+    monkeypatch.setattr(pipeline, "_persist_transcript", boom)
 
     # Downstream best-effort blocks — stub them out so they don't reach
     # real services. They're not under test here.
-    monkeypatch.setattr(webhook_main, "propose_clickup_tasks", lambda mid, codes: {})
-    monkeypatch.setattr(webhook_main, "_generate_meeting_artifacts", lambda **kw: {})
-    monkeypatch.setattr(webhook_main, "_log_run_to_supabase", lambda **kw: None)
+    monkeypatch.setattr(pipeline, "propose_clickup_tasks", lambda mid, codes: {})
+    monkeypatch.setattr(pipeline, "_generate_meeting_artifacts", lambda **kw: {})
+    monkeypatch.setattr(pipeline, "_log_run_to_supabase", lambda **kw: None)
 
     result = webhook_main._perform_auto_ingest(
         meeting_id="meet-xyz",
@@ -244,19 +244,17 @@ def test_transcript_only_commit_fires_with_no_bullets(
     def fake_cloned_tenant():
         yield tenant
 
-    monkeypatch.setattr(webhook_main, "_cloned_tenant", fake_cloned_tenant)
-    monkeypatch.setattr(webhook_main, "_load_tenant_config", lambda root: _config_for(tenant))
-    monkeypatch.setattr(
-        webhook_main, "_stage_transcript",
+    monkeypatch.setattr(git_ops, "_cloned_tenant", fake_cloned_tenant)
+    monkeypatch.setattr(pipeline, "_load_tenant_config", lambda root: _config_for(tenant))
+    monkeypatch.setattr(pipeline, "_stage_transcript",
         lambda root, mid, text: tenant / "staged.txt",
     )
-    monkeypatch.setattr(
-        webhook_main, "_fetch_meeting",
+    monkeypatch.setattr(pipeline, "_fetch_meeting",
         lambda mid: {"id": mid, "title": "Workshop", "meeting_date": "2026-06-16", "action_items": []},
     )
     # find_spine_dir must resolve to the real on-disk project dir so the
     # (non-faked) _persist_transcript can write into it.
-    monkeypatch.setattr(webhook_main, "find_spine_dir", lambda root, c: proj)
+    monkeypatch.setattr(pipeline, "find_spine_dir", lambda root, c: proj)
 
     # The per-project ingest reports NO files written — the only thing
     # that should trigger the commit is the persisted transcript.
@@ -269,7 +267,7 @@ def test_transcript_only_commit_fires_with_no_bullets(
             "status": "ok",
         }
 
-    monkeypatch.setattr(webhook_main, "_ingest_one_project", fake_ingest_one)
+    monkeypatch.setattr(pipeline, "_ingest_one_project", fake_ingest_one)
 
     commits: list[str] = []
 
@@ -277,11 +275,11 @@ def test_transcript_only_commit_fires_with_no_bullets(
         commits.append("cafef00d")
         return "cafef00d"
 
-    monkeypatch.setattr(webhook_main, "_commit_and_push", fake_commit)
+    monkeypatch.setattr(git_ops, "_commit_and_push", fake_commit)
 
-    monkeypatch.setattr(webhook_main, "propose_clickup_tasks", lambda mid, codes: {})
-    monkeypatch.setattr(webhook_main, "_generate_meeting_artifacts", lambda **kw: {})
-    monkeypatch.setattr(webhook_main, "_log_run_to_supabase", lambda **kw: None)
+    monkeypatch.setattr(pipeline, "propose_clickup_tasks", lambda mid, codes: {})
+    monkeypatch.setattr(pipeline, "_generate_meeting_artifacts", lambda **kw: {})
+    monkeypatch.setattr(pipeline, "_log_run_to_supabase", lambda **kw: None)
 
     result = webhook_main._perform_auto_ingest(
         meeting_id="meet-xyz",
@@ -315,7 +313,7 @@ def _capture_commit_message(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         captured.append(message)
         return "feedface"
 
-    monkeypatch.setattr(webhook_main, "_commit_with_message_and_push", fake_push)
+    monkeypatch.setattr(git_ops, "_commit_with_message_and_push", fake_push)
     return captured
 
 
