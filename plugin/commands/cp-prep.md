@@ -9,9 +9,11 @@ Generate a forward-looking, prioritized sprint-planning doc for the
 upcoming sprint. The engine emits a **bundle** — every active project's
 full Exec Summary plus deterministic metrics (capacity binding, urgent
 flags, forward calendar, open commitments) — and **you (the model)
-synthesize** that bundle into `_planning.md` in-session: a Focus list of
-the projects that need the room, the decisions & blockers the partners
-must resolve, cross-cutting patterns, and per-owner commitments.
+synthesize** that bundle into `_planning.md` in-session, following a
+fixed six-section contract: Focus list, decisions & blockers,
+cross-cutting patterns, per-owner commitments, forward calendar, and a
+roster table covering every non-focus project (every active project
+appears exactly once).
 
 The doc is a synthesized plan you author and can defend live ("why is
 ggl-5168 on the focus list?"), not a pre-rendered inventory. The engine
@@ -104,28 +106,57 @@ reading it directly is fine too.)
 Read the bundle — roughly one Exec Summary per active project (~29 of
 them tenant-wide) — and synthesize **across** them into a prioritized
 plan. Then write it to `$PLANNING_PATH` with the **Write** tool. Do NOT
-just transcribe the bundle; the value is in the synthesis. The doc
-should contain:
+just transcribe the bundle; the value is in the synthesis.
 
-- **Focus list** — the 5–8 projects that need the room this sprint,
-  each with a one-line reason: a decision is due, there's a blocker,
-  a deadline is close, or it's slipping. Everything else is "steady";
-  name it briefly but don't spend meeting time on it. Lead with this —
-  it's the agenda. **Respect the freshness verdicts**: a project whose
-  Exec Summary is flagged ⚠ STALE must not be planned from its written
-  Status/Next-up — either put it on the Focus list with the reason
-  "state unverified — confirm verbally" or mark its line "(state as of
-  <date>, unconfirmed)".
-- **Decisions & blockers needing the partners** — pulled from the Exec
-  Summaries' Blockers/Next-up fields and the cross-cutting decisions,
-  **deduped across projects** (the same shared blocker shouldn't appear
-  three times). Say who's needed for each.
-- **Cross-cutting patterns** — capacity binding (an owner on 5+
-  projects), competing deadlines in the same week, blockers shared
-  across projects. These are the things only visible when you read all
-  the summaries at once.
-- **Per-owner commitments** — what each partner owes going into the
-  sprint, rolled up across their projects (us → them and them → us).
+The doc has a **fixed six-section contract**, in this order. The
+sections are the meeting's walk order; don't invent, merge, or drop
+sections week to week — the whole point of the contract is that W(N)
+and W(N+1) come out the same shape.
+
+1. **Focus list** — the 5–8 projects that need the room this sprint,
+   ranked, each with a one-line reason: a decision is due, there's a
+   blocker, a deadline is close, or it's slipping. Lead with this —
+   it's the agenda. **Respect the freshness verdicts**: a project whose
+   Exec Summary is flagged ⚠ STALE must not be planned from its written
+   Status/Next-up — either put it on the Focus list with the reason
+   "state unverified — confirm verbally" or mark its roster row
+   "(state as of <date>, unconfirmed)".
+2. **Decisions & blockers needing the partners** — pulled from the Exec
+   Summaries' Blockers/Next-up fields and the cross-cutting decisions
+   (include the aged ones, with their age in days), **deduped across
+   projects** (the same shared blocker shouldn't appear three times).
+   Say who's needed for each.
+3. **Cross-cutting patterns** — capacity binding (an owner on 5+
+   projects), competing deadlines in the same week, blockers shared
+   across projects. These are the things only visible when you read all
+   the summaries at once.
+4. **Per-owner commitments** — what each partner owes going into the
+   sprint, rolled up across their projects (us → them and them → us),
+   from the bundle's open commitments.
+5. **Forward calendar** — the dated, tenant-wide milestone/feedback
+   table from the bundle (MC-2 schedule entries).
+6. **Roster — everything else** — one table row per active project NOT
+   on the Focus list:
+
+   `| Project | Owner | State | Waiting on | Next dated event | Room? |`
+
+   - **State** is YOUR one-line synthesized verdict from the Exec
+     Summary — never pasted Quick Resume / Status text. If you can't
+     write a defensible one-liner (no Exec Summary, placeholders only),
+     the cell is `⚠ no state` — that's itself useful in the meeting.
+   - **Room?** is `confirm` (worth a 10-second verbal "still true?") or
+     `skip` (parked/waiting, reason visible in State/Waiting-on). This
+     makes the roster walkable at speed: ~30 rows ≈ 5 minutes.
+   - Staleness/freshness caveats go **in the row** (e.g. a ⚠ on the
+     State cell), not in a caveat paragraph.
+
+**The invariant: every active project in the bundle appears exactly
+once — as a Focus entry or a roster row.** Before writing the file,
+count: Focus entries + roster rows must equal the bundle's project
+count. A project missing from both is a rot risk; a project in both is
+noise. (This invariant is why the roster exists: the meeting needs a
+full roll call so nothing rots silently, at one-line density, while the
+Focus list gets the room's actual time.)
 
 Because you author this in-session, you can defend and revise it live in
 the meeting ("why is ggl-5168 on the focus list — what's the blocker?").
@@ -311,9 +342,18 @@ in ClickUp).
   project; the new one is a short plan you built by reading across all
   the Exec Summaries — and can defend live ("why is ggl-5168 on the
   focus list?").
+- **The six sections appear in order, every week** — same shape W(N)
+  and W(N+1). Novelty goes in the content, not the structure.
 - **A real Focus list** leads: 5–8 projects that need the room, each
   with a one-line reason (decision due / blocker / deadline / slipping).
-  Steady projects are named but don't consume meeting time.
+- **The roster is a walkable table, not a paragraph.** Every non-focus
+  project gets a row with a synthesized State verdict and a
+  confirm/skip call. Collapsing the steady projects into a run-on
+  paragraph (the W28 failure mode) reads as "projects are missing";
+  a full-entry-per-project dump (the W27 failure mode) reads as hollow.
+  One row each is the density the roll call needs.
+- **The invariant holds**: Focus entries + roster rows = the bundle's
+  active-project count. Every project appears exactly once.
 - **Decisions & blockers are deduped** across projects — a shared blocker
   appears once, with who's needed to clear it.
 - **Cross-cutting patterns** (capacity binding, competing deadlines,
