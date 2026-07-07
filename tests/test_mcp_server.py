@@ -330,10 +330,13 @@ class _FakeWriteQuery:
 
     Supports the chains the write tools use:
       - .select(...).eq(...).eq(...).limit(...).execute()  (create existing-check)
-      - .select(...).eq(...).eq(...).execute()             (version prior-fetch)
+      - .select(...).eq(...).execute()                     (version prior-fetch)
       - .upsert(rows, on_conflict=...).execute()           (write)
       - .update({...}).eq(...).execute()                   (demote prior live)
-    `select_rows` is the seeded `.data` for any select that runs on this table.
+    Selects APPLY their `.eq()` filters against `select_rows` (so tests can
+    prove a query filters by the right column) — the earlier fake ignored
+    `.eq()`, which is exactly why the project_code-vs-project_id resolver bug
+    slipped through.
     """
 
     def __init__(self, table, client):
@@ -341,12 +344,14 @@ class _FakeWriteQuery:
         self._client = client
         self._mode = None  # "select" | "upsert" | "update"
         self._payload = None
+        self._filters: list[tuple[str, object]] = []
 
     def select(self, *_a, **_k):
         self._mode = "select"
         return self
 
-    def eq(self, _col, _val):
+    def eq(self, col, val):
+        self._filters.append((col, val))
         return self
 
     def limit(self, _n):
@@ -369,8 +374,12 @@ class _FakeWriteQuery:
             return type("R", (), {"data": []})()
         if self._mode == "upsert":
             return type("R", (), {"data": list(self._payload)})()
-        # select
-        return type("R", (), {"data": list(self._client.select_rows)})()
+        # select — apply the recorded eq() filters against the seeded rows.
+        rows = [
+            r for r in self._client.select_rows
+            if all(r.get(c) == v for c, v in self._filters)
+        ]
+        return type("R", (), {"data": rows})()
 
 
 class _FakeWriteClient:
@@ -403,7 +412,11 @@ def test_create_spine_element_writes_authored_v1(monkeypatch):
 
 def test_create_spine_element_conflict(monkeypatch):
     """An existing element with the same slug → error, no clobbering upsert."""
-    client = _FakeWriteClient(select_rows=[{"id": "ibx-5192/_authored/email-from-janet/v1"}])
+    client = _FakeWriteClient(select_rows=[{
+        "id": "ibx-5192/_authored/email-from-janet/v1",
+        "project_id": "pid",
+        "est_item_id": "_authored/email-from-janet",
+    }])
     monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
 
     out = srv.create_spine_element("ibx-5192", "Email from Janet", "email", "Hi", [])
@@ -419,10 +432,12 @@ def test_create_spine_element_unresolved(monkeypatch):
     assert "not found" in out["error"]
 
 
-def test_add_spine_version(monkeypatch):
-    """Demotes the prior live v1 then upserts a new live v2 with the note."""
-    prior = [{
-        "id": "ibx-5192/_authored/hyp/v1",
+def _prior_v1(**over):
+    """A live v1 authored row. `project_id`/`project_code` default to the pair
+    the resolver hands the write tool (pid) vs. the SLUG stored on the row —
+    deliberately different from the short code a caller usually types."""
+    row = {
+        "id": "ibx-5153/_authored/hyp/v1",
         "est_item_id": "_authored/hyp",
         "est_item_kind": None,
         "phase": None,
@@ -437,11 +452,19 @@ def test_add_spine_version(monkeypatch):
         "body": "old",
         "sources": [],
         "origin": "authored",
-    }]
-    client = _FakeWriteClient(select_rows=prior)
+        "project_id": "pid",
+        "project_code": "ibx-5153-ai-campaign",
+    }
+    row.update(over)
+    return row
+
+
+def test_add_spine_version(monkeypatch):
+    """Demotes the prior live v1 then upserts a new live v2 with the note."""
+    client = _FakeWriteClient(select_rows=[_prior_v1()])
     monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
 
-    out = srv.add_spine_version("ibx-5192", "_authored/hyp", "new", "changed")
+    out = srv.add_spine_version("ibx-5153", "_authored/hyp", "new", "changed")
 
     assert out == {"element_id": "_authored/hyp", "version_label": "v2"}
     # prior live v1 demoted via targeted update
@@ -455,6 +478,49 @@ def test_add_spine_version(monkeypatch):
     assert row["status"] == "live"
     assert row["version_note"] == "changed"
     assert row["body"] == "new"
+    # New rows carry the element's OWN stored slug, not the caller's short code.
+    assert row["project_code"] == "ibx-5153-ai-campaign"
+
+
+def test_add_spine_version_resolves_by_project_id_not_code(monkeypatch):
+    """REGRESSION: caller passes `ibx-5153`, the row stores the full slug
+    `ibx-5153-ai-campaign`. The old code filtered `.eq("project_code", <short>)`
+    and returned 'no authored element' despite a resolvable project + element.
+    The fix filters by project_id (the resolved UUID)."""
+    client = _FakeWriteClient(select_rows=[_prior_v1()])
+    # _resolve maps EITHER code form to the same project_id 'pid'.
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+
+    out = srv.add_spine_version("ibx-5153", "_authored/hyp", "new", "changed")
+
+    assert "error" not in out
+    assert out == {"element_id": "_authored/hyp", "version_label": "v2"}
+
+
+def test_add_spine_version_by_framing_substring(monkeypatch):
+    """The key may be a framing (title) substring, like pull_spine_element."""
+    client = _FakeWriteClient(select_rows=[_prior_v1()])
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+
+    out = srv.add_spine_version("ibx-5153", "latest hypothesis", "new", "changed")
+
+    assert out == {"element_id": "_authored/hyp", "version_label": "v2"}
+
+
+def test_add_spine_version_picks_next_number_across_history(monkeypatch):
+    """Prior versions of any status are fetched, so the new label is v3 when a
+    superseded v1 and a live v2 already exist."""
+    client = _FakeWriteClient(select_rows=[
+        _prior_v1(id="a/v1", version_label="v1", status="superseded", body="oldest"),
+        _prior_v1(id="a/v2", version_label="v2", status="live", body="current"),
+    ])
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+
+    out = srv.add_spine_version("ibx-5153", "_authored/hyp", "newer", "changed")
+
+    assert out["version_label"] == "v3"
+    # Only the LIVE v2 gets demoted (one update), not the already-superseded v1.
+    assert client.updates == [("spine_substance", {"status": "superseded"})]
 
 
 def test_add_spine_version_unknown_element(monkeypatch):
@@ -462,11 +528,28 @@ def test_add_spine_version_unknown_element(monkeypatch):
     client = _FakeWriteClient(select_rows=[])
     monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
 
-    out = srv.add_spine_version("ibx-5192", "_authored/missing", "new", "changed")
+    out = srv.add_spine_version("ibx-5153", "_authored/missing", "new", "changed")
 
     assert "no authored element" in out["error"]
     assert client.upserts == []
     assert client.updates == []
+
+
+def test_create_spine_element_conflict_detected_across_code_forms(monkeypatch):
+    """REGRESSION twin: the collision guard scopes by project_id, so an existing
+    element is detected even when the row stores a different code slug than the
+    caller passes — the old project_code filter would MISS it and clobber."""
+    existing = _prior_v1(
+        est_item_id="_authored/email-from-janet",
+        project_code="ibx-5153-ai-campaign",
+    )
+    client = _FakeWriteClient(select_rows=[existing])
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+
+    out = srv.create_spine_element("ibx-5153", "Email from Janet", "email", "Hi", [])
+
+    assert "already exists" in out["error"]
+    assert client.upserts == []
 
 
 class _FakeQuery:

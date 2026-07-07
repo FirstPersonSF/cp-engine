@@ -515,3 +515,108 @@ def test_pull_source_query_mode_miss_does_not_retry():
 
     assert len(client.calls) == 1
     assert "no source named 'Nonexistent Doc'" in out["note"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  resolve_element_versions — the write-path element resolver
+# ──────────────────────────────────────────────────────────────────────
+
+
+class _FilterQuery:
+    """A select query that APPLIES its .eq() filters (unlike _FakeTableQuery,
+    which only records them) — needed to prove project_id scoping."""
+
+    def __init__(self, rows):
+        self._rows = rows
+        self._filters: list[tuple[str, object]] = []
+
+    def select(self, _cols):
+        return self
+
+    def eq(self, col, val):
+        self._filters.append((col, val))
+        return self
+
+    def execute(self):
+        data = [
+            r for r in self._rows
+            if all(r.get(c) == v for c, v in self._filters)
+        ]
+        return _FakeExecute(data)
+
+
+class _FilterClient:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def table(self, _name):
+        return _FilterQuery(self._rows)
+
+
+def _sub_row(**over):
+    row = {
+        "id": "row-1",
+        "est_item_id": "_authored/hyp",
+        "project_id": "pid-1",
+        "project_code": "ibx-5153-ai-campaign",
+        "status": "live",
+        "version_label": "v1",
+        "framing": "Latest hypothesis",
+        "body": "b",
+        "sources": [],
+        "origin": "authored",
+    }
+    row.update(over)
+    return row
+
+
+def test_resolve_element_versions_by_est_item_id():
+    from cp_engine.project_sources import resolve_element_versions
+
+    client = _FilterClient([
+        _sub_row(id="v1", version_label="v1", status="superseded"),
+        _sub_row(id="v2", version_label="v2", status="live"),
+        # A different project's element with the same slug must NOT leak in.
+        _sub_row(id="other", project_id="pid-OTHER"),
+    ])
+    eid, versions = resolve_element_versions(
+        client, "pid-1", "_authored/hyp", columns="id, est_item_id, status",
+    )
+    assert eid == "_authored/hyp"
+    assert {v["id"] for v in versions} == {"v1", "v2"}  # project-scoped, all statuses
+
+
+def test_resolve_element_versions_by_framing_substring():
+    from cp_engine.project_sources import resolve_element_versions
+
+    client = _FilterClient([_sub_row(id="v1")])
+    eid, versions = resolve_element_versions(
+        client, "pid-1", "latest hypothesis", columns="id, est_item_id, status, framing",
+    )
+    assert eid == "_authored/hyp"
+    assert len(versions) == 1
+
+
+def test_resolve_element_versions_no_match():
+    from cp_engine.project_sources import resolve_element_versions
+
+    client = _FilterClient([_sub_row()])
+    eid, versions = resolve_element_versions(
+        client, "pid-1", "_authored/nope", columns="id, est_item_id, status",
+    )
+    assert eid is None
+    assert versions == []
+
+
+def test_resolve_element_versions_scopes_by_project_id():
+    """The whole point: an element resolves under its project_id even though its
+    stored project_code slug differs from any short code a caller might type."""
+    from cp_engine.project_sources import resolve_element_versions
+
+    client = _FilterClient([_sub_row(project_code="ibx-5153-ai-campaign")])
+    # Resolver was handed the project's UUID (pid-1), not a code string.
+    eid, versions = resolve_element_versions(
+        client, "pid-1", "_authored/hyp", columns="id, est_item_id, status, project_code",
+    )
+    assert eid == "_authored/hyp"
+    assert versions[0]["project_code"] == "ibx-5153-ai-campaign"
