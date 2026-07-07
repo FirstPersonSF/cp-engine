@@ -338,19 +338,26 @@ Exec Summary plus deterministic metrics — and **you synthesize**
 doc; the engine does not render it). The synthesized plan contains:
 
 - A **Focus list** — the 5–8 projects that need the room, each with a
-  one-line reason (decision due / blocker / deadline / slipping); steady
-  projects named but not dwelt on
+  one-line reason (decision due / blocker / deadline / slipping)
 - **Decisions & blockers needing the partners**, deduped across projects
 - **Cross-cutting patterns** — capacity binding, competing deadlines,
   shared blockers (visible only when you read all the Exec Summaries at
   once)
 - **Per-owner commitments** rolled up across each partner's projects
   (us → them + them → us)
+- A **Forward calendar** — the dated, tenant-wide milestone table
+- A **Roster table** — one row per non-focus project
+  (`Project | Owner | State | Waiting on | Next dated event | Room?`),
+  each State a synthesized one-line verdict and a confirm/skip call
+
+**Invariant: every active project appears exactly once** — as a Focus
+entry or a roster row — so the meeting gets a full roll call at
+one-line density while the Focus list gets the room's time.
 
 Because you author it in-session, you can defend and revise it live in
 the meeting. The bundle also carries the forward calendar of dated
-ClickUp milestones and the tenant capacity/hours metrics as raw
-material.
+milestones (MC-2 schedules primary) and the tenant capacity/hours
+metrics as raw material.
 
 For ad-hoc scoped prep (e.g. one client meeting): `/cp-prep <code>
 [<code> ...]`.
