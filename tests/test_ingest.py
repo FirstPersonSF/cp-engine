@@ -1322,6 +1322,27 @@ def _fake_supabase_for_project(*, project_id: str = "p1",
         return result
 
     in_chain.execute.side_effect = _dedupe_execute
+
+    # Commitments dedupe chain (.select("id").eq("cp_hash", h).limit(1)
+    # .execute()) — same hash-branching trick as the proposals chain above.
+    limit_chain = (
+        client.table.return_value.select.return_value
+        .eq.return_value.limit.return_value
+    )
+
+    def _hash_execute(*_args, **_kwargs):
+        eq_calls = client.table.return_value.select.return_value.eq.call_args_list
+        last_hash = None
+        for call in reversed(eq_calls):
+            args = call.args
+            if len(args) >= 2 and args[0] == "cp_hash":
+                last_hash = args[1]
+                break
+        result = MagicMock()
+        result.data = [{"id": "x"}] if last_hash in existing else []
+        return result
+
+    limit_chain.execute.side_effect = _hash_execute
     return client
 
 
@@ -1380,6 +1401,27 @@ def _fake_supabase_for_initiative(*, initiative_id: str = "i1",
         return result
 
     in_chain.execute.side_effect = _dedupe_execute
+
+    # Commitments dedupe chain (.select("id").eq("cp_hash", h).limit(1)
+    # .execute()) — same hash-branching trick as the proposals chain above.
+    limit_chain = (
+        client.table.return_value.select.return_value
+        .eq.return_value.limit.return_value
+    )
+
+    def _hash_execute(*_args, **_kwargs):
+        eq_calls = client.table.return_value.select.return_value.eq.call_args_list
+        last_hash = None
+        for call in reversed(eq_calls):
+            args = call.args
+            if len(args) >= 2 and args[0] == "cp_hash":
+                last_hash = args[1]
+                break
+        result = MagicMock()
+        result.data = [{"id": "x"}] if last_hash in existing else []
+        return result
+
+    limit_chain.execute.side_effect = _hash_execute
     return client
 
 
@@ -1528,7 +1570,7 @@ def test_unknown_verb_still_rejected() -> None:
 
 
 def test_set_milestone_inserts_row(tmp_path: Path) -> None:
-    """Handler inserts the expected row shape into clickup_task_proposals."""
+    """Handler inserts the expected commitment row shape."""
     tenant = _make_tenant(tmp_path)
     sb = _fake_supabase_for_project(code="ggl-5168")
     plan = {
@@ -1557,27 +1599,24 @@ def test_set_milestone_inserts_row(tmp_path: Path) -> None:
     assert result.errors == [], result.errors
     row = _last_insert_row(sb)
     assert row["project_id"] == "p1"
-    assert row["clickup_list_id"] == "L1"
-    assert row["task_type"] == "milestone"
-    assert row["is_milestone"] is True
-    # The description must include the milestone-deliverable text so a
-    # reviewer in the dashboard can see what's being proposed without
-    # joining tables. Date may be folded into the description (no
-    # `due_date` column on the proposals table today).
+    assert row.get("initiative_id") is None
+    # ISO plan date lands in the real due_date column; below-"high"
+    # confidence folds into the description (no commitment column).
+    assert row["due_date"] == "2026-06-06"
     assert "Pop-up final to Rena" in row["description"]
-    assert "2026-06-06" in row["description"]
-    assert row["milestone_confidence"] == "medium"
-    assert row["milestone_depends_on"] == ["pop-up-r3-feedback"]
-    assert row["milestone_linked_to"] == ["ggl-5177"]
-    assert row["meeting_id"] == "meet-abc"
-    assert row["status"] == "pending"
+    assert "[confidence: medium]" in row["description"]
+    assert row["direction"] == "us_to_them"
+    assert row["owner_name"] == "brandon"
+    assert row["source_meeting_id"] == "meet-abc"
+    assert row["source_kind"] == "meeting_ingest"
+    assert row["status"] == "open"
+    assert row["date_status"] == "proposed"
 
 
-def test_set_milestone_missing_clickup_list_raises(tmp_path: Path) -> None:
-    """Project with no clickup_list_id surfaces as an ingest error.
-
-    (Result.errors collects per-verb exceptions; the verb wraps its
-    own ValueError.) No row is inserted.
+def test_set_milestone_no_clickup_list_still_inserts(tmp_path: Path) -> None:
+    """A project with NO ClickUp list gets its milestone commitment anyway —
+    the old clickup_list_id gate is gone with the commitments cutover
+    (cp-engine #38); ClickUp routing no longer gates milestone capture.
     """
     tenant = _make_tenant(tmp_path)
     sb = _fake_supabase_for_project(code="ggl-5168", clickup_list_id=None)
@@ -1598,13 +1637,14 @@ def test_set_milestone_missing_clickup_list_raises(tmp_path: Path) -> None:
     result = execute_plan(
         plan, tenant_root=tenant, today=date(2026, 5, 12), supabase=sb
     )
-    assert any("clickup_list_id" in e for e in result.errors), result.errors
-    # No insert happened — the project routing failed before that.
-    assert not sb.table.return_value.insert.called
+    assert result.errors == [], result.errors
+    row = _last_insert_row(sb)
+    assert row["project_id"] == "p1"
+    assert "Pop-up final" in row["description"]
 
 
 def test_set_client_ask_task_inserts_row(tmp_path: Path) -> None:
-    """Handler inserts a client_ask proposal with the expected shape."""
+    """Handler inserts a client-ask commitment with the expected shape."""
     tenant = _make_tenant(tmp_path)
     sb = _fake_supabase_for_project(code="ggl-5168")
     plan = {
@@ -1630,15 +1670,16 @@ def test_set_client_ask_task_inserts_row(tmp_path: Path) -> None:
     assert result.errors == [], result.errors
     row = _last_insert_row(sb)
     assert row["project_id"] == "p1"
-    assert row["clickup_list_id"] == "L1"
-    assert row["task_type"] == "client_ask"
-    assert row["is_milestone"] is False
     assert "Round 3 pop-up feedback" in row["description"]
     # Stakeholder name preserved in description until we add a structured field.
     assert "rena" in row["description"].lower()
-    assert "2026-06-02" in row["description"]
-    assert row["meeting_id"] == "meet-abc"
-    assert row["status"] == "pending"
+    # ISO expected_by lands in the real due_date column, NOT the description.
+    assert row["due_date"] == "2026-06-02"
+    assert "2026-06-02" not in row["description"]
+    assert row["direction"] == "us_to_them"
+    assert row["source_meeting_id"] == "meet-abc"
+    assert row["status"] == "open"
+    assert row["date_status"] == "proposed"
 
 
 def test_set_client_ask_task_optional_expected_by(tmp_path: Path) -> None:
@@ -1665,8 +1706,8 @@ def test_set_client_ask_task_optional_expected_by(tmp_path: Path) -> None:
 def test_set_milestone_no_supabase_is_skipped(tmp_path: Path) -> None:
     """No supabase client → verb is skipped silently (best-effort), not a hard error.
 
-    Mirrors the resilience pattern in webhook/clickup_propose: ClickUp
-    routing must never break the primary auto-ingest contract.
+    Mirrors the resilience pattern in webhook/commitments_propose:
+    MC-2 writes must never break the primary auto-ingest contract.
     """
     tenant = _make_tenant(tmp_path)
     plan = {
@@ -1702,12 +1743,12 @@ def test_set_milestone_is_in_supported_verbs() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  v0.15.1 — cp_ask_hash dedupe on ClickUp-proposal verbs
+#  cp_hash dedupe on commitment verbs
 # ──────────────────────────────────────────────────────────────────────
 #
 # Without dedupe, the v0.13 rerun endpoint re-inserts the same milestone /
-# client-ask N times. The hash recipe matches webhook/clickup_propose's
-# record-ask path so all proposal verbs use a single round-tripping hash.
+# client-ask N times. The hash recipe is unchanged across the ClickUp →
+# commitments cutover so re-ingests stay no-ops over pre-cutover history.
 
 
 def test_set_milestone_inserts_cp_ask_hash(tmp_path: Path) -> None:
@@ -1735,12 +1776,13 @@ def test_set_milestone_inserts_cp_ask_hash(tmp_path: Path) -> None:
     assert result.errors == [], result.errors
     row = _last_insert_row(sb)
     expected = _content_hash("ggl-5168", "set-milestone", "Pop-up final to Rena")
-    assert row["cp_ask_hash"] == expected
+    assert row["cp_hash"] == expected
 
 
 def test_set_milestone_dedupes_existing_pending(tmp_path: Path) -> None:
     """Re-inserting the same milestone is a silent no-op when an existing
-    row in pending/approved status already carries the same cp_ask_hash."""
+    commitment already carries the same cp_hash (any status — dropped
+    rows stay dead)."""
     from cp_engine.ingest import _content_hash
     tenant = _make_tenant(tmp_path)
     deliverable = "Pop-up final to Rena"
@@ -1796,7 +1838,7 @@ def test_set_client_ask_task_inserts_cp_ask_hash(tmp_path: Path) -> None:
     expected = _content_hash(
         "ggl-5168", "set-client-ask-task", "Round 3 pop-up feedback"
     )
-    assert row["cp_ask_hash"] == expected
+    assert row["cp_hash"] == expected
 
 
 def test_set_client_ask_task_dedupes_existing_pending(tmp_path: Path) -> None:
@@ -1827,16 +1869,15 @@ def test_set_client_ask_task_dedupes_existing_pending(tmp_path: Path) -> None:
 def test_set_milestone_dedupe_lookup_failure_falls_back_to_insert(
     tmp_path: Path,
 ) -> None:
-    """If the dedupe Supabase query errors, _proposal_already_present must
-    fall back to allowing the insert — the auto-ingest contract is that
-    ClickUp routing never silently drops a real milestone.
+    """If the dedupe Supabase query errors, commitment_already_present
+    must fall back to allowing the insert — the auto-ingest contract is
+    that MC-2 writes never silently drop a real milestone.
     """
-    from unittest.mock import MagicMock
     tenant = _make_tenant(tmp_path)
     sb = _fake_supabase_for_project(code="ggl-5168")
     # Make the dedupe lookup raise. The project lookup chain is separate
     # (it's `.eq.return_value.execute`) so it stays intact.
-    sb.table.return_value.select.return_value.eq.return_value.in_.return_value.execute.side_effect = RuntimeError(
+    sb.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.side_effect = RuntimeError(
         "boom"
     )
     plan = {
