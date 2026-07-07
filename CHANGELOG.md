@@ -4,6 +4,28 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.50.2 — 2026-07-06
+
+### Spine write tools resolve elements the same way the read tools do
+
+- **`add_spine_version` fixed**: it looked up the element's prior versions
+  with `.eq("project_code", <code passed by caller>)`, but the stored
+  `project_code` is the canonical slug (`ibx-5153-ai-campaign`), so any
+  caller passing a shorter form (`ibx-5153`) got `no authored element`
+  even though `pull_spine_element` resolved the same key fine. It now
+  scopes by `project_id` (the resolved UUID, same as every read path) and
+  accepts a `framing` (title) substring as well as an exact `est_item_id`,
+  via the new shared `project_sources.resolve_element_versions`. New rows
+  carry the element's own stored slug forward.
+- **`create_spine_element` collision guard fixed** (the write-side twin):
+  it scoped the existing-element check by `project_code` too, so a slug
+  collision could be MISSED when the caller's code differed from the row's
+  — it now scopes by `project_id`.
+- Regression tests pin both directions, including the framing-substring
+  key form and full-version-history numbering; the write-tool test fake
+  now applies its `.eq()` filters (it previously ignored them, which is
+  why the bug slipped through).
+
 ## v0.50.1 — 2026-07-04
 
 ### Account / sprint-planning ingest: transcript cap, model, timeout

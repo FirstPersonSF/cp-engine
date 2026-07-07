@@ -316,6 +316,45 @@ def resolve_live_element(client, project_id: str, key: str) -> dict | None:
     return row
 
 
+def resolve_element_versions(
+    client, project_id: str, key: str, *, columns: str,
+) -> tuple[str | None, list[dict]]:
+    """Resolve `key` to an element and return ALL its versions (any status).
+
+    The write-side counterpart to `resolve_live_element`: `add_spine_version`
+    needs every version of the element (to compute the next version number and
+    to demote the current live row), not just the live one. Resolution reuses
+    the exact same matcher the read tools use — `key` may be an exact
+    `est_item_id` OR a distinct `framing` substring — but scopes by
+    `project_id` (the UUID the code resolver produces), NOT by a `project_code`
+    string that may not match the slug stored on the row (the bug this fixes).
+
+    Returns `(est_item_id, versions)`:
+      - resolved   → `(est_item_id, [all version rows])`,
+      - no/ambiguous match → `(None, [])`.
+
+    `columns` is the caller's SELECT list (it needs more columns than the read
+    path's resolve set, e.g. `id`/`sources`/`origin` for the version rebuild).
+    """
+    resp = (
+        client.table(Tables.SPINE_SUBSTANCE)
+        .select(columns)
+        .eq("project_id", project_id)
+        .execute()
+    )
+    rows = getattr(resp, "data", None) or []
+    # Match against the LIVE rows only (a superseded framing could otherwise
+    # resolve an element that no longer has a live version), mirroring the read
+    # path — then return that element's FULL version history.
+    live_rows = [r for r in rows if r.get("status") == "live"]
+    match, _reason, _ = _match_one_live(live_rows, key)
+    if match is None:
+        return None, []
+    est_item_id = match.get("est_item_id")
+    versions = [r for r in rows if r.get("est_item_id") == est_item_id]
+    return est_item_id, versions
+
+
 def list_spine(client, project_id: str) -> list[dict]:
     """List a project's LIVE spine elements (index, not bodies).
 

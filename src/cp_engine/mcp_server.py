@@ -417,9 +417,14 @@ def create_spine_element(project_code: str, label: str, type: str,
             now_iso=datetime.now(timezone.utc).isoformat(),
         )
         # Guard against silently clobbering an existing element with this slug.
+        # Scope by project_id (the UUID), NOT project_code: the caller's code
+        # string may differ from the slug stored on the row (e.g. `ibx-5153`
+        # vs `ibx-5153-ai-campaign`), and a project_code filter would MISS the
+        # collision and let a duplicate slug through — the write-side twin of
+        # the add_spine_version resolver gap.
         eid = rows[0]["est_item_id"]
         existing = (client.table(Tables.SPINE_SUBSTANCE).select("id")
-                    .eq("project_code", project_code).eq("est_item_id", eid)
+                    .eq("project_id", pid).eq("est_item_id", eid)
                     .limit(1).execute().data or [])
         if existing:
             return {"error": f"an element '{eid}' already exists; add a version instead"}
@@ -438,32 +443,43 @@ def add_spine_version(project_code: str, element_id: str, body: str,
     Supersedes the prior live version (a targeted status update) and creates a
     new live version carrying the `version_note` ("what changed"). Returns
     {element_id, version_label}. `element_id` is the element's est_item_id
-    (e.g. `_authored/latest-hypothesis`).
+    (e.g. `_authored/latest-hypothesis`) OR a distinct `framing` (title)
+    substring — the same key forms `pull_spine_element` accepts.
     """
     from datetime import datetime, timezone
 
     from cp_engine.authored_element import build_version_rows
+    from cp_engine.project_sources import resolve_element_versions
 
     _SEL = ("id, est_item_id, est_item_kind, phase, binding, layer, placement, "
             "serves, version_label, version_date, status, framing, body, sources, "
-            "origin, important, note")
+            "origin, important, note, project_code")
     try:
         resolved = _resolve(project_code)
         if resolved is None:
             return {"error": f"project {project_code!r} not found"}
         client, pid, _cid = resolved
-        prior = (client.table(Tables.SPINE_SUBSTANCE).select(_SEL)
-                 .eq("project_code", project_code).eq("est_item_id", element_id)
-                 .execute().data or [])
-        if not prior:
+        # Resolve by project_id (the UUID) + the SAME key matcher the read path
+        # uses. The prior code filtered `.eq("project_code", <passed code>)`,
+        # which fails whenever the caller's code string differs from the slug
+        # stored on the row (e.g. `ibx-5153` vs `ibx-5153-ai-campaign`) — the
+        # read/write resolver divergence. Accepts est_item_id OR framing now.
+        canonical_id, prior = resolve_element_versions(client, pid, element_id, columns=_SEL)
+        if canonical_id is None:
             return {"error": f"no authored element {element_id!r} in {project_code!r}"}
+        # Carry the element's OWN stored project_code onto the new rows (the
+        # canonical slug), not whatever code form the caller passed in.
+        row_project_code = next(
+            (v.get("project_code") for v in prior if v.get("project_code")),
+            project_code,
+        )
         # Demote prior live row(s) via targeted update (no full-row rebuild —
         # mirrors the mc-2 endpoint; avoids clobbering prior sources/version_note).
         for v in prior:
             if v.get("status") == "live":
                 client.table(Tables.SPINE_SUBSTANCE).update({"status": "superseded"}).eq("id", v["id"]).execute()
         rows = build_version_rows(
-            project_id=pid, project_code=project_code, est_item_id=element_id,
+            project_id=pid, project_code=row_project_code, est_item_id=canonical_id,
             prior_versions=prior, body=body, version_note=version_note,
             now_iso=datetime.now(timezone.utc).isoformat(),
         )
