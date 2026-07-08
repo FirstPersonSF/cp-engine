@@ -75,6 +75,7 @@ class ChannelMapRow:
     primary_channel_id: str | None         # legacy scalar; None for initiatives
     primary_channel_name: str | None       # legacy scalar; None for initiatives
     kind: str = "engagement"               # "engagement" or "initiative"
+    owner_id: str | None = None            # MC-2 uuid (projects.id / initiatives.id)
 
 
 @dataclass(frozen=True)
@@ -173,6 +174,7 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
                 primary_channel_id=primary,
                 primary_channel_name=row.get("slack_channel_name") or None,
                 kind="engagement",
+                owner_id=row.get("id") or None,
             )
         )
 
@@ -219,6 +221,7 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
                 primary_channel_id=None,
                 primary_channel_name=None,
                 kind="initiative",
+                owner_id=row.get("id") or None,
             )
         )
 
@@ -294,6 +297,38 @@ def post_dm(
     if not resp.get("ok"):
         raise SlackError(
             f"chat_postMessage returned ok=false for user={user_id}: "
+            f"{resp.get('error', 'unknown')}"
+        )
+    return resp.get("ts", "")
+
+
+def post_channel(
+    client,
+    *,
+    channel_id: str,
+    text: str,
+    blocks: list[dict] | None = None,
+) -> str:
+    """Post to a Slack CHANNEL via chat.postMessage.
+
+    Same contract as :func:`post_dm` (which passes a user id as the
+    channel param); this variant exists so call sites read correctly and
+    so channel-specific failures carry the channel id in the error.
+    The bot must be a member of the channel (`/invite`) or Slack returns
+    ``not_in_channel``.
+    """
+    kwargs = {"channel": channel_id, "text": text}
+    if blocks is not None:
+        kwargs["blocks"] = blocks
+    try:
+        resp = client.chat_postMessage(**kwargs)
+    except Exception as exc:  # slack_sdk.errors.SlackApiError or transport
+        raise SlackError(
+            f"chat_postMessage failed for channel={channel_id}: {exc}"
+        ) from exc
+    if not resp.get("ok"):
+        raise SlackError(
+            f"chat_postMessage returned ok=false for channel={channel_id}: "
             f"{resp.get('error', 'unknown')}"
         )
     return resp.get("ts", "")

@@ -143,6 +143,17 @@ class AttentionDigestConfig:
 
 
 @dataclass(frozen=True)
+class DatesLoopConfig:
+    """Weekly Slack dates loop configuration (commitments consolidation).
+
+    `partners_channel` is the tenant-wide rollup channel id; None means
+    the rollup post is skipped (per-project posts still go out).
+    """
+    partners_channel: str | None = None
+    window_days: int = 14
+
+
+@dataclass(frozen=True)
 class TenantConfig:
     """Merged view of a tenant's committed + local configuration.
 
@@ -195,6 +206,9 @@ class TenantConfig:
     attention_digest: AttentionDigestConfig = field(
         default_factory=AttentionDigestConfig
     )
+    # Weekly Slack dates loop. Tenants opt in via `[dates_loop]` in
+    # `.cp-engine.toml`; absent block yields defaults (no partners rollup).
+    dates_loop: DatesLoopConfig = field(default_factory=DatesLoopConfig)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -242,6 +256,7 @@ def load(tenant_root: Path) -> TenantConfig:
     if committed["team"]:
         kwargs["team"] = committed["team"]
     kwargs["attention_digest"] = committed["attention_digest"]
+    kwargs["dates_loop"] = committed["dates_loop"]
     return TenantConfig(**kwargs)
 
 
@@ -420,6 +435,9 @@ def _normalize_committed(data: dict, source: Path) -> dict:
         data.get("attention_digest") or {}, source
     )
 
+    # Optional [dates_loop] table. Absent block → defaults.
+    dates_loop = _parse_dates_loop(data.get("dates_loop") or {}, source)
+
     return {
         "name": name,
         "display": display,
@@ -430,7 +448,33 @@ def _normalize_committed(data: dict, source: Path) -> dict:
         "risk_categories": risk_categories,
         "team": team,
         "attention_digest": attention_digest,
+        "dates_loop": dates_loop,
     }
+
+
+def _parse_dates_loop(raw: dict, source: Path) -> DatesLoopConfig:
+    """Parse the optional [dates_loop] block from .cp-engine.toml."""
+    if not raw:
+        return DatesLoopConfig()
+
+    partners_channel = raw.get("partners_channel")
+    if partners_channel is not None and (
+        not isinstance(partners_channel, str) or not partners_channel
+    ):
+        raise CommittedConfigInvalid(
+            f"{source}: [dates_loop].partners_channel must be a non-empty "
+            f"Slack channel-ID string"
+        )
+
+    window_days = raw.get("window_days", 14)
+    if isinstance(window_days, bool) or not isinstance(window_days, int) or window_days < 1:
+        raise CommittedConfigInvalid(
+            f"{source}: [dates_loop].window_days must be a positive integer"
+        )
+
+    return DatesLoopConfig(
+        partners_channel=partners_channel, window_days=window_days
+    )
 
 
 def _parse_attention_digest(raw: dict, source: Path) -> AttentionDigestConfig:

@@ -265,54 +265,16 @@ def prep_planning_cmd(
     except Exception:
         planned_allocations = None
 
-    # MC-2 Supabase client for clickup_list_id resolution. Silent degrade if
-    # creds aren't set — per-project blocks will render "(ClickUp list not set)".
-    from cp_engine.prep_planning import _make_supabase_client, _resolve_clickup_token
+    # MC-2 Supabase client (schedule milestones + commitments). Silent
+    # degrade if creds aren't set — per-project blocks render empty-state
+    # notes. ClickUp is out of the prep path entirely (commitments
+    # consolidation, cp-engine #38): milestones come from MC-2 schedules,
+    # asks from the commitments table, and sprint-ask dedupe happens inside
+    # build_project_block via the shared cp_hash recipe.
+    from cp_engine.prep_planning import _make_supabase_client
     supabase_client = _make_supabase_client(config)
 
-    # ClickUp token: env first, then <mc-2 clone>/backend/.env (accepting both
-    # CLICKUP_API_TOKEN and CLICKUP_API_KEY). Resolved here where config is
-    # available — without it, a fresh shell resolves nothing and every
-    # project's Forward Calendar renders empty.
-    clickup_token = _resolve_clickup_token(config)
-
     code_filter = tuple(c.strip() for c in project_filter.split(",") if c.strip()) or None
-
-    # Pre-fetch the cp_ask_hash → clickup_task_id map for bridging-period
-    # dedupe (Open Commitments would otherwise render an ask once as a
-    # ClickUp client-ask and once as a sprint-file fallback). Scan each
-    # active project's current sprint file for hashes; degrade silently on
-    # any failure since the dedupe is a polish, not load-bearing.
-    clickup_task_ids: dict[str, str] = {}
-    try:
-        from cp_engine.prep_planning import (
-            _parse_sprint_open_asks,
-            filter_active,
-        )
-        from cp_engine.sprints import current_sprint_week_iso
-
-        week_iso_for_dedupe = current_sprint_week_iso(
-            datetime.combine(today, datetime.min.time())
-        )
-        wanted_codes = (
-            {c.lower() for c in code_filter} if code_filter else None
-        )
-        all_hashes: list[str] = []
-        for p in filter_active(projects):
-            if wanted_codes is not None and p.code.lower() not in wanted_codes:
-                continue
-            sprint_path = (
-                config.root / "sprints" / week_iso_for_dedupe / f"{p.code}.md"
-            )
-            for a in _parse_sprint_open_asks(sprint_path):
-                if a["hash"]:
-                    all_hashes.append(a["hash"])
-        if all_hashes:
-            clickup_task_ids = _fetch_clickup_task_ids_for_hashes(
-                config, all_hashes
-            )
-    except Exception:  # noqa: BLE001 — dedupe must not break the doc
-        clickup_task_ids = {}
 
     if summary:
         # Summary mode renders no per-project prose, so the sweep synthesis
@@ -325,8 +287,6 @@ def prep_planning_cmd(
             project_filter=code_filter,
             tenant_hours_last_week=tenant_hours,
             supabase_client=supabase_client,
-            clickup_token=clickup_token,
-            clickup_task_ids=clickup_task_ids,
             planned_allocations=planned_allocations,
         )
         click.echo(out_str)
@@ -345,8 +305,6 @@ def prep_planning_cmd(
             project_filter=code_filter,
             tenant_hours_last_week=tenant_hours,
             supabase_client=supabase_client,
-            clickup_token=clickup_token,
-            clickup_task_ids=clickup_task_ids,
             planned_allocations=planned_allocations,
         )
         if out:
@@ -384,8 +342,6 @@ def prep_planning_cmd(
         project_filter=code_filter,
         tenant_hours_last_week=tenant_hours,
         supabase_client=supabase_client,
-        clickup_token=clickup_token,
-        clickup_task_ids=clickup_task_ids,
         sweep_llm=sweep_llm,
         planned_allocations=planned_allocations,
     )
@@ -509,3 +465,77 @@ def _fetch_clickup_task_ids_for_hashes(config, hashes: list[str]) -> dict[str, s
         return {}
 
 
+
+
+@click.command("dates-loop")
+@click.option(
+    "--post",
+    is_flag=True,
+    help="Actually post to Slack and apply ratification write-backs. "
+    "Default is a dry run: render everything, send nothing, change nothing.",
+)
+@click.option(
+    "--window-days",
+    type=int,
+    default=None,
+    help="Forward window in days (default: [dates_loop].window_days, 14).",
+)
+@click.option(
+    "--today",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Override today's date (YYYY-MM-DD). Useful for testing.",
+)
+def dates_loop_cmd(post: bool, window_days: int | None, today) -> None:
+    """Weekly Slack dates loop — what's coming due, per project channel.
+
+    Renders one post per active project/initiative with open commitments
+    or schedule milestones inside the window (due this week / next N days
+    / needs a date / slipped), plus a tenant-wide partners rollup. With
+    --post, sends each to its mapped Slack channel(s) and applies the
+    ratification write-backs (posted_count bumps, proposed->agreed after
+    two unchanged posts, slipped stamps). Dry run by default.
+    """
+    from datetime import date as _date
+
+    from cp_engine.dates_loop import run_dates_loop
+
+    try:
+        config = load(Path.cwd())
+    except ConfigError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+    today_d = today.date() if today else _date.today()
+    result = run_dates_loop(
+        config, today=today_d, post=post, window_days=window_days
+    )
+
+    for cpost in result.posts:
+        sent = " [POSTED]" if cpost.posted else ""
+        click.echo(f"--- {cpost.code} -> {', '.join(cpost.channel_ids)}{sent}")
+        click.echo(cpost.text)
+        click.echo("")
+    if result.partners_text:
+        dest = config.dates_loop.partners_channel or "(no partners_channel configured)"
+        sent = " [POSTED]" if result.partners_posted else ""
+        click.echo(f"--- partners rollup -> {dest}{sent}")
+        click.echo(result.partners_text)
+        click.echo("")
+    if result.skipped_no_channel:
+        click.echo(
+            "skipped (content but no Slack channel / slack disabled): "
+            + ", ".join(result.skipped_no_channel)
+        )
+    if post:
+        click.echo(
+            f"ratification: {result.posted_count_bumped} bumped · "
+            f"{result.agreed_promoted} promoted to agreed · "
+            f"{result.slipped_stamped} stamped slipped"
+        )
+    if result.errors:
+        for err in result.errors:
+            click.echo(f"error: {err}", err=True)
+        raise SystemExit(1)
+    if not result.posts and not result.partners_text:
+        click.echo("Nothing due in the window — no posts to send.")

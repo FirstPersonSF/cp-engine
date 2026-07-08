@@ -90,12 +90,16 @@ with a **freshness verdict** on its heading line (parsed from the
 `· updated <date>` stamp; >14 days old renders a ⚠ STALE warning),
 urgent flags, the forward calendar, and open commitments — plus
 tenant-level metrics (capacity binding, hours, cross-cutting decisions,
-each decision aged in days). Milestones come from TWO sources: **MC-2's
-estimator schedule is primary** (day-granular milestones + feedback
-windows maintained in the Jobs workspace — entries labeled
-`(MC-2 schedule)`), with ClickUp `milestone`-tagged tasks as the
-secondary source. The engine still does the deterministic heavy lifting;
-it just hands you the material instead of pre-formatting a doc.
+each decision aged in days). Milestones come from **MC-2's estimator
+schedule** (day-granular milestones + feedback windows maintained in the
+Jobs workspace — entries labeled `(MC-2 schedule)`); open commitments
+come from **MC-2's `commitments` table** (them→us client-asks +
+us→them/internal obligations, with `[proposed]`/`[slipped]` markers on
+dates the team hasn't ratified yet), deduped against sprint-file asks by
+their shared cp:hash. ClickUp is out of the prep path entirely
+(commitments consolidation). The engine still does the deterministic
+heavy lifting; it just hands you the material instead of pre-formatting
+a doc.
 
 (If you prefer, `cp prep-planning --bundle --out <path>` writes the
 bundle to a scratch file you can Read; capturing into `$BUNDLE` and
@@ -283,41 +287,15 @@ partner owns 5+ projects, sprint planning has to budget time
 accordingly (and partners should consider rebalancing). This supersedes
 the older `prep-agenda` workload-by-owner bullet.
 
-### 5. Surface open ClickUp tasks per project (read-only)
+### 5. Commitments ride in the bundle — no side lookup
 
-Meeting action items are tracked as ClickUp tasks (see the cp ClickUp
-tasks pipeline). For sprint-planning prep, surface each active project's
-open ClickUp tasks alongside the planning doc so the partners see
-committed follow-ups, not just what's in the cp sprint files.
-
-Note: `_planning.md` already includes milestones in each project's
-forward calendar (from ClickUp tasks tagged `milestone`), so this step
-should filter those out — surface only non-milestone open tasks.
-
-This is **read-only** — never create, complete, or modify ClickUp tasks
-from `/cp-prep`.
-
-For each project in scope that has a `clickup_list_id` in MC-2's
-`public.projects`:
-
-1. Query MC-2 for the project's `clickup_list_id` (skip projects where
-   it is null — they have no ClickUp list yet).
-2. Call the ClickUp MCP `clickup_filter_tasks` with
-   `list_ids: ["<id>"]` and `include_closed: false` to fetch open
-   tasks for the list. The tool has **no native tag-exclude
-   parameter** (its `tags` argument is a positive include with OR
-   logic across multiple tags), so **filter milestones client-side**:
-   after the call returns, drop any task whose `tags` array contains
-   an entry named `"milestone"` before surfacing it. Milestones are
-   already in the forward calendar of `_planning.md` and would
-   double-count. Action-item-tagged and client-ask-tagged tasks pass
-   through unchanged.
-3. Surface a short per-project block to the user: task name + assignee +
-   status. Flag `from-fathom`-tagged tasks that are still unassigned.
-
-If the ClickUp MCP is not available in the session, skip this step and
-note it — the rest of the planning doc still stands. This step never
-blocks doc generation.
+Meeting action items, milestones, and client asks are tracked as MC-2
+**commitments** (dated, direction-typed, ratification-stated), and the
+bundle already carries each project's open commitments in its Open
+Commitments table — there is no separate task-system lookup step
+anymore. The weekly Slack dates loop (`cp dates-loop`) is the surface
+that chases dates between sprint plannings; `/cp-prep` just reads the
+current state.
 
 ### 6. Don't commit
 
@@ -333,7 +311,7 @@ churn distracting). Default: don't auto-commit. Tell the user:
 `/cp-prep` is idempotent — re-running overwrites `_planning.md` in place
 with fresh state. Safe to re-run after a `cp sync`, after a `/cp-ingest`,
 or anytime new content lands (including after adding/closing milestones
-in ClickUp).
+in the MC-2 schedule or commitments in MC-2).
 
 ## What good looks like
 
@@ -377,22 +355,13 @@ in ClickUp).
   it.
 - **`cp prep-planning` fails with config error.** Run `cp init` if
   `.cp-engine.toml` is missing. Otherwise check the error and resolve.
-- **`CLICKUP_API_TOKEN` unset or invalid.** `cp prep-planning --summary`
-  currently returns `milestone_counts: {total: 0, fetched: 0, errored: 0}`
-  and `errors: []` — i.e. the failure is silent on the summary output
-  (engine fix tracked for v0.16). If you see all-zero milestone counts
-  AND no errors AND the doc renders `_Could not fetch milestones — check
-  ClickUp connection._` for affected projects, verify the token:
-  `echo $CLICKUP_API_TOKEN | head -c 20` should start with `pk_`. Set it
-  in your shell or `mc-2/backend/.env`.
 - **Forward calendar shows `_(no milestones in the MC-2 schedule …)_`.**
-  As of v0.50 the calendar's primary source is MC-2's estimator schedule
-  (day-granular milestones + feedback windows on the Gantt), with ClickUp
-  `milestone` tags secondary. An empty calendar now means the project has
-  neither — fix it where the work is planned: add milestones to the
-  project's Schedule in the MC-2 Jobs workspace (and set the project
-  `start_date` — without it the week math has no anchor and schedule
-  items can't resolve to dates).
+  The calendar's sole source is MC-2's estimator schedule (day-granular
+  milestones + feedback windows on the Gantt). An empty calendar means
+  the project has none — fix it where the work is planned: add milestones
+  to the project's Schedule in the MC-2 Jobs workspace (and set the
+  project `start_date` — without it the week math has no anchor and
+  schedule items can't resolve to dates).
 - **Planning doc is mostly empty.** Likely a fresh tenant or a sprint
   with no recent ingest activity. The structure is right; data flows
   in as `/cp-ingest` runs against transcripts.
@@ -412,8 +381,8 @@ in ClickUp).
 - The engine doesn't render `_planning.md` — **you** do (from the
   bundle, with the Write tool). The engine only emits the bundle and the
   deterministic metrics.
-- Doesn't write to ClickUp. Pure read on the ClickUp side too — never
-  creates, updates, or completes tasks.
+- Doesn't write to MC-2 commitments — pure read. (Nothing in the prep
+  path touches ClickUp at all anymore.)
 - Doesn't ingest transcripts (that's `/cp-ingest`).
 - Doesn't update master-cp.md or weekly-cp.md (those have their own
   paths via `cp sync` and `/cp-ingest` respectively).

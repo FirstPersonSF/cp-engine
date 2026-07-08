@@ -18,7 +18,7 @@ from pathlib import Path
 
 import git_ops
 import observability
-from clickup_propose import propose_clickup_tasks
+from commitments_propose import propose_commitments
 from fastapi import HTTPException
 from meeting_artifact import write_meeting_artifacts
 
@@ -753,10 +753,12 @@ def _perform_auto_ingest(
         if meeting and link_client is not None and link_url and link_key:
             _link_meeting_safe(link_client, meeting, link_url, link_key)
 
-        # Stage A — propose ClickUp tasks from the meeting's Fathom action
-        # items. Independent of whether the transcript produced cp bullets;
-        # best-effort, never raises.
-        clickup_summary = propose_clickup_tasks(meeting_id, project_codes)
+        # Stage A — propose commitments from the meeting's Fathom action
+        # items (MC-2 public.commitments; successor to the ClickUp proposal
+        # path — commitments consolidation, cp-engine #38). Independent of
+        # whether the transcript produced cp bullets; best-effort, never
+        # raises.
+        commitments_summary = propose_commitments(meeting_id, project_codes)
 
         # Per-meeting artifacts — synthesis + transcript into each
         # project's meetings/ dir. Runs after the per-project bullet
@@ -778,7 +780,7 @@ def _perform_auto_ingest(
                 "ingested": ingested,
                 "commit_sha": None,
                 "skipped_no_op": True,
-                "clickup_proposals": clickup_summary,
+                "commitments": commitments_summary,
                 "meeting_artifacts": artifact_summary,
             }
             _log_run_to_supabase(
@@ -803,7 +805,7 @@ def _perform_auto_ingest(
             "commit_sha": last_commit,
             "commit_shas": commits,
             "skipped_no_op": False,
-            "clickup_proposals": clickup_summary,
+            "commitments": commitments_summary,
             "meeting_artifacts": artifact_summary,
         }
         _log_run_to_supabase(

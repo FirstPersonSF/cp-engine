@@ -83,6 +83,8 @@ def _fake_supabase_for_project(
     )
     # Dedupe lookup: .eq("cp_ask_hash", h).in_("status", [...]).execute().data → []
     client.table.return_value.select.return_value.eq.return_value.in_.return_value.execute.return_value.data = []
+    # Commitments dedupe: .eq("cp_hash", h).limit(1).execute().data → []
+    client.table.return_value.select.return_value.eq.return_value.limit.return_value.execute.return_value.data = []
     return client
 
 
@@ -172,11 +174,11 @@ def test_ingest_one_project_passes_supabase_and_meeting_id_to_execute_plan(
         "regressed back to the v0.15.0 dead-code state"
     )
     inserted_row = insert_calls[-1].args[0]
-    assert inserted_row["task_type"] == "milestone"
-    assert inserted_row["is_milestone"] is True
-    assert inserted_row["meeting_id"] == "meet-xyz", (
+    assert inserted_row["direction"] == "us_to_them"
+    assert inserted_row["date_status"] == "proposed"
+    assert inserted_row["source_meeting_id"] == "meet-xyz", (
         "meeting_id must be threaded through so the dashboard can link "
         "review actions back to the originating Fathom meeting"
     )
-    # cp_ask_hash from Fix 1B is present (round-tripping dedupe).
-    assert "cp_ask_hash" in inserted_row
+    # cp_hash is present (round-tripping dedupe).
+    assert "cp_hash" in inserted_row

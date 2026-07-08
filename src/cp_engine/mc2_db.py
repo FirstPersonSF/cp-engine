@@ -62,6 +62,7 @@ class Tables:
     ASSET_INGEST_RUNS = "asset_ingest_runs"
     RAG_ASSETS = "rag_assets"
     CLICKUP_TASK_PROPOSALS = "clickup_task_proposals"
+    COMMITMENTS = "commitments"
 
     # public — spine
     SPINE_SUBSTANCE = "spine_substance"
