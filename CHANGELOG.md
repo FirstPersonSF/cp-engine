@@ -4,6 +4,22 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.51.2 — 2026-07-08
+
+### The CLI-downgrade loop is dead
+
+- **`sync-cli-version.sh` can no longer move the CLI backwards.** The
+  plugin's SessionStart hook trusted the marketplace clone's
+  `plugin.json` as the target version, but Claude Code doesn't reliably
+  refresh that clone — so after every release, any session started
+  outside a tenant "healed" a newer installed CLI down to the stale
+  clone's version. Two fixes: (a) the hook now refreshes the marketplace
+  clone itself before reading it (guarded: only a checkout under
+  `~/.claude/plugins/` is ever reset); (b) a hard no-downgrade guard —
+  if the installed CLI is newer than the plugin says, the hook no-ops,
+  even offline. One manual clone reset per machine picks this up; after
+  that it's self-sustaining.
+
 ## v0.51.1 — 2026-07-07
 
 ### Dates loop: partners channel lives in MC-2, not .cp-engine.toml

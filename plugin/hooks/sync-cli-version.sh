@@ -39,6 +39,26 @@ while [ "$_dir" != "/" ] && [ -n "$_dir" ]; do
     _dir=$(dirname "$_dir")
 done
 
+# ── Marketplace-clone self-update (the once-and-for-all downgrade fix) ──
+# This hook's truth source is the plugin.json in the marketplace clone at
+# ~/.claude/plugins/marketplaces/cp-engine — but Claude Code does not
+# reliably refresh that clone, so after every release it goes stale and
+# the old behavior "helpfully" downgraded a newer installed CLI to match
+# it. Fix both sides: (a) refresh the clone here, so its version is
+# current; (b) below, NEVER move the CLI backwards regardless.
+# Safety: only reset a checkout that is genuinely the marketplace clone
+# (toplevel under ~/.claude/plugins/) — never a dev working tree.
+_toplevel=$(git -C "${CLAUDE_PLUGIN_ROOT}" rev-parse --show-toplevel 2>/dev/null || true)
+case "$_toplevel" in
+    "$HOME/.claude/plugins/"*)
+        if git -C "$_toplevel" fetch --quiet origin main 2>/dev/null; then
+            git -C "$_toplevel" reset --hard --quiet origin/main 2>/dev/null || true
+        fi
+        # Offline / fetch failure is fine: the no-downgrade guard below
+        # makes a stale clone harmless.
+        ;;
+esac
+
 if [ ! -f "$PLUGIN_JSON" ]; then
     # Plugin is malformed; nothing we can do. Stay silent — surfacing
     # this on every session would be noise the user can't act on.
@@ -65,6 +85,18 @@ INSTALLED_VERSION=$(cp --version 2>/dev/null | awk '{print $NF}' || true)
 
 if [ "$PLUGIN_VERSION" = "$INSTALLED_VERSION" ]; then
     exit 0
+fi
+
+# NEVER downgrade. If the installed CLI is NEWER than the plugin says
+# (stale clone that couldn't refresh, or a dev install ahead of the last
+# release), leave it alone. sort -V gives semantic version ordering; the
+# highest of the two being the installed version means we're ahead.
+if [ -n "$INSTALLED_VERSION" ]; then
+    _highest=$(printf '%s\n%s\n' "$PLUGIN_VERSION" "$INSTALLED_VERSION" | sort -V | tail -1)
+    if [ "$_highest" = "$INSTALLED_VERSION" ]; then
+        # Installed >= plugin (and != from the check above) → ahead. No-op.
+        exit 0
+    fi
 fi
 
 # Drift detected. Tell the user what we're doing before the network call —
