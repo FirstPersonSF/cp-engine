@@ -4,6 +4,42 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.51.0 — 2026-07-07
+
+### Commitments consolidation: MC-2 replaces ClickUp for dated work (#38, #39)
+
+MC-2's new `public.commitments` table (mc-2 mig 097) is now the single
+store for who-owes-what-by-when. ClickUp is out of the ingest and
+planning paths entirely (the app itself survives for other uses).
+
+- **Meeting-ingest writes repointed** — the webhook's Stage A writes
+  Fathom action items as `date_status='proposed'` commitments instead of
+  ClickUp task proposals; the `set-milestone` / `set-client-ask-task`
+  verbs write commitments with a real `due_date` column and no
+  `clickup_list_id` gate. Hash recipes unchanged, so re-ingests stay
+  no-ops across the cutover. The `clickup-task-closed` read path keeps
+  working against historical rows during the decommission tail.
+- **Weekly Slack dates loop** (`cp dates-loop`, `POST /dates-loop`) —
+  per-project channel posts (slipped / due this week / due next N days /
+  needs a date, with MC-2 schedule milestones riding along) plus a
+  tenant-wide partners rollup with pile-up detection. The post is the
+  date-agreement mechanism: `posted_count` bumps on each successful
+  send, `proposed → agreed` promotes at the second unchanged post, and
+  past-due open rows get stamped `slipped`. Post-only v1. New
+  `[dates_loop]` config block (`partners_channel`, `window_days`).
+- **prep-planning off ClickUp** — MC-2's estimator schedule is the sole
+  milestone source; them→us commitments are the client-asks; us→them and
+  internal commitments join the Open Commitments table with
+  `[proposed]`/`[slipped]` markers on unratified dates; sprint-file asks
+  dedupe against commitments via the shared record-ask `cp:hash`. The
+  "(ClickUp list not set)" warnings are gone. The `clickup_*` kwargs on
+  the public render entry points remain as documented no-ops.
+- **`/cp-prep` six-section contract** (#39, shipped in the same window) —
+  `_planning.md` is pinned to Focus list / Decisions & blockers /
+  Cross-cutting patterns / Per-owner commitments / Forward calendar /
+  Roster table, with the invariant that every active project appears
+  exactly once (Focus entry or roster row).
+
 ## v0.50.2 — 2026-07-06
 
 ### Spine write tools resolve elements the same way the read tools do
