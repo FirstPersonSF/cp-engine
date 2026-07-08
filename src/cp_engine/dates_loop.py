@@ -42,6 +42,37 @@ _COMMITMENT_COLUMNS = (
 # posted_count is by construction "posts at the current date".
 _RATIFY_AFTER_POSTS = 2
 
+# MC-2 app_config key holding the partners-rollup channel id. Channel
+# configuration lives in MC-2 (one home), not in .cp-engine.toml — same
+# principle as the per-project channel map.
+_PARTNERS_CHANNEL_KEY = "dates_loop_partners_channel"
+
+
+def _partners_channel(client: Any) -> str | None:
+    """The tenant-wide rollup channel id from MC-2 app_config, or None.
+
+    The jsonb value is accepted as either a bare string ("C0…") or an
+    object with a "channel" key. Absent/blank → the rollup is skipped
+    (per-project posts still go out)."""
+    try:
+        rows = (
+            client.table(Tables.APP_CONFIG)
+            .select("key, value")
+            .eq("key", _PARTNERS_CHANNEL_KEY)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:  # noqa: BLE001 — rollup is optional
+        log.warning("partners-channel lookup failed: %s", exc)
+        return None
+    if not rows:
+        return None
+    value = rows[0].get("value")
+    if isinstance(value, dict):
+        value = value.get("channel")
+    return value if isinstance(value, str) and value else None
+
 
 @dataclass
 class ChannelPost:
@@ -58,6 +89,7 @@ class ChannelPost:
 @dataclass
 class DatesLoopResult:
     posts: list[ChannelPost] = field(default_factory=list)
+    partners_channel: str | None = None  # resolved from MC-2 app_config
     partners_text: str | None = None
     partners_posted: bool = False
     skipped_no_channel: list[str] = field(default_factory=list)
@@ -258,6 +290,7 @@ def run_dates_loop(
     window_days = window_days or config.dates_loop.window_days
 
     client = mc2_db.get_client(config)
+    result.partners_channel = _partners_channel(client)
     commitments = _fetch_open_commitments(client)
     by_owner: dict[str, list[dict]] = {}
     for c in commitments:
@@ -344,15 +377,18 @@ def run_dates_loop(
                 result.errors.append(f"{cpost.code}/{channel_id}: {exc}")
         cpost.posted = ok
 
-    partners_channel = config.dates_loop.partners_channel
-    if result.partners_text and partners_channel:
+    if result.partners_text and result.partners_channel:
         try:
             slack_mod.post_channel(
-                web, channel_id=partners_channel, text=result.partners_text
+                web,
+                channel_id=result.partners_channel,
+                text=result.partners_text,
             )
             result.partners_posted = True
         except slack_mod.SlackError as exc:
-            result.errors.append(f"partners/{partners_channel}: {exc}")
+            result.errors.append(
+                f"partners/{result.partners_channel}: {exc}"
+            )
 
     _apply_ratification(client, result, commitments, today=today)
     return result
