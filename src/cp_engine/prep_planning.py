@@ -143,7 +143,11 @@ class ProjectPlanningBlock:
     client_asks: tuple[Milestone, ...]
     sprint_open_asks: tuple[SprintAsk, ...]
     urgent: tuple[dict, ...]  # flags from _detect_urgent (may be empty)
-    fetch_error: str | None  # non-None when ClickUp fetch failed OR list is unset/empty
+    fetch_error: str | None  # "no_schedule_milestones" empty-state, else None
+    # Open us→them / internal commitments from MC-2 (mig 097), as Milestone
+    # shims — rendered in the Open Commitments table alongside schedule
+    # milestones and them→us client-asks.
+    our_commitments: tuple[Milestone, ...] = ()
     # Optional whole-project sweep synthesis (Project Spine slice 3, Phase B).
     # None on the default fast path — only populated when ``cp prep-planning
     # --sweep`` injects a ``sweep_llm`` and the project has a backfilled spine.
@@ -157,16 +161,12 @@ class ProjectPlanningBlock:
     # which project states to distrust.
     exec_summary_updated: str | None = None
     exec_summary_age_days: int | None = None
-    # ``fetch_error`` carries three distinct sentinels alongside genuine
-    # network/4xx error strings — keep the rendering branches in
-    # ``_render_forward_calendar`` and the error-aggregation guard in
-    # ``build_planning_result`` in sync with this list:
-    #   "no_clickup_list"      — project has no clickup_list_id in MC-2
-    #   "no_milestones_tagged" — list_id present, fetch returned 0 milestones
-    #                            AND 0 client-asks (back-population pending)
-    #   <other string>         — real ClickUp/network/4xx error (counts as
-    #                            errored in milestone_counts, surfaces in
-    #                            result.errors)
+    # ``fetch_error`` carries ONE sentinel since the ClickUp fallback was
+    # removed (commitments consolidation, cp-engine #38):
+    #   "no_schedule_milestones" — the MC-2 estimator schedule has no undone
+    #                              milestone/feedback items for this project
+    #                              (fix where the work is planned: the Jobs
+    #                              workspace Schedule)
 
 
 @dataclass
@@ -654,6 +654,65 @@ def _fetch_mc2_schedule_milestones(
     return tuple(out)
 
 
+def _fetch_project_commitments(supabase_client, project) -> tuple[dict, ...]:
+    """Open MC-2 commitments for one project/initiative (mig 097).
+
+    The commitments table replaced ClickUp task proposals as the store for
+    due-dated work (commitments consolidation, cp-engine #38): them→us rows
+    are the client-asks source; us→them/internal rows join the Open
+    Commitments table. Best-effort: any failure logs and returns ().
+    """
+    if supabase_client is None:
+        return ()
+    from cp_engine.commitments import resolve_commitment_owner
+    from cp_engine.mc2_db import Tables
+
+    try:
+        owner = resolve_commitment_owner(supabase_client, project.code)
+        if owner is None:
+            return ()
+        col = "initiative_id" if owner["kind"] == "initiative" else "project_id"
+        rows = (
+            supabase_client.table(Tables.COMMITMENTS)
+            .select(
+                "id, description, owner_email, owner_name, direction, "
+                "due_date, date_status, cp_hash"
+            )
+            .eq(col, owner["id"])
+            .eq("status", "open")
+            .execute()
+            .data
+            or []
+        )
+        return tuple(rows)
+    except Exception as exc:  # noqa: BLE001 — degrade to sprint-file asks
+        log.warning("commitments fetch failed for %s: %s", project.code, exc)
+        return ()
+
+
+def _commitment_as_milestone(c: dict) -> Milestone:
+    """Shape one commitments row into the Milestone TypedDict the planning
+    renderers consume. date_status rides in ``confidence``-free territory:
+    a non-agreed date gets a ``[proposed]``/``[slipped]`` suffix so the
+    partners see which dates the team has actually ratified."""
+    deliverable = c.get("description") or "(untitled)"
+    date_status = c.get("date_status") or "proposed"
+    if c.get("due_date") and date_status != "agreed":
+        deliverable = f"{deliverable} [{date_status}]"
+    return Milestone(
+        id=str(c.get("id") or ""),
+        task_type="client_ask" if c.get("direction") == "them_to_us" else "milestone",
+        deliverable=deliverable,
+        date=c.get("due_date") or "",
+        owner=c.get("owner_name") or c.get("owner_email") or "",
+        confidence="",
+        depends_on=[],
+        status="open",
+        linked_to=[],
+        source="commitments",
+    )
+
+
 def _extract_exec_summary(cp_md_body: str) -> str | None:
     """Return the inner text of a project cp.md's engine-managed
     ``exec-summary`` region — the model-authored 6-field state box (Objective,
@@ -991,18 +1050,14 @@ def build_project_block(
     supabase_client,
     today: date,
     week_iso: str,
-    clickup_client: httpx.Client | None,
-    clickup_token: str | None,
-    list_id_override: str | None = None,
-    clickup_task_ids: dict[str, str] | None = None,
     sweep_llm: Callable[[str], str] | None = None,
 ) -> ProjectPlanningBlock:
     """Assemble all per-project rendering data.
 
-    ``clickup_task_ids`` maps cp_ask_hash → clickup_task_id for asks that
-    have already been promoted to ClickUp. During the bridging period a
-    sprint-file ask may also exist as a ClickUp client-ask; dedupe so the
-    Open Commitments table doesn't render the same ask twice.
+    Milestones come from MC-2's estimator schedule; commitments (the
+    them→us client-asks and the us→them/internal obligations) come from
+    MC-2's ``commitments`` table. The ClickUp fallback is gone
+    (commitments consolidation, cp-engine #38).
 
     ``sweep_llm`` (Project Spine slice 3, Phase B) is the opt-in seam: when
     provided, this loads the project's on-disk spine elements and runs a
@@ -1025,74 +1080,45 @@ def build_project_block(
         except OSError as exc:
             log.warning("cp.md read failed for %s: %s", project.code, exc)
 
-    # Sprint-file open asks (bridging period — not yet in ClickUp).
+    # Sprint-file open asks (bridging period — not yet in commitments).
     sprint_file_path = (
         config.root / "sprints" / week_iso / f"{project.code}.md"
     )
     sprint_asks = _parse_sprint_open_asks(sprint_file_path)
-    # Bridging-period dedupe: filter out asks that already have a ClickUp
-    # task (they'll surface via ``client_asks`` from the ClickUp fetch
-    # below). Without this, the Open Commitments table renders the same
-    # ask twice — once as a ClickUp client-ask, once with a ``(sprint
-    # file)`` suffix. ``clickup_task_ids`` is None in older callers
-    # (degrades to no-op).
-    if clickup_task_ids:
-        sprint_asks = tuple(
-            a for a in sprint_asks if a["hash"] not in clickup_task_ids
-        )
     # Read the sprint body once so urgent-detection's Rule 2 + Rule 4 can
     # parse Decisions due / Dependencies & risks without re-reading the file.
     sprint_file_body: str | None = None
     if sprint_file_path.is_file():
         sprint_file_body = sprint_file_path.read_text(encoding="utf-8")
 
-    # MC-2 schedule milestones — the PRIMARY source (day-granular
+    # MC-2 schedule milestones — the SOLE milestone source (day-granular
     # milestones + feedback windows maintained in the Jobs workspace).
-    mc2_milestones = _fetch_mc2_schedule_milestones(supabase_client, project)
+    milestones = _fetch_mc2_schedule_milestones(supabase_client, project)
+    fetch_error: str | None = None if milestones else "no_schedule_milestones"
 
-    # ClickUp fetch — tag-sourced milestones + client-asks (secondary
-    # milestone source; sole source for the "them → us" client-asks).
-    list_id = list_id_override or _resolve_clickup_list_for_project(
-        project, supabase_client=supabase_client
+    # MC-2 commitments (mig 097): them→us rows are the client-asks;
+    # us→them/internal rows join the Open Commitments table.
+    commitment_rows = _fetch_project_commitments(supabase_client, project)
+    client_asks = tuple(
+        _commitment_as_milestone(c)
+        for c in commitment_rows
+        if c.get("direction") == "them_to_us"
     )
-    milestones: tuple[Milestone, ...] = ()
-    client_asks: tuple[Milestone, ...] = ()
-    fetch_error: str | None = None
-    if not list_id:
-        fetch_error = "no_clickup_list"
-    else:
-        try:
-            raw_ms = _fetch_clickup_milestones(
-                list_id,
-                tag="milestone",
-                token=clickup_token,
-                client=clickup_client,
-            )
-            milestones = tuple(_normalize_clickup_task(t) for t in raw_ms)
-            raw_asks = _fetch_clickup_milestones(
-                list_id,
-                tag="client-ask",
-                token=clickup_token,
-                client=clickup_client,
-            )
-            client_asks = tuple(_normalize_clickup_task(t) for t in raw_asks)
-            # List exists but nothing milestone-tagged yet — distinguish from
-            # the list-not-set case so the renderer can point users to the
-            # back-population work (Task 29) rather than nagging them to set
-            # a list-id they already have.
-            if not milestones and not client_asks:
-                fetch_error = "no_milestones_tagged"
-        except RuntimeError as exc:
-            fetch_error = str(exc)
-            log.warning("ClickUp fetch failed for %s: %s", project.code, exc)
-
-    # Merge sources; MC-2 schedule entries first at equal dates. When the
-    # schedule supplies milestones, the ClickUp empty-state sentinels no
-    # longer describe reality — clear them so the calendar renders (real
-    # ClickUp ERRORS are kept: they still matter for the client-asks side).
-    milestones = mc2_milestones + milestones
-    if milestones and fetch_error in ("no_clickup_list", "no_milestones_tagged"):
-        fetch_error = None
+    our_commitments = tuple(
+        _commitment_as_milestone(c)
+        for c in commitment_rows
+        if c.get("direction") != "them_to_us"
+    )
+    # Bridging-period dedupe: a sprint-file ask and a commitment created
+    # from the same meeting share the record-ask cp_hash recipe — drop the
+    # sprint copy so the Open Commitments table doesn't render it twice.
+    commitment_hashes = {
+        c["cp_hash"] for c in commitment_rows if c.get("cp_hash")
+    }
+    if commitment_hashes:
+        sprint_asks = tuple(
+            a for a in sprint_asks if a["hash"] not in commitment_hashes
+        )
 
     # Stable, oldest-first ordering by date for the forward calendar.
     milestones = tuple(
@@ -1136,6 +1162,7 @@ def build_project_block(
         exec_summary=exec_summary,
         milestones=milestones,
         client_asks=client_asks,
+        our_commitments=our_commitments,
         sprint_open_asks=sprint_asks,
         urgent=tuple(urgent_list),
         fetch_error=fetch_error,
@@ -1561,32 +1588,16 @@ def _generated_date(generated_at: str) -> date | None:
 def _render_forward_calendar(block: ProjectPlanningBlock) -> list[str]:
     """Render a per-project Forward calendar bullet list.
 
-    Milestones come from two sources — MC-2's estimator schedule (primary;
-    entries carry ``source="mc2_schedule"``) and ClickUp milestone tags.
-    Skips milestones with no date (no anchor to render). The empty-state
-    sentinels only fire when NEITHER source produced anything.
+    Milestones come from MC-2's estimator schedule (entries carry
+    ``source="mc2_schedule"``). Skips milestones with no date (no anchor
+    to render).
     """
     dated = [m for m in block.milestones if m.get("date")]
     if not dated:
-        if block.fetch_error == "no_clickup_list":
-            return [
-                "**Forward calendar:**",
-                "_(no milestones in the MC-2 schedule; no ClickUp list set)_",
-            ]
-        if block.fetch_error == "no_milestones_tagged":
-            return [
-                "**Forward calendar:**",
-                "_(no milestones in the MC-2 schedule or tagged in ClickUp)_",
-            ]
-        if block.fetch_error:
-            return [
-                "**Forward calendar:**",
-                "_No MC-2 schedule milestones; ClickUp fetch failed — "
-                "check ClickUp connection._",
-            ]
         return [
             "**Forward calendar:**",
-            "_(no milestones tracked yet)_",
+            "_(no milestones in the MC-2 schedule — add them in the Jobs "
+            "workspace Schedule)_",
         ]
     out = ["**Forward calendar:**"]
     for m in dated:
@@ -1649,10 +1660,20 @@ def _render_commitments_table(block: ProjectPlanningBlock) -> list[str]:
                 date_str,
             )
         )
+    for oc in block.our_commitments:
+        date_str = short_iso_date(oc.get("date")) or "—"
+        rows.append(
+            (
+                oc.get("owner") or "—",
+                oc.get("deliverable") or "(untitled)",
+                "client",
+                date_str,
+            )
+        )
     for ca in block.client_asks:
         date_str = short_iso_date(ca.get("date")) or "—"
-        # Client-asks: the "owner" assigned in ClickUp is who owes us the
-        # answer — typically the client-side person. Surface as "external".
+        # Client-asks (them→us commitments): the owner is who owes us the
+        # answer — typically the client-side person.
         who = ca.get("owner") or "client"
         rows.append((who, ca.get("deliverable") or "(untitled)", "us", date_str))
     for sa in block.sprint_open_asks:
@@ -1952,15 +1973,13 @@ def build_planning_result(
         today: anchor date for the planned sprint.
         project_filter: restrict to these codes (None = all active).
         tenant_hours_last_week: name → hours dict; rendered in the strip.
-        supabase_client: MC-2 read client for clickup_list_id resolution.
-            None = silent skip (list_id_override fills the gap in tests).
-        clickup_token: explicit token. Falls back to env CLICKUP_API_TOKEN.
-        clickup_client: shared httpx.Client. None = a new client per fetch.
-        list_id_lookup: optional pre-fetched code → list_id map. Tests use
-            this to avoid mocking ``_resolve_proposal_project``.
-        clickup_task_ids: cp_ask_hash → clickup_task_id map for bridging-
-            period dedupe of sprint-file open asks against ClickUp
-            client-asks. None or empty = no dedupe.
+        supabase_client: MC-2 read client (schedule milestones +
+            commitments). None = silent skip.
+        clickup_token / clickup_client / list_id_lookup / clickup_task_ids:
+            DEPRECATED no-ops kept for caller compatibility — the ClickUp
+            fallback was removed (commitments consolidation, cp-engine
+            #38); milestones come from MC-2 schedules and asks from the
+            commitments table.
         sweep_llm: opt-in whole-project sweep synthesizer (Project Spine
             slice 3, Phase B). None (default) = no sweep, no LLM call, the
             fast path is unchanged. When provided, each project's block gets
@@ -1992,52 +2011,20 @@ def build_planning_result(
     fetched = 0
     errored = 0
     total = 0
-    # Auth failures (missing/invalid CLICKUP_API_TOKEN) hit every project
-    # the same way, so collapsing to a single tenant-wide ``errors`` entry
-    # keeps ``--summary`` legible. Per-project blocks still carry the full
-    # ``fetch_error`` string for the renderer's "could not fetch" branch.
-    seen_auth_error = False
     for p in active_sorted:
-        list_id = list_id_lookup.get(p.code)
         block = build_project_block(
             p,
             config=config,
             supabase_client=supabase_client,
             today=today,
             week_iso=week_iso,
-            clickup_client=clickup_client,
-            clickup_token=clickup_token,
-            list_id_override=list_id,
-            clickup_task_ids=clickup_task_ids,
             sweep_llm=sweep_llm,
         )
         total += len(block.milestones) + len(block.client_asks)
-        # ``no_clickup_list`` and ``no_milestones_tagged`` are legitimate
-        # empty-states, not fetch failures — don't count them as errored or
-        # bubble them to ``result.errors``. ``no_milestones_tagged`` still
-        # counts as a successful fetch (the request itself succeeded —
-        # the list was just empty); ``no_clickup_list`` skipped the fetch
-        # entirely so it's neither fetched nor errored. Anything else
-        # (network errors, 4xx/5xx) is a real fetch failure.
-        if block.fetch_error and block.fetch_error not in (
-            "no_clickup_list",
-            "no_milestones_tagged",
-        ):
-            errored += 1
-            # Auth failures dedupe to one tenant-wide entry; everything
-            # else (network errors, 4xx/5xx other than 401/403) appends
-            # per-project as before.
-            if _is_auth_error(block.fetch_error):
-                if not seen_auth_error:
-                    errors.append(
-                        "ClickUp auth failed for all projects: "
-                        "check CLICKUP_API_TOKEN"
-                    )
-                    seen_auth_error = True
-            else:
-                errors.append(f"{p.code}: {block.fetch_error}")
-        elif block.fetch_error is None or block.fetch_error == "no_milestones_tagged":
-            fetched += 1
+        # "no_schedule_milestones" is a legitimate empty-state, not a
+        # failure — the schedule fetch is best-effort and degrades to ()
+        # internally, so every block counts as fetched.
+        fetched += 1
         blocks.append(block)
 
     blocks_by_account = _group_by_account(tuple(blocks))
@@ -2122,29 +2109,21 @@ def render_planning_doc(
     planned_allocations=None,
     sweep_llm: Callable[[str], str] | None = None,
 ) -> str:
-    """Top-level entry: assemble + render the planning doc as markdown."""
-    # Share one httpx.Client across all per-project fetches.
-    client: httpx.Client | None = None
-    if clickup_token or _clickup_token():
-        client = httpx.Client(timeout=_CLICKUP_TIMEOUT)
-    try:
-        result = build_planning_result(
-            config,
-            projects,
-            today=today,
-            project_filter=project_filter,
-            tenant_hours_last_week=tenant_hours_last_week,
-            supabase_client=supabase_client,
-            clickup_token=clickup_token,
-            clickup_client=client,
-            list_id_lookup=list_id_lookup,
-            clickup_task_ids=clickup_task_ids,
-            sweep_llm=sweep_llm,
-            planned_allocations=planned_allocations,
-        )
-    finally:
-        if client is not None:
-            client.close()
+    """Top-level entry: assemble + render the planning doc as markdown.
+
+    The clickup_* / list_id_lookup kwargs are DEPRECATED no-ops (ClickUp
+    fallback removed — commitments consolidation, cp-engine #38).
+    """
+    result = build_planning_result(
+        config,
+        projects,
+        today=today,
+        project_filter=project_filter,
+        tenant_hours_last_week=tenant_hours_last_week,
+        supabase_client=supabase_client,
+        sweep_llm=sweep_llm,
+        planned_allocations=planned_allocations,
+    )
     return render_planning_doc_markdown(result)
 
 
@@ -2161,27 +2140,20 @@ def render_planning_summary(
     clickup_task_ids: dict[str, str] | None = None,
     planned_allocations=None,
 ) -> str:
-    """Return the summary JSON as a string (matches ``--summary`` mode)."""
-    client: httpx.Client | None = None
-    if clickup_token or _clickup_token():
-        client = httpx.Client(timeout=_CLICKUP_TIMEOUT)
-    try:
-        result = build_planning_result(
-            config,
-            projects,
-            today=today,
-            project_filter=project_filter,
-            tenant_hours_last_week=tenant_hours_last_week,
-            supabase_client=supabase_client,
-            clickup_token=clickup_token,
-            clickup_client=client,
-            list_id_lookup=list_id_lookup,
-            clickup_task_ids=clickup_task_ids,
-            planned_allocations=planned_allocations,
-        )
-    finally:
-        if client is not None:
-            client.close()
+    """Return the summary JSON as a string (matches ``--summary`` mode).
+
+    The clickup_* / list_id_lookup kwargs are DEPRECATED no-ops (ClickUp
+    fallback removed — commitments consolidation, cp-engine #38).
+    """
+    result = build_planning_result(
+        config,
+        projects,
+        today=today,
+        project_filter=project_filter,
+        tenant_hours_last_week=tenant_hours_last_week,
+        supabase_client=supabase_client,
+        planned_allocations=planned_allocations,
+    )
     return json.dumps(result.to_summary_dict(), indent=2)
 
 
@@ -2202,26 +2174,16 @@ def render_planning_bundle_doc(
 
     Mirrors ``render_planning_doc`` minus ``sweep_llm`` — the bundle emits
     raw material for in-session synthesis and does not run the per-project
-    spine sweep (keep it simple + free).
+    spine sweep (keep it simple + free). The clickup_* / list_id_lookup
+    kwargs are DEPRECATED no-ops.
     """
-    client: httpx.Client | None = None
-    if clickup_token or _clickup_token():
-        client = httpx.Client(timeout=_CLICKUP_TIMEOUT)
-    try:
-        result = build_planning_result(
-            config,
-            projects,
-            today=today,
-            project_filter=project_filter,
-            tenant_hours_last_week=tenant_hours_last_week,
-            supabase_client=supabase_client,
-            clickup_token=clickup_token,
-            clickup_client=client,
-            list_id_lookup=list_id_lookup,
-            clickup_task_ids=clickup_task_ids,
-            planned_allocations=planned_allocations,
-        )
-    finally:
-        if client is not None:
-            client.close()
+    result = build_planning_result(
+        config,
+        projects,
+        today=today,
+        project_filter=project_filter,
+        tenant_hours_last_week=tenant_hours_last_week,
+        supabase_client=supabase_client,
+        planned_allocations=planned_allocations,
+    )
     return render_planning_bundle(result)

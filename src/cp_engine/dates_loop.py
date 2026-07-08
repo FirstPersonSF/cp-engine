@@ -222,8 +222,14 @@ def _fetch_milestones(client: Any, code: str) -> list[tuple[date, str]]:
     shim = SimpleNamespace(code=code)
     out: list[tuple[date, str]] = []
     for m in _fetch_mc2_schedule_milestones(client, shim):
+        # Milestone is a TypedDict — dict access, not attributes.
         try:
-            out.append((date.fromisoformat(m.date), m.deliverable))
+            out.append(
+                (
+                    date.fromisoformat(m.get("date") or ""),
+                    m.get("deliverable") or "(untitled)",
+                )
+            )
         except (TypeError, ValueError):
             continue
     return out

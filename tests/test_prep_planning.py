@@ -175,41 +175,6 @@ def test_fetch_milestones_returns_normalized_shape():
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_fetch_milestones_handles_clickup_4xx_returns_empty_with_error_logged(tmp_path):
-    """ClickUp returning 404 raises RuntimeError; build_project_block converts
-    it into a fetch_error on the block so rendering continues."""
-    list_id = "MISSING"
-    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
-    client = FakeClient(
-        {
-            (url, "milestone"): FakeResp(404, text="list not found"),
-            (url, "client-ask"): FakeResp(404, text="list not found"),
-        }
-    )
-
-    with pytest.raises(RuntimeError, match="404"):
-        _fetch_clickup_milestones(
-            list_id, tag="milestone", token="tok_test", client=client
-        )
-
-    # And the renderer degrades per-project rather than crashing.
-    config = make_config(tmp_path)
-    state = make_state("ggl-5168", name="GGL 5168 Activation")
-    block = prep_planning.build_project_block(
-        state,
-        config=config,
-        supabase_client=None,
-        today=date(2026, 6, 7),
-        week_iso="2026-W24",
-        clickup_client=client,
-        clickup_token="tok_test",
-        list_id_override="MISSING",
-    )
-    assert block.fetch_error is not None
-    assert "404" in block.fetch_error
-    assert block.milestones == ()
-
-
 # ──────────────────────────────────────────────────────────────────────
 #  Test 3: missing custom fields default to "medium" confidence
 # ──────────────────────────────────────────────────────────────────────
@@ -524,65 +489,9 @@ def test_commitments_table_escapes_newlines_in_client_ask():
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_render_planning_doc_handles_empty_clickup_list(tmp_path):
-    """Project HAS a list_id but ClickUp returns 0 tasks → ``no_milestones_tagged``.
-
-    Distinct from ``no_clickup_list`` (the project simply hasn't been
-    wired to a ClickUp list at all) — see
-    ``test_render_planning_doc_distinguishes_list_unset_vs_list_empty``
-    for both branches side by side.
-    """
-    config = make_config(tmp_path)
-    state = make_state("ggl-5168", name="GGL 5168 Activation")
-    list_id = "EMPTY"
-    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
-    client = FakeClient(
-        {
-            (url, "milestone"): FakeResp(200, {"tasks": []}),
-            (url, "client-ask"): FakeResp(200, {"tasks": []}),
-        }
-    )
-    block = prep_planning.build_project_block(
-        state,
-        config=config,
-        supabase_client=None,
-        today=date(2026, 6, 7),
-        week_iso="2026-W24",
-        clickup_client=client,
-        clickup_token="tok_test",
-        list_id_override=list_id,
-    )
-    # The list-id resolved + the fetch returned 0 tasks → distinct sentinel
-    # from the no-list case so the renderer can point users to the right fix.
-    assert block.fetch_error == "no_milestones_tagged"
-    assert block.milestones == ()
-    rendered = "\n".join(prep_planning._render_forward_calendar(block))
-    assert "tagged in ClickUp" in rendered
-
-
 # ──────────────────────────────────────────────────────────────────────
 #  Test 8: project without a clickup_list_id renders the "not set" line
 # ──────────────────────────────────────────────────────────────────────
-
-
-def test_render_planning_doc_handles_project_without_clickup_list(tmp_path):
-    """No list_id resolvable → block renders the (ClickUp list not set) line."""
-    config = make_config(tmp_path)
-    state = make_state("ggl-9999", name="No List Yet")
-    block = prep_planning.build_project_block(
-        state,
-        config=config,
-        supabase_client=None,  # no Supabase client → can't resolve list_id
-        today=date(2026, 6, 7),
-        week_iso="2026-W24",
-        clickup_client=None,
-        clickup_token=None,
-        list_id_override=None,
-    )
-    assert block.fetch_error == "no_clickup_list"
-    rendered = "\n".join(prep_planning._render_forward_calendar(block))
-    assert "no ClickUp list set" in rendered
-    assert "no milestones in the MC-2 schedule" in rendered
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -590,79 +499,21 @@ def test_render_planning_doc_handles_project_without_clickup_list(tmp_path):
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_render_planning_doc_distinguishes_list_unset_vs_list_empty(tmp_path):
-    """The two empty-states render distinct messages.
-
-    Before #36 both cases emitted "_(ClickUp list not set — milestones not
-    tracked)_", which confused users into thinking they needed to set a
-    list-id that was already set. After #36:
-
-      - No clickup_list_id at all → "no ClickUp list set"
-      - List set but ClickUp returned 0 tasks → "no milestones … tagged
-        in ClickUp".
-    (Message text updated in v0.50 — MC-2's estimator schedule is now the
-    primary milestone source, so both sentinels mention it.)
-    """
-    config = make_config(tmp_path)
-    state_unset = make_state("ggl-9999", name="No List Yet")
-    state_empty = make_state("ggl-5168", name="GGL 5168 Activation")
-
-    # Branch A — no list_id.
-    block_unset = prep_planning.build_project_block(
-        state_unset,
-        config=config,
-        supabase_client=None,
-        today=date(2026, 6, 7),
-        week_iso="2026-W24",
-        clickup_client=None,
-        clickup_token=None,
-        list_id_override=None,
-    )
-    assert block_unset.fetch_error == "no_clickup_list"
-    rendered_unset = "\n".join(prep_planning._render_forward_calendar(block_unset))
-    assert "no ClickUp list set" in rendered_unset
-
-    # Branch B — list_id present, fetch returns 0 tasks.
-    list_id = "EMPTY"
-    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
-    client = FakeClient(
-        {
-            (url, "milestone"): FakeResp(200, {"tasks": []}),
-            (url, "client-ask"): FakeResp(200, {"tasks": []}),
-        }
-    )
-    block_empty = prep_planning.build_project_block(
-        state_empty,
-        config=config,
-        supabase_client=None,
-        today=date(2026, 6, 7),
-        week_iso="2026-W24",
-        clickup_client=client,
-        clickup_token="tok_test",
-        list_id_override=list_id,
-    )
-    assert block_empty.fetch_error == "no_milestones_tagged"
-    rendered_empty = "\n".join(prep_planning._render_forward_calendar(block_empty))
-    assert "tagged in ClickUp" in rendered_empty
-    # And critically — the two messages do NOT collide.
-    assert rendered_unset != rendered_empty
-
-
 # ──────────────────────────────────────────────────────────────────────
 #  Fix 1 (v0.15.2): bridging-period dedupe of sprint-file asks
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_build_project_block_filters_sprint_asks_already_in_clickup(tmp_path):
-    """A sprint-file open ask whose hash exists in the ClickUp task-id map
-    drops out of ``block.sprint_open_asks``. Without the dedupe, the Open
-    Commitments table renders the same ask twice (once as a ClickUp
-    client-ask, once as a sprint-file fallback)."""
+def test_build_project_block_filters_sprint_asks_already_in_commitments(tmp_path):
+    """A sprint-file open ask whose cp:hash matches an MC-2 commitment's
+    cp_hash drops out of ``block.sprint_open_asks`` — the commitment (same
+    record-ask hash recipe) is the canonical copy. Without the dedupe, the
+    Open Commitments table renders the same ask twice."""
+    from unittest.mock import patch
+
     config = make_config(tmp_path)
     state = make_state("ggl-5168", name="GGL 5168 Activation")
 
-    # 3 open asks: hashes aaaa1111 + bbbb2222 already in ClickUp;
-    # cccc3333 only in sprint file.
     sprint_path = tmp_path / "sprints" / "2026-W24" / "ggl-5168.md"
     sprint_path.parent.mkdir(parents=True, exist_ok=True)
     sprint_path.write_text(
@@ -677,28 +528,41 @@ def test_build_project_block_filters_sprint_asks_already_in_clickup(tmp_path):
         "<!-- cp:hash=cccc3333 -->\n"
     )
 
-    clickup_task_ids = {"aaaa1111": "TASK_A", "bbbb2222": "TASK_B"}
-
-    block = prep_planning.build_project_block(
-        state,
-        config=config,
-        supabase_client=None,
-        today=date(2026, 6, 10),
-        week_iso="2026-W24",
-        clickup_client=None,
-        clickup_token=None,
-        list_id_override=None,
-        clickup_task_ids=clickup_task_ids,
+    commitments = (
+        {"id": "1", "description": "Send AI samples", "owner_email": None,
+         "owner_name": "rena", "direction": "them_to_us",
+         "due_date": "2026-06-15", "date_status": "proposed",
+         "cp_hash": "aaaa1111"},
+        {"id": "2", "description": "Pick a domain", "owner_email": None,
+         "owner_name": "janet", "direction": "us_to_them",
+         "due_date": "2026-06-20", "date_status": "agreed",
+         "cp_hash": "bbbb2222"},
     )
+    with patch.object(
+        prep_planning, "_fetch_project_commitments", return_value=commitments
+    ):
+        block = prep_planning.build_project_block(
+            state,
+            config=config,
+            supabase_client=object(),  # non-None so commitments path runs
+            today=date(2026, 6, 10),
+            week_iso="2026-W24",
+        )
 
-    # Only the un-promoted ask survives.
+    # Only the un-promoted ask survives the dedupe…
     assert len(block.sprint_open_asks) == 1
     assert block.sprint_open_asks[0]["hash"] == "cccc3333"
-    assert block.sprint_open_asks[0]["text"] == "Confirm budget"
+    # …and the commitments landed on the right sides of the table:
+    assert [ca.get("deliverable") for ca in block.client_asks] == [
+        "Send AI samples [proposed]"
+    ]
+    assert [oc.get("deliverable") for oc in block.our_commitments] == [
+        "Pick a domain"
+    ]
 
 
-def test_build_project_block_no_dedupe_when_clickup_task_ids_is_none(tmp_path):
-    """Without ``clickup_task_ids`` (older callers, tests), all sprint
+def test_build_project_block_no_dedupe_without_commitments(tmp_path):
+    """With no MC-2 commitments (or no Supabase client at all), all sprint
     open asks pass through — no surprise filtering."""
     config = make_config(tmp_path)
     state = make_state("ggl-5168", name="GGL 5168 Activation")
@@ -720,13 +584,11 @@ def test_build_project_block_no_dedupe_when_clickup_task_ids_is_none(tmp_path):
         supabase_client=None,
         today=date(2026, 6, 10),
         week_iso="2026-W24",
-        clickup_client=None,
-        clickup_token=None,
-        list_id_override=None,
-        clickup_task_ids=None,
     )
 
     assert len(block.sprint_open_asks) == 2
+    assert block.client_asks == ()
+    assert block.our_commitments == ()
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -738,8 +600,8 @@ def test_summary_mode_emits_json(tmp_path):
     """render_planning_summary returns a JSON string with the contracted keys."""
     config = make_config(tmp_path)
     state = make_state("ggl-5168", name="GGL 5168 Activation")
-    # No list_id_lookup, no Supabase → block degrades to "no_clickup_list"
-    # but the summary still renders.
+    # No Supabase → blocks degrade to "no_schedule_milestones" but the
+    # summary still renders.
     summary_str = render_planning_summary(
         config,
         (state,),
@@ -1317,39 +1179,9 @@ def test_render_exec_summary_when_present(tmp_path):
         supabase_client=None,
         today=date(2026, 6, 7),
         week_iso="2026-W24",
-        clickup_client=None,
-        clickup_token=None,
-        list_id_override=None,
     )
     assert block.exec_summary is not None
     assert "Pop-up R3 with Rena" in block.exec_summary
-
-
-def test_summary_counts_errors_for_failed_fetch(tmp_path):
-    """When ClickUp returns 4xx, the project counts as errored in milestone_counts."""
-    config = make_config(tmp_path)
-    state = make_state("ggl-5168", name="GGL 5168 Activation")
-    list_id = "BAD"
-    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
-    client = FakeClient(
-        {
-            (url, "milestone"): FakeResp(500, text="server error"),
-            (url, "client-ask"): FakeResp(500, text="server error"),
-        }
-    )
-    result = build_planning_result(
-        config,
-        (state,),
-        today=date(2026, 6, 7),
-        tenant_hours_last_week={},
-        supabase_client=None,
-        clickup_token="tok_test",
-        clickup_client=client,
-        list_id_lookup={"ggl-5168": list_id},
-    )
-    assert result.milestone_counts["errored"] == 1
-    assert result.milestone_counts["fetched"] == 0
-    assert any("ggl-5168" in err for err in result.errors)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1525,83 +1357,6 @@ def test_fetch_milestones_missing_token_raises_with_env_phrasing():
         _fetch_clickup_milestones("L1", tag="milestone", token="", client=None)
 
 
-def test_summary_auth_failure_surfaces_as_tenant_wide_error(tmp_path):
-    """A 401 on the first project's fetch surfaces ONE tenant-wide auth-error
-    entry in ``result.errors`` so ``--summary`` flags it clearly."""
-    config = make_config(tmp_path)
-    state = make_state("ggl-5168", name="GGL 5168 Activation")
-    list_id = "L1"
-    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
-    client = FakeClient(
-        {
-            (url, "milestone"): FakeResp(401, text="invalid token"),
-            (url, "client-ask"): FakeResp(401, text="invalid token"),
-        }
-    )
-
-    result = build_planning_result(
-        config,
-        (state,),
-        today=date(2026, 6, 7),
-        tenant_hours_last_week={},
-        supabase_client=None,
-        clickup_token="bad_token",
-        clickup_client=client,
-        list_id_lookup={"ggl-5168": list_id},
-    )
-    assert any("ClickUp auth failed" in err for err in result.errors)
-    assert any("CLICKUP_API_TOKEN" in err for err in result.errors)
-    # The single project also surfaces as errored in milestone_counts.
-    assert result.milestone_counts["errored"] == 1
-
-
-def test_summary_auth_failure_dedupes_across_projects(tmp_path):
-    """When auth fails on every project, ``result.errors`` carries exactly
-    ONE auth-error entry (dedup), not N copies."""
-    config = make_config(tmp_path)
-    projects = (
-        make_state("ggl-5168", name="GGL 5168", company_name="Google"),
-        make_state(
-            "ibx-5153", name="IBX 5153",
-            company_code="IBX", company_name="Infoblox",
-        ),
-        make_state(
-            "snt-5189", name="SNT 5189",
-            company_code="SNT", company_name="Sentinel One",
-        ),
-    )
-
-    class _AlwaysAuthFailClient:
-        """Routes every request to a 401, regardless of list_id."""
-
-        def __init__(self):
-            self.calls: list[str] = []
-
-        def get(self, url, *, headers=None, params=None):
-            self.calls.append(url)
-            return FakeResp(401, text="invalid token")
-
-    client = _AlwaysAuthFailClient()
-    result = build_planning_result(
-        config,
-        projects,
-        today=date(2026, 6, 7),
-        tenant_hours_last_week={},
-        supabase_client=None,
-        clickup_token="bad_token",
-        clickup_client=client,
-        list_id_lookup={
-            "ggl-5168": "L1",
-            "ibx-5153": "L2",
-            "snt-5189": "L3",
-        },
-    )
-    auth_errors = [e for e in result.errors if "ClickUp auth failed" in e]
-    assert len(auth_errors) == 1
-    # Every project still counts as errored individually in milestone_counts.
-    assert result.milestone_counts["errored"] == 3
-
-
 # ──────────────────────────────────────────────────────────────────────
 #  Project header dedup when code == name (#38)
 #
@@ -1657,35 +1412,6 @@ def test_project_header_keeps_both_when_code_differs_from_name():
     )
     rendered = "\n".join(prep_planning._render_project_block(block))
     assert "### ggl-5168 GGL 5168 Activation — drew" in rendered
-
-
-def test_summary_non_auth_error_does_not_surface_auth_error(tmp_path):
-    """A 500 (or any non-401/403) MUST NOT bubble an auth-error entry —
-    those errors are real, project-specific and should appear per-project."""
-    config = make_config(tmp_path)
-    state = make_state("ggl-5168", name="GGL 5168 Activation")
-    list_id = "L1"
-    url = f"https://api.clickup.com/api/v2/list/{list_id}/task"
-    client = FakeClient(
-        {
-            (url, "milestone"): FakeResp(500, text="server error"),
-            (url, "client-ask"): FakeResp(500, text="server error"),
-        }
-    )
-
-    result = build_planning_result(
-        config,
-        (state,),
-        today=date(2026, 6, 7),
-        tenant_hours_last_week={},
-        supabase_client=None,
-        clickup_token="tok_test",
-        clickup_client=client,
-        list_id_lookup={"ggl-5168": list_id},
-    )
-    assert not any("ClickUp auth failed" in err for err in result.errors)
-    # The 500 still lands per-project.
-    assert any("ggl-5168" in err for err in result.errors)
 
 
 # ──────────────────────────────────────────────────────────────────────
