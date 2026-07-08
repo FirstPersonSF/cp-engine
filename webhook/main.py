@@ -118,6 +118,7 @@ def health() -> dict:
 # Routers are imported AFTER logging/Sentry setup so their import-time
 # side effects (there should be none) can't race the log configuration.
 from routers import assets as _assets_router  # noqa: E402
+from routers import dates_loop as _dates_loop_router  # noqa: E402
 from routers import ingest as _ingest_router  # noqa: E402
 from routers import integrations as _integrations_router  # noqa: E402
 from routers import meetings as _meetings_router  # noqa: E402
@@ -128,6 +129,7 @@ app.include_router(_integrations_router.router)
 app.include_router(_ingest_router.router)
 app.include_router(_spine_router.router)
 app.include_router(_assets_router.router)
+app.include_router(_dates_loop_router.router)
 app.include_router(_meetings_router.router)
 app.include_router(_slack_router.router)
 
