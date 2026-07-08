@@ -168,3 +168,26 @@ def test_ratification_skips_unposted_and_stamps_slipped() -> None:
     assert by_id["s"]["date_status"] == "slipped"
     assert result.slipped_stamped == 1
     assert result.posted_count_bumped == 0
+
+
+def test_partners_channel_from_app_config() -> None:
+    from cp_engine.dates_loop import _partners_channel
+
+    client = MagicMock()
+    chain = client.table.return_value.select.return_value.eq.return_value
+    # Bare-string value
+    chain.execute.return_value.data = [
+        {"key": "dates_loop_partners_channel", "value": "C0PARTNERS"}
+    ]
+    assert _partners_channel(client) == "C0PARTNERS"
+    # Object value
+    chain.execute.return_value.data = [
+        {"key": "dates_loop_partners_channel", "value": {"channel": "C0X"}}
+    ]
+    assert _partners_channel(client) == "C0X"
+    # Absent key → None (rollup skipped)
+    chain.execute.return_value.data = []
+    assert _partners_channel(client) is None
+    # Lookup failure → None, never raises
+    chain.execute.side_effect = RuntimeError("boom")
+    assert _partners_channel(client) is None

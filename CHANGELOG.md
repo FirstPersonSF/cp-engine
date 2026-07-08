@@ -4,6 +4,17 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.51.1 — 2026-07-07
+
+### Dates loop: partners channel lives in MC-2, not .cp-engine.toml
+
+- The partners-rollup channel id now resolves from MC-2's ``app_config``
+  table (key ``dates_loop_partners_channel``, value = channel id string
+  or ``{"channel": "C0…"}``) — channel configuration has ONE home, mc-2,
+  same as the per-project channel map. The ``[dates_loop].partners_channel``
+  toml knob is removed (``window_days`` stays). Absent key → the rollup
+  post is skipped; per-project posts are unaffected.
+
 ## v0.51.0 — 2026-07-07
 
 ### Commitments consolidation: MC-2 replaces ClickUp for dated work (#38, #39)

@@ -277,7 +277,7 @@ def test_registry_covers_known_tables() -> None:
         "projects", "repos", "initiatives", "companies", "github_orgs",
         "sprint_allocations", "fathom_meetings", "auto_ingest_runs",
         "asset_ingest_runs", "rag_assets", "clickup_task_proposals",
-        "commitments",
+        "commitments", "app_config",
         "spine_substance", "spine_context", "spine_elements",
         "spine_snapshots", "spine_inbox", "spine_promote_runs",
     }

@@ -63,6 +63,7 @@ class Tables:
     RAG_ASSETS = "rag_assets"
     CLICKUP_TASK_PROPOSALS = "clickup_task_proposals"
     COMMITMENTS = "commitments"
+    APP_CONFIG = "app_config"  # tenant-level key/value settings (jsonb)
 
     # public — spine
     SPINE_SUBSTANCE = "spine_substance"

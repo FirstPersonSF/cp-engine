@@ -517,7 +517,10 @@ def dates_loop_cmd(post: bool, window_days: int | None, today) -> None:
         click.echo(cpost.text)
         click.echo("")
     if result.partners_text:
-        dest = config.dates_loop.partners_channel or "(no partners_channel configured)"
+        dest = result.partners_channel or (
+            "(no partners channel — set app_config key "
+            "'dates_loop_partners_channel' in MC-2)"
+        )
         sent = " [POSTED]" if result.partners_posted else ""
         click.echo(f"--- partners rollup -> {dest}{sent}")
         click.echo(result.partners_text)
