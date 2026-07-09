@@ -200,7 +200,9 @@ from routers.slack import (  # noqa: E402,F401
     _run_plan_for_one_item,
 )
 from routers.spine import (  # noqa: E402,F401
+    _frame_promote_in_tree,
     _resolve_project_id_for_promote,
+    _run_frame_promote,
     _run_promote,
     _spine_promote_runs_table,
 )
