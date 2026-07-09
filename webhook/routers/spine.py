@@ -65,6 +65,9 @@ async def spine_promote(request: Request) -> dict:
     The card is flipped to 'promoted' AFTER a successful push (the push is the
     real commit point). If that final flip fails, the version is still durable
     in the repo and we return 200 with "card_flipped": false.
+
+    409: the card is already 'promoted' — a duplicate submit (double click /
+    retry of an already-landed promote). Re-frame the card to promote again.
     """
     from cp_engine.estimate import fetch_estimate
     from cp_engine.plan_from_transcript import _call_claude
@@ -106,6 +109,20 @@ async def spine_promote(request: Request) -> dict:
     card = load_card(client, card_id)
     if card is None:
         raise HTTPException(status_code=404, detail=f"no inbox card '{card_id}'")
+
+    # Double-submit guard (issue #44): a card that already went through the
+    # promote flow must not be silently re-promoted — the observed failure mode
+    # was the same card promoted twice 17s apart, writing a near-duplicate
+    # version. Re-framing the card (which resets its status) is the deliberate
+    # path to promote again.
+    if card.status == "promoted":
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"card '{card_id}' is already promoted — refusing a duplicate "
+                "promote; re-frame the card to promote it again"
+            ),
+        )
 
     # Resolve the target estimate item. Default to the card's guess; 400 if
     # there's still nothing to bind to (the binding key is mandatory).
@@ -152,11 +169,16 @@ async def spine_promote(request: Request) -> dict:
         # failure surface as a 500 — a failed promote must be visible so the
         # UI can show an error, and nothing was pushed yet.
         #
-        # client=None means promote_card does NOT flip the card to 'promoted'
-        # here. The flip is deferred until AFTER a successful push (below): the
-        # git push is the real commit point. If the push fails, the throwaway
-        # clone (and its only copy of the markdown) is discarded — but the card
-        # stays proposed/framed so the human can retry the click. No data loss.
+        # flip_card=False means promote_card does NOT flip the card to
+        # 'promoted' here. The flip is deferred until AFTER a successful push
+        # (below): the git push is the real commit point. If the push fails,
+        # the throwaway clone (and its only copy of the markdown) is discarded
+        # — but the card stays proposed/framed so the human can retry the
+        # click. No data loss. The client IS passed: when the promote's sources
+        # diverge from the bound card's (issue #44), promote_card creates a new
+        # AUTHORED element, whose rows are MC-2-owned and written directly —
+        # for that path the DB row, not the push, is the durable copy (the
+        # authored reverse-mirror regenerates the file on any later sync).
         path = promote_card(
             card,
             framing=framing,
@@ -166,7 +188,8 @@ async def spine_promote(request: Request) -> dict:
             sources=src,
             distiller=_call_claude,
             model=model,
-            client=None,
+            client=client,
+            flip_card=False,
             name=name,
             phase=phase,
         )

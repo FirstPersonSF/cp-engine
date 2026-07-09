@@ -221,9 +221,11 @@ def test_promote_happy_path(monkeypatch, client, tmp_path):
     assert kw["phase"] == "Phase 0"
     assert kw["model"] == webhook_main.DEFAULT_MODEL
     assert kw["sources"] == ["mtg-1"]  # falls back to card.source_ref
-    # C1: promote_card must NOT flip the card (client=None). The flip is
-    # deferred to the endpoint, AFTER a successful push.
-    assert kw["client"] is None
+    # C1: promote_card must NOT flip the card (flip_card=False). The flip is
+    # deferred to the endpoint, AFTER a successful push. The client IS passed
+    # so the issue-#44 create-don't-version path can write authored rows.
+    assert kw["client"] is rec["client"]
+    assert kw["flip_card"] is False
 
     # mirror + commit were both called.
     assert "mirror_kw" in rec
@@ -248,6 +250,27 @@ def test_promote_404_when_card_missing(monkeypatch, client, tmp_path):
     resp = _post(client, {"card_id": "ibx-5153/inbox/nope", "framing": "x"})
     assert resp.status_code == 404
     assert "no inbox card" in resp.text
+
+
+# ---------------------------------------------------------------- 409
+
+
+def test_promote_409_when_card_already_promoted(monkeypatch, client, tmp_path):
+    """Double-submit guard (issue #44): the same card promoted twice wrote two
+    near-duplicate versions 17s apart. An already-'promoted' card must 409 —
+    no re-distill, no write, no card flip. Re-framing the card (which resets
+    its status) is the deliberate path to promote again."""
+    rec = _wire_happy(monkeypatch, tmp_path, card=_card(status="promoted"))
+    resp = _post(client, {
+        "card_id": "ibx-5153/inbox/mtg-1", "framing": "brief",
+    })
+    assert resp.status_code == 409
+    assert "already promoted" in resp.text
+    # Nothing downstream ran: no promote, no mirror, no commit, no DB update.
+    assert "promote_kw" not in rec
+    assert "mirror_kw" not in rec
+    assert "commit_kw" not in rec
+    assert rec["update_calls"] == 0
 
 
 # ---------------------------------------------------------------- 400s

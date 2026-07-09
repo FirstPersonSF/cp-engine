@@ -29,7 +29,13 @@ from datetime import date
 from pathlib import Path
 from typing import Callable
 
-from cp_engine.authored_element import canon_layer
+from cp_engine.authored_element import (
+    authored_est_item_id,
+    build_create_rows,
+    canon_layer,
+    slugify,
+)
+from cp_engine.authored_mirror import write_authored_element
 from cp_engine.mc2_db import Tables
 from cp_engine.substance import (
     SubstanceVersion,
@@ -41,6 +47,7 @@ from cp_engine.substance import (
 )
 
 _INBOX_TABLE = Tables.SPINE_INBOX
+_SUBSTANCE_TABLE = Tables.SPINE_SUBSTANCE
 
 # Columns we read back from spine_inbox (never "*").
 _CARD_COLUMNS = (
@@ -331,6 +338,7 @@ def promote_card(
     name: str | None = None,
     phase: str | None = None,
     today=None,
+    flip_card: bool = True,
 ) -> Path:
     """Frame + promote a proposed card into a directed-distilled live version.
 
@@ -340,17 +348,38 @@ def promote_card(
     item has no file yet, else next v-number with the prior live demoted to
     ``superseded`` via `add_version`). Writes the substance markdown at
     ``spine/<phase-slug>/<item-slug>.md`` with frontmatter binding
-    ``est_item_id``/``est_item_kind``/``phase``. If ``client`` is given, the
-    card's ``spine_inbox`` status flips to ``promoted``. Returns the written Path.
+    ``est_item_id``/``est_item_kind``/``phase``. If ``client`` is given AND
+    ``flip_card`` is true, the card's ``spine_inbox`` status flips to
+    ``promoted`` (the webhook passes ``flip_card=False`` to defer the flip
+    until after a successful git push). Returns the written Path.
 
     TARGETING (one substance file per ``est_item_id`` within a project): the
     binding key is ``est_item_id``, not the slug-derived path. So we FIRST scan
     for an existing substance file already bound to ``est_item_id`` and, if one
-    exists, append a version *into that file* — regardless of what slug the
-    card's name would derive. Only when NO file binds the id yet do we derive a
-    fresh ``_target_path`` and create v1. If MORE THAN ONE existing file binds
-    the same id (a pre-existing corrupt state), raise ValueError — that's the
-    only genuinely-ambiguous case left.
+    exists, target *that file* — regardless of what slug the card's name would
+    derive. Only when NO file binds the id yet do we derive a fresh
+    ``_target_path`` and create v1. If MORE THAN ONE existing file binds the
+    same id (a pre-existing corrupt state), raise ValueError — that's the only
+    genuinely-ambiguous case left.
+
+    CREATE-DON'T-VERSION on source divergence (issue #44): versioning semantics
+    (v_{n+1} supersedes v_n) are only correct when the new body is an UPDATE OF
+    THE SAME ARTIFACT. When the targeted file already exists and BOTH its live
+    version's ``sources`` and the incoming ``sources`` are non-empty but
+    DIFFERENT sets, this promotion is a *different artifact serving the same
+    work item* (e.g. a second interview distilled against a container item like
+    "1:1 stakeholder interviews") — appending a version would silently
+    supersede, and thereby hide, the prior artifact. Instead we create a NEW
+    authored element (``est_item_id = _authored/<slugified framing>``, slug
+    collisions suffixed ``-2``, ``-3``, …) with ``serves=[est_item_id]`` binding
+    it to the work item, upsert its v1-live rows into ``spine_substance``
+    (origin='authored', exactly what the shared create path emits), and mirror
+    it to ``spine/_authored/<slug>.md``. The bound work-item card is left
+    untouched. Same-source re-promotes (a true re-distill) and promotes where
+    either side has no sources keep versioning exactly as before. The create
+    path requires ``client`` (authored elements are MC-2-owned rows; a file
+    alone under ``_authored/`` would never sync) and raises ValueError without
+    one.
     """
     today_iso = today if isinstance(today, str) else (today or date.today()).isoformat()
     spine_root = project_dir / "spine"
@@ -388,6 +417,23 @@ def promote_card(
 
     if target.exists():
         existing = parse_substance(target)
+        prior_sources = set(existing.live_version().sources)
+        incoming_sources = set(sources_tuple)
+        if prior_sources and incoming_sources and prior_sources != incoming_sources:
+            # A different artifact serving the same work item (issue #44):
+            # create a new authored element instead of superseding the card.
+            return _promote_as_new_serving_element(
+                card,
+                framing=framing,
+                work_item_est_id=est_item_id,
+                kind=kind,
+                body=body,
+                sources=sources_tuple,
+                project_dir=project_dir,
+                client=client,
+                flip_card=flip_card,
+                today_iso=today_iso,
+            )
         n = max(int(v.label[1:]) for v in existing.versions) + 1
         version = SubstanceVersion(
             label=f"v{n}", date=today_iso, status="live",
@@ -414,9 +460,107 @@ def promote_card(
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(render_substance(item))
 
-    if client is not None:
+    if client is not None and flip_card:
         client.table(_INBOX_TABLE).update({"status": "promoted"}).eq(
             "id", card.id
         ).execute()
 
     return target
+
+
+def _authored_slug_taken(client, card: InboxCard, spine_root: Path, slug: str) -> bool:
+    """True if ``_authored/<slug>`` already exists for this project — as a
+    mirror file on disk OR as spine_substance rows in MC-2 (scoped by
+    project_id, the stable uuid, not the mutable project_code)."""
+    if (spine_root / "_authored" / f"{slug}.md").exists():
+        return True
+    rows = (
+        client.table(_SUBSTANCE_TABLE)
+        .select("id")
+        .eq("project_id", card.project_id)
+        .eq("est_item_id", authored_est_item_id(slug))
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    return bool(rows)
+
+
+def _promote_as_new_serving_element(
+    card: InboxCard,
+    *,
+    framing: str,
+    work_item_est_id: str,
+    kind: str,
+    body: str,
+    sources: tuple[str, ...],
+    project_dir: Path,
+    client,
+    flip_card: bool,
+    today_iso: str,
+) -> Path:
+    """Create a NEW authored element serving ``work_item_est_id`` (issue #44).
+
+    The promote's sources diverged from the bound card's live sources, so this
+    distillation is a distinct artifact that must not supersede the card. The
+    element takes the authored identity ``_authored/<slugified framing>``
+    (framing is the human title, e.g. "Interview with Paul Wu"; collisions
+    suffix ``-2``, ``-3``, …) and ``serves=[work_item_est_id]`` — the same rows
+    the shared create path (`build_create_rows` → MCP `create_spine_element`)
+    emits: binding='live' (serves non-empty), placement='context', layer from
+    ``kind``, origin='authored', v1 live.
+
+    Rows go to ``spine_substance`` FIRST (authored elements are MC-2-owned; the
+    disk file is only a generated mirror), then the mirror file is written at
+    ``spine/_authored/<slug>.md`` via `write_authored_element` — byte-identical
+    to what `sync_spine_substance`'s authored reverse-mirror regenerates, so
+    the file never fights sync: the disk→DB readers skip ``_authored/``, the
+    reap skips origin='authored', and the reverse-mirror rewrites this same
+    path. Returns the written mirror Path (live version is v1).
+    """
+    if client is None:
+        raise ValueError(
+            "promote with divergent sources must CREATE a new authored element "
+            f"serving {work_item_est_id!r}, which requires an MC-2 client "
+            "(authored elements are DB-owned; a mirror file alone would never "
+            "sync). Pass client=..., or promote with the same sources as the "
+            "live version to re-distill it."
+        )
+
+    spine_root = project_dir / "spine"
+    base_slug = slugify(framing)
+    slug, n = base_slug, 1
+    while _authored_slug_taken(client, card, spine_root, slug):
+        n += 1
+        slug = f"{base_slug}-{n}"
+    est_id = authored_est_item_id(slug)
+
+    rows = build_create_rows(
+        project_id=card.project_id,
+        project_code=card.project_code,
+        label=framing,
+        type_=kind,
+        body=body,
+        serves=[work_item_est_id],
+        now_iso=today_iso,
+        sources=list(sources),
+    )
+    # build_create_rows derives the slug from the label; re-key to the
+    # (possibly collision-suffixed) slug chosen above.
+    for r in rows:
+        r["est_item_id"] = est_id
+        r["id"] = f"{card.project_code}/{est_id}/{r['version_label']}"
+
+    client.table(_SUBSTANCE_TABLE).upsert(rows, on_conflict="id").execute()
+    path = write_authored_element(
+        project_dir, project_code=card.project_code,
+        est_item_id=est_id, rows=rows,
+    )
+
+    if flip_card:
+        client.table(_INBOX_TABLE).update({"status": "promoted"}).eq(
+            "id", card.id
+        ).execute()
+
+    return path
