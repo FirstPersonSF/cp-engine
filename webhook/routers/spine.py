@@ -27,21 +27,31 @@ router = APIRouter()
 
 
 @router.post("/api/spine/promote")
-async def spine_promote(request: Request) -> dict:
-    """Frame + promote a proposed spine_inbox card into a live substance version.
+async def spine_promote(request: Request) -> Response:
+    """Frame + promote a proposed spine_inbox card (async kickoff, 202).
 
     The server-side equivalent of the `cp spine-frame` CLI: a human in the mc-2
     web UI clicks "Frame & promote" on a proposed inbox card with a directing
     framing brief. mc-2 has the Supabase DB but NOT a checkout of the cp tenant
-    filesystem — only this service clones the tenant per-request — so the
-    markdown write (source of truth) + git push happen HERE. mc-2 calls this
-    (signed) as a thin proxy.
+    filesystem — only this service clones the tenant — so the markdown write
+    (source of truth) + git push happen HERE. mc-2 calls this (signed) as a
+    thin proxy.
 
-    Sequence: verify signature → clone tenant → load card → resolve the target
-    estimate item (name/phase/kind, best-effort) → promote_card (directed
-    re-distillation under the framing → write/append a live `## v<N>` substance
-    version) → mirror that project's substance into spine_substance (so the UI
-    sees it immediately, best-effort) → commit + push → return HEAD sha.
+    The promote is an LLM re-distillation plus a tenant clone + push — far too
+    slow to hold an HTTP request open for. So this endpoint mirrors
+    /api/spine/promote-transcript exactly: it validates synchronously
+    (signature, payload, card, 409 double-submit guard, binding target),
+    inserts a `running` spine_promote_runs row (kind='frame_promote',
+    card_id=<card id>), returns 202 immediately, and runs the promote in a
+    background task that updates the row to done/failed when it finishes.
+    mc-2 polls GET /api/spine/promote-runs/{run_id}.
+
+    Background sequence: resolve the target estimate item (name/phase/kind,
+    best-effort) → clone tenant (sparse: scope dirs only) → promote_card
+    (directed re-distillation under the framing → write/append a live
+    `## v<N>` substance version, or CREATE a new authored element on source
+    divergence, issue #44) → mirror that project's substance into
+    spine_substance (best-effort) → commit + push → flip the card.
 
     Request body (JSON):
         {
@@ -57,24 +67,25 @@ async def spine_promote(request: Request) -> dict:
         X-Webhook-Signature: hex(hmac_sha256(...))
         X-Webhook-Timestamp: (optional, per the phased-rollout gate)
 
-    Response (200):
-        {"ok": true, "commit_sha": ..., "version_label": "v3",
-         "rel_path": "1p/.../messaging-system.md", "mirrored": true,
-         "card_flipped": true}
+    Response (202):
+        {"run_id": "<code>/<uuid>", "status": "running"}
+
+    On success the run row's `result` jsonb carries
+        {"version_label", "rel_path", "mirrored", "created_new_element",
+         "card_flipped"}.
 
     The card is flipped to 'promoted' AFTER a successful push (the push is the
     real commit point). If that final flip fails, the version is still durable
-    in the repo and we return 200 with "card_flipped": false.
+    in the repo and the run is recorded done with "card_flipped": false.
 
     409: the card is already 'promoted' — a duplicate submit (double click /
     retry of an already-landed promote). Re-frame the card to promote again.
+    The 409 fires BEFORE any run row is inserted.
     """
-    from cp_engine.estimate import fetch_estimate
-    from cp_engine.plan_from_transcript import _call_claude
-    from cp_engine.spine import find_spine_dir
-    from cp_engine.spine_inbox import _INBOX_TABLE, load_card, promote_card
-    from cp_engine.spine_substance_sync import sync_spine_substance
-    from cp_engine.substance import parse_substance
+    from uuid import uuid4
+
+    from cp_engine.asset_ingest import _utc_now_iso
+    from cp_engine.spine_inbox import load_card
 
     raw_body = await request.body()
     signatures._verify_signature(
@@ -136,6 +147,55 @@ async def spine_promote(request: Request) -> dict:
             ),
         )
 
+    # Everything from here on (estimate resolve, clone, LLM re-distill, push,
+    # card flip) is the slow tail — record a running run row and hand off.
+    run_id = f"{card.project_code}/{uuid4()}"
+    _spine_promote_runs_table(client).insert({
+        "id": run_id,
+        "project_id": card.project_id,
+        "project_code": card.project_code,
+        "est_item_id": target_item_id,
+        "kind": "frame_promote",
+        "card_id": card.id,
+        "status": "running",
+        "started_at": _utc_now_iso(),
+    }).execute()
+    pipeline._spawn_background(_run_frame_promote(
+        run_id, card,
+        framing=framing,
+        est_item_id=target_item_id,
+        kind=kind,
+        sources=list(sources),
+        model=model,
+    ))
+    return Response(
+        content=json.dumps({"run_id": run_id, "status": "running"}),
+        status_code=202,
+        media_type="application/json",
+    )
+
+
+def _frame_promote_in_tree(
+    client, tenant_root, card, *,
+    framing: str, est_item_id: str, kind: str | None,
+    sources: list[str], model: str,
+) -> dict:
+    """The synchronous heavy body of a frame-promote run (runs in a thread).
+
+    Behavior-preserving move of the pre-async /api/spine/promote tail:
+    estimate resolve (best-effort) → promote_card → mirror (best-effort) →
+    commit + push → card flip (best-effort, AFTER the push). Returns the
+    `result` jsonb recorded on the spine_promote_runs row. Raises on the
+    failures that used to 500 the sync route (promote_card, push) — the
+    caller records those as a failed run.
+    """
+    from cp_engine.estimate import fetch_estimate
+    from cp_engine.plan_from_transcript import _call_claude
+    from cp_engine.spine import find_spine_dir
+    from cp_engine.spine_inbox import _INBOX_TABLE, promote_card
+    from cp_engine.spine_substance_sync import sync_spine_substance
+    from cp_engine.substance import parse_substance
+
     # The estimate gives the item's name + phase for the file path + frontmatter.
     # Degrade gracefully (unbound-by-name) if the estimator is unreachable —
     # mirrors the CLI's spine_frame_cmd.
@@ -150,121 +210,185 @@ async def spine_promote(request: Request) -> dict:
             "unbound-by-name: %s", card.project_code, exc,
         )
     if estimate is not None:
-        item = estimate.item_by_id(target_item_id)
+        item = estimate.item_by_id(est_item_id)
         if item is not None:
             name = item.name
             resolved_kind = kind or item.kind
             for ph in estimate.phases:
-                if any(i.id == target_item_id for i in ph.items):
+                if any(i.id == est_item_id for i in ph.items):
                     phase = ph.name
                     break
     resolved_kind = resolved_kind or "deliverable"
 
-    with git_ops._cloned_tenant() as tenant_root:
-        config = pipeline._load_tenant_config(tenant_root)
-        project_dir = find_spine_dir(config.root, card.project_code)
-        src = list(sources) or [card.source_ref]
+    config = pipeline._load_tenant_config(tenant_root)
+    project_dir = find_spine_dir(config.root, card.project_code)
+    src = list(sources) or [card.source_ref]
 
-        # Directed re-distillation + markdown write (source of truth). Let any
-        # failure surface as a 500 — a failed promote must be visible so the
-        # UI can show an error, and nothing was pushed yet.
-        #
-        # flip_card=False means promote_card does NOT flip the card to
-        # 'promoted' here. The flip is deferred until AFTER a successful push
-        # (below): the git push is the real commit point. If the push fails,
-        # the throwaway clone (and its only copy of the markdown) is discarded
-        # — but the card stays proposed/framed so the human can retry the
-        # click. No data loss. The client IS passed: when the promote's sources
-        # diverge from the bound card's (issue #44), promote_card creates a new
-        # AUTHORED element, whose rows are MC-2-owned and written directly —
-        # for that path the DB row, not the push, is the durable copy (the
-        # authored reverse-mirror regenerates the file on any later sync).
-        path = promote_card(
-            card,
-            framing=framing,
-            est_item_id=target_item_id,
-            kind=resolved_kind,
-            project_dir=project_dir,
-            sources=src,
-            distiller=_call_claude,
-            model=model,
-            client=client,
-            flip_card=False,
-            name=name,
-            phase=phase,
-        )
+    # Directed re-distillation + markdown write (source of truth). Let any
+    # failure raise — a failed promote must be visible (the run row flips to
+    # 'failed' so the UI can show an error), and nothing was pushed yet.
+    #
+    # flip_card=False means promote_card does NOT flip the card to
+    # 'promoted' here. The flip is deferred until AFTER a successful push
+    # (below): the git push is the real commit point. If the push fails,
+    # the throwaway clone (and its only copy of the markdown) is discarded
+    # — but the card stays proposed/framed so the human can retry the
+    # click. No data loss. The client IS passed: when the promote's sources
+    # diverge from the bound card's (issue #44), promote_card creates a new
+    # AUTHORED element, whose rows are MC-2-owned and written directly —
+    # for that path the DB row, not the push, is the durable copy (the
+    # authored reverse-mirror regenerates the file on any later sync).
+    path = promote_card(
+        card,
+        framing=framing,
+        est_item_id=est_item_id,
+        kind=resolved_kind,
+        project_dir=project_dir,
+        sources=src,
+        distiller=_call_claude,
+        model=model,
+        client=client,
+        flip_card=False,
+        name=name,
+        phase=phase,
+    )
 
-        # The live version's label, re-parsed off the just-written file.
-        version_label = parse_substance(path).live_version().label
-        rel_path = str(path.relative_to(tenant_root))
+    # Did the issue-#44 create path fire? promote_card's create-don't-version
+    # branch mirrors the new authored element at spine/_authored/<slug>.md;
+    # the version path always writes spine/<phase-slug>/<item-slug>.md. The
+    # parent-dir name is the discriminator.
+    created_new_element = path.parent.name == "_authored"
 
-        # Mirror the new version into spine_substance so the UI sees it
-        # immediately (idempotent reconcile of ALL of this project's substance,
-        # exactly like `cp sync`). Best-effort: a mirror failure must NOT lose
-        # the click — the markdown + git push still land and the next sync
-        # reconciles. So we record mirrored=false and keep going.
-        mirrored = True
-        try:
-            sync_spine_substance(
-                client,
-                project_id=card.project_id,
-                project_code=card.project_code,
-                project_dir=project_dir,
-                estimate=estimate,
-            )
-        except Exception as exc:  # noqa: BLE001 — never lose a successful write
-            log.warning(
-                "spine-promote: spine_substance mirror failed for %s "
-                "(markdown + push will still land): %s",
-                card.project_code, exc,
-            )
-            observability.capture(exc, area="spine_promote_mirror")
-            mirrored = False
+    # The live version's label, re-parsed off the just-written file.
+    version_label = parse_substance(path).live_version().label
+    rel_path = str(path.relative_to(tenant_root))
 
-        # The push IS the commit point — succeeding here means the version is
-        # durably in the repo. Any failure raises a 500 before the card flips,
-        # so the human can safely retry the click (no data loss).
-        commit_sha = git_ops._commit_and_push_promote(
-            tenant_root=tenant_root,
+    # Mirror the new version into spine_substance so the UI sees it
+    # immediately (idempotent reconcile of ALL of this project's substance,
+    # exactly like `cp sync`). Best-effort: a mirror failure must NOT lose
+    # the click — the markdown + git push still land and the next sync
+    # reconciles. So we record mirrored=false and keep going.
+    mirrored = True
+    try:
+        sync_spine_substance(
+            client,
+            project_id=card.project_id,
             project_code=card.project_code,
-            version_label=version_label,
-            rel_path=rel_path,
+            project_dir=project_dir,
+            estimate=estimate,
         )
+    except Exception as exc:  # noqa: BLE001 — never lose a successful write
+        log.warning(
+            "spine-promote: spine_substance mirror failed for %s "
+            "(markdown + push will still land): %s",
+            card.project_code, exc,
+        )
+        observability.capture(exc, area="spine_promote_mirror")
+        mirrored = False
+
+    # The push IS the commit point — succeeding here means the version is
+    # durably in the repo. Any failure raises before the card flips (the run
+    # records 'failed'), so the human can safely retry the click (no data loss).
+    commit_sha = git_ops._commit_and_push_promote(
+        tenant_root=tenant_root,
+        project_code=card.project_code,
+        version_label=version_label,
+        rel_path=rel_path,
+    )
 
     # NOW that the push succeeded, flip the card to 'promoted' — the last,
     # cheapest, most-likely-to-succeed step. If THIS fails the durable work is
     # already done (version is in the repo); worst case the card shows
     # un-promoted and a retry re-distills a duplicate version (benign, and far
-    # better than losing the write). So we log loudly but STILL return 200 with
-    # the commit_sha, recording card_flipped=false (mirrors the `mirrored` field).
+    # better than losing the write). So we log loudly but the run is STILL
+    # recorded done, with card_flipped=false (mirrors the `mirrored` field).
     card_flipped = True
     try:
         client.table(_INBOX_TABLE).update({"status": "promoted"}).eq(
-            "id", card_id
+            "id", card.id
         ).execute()
-    except Exception as exc:  # noqa: BLE001 — push already landed; never 500 here
+    except Exception as exc:  # noqa: BLE001 — push already landed; never fail here
         log.error(
             "spine-promote: card flip to 'promoted' FAILED for %s after a "
             "successful push (%s) — version is durable in the repo; card shows "
             "un-promoted and a retry will re-distill a duplicate version: %s",
-            card_id, commit_sha[:8], exc,
+            card.id, commit_sha[:8], exc,
         )
         observability.capture(exc, area="spine_promote_card_flip")
         card_flipped = False
 
     log.info(
-        "spine-promote: card=%s item=%s %s -> %s (mirrored=%s flipped=%s)",
-        card_id, target_item_id, version_label, commit_sha[:8],
-        mirrored, card_flipped,
+        "spine-promote: card=%s item=%s %s -> %s (mirrored=%s flipped=%s new=%s)",
+        card.id, est_item_id, version_label, commit_sha[:8],
+        mirrored, card_flipped, created_new_element,
     )
     return {
-        "ok": True,
-        "commit_sha": commit_sha,
         "version_label": version_label,
         "rel_path": rel_path,
         "mirrored": mirrored,
+        "created_new_element": created_new_element,
         "card_flipped": card_flipped,
     }
+
+
+async def _run_frame_promote(
+    run_id: str, card, *,
+    framing: str, est_item_id: str, kind: str | None,
+    sources: list[str], model: str,
+) -> None:
+    """Background: run the (sync, slow) frame-promote off the event loop, then
+    record the outcome on the spine_promote_runs row. Never raises — a failure
+    is recorded as status=failed (this is the fire-and-forget tail of
+    /api/spine/promote, which has already returned 202 to the caller). Mirrors
+    `_run_promote` (the promote-transcript runner) exactly.
+
+    The clone is SPARSE, scoped to the engine's scope dirs (`_SCOPE_DIRS`:
+    1p/, firstpersonsf/, canonic/) — provably everything this run touches:
+    `_load_tenant_config` reads root-level .cp-engine.toml (cone mode always
+    materializes root files), `find_spine_dir` walks exactly `_SCOPE_DIRS`,
+    promote_card writes only under the resolved project dir (inside a scope
+    dir), the mirror reads only that project dir, and the commit's
+    `git add -A` stages only checked-out paths (sparse-excluded entries pass
+    through via skip-worktree). sprints/, docs/, meetings/ archives etc. are
+    never materialized or blob-fetched.
+    """
+    from cp_engine.asset_ingest import _utc_now_iso
+    from cp_engine.sync import _SCOPE_DIRS
+
+    client = pipeline._create_supabase_client()
+    try:
+        # The clone exists only for the duration of the threaded promote; the
+        # `with` guarantees cleanup (rmtree) on exit, success or failure.
+        with git_ops._cloned_tenant(sparse_paths=list(_SCOPE_DIRS)) as tenant_root:
+            result = await asyncio.to_thread(
+                _frame_promote_in_tree,
+                client,
+                tenant_root,
+                card,
+                framing=framing,
+                est_item_id=est_item_id,
+                kind=kind,
+                sources=sources,
+                model=model,
+            )
+        _spine_promote_runs_table(client).update({
+            "status": "done",
+            "result": result,
+            "finished_at": _utc_now_iso(),
+        }).eq("id", run_id).execute()
+    except Exception as exc:  # noqa: BLE001 — record the failure, never crash the task
+        log.warning(
+            "spine frame-promote run %s failed: %s", run_id, exc, exc_info=True
+        )
+        observability.capture(exc, area="spine_frame_promote_run")
+        try:
+            # Fresh client on the failure path: the original may be the thing
+            # that failed (transient supabase/network error).
+            _spine_promote_runs_table(pipeline._create_supabase_client()).update(
+                {"status": "failed", "error": str(exc), "finished_at": _utc_now_iso()}
+            ).eq("id", run_id).execute()
+        except Exception:  # noqa: BLE001 — best effort; nothing else to do
+            log.error("spine frame-promote run %s: could not record failure", run_id)
 
 
 def _spine_promote_runs_table(client):

@@ -25,8 +25,21 @@ log = logging.getLogger("cp-engine-webhook")
 
 
 @contextmanager
-def _cloned_tenant():
-    """Clone cp tenant into temp dir; yield path; always clean up."""
+def _cloned_tenant(sparse_paths: list[str] | None = None):
+    """Clone cp tenant into temp dir; yield path; always clean up.
+
+    ``sparse_paths``: when given, the clone is a partial + sparse checkout —
+    ``--depth=10 --filter=blob:none --sparse`` followed by ``git
+    sparse-checkout set <paths...>`` (cone mode, git's default). Only the
+    named top-level directories (recursively) plus all root-level files
+    (cone mode includes those automatically — .cp-engine.toml, master-cp.md,
+    …) are materialized; blobs outside the cone are never fetched. Commits
+    and pushes from such a clone work normally for changes touching
+    checked-out paths (partial-clone push has been solid since git ≥2.30;
+    the deploy image and dev machines run far newer). ``git add -A`` in a
+    sparse checkout only stages visible files — sparse-excluded index
+    entries carry the skip-worktree bit and pass through commits untouched.
+    """
     repo_url = os.environ.get("CP_TENANT_REPO_URL")
     if not repo_url:
         raise HTTPException(status_code=500, detail="CP_TENANT_REPO_URL not configured")
@@ -34,12 +47,24 @@ def _cloned_tenant():
     tmp = Path(tempfile.mkdtemp(prefix="cp-webhook-"))
     try:
         env = _ssh_env()
+        clone_cmd = ["git", "clone", "--depth=10"]
+        if sparse_paths:
+            clone_cmd += ["--filter=blob:none", "--sparse"]
+        clone_cmd += [repo_url, str(tmp / "cp")]
         subprocess.run(
-            ["git", "clone", "--depth=10", repo_url, str(tmp / "cp")],
+            clone_cmd,
             check=True,
             env=env,
             capture_output=True,
         )
+        if sparse_paths:
+            subprocess.run(
+                ["git", "sparse-checkout", "set", *sparse_paths],
+                cwd=tmp / "cp",
+                check=True,
+                env=env,
+                capture_output=True,
+            )
         # Configure committer once per clone so every commit picks it up.
         subprocess.run(
             ["git", "config", "user.name", os.environ.get("GIT_AUTHOR_NAME", "cp-engine-webhook")],
