@@ -4,6 +4,26 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.52.0 — 2026-07-09
+
+**Spine distill data-loss fix (#44) + async Frame & promote.**
+
+- `promote_card` no longer serially overwrites distinct artifacts bound to
+  one work item: when a promote's sources diverge from the bound card's live
+  version's sources, it now CREATES a new authored element with
+  `serves=[work-item]` (shared `build_create_rows` — indistinguishable from
+  MCP `create_spine_element` output, mirrored under `spine/_authored/`)
+  instead of superseding the card. Same-source re-distills still version.
+  Forensics: cp tenant `docs/spine-distill-overwrite-issue-2026-07-09.md`.
+- Webhook `/api/spine/promote` 409s an already-promoted card (the observed
+  double-submit duplicate write) and is now 202-then-background: the click
+  returns immediately with a `spine_promote_runs` row
+  (`kind='frame_promote'`) the mc-2 dashboard polls; clone → directed
+  distillation → push → mirror → card flip run in a background task.
+- Webhook tenant clones for promote are now sparse
+  (`--filter=blob:none` + cone checkout of the scope dirs) — no more
+  full-tenant checkout per click.
+
 ## v0.51.2 — 2026-07-08
 
 ### The CLI-downgrade loop is dead
