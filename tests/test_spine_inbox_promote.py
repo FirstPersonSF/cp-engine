@@ -56,31 +56,61 @@ class _FakeTable:
     def __init__(self, store, name):
         self.store, self.name = store, name
         self._op = None
-        self._filter = None
+        self._filters = []
+        self._limit = None
 
     def update(self, values):
         self._op = ("update", values)
         return self
 
+    def select(self, cols):
+        self._op = ("select", cols)
+        return self
+
+    def upsert(self, rows, on_conflict=None):
+        self._op = ("upsert", list(rows))
+        return self
+
     def eq(self, col, val):
-        self._filter = (col, val)
+        self._filters.append((col, val))
+        return self
+
+    def limit(self, n):
+        self._limit = n
         return self
 
     def execute(self):
         op, payload = self._op
         rows = self.store.setdefault(self.name, [])
         if op == "update":
-            col, val = self._filter
             for x in rows:
-                if x.get(col) == val:
+                if all(x.get(c) == v for c, v in self._filters):
                     x.update(payload)
+            return type("R", (), {"data": []})()
+        if op == "select":
+            hits = [x for x in rows
+                    if all(x.get(c) == v for c, v in self._filters)]
+            if self._limit is not None:
+                hits = hits[: self._limit]
+            return type("R", (), {"data": hits})()
+        if op == "upsert":
+            by_id = {x.get("id"): i for i, x in enumerate(rows)}
+            for new in payload:
+                i = by_id.get(new.get("id"))
+                if i is None:
+                    rows.append(dict(new))
+                else:
+                    rows[i].update(new)
             return type("R", (), {"data": []})()
         return type("R", (), {"data": []})()
 
 
 class _FakeClient:
-    def __init__(self, seed=None):
-        self.store = {"spine_inbox": list(seed or [])}
+    def __init__(self, seed=None, substance=None):
+        self.store = {
+            "spine_inbox": list(seed or []),
+            "spine_substance": list(substance or []),
+        }
 
     def table(self, name):
         return _FakeTable(self.store, name)
@@ -162,10 +192,12 @@ def test_promote_adds_version_and_demotes_prior_live(tmp_path: Path):
         project_dir=tmp_path, sources=["a"], distiller=_distiller("body one"),
         model="m", name="Messaging system", phase="P0", today="2026-04-23",
     )
-    # Promote a second card → v2 live, v1 demoted.
+    # Promote a second card with the SAME sources (a true re-distill of the
+    # same artifact) → v2 live, v1 demoted. (Divergent sources would take the
+    # create-don't-version path instead — see the issue-#44 tests below.)
     path = promote_card(
         _card(), framing="second pass", est_item_id="d1", kind="deliverable",
-        project_dir=tmp_path, sources=["b"], distiller=_distiller("body two"),
+        project_dir=tmp_path, sources=["a"], distiller=_distiller("body two"),
         model="m", name="Messaging system", phase="P0", today="2026-06-15",
     )
     item = parse_substance(path)
@@ -277,3 +309,208 @@ def test_promote_raises_on_two_existing_files_binding_same_id(tmp_path: Path):
             distiller=_distiller("b2"), model="m",
             name="Gamma", phase="P0", today="2026-06-15",
         )
+
+
+# ---- issue #44: create-don't-version on source divergence --------------------
+
+
+def _seed_bound_card(tmp_path: Path, *, sources=("mtg-1",), today="2026-06-24"):
+    """First promote: bind a v1-live substance file to work item d1."""
+    return promote_card(
+        _card(), framing="Planning the interview blocks",
+        est_item_id="d1", kind="activity", project_dir=tmp_path,
+        sources=list(sources), distiller=_distiller("planning body"),
+        model="m", name="1:1 stakeholder interviews",
+        phase="discovery-alignment", today=today,
+    )
+
+
+def test_divergent_sources_creates_new_serving_element(tmp_path: Path):
+    """A promote whose sources differ from the bound card's live sources is a
+    DIFFERENT artifact serving the same work item: it must land as a NEW
+    authored element (serves=[d1]) and leave the bound card untouched."""
+    first = _seed_bound_card(tmp_path, sources=("mtg-1",))
+    client = _FakeClient(seed=[{"id": _card().id, "status": "framed"}])
+
+    path = promote_card(
+        _card(), framing="Interview with Paul Wu",
+        est_item_id="d1", kind="activity", project_dir=tmp_path,
+        sources=["mtg-2"], distiller=_distiller("paul wu body"),
+        model="m", client=client, name="1:1 stakeholder interviews",
+        phase="discovery-alignment", today="2026-07-09",
+    )
+
+    # New element mirrors under spine/_authored/ with the authored identity.
+    assert path == tmp_path / "spine" / "_authored" / "interview-with-paul-wu.md"
+    item = parse_substance(path)
+    assert item.est_item_id == "_authored/interview-with-paul-wu"
+    assert item.serves == ("d1",)
+    assert item.binding == "live"          # serves non-empty → live
+    assert item.placement == "context"     # authored elements are context
+    assert item.layer == "Activity"        # canon_layer(kind)
+    live = item.live_version()
+    assert live.label == "v1" and live.status == "live"
+    assert live.framing == "Interview with Paul Wu"
+    assert live.sources == ("mtg-2",)
+    assert live.body == "paul wu body"
+
+    # The bound card is UNTOUCHED — still its own v1 live, planning body.
+    original = parse_substance(first)
+    assert original.est_item_id == "d1"
+    assert len(original.versions) == 1
+    assert original.live_version().body == "planning body"
+    assert original.live_version().sources == ("mtg-1",)
+
+    # DB rows: v1-live authored rows matching the shared create path's shape.
+    rows = client.store["spine_substance"]
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["id"] == "ibx-5153/_authored/interview-with-paul-wu/v1"
+    assert row["est_item_id"] == "_authored/interview-with-paul-wu"
+    assert row["origin"] == "authored"
+    assert row["serves"] == ["d1"]
+    assert row["binding"] == "live"
+    assert row["placement"] == "context"
+    assert row["layer"] == "Activity"
+    assert row["status"] == "live"
+    assert row["version_label"] == "v1"
+    assert row["sources"] == ["mtg-2"]
+
+    # The card still flipped to promoted (flip_card defaults True).
+    inbox = next(r for r in client.store["spine_inbox"]
+                 if r["id"] == _card().id)
+    assert inbox["status"] == "promoted"
+
+
+def test_divergent_sources_flip_card_false_defers_flip(tmp_path: Path):
+    """The webhook's deferred-flip contract holds on the create path too."""
+    _seed_bound_card(tmp_path)
+    client = _FakeClient(seed=[{"id": _card().id, "status": "framed"}])
+    promote_card(
+        _card(), framing="Interview with Paul Wu",
+        est_item_id="d1", kind="activity", project_dir=tmp_path,
+        sources=["mtg-2"], distiller=_distiller("b"), model="m",
+        client=client, flip_card=False,
+        name="1:1 stakeholder interviews", phase="discovery-alignment",
+        today="2026-07-09",
+    )
+    inbox = next(r for r in client.store["spine_inbox"]
+                 if r["id"] == _card().id)
+    assert inbox["status"] == "framed"          # NOT flipped
+    assert len(client.store["spine_substance"]) == 1   # rows still written
+
+
+def test_divergent_sources_slug_collision_suffixes(tmp_path: Path):
+    """An existing `_authored/<slug>` (file or DB rows) forces `-2`, `-3`, …."""
+    _seed_bound_card(tmp_path)
+    # Occupy the base slug in the DB, and the -2 slug on disk.
+    taken_rows = [{
+        "id": "ibx-5153/_authored/interview-with-paul-wu/v1",
+        "project_id": "u1",
+        "est_item_id": "_authored/interview-with-paul-wu",
+    }]
+    authored_dir = tmp_path / "spine" / "_authored"
+    authored_dir.mkdir(parents=True, exist_ok=True)
+    (authored_dir / "interview-with-paul-wu-2.md").write_text("occupied")
+    client = _FakeClient(seed=[{"id": _card().id, "status": "framed"}],
+                         substance=taken_rows)
+
+    path = promote_card(
+        _card(), framing="Interview with Paul Wu",
+        est_item_id="d1", kind="activity", project_dir=tmp_path,
+        sources=["mtg-9"], distiller=_distiller("third paul wu"), model="m",
+        client=client, name="1:1 stakeholder interviews",
+        phase="discovery-alignment", today="2026-07-09",
+    )
+    assert path.name == "interview-with-paul-wu-3.md"
+    item = parse_substance(path)
+    assert item.est_item_id == "_authored/interview-with-paul-wu-3"
+    assert item.serves == ("d1",)
+    # The pre-existing rows/files are untouched.
+    assert (authored_dir / "interview-with-paul-wu-2.md").read_text() == "occupied"
+    assert any(r["est_item_id"] == "_authored/interview-with-paul-wu"
+               for r in client.store["spine_substance"])
+
+
+def test_empty_incoming_sources_still_versions(tmp_path: Path):
+    """No incoming sources → nothing to compare → version as before."""
+    _seed_bound_card(tmp_path, sources=("mtg-1",))
+    path = promote_card(
+        _card(), framing="re-frame", est_item_id="d1", kind="activity",
+        project_dir=tmp_path, sources=[], distiller=_distiller("v2 body"),
+        model="m", name="1:1 stakeholder interviews",
+        phase="discovery-alignment", today="2026-07-09",
+    )
+    item = parse_substance(path)
+    assert item.live_version().label == "v2"
+    assert len(item.versions) == 2
+
+
+def test_empty_prior_sources_still_versions(tmp_path: Path):
+    """Live version has no sources → nothing to compare → version as before."""
+    _seed_bound_card(tmp_path, sources=())
+    path = promote_card(
+        _card(), framing="re-frame", est_item_id="d1", kind="activity",
+        project_dir=tmp_path, sources=["mtg-2"], distiller=_distiller("v2 body"),
+        model="m", name="1:1 stakeholder interviews",
+        phase="discovery-alignment", today="2026-07-09",
+    )
+    item = parse_substance(path)
+    assert item.live_version().label == "v2"
+    assert len(item.versions) == 2
+
+
+def test_same_sources_repromote_versions(tmp_path: Path):
+    """Same source set (a true re-distill, e.g. the observed v5→v6) versions."""
+    _seed_bound_card(tmp_path, sources=("mtg-1", "deck-a"))
+    path = promote_card(
+        _card(), framing="tighter pass", est_item_id="d1", kind="activity",
+        project_dir=tmp_path, sources=["deck-a", "mtg-1"],  # order-insensitive
+        distiller=_distiller("v2 body"), model="m",
+        name="1:1 stakeholder interviews", phase="discovery-alignment",
+        today="2026-07-09",
+    )
+    item = parse_substance(path)
+    assert item.live_version().label == "v2"
+    assert item.live_version().body == "v2 body"
+
+
+def test_divergent_sources_without_client_raises(tmp_path: Path):
+    """The create path needs MC-2 (authored rows are DB-owned) — a divergent
+    promote without a client must fail LOUD, never silently strand or version."""
+    first = _seed_bound_card(tmp_path, sources=("mtg-1",))
+    with pytest.raises(ValueError, match="authored"):
+        promote_card(
+            _card(), framing="Interview with Paul Wu",
+            est_item_id="d1", kind="activity", project_dir=tmp_path,
+            sources=["mtg-2"], distiller=_distiller("b"), model="m",
+            client=None, name="1:1 stakeholder interviews",
+            phase="discovery-alignment", today="2026-07-09",
+        )
+    # And the bound card was not touched.
+    assert parse_substance(first).live_version().body == "planning body"
+
+
+def test_created_element_is_invisible_to_promote_targeting(tmp_path: Path):
+    """The new element lives under spine/_authored/ (skipped by
+    _iter_substance_files), so a LATER promote to the same work item still
+    targets the original bound file — never the authored mirror."""
+    first = _seed_bound_card(tmp_path, sources=("mtg-1",))
+    client = _FakeClient(seed=[{"id": _card().id, "status": "framed"}])
+    promote_card(
+        _card(), framing="Interview with Paul Wu",
+        est_item_id="d1", kind="activity", project_dir=tmp_path,
+        sources=["mtg-2"], distiller=_distiller("b"), model="m",
+        client=client, name="1:1 stakeholder interviews",
+        phase="discovery-alignment", today="2026-07-09",
+    )
+    # Same-source re-promote of the ORIGINAL card versions the original file.
+    path = promote_card(
+        _card(), framing="planning re-distill", est_item_id="d1",
+        kind="activity", project_dir=tmp_path, sources=["mtg-1"],
+        distiller=_distiller("planning v2"), model="m",
+        name="1:1 stakeholder interviews", phase="discovery-alignment",
+        today="2026-07-09",
+    )
+    assert path == first
+    assert parse_substance(path).live_version().label == "v2"
