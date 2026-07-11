@@ -6,6 +6,15 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 ## Unreleased
 
+**Account-dir stakeholder mirror.**
+
+- `cp sync` now mirrors account-scoped elements (promoted stakeholders) to
+  `1p/<account>/_stakeholders/<slug>.md` — fetched by company, so sibling
+  projects' promotions appear and every project's sync converges on the same
+  files. The provenance project's `spine/_authored/` no longer carries them
+  (stale pre-promotion mirror files are removed); archived account elements
+  are skipped. Best-effort, never aborts sync.
+
 **Frameworks slice 2: authoring adapter + decision diff.**
 
 - `framework_compose` returns `body` — the package's `{sections}` content
