@@ -28,6 +28,22 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
   (`1p/<account>/_stakeholders/`) ships as a follow-up.
 - Design: cp tenant `docs/plans/2026-07-11-stakeholders-account-scope-design.md`.
 
+**Inbound frameworks, slice 1 (MCP tools).**
+
+- New `inbound-frameworks[anthropic]` dependency @ `a7214a7`; all
+  1p-component-library pins bumped to the same SHA (verified no-op for the
+  existing packages — empty diff over their subdirectories).
+- Three MCP tools: `framework_readiness` (curated menu + snapshot identity,
+  no LLM), `framework_decompose` (extraction over an explicitly scoped
+  corpus — repo-relative files, spine elements, or source docs; path-escape
+  guarded; misses recorded, never dropped), `framework_compose` (generation
+  from human-confirmed field values). Anti-graveyard and the framework-IP
+  invariant carried per the package's IMPLEMENTATION.md; engines persist
+  nothing; `usage` surfaced per call.
+- Model knobs: `CP_FRAMEWORKS_DECOMPOSE_MODEL` / `CP_FRAMEWORKS_COMPOSE_MODEL`
+  (default `claude-sonnet-5`, the pilot-validated tier).
+- Design doc: cp tenant `docs/plans/2026-07-11-inbound-frameworks-integration-design.md`.
+
 ## v0.53.0 — 2026-07-10
 
 **Spine MCP curation verbs (#47): retitle, rebind, retire.**
