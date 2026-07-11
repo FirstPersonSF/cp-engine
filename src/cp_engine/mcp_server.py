@@ -782,7 +782,8 @@ def framework_readiness(layer: str | None = None) -> dict:
 
 @mcp.tool()
 def framework_decompose(project_code: str, framework: str,
-                        source_keys: list[str]) -> dict:
+                        source_keys: list[str],
+                        baseline: dict | None = None) -> dict:
     """Decompose project material through one curated framework (extraction).
 
     `framework` is an id or slug (see framework_readiness). `source_keys`
@@ -793,8 +794,11 @@ def framework_decompose(project_code: str, framework: str,
     outcome, sources, usage}. Treat 'uncertain' fields as human-review items
     (they are usually the open decisions). A 'discarded' outcome means no
     curated template — that's a no-op, never write a substitute prompt.
-    Persists nothing. INTERNAL: results carry framework identity — keep them
-    out of client-facing material.
+    Pass `baseline` (a prior result's {field_values, field_confidence}) to
+    get a `diff` — the pre/post decision record (changed/new/dropped fields
+    plus confidence moves; a value that held while confidence hardened is a
+    decision RATIFIED). Persists nothing. INTERNAL: results carry framework
+    identity — keep them out of client-facing material.
     """
     from cp_engine.config import load as load_config
     from cp_engine.frameworks import assemble_corpus, get_catalog, make_llm
@@ -820,7 +824,7 @@ def framework_decompose(project_code: str, framework: str,
             return {"error": "no source_keys resolved to any text", "sources": manifest}
         _load_ingest_creds(load_config(root))  # ANTHROPIC_API_KEY into env
         d = decompose(fw, corpus, make_llm("decompose"))
-        return {
+        result = {
             "framework_id": fw.id,
             "outcome": d.get("outcome"),
             "field_values": d.get("field_values"),
@@ -828,6 +832,10 @@ def framework_decompose(project_code: str, framework: str,
             "sources": manifest,
             "usage": d.get("usage"),
         }
+        if baseline is not None:
+            from cp_engine.frameworks import diff_decompositions
+            result["diff"] = diff_decompositions(baseline, result)
+        return result
     except Exception as exc:  # noqa: BLE001
         return {"error": f"failed to decompose {framework!r} in {project_code!r}: {exc}"}
 
@@ -840,11 +848,12 @@ def framework_compose(framework: str, field_values: dict,
     The generation half of the loop: run AFTER a human has reviewed the
     decompose output (especially 'uncertain' fields — they are usually
     undecided questions, not extraction noise). Returns {content, element_type,
-    outcome, usage}; content is `{sections:[...]}`. The caller authors it as a
-    DRAFT spine element (create_spine_element) — never auto-canonical, and the
-    framework id goes in the version note only, never the element body or
-    title. Composed text is already Element-language (the invariant is baked
-    into the engine prompt).
+    body, outcome, usage}; `content` is the package's `{sections:[...]}` and
+    `body` is that content adapted to spine-element markdown, ready to pass
+    straight to create_spine_element. Author it as a DRAFT — never
+    auto-canonical, and the framework id goes in the version note only, never
+    the element body or title. Composed text is already Element-language (the
+    invariant is baked into the engine prompt).
     """
     from cp_engine.config import load as load_config
     from cp_engine.frameworks import get_catalog, make_llm
@@ -863,10 +872,12 @@ def framework_compose(framework: str, field_values: dict,
         _load_ingest_creds(load_config(_tenant_root()))
         c = compose(fw, field_values, make_llm("compose"),
                     target_element_type=target_element_type)
+        from cp_engine.frameworks import content_to_body
         return {
             "framework_id": fw.id,
             "outcome": c.get("outcome"),
             "content": c.get("content"),
+            "body": content_to_body(c.get("content") or {}),
             "element_type": c.get("element_type"),
             "usage": c.get("usage"),
         }
