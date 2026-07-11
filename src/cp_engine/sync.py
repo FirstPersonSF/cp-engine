@@ -1934,6 +1934,11 @@ def _deactivate_stale_cps(
                     continue
                 if path.name == INACTIVE_DIR_NAME:
                     continue
+                if path.name.startswith("_"):
+                    # Account-level engine dirs (e.g. `_stakeholders/`, the
+                    # account-scope stakeholder mirror — v0.56.0) are not
+                    # project working dirs; never sweep them to inactive/.
+                    continue
 
                 # uuid-anchored: a dir whose stamped MC-id is in the live
                 # set is live regardless of its (possibly drifted) name.
