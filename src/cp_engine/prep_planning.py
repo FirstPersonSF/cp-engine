@@ -154,6 +154,11 @@ class ProjectPlanningBlock:
     # Best-effort per project: a sweep failure leaves this None and the block
     # still renders. See ``build_project_block``'s ``sweep_llm`` handling.
     sweep_synthesis: str | None = None
+    # Deliverable-card lines (canonical-objects: pure derivation from
+    # phase_deliverables + schedule bars + spine serves bindings) — the
+    # project's deliverable STATE at one-line density ("P&P Report · due
+    # 2026-08-26 · 1 output accrued"). Empty for initiatives/no-estimate.
+    deliverables: tuple[str, ...] = ()
     # Freshness of the exec summary (parsed from its `· updated <date>`
     # heading stamp): ISO date + age in days at build time. None/None when
     # the region is absent or unstamped. The bundle renderer flags blocks
@@ -739,6 +744,106 @@ def _extract_exec_summary(cp_md_body: str) -> str | None:
 
 
 # The `· updated YYYY-MM-DD` stamp the wrap-up protocol puts on the
+def _fetch_deliverable_lines(supabase_client, project: ProjectState) -> tuple[str, ...]:
+    """Deliverable-card lines from MC-2 (design: deliverables-projection).
+
+    One line per deliverable of the default estimate: name, due date (via its
+    schedule bar's work_item link — mig 105 keeps bars linked), done-mark,
+    and how many live spine elements serve it (work product accruing).
+    Engagements only; best-effort — any failure returns () and the block
+    renders without a Deliverables strip.
+    """
+    if supabase_client is None:
+        return ()
+    from cp_engine.clickup_routing import engagement_number
+    from cp_engine.mc2_db import Tables
+
+    if engagement_number(project.code) is None:
+        return ()
+    try:
+        rows = (
+            supabase_client.table(Tables.PROJECTS)
+            .select("id, start_date")
+            .eq("number", engagement_number(project.code))
+            .execute().data or []
+        )
+        if not rows:
+            return ()
+        mc_project_id = rows[0]["id"]
+        start_date = rows[0].get("start_date")
+        est_rows = (
+            supabase_client.schema("estimator").table(Tables.EST_PROJECTS)
+            .select("id").eq("mc_project_id", mc_project_id)
+            .eq("is_default", True).execute().data or []
+        )
+        if not est_rows:
+            return ()
+        est_id = est_rows[0]["id"]
+        phases = (
+            supabase_client.schema("estimator").table(Tables.EST_PHASES)
+            .select("id").eq("project_id", est_id).execute().data or []
+        )
+        phase_ids = [ph["id"] for ph in phases]
+        if not phase_ids:
+            return ()
+        deliverables = (
+            supabase_client.schema("estimator")
+            .table(Tables.EST_PHASE_DELIVERABLES)
+            .select("id, name, position").in_("phase_id", phase_ids)
+            .execute().data or []
+        )
+        bars = (
+            supabase_client.schema("estimator").table(Tables.EST_SCHEDULE_ITEMS)
+            .select("work_item_id, start_week, done")
+            .eq("project_id", est_id).execute().data or []
+        )
+        substance = (
+            supabase_client.table(Tables.SPINE_SUBSTANCE)
+            .select("serves, status, archived")
+            .eq("project_id", mc_project_id).eq("status", "live")
+            .execute().data or []
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort
+        log.warning("deliverable-card fetch failed for %s: %s", project.code, exc)
+        return ()
+
+    bars_by_item: dict[str, dict] = {}
+    for b in bars:
+        wid = b.get("work_item_id")
+        if not wid:
+            continue
+        wid = str(wid)
+        prior = bars_by_item.get(wid)
+        if prior is None or (b.get("done") and not prior.get("done")):
+            bars_by_item[wid] = b
+    serve_counts: dict[str, int] = {}
+    for row in substance:
+        if row.get("archived"):
+            continue
+        for served in row.get("serves") or []:
+            serve_counts[str(served)] = serve_counts.get(str(served), 0) + 1
+
+    lines: list[str] = []
+    for d in sorted(deliverables, key=lambda r: r.get("position") or 0):
+        did = str(d["id"])
+        parts = [d.get("name") or "(unnamed)"]
+        bar = bars_by_item.get(did)
+        if bar is not None and start_date:
+            try:
+                week = int(float(bar.get("start_week") or 0))
+                due = date.fromisoformat(str(start_date)[:10]) + timedelta(days=week * 7)
+                parts.append(f"due ~{due.isoformat()}")
+            except (TypeError, ValueError):
+                pass
+        if bar is not None and bar.get("done"):
+            parts.append("done \u2713")
+        n = serve_counts.get(did, 0)
+        if n:
+            parts.append(f"{n} output{'s' if n != 1 else ''} accrued")
+        lines.append(" \u00b7 ".join(parts))
+    return tuple(lines)
+
+
 # `## Exec Summary` heading line (free-text suffixes like "(night)" allowed).
 _EXEC_SUMMARY_STAMP_RE = re.compile(
     r"^##\s+Exec Summary\s*·\s*updated\s+(?P<date>\d{4}-\d{2}-\d{2})",
@@ -1149,6 +1254,8 @@ def build_project_block(
             sweep_llm=sweep_llm,
         )
 
+    deliverable_lines = _fetch_deliverable_lines(supabase_client, project)
+
     updated = _exec_summary_updated(exec_summary)
     age_days: int | None = None
     if updated:
@@ -1166,6 +1273,7 @@ def build_project_block(
         sprint_open_asks=sprint_asks,
         urgent=tuple(urgent_list),
         fetch_error=fetch_error,
+        deliverables=deliverable_lines,
         sweep_synthesis=sweep_synthesis,
         exec_summary_updated=updated,
         exec_summary_age_days=age_days,
@@ -1757,6 +1865,11 @@ def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
         out.append(block.sweep_synthesis.strip())
         out.append("")
 
+    if block.deliverables:
+        out.append("**Deliverables:**")
+        out.extend(f"- {line}" for line in block.deliverables)
+        out.append("")
+
     out.extend(_render_forward_calendar(block))
     out.append("")
     out.extend(_render_commitments_table(block))
@@ -1854,6 +1967,11 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
     else:
         out.append(_EXEC_SUMMARY_UNAUTHORED_MARKER)
     out.append("")
+
+    if block.deliverables:
+        out.append("**Deliverables:**")
+        out.extend(f"- {line}" for line in block.deliverables)
+        out.append("")
 
     out.extend(_render_forward_calendar(block))
     out.append("")

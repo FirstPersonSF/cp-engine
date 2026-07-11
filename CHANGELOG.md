@@ -6,6 +6,14 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 ## Unreleased
 
+**/cp-prep deliverable strip (deliverable cards, consumer 2).**
+
+- Each engagement's planning block gains a `**Deliverables:**` strip — one
+  line per deliverable of the default estimate (`name · due ~date · done ✓ ·
+  N outputs accrued`), derived from phase_deliverables + linked schedule
+  bars (mig 105) + spine `serves` bindings. Best-effort; initiatives and
+  no-estimate projects render without it.
+
 **Account-dir stakeholder mirror.**
 
 - `cp sync` now mirrors account-scoped elements (promoted stakeholders) to
