@@ -75,6 +75,10 @@ _Pebble Foods Activation · Maria Mraz & Sam Ito_
 
 ### Deliverables
 
+<!-- cp-engine:start deliverable-cards -->
+_(no deliverables in the estimate yet)_
+<!-- cp-engine:end deliverable-cards -->
+
 1. _<top deliverable>_
 
 ### Definition of done

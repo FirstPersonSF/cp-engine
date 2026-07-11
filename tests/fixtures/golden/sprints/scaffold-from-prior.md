@@ -74,6 +74,10 @@ _No recent session captured._
 
 ### Deliverables
 
+<!-- cp-engine:start deliverable-cards -->
+_(no deliverables in the estimate yet)_
+<!-- cp-engine:end deliverable-cards -->
+
 1. _<top deliverable>_
 
 ### Definition of done

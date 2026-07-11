@@ -1609,7 +1609,28 @@ def _collect_sprint_per_project_data(
     """
     del allocations  # reserved for future hours-line aggregation
     out: dict[str, dict] = {}
+    # Deliverable-card lines for the sprint files' engine region — one MC-2
+    # client for the whole pass, best-effort (no creds / no network → the
+    # region renders its empty state; never blocks sync).
+    mc2_client = None
+    try:
+        from cp_engine import mc2_db
+
+        mc2_client = mc2_db.get_client(config)
+    except Exception:  # noqa: BLE001 — deliverable lines are best-effort
+        logger.info("sprint deliverable-cards: no MC-2 client; skipping")
     for project in projects:
+        if mc2_client is not None:
+            try:
+                from cp_engine.prep_planning import _fetch_deliverable_lines
+
+                lines = _fetch_deliverable_lines(mc2_client, project)
+                if lines:
+                    out.setdefault(project.code, {})["deliverable_lines"] = lines
+            except Exception:  # noqa: BLE001 — best-effort per project
+                logger.info(
+                    "sprint deliverable-cards fetch failed for %s", project.code
+                )
         repo_path = config.local_repos.get(project.code)
         if repo_path is None:
             continue
@@ -1618,7 +1639,7 @@ def _collect_sprint_per_project_data(
         )
         if not commits:
             continue
-        out[project.code] = {"recent_commits": commits}
+        out.setdefault(project.code, {})["recent_commits"] = commits
     return out
 
 

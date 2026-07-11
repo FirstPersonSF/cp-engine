@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+**Sprint files: deliverable-cards engine region (cards consumer 3 of 3).**
+
+- Engagement sprint files' `### Deliverables` gains an engine-managed
+  `deliverable-cards` region — one line per deliverable (name · due ·
+  done ✓ · outputs accrued), derived at sync time from the estimate +
+  linked bars + spine serves. Hand-written notes below the region stay
+  human territory; initiatives keep their slimmer scaffold. Best-effort:
+  no MC-2 creds → the region renders its empty state. Files pre-dating
+  the region pick it up with next week'''s scaffold.
+
 ## v0.57.0 — 2026-07-11
 
 **demote_stakeholder (the scope ladder's down verb).**
