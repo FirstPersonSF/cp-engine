@@ -334,6 +334,12 @@ def pull_spine_element(project_code: str, key: str) -> dict:
     (`framing`). Returns the full body + context (layer, binding, serves,
     sources, version_label). Returns an `error` key when nothing/ambiguously
     matches; a successful element may carry its own importance `note`.
+
+    AGREEMENT elements are projections: the stored body carries only the
+    human-authored terms, and this pull composes the live engagement shape
+    (phases, deliverables, dates, done-marks) from the estimator into the
+    returned body (`derived_block: true`). Deliverables/dates edited in the
+    estimate are instantly true here — never retype them into the element.
     """
     from cp_engine.project_sources import pull_spine
 
@@ -345,7 +351,30 @@ def pull_spine_element(project_code: str, key: str) -> dict:
                 "error": f"project '{project_code}' not found",
             }
         client, pid, cid = resolved
-        return pull_spine(client, pid, key, cid)
+        result = pull_spine(client, pid, key, cid)
+        if (result.get("layer") or "").lower() == "agreement" and not result.get("error"):
+            # Compose the read-side projection. Fail-soft: a missing estimate
+            # (initiatives, pre-estimate deals) or a fetch error just means no
+            # block — never break the pull.
+            try:
+                from cp_engine.agreement_projection import (
+                    render_engagement_block, sow_attach_nudge,
+                )
+                from cp_engine.estimate import fetch_estimate, fetch_schedule
+                est = fetch_estimate(client, pid)
+                if est is not None:
+                    bars = fetch_schedule(client, est.id)
+                    result["body"] = (result.get("body") or "") + "\n\n" + \
+                        render_engagement_block(est, bars)
+                    result["derived_block"] = True
+                if not result.get("sources") and cid is not None:
+                    from cp_engine.project_sources import list_sources
+                    nudge = sow_attach_nudge(list_sources(client, pid, cid))
+                    if nudge:
+                        result["attach_nudge"] = nudge
+            except Exception:  # noqa: BLE001 — projection is best-effort
+                pass
+        return result
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,
         # actionable error note instead of propagating a protocol error.

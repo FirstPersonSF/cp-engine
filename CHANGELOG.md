@@ -4,6 +4,23 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+**SOW as projection + Brief contract (canonical-objects slices).**
+
+- `agreement_projection.render_engagement_block`: the Agreement element's
+  read-side projection — phases, deliverables (dated via schedule bars,
+  done-marked, ANY-done-wins), activities, kickoff — composed live from the
+  estimator. `pull_spine_element` appends it for Agreement-layer elements of
+  engagements (`derived_block: true`); fail-soft when no estimate.
+- `attach_nudge`: an Agreement pull with no attached source names any
+  SOW-looking doc sitting in the source store.
+- Tenant CLAUDE.md documents the two standing-element contracts (six-section
+  Brief; human-terms-only SOW). mc-2 #185 updated the scaffolds new spines
+  are born with.
+- Deferred: the mirror-side derived block (`cp sync` markers) — read-side
+  projection ships first.
+
 ## v0.54.0 — 2026-07-11
 
 **Account-scoped stakeholders (canonical-objects slice 1).**

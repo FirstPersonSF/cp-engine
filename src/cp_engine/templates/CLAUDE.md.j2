@@ -227,6 +227,19 @@ stakeholder dossiers) alongside the project's own — the `scope` field tells
 them apart. Version an account element from any of the company's projects
 with the usual `add_spine_version`.
 
+**Standing-element contracts.** Every spine carries two standing elements
+with fixed shapes:
+- **Inputs & Briefing** (the working brief) uses six stable sections —
+  Objective / Audience / The problem / Constraints / Inputs / Key dates.
+  Author prose under the headings, keep the headings; version the brief as
+  understanding evolves (the brief you're given ≠ the brief you discover).
+- **SOW** (Agreement) stores ONLY the human side — distilled terms,
+  exclusions, change orders as dated versions, with the signed doc attached
+  as a source. Deliverables, dates, and pricing live in the estimate:
+  `pull_spine_element` composes the live engagement shape into the body
+  (`derived_block: true`) at read time. Never retype estimator facts into
+  the element.
+
 **3 — Inbound frameworks** (curated synthesis frameworks for engagement work;
 framework names/ids are INTERNAL — never in client-facing material):
 - `framework_readiness(layer?)` — the curated menu + snapshot identity. Start
