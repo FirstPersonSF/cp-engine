@@ -45,7 +45,8 @@ _CONTEXT_TABLE = Tables.SPINE_CONTEXT
 # Columns `write_authored_element` reads off each authored DB row.
 _AUTHORED_SELECT = (
     "id, est_item_id, est_item_kind, phase, binding, layer, placement, "
-    "serves, version_label, version_date, status, framing, body, sources, origin"
+    "serves, version_label, version_date, status, framing, body, sources, "
+    "origin, scope, archived"
 )
 
 # The fields a human verifies on a substance version. Same one-way door as
@@ -432,8 +433,14 @@ def sync_spine_substance(
             .execute()
             .data
         ) or []
+        # Account-scoped rows (promoted stakeholders — mig 104) mirror under
+        # the ACCOUNT directory, not this project's spine/: they are company
+        # facts this project merely originated. Split them out here; they are
+        # handled below with the sibling promotions.
         groups: dict[str, list[dict]] = {}
         for r in authored:
+            if (r.get("scope") or "project") == "account":
+                continue
             groups.setdefault(r["est_item_id"], []).append(r)
         for est_item_id, group in groups.items():
             write_authored_element(
@@ -446,7 +453,72 @@ def sync_spine_substance(
             project_code, exc, exc_info=True,
         )
 
+    # Account mirror (DB→disk): the COMPANY's account-scoped elements land in
+    # `<account-dir>/_stakeholders/<slug>.md` (the account dir is the working
+    # dir's parent under the v0.9.0 layout). Fetched by company_id so sibling
+    # projects' promotions appear too, and each project's sync converges on
+    # the same files (idempotent). Archived elements are skipped; a stale
+    # project-side mirror file from before promotion is removed. Best-effort:
+    # never aborts sync.
+    try:
+        _mirror_account_elements(client, project_id=project_id,
+                                 project_code=project_code,
+                                 project_dir=project_dir)
+    except Exception as exc:  # noqa: BLE001 — best-effort account mirror
+        logger.warning(
+            "account mirror skipped for %s: %s", project_code, exc, exc_info=True,
+        )
+
     return len(rows)
+
+
+def _mirror_account_elements(client, *, project_id: str, project_code: str,
+                             project_dir: Path) -> int:
+    """Mirror the project's company account-scoped authored elements to
+    `<account-dir>/_stakeholders/`. Returns how many elements were written."""
+    proj = (
+        client.table(Tables.PROJECTS)
+        .select("company_id")
+        .eq("id", project_id)
+        .limit(1)
+        .execute()
+        .data
+    ) or []
+    company_id = proj[0].get("company_id") if proj else None
+    if company_id is None:
+        return 0  # initiative-shaped or unlinked — no account scope
+
+    rows = (
+        client.table(_SUBSTANCE_TABLE)
+        .select(_AUTHORED_SELECT)
+        .eq("company_id", company_id)
+        .eq("scope", "account")
+        .eq("origin", "authored")
+        .execute()
+        .data
+    ) or []
+    groups: dict[str, list[dict]] = {}
+    for r in rows:
+        groups.setdefault(r["est_item_id"], []).append(r)
+
+    stakeholders_dir = project_dir.parent / "_stakeholders"
+    written = 0
+    for est_item_id, group in groups.items():
+        # Element-level archive (retire) → skip the mirror entirely.
+        if all(r.get("archived") for r in group):
+            continue
+        write_authored_element(
+            project_dir, project_code=project_code,
+            est_item_id=est_item_id, rows=group,
+            out_dir=stakeholders_dir,
+        )
+        written += 1
+        # Pre-promotion mirror file under this project's spine/_authored/ is
+        # now stale (the element moved up the scope ladder) — remove it.
+        slug = est_item_id.split("/", 1)[1] if "/" in est_item_id else est_item_id
+        stale = project_dir / "spine" / "_authored" / f"{slug}.md"
+        stale.unlink(missing_ok=True)
+    return written
 
 
 def sync_spine_context(

@@ -22,17 +22,21 @@ def _version_sort_key(row):
 
 
 def write_authored_element(project_dir: Path, *, project_code: str,
-                           est_item_id: str, rows: list[dict]) -> Path:
+                           est_item_id: str, rows: list[dict],
+                           out_dir: Path | None = None) -> Path:
     """Render `rows` (an authored element's versions) to spine/_authored/<slug>.md.
 
-    Returns the written path. `rows` may be in any order; versions are emitted
-    newest-first (as render_substance expects)."""
+    `out_dir` overrides the destination directory (the account-scope mirror
+    writes to `<account-dir>/_stakeholders/` — same file format, different
+    home). Returns the written path. `rows` may be in any order; versions are
+    emitted newest-first (as render_substance expects)."""
     if not rows:
         raise ValueError("write_authored_element: no rows")
     ordered = sorted(rows, key=_version_sort_key, reverse=True)
     first = ordered[0]
     slug = est_item_id.split("/", 1)[1] if "/" in est_item_id else est_item_id
-    out_dir = project_dir / "spine" / "_authored"
+    if out_dir is None:
+        out_dir = project_dir / "spine" / "_authored"
     out_dir.mkdir(parents=True, exist_ok=True)
     path = out_dir / f"{slug}.md"
 
