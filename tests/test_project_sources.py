@@ -206,7 +206,7 @@ def test_list_spine_returns_live_elements_with_metadata():
     # test_spine_done_read.py
     assert set(first.keys()) == {
         "est_item_id", "framing", "layer", "binding", "status",
-        "serves_count", "body_len", "important", "note", "done",
+        "serves_count", "body_len", "important", "note", "done", "scope",
     }
     assert "body" not in first
     assert first["est_item_id"] == "_authored/brief"

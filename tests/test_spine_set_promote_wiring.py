@@ -54,7 +54,7 @@ def _wire(monkeypatch, *, prior_important, promote_result=None):
     monkeypatch.setattr("cp_engine.mcp_server._resolve",
                         lambda code: (_C(captured), "pid", "cid"))
     monkeypatch.setattr("cp_engine.project_sources.resolve_live_element",
-                        lambda client, pid, key: _row(prior_important))
+                        lambda client, pid, key, cid=None: _row(prior_important))
     monkeypatch.setattr("cp_engine.mcp_server._tenant_root", lambda: "/tenant")
     monkeypatch.setattr("cp_engine.config.load", lambda root: {})
     monkeypatch.setattr("cp_engine.sync_mc2._load_supabase_creds",
@@ -141,7 +141,7 @@ def test_both_trigger_paths_agree_on_promote_args(monkeypatch):
         monkeypatch.setattr("cp_engine.mcp_server._resolve",
                             lambda code: (fake_client, "pid", "cid"))
         monkeypatch.setattr("cp_engine.project_sources.resolve_live_element",
-                            lambda client, pid, key: dict(row))
+                            lambda client, pid, key, cid=None: dict(row))
         monkeypatch.setattr("cp_engine.mcp_server._tenant_root", lambda: "/tenant")
         monkeypatch.setattr("cp_engine.config.load", lambda root: {})
         monkeypatch.setattr("cp_engine.sync_mc2._load_supabase_creds",

@@ -148,14 +148,15 @@ FATHOM_ARTIFACT_COLUMNS = (
 # row is a valid retire state; filtering on status alone leaks it — #47).
 SPINE_LIST_COLUMNS = (
     "est_item_id, framing, layer, binding, status, serves, body, important, "
-    "note, archived"
+    "note, archived, scope, company_id"
 )
 SPINE_PULL_COLUMNS = (
     "est_item_id, framing, layer, binding, status, serves, sources, "
-    "version_label, body, important, note, archived"
+    "version_label, body, important, note, archived, scope, company_id"
 )
 SPINE_RESOLVE_COLUMNS = (
-    "id, est_item_id, framing, status, important, note, rel_path, archived"
+    "id, est_item_id, framing, status, important, note, rel_path, archived, "
+    "scope, company_id, project_id"
 )
 SPINE_STATUS_COLUMNS = (
     "est_item_id, status, version_date, version_label, binding, project_id"

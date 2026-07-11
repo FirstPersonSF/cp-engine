@@ -217,6 +217,15 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   ids; `[]` unbinds — `binding` follows automatically), re-file with `layer`.
 - `retire_spine_element(code, key)` — remove an element from the live spine
   (duplicates, no-longer-relevant items). History is archived, not deleted.
+- `promote_stakeholder(code, key)` — promote a stakeholder element to ACCOUNT
+  scope: it becomes readable from every project of the same company (rows
+  carry `scope: "account"` in list/pull). Engagements only; opt-in — keep
+  engagement-specific reads in a separate project-scoped element.
+
+Spine listings may include the company's account-scoped elements (promoted
+stakeholder dossiers) alongside the project's own — the `scope` field tells
+them apart. Version an account element from any of the company's projects
+with the usual `add_spine_version`.
 
 **3 — Inbound frameworks** (curated synthesis frameworks for engagement work;
 framework names/ids are INTERNAL — never in client-facing material):

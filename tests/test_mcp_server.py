@@ -173,8 +173,8 @@ def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
     assert srv._tenant_root() == tmp_path.resolve()
 
 
-def test_exactly_fourteen_tools_registered():
-    """3 source-read + 2 spine-read + 4 spine-write + 1 spine-promote +
+def test_exactly_fifteen_tools_registered():
+    """3 source-read + 2 spine-read + 5 spine-write + 1 spine-promote +
     1 meetings-read + 3 framework tools."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
@@ -187,6 +187,7 @@ def test_exactly_fourteen_tools_registered():
         "add_spine_version",
         "set_spine_element",
         "retire_spine_element",
+        "promote_stakeholder",
         "promote_spine_transcript",
         "framework_readiness",
         "framework_decompose",
@@ -207,7 +208,7 @@ def test_list_spine_elements_delegates(monkeypatch):
 
     captured = {}
 
-    def fake_list_spine(client, project_id):
+    def fake_list_spine(client, project_id, company_id=None):
         captured["args"] = (client, project_id)
         return [{"est_item_id": "_authored/brief", "framing": "Brief"}]
 
@@ -226,7 +227,7 @@ def test_pull_spine_element_delegates(monkeypatch):
 
     captured = {}
 
-    def fake_pull_spine(client, project_id, key):
+    def fake_pull_spine(client, project_id, key, company_id=None):
         captured["args"] = (client, project_id, key)
         return {"est_item_id": key, "body": "full text"}
 

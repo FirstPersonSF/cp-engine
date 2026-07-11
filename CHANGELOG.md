@@ -6,6 +6,28 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 ## Unreleased
 
+**Account-scoped stakeholders (canonical-objects slice 1).**
+
+- mc-2 mig 104 (applied live 2026-07-11): `spine_substance.company_id` +
+  `scope ('project'|'account')`; `project_id` retained as provenance on
+  account rows.
+- Read union: `list_spine_elements`/`pull_spine_element` (and both write-side
+  resolvers) surface the company's account-scoped elements in every project
+  of that company; rows carry `scope`. Initiatives (no company) skip the
+  account arm.
+- New `promote_stakeholder(code, key)` MCP tool: element-level move to
+  account scope (all versions together), with an already-promoted note, a
+  sibling-collision guard ("version the account element instead"), an
+  initiative rejection, and a non-Stakeholders-layer warning.
+- Element-level writes (`set_spine_element` layer/framing/serves,
+  `retire_spine_element`, `add_spine_version`) now target the element's OWN
+  provenance `project_id`, so account elements are editable from any of the
+  company's projects.
+- Mirror note: account rows continue to mirror under their provenance
+  project's `spine/` until the account-dir mirror
+  (`1p/<account>/_stakeholders/`) ships as a follow-up.
+- Design: cp tenant `docs/plans/2026-07-11-stakeholders-account-scope-design.md`.
+
 **Inbound frameworks, slice 1 (MCP tools).**
 
 - New `inbound-frameworks[anthropic]` dependency @ `a7214a7`; all
