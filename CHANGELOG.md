@@ -4,7 +4,7 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## Unreleased
+## v0.56.0 — 2026-07-11
 
 **/cp-prep deliverable strip (deliverable cards, consumer 2).**
 
