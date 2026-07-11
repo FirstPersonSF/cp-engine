@@ -4,6 +4,15 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+**Fix: deactivation sweep spared account-level dirs.**
+
+- The stale-project sweep treated `1p/<account>/_stakeholders/` (the new
+  account mirror dir) as an unknown project working dir and moved it to
+  `inactive/`. Underscore-prefixed dirs under an account are engine
+  surfaces, never project dirs — the sweep now skips them.
+
 ## v0.56.0 — 2026-07-11
 
 **/cp-prep deliverable strip (deliverable cards, consumer 2).**

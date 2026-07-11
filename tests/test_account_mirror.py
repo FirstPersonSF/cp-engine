@@ -95,3 +95,15 @@ def test_multi_version_element_mirrors_all_versions(tmp_path):
     assert n == 1
     text = (tmp_path / "1p" / "acme" / "_stakeholders" / "fred.md").read_text()
     assert "v2" in text and "v1" in text
+
+
+def test_deactivation_sweep_skips_underscore_account_dirs(tmp_path):
+    """`1p/<account>/_stakeholders/` must never be swept to inactive/ — the
+    v0.56.0 field bug: the sweep saw it as an unknown project dir."""
+    from cp_engine.sync import _deactivate_stale_cps
+    account = tmp_path / "1p" / "sap-concur"
+    (account / "_stakeholders").mkdir(parents=True)
+    (account / "_stakeholders" / "fred.md").write_text("dossier")
+    moved = _deactivate_stale_cps(tmp_path, set())
+    assert moved == []
+    assert (account / "_stakeholders" / "fred.md").is_file()
