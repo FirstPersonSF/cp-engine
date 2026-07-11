@@ -1,6 +1,6 @@
 {
   "name": "cp-engine",
-  "version": "0.56.0",
+  "version": "0.56.1",
   "description": "Slash commands for capturing development sessions back to the Context Protocol working tree.",
   "author": {
     "name": "First Person + Canonic",
