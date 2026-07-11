@@ -308,28 +308,61 @@ def _match_one_live(rows: list[dict], key: str):
     return next(iter(distinct.values())), None, None
 
 
-def resolve_live_element(client, project_id: str, key: str) -> dict | None:
+def _row_scope(row: dict) -> str:
+    """A row's scope, defaulting pre-migration rows to 'project'."""
+    return row.get("scope") or "project"
+
+
+def _fetch_scoped(client, project_id: str, company_id: str | None,
+                  columns: str, *, live_only: bool = True) -> list[dict]:
+    """Fetch a project's spine rows PLUS its company's account-scoped rows.
+
+    The scope ladder (mig 104): an element promoted to account scope keeps its
+    `project_id` as provenance but becomes readable from every project of its
+    `company_id`. Two arms, no dedup needed:
+
+      - project arm: `project_id` rows EXCLUDING scope='account' (an account
+        row would otherwise appear twice for its originating project);
+      - account arm: `company_id` rows WITH scope='account' (skipped when
+        `company_id` is None — initiatives have no company, so no account
+        reads and no promotion).
+    """
+    q = (client.table(Tables.SPINE_SUBSTANCE).select(columns)
+         .eq("project_id", project_id))
+    if live_only:
+        q = q.eq("status", "live")
+    rows = [r for r in (getattr(q.execute(), "data", None) or [])
+            if _row_scope(r) != "account"]
+    if company_id is not None:
+        q = (client.table(Tables.SPINE_SUBSTANCE).select(columns)
+             .eq("company_id", company_id).eq("scope", "account"))
+        if live_only:
+            q = q.eq("status", "live")
+        rows.extend(getattr(q.execute(), "data", None) or [])
+    return rows
+
+
+def resolve_live_element(client, project_id: str, key: str,
+                         company_id: str | None = None) -> dict | None:
     """Resolve `key` to the single matching LIVE spine_substance row, or None.
 
     Same discipline as `pull_spine` (exact est_item_id → single distinct framing
-    substring → else None on no-match OR ambiguity). Returns the raw row dict
-    INCLUDING its `id` column (needed for a targeted update on a callsite that
-    wants to write the row back). Never `SELECT *`.
+    substring → else None on no-match OR ambiguity). With `company_id`, the
+    company's account-scoped elements resolve too (the scope ladder). Returns
+    the raw row dict INCLUDING its `id`/`project_id` columns (needed for a
+    targeted update — an account row's project_id is its provenance project,
+    which may differ from the caller's). Never `SELECT *`.
     """
-    resp = (
-        client.table(Tables.SPINE_SUBSTANCE)
-        .select(_SPINE_RESOLVE_COLUMNS)
-        .eq("project_id", project_id)
-        .eq("status", "live")
-        .execute()
+    rows = _unarchived(
+        _fetch_scoped(client, project_id, company_id, _SPINE_RESOLVE_COLUMNS)
     )
-    rows = _unarchived(getattr(resp, "data", None) or [])
     row, _reason, _ = _match_one_live(rows, key)
     return row
 
 
 def resolve_element_versions(
     client, project_id: str, key: str, *, columns: str,
+    company_id: str | None = None,
 ) -> tuple[str | None, list[dict]]:
     """Resolve `key` to an element and return ALL its versions (any status).
 
@@ -348,46 +381,42 @@ def resolve_element_versions(
     `columns` is the caller's SELECT list (it needs more columns than the read
     path's resolve set, e.g. `id`/`sources`/`origin` for the version rebuild).
     """
-    resp = (
-        client.table(Tables.SPINE_SUBSTANCE)
-        .select(columns)
-        .eq("project_id", project_id)
-        .execute()
-    )
-    rows = getattr(resp, "data", None) or []
+    rows = _fetch_scoped(client, project_id, company_id, columns,
+                         live_only=False)
     # Match against the LIVE, unarchived rows only (a superseded framing could
     # otherwise resolve an element that no longer has a live version, and a
     # retired element must not accept new versions), mirroring the read path —
-    # then return that element's FULL version history.
+    # then return that element's FULL version history. Versions are scoped to
+    # the matched element's ARM (same est_item_id + same scope), so a
+    # same-slug project element never mixes into an account element's history.
     live_rows = _unarchived([r for r in rows if r.get("status") == "live"])
     match, _reason, _ = _match_one_live(live_rows, key)
     if match is None:
         return None, []
     est_item_id = match.get("est_item_id")
-    versions = [r for r in rows if r.get("est_item_id") == est_item_id]
+    match_scope = _row_scope(match)
+    versions = [r for r in rows
+                if r.get("est_item_id") == est_item_id
+                and _row_scope(r) == match_scope]
     return est_item_id, versions
 
 
-def list_spine(client, project_id: str) -> list[dict]:
+def list_spine(client, project_id: str, company_id: str | None = None) -> list[dict]:
     """List a project's LIVE spine elements (index, not bodies).
 
     Returns `[{est_item_id, framing, layer, binding, status, serves_count,
-    body_len, important, note, done}]` for every live element of the project.
-    `important`/`note` are the element's importance flag + annotation; `done` is
-    true/false/null (null = n/a, i.e. not bound to a real work-item). The full
-    body is never returned here (only its length) — call `pull_spine` for one
-    element's text. Never raises: the MCP tool boundary converts failures to a
-    structured note.
+    body_len, important, note, done, scope}]` for every live element of the
+    project PLUS, when `company_id` is given, the company's account-scoped
+    elements (promoted stakeholders etc. — the scope ladder; `scope` tells the
+    two apart). `important`/`note` are the element's importance flag +
+    annotation; `done` is true/false/null (null = n/a, i.e. not bound to a
+    real work-item). The full body is never returned here (only its length) —
+    call `pull_spine` for one element's text. Never raises: the MCP tool
+    boundary converts failures to a structured note.
     """
-    resp = (
-        client.table(Tables.SPINE_SUBSTANCE)
-        .select(_SPINE_LIST_COLUMNS)
-        .eq("project_id", project_id)
-        .eq("status", "live")
-        .order("layer", desc=False)
-        .execute()
+    rows = _unarchived(
+        _fetch_scoped(client, project_id, company_id, _SPINE_LIST_COLUMNS)
     )
-    rows = _unarchived(getattr(resp, "data", None) or [])
     # Fetch the project's done-map ONCE (not per row — no N+1). `done` is
     # best-effort: if the estimator schema is unreachable the fetch may raise,
     # so we fail-soft to an empty map, which makes `derive_done` return None for
@@ -418,6 +447,7 @@ def list_spine(client, project_id: str) -> list[dict]:
                 "important": bool(row.get("important")),
                 "note": row.get("note"),
                 "done": derive_done(row.get("est_item_id"), done_map),
+                "scope": _row_scope(row),
             }
         )
     # Important elements sort first; list.sort is stable so within-group order
@@ -426,7 +456,8 @@ def list_spine(client, project_id: str) -> list[dict]:
     return out
 
 
-def pull_spine(client, project_id: str, key: str) -> dict:
+def pull_spine(client, project_id: str, key: str,
+               company_id: str | None = None) -> dict:
     """Pull ONE live spine element's full body + context by id or title.
 
     `key` resolves to a single element, mirroring `pull_source`'s discipline of
@@ -444,14 +475,9 @@ def pull_spine(client, project_id: str, key: str) -> dict:
     not bound to a real work-item). Failure paths return an `error` key. Never
     raises.
     """
-    resp = (
-        client.table(Tables.SPINE_SUBSTANCE)
-        .select(_SPINE_PULL_COLUMNS)
-        .eq("project_id", project_id)
-        .eq("status", "live")
-        .execute()
+    rows = _unarchived(
+        _fetch_scoped(client, project_id, company_id, _SPINE_PULL_COLUMNS)
     )
-    rows = _unarchived(getattr(resp, "data", None) or [])
 
     row, reason, distinct = _match_one_live(rows, key)
     if row is not None:
@@ -505,6 +531,7 @@ def _spine_element(row: dict) -> dict:
         "body": row.get("body") or "",
         "important": bool(row.get("important")),
         "note": row.get("note"),
+        "scope": _row_scope(row),
     }
 
 

@@ -317,8 +317,8 @@ def list_spine_elements(project_code: str) -> list[dict]:
             # A structured note, NOT a bare [] — an unresolvable code must never
             # masquerade as a genuinely empty spine (the v0.39.0 false-negative).
             return [{"note": f"code '{project_code}' resolved to no project"}]
-        client, pid, _cid = resolved
-        return list_spine(client, pid)
+        client, pid, cid = resolved
+        return list_spine(client, pid, cid)
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,
         # actionable error note instead of propagating a protocol error.
@@ -344,8 +344,8 @@ def pull_spine_element(project_code: str, key: str) -> dict:
                 "body": "",
                 "error": f"project '{project_code}' not found",
             }
-        client, pid, _cid = resolved
-        return pull_spine(client, pid, key)
+        client, pid, cid = resolved
+        return pull_spine(client, pid, key, cid)
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,
         # actionable error note instead of propagating a protocol error.
@@ -453,7 +453,7 @@ def add_spine_version(project_code: str, element_id: str, body: str,
 
     _SEL = ("id, est_item_id, est_item_kind, phase, binding, layer, placement, "
             "serves, version_label, version_date, status, framing, body, sources, "
-            "origin, important, note, project_code, archived")
+            "origin, important, note, project_code, archived, scope, project_id")
     try:
         resolved = _resolve(project_code)
         if resolved is None:
@@ -464,7 +464,7 @@ def add_spine_version(project_code: str, element_id: str, body: str,
         # which fails whenever the caller's code string differs from the slug
         # stored on the row (e.g. `ibx-5153` vs `ibx-5153-ai-campaign`) — the
         # read/write resolver divergence. Accepts est_item_id OR framing now.
-        canonical_id, prior = resolve_element_versions(client, pid, element_id, columns=_SEL)
+        canonical_id, prior = resolve_element_versions(client, pid, element_id, columns=_SEL, company_id=_cid)
         if canonical_id is None:
             return {"error": f"no authored element {element_id!r} in {project_code!r}"}
         # Carry the element's OWN stored project_code onto the new rows (the
@@ -478,8 +478,10 @@ def add_spine_version(project_code: str, element_id: str, body: str,
         for v in prior:
             if v.get("status") == "live":
                 client.table(Tables.SPINE_SUBSTANCE).update({"status": "superseded"}).eq("id", v["id"]).execute()
+        row_project_id = next(
+            (v.get("project_id") for v in prior if v.get("project_id")), pid)
         rows = build_version_rows(
-            project_id=pid, project_code=row_project_code, est_item_id=canonical_id,
+            project_id=row_project_id, project_code=row_project_code, est_item_id=canonical_id,
             prior_versions=prior, body=body, version_note=version_note,
             now_iso=datetime.now(timezone.utc).isoformat(),
         )
@@ -528,7 +530,7 @@ def set_spine_element(project_code: str, key: str,
         if resolved is None:
             return {"error": f"project {project_code!r} not found"}
         client, pid, company_id = resolved
-        row = resolve_live_element(client, pid, key)
+        row = resolve_live_element(client, pid, key, company_id)
         if row is None:
             return {"note": f"no single live element matching '{key}' in {project_code!r}"}
         # Capture the PRIOR important flag before the patch so we can detect a
@@ -558,7 +560,8 @@ def set_spine_element(project_code: str, key: str,
             element_patch["binding"] = "live" if serves else "unbound"
         if element_patch:
             (client.table(Tables.SPINE_SUBSTANCE).update(element_patch)
-             .eq("project_id", pid).eq("est_item_id", row["est_item_id"]).execute())
+             .eq("project_id", row.get("project_id") or pid)
+             .eq("est_item_id", row["est_item_id"]).execute())
         result = {
             "est_item_id": row["est_item_id"],
             "important": patch.get("important", row.get("important")),
@@ -614,23 +617,80 @@ def retire_spine_element(project_code: str, key: str) -> dict:
         resolved = _resolve(project_code)
         if resolved is None:
             return {"error": f"project {project_code!r} not found"}
-        client, pid, _cid = resolved
-        row = resolve_live_element(client, pid, key)
+        client, pid, cid = resolved
+        row = resolve_live_element(client, pid, key, cid)
         if row is None:
             return {"note": f"no single live element matching '{key}' in {project_code!r}"}
         eid = row["est_item_id"]
+        row_pid = row.get("project_id") or pid
         # Archive EVERY version (element-level retire), then demote the live
         # row(s). Two targeted updates, ordered so a failure between them leaves
         # the element archived (hidden from reads, #47's filter) rather than
         # superseded-but-unarchived with no live version.
         (client.table(Tables.SPINE_SUBSTANCE).update({"archived": True})
-         .eq("project_id", pid).eq("est_item_id", eid).execute())
+         .eq("project_id", row_pid).eq("est_item_id", eid).execute())
         (client.table(Tables.SPINE_SUBSTANCE).update({"status": "superseded"})
-         .eq("project_id", pid).eq("est_item_id", eid)
+         .eq("project_id", row_pid).eq("est_item_id", eid)
          .eq("status", "live").execute())
         return {"est_item_id": eid, "retired": True}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"failed to retire '{key}' in {project_code!r}: {exc}"}
+
+
+@mcp.tool()
+def promote_stakeholder(project_code: str, key: str) -> dict:
+    """Promote a project's stakeholder element to ACCOUNT scope.
+
+    Stakeholders are account-level people wearing project clothes: promotion
+    makes the element readable from EVERY project of the company (it appears
+    in their list/pull with scope='account'), while `project_id` stays as
+    provenance. Opt-in and human-triggered — engagement-specific reads that
+    shouldn't travel belong in a separate project-scoped element. Every
+    version of the element moves together. Engagements only (initiatives have
+    no company). Returns {est_item_id, scope, company_id, layer[, warning]},
+    or a structured {note}/{error} on miss/collision.
+    """
+    from cp_engine.project_sources import resolve_live_element
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+        if cid is None:
+            return {"note": "initiatives have no company — account promotion "
+                            "applies to engagements only"}
+        row = resolve_live_element(client, pid, key, cid)
+        if row is None:
+            return {"note": f"no single live element matching '{key}' in {project_code!r}"}
+        if (row.get("scope") or "project") == "account":
+            return {"note": f"'{row['est_item_id']}' is already account-scoped"}
+        eid = row["est_item_id"]
+        # Collision guard: the same slug already promoted from a SIBLING
+        # project means this person exists at account scope — version that
+        # element instead of creating a twin.
+        twins = (client.table(Tables.SPINE_SUBSTANCE)
+                 .select("est_item_id, project_id")
+                 .eq("company_id", cid).eq("scope", "account")
+                 .eq("est_item_id", eid).limit(1).execute().data or [])
+        if twins and str(twins[0].get("project_id")) != str(pid):
+            return {"error": f"'{eid}' already exists at account scope "
+                             "(promoted from another project) — add_spine_version "
+                             "on the account element instead"}
+        # Element-level move: every version row travels together (same
+        # discipline as layer/framing/serves).
+        (client.table(Tables.SPINE_SUBSTANCE)
+         .update({"scope": "account", "company_id": cid})
+         .eq("project_id", pid).eq("est_item_id", eid).execute())
+        result = {"est_item_id": eid, "scope": "account", "company_id": cid,
+                  "layer": row.get("layer")}
+        if (row.get("layer") or "").lower() not in ("stakeholders", "stakeholder"):
+            result["warning"] = (f"layer is {row.get('layer')!r}, not Stakeholders — "
+                                 "promotion applied, but check this is really an "
+                                 "account-level element")
+        return result
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to promote '{key}' in {project_code!r}: {exc}"}
 
 
 @mcp.tool()
@@ -652,7 +712,7 @@ def promote_spine_transcript(project_code: str, key: str) -> dict:
         if resolved is None:
             return {"error": f"project {project_code!r} not found"}
         client, pid, company_id = resolved
-        row = resolve_live_element(client, pid, key)
+        row = resolve_live_element(client, pid, key, company_id)
         if row is None:
             return {"note": f"no single live element matching '{key}' in {project_code!r}"}
         # Same cred source the rest of the engine uses (asset_ingest resolves

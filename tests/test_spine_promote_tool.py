@@ -43,7 +43,7 @@ def test_promote_happy(monkeypatch):
     row = {"est_item_id": "_authored/email-from-janet", "rel_path": "meetings/x.txt"}
     monkeypatch.setattr(
         "cp_engine.project_sources.resolve_live_element",
-        lambda c, pid, key: row,
+        lambda c, pid, key, cid=None: row,
     )
     calls = []
 
@@ -80,7 +80,7 @@ def test_promote_initiative_deferred(monkeypatch):
     row = {"est_item_id": "storyos-elem", "rel_path": "meetings/x.txt"}
     monkeypatch.setattr(
         "cp_engine.project_sources.resolve_live_element",
-        lambda c, pid, key: row,
+        lambda c, pid, key, cid=None: row,
     )
 
     def fake_promote(c, tenant_root, project_code, pid, company_id, element_row,
@@ -106,7 +106,7 @@ def test_promote_no_match(monkeypatch):
     monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
     monkeypatch.setattr(
         "cp_engine.project_sources.resolve_live_element",
-        lambda c, pid, key: None,
+        lambda c, pid, key, cid=None: None,
     )
     called = []
     monkeypatch.setattr(
@@ -135,7 +135,7 @@ def test_promote_never_throws(monkeypatch):
     monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
     monkeypatch.setattr(
         "cp_engine.project_sources.resolve_live_element",
-        lambda c, pid, key: {"est_item_id": "e", "rel_path": "r"},
+        lambda c, pid, key, cid=None: {"est_item_id": "e", "rel_path": "r"},
     )
 
     def boom(*a, **k):
