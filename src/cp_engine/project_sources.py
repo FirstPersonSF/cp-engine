@@ -267,6 +267,18 @@ _SPINE_PULL_COLUMNS = mc2_db.SPINE_PULL_COLUMNS
 _SPINE_RESOLVE_COLUMNS = mc2_db.SPINE_RESOLVE_COLUMNS
 
 
+def _unarchived(rows: list[dict]) -> list[dict]:
+    """Drop archived rows from a spine_substance fetch.
+
+    An element is retired by archiving it (retire_spine_element, the dashboard,
+    or a manual repair), and a retired element must be invisible to every read
+    path — list, pull, and both resolvers — or a stale title keeps matching
+    keys and an archived element resurfaces in listings (#47). `archived` may
+    be NULL on pre-column rows, so test falsiness, not equality with False.
+    """
+    return [r for r in rows if not r.get("archived")]
+
+
 def _match_one_live(rows: list[dict], key: str):
     """Resolve `key` against already-fetched live rows to ONE element.
 
@@ -311,7 +323,7 @@ def resolve_live_element(client, project_id: str, key: str) -> dict | None:
         .eq("status", "live")
         .execute()
     )
-    rows = getattr(resp, "data", None) or []
+    rows = _unarchived(getattr(resp, "data", None) or [])
     row, _reason, _ = _match_one_live(rows, key)
     return row
 
@@ -343,10 +355,11 @@ def resolve_element_versions(
         .execute()
     )
     rows = getattr(resp, "data", None) or []
-    # Match against the LIVE rows only (a superseded framing could otherwise
-    # resolve an element that no longer has a live version), mirroring the read
-    # path — then return that element's FULL version history.
-    live_rows = [r for r in rows if r.get("status") == "live"]
+    # Match against the LIVE, unarchived rows only (a superseded framing could
+    # otherwise resolve an element that no longer has a live version, and a
+    # retired element must not accept new versions), mirroring the read path —
+    # then return that element's FULL version history.
+    live_rows = _unarchived([r for r in rows if r.get("status") == "live"])
     match, _reason, _ = _match_one_live(live_rows, key)
     if match is None:
         return None, []
@@ -374,7 +387,7 @@ def list_spine(client, project_id: str) -> list[dict]:
         .order("layer", desc=False)
         .execute()
     )
-    rows = getattr(resp, "data", None) or []
+    rows = _unarchived(getattr(resp, "data", None) or [])
     # Fetch the project's done-map ONCE (not per row — no N+1). `done` is
     # best-effort: if the estimator schema is unreachable the fetch may raise,
     # so we fail-soft to an empty map, which makes `derive_done` return None for
@@ -438,7 +451,7 @@ def pull_spine(client, project_id: str, key: str) -> dict:
         .eq("status", "live")
         .execute()
     )
-    rows = getattr(resp, "data", None) or []
+    rows = _unarchived(getattr(resp, "data", None) or [])
 
     row, reason, distinct = _match_one_live(rows, key)
     if row is not None:
