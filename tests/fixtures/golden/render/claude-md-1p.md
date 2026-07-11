@@ -211,6 +211,12 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   synthesis|output|activity). Live immediately; mirrors to the repo on next sync.
 - `add_spine_version(code, element_id, body, version_note?)` — supersede the prior
   live version with a new one (a targeted "what changed" update).
+- `set_spine_element(code, key, important?, note?, layer?, framing?, serves?)` —
+  partial update of an element's flags and element-level facts: retitle with
+  `framing` (the est_item_id never changes), rebind with `serves` (work-item
+  ids; `[]` unbinds — `binding` follows automatically), re-file with `layer`.
+- `retire_spine_element(code, key)` — remove an element from the live spine
+  (duplicates, no-longer-relevant items). History is archived, not deleted.
 
 To find an email or note you authored into a project's (or initiative's) spine,
 `list_spine_elements(code)` then `pull_spine_element(code, <key>)` — don't grep
