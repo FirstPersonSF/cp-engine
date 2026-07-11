@@ -218,6 +218,18 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
 - `retire_spine_element(code, key)` — remove an element from the live spine
   (duplicates, no-longer-relevant items). History is archived, not deleted.
 
+**3 — Inbound frameworks** (curated synthesis frameworks for engagement work;
+framework names/ids are INTERNAL — never in client-facing material):
+- `framework_readiness(layer?)` — the curated menu + snapshot identity. Start
+  here; only listed frameworks are usable (others discard by design).
+- `framework_decompose(code, framework, source_keys)` — extract framework
+  field values from scoped project material (file paths under the tenant
+  root, spine element keys, or source-doc titles). `uncertain` fields are
+  usually open decisions — surface them for human review, don't trust them.
+- `framework_compose(framework, field_values, target_element_type?)` — draft
+  element content from HUMAN-CONFIRMED field values. Author the result as a
+  DRAFT spine element; put the framework id in the version note only.
+
 To find an email or note you authored into a project's (or initiative's) spine,
 `list_spine_elements(code)` then `pull_spine_element(code, <key>)` — don't grep
 the `spine/` mirror, which may lag the live MC-2 row.
