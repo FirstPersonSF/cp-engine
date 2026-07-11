@@ -723,6 +723,42 @@ def promote_stakeholder(project_code: str, key: str) -> dict:
 
 
 @mcp.tool()
+def demote_stakeholder(project_code: str, key: str) -> dict:
+    """Remove an element from ACCOUNT scope — the inverse of promote_stakeholder.
+
+    The element returns to its PROVENANCE project (scope='project',
+    company_id cleared; project_id never changed, so there is exactly one
+    home for it to land). It disappears from sibling projects' spines and
+    the account roster; nothing is deleted, and re-promoting restores
+    account visibility. Every version moves together. `key` resolves the
+    account element from ANY of the company's projects. Returns
+    {est_item_id, scope, returned_to_project_id}, or a structured
+    {note}/{error} on miss.
+    """
+    from cp_engine.project_sources import resolve_live_element
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+        row = resolve_live_element(client, pid, key, cid)
+        if row is None:
+            return {"note": f"no single live element matching '{key}' in {project_code!r}"}
+        if (row.get("scope") or "project") != "account":
+            return {"note": f"'{row['est_item_id']}' is not account-scoped — nothing to demote"}
+        provenance_pid = row.get("project_id") or pid
+        (client.table(Tables.SPINE_SUBSTANCE)
+         .update({"scope": "project", "company_id": None})
+         .eq("project_id", provenance_pid)
+         .eq("est_item_id", row["est_item_id"]).execute())
+        return {"est_item_id": row["est_item_id"], "scope": "project",
+                "returned_to_project_id": provenance_pid}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to demote '{key}' in {project_code!r}: {exc}"}
+
+
+@mcp.tool()
 def promote_spine_transcript(project_code: str, key: str) -> dict:
     """Promote a spine element's source transcript into the RAG store.
 

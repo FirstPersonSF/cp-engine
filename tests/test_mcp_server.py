@@ -173,8 +173,8 @@ def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
     assert srv._tenant_root() == tmp_path.resolve()
 
 
-def test_exactly_fifteen_tools_registered():
-    """3 source-read + 2 spine-read + 5 spine-write + 1 spine-promote +
+def test_exactly_sixteen_tools_registered():
+    """3 source-read + 2 spine-read + 6 spine-write + 1 spine-promote +
     1 meetings-read + 3 framework tools."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
@@ -188,6 +188,7 @@ def test_exactly_fifteen_tools_registered():
         "set_spine_element",
         "retire_spine_element",
         "promote_stakeholder",
+        "demote_stakeholder",
         "promote_spine_transcript",
         "framework_readiness",
         "framework_decompose",
