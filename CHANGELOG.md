@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+**Frameworks slice 2: authoring adapter + decision diff.**
+
+- `framework_compose` returns `body` — the package's `{sections}` content
+  adapted to spine-element markdown (explicit consumer-boundary adapter;
+  framework identity never renders into the body).
+- `framework_decompose` accepts `baseline` (a prior result) and returns
+  `diff`: changed/new/dropped fields + confidence moves, with
+  hardened/softened summaries — unchanged-value-but-hardened = a decision
+  RATIFIED, the P&P Report's citation shape.
+
 ## v0.55.0 — 2026-07-11
 
 **SOW as projection + Brief contract (canonical-objects slices).**

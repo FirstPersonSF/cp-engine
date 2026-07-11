@@ -93,6 +93,84 @@ def readiness_menu(layer: str | None = None) -> dict:
     return {"snapshot": catalog.snapshot_meta(), "frameworks": rows}
 
 
+def content_to_body(content: dict) -> str:
+    """Adapt compose() output (`{sections:[{id,text,order,title}], fields?}`)
+    to a spine-element markdown body — the explicit adapter the package's
+    IMPLEMENTATION.md requires (never reshape the package's output; convert
+    at the consumer boundary). Sections render in `order`; a section title
+    becomes an `##` heading; typed `fields` render as a trailing bold-label
+    list. Framework identity is deliberately NOT rendered — it belongs in the
+    version note, never the body (the IP invariant at the authoring layer).
+    """
+    parts: list[str] = []
+    sections = sorted(content.get("sections") or [],
+                      key=lambda s: s.get("order") or 0)
+    for s in sections:
+        title = (s.get("title") or "").strip()
+        text = (s.get("text") or "").strip()
+        if title:
+            parts.append(f"## {title}")
+        if text:
+            parts.append(text)
+    fields = content.get("fields") or {}
+    if fields:
+        parts.append("\n".join(f"- **{k}**: {v}" for k, v in fields.items()))
+    return "\n\n".join(parts)
+
+
+def diff_decompositions(baseline: dict, current: dict) -> dict:
+    """The pre/post decision diff: what changed between two decompose results
+    over the same framework (e.g. corpus-only vs corpus+workshop-transcript).
+
+    `baseline`/`current` are `{field_values, field_confidence}` shapes (what
+    framework_decompose returns). Returns per-field rows plus a summary:
+
+        {fields: {name: {status: unchanged|changed|new|dropped,
+                         baseline?, current?,
+                         confidence: {baseline?, current?, moved: bool}}},
+         summary: {changed: [...], new: [...], dropped: [...],
+                   hardened: [...], softened: [...]}}
+
+    `hardened`/`softened` track confidence moves (uncertain→likely→certain
+    and the reverse) — a field whose VALUE held but whose confidence hardened
+    after the workshop is a decision RATIFIED, which is exactly what the
+    P&P Report wants to cite.
+    """
+    rank = {"uncertain": 0, "likely": 1, "certain": 2}
+    b_vals = baseline.get("field_values") or {}
+    c_vals = current.get("field_values") or {}
+    b_conf = baseline.get("field_confidence") or {}
+    c_conf = current.get("field_confidence") or {}
+
+    fields: dict[str, dict] = {}
+    summary: dict[str, list] = {"changed": [], "new": [], "dropped": [],
+                                "hardened": [], "softened": []}
+    for name in sorted(set(b_vals) | set(c_vals)):
+        row: dict = {}
+        in_b, in_c = name in b_vals, name in c_vals
+        if in_b and not in_c:
+            row["status"] = "dropped"
+            row["baseline"] = b_vals[name]
+            summary["dropped"].append(name)
+        elif in_c and not in_b:
+            row["status"] = "new"
+            row["current"] = c_vals[name]
+            summary["new"].append(name)
+        else:
+            same = (b_vals[name] or "").strip() == (c_vals[name] or "").strip()
+            row["status"] = "unchanged" if same else "changed"
+            row["baseline"], row["current"] = b_vals[name], c_vals[name]
+            if not same:
+                summary["changed"].append(name)
+        bc, cc = b_conf.get(name), c_conf.get(name)
+        moved = bc is not None and cc is not None and bc != cc
+        row["confidence"] = {"baseline": bc, "current": cc, "moved": moved}
+        if moved and bc in rank and cc in rank:
+            summary["hardened" if rank[cc] > rank[bc] else "softened"].append(name)
+        fields[name] = row
+    return {"fields": fields, "summary": summary}
+
+
 def assemble_corpus(
     client, project_id: str, company_id: str | None, tenant_root: Path,
     source_keys: list[str],

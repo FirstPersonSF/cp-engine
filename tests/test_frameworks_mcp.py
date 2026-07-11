@@ -181,3 +181,80 @@ def test_readiness_tool_never_errors_without_project():
     import cp_engine.mcp_server as m
     menu = m.framework_readiness()
     assert menu["frameworks"]
+
+
+# ── slice 2: compose body adapter + decision diff ────────────────────────────
+
+from cp_engine.frameworks import content_to_body, diff_decompositions
+
+
+def test_content_to_body_orders_sections_and_renders_fields():
+    body = content_to_body({
+        "sections": [
+            {"id": "s2", "text": "second", "order": 2, "title": "Later"},
+            {"id": "s1", "text": "first", "order": 1, "title": ""},
+        ],
+        "fields": {"tagline": "one line"},
+    })
+    assert body.index("first") < body.index("## Later")
+    assert "- **tagline**: one line" in body
+    assert "FW-" not in body                     # framework identity never renders
+
+
+def test_content_to_body_empty_content_is_empty_string():
+    assert content_to_body({}) == ""
+
+
+def test_diff_marks_ratified_decisions_as_hardened():
+    pre = {"field_values": {"vision": "candidate A", "gap": "no dollar story"},
+           "field_confidence": {"vision": "uncertain", "gap": "certain"}}
+    post = {"field_values": {"vision": "candidate A", "gap": "no dollar story"},
+            "field_confidence": {"vision": "certain", "gap": "certain"}}
+    d = diff_decompositions(pre, post)
+    assert d["fields"]["vision"]["status"] == "unchanged"
+    assert d["fields"]["vision"]["confidence"]["moved"] is True
+    assert d["summary"]["hardened"] == ["vision"]
+    assert d["summary"]["changed"] == []
+
+
+def test_diff_changed_new_dropped_and_softened():
+    pre = {"field_values": {"a": "old", "b": "kept", "c": "gone"},
+           "field_confidence": {"a": "certain", "b": "likely", "c": "likely"}}
+    post = {"field_values": {"a": "new", "b": "kept", "d": "arrived"},
+            "field_confidence": {"a": "likely", "b": "likely", "d": "likely"}}
+    d = diff_decompositions(pre, post)
+    assert d["summary"]["changed"] == ["a"]
+    assert d["summary"]["dropped"] == ["c"]
+    assert d["summary"]["new"] == ["d"]
+    assert d["summary"]["softened"] == ["a"]
+    assert d["fields"]["b"]["status"] == "unchanged"
+
+
+def test_compose_tool_returns_ready_body(monkeypatch, tmp_path):
+    fw = _curated_fw()
+    llm = MockLLM(LLMResult(
+        tool_input={"content": {"sections": [
+            {"id": "s1", "text": "drafted prose", "order": 1, "title": "Story"}]}},
+        usage={"input_tokens": 1, "output_tokens": 1}))
+    m = _wire(monkeypatch, tmp_path, llm)
+    res = m.framework_compose(fw.id, {"field": "v"})
+    assert "error" not in res
+    # the adapter renders whatever content the ENGINE returns (here its
+    # field-mapped fallback for an unrecognized mock tool_input shape) as
+    # markdown, ready for create_spine_element
+    assert res["body"] and "v" in res["body"]
+    assert res["body"] == content_to_body(res["content"])
+
+
+def test_decompose_tool_diffs_against_baseline(monkeypatch, tmp_path):
+    fw = _curated_fw()
+    (tmp_path / "src.md").write_text("text")
+    llm = MockLLM(LLMResult(tool_input={"field_values": {"f": "post"},
+                                        "field_confidence": {"f": "certain"}},
+                            usage={"input_tokens": 1, "output_tokens": 1}))
+    m = _wire(monkeypatch, tmp_path, llm)
+    res = m.framework_decompose("p", fw.id, ["src.md"],
+                                baseline={"field_values": {"f": "pre"},
+                                          "field_confidence": {"f": "likely"}})
+    assert res["diff"]["summary"]["changed"] == ["f"]
+    assert res["diff"]["summary"]["hardened"] == ["f"]
