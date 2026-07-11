@@ -453,7 +453,7 @@ def add_spine_version(project_code: str, element_id: str, body: str,
 
     _SEL = ("id, est_item_id, est_item_kind, phase, binding, layer, placement, "
             "serves, version_label, version_date, status, framing, body, sources, "
-            "origin, important, note, project_code")
+            "origin, important, note, project_code, archived")
     try:
         resolved = _resolve(project_code)
         if resolved is None:
@@ -494,8 +494,11 @@ def add_spine_version(project_code: str, element_id: str, body: str,
 def set_spine_element(project_code: str, key: str,
                       important: bool | None = None,
                       note: str | None = None,
-                      layer: str | None = None) -> dict:
-    """Set the `important` flag, standing `note`, and/or `layer` on a spine element.
+                      layer: str | None = None,
+                      framing: str | None = None,
+                      serves: list[str] | None = None) -> dict:
+    """Set `important`, `note`, `layer`, `framing` (title), and/or `serves`
+    (work-item binding) on a spine element.
 
     `key` is an est_item_id (exact) or a case-insensitive `framing` (title)
     substring resolved to ONE live element (same discipline as
@@ -508,9 +511,15 @@ def set_spine_element(project_code: str, key: str,
     set. `promote_spine_transcript` is the standalone tool to run/retry promotion
     on its own. `layer` re-files the element under a spine layer (retrospective,
     research, synthesis, decisions, client feedback, timeline, …) — the value is
-    normalized to the UI's canonical string and applied to EVERY version of the
-    element so its history stays in one layer. Returns {est_item_id, important,
-    note[, layer][, promotion]}, or a structured {note}/{error} on miss.
+    normalized to the UI's canonical string. `framing` retitles the element (the
+    est_item_id — the machine path — never changes, so existing keys keep
+    working). `serves` rebinds the element to work-item ids (estimate
+    activities/deliverables); pass `[]` to unbind — `binding` follows
+    automatically ('live' when serves is non-empty, 'unbound' when empty).
+    Layer, framing, and serves are element-level facts, so each is applied to
+    EVERY version of the element — a partial write would scatter one element's
+    history. Returns {est_item_id, important, note[, layer][, framing]
+    [, serves][, promotion]}, or a structured {note}/{error} on miss.
     """
     from cp_engine.authored_element import canon_layer
     from cp_engine.project_sources import resolve_live_element
@@ -533,13 +542,22 @@ def set_spine_element(project_code: str, key: str,
         # Importance is ALWAYS set first — promotion never blocks it.
         if patch:
             client.table(Tables.SPINE_SUBSTANCE).update(patch).eq("id", row["id"]).execute()
+        # layer / framing / serves describe the element as a whole (its kind,
+        # its title, what it's bound to), so every version row moves together —
+        # a partial move would scatter one element's history (#47).
+        element_patch = {}
         canonical_layer = None
         if layer is not None:
-            # Layer describes the element KIND, so every version row moves
-            # together — a partial move would scatter one element's history
-            # across layers.
             canonical_layer = canon_layer(layer)
-            (client.table(Tables.SPINE_SUBSTANCE).update({"layer": canonical_layer})
+            element_patch["layer"] = canonical_layer
+        if framing is not None:
+            element_patch["framing"] = framing
+        if serves is not None:
+            element_patch["serves"] = list(serves)
+            # Same rule the authored-element builders use: bound ⇔ non-empty.
+            element_patch["binding"] = "live" if serves else "unbound"
+        if element_patch:
+            (client.table(Tables.SPINE_SUBSTANCE).update(element_patch)
              .eq("project_id", pid).eq("est_item_id", row["est_item_id"]).execute())
         result = {
             "est_item_id": row["est_item_id"],
@@ -548,6 +566,11 @@ def set_spine_element(project_code: str, key: str,
         }
         if canonical_layer is not None:
             result["layer"] = canonical_layer
+        if framing is not None:
+            result["framing"] = framing
+        if serves is not None:
+            result["serves"] = list(serves)
+            result["binding"] = element_patch["binding"]
         # Promote the source transcript to RAG ONLY on a genuine false→true flip
         # (not when already True — no redundant re-embed — nor when untouched/False).
         # Promotion is NON-FATAL: a failure surfaces under "promotion", never as a
@@ -570,6 +593,44 @@ def set_spine_element(project_code: str, key: str,
         return result
     except Exception as exc:  # noqa: BLE001
         return {"error": f"failed to set element '{key}' in {project_code!r}: {exc}"}
+
+
+@mcp.tool()
+def retire_spine_element(project_code: str, key: str) -> dict:
+    """Retire a spine element — remove it from the live spine, keeping history.
+
+    Use for duplicates and elements that no longer belong (e.g. the same source
+    doc ingested twice). `key` is an est_item_id (exact) or a case-insensitive
+    `framing` (title) substring resolved to ONE live element (same discipline
+    as pull_spine_element). Every version of the element is marked
+    `archived=true` and its live version is superseded, so it disappears from
+    list/pull/resolve immediately and reaps from the repo mirror on next sync —
+    nothing is deleted, and a dashboard un-archive can bring it back. Returns
+    {est_item_id, retired: true}, or a structured {note}/{error} on miss.
+    """
+    from cp_engine.project_sources import resolve_live_element
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, _cid = resolved
+        row = resolve_live_element(client, pid, key)
+        if row is None:
+            return {"note": f"no single live element matching '{key}' in {project_code!r}"}
+        eid = row["est_item_id"]
+        # Archive EVERY version (element-level retire), then demote the live
+        # row(s). Two targeted updates, ordered so a failure between them leaves
+        # the element archived (hidden from reads, #47's filter) rather than
+        # superseded-but-unarchived with no live version.
+        (client.table(Tables.SPINE_SUBSTANCE).update({"archived": True})
+         .eq("project_id", pid).eq("est_item_id", eid).execute())
+        (client.table(Tables.SPINE_SUBSTANCE).update({"status": "superseded"})
+         .eq("project_id", pid).eq("est_item_id", eid)
+         .eq("status", "live").execute())
+        return {"est_item_id": eid, "retired": True}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to retire '{key}' in {project_code!r}: {exc}"}
 
 
 @mcp.tool()

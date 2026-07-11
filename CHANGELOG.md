@@ -4,6 +4,25 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+**Spine MCP curation verbs (#47): retitle, rebind, retire.**
+
+- `set_spine_element` gains `framing` (retitle — the est_item_id/machine path
+  never changes, so existing keys keep working) and `serves` (rebind to
+  work-item ids; `[]` unbinds; `binding` derives as live/unbound, the same
+  rule the authored-element builders use). Like `layer`, both apply to EVERY
+  version of the element so its history moves together.
+- New `retire_spine_element(code, key)` — archives every version and
+  supersedes the live row, in that order (a failure in between leaves the
+  element hidden, not half-retired). Nothing is deleted; a dashboard
+  un-archive brings it back.
+- **Fix:** archived elements are now invisible to every spine read path
+  (`list_spine_elements`, `pull_spine_element`, and both write-side
+  resolvers). Previously `archived=true` alone left the element in listings
+  and resolvable — the live-but-archived leak found during the sap-5174
+  hygiene pass. NULL `archived` (pre-column rows) still reads as unarchived.
+
 ## v0.52.0 — 2026-07-09
 
 **Spine distill data-loss fix (#44) + async Frame & promote.**

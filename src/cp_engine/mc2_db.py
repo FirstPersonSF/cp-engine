@@ -143,15 +143,20 @@ FATHOM_ARTIFACT_COLUMNS = (
     "recording_id, project_tags, project_id, summary_embedded_at"
 )
 
-# spine_substance — list / pull / resolve / status-fold shapes.
+# spine_substance — list / pull / resolve / status-fold shapes. Each carries
+# `archived` so the read paths can hide retired elements (a live-but-archived
+# row is a valid retire state; filtering on status alone leaks it — #47).
 SPINE_LIST_COLUMNS = (
-    "est_item_id, framing, layer, binding, status, serves, body, important, note"
+    "est_item_id, framing, layer, binding, status, serves, body, important, "
+    "note, archived"
 )
 SPINE_PULL_COLUMNS = (
     "est_item_id, framing, layer, binding, status, serves, sources, "
-    "version_label, body, important, note"
+    "version_label, body, important, note, archived"
 )
-SPINE_RESOLVE_COLUMNS = "id, est_item_id, framing, status, important, note, rel_path"
+SPINE_RESOLVE_COLUMNS = (
+    "id, est_item_id, framing, status, important, note, rel_path, archived"
+)
 SPINE_STATUS_COLUMNS = (
     "est_item_id, status, version_date, version_label, binding, project_id"
 )
