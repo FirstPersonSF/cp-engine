@@ -4,6 +4,15 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+**demote_stakeholder (the scope ladder's down verb).**
+
+- New MCP tool: returns an account-scoped element to its provenance project
+  (`scope='project'`, `company_id` cleared) — resolvable from any of the
+  company's projects, targeting provenance. Parity with mc-2 #189's
+  dashboard Remove-from-account. Tool census: 16.
+
 ## v0.56.1 — 2026-07-11
 
 **Fix: deactivation sweep spared account-level dirs.**

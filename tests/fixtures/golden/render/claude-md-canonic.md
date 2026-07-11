@@ -221,6 +221,8 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   scope: it becomes readable from every project of the same company (rows
   carry `scope: "account"` in list/pull). Engagements only; opt-in — keep
   engagement-specific reads in a separate project-scoped element.
+- `demote_stakeholder(code, key)` — the inverse: the element returns to its
+  provenance project and leaves the account roster. Nothing is deleted.
 
 Spine listings may include the company's account-scoped elements (promoted
 stakeholder dossiers) alongside the project's own — the `scope` field tells
