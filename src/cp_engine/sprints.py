@@ -609,6 +609,7 @@ def render_sprint_scaffold(
     open_issues: tuple[Issue, ...],
     carry_forward: CarryForward,
     meetings_this_sprint: int = 0,
+    deliverable_lines: tuple[str, ...] = (),
 ) -> str:
     """Render a sprint file scaffold from the Jinja template.
 
@@ -668,6 +669,15 @@ def render_sprint_scaffold(
         recent_commits=recent_commits,
         open_issues=open_issues,
         carry_forward=carry_forward,
+        # Deliverable-card lines (canonical-objects: derived from the
+        # estimate + linked bars + spine serves — see sync's collector).
+        # The engine-managed region shows STATE; hand-written notes below
+        # it stay human territory.
+        deliverable_cards_block=(
+            "\n".join(f"- {line}" for line in deliverable_lines)
+            if deliverable_lines
+            else "_(no deliverables in the estimate yet)_"
+        ),
     )
 
 
@@ -788,6 +798,7 @@ def ensure_sprint_file(
     last_session_summary: str | None,
     recent_commits: tuple[SprintCommit, ...],
     open_issues: tuple,
+    deliverable_lines: tuple[str, ...] = (),
 ) -> Path:
     """Create the sprint file if missing, or refresh just its engine regions.
 
@@ -850,6 +861,7 @@ def ensure_sprint_file(
         open_issues=open_issues,
         carry_forward=cf,
         meetings_this_sprint=meetings_this_sprint,
+        deliverable_lines=deliverable_lines,
     )
 
     if not out.exists():
@@ -861,7 +873,8 @@ def ensure_sprint_file(
     # later); skip those gracefully rather than mangle hand-written content.
     existing = out.read_text()
     spliced = existing
-    for region in ("sprint-facts", "where-it-stands", "carry-forward"):
+    for region in ("sprint-facts", "where-it-stands", "carry-forward",
+                   "deliverable-cards"):
         try:
             new_inner = _extract_region(new_body, region).strip()
         except ValueError:
@@ -1195,6 +1208,7 @@ def ensure_sprint_files_for_active_projects(
         if not _is_active_for_sprint(project):
             continue
         data = per_project_data.get(project.code, {})
+        deliverable_lines = tuple(data.get("deliverable_lines", ()))
         # Track the mtime before so we only report paths where the call
         # actually wrote (ensure_sprint_file is idempotent — refreshing an
         # unchanged file is a no-op on disk). Without this, every resync
@@ -1217,6 +1231,7 @@ def ensure_sprint_files_for_active_projects(
             last_session_summary=data.get("last_session_summary"),
             recent_commits=data.get("recent_commits", ()),
             open_issues=data.get("open_issues", ()),
+            deliverable_lines=deliverable_lines,
         )
         after = sprint_path.stat().st_mtime_ns if sprint_path.exists() else None
         if after is not None and after != before:
