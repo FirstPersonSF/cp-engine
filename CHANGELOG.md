@@ -6,6 +6,27 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 ## Unreleased
 
+**arch-phase-4 (#34): the last raw-client bypasses retired.**
+
+- The three remaining inline ad-hoc Supabase queries in CLI command bodies
+  moved behind typed `mc2_db` helpers (each documents its caller):
+  `fetch_clickup_task_id_map` (attention-digest ClickUp link decoration,
+  was inline in `cli_cmds/planning.py`), `fetch_element_review_flags` +
+  `update_element_review_flags` (sweep drift-flag recorder, was inline in
+  `cli_cmds/spine.py`), and `upsert_spine_snapshot` (`cp snapshot`'s MC-2
+  index row, same file). Query semantics and explicit column lists are
+  unchanged.
+- `spine_client()` left the core `Backend` protocol. It now lives on an
+  opt-in `@runtime_checkable SpineClientProvider` protocol; the spine
+  mirror inside `sync_tenant` (its only consumer) checks the capability
+  and degrades with `client=None` for backends that don't implement it —
+  byte-identical to the old protocol stub's `None` return for test fakes.
+  `MC2Backend.spine_client()` is unchanged; the handed-back client is only
+  ever passed to typed accessors, never to ad-hoc queries.
+- (Already landed via #36, recorded here for the #34 audit trail:
+  `connect()` deleted, `migrate_accounts` re-exports sync's
+  `_default_backend_factory` instead of duplicating it.)
+
 **Account mirror: reap on demote/retire.**
 
 - `_mirror_account_elements` now reconciles `1p/<account>/_stakeholders/`

@@ -253,6 +253,8 @@ class MC2Backend:
     def spine_client(self) -> Client:
         """Return the Supabase client read_projects already created.
 
+        Implements sync's opt-in ``SpineClientProvider`` capability (the
+        method left the core ``Backend`` protocol in arch-phase-4, #34).
         The spine mirror reuses the exact client (and creds) the project
         read used — never mints a fresh connection."""
         if self._client is None:

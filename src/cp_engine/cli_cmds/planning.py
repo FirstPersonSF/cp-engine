@@ -14,7 +14,6 @@ import click
 
 import cp_engine.cli as _cli
 from cp_engine.config import ConfigError, load
-from cp_engine.mc2_db import Tables
 
 
 @click.command("prep-agenda")
@@ -448,18 +447,7 @@ def _fetch_clickup_task_ids_for_hashes(config, hashes: list[str]) -> dict[str, s
         if client is None:
             log.info("clickup task-id lookup skipped: SUPABASE env not set")
             return {}
-        resp = (
-            client.table(Tables.CLICKUP_TASK_PROPOSALS)
-            .select("cp_ask_hash, clickup_task_id")
-            .in_("cp_ask_hash", hashes)
-            .not_.is_("clickup_task_id", "null")
-            .execute()
-        )
-        return {
-            row["cp_ask_hash"]: row["clickup_task_id"]
-            for row in (resp.data or [])
-            if row.get("clickup_task_id")
-        }
+        return mc2_db.fetch_clickup_task_id_map(client, hashes)
     except Exception as exc:  # noqa: BLE001 — digest send must not fail
         log.warning("clickup task-id lookup failed (degrading to no links): %s", exc)
         return {}
