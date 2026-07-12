@@ -53,7 +53,7 @@ _No recent session captured._
 - _<message — `[status · date]` prefix>_
 
 ### Open asks
-- _<what we need from them — `[open · date · who]` prefix>_
+- _<what we need from them — `[open · date · who]` prefix; add `· by YYYY-MM-DD` when the ask has a deadline (prep + the attention digest escalate it)>_
 
 ### Inbound
 - _<what they told us — `[date · who]` prefix>_

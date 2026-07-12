@@ -187,6 +187,27 @@ def parse_bracketed_bullet(line: str) -> tuple[list[str], str] | None:
     return parts, m.group("text").strip()
 
 
+# The `by YYYY-MM-DD` bracket part on an ask (#70) — the due date the ask
+# carries. Mirrors ``attention_digest._OPEN_ASK_RE`` / ``prep_planning
+# ._SPRINT_OPEN_ASK_RE``, which already escalate against it.
+_ASK_BY_RE = re.compile(r"^by\s+(\d{4}-\d{2}-\d{2})$")
+
+
+def _ask_who_and_by(tail_parts: list[str]) -> tuple[str | None, str | None]:
+    """Split an ask bracket's tail (everything after status · date) into
+    (who, by). The `by <date>` part is positional-independent so both
+    `[open · d · janet · by d2]` and `[open · d · by d2]` parse."""
+    who: str | None = None
+    by: str | None = None
+    for part in tail_parts:
+        m = _ASK_BY_RE.match(part)
+        if m:
+            by = m.group(1)
+        elif who is None and part:
+            who = part
+    return who, by
+
+
 def section_body(body: str, heading: str) -> str:
     """Slice out a `## heading` section up to next `## ` or EOF.
 
@@ -269,9 +290,10 @@ def _parse_client_section(
             parts, text = parsed
             status = parts[0] if parts else "open"
             asked_date = parts[1] if len(parts) > 1 else ""
-            who = parts[2] if len(parts) > 2 else None
+            who, by = _ask_who_and_by(parts[2:])
             asks.append(
-                ClientAsk(text=text, asked_date=asked_date, status=status, who=who)
+                ClientAsk(text=text, asked_date=asked_date, status=status,
+                          who=who, by=by)
             )
     inbound: list[InboundUpdate] = []
     for first, _ in bullets(subsection(section, "Inbound")):
@@ -375,12 +397,14 @@ def _parse_carry_forward(body: str) -> CarryForward:
         parts, text = parsed
         kind = parts[0] if parts else ""
         if kind == "ask":
+            cf_who, cf_by = _ask_who_and_by(parts[2:])
             asks.append(
                 ClientAsk(
                     text=text,
                     asked_date=parts[1] if len(parts) > 1 else "",
                     status="open",
-                    who=parts[2] if len(parts) > 2 else None,
+                    who=cf_who,
+                    by=cf_by,
                 )
             )
         elif kind == "risk":
