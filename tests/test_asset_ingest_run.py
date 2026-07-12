@@ -113,6 +113,12 @@ class _FakeSelectChain:
         self._filters[col] = val
         return self
 
+    def ilike(self, col, pattern):
+        # The #57 same-title supersede lookup. These tests seed no same-title
+        # priors, so it finds nothing (supersede no-op).
+        self._filters[f"ilike:{col}"] = pattern
+        return self
+
     def execute(self):
         self._filters_seen.append(dict(self._filters))
         rows = self._rows_by_hash.get(self._filters.get("file_hash"), [])
@@ -247,6 +253,11 @@ class _RecordingTable:
 
     def eq(self, col, val):
         self._filters[col] = val
+        return self
+
+    def ilike(self, col, pattern):
+        # #57 same-title supersede lookup — no same-title priors seeded here.
+        self._filters[f"ilike:{col}"] = pattern
         return self
 
     def execute(self):

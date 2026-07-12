@@ -158,6 +158,61 @@ def test_list_sources_empty():
     assert list_sources(client, "proj-1", "co-9") == []
 
 
+def test_list_sources_excludes_assets_with_a_successor():
+    # #57: an asset another row's prev_asset_id points at is a superseded
+    # predecessor — even if its status flip didn't land (backlog residue),
+    # the list must only show the newest copy.
+    rows = [
+        {
+            "id": "a-v2",
+            "title": "Brief.pdf",
+            "source_type": "drive",
+            "status": "active",
+            "created_at": "2026-07-01T00:00:00Z",
+            "prev_asset_id": "a-v1",
+        },
+        {
+            "id": "a-v1",
+            "title": "Brief.pdf",
+            "source_type": "drive",
+            "status": "active",
+            "created_at": "2026-06-01T00:00:00Z",
+            "prev_asset_id": None,
+        },
+        {
+            "id": "b",
+            "title": "Other.pdf",
+            "source_type": "dropbox",
+            "status": "active",
+            "created_at": "2026-05-01T00:00:00Z",
+            "prev_asset_id": None,
+        },
+    ]
+    client = _FakeTableClient(rows)
+
+    out = list_sources(client, "proj-1", "co-9")
+
+    assert [r["id"] for r in out] == ["a-v2", "b"]
+    # prev_asset_id is selected (needed for the successor check) but the
+    # returned entries keep the manifest shape (no chain plumbing leaked).
+    assert "prev_asset_id" in client.recorder["select"]
+    assert all("prev_asset_id" not in r for r in out)
+
+
+def test_drop_superseded_assets_helper():
+    from cp_engine.project_sources import drop_superseded_assets
+
+    rows = [
+        {"id": "new", "prev_asset_id": "old"},
+        {"id": "old", "prev_asset_id": None},
+        {"id": "solo", "prev_asset_id": None},
+        # successor pointing OUTSIDE the set: nothing in-set to drop
+        {"id": "ext", "prev_asset_id": "not-here"},
+    ]
+    out = drop_superseded_assets(rows)
+    assert [r["id"] for r in out] == ["new", "solo", "ext"]
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  list_spine — index of a project's live spine elements
 # ──────────────────────────────────────────────────────────────────────

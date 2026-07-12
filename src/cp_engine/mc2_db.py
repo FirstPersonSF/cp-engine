@@ -61,6 +61,7 @@ class Tables:
     AUTO_INGEST_RUNS = "auto_ingest_runs"
     ASSET_INGEST_RUNS = "asset_ingest_runs"
     RAG_ASSETS = "rag_assets"
+    ASSET_CHUNKS = "asset_chunks"  # chunk text; embeddings FK-cascade on delete
     CLICKUP_TASK_PROPOSALS = "clickup_task_proposals"
     COMMITMENTS = "commitments"
     APP_CONFIG = "app_config"  # tenant-level key/value settings (jsonb)
@@ -164,7 +165,12 @@ SPINE_STATUS_COLUMNS = (
 
 # rag_assets — manifest list shape. `meta` is JSONB and must NEVER be
 # selected wholesale (`SELECT *` on this table is the classic 25MB mistake).
-RAG_ASSET_LIST_COLUMNS = "id, title, source_type, status, created_at, file_hash"
+# `prev_asset_id` (a short uuid scalar) rides along so read paths can drop
+# assets that have a SUCCESSOR — a newer asset whose prev_asset_id points at
+# them (see project_sources.drop_superseded_assets).
+RAG_ASSET_LIST_COLUMNS = (
+    "id, title, source_type, status, created_at, file_hash, prev_asset_id"
+)
 RAG_ASSET_REFETCH_COLUMNS = "title, source_provider, source_file_id, source_path, url"
 
 # estimator schema shapes.
@@ -245,6 +251,7 @@ class RagAssetRow:
     status: str | None = None
     created_at: str | None = None
     file_hash: str | None = None
+    prev_asset_id: str | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> "RagAssetRow":
@@ -255,6 +262,7 @@ class RagAssetRow:
             status=row.get("status"),
             created_at=row.get("created_at"),
             file_hash=row.get("file_hash"),
+            prev_asset_id=row.get("prev_asset_id"),
         )
 
 

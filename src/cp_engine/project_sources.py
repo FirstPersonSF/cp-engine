@@ -40,6 +40,29 @@ _SOURCE_COLUMNS = mc2_db.RAG_ASSET_LIST_COLUMNS
 _MISS_RETRY_LIMIT = 2000
 
 
+def drop_superseded_assets(rows: list[dict]) -> list[dict]:
+    """Drop assets that have a SUCCESSOR in `rows` (issue #57's read guard).
+
+    A successor is another row whose `prev_asset_id` points at this row's `id`
+    — the chain a same-title re-ingest (or the pipeline's own same-path
+    new_version) writes. Superseded predecessors normally also flip to
+    `status='superseded'` and never reach here; this guard covers the residue
+    where both ends of a chain are still active (pre-cleanup backlog, or a
+    supersede that half-landed), so `list_sources` / the `_sources.md`
+    manifest never show both copies of one document.
+
+    Shared helper on purpose: every list surface (MCP `list_project_sources`,
+    the manifest generator) flows through `list_sources`, which applies this.
+    Order is preserved.
+    """
+    predecessor_ids = {
+        r.get("prev_asset_id") for r in rows if r.get("prev_asset_id")
+    }
+    if not predecessor_ids:
+        return rows
+    return [r for r in rows if r.get("id") not in predecessor_ids]
+
+
 def list_sources(
     client,
     project_id: str,
@@ -63,6 +86,12 @@ def list_sources(
     The manifest generator passes cached summaries; the MCP list tool passes
     none.
 
+    Assets with a SUCCESSOR (another asset's `prev_asset_id` points at them)
+    are excluded via `drop_superseded_assets` — see that helper. `pull_source`
+    gets the equivalent guarantee from the `read_scoped_asset_chunks` RPC's
+    `status='active'` filter (superseded predecessors are status-flipped and
+    their chunks deleted at supersede time).
+
     Returns `[{id, title, source_type, created_at[, summary]}]`, newest first.
     """
     resp = (
@@ -73,7 +102,7 @@ def list_sources(
         .order("created_at", desc=True)
         .execute()
     )
-    rows = getattr(resp, "data", None) or []
+    rows = drop_superseded_assets(getattr(resp, "data", None) or [])
     out: list[dict] = []
     for raw in rows:
         row = RagAssetRow.from_row(raw)

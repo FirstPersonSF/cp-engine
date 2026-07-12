@@ -841,6 +841,13 @@ class IngestRunResult:
     # from `skipped` (pipeline same-path), `deduped` (cross-path content dup), and
     # `skipped_shortcuts` (pointer files). Zero when use_cache=False or no hits.
     skipped_unchanged: int = 0
+    # Prior active assets superseded by a same-title re-ingest (#57): the doc's
+    # CONTENT changed since its last ingest, so the pipeline created a brand-new
+    # row (hash dedup can't catch it, and the path-keyed dedup only versions
+    # same-path re-arrivals). The post-create supersede chains the new row via
+    # `prev_asset_id` and retires the old copies so retrieval only ever serves
+    # the newest. Counts OLD assets retired, not new files ingested.
+    superseded: int = 0
     failures: list[tuple[str, str]] = field(default_factory=list)
     project_found: bool = True
     # Per-source listing notes from list_files: a dead/skipped source records a
@@ -1163,6 +1170,7 @@ def ingest_project_assets(
             # AND Dropbox, or a copy within one source) would create a duplicate
             # row. If this content hash is already active in the project under a
             # DIFFERENT path, skip the file entirely — no parse/embed/insert.
+            file_hash: str | None = None
             try:
                 file_hash = _content_hash(local)
                 if _existing_dup_at_other_path(
@@ -1211,6 +1219,30 @@ def ingest_project_assets(
                         result.failures.append(
                             (file_ref.name, f"scope-stamp failed: {exc}")
                         )
+                    # Same-title supersede (#57): a re-ingest of a doc whose
+                    # CONTENT changed lands at a fresh temp path, so the
+                    # path-keyed pipeline dedup sees a brand-new file and
+                    # 'created' a duplicate row under the same title. Chain the
+                    # new row to the prior copy via prev_asset_id and retire
+                    # the old ones (status='superseded' + chunks deleted) so
+                    # retrieval only ever serves the newest. 'versioned' rows
+                    # are excluded: the pipeline already chained + superseded
+                    # their same-path predecessor. Failure policy matches the
+                    # stamp: the ingest succeeded, so a supersede failure is
+                    # surfaced in `failures` without touching the counts.
+                    if action == "created":
+                        try:
+                            result.superseded += _supersede_same_title(
+                                client,
+                                folders,
+                                title=file_ref.name,
+                                file_path=file_path,
+                                file_hash=file_hash,
+                            )
+                        except Exception as exc:
+                            result.failures.append(
+                                (file_ref.name, f"supersede failed: {exc}")
+                            )
                 elif action == "skipped":
                     # Already stamped on the run that first created it — no-op.
                     result.skipped += 1
@@ -1298,6 +1330,116 @@ def _existing_dup_at_other_path(
         )
         return False
     return any(r.get("file_path") != current_path for r in rows)
+
+
+def _escape_like(value: str) -> str:
+    """Escape PostgREST LIKE/ILIKE wildcards so `value` matches literally.
+
+    `ilike` treats `%`/`_` as wildcards and `\\` as the escape char; a title
+    like `Q1_report 100%.pdf` would otherwise match unrelated rows. Escaping
+    all three turns the pattern into an exact (case-insensitive) equality.
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _prior_same_title_assets(
+    client,
+    owner_col: str,
+    owner_val: str,
+    title: str,
+    file_path: str,
+    file_hash: str,
+) -> list[dict]:
+    """The project's OTHER active assets carrying this exact title.
+
+    Same-title matching is case-insensitive EXACT equality (via an
+    escaped-`ilike` pattern — no substring matching; `pull_source` groups by
+    exact title string, which is precisely the collision we're preventing).
+    Excludes:
+      - the just-written row itself (same `file_path`), and any same-path row
+        (that case is the pipeline's skip/new_version province);
+      - same-hash rows (identical bytes — the cross-path dedup's province, and
+        the issue's "same-title-same-hash stays a no-op").
+    Returns the raw rows `[{id, created_at, file_hash, file_path}]`.
+    """
+    resp = (
+        client.table(Tables.RAG_ASSETS)
+        .select("id, created_at, file_hash, file_path")
+        .eq(owner_col, owner_val)
+        .eq("status", "active")
+        .ilike("title", _escape_like(title))
+        .execute()
+    )
+    rows = getattr(resp, "data", None) or []
+    return [
+        r
+        for r in rows
+        if r.get("file_path") != file_path and r.get("file_hash") != file_hash
+    ]
+
+
+def _retire_asset(client, asset_id: str) -> None:
+    """Retire ONE old asset: mark it superseded and drop its chunks.
+
+    Mirrors the document-ingest pipeline's own new_version convention
+    (`storage_api`: old row → `status='superseded'`), then goes one step
+    further and DELETES the old row's `asset_chunks` (embeddings FK-cascade
+    with the chunks) so no read path — even one that forgets the status
+    filter — can ever serve the stale content. The asset ROW is kept: it is
+    the prev_asset_id chain's history and may be referenced by spine
+    `sources`.
+    """
+    client.table(Tables.RAG_ASSETS).update({"status": "superseded"}).eq(
+        "id", asset_id
+    ).execute()
+    client.table(Tables.ASSET_CHUNKS).delete().eq("asset_id", asset_id).execute()
+
+
+def _supersede_same_title(
+    client,
+    folders: ProjectFolders,
+    *,
+    title: str,
+    file_path: str,
+    file_hash: str | None,
+) -> int:
+    """Chain a just-'created' asset over its same-title predecessors (#57).
+
+    When the project already held active asset(s) with the SAME title
+    (case-insensitive) and DIFFERENT content (hash) at a DIFFERENT path:
+
+      1. stamp the new row's `prev_asset_id` → the newest prior copy (the
+         same chain shape the pipeline's own same-path new_version writes);
+      2. retire every prior copy — `status='superseded'` + chunks deleted —
+         so `pull_source` can never interleave old and new chunks under one
+         title/citation.
+
+    No-ops (returns 0) when there is no prior copy or when `file_hash` is
+    unavailable (hashing failed earlier — without a hash we can't honor the
+    "same-title-same-hash stays a no-op" contract, so we do nothing rather
+    than risk retiring an identical copy).
+
+    Returns the number of prior assets retired.
+    """
+    if not title or file_hash is None:
+        return 0
+    owner_col, owner_val = _owner_filter(folders)
+    priors = _prior_same_title_assets(
+        client, owner_col, owner_val, title, file_path, file_hash
+    )
+    if not priors:
+        return 0
+    priors.sort(key=lambda r: str(r.get("created_at") or ""), reverse=True)
+    # Chain the new row (found by the same dedup key the scope stamp uses:
+    # owner + file_path + active is unique) to the NEWEST prior copy.
+    client.table(Tables.RAG_ASSETS).update(
+        {"prev_asset_id": priors[0]["id"]}
+    ).eq(owner_col, owner_val).eq("file_path", file_path).eq(
+        "status", "active"
+    ).execute()
+    for prior in priors:
+        _retire_asset(client, prior["id"])
+    return len(priors)
 
 
 def _unchanged_since_last_ingest(client, project_id: str, file_ref) -> bool:
