@@ -49,12 +49,21 @@ def _echo_run_summary(code: str, run) -> None:
     help="Scan only this configured ingest folder (narrows the allowlist; "
     "must be a configured folder, else scans nothing). Single-project only.",
 )
+@click.option(
+    "--allow-empty",
+    "allow_empty",
+    is_flag=True,
+    help="Proceed (exit 0) when the project has no Drive/Dropbox folder "
+    "configured, instead of refusing. For scripted use. Single-project only "
+    "(--all already skips unconfigured projects with a note).",
+)
 def ingest_assets_cmd(
     code: str | None,
     all_: bool,
     scope: str | None,
     no_cache: bool,
     folder: str | None,
+    allow_empty: bool,
 ) -> None:
     """Ingest a project's Drive/Dropbox assets into the asset store.
 
@@ -88,6 +97,14 @@ def ingest_assets_cmd(
         )
         sys.exit(2)
 
+    if allow_empty and all_:
+        click.echo(
+            "Error: --allow-empty is single-project only; --all already skips "
+            "unconfigured projects with a note.",
+            err=True,
+        )
+        sys.exit(2)
+
     # ── Single project ──
     if code:
         # Clear the in-process listing cache once at the start of this CLI run
@@ -102,6 +119,21 @@ def ingest_assets_cmd(
         if not run.project_found:
             click.echo(f"Error: no MC-2 project resolved for '{code}'.", err=True)
             sys.exit(1)
+        # Confirm gate (#59): an explicitly-requested single-project ingest with
+        # no folder configured refuses rather than recording a normal-looking
+        # empty run. --allow-empty downgrades the refusal to a note (exit 0)
+        # for scripted callers that sweep codes regardless of config state.
+        if run.unconfigured_reason:
+            if not allow_empty:
+                click.echo(
+                    f"Error: {code} has no Drive/Dropbox folder configured — "
+                    "set folders in MC-2 or pass --allow-empty to proceed. "
+                    f"({run.unconfigured_reason})",
+                    err=True,
+                )
+                sys.exit(1)
+            click.echo(f"{code}: SKIPPED — {run.unconfigured_reason}")
+            return
         _echo_run_summary(code, run)
         if run.failed or run.failures:
             sys.exit(1)
@@ -126,6 +158,11 @@ def ingest_assets_cmd(
         if outcome.error:
             click.echo(f"{outcome.code}: ERROR {outcome.error}", err=True)
             continue
+        if outcome.unconfigured:
+            # Confirm gate (#59), sweep shape: never hard-fail the fan-out for
+            # a config gap — skip the project with a VISIBLE per-project note.
+            click.echo(f"{outcome.code}: SKIPPED — {outcome.unconfigured}")
+            continue
         _echo_run_summary(outcome.code, outcome)
 
     click.echo(
@@ -135,7 +172,8 @@ def ingest_assets_cmd(
         f"superseded={result.total_superseded} "
         f"unchanged={result.total_skipped_unchanged} "
         f"shortcuts={result.total_skipped_shortcuts} "
-        f"failed={result.total_failed}"
+        f"failed={result.total_failed} "
+        f"unconfigured={result.total_unconfigured}"
     )
     if result.any_failures:
         sys.exit(1)

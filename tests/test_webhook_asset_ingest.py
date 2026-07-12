@@ -616,3 +616,39 @@ def test_runner_records_failed_when_project_not_found(monkeypatch):
     assert "no MC-2 project" in patch["error"]
     assert "ibx-5153" in patch["error"]
     assert "finished_at" in patch
+
+
+def test_runner_records_refusal_when_unconfigured(monkeypatch):
+    """Confirm gate (#59): a NULL-folder project records a structured refusal
+    (status=failed + actionable error), NOT a done-with-zero-counts run."""
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
+    rec = {}
+    sb = _RecordingClient(rec)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
+
+    reason = (
+        "no Drive/Dropbox folder configured "
+        "(drive: enabled but folder not set; dropbox: disabled)"
+    )
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.ingest_project_assets",
+        lambda code, **kwargs: IngestRunResult(
+            unconfigured_reason=reason,
+            source_notes=[{"source": "config", "note": reason}],
+        ),
+    )
+
+    asyncio.run(webhook_main._run_asset_ingest("run-1", "ibx-5153"))
+
+    ups = [u for u in rec["updates"] if u["table"] == "asset_ingest_runs"]
+    assert len(ups) == 1
+    patch = ups[0]["update"]
+    assert patch["status"] == "failed"
+    assert "No Drive/Dropbox folder configured" in patch["error"]
+    assert "ibx-5153" in patch["error"]
+    assert "MC-2" in patch["error"]
+    assert patch["source_notes"] == [{"source": "config", "note": reason}]
+    assert "created" not in patch  # not a normal-looking empty run
+    assert "finished_at" in patch
+    assert ups[0]["eq"] == ("id", "run-1")

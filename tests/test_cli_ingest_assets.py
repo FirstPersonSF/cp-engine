@@ -421,3 +421,96 @@ def _folders(project_id: str):
         enable_google_drive=False,
         enable_dropbox=False,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Confirm gate (#59): NULL-folder refusal / --allow-empty / fan-out skip
+# ──────────────────────────────────────────────────────────────────────
+
+_REASON = (
+    "no Drive/Dropbox folder configured "
+    "(drive: enabled but folder not set; dropbox: disabled)"
+)
+
+
+def test_ingest_assets_unconfigured_refuses_without_allow_empty(monkeypatch):
+    _stub_client(monkeypatch)
+
+    monkeypatch.setattr(
+        asset_ingest,
+        "ingest_project_assets",
+        lambda code, **kw: IngestRunResult(unconfigured_reason=_REASON),
+    )
+
+    result = CliRunner().invoke(main, ["ingest-assets", "ibx-5153"])
+    assert result.exit_code == 1, result.output
+    assert "ibx-5153" in result.output
+    assert "no Drive/Dropbox folder configured" in result.output
+    assert "--allow-empty" in result.output
+    # A refusal must not print a normal-looking zero-count summary line.
+    assert "created=0" not in result.output
+
+
+def test_ingest_assets_unconfigured_allow_empty_proceeds(monkeypatch):
+    _stub_client(monkeypatch)
+
+    monkeypatch.setattr(
+        asset_ingest,
+        "ingest_project_assets",
+        lambda code, **kw: IngestRunResult(unconfigured_reason=_REASON),
+    )
+
+    result = CliRunner().invoke(
+        main, ["ingest-assets", "ibx-5153", "--allow-empty"]
+    )
+    assert result.exit_code == 0, result.output
+    assert "SKIPPED" in result.output
+    assert _REASON in result.output
+
+
+def test_ingest_assets_allow_empty_with_all_is_exit_2(monkeypatch):
+    _stub_client(monkeypatch)
+    _stub_config(monkeypatch)
+
+    called: list[str] = []
+    monkeypatch.setattr(
+        asset_ingest,
+        "ingest_project_assets",
+        lambda code, **kw: called.append(code) or IngestRunResult(),
+    )
+
+    result = CliRunner().invoke(main, ["ingest-assets", "--all", "--allow-empty"])
+    assert result.exit_code == 2, result.output
+    assert "allow-empty" in result.output.lower()
+    assert called == []
+
+
+def test_ingest_assets_all_skips_unconfigured_with_note(monkeypatch):
+    """The sweep NEVER hard-fails on a config gap: the unconfigured project is
+    skipped with a visible per-project note, the others run, exit 0."""
+    _stub_client(monkeypatch)
+    _stub_config(monkeypatch)
+
+    monkeypatch.setattr(
+        asset_ingest_cli,
+        "active_ingestable_codes",
+        lambda config: ["a-1", "b-2", "c-3"],
+    )
+
+    def fake_ingest(code, **kwargs):
+        if code == "b-2":
+            return IngestRunResult(
+                unconfigured_reason=_REASON,
+                source_notes=[{"source": "config", "note": _REASON}],
+            )
+        return IngestRunResult(created=1)
+
+    monkeypatch.setattr(asset_ingest, "ingest_project_assets", fake_ingest)
+
+    result = CliRunner().invoke(main, ["ingest-assets", "--all"])
+    assert result.exit_code == 0, result.output
+    assert "b-2: SKIPPED" in result.output
+    assert _REASON in result.output
+    # Others still ran and rolled up; the skip is counted in the TOTAL line.
+    assert "created=2" in result.output
+    assert "unconfigured=1" in result.output
