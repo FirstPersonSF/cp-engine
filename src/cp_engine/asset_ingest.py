@@ -259,6 +259,42 @@ def _hydrate(client, row: dict) -> dict:
     return hydrate_project_row(row, grouped.get(row["id"], []))
 
 
+def folders_unconfigured_reason(folders: ProjectFolders) -> str | None:
+    """The #59 confirm-gate predicate: WHY this project would ingest nothing.
+
+    Returns None (configured — proceed) when at least one ENABLED source has a
+    folder id. Returns a human-readable reason when no enabled source does —
+    i.e. both folder columns are NULL/empty, every enabled source's folder is
+    NULL, or no source is enabled at all. A DISABLED source's NULL folder is
+    NOT a gap (that source was never going to list), so drive-on+configured
+    with dropbox-off+NULL passes cleanly.
+
+    Non-client companies return None: asset ingest skips them wholesale via
+    `list_files`' existing kind guard, and a "no folder configured" message
+    would misdiagnose that case (folders aren't the reason nothing ingests).
+
+    Deliberately NOT URL/path validation — a present-but-wrong folder id
+    surfaces as a per-source listing failure note, exactly as before.
+    """
+    if folders.company_kind != "client":
+        return None
+    if folders.enable_google_drive and folders.google_drive_folder_id:
+        return None
+    if folders.enable_dropbox and folders.mc_dropbox_folder_id:
+        return None
+
+    def _state(enabled: bool, folder_id: str | None) -> str:
+        if not enabled:
+            return "disabled"
+        return "enabled but folder not set" if not folder_id else "configured"
+
+    return (
+        "no Drive/Dropbox folder configured "
+        f"(drive: {_state(folders.enable_google_drive, folders.google_drive_folder_id)}; "
+        f"dropbox: {_state(folders.enable_dropbox, folders.mc_dropbox_folder_id)})"
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  List
 # ──────────────────────────────────────────────────────────────────────
@@ -854,6 +890,14 @@ class IngestRunResult:
     # {"source", "note"} entry here rather than aborting the whole run, so the
     # caller (and the button UI) can show why a source produced nothing.
     source_notes: list[dict[str, str]] = field(default_factory=list)
+    # The confirm-gate verdict (#59): non-None when the project resolved fine
+    # but NO ENABLED source has a folder id configured — the run would silently
+    # ingest nothing, so `ingest_project_assets` short-circuits and records WHY
+    # here instead of returning a normal-looking empty run. Callers decide the
+    # UX: the single-project CLI refuses (unless --allow-empty), the --all
+    # fan-out skips with a visible note, and the webhook records a structured
+    # refusal on the run row. None on every configured (or not-found) run.
+    unconfigured_reason: str | None = None
 
 
 # configure_ingest() wires document-ingest's module-level singletons (settings +
@@ -1072,6 +1116,23 @@ def ingest_project_assets(
         # No matching MC-2 project — asset ingest doesn't apply. The resolver
         # already printed the reason to stderr.
         return IngestRunResult(project_found=False)
+
+    # Confirm gate (#59): a client project whose ENABLED sources have no folder
+    # id would silently list nothing — short-circuit BEFORE building connectors
+    # or touching a provider, and record the reason so every entry point (CLI,
+    # --all fan-out, webhook button) can surface it instead of a
+    # normal-looking empty run. Non-client kinds pass through to list_files'
+    # existing skip (the reason there is the company kind, not folders).
+    unconfigured = folders_unconfigured_reason(folders)
+    if unconfigured is not None:
+        print(
+            f"[asset-ingest] {project_code}: {unconfigured} — nothing to ingest",
+            file=sys.stderr,
+        )
+        return IngestRunResult(
+            unconfigured_reason=unconfigured,
+            source_notes=[{"source": "config", "note": unconfigured}],
+        )
 
     # Build the connectors ONCE up front (when their source is enabled) so the
     # same instance is reused for listing, downloading, AND link generation.

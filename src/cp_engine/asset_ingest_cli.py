@@ -114,6 +114,10 @@ class _ProjectOutcome:
     failed: int = 0
     failures: list[tuple[str, str]] = field(default_factory=list)
     error: str | None = None  # whole-project error (resolve/run blew up)
+    # Confirm gate (#59): the reason this project was skipped because no
+    # ENABLED source has a folder configured. NOT a failure — the sweep must
+    # keep going — but the CLI prints a visible per-project SKIPPED note.
+    unconfigured: str | None = None
 
 
 @dataclass
@@ -155,6 +159,11 @@ class FanOutResult:
         return sum(o.failed for o in self.outcomes)
 
     @property
+    def total_unconfigured(self) -> int:
+        """Projects skipped by the #59 confirm gate (no folder configured)."""
+        return sum(1 for o in self.outcomes if o.unconfigured)
+
+    @property
     def any_failures(self) -> bool:
         """True if any per-file failure OR any whole-project error occurred."""
         return any(o.failed or o.failures or o.error for o in self.outcomes)
@@ -194,6 +203,7 @@ def fan_out_ingest(
             outcome.skipped_shortcuts = run.skipped_shortcuts
             outcome.failed = run.failed
             outcome.failures = list(run.failures)
+            outcome.unconfigured = run.unconfigured_reason
         except Exception as exc:  # noqa: BLE001 — collect, keep going
             outcome.error = str(exc)
         result.outcomes.append(outcome)

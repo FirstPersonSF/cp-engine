@@ -778,3 +778,125 @@ def test_run_cleans_temp_files(monkeypatch, tmp_path):
     leftovers = list(work_root.rglob("*")) if work_root.exists() else []
     leftover_files = [p for p in leftovers if p.is_file()]
     assert leftover_files == [], f"unexpected leftover files: {leftover_files}"
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Confirm gate (#59): NULL-folder projects short-circuit with a reason
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _folders(**overrides) -> ProjectFolders:
+    base = dict(
+        project_id="proj-1",
+        company_id="co-9",
+        company_kind="client",
+        google_drive_folder_id=None,
+        mc_dropbox_folder_id=None,
+        enable_google_drive=False,
+        enable_dropbox=False,
+    )
+    base.update(overrides)
+    return ProjectFolders(**base)
+
+
+def _patch_resolve_only(monkeypatch, folders):
+    """Patch the resolver AND make list_files a landmine — the gate must
+    short-circuit BEFORE any listing happens."""
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.resolve_project_folders",
+        lambda client, code: folders,
+    )
+
+    def _boom(*a, **k):  # pragma: no cover - must not be called
+        raise AssertionError("list_files must not run for an unconfigured project")
+
+    monkeypatch.setattr("cp_engine.asset_ingest.list_files", _boom)
+
+
+def test_unconfigured_reason_both_null():
+    from cp_engine.asset_ingest import folders_unconfigured_reason
+
+    reason = folders_unconfigured_reason(
+        _folders(enable_google_drive=True, enable_dropbox=True)
+    )
+    assert reason is not None
+    assert "no Drive/Dropbox folder configured" in reason
+    assert "enabled but folder not set" in reason
+
+
+def test_unconfigured_reason_enabled_source_null_folder():
+    # Drive ENABLED with a NULL folder counts as unconfigured even though
+    # Dropbox (disabled) also has no folder.
+    from cp_engine.asset_ingest import folders_unconfigured_reason
+
+    reason = folders_unconfigured_reason(_folders(enable_google_drive=True))
+    assert reason is not None
+    assert "drive: enabled but folder not set" in reason
+    assert "dropbox: disabled" in reason
+
+
+def test_unconfigured_reason_disabled_null_folder_does_not_gate():
+    # A DISABLED source's NULL folder is not a gap: drive enabled+configured,
+    # dropbox disabled+NULL → configured, no gate.
+    from cp_engine.asset_ingest import folders_unconfigured_reason
+
+    assert (
+        folders_unconfigured_reason(
+            _folders(enable_google_drive=True, google_drive_folder_id="fid-1")
+        )
+        is None
+    )
+
+
+def test_unconfigured_reason_no_sources_enabled_gates():
+    from cp_engine.asset_ingest import folders_unconfigured_reason
+
+    reason = folders_unconfigured_reason(_folders())
+    assert reason is not None
+    assert "drive: disabled" in reason and "dropbox: disabled" in reason
+
+
+def test_unconfigured_reason_non_client_is_none():
+    # Non-client kinds are list_files' existing skip, not a folder gap.
+    from cp_engine.asset_ingest import folders_unconfigured_reason
+
+    assert (
+        folders_unconfigured_reason(
+            _folders(company_kind="internal", enable_google_drive=True)
+        )
+        is None
+    )
+
+
+def test_run_short_circuits_unconfigured_project(monkeypatch, tmp_path):
+    _patch_resolve_only(
+        monkeypatch, _folders(enable_google_drive=True, enable_dropbox=True)
+    )
+
+    def _boom_factory(*a, **k):  # pragma: no cover - must not be called
+        raise AssertionError("pipeline must not be built for an unconfigured project")
+
+    result = ingest_project_assets(
+        "acme-1", client=object(), pipeline_factory=_boom_factory, tmp_root=tmp_path
+    )
+
+    assert isinstance(result, IngestRunResult)
+    assert result.project_found is True
+    assert result.unconfigured_reason is not None
+    assert "no Drive/Dropbox folder configured" in result.unconfigured_reason
+    assert (result.created, result.versioned, result.skipped, result.failed) == (0, 0, 0, 0)
+    # The reason also rides source_notes so existing note plumbing (webhook row,
+    # button UI) surfaces it without new columns.
+    assert result.source_notes == [
+        {"source": "config", "note": result.unconfigured_reason}
+    ]
+
+
+def test_run_configured_project_is_not_gated(monkeypatch, tmp_path):
+    # Dropbox enabled + folder set (the _FOLDERS fixture): no gate, run proceeds
+    # to a normal (empty-list) run with unconfigured_reason None.
+    _patch_resolve_and_list(monkeypatch, _FOLDERS, [])
+
+    result = ingest_project_assets("acme-1", client=object(), tmp_root=tmp_path)
+
+    assert result.unconfigured_reason is None

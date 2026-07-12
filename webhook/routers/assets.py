@@ -70,6 +70,22 @@ async def _run_asset_ingest(
                 "error": f"no MC-2 project resolved for '{code}'",
                 "finished_at": _utc_now_iso(),
             }
+        elif run.unconfigured_reason:
+            # Confirm gate (#59): the project resolved but no ENABLED source
+            # has a folder id — record a structured refusal, NOT a
+            # normal-looking done-with-zero-counts run. The mc-2 button's
+            # status line renders `error` for failed runs, so this message is
+            # exactly what the user sees under the button.
+            patch = {
+                "status": "failed",
+                "error": (
+                    f"No Drive/Dropbox folder configured for '{code}' — set "
+                    "the project's folders in MC-2, then re-run. "
+                    f"({run.unconfigured_reason})"
+                ),
+                "source_notes": run.source_notes,
+                "finished_at": _utc_now_iso(),
+            }
         else:
             patch = {
                 "status": "done",

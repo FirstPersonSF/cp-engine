@@ -4,6 +4,28 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+**Asset ingest: confirm-gate for projects with NULL Drive/Dropbox folders (#59).**
+
+- `ingest_project_assets` now short-circuits when a resolved client project
+  has no ENABLED source with a folder id (both folder columns NULL/empty, or
+  every enabled source's folder unset) — recording WHY on the new
+  `IngestRunResult.unconfigured_reason` (also mirrored into `source_notes`)
+  instead of returning a normal-looking empty run. A disabled source's NULL
+  folder is not a gap; non-client kinds keep their existing `list_files` skip.
+- CLI `cp ingest-assets <code>`: refuses (exit 1) with an actionable message
+  for an unconfigured project; new `--allow-empty` flag downgrades the
+  refusal to a SKIPPED note (exit 0) for scripted use. Single-project only —
+  combining with `--all` is a usage error.
+- CLI `cp ingest-assets --all`: the sweep never hard-fails on a config gap —
+  unconfigured projects are skipped with a visible per-project `SKIPPED`
+  note and counted in the new `unconfigured=` total.
+- Webhook `/api/assets/ingest` (the mc-2 button): an unconfigured project's
+  run row records a structured refusal (`status='failed'` + "set the
+  project's folders in MC-2" error), which the mc-2 button's status line
+  already renders — no dashboard change needed.
+
 ## v0.59.0 — 2026-07-11
 
 **Asset ingest: same-title re-ingests supersede instead of duplicating (#57).**
