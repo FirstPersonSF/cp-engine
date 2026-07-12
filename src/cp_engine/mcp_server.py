@@ -366,16 +366,32 @@ def pull_spine_element(project_code: str, key: str) -> dict:
             # (initiatives, pre-estimate deals) or a fetch error just means no
             # block — never break the pull.
             try:
+                from datetime import date as _date
+
                 from cp_engine.agreement_projection import (
-                    render_engagement_block, sow_attach_nudge,
+                    drift_warnings, render_engagement_block, sow_attach_nudge,
                 )
                 from cp_engine.estimate import fetch_estimate, fetch_schedule
                 est = fetch_estimate(client, pid)
                 if est is not None:
                     bars = fetch_schedule(client, est.id)
+                    # Drift is best-effort within the best-effort block: a
+                    # meetings fetch failure just means no divergence rule.
+                    try:
+                        from cp_engine.project_sources import (
+                            list_project_meetings,
+                        )
+                        meetings = list_project_meetings(client, pid)
+                    except Exception:  # noqa: BLE001
+                        meetings = []
+                    drift = drift_warnings(
+                        est, bars, meetings, today=_date.today(),
+                    )
                     result["body"] = (result.get("body") or "") + "\n\n" + \
-                        render_engagement_block(est, bars)
+                        render_engagement_block(est, bars, drift=drift)
                     result["derived_block"] = True
+                    if drift:
+                        result["drift_warnings"] = drift
                 if not result.get("sources") and cid is not None:
                     from cp_engine.project_sources import list_sources
                     nudge = sow_attach_nudge(list_sources(client, pid, cid))

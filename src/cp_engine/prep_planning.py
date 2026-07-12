@@ -166,6 +166,11 @@ class ProjectPlanningBlock:
     # which project states to distrust.
     exec_summary_updated: str | None = None
     exec_summary_age_days: int | None = None
+    # Estimate-drift warnings (cp-engine #65): undone estimate items past due
+    # with no done-mark, or whose linked meeting's actual date diverges from
+    # the estimated date — the same lines the Agreement projection appends to
+    # its derived block. Empty for initiatives / no estimate / no drift.
+    drift: tuple[str, ...] = ()
     # ``fetch_error`` carries ONE sentinel since the ClickUp fallback was
     # removed (commitments consolidation, cp-engine #38):
     #   "no_schedule_milestones" — the MC-2 estimator schedule has no undone
@@ -657,6 +662,54 @@ def _fetch_mc2_schedule_milestones(
             )
         )
     return tuple(out)
+
+
+def _fetch_drift_warnings(
+    supabase_client,
+    project: ProjectState,
+    today: date,
+) -> tuple[str, ...]:
+    """Estimate-drift warnings for one engagement (cp-engine #65).
+
+    Reuses the Agreement projection's ``drift_warnings`` — past-due items with
+    no done-mark, and items whose linked meeting's actual date diverges from
+    the estimated date — so prep and the SOW pull warn identically. Only
+    engagements have estimates (initiatives return ()). Best-effort: any
+    fetch error logs and returns () — the block still renders.
+    """
+    if supabase_client is None:
+        return ()
+    from cp_engine.clickup_routing import engagement_number
+
+    number = engagement_number(project.code)
+    if number is None:
+        return ()  # initiative slug — no estimate, no drift
+    try:
+        from cp_engine.agreement_projection import drift_warnings
+        from cp_engine.estimate import fetch_estimate, fetch_schedule
+        from cp_engine.mc2_db import Tables
+        from cp_engine.project_sources import list_project_meetings
+
+        rows = (
+            supabase_client.table(Tables.PROJECTS)
+            .select("id")
+            .eq("number", number)
+            .execute()
+            .data
+            or []
+        )
+        if not rows:
+            return ()
+        mc_project_id = rows[0]["id"]
+        est = fetch_estimate(supabase_client, mc_project_id)
+        if est is None:
+            return ()
+        bars = fetch_schedule(supabase_client, est.id)
+        meetings = list_project_meetings(supabase_client, mc_project_id)
+        return tuple(drift_warnings(est, bars, meetings, today=today))
+    except Exception as exc:  # noqa: BLE001 — drift is best-effort
+        log.warning("drift fetch failed for %s: %s", project.code, exc)
+        return ()
 
 
 def _fetch_project_commitments(supabase_client, project) -> tuple[dict, ...]:
@@ -1256,6 +1309,8 @@ def build_project_block(
 
     deliverable_lines = _fetch_deliverable_lines(supabase_client, project)
 
+    drift = _fetch_drift_warnings(supabase_client, project, today)
+
     updated = _exec_summary_updated(exec_summary)
     age_days: int | None = None
     if updated:
@@ -1274,6 +1329,7 @@ def build_project_block(
         urgent=tuple(urgent_list),
         fetch_error=fetch_error,
         deliverables=deliverable_lines,
+        drift=drift,
         sweep_synthesis=sweep_synthesis,
         exec_summary_updated=updated,
         exec_summary_age_days=age_days,
@@ -1850,6 +1906,11 @@ def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
     out = _render_block_header(block.project)
     out.extend(_render_urgent(block))
 
+    if block.drift:
+        out.append("**⚠ Estimate drift:**")
+        out.extend(f"- {w}" for w in block.drift)
+        out.append("")
+
     if block.exec_summary:
         out.append(block.exec_summary)
     else:
@@ -1938,6 +1999,11 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
     """
     out = _render_block_header(block.project)
     out.extend(_render_urgent(block))
+
+    if block.drift:
+        out.append("**⚠ Estimate drift:**")
+        out.extend(f"- {w}" for w in block.drift)
+        out.append("")
 
     # FULL exec summary verbatim — every project, including unauthored ones
     # (explicit marker, never silently omitted). The heading carries the
