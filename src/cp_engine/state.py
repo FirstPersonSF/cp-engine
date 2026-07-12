@@ -280,6 +280,9 @@ class ClientAsk:
     asked_date: str  # ISO date
     status: str      # "open" | "answered" | "dropped"
     who: str | None = None
+    # Optional due date (`· by YYYY-MM-DD` in the bracket) — the deadline the
+    # ask carries; prep + the attention digest escalate against it (#70).
+    by: str | None = None
 
 
 @dataclass(frozen=True)

@@ -749,7 +749,8 @@ def _write_ask(
 ) -> bool:
     text = _sanitize_inline_text(item.get("text") or "")
     who = (item.get("who") or "").strip()
-    by = (item.get("by") or "").strip()
+    # `due` is the issue-#70 alias for `by` — both name the ask's deadline.
+    by = (item.get("by") or item.get("due") or "").strip()
     asked_date = (
         item.get("date") or item.get("asked_date") or _resolve_today_iso(today)
     ).strip()

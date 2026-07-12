@@ -49,7 +49,7 @@ PriorSprint: {{ prior_sprint }}
 <!-- cp-engine:start carry-forward -->
 ## Carried over from {{ prior_sprint or "prior sprint" }}
 {%- for a in carry_forward.asks %}
-- [ask · {{ a.asked_date }}{% if a.who %} · {{ a.who }}{% endif %}] {{ a.text }}
+- [ask · {{ a.asked_date }}{% if a.who %} · {{ a.who }}{% endif %}{% if a.by %} · by {{ a.by }}{% endif %}] {{ a.text }}
 {%- endfor %}
 {%- for r in carry_forward.risks %}
 - [risk · {{ r.severity }} · {{ r.category }} · {{ r.raised_date }}] {{ r.text }}
@@ -65,7 +65,7 @@ PriorSprint: {{ prior_sprint }}
 ## Team communication
 
 ### Open asks
-- _<what we need from someone — `[open · date · who]` prefix>_
+- _<what we need from someone — `[open · date · who]` prefix; add `· by YYYY-MM-DD` when the ask has a deadline (prep + the attention digest escalate it)>_
 
 ### Slack digest
 - _<weekly summary of the initiative's Slack channel(s) — `[YYYY-W## · Slack]` prefix; one bullet per week, written by the Sunday cron>_

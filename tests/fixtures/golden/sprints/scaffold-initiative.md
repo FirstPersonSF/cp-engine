@@ -47,7 +47,7 @@ Reconciled §4.2 redlines with Sam.
 ## Team communication
 
 ### Open asks
-- _<what we need from someone — `[open · date · who]` prefix>_
+- _<what we need from someone — `[open · date · who]` prefix; add `· by YYYY-MM-DD` when the ask has a deadline (prep + the attention digest escalate it)>_
 
 ### Slack digest
 - _<weekly summary of the initiative's Slack channel(s) — `[YYYY-W## · Slack]` prefix; one bullet per week, written by the Sunday cron>_
