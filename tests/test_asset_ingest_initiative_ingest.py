@@ -512,11 +512,16 @@ def test_initiative_run_stamps_by_initiative_owner(tmp_path, monkeypatch):
     connector = _FakeDropboxConnector(
         [_FakeDropboxEntry("brief.pdf", "/Internal/StoryOS/brief.pdf")]
     )
-    monkeypatch.setattr(
-        "cp_engine.asset_ingest.download_file",
-        lambda ref, d, *a, **k: (d / ref.name).write_bytes(b"pdf-bytes")
-        or (d / ref.name),
-    )
+    def _fake_download(ref, tmp_dir, *a, **k):
+        # NOT `write_bytes(...) or path`: write_bytes returns the byte COUNT
+        # (truthy), so that expression returns an int — and downstream
+        # `open(<int>)` treats it as a raw file descriptor, closing an fd the
+        # test run doesn't own (this killed the whole suite at teardown).
+        p = tmp_dir / ref.name
+        p.write_bytes(b"pdf-bytes")
+        return p
+
+    monkeypatch.setattr("cp_engine.asset_ingest.download_file", _fake_download)
     pipeline = _FakePipeline()
     run = ingest_project_assets(
         "storyos",
