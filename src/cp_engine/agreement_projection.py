@@ -15,6 +15,8 @@ data in, markdown out. Fail-soft at the call site, never here.
 
 from __future__ import annotations
 
+from datetime import date
+
 from cp_engine.estimate import week_to_date
 
 HEADER = "## Engagement shape (derived from the estimate — live)"
@@ -54,9 +56,70 @@ def _item_line(item, estimate, idx) -> str:
     return " · ".join(parts)
 
 
-def render_engagement_block(estimate, bars) -> str:
+DRIFT_THRESHOLD_DAYS = 7
+DRIFT_HEADER = "**⚠ Drift (estimate vs linked reality)**"
+
+
+def drift_warnings(estimate, bars, meetings=None, *, today=None,
+                   threshold_days: int = DRIFT_THRESHOLD_DAYS) -> list[str]:
+    """Flag undone items whose estimate date has lost touch with reality.
+
+    Two rules, one warning per item (the meeting rule wins — it names the
+    real date, which is more actionable than a bare past-due):
+
+      - a linked meeting's actual `meeting_date` diverges from the item's
+        estimated date by more than `threshold_days` (when several meetings
+        link, the CLOSEST one is compared — if even that diverges, it's real
+        drift, not a prep call);
+      - the item is past due (`today` given, estimated date behind it) with
+        no done-mark.
+
+    Done items are settled truth and never flagged. `meetings` rows need only
+    `work_item_id` + `meeting_date` (list_project_meetings' shape). Returns
+    display-ready strings; empty when nothing drifts (or without inputs —
+    no `today` disables the past-due rule, no `meetings` the divergence rule).
+    """
+    idx = _bar_index(bars)
+    dates_by_item: dict[str, list] = {}
+    for m in meetings or []:
+        wid, when = m.get("work_item_id"), m.get("meeting_date")
+        if not (wid and when):
+            continue
+        try:
+            dates_by_item.setdefault(str(wid), []).append(
+                date.fromisoformat(str(when)[:10]))
+        except ValueError:
+            continue
+
+    out: list[str] = []
+    for item in estimate.all_items():
+        bar = (idx["by_id"].get(str(item.id))
+               or idx["by_label"].get(item.name.strip().lower()))
+        if bar is None or bar.done:
+            continue
+        due = week_to_date(estimate.start_date, bar.start_week)
+        if due is None:
+            continue
+        linked = dates_by_item.get(str(item.id))
+        if linked:
+            closest = min(linked, key=lambda d: abs((d - due).days))
+            delta = (closest - due).days
+            if abs(delta) > threshold_days:
+                out.append(
+                    f"⚠ {item.name} — linked meeting {closest.isoformat()} "
+                    f"vs estimate ~{due.isoformat()} ({delta:+d}d)")
+                continue
+        if today is not None and due < today:
+            out.append(f"⚠ {item.name} — past due ~{due.isoformat()}, "
+                       "no done-mark")
+    return out
+
+
+def render_engagement_block(estimate, bars, *, drift=None) -> str:
     """The Agreement projection: phases → deliverables (dated, done-marked)
-    and activities, rendered from live estimator data."""
+    and activities, rendered from live estimator data. `drift` is an optional
+    pre-computed `drift_warnings` list, rendered as its own sub-block so the
+    projection is self-auditing rather than merely true-at-read-time."""
     lines = [HEADER, ""]
     idx = _bar_index(bars)
     for phase in estimate.phases:
@@ -68,6 +131,10 @@ def render_engagement_block(estimate, bars) -> str:
         if activities:
             lines.append("- Activities: "
                          + " · ".join(_item_line(a, estimate, idx) for a in activities))
+        lines.append("")
+    if drift:
+        lines.append(DRIFT_HEADER)
+        lines.extend(f"- {w}" for w in drift)
         lines.append("")
     if estimate.start_date:
         lines.append(f"Kickoff: {estimate.start_date}")
