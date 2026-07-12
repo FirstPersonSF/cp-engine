@@ -503,6 +503,7 @@ def _mirror_account_elements(client, *, project_id: str, project_code: str,
 
     stakeholders_dir = project_dir.parent / "_stakeholders"
     written = 0
+    expected: set[str] = set()
     for est_item_id, group in groups.items():
         # Element-level archive (retire) → skip the mirror entirely.
         if all(r.get("archived") for r in group):
@@ -516,8 +517,20 @@ def _mirror_account_elements(client, *, project_id: str, project_code: str,
         # Pre-promotion mirror file under this project's spine/_authored/ is
         # now stale (the element moved up the scope ladder) — remove it.
         slug = est_item_id.split("/", 1)[1] if "/" in est_item_id else est_item_id
+        expected.add(f"{slug}.md")
         stale = project_dir / "spine" / "_authored" / f"{slug}.md"
         stale.unlink(missing_ok=True)
+
+    # Reap (the mirror's other half): a file whose element left the account
+    # scope — demoted back to its provenance project, or retired — must not
+    # linger in `_stakeholders/`. The dir is engine-owned (created only by
+    # this mirror), so reconciling every `*.md` not in this fetch's expected
+    # set is safe. A demoted element reappears as a normal `_authored/` file
+    # on its provenance project's next sync; nothing is lost, only re-filed.
+    if stakeholders_dir.is_dir():
+        for stale_file in stakeholders_dir.glob("*.md"):
+            if stale_file.name not in expected:
+                stale_file.unlink(missing_ok=True)
     return written
 
 
