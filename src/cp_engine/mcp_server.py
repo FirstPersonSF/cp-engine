@@ -302,12 +302,20 @@ def fetch_project_source(project_code: str, doc_title: str) -> dict:
 
 
 @mcp.tool()
-def list_spine_elements(project_code: str) -> list[dict]:
+def list_spine_elements(project_code: str, layer: str = "",
+                        scope: str = "", binding: str = "") -> list[dict]:
     """List a project's LIVE spine elements (the distilled-memory index).
 
     Returns one row per element: est_item_id, framing (title), layer, binding,
-    status, serves_count, body_len. Use this to see what's in a project's spine,
-    then `pull_spine_element` to read one element's full body.
+    status, serves_count, body_len, version_label, version_date. Use this to
+    see what's in a project's spine, then `pull_spine_element` to read one
+    element's full body.
+
+    Optional filters narrow the listing, each a comma-list matched
+    case-insensitively: `layer` (e.g. "Note,Decision"), `scope` ("project" or
+    "account"), `binding` (e.g. "unbound"). Empty filters return everything —
+    useful defaults for a first look; filter when the account dossiers and
+    source stubs drown out the authored working set.
     """
     from cp_engine.project_sources import list_spine
 
@@ -318,7 +326,8 @@ def list_spine_elements(project_code: str) -> list[dict]:
             # masquerade as a genuinely empty spine (the v0.39.0 false-negative).
             return [{"note": f"code '{project_code}' resolved to no project"}]
         client, pid, cid = resolved
-        return list_spine(client, pid, cid)
+        return list_spine(client, pid, cid, layer=layer or None,
+                          scope=scope or None, binding=binding or None)
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,
         # actionable error note instead of propagating a protocol error.
