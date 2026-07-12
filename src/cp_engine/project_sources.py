@@ -430,22 +430,49 @@ def resolve_element_versions(
     return est_item_id, versions
 
 
-def list_spine(client, project_id: str, company_id: str | None = None) -> list[dict]:
+def _in_filter(value: str | None, wanted: str | None) -> bool:
+    """True when `value` passes a comma-list filter (None filter = pass all).
+
+    Matching is case-insensitive and whitespace-tolerant; a row with a NULL
+    value only passes when no filter is set (it can't match any named value).
+    """
+    if not wanted:
+        return True
+    allowed = {w.strip().lower() for w in wanted.split(",") if w.strip()}
+    if not allowed:
+        return True
+    return (value or "").lower() in allowed
+
+
+def list_spine(client, project_id: str, company_id: str | None = None, *,
+               layer: str | None = None, scope: str | None = None,
+               binding: str | None = None) -> list[dict]:
     """List a project's LIVE spine elements (index, not bodies).
 
     Returns `[{est_item_id, framing, layer, binding, status, serves_count,
-    body_len, important, note, done, scope}]` for every live element of the
-    project PLUS, when `company_id` is given, the company's account-scoped
-    elements (promoted stakeholders etc. — the scope ladder; `scope` tells the
-    two apart). `important`/`note` are the element's importance flag +
-    annotation; `done` is true/false/null (null = n/a, i.e. not bound to a
-    real work-item). The full body is never returned here (only its length) —
-    call `pull_spine` for one element's text. Never raises: the MCP tool
-    boundary converts failures to a structured note.
+    body_len, important, note, done, scope, version_label, version_date}]`
+    for every live element of the project PLUS, when `company_id` is given,
+    the company's account-scoped elements (promoted stakeholders etc. — the
+    scope ladder; `scope` tells the two apart). `important`/`note` are the
+    element's importance flag + annotation; `done` is true/false/null (null =
+    n/a, i.e. not bound to a real work-item); `version_label`/`version_date`
+    are the live version's label + authored date (the staleness signals —
+    spine rows carry no updated_at). The full body is never returned here
+    (only its length) — call `pull_spine` for one element's text.
+
+    `layer`/`scope`/`binding` are optional comma-list filters (e.g.
+    layer="Note,Decision", scope="project", binding="unbound"), matched
+    case-insensitively; omitted filters pass everything, so the no-filter
+    call is unchanged. Never raises: the MCP tool boundary converts failures
+    to a structured note.
     """
     rows = _unarchived(
         _fetch_scoped(client, project_id, company_id, _SPINE_LIST_COLUMNS)
     )
+    rows = [r for r in rows
+            if _in_filter(r.get("layer"), layer)
+            and _in_filter(_row_scope(r), scope)
+            and _in_filter(r.get("binding"), binding)]
     # Fetch the project's done-map ONCE (not per row — no N+1). `done` is
     # best-effort: if the estimator schema is unreachable the fetch may raise,
     # so we fail-soft to an empty map, which makes `derive_done` return None for
@@ -477,6 +504,8 @@ def list_spine(client, project_id: str, company_id: str | None = None) -> list[d
                 "note": row.get("note"),
                 "done": derive_done(row.get("est_item_id"), done_map),
                 "scope": _row_scope(row),
+                "version_label": row.get("version_label"),
+                "version_date": row.get("version_date"),
             }
         )
     # Important elements sort first; list.sort is stable so within-group order
