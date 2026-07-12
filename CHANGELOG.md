@@ -4,7 +4,7 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## Unreleased
+## v0.61.0 — 2026-07-12
 
 **Asset ingest: initiatives reach folder-binding + ingest parity with
 engagements (mc-2 #192, "open the door").**
