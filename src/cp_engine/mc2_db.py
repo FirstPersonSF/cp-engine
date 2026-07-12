@@ -162,6 +162,12 @@ SPINE_RESOLVE_COLUMNS = (
 SPINE_STATUS_COLUMNS = (
     "est_item_id, status, version_date, version_label, binding, project_id"
 )
+# cp spine-lint — live-row hygiene shape (#69): flags + body + sources, no
+# version bookkeeping.
+SPINE_LINT_COLUMNS = (
+    "est_item_id, framing, layer, binding, serves, important, body, "
+    "sources, status, archived"
+)
 # add/remove_element_source — every version row + its sources array (the
 # element-level fact moves across all versions together, like serves).
 SPINE_SOURCES_EDIT_COLUMNS = (

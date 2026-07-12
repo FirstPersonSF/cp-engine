@@ -679,3 +679,65 @@ def snapshots_cmd(ref: str) -> None:
         click.echo(f"  {created}  {meta.get('label','')}  [{commit}]  {reason}")
 
 
+
+
+@click.command("spine-lint")
+@click.argument("code")
+def spine_lint_cmd(code: str) -> None:
+    """Warn-only spine hygiene lint for one project (#69).
+
+    Flags: important-yet-unbound-serving-nothing elements; Agreements whose
+    body says "attach as source" with an empty sources array; scaffold
+    template placeholders still in cp.md. Run per touched project at
+    `wrap up`, alongside word-count discipline. NEVER blocks or fixes —
+    prints findings and exits 0 either way (non-zero only when the project
+    can't be read at all).
+    """
+    from cp_engine.spine import SpineDirNotFound, find_spine_dir
+    from cp_engine.spine_lint import lint_cp_placeholders, lint_spine_rows
+    from cp_engine.sync import BackendUnavailable
+
+    config = _cli._load_config_or_die()
+    warnings: list[str] = []
+
+    try:
+        client = mc2_db.get_client(config)
+    except BackendUnavailable as exc:
+        click.echo(f"cp spine-lint needs MC-2 for the spine checks: {exc}",
+                   err=True)
+        sys.exit(1)
+    rows = (
+        client.table(mc2_db.Tables.SPINE_SUBSTANCE)
+        .select(mc2_db.SPINE_LINT_COLUMNS)
+        .eq("project_code", code)
+        .eq("status", "live")
+        .execute()
+        .data
+    ) or []
+    rows = [r for r in rows if not r.get("archived")]
+    if not rows:
+        click.echo(
+            f"No live spine for '{code}' — spine-lint resolves by the "
+            "project's dir-slug code (the spine_substance project_code).",
+            err=True,
+        )
+        sys.exit(1)
+    warnings.extend(lint_spine_rows(rows))
+
+    # cp.md placeholder check — best-effort, offline (skip silently when the
+    # working dir doesn't resolve; the spine checks already ran).
+    try:
+        cp_md = find_spine_dir(config.root, code) / "cp.md"
+        if cp_md.is_file():
+            warnings.extend(
+                lint_cp_placeholders(cp_md.read_text(encoding="utf-8"))
+            )
+    except (SpineDirNotFound, OSError):
+        pass
+
+    if warnings:
+        click.echo(f"{code} — {len(warnings)} spine-lint warning(s):")
+        for w in warnings:
+            click.echo(f"  {w}")
+    else:
+        click.echo(f"{code} — spine lint clean.")
