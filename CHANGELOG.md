@@ -4,7 +4,7 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## Unreleased
+## v0.62.0 — 2026-07-12
 
 **arch-phase-4 (#34): the last raw-client bypasses retired.**
 
