@@ -85,9 +85,10 @@ def active_ingestable_codes(config) -> list[str]:
     `ProjectState.code` (already the pre-built canonical form — `<co>-<number>`
     for engagements, the slug for initiatives — no hand-rebuilt string).
 
-    Initiatives with no ingest folders configured simply list nothing when the
-    per-project run resolves them; widening the SET here is safe and never
-    crashes (see `ingest_project_assets`'s graceful no-folders short-circuit).
+    Initiatives resolve via the initiatives-table path (mc-2 #192) and ingest
+    from their Drive/Dropbox folder bindings; ones with no folders configured
+    hit the #59 confirm gate and surface as a visible SKIPPED note in the
+    fan-out (never a crash).
     """
     backend = _default_backend_factory(config.sync.backend)
     projects = backend.read_projects(config)

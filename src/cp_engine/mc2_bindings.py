@@ -117,8 +117,18 @@ def hydrate_project_row(row: dict, binding_rows: list[dict] | None) -> dict:
 
 
 def hydrate_initiative_row(row: dict, binding_rows: list[dict] | None) -> dict:
-    """Ditto for ``initiatives`` rows (slack multi-channel + clickup list)."""
+    """Ditto for ``initiatives`` rows (slack multi-channel + clickup list +
+    Drive/Dropbox folder coordinates for asset ingest — mc-2 #192)."""
     _primary, all_ids = _slack_channel_ids(binding_rows)
     row["slack_channel_ids"] = all_ids
     row["clickup_list_id"] = _clickup_list_id(binding_rows)
+    # Same ref shapes the project hydration uses: Drive stores the folder id
+    # in `id`; the dropbox ref's `url` holds the folder PATH (or a legacy
+    # share link).
+    row["google_drive_folder_id"] = (
+        _singleton_ref(binding_rows, "google_drive").get("id") or None
+    )
+    row["mc_dropbox_folder_id"] = (
+        _singleton_ref(binding_rows, "dropbox").get("url") or None
+    )
     return row

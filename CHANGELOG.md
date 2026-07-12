@@ -4,6 +4,38 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+**Asset ingest: initiatives reach folder-binding + ingest parity with
+engagements (mc-2 #192, "open the door").**
+
+- `resolve_project_folders` now falls back to the `initiatives` table for
+  slug codes (`mission-control`, `storyos`) — and for digit-carrying slugs
+  that miss `projects.number` — returning `ProjectFolders` with
+  `is_initiative=True`; `resolve_project_folders_by_id` likewise falls back
+  to `initiatives.id` on a `projects.id` miss (the initiative workspace's
+  button passes that id). Folder coordinates hydrate from initiative-owned
+  `project_integrations` bindings (`hydrate_initiative_row` now carries
+  `google_drive_folder_id` + `mc_dropbox_folder_id`, same ref shapes as
+  projects).
+- The previously-inert `is_initiative` / `initiative_id` owner seam is live:
+  the run loop's skip-cache and cross-path dedup pre-checks key on the owner
+  pair (`initiative_id` for initiatives), and the document-ingest pipeline's
+  two engagement-shaped seams (`deduplication.check_asset`,
+  `storage.create_asset`) are rebound per-run so initiative rows INSERT with
+  `initiative_id` (migration 081's exactly-one-owner CHECK) instead of
+  FK-crashing on `project_id`.
+- Confirm-gate parity (#59): an initiative with no folder bindings gates
+  exactly like an unconfigured client project (CLI refusal / `--all` SKIPPED
+  note / webhook structured refusal) — never a silent empty run. Initiatives
+  have no per-source enable columns, so both sources read as enabled and a
+  missing binding reports "enabled but folder not set".
+- `list_files`’ client-only kind guard now exempts initiatives (which live
+  under self-* companies by construction); non-client ENGAGEMENTS still
+  skip. `cp ingest-assets <slug>`, the `--all` fan-out (which already
+  enumerated initiatives), and the webhook route all work end-to-end for
+  initiatives with no interface changes.
+
 ## v0.60.0 — 2026-07-11
 
 **Asset ingest: confirm-gate for projects with NULL Drive/Dropbox folders (#59).**
