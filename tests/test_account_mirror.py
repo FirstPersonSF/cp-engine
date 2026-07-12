@@ -107,3 +107,48 @@ def test_deactivation_sweep_skips_underscore_account_dirs(tmp_path):
     moved = _deactivate_stale_cps(tmp_path, set())
     assert moved == []
     assert (account / "_stakeholders" / "fred.md").is_file()
+
+
+def test_demoted_element_file_is_reaped(tmp_path):
+    # A file mirrored while the element was account-scoped must vanish once
+    # the element leaves the account roster (demote → scope back to project).
+    project_dir = tmp_path / "1p" / "sap-concur" / "proj"
+    project_dir.mkdir(parents=True)
+    gone = tmp_path / "1p" / "sap-concur" / "_stakeholders" / "demoted.md"
+    gone.parent.mkdir(parents=True)
+    gone.write_text("stale dossier (element demoted)")
+    client = _Client("cid", [_row("_authored/kept")])
+    n = _mirror_account_elements(client, project_id="pid", project_code="c",
+                                 project_dir=project_dir)
+    assert n == 1
+    assert not gone.exists()
+    assert (gone.parent / "kept.md").is_file()
+
+
+def test_retired_element_file_is_reaped(tmp_path):
+    # Archived (retired) elements are skipped by the writer — their existing
+    # mirror file must also be REMOVED, not left to linger.
+    project_dir = tmp_path / "1p" / "sap-concur" / "proj"
+    project_dir.mkdir(parents=True)
+    stale = tmp_path / "1p" / "sap-concur" / "_stakeholders" / "gone.md"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("stale dossier (element retired)")
+    client = _Client("cid", [_row("_authored/gone", archived=True)])
+    n = _mirror_account_elements(client, project_id="pid", project_code="c",
+                                 project_dir=project_dir)
+    assert n == 0
+    assert not stale.exists()
+
+
+def test_reap_spares_non_md_files(tmp_path):
+    # Only engine-written *.md mirrors are reconciled; anything else a human
+    # parked in the dir survives.
+    project_dir = tmp_path / "1p" / "sap-concur" / "proj"
+    project_dir.mkdir(parents=True)
+    keep = tmp_path / "1p" / "sap-concur" / "_stakeholders" / "notes.txt"
+    keep.parent.mkdir(parents=True)
+    keep.write_text("human notes")
+    client = _Client("cid", [])
+    _mirror_account_elements(client, project_id="pid", project_code="c",
+                             project_dir=project_dir)
+    assert keep.exists()

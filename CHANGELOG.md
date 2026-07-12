@@ -27,6 +27,15 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
   `connect()` deleted, `migrate_accounts` re-exports sync's
   `_default_backend_factory` instead of duplicating it.)
 
+**Account mirror: reap on demote/retire.**
+
+- `_mirror_account_elements` now reconciles `1p/<account>/_stakeholders/`
+  both ways: elements that left the account scope (demoted back to their
+  provenance project, or retired) have their mirror files REMOVED, not
+  left to linger. Only engine-written `*.md` files are reconciled; other
+  files humans park in the dir survive. A demoted element reappears as a
+  normal `spine/_authored/` file on its provenance project's next sync.
+
 ## v0.61.0 — 2026-07-12
 
 **Asset ingest: initiatives reach folder-binding + ingest parity with
