@@ -4,6 +4,43 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.63.0 — 2026-07-12
+
+**The sap-5174 read-through batch (#65–#70): six product proposals from one
+verification read, shipped together** (origin: cp tenant
+`docs/plans/2026-07-11-sap-5174-readthrough-improvements.md`).
+
+- **Drift warnings on Agreement derived blocks (#65, PR #73).** The SOW
+  projection is now self-auditing: `drift_warnings()` flags undone estimate
+  items that are past due with no done-mark, or whose closest linked
+  meeting date diverges from the estimated date by >7d. Warnings render as
+  a `⚠ Drift` sub-block inside the derived block, return structured under
+  `drift_warnings`, and surface per engagement in the `/cp-prep` planning
+  doc + bundle (`**⚠ Estimate drift:**`, under the urgent flags).
+- **`add_element_source` / `remove_element_source` MCP verbs (#66, PR #72).**
+  The attach-as-source loop closes from a session: element resolved with
+  the pull discipline, source resolved exact-then-unique-substring from the
+  project's active assets, the typed `{"type":"rag_asset", id, title}` link
+  written across every version row, deduped by id — byte-compatible with
+  MC-2's PATCH /substance actions. 16 → 18 tools.
+- **Filters + staleness columns on `list_spine_elements` (#67 + #68,
+  PR #71).** Optional `layer`/`scope`/`binding` comma-list filters
+  (case-insensitive, no-filter call unchanged) and `version_label` +
+  `version_date` on every row (spine rows carry no `updated_at`;
+  version_date is the authored-date staleness signal).
+- **`cp spine-lint` (#69, PR #74).** Warn-only hygiene checks, run per
+  touched project at `wrap up` alongside word-count discipline:
+  important-yet-unbound-serving-nothing elements, Agreements whose body
+  says "attach as source" with no attached source, scaffold placeholders
+  still in `cp.md`. Never blocks, never auto-fixes. Documented in the
+  CLAUDE.md template's wrap-up protocol.
+- **Due dates on open asks (#70, PR #75).** `ClientAsk` now carries the
+  `· by YYYY-MM-DD` deadline (parse is position-tolerant), carry-forward
+  re-renders it so it survives week rollover, and `record-ask` ingest
+  accepts `due:` as an alias. Prep's `past_due_ask` rule and the attention
+  digest already escalated against `by` — they now actually receive it
+  after week one.
+
 ## v0.62.0 — 2026-07-12
 
 **arch-phase-4 (#34): the last raw-client bypasses retired.**
