@@ -584,3 +584,81 @@ def reset_client_cache() -> None:
     """Drop cached clients + resolved creds (tests; after cred swaps)."""
     _client_cache.clear()
     _creds_cache.clear()
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Typed query helpers (arch-phase-4, #34)
+#
+#  Home for the ad-hoc queries that used to live inline in CLI command
+#  bodies. Each helper takes an already-built client (callers own the
+#  get_client / degrade decision), runs ONE query with explicit columns,
+#  and documents its caller.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def fetch_clickup_task_id_map(client: "Client", hashes: list[str]) -> dict[str, str]:
+    """Map each ``cp_ask_hash`` to its linked ``clickup_task_id``.
+
+    Caller: ``cli_cmds.planning._fetch_clickup_task_ids_for_hashes`` (the
+    attention-digest Open-in-ClickUp link decoration). Rows without a task id
+    are excluded by the query (``clickup_task_id IS NOT NULL``) and again
+    defensively when shaping the map.
+    """
+    resp = (
+        client.table(Tables.CLICKUP_TASK_PROPOSALS)
+        .select("cp_ask_hash, clickup_task_id")
+        .in_("cp_ask_hash", hashes)
+        .not_.is_("clickup_task_id", "null")
+        .execute()
+    )
+    return {
+        row["cp_ask_hash"]: row["clickup_task_id"]
+        for row in (resp.data or [])
+        if row.get("clickup_task_id")
+    }
+
+
+def fetch_element_review_flags(client: "Client", element_id: str) -> list | None:
+    """Return one spine element's current ``review_flags`` list, or ``None``
+    when no row matches the ``element_id`` (unknown / hallucinated id).
+
+    Caller: ``cli_cmds.spine._write_drift_flags`` (the sweep's advisory
+    drift-flag recorder). An existing row with no flags returns ``[]`` —
+    distinct from ``None`` so the caller can skip unknown elements without
+    overcounting.
+    """
+    rows = (
+        client.table(Tables.SPINE_ELEMENTS)
+        .select("review_flags")
+        .eq("element_id", element_id)
+        .limit(1)
+        .execute()
+        .data
+    ) or []
+    if not rows:
+        return None
+    return list(rows[0].get("review_flags") or [])
+
+
+def update_element_review_flags(
+    client: "Client", element_id: str, review_flags: list
+) -> None:
+    """Overwrite one spine element's ``review_flags`` column.
+
+    Caller: ``cli_cmds.spine._write_drift_flags`` — always paired with a
+    prior :func:`fetch_element_review_flags` read + ``_merge_flag`` merge, so
+    the write carries the merged list, never a blind append.
+    """
+    client.table(Tables.SPINE_ELEMENTS).update(
+        {"review_flags": review_flags}
+    ).eq("element_id", element_id).execute()
+
+
+def upsert_spine_snapshot(client: "Client", row: dict) -> None:
+    """Upsert one ``spine_snapshots`` index row (conflict key: ``id``).
+
+    Caller: ``cli_cmds.spine.snapshot_cmd`` (`cp snapshot`). Best-effort at
+    the callsite — the on-disk frozen file is canonical; this row is only
+    the MC-2 index entry.
+    """
+    client.table(Tables.SPINE_SNAPSHOTS).upsert(row, on_conflict="id").execute()

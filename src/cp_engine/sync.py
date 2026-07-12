@@ -26,7 +26,7 @@ import subprocess
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol, runtime_checkable
 
 if TYPE_CHECKING:  # pragma: no cover — typing only
     from supabase import Client
@@ -115,18 +115,27 @@ class Backend(Protocol):
         """
         ...
 
+
+@runtime_checkable
+class SpineClientProvider(Protocol):
+    """Opt-in capability: a backend that can hand back its live Supabase client.
+
+    Split out of ``Backend`` (arch-phase-4, #34) so the core protocol carries
+    no raw-client door. The spine mirror inside ``sync_tenant`` is the ONLY
+    consumer: it reuses the exact client (and creds) ``read_projects`` used,
+    passing it to typed accessors (``fetch_estimate``, ``sync_spine_*``,
+    ``write_sources_manifest``) — never to ad-hoc queries. Backends that don't
+    implement it (test fakes, a future github-issues backend) simply skip the
+    client-handoff: the mirror degrades exactly as it did when the old
+    protocol stub returned ``None``.
+
+    Code that needs ad-hoc MC-2 access outside a Backend should go through
+    ``cp_engine.mc2_db.get_client`` (the single constructor) and the typed
+    helpers in ``mc2_db`` rather than growing new leaks here.
+    """
+
     def spine_client(self) -> "Client":
-        """Return the Supabase client used to read projects.
-
-        Used by the spine mirror (slice 2) to reconcile a project's
-        `spine/` frontmatter into MC-2's `spine_elements` table without
-        re-resolving credentials. Returns the live client instance.
-
-        This is deliberately the ONLY raw-client door in the protocol.
-        Code that needs ad-hoc MC-2 access outside a Backend should go
-        through `cp_engine.mc2_db.get_client` (the single constructor)
-        rather than growing new leaks here.
-        """
+        """Return the live Supabase client ``read_projects`` already built."""
         ...
 
 
@@ -484,7 +493,16 @@ def sync_tenant(
             )
             from cp_engine.spine_sync import sync_spine_snapshots
 
-            client = backend.spine_client()
+            # The raw-client handoff is an opt-in capability (SpineClientProvider),
+            # not part of the core Backend protocol (arch-phase-4, #34). A backend
+            # without it (test fakes, future github-issues) yields client=None and
+            # every mirror below degrades through its own best-effort except —
+            # byte-identical to the old protocol stub returning None.
+            client = (
+                backend.spine_client()
+                if isinstance(backend, SpineClientProvider)
+                else None
+            )
             # NOTE: the legacy `spine_elements` mirror was removed here — the
             # spine_elements → spine_substance merge is complete and the table
             # was dropped (mc-2 migration 072). Calling it logged a PGRST205

@@ -13,7 +13,6 @@ import click
 
 import cp_engine.cli as _cli
 from cp_engine import mc2_db
-from cp_engine.mc2_db import Tables
 
 
 def _spine_mc2_client(config):
@@ -523,19 +522,11 @@ def _write_drift_flags(client, drift_items, today: str) -> int:
         element_id = item["element_id"]
         field = item["field"]
         try:
-            prior = (
-                client.table(Tables.SPINE_ELEMENTS)
-                .select("review_flags")
-                .eq("element_id", element_id)
-                .limit(1)
-                .execute()
-                .data
-            ) or []
-            if not prior:
+            existing = mc2_db.fetch_element_review_flags(client, element_id)
+            if existing is None:
                 # Unknown element id (e.g. an LLM hallucination) — don't update
                 # zero rows and overcount. Skip quietly.
                 continue
-            existing = list(prior[0].get("review_flags") or [])
             flag = {
                 "field": field,
                 "was": "(sweep)",
@@ -544,9 +535,7 @@ def _write_drift_flags(client, drift_items, today: str) -> int:
                 "source": "sweep",
             }
             merged = _merge_flag(existing, field, flag)
-            client.table(Tables.SPINE_ELEMENTS).update(
-                {"review_flags": merged}
-            ).eq("element_id", element_id).execute()
+            mc2_db.update_element_review_flags(client, element_id, merged)
             written += 1
         except Exception as exc:  # noqa: BLE001 — advisory, skip on failure
             click.echo(
@@ -634,7 +623,7 @@ def snapshot_cmd(ref: str, label: str, reason: str | None) -> None:
 
     try:
         client = mc2_db.get_client(config)
-        client.table(Tables.SPINE_SNAPSHOTS).upsert(row, on_conflict="id").execute()
+        mc2_db.upsert_spine_snapshot(client, row)
     except BackendUnavailable as exc:
         # Expected when offline / no creds — the file is the source of truth.
         click.echo(f"(snapshot saved to disk; MC-2 index skipped — {exc})", err=True)
