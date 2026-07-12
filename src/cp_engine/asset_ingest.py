@@ -20,9 +20,12 @@ keep re-runs cheap: a per-folder in-process listing cache (shared across an
 matches the one stamped into `meta.change_token` on a prior run are skipped
 before download. `--no-cache` (`use_cache=False`) disables both.
 
-Scope guard: asset ingest targets *client* companies only. Self-fpsf /
-self-canonic companies are house/framework territory and out of scope; `list_files`
-returns `[]` for them.
+Scope guard: asset ingest targets *client* companies and *initiatives*
+(mc-2 #192). Non-client ENGAGEMENT owners (self-fpsf / self-canonic projects)
+are house/framework territory and out of scope; `list_files` returns `[]` for
+them. Initiatives — which also live under self-* companies — are explicitly
+allowed via `ProjectFolders.is_initiative` and write `initiative_id`-owned
+rag_assets rows.
 """
 
 from __future__ import annotations
@@ -55,6 +58,13 @@ _PROJECT_COLUMNS = (
     "enable_google_drive, enable_dropbox, asset_ingest_folders, companies(kind)"
 )
 
+# Columns we read from MC-2's `initiatives` table (the initiative resolve
+# path, mc-2 #192). Initiatives carry NO per-source enable flags and NO
+# asset_ingest_folders column — a source is "configured" iff its
+# initiative-owned binding exists (hydrated by `_hydrate_initiative`).
+# Explicit list, never `*`.
+_INITIATIVE_COLUMNS = "id, company_id, companies(kind)"
+
 
 @dataclass
 class ProjectFolders:
@@ -78,14 +88,11 @@ class ProjectFolders:
     # exactly one of project_id/initiative_id). Defaults to False so every
     # existing engagement construction site is unaffected. See `_owner_filter`.
     #
-    # INERT TODAY: no production resolve path sets this True yet. Initiatives
-    # don't resolve to folders — `resolve_project_folders` bails for slug codes
-    # (no number), and the by-id resolver queries the `projects` table only,
-    # never the initiatives table. So while `active_ingestable_codes` enumerates
-    # initiatives for ingest, the resolve→folders→write half can't fire for them.
-    # This field + `_owner_filter` are staged for a FUTURE task that adds
-    # initiative folder config + an initiatives-table resolve path; until then
-    # the `initiative_id` owner-column write is intentionally unreachable.
+    # Set True by the initiatives-table resolve path (mc-2 #192):
+    # `resolve_project_folders` falls back to the `initiatives` table for slug
+    # codes, and `resolve_project_folders_by_id` falls back on a `projects.id`
+    # miss — both via `_initiative_row_to_folders`, which hydrates folder ids
+    # from initiative-owned `project_integrations` bindings.
     is_initiative: bool = False
 
 
@@ -126,7 +133,8 @@ def _project_number(project_code: str) -> int | None:
 
     Returns None when the code carries no number — initiatives use slug codes
     with no number and standalone repos are bare slugs; neither maps to a
-    `projects.number`, so asset ingest simply doesn't apply.
+    `projects.number`. Slug codes fall through to the initiatives-table
+    resolve path in `resolve_project_folders`.
     """
     if not project_code:
         return None
@@ -134,23 +142,27 @@ def _project_number(project_code: str) -> int | None:
     return int(match.group(1)) if match else None
 
 
+def _company_kind(row: dict) -> str:
+    """The owning company's `kind` from a `companies(kind)` embed.
+
+    PostgREST returns the to-one `companies` embed as either a dict or a
+    single-element list (shape varies); defend against both — see the same
+    guard in sync_mc2._engagement_canonical_id / _repo_row_to_state.
+    """
+    companies = row.get("companies") or {}
+    if isinstance(companies, list):
+        companies = companies[0] if companies else {}
+    return (companies.get("kind") if isinstance(companies, dict) else "") or ""
+
+
 def _row_to_folders(row: dict) -> ProjectFolders:
     """Map one MC-2 `projects` row (selected via `_PROJECT_COLUMNS`) to a
     ProjectFolders. Shared by both resolve paths (by-number and by-id) so the
     companies-embed guard + field mapping live in exactly one place.
 
-    This is the SOLE ProjectFolders construction site in the resolve path and it
-    never sets `is_initiative` (defaults False) — both resolve paths read the
-    `projects` table, so no initiative ever reaches here. The `is_initiative` /
-    `initiative_id` owner-column seam is therefore inert today; see the field
-    comment on `ProjectFolders.is_initiative`."""
-    # PostgREST returns the to-one `companies` embed as either a dict or a
-    # single-element list (shape varies); defend against both — see the same
-    # guard in sync_mc2._engagement_canonical_id / _repo_row_to_state.
-    companies = row.get("companies") or {}
-    if isinstance(companies, list):
-        companies = companies[0] if companies else {}
-    company_kind = (companies.get("kind") if isinstance(companies, dict) else "") or ""
+    ENGAGEMENT construction site only — it never sets `is_initiative` (defaults
+    False). Initiative rows map through `_initiative_row_to_folders` instead."""
+    company_kind = _company_kind(row)
 
     return ProjectFolders(
         project_id=row.get("id"),
@@ -185,23 +197,26 @@ def resolve_project_folders(client, project_code: str) -> ProjectFolders | None:
     """Look up the Drive/Dropbox folders for `project_code` from MC-2.
 
     `client` is a Supabase client (the same `create_client(url, key)` MC2Backend
-    uses). Returns None when the code has no number or no matching project row.
+    uses). Returns None when nothing matches in either table.
 
-    NOTE: this resolves by `projects.number` parsed out of the code. That works
-    for bare-numeric / `<co>-<number>` codes, but NOT for slug-style codes
-    (`SAP-vision-update-2026`, `IBX-ai-campaign`) which carry no number — and
-    worse, a year embedded in the slug (`…-2026`) would be mis-parsed as the
-    project number. When the caller has the MC-2 row id (e.g. the mc-2 button),
-    prefer `resolve_project_folders_by_id`, which is authoritative.
+    Resolution order:
+      1. codes with a numeric part resolve by `projects.number` (engagements);
+      2. slug codes (no number) — and numbered codes that miss the projects
+         table — fall back to the `initiatives` table by `code` (mc-2 #192),
+         mirroring the cp-sources MCP resolver's initiative fallback. The
+         fallback-on-miss also covers initiative slugs that happen to embed a
+         digit (`web3-lab`), which `_project_number` would otherwise mis-parse.
+
+    NOTE: the by-number branch works for bare-numeric / `<co>-<number>` codes,
+    but NOT for slug-style engagement codes (`SAP-vision-update-2026`) where a
+    year embedded in the slug would be mis-parsed as the project number. When
+    the caller has the MC-2 row id (e.g. the mc-2 button), prefer
+    `resolve_project_folders_by_id`, which is authoritative.
     """
     number = _project_number(project_code)
     if number is None:
-        print(
-            f"[asset-ingest] no numeric part in '{project_code}' — not a "
-            "numbered engagement; skipping asset resolve",
-            file=sys.stderr,
-        )
-        return None
+        # Slug code — not a numbered engagement; try the initiatives table.
+        return _resolve_initiative_folders(client, project_code)
 
     rows = (
         client.table(Tables.PROJECTS)
@@ -212,14 +227,75 @@ def resolve_project_folders(client, project_code: str) -> ProjectFolders | None:
         or []
     )
     if not rows:
+        # No engagement with that number — the "number" may be a digit inside
+        # an initiative slug; try the initiatives table by full code.
+        folders = _resolve_initiative_folders(client, project_code, quiet=True)
+        if folders is not None:
+            return folders
         print(
             f"[asset-ingest] no MC-2 project with number={number} "
-            f"(code '{project_code}')",
+            f"(code '{project_code}') and no initiative with that code",
             file=sys.stderr,
         )
         return None
 
     return _row_to_folders(_hydrate(client, rows[0]))
+
+
+def _resolve_initiative_folders(
+    client, code: str, *, quiet: bool = False
+) -> ProjectFolders | None:
+    """Look up an INITIATIVE's Drive/Dropbox folders by its slug code.
+
+    Initiatives live in their own `initiatives` table (parallel to projects,
+    slug codes like `mission-control`). Folder coordinates come from
+    initiative-owned `project_integrations` bindings, hydrated onto the row
+    before mapping. Returns None (with a stderr note unless `quiet`) when no
+    initiative matches.
+    """
+    if not code:
+        return None
+    rows = (
+        client.table(Tables.INITIATIVES)
+        .select(_INITIATIVE_COLUMNS)
+        .eq("code", code)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        if not quiet:
+            print(
+                f"[asset-ingest] no MC-2 initiative with code '{code}'",
+                file=sys.stderr,
+            )
+        return None
+    return _initiative_row_to_folders(_hydrate_initiative(client, rows[0]))
+
+
+def _initiative_row_to_folders(row: dict) -> ProjectFolders:
+    """Map one MC-2 `initiatives` row (selected via `_INITIATIVE_COLUMNS` and
+    bindings-hydrated) to a ProjectFolders with `is_initiative=True`.
+
+    Initiatives have NO per-source enable flags (there is no
+    enable_google_drive/enable_dropbox column on the table): a source is
+    configured iff its binding exists. Both enable flags are therefore set
+    True so `folders_unconfigured_reason` reads a missing binding as
+    "enabled but folder not set" — gating an unconfigured initiative exactly
+    like an unconfigured client project rather than silently passing.
+    `asset_ingest_folders` has no initiative column either → `()` → no filter.
+    """
+    return ProjectFolders(
+        project_id=row.get("id"),
+        company_id=row.get("company_id"),
+        company_kind=_company_kind(row),
+        google_drive_folder_id=row.get("google_drive_folder_id") or None,
+        mc_dropbox_folder_id=row.get("mc_dropbox_folder_id") or None,
+        enable_google_drive=True,
+        enable_dropbox=True,
+        asset_ingest_folders=(),
+        is_initiative=True,
+    )
 
 
 def resolve_project_folders_by_id(
@@ -231,7 +307,11 @@ def resolve_project_folders_by_id(
     so there is no number-parsing and no risk of mis-reading a year embedded in
     a slug code (`SAP-vision-update-2026`). The mc-2 "Ingest assets" button
     already has this id; prefer it over `resolve_project_folders` (by-number)
-    whenever available. Returns None when no row matches.
+    whenever available.
+
+    On a `projects.id` miss, falls back to the `initiatives` table by id
+    (mc-2 #192) — the initiative workspace's button passes `initiatives.id`
+    through the same field. Returns None when neither table matches.
     """
     rows = (
         client.table(Tables.PROJECTS)
@@ -242,8 +322,21 @@ def resolve_project_folders_by_id(
         or []
     )
     if not rows:
+        init_rows = (
+            client.table(Tables.INITIATIVES)
+            .select(_INITIATIVE_COLUMNS)
+            .eq("id", mc_project_id)
+            .execute()
+            .data
+            or []
+        )
+        if init_rows:
+            return _initiative_row_to_folders(
+                _hydrate_initiative(client, init_rows[0])
+            )
         print(
-            f"[asset-ingest] no MC-2 project with id={mc_project_id}",
+            f"[asset-ingest] no MC-2 project or initiative with "
+            f"id={mc_project_id}",
             file=sys.stderr,
         )
         return None
@@ -259,6 +352,14 @@ def _hydrate(client, row: dict) -> dict:
     return hydrate_project_row(row, grouped.get(row["id"], []))
 
 
+def _hydrate_initiative(client, row: dict) -> dict:
+    """Overlay bindings-derived folder ids onto an initiatives row (#192)."""
+    from cp_engine.mc2_bindings import fetch_binding_rows, hydrate_initiative_row
+
+    grouped = fetch_binding_rows(client, initiative_ids=[row["id"]])
+    return hydrate_initiative_row(row, grouped.get(row["id"], []))
+
+
 def folders_unconfigured_reason(folders: ProjectFolders) -> str | None:
     """The #59 confirm-gate predicate: WHY this project would ingest nothing.
 
@@ -272,11 +373,15 @@ def folders_unconfigured_reason(folders: ProjectFolders) -> str | None:
     Non-client companies return None: asset ingest skips them wholesale via
     `list_files`' existing kind guard, and a "no folder configured" message
     would misdiagnose that case (folders aren't the reason nothing ingests).
+    EXCEPTION: initiatives (`is_initiative=True`) are ingestable despite their
+    self-* company kind (mc-2 #192), so the gate applies to them exactly as it
+    does to a client project — an initiative with no folder bindings must
+    refuse visibly, not silently pass.
 
     Deliberately NOT URL/path validation — a present-but-wrong folder id
     surfaces as a per-source listing failure note, exactly as before.
     """
-    if folders.company_kind != "client":
+    if folders.company_kind != "client" and not folders.is_initiative:
         return None
     if folders.enable_google_drive and folders.google_drive_folder_id:
         return None
@@ -671,10 +776,13 @@ def list_files(
     # store) so `use_cache=False` reproduces the pre-cache behavior exactly.
     _listing_ttl = _LISTING_TTL_SECONDS if use_cache else 0.0
 
-    if folders.company_kind != "client":
+    # Initiatives are ingestable despite their self-* company kind (mc-2 #192);
+    # the kind guard only screens out non-client ENGAGEMENT owners.
+    if folders.company_kind != "client" and not folders.is_initiative:
         print(
             f"[asset-ingest] skipping non-client company kind="
-            f"'{folders.company_kind}' (asset ingest targets clients only)",
+            f"'{folders.company_kind}' (asset ingest targets clients "
+            "and initiatives only)",
             file=sys.stderr,
         )
         return [], []
@@ -953,6 +1061,106 @@ def _build_pipeline(project_id: str, supabase_url: str, supabase_key: str):
     )
 
 
+def _adapt_pipeline_for_initiative(pipeline, initiative_id: str) -> None:
+    """Rebind a real IngestPipeline's owner column to `initiative_id` (#192).
+
+    The document-ingest package is engagement-shaped: `ingest_file` calls
+    `deduplication.check_asset(project_id, …)` (a rag_assets lookup filtered on
+    the `project_id` column) and `storage.create_asset(project_id=…)` (an
+    INSERT carrying `project_id`). For an initiative, both are wrong — the
+    lookup would never match (owner lives in `initiative_id`) and the INSERT
+    would FK-crash (`rag_assets.project_id` references `projects`; migration
+    081's CHECK wants exactly one owner). Since the pipeline has no owner-column
+    seam of its own, we rebind the two instance methods here:
+
+      - `deduplication.check_asset` → the same path+hash decision tree, but
+        filtered on `initiative_id` (explicit columns, never `*`);
+      - `storage.create_asset` → the same INSERT shape with `initiative_id`
+        as the owner column (and the same prev-version supersede behavior).
+
+    Chunk/embedding writes key on `asset_id` and are untouched. No-ops when
+    the pipeline lacks the `storage`/`deduplication` seams (an injected test
+    fake) — such fakes never hit the real table, so there is nothing to rebind.
+    """
+    storage = getattr(pipeline, "storage", None)
+    dedup = getattr(pipeline, "deduplication", None)
+    if storage is None or dedup is None:
+        return
+
+    def _check_asset(project_id, file_path, file_hash):
+        # Mirrors DeduplicationService.check_asset, owner-filtered on
+        # initiative_id. `project_id` (the pipeline passes its own configured
+        # id positionally) is deliberately ignored in favor of the closure.
+        from ingest.deduplication_api import DedupeDecision
+
+        result = (
+            dedup.client.table(Tables.RAG_ASSETS)
+            .select("id, file_hash, status")
+            .eq("initiative_id", initiative_id)
+            .eq("file_path", file_path)
+            .eq("status", "active")
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+        )
+        rows = getattr(result, "data", None) or []
+        if not rows:
+            return DedupeDecision(
+                action="new", reason="File path not found in database"
+            )
+        row = rows[0]
+        if row["file_hash"] == file_hash:
+            return DedupeDecision(
+                action="skip",
+                existing_asset_id=row["id"],
+                reason="File content unchanged (hash match)",
+            )
+        return DedupeDecision(
+            action="new_version",
+            existing_asset_id=row["id"],
+            reason="File content changed (hash mismatch)",
+        )
+
+    def _create_asset(
+        project_id,
+        source_type,
+        title,
+        url,
+        file_path,
+        file_hash,
+        metadata,
+        prev_asset_id=None,
+    ):
+        # Mirrors StorageService.create_asset with the initiative owner column;
+        # `project_id` is ignored (see _check_asset). project_id stays absent
+        # from the INSERT so migration 081's exactly-one-owner CHECK holds.
+        result = (
+            storage.client.table(Tables.RAG_ASSETS)
+            .insert(
+                {
+                    "initiative_id": initiative_id,
+                    "source_type": source_type,
+                    "title": title,
+                    "url": url,
+                    "file_path": file_path,
+                    "file_hash": file_hash,
+                    "meta": metadata,
+                    "prev_asset_id": prev_asset_id,
+                }
+            )
+            .execute()
+        )
+        asset_id = result.data[0]["id"]
+        if prev_asset_id:
+            storage.client.table(Tables.RAG_ASSETS).update(
+                {"status": "superseded"}
+            ).eq("id", prev_asset_id).execute()
+        return asset_id
+
+    dedup.check_asset = _check_asset
+    storage.create_asset = _create_asset
+
+
 def _stable_dir_for(tmp_root: Path, file_ref: FileRef) -> Path:
     """A per-source, deterministic temp subdir for one file.
 
@@ -1181,8 +1389,17 @@ def ingest_project_assets(
         _configure_pipeline_once()
         factory = pipeline_factory or _build_pipeline
         pipeline = factory(folders.project_id, supabase_url, supabase_key)
+        if folders.is_initiative:
+            # The document-ingest pipeline hard-writes `project_id` on both
+            # its dedup lookup and its rag_assets INSERT; an initiative id
+            # there would FK-crash (project_id references projects). Rebind
+            # both seams to the `initiative_id` owner column (mc-2 #192).
+            _adapt_pipeline_for_initiative(pipeline, folders.project_id)
 
     result = IngestRunResult(source_notes=source_notes)
+    # The single (owner column, owner id) pair for every rag_assets read/write
+    # in this run — `initiative_id` for initiatives, `project_id` otherwise.
+    owner_col, owner_val = _owner_filter(folders)
     run_root = Path(tmp_root) if tmp_root is not None else Path(tempfile.gettempdir())
     run_root.mkdir(parents=True, exist_ok=True)
 
@@ -1197,12 +1414,9 @@ def ingest_project_assets(
         # rag_asset's meta.change_token == the freshly-listed token), skip it
         # BEFORE any download/hash/embed — the `continue` guarantees none of those
         # run. `use_cache=False` (CLI --no-cache) forces a full re-scan.
-        # `folders.project_id` is the engagement owner id, which is what
-        # _unchanged_since_last_ingest keys on — correct for engagements. The
-        # initiative-owner case is the SAME owner-keying seam flagged inside
-        # _unchanged_since_last_ingest (initiatives aren't reachable by ingest yet).
+        # Keyed on the run's owner pair so initiative-owned rows hit too.
         if use_cache and _unchanged_since_last_ingest(
-            client, folders.project_id, file_ref
+            client, owner_val, file_ref, owner_col
         ):
             result.skipped_unchanged += 1
             continue
@@ -1235,7 +1449,7 @@ def ingest_project_assets(
             try:
                 file_hash = _content_hash(local)
                 if _existing_dup_at_other_path(
-                    client, folders.project_id, file_hash, file_path
+                    client, owner_val, file_hash, file_path, owner_col
                 ):
                     result.deduped += 1
                     continue
@@ -1351,7 +1565,11 @@ def _content_hash(path: Path | str) -> str:
 
 
 def _existing_dup_at_other_path(
-    client, project_id: str, file_hash: str, current_path: str
+    client,
+    project_id: str,
+    file_hash: str,
+    current_path: str,
+    owner_col: str = "project_id",
 ) -> bool:
     """True if this project already has an ACTIVE asset with `file_hash` at a
     DIFFERENT `file_path` than `current_path`.
@@ -1367,6 +1585,11 @@ def _existing_dup_at_other_path(
     match at a DIFFERENT path means "this exact content is already ingested
     elsewhere in the project" → skip.
 
+    `owner_col` selects the rag_assets owner column (`project_id` for
+    engagements — the default, keeping existing callers/tests unchanged —
+    `initiative_id` for initiatives; `project_id` here is the owning row's id
+    for either kind, mirroring `_owner_filter`).
+
     Returns False on any query error — a dedup pre-check must never abort a run;
     worst case we fall back to the prior behavior (the pipeline ingests it).
     """
@@ -1374,7 +1597,7 @@ def _existing_dup_at_other_path(
         resp = (
             client.table(Tables.RAG_ASSETS)
             .select("id, file_path")
-            .eq("project_id", project_id)
+            .eq(owner_col, project_id)
             .eq("file_hash", file_hash)
             .eq("status", "active")
             .execute()
@@ -1503,13 +1726,18 @@ def _supersede_same_title(
     return len(priors)
 
 
-def _unchanged_since_last_ingest(client, project_id: str, file_ref) -> bool:
+def _unchanged_since_last_ingest(
+    client, project_id: str, file_ref, owner_col: str = "project_id"
+) -> bool:
     """True iff an active rag_asset for this (provider, file) already carries a
     meta.change_token equal to the freshly-listed token → unchanged → safe to
     skip download+embed. Fail-open: missing row / missing or mismatched token /
     None token / any error → False (ingest normally). Keyed on
-    (project_id, source_provider, source_file_id) so a Drive token is never
-    compared against a Dropbox one (different hash algorithms).
+    (owner, source_provider, source_file_id) so a Drive token is never
+    compared against a Dropbox one (different hash algorithms). `owner_col`
+    selects the owner column (`initiative_id` for initiatives, per
+    `_owner_filter`; the `project_id` default keeps engagement callers/tests
+    unchanged — the arg is the owning row's id for either kind).
     """
     token = getattr(file_ref, "change_token", None)
     if not token:
@@ -1518,10 +1746,7 @@ def _unchanged_since_last_ingest(client, project_id: str, file_ref) -> bool:
         rows = (
             client.table(Tables.RAG_ASSETS)
             .select("meta")  # explicit, never *
-            # NOTE: keyed on project_id only. Initiatives (owner via initiative_id,
-            # see _owner_filter) aren't reachable by ingest today; if that changes,
-            # this filter must become owner-aware or initiative caching always-misses.
-            .eq("project_id", project_id)
+            .eq(owner_col, project_id)
             .eq("source_provider", file_ref.source)
             .eq("source_file_id", file_ref.id)
             .eq("status", "active")

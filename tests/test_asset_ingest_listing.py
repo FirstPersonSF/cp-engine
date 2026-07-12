@@ -285,9 +285,21 @@ def test_resolve_returns_none_for_unknown_project() -> None:
     assert resolve_project_folders(client, "ibx-9999") is None
 
 
-def test_resolve_returns_none_for_codeless_input() -> None:
+def test_resolve_slug_code_falls_back_to_initiatives() -> None:
+    # A code with no numeric part is not a numbered engagement — since
+    # mc-2 #192 it resolves via the `initiatives` table instead of bailing.
+    client = _FakeClient([{"id": "init-uuid", "company_id": "co-uuid"}])
+    folders = resolve_project_folders(client, "no-number-here")
+    assert folders is not None
+    assert folders.is_initiative is True
+    assert folders.project_id == "init-uuid"
+    assert client.recorder["table"] == "initiatives"
+    assert client.recorder["eq"] == ("code", "no-number-here")
+    assert "*" not in client.recorder["select"]
+
+
+def test_resolve_returns_none_for_empty_code() -> None:
     client = _FakeClient([{"id": "x"}])
-    assert resolve_project_folders(client, "no-number-here") is None
     assert resolve_project_folders(client, "") is None
 
 
@@ -385,7 +397,7 @@ def test_resolve_by_id_returns_none_and_notes_when_no_row(
     client = _FakeClient([])
     assert resolve_project_folders_by_id(client, "missing-id") is None
     err = capsys.readouterr().err
-    assert "no MC-2 project with id=missing-id" in err
+    assert "no MC-2 project or initiative with id=missing-id" in err
 
 
 def test_resolve_by_id_handles_companies_as_list() -> None:
