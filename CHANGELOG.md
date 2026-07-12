@@ -4,6 +4,30 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+**Asset ingest: same-title re-ingests supersede instead of duplicating (#57).**
+
+- Ingest: a 'created' asset whose exact title (case-insensitive) already
+  exists active in the project with different content now chains to the
+  prior copy via `prev_asset_id`, flips the old copy to
+  `status='superseded'`, and deletes its chunks (embeddings cascade) — so
+  `pull_source` can never interleave old and new chunks under one citation.
+  Same-title-same-hash stays the existing dedup no-op; 'versioned' rows keep
+  the pipeline's own same-path chain. New `superseded` count in the run
+  summary.
+- Read paths: `list_project_sources` and the `_sources.md` manifest (both via
+  `list_sources`) drop assets that have a successor — another asset's
+  `prev_asset_id` pointing at them — covering backlog rows whose status flip
+  never landed. `pull_source` already excludes superseded rows via the
+  scoped-chunks RPC's `status='active'` filter.
+- New `cp assets-dedupe` (dry-run by default; `--apply` to execute): the
+  one-time tenant-wide backlog sweep. Groups active assets by owner +
+  case-insensitive title, keeps the newest, chains it, and retires the older
+  copies — but any group whose older copy is referenced by a spine element's
+  `sources` is BLOCKED and reported, never touched. Asset rows are never
+  deleted (chain history); only their chunks are.
+
 ## v0.58.0 — 2026-07-11
 
 **Sprint files: deliverable-cards engine region (cards consumer 3 of 3).**

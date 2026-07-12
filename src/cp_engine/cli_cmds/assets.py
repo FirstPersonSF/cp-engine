@@ -19,6 +19,7 @@ def _echo_run_summary(code: str, run) -> None:
     click.echo(
         f"{code}: created={run.created} versioned={run.versioned} "
         f"skipped={run.skipped} deduped={run.deduped} "
+        f"superseded={run.superseded} "
         f"unchanged={run.skipped_unchanged} shortcuts={run.skipped_shortcuts} "
         f"failed={run.failed}"
     )
@@ -131,6 +132,7 @@ def ingest_assets_cmd(
         f"TOTAL ({len(result.outcomes)} projects): "
         f"created={result.total_created} versioned={result.total_versioned} "
         f"skipped={result.total_skipped} deduped={result.total_deduped} "
+        f"superseded={result.total_superseded} "
         f"unchanged={result.total_skipped_unchanged} "
         f"shortcuts={result.total_skipped_shortcuts} "
         f"failed={result.total_failed}"
@@ -208,6 +210,74 @@ def archive_project_assets_cmd(code: str) -> None:
     click.echo(
         f"Archived {n} project-scoped assets for {code} "
         "(account assets unaffected)"
+    )
+
+
+@click.command(name="assets-dedupe")
+@click.option(
+    "--apply",
+    "apply_",
+    is_flag=True,
+    help="Execute the plan (default is a pure-read dry run).",
+)
+def assets_dedupe_cmd(apply_: bool) -> None:
+    """Clean up same-title duplicate assets tenant-wide (#57 backlog).
+
+    Finds groups of ACTIVE rag_assets sharing an owner + title
+    (case-insensitive), keeps the newest, chains it to its predecessors via
+    prev_asset_id, and retires the older copies (status='superseded' +
+    chunks/embeddings deleted). Groups whose older copy is referenced by a
+    spine element's `sources` are BLOCKED: reported, never touched.
+
+    DRY-RUN BY DEFAULT — prints the plan and exits. Pass --apply to execute.
+    """
+    from cp_engine import asset_dedupe
+
+    client = _cli.build_mc2_client()
+    assets = asset_dedupe.fetch_active_assets(client)
+    referenced = asset_dedupe.fetch_spine_referenced_asset_ids(client)
+    groups = asset_dedupe.plan_dedupe(assets, referenced)
+
+    if not groups:
+        click.echo("No same-title duplicate groups found. Nothing to do.")
+        return
+
+    actionable = [g for g in groups if not g.blocked and g.losers]
+    blocked = [g for g in groups if g.blocked]
+
+    for g in groups:
+        tag = "BLOCKED" if g.blocked else "group"
+        click.echo(
+            f"[{tag}] {g.title!r} ({g.owner_col}={g.owner_id}) — "
+            f"{1 + len(g.losers) + len(g.blocked_refs)} copies"
+        )
+        click.echo(
+            f"  keep   {g.keeper.get('id')}  created {g.keeper.get('created_at')}"
+        )
+        for r in g.losers:
+            click.echo(
+                f"  retire {r.get('id')}  created {r.get('created_at')}"
+            )
+        for r in g.blocked_refs:
+            click.echo(
+                f"  HOLD   {r.get('id')}  created {r.get('created_at')} "
+                "— referenced by spine sources; rebind the element first"
+            )
+
+    click.echo(
+        f"\n{len(actionable)} actionable group(s), {len(blocked)} blocked "
+        f"group(s), {sum(len(g.losers) for g in actionable)} asset(s) to retire."
+    )
+    if not apply_:
+        click.echo("Dry run — nothing changed. Re-run with --apply to execute.")
+        return
+
+    counts = asset_dedupe.apply_dedupe(client, groups)
+    click.echo(
+        f"Applied: {counts['groups']} group(s) cleaned, "
+        f"{counts['retired']} asset(s) retired, "
+        f"{counts['chained']} keeper(s) chained, "
+        f"{counts['blocked']} group(s) skipped (spine-referenced)."
     )
 
 

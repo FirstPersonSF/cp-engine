@@ -108,6 +108,7 @@ class _ProjectOutcome:
     versioned: int = 0
     skipped: int = 0
     deduped: int = 0
+    superseded: int = 0
     skipped_unchanged: int = 0
     skipped_shortcuts: int = 0
     failed: int = 0
@@ -136,6 +137,10 @@ class FanOutResult:
     @property
     def total_deduped(self) -> int:
         return sum(o.deduped for o in self.outcomes)
+
+    @property
+    def total_superseded(self) -> int:
+        return sum(o.superseded for o in self.outcomes)
 
     @property
     def total_skipped_unchanged(self) -> int:
@@ -184,6 +189,7 @@ def fan_out_ingest(
             outcome.versioned = run.versioned
             outcome.skipped = run.skipped
             outcome.deduped = run.deduped
+            outcome.superseded = run.superseded
             outcome.skipped_unchanged = run.skipped_unchanged
             outcome.skipped_shortcuts = run.skipped_shortcuts
             outcome.failed = run.failed
