@@ -637,6 +637,58 @@ def set_spine_element(project_code: str, key: str,
 
 
 @mcp.tool()
+def add_element_source(project_code: str, key: str, source_title: str) -> dict:
+    """Attach an ingested source document to a spine element.
+
+    `key` resolves to ONE live element (est_item_id exact, or a unique
+    case-insensitive title substring — same discipline as pull_spine_element);
+    `source_title` resolves to ONE of the project's active ingested sources
+    (see list_project_sources; exact title first, else a unique substring).
+    Writes the typed link {"type": "rag_asset", id, title} into the element's
+    `sources` on every version — the same write MC-2's dashboard performs —
+    deduped by asset id (re-attaching is a no-op, `already: true`). Use it to
+    close attach-as-source loops, e.g. an Agreement's signed SOW. Returns
+    {est_item_id, source, attached, sources}, or a structured {note}/{error}.
+    """
+    from cp_engine.project_sources import modify_element_sources
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+        return modify_element_sources(client, pid, key, source_title,
+                                      add=True, company_id=cid)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to attach '{source_title}' to '{key}' "
+                         f"in {project_code!r}: {exc}"}
+
+
+@mcp.tool()
+def remove_element_source(project_code: str, key: str, source_title: str) -> dict:
+    """Detach an ingested source document from a spine element.
+
+    The inverse of add_element_source: resolves the element and the source the
+    same way, then removes the matching {"type": "rag_asset", ...} link (by
+    asset id) from every version's `sources`. Removing a source that isn't
+    attached returns a structured note, not an error. Returns
+    {est_item_id, source, removed, sources}, or {note}/{error}.
+    """
+    from cp_engine.project_sources import modify_element_sources
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+        return modify_element_sources(client, pid, key, source_title,
+                                      add=False, company_id=cid)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to detach '{source_title}' from '{key}' "
+                         f"in {project_code!r}: {exc}"}
+
+
+@mcp.tool()
 def retire_spine_element(project_code: str, key: str) -> dict:
     """Retire a spine element — remove it from the live spine, keeping history.
 

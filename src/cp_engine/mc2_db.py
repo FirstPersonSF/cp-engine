@@ -162,6 +162,12 @@ SPINE_RESOLVE_COLUMNS = (
 SPINE_STATUS_COLUMNS = (
     "est_item_id, status, version_date, version_label, binding, project_id"
 )
+# add/remove_element_source — every version row + its sources array (the
+# element-level fact moves across all versions together, like serves).
+SPINE_SOURCES_EDIT_COLUMNS = (
+    "id, est_item_id, framing, status, archived, scope, company_id, "
+    "project_id, sources"
+)
 
 # rag_assets — manifest list shape. `meta` is JSONB and must NEVER be
 # selected wholesale (`SELECT *` on this table is the classic 25MB mistake).

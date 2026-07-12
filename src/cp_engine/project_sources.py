@@ -444,6 +444,78 @@ def _in_filter(value: str | None, wanted: str | None) -> bool:
     return (value or "").lower() in allowed
 
 
+def _source_link(asset: dict) -> dict:
+    """The typed source link shape MC-2's dashboard writes (manage-by-id)."""
+    return {"type": "rag_asset", "id": asset["id"], "title": asset["title"]}
+
+
+def modify_element_sources(client, project_id: str, key: str,
+                           source_title: str, *, add: bool,
+                           company_id: str | None = None) -> dict:
+    """Attach/detach one ingested source document on a spine element.
+
+    Resolves `key` to ONE live element (same discipline as pull_spine) and
+    `source_title` to ONE of the project's active rag_assets (exact title
+    first, else a unique case-insensitive substring — mirroring pull_source's
+    resolution ladder, minus chunk reads). The typed link
+    `{"type": "rag_asset", "id", "title"}` is then added to / removed from the
+    `sources` array of EVERY version row — sources are an element-level fact,
+    like `serves` — deduped by asset id exactly as MC-2's PATCH /substance
+    add_source/remove_source actions do. Adding an already-attached id is a
+    no-op (`already: true`); removing an id that isn't attached returns a
+    structured note. Never raises past the MCP boundary.
+    """
+    est_item_id, versions = resolve_element_versions(
+        client, project_id, key,
+        columns=mc2_db.SPINE_SOURCES_EDIT_COLUMNS, company_id=company_id,
+    )
+    if est_item_id is None:
+        return {"note": f"no single live element matching '{key}'"}
+
+    assets = list_sources(client, project_id, company_id or "")
+    exact = [a for a in assets
+             if (a.get("title") or "").lower() == source_title.lower()]
+    matched = exact or [a for a in assets
+                        if _title_matches(source_title, a.get("title"))]
+    if not matched:
+        return {"note": f"no active source titled '{source_title}'"}
+    if len(matched) > 1:
+        titles = sorted(a.get("title") or "" for a in matched)
+        return {"note": f"ambiguous: '{source_title}' matched "
+                        f"{len(matched)} sources: {titles}"}
+    link = _source_link(matched[0])
+
+    def _attached(entries: list) -> bool:
+        return any(isinstance(s, dict) and s.get("type") == "rag_asset"
+                   and s.get("id") == link["id"] for s in entries)
+
+    live = next((r for r in versions if r.get("status") == "live"), None)
+    current_live = list((live or {}).get("sources") or [])
+    if add and _attached(current_live):
+        return {"est_item_id": est_item_id, "source": link,
+                "already": True, "sources": current_live}
+    if not add and not _attached(current_live):
+        return {"note": f"'{link['title']}' is not attached to "
+                        f"'{est_item_id}'"}
+
+    result_sources = current_live
+    for row in versions:
+        entries = list(row.get("sources") or [])
+        if add:
+            new = entries if _attached(entries) else [*entries, link]
+        else:
+            new = [s for s in entries
+                   if not (isinstance(s, dict) and s.get("type") == "rag_asset"
+                           and s.get("id") == link["id"])]
+        (client.table(Tables.SPINE_SUBSTANCE).update({"sources": new})
+         .eq("id", row["id"]).execute())
+        if row is live:
+            result_sources = new
+    return {"est_item_id": est_item_id, "source": link,
+            "attached" if add else "removed": True,
+            "sources": result_sources}
+
+
 def list_spine(client, project_id: str, company_id: str | None = None, *,
                layer: str | None = None, scope: str | None = None,
                binding: str | None = None) -> list[dict]:
