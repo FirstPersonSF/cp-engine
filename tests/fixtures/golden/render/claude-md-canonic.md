@@ -485,6 +485,16 @@ synthesis plus a verbatim transcript and are legitimately long — they
 are a fixed-per-meeting record, not an accreting CP file. Do not audit
 or rotate them.
 
+## Spine lint at wrap up
+
+Alongside word-count discipline, run `cp spine-lint <code>` once for each
+project the session touched. It is WARN-ONLY (never blocks, never
+auto-fixes) and flags mechanical hygiene drift: elements flagged important
+yet unbound and serving nothing; Agreements whose body says "attach as
+source" with no attached source (close the loop with `add_element_source`);
+scaffold template placeholders still sitting in `cp.md`. Surface any
+findings to the user and fix only what they confirm.
+
 ## Spec
 
 Tenant config: `.cp-engine.toml` (committed) + `.cp-engine.local.toml` (gitignored).
