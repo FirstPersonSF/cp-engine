@@ -1084,3 +1084,137 @@ def test_source_repo_mode_keeps_narrow_scope(tmp_path: Path) -> None:
         cwd=tenant, check=True, capture_output=True, text=True,
     ).stdout.strip().splitlines()
     assert not any("stale-extra.md" in c for c in committed)
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #81: Last session derived from sessions/ (two-writer race fix)
+# ──────────────────────────────────────────────────────────────────────
+
+from cp_engine.capture_session import (  # noqa: E402
+    derive_last_session_line,
+    refresh_last_session_line,
+)
+
+
+def _session_file(wd: Path, name: str, *, header: str | None, body: str) -> None:
+    sessions = wd / "sessions"
+    sessions.mkdir(exist_ok=True)
+    text = (f"## Session: {header}\n\n" if header else "") + body
+    (sessions / name).write_text(text, encoding="utf-8")
+
+
+def test_derive_picks_newest_by_filename(tmp_path: Path) -> None:
+    """Two captures five days apart — the newer one wins deterministically,
+    regardless of write/merge order (the 2026-07-13 conflict shape)."""
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    _session_file(
+        wd, "2026-07-08-1430-marcello.md",
+        header="2026-07-08 14:30, Marcello",
+        body="### What we did\nMachine setup.\n",
+    )
+    _session_file(
+        wd, "2026-07-13-1015-drew.md",
+        header="2026-07-13 10:15, Drew",
+        body="### What we did\nShipped two releases.\n",
+    )
+    line = derive_last_session_line(wd)
+    assert line == (
+        "**Last session:** _2026-07-13 10:15 (Drew) — Shipped two releases._"
+    )
+
+
+def test_derive_falls_back_to_filename_when_header_missing(tmp_path: Path) -> None:
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    _session_file(
+        wd, "2026-07-13-0905-drew-fiero.md",
+        header=None,
+        body="First real line of the summary.\n",
+    )
+    line = derive_last_session_line(wd)
+    assert line is not None
+    assert line.startswith(
+        "**Last session:** _2026-07-13 09:05 (Drew Fiero) — First real line"
+    )
+
+
+def test_derive_none_without_sessions(tmp_path: Path) -> None:
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    assert derive_last_session_line(wd) is None
+    (wd / "sessions").mkdir()
+    assert derive_last_session_line(wd) is None
+
+
+def test_refresh_rewrites_first_line_only(tmp_path: Path) -> None:
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    _session_file(
+        wd, "2026-07-13-1015-drew.md",
+        header="2026-07-13 10:15, Drew",
+        body="### What we did\nShipped it.\n",
+    )
+    (wd / "cp.md").write_text(
+        "# x\n\n## Quick Resume\n\n"
+        "**Last session:** _stale prose from a lost race_\n"
+        "**Current work:** _hand-written_\n\n"
+        "## History\n\n"
+        "**Last session:** _an older archived copy — must NOT be touched_\n",
+        encoding="utf-8",
+    )
+    assert refresh_last_session_line(wd) is True
+    body = (wd / "cp.md").read_text(encoding="utf-8")
+    assert "**Last session:** _2026-07-13 10:15 (Drew) — Shipped it._" in body
+    assert "_an older archived copy — must NOT be touched_" in body
+    assert "_hand-written_" in body
+    # Idempotent: second refresh is a no-op.
+    assert refresh_last_session_line(wd) is False
+
+
+def test_refresh_noops_without_cp_md_or_line(tmp_path: Path) -> None:
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    _session_file(
+        wd, "2026-07-13-1015-drew.md",
+        header="2026-07-13 10:15, Drew", body="x\n",
+    )
+    assert refresh_last_session_line(wd) is False  # no cp.md
+    (wd / "cp.md").write_text("# no last-session line here\n", encoding="utf-8")
+    assert refresh_last_session_line(wd) is False
+
+
+def test_sync_convergence_pass_heals_mismerged_lines(tmp_path: Path) -> None:
+    """`_refresh_all_last_session_lines` walks every sessions/ dir under the
+    root and converges each cp.md line to its newest capture — the sync-side
+    half of #81 (a mis-merged line self-heals on the next sync)."""
+    from cp_engine.sync import _refresh_all_last_session_lines
+
+    root = tmp_path / "tenant"
+    wd1 = root / "firstpersonsf" / "cp-engine"
+    wd2 = root / "1p" / "acme" / "acme-1234-thing"
+    for wd in (wd1, wd2):
+        wd.mkdir(parents=True)
+    _session_file(
+        wd1, "2026-07-13-1015-drew.md",
+        header="2026-07-13 10:15, Drew",
+        body="### What we did\nShipped two releases.\n",
+    )
+    # wd1: a merge kept the WRONG (older) side — must heal.
+    (wd1 / "cp.md").write_text(
+        "## Quick Resume\n\n**Last session:** _2026-07-08 14:30 (Marcello) — old._\n",
+        encoding="utf-8",
+    )
+    # wd2: sessions dir but already-correct line — must not churn.
+    _session_file(
+        wd2, "2026-07-01-0900-tony.md",
+        header="2026-07-01 09:00, Tony", body="### What we did\nStuff.\n",
+    )
+    (wd2 / "cp.md").write_text(
+        "**Last session:** _2026-07-01 09:00 (Tony) — Stuff._\n",
+        encoding="utf-8",
+    )
+
+    changed = _refresh_all_last_session_lines(root)
+    assert changed == [wd1 / "cp.md"]
+    assert "(Drew) — Shipped two releases." in (wd1 / "cp.md").read_text()
