@@ -4,6 +4,26 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.64.0 — 2026-07-13
+
+- **`create_commitment` / `list_commitments` / `resolve_commitment` MCP verbs
+  (#76, PR #77).** Session-facing surface over MC-2's mig-097 commitments
+  store, through the same `cp_engine.commitments` access path the auto-ingest
+  webhook uses — review-gate parity by construction. `create_commitment`
+  lands a PROPOSAL (`date_status='proposed'`, `source_kind='session'`; the
+  weekly dates loop ratifies, the Monday partners digest picks it up), with
+  `cp_hash` keyed on the resolved owner id so every code form of a project
+  dedupes to one row, and ISO-or-rejected due dates (never guess an unagreed
+  date). `list_commitments` is the explicit-column wrap-up
+  promised-vs-delivered lens (`open|done|dropped|all`). `resolve_commitment`
+  closes an open row as `done`/`dropped` by id or distinct description
+  substring — ambiguity returns candidates, and dropped rows stay dead (the
+  `cp_hash` backstop keeps re-ingests from resurrecting them). Owner-kind
+  resolution checks initiatives before projects for the
+  `num_nonnulls(project_id, initiative_id)=1` CHECK; standalone repos can't
+  own commitments. CLAUDE.md template gains section "4 — Commitments".
+  18 → 21 tools.
+
 ## v0.63.0 — 2026-07-12
 
 **The sap-5174 read-through batch (#65–#70): six product proposals from one
