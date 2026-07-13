@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.66.2 — 2026-07-13
+
+- **dates-loop: unmasked Slack error codes + partial-success exit 0
+  (#85, PR #86).** `post_channel` now surfaces the actionable code from
+  `SlackApiError.response` (the first live run's partners failure was
+  undiagnosable from "The request to the Slack API failed."), and the
+  CLI exits 1 only when post mode delivered nothing — partial success
+  prints loud errors and exits 0, since a rerun would double-post the
+  delivered messages and double-bump ratification. Diagnosis of the
+  07-13 failure: `channel_not_found` — the private partners channel
+  never got `/invite @first-bot` (ops fix, not code).
+
 ## v0.66.1 — 2026-07-13
 
 - **last-session refresh: never regress a newer authored line (PR #84).**
