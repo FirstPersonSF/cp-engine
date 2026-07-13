@@ -4,6 +4,15 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.66.1 — 2026-07-13
+
+- **last-session refresh: never regress a newer authored line (PR #84).**
+  Live-caught on the first tenant sync after v0.66.0: wrap-ups author the
+  line with no session file, so "newest session file" is a floor, not the
+  truth. The refresh now replaces only when the derived capture is
+  strictly newer by date than the date already on the line (same-day
+  counts as current; undated/placeholder lines still converge).
+
 ## v0.66.0 — 2026-07-13
 
 **The Marcello divergent-clone post-mortem pair (#80/#81)** — from the
