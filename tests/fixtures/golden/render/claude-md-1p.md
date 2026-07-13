@@ -424,9 +424,16 @@ Each project `cp.md` carries a model-authored `## Exec Summary` region
 (between `<!-- cp-engine:start exec-summary -->` and
 `<!-- cp-engine:end exec-summary -->`) with six fields — **Objective /
 Status / Where it stands / Next up / Blockers / Updates** — plus a
-`**Last session:**` line. **You author this; the engine does not.** The
-engine only scaffolds the region, migrates the old Quick Resume into it
-on `cp sync`, and reads it for `/cp-prep`. Auto-ingest no longer writes
+`**Last session:**` line. **You author the six fields; the engine does
+not.** The engine only scaffolds the region, migrates the old Quick
+Resume into it on `cp sync`, and reads it for `/cp-prep`.
+
+**Exception: the `**Last session:**` line is DERIVED, not authored** —
+it's a projection of the newest file under the working dir's `sessions/`
+directory, recomputed by `cp capture-session` and re-converged on every
+`cp sync`. Don't hand-edit it (the next sync overwrites it), and if a
+merge ever conflicts on that line, keep either side and run `cp sync` —
+it self-heals to the newest capture. Auto-ingest no longer writes
 project `cp.md` state at all — per-meeting truth lands in the sprint file
 only, and the Exec Summary is refreshed by you at `wrap up`.
 

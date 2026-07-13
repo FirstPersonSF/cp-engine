@@ -898,6 +898,15 @@ def sync_tenant(
         ):
             files_written.append(readme_path)
 
+    # Last-session convergence pass (cp-engine #81): every working dir's
+    # `**Last session:**` line is a projection of its sessions/ directory,
+    # recomputed here so a mis-merged line (two captures racing between
+    # pulls) self-heals on the next sync on any machine. Conflict recipe:
+    # keep either side, run `cp sync` — the line converges to the true
+    # newest capture.
+    if not dry_run:
+        files_written.extend(_refresh_all_last_session_lines(config.root))
+
     # Deactivation sweep — any live working dir whose code isn't in
     # `live_dirs` represents a project that fell out of sync's view (MC-2
     # status flipped, deleted, or is_internal=true). Move the whole
@@ -913,6 +922,32 @@ def sync_tenant(
         files_deactivated=tuple(files_deactivated),
         no_op=not (files_written or files_deactivated),
     )
+
+
+def _refresh_all_last_session_lines(root: Path) -> list[Path]:
+    """Recompute every working dir's `**Last session:**` line from its
+    sessions/ directory (cp-engine #81). Returns the cp.md paths changed.
+
+    Walks every `sessions/` dir under the tenant (live AND inactive —
+    an inactive dir's line converging is harmless and keeps it truthful
+    if the project reactivates). Best-effort per dir: one bad working
+    dir must never abort sync.
+    """
+    changed: list[Path] = []
+    from cp_engine.capture_session import refresh_last_session_line
+
+    for sessions_dir in sorted(root.glob("**/sessions")):
+        if not sessions_dir.is_dir() or ".git" in sessions_dir.parts:
+            continue
+        working_dir = sessions_dir.parent
+        try:
+            if refresh_last_session_line(working_dir):
+                changed.append(working_dir / "cp.md")
+        except Exception as exc:  # noqa: BLE001 — best-effort convergence
+            logger.warning(
+                "last-session refresh skipped for %s: %s", working_dir, exc
+            )
+    return changed
 
 
 # ──────────────────────────────────────────────────────────────────────

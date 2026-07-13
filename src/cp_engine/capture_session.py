@@ -275,7 +275,10 @@ def _write_to_working_dir(
         user=user,
         when=when,
     )
-    cp_md_updated = _update_last_session_line(working_dir, when, user, summary_text)
+    # Derived, not authored (cp-engine #81): the just-written session file
+    # is on disk, so the derivation includes it — but if a NEWER capture
+    # from a teammate already sits in sessions/, theirs correctly wins.
+    cp_md_updated = refresh_last_session_line(working_dir)
 
     cp_tenant_root = _walk_to_cp_tenant_root(working_dir)
     # Stage just the files this capture wrote: the new session file, and
@@ -545,33 +548,96 @@ def _slug_user(user: str) -> str:
 
 # Match `**Last session:**` and everything after it on the same line.
 # The whole line gets replaced — original placeholder, prior auto-edit,
-# or hand-written content all get overwritten. By design (last write wins).
+# or hand-written content all get overwritten.
 _LAST_SESSION_RE = re.compile(r"^\*\*Last session:\*\*.*$", re.MULTILINE)
 
+# Session-file header: `## Session: <YYYY-MM-DD HH:MM>, <user>` (the
+# /cp-summarize template). Carries the user with proper casing, which the
+# lowercase filename slug loses.
+_SESSION_HEADER_RE = re.compile(
+    r"^##\s+Session:\s*(?P<stamp>\d{4}-\d{2}-\d{2}[ T]\d{2}:?\d{2})\s*,\s*(?P<user>.+?)\s*$",
+    re.MULTILINE,
+)
 
-def _update_last_session_line(
-    working_dir: Path, when: datetime, user: str, summary_text: str
-) -> bool:
-    """Rewrite the `**Last session:**` line in <working_dir>/cp.md.
+# Session filename: `YYYY-MM-DD-HHMM-<user-slug>[-n].md` (see
+# `_write_session_file`). The stamp prefix makes lexicographic order
+# chronological order — the whole derivation leans on that.
+_SESSION_FILENAME_RE = re.compile(
+    r"^(?P<date>\d{4}-\d{2}-\d{2})-(?P<time>\d{4})-(?P<user>.+?)(?:-\d+)?$"
+)
 
-    If cp.md doesn't exist or has no `**Last session:**` line, this is a
-    no-op (returns False). The deepening pass and the slash command both
-    write here, so we do NOT touch other Quick Resume lines.
 
-    Returns True if cp.md was modified.
+def derive_last_session_line(working_dir: Path) -> str | None:
+    """Derive the `**Last session:**` line from the NEWEST file under
+    <working_dir>/sessions/ (cp-engine #81).
+
+    The session files are additive and never conflict; this line is a
+    projection of them. Deriving (instead of letting each capture write
+    its own prose) makes the line convergent: whatever a merge does to it,
+    the next capture or `cp sync` recomputes the same value on every
+    machine — two teammates capturing between pulls can no longer race.
+
+    Newest = last in lexicographic filename order (the `YYYY-MM-DD-HHMM-`
+    prefix sorts chronologically; collision suffixes `-2`, `-3` sort after
+    their base). Timestamp + proper-cased user come from the file's
+    `## Session:` header, falling back to the filename slug. Returns None
+    when there are no session files.
+    """
+    sessions_dir = working_dir / "sessions"
+    if not sessions_dir.is_dir():
+        return None
+    files = sorted(p for p in sessions_dir.glob("*.md") if p.is_file())
+    if not files:
+        return None
+    newest = files[-1]
+    try:
+        text = newest.read_text(encoding="utf-8")
+    except OSError:
+        return None
+
+    timestamp: str | None = None
+    user: str | None = None
+    header = _SESSION_HEADER_RE.search(text)
+    if header:
+        timestamp = header.group("stamp").replace("T", " ")
+        user = header.group("user")
+    else:
+        m = _SESSION_FILENAME_RE.match(newest.stem)
+        if m:
+            hhmm = m.group("time")
+            timestamp = f"{m.group('date')} {hhmm[:2]}:{hhmm[2:]}"
+            user = m.group("user").replace("-", " ").title()
+    if not timestamp or not user:
+        return None
+
+    one_line = _extract_one_liner(text) or "session captured"
+    return f"**Last session:** _{timestamp} ({user}) — {one_line}_"
+
+
+def refresh_last_session_line(working_dir: Path) -> bool:
+    """Recompute the `**Last session:**` line in <working_dir>/cp.md from
+    the sessions/ directory and rewrite it in place if it changed.
+
+    No-op (False) when cp.md is missing, has no `**Last session:**` line,
+    or the working dir has no session files. Only the FIRST matching line
+    is touched — on project/initiative cp.mds that's the one inside the
+    exec-summary region, on repo cp.mds the Quick Resume one.
+
+    Called from capture (right after the session file is written, so the
+    just-captured session is part of the derivation) and from `cp sync`
+    (the convergence point: a mis-merged line self-heals on the next sync
+    on any machine).
     """
     cp_md = working_dir / "cp.md"
     if not cp_md.exists():
+        return False
+    replacement = derive_last_session_line(working_dir)
+    if replacement is None:
         return False
 
     existing = cp_md.read_text(encoding="utf-8")
     if not _LAST_SESSION_RE.search(existing):
         return False
-
-    one_line = _extract_one_liner(summary_text) or "session captured"
-    timestamp = when.strftime("%Y-%m-%d %H:%M")
-    replacement = f"**Last session:** _{timestamp} ({user}) — {one_line}_"
-
     updated = _LAST_SESSION_RE.sub(replacement, existing, count=1)
     if updated == existing:
         return False
