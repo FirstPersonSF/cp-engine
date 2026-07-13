@@ -88,7 +88,11 @@ The bundle contains, per project: code + name, the **full Exec Summary**
 (Objective / Status / Where it stands / Next up / Blockers / Updates)
 with a **freshness verdict** on its heading line (parsed from the
 `· updated <date>` stamp; >14 days old renders a ⚠ STALE warning),
-urgent flags, the forward calendar, and open commitments — plus
+urgent flags, the forward calendar, open commitments, and **last
+week's Slack digest** (the Sunday cron's per-project channel summary,
+carried from the prior week's sprint file — cp-engine #78; it is FRESHER
+than the Exec Summary by construction, since the digest lands Sunday
+night after every wrap-up, so weigh it when the two disagree) — plus
 tenant-level metrics (capacity binding, hours, cross-cutting decisions,
 each decision aged in days). Milestones come from **MC-2's estimator
 schedule** (day-granular milestones + feedback windows maintained in the
