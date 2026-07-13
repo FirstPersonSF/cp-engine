@@ -527,6 +527,23 @@ def dates_loop_cmd(post: bool, window_days: int | None, today) -> None:
     if result.errors:
         for err in result.errors:
             click.echo(f"error: {err}", err=True)
-        raise SystemExit(1)
+        # Partial success is SUCCESS with loud errors (cp-engine #85): a
+        # failed partners rollup after delivered per-project posts must not
+        # fail the run — a rerun would double-post the delivered messages
+        # and double-bump their ratification counters. Exit 1 only when
+        # post mode delivered NOTHING.
+        any_delivered = (
+            any(p.posted for p in result.posts) or result.partners_posted
+        )
+        if post and not any_delivered:
+            raise SystemExit(1)
+        delivered = sum(1 for p in result.posts if p.posted) + (
+            1 if result.partners_posted else 0
+        )
+        click.echo(
+            f"partial success: {delivered} post(s) delivered, "
+            f"{len(result.errors)} failed — see errors above.",
+            err=True,
+        )
     if not result.posts and not result.partners_text:
         click.echo("Nothing due in the window — no posts to send.")

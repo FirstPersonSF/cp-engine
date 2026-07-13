@@ -323,8 +323,21 @@ def post_channel(
     try:
         resp = client.chat_postMessage(**kwargs)
     except Exception as exc:  # slack_sdk.errors.SlackApiError or transport
+        # SlackApiError's str() is the generic "The request to the Slack API
+        # failed." — the actionable code (not_in_channel, channel_not_found,
+        # msg_too_long, …) hides in exc.response. Surface it (cp-engine #85:
+        # the first live dates-loop failure was undiagnosable from the log).
+        detail = ""
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                code = response.get("error")
+                if code:
+                    detail = f" [slack error: {code}]"
+            except Exception:  # noqa: BLE001 — diagnostics must not mask the raise
+                pass
         raise SlackError(
-            f"chat_postMessage failed for channel={channel_id}: {exc}"
+            f"chat_postMessage failed for channel={channel_id}: {exc}{detail}"
         ) from exc
     if not resp.get("ok"):
         raise SlackError(

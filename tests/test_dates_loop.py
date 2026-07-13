@@ -191,3 +191,82 @@ def test_partners_channel_from_app_config() -> None:
     # Lookup failure → None, never raises
     chain.execute.side_effect = RuntimeError("boom")
     assert _partners_channel(client) is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #85: unmasked Slack error codes + partial-success exit semantics
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_post_channel_surfaces_slack_error_code() -> None:
+    """SlackApiError's str() is generic; the actionable code lives in
+    exc.response and must reach the SlackError message (the first live
+    dates-loop failure was undiagnosable without it)."""
+    import pytest
+
+    from cp_engine import slack as slack_mod
+
+    class FakeApiError(Exception):
+        def __init__(self):
+            super().__init__("The request to the Slack API failed.")
+            self.response = {"ok": False, "error": "channel_not_found"}
+
+    class FakeClient:
+        def chat_postMessage(self, **kwargs):
+            raise FakeApiError()
+
+    with pytest.raises(slack_mod.SlackError, match=r"\[slack error: channel_not_found\]"):
+        slack_mod.post_channel(FakeClient(), channel_id="C123", text="hi")
+
+
+def _cli_result(*, project_posted: bool, partners_posted: bool, errors: list[str]):
+    from cp_engine.dates_loop import ChannelPost, DatesLoopResult
+
+    r = DatesLoopResult()
+    post = ChannelPost(
+        code="ggl-5136", name="go/safety", channel_ids=("C0AA",),
+        text=":date: post", commitment_ids=(),
+    )
+    post.posted = project_posted
+    r.posts = [post]
+    r.partners_channel = "C09RY4D451U"
+    r.partners_text = "rollup"
+    r.partners_posted = partners_posted
+    r.errors = errors
+    return r
+
+
+def _run_cli(monkeypatch, result):
+    from click.testing import CliRunner
+
+    from cp_engine.cli import main  # full CLI import avoids the partial-init cycle
+    import cp_engine.cli_cmds.planning as planning
+
+    monkeypatch.setattr(planning, "load", lambda p: object())
+    monkeypatch.setattr(
+        "cp_engine.dates_loop.run_dates_loop",
+        lambda config, **kw: result,
+    )
+    return CliRunner().invoke(main, ["dates-loop", "--post"])
+
+
+def test_cli_partial_success_exits_zero(monkeypatch) -> None:
+    """Delivered per-project posts + failed partners rollup = exit 0 with
+    loud errors — a rerun would double-post the delivered messages."""
+    result = _cli_result(
+        project_posted=True, partners_posted=False,
+        errors=["partners/C09RY4D451U: chat_postMessage failed [slack error: channel_not_found]"],
+    )
+    out = _run_cli(monkeypatch, result)
+    assert out.exit_code == 0
+    assert "partial success: 1 post(s) delivered, 1 failed" in out.output
+    assert "channel_not_found" in out.output
+
+
+def test_cli_nothing_delivered_exits_one(monkeypatch) -> None:
+    result = _cli_result(
+        project_posted=False, partners_posted=False,
+        errors=["ggl-5136/C0AA: boom", "partners/C09RY4D451U: boom"],
+    )
+    out = _run_cli(monkeypatch, result)
+    assert out.exit_code == 1
