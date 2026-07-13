@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.65.0 — 2026-07-13
+
+- **Planning bundle carries last week's Slack digest (#78, PR #79).** The
+  Sunday digest cron writes into the closing week's sprint file at
+  ~23:55 UTC — after every wrap-up, before Monday planning — so its
+  channel summaries never reached `/cp-prep`. Each project's bundle block
+  now carries a `**Last week's Slack digest:**` section parsed from the
+  most recent prior week's sprint file (placeholders excluded, cp:hash
+  markers stripped, own heading-bounded slice so initiative-shaped files
+  don't leak the next section). The /cp-prep contract documents the
+  freshness rule: the digest is fresher than the Exec Summary by
+  construction — weigh it when they disagree. Verified live: the W29
+  bundle carries exactly the 4 projects the W28 cron digested.
+
 ## v0.64.0 — 2026-07-13
 
 - **`create_commitment` / `list_commitments` / `resolve_commitment` MCP verbs
