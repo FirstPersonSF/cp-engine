@@ -614,9 +614,24 @@ def derive_last_session_line(working_dir: Path) -> str | None:
     return f"**Last session:** _{timestamp} ({user}) — {one_line}_"
 
 
+# First YYYY-MM-DD anywhere after the label — matches both capture-written
+# lines (`_2026-07-13 10:15 (Drew) — …_`) and wrap-up-authored prose
+# (`2026-07-11 (evening) — …`). ISO dates compare lexicographically.
+_LINE_DATE_RE = re.compile(r"\*\*Last session:\*\*.*?(\d{4}-\d{2}-\d{2})")
+
+
 def refresh_last_session_line(working_dir: Path) -> bool:
     """Recompute the `**Last session:**` line in <working_dir>/cp.md from
-    the sessions/ directory and rewrite it in place if it changed.
+    the sessions/ directory and rewrite it in place — but only FORWARD.
+
+    The line has two legitimate writers: session captures (which leave a
+    file under sessions/) and wrap-ups (which author the line directly,
+    with NO session file). "Newest session file" is therefore a floor,
+    not the truth: a wrap-up-authored line dated on or after the newest
+    capture must be preserved. The guard: replace only when the derived
+    capture is STRICTLY newer (by date) than the date already on the
+    line, or when the line carries no parseable date at all (scaffold
+    placeholder, freeform prose — the convergent choice is the capture).
 
     No-op (False) when cp.md is missing, has no `**Last session:**` line,
     or the working dir has no session files. Only the FIRST matching line
@@ -636,8 +651,18 @@ def refresh_last_session_line(working_dir: Path) -> bool:
         return False
 
     existing = cp_md.read_text(encoding="utf-8")
-    if not _LAST_SESSION_RE.search(existing):
+    current = _LAST_SESSION_RE.search(existing)
+    if not current:
         return False
+
+    existing_date = _LINE_DATE_RE.search(current.group(0))
+    derived_date = _LINE_DATE_RE.search(replacement)
+    if existing_date and derived_date:
+        # Same-day counts as current: a wrap-up and a capture on one day
+        # are both truthful — don't churn between them.
+        if existing_date.group(1) >= derived_date.group(1):
+            return False
+
     updated = _LAST_SESSION_RE.sub(replacement, existing, count=1)
     if updated == existing:
         return False
