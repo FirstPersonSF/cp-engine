@@ -173,9 +173,9 @@ def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
     assert srv._tenant_root() == tmp_path.resolve()
 
 
-def test_exactly_eighteen_tools_registered():
+def test_exactly_twenty_one_tools_registered():
     """3 source-read + 2 spine-read + 8 spine-write + 1 spine-promote +
-    1 meetings-read + 3 framework tools."""
+    1 meetings-read + 3 framework + 3 commitment tools."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
         "list_project_sources",
@@ -196,6 +196,9 @@ def test_exactly_eighteen_tools_registered():
         "framework_decompose",
         "framework_compose",
         "list_project_meetings",
+        "create_commitment",
+        "list_commitments",
+        "resolve_commitment",
     }
 
 
@@ -788,3 +791,186 @@ def test_module_import_is_light():
                 sys.modules[mod] = obj
             else:
                 sys.modules.pop(mod, None)
+
+
+# ---------------------------------------------------------------------------
+# Commitment tools (create_commitment / list_commitments / resolve_commitment)
+# ---------------------------------------------------------------------------
+
+
+def _scope(kind="project"):
+    return {"id": "own-1", "code": "ggl-5168", "kind": kind}
+
+
+def test_commitment_scope_initiative_wins(monkeypatch):
+    """Initiatives are checked FIRST so _resolve_project_id's own initiative
+    fallback can never mislabel one as a project."""
+    monkeypatch.setattr(srv, "_resolve_initiative_id", lambda c, code: "init-1")
+    monkeypatch.setattr(
+        srv, "_resolve_project_id",
+        lambda c, code: (_ for _ in ()).throw(AssertionError("must not be called")),
+    )
+    scope = srv._commitment_scope(object(), "mission-control")
+    assert scope == {"id": "init-1", "code": "mission-control", "kind": "initiative"}
+
+
+def test_commitment_scope_project_after_initiative_miss(monkeypatch):
+    monkeypatch.setattr(srv, "_resolve_initiative_id", lambda c, code: None)
+    monkeypatch.setattr(srv, "_resolve_project_id", lambda c, code: "proj-1")
+    scope = srv._commitment_scope(object(), "ggl-5168")
+    assert scope == {"id": "proj-1", "code": "ggl-5168", "kind": "project"}
+
+
+def test_commitment_scope_unresolved(monkeypatch):
+    monkeypatch.setattr(srv, "_resolve_initiative_id", lambda c, code: None)
+    monkeypatch.setattr(srv, "_resolve_project_id", lambda c, code: None)
+    assert srv._commitment_scope(object(), "cp-engine") is None
+
+
+def test_create_commitment_delegates(monkeypatch):
+    fake_client = object()
+    monkeypatch.setattr(srv, "_resolve_commitments",
+                        lambda code: (fake_client, _scope()))
+    captured = {}
+
+    def fake_write(client, **kwargs):
+        captured["client"] = client
+        captured.update(kwargs)
+        return "inserted"
+
+    monkeypatch.setattr("cp_engine.commitments.write_commitment", fake_write)
+    out = srv.create_commitment(
+        "ggl-5168", "  Deliver the grids  ", owner="drew@firstperson.is",
+        due_date="2026-07-20", direction="us_to_them",
+    )
+    assert out["result"] == "inserted"
+    assert out["kind"] == "project"
+    assert captured["client"] is fake_client
+    assert captured["description"] == "Deliver the grids"
+    assert captured["direction"] == "us_to_them"
+    assert captured["owner_email"] == "drew@firstperson.is"
+    assert captured["owner_name"] is None
+    assert captured["due_date"] == "2026-07-20"
+    assert captured["source_kind"] == "session"
+    assert captured["cp_hash"] == out["cp_hash"]
+
+
+def test_create_commitment_name_owner(monkeypatch):
+    monkeypatch.setattr(srv, "_resolve_commitments",
+                        lambda code: (object(), _scope()))
+    captured = {}
+    monkeypatch.setattr(
+        "cp_engine.commitments.write_commitment",
+        lambda client, **kw: captured.update(kw) or "inserted",
+    )
+    srv.create_commitment("ggl-5168", "Deliver", owner="Marcello")
+    assert captured["owner_name"] == "Marcello"
+    assert captured["owner_email"] is None
+    assert captured["direction"] == "internal"
+
+
+def test_create_commitment_bad_direction():
+    out = srv.create_commitment("ggl-5168", "Deliver", direction="sideways")
+    assert "direction" in out["error"]
+
+
+def test_create_commitment_bad_due_date():
+    out = srv.create_commitment("ggl-5168", "Deliver", due_date="next Tuesday")
+    assert "ISO" in out["error"]
+
+
+def test_create_commitment_empty_description():
+    out = srv.create_commitment("ggl-5168", "   ")
+    assert "description" in out["error"]
+
+
+def test_create_commitment_unresolved(monkeypatch):
+    monkeypatch.setattr(srv, "_resolve_commitments", lambda code: (object(), None))
+    out = srv.create_commitment("nope-1", "Deliver")
+    assert "resolved to no" in out["error"]
+
+
+def test_create_commitment_hash_uses_owner_id(monkeypatch):
+    """Two code forms for the same project must produce the same cp_hash."""
+    monkeypatch.setattr(
+        srv, "_resolve_commitments",
+        lambda code: (object(), {"id": "own-1", "code": code, "kind": "project"}),
+    )
+    monkeypatch.setattr("cp_engine.commitments.write_commitment",
+                        lambda client, **kw: "inserted")
+    a = srv.create_commitment("ibx-5153", "Deliver the thing")
+    b = srv.create_commitment("ibx-5153-ai-campaign", "Deliver the thing")
+    assert a["cp_hash"] == b["cp_hash"]
+
+
+def test_list_commitments_delegates(monkeypatch):
+    fake_client = object()
+    monkeypatch.setattr(srv, "_resolve_commitments",
+                        lambda code: (fake_client, _scope("initiative")))
+    captured = {}
+
+    def fake_list(client, owner, status="open"):
+        captured["args"] = (client, owner, status)
+        return [{"id": "c1"}]
+
+    monkeypatch.setattr("cp_engine.commitments.list_commitments", fake_list)
+    out = srv.list_commitments("mission-control", status="all")
+    assert out == [{"id": "c1"}]
+    assert captured["args"] == (fake_client, _scope("initiative"), "all")
+
+
+def test_list_commitments_bad_status():
+    out = srv.list_commitments("ggl-5168", status="pending")
+    assert "status" in out[0]["error"]
+
+
+def test_list_commitments_unresolved(monkeypatch):
+    monkeypatch.setattr(srv, "_resolve_commitments", lambda code: (object(), None))
+    out = srv.list_commitments("nope-1")
+    assert "resolved to no" in out[0]["note"]
+
+
+def test_resolve_commitment_delegates(monkeypatch):
+    fake_client = object()
+    monkeypatch.setattr(srv, "_resolve_commitments",
+                        lambda code: (fake_client, _scope()))
+    row = {"id": "c1", "description": "Deliver the grids"}
+    monkeypatch.setattr("cp_engine.commitments.find_open_commitment",
+                        lambda client, owner, key: (row, None))
+    captured = {}
+    monkeypatch.setattr(
+        "cp_engine.commitments.close_commitment",
+        lambda client, cid, outcome: captured.update(cid=cid, outcome=outcome),
+    )
+    out = srv.resolve_commitment("ggl-5168", "grids", outcome="done")
+    assert out == {"resolved": "c1", "description": "Deliver the grids",
+                   "outcome": "done"}
+    assert captured == {"cid": "c1", "outcome": "done"}
+
+
+def test_resolve_commitment_bad_outcome():
+    out = srv.resolve_commitment("ggl-5168", "grids", outcome="deleted")
+    assert "outcome" in out["error"]
+
+
+def test_resolve_commitment_ambiguous_returns_error(monkeypatch):
+    monkeypatch.setattr(srv, "_resolve_commitments",
+                        lambda code: (object(), _scope()))
+    monkeypatch.setattr("cp_engine.commitments.find_open_commitment",
+                        lambda client, owner, key: (None, "2 open commitments match"))
+    closed = []
+    monkeypatch.setattr("cp_engine.commitments.close_commitment",
+                        lambda *a: closed.append(a))
+    out = srv.resolve_commitment("ggl-5168", "the")
+    assert "match" in out["error"]
+    assert not closed
+
+
+def test_commitment_tools_resolve_raises_returns_error(monkeypatch):
+    def boom(code):
+        raise RuntimeError("no creds")
+
+    monkeypatch.setattr(srv, "_resolve_commitments", boom)
+    assert "no creds" in srv.create_commitment("ggl-5168", "Deliver")["error"]
+    assert "no creds" in srv.list_commitments("ggl-5168")[0]["error"]
+    assert "no creds" in srv.resolve_commitment("ggl-5168", "x")["error"]

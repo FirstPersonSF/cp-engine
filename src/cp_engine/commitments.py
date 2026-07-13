@@ -1,11 +1,12 @@
 """Write dated commitments into MC-2's ``public.commitments`` table.
 
 A commitment is who-owes-what-to-whom-by-when on a project or initiative
-(mc-2 mig 097). This module is the cp-engine write path — used by the
-auto-ingest webhook (Fathom action items) and the ``set-milestone`` /
-``set-client-ask-task`` ingest verbs, which historically wrote
-``clickup_task_proposals`` rows (design:
-cp/docs/plans/2026-07-07-commitments-consolidation-design.md).
+(mc-2 mig 097). This module is the cp-engine store access path — used by
+the auto-ingest webhook (Fathom action items), the ``set-milestone`` /
+``set-client-ask-task`` ingest verbs (which historically wrote
+``clickup_task_proposals`` rows; design:
+cp/docs/plans/2026-07-07-commitments-consolidation-design.md), and the
+session-facing cp-sources MCP verbs (create/list/resolve, cp-engine #76).
 
 The review-gate concept survives as state: every row lands with
 ``date_status='proposed'``; the weekly Slack dates loop ratifies dates
@@ -22,7 +23,7 @@ re-appears in a re-ingested meeting must not resurrect.
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any
 
 from cp_engine.clickup_routing import engagement_number
@@ -34,6 +35,15 @@ log = logging.getLogger(__name__)
 US_TO_THEM = "us_to_them"
 THEM_TO_US = "them_to_us"
 INTERNAL = "internal"
+DIRECTIONS = frozenset({US_TO_THEM, THEM_TO_US, INTERNAL})
+
+# Session-facing read columns — never SELECT * (mirrors the mc-2 router's
+# explicit-column discipline; excludes the dates-loop internals the model
+# doesn't act on, keeps date_status so ratification state is visible).
+LIST_COLUMNS = (
+    "id, description, owner_email, owner_name, direction, due_date, "
+    "date_status, status, source_kind, source_meeting_id, created_at, updated_at"
+)
 
 
 def resolve_commitment_owner(client: Any, code: str) -> dict | None:
@@ -165,3 +175,66 @@ def write_commitment(
 
     client.table(Tables.COMMITMENTS).insert(row).execute()
     return "inserted"
+
+
+def list_commitments(client: Any, owner: dict, status: str = "open") -> list[dict]:
+    """List one project's/initiative's commitments, due-date ascending
+    (undated last, matching the mc-2 router's ordering).
+
+    ``owner`` is a resolve dict (``{"id", "code", "kind"}``); its ``kind``
+    picks the scope column. ``status='all'`` disables the status filter.
+    """
+    column = "initiative_id" if owner.get("kind") == "initiative" else "project_id"
+    q = client.table(Tables.COMMITMENTS).select(LIST_COLUMNS).eq(column, owner["id"])
+    if status != "all":
+        q = q.eq("status", status)
+    resp = q.order("due_date", nullsfirst=False).execute()
+    return resp.data or []
+
+
+def find_open_commitment(
+    client: Any, owner: dict, key: str
+) -> tuple[dict | None, str | None]:
+    """Resolve ``key`` to exactly ONE open commitment: ``(row, error)``.
+
+    ``key`` is a commitment id (exact) or a case-insensitive substring of
+    the description — the same exact-then-substring discipline as the spine
+    element resolvers. Ambiguity is an error, not a guess: the caller gets
+    the candidates back so a human (or the model) can re-key by id.
+    """
+    rows = list_commitments(client, owner, status="open")
+    matches = [r for r in rows if r.get("id") == key]
+    if not matches:
+        needle = key.strip().lower()
+        if needle:
+            matches = [
+                r for r in rows if needle in (r.get("description") or "").lower()
+            ]
+    if not matches:
+        return None, f"no open commitment in {owner['code']!r} matches {key!r}"
+    if len(matches) > 1:
+        candidates = "; ".join(
+            f"{r['id'][:8]}… \"{(r.get('description') or '')[:60]}\""
+            for r in matches[:5]
+        )
+        return None, (
+            f"{len(matches)} open commitments match {key!r} — "
+            f"pass an id instead: {candidates}"
+        )
+    return matches[0], None
+
+
+def close_commitment(client: Any, commitment_id: str, outcome: str) -> None:
+    """Set an open commitment's status to ``done`` or ``dropped``.
+
+    Commitments are never deleted — a dropped row is the archive, and its
+    ``cp_hash`` keeps a re-ingest of the same meeting from resurrecting it.
+    The table has no auto-update trigger; ``updated_at`` is set explicitly
+    (mirrors the mc-2 router).
+    """
+    client.table(Tables.COMMITMENTS).update(
+        {
+            "status": outcome,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+    ).eq("id", commitment_id).execute()

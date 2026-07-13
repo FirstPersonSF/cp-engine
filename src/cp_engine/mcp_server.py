@@ -998,6 +998,144 @@ def framework_compose(framework: str, field_values: dict,
         return {"error": f"failed to compose {framework!r}: {exc}"}
 
 
+def _commitment_scope(client, project_code: str) -> dict | None:
+    """Resolve a code to the commitments owner dict ``{"id", "code", "kind"}``.
+
+    The commitments table needs to know WHICH owner column to use
+    (``project_id`` vs ``initiative_id`` under the num_nonnulls==1 CHECK), so
+    unlike ``_resolve`` this keeps the kind. Initiatives are checked FIRST:
+    their bare slugs are unambiguous, and ``_resolve_project_id``'s own
+    fallback can return initiative ids — after an initiatives miss, any
+    project-branch hit is genuinely a project. Standalone repos have no owner
+    column in mig-097 and resolve to None (a commitment must belong to an
+    engagement or an initiative).
+    """
+    iid = _resolve_initiative_id(client, project_code)
+    if iid is not None:
+        return {"id": iid, "code": project_code, "kind": "initiative"}
+    pid = _resolve_project_id(client, project_code)
+    if pid is None:
+        return None
+    return {"id": pid, "code": project_code, "kind": "project"}
+
+
+def _resolve_commitments(project_code: str):
+    """Resolve a code for the commitment tools: ``(client, scope-or-None)``."""
+    from cp_engine.config import load as load_config
+    from cp_engine import mc2_db
+
+    config = load_config(_tenant_root())
+    client = mc2_db.get_client(config)
+    return client, _commitment_scope(client, project_code)
+
+
+@mcp.tool()
+def create_commitment(project_code: str, description: str, owner: str = "",
+                      due_date: str = "", direction: str = "internal") -> dict:
+    """Register a dated commitment (who owes what by when) in MC-2's commitments store.
+
+    Lands as a PROPOSAL (`date_status='proposed'`) with `source_kind='session'`
+    — the same review gate the meeting auto-ingest path uses: the weekly dates
+    loop ratifies the date and the Monday partners digest picks it up; nothing
+    is auto-confirmed. `owner` is the person who owes it — an email address
+    (stored as owner_email) or a display name. `direction` is one of
+    us_to_them | them_to_us | internal. `due_date` must be ISO YYYY-MM-DD or
+    empty (undated rows get flagged "needs a date" downstream — don't guess a
+    date the humans never agreed). Idempotent on identical description text:
+    re-creating returns "duplicate", including rows a human already dropped.
+    """
+    from cp_engine.commitments import (
+        DIRECTIONS, INTERNAL, _valid_due_date, write_commitment,
+    )
+    from cp_engine.ingest import _content_hash
+
+    try:
+        direction = (direction or "").strip() or INTERNAL
+        if direction not in DIRECTIONS:
+            return {"error": f"direction must be one of {sorted(DIRECTIONS)}"}
+        text = (description or "").strip()
+        if not text:
+            return {"error": "description is required"}
+        due_iso = None
+        if (due_date or "").strip():
+            due_iso = _valid_due_date(due_date)
+            if due_iso is None:
+                return {"error": f"due_date {due_date!r} is not an ISO date "
+                                 "(YYYY-MM-DD); omit it if no date was agreed"}
+        client, scope = _resolve_commitments(project_code)
+        if scope is None:
+            return {"error": f"code {project_code!r} resolved to no engagement "
+                             "or initiative (standalone repos can't own commitments)"}
+        who = (owner or "").strip()
+        owner_email = who if "@" in who else None
+        owner_name = None if owner_email else (who or None)
+        # Hash on the resolved owner id, not the caller's code string — the
+        # same project reached via `ibx-5153` and `ibx-5153-ai-campaign` must
+        # dedupe to one row.
+        cp_hash = _content_hash(scope["id"], "create-commitment", text)
+        outcome = write_commitment(
+            client, owner=scope, description=text, cp_hash=cp_hash,
+            source_kind="session", direction=direction,
+            owner_email=owner_email, owner_name=owner_name, due_date=due_iso,
+        )
+        return {"result": outcome, "kind": scope["kind"], "cp_hash": cp_hash}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to create commitment in {project_code!r}: {exc}"}
+
+
+@mcp.tool()
+def list_commitments(project_code: str, status: str = "open") -> list[dict]:
+    """List a project's or initiative's commitments (due-date ascending, undated last).
+
+    `status` is one of open | done | dropped | all. The read side of the
+    commitments store — use at wrap up to reconcile promised vs. delivered.
+    `date_status` shows ratification state (proposed → agreed after two
+    unchanged weekly posts; slipped = past due while still open) and
+    `source_kind` tells session-authored rows from meeting-ingested ones.
+    """
+    from cp_engine import commitments as cm
+
+    try:
+        if status not in ("open", "done", "dropped", "all"):
+            return [{"error": "status must be one of open|done|dropped|all"}]
+        client, scope = _resolve_commitments(project_code)
+        if scope is None:
+            return [{"note": f"code {project_code!r} resolved to no engagement "
+                             "or initiative"}]
+        return cm.list_commitments(client, scope, status=status)
+    except Exception as exc:  # noqa: BLE001
+        return [{"error": f"failed to list commitments for {project_code!r}: {exc}"}]
+
+
+@mcp.tool()
+def resolve_commitment(project_code: str, key: str, outcome: str = "done") -> dict:
+    """Close an OPEN commitment: `outcome` 'done' (delivered) or 'dropped' (no longer owed).
+
+    `key` is a commitment id from list_commitments or a distinct substring of
+    its description; an ambiguous key returns the candidates instead of
+    guessing. Commitments are never deleted — a dropped row stays as the
+    archive and keeps re-ingests of the same meeting from resurrecting it.
+    The wrap-up-sweep verb, mirroring weekly-cp.md's `[resolved: ...]` markers.
+    """
+    from cp_engine.commitments import close_commitment, find_open_commitment
+
+    try:
+        if outcome not in ("done", "dropped"):
+            return {"error": "outcome must be 'done' or 'dropped'"}
+        client, scope = _resolve_commitments(project_code)
+        if scope is None:
+            return {"error": f"code {project_code!r} resolved to no engagement "
+                             "or initiative"}
+        row, err = find_open_commitment(client, scope, key)
+        if err:
+            return {"error": err}
+        close_commitment(client, row["id"], outcome)
+        return {"resolved": row["id"], "description": row.get("description"),
+                "outcome": outcome}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to resolve commitment in {project_code!r}: {exc}"}
+
+
 def run_stdio() -> None:
     """Run the server over stdio (what Claude Code launches via .mcp.json)."""
     mcp.run(transport="stdio")
