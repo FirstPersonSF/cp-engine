@@ -122,3 +122,92 @@ def test_valid_due_date() -> None:
     assert _valid_due_date("next Tuesday") is None
     assert _valid_due_date("") is None
     assert _valid_due_date(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Session read/close path (list / find / close — cp-engine #76)
+# ---------------------------------------------------------------------------
+
+from cp_engine.commitments import (  # noqa: E402
+    close_commitment,
+    find_open_commitment,
+    list_commitments,
+)
+
+_OWNER_P = {"id": "p1", "code": "ggl-5168", "kind": "project"}
+_OWNER_I = {"id": "i1", "code": "mission-control", "kind": "initiative"}
+
+
+def _list_client(rows: list[dict]) -> MagicMock:
+    """Client whose commitments listing returns `rows` for BOTH chain shapes
+    (.eq().eq().order() when status-filtered, .eq().order() for status='all')."""
+    client = MagicMock()
+    base = client.table.return_value.select.return_value.eq.return_value
+    base.order.return_value.execute.return_value.data = rows
+    base.eq.return_value.order.return_value.execute.return_value.data = rows
+    return client
+
+
+def test_list_commitments_project_scope_column() -> None:
+    client = _list_client([{"id": "c1"}])
+    assert list_commitments(client, _OWNER_P) == [{"id": "c1"}]
+    scope_eq = client.table.return_value.select.return_value.eq
+    assert scope_eq.call_args.args == ("project_id", "p1")
+    # default status filter applied on top of the scope filter
+    assert scope_eq.return_value.eq.call_args.args == ("status", "open")
+
+
+def test_list_commitments_initiative_scope_column() -> None:
+    client = _list_client([])
+    list_commitments(client, _OWNER_I, status="done")
+    scope_eq = client.table.return_value.select.return_value.eq
+    assert scope_eq.call_args.args == ("initiative_id", "i1")
+    assert scope_eq.return_value.eq.call_args.args == ("status", "done")
+
+
+def test_list_commitments_status_all_skips_filter() -> None:
+    client = _list_client([{"id": "c1"}])
+    assert list_commitments(client, _OWNER_P, status="all") == [{"id": "c1"}]
+    scope_eq = client.table.return_value.select.return_value.eq
+    assert not scope_eq.return_value.eq.called
+
+
+def test_find_open_commitment_by_id() -> None:
+    rows = [{"id": "aaa-1", "description": "Deliver grids"},
+            {"id": "bbb-2", "description": "Send deck"}]
+    client = _list_client(rows)
+    row, err = find_open_commitment(client, _OWNER_P, "bbb-2")
+    assert err is None and row["id"] == "bbb-2"
+
+
+def test_find_open_commitment_by_substring_case_insensitive() -> None:
+    rows = [{"id": "aaa-1", "description": "Deliver competitive GRIDS"},
+            {"id": "bbb-2", "description": "Send deck"}]
+    client = _list_client(rows)
+    row, err = find_open_commitment(client, _OWNER_P, "grids")
+    assert err is None and row["id"] == "aaa-1"
+
+
+def test_find_open_commitment_no_match() -> None:
+    client = _list_client([{"id": "a", "description": "Send deck"}])
+    row, err = find_open_commitment(client, _OWNER_P, "grids")
+    assert row is None and "no open commitment" in err
+
+
+def test_find_open_commitment_ambiguous_lists_candidates() -> None:
+    rows = [{"id": "aaaaaaaa-1", "description": "Deliver grids to Marcello"},
+            {"id": "bbbbbbbb-2", "description": "Deliver grids to Michelle"}]
+    client = _list_client(rows)
+    row, err = find_open_commitment(client, _OWNER_P, "grids")
+    assert row is None
+    assert "2 open commitments" in err and "aaaaaaaa" in err
+
+
+def test_close_commitment_sets_status_and_updated_at() -> None:
+    client = MagicMock()
+    close_commitment(client, "c1", "done")
+    fields = client.table.return_value.update.call_args.args[0]
+    assert fields["status"] == "done"
+    assert "updated_at" in fields
+    eq_call = client.table.return_value.update.return_value.eq
+    assert eq_call.call_args.args == ("id", "c1")
