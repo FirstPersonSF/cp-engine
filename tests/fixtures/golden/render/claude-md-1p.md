@@ -258,6 +258,24 @@ framework names/ids are INTERNAL — never in client-facing material):
   ready-to-author markdown: pass it straight to `create_spine_element` as a
   DRAFT; put the framework id in the version note only.
 
+**4 — Commitments** (MC-2's dated-obligations store — who owes what by when;
+the same store meeting auto-ingest proposes into, the weekly dates loop
+ratifies, and the Monday partners digest reads):
+- `create_commitment(code, description, owner?, due_date?, direction?)` —
+  register a session-agreed commitment as a PROPOSAL (`source_kind='session'`,
+  review-gate parity with auto-ingest — nothing is auto-confirmed).
+  `direction` ∈ `us_to_them | them_to_us | internal`; `owner` is an email or
+  display name; `due_date` ISO or omitted (never guess a date the humans
+  didn't agree). Idempotent on identical text — dropped rows stay dead.
+- `list_commitments(code, status?)` — the read side (`status` ∈
+  `open | done | dropped | all`). Use at wrap up to reconcile promised vs.
+  delivered; `date_status` shows ratification, `source_kind` shows origin.
+- `resolve_commitment(code, key, outcome?)` — close an open row as `done` or
+  `dropped` (`key` = id or distinct description substring). The wrap-up-sweep
+  verb, mirroring `weekly-cp.md`'s `[resolved: ...]` markers.
+
+Engagements and initiatives can own commitments; standalone repos cannot.
+
 To find an email or note you authored into a project's (or initiative's) spine,
 `list_spine_elements(code)` then `pull_spine_element(code, <key>)` — don't grep
 the `spine/` mirror, which may lag the live MC-2 row.
