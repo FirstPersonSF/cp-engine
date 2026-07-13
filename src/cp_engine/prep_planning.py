@@ -171,6 +171,13 @@ class ProjectPlanningBlock:
     # the estimated date — the same lines the Agreement projection appends to
     # its derived block. Empty for initiatives / no estimate / no drift.
     drift: tuple[str, ...] = ()
+    # Last week's Slack digest bullet(s) (cp-engine #78): parsed from the
+    # most recent PRIOR sprint file's `### Slack digest` section. The Sunday
+    # digest cron lands ~23:55 UTC — after every wrap-up but before Monday
+    # planning — so without this carry the freshest channel signal never
+    # reaches the bundle. Each entry keeps its `[YYYY-W## · Slack]` prefix
+    # (self-labeling week); placeholders and hash markers stripped.
+    slack_digest: tuple[str, ...] = ()
     # ``fetch_error`` carries ONE sentinel since the ClickUp fallback was
     # removed (commitments consolidation, cp-engine #38):
     #   "no_schedule_milestones" — the MC-2 estimator schedule has no undone
@@ -956,6 +963,61 @@ def _parse_sprint_open_asks(sprint_file_path: Path) -> tuple[SprintAsk, ...]:
     return tuple(out)
 
 
+# `### Slack digest` section slice. Own regex rather than sprints.subsection:
+# that helper's lookahead stops only at the next `### `, so when the digest is
+# the LAST subsection of its `## ` block (the initiative-file shape) it leaks
+# into the following top-level section. This one stops at any heading.
+_SLACK_DIGEST_SECTION_RE = re.compile(
+    r"^### Slack digest\s*$(.*?)(?=^#{2,3} |\Z)",
+    re.MULTILINE | re.DOTALL,
+)
+
+
+def _parse_prior_slack_digest(
+    tenant_root: Path, project_code: str, week_iso: str
+) -> tuple[str, ...]:
+    """Digest bullet(s) from the project's most recent PRIOR sprint file.
+
+    The Sunday digest cron writes into the closing week's file (~23:55 UTC),
+    after that week's wrap-ups — so planning must read BACKWARD one file or
+    the freshest channel signal is lost (cp-engine #78). Prior-week discovery
+    globs like ``sprints.create_sprint_file_from_prior``: newest week dir
+    strictly before ``week_iso`` that has this project's file. Returns () on
+    no prior file, no digest section, or only unfilled placeholders.
+    """
+    sprints_root = tenant_root / "sprints"
+    if not sprints_root.is_dir():
+        return ()
+    prior_weeks = sorted(
+        (p.parent.name for p in sprints_root.glob(f"*/{project_code}.md")),
+        reverse=True,
+    )
+    prior_weeks = [w for w in prior_weeks if w < week_iso]
+    if not prior_weeks:
+        return ()
+    prior_path = sprints_root / prior_weeks[0] / f"{project_code}.md"
+    try:
+        body = prior_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.warning("prior sprint file read failed for %s: %s", project_code, exc)
+        return ()
+    m = _SLACK_DIGEST_SECTION_RE.search(body)
+    if not m:
+        return ()
+    out: list[str] = []
+    for first, cont in bullets(m.group(1)):
+        if _is_template_placeholder(first):
+            continue
+        text = first[2:].strip()  # drop the leading "- "
+        if cont:
+            text = f"{text} {cont}"
+        # The dedupe hash marker is plumbing, not content.
+        text = re.sub(r"\s*<!--\s*cp:hash=[0-9a-f]+\s*-->\s*", " ", text).strip()
+        if text:
+            out.append(text)
+    return tuple(out)
+
+
 _URGENT_HORIZON_KEYWORDS = ("this sprint", "next sprint", "by workshop")
 _URGENT_HORIZON_DAYS = 14
 
@@ -1311,6 +1373,8 @@ def build_project_block(
 
     drift = _fetch_drift_warnings(supabase_client, project, today)
 
+    slack_digest = _parse_prior_slack_digest(config.root, project.code, week_iso)
+
     updated = _exec_summary_updated(exec_summary)
     age_days: int | None = None
     if updated:
@@ -1330,6 +1394,7 @@ def build_project_block(
         fetch_error=fetch_error,
         deliverables=deliverable_lines,
         drift=drift,
+        slack_digest=slack_digest,
         sweep_synthesis=sweep_synthesis,
         exec_summary_updated=updated,
         exec_summary_age_days=age_days,
@@ -2037,6 +2102,13 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
     if block.deliverables:
         out.append("**Deliverables:**")
         out.extend(f"- {line}" for line in block.deliverables)
+        out.append("")
+
+    # Last week's channel signal (#78) — fresher than the exec summary by
+    # construction (the digest cron runs Sunday night, after every wrap-up).
+    if block.slack_digest:
+        out.append("**Last week's Slack digest:**")
+        out.extend(f"- {line}" for line in block.slack_digest)
         out.append("")
 
     out.extend(_render_forward_calendar(block))

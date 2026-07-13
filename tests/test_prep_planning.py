@@ -2095,3 +2095,103 @@ def test_cross_cutting_decisions_render_ages():
     assert "Old one. _(22d old · 2026-05-10 — aging: resolve or re-affirm)_" in out
     assert "Fresh one. _(2d old · 2026-05-30)_" in out
     assert "Undated one. _(undated — stamp or resolve at next wrap up)_" in out
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #78: last week's Slack digest carried into the bundle
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _write_sprint(tmp_path, week, code, body):
+    p = tmp_path / "sprints" / week / f"{code}.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(body)
+    return p
+
+
+def test_parse_prior_slack_digest_reads_most_recent_prior_week(tmp_path):
+    from cp_engine.prep_planning import _parse_prior_slack_digest
+
+    _write_sprint(
+        tmp_path, "2026-W27", "ggl-5168",
+        "## Client communication\n\n### Slack digest\n"
+        "- [2026-W27 · Slack] Old week — must not win. <!-- cp:hash=aaaa1111 -->\n",
+    )
+    _write_sprint(
+        tmp_path, "2026-W28", "ggl-5168",
+        "## Client communication\n\n### Slack digest\n"
+        "- [2026-W28 · Slack] Janet approved v1.5; deck lands Tuesday.\n"
+        "  Second line continues the paragraph. <!-- cp:hash=b2be0c06 -->\n"
+        "### Stakeholders\n"
+        "- [Rena Ramos · Director] decision-maker\n",
+    )
+    out = _parse_prior_slack_digest(tmp_path, "ggl-5168", "2026-W29")
+    assert len(out) == 1
+    assert out[0].startswith("[2026-W28 · Slack] Janet approved v1.5")
+    assert "Second line continues" in out[0]
+    assert "cp:hash" not in out[0]
+    assert "Rena Ramos" not in out[0]
+
+
+def test_parse_prior_slack_digest_skips_placeholder_and_missing(tmp_path):
+    from cp_engine.prep_planning import _parse_prior_slack_digest
+
+    # Unfilled scaffold placeholder → ().
+    _write_sprint(
+        tmp_path, "2026-W28", "ggl-5168",
+        "## Client communication\n\n### Slack digest\n"
+        "- _<weekly summary of the project's Slack channel — `[YYYY-W## · "
+        "Slack]` prefix; one bullet per week, written by the Sunday cron>_\n",
+    )
+    assert _parse_prior_slack_digest(tmp_path, "ggl-5168", "2026-W29") == ()
+    # No prior file at all → ().
+    assert _parse_prior_slack_digest(tmp_path, "ibx-5153", "2026-W29") == ()
+    # Current/future weeks never count as prior.
+    _write_sprint(
+        tmp_path, "2026-W29", "ibx-5153",
+        "### Slack digest\n- [2026-W29 · Slack] Same-week digest.\n",
+    )
+    assert _parse_prior_slack_digest(tmp_path, "ibx-5153", "2026-W29") == ()
+
+
+def test_parse_prior_slack_digest_stops_at_next_h2(tmp_path):
+    """Initiative-file shape: digest is the LAST ### of its ## block — the
+    slice must stop at the following ## heading, not leak into it."""
+    from cp_engine.prep_planning import _parse_prior_slack_digest
+
+    _write_sprint(
+        tmp_path, "2026-W28", "mission-control",
+        "## Team communication\n\n### Slack digest\n"
+        "- [2026-W28 · Slack] Quiet infra week. <!-- cp:hash=deadbeef -->\n"
+        "\n## Dependencies & risks\n"
+        "- [watching · infra] Railway cron drift\n",
+    )
+    out = _parse_prior_slack_digest(tmp_path, "mission-control", "2026-W29")
+    assert out == ("[2026-W28 · Slack] Quiet infra week.",)
+
+
+def test_bundle_block_renders_slack_digest():
+    from cp_engine.prep_planning import (
+        ProjectPlanningBlock,
+        _render_bundle_project_block,
+    )
+
+    block = ProjectPlanningBlock(
+        project=make_state("ggl-5168", name="GGL 5168 Activation"),
+        exec_summary=None,
+        milestones=(),
+        client_asks=(),
+        sprint_open_asks=(),
+        urgent=(),
+        fetch_error=None,
+        slack_digest=("[2026-W28 · Slack] Janet approved v1.5.",),
+    )
+    text = "\n".join(_render_bundle_project_block(block))
+    assert "**Last week's Slack digest:**" in text
+    assert "- [2026-W28 · Slack] Janet approved v1.5." in text
+    # Empty digest → section absent entirely.
+    quiet = ProjectPlanningBlock(
+        project=make_state("ggl-5168"), exec_summary=None, milestones=(),
+        client_asks=(), sprint_open_asks=(), urgent=(), fetch_error=None,
+    )
+    assert "Slack digest" not in "\n".join(_render_bundle_project_block(quiet))
