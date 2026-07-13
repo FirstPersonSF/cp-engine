@@ -4,6 +4,31 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.66.0 — 2026-07-13
+
+**The Marcello divergent-clone post-mortem pair (#80/#81)** — from the
+07-13 co-working incident: 114 stale files + 1 unpushed commit + 100
+commits behind, surfacing a one-line merge conflict on a `**Last
+session:**` line two captures had raced on.
+
+- **SessionStart tenant-freshness gate (#80, PR #82).** New plugin hook:
+  `git fetch` always; `git pull --ff-only` when the tree is clean and
+  strictly behind; otherwise a loud behind/ahead/dirty warning with the
+  reconcile recipe into session context BEFORE any edits. Not-in-tenant
+  → silent no-op; offline degrades to a note; never blocks session
+  start. A forced pull would fail in exactly the dirty-and-diverged
+  state that needs the gate — so it gates, warns, and only pulls when
+  fast-forward is safe. Rides the marketplace clone self-update to every
+  teammate's machine.
+- **`Last session:` derived from sessions/ (#81, PR #83).** The line is
+  now a projection of the newest additive `sessions/*.md` capture —
+  `cp capture-session` refreshes it from the derivation (a teammate's
+  newer capture wins even at capture time) and `cp sync` runs a
+  tenant-wide convergence pass, so a mis-merged line self-heals on the
+  next sync. Conflict recipe collapses to "keep either side, run
+  `cp sync`". Output format unchanged; CLAUDE.md documents the line as
+  derived (don't hand-edit).
+
 ## v0.65.0 — 2026-07-13
 
 - **Planning bundle carries last week's Slack digest (#78, PR #79).** The
