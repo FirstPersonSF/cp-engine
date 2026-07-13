@@ -1218,3 +1218,39 @@ def test_sync_convergence_pass_heals_mismerged_lines(tmp_path: Path) -> None:
     changed = _refresh_all_last_session_lines(root)
     assert changed == [wd1 / "cp.md"]
     assert "(Drew) — Shipped two releases." in (wd1 / "cp.md").read_text()
+
+
+def test_refresh_preserves_newer_wrapup_authored_line(tmp_path: Path) -> None:
+    """Wrap-ups author the line directly with NO session file — a derived
+    (older) capture must never regress it. The live-caught fathom shape:
+    newest sessions/ file 2026-05-12, wrap-up line 2026-07-11."""
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    _session_file(
+        wd, "2026-05-12-2130-drew.md",
+        header="2026-05-12 21:30, Drew",
+        body="### What we did\nFixed the multi-week outage.\n",
+    )
+    authored = (
+        "**Last session:** 2026-07-11 (evening) — #15 fixed and merged "
+        "(PR #16): assignment now respects the duplicate flag.\n"
+    )
+    (wd / "cp.md").write_text(f"## Exec Summary\n\n{authored}", encoding="utf-8")
+    assert refresh_last_session_line(wd) is False
+    assert authored in (wd / "cp.md").read_text(encoding="utf-8")
+
+
+def test_refresh_same_day_does_not_churn(tmp_path: Path) -> None:
+    """A wrap-up and a capture on the same day are both truthful — keep
+    whichever is on the line."""
+    wd = tmp_path / "wd"
+    wd.mkdir()
+    _session_file(
+        wd, "2026-07-13-1015-drew.md",
+        header="2026-07-13 10:15, Drew", body="### What we did\nCaptured.\n",
+    )
+    (wd / "cp.md").write_text(
+        "**Last session:** 2026-07-13 — wrap-up authored, richer detail.\n",
+        encoding="utf-8",
+    )
+    assert refresh_last_session_line(wd) is False
