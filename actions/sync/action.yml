@@ -97,4 +97,18 @@ runs:
         git config user.email "${{ inputs.bot-email }}"
         git add -A
         git commit -m "${{ inputs.commit-message }} $(date -u +%Y-%m-%dT%H:%MZ)"
+        # The tenant's default branch is a busy ref (auto-ingest, spine
+        # promotes, live sessions) — a bare push can lose the race and fail
+        # the whole run. Retry with fetch+merge, resolving conflicting hunks
+        # with OURS: sync output is regenerated from MC-2 and is the newest
+        # derivation; remote non-conflicting changes merge in normally.
+        branch="$(git rev-parse --abbrev-ref HEAD)"
+        for attempt in 1 2 3; do
+          if git push origin HEAD; then
+            exit 0
+          fi
+          echo "push rejected (attempt $attempt) — merging remote and retrying"
+          git fetch origin
+          git merge "origin/${branch}" -X ours --no-edit || exit 1
+        done
         git push origin HEAD
