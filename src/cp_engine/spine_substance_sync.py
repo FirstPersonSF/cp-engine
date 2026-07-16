@@ -167,25 +167,28 @@ def reconcile_bindings(
 # ---- Task 2.3 + 2.4: per-project reconcile upserts --------------------------
 
 
-def _is_substance_file(md: Path) -> bool:
-    """Cheap probe: does this ``.md`` have ``est_item_id`` in its frontmatter?
+def _substance_est_item_id(md: Path) -> str | None:
+    """Cheap probe: this ``.md``'s frontmatter ``est_item_id``, or None.
 
     During the spine transition a project's ``spine/`` tree holds BOTH new
     substance files (lowercase phase dirs, ``est_item_id`` present) and OLD
     shipped element files (capitalized layer dirs, no ``est_item_id``). Only the
     former are substance. A file whose frontmatter can't even be loaded is not
-    ours either → skip it. We do NOT call the full strict `parse_substance`
-    here: a file that IS a substance file but is otherwise malformed must still
-    surface its error from the real parse below.
+    ours either → None. We do NOT call the full strict `parse_substance`
+    here: a file that IS a substance file but is otherwise malformed is
+    skip-and-reported by the real parse below.
     """
     try:
         meta = frontmatter.load(str(md)).metadata
     except Exception:
-        return False
-    return "est_item_id" in meta
+        return None
+    eid = meta.get("est_item_id")
+    return str(eid) if eid else None
 
 
-def _load_substance_items(project_dir: Path) -> list[tuple[WorkItemSubstance, str]]:
+def _load_substance_items(
+    project_dir: Path,
+) -> tuple[list[tuple[WorkItemSubstance, str]], list[dict]]:
     """Parse every work-item substance file under ``spine/<phase>/*.md``.
 
     Skips ``_context/`` (project-level context, not substance) and any
@@ -193,13 +196,22 @@ def _load_substance_items(project_dir: Path) -> list[tuple[WorkItemSubstance, st
     OLD-style element files that coexist in the tree during the spine
     transition — identified by the absence of ``est_item_id`` in frontmatter —
     so the shipped `spine_elements` files don't crash the substance mirror.
-    Returns ``(item, rel_path)`` pairs, rel_path kept relative to project_dir
-    for stable, portable storage.
+
+    A genuine substance file that fails the strict parse (e.g. a hand-edited
+    version header with a bad status) is SKIPPED AND REPORTED, not raised —
+    one malformed file must not abort the whole project's mirror (issue #90;
+    the sap-5171 'synthesis' status stranded 12 days of sibling reconciles).
+
+    Returns ``(items, malformed)``: items as ``(item, rel_path)`` pairs
+    (rel_path relative to project_dir for stable, portable storage), malformed
+    as ``{"rel_path", "est_item_id", "error"}`` dicts for the caller to report
+    and for the reap shield.
     """
     out: list[tuple[WorkItemSubstance, str]] = []
+    malformed: list[dict] = []
     spine_root = project_dir / "spine"
     if not spine_root.is_dir():
-        return out
+        return out, malformed
     for md in sorted(spine_root.glob("*/*.md")):
         parts = md.relative_to(spine_root).parts
         # Skip _context, _authored, and snapshot dirs (shared predicate so this
@@ -209,13 +221,27 @@ def _load_substance_items(project_dir: Path) -> list[tuple[WorkItemSubstance, st
         # the file's sentinel kind on the next sync.
         if is_skipped_spine_dir(parts):
             continue
-        # Skip non-substance files (old element files, unrelated .md). A genuine
-        # substance file that fails the full parse still raises below.
-        if not _is_substance_file(md):
+        # Skip non-substance files (old element files, unrelated .md).
+        est_item_id = _substance_est_item_id(md)
+        if est_item_id is None:
             continue
-        item = parse_substance(md)
-        out.append((item, str(md.relative_to(project_dir))))
-    return out
+        rel_path = str(md.relative_to(project_dir))
+        try:
+            item = parse_substance(md)
+        except ValueError as exc:
+            logger.warning(
+                "spine substance file %s is malformed — skipped from the "
+                "mirror (its DB rows are shielded from the reap); fix the "
+                "file so it reconciles: %s", rel_path, exc,
+            )
+            malformed.append({
+                "rel_path": rel_path,
+                "est_item_id": est_item_id,
+                "error": str(exc),
+            })
+            continue
+        out.append((item, rel_path))
+    return out, malformed
 
 
 def _rehome_authored_codes(client, *, project_id, project_code):
@@ -291,6 +317,7 @@ def sync_spine_substance(
     project_dir: Path,
     estimate=None,
     now: datetime | None = None,
+    malformed_out: list[dict] | None = None,
 ) -> int:
     """Reconcile `spine_substance` rows for one project to match disk.
 
@@ -304,6 +331,11 @@ def sync_spine_substance(
     Returns the number of version rows upserted. Reaps rows whose substance file
     vanished, scoped to this project_code; a row with any confirmed tracked field
     is flagged source-missing rather than deleted.
+
+    Malformed substance files are skipped, not fatal (issue #90): their parse
+    errors append to ``malformed_out`` (when given) for the caller to report,
+    and their existing rows are SHIELDED from the reap — a file that fails to
+    parse is present-but-broken, not vanished.
 
     Recovery: a mid-mirror DB error may leave partial state (some reaps/upserts
     done), but the next ``cp sync`` reconverges because every row is derived from
@@ -321,7 +353,10 @@ def sync_spine_substance(
     # project_id key so a code change doesn't strand them (mig 078).
     _rehome_snapshot_codes(client, project_id=project_id, project_code=project_code)
 
-    parsed = _load_substance_items(project_dir)
+    parsed, malformed = _load_substance_items(project_dir)
+    if malformed_out is not None:
+        malformed_out.extend(malformed)
+    skipped_est_ids = {m["est_item_id"] for m in malformed}
     items = [p[0] for p in parsed]
     rel_paths = [p[1] for p in parsed]
     items = reconcile_bindings(items, estimate)
@@ -343,7 +378,7 @@ def sync_spine_substance(
     prior = (
         client.table(_SUBSTANCE_TABLE)
         .select(
-            "id, framing, body, status, layer, serves, archived, "
+            "id, est_item_id, framing, body, status, layer, serves, archived, "
             "field_states, review_flags, origin"
         )
         # Scope the reap on the STABLE project_id (uuid), not the mutable
@@ -406,6 +441,16 @@ def sync_spine_substance(
             continue
         if existing.get("origin") == "authored":
             continue  # MC-2 owns authored rows; disk is downstream — never reap.
+        # Reap shield (issue #90): a malformed file's rows are absent from
+        # present_ids because the file failed to PARSE, not because it
+        # vanished — reaping (or source-missing-flagging) them here would turn
+        # a typo'd version header into data loss. Match on est_item_id, with
+        # an id-prefix fallback for legacy rows predating the column.
+        if existing.get("est_item_id") in skipped_est_ids or any(
+            row_id.startswith(f"{project_code}/{eid}/")
+            for eid in skipped_est_ids
+        ):
+            continue
         if _has_confirmed_field(existing, tracked_fields=_SUBSTANCE_TRACKED_FIELDS):
             review_flags = _merge_flag(
                 list(existing.get("review_flags") or []),

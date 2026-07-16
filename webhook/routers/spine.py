@@ -269,6 +269,7 @@ def _frame_promote_in_tree(
     # the click — the markdown + git push still land and the next sync
     # reconciles. So we record mirrored=false and keep going.
     mirrored = True
+    mirror_skipped: list[dict] = []
     try:
         sync_spine_substance(
             client,
@@ -276,6 +277,7 @@ def _frame_promote_in_tree(
             project_code=card.project_code,
             project_dir=project_dir,
             estimate=estimate,
+            malformed_out=mirror_skipped,
         )
     except Exception as exc:  # noqa: BLE001 — never lose a successful write
         log.warning(
@@ -285,6 +287,19 @@ def _frame_promote_in_tree(
         )
         observability.capture(exc, area="spine_promote_mirror")
         mirrored = False
+    # Malformed sibling files were skipped (issue #90), not fatal — the mirror
+    # covered everything else. Still report each: the file's own content is
+    # stranded until a human fixes it, and silence is how sap-5171's bad
+    # header went unnoticed for 12 days.
+    for skip in mirror_skipped:
+        log.warning(
+            "spine-promote: malformed substance file skipped for %s: %s (%s)",
+            card.project_code, skip["rel_path"], skip["error"],
+        )
+        observability.capture(
+            ValueError(f"{skip['rel_path']}: {skip['error']}"),
+            area="spine_substance_skip",
+        )
 
     # The push IS the commit point — succeeding here means the version is
     # durably in the repo. Any failure raises before the card flips (the run
@@ -326,6 +341,7 @@ def _frame_promote_in_tree(
         "version_label": version_label,
         "rel_path": rel_path,
         "mirrored": mirrored,
+        "mirror_skipped": [s["rel_path"] for s in mirror_skipped],
         "created_new_element": created_new_element,
         "card_flipped": card_flipped,
     }

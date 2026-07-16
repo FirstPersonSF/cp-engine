@@ -324,6 +324,7 @@ def test_promote_background_completes_run_row_done(monkeypatch, client, tmp_path
         "version_label": "v3",
         "rel_path": "1p/infoblox/ibx-5153/spine/phase-0/messaging-system.md",
         "mirrored": True,
+        "mirror_skipped": [],
         "created_new_element": False,
         "card_flipped": True,
     }
