@@ -4,6 +4,28 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.67.0 — 2026-07-16
+
+- **Cross-project detection in meeting ingest: propose-and-confirm
+  routing (#88, PR #89).** A meeting tagged to ONE project often carries
+  substantive items belonging to OTHER projects. The single-project
+  classifier now scores extracted items against the active-roster
+  vocabulary (new `list_active_all`; roster block in both prompt
+  templates) and annotates `cross_project` + confidence on
+  inbound/asks/decisions/risks items. Guarded post-validation (roster
+  codes only, never self, high|medium only — garbled/invented codes
+  drop silently), the tagged project's bullet gets a
+  `[cross-project? → code]` suffix, and clean proposals land in MC-2's
+  new `cross_project_proposals` review gate (mc-2 mig 112) via the new
+  `cp_engine.cross_project` module. The morning attention digest grows
+  a 🔀 proposals section with Route it / Dismiss buttons;
+  `/slack-action` routes accepted items to the target project's current
+  sprint file with `[cross-routed from <code> · meeting <id>]`
+  provenance (usual hash-dedup) and stamps `routed_commit_sha`.
+  Detection degrades to OFF on roster/MC-2 failures — never breaks
+  normal ingest. Follow-ups: dashboard meeting-card surface,
+  stakeholder-name vocabulary.
+
 ## v0.66.2 — 2026-07-13
 
 - **dates-loop: unmasked Slack error codes + partial-success exit 0
