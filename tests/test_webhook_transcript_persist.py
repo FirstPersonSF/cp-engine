@@ -180,7 +180,7 @@ def test_persist_failure_is_swallowed_and_ingest_continues(
     )
 
     # The per-project ingest reports a real write so the commit path runs.
-    def fake_ingest_one(*, config, code, transcript_path, action_items, meeting_id, meeting):
+    def fake_ingest_one(*, config, code, transcript_path, action_items, meeting_id, meeting, roster=None):
         return {
             "code": code,
             "files_written": ["sprints/2026-W25/ggl-5168.md"],
@@ -258,7 +258,7 @@ def test_transcript_only_commit_fires_with_no_bullets(
 
     # The per-project ingest reports NO files written — the only thing
     # that should trigger the commit is the persisted transcript.
-    def fake_ingest_one(*, config, code, transcript_path, action_items, meeting_id, meeting):
+    def fake_ingest_one(*, config, code, transcript_path, action_items, meeting_id, meeting, roster=None):
         return {
             "code": code,
             "files_written": [],
