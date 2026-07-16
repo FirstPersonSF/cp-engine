@@ -4,6 +4,19 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.67.1 — 2026-07-16
+
+- **Spine substance mirror: skip-and-report malformed files (#90,
+  PR #91).** One hand-edited version header (sap-5171's `· synthesis`,
+  Sentry `43a1ab10`) aborted the whole project's substance reconcile —
+  every promote's mirror step failed and sibling edits silently stopped
+  flowing disk→DB for 12 days. `_load_substance_items` now catches the
+  per-file parse error and continues; skipped files' existing rows are
+  SHIELDED from the reap (present-but-broken ≠ vanished, so a typo'd
+  header can never delete or source-flag good rows); the promote webhook
+  records `mirror_skipped` on the run row and captures each skip to
+  Sentry (`area=spine_substance_skip`) so broken files stay visible.
+
 ## v0.67.0 — 2026-07-16
 
 - **Cross-project detection in meeting ingest: propose-and-confirm
