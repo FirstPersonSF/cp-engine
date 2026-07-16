@@ -313,23 +313,66 @@ def test_sync_substance_skips_old_element_files(tmp_path):
     assert ids == {"proj-1/d1/v2", "proj-1/d1/v1"}
 
 
-def test_sync_substance_malformed_substance_file_still_raises(tmp_path):
-    """The skip-probe must NOT over-swallow: a file that genuinely IS a
-    substance file (has est_item_id) but is otherwise malformed (broken version
-    header) must still raise — only NON-substance files are skipped."""
-    import pytest
-
-    proj = tmp_path / "1p/acct/proj-1"
-    d = proj / "spine/phase-0-message-strategy"
+def _write_broken_substance(root: Path, name: str, *, est_item_id):
+    """A genuine substance file (has est_item_id) with an invalid version
+    header — reproduces the sap-5171 hand-edit (`· synthesis` status)."""
+    d = root / "1p/acct/proj-1/spine/phase-0-message-strategy"
     d.mkdir(parents=True, exist_ok=True)
-    (d / "broken.md").write_text(
-        "---\nest_item_id: d1\nest_item_kind: deliverable\nbinding: live\n---\n"
-        "## not-a-valid-version-header\nframing: x\nsources:\n\nbody\n"
+    (d / f"{name}.md").write_text(
+        f"---\nest_item_id: {est_item_id}\nest_item_kind: deliverable\n"
+        "binding: live\n---\n"
+        "## v2 — 2026-07-04 · synthesis\nframing: x\nsources:\n\nbody\n"
     )
+
+
+def test_sync_substance_malformed_file_skipped_and_reported(tmp_path):
+    """Issue #90: a malformed substance file is skipped-and-reported, NOT
+    fatal — sibling files still mirror, and the parse error surfaces via
+    malformed_out (the sap-5171 'synthesis' status aborted the whole project's
+    mirror for 12 days)."""
+    proj = tmp_path / "1p/acct/proj-1"
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
+    _write_broken_substance(tmp_path, "broken", est_item_id="d2")
     client = _FakeClient()
-    with pytest.raises(ValueError):
-        sync_spine_substance(client, project_id="u1", project_code="proj-1",
-                             project_dir=proj, estimate=_FakeEstimate({"d1"}))
+    malformed: list[dict] = []
+    n = sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                             project_dir=proj,
+                             estimate=_FakeEstimate({"d1", "d2"}),
+                             malformed_out=malformed)
+    # The healthy sibling's two versions mirrored; nothing from the bad file.
+    assert n == 2
+    ids = {r["id"] for r in client.store["spine_substance"]}
+    assert ids == {"proj-1/d1/v2", "proj-1/d1/v1"}
+    # The skip is reported, with enough detail to act on.
+    assert len(malformed) == 1
+    assert malformed[0]["est_item_id"] == "d2"
+    assert malformed[0]["rel_path"].endswith("broken.md")
+    assert "synthesis" in malformed[0]["error"]
+
+
+def test_sync_substance_malformed_file_shields_reap(tmp_path):
+    """Issue #90: a malformed file's EXISTING rows must not be reaped or
+    source-missing-flagged — the file is present-but-broken, not vanished.
+    A typo'd version header must never turn into data loss."""
+    proj = tmp_path / "1p/acct/proj-1"
+    _write_broken_substance(tmp_path, "broken", est_item_id="d2")
+    client = _FakeClient()
+    client.store["spine_substance"] = [
+        {"id": "proj-1/d2/v1", "project_id": "u1", "project_code": "proj-1",
+         "est_item_id": "d2", "field_states": {}, "review_flags": []},
+        # Legacy row without the est_item_id column: the id-prefix fallback.
+        {"id": "proj-1/d2/v0", "project_id": "u1", "project_code": "proj-1",
+         "field_states": {}, "review_flags": []},
+        # A genuinely vanished item still reaps.
+        {"id": "proj-1/GONE/v1", "project_id": "u1", "project_code": "proj-1",
+         "est_item_id": "GONE", "field_states": {}, "review_flags": []},
+    ]
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d2"}))
+    rows = {r["id"]: r for r in client.store["spine_substance"]}
+    assert "proj-1/d2/v1" in rows and "proj-1/d2/v0" in rows
+    assert rows["proj-1/d2/v1"]["review_flags"] == []  # not source-flagged
+    assert "proj-1/GONE/v1" not in rows
 
 
 def test_sync_substance_reaps_vanished_row(tmp_path):
@@ -1243,7 +1286,7 @@ def test_sync_skips_authored_dir_on_read(tmp_path):
         "binding: unbound\nplacement: context\n---\n"
         "## v1 — 2026-06-19 · live\nframing: authored note\nsources:\n\nbody\n"
     )
-    items = _load_substance_items(proj)
+    items, _malformed = _load_substance_items(proj)
     assert not any(it.est_item_id.startswith("_authored/") for it, _ in items)
 
 
@@ -1253,5 +1296,5 @@ def test_load_substance_still_loads_phase_dir_file(tmp_path):
 
     proj = tmp_path / "1p/acct/proj-1"
     _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
-    items = _load_substance_items(proj)
+    items, _malformed = _load_substance_items(proj)
     assert any(it.est_item_id == "d1" for it, _ in items)
