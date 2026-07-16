@@ -49,6 +49,13 @@ class GeneratedPlan:
     project_code: str
     transcript_path: Path
     model: str
+    # Cross-project proposals (#88): items the classifier flagged as
+    # belonging to a DIFFERENT active project. Each entry:
+    # {target_code, verb, text, confidence, item} where `item` is the
+    # clean plan item (marker-free) ready to route on accept. The item
+    # ALSO stays in this project's plan with a `[cross-project? → code]`
+    # suffix — detection proposes, never writes to the target.
+    cross_project: tuple[dict, ...] = ()
 
 
 def generate_plan(
@@ -59,6 +66,7 @@ def generate_plan(
     action_items: list[dict] | None = None,
     model: str = "claude-opus-4-7",
     api_key: str | None = None,
+    roster: list | None = None,
 ) -> GeneratedPlan:
     """Read transcript + project context, ask Claude for a plan, validate it.
 
@@ -82,6 +90,7 @@ def generate_plan(
         project_code=project_code,
         transcript_path=transcript_path,
         team=config.team,
+        roster=roster,
     )
 
     response_text = _call_claude(prompt, model=model, api_key=api_key)
@@ -123,12 +132,20 @@ def generate_plan(
             proj = plan.setdefault("projects", {}).setdefault(project_code, {})
             proj.setdefault("record-ask", []).extend(ask_items)
 
+    # Cross-project annotations (#88): validate against the roster (drop
+    # anything the LLM invented), suffix flagged items with the
+    # `[cross-project? → code]` marker, and collect clean proposals.
+    cross_project = _apply_cross_project_annotations(
+        plan, project_code=project_code, roster=roster
+    )
+
     return GeneratedPlan(
         plan=plan,
         raw_response=response_text,
         project_code=project_code,
         transcript_path=transcript_path,
         model=model,
+        cross_project=tuple(cross_project),
     )
 
 
@@ -288,6 +305,105 @@ def _is_engagement_code(project_code: str) -> bool:
     return bool(_ENGAGEMENT_CODE_RE.match(project_code or ""))
 
 
+# Verbs whose items may carry a cross-project annotation (#88): the
+# text-carrying sprint-file verbs. Forward-looking ClickUp verbs and
+# stakeholders are excluded — they have their own routing semantics.
+_XPROJECT_VERBS = {
+    "inbound", "record-inbound",
+    "asks", "ask", "record-ask",
+    "decisions", "decision", "add-decision",
+    "risks", "risk", "record-risk",
+}
+
+# Canonical shorthand family stored on proposals (and used to build the
+# one-item plan on accept).
+_XPROJECT_VERB_FAMILY = {
+    "inbound": "inbound", "record-inbound": "inbound",
+    "asks": "asks", "ask": "asks", "record-ask": "asks",
+    "decisions": "decisions", "decision": "decisions",
+    "add-decision": "decisions",
+    "risks": "risks", "risk": "risks", "record-risk": "risks",
+}
+
+
+def _apply_cross_project_annotations(
+    plan: dict, *, project_code: str, roster: list | None
+) -> list[dict]:
+    """Validate + apply per-item `cross_project` annotations in place.
+
+    For each item the LLM annotated with `cross_project` (+ optional
+    `cross_project_confidence`), the annotation fields are POPPED off the
+    item (writers never see them). When the annotation survives the
+    guards — target is a real roster code, isn't the tagged project, the
+    verb is a sprint-file verb, confidence ∈ {high, medium} — the item's
+    text gets the `[cross-project? → code]` suffix and a clean proposal
+    dict is returned. Invalid annotations are dropped silently (the item
+    still writes normally): detection must never break ingest, and a
+    garbled/invented code (the known Fathom-mislabel failure mode) must
+    propose nothing rather than propose wrongly.
+    """
+    roster_codes = {
+        (p.code or "").strip().lower() for p in (roster or []) if p.code
+    }
+    proposals: list[dict] = []
+    entries = (plan.get("projects") or {}).get(project_code) or {}
+    for verb, items in entries.items():
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            target = item.pop("cross_project", None)
+            confidence = item.pop("cross_project_confidence", None)
+            if not target:
+                continue
+            target = str(target).strip().lower()
+            confidence = str(confidence or "medium").strip().lower()
+            text = (item.get("text") or "").strip()
+            if (
+                verb not in _XPROJECT_VERBS
+                or not text
+                or target == project_code.strip().lower()
+                or target not in roster_codes
+                or confidence not in ("high", "medium")
+            ):
+                continue
+            payload = dict(item)  # clean copy, marker-free
+            item["text"] = f"{text} [cross-project? → {target}]"
+            proposals.append(
+                {
+                    "target_code": target,
+                    "verb": _XPROJECT_VERB_FAMILY[verb],
+                    "text": text,
+                    "confidence": confidence,
+                    "item": payload,
+                }
+            )
+    return proposals
+
+
+def _build_roster_block(roster: list | None, project_code: str) -> str:
+    """Render the cross-project detection roster for the prompt."""
+    lines: list[str] = []
+    code_lc = project_code.strip().lower()
+    for p in roster or []:
+        code = (p.code or "").strip().lower()
+        if not code or code == code_lc:
+            continue
+        label = f"- `{code}` — {p.name or code}"
+        if getattr(p, "company_name", None):
+            label += f" ({p.company_name})"
+        if getattr(p, "source", "") == "initiative":
+            label += " [initiative]"
+        lines.append(label)
+    if not lines:
+        return (
+            "(No roster provided — cross-project detection is OFF. "
+            "Never emit `cross_project` fields.)"
+        )
+    return "\n".join(lines)
+
+
 def _build_prompt(
     *,
     transcript: str,
@@ -295,6 +411,7 @@ def _build_prompt(
     project_code: str,
     transcript_path: Path,
     team: tuple[str, ...] = (),
+    roster: list | None = None,
 ) -> str:
     today = datetime.now().date().isoformat()
     if team:
@@ -322,6 +439,7 @@ def _build_prompt(
         project_context=project_context,
         transcript=transcript,
         team_block=team_block,
+        roster_block=_build_roster_block(roster, project_code),
     )
 
 
@@ -338,6 +456,9 @@ against the project's sprint file.
 
 # Internal team
 {team_block}
+
+# Other active projects (cross-project detection roster)
+{roster_block}
 
 # What's already known about this project
 {project_context}
@@ -418,9 +539,20 @@ projects:
 7. **Quote-like fidelity, no embellishment.** The text should reflect what
    was actually said. Don't add interpretation or speculation. If a
    commitment is vague ("we should look at that"), it's NOT a decision.
-8. **One project only.** Even if the meeting touches other projects, only
-   record items relevant to {project_code}. Cross-project items belong in
-   themes (handled separately).
+8. **One project's file — but FLAG cross-project items.** Record items
+   relevant to {project_code} as usual. If the meeting ALSO carries a
+   substantive item (a real decision, ask, risk, or inbound update — not
+   a passing mention) that clearly belongs to one of the OTHER active
+   projects in the roster above, still record it here under the right
+   verb and add two extra fields to that item:
+     cross_project: "<other-project-code>"    # EXACTLY as listed in the roster
+     cross_project_confidence: "high"         # high | medium
+   Guards: use only codes from the roster; never {project_code} itself;
+   only on inbound/asks/decisions/risks items. Be conservative — if you
+   are not at least medium-confident which project it belongs to, or the
+   roster block says detection is OFF, leave the fields off entirely.
+   These become human-reviewed routing proposals; nothing auto-writes to
+   the other project.
 9. **Milestones vs decisions vs asks.** Use `set-milestone` when the
    transcript names an INTERNAL deliverable with a date AND an owner
    ("Pop-up final to Rena Friday", "Tony delivers redirect page
@@ -471,6 +603,9 @@ or between teams).
 
 # Internal team
 {team_block}
+
+# Other active projects (cross-project detection roster)
+{roster_block}
 
 # What's already known about this initiative
 {project_context}
@@ -547,6 +682,17 @@ projects:
     proposes a ClickUp task behind a review gate. Aspirational or
     undated commitments stay in `decisions` (which writes to the
     sprint file).
+11. **Flag cross-project items.** If the meeting carries a substantive
+    item (a real decision, ask, or risk — not a passing mention) that
+    clearly belongs to one of the OTHER active projects in the roster
+    above, still record it here under the right verb and add:
+      cross_project: "<other-project-code>"    # EXACTLY as listed in the roster
+      cross_project_confidence: "high"         # high | medium
+    Guards: only codes from the roster; never {project_code} itself;
+    only on asks/decisions/risks items. Be conservative — if you are
+    not at least medium-confident, or the roster block says detection
+    is OFF, leave the fields off. These become human-reviewed routing
+    proposals; nothing auto-writes to the other project.
 
 # Output format
 

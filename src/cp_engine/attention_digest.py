@@ -263,8 +263,9 @@ def compose_digest(digest: dict, *, recipient_name: str, today: date) -> str:
     past_due = digest.get("past_due") or []
     escalated = digest.get("escalated") or []
     allocation = digest.get("allocation") or []
+    cross_project = digest.get("cross_project") or []
 
-    if not past_due and not escalated and not allocation:
+    if not past_due and not escalated and not allocation and not cross_project:
         return (
             f"**{recipient_name}, all clear this morning.** "
             "No past-due asks, no new escalations, allocation within caps."
@@ -289,6 +290,16 @@ def compose_digest(digest: dict, *, recipient_name: str, today: date) -> str:
         lines.append(f"🚨 **{len(escalated_sorted)} {noun} escalated this week**")
         for risk in escalated_sorted:
             lines.append(f"• `{risk.code}` — {risk.text}")
+        lines.append("")
+
+    if cross_project:
+        noun = "proposal" if len(cross_project) == 1 else "proposals"
+        lines.append(f"🔀 **{len(cross_project)} cross-project routing {noun}**")
+        for p in cross_project:
+            lines.append(
+                f"• `{p['source_code']}` → `{p['target_code']}` — {p['text']} "
+                f"({p['verb']} · {p.get('confidence') or 'medium'})"
+            )
         lines.append("")
 
     if allocation:
@@ -352,11 +363,12 @@ def _render_digest_blocks(
     past_due = digest.get("past_due") or []
     escalated = digest.get("escalated") or []
     allocation = digest.get("allocation") or []
+    cross_project = digest.get("cross_project") or []
     # Sprint week the items were read from; embedded into button payloads so
     # a click resolves against the right sprint file after a rollover.
     week_iso = digest.get("week_iso")
 
-    if not past_due and not escalated and not allocation:
+    if not past_due and not escalated and not allocation and not cross_project:
         return [{
             "type": "section",
             "text": {
@@ -490,6 +502,63 @@ def _render_digest_blocks(
                 }],
             })
 
+    if cross_project:
+        # Cross-project routing proposals (#88): meeting-ingested items the
+        # classifier flagged as belonging to a DIFFERENT project, pending
+        # human confirm. Accept routes the item to the target's sprint file;
+        # Dismiss archives the proposal (its hash stays dead).
+        blocks.append({"type": "divider"})
+        blocks.append({
+            "type": "section",
+            "text": {
+                "type": "mrkdwn",
+                "text": (
+                    f"🔀 *{len(cross_project)} cross-project routing "
+                    f"proposal{'s' if len(cross_project) != 1 else ''}*"
+                ),
+            },
+        })
+        budget_items = max(0, _remaining_budget() // 4)
+        cap = min(MAX_ITEMS_PER_SECTION, budget_items)
+        shown_xproj = cross_project[:cap]
+        dropped_xproj = len(cross_project) - len(shown_xproj)
+        for p in shown_xproj:
+            blocks.append({"type": "divider"})
+            blocks.append({
+                "type": "section",
+                "text": {
+                    "type": "mrkdwn",
+                    "text": f"`{p['source_code']}` → `{p['target_code']}` — {p['text']}",
+                },
+            })
+            meeting_ref = (p.get("meeting_id") or "")[:8]
+            context_bits = [p["verb"], p.get("confidence") or "medium"]
+            if meeting_ref:
+                context_bits.append(f"meeting {meeting_ref}")
+            blocks.append({
+                "type": "context",
+                "elements": [{"type": "mrkdwn", "text": " · ".join(context_bits)}],
+            })
+            blocks.append({
+                "type": "actions",
+                "elements": _xproject_action_buttons(
+                    target_code=p["target_code"],
+                    cp_hash=p["cp_hash"],
+                    week_iso=week_iso,
+                ),
+            })
+        if dropped_xproj > 0:
+            blocks.append({
+                "type": "context",
+                "elements": [{
+                    "type": "mrkdwn",
+                    "text": (
+                        f"_+ {dropped_xproj} more cross-project proposal"
+                        f"{'s' if dropped_xproj != 1 else ''} not shown_"
+                    ),
+                }],
+            })
+
     if allocation:
         blocks.append({"type": "divider"})
         blocks.append({
@@ -560,6 +629,32 @@ def _ask_action_buttons(*, code: str, cp_hash: str, week_iso: str | None = None)
             "text": {"type": "plain_text", "text": "📅 Snooze until…"},
             "value": _pipe("snooze-ask-pick", code, cp_hash, week_iso),
             "action_id": f"snooze-ask-pick_{code}_{cp_hash}",
+        },
+    ]
+
+
+def _xproject_action_buttons(
+    *, target_code: str, cp_hash: str, week_iso: str | None = None
+) -> list[dict]:
+    """Accept/Dismiss for a cross-project routing proposal (#88).
+
+    The `code` slot in the pipe payload carries the TARGET project code —
+    the click handler routes the item there. `cp_hash` is the proposal's
+    unique key in MC-2's cross_project_proposals table.
+    """
+    return [
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "✅ Route it"},
+            "style": "primary",
+            "value": _pipe("xproj-accept", target_code, cp_hash, week_iso),
+            "action_id": f"xproj-accept_{target_code}_{cp_hash}",
+        },
+        {
+            "type": "button",
+            "text": {"type": "plain_text", "text": "✖️ Dismiss"},
+            "value": _pipe("xproj-dismiss", target_code, cp_hash, week_iso),
+            "action_id": f"xproj-dismiss_{target_code}_{cp_hash}",
         },
     ]
 

@@ -397,6 +397,10 @@ def attention_digest_cmd(post_to_slack: bool, recipient: str, today) -> None:
 
     today_date = today.date() if today else _date.today()
     digest = run_digest(config=config, today=today_date)
+    # Cross-project routing proposals (#88): pending rows from MC-2's
+    # review gate ride the same digest. Best-effort — the digest must
+    # still send when MC-2 is unreachable.
+    digest["cross_project"] = _fetch_pending_cross_project()
     markdown = compose_digest(digest, recipient_name=recipient, today=today_date)
 
     if post_to_slack:
@@ -451,6 +455,29 @@ def _fetch_clickup_task_ids_for_hashes(config, hashes: list[str]) -> dict[str, s
     except Exception as exc:  # noqa: BLE001 — digest send must not fail
         log.warning("clickup task-id lookup failed (degrading to no links): %s", exc)
         return {}
+
+
+def _fetch_pending_cross_project() -> list[dict]:
+    """Pending cross-project proposals from MC-2 (#88).
+
+    Returns [] on any failure (Supabase missing, query error) — the
+    digest must still send without the proposals section.
+    """
+    import logging
+
+    log = logging.getLogger(__name__)
+    try:
+        from cp_engine import mc2_db
+        from cp_engine.cross_project import list_pending
+
+        client = mc2_db.get_client(required=False)
+        if client is None:
+            log.info("cross-project lookup skipped: SUPABASE env not set")
+            return []
+        return list_pending(client)
+    except Exception as exc:  # noqa: BLE001 — digest send must not fail
+        log.warning("cross-project lookup failed (degrading to none): %s", exc)
+        return []
 
 
 

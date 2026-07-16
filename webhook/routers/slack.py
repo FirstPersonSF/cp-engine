@@ -115,6 +115,24 @@ async def _handle_block_action(payload: dict) -> dict:
         )
         return {"ok": True}
 
+    # Cross-project routing proposals (#88): Accept routes the item to the
+    # target project's sprint file, Dismiss archives the proposal. `code`
+    # in the pipe payload is the TARGET project; cp_hash keys the MC-2
+    # cross_project_proposals row. Dedicated background path — the generic
+    # one below builds hash-only plans for existing sprint bullets, which
+    # is the wrong shape here.
+    if verb in ("xproj-accept", "xproj-dismiss"):
+        log.info(
+            "slack_action_spawn code=%s verb=%s hash=%s action_id=%s user=%s",
+            code, verb, cp_hash, action_id, user_id,
+        )
+        pipeline._spawn_background(_run_xproject_in_background(
+            verb=verb, target_code=code, cp_hash=cp_hash,
+            response_url=response_url, original_message=original_message,
+            clicked_action_id=action_id,
+        ))
+        return {"ok": True, "queued": True}
+
     extras: dict = {"closed_by": "slack", "user": user_id}
 
     if verb in ("snooze-ask-7d", "snooze-risk-7d"):
@@ -397,6 +415,130 @@ def _post_response_url_update(
             "response_url update returned %s: %s",
             resp.status_code, resp.text[:200],
         )
+
+
+async def _run_xproject_in_background(
+    *,
+    verb: str, target_code: str, cp_hash: str,
+    response_url: str, original_message: dict,
+    clicked_action_id: str = "",
+) -> None:
+    """Background coroutine for cross-project proposal decisions (#88).
+
+    Mirrors `_run_action_in_background`'s shape: sync work via to_thread,
+    logs-never-raises, surgical response_url update."""
+    try:
+        result = await asyncio.to_thread(
+            _run_xproject_action,
+            verb=verb, target_code=target_code, cp_hash=cp_hash,
+        )
+    except Exception as exc:  # noqa: BLE001 — background must not crash
+        log.exception(
+            "xproject background failed: %s/%s/%s", verb, target_code, cp_hash
+        )
+        observability.capture(exc, area="slack_action_background")
+        result = {"committed": False, "commit_sha": None, "errors": [str(exc)]}
+
+    log.info(
+        "slack_action_complete code=%s verb=%s hash=%s committed=%s "
+        "commit_sha=%s errors=%d",
+        target_code, verb, cp_hash,
+        result.get("committed"),
+        (result.get("commit_sha") or "")[:8],
+        len(result.get("errors") or []),
+    )
+
+    confirmation = _xproject_confirmation_text(
+        verb=verb, target_code=target_code, result=result
+    )
+    try:
+        await asyncio.to_thread(
+            _post_response_url_update,
+            response_url=response_url,
+            original_message=original_message,
+            confirmation=confirmation,
+            clicked_action_id=clicked_action_id,
+        )
+    except Exception:  # noqa: BLE001
+        log.exception(
+            "xproject response_url update failed: %s/%s", target_code, cp_hash
+        )
+
+
+def _run_xproject_action(*, verb: str, target_code: str, cp_hash: str) -> dict:
+    """Decide one cross-project proposal (sync worker).
+
+    Dismiss: stamp the MC-2 row dismissed (no tenant clone).
+    Accept: build the one-item routed plan, clone the tenant, write it to
+    the target project's CURRENT sprint file (provenance marker + the
+    usual hash-dedup), commit + push, stamp the row accepted.
+    """
+    from cp_engine.cross_project import build_routed_plan, decide, get_by_hash
+
+    client = pipeline._create_supabase_client()
+    if client is None:
+        return {"committed": False, "commit_sha": None,
+                "errors": ["MC-2 (Supabase) unavailable"]}
+
+    proposal = get_by_hash(client, cp_hash)
+    if proposal is None:
+        return {"committed": False, "commit_sha": None,
+                "errors": [f"proposal {cp_hash} not found"]}
+    if proposal.get("status") != "pending":
+        return {"committed": False, "commit_sha": None, "errors": [],
+                "already": proposal.get("status")}
+
+    if verb == "xproj-dismiss":
+        decide(client, proposal["id"], "dismissed")
+        return {"committed": False, "commit_sha": None, "errors": [],
+                "dismissed": True}
+
+    plan = build_routed_plan(proposal)
+    with git_ops._cloned_tenant() as tenant_root:
+        result = execute_plan(
+            plan,
+            tenant_root=tenant_root,
+            today=date.today(),
+            supabase=client,
+            meeting_id=proposal.get("meeting_id"),
+        )
+        commit_sha = None
+        if result.files_written:
+            ingested_entry = {
+                "code": proposal["target_code"],
+                "files_written": [str(p) for p in result.files_written],
+                "errors": result.errors,
+                "plan_summary": {proposal["verb"]: 1},
+            }
+            commit_sha = git_ops._commit_and_push(
+                tenant_root=tenant_root,
+                meeting_id=f"xproj-{cp_hash}",
+                ingested=[ingested_entry],
+            )
+    if result.errors and not result.files_written:
+        # Nothing landed — keep the proposal pending so the human can retry.
+        return {"committed": False, "commit_sha": None, "errors": result.errors}
+    # Routed (or an identical bullet was already there — hash dedupe):
+    # either way the routing decision is settled.
+    decide(client, proposal["id"], "accepted", routed_commit_sha=commit_sha)
+    return {"committed": bool(commit_sha), "commit_sha": commit_sha,
+            "errors": result.errors, "accepted": True}
+
+
+def _xproject_confirmation_text(*, verb: str, target_code: str, result: dict) -> str:
+    """Post-click confirmation for cross-project decisions (#88)."""
+    from datetime import datetime as _datetime
+    now_str = _datetime.now(UTC).strftime("%I:%M %p UTC").lstrip("0")
+    errors = result.get("errors") or []
+    if errors and not result.get("accepted") and not result.get("dismissed"):
+        return f"⚠️ Action failed: {errors[0][:120]}"
+    if result.get("already"):
+        return f"ℹ️ Already {result['already']} · {now_str}"
+    if result.get("dismissed"):
+        return f"✖️ Dismissed · {now_str}"
+    sha = result.get("commit_sha")
+    sha_str = f" · `{sha[:8]}`" if sha else " · already in sprint file"
+    return f"✅ Routed to `{target_code}` · {now_str}{sha_str}"
 
 
 def _confirmation_text(*, verb: str, extras: dict, result: dict) -> str:

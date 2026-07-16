@@ -290,6 +290,7 @@ def _ingest_one_project(
     action_items: list[dict] | None = None,
     meeting_id: str | None = None,
     meeting: dict | None = None,
+    roster: list | None = None,
 ) -> dict:
     """Generate plan + execute for a single project. Returns a summary dict.
 
@@ -309,6 +310,7 @@ def _ingest_one_project(
         "files_written": [],
         "skipped_duplicate": 0,
         "errors": [],
+        "cross_project": [],
     }
     try:
         gen = generate_plan(
@@ -316,6 +318,7 @@ def _ingest_one_project(
             project_code=code,
             transcript_path=transcript_path,
             action_items=action_items,
+            roster=roster,
         )
     except PlanGenerationError as exc:
         entry["errors"].append(f"plan generation failed: {exc}")
@@ -326,6 +329,9 @@ def _ingest_one_project(
     projects = gen.plan.get("projects") or {}
     project_block = projects.get(code) or {}
     entry["plan_summary"] = {verb: len(items) for verb, items in project_block.items()}
+    # Cross-project proposals (#88): validated annotations collected by
+    # generate_plan. The caller writes them to MC-2 after this returns.
+    entry["cross_project"] = list(gen.cross_project)
 
     try:
         exec_result = execute_plan(
@@ -628,6 +634,45 @@ def _link_meeting_safe(client, meeting, supabase_url, supabase_key):
         return None
 
 
+def _propose_cross_project(
+    *,
+    meeting_id: str | None,
+    source_code: str,
+    proposals: list[dict],
+) -> dict:
+    """Write cross-project proposals (#88) to MC-2's review gate.
+
+    Returns a summary {inserted, duplicate, unresolvable} for the run log.
+    Raises only on client-creation problems the caller already guards.
+    """
+    from cp_engine.cross_project import write_proposal
+
+    client = _create_supabase_client()
+    if client is None:
+        log.info("cross-project: no Supabase client; skipping %d proposal(s)",
+                 len(proposals))
+        return {}
+
+    summary = {"inserted": 0, "duplicate": 0, "unresolvable": 0}
+    for p in proposals:
+        outcome = write_proposal(
+            client,
+            meeting_id=meeting_id,
+            source_code=source_code,
+            target_code=p["target_code"],
+            verb=p["verb"],
+            text=p["text"],
+            confidence=p.get("confidence"),
+            item=p.get("item"),
+        )
+        summary[outcome] = summary.get(outcome, 0) + 1
+    log.info(
+        "cross-project: %s → proposals %s (meeting %s)",
+        source_code, summary, meeting_id,
+    )
+    return summary
+
+
 def _perform_auto_ingest(
     *,
     meeting_id: str,
@@ -672,6 +717,18 @@ def _perform_auto_ingest(
         meeting = _fetch_meeting(meeting_id)
         action_items = (meeting or {}).get("action_items") or []
 
+        # Cross-project detection roster (#88): every active project across
+        # the tenant, fetched once per run. Best-effort — an MC-2 hiccup
+        # degrades to roster=None, which turns detection OFF for this run
+        # (the prompt tells the model to emit no cross_project fields).
+        try:
+            from cp_engine.plan_from_account_meeting import list_active_all
+
+            roster = list_active_all(config)
+        except Exception:  # noqa: BLE001 — detection must never break ingest
+            log.warning("cross-project roster fetch failed", exc_info=True)
+            roster = None
+
         # Per-project ingest + per-project commit. A multi-project
         # auto-ingest call produces N commits (one per project that
         # actually wrote files), not one combined commit. This makes
@@ -688,8 +745,24 @@ def _perform_auto_ingest(
                 action_items=action_items,
                 meeting_id=meeting_id,
                 meeting=meeting,
+                roster=roster,
             )
             ingested.append(entry)
+
+            # Cross-project proposals (#88) → MC-2 review gate. Best-effort:
+            # a store failure must never break the ingest or the commit.
+            if entry.get("cross_project"):
+                try:
+                    entry["cross_project_proposed"] = _propose_cross_project(
+                        meeting_id=meeting_id,
+                        source_code=code,
+                        proposals=entry["cross_project"],
+                    )
+                except Exception:  # noqa: BLE001
+                    log.warning(
+                        "cross-project proposal write failed for %s (meeting %s)",
+                        code, meeting_id, exc_info=True,
+                    )
 
             # Persist the FULL verbatim transcript into this project's
             # meeting-transcripts/ dir. It's the input for the

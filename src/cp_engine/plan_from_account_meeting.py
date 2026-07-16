@@ -425,6 +425,34 @@ def list_active_for_company(
     return out
 
 
+def list_active_all(config: TenantConfig) -> list[ProjectState]:
+    """Return every active project across the tenant — engagements
+    (Deal | Open, not internal) plus initiatives (Active), all companies.
+
+    Used as the cross-project detection roster (#88): the single-project
+    ingest classifier scores extracted items against this list to spot
+    items that belong to a DIFFERENT active project than the one the
+    meeting was tagged to. Standalone repos are skipped — they're not
+    ingest targets.
+    """
+    from cp_engine.status import is_active_initiative_status, is_active_status
+    from cp_engine.sync import _default_backend_factory
+
+    backend = _default_backend_factory(config.sync.backend)
+    all_projects = backend.read_projects(config)
+
+    out: list[ProjectState] = []
+    for p in all_projects:
+        if p.source == "engagement":
+            if is_active_status(p.status) and not p.is_internal:
+                out.append(p)
+        elif p.source == "initiative":
+            if is_active_initiative_status(p.status):
+                out.append(p)
+    out.sort(key=lambda p: p.code)
+    return out
+
+
 # Phase D.5: tenant-scope sprint planning. Three valid scopes mapping
 # to companies.kind values; each pulls a different active set.
 _SCOPE_TO_KIND = {
