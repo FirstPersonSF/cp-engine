@@ -32,6 +32,7 @@ def _asset_runs_table(client):
 async def _run_asset_ingest(
     run_id: str, code: str, mc_project_id: str | None = None,
     folder: str | None = None,
+    file_ids: list[str] | None = None,
 ) -> None:
     """Background: run the (sync, slow) asset ingest off the event loop, then
     record the outcome on the asset_ingest_runs row. Never raises — a failure is
@@ -63,6 +64,7 @@ async def _run_asset_ingest(
             supabase_url=supabase_url,
             supabase_key=supabase_key,
             only_folder=folder,
+            only_file_ids=set(file_ids) if file_ids else None,
         )
         if not run.project_found:
             patch = {
@@ -129,7 +131,9 @@ async def asset_ingest_endpoint(request: Request) -> Response:
 
     Request body (JSON):
         {"code": "<project_code>", "run_id": "<uuid>",
-         "mc_project_id": "<projects.id>"}  # code+run_id required; mc_project_id optional
+         "mc_project_id": "<projects.id>",  # code+run_id required; rest optional
+         "folder": "<name>",                # narrow to one configured folder
+         "file_ids": ["<key>", ...]}        # picker: ingest ONLY these files
 
     `mc_project_id` (= `projects.id`) is the authoritative resolution key. When
     present we resolve by it directly, sidestepping the by-number path that
@@ -150,6 +154,10 @@ async def asset_ingest_endpoint(request: Request) -> Response:
     run_id = (payload.get("run_id") or "").strip()
     mc_project_id = (payload.get("mc_project_id") or "").strip() or None
     folder = (payload.get("folder") or "").strip() or None
+    # File-scoped selection (the picker): ingest ONLY these selection keys
+    # (Drive ids / Dropbox paths). Empty/absent → None → today's folder scan.
+    raw_file_ids = payload.get("file_ids") or []
+    file_ids = [s for s in (str(x).strip() for x in raw_file_ids) if s] or None
     if not code or not run_id:
         raise HTTPException(status_code=400, detail="code and run_id are required")
     client = pipeline._create_supabase_client()
@@ -177,9 +185,71 @@ async def asset_ingest_endpoint(request: Request) -> Response:
         "status": "running",
         "started_at": _utc_now_iso(),
     }).execute()
-    pipeline._spawn_background(_run_asset_ingest(run_id, code, mc_project_id, folder))
+    pipeline._spawn_background(
+        _run_asset_ingest(run_id, code, mc_project_id, folder, file_ids)
+    )
     return Response(
         content=json.dumps({"run_id": run_id, "status": "running"}),
         status_code=202,
+        media_type="application/json",
+    )
+
+
+@router.post("/api/assets/list")
+async def asset_list_endpoint(request: Request) -> Response:
+    """List a project's cloud files for the ingest PICKER (signed).
+
+    Unlike /api/assets/ingest this is SYNCHRONOUS — it only walks the
+    Drive/Dropbox folder trees (seconds; no download or embed) and returns the
+    files, each annotated `already_ingested`. No asset_ingest_runs row, no
+    background task: mc-2 awaits the response and renders the picker. Reuses the
+    same auth, resolution, and listing the ingest path uses.
+
+    Request body (JSON):
+        {"code": "<project_code>", "mc_project_id": "<projects.id>"?}
+
+    Response (200):
+        {"project_found": bool, "unconfigured_reason": str|null,
+         "source_notes": [...], "files": [{key,source,id,name,mime_type,size,
+         modified,path,folder_path,already_ingested}, ...]}
+    """
+    raw_body = await request.body()
+    signatures._verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
+    payload = json.loads(raw_body)
+    code = (payload.get("code") or "").strip()
+    mc_project_id = (payload.get("mc_project_id") or "").strip() or None
+    if not code:
+        raise HTTPException(status_code=400, detail="code is required")
+
+    supabase_url = os.environ.get("SUPABASE_URL")
+    supabase_key = os.environ.get("SUPABASE_SERVICE_KEY")
+    if not supabase_url or not supabase_key:
+        raise HTTPException(
+            status_code=500, detail="Supabase not configured for asset listing"
+        )
+
+    from cp_engine import asset_ingest
+
+    # Listing walks the provider trees (blocking I/O) — run off the event loop.
+    try:
+        result = await asyncio.to_thread(
+            asset_ingest.list_project_files_annotated,
+            code,
+            mc_project_id=mc_project_id,
+            supabase_url=supabase_url,
+            supabase_key=supabase_key,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface a clean 502, capture detail
+        log.warning("asset-list for %s failed: %s", code, exc, exc_info=True)
+        observability.capture(exc, area="asset_list")
+        raise HTTPException(status_code=502, detail=f"asset listing failed: {exc}")
+
+    return Response(
+        content=json.dumps(result),
+        status_code=200,
         media_type="application/json",
     )

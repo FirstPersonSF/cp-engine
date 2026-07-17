@@ -652,3 +652,107 @@ def test_runner_records_refusal_when_unconfigured(monkeypatch):
     assert "created" not in patch  # not a normal-looking empty run
     assert "finished_at" in patch
     assert ups[0]["eq"] == ("id", "run-1")
+
+
+# ------------------------------------------------ file-scoped ingest (picker)
+
+
+def test_run_asset_ingest_threads_only_file_ids(monkeypatch):
+    """_run_asset_ingest passes file_ids through to ingest_project_assets as an
+    only_file_ids SET (the picker's 'ingest exactly these')."""
+    rec = _wire(monkeypatch, spawn=False)
+    captured: dict = {}
+
+    def _fake_ingest(code, **kwargs):
+        captured["only_file_ids"] = kwargs.get("only_file_ids")
+        return IngestRunResult(created=1)
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.ingest_project_assets", _fake_ingest
+    )
+
+    asyncio.run(
+        webhook_main._run_asset_ingest(
+            "run-1", "ibx-5153", file_ids=["keep", "/proj/Deck.pdf"]
+        )
+    )
+    assert captured["only_file_ids"] == {"keep", "/proj/Deck.pdf"}
+
+
+def test_run_asset_ingest_none_file_ids_is_none(monkeypatch):
+    rec = _wire(monkeypatch, spawn=False)
+    captured: dict = {}
+
+    def _fake_ingest(code, **kwargs):
+        captured["only_file_ids"] = kwargs.get("only_file_ids", "MISSING")
+        return IngestRunResult(created=0)
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.ingest_project_assets", _fake_ingest
+    )
+    asyncio.run(webhook_main._run_asset_ingest("run-1", "ibx-5153"))
+    assert captured["only_file_ids"] is None
+
+
+def test_ingest_202_accepts_file_ids(monkeypatch, client):
+    """The endpoint parses file_ids and still returns 202 (picker-scoped run)."""
+    rec = _wire(monkeypatch)
+    resp = _post(
+        client,
+        {"code": "ibx-5153", "run_id": "run-1", "file_ids": ["a", "b"]},
+    )
+    assert resp.status_code == 202, resp.text
+    assert len(rec["spawned"]) == 1
+
+
+# ------------------------------------------------------ /api/assets/list
+
+
+def _post_list(client: TestClient, payload: dict):
+    body = json.dumps(payload).encode()
+    return client.post(
+        "/api/assets/list",
+        content=body,
+        headers={"x-webhook-signature": _signed(body)},
+    )
+
+
+def test_list_returns_annotated_files(monkeypatch, client):
+    _wire(monkeypatch)
+    result = {
+        "project_found": True,
+        "unconfigured_reason": None,
+        "source_notes": [],
+        "files": [
+            {"key": "f1", "source": "drive", "id": "f1", "name": "a.pdf",
+             "mime_type": "application/pdf", "size": 10, "modified": None,
+             "path": None, "folder_path": [], "already_ingested": False},
+        ],
+    }
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.list_project_files_annotated",
+        lambda code, **kwargs: result,
+    )
+    resp = _post_list(client, {"code": "ibx-5153"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == result
+
+
+def test_list_400_when_code_missing(monkeypatch, client):
+    _wire(monkeypatch)
+    resp = _post_list(client, {})
+    assert resp.status_code == 400
+
+
+def test_list_502_when_listing_raises(monkeypatch, client):
+    _wire(monkeypatch)
+
+    def _boom(code, **kwargs):
+        raise RuntimeError("drive down")
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.list_project_files_annotated", _boom
+    )
+    resp = _post_list(client, {"code": "ibx-5153"})
+    assert resp.status_code == 502
+    assert "drive down" in resp.json()["detail"]

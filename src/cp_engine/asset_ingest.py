@@ -123,6 +123,18 @@ class FileRef:
     change_token: str | None = None
 
 
+def file_selection_key(ref: FileRef) -> str:
+    """A stable per-file key the picker uses to select files for a scoped
+    ingest. Drive files are fetched by `id`; Dropbox files by `path` — so the
+    key is the path for Dropbox (its download coordinate) and the id for Drive.
+    Kept in ONE place so the listing endpoint (which stamps this onto each
+    returned file) and the `only_file_ids` filter agree on the key space.
+    """
+    if ref.source == "dropbox" and ref.path:
+        return ref.path
+    return ref.id
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Resolve
 # ──────────────────────────────────────────────────────────────────────
@@ -1246,6 +1258,7 @@ def ingest_project_assets(
     supabase_key: str | None = None,
     use_cache: bool = True,
     only_folder: str | None = None,
+    only_file_ids: set[str] | None = None,
 ) -> IngestRunResult:
     """Resolve, list, download, ingest, and scope-stamp a project's cloud assets.
 
@@ -1297,6 +1310,15 @@ def ingest_project_assets(
     listing to a single configured folder via `_effective_allowlist`. It can only
     RESTRICT the per-project `asset_ingest_folders` allowlist, never widen it — an
     `only_folder` the allowlist doesn't permit scans NOTHING (scope guard).
+
+    FILE-SCOPED SCAN: `only_file_ids` (default None = no file filter) narrows the
+    listed files to an explicit set of selection keys — the picker's "ingest
+    exactly these" path. A key is `file_selection_key(ref)`: the Drive file id,
+    or (Dropbox) the path_display, or the id. This is a pure NARROWING filter
+    applied AFTER `list_files`, so it can only ever be a subset of what a full
+    scan would see — no new download path, and the per-file content-hash cache
+    still applies. An empty set scans nothing; None disables the filter. Combines
+    with `only_folder` (both narrow; the intersection is scanned).
     """
     # Resolve creds lazily, and ONLY the pieces actually missing — so the unit-
     # test path (injected client + pipeline) never touches cp config / Supabase.
@@ -1372,6 +1394,12 @@ def ingest_project_assets(
         allowlist=_effective_allowlist(only_folder, folders.asset_ingest_folders),
         use_cache=use_cache,
     )
+    # File-scoped narrowing (picker's "ingest exactly these"): keep only the
+    # listed files whose selection key was chosen. Pure subset of the scan
+    # above — never widens. `None` disables; an empty set legitimately scans
+    # nothing (and falls through to the `if not files` short-circuit below).
+    if only_file_ids is not None:
+        files = [f for f in files if file_selection_key(f) in only_file_ids]
     if not files:
         # Nothing to ingest (non-client company, disabled sources, empty folder,
         # missing folder ids, OR a dead source — all handled + noted inside
@@ -1878,6 +1906,152 @@ def _utc_now_iso() -> str:
 def _affected_count(resp) -> int:
     """Number of rows an update touched, from its `.data` representation."""
     return len(getattr(resp, "data", None) or [])
+
+
+def list_project_files_annotated(
+    project_code: str,
+    *,
+    mc_project_id: str | None = None,
+    client=None,
+    supabase_url: str | None = None,
+    supabase_key: str | None = None,
+    use_cache: bool = True,
+) -> dict:
+    """List a project's cloud files for the ingest PICKER, each annotated with
+    whether it's already ingested. Synchronous (no download/embed) — this is the
+    read the picker awaits before showing the tree.
+
+    Resolves folders exactly as `ingest_project_assets` does (by-id preferred,
+    by-code fallback), builds connectors, calls `list_files`, then batch-joins
+    the discovered files against this owner's ACTIVE rag_assets to set
+    `already_ingested` per file. A file counts as already ingested when its
+    source id matches a live row's `source_file_id` OR its content hash matches
+    that row's `meta.change_token` (Drew's answer to Q1: match on both).
+
+    Returns a JSON-able dict:
+        {"project_found": bool,
+         "unconfigured_reason": str | None,
+         "source_notes": [{"source","note"}, ...],
+         "files": [{"key","source","id","name","mime_type","size","modified",
+                    "path","folder_path":[...],"already_ingested":bool}, ...]}
+    """
+    from cp_engine import mc2_db
+
+    if client is None:
+        if supabase_url is not None and supabase_key is not None:
+            client = mc2_db.get_client(url=supabase_url, key=supabase_key)
+        else:
+            from cp_engine import config as cp_config
+
+            client = mc2_db.get_client(cp_config.load(Path.cwd()))
+
+    folders = (
+        resolve_project_folders_by_id(client, mc_project_id)
+        if mc_project_id
+        else resolve_project_folders(client, project_code)
+    )
+    if folders is None:
+        return {
+            "project_found": False,
+            "unconfigured_reason": None,
+            "source_notes": [],
+            "files": [],
+        }
+
+    unconfigured = folders_unconfigured_reason(folders)
+    if unconfigured is not None:
+        return {
+            "project_found": True,
+            "unconfigured_reason": unconfigured,
+            "source_notes": [{"source": "config", "note": unconfigured}],
+            "files": [],
+        }
+
+    drive_connector = None
+    dropbox_connector = None
+    if getattr(folders, "enable_google_drive", False):
+        try:
+            from cloud_storage.google_drive_connector import GoogleDriveConnector
+
+            drive_connector = GoogleDriveConnector(service_account_file=None)
+        except Exception:  # noqa: BLE001 — list_files notes the per-source failure
+            drive_connector = None
+    if getattr(folders, "enable_dropbox", False):
+        try:
+            from cloud_storage.dropbox_connector import DropboxConnector
+
+            dropbox_connector = DropboxConnector()
+        except Exception:  # noqa: BLE001 — list_files notes the per-source failure
+            dropbox_connector = None
+
+    files, source_notes = list_files(
+        folders,
+        drive_connector,
+        dropbox_connector,
+        allowlist=folders.asset_ingest_folders,
+        use_cache=use_cache,
+    )
+
+    # Batch-join against this owner's active rag_assets. Pull the two match keys
+    # (source_file_id and meta.change_token) for every live row ONCE, then set
+    # already_ingested per file in memory — one query, not one-per-file.
+    owner_col, owner_val = _owner_filter(folders)
+    ingested_ids: set[str] = set()
+    ingested_tokens: set[str] = set()
+    try:
+        rows = (
+            client.table(Tables.RAG_ASSETS)
+            .select("source_file_id, meta")
+            .eq(owner_col, owner_val)
+            .eq("status", "active")
+            .execute()
+            .data
+            or []
+        )
+        for r in rows:
+            sid = r.get("source_file_id")
+            if sid:
+                ingested_ids.add(sid)
+            tok = (r.get("meta") or {}).get("change_token")
+            if tok:
+                ingested_tokens.add(tok)
+    except Exception as exc:  # noqa: BLE001 — annotation is best-effort; a join
+        # failure must not blank the picker. Degrade to "nothing known ingested"
+        # (everything pickable) and note it rather than crash.
+        print(
+            f"[asset-ingest] already-ingested check failed ({exc}); "
+            "listing all files as pickable",
+            file=sys.stderr,
+        )
+        source_notes = [
+            *source_notes,
+            {"source": "config", "note": f"already-ingested check failed: {exc}"},
+        ]
+
+    out_files = []
+    for f in files:
+        already = f.id in ingested_ids or (
+            f.change_token is not None and f.change_token in ingested_tokens
+        )
+        out_files.append({
+            "key": file_selection_key(f),
+            "source": f.source,
+            "id": f.id,
+            "name": f.name,
+            "mime_type": f.mime_type,
+            "size": f.size,
+            "modified": f.modified,
+            "path": f.path,
+            "folder_path": list(f.folder_path),
+            "already_ingested": already,
+        })
+
+    return {
+        "project_found": True,
+        "unconfigured_reason": None,
+        "source_notes": source_notes,
+        "files": out_files,
+    }
 
 
 def promote_asset(client, asset_id: str) -> bool:
