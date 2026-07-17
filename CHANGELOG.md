@@ -4,6 +4,23 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.68.0 — 2026-07-17
+
+- **Ingest picker data path: file-scoped ingest + annotated listing
+  (#94).** The engine backing mc-2's targeted ingest picker — choose
+  exactly which cloud files to ingest instead of scanning the whole
+  Drive + Dropbox tree (the incremental "1–3 files as the project goes"
+  workflow). `ingest_project_assets(..., only_file_ids=...)` narrows the
+  listed files to a set of selection keys AFTER `list_files` — a pure
+  subset that never widens, with the per-file content-hash cache still
+  applying; `None` preserves today's whole-tree behavior.
+  `list_project_files_annotated(...)` is a new synchronous listing that
+  walks the trees and flags each file `already_ingested` (matched on
+  source id OR content hash against live `rag_assets`), no download or
+  embed. The webhook gains a signed synchronous `POST /api/assets/list`
+  and a `file_ids` field on `POST /api/assets/ingest`. Additive: no
+  migration, no change to `rag_assets` or the run-status model.
+
 ## v0.67.1 — 2026-07-16
 
 - **Spine substance mirror: skip-and-report malformed files (#90,
