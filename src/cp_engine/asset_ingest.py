@@ -2042,7 +2042,13 @@ def list_project_files_annotated(
             "size": f.size,
             "modified": f.modified,
             "path": f.path,
-            "folder_path": list(f.folder_path),
+            # `_folder_segments` derives the real ancestry for BOTH sources:
+            # Drive already carries a breadcrumb in folder_path, but Dropbox
+            # files only carry it in path_display — the raw FileRef.folder_path
+            # is empty for every Dropbox file, which collapsed the whole tree
+            # into one "(root)" group in the picker. Derive it here so folders
+            # group correctly.
+            "folder_path": _folder_segments(f),
             "already_ingested": already,
         })
 
