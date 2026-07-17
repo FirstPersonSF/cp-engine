@@ -16,6 +16,7 @@ from cp_engine.asset_ingest import (
     FileRef,
     IngestRunResult,
     ProjectFolders,
+    _folder_segments,
     file_selection_key,
     ingest_project_assets,
 )
@@ -85,6 +86,28 @@ def test_selection_key_dropbox_without_path_falls_back_to_id() -> None:
     ref = FileRef(source="dropbox", id="id:only", name="x", mime_type=None,
                   size=1, modified=None, path=None)
     assert file_selection_key(ref) == "id:only"
+
+
+# ── folder grouping (picker "(root)" bug) ───────────────────────────────
+
+
+def test_folder_segments_dropbox_derives_ancestry_from_path():
+    # The picker groups by folder_path. Dropbox FileRefs carry their folder
+    # ONLY in path_display (folder_path is empty), so the annotated listing must
+    # derive segments from the path — else every file collapses into "(root)".
+    ref = FileRef(
+        source="dropbox", id="id:1", name="Deck.pdf", mime_type=None, size=1,
+        modified=None, path="/SAP 5174/Creative Assets/Decks/Deck.pdf",
+    )
+    assert _folder_segments(ref) == ["SAP 5174", "Creative Assets", "Decks"]
+
+
+def test_folder_segments_dropbox_root_file_is_empty():
+    ref = FileRef(
+        source="dropbox", id="id:2", name="Top.pdf", mime_type=None, size=1,
+        modified=None, path="/Top.pdf",
+    )
+    assert _folder_segments(ref) == []
 
 
 # ── only_file_ids narrowing ─────────────────────────────────────────────
