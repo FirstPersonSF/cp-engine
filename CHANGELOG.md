@@ -4,6 +4,16 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.68.1 — 2026-07-17
+
+- **Ingest picker: fix Dropbox folder grouping (#95).** The picker
+  collapsed every Dropbox file into a single "(root)" group — Dropbox
+  `FileRef`s carry their folder only in `path_display`, and
+  `list_project_files_annotated` returned the raw (empty for Dropbox)
+  `folder_path`. Now derives it via `_folder_segments` (ancestry from
+  `path_display`, filename dropped) for both sources, so folders group
+  correctly.
+
 ## v0.68.0 — 2026-07-17
 
 - **Ingest picker data path: file-scoped ingest + annotated listing
