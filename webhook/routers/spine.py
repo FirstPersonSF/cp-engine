@@ -337,6 +337,27 @@ def _frame_promote_in_tree(
         card.id, est_item_id, version_label, commit_sha[:8],
         mirrored, card_flipped, created_new_element,
     )
+
+    # Relationship layer (mig 117): a promote that minted a DISTINCT new
+    # authored element (issue-#44 create path) whose distiller matched an
+    # existing item reads as a reaction to that item — propose the
+    # `responds_to` edge into the Suggestions inbox. Best-effort; a failure
+    # never touches the already-durable promote. Only the create path yields a
+    # distinct from-endpoint; the version path bound the card to the item
+    # itself (no element to link).
+    edge_proposal = None
+    if created_new_element:
+        from relations_propose import propose_responds_to_edge
+
+        edge_proposal = propose_responds_to_edge(
+            client,
+            project_id=card.project_id,
+            project_code=card.project_code,
+            new_est_item_id=f"_authored/{path.stem}",
+            guessed_est_item_id=card.guessed_est_item_id,
+            kind=resolved_kind,
+        )
+
     return {
         "version_label": version_label,
         "rel_path": rel_path,
@@ -344,6 +365,7 @@ def _frame_promote_in_tree(
         "mirror_skipped": [s["rel_path"] for s in mirror_skipped],
         "created_new_element": created_new_element,
         "card_flipped": card_flipped,
+        "edge_proposal": edge_proposal,
     }
 
 

@@ -73,6 +73,7 @@ class Tables:
     SPINE_SNAPSHOTS = "spine_snapshots"
     SPINE_INBOX = "spine_inbox"
     SPINE_PROMOTE_RUNS = "spine_promote_runs"
+    SPINE_RELATIONS = "spine_relations"  # typed element->element edges (mig 117)
 
     # estimator schema
     EST_PROJECTS = "projects"

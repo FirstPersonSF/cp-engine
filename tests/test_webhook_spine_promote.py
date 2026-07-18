@@ -327,6 +327,9 @@ def test_promote_background_completes_run_row_done(monkeypatch, client, tmp_path
         "mirror_skipped": [],
         "created_new_element": False,
         "card_flipped": True,
+        # created_new_element=False (version path), so no edge is proposed —
+        # only the create path yields a distinct from-endpoint (mig 117).
+        "edge_proposal": None,
     }
 
     # Clone lifecycle: entered once, exited once (no per-promote disk leak).

@@ -281,6 +281,7 @@ def test_registry_covers_known_tables() -> None:
         "commitments", "app_config",
         "spine_substance", "spine_context", "spine_elements",
         "spine_snapshots", "spine_inbox", "spine_promote_runs",
+        "spine_relations",
     }
     names = {
         v
