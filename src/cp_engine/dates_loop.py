@@ -110,7 +110,7 @@ def _fmt_commitment(c: dict, *, with_date: bool = True) -> str:
         "them_to_us": "they owe",
         "internal": "internal",
     }.get(c.get("direction") or "", "")
-    bits = [f"*{c['description']}*", f"({who}"]
+    bits = [c["description"], f"({who}"]
     if arrow:
         bits[-1] += f", {arrow}"
     bits[-1] += ")"
@@ -164,17 +164,17 @@ def _render_project_post(
         sections.append(f":rotating_light: *Slipped — date passed, still open*\n{lines}")
     if this_week or ms_this_week:
         lines = [
-            f"• :checkered_flag: *{label}* — {_fmt_day(d)}"
+            f"• {label} — {_fmt_day(d)} _(milestone)_"
             for d, label in sorted(ms_this_week)
         ]
         lines += [
             _fmt_commitment(c)
             for c in sorted(this_week, key=lambda c: c["due_date"])
         ]
-        sections.append(":dart: *Due this week*\n" + "\n".join(lines))
+        sections.append("*Due this week*\n" + "\n".join(lines))
     if upcoming or ms_upcoming:
         lines = [
-            f"• :checkered_flag: *{label}* — {_fmt_day(d)}"
+            f"• {label} — {_fmt_day(d)} _(milestone)_"
             for d, label in sorted(ms_upcoming)
         ]
         lines += [
@@ -182,11 +182,11 @@ def _render_project_post(
             for c in sorted(upcoming, key=lambda c: c["due_date"])
         ]
         sections.append(
-            f":calendar: *Due in the next {window_days} days*\n" + "\n".join(lines)
+            f"*Due in the next {window_days} days*\n" + "\n".join(lines)
         )
     if undated:
         lines = "\n".join(_fmt_commitment(c, with_date=False) for c in undated)
-        sections.append(":grey_question: *Needs a date*\n" + lines)
+        sections.append("*Needs a date*\n" + lines)
 
     if not sections:
         return "", []

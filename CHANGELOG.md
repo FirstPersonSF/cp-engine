@@ -4,6 +4,17 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.68.2 — 2026-07-20
+
+- **Weekly dates reminder: tone down the formatting.** The First-Bot
+  weekly dates-check post was almost entirely bold and led every
+  milestone with a checkered-flag emoji, making it read as one loud wall.
+  Commitment descriptions now render as plain text (only the section
+  labels stay bold), the `:dart:` / `:grey_question:` section emoji are
+  dropped, and milestones lose the checkered flag in favor of a muted
+  `_(milestone)_` suffix. The `:rotating_light:` on the Slipped section
+  stays — a passed date should still shout.
+
 ## v0.68.1 — 2026-07-17
 
 - **Ingest picker: fix Dropbox folder grouping (#95).** The picker
