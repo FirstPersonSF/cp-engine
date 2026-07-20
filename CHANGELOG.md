@@ -4,6 +4,25 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.69.0 — 2026-07-20
+
+- **Spine edge MCP verbs + retire edge cascade (#96, #97).** The
+  `cp-sources` MCP could read spine relations but not author them — every
+  edge fix required raw SQL or the mc-2 API, which blocked the
+  synthesis-session protocol (whose save-time checklist is entirely about
+  authoring edges). Two new verbs close the gap:
+  `create_spine_relation(code, kind, from_key, to_key, note?)` and
+  `retire_spine_relation(code, kind, from_key, to_key)`. Both resolve
+  endpoints the way `pull_spine_element` does, enforce the mig-117 closed
+  kind vocabulary (responds_to | supersedes | derives_from | informs |
+  contradicts) with a readable error before the DB CHECK, and are
+  idempotent; retire tolerates a dead endpoint (raw est_item_ids) so
+  orphaned edges stay cleanable. Separately, `retire_spine_element` now
+  cascades to the element's typed edges — archiving `spine_substance`
+  alone previously left `spine_relations` rows `active` but dangling from
+  a dead endpoint (a silent corruption of the graph an agent walks); it
+  now deletes both sides and reports `edges_removed`.
+
 ## v0.68.2 — 2026-07-20
 
 - **Weekly dates reminder: tone down the formatting.** The First-Bot
