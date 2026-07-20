@@ -20,7 +20,11 @@ def _client(rows, captured):
         def eq(self, c, v): self._eqs.append((c, v)); return self
         def order(self, *a, **k): return self
         def update(self, d): self._patch = d; return self
+        def delete(self): self._deleting = True; return self
         def execute(self):
+            if getattr(self, "_deleting", False):
+                captured.setdefault("deletes", []).append((self.__dict__.get, list(self._eqs)))
+                return type("R", (), {"data": []})()
             if self._patch is not None:
                 captured.setdefault("updates", []).append((self._patch, list(self._eqs)))
             return type("R", (), {"data": rows})()
@@ -139,7 +143,11 @@ def test_retire_archives_all_versions_then_supersedes_live(monkeypatch):
     _patch_resolve(monkeypatch, [_row("_authored/dupe")], captured)
     import cp_engine.mcp_server as m
     res = m.retire_spine_element("p", "_authored/dupe")
-    assert res == {"est_item_id": "_authored/dupe", "retired": True}
+    assert res == {"est_item_id": "_authored/dupe", "retired": True,
+                   "edges_removed": 0}
+    # retire cascades to the element's edges (#96): two deletes on
+    # spine_relations, one per direction (from_item_id + to_item_id).
+    assert len(captured.get("deletes", [])) == 2
     updates = captured["updates"]
     archive = [(p, eqs) for p, eqs in updates if p == {"archived": True}]
     demote = [(p, eqs) for p, eqs in updates if p == {"status": "superseded"}]
