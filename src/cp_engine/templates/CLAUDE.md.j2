@@ -216,7 +216,18 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   `framing` (the est_item_id never changes), rebind with `serves` (work-item
   ids; `[]` unbinds — `binding` follows automatically), re-file with `layer`.
 - `retire_spine_element(code, key)` — remove an element from the live spine
-  (duplicates, no-longer-relevant items). History is archived, not deleted.
+  (duplicates, no-longer-relevant items). The element's history is archived (not
+  deleted, un-archivable), and its typed edges are removed so nothing dangles.
+- `create_spine_relation(code, kind, from_key, to_key, note?)` — author a typed
+  directed edge between two live elements. `kind` ∈ responds_to | supersedes |
+  derives_from | informs | contradicts. Keys resolve like `pull_spine_element`
+  (est_item_id or distinct title substring). Idempotent. Edge vocab: responds_to
+  = their voice reacting to ours; derives_from = built from named inputs;
+  supersedes = a genuine fork (rare); informs = shaped but didn't generate;
+  contradicts = conflicting claim.
+- `retire_spine_relation(code, kind, from_key, to_key)` — delete one edge (fix a
+  mis-recorded relation). Tolerates a dead endpoint: pass raw est_item_ids to
+  clean an orphaned edge left by an older retire.
 - `promote_stakeholder(code, key)` — promote a stakeholder element to ACCOUNT
   scope: it becomes readable from every project of the same company (rows
   carry `scope: "account"` in list/pull). Engagements only; opt-in — keep

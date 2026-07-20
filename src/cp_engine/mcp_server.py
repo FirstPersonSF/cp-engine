@@ -714,8 +714,10 @@ def retire_spine_element(project_code: str, key: str) -> dict:
     as pull_spine_element). Every version of the element is marked
     `archived=true` and its live version is superseded, so it disappears from
     list/pull/resolve immediately and reaps from the repo mirror on next sync —
-    nothing is deleted, and a dashboard un-archive can bring it back. Returns
-    {est_item_id, retired: true}, or a structured {note}/{error} on miss.
+    the element itself is recoverable via a dashboard un-archive. Its typed
+    edges (spine_relations) ARE deleted, not archived (#96) — a retired element
+    must not leave `active` edges dangling from a dead endpoint. Returns
+    {est_item_id, retired: true, edges_removed: int}, or {note}/{error} on miss.
     """
     from cp_engine.project_sources import resolve_live_element
 
@@ -738,9 +740,139 @@ def retire_spine_element(project_code: str, key: str) -> dict:
         (client.table(Tables.SPINE_SUBSTANCE).update({"status": "superseded"})
          .eq("project_id", row_pid).eq("est_item_id", eid)
          .eq("status", "live").execute())
-        return {"est_item_id": eid, "retired": True}
+        # Cascade to the element's typed edges (#96): archiving substance alone
+        # left spine_relations rows `active` but dangling from a now-dead
+        # endpoint — a silent graph corruption an agent would still walk. Delete
+        # every edge on either side of this element. Edges key on est_item_id
+        # (mig 117), so this is a straight two-sided delete; PostgREST has no OR
+        # across columns, so run one delete per direction.
+        edges_removed = 0
+        for side in ("from_item_id", "to_item_id"):
+            res = (client.table(Tables.SPINE_RELATIONS).delete()
+                   .eq("project_id", row_pid).eq(side, eid).execute())
+            edges_removed += len(res.data or [])
+        return {"est_item_id": eid, "retired": True, "edges_removed": edges_removed}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"failed to retire '{key}' in {project_code!r}: {exc}"}
+
+
+# The closed relation vocabulary (mig 117's CHECK). Kept here as the MCP's own
+# source of truth so a bad kind is rejected with a readable error before it ever
+# reaches the DB CHECK (which would surface as an opaque 500).
+_RELATION_KINDS = frozenset(
+    {"responds_to", "supersedes", "derives_from", "informs", "contradicts"}
+)
+
+
+@mcp.tool()
+def create_spine_relation(
+    project_code: str, kind: str, from_key: str, to_key: str,
+    note: str | None = None,
+) -> dict:
+    """Create a typed directed edge between two live spine elements (#97).
+
+    `kind` is one of the closed vocabulary: responds_to | supersedes |
+    derives_from | informs | contradicts. `from_key`/`to_key` each resolve to
+    ONE live element the same way `pull_spine_element` resolves — an exact
+    est_item_id or a distinct `framing` (title) substring. The edge is written
+    live (`status='active'`, `source='manual'`) into spine_relations and keys on
+    est_item_id (stable across version bumps), so the live version resolves at
+    read time. Idempotent on the mig-117 unique constraint
+    (project_id, kind, from, to) — a re-create of the same edge is a no-op.
+    Returns {kind, from_item_id, to_item_id, created: bool}, or {note}/{error}.
+
+    Authoring vocab (which edge for which change) lives in the synthesis-session
+    protocol: responds_to = their voice reacting to ours; derives_from = built
+    from named inputs; supersedes = a genuine fork (rare); informs = shaped but
+    didn't generate; contradicts = conflicting claim.
+    """
+    from cp_engine.project_sources import resolve_live_element
+
+    try:
+        kind_n = (kind or "").strip().lower()
+        if kind_n not in _RELATION_KINDS:
+            return {"error": f"unknown relation kind {kind!r}; "
+                             f"use one of {sorted(_RELATION_KINDS)}"}
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+        src = resolve_live_element(client, pid, from_key, cid)
+        if src is None:
+            return {"note": f"no single live element matching from_key '{from_key}'"}
+        dst = resolve_live_element(client, pid, to_key, cid)
+        if dst is None:
+            return {"note": f"no single live element matching to_key '{to_key}'"}
+        from_eid, to_eid = src["est_item_id"], dst["est_item_id"]
+        if from_eid == to_eid:
+            return {"error": "an element cannot relate to itself"}
+        # Idempotent: the mig-117 unique constraint means a duplicate edge is a
+        # no-op, but check first so we return created=False rather than swallow a
+        # constraint error.
+        existing = (client.table(Tables.SPINE_RELATIONS).select("id")
+                    .eq("project_id", pid).eq("kind", kind_n)
+                    .eq("from_item_id", from_eid).eq("to_item_id", to_eid)
+                    .limit(1).execute().data or [])
+        if existing:
+            return {"kind": kind_n, "from_item_id": from_eid,
+                    "to_item_id": to_eid, "created": False}
+        client.table(Tables.SPINE_RELATIONS).insert({
+            "project_id": pid, "project_code": project_code, "kind": kind_n,
+            "from_item_id": from_eid, "to_item_id": to_eid,
+            "status": "active", "source": "manual",
+            "note": note, "created_by": "cp-sources",
+        }).execute()
+        return {"kind": kind_n, "from_item_id": from_eid,
+                "to_item_id": to_eid, "created": True}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to create relation in {project_code!r}: {exc}"}
+
+
+@mcp.tool()
+def retire_spine_relation(
+    project_code: str, kind: str, from_key: str, to_key: str,
+) -> dict:
+    """Delete a typed edge between two spine elements (#97).
+
+    The inverse of `create_spine_relation`: resolves `from_key`/`to_key` to live
+    elements (or accepts raw est_item_ids for edges whose endpoint is already
+    retired), then deletes the matching `kind` edge from spine_relations. Use to
+    fix a mis-recorded edge (e.g. a wrong `supersedes` that should be
+    `responds_to`). Returns {kind, from_item_id, to_item_id, removed: int}, or
+    {note}/{error}.
+
+    Resolution tolerates a dead endpoint: if `from_key`/`to_key` doesn't resolve
+    to a LIVE element it is used verbatim as an est_item_id, so an orphaned edge
+    left by an older retire can still be cleaned by passing the raw ids.
+    """
+    from cp_engine.project_sources import resolve_live_element
+
+    try:
+        kind_n = (kind or "").strip().lower()
+        if kind_n not in _RELATION_KINDS:
+            return {"error": f"unknown relation kind {kind!r}; "
+                             f"use one of {sorted(_RELATION_KINDS)}"}
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+        src = resolve_live_element(client, pid, from_key, cid)
+        dst = resolve_live_element(client, pid, to_key, cid)
+        # Fall back to the raw key as an est_item_id so orphaned edges (endpoint
+        # already retired) remain cleanable.
+        from_eid = src["est_item_id"] if src else from_key
+        to_eid = dst["est_item_id"] if dst else to_key
+        res = (client.table(Tables.SPINE_RELATIONS).delete()
+               .eq("project_id", pid).eq("kind", kind_n)
+               .eq("from_item_id", from_eid).eq("to_item_id", to_eid)
+               .execute())
+        removed = len(res.data or [])
+        if removed == 0:
+            return {"note": f"no {kind_n} edge {from_eid} -> {to_eid} to remove"}
+        return {"kind": kind_n, "from_item_id": from_eid,
+                "to_item_id": to_eid, "removed": removed}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to retire relation in {project_code!r}: {exc}"}
 
 
 @mcp.tool()
