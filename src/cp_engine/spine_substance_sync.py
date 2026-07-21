@@ -505,11 +505,31 @@ def sync_spine_substance(
             logger.warning("step reverse-mirror fetch skipped for %s: %s",
                            project_code, exc)
         for est_item_id, group in groups.items():
-            write_authored_element(
-                project_dir, project_code=project_code,
-                est_item_id=est_item_id, rows=group,
-                steps=steps_by_item.get(est_item_id),
-            )
+            slug = (est_item_id.split("/", 1)[1]
+                    if "/" in est_item_id else est_item_id)
+            # Element-level archive (retire) → skip the mirror entirely and
+            # drop any stale file the element left behind. Mirrors the account
+            # mirror's archived-skip below; without it a retired element (zero
+            # live versions) trips write_authored_element's one-live guard and
+            # aborts the whole loop, stranding every later element's mirror.
+            if all(r.get("archived") for r in group):
+                (project_dir / "spine" / "_authored" / f"{slug}.md").unlink(
+                    missing_ok=True)
+                continue
+            # Per-element best-effort: a single malformed element (e.g. a
+            # lingering zero/two-live state) must not abort the rest of the
+            # sweep — log it and move on.
+            try:
+                write_authored_element(
+                    project_dir, project_code=project_code,
+                    est_item_id=est_item_id, rows=group,
+                    steps=steps_by_item.get(est_item_id),
+                )
+            except Exception as exc:  # noqa: BLE001 — one bad element
+                logger.warning(
+                    "authored element mirror skipped for %s / %s: %s",
+                    project_code, est_item_id, exc,
+                )
     except Exception as exc:  # noqa: BLE001 — best-effort authored reverse-mirror
         logger.warning(
             "authored reverse-mirror skipped for %s: %s",

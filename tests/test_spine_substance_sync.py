@@ -1216,6 +1216,36 @@ def test_sync_generates_authored_file(tmp_path):
     assert len(item.versions) == 2
 
 
+def test_authored_reverse_mirror_skips_retired_element(tmp_path):
+    """A retired (element-level archived) authored element has zero live
+    versions. The reverse-mirror must SKIP it — deleting any stale file it left
+    behind — not feed it to write_authored_element (whose one-live guard would
+    raise and abort the whole sweep, stranding every later element). Proves the
+    retired element's file is removed AND a sibling live element still mirrors."""
+    from cp_engine.substance import parse_substance
+
+    proj = tmp_path / "1p/acct/proj-1"
+    (proj / "spine/_authored").mkdir(parents=True)
+    # A stale mirror file from before the retire — sync must delete it.
+    stale = proj / "spine/_authored/gone.md"
+    stale.write_text("stale mirror content")
+
+    client = _FakeClient()
+    retired = _authored_row("_authored/gone", "v1", status="superseded")
+    retired["archived"] = True            # element-level retire → 0 live
+    live = _authored_row("_authored/kept", "v1", status="live")
+    client.store["spine_substance"] = [retired, live]
+
+    # Must not raise despite the zero-live retired element.
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=None)
+
+    assert not stale.exists()             # retired element's file removed
+    kept = proj / "spine/_authored/kept.md"
+    assert kept.exists()                  # sibling live element still mirrored
+    assert len(parse_substance(kept).versions) == 1
+
+
 def test_authored_reverse_mirror_finds_rows_by_project_id(tmp_path):
     """The authored reverse-mirror (DB→disk) query is keyed on the STABLE
     project_id, not the mutable project_code. Authored rows under ANY code (here
