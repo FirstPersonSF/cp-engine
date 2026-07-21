@@ -12,7 +12,7 @@ dependencies = [
     # if the checkout's cp-engine version doesn't match, `pip install
     # ./webhook` fails loudly instead of silently resolving elsewhere.
     # scripts/release.py bumps this line alongside the other version mirrors.
-    "cp-engine==0.69.5",
+    "cp-engine==0.70.0",
     "supabase>=2.0",
     "anthropic>=0.40",
     # Error alerting (arch-phase-3, issue #28). Init is env-gated on
