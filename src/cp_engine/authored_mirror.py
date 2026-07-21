@@ -21,8 +21,27 @@ def _version_sort_key(row):
     return int(lbl[1:]) if lbl.startswith("v") and lbl[1:].isdigit() else 0
 
 
+def _shape_steps(steps: list[dict] | None) -> tuple[dict, ...]:
+    """Order spine_steps rows by position and project to the mirror shape
+    {position, title, status, date, note} — `step_date` renders as `date`."""
+    if not steps:
+        return ()
+    ordered = sorted(steps, key=lambda s: s.get("position") or 0)
+    return tuple(
+        {
+            "position": s.get("position"),
+            "title": s.get("title"),
+            "status": s.get("status"),
+            "date": s.get("step_date"),
+            "note": s.get("note"),
+        }
+        for s in ordered
+    )
+
+
 def write_authored_element(project_dir: Path, *, project_code: str,
                            est_item_id: str, rows: list[dict],
+                           steps: list[dict] | None = None,
                            out_dir: Path | None = None) -> Path:
     """Render `rows` (an authored element's versions) to spine/_authored/<slug>.md.
 
@@ -72,6 +91,7 @@ def write_authored_element(project_dir: Path, *, project_code: str,
         placement=str(first.get("placement") or "context"),
         serves=tuple(first.get("serves") or ()),
         archived=bool(first.get("archived", False)),
+        steps=_shape_steps(steps),
     )
     text = render_substance(item)
     path.write_text(text)

@@ -66,3 +66,45 @@ def test_write_authored_raises_on_two_live(tmp_path):
     with pytest.raises(ValueError, match="2 live"):
         write_authored_element(tmp_path, project_code="p",
                                est_item_id="_authored/hyp", rows=rows)
+
+
+def test_authored_element_mirrors_steps_to_frontmatter(tmp_path):
+    """Steps (mig 119) render into element frontmatter, ordered by position, and
+    round-trip through parse_substance."""
+    rows = [{"est_item_id": "_authored/directions", "est_item_kind": None,
+             "phase": None, "binding": "unbound", "layer": "output",
+             "placement": "context", "serves": [], "version_label": "v1",
+             "version_date": "2026-07-16", "status": "live",
+             "framing": "Three directions", "body": "b", "sources": [],
+             "origin": "authored"}]
+    steps = [
+        {"est_item_id": "_authored/directions", "position": 2, "title": "second",
+         "status": "active", "step_date": "7/16", "note": "a note"},
+        {"est_item_id": "_authored/directions", "position": 1, "title": "first",
+         "status": "done", "step_date": "5/20", "note": None},
+    ]
+    from cp_engine.authored_mirror import write_authored_element
+    from cp_engine.substance import parse_substance, render_substance
+    path = write_authored_element(
+        tmp_path, project_code="p", est_item_id="_authored/directions",
+        rows=rows, steps=steps,
+    )
+    item = parse_substance(path)                       # must NOT raise
+    assert [s["title"] for s in item.steps] == ["first", "second"]  # position order
+    assert item.steps[0]["status"] == "done"
+    assert item.steps[1]["date"] == "7/16" and item.steps[1]["note"] == "a note"
+    # Idempotent round-trip.
+    assert render_substance(item) == path.read_text()
+
+
+def test_authored_element_without_steps_omits_key(tmp_path):
+    """No steps -> no `steps:` in frontmatter (byte-for-byte round-trip)."""
+    rows = [{"est_item_id": "_authored/x", "est_item_kind": None, "phase": None,
+             "binding": "unbound", "layer": "note", "placement": "context",
+             "serves": [], "version_label": "v1", "version_date": "2026-06-19",
+             "status": "live", "framing": "f", "body": "b", "sources": [],
+             "origin": "authored"}]
+    from cp_engine.authored_mirror import write_authored_element
+    path = write_authored_element(tmp_path, project_code="p",
+                                  est_item_id="_authored/x", rows=rows)
+    assert "steps:" not in path.read_text()
