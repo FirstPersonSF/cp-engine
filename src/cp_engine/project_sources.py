@@ -879,6 +879,107 @@ def fetch_source(client, project_id: str, doc_title: str, dest_dir) -> dict:
     }
 
 
+def _drive_comments(file_id: str) -> list[dict]:
+    """Read a Drive file's comments via the Drive API (comments.list). Works for
+    Google Docs (whose comments exist ONLY here, not in any export) AND for
+    Office files stored in Drive. Returns the normalized comment shape; never
+    raises — a Drive/auth failure returns []."""
+    try:
+        from cloud_storage.google_drive_connector import GoogleDriveConnector
+
+        conn = GoogleDriveConnector(service_account_file=None)
+        conn._authenticate()
+        fields = ("comments(author/displayName,content,quotedFileContent/value,"
+                  "createdTime,resolved,replies(author/displayName,content,createdTime))")
+        out: list[dict] = []
+        page = None
+        while True:
+            resp = conn.service.comments().list(
+                fileId=file_id, fields=f"nextPageToken,{fields}",
+                pageToken=page, includeDeleted=False,
+            ).execute()
+            for c in resp.get("comments", []):
+                out.append({
+                    "author": (c.get("author") or {}).get("displayName") or "Unknown",
+                    "date": c.get("createdTime"),
+                    "anchored_text": (c.get("quotedFileContent") or {}).get("value"),
+                    "comment": c.get("content") or "",
+                    "resolved": c.get("resolved", False),
+                    "replies": [
+                        {"author": (r.get("author") or {}).get("displayName") or "Unknown",
+                         "date": r.get("createdTime"), "comment": r.get("content") or ""}
+                        for r in c.get("replies", [])
+                    ],
+                })
+            page = resp.get("nextPageToken")
+            if not page:
+                break
+        return out
+    except Exception:  # noqa: BLE001 — MCP boundary
+        return []
+
+
+def pull_document_comments(client, project_id: str, doc_title: str,
+                           dest_dir) -> dict:
+    """Read reviewer comments on an ingested document (#108).
+
+    Comments/annotations are dropped by the ingest parsers, so this reads them
+    live: for a Drive-hosted asset via the Drive API (covers Google Docs, whose
+    comments exist nowhere else); otherwise by downloading the original Office
+    binary and parsing its comment XML (docx/pptx/xlsx). Title resolution mirrors
+    fetch_source. Returns {title, provider, comment_count, comments:[...]} where
+    each comment is {author, date, anchored_text, comment, replies[]}, or a
+    structured {note}/{error}. NEVER raises — MCP tool boundary."""
+    from cp_engine.doc_comments import extract_comments
+
+    try:
+        rows = (
+            client.table(Tables.RAG_ASSETS)
+            .select(_REFETCH_COLUMNS)
+            .eq("project_id", project_id)
+            .execute()
+        ).data or []
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"lookup failed: {exc}"}
+
+    target = doc_title.strip().lower()
+    matched = [r for r in rows if _title_matches(doc_title, r.get("title"))]
+    exact = [r for r in matched if (r.get("title") or "").lower() == target]
+    selected = exact or matched
+    if not selected:
+        return {"error": f"no source titled {doc_title!r} in project"}
+    if len(selected) > 1 and not exact:
+        titles = sorted({r.get("title") or "" for r in selected})
+        return {"note": f"ambiguous: '{doc_title}' matched {len(titles)} sources: {titles}"}
+    row = selected[0]
+
+    provider = row.get("source_provider")
+    file_id = row.get("source_file_id")
+    title = row.get("title")
+
+    # Drive path — the only one that reaches Google Docs comments, and works
+    # without downloading a binary.
+    if provider == "drive" and file_id:
+        comments = _drive_comments(file_id)
+        return {"title": title, "provider": "drive",
+                "comment_count": len(comments), "comments": comments}
+
+    # Office-binary path — download the original and parse its comment XML.
+    if not provider or not file_id:
+        return {"note": f"{title!r} has no re-fetch coords (ingested before the "
+                        "live-link layer; re-ingest to enable comment reads)"}
+    file_ref = FileRef(source=provider, id=file_id, name=title or "source",
+                       mime_type=None, size=None, modified=None,
+                       path=row.get("source_path"))
+    try:
+        local = download_file(file_ref, Path(dest_dir))
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"download failed: {exc}"}
+    comments = extract_comments(str(local))
+    return {"title": title, "provider": provider,
+            "comment_count": len(comments), "comments": comments}
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Manifest generator — `_sources.md` with cached per-doc summaries
 # ──────────────────────────────────────────────────────────────────────

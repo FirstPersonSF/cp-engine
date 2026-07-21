@@ -194,6 +194,12 @@ the *source* tools return empty for them — but the *spine* tools work fully.
   by title; pass `query` to rank chunks by relevance instead of full-doc order.
 - `fetch_project_source(code, doc_title)` — download the ORIGINAL binary (e.g. a
   `.pptx` to inspect hidden slides) to a local path you can then Read.
+- `pull_document_comments(code, doc_title)` — read the reviewer COMMENTS on a doc
+  (ingest drops them). Live read: Google-Drive docs via the Drive API (the only
+  path to Google-Docs comments), else the original Office binary's comment XML
+  (.docx/.pptx/.xlsx). Returns `{author, date, anchored_text, comment, replies}`
+  per comment — grouped by author it's stakeholder intelligence ("what did each
+  reviewer push on?"). Use when a doc was reviewed and you need the margin notes.
 
 The `_sources.md` manifest in each working dir names what exists; these tools
 fetch content. Both project-scoped and shared account-scoped docs are surfaced.

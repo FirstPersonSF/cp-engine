@@ -302,6 +302,40 @@ def fetch_project_source(project_code: str, doc_title: str) -> dict:
 
 
 @mcp.tool()
+def pull_document_comments(project_code: str, doc_title: str) -> dict:
+    """Read the reviewer COMMENTS on an ingested document (#108).
+
+    Inline comments/annotations are the highest-signal stakeholder capture on a
+    project — the client's own reviewers saying, in their words, what to change —
+    but the ingest parsers drop them (they live in the file's comment layer, not
+    its body). This reads them LIVE: a Google-Drive-hosted doc via the Drive API
+    (the ONLY way to reach Google Docs comments, which exist nowhere in an
+    export), otherwise by fetching the original Office binary (.docx/.pptx/.xlsx)
+    and parsing its comment XML. `doc_title` resolves like pull_project_source
+    (exact title, else a unique substring).
+
+    Returns {title, provider, comment_count, comments} where each comment is
+    {author, date, anchored_text, comment, replies[]} — grouped by author, it
+    doubles as stakeholder intelligence ("what did each reviewer push on?").
+    Returns {comment_count: 0} for a doc with no comments, or a {note}/{error}.
+    """
+    import tempfile
+
+    from cp_engine.project_sources import pull_document_comments as _pull
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, _cid = resolved
+        dest = tempfile.mkdtemp(prefix="cp-comments-")
+        return _pull(client, pid, doc_title, dest)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to read comments on '{doc_title}' "
+                         f"in '{project_code}': {exc}"}
+
+
+@mcp.tool()
 def list_spine_elements(project_code: str, layer: str = "",
                         scope: str = "", binding: str = "") -> list[dict]:
     """List a project's LIVE spine elements (the distilled-memory index).
