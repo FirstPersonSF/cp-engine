@@ -4,6 +4,19 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.69.4 — 2026-07-20
+
+- **Voyage embed sub-batching (large-document ingest fix).** The ingest
+  embedder handed a whole document's chunk list to a single Voyage `embed()`
+  call, but Voyage caps one request at 128 texts and 120,000 tokens — so a
+  large doc failed outright (`max allowed tokens per submitted batch is 120000.
+  Your batch has 565908 tokens`). `IngestEmbeddingService.embed_batch` now packs
+  chunks into sub-batches under both caps (token counts from the Voyage client,
+  so packing is exact; 115k headroom), embeds each, and concatenates in order;
+  an over-cap single chunk embeds alone with a warning. Fixed upstream in
+  `1p-component-library` (#10); this release re-pins the component set to
+  `@0e2d914`. No new deps. Deploy the webhook to pick this up in prod ingest.
+
 ## v0.69.3 — 2026-07-20
 
 - **Non-UTF-8 `.md`/`.txt` ingest fix.** `TextParser`/`MarkdownParser` opened
