@@ -705,6 +705,59 @@ def remove_element_source(project_code: str, key: str, source_title: str) -> dic
 
 
 @mcp.tool()
+def add_element_provenance(project_code: str, key: str, source_key: str) -> dict:
+    """Attach ANOTHER spine element as provenance to a spine element (#104).
+
+    The tiering-rule move for "this synthesis card absorbs these raw cards":
+    where add_element_source attaches an ingested rag_asset, this attaches a
+    spine ELEMENT as provenance. `key` resolves to ONE live target element (the
+    survivor); `source_key` resolves to ONE element that MAY ALREADY BE RETIRED
+    (the folded-in raw material — the usual cleanup case). Writes the typed link
+    {"type": "spine_element", id, title, retired} into the target's `sources` on
+    every version, deduped by (type, id). Because the link is a property of the
+    surviving card, it SURVIVES the source element's retirement — closing the
+    lineage hole where retire-and-lose-the-link was the only option. Returns
+    {est_item_id, source, attached, sources}, or a structured {note}/{error}.
+    """
+    from cp_engine.project_sources import modify_element_provenance
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+        return modify_element_provenance(client, pid, key, source_key,
+                                         add=True, company_id=cid)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to attach element '{source_key}' to '{key}' "
+                         f"in {project_code!r}: {exc}"}
+
+
+@mcp.tool()
+def remove_element_provenance(project_code: str, key: str, source_key: str) -> dict:
+    """Detach a spine-element provenance link from a spine element (#104).
+
+    The inverse of add_element_provenance: resolves the target and source the
+    same way (source may be retired), then removes the matching
+    {"type": "spine_element", ...} link (by element id) from every version's
+    `sources`. Detaching one that isn't attached returns a structured note, not
+    an error. Returns {est_item_id, source, removed, sources}, or {note}/{error}.
+    """
+    from cp_engine.project_sources import modify_element_provenance
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+        return modify_element_provenance(client, pid, key, source_key,
+                                         add=False, company_id=cid)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to detach element '{source_key}' from '{key}' "
+                         f"in {project_code!r}: {exc}"}
+
+
+@mcp.tool()
 def retire_spine_element(project_code: str, key: str) -> dict:
     """Retire a spine element — remove it from the live spine, keeping history.
 
@@ -719,41 +772,86 @@ def retire_spine_element(project_code: str, key: str) -> dict:
     must not leave `active` edges dangling from a dead endpoint. Returns
     {est_item_id, retired: true, edges_removed: int}, or {note}/{error} on miss.
     """
-    from cp_engine.project_sources import resolve_live_element
-
     try:
         resolved = _resolve(project_code)
         if resolved is None:
             return {"error": f"project {project_code!r} not found"}
         client, pid, cid = resolved
-        row = resolve_live_element(client, pid, key, cid)
-        if row is None:
-            return {"note": f"no single live element matching '{key}' in {project_code!r}"}
-        eid = row["est_item_id"]
-        row_pid = row.get("project_id") or pid
-        # Archive EVERY version (element-level retire), then demote the live
-        # row(s). Two targeted updates, ordered so a failure between them leaves
-        # the element archived (hidden from reads, #47's filter) rather than
-        # superseded-but-unarchived with no live version.
-        (client.table(Tables.SPINE_SUBSTANCE).update({"archived": True})
-         .eq("project_id", row_pid).eq("est_item_id", eid).execute())
-        (client.table(Tables.SPINE_SUBSTANCE).update({"status": "superseded"})
-         .eq("project_id", row_pid).eq("est_item_id", eid)
-         .eq("status", "live").execute())
-        # Cascade to the element's typed edges (#96): archiving substance alone
-        # left spine_relations rows `active` but dangling from a now-dead
-        # endpoint — a silent graph corruption an agent would still walk. Delete
-        # every edge on either side of this element. Edges key on est_item_id
-        # (mig 117), so this is a straight two-sided delete; PostgREST has no OR
-        # across columns, so run one delete per direction.
-        edges_removed = 0
-        for side in ("from_item_id", "to_item_id"):
-            res = (client.table(Tables.SPINE_RELATIONS).delete()
-                   .eq("project_id", row_pid).eq(side, eid).execute())
-            edges_removed += len(res.data or [])
-        return {"est_item_id": eid, "retired": True, "edges_removed": edges_removed}
+        return _retire_one(client, pid, cid, key)
     except Exception as exc:  # noqa: BLE001
         return {"error": f"failed to retire '{key}' in {project_code!r}: {exc}"}
+
+
+def _retire_one(client, pid: str, cid: str | None, key: str) -> dict:
+    """Retire a single live element (the shared body of retire_spine_element and
+    retire_spine_elements). Resolves `key`, archives every version, demotes the
+    live row, and cascades the element's typed edges (#96). Returns
+    {est_item_id, retired: true, edges_removed} or a {note} on a resolution miss.
+    Raises are left to the caller's try/except boundary."""
+    from cp_engine.project_sources import resolve_live_element
+
+    row = resolve_live_element(client, pid, key, cid)
+    if row is None:
+        return {"note": f"no single live element matching '{key}'"}
+    eid = row["est_item_id"]
+    row_pid = row.get("project_id") or pid
+    # Archive EVERY version (element-level retire), then demote the live
+    # row(s). Two targeted updates, ordered so a failure between them leaves
+    # the element archived (hidden from reads, #47's filter) rather than
+    # superseded-but-unarchived with no live version.
+    (client.table(Tables.SPINE_SUBSTANCE).update({"archived": True})
+     .eq("project_id", row_pid).eq("est_item_id", eid).execute())
+    (client.table(Tables.SPINE_SUBSTANCE).update({"status": "superseded"})
+     .eq("project_id", row_pid).eq("est_item_id", eid)
+     .eq("status", "live").execute())
+    # Cascade to the element's typed edges (#96): archiving substance alone
+    # left spine_relations rows `active` but dangling from a now-dead
+    # endpoint — a silent graph corruption an agent would still walk. Delete
+    # every edge on either side of this element. Edges key on est_item_id
+    # (mig 117), so this is a straight two-sided delete; PostgREST has no OR
+    # across columns, so run one delete per direction.
+    edges_removed = 0
+    for side in ("from_item_id", "to_item_id"):
+        res = (client.table(Tables.SPINE_RELATIONS).delete()
+               .eq("project_id", row_pid).eq(side, eid).execute())
+        edges_removed += len(res.data or [])
+    return {"est_item_id": eid, "retired": True, "edges_removed": edges_removed}
+
+
+@mcp.tool()
+def retire_spine_elements(project_code: str, keys: list[str]) -> dict:
+    """Retire several spine elements in one call (#105) — batch cleanup.
+
+    Each entry of `keys` resolves and retires exactly as retire_spine_element
+    (archive every version, supersede the live row, cascade typed edges #96).
+    A slot cleanup that collapses many raw cards is one operation instead of
+    N. Per-key results are returned so a partial resolution miss doesn't fail
+    the batch: `results` is a list of {key, est_item_id, retired, edges_removed}
+    for hits and {key, note} for a key that resolved to no single live element.
+    Returns {retired: int, edges_removed: int, results: [...]}, or {error}.
+    """
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+        results: list[dict] = []
+        retired = 0
+        edges_removed = 0
+        for key in keys:
+            try:
+                r = _retire_one(client, pid, cid, key)
+            except Exception as exc:  # noqa: BLE001 — one bad key must not abort the batch
+                results.append({"key": key, "error": str(exc)})
+                continue
+            if r.get("retired"):
+                retired += 1
+                edges_removed += r.get("edges_removed", 0)
+            results.append({"key": key, **r})
+        return {"retired": retired, "edges_removed": edges_removed,
+                "results": results}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to batch-retire in {project_code!r}: {exc}"}
 
 
 # The closed relation vocabulary (mig 117's CHECK). Kept here as the MCP's own

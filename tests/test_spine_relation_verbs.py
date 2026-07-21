@@ -169,6 +169,34 @@ def test_retire_element_cascades_edges(monkeypatch):
     assert sides == {"from_item_id", "to_item_id"}
 
 
+# ── retire_spine_elements (batch, #105) ─────────────────────────────────────
+
+def test_retire_elements_batch_happy(monkeypatch):
+    log = {}
+    client = _Client(log, {("spine_relations", "delete"): [{"id": "e1"}]})
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+    _patch_resolve_client(monkeypatch, client, {"a", "b"})
+    out = srv.retire_spine_elements("ibx-5192", ["a", "b"])
+    assert out["retired"] == 2
+    # each element cascades 2 delete calls × 1 row = 2 edges; two elements = 4.
+    assert out["edges_removed"] == 4
+    assert [r["key"] for r in out["results"]] == ["a", "b"]
+    assert all(r["retired"] for r in out["results"])
+
+
+def test_retire_elements_partial_miss(monkeypatch):
+    """A key that resolves to nothing returns a per-key note; the batch goes on."""
+    log = {}
+    client = _Client(log, {})
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+    _patch_resolve_client(monkeypatch, client, {"a"})  # 'ghost' missing
+    out = srv.retire_spine_elements("ibx-5192", ["a", "ghost"])
+    assert out["retired"] == 1
+    results = {r["key"]: r for r in out["results"]}
+    assert results["a"]["retired"] is True
+    assert "note" in results["ghost"] and "ghost" not in str(results["a"])
+
+
 def _patch_resolve_client(monkeypatch, _client, elements):
     """resolve_live_element that knows a fixed set of live element keys."""
     def fake_resolve(_c, _pid, key, _cid=None):

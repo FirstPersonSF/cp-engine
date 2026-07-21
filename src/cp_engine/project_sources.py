@@ -516,6 +516,93 @@ def modify_element_sources(client, project_id: str, key: str,
             "sources": result_sources}
 
 
+def _resolve_source_element(client, project_id: str, key: str,
+                            company_id: str | None) -> dict | None:
+    """Resolve `key` to ONE element usable as PROVENANCE — INCLUDING retired ones.
+
+    The provenance case (#104) is precisely "fold a now-retired raw card into a
+    synthesis card", so unlike the read/write resolvers this must match archived
+    elements too. Resolution: exact est_item_id, else a distinct framing
+    substring, across ALL of the project's (+ account's) elements regardless of
+    status/archived. Returns the newest matching row (carrying est_item_id,
+    framing, archived) or None on no-match / ambiguity.
+    """
+    rows = _fetch_scoped(client, project_id, company_id,
+                         mc2_db.SPINE_RESOLVE_COLUMNS, live_only=False)
+    exact = [r for r in rows if r.get("est_item_id") == key]
+    if exact:
+        return exact[0]
+    matched = [r for r in rows if _title_matches(key, r.get("framing"))]
+    distinct = {r.get("est_item_id"): r for r in matched}
+    if len(distinct) != 1:
+        return None  # no-match or ambiguous
+    return next(iter(distinct.values()))
+
+
+def modify_element_provenance(client, project_id: str, key: str,
+                              source_key: str, *, add: bool,
+                              company_id: str | None = None) -> dict:
+    """Attach/detach ANOTHER spine element as provenance on a target element (#104).
+
+    The tiering-rule counterpart to `modify_element_sources`: where that attaches
+    an ingested `rag_asset`, this attaches a `{"type": "spine_element", "id",
+    "title", "retired"}` link — e.g. a raw feedback email folded in as provenance
+    under a synthesis card. `key` resolves to ONE LIVE target element (the
+    survivor); `source_key` resolves to ONE element that MAY BE RETIRED (the
+    folded-in raw material). The link is a property of the target's versions, so
+    it SURVIVES the source's retirement — the whole point. Deduped by
+    (type, id) so an element source never collides with a rag_asset of the same
+    id. Adding an already-attached element is a no-op (`already: true`);
+    detaching one that isn't attached returns a structured note.
+    """
+    est_item_id, versions = resolve_element_versions(
+        client, project_id, key,
+        columns=mc2_db.SPINE_SOURCES_EDIT_COLUMNS, company_id=company_id,
+    )
+    if est_item_id is None:
+        return {"note": f"no single live element matching '{key}'"}
+
+    src = _resolve_source_element(client, project_id, source_key, company_id)
+    if src is None:
+        return {"note": f"no single element matching source '{source_key}'"}
+    src_eid = src.get("est_item_id")
+    if src_eid == est_item_id:
+        return {"note": "an element cannot be its own provenance"}
+    link = {"type": "spine_element", "id": src_eid,
+            "title": src.get("framing") or src_eid,
+            "retired": bool(src.get("archived"))}
+
+    def _attached(entries: list) -> bool:
+        return any(isinstance(s, dict) and s.get("type") == "spine_element"
+                   and s.get("id") == src_eid for s in entries)
+
+    live = next((r for r in versions if r.get("status") == "live"), None)
+    current_live = list((live or {}).get("sources") or [])
+    if add and _attached(current_live):
+        return {"est_item_id": est_item_id, "source": link,
+                "already": True, "sources": current_live}
+    if not add and not _attached(current_live):
+        return {"note": f"'{link['title']}' is not attached to '{est_item_id}'"}
+
+    result_sources = current_live
+    for row in versions:
+        entries = list(row.get("sources") or [])
+        if add:
+            new = entries if _attached(entries) else [*entries, link]
+        else:
+            new = [s for s in entries
+                   if not (isinstance(s, dict)
+                           and s.get("type") == "spine_element"
+                           and s.get("id") == src_eid)]
+        (client.table(Tables.SPINE_SUBSTANCE).update({"sources": new})
+         .eq("id", row["id"]).execute())
+        if row is live:
+            result_sources = new
+    return {"est_item_id": est_item_id, "source": link,
+            "attached" if add else "removed": True,
+            "sources": result_sources}
+
+
 def list_spine(client, project_id: str, company_id: str | None = None, *,
                layer: str | None = None, scope: str | None = None,
                binding: str | None = None) -> list[dict]:

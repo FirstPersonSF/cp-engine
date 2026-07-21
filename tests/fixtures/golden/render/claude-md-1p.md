@@ -218,6 +218,15 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
 - `retire_spine_element(code, key)` — remove an element from the live spine
   (duplicates, no-longer-relevant items). The element's history is archived (not
   deleted, un-archivable), and its typed edges are removed so nothing dangles.
+- `retire_spine_elements(code, keys)` — batch retire (slot cleanup): retire a
+  list of elements in one call, each exactly as `retire_spine_element`. Returns
+  per-key results so a resolution miss doesn't fail the batch.
+- `add_element_provenance(code, key, source_key)` — attach ANOTHER spine element
+  as provenance to `key` (the tiering-rule move for "this synthesis card absorbs
+  these raw cards"). `source_key` MAY be already-retired; the link is a property
+  of the surviving card, so it survives the source's retirement. Inverse:
+  `remove_element_provenance(code, key, source_key)`. Distinct from
+  `add_element_source`, which attaches an ingested rag_asset.
 - `create_spine_relation(code, kind, from_key, to_key, note?)` — author a typed
   directed edge between two live elements. `kind` ∈ responds_to | supersedes |
   derives_from | informs | contradicts. Keys resolve like `pull_spine_element`
