@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.69.1 — 2026-07-20
+
+- **Excel (`.xlsx`/`.xls`) ingest fix.** Spreadsheet sources were silently
+  skipped by the RAG ingest pipeline. `.xlsx`/`.xls`/`.csv` are wired to
+  `SpreadsheetParser`, but pandas defers Excel I/O to optional engines
+  (`openpyxl` for `.xlsx`, `xlrd` for `.xls`) that were never installed —
+  so `pd.read_excel()` raised `ImportError` at parse time and the file was
+  dropped without surfacing an error. Fixed upstream in
+  `1p-component-library` (document-ingest's `spreadsheet` extra now pins
+  `openpyxl>=3.1` + `xlrd>=2.0`); this release re-pins the component set to
+  `@0d4af13` and re-locks (`openpyxl 3.1.5` + `xlrd 2.0.2` now resolved).
+  Surfaced while ingesting client value-card / use-case-brief spreadsheets.
+  Deploy the webhook to pick this up in prod ingest.
+
 ## v0.69.0 — 2026-07-20
 
 - **Spine edge MCP verbs + retire edge cascade (#96, #97).** The
