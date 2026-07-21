@@ -37,22 +37,59 @@ def _text_of(el) -> str:
 def _docx_comments(zf: zipfile.ZipFile) -> list[dict]:
     """word/comments.xml → flat comments; word/commentsExtended.xml threads them.
 
-    comments.xml carries id/author/date/text per comment. commentsExtended maps
-    a comment to its parent (para id links) for reply nesting; when absent we
-    return a flat list (still correct, just un-nested)."""
+    comments.xml carries id/author/date/text per comment. The anchored span (which
+    text the comment sits on) lives in word/document.xml as
+    <w:commentRangeStart w:id="N"/> … <w:commentRangeEnd w:id="N"/> markers
+    wrapping the annotated runs — resolved by `_docx_anchor_map` and stitched in by
+    id. commentsExtended maps a comment to its parent for reply nesting; when
+    absent we return a flat list (still correct, just un-nested)."""
     if "word/comments.xml" not in zf.namelist():
         return []
     root = ET.fromstring(zf.read("word/comments.xml"))
+    anchors = _docx_anchor_map(zf)
     out = []
     for c in root.findall(f"{_W}comment"):
+        cid = c.get(f"{_W}id")
         out.append({
             "author": c.get(f"{_W}author") or "Unknown",
             "date": c.get(f"{_W}date"),
-            "anchored_text": None,  # docx anchors via runs in document.xml (v2)
+            "anchored_text": anchors.get(cid),
             "comment": _text_of(c),
             "replies": [],
         })
     return out
+
+
+def _docx_anchor_map(zf: zipfile.ZipFile) -> dict[str, str]:
+    """Map comment id → the text it annotates, read from word/document.xml.
+
+    Walks the document in order tracking OPEN comment ranges: text runs (`w:t`)
+    between a `commentRangeStart[id=N]` and its `commentRangeEnd[id=N]` belong to
+    comment N. Ranges can overlap/nest, so each run's text is appended to EVERY
+    currently-open range. Unpaired or absent markers simply yield no anchor for
+    that id (never raises). Returns {} if document.xml is missing or malformed."""
+    if "word/document.xml" not in zf.namelist():
+        return {}
+    try:
+        root = ET.fromstring(zf.read("word/document.xml"))
+    except Exception:  # noqa: BLE001 — a bad body just means no anchors
+        return {}
+    active: set[str] = set()
+    parts: dict[str, list[str]] = {}
+    for el in root.iter():
+        tag = el.tag
+        if tag == f"{_W}commentRangeStart":
+            cid = el.get(f"{_W}id")
+            if cid is not None:
+                active.add(cid)
+                parts.setdefault(cid, [])
+        elif tag == f"{_W}commentRangeEnd":
+            active.discard(el.get(f"{_W}id"))
+        elif tag == f"{_W}t" and active and el.text:
+            for cid in active:
+                parts[cid].append(el.text)
+    return {cid: "".join(chunks).strip()
+            for cid, chunks in parts.items() if "".join(chunks).strip()}
 
 
 def _pptx_comments(zf: zipfile.ZipFile) -> list[dict]:

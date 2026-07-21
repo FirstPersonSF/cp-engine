@@ -40,6 +40,46 @@ def test_docx_no_comments_part_returns_empty(tmp_path):
     assert dc.extract_comments(path) == []
 
 
+_DOCX_DOCUMENT_WITH_RANGES = """<?xml version="1.0"?>
+<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+  <w:body>
+    <w:p>
+      <w:r><w:t>The challenge is </w:t></w:r>
+      <w:commentRangeStart w:id="1"/>
+      <w:r><w:t>rarely the model</w:t></w:r>
+      <w:commentRangeEnd w:id="1"/>
+      <w:r><w:t>, it's the foundation.</w:t></w:r>
+    </w:p>
+    <w:p>
+      <w:commentRangeStart w:id="2"/>
+      <w:r><w:t>autonomous </w:t></w:r>
+      <w:r><w:t>remediation</w:t></w:r>
+      <w:commentRangeEnd w:id="2"/>
+    </w:p>
+  </w:body>
+</w:document>"""
+
+
+def test_docx_anchored_text_resolved_from_document(tmp_path):
+    path = _zip(tmp_path, "story.docx", {
+        "word/comments.xml": _DOCX_COMMENTS,
+        "word/document.xml": _DOCX_DOCUMENT_WITH_RANGES,
+    })
+    out = dc.extract_comments(path)
+    by_author = {c["author"]: c for c in out}
+    # comment id 1 (Scott) anchors "rarely the model"; id 2 (Cricket) spans two runs
+    assert by_author["Scott"]["anchored_text"] == "rarely the model"
+    assert by_author["Cricket"]["anchored_text"] == "autonomous remediation"
+
+
+def test_docx_anchor_absent_when_no_document(tmp_path):
+    # comments.xml present, document.xml absent → comments still returned, no anchor
+    path = _zip(tmp_path, "story.docx", {"word/comments.xml": _DOCX_COMMENTS})
+    out = dc.extract_comments(path)
+    assert all(c["anchored_text"] is None for c in out)
+    assert [c["author"] for c in out] == ["Scott", "Cricket"]
+
+
 # ── xlsx (threaded) ──────────────────────────────────────────────────────────
 
 _XLSX_PERSON = """<?xml version="1.0"?>
