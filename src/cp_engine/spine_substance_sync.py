@@ -487,10 +487,28 @@ def sync_spine_substance(
             if (r.get("scope") or "project") == "account":
                 continue
             groups.setdefault(r["est_item_id"], []).append(r)
+        # Steps (mig 119) mirror into the element's frontmatter. Fetch the whole
+        # project's trail once, grouped by est_item_id, and hand each element its
+        # own steps. Best-effort with the rest of the reverse-mirror.
+        steps_by_item: dict[str, list[dict]] = {}
+        try:
+            step_rows = (
+                client.table(Tables.SPINE_STEPS)
+                .select("est_item_id, position, title, status, step_date, note")
+                .eq("project_id", project_id)
+                .execute()
+                .data
+            ) or []
+            for s in step_rows:
+                steps_by_item.setdefault(s["est_item_id"], []).append(s)
+        except Exception as exc:  # noqa: BLE001 — steps table may not exist yet
+            logger.warning("step reverse-mirror fetch skipped for %s: %s",
+                           project_code, exc)
         for est_item_id, group in groups.items():
             write_authored_element(
                 project_dir, project_code=project_code,
                 est_item_id=est_item_id, rows=group,
+                steps=steps_by_item.get(est_item_id),
             )
     except Exception as exc:  # noqa: BLE001 — best-effort authored reverse-mirror
         logger.warning(

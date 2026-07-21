@@ -89,6 +89,11 @@ class WorkItemSubstance:
     # MC-2 spine card-dashboard. Default False; omitted from frontmatter when
     # False so untouched files round-trip byte-for-byte.
     archived: bool = False
+    # Ordered progress trail (mig 119): element-scoped steps, each a dict
+    # {position, title, status, date, note}. Element-level (not per-version), so
+    # it lives in frontmatter. Empty tuple = no trail; omitted from frontmatter
+    # when empty so untouched files round-trip byte-for-byte.
+    steps: tuple[dict, ...] = ()
     # Unknown frontmatter keys (Phase 2: mc2 row id, confirmed_at, …) preserved
     # verbatim across parse->render so a render pass never wipes them.
     extra: dict = dataclasses.field(default_factory=dict)
@@ -204,10 +209,12 @@ def parse_substance(path: Path) -> WorkItemSubstance:
     placement = str(meta.get("placement", "item"))
     serves = tuple(str(s) for s in _as_tuple(meta.get("serves")))
     archived = bool(meta.get("archived", False))
+    steps_raw = meta.get("steps") or []
+    steps = tuple(dict(s) for s in steps_raw) if isinstance(steps_raw, list) else ()
 
     _KNOWN = {
         "est_item_id", "est_item_kind", "binding", "phase",
-        "layer", "placement", "serves", "archived",
+        "layer", "placement", "serves", "archived", "steps",
     }
     extra = {k: v for k, v in meta.items() if k not in _KNOWN}
 
@@ -242,6 +249,7 @@ def parse_substance(path: Path) -> WorkItemSubstance:
         placement=placement,
         serves=serves,
         archived=archived,
+        steps=steps,
         extra=extra,
     )
 
@@ -301,6 +309,14 @@ def render_substance(item: WorkItemSubstance) -> str:
     # (mirrors how `placement` is omitted when "item").
     if item.archived:
         fm["archived"] = True
+    # The ordered progress trail (mig 119). Emit each step as a plain dict in a
+    # stable key order so the YAML is legible + diff-friendly; omit when empty.
+    if item.steps:
+        fm["steps"] = [
+            {k: s[k] for k in ("position", "title", "status", "date", "note")
+             if k in s}
+            for s in item.steps
+        ]
     for k in sorted(item.extra):
         fm[k] = item.extra[k]
 

@@ -739,6 +739,112 @@ def remove_element_source(project_code: str, key: str, source_title: str) -> dic
 
 
 @mcp.tool()
+def add_spine_step(
+    project_code: str, key: str, title: str,
+    status: str = "upcoming", step_date: str | None = None,
+    note: str | None = None,
+) -> dict:
+    """Append an ordered STEP to a spine element's progress trail (#119).
+
+    A step is a lightweight marker of one move toward finishing the element
+    (drafted -> ratified -> rewriting -> booked) — NOT a version, source, or
+    body. `key` resolves to ONE live element (est_item_id exact, or a unique
+    framing substring — same discipline as pull_spine_element). The step is
+    appended at the end (position = max+1). `status` ∈ done|active|upcoming
+    (default upcoming); `step_date` is free-form ('7/16', optional); `note` is a
+    sentence or two (optional, ≤8000 chars). A step NEVER completes the
+    work-item on the schedule — that stays human-confirmed. Returns
+    {est_item_id, position, steps} or {error}. Author steps as the work moves.
+    """
+    from cp_engine import spine_steps
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+        return spine_steps.add_step(client, pid, key, title, status=status,
+                                    step_date=step_date, note=note,
+                                    company_id=cid)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to add step to '{key}' in "
+                         f"{project_code!r}: {exc}"}
+
+
+@mcp.tool()
+def set_spine_step(
+    project_code: str, key: str, step_id: str,
+    title: str | None = None, status: str | None = None,
+    step_date: str | None = None, note: str | None = None,
+) -> dict:
+    """Update one step on a spine element's trail (#119).
+
+    Advance a step (`status` ∈ done|active|upcoming) or edit its title/step_date/
+    note. `key` resolves the parent element; `step_id` picks the step. Only the
+    fields you pass change (None = untouched — this verb never nulls a field).
+    Returns {est_item_id, step_id, steps} or {error}. The common move is
+    advancing a step to `done` as the work lands.
+    """
+    from cp_engine import spine_steps
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+        return spine_steps.set_step(client, pid, key, step_id, title=title,
+                                    status=status, step_date=step_date,
+                                    note=note, company_id=cid)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to update step {step_id!r} on '{key}' in "
+                         f"{project_code!r}: {exc}"}
+
+
+@mcp.tool()
+def reorder_spine_step(project_code: str, key: str, order: list[str]) -> dict:
+    """Reorder a spine element's steps (#119).
+
+    `order` is the FULL list of the element's step_ids in the desired order;
+    positions are renumbered 1..N to match. `key` resolves the parent element.
+    Returns {est_item_id, steps} or {error}.
+    """
+    from cp_engine import spine_steps
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+        return spine_steps.reorder_steps(client, pid, key, order,
+                                         company_id=cid)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to reorder steps on '{key}' in "
+                         f"{project_code!r}: {exc}"}
+
+
+@mcp.tool()
+def remove_spine_step(project_code: str, key: str, step_id: str) -> dict:
+    """Delete one step from a spine element's trail (#119).
+
+    `key` resolves the parent element; `step_id` picks the step. Remaining steps
+    densify to stay 1..N contiguous. Returns {est_item_id, removed, steps} or
+    {error}.
+    """
+    from cp_engine import spine_steps
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+        return spine_steps.remove_step(client, pid, key, step_id,
+                                       company_id=cid)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to remove step {step_id!r} on '{key}' in "
+                         f"{project_code!r}: {exc}"}
+
+
+@mcp.tool()
 def add_element_provenance(project_code: str, key: str, source_key: str) -> dict:
     """Attach ANOTHER spine element as provenance to a spine element (#104).
 

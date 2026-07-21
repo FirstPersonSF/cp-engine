@@ -76,6 +76,7 @@ class Tables:
     SPINE_INBOX = "spine_inbox"
     SPINE_PROMOTE_RUNS = "spine_promote_runs"
     SPINE_RELATIONS = "spine_relations"  # typed element->element edges (mig 117)
+    SPINE_STEPS = "spine_steps"  # ordered progress trail inside an element (mig 119)
 
     # estimator schema
     EST_PROJECTS = "projects"
