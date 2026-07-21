@@ -296,6 +296,15 @@ ratifies, and the Monday partners digest reads):
 
 Engagements and initiatives can own commitments; standalone repos cannot.
 
+**5 — Notes** (MC-2's partner-ping surface — an in-app unread note + a Slack DM):
+- `create_note(code, recipient, body, author?)` — leave a partner a note against
+  a project (progress update, session handoff). `recipient` resolves to ONE
+  person by display name (distinct substring, e.g. "Marcello") or email;
+  `author` defaults to the acting partner. `body` is markdown, document-sized.
+  Delivered as a Slack DM (best-effort — `slack_delivery` ∈ sent|failed|skipped;
+  the note is in-app regardless). Author it only when the human asks to notify a
+  partner — never unprompted.
+
 To find an email or note you authored into a project's (or initiative's) spine,
 `list_spine_elements(code)` then `pull_spine_element(code, <key>)` — don't grep
 the `spine/` mirror, which may lag the live MC-2 row.

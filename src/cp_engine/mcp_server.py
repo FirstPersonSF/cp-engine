@@ -1366,6 +1366,45 @@ def resolve_commitment(project_code: str, key: str, outcome: str = "done") -> di
         return {"error": f"failed to resolve commitment in {project_code!r}: {exc}"}
 
 
+@mcp.tool()
+def create_note(project_code: str, recipient: str, body: str,
+                author: str = "") -> dict:
+    """Leave a partner a Note against a project (in-app unread + Slack DM).
+
+    The agent-session bridge to MC-2's Notes feature — use it to hand a partner
+    a progress note / handoff at the end of session work (the same surface the
+    dashboard's "leave a note" uses). `recipient` resolves to ONE person by
+    display name (a distinct substring, e.g. "Marcello") or email; `author`
+    defaults to the tenant's acting partner (Drew) and likewise resolves by
+    name/email. `body` is markdown, document-sized (renders in-app; the Slack DM
+    copy is truncated with a link to the full note). `project_code` is any
+    engagement/initiative/repo code.
+
+    The note lands `status='unread'` and is delivered as a Slack DM to the
+    recipient; delivery is best-effort and never blocks the note (the return's
+    `slack_delivery` is 'sent' | 'failed' | 'skipped' — 'skipped' means the note
+    is in-app only, e.g. no Slack user for the recipient). Returns
+    {note_id, recipient, author, slack_delivery[, slack_ts]}, or a {note}/{error}
+    on a resolution miss. Author it when the human asks to notify/ping a partner
+    — don't send unprompted.
+    """
+    from cp_engine.config import load as load_config
+    from cp_engine.notes import write_note
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, _cid = resolved
+        config = load_config(_tenant_root())
+        return write_note(
+            client, config, project_code=project_code, project_id=pid,
+            recipient=recipient, body=body, author=(author or None),
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to create note in {project_code!r}: {exc}"}
+
+
 def run_stdio() -> None:
     """Run the server over stdio (what Claude Code launches via .mcp.json)."""
     mcp.run(transport="stdio")

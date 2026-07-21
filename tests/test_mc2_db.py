@@ -274,11 +274,12 @@ def test_no_table_string_literals_outside_registry() -> None:
 def test_registry_covers_known_tables() -> None:
     """The registry names every table the survey found (drift alarm both ways)."""
     expected_public = {
-        "projects", "repos", "initiatives", "companies", "github_orgs",
+        "projects", "repos", "initiatives", "companies", "entities",
+        "github_orgs",
         "sprint_allocations", "fathom_meetings", "auto_ingest_runs",
         "asset_ingest_runs", "rag_assets", "asset_chunks",
         "clickup_task_proposals",
-        "commitments", "app_config",
+        "commitments", "app_config", "notes",
         "spine_substance", "spine_context", "spine_elements",
         "spine_snapshots", "spine_inbox", "spine_promote_runs",
         "spine_relations",
