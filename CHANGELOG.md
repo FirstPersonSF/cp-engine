@@ -4,6 +4,19 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.69.3 — 2026-07-20
+
+- **Non-UTF-8 `.md`/`.txt` ingest fix.** `TextParser`/`MarkdownParser` opened
+  files as strict UTF-8, so a single stray Latin-1/CP-1252 byte (a smart quote,
+  em-dash, or `½`/`°` — routine in Word/Windows exports) raised
+  `UnicodeDecodeError` and dropped the whole file from ingest (e.g. `'utf-8'
+  codec can't decode byte 0xbd in position 10`). New `read_text_file()` helper
+  reads strict UTF-8, then CP-1252 (the typical Word-export shape), then UTF-8
+  `errors='replace'` as a last resort — mirroring the CSV encoding fallback
+  `SpreadsheetParser` already had. Fixed upstream in `1p-component-library` (#9);
+  this release re-pins the component set to `@9ec3355`. No new deps. Deploy the
+  webhook to pick this up in prod ingest.
+
 ## v0.69.2 — 2026-07-20
 
 - **Local `.html`/`.htm` file ingest.** The ingest pipeline extracted remote
