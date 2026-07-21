@@ -207,17 +207,24 @@ def pull_source(
     )
 
     matched = [r for r in rows if _title_matches(doc_title, r.get("title"))]
-    if not matched and query is None and limit < _MISS_RETRY_LIMIT:
-        # The no-query read is recency-ordered ACROSS the whole scope, then
-        # title-filtered here — a doc older than the newest `limit` chunks is
-        # invisible at the default window even though it exists. Before
-        # declaring "no source", widen once to a window big enough to cover
-        # every doc a project realistically holds.
+    if not matched and limit < _MISS_RETRY_LIMIT:
+        # The scoped read returns only the top `limit` chunks ACROSS the whole
+        # scope, then we title-filter here — so a doc whose chunks fall outside
+        # that window is invisible even though it EXISTS. This bites two ways:
+        #   - query=None: recency-ordered, so an OLD doc drops below the window.
+        #   - query!=None: vector-ranked, so a doc whose chunks rank below the
+        #     top `limit` for THIS query (common for a short xlsx against many
+        #     semantically-closer PDFs) drops out — reported as "no source" even
+        #     though the title is right there in the manifest (the bug: resolving
+        #     a doc BY TITLE must never depend on how its chunks rank).
+        # Before declaring "no source", widen once to a window big enough to
+        # cover every doc a project realistically holds. Keep the query_embedding
+        # so a successful widen still returns the query-ranked chunks.
         rows = read_scoped_chunks(
             client,
             project_id,
             company_id,
-            query_embedding=None,
+            query_embedding=query_embedding,
             limit=_MISS_RETRY_LIMIT,
         )
         matched = [r for r in rows if _title_matches(doc_title, r.get("title"))]
