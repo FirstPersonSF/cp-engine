@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.69.2 — 2026-07-20
+
+- **Local `.html`/`.htm` file ingest.** The ingest pipeline extracted remote
+  URLs (via `WebParser`) but had no parser for local HTML files — a saved
+  webpage or `.html` email attachment dropped in a source folder fell through
+  the extension dispatch as unsupported and was silently skipped (same class
+  as the xlsx gap in v0.69.1). New `HTMLFileParser` reads the file off disk
+  and reuses `WebParser`'s soup-level content/metadata extraction (nav/script/
+  ad stripping, `<title>`/description), so HTML files ingest to clean text with
+  the same rules as fetched URLs. Fixed upstream in `1p-component-library` (#8);
+  this release re-pins the component set to `@073bbe6`. No new deps (`bs4`
+  already required via the `web` extra). Deploy the webhook to pick this up in
+  prod ingest.
+
 ## v0.69.1 — 2026-07-20
 
 - **Excel (`.xlsx`/`.xls`) ingest fix.** Spreadsheet sources were silently
