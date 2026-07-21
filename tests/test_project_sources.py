@@ -554,10 +554,48 @@ def test_pull_source_miss_widens_window_and_finds_older_doc():
     assert "note" not in out
 
 
-def test_pull_source_query_mode_miss_does_not_retry():
-    # Query mode already ranks the whole scope by similarity — a miss there is
-    # a real miss, and a second (recency) read would not be an improvement.
-    client = _FakeRpcClient(_CHUNK_ROWS)
+def test_pull_source_query_mode_miss_widens_and_finds_doc():
+    # The bug (2026-07-21): the RPC returns only the top `limit` chunks ACROSS
+    # the whole scope, ranked by the query. A doc whose chunks rank BELOW that
+    # window for this query (e.g. a short xlsx against many semantically-closer
+    # PDFs) fell out and was reported "no source" — even though its title is in
+    # the manifest. Resolving a doc BY TITLE must not depend on chunk ranking:
+    # a query miss must widen once (keeping the query embedding) before giving up.
+    xlsx_rows = [
+        {
+            "text": "Solution Area | Use Case | # Capabilities",
+            "citation_url": "",
+            "title": "Infoblox_Solutions_Framework_Use_Cases_Capabilities.xlsx",
+            "scope": "project",
+        }
+    ]
+    # First (narrow) read ranks the xlsx out of view; the widen surfaces it.
+    client = _SequencedRpcClient([_CHUNK_ROWS, _CHUNK_ROWS + xlsx_rows])
+    embedder = _FakeEmbedder([0.1, 0.2, 0.3])
+
+    out = pull_source(
+        client,
+        "proj-1",
+        "co-9",
+        doc_title="Infoblox_Solutions_Framework_Use_Cases_Capabilities.xlsx",
+        query="Executive View one-line business outcome per use case",
+        embedder=embedder,
+    )
+
+    assert len(client.calls) == 2
+    assert client.calls[0]["params"]["p_limit"] == 50
+    retry = client.calls[1]["params"]
+    assert retry["p_limit"] == _MISS_RETRY_LIMIT
+    # The widen KEEPS the query embedding so chunks stay query-ranked.
+    assert retry["p_query_embedding"] == [0.1, 0.2, 0.3]
+    assert out["chunks"] == ["Solution Area | Use Case | # Capabilities"]
+    assert "note" not in out
+
+
+def test_pull_source_query_mode_genuine_miss_still_reports_after_widen():
+    # A doc that truly isn't in the scope still returns the note — but only
+    # after the widen has ruled it out (2 calls, not 1).
+    client = _SequencedRpcClient([_CHUNK_ROWS, _CHUNK_ROWS])
     embedder = _FakeEmbedder([0.1, 0.2, 0.3])
 
     out = pull_source(
@@ -569,7 +607,7 @@ def test_pull_source_query_mode_miss_does_not_retry():
         embedder=embedder,
     )
 
-    assert len(client.calls) == 1
+    assert len(client.calls) == 2
     assert "no source named 'Nonexistent Doc'" in out["note"]
 
 
