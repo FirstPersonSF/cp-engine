@@ -879,6 +879,76 @@ def fetch_source(client, project_id: str, doc_title: str, dest_dir) -> dict:
     }
 
 
+def _dropbox_folder_path(connector, folder_id: str) -> str:
+    """Resolve MC-2's stored `mc_dropbox_folder_id` to a `/literal/path`.
+
+    The stored value is either already a literal path (`/Clients/Acme/…`) or an
+    `id:<body>` form (both of which `files_list_folder` accepts on the read
+    side). `upload_file`, though, needs a literal destination path to append a
+    filename to — an `id:` prefix has no `/…/name` shape. So: a value that
+    already starts with `/` is returned as-is; an `id:`/bare-id value is
+    resolved to its `path_display` via `files_get_metadata`. Raises on an
+    unresolvable id (caller converts to a structured error).
+    """
+    if folder_id.startswith("/"):
+        return folder_id.rstrip("/")
+    meta = connector.dbx.files_get_metadata(folder_id)
+    path = getattr(meta, "path_display", None)
+    if not path:
+        raise ValueError(
+            f"Dropbox folder id {folder_id!r} has no path_display "
+            "(cannot build an upload destination)"
+        )
+    return path.rstrip("/")
+
+
+def push_to_dropbox(
+    connector, folder_id: str, local_path, dest_name: str | None = None,
+    overwrite: bool = False,
+) -> dict:
+    """Upload a local file INTO a project's Dropbox folder.
+
+    The write-back counterpart to `fetch_source`: takes the project's stored
+    `mc_dropbox_folder_id`, resolves it to a literal folder path, and uploads
+    `local_path` there as `dest_name` (defaults to the local filename). Uses the
+    connector's `upload_file`, which refuses to clobber an existing file unless
+    `overwrite=True`. Returns `{dropbox_path, name, size, overwrote}` on success
+    or a structured `{error}` on any failure — NEVER raises (MCP tool boundary).
+    """
+    src = Path(local_path)
+    if not src.exists():
+        return {"error": f"local file not found: {local_path}"}
+    if not src.is_file():
+        return {"error": f"not a file: {local_path}"}
+
+    name = dest_name or src.name
+    try:
+        folder_path = _dropbox_folder_path(connector, folder_id)
+    except Exception as exc:  # noqa: BLE001 — MCP tool boundary, never raise
+        return {"error": f"could not resolve Dropbox folder: {exc}"}
+
+    dropbox_path = f"{folder_path}/{name}"
+    try:
+        meta = connector.upload_file(str(src), dropbox_path, overwrite=overwrite)
+    except Exception as exc:  # noqa: BLE001 — MCP tool boundary, never raise
+        # The connector raises ComponentFileExistsError when the file exists and
+        # overwrite is False; surface that as a clear, actionable message rather
+        # than a class name the caller can't act on.
+        if type(exc).__name__ == "ComponentFileExistsError":
+            return {
+                "error": f"a file named {name!r} already exists at "
+                f"{dropbox_path!r}; call again with overwrite=True to replace it"
+            }
+        return {"error": f"upload failed: {exc}"}
+
+    return {
+        "dropbox_path": getattr(meta, "path_display", dropbox_path),
+        "name": name,
+        "size": getattr(meta, "size", src.stat().st_size),
+        "overwrote": bool(overwrite),
+    }
+
+
 def _drive_comments(file_id: str) -> list[dict]:
     """Read a Drive file's comments via the Drive API (comments.list). Works for
     Google Docs (whose comments exist ONLY here, not in any export) AND for

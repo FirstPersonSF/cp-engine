@@ -4,6 +4,41 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.75.0 — 2026-07-21
+
+- **Four new `cp-sources` MCP verbs — documents in, documents out, content across
+  projects (#120).** Closes three gaps in what Claude can do to a spine without
+  a human copy-pasting content around:
+  - **`add_spine_document`** authors a whole DOCUMENT into the spine as a new
+    element, from EITHER a local `file_path` (a synthesis `.md` you generated on
+    disk → element body, no manual paste) OR an already-ingested `source_title`
+    (pull the ingested doc's text as the body AND auto-attach the rag_asset for
+    provenance — "turn this brief into a spine card"). `type` defaults to
+    `synthesis`; provide exactly one of file/source. A binary or non-UTF-8 file
+    is refused with a nudge to ingest-then-`source_title`.
+  - **`push_to_dropbox`** is the write-back inverse of `fetch_project_source`:
+    upload a rich document you built locally (a `.pptx` deck, `.docx`, PDF) INTO
+    the project's configured Dropbox folder, so the humans find it where they
+    expect. Resolves `mc_dropbox_folder_id` → a literal path, refuses to clobber
+    an existing name unless `overwrite=True`. New `mc2_db.load_dropbox_creds`
+    loads the DROPBOX_* vars from the mc-2 `.env` for local MCP sessions (the
+    ingest-creds loader covered only OPENAI/VOYAGE). Engagements and initiatives
+    both, whichever has a Dropbox folder.
+  - **`pull_element_from_project`** copies a spine element FROM another project
+    INTO this one: resolve `key` in `from_code`, author a copy of its body in
+    `to_code` with a legible origin provenance line stamped into the body head.
+    With `account=True` the copy lands account-scoped immediately (serves the
+    whole company). Lineage is recorded as provenance IN the copy (origin line +
+    payload), since relation edges are within-project; wire a local
+    `derives_from` edge for in-project lineage.
+  - **`set_element_account_scope`** is the type-agnostic generalization of
+    `promote_stakeholder`/`demote_stakeholder` — tag ANY element (synthesis,
+    source, decision) account-level or return it to project scope, without the
+    stakeholder-layer sanity check.
+
+  Tool count 32 → 36. All four follow the never-raise MCP boundary contract and
+  are covered by unit tests (`test_mcp_server.py`).
+
 ## v0.74.1 — 2026-07-21
 
 - **Fix: authored reverse-mirror aborting on retired elements.** `cp sync`'s

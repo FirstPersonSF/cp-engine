@@ -276,6 +276,7 @@ class MC2Backend:
 
 _load_supabase_creds = mc2_db.load_supabase_creds
 _load_ingest_creds = mc2_db.load_ingest_creds
+_load_dropbox_creds = mc2_db.load_dropbox_creds
 _mc2_env_file = mc2_db._mc2_env_file
 _read_dotenv = mc2_db._read_dotenv
 

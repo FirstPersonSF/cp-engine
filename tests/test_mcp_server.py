@@ -173,25 +173,32 @@ def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
     assert srv._tenant_root() == tmp_path.resolve()
 
 
-def test_exactly_thirty_two_tools_registered():
-    """4 source-read + 2 spine-read + 11 spine-write + 2 spine-relation-write +
-    4 spine-step-write + 1 spine-promote + 1 meetings-read + 3 framework +
-    3 commitment + 1 note tool.
+def test_exactly_thirty_six_tools_registered():
+    """4 source-read + 1 dropbox-write + 2 spine-read + 13 spine-write +
+    2 spine-relation-write + 4 spine-step-write + 1 spine-promote +
+    1 meetings-read + 3 framework + 3 commitment + 1 note tool.
 
     source-read grew 3→4 (#108 pull_document_comments); spine-write grew 8→11
     (#104 add/remove_element_provenance, #105 retire_spine_elements); create_note
-    added (#107); spine-step-write added 4 (#119 add/set/reorder/remove_spine_step)."""
+    added (#107); spine-step-write added 4 (#119 add/set/reorder/remove_spine_step);
+    then +4 (#120): push_to_dropbox (rich-doc write-back), add_spine_document
+    (file/source → element), pull_element_from_project (cross-project copy +
+    account-tag + lineage), set_element_account_scope (type-agnostic promote)."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
         "list_project_sources",
         "pull_project_source",
         "fetch_project_source",
         "pull_document_comments",
+        "push_to_dropbox",
         "list_spine_elements",
         "pull_spine_element",
         "create_spine_element",
+        "add_spine_document",
         "add_spine_version",
         "set_spine_element",
+        "set_element_account_scope",
+        "pull_element_from_project",
         "add_element_source",
         "remove_element_source",
         "add_element_provenance",
@@ -990,3 +997,210 @@ def test_commitment_tools_resolve_raises_returns_error(monkeypatch):
     assert "no creds" in srv.create_commitment("ggl-5168", "Deliver")["error"]
     assert "no creds" in srv.list_commitments("ggl-5168")[0]["error"]
     assert "no creds" in srv.resolve_commitment("ggl-5168", "x")["error"]
+
+
+# ---------------------------------------------------------------------------
+# push_to_dropbox (#120 — rich-doc write-back)
+# ---------------------------------------------------------------------------
+
+
+def test_push_to_dropbox_unresolved(monkeypatch):
+    """A code resolving to no project returns a structured error, never raises."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: None)
+    out = srv.push_to_dropbox("nope-9999", "/tmp/deck.pptx")
+    assert "not found" in out["error"]
+
+
+def test_push_to_dropbox_no_folder_configured(monkeypatch):
+    """A project with no Dropbox folder id gets a clear 'nowhere to push' error."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+
+    class _Folders:
+        mc_dropbox_folder_id = None
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.resolve_project_folders_by_id",
+        lambda client, pid: _Folders(),
+    )
+    out = srv.push_to_dropbox("ibx-5153", "/tmp/deck.pptx")
+    assert "no Dropbox folder configured" in out["error"]
+
+
+def test_push_to_dropbox_delegates(monkeypatch, tmp_path):
+    """Resolves folder, loads creds, uploads via the connector, returns result."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+
+    class _Folders:
+        mc_dropbox_folder_id = "id:abc123"
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.resolve_project_folders_by_id",
+        lambda client, pid: _Folders(),
+    )
+    monkeypatch.setattr("cp_engine.config.load", lambda root: object())
+    creds_loaded = {}
+    monkeypatch.setattr(
+        "cp_engine.sync_mc2._load_dropbox_creds",
+        lambda config: creds_loaded.setdefault("called", True),
+    )
+    # Stub the connector class the tool imports at runtime.
+    import cloud_storage.dropbox_connector as dc
+
+    monkeypatch.setattr(dc, "DropboxConnector", lambda: object())
+
+    captured = {}
+
+    def fake_push(connector, folder_id, local_path, dest_name=None, overwrite=False):
+        captured.update(folder_id=folder_id, local_path=local_path,
+                        dest_name=dest_name, overwrite=overwrite)
+        return {"dropbox_path": "/Clients/x/deck.pptx", "name": "deck.pptx",
+                "size": 10, "overwrote": overwrite}
+
+    monkeypatch.setattr("cp_engine.project_sources.push_to_dropbox", fake_push)
+
+    f = tmp_path / "deck.pptx"
+    f.write_bytes(b"x" * 10)
+    out = srv.push_to_dropbox("ibx-5153", str(f), overwrite=True)
+    assert creds_loaded["called"] is True
+    assert captured["folder_id"] == "id:abc123"
+    assert captured["overwrite"] is True
+    assert out["name"] == "deck.pptx"
+
+
+# ---------------------------------------------------------------------------
+# add_spine_document (#120 — file / ingested-source → element)
+# ---------------------------------------------------------------------------
+
+
+def test_add_spine_document_requires_exactly_one_source():
+    """Neither file_path nor source_title, or both, is a usage error."""
+    assert "exactly one" in srv.add_spine_document("ibx-5153", "L")["error"]
+    assert "exactly one" in srv.add_spine_document(
+        "ibx-5153", "L", file_path="/a", source_title="b"
+    )["error"]
+
+
+def test_add_spine_document_from_file(monkeypatch, tmp_path):
+    """Reads a UTF-8 file and authors an element from its text."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+    captured = {}
+
+    def fake_create(code, label, type_, body="", serves=None):
+        captured.update(label=label, type=type_, body=body)
+        return {"element_id": "_authored/l", "version_label": "v1"}
+
+    monkeypatch.setattr(srv, "create_spine_element", fake_create)
+
+    f = tmp_path / "synth.md"
+    f.write_text("# Synthesis\n\nBody text.", encoding="utf-8")
+    out = srv.add_spine_document("ibx-5153", "My synth", file_path=str(f))
+    assert captured["type"] == "synthesis"
+    assert "Body text." in captured["body"]
+    assert out["element_id"] == "_authored/l"
+    assert "source_attached" not in out  # file path never attaches a source
+
+
+def test_add_spine_document_missing_file(monkeypatch):
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+    out = srv.add_spine_document("ibx-5153", "L", file_path="/no/such/file.md")
+    assert "file not found" in out["error"]
+
+
+def test_add_spine_document_from_source_attaches(monkeypatch):
+    """Pulls an ingested source's text as body AND attaches the source."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+    monkeypatch.setattr("cp_engine.config.load", lambda root: object())
+    monkeypatch.setattr("cp_engine.sync_mc2._load_ingest_creds", lambda config: None)
+    monkeypatch.setattr(
+        "cp_engine.project_sources.pull_source",
+        lambda client, pid, cid, title: {"chunks": ["chunk one", "chunk two"]},
+    )
+    monkeypatch.setattr(
+        srv, "create_spine_element",
+        lambda *a, **k: {"element_id": "_authored/b", "version_label": "v1"},
+    )
+    monkeypatch.setattr(
+        srv, "add_element_source",
+        lambda code, key, title: {"source": {"title": title}},
+    )
+    out = srv.add_spine_document("ibx-5153", "Brief card",
+                                 source_title="The Brief")
+    assert out["element_id"] == "_authored/b"
+    assert out["source_attached"] == {"title": "The Brief"}
+
+
+def test_add_spine_document_source_needs_engagement(monkeypatch):
+    """An initiative (cid=None) can't use source_title (no ingested sources)."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", None))
+    out = srv.add_spine_document("mission-control", "L", source_title="X")
+    assert "engagements" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# pull_element_from_project + set_element_account_scope (#120)
+# ---------------------------------------------------------------------------
+
+
+def test_set_element_account_scope_dispatches(monkeypatch):
+    """account=True → promote, account=False → demote."""
+    monkeypatch.setattr(srv, "promote_stakeholder",
+                        lambda code, key: {"scope": "account"})
+    monkeypatch.setattr(srv, "demote_stakeholder",
+                        lambda code, key: {"scope": "project"})
+    assert srv.set_element_account_scope("ibx-5153", "k", True)["scope"] == "account"
+    assert srv.set_element_account_scope("ibx-5153", "k", False)["scope"] == "project"
+
+
+def test_pull_element_from_project_copies_with_provenance(monkeypatch):
+    """Reads source element, authors a copy carrying an origin line in the body."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+    monkeypatch.setattr(
+        "cp_engine.project_sources.pull_spine",
+        lambda client, pid, key, cid: {
+            "est_item_id": "_authored/insight", "framing": "Key insight",
+            "body": "The insight body.",
+        },
+    )
+    captured = {}
+
+    def fake_create(code, label, type_, body="", serves=None):
+        captured.update(code=code, label=label, body=body)
+        return {"element_id": "_authored/insight-copy", "version_label": "v1"}
+
+    monkeypatch.setattr(srv, "create_spine_element", fake_create)
+    out = srv.pull_element_from_project("ggl-5168", "ibx-5153", "Key insight")
+    assert captured["code"] == "ibx-5153"          # authored INTO the target
+    assert "Pulled from **ggl-5168**" in captured["body"]
+    assert "The insight body." in captured["body"]
+    assert out["origin"]["project"] == "ggl-5168"
+    assert out["account_scoped"] is False
+
+
+def test_pull_element_from_project_account_tag(monkeypatch):
+    """account=True promotes the copy to account scope."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+    monkeypatch.setattr(
+        "cp_engine.project_sources.pull_spine",
+        lambda client, pid, key, cid: {
+            "est_item_id": "_authored/x", "framing": "X", "body": "b",
+        },
+    )
+    monkeypatch.setattr(
+        srv, "create_spine_element",
+        lambda *a, **k: {"element_id": "_authored/x-copy", "version_label": "v1"},
+    )
+    monkeypatch.setattr(srv, "set_element_account_scope",
+                        lambda code, key, account: {"scope": "account"})
+    out = srv.pull_element_from_project("ggl-5168", "ibx-5153", "X", account=True)
+    assert out["account_scoped"] is True
+
+
+def test_pull_element_from_project_source_miss(monkeypatch):
+    """A miss in the source project surfaces as an error, never raises."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+    monkeypatch.setattr(
+        "cp_engine.project_sources.pull_spine",
+        lambda client, pid, key, cid: {"body": "", "error": "no spine element"},
+    )
+    out = srv.pull_element_from_project("ggl-5168", "ibx-5153", "ghost")
+    assert "ggl-5168" in out["error"] and "no spine element" in out["error"]

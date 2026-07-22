@@ -302,6 +302,62 @@ def fetch_project_source(project_code: str, doc_title: str) -> dict:
 
 
 @mcp.tool()
+def push_to_dropbox(
+    project_code: str, local_path: str, dest_name: str | None = None,
+    overwrite: bool = False,
+) -> dict:
+    """Upload a local file INTO a project's Dropbox folder (the write-back path).
+
+    The inverse of `fetch_project_source`: use it to put a rich document you
+    generated on this machine — a `.pptx` deck, a `.docx`, a PDF report — back
+    into the project's Dropbox so the humans find it where they expect. Resolves
+    the project's configured Dropbox folder, then uploads `local_path` there as
+    `dest_name` (defaults to the local filename).
+
+    Refuses to overwrite an existing file unless `overwrite=True` (so a second
+    call with the same name is a safe no-clobber by default; pass overwrite=True
+    to replace). Works for engagements AND initiatives — whichever has a Dropbox
+    folder configured in MC-2. Returns {dropbox_path, name, size, overwrote}, or
+    a structured {error} (no Dropbox folder configured, file not found, name
+    collision, upload failure).
+    """
+    from cp_engine.asset_ingest import resolve_project_folders_by_id
+    from cp_engine.config import load as load_config
+    from cp_engine.project_sources import push_to_dropbox as _push
+    from cp_engine.sync_mc2 import _load_dropbox_creds
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, _cid = resolved
+        folders = resolve_project_folders_by_id(client, pid)
+        if folders is None or not folders.mc_dropbox_folder_id:
+            return {
+                "error": f"{project_code!r} has no Dropbox folder configured "
+                "in MC-2 — nowhere to push to"
+            }
+        # The DropboxConnector reads DROPBOX_* from os.getenv; a local MCP
+        # session resolves them from the mc-2 .env (mirrors pull_project_source's
+        # ingest-creds load), not the bare process env.
+        _load_dropbox_creds(load_config(_tenant_root()))
+        from cloud_storage.dropbox_connector import DropboxConnector
+
+        connector = DropboxConnector()
+        return _push(
+            connector, folders.mc_dropbox_folder_id, local_path,
+            dest_name=dest_name, overwrite=overwrite,
+        )
+    except Exception as exc:  # noqa: BLE001
+        # An MCP tool must never throw to the client: return a structured,
+        # actionable error note instead of propagating a protocol error.
+        return {
+            "error": f"failed to push '{local_path}' to {project_code!r} "
+            f"Dropbox: {exc}"
+        }
+
+
+@mcp.tool()
 def pull_document_comments(project_code: str, doc_title: str) -> dict:
     """Read the reviewer COMMENTS on an ingested document (#108).
 
@@ -521,6 +577,102 @@ def create_spine_element(project_code: str, label: str, type: str,
         return {"element_id": live["est_item_id"], "version_label": live["version_label"]}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"failed to create element in {project_code!r}: {exc}"}
+
+
+@mcp.tool()
+def add_spine_document(
+    project_code: str, label: str, type: str = "synthesis",
+    file_path: str | None = None, source_title: str | None = None,
+    serves: list[str] | None = None,
+) -> dict:
+    """Add a whole DOCUMENT to the spine as a new element — file OR ingested source.
+
+    A document-oriented wrapper over `create_spine_element` for the two shapes
+    that otherwise force a manual copy-paste of the body:
+
+    - `file_path` — read a local file (a synthesis `.md` you generated, a
+      reference doc on disk) and author its content as the element body. UTF-8
+      text files (`.md`/`.txt`/etc.) only; for a binary you want in the spine,
+      push it to Dropbox / ingest it as a source instead, then use
+      `source_title` here.
+    - `source_title` — pull an ALREADY-INGESTED source's text (by title, resolved
+      like `pull_project_source`) as the body AND auto-attach that source to the
+      new element (the rag_asset link `add_element_source` writes), so the card
+      carries its own provenance. "Turn this ingested brief into a spine card."
+
+    Provide exactly ONE of `file_path` / `source_title`. `type` is the element
+    kind (default `synthesis`; use `source` for reference material, or any kind
+    `create_spine_element` accepts). `serves` optionally binds work-item ids.
+    Returns {element_id, version_label[, source_attached]}, or a structured
+    {error}. To UPDATE an existing element from a document instead, read the file
+    and pass its text to `add_spine_version`.
+    """
+    from cp_engine.config import load as load_config
+    from cp_engine.sync_mc2 import _load_ingest_creds
+
+    try:
+        if bool(file_path) == bool(source_title):
+            return {"error": "provide exactly one of file_path or source_title"}
+
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+
+        # ── Assemble the body from the chosen document source ──
+        if file_path:
+            from pathlib import Path
+
+            src = Path(file_path)
+            if not src.exists() or not src.is_file():
+                return {"error": f"file not found: {file_path}"}
+            try:
+                body = src.read_text(encoding="utf-8")
+            except UnicodeDecodeError:
+                return {
+                    "error": f"{file_path!r} is not UTF-8 text — ingest it as a "
+                    "source (or push to Dropbox) and pass source_title instead"
+                }
+            if not body.strip():
+                return {"error": f"file is empty: {file_path}"}
+        else:
+            from cp_engine.project_sources import pull_source
+
+            if cid is None:
+                return {
+                    "error": "source_title works for engagements (initiatives "
+                    "have no ingested sources) — use file_path for an initiative"
+                }
+            # No query: full-doc text in returned order (see pull_source). Load
+            # ingest creds defensively though no embedding happens on query=None.
+            _load_ingest_creds(load_config(_tenant_root()))
+            pulled = pull_source(client, pid, cid, source_title)
+            chunks = pulled.get("chunks") or []
+            if not chunks:
+                note = pulled.get("note") or "no chunks"
+                return {"error": f"could not read source {source_title!r}: {note}"}
+            body = "\n\n".join(chunks)
+
+        # ── Author the element (reuse create_spine_element's validated path) ──
+        created = create_spine_element(
+            project_code, label, type, body=body, serves=serves,
+        )
+        if "error" in created:
+            return created
+
+        # ── For the ingested-source path, attach the source for provenance ──
+        result = dict(created)
+        if source_title:
+            attached = add_element_source(
+                project_code, created["element_id"], source_title,
+            )
+            result["source_attached"] = (
+                attached.get("source") if "error" not in attached
+                else f"(attach failed: {attached['error']})"
+            )
+        return result
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to add document to {project_code!r}: {exc}"}
 
 
 @mcp.tool()
@@ -1203,6 +1355,104 @@ def demote_stakeholder(project_code: str, key: str) -> dict:
                 "returned_to_project_id": provenance_pid}
     except Exception as exc:  # noqa: BLE001
         return {"error": f"failed to demote '{key}' in {project_code!r}: {exc}"}
+
+
+@mcp.tool()
+def set_element_account_scope(
+    project_code: str, key: str, account: bool = True,
+) -> dict:
+    """Tag ANY spine element account-level (or return it to project scope).
+
+    The type-agnostic generalization of `promote_stakeholder`/`demote_stakeholder`:
+    use it to make a synthesis, a source, a decision — any element, not just a
+    stakeholder — readable from EVERY project of the same company (`account=True`,
+    scope='account', company_id set, provenance project unchanged), or to pull it
+    back to its home project (`account=False`). Every version of the element
+    moves together. Engagements only (initiatives have no company). Opt-in and
+    human-triggered — engagement-specific content that shouldn't travel belongs
+    in a project-scoped element. Returns
+    {est_item_id, scope, company_id?, returned_to_project_id?}, or {note}/{error}.
+
+    (For a stakeholder specifically, `promote_stakeholder` is the same move with a
+    layer sanity-check — prefer it there; this is for everything else.)
+    """
+    if account:
+        return promote_stakeholder(project_code, key)
+    return demote_stakeholder(project_code, key)
+
+
+@mcp.tool()
+def pull_element_from_project(
+    from_code: str, to_code: str, key: str, type: str = "synthesis",
+    account: bool = False,
+) -> dict:
+    """Copy a spine element FROM another project INTO this one, with lineage.
+
+    The "pull content from another project" move: resolve `key` to one live
+    element in `from_code` (est_item_id or a distinct title substring, exactly
+    like `pull_spine_element`), then author a COPY of its body as a new element
+    in `to_code`. The copy's body is prefixed with an origin provenance line
+    (`from <from_code> · <est_item_id>`) and its version note records the source,
+    so the lineage is legible in the element itself. `type` sets the copy's kind
+    (default `synthesis` — a cross-project pull is usually re-synthesis; pass
+    `source`/`reference` to carry it verbatim). With `account=True` the copy
+    lands account-scoped immediately (readable from every sibling project — the
+    account-tagging ask), so a body pulled once serves the whole company.
+
+    Lineage note: spine relation edges are within-project (they key on
+    est_item_id in one project's space), so cross-project lineage is recorded as
+    provenance IN the copied element — the origin line + version note — rather
+    than a dangling edge. Within `to_code`, wire a `derives_from` edge from the
+    copy to any local element it builds on with `create_spine_relation`.
+
+    Returns {element_id, version_label, origin, account_scoped}, or a structured
+    {error}. Does NOT move the original — the source project keeps its element.
+    """
+    from cp_engine.project_sources import pull_spine
+
+    try:
+        src = _resolve(from_code)
+        if src is None:
+            return {"error": f"source project {from_code!r} not found"}
+        s_client, s_pid, s_cid = src
+        # Read the source element (its own scope ladder, incl. account elements).
+        pulled = pull_spine(s_client, s_pid, key, s_cid)
+        if pulled.get("error"):
+            return {"error": f"in {from_code!r}: {pulled['error']}"}
+        origin_id = pulled.get("est_item_id") or key
+        origin_framing = pulled.get("framing") or origin_id
+        body = pulled.get("body") or ""
+        if not body.strip():
+            return {"error": f"source element {origin_id!r} in {from_code!r} has "
+                             "an empty body — nothing to pull"}
+
+        # Stamp legible cross-project provenance into the copy's body head.
+        origin_line = f"> _Pulled from **{from_code}** · `{origin_id}` ({origin_framing})_"
+        copied_body = f"{origin_line}\n\n{body}"
+        label = f"{origin_framing} (from {from_code})"
+
+        created = create_spine_element(to_code, label, type, body=copied_body)
+        if "error" in created:
+            return created
+
+        # Record the source in the new element's first version note via a
+        # targeted add_spine_version? No — create already made v1. Instead carry
+        # provenance in the body (above) + the return payload. Account-tag if asked.
+        account_scoped = False
+        if account:
+            promoted = set_element_account_scope(to_code, created["element_id"], True)
+            account_scoped = promoted.get("scope") == "account"
+
+        return {
+            "element_id": created["element_id"],
+            "version_label": created["version_label"],
+            "origin": {"project": from_code, "est_item_id": origin_id,
+                       "framing": origin_framing},
+            "account_scoped": account_scoped,
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to pull '{key}' from {from_code!r} into "
+                         f"{to_code!r}: {exc}"}
 
 
 @mcp.tool()

@@ -289,6 +289,18 @@ class RagAssetRow:
 
 _SUPABASE_KEYS = ("SUPABASE_URL", "SUPABASE_SERVICE_KEY")
 _INGEST_KEYS = ("OPENAI_API_KEY", "VOYAGE_API_KEY")
+# Dropbox OAuth creds the `DropboxConnector` reads via `os.getenv` (refresh-token
+# path preferred). Loaded on demand by `load_dropbox_creds` for tools that write
+# BACK to Dropbox (push_to_dropbox) — the ingest creds loader covers only
+# OPENAI/VOYAGE, so a local MCP session with the mc-2 `.env` on disk but no
+# Dropbox vars in its own environment would otherwise build an unauthenticated
+# connector.
+_DROPBOX_KEYS = (
+    "DROPBOX_APP_KEY",
+    "DROPBOX_APP_SECRET",
+    "DROPBOX_REFRESH_TOKEN",
+    "DROPBOX_ACCESS_TOKEN",
+)
 
 
 def _backend_unavailable(message: str) -> Exception:
@@ -324,6 +336,27 @@ def load_ingest_creds(config: "TenantConfig") -> None:
         return
     file_creds = _read_dotenv(env_file, _INGEST_KEYS)
     for key in _INGEST_KEYS:
+        if not os.environ.get(key) and file_creds.get(key):
+            os.environ[key] = file_creds[key]
+
+
+def load_dropbox_creds(config: "TenantConfig") -> None:
+    """Export DROPBOX_* creds into `os.environ` for the `DropboxConnector`.
+
+    The Dropbox connector self-configures from `os.getenv` (refresh-token path
+    preferred). A `push_to_dropbox` call made from a local MCP session has the
+    MC-2 `.env` on disk but not necessarily the DROPBOX_* vars in its own
+    process environment, so the connector would authenticate as nobody and
+    fail. This mirrors `load_ingest_creds` exactly: an already-set env var WINS
+    (CI / explicit exports), otherwise fill from `<mc-2 clone>/backend/.env`.
+    No clone configured → no-op (never raises): the creds may legitimately come
+    from the real process environment in production (the ingest webhook).
+    """
+    env_file = _mc2_env_file(config)
+    if env_file is None:
+        return
+    file_creds = _read_dotenv(env_file, _DROPBOX_KEYS)
+    for key in _DROPBOX_KEYS:
         if not os.environ.get(key) and file_creds.get(key):
             os.environ[key] = file_creds[key]
 
