@@ -26,7 +26,9 @@ STEP_STATUSES = ("done", "active", "upcoming")
 NOTE_MAX = 8000  # parity with partner notes (long allowed, truncated for Slack)
 
 # The read shape the verbs return (and the outline API mirrors).
-_STEP_SELECT = "id, est_item_id, position, title, status, step_date, note"
+_STEP_SELECT = (
+    "id, est_item_id, position, title, status, step_date, note, source, review"
+)
 
 
 def _resolve_est_item_id(client, project_id, key, company_id=None):
@@ -93,6 +95,65 @@ def add_step(client, project_id, key, title, *, status="upcoming",
         "note": note,
     }).execute()
     return {"est_item_id": est_item_id, "position": next_pos,
+            "steps": _read_steps(client, project_id, est_item_id)}
+
+
+def propose_step(client, project_id, key, title, *, status="done",
+                 step_date=None, note=None, company_id=None):
+    """Propose a MACHINE-AUTHORED step (source='auto', review='proposed').
+
+    The write side of auto-journey-steps (design 2026-07-21): Claude authors a
+    step as work moves, but it lands PROPOSED — a human confirms/dismisses it on
+    the trail (Drew's review-gate decision, Q2=3b). Distinct from add_step, which
+    writes a live human (manual/confirmed) step.
+
+    Idempotency: re-proposing the same move (same est_item_id + title +
+    step_date) is a NO-OP whatever its current review state — so re-running a
+    capture never double-proposes, and a step the human already DISMISSED is not
+    resurrected. Returns {est_item_id, proposed: bool, already?: bool, steps}.
+    """
+    if not (title and title.strip()):
+        return {"error": "title is required to propose a step"}
+    if status not in STEP_STATUSES:
+        return {"error": f"status must be one of {list(STEP_STATUSES)}"}
+    if note is not None and len(note) > NOTE_MAX:
+        return {"error": f"note exceeds {NOTE_MAX} characters"}
+
+    est_item_id = _resolve_est_item_id(client, project_id, key, company_id)
+    if est_item_id is None:
+        return {"error": f"no live element matching {key!r}"}
+
+    title_clean = title.strip()
+    existing = _read_steps(client, project_id, est_item_id)
+    # Idempotency guard on the natural key. Matches on ANY review state
+    # (confirmed/proposed/dismissed) so a confirmed or rejected twin blocks a
+    # re-propose — the same discipline as create_spine_relation's idempotency.
+    dup = next(
+        (
+            s
+            for s in existing
+            if (s.get("title") or "").strip().lower() == title_clean.lower()
+            and (s.get("step_date") or None) == (step_date or None)
+        ),
+        None,
+    )
+    if dup is not None:
+        return {"est_item_id": est_item_id, "proposed": False, "already": True,
+                "steps": existing}
+
+    next_pos = max((s.get("position") or 0 for s in existing), default=0) + 1
+    client.table(Tables.SPINE_STEPS).insert({
+        "project_id": project_id,
+        "est_item_id": est_item_id,
+        "position": next_pos,
+        "title": title_clean,
+        "status": status,
+        "step_date": step_date,
+        "note": note,
+        "source": "auto",
+        "review": "proposed",
+    }).execute()
+    return {"est_item_id": est_item_id, "proposed": True,
             "steps": _read_steps(client, project_id, est_item_id)}
 
 

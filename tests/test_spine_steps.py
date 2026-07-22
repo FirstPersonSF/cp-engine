@@ -203,3 +203,65 @@ def test_tool_unknown_project_errors(monkeypatch):
     monkeypatch.setattr(srv, "_resolve", lambda code: None)
     out = srv.add_spine_step("nope", "sow", "x")
     assert "error" in out and "not found" in out["error"]
+
+
+# --- propose_step (auto-journey-steps: machine-authored, review-gated) --------
+
+
+def test_propose_writes_auto_proposed(monkeypatch):
+    _resolve(monkeypatch)
+    c = _FakeSteps()
+    out = steps.propose_step(c, "pid", "sow", "Ratified the pillars",
+                             step_date="7/21")
+    assert out["proposed"] is True
+    row = c.rows[0]
+    assert row["source"] == "auto"
+    assert row["review"] == "proposed"
+    assert row["status"] == "done"  # propose defaults to done (the move happened)
+    assert row["title"] == "Ratified the pillars"
+
+
+def test_propose_is_idempotent_on_title_and_date(monkeypatch):
+    _resolve(monkeypatch)
+    c = _FakeSteps()
+    first = steps.propose_step(c, "pid", "sow", "Sent v3 to Janet", step_date="7/21")
+    assert first["proposed"] is True
+    # Same move again → no-op, no second row.
+    again = steps.propose_step(c, "pid", "sow", "sent v3 to janet", step_date="7/21")
+    assert again["proposed"] is False
+    assert again["already"] is True
+    assert len(c.rows) == 1
+
+
+def test_propose_not_blocked_by_different_date(monkeypatch):
+    _resolve(monkeypatch)
+    c = _FakeSteps()
+    steps.propose_step(c, "pid", "sow", "Weekly sync", step_date="7/21")
+    out = steps.propose_step(c, "pid", "sow", "Weekly sync", step_date="7/28")
+    assert out["proposed"] is True
+    assert len(c.rows) == 2
+
+
+def test_propose_idempotent_against_confirmed_twin(monkeypatch):
+    """A step the human already CONFIRMED (or a manual one) blocks a re-propose —
+    the guard matches on the natural key in ANY review state."""
+    _resolve(monkeypatch)
+    c = _FakeSteps()
+    # Simulate a live human step with the same title/date.
+    steps.add_step(c, "pid", "sow", "Booked the session", step_date="7/21")
+    out = steps.propose_step(c, "pid", "sow", "Booked the session", step_date="7/21")
+    assert out["proposed"] is False and out["already"] is True
+    assert len(c.rows) == 1
+
+
+def test_propose_rejects_bad_status_and_blank_title(monkeypatch):
+    _resolve(monkeypatch)
+    c = _FakeSteps()
+    assert "error" in steps.propose_step(c, "pid", "sow", "x", status="bogus")
+    assert "error" in steps.propose_step(c, "pid", "sow", "   ")
+
+
+def test_propose_tool_unknown_project_errors(monkeypatch):
+    monkeypatch.setattr(srv, "_resolve", lambda code: None)
+    out = srv.propose_spine_step("nope", "sow", "x")
+    assert "error" in out and "not found" in out["error"]

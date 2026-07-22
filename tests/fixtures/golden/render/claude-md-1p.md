@@ -550,6 +550,25 @@ transient weekly material belongs in the sprint file, not in `cp.md`.
 `wrap up` extends to commit the entire `sprints/<YYYY-W##>/` directory alongside
 the master roll-up and to run word-count discipline on each sprint file.
 
+## Proposing journey steps at wrap up
+
+When a session MOVED a specific spine element/activity/deliverable forward —
+you drafted a deck, ratified a decision, sent a version to a stakeholder,
+wired a feature — propose that move as a **step** on the element's trail with
+`propose_spine_step(code, key, title, status="done", step_date=<today>)`. It
+lands PROPOSED: a human confirms or dismisses it on the spine (the review
+gate) — you never write a live step or touch the schedule.
+
+Discipline (this is a judgment call — do it well or not at all):
+- **One move = one step**, not one edit. A terse past-tense `title`
+  ("Ratified the pillars", not "worked on pillars").
+- **Bind to exactly ONE element** (`key` resolves like `pull_spine_element`).
+  If the work can't be pinned to one element, DON'T propose — ambiguity is
+  the signal to skip, not guess.
+- **Cap yourself at ≤2 proposed steps per session**, across all elements.
+- Idempotent: re-proposing the same `(element, title, date)` is a no-op, so a
+  re-run never double-proposes and a dismissed step never comes back.
+
 ## Word-count discipline
 
 Per bootstrap v2:

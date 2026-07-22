@@ -4,6 +4,24 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.76.0 — 2026-07-21
+
+- **`propose_spine_step` — machine-authored journey steps, review-gated
+  (auto-journey-steps).** A new `cp-sources` MCP verb that lets Claude PROPOSE a
+  step on a spine element's trail as work moves during a session — but it lands
+  PROPOSED, not live: a human confirms or dismisses it on the spine (the review
+  gate Drew chose, design `cp/docs/plans/2026-07-21-auto-journey-steps-design.md`
+  Q2). Distinct from `add_spine_step` (which writes a live human step): this
+  writes `source='auto', review='proposed'` (mc-2 mig 120 adds those two columns
+  to `spine_steps`, modeled on `spine_relations`' source+status split — the
+  progress `status` enum stays clean). Idempotent on `(est_item_id, title,
+  step_date)` in ANY review state, so re-running a capture never double-proposes
+  and a dismissed step is never resurrected. Authoring discipline (verb
+  docstring + the `wrap up` guidance in the CLAUDE.md template): one move = one
+  step, bind to exactly one element or skip, cap ≤2 per session, prefer
+  `status='done'`. Tool count 36 → 37. Verified live (propose + idempotency)
+  against a real IBX element. A step still NEVER writes the schedule `done`.
+
 ## v0.75.0 — 2026-07-21
 
 - **Four new `cp-sources` MCP verbs — documents in, documents out, content across

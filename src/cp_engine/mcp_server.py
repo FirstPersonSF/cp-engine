@@ -924,6 +924,47 @@ def add_spine_step(
 
 
 @mcp.tool()
+def propose_spine_step(
+    project_code: str, key: str, title: str,
+    status: str = "done", step_date: str | None = None,
+    note: str | None = None,
+) -> dict:
+    """PROPOSE a machine-authored step on an element's trail (auto-journey-steps).
+
+    Author a step as work moves DURING a session — but it lands PROPOSED, not
+    live: a human confirms or dismisses it on the spine trail (the review-gate).
+    Use this (not `add_spine_step`, which writes a live human step) when YOU are
+    recording progress you just made on a work-item, e.g. at the end of a
+    content/synthesis session on an engagement.
+
+    Contract (design 2026-07-21 §2): one MOVE = one step (not one edit); bind to
+    exactly ONE element (`key` resolves like pull_spine_element — skip rather
+    than guess if you can't attribute the work to a single element); prefer
+    `status='done'` (the move already happened); a terse past-tense `title`
+    (≤~60 chars, "Ratified the pillars", not "worked on pillars"). Cap yourself
+    at ≤2 proposed steps per session across all elements.
+
+    Idempotent: re-proposing the same (element, title, step_date) is a no-op in
+    ANY review state — a confirmed or already-dismissed twin is not re-proposed.
+    Returns {est_item_id, proposed: bool, already?: bool, steps} or {error}.
+    A step NEVER completes the work-item on the schedule — that stays human-only.
+    """
+    from cp_engine import spine_steps
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, cid = resolved
+        return spine_steps.propose_step(client, pid, key, title, status=status,
+                                        step_date=step_date, note=note,
+                                        company_id=cid)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to propose step on '{key}' in "
+                         f"{project_code!r}: {exc}"}
+
+
+@mcp.tool()
 def set_spine_step(
     project_code: str, key: str, step_id: str,
     title: str | None = None, status: str | None = None,

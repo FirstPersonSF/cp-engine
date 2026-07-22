@@ -173,9 +173,9 @@ def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
     assert srv._tenant_root() == tmp_path.resolve()
 
 
-def test_exactly_thirty_six_tools_registered():
+def test_exactly_thirty_seven_tools_registered():
     """4 source-read + 1 dropbox-write + 2 spine-read + 13 spine-write +
-    2 spine-relation-write + 4 spine-step-write + 1 spine-promote +
+    2 spine-relation-write + 5 spine-step-write + 1 spine-promote +
     1 meetings-read + 3 framework + 3 commitment + 1 note tool.
 
     source-read grew 3→4 (#108 pull_document_comments); spine-write grew 8→11
@@ -183,7 +183,9 @@ def test_exactly_thirty_six_tools_registered():
     added (#107); spine-step-write added 4 (#119 add/set/reorder/remove_spine_step);
     then +4 (#120): push_to_dropbox (rich-doc write-back), add_spine_document
     (file/source → element), pull_element_from_project (cross-project copy +
-    account-tag + lineage), set_element_account_scope (type-agnostic promote)."""
+    account-tag + lineage), set_element_account_scope (type-agnostic promote);
+    then +1 (auto-journey-steps): propose_spine_step (machine-authored, proposed
+    review-state)."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
         "list_project_sources",
@@ -208,6 +210,7 @@ def test_exactly_thirty_six_tools_registered():
         "create_spine_relation",
         "retire_spine_relation",
         "add_spine_step",
+        "propose_spine_step",
         "set_spine_step",
         "reorder_spine_step",
         "remove_spine_step",
