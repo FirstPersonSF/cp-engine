@@ -200,6 +200,12 @@ the *source* tools return empty for them — but the *spine* tools work fully.
   (.docx/.pptx/.xlsx). Returns `{author, date, anchored_text, comment, replies}`
   per comment — grouped by author it's stakeholder intelligence ("what did each
   reviewer push on?"). Use when a doc was reviewed and you need the margin notes.
+- `push_to_dropbox(code, local_path, dest_name?, overwrite?)` — the WRITE-BACK
+  inverse of `fetch_project_source`: upload a rich document you generated on this
+  machine (a `.pptx` deck, `.docx`, PDF) INTO the project's Dropbox folder, so
+  the humans find it where they expect. Refuses to clobber an existing name
+  unless `overwrite=true`. Engagements and initiatives both (whichever has a
+  Dropbox folder configured).
 
 The `_sources.md` manifest in each working dir names what exists; these tools
 fetch content. Both project-scoped and shared account-scoped docs are surfaced.
@@ -215,6 +221,14 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
 - `create_spine_element(code, label, type, body?, serves?)` — author a new live
   v1 element (`type` ∈ email|note|source|brief|decision|stakeholder|agreement|
   synthesis|output|activity). Live immediately; mirrors to the repo on next sync.
+- `add_spine_document(code, label, type?, file_path?, source_title?, serves?)` —
+  author a whole DOCUMENT into the spine as a new element, without hand-pasting
+  the body. Pass EITHER a local `file_path` (a synthesis `.md` you wrote to disk
+  → element body — UTF-8 text only) OR an already-ingested `source_title` (pull
+  the ingested doc's text as the body AND auto-attach the rag_asset for
+  provenance). `type` defaults to `synthesis`; provide exactly one of
+  file/source. To UPDATE an element from a document, read the file and pass its
+  text to `add_spine_version` instead.
 - `add_spine_version(code, element_id, body, version_note?)` — supersede the prior
   live version with a new one (a targeted "what changed" update).
 - `set_spine_element(code, key, important?, note?, layer?, framing?, serves?)` —
@@ -249,6 +263,20 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   engagement-specific reads in a separate project-scoped element.
 - `demote_stakeholder(code, key)` — the inverse: the element returns to its
   provenance project and leaves the account roster. Nothing is deleted.
+- `set_element_account_scope(code, key, account?)` — the type-AGNOSTIC promote:
+  tag ANY element (a synthesis, a source, a decision — not just a stakeholder)
+  account-level (`account=true`, readable from every sibling project) or return
+  it to project scope (`account=false`). Same mechanism as promote_stakeholder,
+  without the stakeholder-layer sanity check. Engagements only.
+- `pull_element_from_project(from_code, to_code, key, type?, account?)` — copy a
+  spine element FROM another project INTO this one. Resolves `key` in `from_code`
+  (est_item_id or distinct title substring), authors a COPY of its body in
+  `to_code` with an origin provenance line stamped into the body head. `type`
+  defaults to `synthesis` (a cross-project pull is usually re-synthesis).
+  `account=true` lands the copy account-scoped immediately. Does NOT move the
+  original. Cross-project LINEAGE lives in the copy's provenance (origin line +
+  return payload) — relation edges are within-project, so wire a local
+  `derives_from` edge with `create_spine_relation` for in-project lineage.
 
 Spine listings may include the company's account-scoped elements (promoted
 stakeholder dossiers) alongside the project's own — the `scope` field tells
