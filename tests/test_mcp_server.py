@@ -440,7 +440,8 @@ def test_create_spine_element_writes_authored_v1(monkeypatch):
 
     out = srv.create_spine_element("ibx-5192", "Email from Janet", "email", "Hi", [])
 
-    assert out == {"element_id": "_authored/email-from-janet", "version_label": "v1"}
+    assert out["element_id"] == "_authored/email-from-janet"
+    assert out["version_label"] == "v1"
     assert len(client.upserts) == 1
     table, rows, _ = client.upserts[0]
     assert table == "spine_substance"
@@ -507,7 +508,8 @@ def test_add_spine_version(monkeypatch):
 
     out = srv.add_spine_version("ibx-5153", "_authored/hyp", "new", "changed")
 
-    assert out == {"element_id": "_authored/hyp", "version_label": "v2"}
+    assert out["element_id"] == "_authored/hyp"
+    assert out["version_label"] == "v2"
     # prior live v1 demoted via targeted update
     assert client.updates == [("spine_substance", {"status": "superseded"})]
     # new live v2 upserted carrying the version_note
@@ -535,7 +537,8 @@ def test_add_spine_version_resolves_by_project_id_not_code(monkeypatch):
     out = srv.add_spine_version("ibx-5153", "_authored/hyp", "new", "changed")
 
     assert "error" not in out
-    assert out == {"element_id": "_authored/hyp", "version_label": "v2"}
+    assert out["element_id"] == "_authored/hyp"
+    assert out["version_label"] == "v2"
 
 
 def test_add_spine_version_by_framing_substring(monkeypatch):
@@ -545,7 +548,8 @@ def test_add_spine_version_by_framing_substring(monkeypatch):
 
     out = srv.add_spine_version("ibx-5153", "latest hypothesis", "new", "changed")
 
-    assert out == {"element_id": "_authored/hyp", "version_label": "v2"}
+    assert out["element_id"] == "_authored/hyp"
+    assert out["version_label"] == "v2"
 
 
 def test_add_spine_version_picks_next_number_across_history(monkeypatch):
@@ -574,6 +578,95 @@ def test_add_spine_version_unknown_element(monkeypatch):
     assert "no authored element" in out["error"]
     assert client.upserts == []
     assert client.updates == []
+
+
+# --- auto-step wiring on content-writes (2026-07-23-auto-step-on-version-write)
+
+
+def _capture_auto_step(monkeypatch):
+    """Replace spine_steps.upsert_auto_step with a capturing stub; return the dict
+    it records its args into."""
+    captured = {}
+
+    def fake(client, pid, key, title, *, step_date, company_id=None):
+        captured.update(key=key, title=title, step_date=step_date,
+                        company_id=company_id)
+        return {"est_item_id": key, "created": True}
+
+    monkeypatch.setattr("cp_engine.spine_steps.upsert_auto_step", fake)
+    return captured
+
+
+def test_add_spine_version_auto_steps_with_explicit_title(monkeypatch):
+    client = _FakeWriteClient(select_rows=[_prior_v1()])
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+    cap = _capture_auto_step(monkeypatch)
+
+    out = srv.add_spine_version("ibx-5153", "_authored/hyp", "new", "changed",
+                                step_title="Built the cube slide")
+
+    assert out["step"] == {"est_item_id": "_authored/hyp", "created": True}
+    assert cap["title"] == "Built the cube slide"  # explicit wins
+    assert cap["key"] == "_authored/hyp"
+    assert cap["company_id"] == "cid"
+
+
+def test_add_spine_version_auto_step_falls_back_to_version_note(monkeypatch):
+    client = _FakeWriteClient(select_rows=[_prior_v1()])
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+    cap = _capture_auto_step(monkeypatch)
+
+    srv.add_spine_version("ibx-5153", "_authored/hyp", "new", "Folded in redlines")
+
+    assert cap["title"] == "Folded in redlines"  # version_note fallback
+
+
+def test_add_spine_version_auto_step_derived_title_when_no_note(monkeypatch):
+    client = _FakeWriteClient(select_rows=[_prior_v1()])
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+    cap = _capture_auto_step(monkeypatch)
+
+    srv.add_spine_version("ibx-5153", "_authored/hyp", "new")  # no note
+
+    assert cap["title"] == "Updated Latest hypothesis (v2)"  # framing + version
+
+
+def test_add_spine_version_auto_step_is_non_fatal(monkeypatch):
+    client = _FakeWriteClient(select_rows=[_prior_v1()])
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+
+    def boom(*a, **k):
+        raise RuntimeError("journal down")
+
+    monkeypatch.setattr("cp_engine.spine_steps.upsert_auto_step", boom)
+    out = srv.add_spine_version("ibx-5153", "_authored/hyp", "new", "changed")
+
+    # version write still succeeds; the step failure is captured, not raised
+    assert out["version_label"] == "v2"
+    assert "error" in out["step"] and "journal down" in out["step"]["error"]
+
+
+def test_create_spine_element_auto_steps(monkeypatch):
+    client = _FakeWriteClient(select_rows=[])
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+    cap = _capture_auto_step(monkeypatch)
+
+    out = srv.create_spine_element("ibx-5192", "Email from Janet", "email", "Hi", [])
+
+    assert out["step"]["created"] is True
+    assert cap["title"] == "Created Email from Janet"  # derived from label
+    assert cap["key"] == "_authored/email-from-janet"
+
+
+def test_create_spine_element_auto_step_explicit_title(monkeypatch):
+    client = _FakeWriteClient(select_rows=[])
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
+    cap = _capture_auto_step(monkeypatch)
+
+    srv.create_spine_element("ibx-5192", "Email from Janet", "email", "Hi", [],
+                             step_title="Captured Janet's kickoff email")
+
+    assert cap["title"] == "Captured Janet's kickoff email"
 
 
 def test_create_spine_element_conflict_detected_across_code_forms(monkeypatch):

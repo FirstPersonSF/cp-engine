@@ -534,7 +534,8 @@ def list_project_meetings(project_code: str) -> list[dict]:
 
 @mcp.tool()
 def create_spine_element(project_code: str, label: str, type: str,
-                         body: str = "", serves: list[str] | None = None) -> dict:
+                         body: str = "", serves: list[str] | None = None,
+                         step_title: str | None = None) -> dict:
     """Create a new AUTHORED spine element (live v1) in MC-2.
 
     `type` is the element kind (email|note|source|brief|decision|stakeholder|
@@ -543,8 +544,14 @@ def create_spine_element(project_code: str, label: str, type: str,
     canonical `layer` (e.g. email→Email, source→Source material), so an element
     you author here groups under the same layer the dashboard shows and its
     by-layer filters match. `serves` optionally binds it to
-    work-item ids. Returns {element_id, version_label}. The element is live
-    immediately and mirrors to the repo on the next cp sync.
+    work-item ids. Returns {element_id, version_label[, step]}. The element is
+    live immediately and mirrors to the repo on the next cp sync.
+
+    Auto-journals creation as a review-gated `source='auto'` step for today
+    (design 2026-07-23-auto-step-on-version-write), so authoring a card always
+    leaves an activity record. `step_title` overrides the derived "Created
+    <label>" title. Non-fatal — a journal miss surfaces under `step`, never
+    fails the create.
     """
     from datetime import datetime, timezone
 
@@ -574,7 +581,20 @@ def create_spine_element(project_code: str, label: str, type: str,
             return {"error": f"an element '{eid}' already exists; add a version instead"}
         client.table(Tables.SPINE_SUBSTANCE).upsert(rows, on_conflict="id").execute()
         live = next(r for r in rows if r["status"] == "live")
-        return {"element_id": live["est_item_id"], "version_label": live["version_label"]}
+        result = {"element_id": live["est_item_id"],
+                  "version_label": live["version_label"]}
+        # Auto-journal creation (non-fatal — never fails the create).
+        try:
+            from cp_engine import spine_steps
+            result["step"] = spine_steps.upsert_auto_step(
+                client, pid, live["est_item_id"],
+                step_title or f"Created {label}",
+                step_date=datetime.now(timezone.utc).isoformat()[:10],
+                company_id=_cid,
+            )
+        except Exception as exc:  # noqa: BLE001 — journaling is non-fatal
+            result["step"] = {"error": f"auto-step failed: {exc}"}
+        return result
     except Exception as exc:  # noqa: BLE001
         return {"error": f"failed to create element in {project_code!r}: {exc}"}
 
@@ -677,7 +697,8 @@ def add_spine_document(
 
 @mcp.tool()
 def add_spine_version(project_code: str, element_id: str, body: str,
-                      version_note: str | None = None) -> dict:
+                      version_note: str | None = None,
+                      step_title: str | None = None) -> dict:
     """Add a new version to an existing AUTHORED spine element.
 
     Supersedes the prior live version (a targeted status update) and creates a
@@ -685,6 +706,18 @@ def add_spine_version(project_code: str, element_id: str, body: str,
     {element_id, version_label}. `element_id` is the element's est_item_id
     (e.g. `_authored/latest-hypothesis`) OR a distinct `framing` (title)
     substring — the same key forms `pull_spine_element` accepts.
+
+    Auto-journals the move: on success it proposes ONE `source='auto'` step for
+    today on this element's trail (review-gated — a human confirms/dismisses it),
+    so a content-write always leaves an activity record without a manual
+    wrap-up proposal (design 2026-07-23-auto-step-on-version-write). Pass
+    `step_title` to give that step the real move's words ("Built Mehul's cube
+    framing into deck v09"); omitted, it falls back to `version_note`, else
+    "Updated <framing> (v<N>)". A second bump of the same element the same day
+    UPDATES that step's title rather than stacking a row. The auto-step is
+    NON-FATAL: any failure surfaces under `step` in the return, never as a tool
+    {error} — a journal miss never fails the version write. Returns
+    {element_id, version_label[, step]}.
     """
     from datetime import datetime, timezone
 
@@ -727,7 +760,24 @@ def add_spine_version(project_code: str, element_id: str, body: str,
         )
         client.table(Tables.SPINE_SUBSTANCE).upsert(rows, on_conflict="id").execute()
         live = next(r for r in rows if r["status"] == "live")
-        return {"element_id": live["est_item_id"], "version_label": live["version_label"]}
+        result = {"element_id": live["est_item_id"],
+                  "version_label": live["version_label"]}
+        # Auto-journal the move as a review-gated step (non-fatal — a journal
+        # miss must never fail the version write). Title priority:
+        # explicit step_title > version_note > derived "Updated <framing> (v<N>)".
+        try:
+            from cp_engine import spine_steps
+            title = (step_title or version_note
+                     or f"Updated {live.get('framing') or canonical_id} "
+                        f"({live['version_label']})")
+            result["step"] = spine_steps.upsert_auto_step(
+                client, row_project_id, canonical_id, title,
+                step_date=datetime.now(timezone.utc).isoformat()[:10],
+                company_id=_cid,
+            )
+        except Exception as exc:  # noqa: BLE001 — journaling is non-fatal
+            result["step"] = {"error": f"auto-step failed: {exc}"}
+        return result
     except Exception as exc:  # noqa: BLE001
         return {"error": f"failed to add version in {project_code!r}: {exc}"}
 

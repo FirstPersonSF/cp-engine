@@ -157,6 +157,81 @@ def propose_step(client, project_id, key, title, *, status="done",
             "steps": _read_steps(client, project_id, est_item_id)}
 
 
+def upsert_auto_step(client, project_id, key, title, *, step_date,
+                     company_id=None):
+    """Auto-journal a content-write as a step, ONE per (element, day).
+
+    The floor beneath `propose_step` (design
+    cp/docs/plans/2026-07-23-auto-step-on-version-write.md): a spine content-write
+    (`add_spine_version` / `create_spine_element`) calls this so real work always
+    leaves an activity record — no manual wrap-up proposal required.
+
+    Unlike `propose_step`, which dedups on (est_item_id, title, step_date) so a
+    retitle makes a NEW step, this collapses on (est_item_id, step_date) IGNORING
+    title: a second version bump of the same element the same day UPDATES the
+    existing proposed auto-step's title to the latest move rather than stacking a
+    near-identical row. Keeps the trail legible.
+
+    Guardrails: it only ever touches a row that is BOTH source='auto' AND
+    review='proposed'. A human step, or an auto-step the human already CONFIRMED,
+    is frozen — never retitled, never duplicated onto. A DISMISSED auto-step for
+    the day does not block a fresh one (the human rejected that title, not the
+    day's work), so a later real move still gets journaled.
+
+    Always status='done' (the move happened) and review='proposed' (the gate).
+    Returns {est_item_id, created|updated: bool, step_id, steps} or {error}.
+    Callers treat any {error} as non-fatal — a journal miss must never fail the
+    content-write that triggered it.
+    """
+    if not (title and title.strip()):
+        return {"error": "title is required to journal a step"}
+
+    est_item_id = _resolve_est_item_id(client, project_id, key, company_id)
+    if est_item_id is None:
+        return {"error": f"no live element matching {key!r}"}
+
+    title_clean = title.strip()
+    existing = _read_steps(client, project_id, est_item_id)
+    # Collapse target: the day's still-proposed auto-step. Human steps and
+    # confirmed/dismissed auto-steps are excluded so we never overwrite a
+    # human-touched title.
+    open_auto = next(
+        (
+            s
+            for s in existing
+            if s.get("source") == "auto"
+            and s.get("review") == "proposed"
+            and (s.get("step_date") or None) == (step_date or None)
+        ),
+        None,
+    )
+    if open_auto is not None:
+        # Same title already? Nothing to do — idempotent re-run.
+        if (open_auto.get("title") or "").strip() != title_clean:
+            client.table(Tables.SPINE_STEPS).update(
+                {"title": title_clean}
+            ).eq("id", open_auto["id"]).execute()
+        return {"est_item_id": est_item_id, "updated": True,
+                "step_id": open_auto["id"],
+                "steps": _read_steps(client, project_id, est_item_id)}
+
+    next_pos = max((s.get("position") or 0 for s in existing), default=0) + 1
+    inserted = client.table(Tables.SPINE_STEPS).insert({
+        "project_id": project_id,
+        "est_item_id": est_item_id,
+        "position": next_pos,
+        "title": title_clean,
+        "status": "done",
+        "step_date": step_date,
+        "note": None,
+        "source": "auto",
+        "review": "proposed",
+    }).execute()
+    step_id = (inserted.data[0]["id"] if inserted.data else None)
+    return {"est_item_id": est_item_id, "created": True, "step_id": step_id,
+            "steps": _read_steps(client, project_id, est_item_id)}
+
+
 def set_step(client, project_id, key, step_id, *, title=None, status=None,
              step_date=None, note=None, company_id=None):
     """Update one step's title/status/step_date/note. Only passed fields change

@@ -4,6 +4,34 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.77.0 — 2026-07-23
+
+- **Spine content-writes auto-journal a step (auto-step on version-write).**
+  `add_spine_version` and `create_spine_element` now auto-propose ONE
+  `source='auto'` step for today on the element's trail, so real work always
+  leaves an activity record without a manual wrap-up proposal — closing the gap
+  where a full work session (review a recording → extract text → form a design →
+  iterate → version the card) versioned the card but left NO step, because
+  proposing one was an easy-to-forget chore (design
+  `cp/docs/plans/2026-07-23-auto-step-on-version-write.md`). Behavior: fires for
+  ALL callers server-side (MCP sessions, scripts, webhook — the mc-2 dashboard
+  version endpoint is a follow-up); the step is review-gated (`review='proposed'`
+  — a human confirms/dismisses it, nothing goes live) and status `done`. Both
+  verbs gain an optional `step_title` — pass the real move's words ("Built
+  Mehul's cube framing into deck v09"); omitted, it falls back to the
+  `version_note`, else a derived "Updated <framing> (v<N>)" / "Created <label>".
+  New helper `spine_steps.upsert_auto_step` collapses to ONE auto-step per
+  (element, day): a second bump the same day UPDATES that step's title rather
+  than stacking a near-identical row, keeping the trail legible. Guardrails: it
+  only ever touches a row that is BOTH `source='auto'` AND `review='proposed'` —
+  a human step or an already-confirmed auto-step is frozen; a dismissed auto-step
+  doesn't block a later real move. Non-fatal: any journal failure surfaces under
+  `step` in the return, never fails the content-write. Manual `propose_spine_step`
+  is unchanged and now reserved for moves the auto-step doesn't capture (a
+  non-version move, or a cross-edit narrative the auto-title undersells); the
+  ≤2-per-session cap applies to hand-proposed steps only. Tool count unchanged
+  (37 — new params + behavior, no new verb). CLAUDE.md wrap-up guidance updated.
+
 ## v0.76.1 — 2026-07-23
 
 - **`add_spine_version` no longer drops the element's attached sources (#110).**

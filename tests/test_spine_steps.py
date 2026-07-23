@@ -265,3 +265,101 @@ def test_propose_tool_unknown_project_errors(monkeypatch):
     monkeypatch.setattr(srv, "_resolve", lambda code: None)
     out = srv.propose_spine_step("nope", "sow", "x")
     assert "error" in out and "not found" in out["error"]
+
+
+# --- upsert_auto_step (auto-step on content-write, collapse-per-day) ----------
+
+
+def test_auto_step_creates_proposed_done(monkeypatch):
+    _resolve(monkeypatch)
+    c = _FakeSteps()
+    out = steps.upsert_auto_step(c, "pid", "sow", "Updated the SOW (v2)",
+                                 step_date="2026-07-23")
+    assert out["created"] is True
+    row = c.rows[0]
+    assert row["source"] == "auto"
+    assert row["review"] == "proposed"
+    assert row["status"] == "done"
+    assert row["title"] == "Updated the SOW (v2)"
+
+
+def test_auto_step_collapses_same_day_updates_title(monkeypatch):
+    # A second content-write of the same element the same day updates the
+    # existing proposed auto-step's title — no second row.
+    _resolve(monkeypatch)
+    c = _FakeSteps()
+    steps.upsert_auto_step(c, "pid", "sow", "Updated the SOW (v2)",
+                           step_date="2026-07-23")
+    out = steps.upsert_auto_step(c, "pid", "sow", "Folded in Janet's redlines (v3)",
+                                 step_date="2026-07-23")
+    assert out["updated"] is True
+    assert len(c.rows) == 1
+    assert c.rows[0]["title"] == "Folded in Janet's redlines (v3)"
+
+
+def test_auto_step_same_title_is_noop_update(monkeypatch):
+    _resolve(monkeypatch)
+    c = _FakeSteps()
+    steps.upsert_auto_step(c, "pid", "sow", "Same move", step_date="2026-07-23")
+    out = steps.upsert_auto_step(c, "pid", "sow", "Same move", step_date="2026-07-23")
+    assert out["updated"] is True
+    assert len(c.rows) == 1
+
+
+def test_auto_step_new_day_new_row(monkeypatch):
+    _resolve(monkeypatch)
+    c = _FakeSteps()
+    steps.upsert_auto_step(c, "pid", "sow", "Day one", step_date="2026-07-23")
+    steps.upsert_auto_step(c, "pid", "sow", "Day two", step_date="2026-07-24")
+    assert len(c.rows) == 2
+
+
+def test_auto_step_never_touches_confirmed(monkeypatch):
+    # An auto-step the human already CONFIRMED is frozen — a same-day write
+    # inserts a fresh proposed row rather than retitling the confirmed one.
+    _resolve(monkeypatch)
+    c = _FakeSteps()
+    steps.upsert_auto_step(c, "pid", "sow", "Confirmed move", step_date="2026-07-23")
+    c.rows[0]["review"] = "confirmed"  # human confirmed it
+    out = steps.upsert_auto_step(c, "pid", "sow", "Later same-day move",
+                                 step_date="2026-07-23")
+    assert out["created"] is True
+    assert len(c.rows) == 2
+    assert c.rows[0]["title"] == "Confirmed move"  # untouched
+
+
+def test_auto_step_never_touches_human_step(monkeypatch):
+    _resolve(monkeypatch)
+    c = _FakeSteps()
+    steps.add_step(c, "pid", "sow", "Human move", step_date="2026-07-23")  # source unset→not auto
+    out = steps.upsert_auto_step(c, "pid", "sow", "Auto move", step_date="2026-07-23")
+    assert out["created"] is True
+    assert len(c.rows) == 2
+    human = [r for r in c.rows if r["title"] == "Human move"][0]
+    assert human["title"] == "Human move"  # untouched
+
+
+def test_auto_step_dismissed_does_not_block(monkeypatch):
+    # A dismissed auto-step for the day is skipped (matched only on
+    # review='proposed'), so a later real move still gets journaled.
+    _resolve(monkeypatch)
+    c = _FakeSteps()
+    steps.upsert_auto_step(c, "pid", "sow", "Rejected title", step_date="2026-07-23")
+    c.rows[0]["review"] = "dismissed"
+    out = steps.upsert_auto_step(c, "pid", "sow", "Real move", step_date="2026-07-23")
+    assert out["created"] is True
+    assert len(c.rows) == 2
+
+
+def test_auto_step_blank_title_errors(monkeypatch):
+    _resolve(monkeypatch)
+    out = steps.upsert_auto_step(_FakeSteps(), "pid", "sow", "   ",
+                                 step_date="2026-07-23")
+    assert "error" in out
+
+
+def test_auto_step_unresolved_element_errors(monkeypatch):
+    monkeypatch.setattr(steps, "_resolve_est_item_id", lambda *a, **k: None)
+    out = steps.upsert_auto_step(_FakeSteps(), "pid", "nope", "x",
+                                 step_date="2026-07-23")
+    assert "error" in out

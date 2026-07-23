@@ -567,12 +567,26 @@ the master roll-up and to run word-count discipline on each sprint file.
 
 ## Proposing journey steps at wrap up
 
-When a session MOVED a specific spine element/activity/deliverable forward —
-you drafted a deck, ratified a decision, sent a version to a stakeholder,
-wired a feature — propose that move as a **step** on the element's trail with
-`propose_spine_step(code, key, title, status="done", step_date=<today>)`. It
-lands PROPOSED: a human confirms or dismisses it on the spine (the review
-gate) — you never write a live step or touch the schedule.
+**A content-write already journals itself.** `add_spine_version` and
+`create_spine_element` auto-propose ONE `source='auto'` step for today on the
+element's trail (review-gated — a human confirms/dismisses it), collapsing to
+one per element per day. So the "we versioned this card" floor is covered
+automatically — you don't hand-propose a step for every version bump. Pass
+`step_title` to either verb when you want that auto-step to carry the real
+move's words ("Built Mehul's cube framing into deck v09") rather than the
+derived "Updated <framing> (v<N>)".
+
+Hand-author a step with `propose_spine_step(code, key, title, status="done",
+step_date=<today>)` only for a move the auto-step DOESN'T capture or undersells:
+
+- A move that is NOT a content-write — a decision ratified across several
+  elements, a version sent to a stakeholder, a deck booked, a feature wired.
+- A cross-edit narrative the single auto-title can't hold — when a session's
+  real story ("reviewed the recording, extracted the framing, built the slide")
+  deserves better than the last version note.
+
+It lands PROPOSED like the auto-step; you never write a live step or touch the
+schedule.
 
 Discipline (this is a judgment call — do it well or not at all):
 - **One move = one step**, not one edit. A terse past-tense `title`
@@ -580,7 +594,8 @@ Discipline (this is a judgment call — do it well or not at all):
 - **Bind to exactly ONE element** (`key` resolves like `pull_spine_element`).
   If the work can't be pinned to one element, DON'T propose — ambiguity is
   the signal to skip, not guess.
-- **Cap yourself at ≤2 proposed steps per session**, across all elements.
+- **Cap yourself at ≤2 hand-proposed steps per session**, across all elements
+  (the auto-steps don't count against this — they're the floor).
 - Idempotent: re-proposing the same `(element, title, date)` is a no-op, so a
   re-run never double-proposes and a dismissed step never comes back.
 
