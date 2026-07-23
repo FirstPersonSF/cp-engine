@@ -4,6 +4,23 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.76.1 — 2026-07-23
+
+- **`add_spine_version` no longer drops the element's attached sources (#110).**
+  Versioning an authored spine element silently zeroed its `rag_asset`
+  provenance: the new live row wrote `sources: []`, so every attach had to be
+  re-added by hand after a `pull` revealed the loss (found folding Mehul's
+  wow-slide framing into the ibx-5192 card — a v2 bump dropped 6 sources).
+  Root cause was in the pinned `spine-authoring` package: `build_version_rows`
+  carried forward `serves`/`important`/`note`/`framing`/`layer` from the prior
+  live row but not `sources`. Sources now inherit from the prior live version by
+  default (deduped by `(type, id)`), with an explicit opt-out (pass a list to
+  override, `[]` to clear) — exactly the `serves` semantics. Pin bumped to
+  `1p-component-library@023e656` (PR #15); no cp-engine caller change needed
+  (`add_spine_version` already selected `sources` into the prior-versions
+  payload). This fix is forward-only — cards whose sources were already lost
+  stay as-is.
+
 ## v0.76.0 — 2026-07-21
 
 - **`propose_spine_step` — machine-authored journey steps, review-gated

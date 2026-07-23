@@ -594,7 +594,7 @@ toml = [
 
 [[package]]
 name = "cp-engine"
-version = "0.72.0"
+version = "0.76.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -650,7 +650,7 @@ requires-dist = [
     { name = "resilience", git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=patterns%2Fresilience&rev=94eb35a" },
     { name = "ruff", marker = "extra == 'dev'", specifier = ">=0.4" },
     { name = "slack-sdk", specifier = ">=3.27" },
-    { name = "spine-authoring", git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=services%2Fspine-authoring&rev=3ea70cc" },
+    { name = "spine-authoring", git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=services%2Fspine-authoring&rev=023e656" },
     { name = "supabase", specifier = ">=2.0" },
     { name = "tomlkit", specifier = ">=0.13" },
     { name = "visual-document-capture", git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=processors%2Fvisual-document-capture&rev=3ea70cc" },
@@ -3334,7 +3334,7 @@ wheels = [
 [[package]]
 name = "spine-authoring"
 version = "1.0.0"
-source = { git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=services%2Fspine-authoring&rev=3ea70cc#3ea70cc23f04dddf21682ef4b06e28b92595d404" }
+source = { git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=services%2Fspine-authoring&rev=023e656#023e6562a250ec812615c8b6812a9c063eac7863" }
 
 [[package]]
 name = "sse-starlette"
