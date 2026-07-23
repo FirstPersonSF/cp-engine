@@ -1,0 +1,35 @@
+Alex,
+
+Happy to meet, shall we shoot for Wednesday 12.30 pst?
+
+Also some thoughts
+
+  1.
+Should we push down the overview slide [slide 3] and continue with the core problem?
+  2.
+Also I didn't see the capabilities > outcomes summary slide
+  3.
+Why do we only have the roadmap before slide 15? I assume slide 15 is the last slide we present and the others are based on interest - track A / track B?
+     *
+I think if we include the roadmap then you have to include the other 2
+
+- Sam
+From: Alex Rivera <alex@example-agency.test>
+Date: Saturday, 18 July 2026 at 05:45
+To: Sam Taylor <sam@example-corp.test>
+Cc: Pat Lee <pat@example-corp.test>; Jordan Kim <jordan@example-corp.test>
+Subject: Deck r01
+
+This Message Is From an External Sender
+This message came from outside your organization.
+
+Hello Sam,
+
+Please find the first round of our blocking deck here<https://example.test/share/abcd1234>.
+
+This is our initial draft, and we have updated the story to improve the flow and impact. Also, please note that we included guidance slides explaining our intention for the subsequent slide(s).
+
+We would love to meet next week so we can finalize the content and copy in the deck and go deeper into design. Please let us know a day/ time that works for you.
+
+Best,
+Alex
