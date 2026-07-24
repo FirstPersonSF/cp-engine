@@ -4,6 +4,47 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.78.0 — 2026-07-24
+
+- **Email → spine ingest (Phase 2): inbound emails now distill.** The
+  `/api/inbound-email` route (Cloudflare Email Worker → webhook) no longer just
+  parks the raw message — after stripping quoted history to the net-new delta,
+  it runs that delta through the EXISTING distill (`_ingest_one_project`, the
+  same path Fathom auto-ingest uses), so an email proposes commitments /
+  decisions / stakeholder signals / agenda items into the review gate. Email is
+  an ingest SOURCE feeding the existing pipeline, not a new spine object; every
+  proposal lands PROPOSED, identical to Fathom. Park is kept as the durable
+  audit + the distill input. Distill is skipped on an empty delta (a
+  scheduling-only forward strips to nothing — the "produce nothing" discipline),
+  and a distill failure never loses the parked mail (the email still commits).
+  One commit sweeps the parked email + any distilled bullets; the message reads
+  `distilled` vs `parked` (design
+  `cp/docs/plans/2026-07-22-email-ingest-design.md`).
+
+- **Unroutable emails are captured, not dropped.** A bare `cp@` (no `+code`) or
+  a `cp+<typo>@` whose code matches no live project used to be a silent no-op —
+  the mail evaporated. Both dead ends now record an `unrouted_emails` row in MC-2
+  (reason `no_code` | `unknown_code`, with the attempted code), so a human can
+  route it from MC-2's Inputs routing queue. Guarded by an `_is_cp_mailbox`
+  check so a genuine catch-all stray (a non-`cp` local part) stays a true no-op
+  and doesn't pollute the queue. New `POST /api/route-email` (signed with the
+  standard `WEBHOOK_HMAC_SECRET`, the MC-2→webhook hop) reconstructs the email
+  from the row, runs the shared park+distill core, and flips the row to
+  `routed`; idempotent on an already-routed row.
+
+- **Email routing resolves a project by MC-id (UUID-first), not just code.**
+  `find_spine_dir(tenant_root, code, mc2_id=None)` gains an optional MC-2 UUID:
+  when given, it resolves UUID-first off the `cp.md` `MC-id` stamp — so a caller
+  that knows the project's id (the dashboard routing an email by the picker's
+  UUID) resolves correctly even when the MC-2 `code` column differs from the
+  dir's slug-of-`full_job_name` (they routinely do: `SLT-brand-campaign-26` the
+  code vs `slt-5196-brand-campaign-26` the dir). Falls back to the name match, so
+  email-addressed routing (slug as `code`, no id) is unchanged. `/api/route-email`
+  accepts `project_id` and threads it through; a project with no working dir yet
+  (a brand-new Deal, not synced) now fails with a clear, actionable message
+  ("isn't set up in cp yet — run a sync first, then route") instead of a cryptic
+  resolution error.
+
 ## v0.77.0 — 2026-07-23
 
 - **Spine content-writes auto-journal a step (auto-step on version-write).**
