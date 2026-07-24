@@ -96,6 +96,134 @@ def test_top_quoted_message_fails_open():
     assert result.delta != ""
 
 
+def test_forward_unwraps_to_payload():
+    """A forwarded message: drop the fence + header stanza, keep the payload.
+
+    This is the shape that fail-opened before the forward-unwrap fix — the
+    ``---- Forwarded message ----`` fence sat on the first content line, so
+    the old "keep everything above the first marker" logic returned nothing
+    and fell open to the full body (HTML twin and all).
+    """
+    body = (
+        "---------- Forwarded message ---------\n"
+        "From: Jaime Mehra <jmehra@example.test>\n"
+        "Date: Thu, Jul 23, 2026 at 5:27 PM\n"
+        "Subject: Re: AI campaign\n"
+        "To: Janet Noe <jnoe@example.test>, Drew <drew@example.test>\n"
+        "\n"
+        "We are drawing a line in the sand now to get this to sales at SRS.\n"
+        "We already have line of sight to a v2 with Kentik value prop.\n"
+    )
+    result = email_strip.strip_quoted_history(body)
+    assert result.stripped is True
+    # Payload survives.
+    assert "drawing a line in the sand" in result.delta
+    assert "Kentik value prop" in result.delta
+    # Fence + header stanza are gone.
+    assert "Forwarded message" not in result.delta
+    assert "jmehra@example.test" not in result.delta
+    assert "Subject:" not in result.delta
+
+
+def test_forward_with_note_drops_note_and_headers():
+    """A forwarder's one-line note above the fence is dropped with the wrapper."""
+    body = (
+        "fyi — see Jaime's note below\n"
+        "\n"
+        "---------- Forwarded message ---------\n"
+        "From: Jaime Mehra <jmehra@example.test>\n"
+        "Subject: Re: AI campaign\n"
+        "\n"
+        "The pillars need external-ready language, not internal framing.\n"
+    )
+    result = email_strip.strip_quoted_history(body)
+    assert result.stripped is True
+    assert "pillars need external-ready language" in result.delta
+    assert "fyi" not in result.delta
+    assert "Forwarded message" not in result.delta
+
+
+def test_forward_then_inner_quote_keeps_only_forwarded_net_new():
+    """Forward whose payload itself quotes an earlier message: cut the inner quote."""
+    body = (
+        "---------- Forwarded message ---------\n"
+        "From: Jaime Mehra <jmehra@example.test>\n"
+        "Subject: Re: deck\n"
+        "\n"
+        "This is important feedback, thanks.\n"
+        "\n"
+        "On Mon, Jul 20, 2026 at 10:22 AM Janet Noe <jnoe@example.test> wrote:\n"
+        "> Here is the older message we should not keep.\n"
+    )
+    result = email_strip.strip_quoted_history(body)
+    assert result.stripped is True
+    assert "This is important feedback" in result.delta
+    assert "older message we should not keep" not in result.delta
+
+
+def test_forward_drops_external_banner_in_payload():
+    """An External-Sender banner inside the forwarded payload is dropped."""
+    body = (
+        "---------- Forwarded message ---------\n"
+        "From: X <x@example.test>\n"
+        "\n"
+        "This Message Is From an External Sender\n"
+        "The real forwarded content is this sentence.\n"
+    )
+    result = email_strip.strip_quoted_history(body)
+    assert result.stripped is True
+    assert "External Sender" not in result.delta
+    assert "real forwarded content" in result.delta
+
+
+def test_forward_real_shape_wrapped_recipients_and_bare_divider():
+    """The exact shape of the first real ingested forward (ibx-5192).
+
+    Two things this exercises that the simpler forward tests don't:
+      - the To:/Cc: recipient list WRAPS onto an unindented next line inside
+        the header stanza (must not leak into the payload);
+      - the inner Outlook reply uses a BARE run-of-dashes divider (no
+        "Original Message" text) above its From:/Sent: stanza.
+    Only Jaime's net-new note should survive.
+    """
+    body = (
+        "---------- Forwarded message ---------\n"
+        "From: Jaime Mehra <jmehra@example.test>\n"
+        "Subject: Re: AI campaign\n"
+        "To: Janet Noe <jnoe@example.test>, Carolina Janovik <cjanovik@example.test>,\n"
+        "drew <drew@example.test>\n"
+        "Cc: Jarrod Kelsey <jkelsey@example.test>\n"
+        "\n"
+        "We are drawing a line in the sand now to get this to sales at SRS.\n"
+        "\n"
+        "------------------------------\n"
+        "From: Drew Fiero <drew@example.test>\n"
+        "Sent: Wednesday, 22 July 2026 23:46:38\n"
+        "Subject: Re: AI campaign\n"
+        "\n"
+        "Thanks Janet. This is important feedback.\n"
+        "On Mon, Jul 20, 2026 at 10:22 AM Janet Noe <jnoe@example.test> wrote:\n"
+        "> Hi everyone, the pillars need work.\n"
+    )
+    result = email_strip.strip_quoted_history(body)
+    assert result.stripped is True
+    assert result.delta == "We are drawing a line in the sand now to get this to sales at SRS."
+    # None of the wrapper / recipient-list / inner-reply noise survives.
+    assert "cjanovik@example.test" not in result.delta
+    assert "drew <drew@example.test>" not in result.delta
+    assert "Sent:" not in result.delta
+    assert "pillars need work" not in result.delta
+
+
+def test_bare_dashes_divider_not_triggered_by_signature():
+    """A signature '--' or a 3-dash rule must NOT be treated as a divider."""
+    body = "Here is my real reply.\n--\nDrew\n"
+    result = email_strip.strip_quoted_history(body)
+    # Two-dash signature marker is below the 6-dash threshold → not a boundary.
+    assert "Here is my real reply." in result.delta
+    assert result.stripped is False
+
+
 def test_empty_body():
     result = email_strip.strip_quoted_history("")
     assert result.delta == ""
