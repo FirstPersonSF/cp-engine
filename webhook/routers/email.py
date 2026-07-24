@@ -39,8 +39,10 @@ from datetime import datetime, timezone
 
 import git_ops
 import pipeline
+import signatures
 from fastapi import APIRouter, HTTPException, Request
 
+from cp_engine import mc2_db
 from cp_engine.config import load as load_config
 from cp_engine.spine import SpineDirNotFound, find_spine_dir
 
@@ -59,6 +61,16 @@ _PLUS_ADDR = re.compile(
     r"^cp\+(?P<suffix>[^@]+)@",
     re.IGNORECASE,
 )
+
+# The bare cp mailbox, no "+suffix": cp@… . A message here was meant for cp
+# (someone forgot the +code) — worth recording as unrouted. Anything else that
+# reached the catch-all is a stray and stays a true no-op.
+_BARE_CP = re.compile(r"^cp@", re.IGNORECASE)
+
+
+def _is_cp_mailbox(to_addr: str) -> bool:
+    """True if the address is the bare ``cp@…`` mailbox (no +code)."""
+    return bool(_BARE_CP.search((to_addr or "").strip()))
 
 
 @dataclass
@@ -221,6 +233,59 @@ def _stage_email_delta(tenant_root, code: str, message_id: str, text: str):
     return path
 
 
+def _record_unrouted(payload: dict, *, reason: str, attempted_code: str | None) -> bool:
+    """Persist an unroutable email to MC-2's ``unrouted_emails`` holding pen.
+
+    The two dead ends — a bare ``cp@`` (reason='no_code') and a ``cp+<code>@``
+    whose code matches no live project (reason='unknown_code') — used to be a
+    silent no-op. Now they land here so the Inputs routing queue can surface
+    them for a human to route. Idempotent on the Message-ID (upsert), so a
+    Worker retry doesn't duplicate.
+
+    Best-effort by contract: a None client (env missing / pkg absent) or any
+    write failure logs and returns False — the endpoint still 200s so the
+    Worker doesn't retry-storm. We never had the mail in MC-2 before, so a
+    miss is no worse than the old behavior, just louder in the logs.
+    """
+    client = mc2_db.get_client(required=False)
+    if client is None:
+        log.warning(
+            "inbound-email: unrouted (%s) but MC-2 client unavailable — not recorded",
+            reason,
+        )
+        return False
+
+    strip = email_strip.strip_quoted_history(payload.get("text", "") or "")
+    mid = (payload.get("message_id", "") or "").strip().strip("<>")
+    # No Message-ID (rare): synthesize a stable-ish key so the row still lands.
+    row_id = mid or f"nomid-{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    row = {
+        "id": row_id,
+        "thread_id": (payload.get("in_reply_to") or "").strip().strip("<>") or None,
+        "from_addr": payload.get("from") or None,
+        "to_addr": payload.get("to") or payload.get("header_to") or None,
+        "subject": payload.get("subject") or None,
+        "delta": strip.delta or None,
+        "raw_text": payload.get("text") or None,
+        "received_at": payload.get("received_at") or None,
+        "reason": reason,
+        "attempted_code": attempted_code,
+        "status": "unrouted",
+    }
+    try:
+        client.table("unrouted_emails").upsert(row, on_conflict="id").execute()
+        log.info(
+            "inbound-email: recorded unrouted email id=%s reason=%s attempted=%s",
+            row_id, reason, attempted_code,
+        )
+        return True
+    except Exception:  # noqa: BLE001 — best-effort, never fail the request
+        log.warning(
+            "inbound-email: failed to record unrouted email (%s)", reason, exc_info=True
+        )
+        return False
+
+
 @router.post("/api/inbound-email")
 async def inbound_email(request: Request) -> dict:
     """Park + distill an inbound email into its project's working dir.
@@ -259,9 +324,18 @@ async def inbound_email(request: Request) -> dict:
     to_addr = payload.get("to") or payload.get("header_to") or ""
     routing = parse_plus_address(to_addr)
     if routing is None:
-        # Not a cp+<code> address — acknowledge without acting so the Worker
-        # doesn't reject/retry. Nothing to park.
-        log.warning("inbound-email: unresolved address %r — no-op", to_addr)
+        # No cp+<code>. A bare `cp@` (someone forgot the +code) is worth
+        # capturing so a human can route it; a genuinely foreign local-part
+        # (a catch-all stray, not meant for cp at all) stays a true no-op so
+        # we don't fill the routing queue with spam.
+        if _is_cp_mailbox(to_addr):
+            recorded = _record_unrouted(payload, reason="no_code", attempted_code=None)
+            log.warning(
+                "inbound-email: bare cp@ with no project code (%r) — unrouted (recorded=%s)",
+                to_addr, recorded,
+            )
+            return {"status": "unrouted", "reason": "no_code", "to": to_addr, "recorded": recorded}
+        log.warning("inbound-email: unrelated address %r — no-op", to_addr)
         return {"status": "unresolved", "to": to_addr}
 
     # Phase 1 only parks the project shape. Account/planning fan-out reuses
@@ -283,82 +357,224 @@ async def inbound_email(request: Request) -> dict:
         try:
             project_dir = find_spine_dir(config.root, routing.code)
         except SpineDirNotFound:
-            # Address parsed but the code isn't a live project. Acknowledge
-            # (200) so the Worker doesn't retry; log for the review surface.
+            # A +code that matches no live project (typo, archived, wrong
+            # tenant). Record it in the unrouted holding pen — same routing
+            # queue as a bare cp@, but with the attempted code so the human
+            # sees what was tried. Still 200 so the Worker doesn't retry.
+            recorded = _record_unrouted(
+                payload, reason="unknown_code", attempted_code=routing.code
+            )
             log.warning(
-                "inbound-email: code %r did not resolve to a project dir — not parked",
-                routing.code,
+                "inbound-email: code %r did not resolve to a project — unrouted (recorded=%s)",
+                routing.code, recorded,
             )
             return {
-                "status": "park_only_unknown_code",
+                "status": "unrouted",
+                "reason": "unknown_code",
                 "code": routing.code,
                 "shape": routing.shape,
+                "recorded": recorded,
             }
 
-        # 1) Park the raw email — the durable audit + the distill input.
-        out_dir = project_dir / "email-ingest"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        filename = _park_filename(
-            payload.get("message_id", ""), payload.get("received_at", "")
+        result = _park_and_distill(
+            tenant_root=tenant_root,
+            config=config,
+            project_dir=project_dir,
+            code=routing.code,
+            payload=payload,
+            strip=strip,
         )
-        parked = out_dir / filename
-        parked.write_text(_render_parked_email(payload, strip), encoding="utf-8")
-        rel = parked.relative_to(tenant_root)
 
-        # 2) Distill the net-new delta through the EXISTING pipeline — the same
-        #    _ingest_one_project the Fathom path runs. Everything it writes
-        #    lands PROPOSED (the review gate). Skipped when the delta is empty:
-        #    a pure-scheduling forward strips to nothing, and the "produce
-        #    nothing" discipline says don't invent a plan from an empty body.
-        delta = (strip.delta or "").strip()
-        distill: dict | None = None
-        if delta:
-            distill_text = _render_distill_input(payload, delta)
-            transcript_path = _stage_email_delta(
-                tenant_root, routing.code, payload.get("message_id", ""), distill_text
-            )
-            try:
-                distill = pipeline._ingest_one_project(
-                    config=config,
-                    code=routing.code,
-                    transcript_path=transcript_path,
-                    # No Fathom meeting behind an email: no action_items,
-                    # no meeting_id, no roster. _ingest_one_project guards
-                    # each — the LLM-only plan path runs cleanly.
-                )
-            except Exception:  # noqa: BLE001 — distill must never lose the parked mail
-                log.warning(
-                    "inbound-email: distill failed for %s (email parked, committed anyway)",
-                    routing.code, exc_info=True,
-                )
-                distill = {"errors": ["distill raised — see logs"], "files_written": []}
-        else:
-            log.info(
-                "inbound-email: empty delta for %s — parked, no distill (scheduling-only?)",
-                routing.code,
-            )
+    result["shape"] = routing.shape
+    return result
 
-        # 3) ONE commit sweeps the parked email + any distilled bullets
-        #    (`git add -A` inside git_ops). The message attributes distill so
-        #    the log distinguishes "distilled" from "parked only".
-        mid_prefix = (payload.get("message_id", "") or "").strip().strip("<>")[:16]
-        wrote = bool(distill and distill.get("files_written"))
-        verb = "distilled" if wrote else "parked"
-        commit_sha = git_ops._commit_with_message_and_push(
-            tenant_root,
-            f"[auto-ingest] email:{routing.code}: {verb} {mid_prefix or 'message'}",
+
+@router.post("/api/route-email")
+async def route_email(request: Request) -> dict:
+    """Route a previously-unrouted email to a chosen project. Human-triggered.
+
+    MC-2's Inputs routing queue calls this when a partner picks the target
+    project for an ``unrouted_emails`` row. We reconstruct the email payload
+    from that row, run the SAME park+distill core, and flip the row to
+    ``routed``. Signed with INBOUND_EMAIL_SECRET, same as ``/api/inbound-email``
+    (MC-2 holds the secret to sign server-side).
+
+    Request body (JSON):
+        { message_id, code }   — the unrouted_emails.id + the chosen project code
+
+    Signed with the standard MC-2→webhook secret (WEBHOOK_HMAC_SECRET, via
+    signatures._verify_signature) — the same hop as promote-transcript /
+    asset-ingest, NOT the Worker's INBOUND_EMAIL_SECRET (that one is only for
+    the Cloudflare Worker → /api/inbound-email leg).
+
+    Response mirrors /api/inbound-email's park+distill result, plus
+    ``routed_from`` (the original reason).
+    """
+    raw_body = await request.body()
+    signatures._verify_signature(
+        raw_body,
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-webhook-timestamp", ""),
+    )
+
+    try:
+        req = json.loads(raw_body)
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
+
+    message_id = (req.get("message_id") or "").strip()
+    code = (req.get("code") or "").strip()
+    if not message_id or not code:
+        raise HTTPException(status_code=400, detail="message_id and code are required")
+
+    client = mc2_db.get_client(required=False)
+    if client is None:
+        raise HTTPException(status_code=500, detail="MC-2 client unavailable")
+
+    # Load the unrouted row — the source of truth for the email's content.
+    resp = (
+        client.table("unrouted_emails")
+        .select("id, thread_id, from_addr, to_addr, subject, raw_text, received_at, status")
+        .eq("id", message_id)
+        .single()
+        .execute()
+    )
+    row = resp.data
+    if not row:
+        raise HTTPException(status_code=404, detail=f"unrouted email {message_id!r} not found")
+    if row.get("status") == "routed":
+        # Idempotent: already routed (double-click / retry). Report, don't re-ingest.
+        return {"status": "already_routed", "message_id": message_id, "code": row.get("routed_to_code")}
+
+    # Rebuild the payload shape _park_and_distill expects, then re-strip from
+    # the stored raw text (don't trust a stored delta — re-derive it).
+    payload = {
+        "message_id": row["id"],
+        "in_reply_to": row.get("thread_id"),
+        "from": row.get("from_addr"),
+        "to": row.get("to_addr"),
+        "subject": row.get("subject"),
+        "text": row.get("raw_text") or "",
+        "received_at": row.get("received_at"),
+    }
+    strip = email_strip.strip_quoted_history(payload["text"])
+
+    with git_ops._cloned_tenant() as tenant_root:
+        config = load_config(tenant_root)
+        try:
+            project_dir = find_spine_dir(config.root, code)
+        except SpineDirNotFound:
+            # The human picked a code that doesn't resolve either — leave the
+            # row unrouted so they can pick again; surface the error.
+            raise HTTPException(
+                status_code=422,
+                detail=f"code {code!r} did not resolve to a project — not routed",
+            ) from None
+
+        result = _park_and_distill(
+            tenant_root=tenant_root,
+            config=config,
+            project_dir=project_dir,
+            code=code,
+            payload=payload,
+            strip=strip,
         )
+
+    # Flip the row to routed only after the ingest actually committed.
+    try:
+        client.table("unrouted_emails").update(
+            {"status": "routed", "routed_to_code": code}
+        ).eq("id", message_id).execute()
+    except Exception:  # noqa: BLE001 — the ingest succeeded; a status-flip miss is recoverable
+        log.warning(
+            "route-email: ingest committed for %s → %s but status flip failed",
+            message_id, code, exc_info=True,
+        )
+
+    result["routed_from"] = "unrouted"
+    result["message_id"] = message_id
+    return result
+
+
+def _park_and_distill(
+    *,
+    tenant_root,
+    config,
+    project_dir,
+    code: str,
+    payload: dict,
+    strip: email_strip.StripResult,
+) -> dict:
+    """Park the raw email, distill its delta, and commit — the shared core.
+
+    Runs INSIDE an open tenant clone (the caller owns the ``_cloned_tenant``
+    context). Used by both ``/api/inbound-email`` (a cp+<code>@ that resolved)
+    and ``/api/route-email`` (a human routed a previously-unrouted email to
+    this code). Returns the response dict sans ``shape`` (the caller adds it).
+    """
+    # 1) Park the raw email — the durable audit + the distill input.
+    out_dir = project_dir / "email-ingest"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    filename = _park_filename(
+        payload.get("message_id", ""), payload.get("received_at", "")
+    )
+    parked = out_dir / filename
+    parked.write_text(_render_parked_email(payload, strip), encoding="utf-8")
+    rel = parked.relative_to(tenant_root)
+
+    # 2) Distill the net-new delta through the EXISTING pipeline — the same
+    #    _ingest_one_project the Fathom path runs. Everything it writes lands
+    #    PROPOSED (the review gate). Skipped when the delta is empty: a
+    #    pure-scheduling forward strips to nothing, and the "produce nothing"
+    #    discipline says don't invent a plan from an empty body.
+    delta = (strip.delta or "").strip()
+    distill: dict | None = None
+    if delta:
+        distill_text = _render_distill_input(payload, delta)
+        transcript_path = _stage_email_delta(
+            tenant_root, code, payload.get("message_id", ""), distill_text
+        )
+        try:
+            distill = pipeline._ingest_one_project(
+                config=config,
+                code=code,
+                transcript_path=transcript_path,
+                # No Fathom meeting behind an email: no action_items, no
+                # meeting_id, no roster. _ingest_one_project guards each —
+                # the LLM-only plan path runs cleanly.
+            )
+        except Exception:  # noqa: BLE001 — distill must never lose the parked mail
+            log.warning(
+                "inbound-email: distill failed for %s (email parked, committed anyway)",
+                code, exc_info=True,
+            )
+            distill = {"errors": ["distill raised — see logs"], "files_written": []}
+    else:
+        log.info(
+            "inbound-email: empty delta for %s — parked, no distill (scheduling-only?)",
+            code,
+        )
+
+    # 3) ONE commit sweeps the parked email + any distilled bullets
+    #    (`git add -A` inside git_ops). The message attributes distill so the
+    #    log distinguishes "distilled" from "parked only".
+    mid_prefix = (payload.get("message_id", "") or "").strip().strip("<>")[:16]
+    wrote = bool(distill and distill.get("files_written"))
+    verb = "distilled" if wrote else "parked"
+    commit_sha = git_ops._commit_with_message_and_push(
+        tenant_root,
+        f"[auto-ingest] email:{code}: {verb} {mid_prefix or 'message'}",
+    )
 
     plan_summary = (distill or {}).get("plan_summary")
     distill_errors = (distill or {}).get("errors") or []
     log.info(
         "inbound-email done: code=%s file=%s stripped=%s distilled=%s plan=%s commit=%s",
-        routing.code, rel, strip.stripped, bool(plan_summary), plan_summary, commit_sha,
+        code, rel, strip.stripped, bool(plan_summary), plan_summary, commit_sha,
     )
     return {
         "status": "ingested" if (distill and not distill_errors) else "parked",
-        "code": routing.code,
-        "shape": routing.shape,
+        "code": code,
         "parked_path": str(rel),
         "stripped": strip.stripped,
         "distilled": bool(distill),

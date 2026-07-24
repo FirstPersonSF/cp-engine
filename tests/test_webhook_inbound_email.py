@@ -35,18 +35,32 @@ from routers import email as email_router  # noqa: E402
 _SECRET = "test-inbound-secret"
 
 
+_WEBHOOK_SECRET = "test-webhook-hmac-secret"
+
+
 @pytest.fixture
 def client(monkeypatch) -> TestClient:
     monkeypatch.setenv("INBOUND_EMAIL_SECRET", _SECRET)
+    monkeypatch.setenv("WEBHOOK_HMAC_SECRET", _WEBHOOK_SECRET)
     return TestClient(webhook_main.app)
 
 
-def _signed(body: dict) -> tuple[bytes, dict]:
+def _sign_with(secret: str, body: dict) -> tuple[bytes, dict]:
     raw = json.dumps(body).encode()
     ts = str(int(time.time()))
     base = f"{ts}.".encode() + raw
-    sig = hmac.new(_SECRET.encode(), base, hashlib.sha256).hexdigest()
+    sig = hmac.new(secret.encode(), base, hashlib.sha256).hexdigest()
     return raw, {"x-webhook-signature": sig, "x-webhook-timestamp": ts}
+
+
+def _signed(body: dict) -> tuple[bytes, dict]:
+    # The Cloudflare Worker → /api/inbound-email leg (INBOUND_EMAIL_SECRET).
+    return _sign_with(_SECRET, body)
+
+
+def _signed_webhook(body: dict) -> tuple[bytes, dict]:
+    # The MC-2 → /api/route-email leg (WEBHOOK_HMAC_SECRET), same as promote.
+    return _sign_with(_WEBHOOK_SECRET, body)
 
 
 # ── plus-address parsing ──────────────────────────────────────────────
@@ -120,12 +134,44 @@ def test_stale_timestamp_401(client):
 # ── early-return paths (no clone needed) ──────────────────────────────
 
 
-def test_unresolved_address_200_noop(client):
+def test_foreign_address_200_noop(client):
+    # A non-cp local part that hit the catch-all is a true no-op — NOT recorded
+    # as unrouted (we don't fill the routing queue with strays).
     body = {"to": "drew@firstperson.is", "text": "hi"}
     raw, headers = _signed(body)
     resp = client.post("/api/inbound-email", content=raw, headers=headers)
     assert resp.status_code == 200
     assert resp.json()["status"] == "unresolved"
+
+
+def test_bare_cp_records_unrouted(client, monkeypatch):
+    # A bare cp@ (forgot the +code) is captured as unrouted, reason='no_code'.
+    seen = {}
+    monkeypatch.setattr(
+        email_router,
+        "_record_unrouted",
+        lambda payload, *, reason, attempted_code: seen.update(
+            {"reason": reason, "attempted": attempted_code}
+        )
+        or True,
+    )
+    body = {"to": "cp@thinkermakers.com", "from": "Drew <drew@firstperson.is>", "text": "route me"}
+    raw, headers = _signed(body)
+    resp = client.post("/api/inbound-email", content=raw, headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "unrouted"
+    assert data["reason"] == "no_code"
+    assert data["recorded"] is True
+    assert seen == {"reason": "no_code", "attempted": None}
+
+
+def test_is_cp_mailbox():
+    assert email_router._is_cp_mailbox("cp@thinkermakers.com") is True
+    assert email_router._is_cp_mailbox("CP@thinkermakers.com") is True
+    assert email_router._is_cp_mailbox("cp+ibx-5192@thinkermakers.com") is False  # has a code
+    assert email_router._is_cp_mailbox("drew@firstperson.is") is False
+    assert email_router._is_cp_mailbox("") is False
 
 
 def test_account_shape_acknowledged_not_parked(client):
@@ -247,6 +293,43 @@ def test_nonempty_delta_distills(client, _wire):
     assert "distilled" in _wire["commit_msg"]
 
 
+def test_unknown_code_records_unrouted(client, monkeypatch, tmp_path):
+    # A cp+<code>@ whose code resolves to no project → recorded unrouted with
+    # reason='unknown_code' + the attempted code, still 200.
+    from cp_engine.spine import SpineDirNotFound
+
+    monkeypatch.setattr(email_router.git_ops, "_cloned_tenant", lambda: _FakeClone(tmp_path))
+
+    class _Cfg:
+        root = tmp_path
+
+    monkeypatch.setattr(email_router, "load_config", lambda root: _Cfg())
+
+    def _raise(root, code):
+        raise SpineDirNotFound(code)
+
+    monkeypatch.setattr(email_router, "find_spine_dir", _raise)
+
+    seen = {}
+    monkeypatch.setattr(
+        email_router,
+        "_record_unrouted",
+        lambda payload, *, reason, attempted_code: seen.update(
+            {"reason": reason, "attempted": attempted_code}
+        )
+        or True,
+    )
+    body = {"to": "cp+ibx-9999@thinkermakers.com", "text": "typo'd code"}
+    raw, headers = _signed(body)
+    resp = client.post("/api/inbound-email", content=raw, headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "unrouted"
+    assert data["reason"] == "unknown_code"
+    assert data["recorded"] is True
+    assert seen == {"reason": "unknown_code", "attempted": "ibx-9999"}
+
+
 def test_empty_delta_parks_without_distill(client, _wire):
     # A whitespace-only body strips to an empty delta → park, no distill.
     # (A pure-quote reply deliberately fails OPEN in the stripper, keeping
@@ -266,3 +349,98 @@ def test_empty_delta_parks_without_distill(client, _wire):
     assert data["status"] == "parked"
     assert _wire["distill_args"] is None  # distill skipped
     assert "parked" in _wire["commit_msg"]
+
+
+# ── /api/route-email (human routes an unrouted email) ─────────────────
+
+
+class _FakeMC2:
+    """Minimal Supabase-client stand-in for the route-email callback."""
+
+    def __init__(self, row):
+        self._row = row
+        self.updated = None
+
+    def table(self, name):
+        assert name == "unrouted_emails"
+        return self
+
+    def select(self, *_a, **_k):
+        return self
+
+    def eq(self, *_a, **_k):
+        return self
+
+    def single(self):
+        return self
+
+    def execute(self):
+        # select path returns the row; update path is captured separately.
+        return type("R", (), {"data": self._row})()
+
+    def update(self, patch):
+        self.updated = patch
+        return self
+
+
+def test_route_email_ingests_and_marks_routed(client, monkeypatch, tmp_path):
+    row = {
+        "id": "m-unr@host",
+        "thread_id": None,
+        "from_addr": "Drew <drew@firstperson.is>",
+        "to_addr": "cp@thinkermakers.com",
+        "subject": "route me",
+        "raw_text": "Keep preemptive as a fourth leg.",
+        "received_at": "2026-07-24T09:00:00Z",
+        "status": "unrouted",
+    }
+    fake = _FakeMC2(row)
+    monkeypatch.setattr(email_router.mc2_db, "get_client", lambda required=False: fake)
+    monkeypatch.setattr(email_router.git_ops, "_cloned_tenant", lambda: _FakeClone(tmp_path))
+
+    project_dir = tmp_path / "1p" / "infoblox" / "ibx-5153-x"
+    project_dir.mkdir(parents=True)
+
+    class _Cfg:
+        root = tmp_path
+
+    monkeypatch.setattr(email_router, "load_config", lambda root: _Cfg())
+    monkeypatch.setattr(email_router, "find_spine_dir", lambda root, code: project_dir)
+    monkeypatch.setattr(
+        email_router.git_ops, "_commit_with_message_and_push", lambda root, msg: "cafef00d"
+    )
+    monkeypatch.setattr(
+        email_router.pipeline,
+        "_ingest_one_project",
+        lambda **kw: {"plan_summary": {"record-ask": 1}, "files_written": ["x"], "errors": []},
+    )
+
+    body = {"message_id": "m-unr@host", "code": "ibx-5153"}
+    raw, headers = _signed_webhook(body)
+    resp = client.post("/api/route-email", content=raw, headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ingested"
+    assert data["code"] == "ibx-5153"
+    assert data["routed_from"] == "unrouted"
+    # row was flipped to routed with the chosen code
+    assert fake.updated == {"status": "routed", "routed_to_code": "ibx-5153"}
+
+
+def test_route_email_already_routed_is_idempotent(client, monkeypatch, tmp_path):
+    row = {"id": "m2@host", "status": "routed", "routed_to_code": "ibx-5153"}
+    fake = _FakeMC2(row)
+    monkeypatch.setattr(email_router.mc2_db, "get_client", lambda required=False: fake)
+
+    body = {"message_id": "m2@host", "code": "ibx-5153"}
+    raw, headers = _signed_webhook(body)
+    resp = client.post("/api/route-email", content=raw, headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "already_routed"
+
+
+def test_route_email_requires_message_id_and_code(client):
+    body = {"message_id": "", "code": ""}
+    raw, headers = _signed_webhook(body)
+    resp = client.post("/api/route-email", content=raw, headers=headers)
+    assert resp.status_code == 400
