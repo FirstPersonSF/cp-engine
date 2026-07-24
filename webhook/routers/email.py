@@ -1,7 +1,7 @@
 """Inbound-email route: POST /api/inbound-email (Phase 1 — park-only pipe).
 
 The cp-email-worker (a Cloudflare Email Worker) receives mail at
-``cp+<code>@cp.firstperson.is``, MIME-parses it, normalizes to JSON,
+``cp+<code>@thinkermakers.com``, MIME-parses it, normalizes to JSON,
 HMAC-signs, and POSTs here. Phase 1 does the minimum that proves the pipe
 end-to-end: verify → resolve the plus-address to a project code → PARK the
 raw message into that project's working dir → commit + push → 200. No
