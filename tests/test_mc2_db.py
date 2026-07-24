@@ -276,7 +276,8 @@ def test_registry_covers_known_tables() -> None:
     expected_public = {
         "projects", "repos", "initiatives", "companies", "entities",
         "github_orgs",
-        "sprint_allocations", "fathom_meetings", "auto_ingest_runs",
+        "sprint_allocations", "fathom_meetings", "unrouted_emails",
+        "auto_ingest_runs",
         "asset_ingest_runs", "rag_assets", "asset_chunks",
         "clickup_task_proposals",
         "commitments", "app_config", "notes",
