@@ -273,7 +273,7 @@ def _record_unrouted(payload: dict, *, reason: str, attempted_code: str | None) 
         "status": "unrouted",
     }
     try:
-        client.table("unrouted_emails").upsert(row, on_conflict="id").execute()
+        client.table(mc2_db.Tables.UNROUTED_EMAILS).upsert(row, on_conflict="id").execute()
         log.info(
             "inbound-email: recorded unrouted email id=%s reason=%s attempted=%s",
             row_id, reason, attempted_code,
@@ -445,7 +445,7 @@ async def route_email(request: Request) -> dict:
 
     # Load the unrouted row — the source of truth for the email's content.
     resp = (
-        client.table("unrouted_emails")
+        client.table(mc2_db.Tables.UNROUTED_EMAILS)
         .select("id, thread_id, from_addr, to_addr, subject, raw_text, received_at, status")
         .eq("id", message_id)
         .single()
@@ -501,7 +501,7 @@ async def route_email(request: Request) -> dict:
 
     # Flip the row to routed only after the ingest actually committed.
     try:
-        client.table("unrouted_emails").update(
+        client.table(mc2_db.Tables.UNROUTED_EMAILS).update(
             {"status": "routed", "routed_to_code": code}
         ).eq("id", message_id).execute()
     except Exception:  # noqa: BLE001 — the ingest succeeded; a status-flip miss is recoverable

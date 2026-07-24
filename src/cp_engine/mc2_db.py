@@ -60,6 +60,7 @@ class Tables:
 
     # public — meetings + ingest
     FATHOM_MEETINGS = "fathom_meetings"
+    UNROUTED_EMAILS = "unrouted_emails"  # inbound emails w/o a routable project (mig 122)
     AUTO_INGEST_RUNS = "auto_ingest_runs"
     ASSET_INGEST_RUNS = "asset_ingest_runs"
     RAG_ASSETS = "rag_assets"
