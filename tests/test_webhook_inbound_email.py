@@ -1,12 +1,16 @@
-"""Tests for POST /api/inbound-email (Phase 1 — park-only pipe).
+"""Tests for POST /api/inbound-email (Phase 2 — park + distill).
 
-Covers the two units that don't require a live tenant clone:
+Covers:
   - plus-address parsing → (shape, code)
   - HMAC signature verification (timestamped, INBOUND_EMAIL_SECRET)
   - the route's early-return paths (unresolved address, non-project shape)
+  - the distill-input helpers (envelope render, delta staging)
+  - the park+distill wiring with the clone, commit, and distill mocked:
+    a non-empty delta distills; an empty (pure-quote) delta parks only.
 
-Parking itself (clone → write → commit → push) is exercised end-to-end
-against the deployed service, not in unit tests — it needs git + SSH.
+The real clone → write → commit → push (git + SSH) and the LLM distill are
+exercised end-to-end against the deployed service, not in unit tests; here
+those seams are monkeypatched.
 """
 from __future__ import annotations
 
@@ -133,3 +137,132 @@ def test_account_shape_acknowledged_not_parked(client):
     assert data["status"] == "acknowledged_not_parked"
     assert data["shape"] == "account"
     assert data["code"] == "infoblox"
+
+
+# ── distill-input helpers (pure, no clone) ────────────────────────────
+
+
+def test_render_distill_input_prepends_envelope():
+    payload = {
+        "from": "Janet Noe <jnoe@infoblox.com>",
+        "subject": "Re: pillars",
+        "received_at": "2026-07-24T09:00:00Z",
+    }
+    out = email_router._render_distill_input(payload, "Let's keep preemptive as a fourth leg.")
+    # The distiller keys off who/what, so From + Subject + Date lead the text.
+    assert "# Email: Re: pillars" in out
+    assert "# From: Janet Noe <jnoe@infoblox.com>" in out
+    assert "# Date: 2026-07-24" in out  # trimmed to the date
+    assert out.rstrip().endswith("Let's keep preemptive as a fourth leg.")
+
+
+def test_render_distill_input_tolerates_missing_fields():
+    out = email_router._render_distill_input({}, "body only")
+    assert "(no subject)" in out
+    assert "(unknown sender)" in out
+    assert out.rstrip().endswith("body only")
+
+
+def test_stage_email_delta_writes_prefixed_file(tmp_path):
+    path = email_router._stage_email_delta(
+        tmp_path, "ibx-5192", "<abc.def@host>", "distill me"
+    )
+    assert path.exists()
+    assert path.read_text(encoding="utf-8") == "distill me"
+    # Distinct 'email-' prefix so it never collides with a Fathom stage file,
+    # and it lives under transcripts/incoming/ like the meeting path.
+    assert path.name.startswith("email-")
+    assert path.parent == tmp_path / "transcripts" / "incoming"
+
+
+# ── park + distill wiring (clone + distill mocked) ────────────────────
+
+
+class _FakeClone:
+    """Stand-in for git_ops._cloned_tenant() as a context manager."""
+
+    def __init__(self, root):
+        self._root = root
+
+    def __enter__(self):
+        return self._root
+
+    def __exit__(self, *exc):
+        return False
+
+
+@pytest.fixture
+def _wire(monkeypatch, tmp_path):
+    """Patch the clone, config, project-dir resolver, commit, and distill so
+    the handler runs park+distill without git/SSH/LLM. Returns a dict the
+    tests read to assert what happened.
+    """
+    calls = {"distill_args": None, "commit_msg": None}
+
+    project_dir = tmp_path / "1p" / "infoblox" / "ibx-5192-x"
+    project_dir.mkdir(parents=True)
+
+    monkeypatch.setattr(email_router.git_ops, "_cloned_tenant", lambda: _FakeClone(tmp_path))
+
+    class _Cfg:
+        root = tmp_path
+
+    monkeypatch.setattr(email_router, "load_config", lambda root: _Cfg())
+    monkeypatch.setattr(email_router, "find_spine_dir", lambda root, code: project_dir)
+    monkeypatch.setattr(
+        email_router.git_ops,
+        "_commit_with_message_and_push",
+        lambda root, msg: calls.__setitem__("commit_msg", msg) or "deadbee",
+    )
+
+    def _fake_ingest(*, config, code, transcript_path, **kw):
+        calls["distill_args"] = {"code": code, "path": str(transcript_path)}
+        return {
+            "plan_summary": {"record-decision": 1},
+            "files_written": [str(project_dir / "sprints" / "x.md")],
+            "errors": [],
+        }
+
+    monkeypatch.setattr(email_router.pipeline, "_ingest_one_project", _fake_ingest)
+    return calls
+
+
+def test_nonempty_delta_distills(client, _wire):
+    body = {
+        "to": "cp+ibx-5192@cp.firstperson.is",
+        "from": "Janet <jnoe@infoblox.com>",
+        "subject": "Re: pillars",
+        "message_id": "<m1@host>",
+        "text": "Keep preemptive as a fourth leg.\n\nOn Wed, X wrote:\n> old stuff",
+    }
+    raw, headers = _signed(body)
+    resp = client.post("/api/inbound-email", content=raw, headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["status"] == "ingested"
+    assert data["distilled"] is True
+    assert data["plan_summary"] == {"record-decision": 1}
+    # distill actually ran against the staged delta
+    assert _wire["distill_args"]["code"] == "ibx-5192"
+    assert "distilled" in _wire["commit_msg"]
+
+
+def test_empty_delta_parks_without_distill(client, _wire):
+    # A whitespace-only body strips to an empty delta → park, no distill.
+    # (A pure-quote reply deliberately fails OPEN in the stripper, keeping
+    # the body, so it is NOT the empty case — see email_strip contract.)
+    body = {
+        "to": "cp+ibx-5192@cp.firstperson.is",
+        "from": "Janet <jnoe@infoblox.com>",
+        "subject": "Re: pillars",
+        "message_id": "<m2@host>",
+        "text": "   \n\n  \n",
+    }
+    raw, headers = _signed(body)
+    resp = client.post("/api/inbound-email", content=raw, headers=headers)
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["distilled"] is False
+    assert data["status"] == "parked"
+    assert _wire["distill_args"] is None  # distill skipped
+    assert "parked" in _wire["commit_msg"]

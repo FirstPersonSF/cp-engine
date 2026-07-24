@@ -1,12 +1,21 @@
-"""Inbound-email route: POST /api/inbound-email (Phase 1 — park-only pipe).
+"""Inbound-email route: POST /api/inbound-email (Phase 2 — park + distill).
 
 The cp-email-worker (a Cloudflare Email Worker) receives mail at
 ``cp+<code>@thinkermakers.com``, MIME-parses it, normalizes to JSON,
-HMAC-signs, and POSTs here. Phase 1 does the minimum that proves the pipe
-end-to-end: verify → resolve the plus-address to a project code → PARK the
-raw message into that project's working dir → commit + push → 200. No
-distill yet (that's Phase 2); no thread-keyed DB source parking yet (that's
-a later MC-2 migration).
+HMAC-signs, and POSTs here. The route: verify → resolve the plus-address to
+a project code → strip quoted history to the net-new delta → PARK the raw
+message into that project's working dir → run the delta through the EXISTING
+distill (``_ingest_one_project``, the same path Fathom auto-ingest uses) so
+it proposes commitments / decisions / stakeholder signals / agenda items
+into the review gate → commit + push → 200.
+
+Everything the distill writes lands PROPOSED (the review gate), identical to
+Fathom auto-ingest — nothing is auto-confirmed. Email is an ingest SOURCE
+feeding the existing pipeline, not a new spine object.
+
+Still to come: thread-keyed DB source parking (a later MC-2 migration so
+replies on one thread append to one source); account/planning fan-out
+(Phase 3); Option A label-driven auto-forward (Phase 2.5).
 
 Design: cp/docs/plans/2026-07-22-email-ingest-design.md.
 
@@ -26,9 +35,10 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 import git_ops
+import pipeline
 from fastapi import APIRouter, HTTPException, Request
 
 from cp_engine.config import load as load_config
@@ -137,11 +147,11 @@ def _park_filename(message_id: str, received_at: str) -> str:
     # sanitize to a filesystem-safe slug.
     mid = (message_id or "").strip().strip("<>")
     slug = re.sub(r"[^A-Za-z0-9._-]", "-", mid) if mid else ""
-    date_part = (received_at or datetime.utcnow().isoformat())[:10]
+    date_part = (received_at or datetime.now(timezone.utc).isoformat())[:10]
     if slug:
         return f"{date_part} email {slug}.md"
     # No Message-ID (rare): fall back to a timestamp so we never collide-clobber.
-    return f"{date_part} email {datetime.utcnow().strftime('%H%M%S')}.md"
+    return f"{date_part} email {datetime.now(timezone.utc).strftime('%H%M%S')}.md"
 
 
 def _render_parked_email(payload: dict, strip: email_strip.StripResult) -> str:
@@ -175,9 +185,49 @@ def _render_parked_email(payload: dict, strip: email_strip.StripResult) -> str:
     return "\n".join(lines)
 
 
+def _render_distill_input(payload: dict, delta: str) -> str:
+    """The text handed to the distiller: a light envelope over the delta.
+
+    The distiller keys stakeholder + feedback signals off WHO said something
+    and about WHAT, so we prepend From/Subject/Date rather than feed the bare
+    delta. Shaped like the header the transcript path stages
+    (``# <title>\\n# Date: …``) so the same prompt reads it naturally.
+    """
+    frm = (payload.get("from") or "").strip()
+    subject = (payload.get("subject") or "").strip()
+    date_part = (payload.get("received_at") or datetime.now(timezone.utc).isoformat())[:10]
+    header = (
+        f"# Email: {subject or '(no subject)'}\n"
+        f"# From: {frm or '(unknown sender)'}\n"
+        f"# Date: {date_part}\n\n"
+    )
+    return header + (delta or "")
+
+
+def _stage_email_delta(tenant_root, code: str, message_id: str, text: str):
+    """Stage the distill input into transcripts/incoming/ and return its Path.
+
+    Mirrors pipeline._stage_transcript's location + audit role, but keyed on
+    the email Message-ID instead of a meeting id, and never collides with a
+    Fathom stage file (distinct ``email-`` prefix).
+    """
+    incoming = tenant_root / "transcripts" / "incoming"
+    incoming.mkdir(parents=True, exist_ok=True)
+    mid = (message_id or "").strip().strip("<>")
+    slug = re.sub(r"[^A-Za-z0-9._-]", "-", mid)[:24] if mid else "nomid"
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    path = incoming / f"email-{stamp}-{slug}.txt"
+    path.write_text(text, encoding="utf-8")
+    return path
+
+
 @router.post("/api/inbound-email")
 async def inbound_email(request: Request) -> dict:
-    """Park an inbound email into its project's working dir. Phase 1.
+    """Park + distill an inbound email into its project's working dir.
+
+    Verify → resolve the plus-address → strip to the net-new delta → park the
+    raw email → distill the delta through the existing pipeline (PROPOSED,
+    review-gated) → one commit + push.
 
     Request body (JSON, from the Cloudflare Worker):
         { to, from, subject, message_id, in_reply_to, references,
@@ -188,8 +238,11 @@ async def inbound_email(request: Request) -> dict:
         X-Webhook-Timestamp: unix seconds
 
     Response:
-        { status, code, shape, parked_path, stripped, commit_sha }
-        or { status: "unresolved"|"park_only_unknown_code", ... } (still 200).
+        { status, code, shape, parked_path, stripped, distilled,
+          plan_summary, files_written, distill_errors, commit_sha }
+        or { status: "unresolved"|"acknowledged_not_parked"|
+             "park_only_unknown_code", ... } (still 200).
+        status is "ingested" when the delta distilled clean, else "parked".
     """
     raw_body = await request.body()
     _verify_inbound_signature(
@@ -224,7 +277,7 @@ async def inbound_email(request: Request) -> dict:
     # Strip quoted history to the net-new delta (server-side, one place).
     strip = email_strip.strip_quoted_history(payload.get("text", "") or "")
 
-    # Park into the project's working dir on a fresh tenant clone, commit, push.
+    # Park + distill on a fresh tenant clone, then ONE commit + push.
     with git_ops._cloned_tenant() as tenant_root:
         config = load_config(tenant_root)
         try:
@@ -242,6 +295,7 @@ async def inbound_email(request: Request) -> dict:
                 "shape": routing.shape,
             }
 
+        # 1) Park the raw email — the durable audit + the distill input.
         out_dir = project_dir / "email-ingest"
         out_dir.mkdir(parents=True, exist_ok=True)
         filename = _park_filename(
@@ -249,23 +303,67 @@ async def inbound_email(request: Request) -> dict:
         )
         parked = out_dir / filename
         parked.write_text(_render_parked_email(payload, strip), encoding="utf-8")
-
         rel = parked.relative_to(tenant_root)
+
+        # 2) Distill the net-new delta through the EXISTING pipeline — the same
+        #    _ingest_one_project the Fathom path runs. Everything it writes
+        #    lands PROPOSED (the review gate). Skipped when the delta is empty:
+        #    a pure-scheduling forward strips to nothing, and the "produce
+        #    nothing" discipline says don't invent a plan from an empty body.
+        delta = (strip.delta or "").strip()
+        distill: dict | None = None
+        if delta:
+            distill_text = _render_distill_input(payload, delta)
+            transcript_path = _stage_email_delta(
+                tenant_root, routing.code, payload.get("message_id", ""), distill_text
+            )
+            try:
+                distill = pipeline._ingest_one_project(
+                    config=config,
+                    code=routing.code,
+                    transcript_path=transcript_path,
+                    # No Fathom meeting behind an email: no action_items,
+                    # no meeting_id, no roster. _ingest_one_project guards
+                    # each — the LLM-only plan path runs cleanly.
+                )
+            except Exception:  # noqa: BLE001 — distill must never lose the parked mail
+                log.warning(
+                    "inbound-email: distill failed for %s (email parked, committed anyway)",
+                    routing.code, exc_info=True,
+                )
+                distill = {"errors": ["distill raised — see logs"], "files_written": []}
+        else:
+            log.info(
+                "inbound-email: empty delta for %s — parked, no distill (scheduling-only?)",
+                routing.code,
+            )
+
+        # 3) ONE commit sweeps the parked email + any distilled bullets
+        #    (`git add -A` inside git_ops). The message attributes distill so
+        #    the log distinguishes "distilled" from "parked only".
         mid_prefix = (payload.get("message_id", "") or "").strip().strip("<>")[:16]
+        wrote = bool(distill and distill.get("files_written"))
+        verb = "distilled" if wrote else "parked"
         commit_sha = git_ops._commit_with_message_and_push(
             tenant_root,
-            f"[auto-ingest] email:{routing.code}: {mid_prefix or 'message'}",
+            f"[auto-ingest] email:{routing.code}: {verb} {mid_prefix or 'message'}",
         )
 
+    plan_summary = (distill or {}).get("plan_summary")
+    distill_errors = (distill or {}).get("errors") or []
     log.info(
-        "inbound-email parked: code=%s file=%s stripped=%s commit=%s",
-        routing.code, rel, strip.stripped, commit_sha,
+        "inbound-email done: code=%s file=%s stripped=%s distilled=%s plan=%s commit=%s",
+        routing.code, rel, strip.stripped, bool(plan_summary), plan_summary, commit_sha,
     )
     return {
-        "status": "parked",
+        "status": "ingested" if (distill and not distill_errors) else "parked",
         "code": routing.code,
         "shape": routing.shape,
         "parked_path": str(rel),
         "stripped": strip.stripped,
+        "distilled": bool(distill),
+        "plan_summary": plan_summary,
+        "files_written": (distill or {}).get("files_written", []),
+        "distill_errors": distill_errors,
         "commit_sha": commit_sha,
     }
