@@ -254,7 +254,7 @@ def _wire(monkeypatch, tmp_path):
         root = tmp_path
 
     monkeypatch.setattr(email_router, "load_config", lambda root: _Cfg())
-    monkeypatch.setattr(email_router, "find_spine_dir", lambda root, code: project_dir)
+    monkeypatch.setattr(email_router, "find_spine_dir", lambda root, code, mc2_id=None: project_dir)
     monkeypatch.setattr(
         email_router.git_ops,
         "_commit_with_message_and_push",
@@ -405,7 +405,17 @@ def test_route_email_ingests_and_marks_routed(client, monkeypatch, tmp_path):
         root = tmp_path
 
     monkeypatch.setattr(email_router, "load_config", lambda root: _Cfg())
-    monkeypatch.setattr(email_router, "find_spine_dir", lambda root, code: project_dir)
+    # Capture how find_spine_dir was called so we can assert project_id is
+    # threaded through as the UUID-first resolution key.
+    resolve_call = {}
+    monkeypatch.setattr(
+        email_router,
+        "find_spine_dir",
+        lambda root, code, mc2_id=None: resolve_call.update(
+            {"code": code, "mc2_id": mc2_id}
+        )
+        or project_dir,
+    )
     monkeypatch.setattr(
         email_router.git_ops, "_commit_with_message_and_push", lambda root, msg: "cafef00d"
     )
@@ -415,16 +425,23 @@ def test_route_email_ingests_and_marks_routed(client, monkeypatch, tmp_path):
         lambda **kw: {"plan_summary": {"record-ask": 1}, "files_written": ["x"], "errors": []},
     )
 
-    body = {"message_id": "m-unr@host", "code": "ibx-5153"}
+    body = {
+        "message_id": "m-unr@host",
+        "code": "SLT-brand-campaign-26",
+        "project_id": "ec42e640-f93c-4047-b610-98bc1dc2ebfc",
+    }
     raw, headers = _signed_webhook(body)
     resp = client.post("/api/route-email", content=raw, headers=headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "ingested"
-    assert data["code"] == "ibx-5153"
+    assert data["code"] == "SLT-brand-campaign-26"
     assert data["routed_from"] == "unrouted"
+    # project_id was passed to find_spine_dir as the UUID-first key (the whole
+    # point of the fix — code alone wouldn't resolve this project's dir).
+    assert resolve_call["mc2_id"] == "ec42e640-f93c-4047-b610-98bc1dc2ebfc"
     # row was flipped to routed with the chosen code
-    assert fake.updated == {"status": "routed", "routed_to_code": "ibx-5153"}
+    assert fake.updated == {"status": "routed", "routed_to_code": "SLT-brand-campaign-26"}
 
 
 def test_route_email_already_routed_is_idempotent(client, monkeypatch, tmp_path):

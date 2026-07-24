@@ -400,7 +400,18 @@ async def route_email(request: Request) -> dict:
     (MC-2 holds the secret to sign server-side).
 
     Request body (JSON):
-        { message_id, code }   — the unrouted_emails.id + the chosen project code
+        { message_id, code, project_id? }
+          message_id — the unrouted_emails.id
+          code       — the chosen project's code (for logging + the routed_to
+                       stamp; a human-readable label)
+          project_id — the chosen project's MC-2 UUID (optional but PREFERRED).
+                       find_spine_dir resolves UUID-first off the cp.md MC-id
+                       stamp, so this resolves even when the MC-2 `code` column
+                       differs from the dir's slug-of-full_job_name (they
+                       routinely do: `SLT-brand-campaign-26` the code vs
+                       `slt-5196-brand-campaign-26` the dir). Without it we fall
+                       back to matching `code` by name, which only works when
+                       `code` already IS the dir slug (e.g. email-addressed).
 
     Signed with the standard MC-2→webhook secret (WEBHOOK_HMAC_SECRET, via
     signatures._verify_signature) — the same hop as promote-transcript /
@@ -424,6 +435,7 @@ async def route_email(request: Request) -> dict:
 
     message_id = (req.get("message_id") or "").strip()
     code = (req.get("code") or "").strip()
+    project_id = (req.get("project_id") or "").strip() or None
     if not message_id or not code:
         raise HTTPException(status_code=400, detail="message_id and code are required")
 
@@ -462,13 +474,20 @@ async def route_email(request: Request) -> dict:
     with git_ops._cloned_tenant() as tenant_root:
         config = load_config(tenant_root)
         try:
-            project_dir = find_spine_dir(config.root, code)
+            # UUID-first (project_id) so a synced project resolves off its
+            # cp.md MC-id stamp regardless of code/slug drift; falls back to
+            # matching `code` by dir name.
+            project_dir = find_spine_dir(config.root, code, mc2_id=project_id)
         except SpineDirNotFound:
-            # The human picked a code that doesn't resolve either — leave the
-            # row unrouted so they can pick again; surface the error.
+            # The project has no working dir in the cp tree yet — a brand-new
+            # Deal that hasn't been synced. Leave the row unrouted (the human
+            # can sync it and route again) and say so plainly.
             raise HTTPException(
                 status_code=422,
-                detail=f"code {code!r} did not resolve to a project — not routed",
+                detail=(
+                    f"'{code}' isn't set up in cp yet — no working directory. "
+                    "Run a sync for it first, then route this email."
+                ),
             ) from None
 
         result = _park_and_distill(
