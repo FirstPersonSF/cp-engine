@@ -414,6 +414,13 @@ source" with no attached source (close the loop with `add_element_source`);
 scaffold template placeholders still sitting in `cp.md`. Surface any
 findings to the user and fix only what they confirm.
 
+## After a cp-engine release: restart `cp mcp`
+
+`cp mcp` is long-running — a session started before a release keeps serving
+old bytecode after `cp sync` upgrades the CLI; `cp sync` doesn't own that
+process. If a spine tool seems to ignore a fix the release notes say
+shipped, restart the MCP connection (`/mcp`) before assuming it's broken.
+
 ## Spec
 
 Tenant config: `.cp-engine.toml` (committed) + `.cp-engine.local.toml` (gitignored).
