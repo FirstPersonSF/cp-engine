@@ -241,9 +241,10 @@ def test_list_spine_elements_delegates(monkeypatch):
     captured = {}
 
     def fake_list_spine(client, project_id, company_id=None, *,
-                        layer=None, scope=None, binding=None):
+                        layer=None, scope=None, binding=None, compact=False):
         captured["args"] = (client, project_id)
         captured["filters"] = (layer, scope, binding)
+        captured["compact"] = compact
         return [{"est_item_id": "_authored/brief", "framing": "Brief"}]
 
     monkeypatch.setattr("cp_engine.project_sources.list_spine", fake_list_spine)
@@ -253,7 +254,11 @@ def test_list_spine_elements_delegates(monkeypatch):
     assert captured["args"] == (fake_client, "pid")
     # empty-string filter args normalize to None (no filtering)
     assert captured["filters"] == (None, None, None)
+    assert captured["compact"] is False
     assert out == [{"est_item_id": "_authored/brief", "framing": "Brief"}]
+
+    srv.list_spine_elements("sap-5171", compact=True)
+    assert captured["compact"] is True
 
 
 def test_pull_spine_element_delegates(monkeypatch):

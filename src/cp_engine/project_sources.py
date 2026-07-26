@@ -488,6 +488,37 @@ def _in_filter(value: str | None, wanted: str | None) -> bool:
     return (value or "").lower() in allowed
 
 
+def _fold_layer(value: str) -> str:
+    """Normalize a layer label for matching: casefold + drop ONE trailing 's'.
+
+    Live layer labels drift plural/mixed ("Decisions", "Stakeholders",
+    "Client feedback") while callers pass singular ("Decision",
+    "stakeholder"); folding both sides makes them equivalent.
+    """
+    value = value.strip().casefold()
+    return value[:-1] if value.endswith("s") else value
+
+
+def _layer_filter(value: str | None, wanted: str | None) -> bool:
+    """True when a row's `layer` passes a comma-list layer filter.
+
+    Like `_in_filter` (None filter = pass all; NULL value only passes an
+    unset filter) but tolerant of real-world layer label drift: each wanted
+    term matches casefolded, singular/plural-equivalent (`_fold_layer`), and
+    as a substring — so "decision" matches "Decisions" and "feedback"
+    matches "Client feedback".
+    """
+    if not wanted:
+        return True
+    allowed = [_fold_layer(w) for w in wanted.split(",") if w.strip()]
+    if not allowed:
+        return True
+    if value is None:
+        return False
+    folded = _fold_layer(value)
+    return any(term in folded for term in allowed)
+
+
 def _source_link(asset: dict) -> dict:
     """The typed source link shape MC-2's dashboard writes (manage-by-id)."""
     return {"type": "rag_asset", "id": asset["id"], "title": asset["title"]}
@@ -649,7 +680,7 @@ def modify_element_provenance(client, project_id: str, key: str,
 
 def list_spine(client, project_id: str, company_id: str | None = None, *,
                layer: str | None = None, scope: str | None = None,
-               binding: str | None = None) -> list[dict]:
+               binding: str | None = None, compact: bool = False) -> list[dict]:
     """List a project's LIVE spine elements (index, not bodies).
 
     Returns `[{est_item_id, framing, layer, binding, status, serves_count,
@@ -663,19 +694,56 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
     spine rows carry no updated_at). The full body is never returned here
     (only its length) — call `pull_spine` for one element's text.
 
+    `compact=True` trims each row to the orientation set — `{est_item_id,
+    framing, layer, binding, body_len, version_label, scope, important,
+    has_note}` (`has_note` a bool, not the note text) — roughly a fifth of
+    the full listing's token cost on a large spine. Detail fields (`status`,
+    `serves_count`, `done`, `version_date`, the note text) are dropped;
+    re-list without `compact` when you need them.
+
     `layer`/`scope`/`binding` are optional comma-list filters (e.g.
     layer="Note,Decision", scope="project", binding="unbound"), matched
     case-insensitively; omitted filters pass everything, so the no-filter
-    call is unchanged. Never raises: the MCP tool boundary converts failures
-    to a structured note.
+    call is unchanged. The `layer` filter additionally folds singular/plural
+    and matches substrings (`_layer_filter`) — live layer labels drift
+    ("Decisions", "Client feedback") and the filter should meet them where
+    they are. When a layer filter matches NOTHING, the result is a single
+    note row carrying a `hint` list of the distinct layer values that exist
+    on this spine — a silent `[]` would leave the caller guessing at labels.
+    Never raises: the MCP tool boundary converts failures to a structured
+    note.
     """
-    rows = _one_live_per_element(_unarchived(
+    all_rows = _one_live_per_element(_unarchived(
         _fetch_scoped(client, project_id, company_id, _SPINE_LIST_COLUMNS)
     ))
-    rows = [r for r in rows
-            if _in_filter(r.get("layer"), layer)
+    rows = [r for r in all_rows
+            if _layer_filter(r.get("layer"), layer)
             and _in_filter(_row_scope(r), scope)
             and _in_filter(r.get("binding"), binding)]
+    if layer and not rows:
+        # A layer filter that matches nothing must be self-explaining, not a
+        # silent [] — surface the labels that DO exist so the caller can
+        # re-aim (the layer vocabulary is live data, not a fixed enum).
+        layers = sorted({r.get("layer") for r in all_rows if r.get("layer")})
+        return [{"note": f"layer filter {layer!r} matched no elements",
+                 "hint": layers}]
+    if compact:
+        out = [
+            {
+                "est_item_id": row.get("est_item_id"),
+                "framing": row.get("framing"),
+                "layer": row.get("layer"),
+                "binding": row.get("binding"),
+                "body_len": len(row.get("body") or ""),
+                "important": bool(row.get("important")),
+                "has_note": bool(row.get("note")),
+                "scope": _row_scope(row),
+                "version_label": row.get("version_label"),
+            }
+            for row in rows
+        ]
+        out.sort(key=lambda r: not r["important"])
+        return out
     # Fetch the project's done-map ONCE (not per row — no N+1). `done` is
     # best-effort: if the estimator schema is unreachable the fetch may raise,
     # so we fail-soft to an empty map, which makes `derive_done` return None for

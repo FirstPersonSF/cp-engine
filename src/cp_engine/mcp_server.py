@@ -393,7 +393,8 @@ def pull_document_comments(project_code: str, doc_title: str) -> dict:
 
 @mcp.tool()
 def list_spine_elements(project_code: str, layer: str = "",
-                        scope: str = "", binding: str = "") -> list[dict]:
+                        scope: str = "", binding: str = "",
+                        compact: bool = False) -> list[dict]:
     """List a project's LIVE spine elements (the distilled-memory index).
 
     Returns one row per element: est_item_id, framing (title), layer, binding,
@@ -401,11 +402,21 @@ def list_spine_elements(project_code: str, layer: str = "",
     see what's in a project's spine, then `pull_spine_element` to read one
     element's full body.
 
+    `compact=true` returns a trimmed row — est_item_id, framing, layer,
+    binding, body_len, version_label, scope, important, has_note (bool; the
+    note text is dropped) — at a fraction of the token cost. Prefer it for
+    orientation on a big spine; re-list without it when you need status,
+    serves_count, done, version_date, or the note text.
+
     Optional filters narrow the listing, each a comma-list matched
     case-insensitively: `layer` (e.g. "Note,Decision"), `scope` ("project" or
-    "account"), `binding` (e.g. "unbound"). Empty filters return everything —
-    useful defaults for a first look; filter when the account dossiers and
-    source stubs drown out the authored working set.
+    "account"), `binding` (e.g. "unbound"). The layer filter also folds
+    singular/plural and matches substrings ("decision" matches "Decisions",
+    "feedback" matches "Client feedback"); a layer filter that matches
+    nothing returns a note row with a `hint` list of the layer values that
+    actually exist on the spine. Empty filters return everything — useful
+    defaults for a first look; filter when the account dossiers and source
+    stubs drown out the authored working set.
     """
     from cp_engine.project_sources import list_spine
 
@@ -417,7 +428,8 @@ def list_spine_elements(project_code: str, layer: str = "",
             return [{"note": f"code '{project_code}' resolved to no project"}]
         client, pid, cid = resolved
         return list_spine(client, pid, cid, layer=layer or None,
-                          scope=scope or None, binding=binding or None)
+                          scope=scope or None, binding=binding or None,
+                          compact=compact)
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,
         # actionable error note instead of propagating a protocol error.
