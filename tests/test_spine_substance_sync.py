@@ -1328,3 +1328,111 @@ def test_load_substance_still_loads_phase_dir_file(tmp_path):
     _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
     items, _malformed = _load_substance_items(proj)
     assert any(it.est_item_id == "d1" for it, _ in items)
+
+
+# ---- #113: authored-live shield — the mirror must never re-flip a distilled
+# version live over a NEWER authored live version (the sap-5174 e94d0a03
+# double-live: add_spine_version wrote authored v3 and demoted v2, then the
+# disk file — still claiming v2 live — flipped v2 back on the next sync).
+
+
+def test_sync_shield_disk_live_older_than_authored_live_mirrors_superseded(tmp_path):
+    proj = tmp_path / "1p/acct/proj-1"
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")  # v2 live on disk
+    client = _FakeClient()
+    client.store["spine_substance"] = [
+        _authored_row("d1", "v3", status="live"),
+        # The demoted distilled row, as add_spine_version left it.
+        {"id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
+         "est_item_id": "d1", "origin": "distilled", "status": "superseded",
+         "version_label": "v2", "archived": False, "framing": "framing",
+         "body": "live body", "layer": None, "serves": [],
+         "field_states": {}, "review_flags": []},
+    ]
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+    by_id = {r["id"]: r for r in client.store["spine_substance"]}
+    # Disk's v2 'live' must NOT resurrect: exactly one live row remains (v3).
+    assert by_id["proj-1/d1/v2"]["status"] == "superseded"
+    assert by_id["proj-1/d1/v3"]["status"] == "live"
+    live = [r for r in client.store["spine_substance"]
+            if r["est_item_id"] == "d1" and r["status"] == "live"
+            and not r.get("archived")]
+    assert len(live) == 1
+
+
+def test_sync_shield_heals_an_already_double_live_element(tmp_path):
+    # The live sap-5174 shape: the distilled v2 row is ALREADY (wrongly) live in
+    # the DB alongside authored v3. The next sync converges it to superseded.
+    proj = tmp_path / "1p/acct/proj-1"
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
+    client = _FakeClient()
+    client.store["spine_substance"] = [
+        _authored_row("d1", "v3", status="live"),
+        {"id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
+         "est_item_id": "d1", "origin": "distilled", "status": "live",
+         "version_label": "v2", "archived": False, "framing": "framing",
+         "body": "live body", "layer": None, "serves": [],
+         "field_states": {}, "review_flags": []},
+    ]
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+    by_id = {r["id"]: r for r in client.store["spine_substance"]}
+    assert by_id["proj-1/d1/v2"]["status"] == "superseded"
+    assert by_id["proj-1/d1/v3"]["status"] == "live"
+
+
+def test_sync_shield_no_authored_live_leaves_disk_live_alone(tmp_path):
+    proj = tmp_path / "1p/acct/proj-1"
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
+    client = _FakeClient()
+    # A SUPERSEDED authored row must not shield anything.
+    client.store["spine_substance"] = [_authored_row("d1", "v3",
+                                                     status="superseded")]
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+    by_id = {r["id"]: r for r in client.store["spine_substance"]}
+    assert by_id["proj-1/d1/v2"]["status"] == "live"
+
+
+def test_sync_shield_scoped_per_element(tmp_path):
+    # An authored live v3 on d1 must not demote d2's own disk live version.
+    proj = tmp_path / "1p/acct/proj-1"
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
+    _write_substance(tmp_path, "Phase0", "other", est_item_id="d2")
+    client = _FakeClient()
+    client.store["spine_substance"] = [_authored_row("d1", "v3",
+                                                     status="live")]
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d1", "d2"}))
+    by_id = {r["id"]: r for r in client.store["spine_substance"]}
+    assert by_id["proj-1/d1/v2"]["status"] == "superseded"
+    assert by_id["proj-1/d2/v2"]["status"] == "live"
+
+
+def test_sync_shield_overrides_confirmed_live_status(tmp_path):
+    # A CONFIRMED status='live' on the stale distilled row must not defeat the
+    # shield: reconcile_field keeps a confirmed value, which would leave the
+    # element double-live PERMANENTLY (the supersede discarded every sync).
+    # Two live versions is an invariant violation, not a field preference —
+    # the shield overrides post-reconcile, keeps the confirmed field_state,
+    # and the drift review_flag stays raised (visible, not silent).
+    proj = tmp_path / "1p/acct/proj-1"
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
+    client = _FakeClient()
+    client.store["spine_substance"] = [
+        _authored_row("d1", "v3", status="live"),
+        {"id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
+         "est_item_id": "d1", "origin": "distilled", "status": "live",
+         "version_label": "v2", "archived": False, "framing": "framing",
+         "body": "live body", "layer": None, "serves": [],
+         "field_states": {"status": "confirmed"}, "review_flags": []},
+    ]
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+    by_id = {r["id"]: r for r in client.store["spine_substance"]}
+    assert by_id["proj-1/d1/v2"]["status"] == "superseded"
+    assert by_id["proj-1/d1/v3"]["status"] == "live"
+    # The override is visible: the drift flag reconcile raised survives.
+    flags = by_id["proj-1/d1/v2"].get("review_flags") or []
+    assert any(f.get("field") == "status" for f in flags)

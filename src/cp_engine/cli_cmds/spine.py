@@ -714,7 +714,10 @@ def spine_lint_cmd(code: str) -> None:
         .execute()
         .data
     ) or []
-    rows = [r for r in rows if not r.get("archived")]
+    # Same one-live-per-element discipline as the read paths (#113) — a
+    # double-live element must warn once, not twice.
+    from cp_engine.project_sources import _one_live_per_element
+    rows = _one_live_per_element([r for r in rows if not r.get("archived")])
     if not rows:
         click.echo(
             f"No live spine for '{code}' — spine-lint resolves by the "

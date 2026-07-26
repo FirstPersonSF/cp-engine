@@ -35,6 +35,7 @@ from cp_engine.substance import (
     WorkItemSubstance,
     is_skipped_spine_dir,
     parse_substance,
+    version_number,
 )
 
 logger = logging.getLogger(__name__)
@@ -379,7 +380,7 @@ def sync_spine_substance(
         client.table(_SUBSTANCE_TABLE)
         .select(
             "id, est_item_id, framing, body, status, layer, serves, archived, "
-            "field_states, review_flags, origin"
+            "field_states, review_flags, origin, version_label"
         )
         # Scope the reap on the STABLE project_id (uuid), not the mutable
         # project_code: the row id embeds the code, so a canonical-id rename
@@ -391,7 +392,39 @@ def sync_spine_substance(
     ) or []
     existing_by_id = {r["id"]: r for r in prior}
 
+    # Authored-live shield (#113): when MC-2 holds a LIVE authored version of an
+    # element (add_spine_version wrote e.g. v7 and demoted the distilled v6),
+    # the substance FILE on disk still claims its own top version is live — the
+    # disk→DB reconcile would flip the superseded v6 back to 'live' and the
+    # element would carry TWO live rows (the sap-5174 e94d0a03 double-listing).
+    # Authored rows are MC-2-owned and disk is downstream of them (same rule as
+    # the reap's authored exemption), so a disk 'live' older than the newest
+    # authored live version is stale by construction → mirror it superseded.
+    # Applied BEFORE the per-field reconcile so an already-flipped row heals on
+    # the next sync (cur='live', new='superseded' → unconfirmed disk-wins).
+    authored_live_max: dict[str, int] = {}
+    for r in prior:
+        if (r.get("origin") == "authored" and r.get("status") == "live"
+                and not r.get("archived")):
+            eid = r.get("est_item_id")
+            n = version_number(r.get("version_label"))
+            if eid and n > authored_live_max.get(eid, -1):
+                authored_live_max[eid] = n
+
     for row in rows:
+        shielded = (row.get("status") == "live"
+                    and version_number(row.get("version_label"))
+                    < authored_live_max.get(row.get("est_item_id"), -1))
+        if shielded:
+            row["status"] = "superseded"
+            logger.warning(
+                "authored-live shield (#113): element %s disk %s claims live "
+                "but authored v%d is live — mirroring the disk version "
+                "superseded (the substance file is stale; re-distill or "
+                "update it)",
+                row.get("est_item_id"), row.get("version_label"),
+                authored_live_max.get(row.get("est_item_id"), -1),
+            )
         existing = existing_by_id.get(row["id"])
         if existing is None:
             field_states: dict = {}
@@ -418,6 +451,22 @@ def sync_spine_substance(
                 row[field] = value
                 field_states[field] = state
                 review_flags = _merge_flag(review_flags, field, flag)
+            # The shield outranks a CONFIRMED status (#113 follow-up): two
+            # live version rows on one element is an invariant violation, not
+            # a field preference — and the authored live version IS the newer
+            # human action, so keeping the confirmed 'live' here would leave
+            # the element double-live permanently (reconcile discards the
+            # supersede every sync). The field stays confirmed and the drift
+            # review_flag reconcile just emitted stays raised, so the override
+            # is visible on the review surface, not silent.
+            if shielded and row.get("status") == "live":
+                row["status"] = "superseded"
+                logger.warning(
+                    "authored-live shield (#113): element %s %s status is "
+                    "confirmed-live; overriding to superseded anyway (a "
+                    "strictly newer authored live version exists)",
+                    row.get("est_item_id"), row.get("version_label"),
+                )
         # Binding flag: raise when orphaned, self-heal (prune) when healthy.
         if orphaned_by_id.get(row["id"]):
             review_flags = _merge_flag(
