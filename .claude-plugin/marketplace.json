@@ -1,6 +1,6 @@
 {
   "name": "cp-engine",
-  "version": "0.79.0",
+  "version": "0.80.0",
   "description": "Slash commands for the Context Protocol Engine.",
   "owner": {
     "name": "First Person + Canonic",
