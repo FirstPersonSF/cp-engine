@@ -787,7 +787,13 @@ def exec_lint_cmd(code: str) -> None:
     is_flag=True,
     help="Scaffold anyway even if the project's MC-2 status is still active.",
 )
-def close_cmd(code: str, force: bool) -> None:
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help="Regenerate over today's existing checklist (discards any checked "
+    "boxes / notes added to it).",
+)
+def close_cmd(code: str, force: bool, overwrite: bool) -> None:
     """Scaffold the close-out ritual checklist for a wrapping project.
 
     Emits `<workdir>/close-out-<code>-<date>.md` — a checklist working file
@@ -803,13 +809,24 @@ def close_cmd(code: str, force: bool) -> None:
     from datetime import date
 
     from cp_engine import close_out as _close
-    from cp_engine.spine import SpineDirNotFound, load_spine
+    from cp_engine.spine import SpineDirNotFound
 
     config = _cli._load_config_or_die()
     try:
         workdir, parked = _close.find_close_workdir(config.root, code)
     except SpineDirNotFound as exc:
         click.echo(str(exc), err=True)
+        sys.exit(1)
+
+    # ── Same-day re-run guard: never clobber a worked checklist ──────
+    out_path = workdir / f"close-out-{code}-{date.today().isoformat()}.md"
+    if out_path.exists() and not overwrite:
+        click.echo(
+            f"REFUSING: {out_path} already exists — it may hold checked "
+            "boxes and notes from an in-progress ritual. Re-run with "
+            "--overwrite to regenerate it from scratch.",
+            err=True,
+        )
         sys.exit(1)
 
     client = mc2_db.get_client(config, required=False)
@@ -863,7 +880,11 @@ def close_cmd(code: str, force: bool) -> None:
     if not client_spine_ok:
         click.echo("(spine from on-disk mirror — last-known, unverified)",
                    err=True)
-        elements = [_close.element_from_spine(e) for e in load_spine(workdir)]
+        # Substance-aware mirror read: modern lowercase phase dirs +
+        # spine/_authored/ (where nearly all authored elements live) +
+        # legacy capitalized layer dirs. NOT legacy-only load_spine, which
+        # is blind on modern projects.
+        elements = _close.load_mirror_elements(workdir)
 
     # ── Commitments (live only — no offline fallback) ────────────────
     commitments = None
@@ -882,12 +903,12 @@ def close_cmd(code: str, force: bool) -> None:
             code=code,
             status_label=status_label,
             elements=elements,
+            spine_verified=client_spine_ok,
             commitments=commitments,
             workdir_root_files=root_files,
         ),
         today=date.today(),
     )
-    out_path = workdir / f"close-out-{code}-{date.today().isoformat()}.md"
     out_path.write_text(text, encoding="utf-8")
 
     n_open = len(commitments) if commitments else 0

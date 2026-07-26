@@ -85,6 +85,72 @@ def element_from_spine(el: Any) -> CloseElement:
     )
 
 
+def load_mirror_elements(workdir: Path) -> list[CloseElement]:
+    """Offline/degraded fallback: read the ON-DISK spine mirror, read-only.
+
+    A modern project's elements live under ``spine/`` as substance files —
+    lowercase work-item phase dirs PLUS ``spine/_authored/`` (the DB→disk
+    mirror of authored rows, where nearly all authored elements sit). The
+    legacy reader (`spine.load_spine`) only walks the capitalized layer dirs
+    and is effectively blind on modern projects, so this reader parses the
+    substance files directly with `parse_substance`.
+
+    Unlike `spine_substance_sync._load_substance_items`, ``_authored/`` is
+    INCLUDED here: that reader's exclusion exists because its output flows
+    disk→DB, which must never happen for DB-owned rows. This function's
+    output only ever renders into a checklist — a pure read — so reading the
+    authored mirror is safe and necessary.
+
+    Legacy capitalized-layer element files (pre-substance projects) are still
+    picked up via `load_spine`, deduped by key. Malformed files are skipped
+    (a broken file must not abort the checklist); archived items and
+    superseded versions are excluded, matching the live read's filters.
+    """
+    from cp_engine.spine import load_spine
+    from cp_engine.substance import parse_substance
+
+    out: list[CloseElement] = []
+    seen: set[str] = set()
+    spine_root = workdir / "spine"
+    if spine_root.is_dir():
+        for md in sorted(spine_root.glob("*/*.md")):
+            parts = md.relative_to(spine_root).parts
+            # Skip project context and frozen snapshots — but NOT _authored/
+            # (see docstring), which is why is_skipped_spine_dir isn't used.
+            if parts[0] == "_context" or any(
+                p.endswith(".snapshots") for p in parts
+            ):
+                continue
+            try:
+                item = parse_substance(md)
+            except Exception:  # noqa: BLE001 — malformed file: skip, don't abort
+                continue
+            if item.archived or item.est_item_id in seen:
+                continue
+            try:
+                live = item.live_version()
+            except ValueError:
+                continue
+            seen.add(item.est_item_id)
+            out.append(
+                CloseElement(
+                    key=item.est_item_id,
+                    title=live.framing or item.est_item_id,
+                    layer=item.layer or "Deliverables",
+                    body_len=len((live.body or "").strip()),
+                    serves=item.serves,
+                    scope=None,  # scope is MC-2-only metadata; unknown offline
+                )
+            )
+    # Legacy capitalized-layer element files (old projects / transition trees).
+    for el in load_spine(workdir):
+        ce = element_from_spine(el)
+        if ce.key not in seen:
+            seen.add(ce.key)
+            out.append(ce)
+    return out
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Working-dir resolution (live OR parked)
 # ──────────────────────────────────────────────────────────────────────
@@ -153,6 +219,11 @@ def fetch_item_status(client: Any, code: str) -> tuple[str, str | None] | None:
     codes carry a trailing number (→ `projects.mc_status`), bare slugs are
     initiatives (→ `initiatives.status`) with a repo fallback
     (→ `repos.status`).
+
+    A projects-miss on the number branch FALLS THROUGH to the initiative and
+    repo lookups rather than returning None: repo slugs whose second dash-
+    segment is numeric (`mc-2`) parse as engagement numbers, and a short-
+    circuit there would make such repos permanently unresolvable.
     """
     from cp_engine.clickup_routing import engagement_number
     from cp_engine.mc2_db import Tables
@@ -168,7 +239,6 @@ def fetch_item_status(client: Any, code: str) -> tuple[str, str | None] | None:
         ) or []
         if rows:
             return "project", rows[0].get("mc_status")
-        return None
 
     rows = (
         client.table(Tables.INITIATIVES)
@@ -282,6 +352,12 @@ class CloseChecklistInputs:
     code: str
     status_label: str  # e.g. "Closed (engagement)" or "unverified — MC-2 unreachable"
     elements: list[CloseElement] = field(default_factory=list)
+    # False when `elements` came from the on-disk mirror (MC-2 down or the
+    # live spine read failed) rather than a live MC-2 read. The renderer
+    # stamps the provenance into the file and never renders a pre-checked
+    # `[x]` empty state from mirror data — same None-vs-empty discipline as
+    # `commitments` below.
+    spine_verified: bool = True
     # None = commitments unreadable (MC-2 down / repo); [] = verified empty.
     commitments: list[dict] | None = None
     workdir_root_files: list[str] = field(default_factory=list)
@@ -320,6 +396,19 @@ def build_close_checklist(
         "`cp close` — a checklist, not an action log. Every box is a human/"
         "agent judgment call; nothing below has been done automatically.",
         "",
+    ]
+    if not inputs.spine_verified:
+        lines.extend(
+            [
+                "> **Spine UNVERIFIED** — element data below came from the "
+                "on-disk mirror (MC-2 unreachable at scaffold time), which "
+                "may lag the live spine. Re-check with "
+                "`list_spine_elements` before retiring or promoting "
+                "anything.",
+                "",
+            ]
+        )
+    lines.extend([
         "## 1 · Final synthesis spine element",
         "",
         "- [ ] Author ONE terminal synthesis element (`create_spine_element`, "
@@ -328,7 +417,7 @@ def build_close_checklist(
         "- [ ] Wire `derives_from` edges (`create_spine_relation`) to the "
         "load-bearing cards. Suggested targets (live Synthesis/Output "
         "elements):",
-    ]
+    ])
     targets = synthesis_targets(inputs.elements)
     if targets:
         lines.extend(f"  {_el_line(e)}" for e in targets)
@@ -394,8 +483,13 @@ def build_close_checklist(
         lines.extend(
             _el_line(e, f"({e.body_len} chars, serves nothing)") for e in stubs
         )
+    elif inputs.spine_verified:
+        lines.append("- [x] No thin-stub candidates found — verified live.")
     else:
-        lines.append("- [x] No thin-stub candidates found.")
+        lines.append(
+            "- [ ] No thin-stub candidates in the on-disk mirror — "
+            "UNVERIFIED; re-check with `list_spine_elements` before closing."
+        )
 
     lines.extend(
         [
@@ -411,8 +505,17 @@ def build_close_checklist(
     promos = promotion_candidates(inputs.elements)
     if promos:
         lines.extend(_el_line(e, f"[{e.layer}]") for e in promos)
+    elif inputs.spine_verified:
+        lines.append(
+            "- [x] No promotion candidates (or all already promoted) — "
+            "verified live."
+        )
     else:
-        lines.append("- [x] No promotion candidates (or all already promoted).")
+        lines.append(
+            "- [ ] No promotion candidates in the on-disk mirror — "
+            "UNVERIFIED (mirror lacks account-scope metadata); re-check "
+            "with `list_spine_elements` before closing."
+        )
 
     lines.extend(
         [
