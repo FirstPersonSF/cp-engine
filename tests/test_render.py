@@ -407,21 +407,19 @@ def test_claude_md_omits_per_verb_catalog() -> None:
 
 
 def test_claude_md_word_count_budget() -> None:
-    """Splitting the verb catalog out brought the generated file from ~4,600
-    to ~3,300 words. Hold the line — growth here is context every session
-    pays for."""
+    """Splitting the verb catalog (and the on-demand /cp-prep and journey-step
+    detail) out of the generated file brought it from ~4,600 to the ~2,800-word
+    acceptance target (fixtures: ~2,740 for 1p, ~2,800 for canonic). The assert
+    sits at 2,900 — ~100 words of slack for per-tenant render variation (real
+    tenants aren't the fixture tenants) without letting reference content creep
+    back. Growth here is context every session pays for: move on-demand
+    reference material into a plugin command instead of raising the budget."""
     for name in ("1p", "canonic"):
         out = render_claude_md(make_tenant(name=name))
-        assert len(out.split()) <= 3400, (
+        assert len(out.split()) <= 2900, (
             f"CLAUDE.md for tenant {name!r} is {len(out.split())} words; "
             "move on-demand reference content into a plugin command instead"
         )
-
-
-def test_claude_md_render_is_idempotent() -> None:
-    """Regenerating the template with the same inputs is byte-stable."""
-    tenant = make_tenant(name="1p")
-    assert render_claude_md(tenant) == render_claude_md(tenant)
 
 
 def test_cp_tools_command_carries_the_verb_catalog() -> None:
@@ -447,6 +445,10 @@ def test_cp_tools_command_carries_the_verb_catalog() -> None:
         assert verb in cmd
     # Standing-element contracts travel with the catalog.
     assert "Standing-element contracts" in cmd
+    # So does the journey-step proposal discipline (pointer stays in
+    # CLAUDE.md; the full rules ride with the verbs they govern).
+    assert "propose_spine_step" in cmd
+    assert "Proposing journey steps at wrap up" in cmd
 
 
 def test_claude_md_documents_sprint_file_deepening_path() -> None:

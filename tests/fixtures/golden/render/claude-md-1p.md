@@ -177,24 +177,13 @@ session summary back to the cp working dir at the end of a development session.
 ## MC-2 storage: sources + spine (the `cp-sources` MCP server)
 
 **MC-2 (Supabase) is the source of truth; reach it LIVE through the
-`cp-sources` MCP server** (local stdio, launched as `cp mcp` per `.mcp.json`).
-The markdown files on disk (`_sources.md`, `spine/`) are *mirrors* regenerated
-by `cp sync` — prefer the MCP tools over reading the mirrors, and never
-reconstruct spine/source content from screenshots. Every tool takes a `<code>`
-first — engagements (`ibx-5153`), initiatives (`mission-control`), and
-standalone repos all resolve (initiatives have no ingested sources; their
-spine tools work fully).
-
-The server exposes five stores: **1 — RAG source store** (ingested
-Drive/Dropbox docs: list, pull text, fetch the original binary, read reviewer
-comments, push a generated deliverable back to the project's Dropbox);
-**2 — Spine** (the distilled-memory index of emails, notes, decisions,
-syntheses: list/pull elements, author and version them, typed relations,
-provenance, account scope — plus the standing Inputs & Briefing and SOW
-element contracts); **3 — Inbound frameworks** (curated synthesis frameworks;
-names/ids are INTERNAL, never client-facing); **4 — Commitments** (dated
-obligations — create as proposals, list, resolve at wrap up); **5 — Notes**
-(partner pings: in-app note + Slack DM, only when the human asks).
+`cp-sources` MCP server** (`cp mcp` per `.mcp.json`). The on-disk mirrors
+(`_sources.md`, `spine/`) lag — prefer the MCP tools; never screenshots.
+Every tool takes a `<code>` first (engagement, initiative, or standalone
+repo). Five stores: **1 — RAG source store** (ingested Drive/Dropbox
+docs); **2 — Spine** (the distilled-memory index: elements, versions,
+relations, provenance); **3 — Inbound frameworks** (INTERNAL-only);
+**4 — Commitments** (dated obligations); **5 — Notes** (partner pings).
 
 **Full verb catalog: run `/cp-tools`** before any spine-authoring, source,
 framework, commitment, or notes work — per-verb signatures and usage
@@ -300,36 +289,14 @@ auto-appended bullets in known sections.
 
 When the user asks to prep an agenda for sprint planning ("run weekly
 sprint planning", "prep sprint planning agenda", or similar), run
-`/cp-prep` (the engine-managed slash command). The engine emits a
+`/cp-prep`. The engine emits a
 **bundle** (`cp prep-planning --bundle`) — every active project's full
 Exec Summary plus deterministic metrics — and **you synthesize**
-`sprints/<W##>/_planning.md` from it in-session (you author and write the
-doc; the engine does not render it). The synthesized plan contains:
-
-- A **Focus list** — the 5–8 projects that need the room, each with a
-  one-line reason (decision due / blocker / deadline / slipping)
-- **Decisions & blockers needing the partners**, deduped across projects
-- **Cross-cutting patterns** — capacity binding, competing deadlines,
-  shared blockers (visible only when you read all the Exec Summaries at
-  once)
-- **Per-owner commitments** rolled up across each partner's projects
-  (us → them + them → us)
-- A **Forward calendar** — the dated, tenant-wide milestone table
-- A **Roster table** — one row per non-focus project
-  (`Project | Owner | State | Waiting on | Next dated event | Room?`),
-  each State a synthesized one-line verdict and a confirm/skip call
-
-**Invariant: every active project appears exactly once** — as a Focus
-entry or a roster row — so the meeting gets a full roll call at
-one-line density while the Focus list gets the room's time.
-
-Because you author it in-session, you can defend and revise it live in
-the meeting. The bundle also carries the forward calendar of dated
-milestones (MC-2 schedules primary) and the tenant capacity/hours
-metrics as raw material.
-
-For ad-hoc scoped prep (e.g. one client meeting): `/cp-prep <code>
-[<code> ...]`.
+`sprints/<W##>/_planning.md` from it in-session (you author the doc, so
+you can defend and revise it live in the meeting). The command itself
+carries the full six-section contract and the every-active-project-
+appears-exactly-once invariant. Ad-hoc scoped prep (e.g. one client
+meeting): `/cp-prep <code> [<code> ...]`.
 
 After the meeting runs, the canonical capture path is to tag the
 Fathom recording in the dashboard as `sprint_planning_scope='1p' |
@@ -409,37 +376,10 @@ the master roll-up and to run word-count discipline on each sprint file.
 
 ## Proposing journey steps at wrap up
 
-**A content-write already journals itself.** `add_spine_version` and
-`create_spine_element` auto-propose ONE `source='auto'` step for today on the
-element's trail (review-gated — a human confirms/dismisses it), collapsing to
-one per element per day. So the "we versioned this card" floor is covered
-automatically — you don't hand-propose a step for every version bump. Pass
-`step_title` to either verb when you want that auto-step to carry the real
-move's words ("Built Mehul's cube framing into deck v09") rather than the
-derived "Updated <framing> (v<N>)".
-
-Hand-author a step with `propose_spine_step(code, key, title, status="done",
-step_date=<today>)` only for a move the auto-step DOESN'T capture or undersells:
-
-- A move that is NOT a content-write — a decision ratified across several
-  elements, a version sent to a stakeholder, a deck booked, a feature wired.
-- A cross-edit narrative the single auto-title can't hold — when a session's
-  real story ("reviewed the recording, extracted the framing, built the slide")
-  deserves better than the last version note.
-
-It lands PROPOSED like the auto-step; you never write a live step or touch the
-schedule.
-
-Discipline (this is a judgment call — do it well or not at all):
-- **One move = one step**, not one edit. A terse past-tense `title`
-  ("Ratified the pillars", not "worked on pillars").
-- **Bind to exactly ONE element** (`key` resolves like `pull_spine_element`).
-  If the work can't be pinned to one element, DON'T propose — ambiguity is
-  the signal to skip, not guess.
-- **Cap yourself at ≤2 hand-proposed steps per session**, across all elements
-  (the auto-steps don't count against this — they're the floor).
-- Idempotent: re-proposing the same `(element, title, date)` is a no-op, so a
-  re-run never double-proposes and a dismissed step never comes back.
+Spine content-writes journal themselves (one review-gated auto-step per
+element per day). Hand-propose a step (`propose_spine_step`) only for a
+move the auto-step doesn't capture, ≤2 per session. Full discipline:
+`/cp-tools`.
 
 ## Word-count discipline
 
