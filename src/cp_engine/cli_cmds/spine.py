@@ -688,11 +688,13 @@ def spine_lint_cmd(code: str) -> None:
 
     Flags: important-yet-unbound-serving-nothing elements; Agreements whose
     body says "attach as source" with an empty sources array; scaffold
-    template placeholders still in cp.md. Run per touched project at
+    template placeholders still in cp.md; Exec Summary fields over their
+    per-field word budgets. Run per touched project at
     `wrap up`, alongside word-count discipline. NEVER blocks or fixes —
     prints findings and exits 0 either way (non-zero only when the project
     can't be read at all).
     """
+    from cp_engine.exec_summary_lint import lint_exec_summary
     from cp_engine.spine import SpineDirNotFound, find_spine_dir
     from cp_engine.spine_lint import lint_cp_placeholders, lint_spine_rows
     from cp_engine.sync import BackendUnavailable
@@ -732,9 +734,9 @@ def spine_lint_cmd(code: str) -> None:
     try:
         cp_md = find_spine_dir(config.root, code) / "cp.md"
         if cp_md.is_file():
-            warnings.extend(
-                lint_cp_placeholders(cp_md.read_text(encoding="utf-8"))
-            )
+            cp_md_text = cp_md.read_text(encoding="utf-8")
+            warnings.extend(lint_cp_placeholders(cp_md_text))
+            warnings.extend(lint_exec_summary(cp_md_text))
     except (SpineDirNotFound, OSError):
         pass
 
@@ -744,3 +746,35 @@ def spine_lint_cmd(code: str) -> None:
             click.echo(f"  {w}")
     else:
         click.echo(f"{code} — spine lint clean.")
+
+
+@click.command("exec-lint")
+@click.argument("code")
+def exec_lint_cmd(code: str) -> None:
+    """Warn-only Exec Summary per-field word-budget lint for one project.
+
+    Budgets: Status ≤ 100 words; Where it stands ≤ 5 bullets and ≤ 40
+    words/bullet; Next up ≤ 6 bullets; Blockers ≤ 5 bullets. Reads only the
+    project's cp.md (offline — no MC-2). NEVER blocks or edits — prints
+    findings and exits 0 either way (non-zero only when the project's cp.md
+    can't be read at all). Also folded into `cp spine-lint` and echoed after
+    `cp render`, alongside word-count discipline.
+    """
+    from cp_engine.exec_summary_lint import lint_exec_summary
+    from cp_engine.spine import SpineDirNotFound, find_spine_dir
+
+    config = _cli._load_config_or_die()
+    try:
+        cp_md = find_spine_dir(config.root, code) / "cp.md"
+        cp_md_text = cp_md.read_text(encoding="utf-8")
+    except (SpineDirNotFound, OSError) as exc:
+        click.echo(f"Could not read cp.md for '{code}': {exc}", err=True)
+        sys.exit(1)
+
+    warnings = lint_exec_summary(cp_md_text)
+    if warnings:
+        click.echo(f"{code} — {len(warnings)} exec-summary budget warning(s):")
+        for w in warnings:
+            click.echo(f"  {w}")
+    else:
+        click.echo(f"{code} — exec-summary within budget.")
