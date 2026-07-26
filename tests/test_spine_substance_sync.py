@@ -1408,3 +1408,31 @@ def test_sync_shield_scoped_per_element(tmp_path):
     by_id = {r["id"]: r for r in client.store["spine_substance"]}
     assert by_id["proj-1/d1/v2"]["status"] == "superseded"
     assert by_id["proj-1/d2/v2"]["status"] == "live"
+
+
+def test_sync_shield_overrides_confirmed_live_status(tmp_path):
+    # A CONFIRMED status='live' on the stale distilled row must not defeat the
+    # shield: reconcile_field keeps a confirmed value, which would leave the
+    # element double-live PERMANENTLY (the supersede discarded every sync).
+    # Two live versions is an invariant violation, not a field preference —
+    # the shield overrides post-reconcile, keeps the confirmed field_state,
+    # and the drift review_flag stays raised (visible, not silent).
+    proj = tmp_path / "1p/acct/proj-1"
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
+    client = _FakeClient()
+    client.store["spine_substance"] = [
+        _authored_row("d1", "v3", status="live"),
+        {"id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
+         "est_item_id": "d1", "origin": "distilled", "status": "live",
+         "version_label": "v2", "archived": False, "framing": "framing",
+         "body": "live body", "layer": None, "serves": [],
+         "field_states": {"status": "confirmed"}, "review_flags": []},
+    ]
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+    by_id = {r["id"]: r for r in client.store["spine_substance"]}
+    assert by_id["proj-1/d1/v2"]["status"] == "superseded"
+    assert by_id["proj-1/d1/v3"]["status"] == "live"
+    # The override is visible: the drift flag reconcile raised survives.
+    flags = by_id["proj-1/d1/v2"].get("review_flags") or []
+    assert any(f.get("field") == "status" for f in flags)

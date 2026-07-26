@@ -315,8 +315,31 @@ def _unarchived(rows: list[dict]) -> list[dict]:
     return [r for r in rows if not r.get("archived")]
 
 
+def _element_key(r: dict) -> tuple:
+    """Identity key for ONE spine element within a scoped fetch.
+
+    `est_item_id` is only unique PER PROJECT (authored ids are
+    `_authored/<label-slug>`), so an account-scoped row must also carry its
+    ORIGIN `project_id` in the key — two sibling projects can each promote
+    `_authored/janet-dossier` and both are legitimately-distinct elements.
+    Project-arm rows all share one project_id (the fetch filters on it), so
+    the eid+scope pair already identifies them; keying them without project_id
+    keeps behavior stable for callers whose column set omits it."""
+    scope = _row_scope(r)
+    return (r.get("est_item_id"), scope,
+            r.get("project_id") if scope == "account" else None)
+
+
+def _version_rank(r: dict) -> tuple:
+    """Version ordering for rows of ONE element: numeric label, then date."""
+    from cp_engine.substance import version_number
+
+    return (version_number(r.get("version_label")),
+            str(r.get("version_date") or ""))
+
+
 def _one_live_per_element(rows: list[dict]) -> list[dict]:
-    """Collapse duplicate live rows to ONE per (est_item_id, scope) — the
+    """Collapse duplicate live rows to ONE per element (`_element_key`) — the
     latest by version ordering (#113 defense).
 
     `spine_substance` stores one row per VERSION; a live-only fetch should
@@ -326,29 +349,32 @@ def _one_live_per_element(rows: list[dict]) -> list[dict]:
     must tolerate that — a listing that emits the same element twice, or a pull
     that resolves to the stale older body, turns one dirty row into wrong
     answers everywhere. Keeps the row with the highest numeric version_label
-    (fallback: version_date, then last-fetched); preserves first-seen element
-    order so the caller's ordering semantics are unchanged. Rows without an
-    est_item_id pass through untouched (never merge unidentifiable rows)."""
-    from cp_engine.substance import version_number
-
-    def _rank(r: dict) -> tuple:
-        return (version_number(r.get("version_label")),
-                str(r.get("version_date") or ""))
-
+    (fallback: version_date, then last-fetched) and WARNS when it drops one (a
+    collapsed row is dirty data someone should clean, not silently mask).
+    Deduped elements keep first-seen order; rows without an est_item_id are
+    never merged (unidentifiable) and are appended at the END, after the keyed
+    elements — callers relying on interleaving must not pass id-less rows."""
     best: dict[tuple, dict] = {}
     order: list = []
     passthrough: list[dict] = []
     for r in rows:
-        eid = r.get("est_item_id")
-        if not eid:
+        if not r.get("est_item_id"):
             passthrough.append(r)
             continue
-        k = (eid, _row_scope(r))
+        k = _element_key(r)
         if k not in best:
             best[k] = r
             order.append(k)
-        elif _rank(r) >= _rank(best[k]):
-            best[k] = r
+        else:
+            kept, dropped = ((r, best[k]) if _version_rank(r) >= _version_rank(best[k])
+                             else (best[k], r))
+            best[k] = kept
+            logger.warning(
+                "spine dedup (#113): element %s has multiple live version rows; "
+                "keeping %s, hiding %s — the hidden row is dirty data and "
+                "should be superseded in MC-2",
+                k[0], kept.get("version_label"), dropped.get("version_label"),
+            )
     return [best[k] for k in order] + passthrough
 
 
@@ -366,16 +392,28 @@ def _match_one_live(rows: list[dict], key: str):
       - unique resolution → `(row, None, None)`,
       - no title match     → `(None, "no-match", None)`,
       - 2+ distinct        → `(None, "ambiguous", distinct)` where `distinct` is
-        the already-computed est_item_id→row map, so the caller can render
+        the already-computed element-key→row map, so the caller can render
         candidate names WITHOUT re-filtering `rows` (keeps the dedup in one place).
+
+    Distinctness is by `_element_key`, not bare est_item_id: two account-scoped
+    elements promoted from different origin projects can share an
+    `_authored/<slug>` id — that's a genuine ambiguity (report it), never a
+    first-fetched-wins pick. Exception: an exact-id match prefers the caller's
+    OWN project-arm row over a same-slug account element (the pre-existing
+    scope-arm contract — promote's sibling-collision guard relies on it).
     """
-    exact = [r for r in rows if r.get("est_item_id") == key]
+    exact = {_element_key(r): r for r in rows if r.get("est_item_id") == key}
     if exact:
-        return exact[0], None, None
+        own = [r for r in exact.values() if _row_scope(r) != "account"]
+        if own:
+            return own[0], None, None
+        if len(exact) > 1:
+            return None, "ambiguous", exact
+        return next(iter(exact.values())), None, None
     matched = [r for r in rows if _title_matches(key, r.get("framing"))]
     if not matched:
         return None, "no-match", None
-    distinct = {r.get("est_item_id"): r for r in matched}
+    distinct = {_element_key(r): r for r in matched}
     if len(distinct) > 1:
         return None, "ambiguous", distinct
     return next(iter(distinct.values())), None, None
@@ -448,7 +486,7 @@ def resolve_element_versions(
     string that may not match the slug stored on the row (the bug this fixes).
 
     Returns `(est_item_id, versions)`:
-      - resolved   → `(est_item_id, [all version rows])`,
+      - resolved   → `(est_item_id, [all version rows, newest-first])`,
       - no/ambiguous match → `(None, [])`.
 
     `columns` is the caller's SELECT list (it needs more columns than the read
@@ -459,18 +497,27 @@ def resolve_element_versions(
     # Match against the LIVE, unarchived rows only (a superseded framing could
     # otherwise resolve an element that no longer has a live version, and a
     # retired element must not accept new versions), mirroring the read path —
-    # then return that element's FULL version history. Versions are scoped to
-    # the matched element's ARM (same est_item_id + same scope), so a
-    # same-slug project element never mixes into an account element's history.
-    live_rows = _unarchived([r for r in rows if r.get("status") == "live"])
+    # INCLUDING its one-live-per-element dedup (#113): while an element is
+    # double-live, the stale row's framing must not resolve on the write path
+    # when the read path no longer surfaces it (resolver divergence). Then
+    # return that element's FULL version history, scoped to the matched
+    # element's identity (`_element_key`: est_item_id + scope + origin project
+    # for account rows), so a same-slug sibling element never mixes into an
+    # account element's history.
+    live_rows = _one_live_per_element(
+        _unarchived([r for r in rows if r.get("status") == "live"]))
     match, _reason, _ = _match_one_live(live_rows, key)
     if match is None:
         return None, []
     est_item_id = match.get("est_item_id")
-    match_scope = _row_scope(match)
-    versions = [r for r in rows
-                if r.get("est_item_id") == est_item_id
-                and _row_scope(r) == match_scope]
+    match_key = _element_key(match)
+    versions = [r for r in rows if _element_key(r) == match_key]
+    # Newest-first by version ordering. This is load-bearing for the write
+    # path: while an element is double-live, downstream carry-forward
+    # (spine_authoring.build_version_rows) bases the new version on the FIRST
+    # live row it sees — fetch order must not let the stale live row donate
+    # its framing/sources/serves to the next authored version.
+    versions.sort(key=_version_rank, reverse=True)
     return est_item_id, versions
 
 

@@ -152,13 +152,19 @@ FATHOM_ARTIFACT_COLUMNS = (
 # spine_substance — list / pull / resolve / status-fold shapes. Each carries
 # `archived` so the read paths can hide retired elements (a live-but-archived
 # row is a valid retire state; filtering on status alone leaks it — #47).
+# `project_id` rides along on list/pull so the live-row dedup can key
+# account-scoped rows by their ORIGIN project (est_item_id is only unique per
+# project — two sibling projects can each promote `_authored/<same-slug>`).
+# `version_date` rides along on pull so its dedup tie-breaks identically to
+# list's (equal/unparseable version numbers fall back to the date).
 SPINE_LIST_COLUMNS = (
     "est_item_id, framing, layer, binding, status, serves, body, important, "
-    "note, archived, scope, company_id, version_label, version_date"
+    "note, archived, scope, company_id, project_id, version_label, version_date"
 )
 SPINE_PULL_COLUMNS = (
     "est_item_id, framing, layer, binding, status, serves, sources, "
-    "version_label, body, important, note, archived, scope, company_id"
+    "version_label, version_date, body, important, note, archived, scope, "
+    "company_id, project_id"
 )
 SPINE_RESOLVE_COLUMNS = (
     "id, est_item_id, framing, status, important, note, rel_path, archived, "
@@ -171,7 +177,7 @@ SPINE_STATUS_COLUMNS = (
 # version bookkeeping.
 SPINE_LINT_COLUMNS = (
     "est_item_id, framing, layer, binding, serves, important, body, "
-    "sources, status, archived"
+    "sources, status, archived, scope, project_id, version_label, version_date"
 )
 # add/remove_element_source — every version row + its sources array (the
 # element-level fact moves across all versions together, like serves).

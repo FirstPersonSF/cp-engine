@@ -412,10 +412,19 @@ def sync_spine_substance(
                 authored_live_max[eid] = n
 
     for row in rows:
-        if (row.get("status") == "live"
-                and version_number(row.get("version_label"))
-                < authored_live_max.get(row.get("est_item_id"), -1)):
+        shielded = (row.get("status") == "live"
+                    and version_number(row.get("version_label"))
+                    < authored_live_max.get(row.get("est_item_id"), -1))
+        if shielded:
             row["status"] = "superseded"
+            logger.warning(
+                "authored-live shield (#113): element %s disk %s claims live "
+                "but authored v%d is live — mirroring the disk version "
+                "superseded (the substance file is stale; re-distill or "
+                "update it)",
+                row.get("est_item_id"), row.get("version_label"),
+                authored_live_max.get(row.get("est_item_id"), -1),
+            )
         existing = existing_by_id.get(row["id"])
         if existing is None:
             field_states: dict = {}
@@ -442,6 +451,22 @@ def sync_spine_substance(
                 row[field] = value
                 field_states[field] = state
                 review_flags = _merge_flag(review_flags, field, flag)
+            # The shield outranks a CONFIRMED status (#113 follow-up): two
+            # live version rows on one element is an invariant violation, not
+            # a field preference — and the authored live version IS the newer
+            # human action, so keeping the confirmed 'live' here would leave
+            # the element double-live permanently (reconcile discards the
+            # supersede every sync). The field stays confirmed and the drift
+            # review_flag reconcile just emitted stays raised, so the override
+            # is visible on the review surface, not silent.
+            if shielded and row.get("status") == "live":
+                row["status"] = "superseded"
+                logger.warning(
+                    "authored-live shield (#113): element %s %s status is "
+                    "confirmed-live; overriding to superseded anyway (a "
+                    "strictly newer authored live version exists)",
+                    row.get("est_item_id"), row.get("version_label"),
+                )
         # Binding flag: raise when orphaned, self-heal (prune) when healthy.
         if orphaned_by_id.get(row["id"]):
             review_flags = _merge_flag(
