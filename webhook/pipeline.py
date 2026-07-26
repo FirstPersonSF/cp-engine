@@ -830,8 +830,11 @@ def _perform_auto_ingest(
         # items (MC-2 public.commitments; successor to the ClickUp proposal
         # path — commitments consolidation, cp-engine #38). Independent of
         # whether the transcript produced cp bullets; best-effort, never
-        # raises.
-        commitments_summary = propose_commitments(meeting_id, project_codes)
+        # raises. The #88 roster (fetched once above) powers off-project
+        # flagging (#114); roster=None just turns the screen off.
+        commitments_summary = propose_commitments(
+            meeting_id, project_codes, roster=roster
+        )
 
         # Per-meeting artifacts — synthesis + transcript into each
         # project's meetings/ dir. Runs after the per-project bullet

@@ -207,7 +207,7 @@ def test_persist_failure_is_swallowed_and_ingest_continues(
 
     # Downstream best-effort blocks — stub them out so they don't reach
     # real services. They're not under test here.
-    monkeypatch.setattr(pipeline, "propose_commitments", lambda mid, codes: {})
+    monkeypatch.setattr(pipeline, "propose_commitments", lambda mid, codes, roster=None: {})
     monkeypatch.setattr(pipeline, "_generate_meeting_artifacts", lambda **kw: {})
     monkeypatch.setattr(pipeline, "_log_run_to_supabase", lambda **kw: None)
 
@@ -277,7 +277,7 @@ def test_transcript_only_commit_fires_with_no_bullets(
 
     monkeypatch.setattr(git_ops, "_commit_and_push", fake_commit)
 
-    monkeypatch.setattr(pipeline, "propose_commitments", lambda mid, codes: {})
+    monkeypatch.setattr(pipeline, "propose_commitments", lambda mid, codes, roster=None: {})
     monkeypatch.setattr(pipeline, "_generate_meeting_artifacts", lambda **kw: {})
     monkeypatch.setattr(pipeline, "_log_run_to_supabase", lambda **kw: None)
 
