@@ -75,6 +75,39 @@ def render() -> None:
     ctx = click.get_current_context()
     ctx.invoke(sync)
 
+    # Word-count discipline: warn-only Exec Summary per-field budget pass over
+    # every live project cp.md. Best-effort — findings are echoed and NEVER
+    # affect the exit code; any failure here degrades silently (sync already
+    # ran).
+    try:
+        config = load(Path.cwd())
+        for warning in _exec_summary_warnings(config.root):
+            click.echo(warning, err=True)
+    except Exception:  # noqa: BLE001 — advisory pass, never fail a render
+        pass
+
+
+def _exec_summary_warnings(root: Path) -> list[str]:
+    """Exec-summary budget warnings across the tenant's live project CPs.
+
+    Scans every `cp.md` below `root` (skipping `inactive/` dirs and the
+    tenant's own top-level files), prefixing each finding with its project
+    dir so tenant-wide output stays attributable. Pure read — never edits.
+    """
+    out: list[str] = []
+    from cp_engine.exec_summary_lint import lint_exec_summary
+
+    for cp_md in sorted(root.rglob("cp.md")):
+        rel = cp_md.relative_to(root)
+        if "inactive" in rel.parts or len(rel.parts) < 2:
+            continue
+        try:
+            findings = lint_exec_summary(cp_md.read_text(encoding="utf-8"))
+        except OSError:
+            continue
+        out.extend(f"{rel.parent}: {w}" for w in findings)
+    return out
+
 
 @click.command(name="refresh-pristine")
 @click.option(
