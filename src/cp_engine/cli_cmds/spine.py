@@ -778,3 +778,147 @@ def exec_lint_cmd(code: str) -> None:
             click.echo(f"  {w}")
     else:
         click.echo(f"{code} — exec-summary within budget.")
+
+
+@click.command("close")
+@click.argument("code")
+@click.option(
+    "--force",
+    is_flag=True,
+    help="Scaffold anyway even if the project's MC-2 status is still active.",
+)
+@click.option(
+    "--overwrite",
+    is_flag=True,
+    help="Regenerate over today's existing checklist (discards any checked "
+    "boxes / notes added to it).",
+)
+def close_cmd(code: str, force: bool, overwrite: bool) -> None:
+    """Scaffold the close-out ritual checklist for a wrapping project.
+
+    Emits `<workdir>/close-out-<code>-<date>.md` — a checklist working file
+    for the human/agent close-out ritual (final synthesis, terminal Exec
+    Summary, commitment sweep, stub retires, account promotion, dir hygiene).
+    NEVER mutates project data: no spine writes, no commitment closes.
+
+    Refuses on projects whose MC-2 status is still active-like (engagement
+    Deal/Open, initiative Active, repo Active) unless --force. Works offline
+    for parked dirs (the inactive/ location is itself evidence of closure);
+    a live dir with MC-2 unreachable needs --force.
+    """
+    from datetime import date
+
+    from cp_engine import close_out as _close
+    from cp_engine.spine import SpineDirNotFound
+
+    config = _cli._load_config_or_die()
+    try:
+        workdir, parked = _close.find_close_workdir(config.root, code)
+    except SpineDirNotFound as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+
+    # ── Same-day re-run guard: never clobber a worked checklist ──────
+    out_path = workdir / f"close-out-{code}-{date.today().isoformat()}.md"
+    if out_path.exists() and not overwrite:
+        click.echo(
+            f"REFUSING: {out_path} already exists — it may hold checked "
+            "boxes and notes from an in-progress ritual. Re-run with "
+            "--overwrite to regenerate it from scratch.",
+            err=True,
+        )
+        sys.exit(1)
+
+    client = mc2_db.get_client(config, required=False)
+
+    # ── Status gate ──────────────────────────────────────────────────
+    resolved = _close.fetch_item_status(client, code) if client is not None else None
+    if resolved is not None:
+        kind, status = resolved
+        status_label = f"{status or 'unknown'} ({kind})"
+        if _close.is_active_like(kind, status) and not force:
+            click.echo(
+                f"REFUSING: '{code}' is still active in MC-2 "
+                f"(status={status!r}, kind={kind}). Close it there first, "
+                "or re-run with --force if you really mean to scaffold the "
+                "close-out ritual for a live project.",
+                err=True,
+            )
+            sys.exit(1)
+    else:
+        where = "MC-2 unreachable" if client is None else "no MC-2 row"
+        status_label = f"unverified — {where}"
+        if not parked and not force:
+            click.echo(
+                f"REFUSING: cannot verify '{code}' is inactive ({where}) and "
+                "its working dir is still live (not under inactive/). Re-run "
+                "with --force to scaffold anyway.",
+                err=True,
+            )
+            sys.exit(1)
+        click.echo(f"(status unverified: {where} — proceeding: "
+                   f"{'dir is parked under inactive/' if parked else '--force'})",
+                   err=True)
+
+    # ── Spine read (MC-2 canonical; disk mirror when unreachable) ────
+    elements: list = []
+    if client is not None:
+        try:
+            # spine_substance keys on the dir-slug project_code == dir name.
+            elements = [
+                _close.element_from_row(r)
+                for r in _close.fetch_live_spine_rows(client, workdir.name)
+            ]
+        except Exception as exc:  # noqa: BLE001 — degrade loudly to the mirror
+            click.echo(f"(WARNING: MC-2 spine read failed: {exc} — falling "
+                       "back to the on-disk mirror)", err=True)
+            client_spine_ok = False
+        else:
+            client_spine_ok = True
+    else:
+        client_spine_ok = False
+    if not client_spine_ok:
+        click.echo("(spine from on-disk mirror — last-known, unverified)",
+                   err=True)
+        # Substance-aware mirror read: modern lowercase phase dirs +
+        # spine/_authored/ (where nearly all authored elements live) +
+        # legacy capitalized layer dirs. NOT legacy-only load_spine, which
+        # is blind on modern projects.
+        elements = _close.load_mirror_elements(workdir)
+
+    # ── Commitments (live only — no offline fallback) ────────────────
+    commitments = None
+    if client is not None:
+        try:
+            commitments = _close.fetch_open_commitments(client, code)
+        except Exception as exc:  # noqa: BLE001 — checklist must still emit
+            click.echo(f"(WARNING: commitments read failed: {exc})", err=True)
+
+    root_files = sorted(
+        p.name for p in workdir.iterdir()
+        if p.is_file() and not p.name.startswith("close-out-")
+    )
+    text = _close.build_close_checklist(
+        _close.CloseChecklistInputs(
+            code=code,
+            status_label=status_label,
+            elements=elements,
+            spine_verified=client_spine_ok,
+            commitments=commitments,
+            workdir_root_files=root_files,
+        ),
+        today=date.today(),
+    )
+    out_path.write_text(text, encoding="utf-8")
+
+    n_open = len(commitments) if commitments else 0
+    click.echo(f"Close-out checklist written: {out_path}")
+    click.echo(
+        f"  {len(elements)} live spine element(s) · "
+        f"{len(_close.synthesis_targets(elements))} synthesis target(s) · "
+        f"{len(_close.thin_stubs(elements))} stub candidate(s) · "
+        f"{len(_close.promotion_candidates(elements))} promotion candidate(s) · "
+        f"{n_open} open commitment(s)"
+    )
+    click.echo("Nothing was mutated — work the checklist, then commit it "
+               "with the close-out edits.")
