@@ -336,6 +336,12 @@ def _parse_risks(body: str) -> tuple[Risk, ...]:
     return tuple(out)
 
 
+# A line that is entirely one HTML comment — the scaffold-placeholder shape
+# emitted by the sprint templates since v0.78 (guidance that renders
+# invisibly). Parsers already ignore these implicitly (they aren't `- `
+# bullets); this regex is for the few prose sections parsed as raw text.
+_HTML_COMMENT_LINE_RE = re.compile(r"^\s*<!--.*-->\s*$")
+
 _ALLOCATION_RE = re.compile(r"\*\*Allocation:\*\*\s*(.+)")
 _PERSON_HOURS_RE = re.compile(r"(?P<name>[A-Za-z][\w\s]*?)\s*·\s*(?P<hours>[\d.]+)h")
 
@@ -362,7 +368,12 @@ def _parse_this_sprint(
     ):
         text = re.sub(r"^\d+\.\s+", "", line).strip()
         deliverables.append(Deliverable(text=text, position=i))
-    dod = subsection(section, "Definition of done").strip()
+    # Scaffold guidance is emitted as HTML comment lines (invisible when
+    # rendered); drop them so an unfilled Definition of done parses as "".
+    dod = "\n".join(
+        ln for ln in subsection(section, "Definition of done").splitlines()
+        if not _HTML_COMMENT_LINE_RE.match(ln)
+    ).strip()
     return tuple(alloc), tuple(deliverables), dod
 
 

@@ -39,8 +39,8 @@ def test_deliverable_lines_render_inside_engine_region():
     region = body[start:end]
     assert "- P&P Report · due ~2026-08-24 · 1 output accrued" in region
     assert "- UNF · due ~2026-10-26" in region
-    # the hand-written stub survives BELOW the region
-    assert body.index("_<top deliverable>_") > end
+    # the hand-written stub (now an HTML comment) survives BELOW the region
+    assert body.index("<!-- 1. <top deliverable> -->") > end
 
 
 def test_empty_lines_render_placeholder_not_blank_region():
