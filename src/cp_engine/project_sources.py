@@ -315,6 +315,43 @@ def _unarchived(rows: list[dict]) -> list[dict]:
     return [r for r in rows if not r.get("archived")]
 
 
+def _one_live_per_element(rows: list[dict]) -> list[dict]:
+    """Collapse duplicate live rows to ONE per (est_item_id, scope) — the
+    latest by version ordering (#113 defense).
+
+    `spine_substance` stores one row per VERSION; a live-only fetch should
+    yield exactly one row per element, but the data can carry two `status='live'`
+    version rows for the same element (e.g. sap-5174's e94d0a03: an authored v7
+    plus a distilled v6 the substance mirror re-flipped live). Every read path
+    must tolerate that — a listing that emits the same element twice, or a pull
+    that resolves to the stale older body, turns one dirty row into wrong
+    answers everywhere. Keeps the row with the highest numeric version_label
+    (fallback: version_date, then last-fetched); preserves first-seen element
+    order so the caller's ordering semantics are unchanged. Rows without an
+    est_item_id pass through untouched (never merge unidentifiable rows)."""
+    from cp_engine.substance import version_number
+
+    def _rank(r: dict) -> tuple:
+        return (version_number(r.get("version_label")),
+                str(r.get("version_date") or ""))
+
+    best: dict[tuple, dict] = {}
+    order: list = []
+    passthrough: list[dict] = []
+    for r in rows:
+        eid = r.get("est_item_id")
+        if not eid:
+            passthrough.append(r)
+            continue
+        k = (eid, _row_scope(r))
+        if k not in best:
+            best[k] = r
+            order.append(k)
+        elif _rank(r) >= _rank(best[k]):
+            best[k] = r
+    return [best[k] for k in order] + passthrough
+
+
 def _match_one_live(rows: list[dict], key: str):
     """Resolve `key` against already-fetched live rows to ONE element.
 
@@ -389,9 +426,9 @@ def resolve_live_element(client, project_id: str, key: str,
     targeted update — an account row's project_id is its provenance project,
     which may differ from the caller's). Never `SELECT *`.
     """
-    rows = _unarchived(
+    rows = _one_live_per_element(_unarchived(
         _fetch_scoped(client, project_id, company_id, _SPINE_RESOLVE_COLUMNS)
-    )
+    ))
     row, _reason, _ = _match_one_live(rows, key)
     return row
 
@@ -632,9 +669,9 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
     call is unchanged. Never raises: the MCP tool boundary converts failures
     to a structured note.
     """
-    rows = _unarchived(
+    rows = _one_live_per_element(_unarchived(
         _fetch_scoped(client, project_id, company_id, _SPINE_LIST_COLUMNS)
-    )
+    ))
     rows = [r for r in rows
             if _in_filter(r.get("layer"), layer)
             and _in_filter(_row_scope(r), scope)
@@ -699,9 +736,9 @@ def pull_spine(client, project_id: str, key: str,
     not bound to a real work-item). Failure paths return an `error` key. Never
     raises.
     """
-    rows = _unarchived(
+    rows = _one_live_per_element(_unarchived(
         _fetch_scoped(client, project_id, company_id, _SPINE_PULL_COLUMNS)
-    )
+    ))
 
     row, reason, distinct = _match_one_live(rows, key)
     if row is not None:

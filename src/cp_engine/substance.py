@@ -55,6 +55,23 @@ _HEADER_RE = re.compile(
 )
 
 
+def version_number(label) -> int:
+    """The numeric part of a ``v<N>`` version_label, or -1 when unparseable.
+
+    Shared version-ordering primitive (#113): both the spine read path (dedupe
+    duplicate live rows to the latest version) and the substance mirror (shield
+    a newer authored live version from a stale disk 'live') need to compare
+    version labels numerically — "v10" must beat "v9", which string comparison
+    gets wrong. Tolerant of None/odd labels so a dirty row can't raise."""
+    s = str(label or "")
+    if s.startswith("v"):
+        try:
+            return int(s[1:])
+        except ValueError:
+            return -1
+    return -1
+
+
 @dataclass(frozen=True)
 class SubstanceVersion:
     """One distilled version of a work item's substance."""
