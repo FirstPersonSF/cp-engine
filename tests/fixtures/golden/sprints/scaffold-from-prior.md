@@ -50,27 +50,27 @@ _No recent session captured._
 ## Client communication
 
 ### Outbound
-- _<message — `[status · date]` prefix>_
+<!-- <message — `[status · date]` prefix> -->
 
 ### Open asks
-- _<what we need from them — `[open · date · who]` prefix; add `· by YYYY-MM-DD` when the ask has a deadline (prep + the attention digest escalate it)>_
+<!-- <what we need from them — `[open · date · who]` prefix; add `· by YYYY-MM-DD` when the ask has a deadline (prep + the attention digest escalate it)> -->
 
 ### Inbound
-- _<what they told us — `[date · who]` prefix>_
+<!-- <what they told us — `[date · who]` prefix> -->
 
 ### Slack digest
-- _<weekly summary of the project's Slack channel — `[YYYY-W## · Slack]` prefix; one bullet per week, written by the Sunday cron>_
+<!-- <weekly summary of the project's Slack channel — `[YYYY-W## · Slack]` prefix; one bullet per week, written by the Sunday cron> -->
 
 ### Stakeholders
-- _<person and role — `[name · role · context]` prefix; e.g. `[Rena Ramos · Director · primary client decision-maker]`>_
+<!-- <person and role — `[name · role · context]` prefix; e.g. `[Rena Ramos · Director · primary client decision-maker]`> -->
 
 ## Dependencies & risks
 
-- _<risk — `[severity · category · date]` prefix>_
+<!-- <risk — `[severity · category · date]` prefix> -->
 
 ## This sprint
 
-**Allocation:** _<Drew · Nh · Tony · Nh>_
+**Allocation:** <!-- Drew · Nh · Tony · Nh -->
 
 ### Deliverables
 
@@ -78,26 +78,26 @@ _No recent session captured._
 _(no deliverables in the estimate yet)_
 <!-- cp-engine:end deliverable-cards -->
 
-1. _<top deliverable>_
+<!-- 1. <top deliverable> -->
 
 ### Definition of done
 
-_<short prose paragraph>_
+<!-- <short prose paragraph> -->
 
 ## Horizon — 4–8 weeks out
 
 ### Milestones
-- _<calendar event — `[date]` prefix>_
+<!-- <calendar event — `[date]` prefix> -->
 
 ### Decisions due
-- _<choice — `[by W##]` prefix>_
+<!-- <choice — `[by W##]` prefix> -->
 
 ### Opportunities
-- _<early-planning note>_
+<!-- <early-planning note> -->
 
 ## Meeting notes & decisions
 
-_<filled by `deepen from transcript` during the partners' weekly review>_
+<!-- filled by `deepen from transcript` during the partners' weekly review -->
 
 ### Decisions
 

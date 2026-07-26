@@ -32,13 +32,8 @@
   "client_open_asks": [],
   "client_outbound": [],
   "decisions": [],
-  "definition_of_done": "_<short prose paragraph>_",
-  "deliverables": [
-    {
-      "position": 1,
-      "text": "_<top deliverable>_"
-    }
-  ],
+  "definition_of_done": "",
+  "deliverables": [],
   "facts": {
     "budget_short": "$45k",
     "last_sprint_hours_line": "Drew 6.5h \u00b7 Tony 2h",

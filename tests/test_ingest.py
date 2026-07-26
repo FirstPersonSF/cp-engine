@@ -2110,3 +2110,121 @@ def test_ingest_risk_honors_today_for_default_date(tmp_path: Path) -> None:
     )
     body = _read_sprint_body(tenant)
     assert "[watching · schedule · 2025-01-01]" in body
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Section targeting on a FRESHLY SCAFFOLDED sprint file — the scaffold
+#  templates now emit placeholder guidance as HTML comments; the ingest
+#  verbs anchor on section HEADERS, so a new-template file must accept
+#  bullets exactly like the old `- _<...>_` shape did.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _render_current_template_sprint_file(source: str = "engagement") -> str:
+    from cp_engine.sprints import render_sprint_scaffold
+    from cp_engine.state import CarryForward, ProjectState
+
+    if source == "initiative":
+        project = ProjectState(
+            code="mission-control", name="Mission Control",
+            source="initiative", company_kind="self-fpsf",
+            company_code="1PI", company_name="First Person",
+            status="Active", is_internal=True, owner="Tony",
+            last_touched=None, deadline=None,
+        )
+    else:
+        project = ProjectState(
+            code="ggl-5168", name="GGL Activation",
+            source="engagement", company_kind="client",
+            company_code="GGL", company_name="Google",
+            status="Open", is_internal=False, owner="Drew",
+            last_touched=None, deadline=None,
+        )
+    return render_sprint_scaffold(
+        project=project,
+        week_iso="2026-W20", week_label="W20",
+        week_start="2026-05-11", week_end="2026-05-17",
+        prior_sprint=None, last_sprint_hours_line=None,
+        sessions_this_week=0, last_session_date=None,
+        last_session_who=None, last_session_summary=None,
+        recent_commits=(), open_issues=(),
+        carry_forward=CarryForward(asks=(), risks=(), horizon=()),
+        meetings_this_sprint=0,
+    )
+
+
+def test_execute_plan_targets_sections_in_freshly_scaffolded_file(
+    tmp_path: Path,
+) -> None:
+    from cp_engine.sprints import section_body, subsection
+
+    week_dir = tmp_path / "sprints" / "2026-W20"
+    week_dir.mkdir(parents=True)
+    sprint_path = week_dir / "ggl-5168.md"
+    body = _render_current_template_sprint_file()
+    assert "_<" not in body  # new-template scaffold: comments, not italics
+    sprint_path.write_text(body)
+
+    plan = {
+        "projects": {
+            "ggl-5168": {
+                "inbound": [
+                    {"text": "Rena approved Round 3", "date": "2026-05-12",
+                     "who": "Rena"}
+                ],
+                "asks": [
+                    {"text": "Approve Round 3", "who": "Rena",
+                     "date": "2026-05-12"}
+                ],
+                "risks": [
+                    {"text": "Legal may slip", "severity": "watching",
+                     "category": "contract", "date": "2026-05-12"}
+                ],
+                "decisions": [{"text": "Ship v2 Friday", "date": "2026-05-12"}],
+            }
+        }
+    }
+    result = execute_plan(plan, tenant_root=tmp_path, today=date(2026, 5, 12))
+    assert result.errors == []
+    written = sprint_path.read_text()
+
+    # Each bullet resolved into its own section/subsection — the header
+    # contract held even though every zone contained only HTML comments.
+    comm = section_body(written, "Client communication")
+    assert "Rena approved Round 3" in subsection(comm, "Inbound")
+    assert "Approve Round 3" in subsection(comm, "Open asks")
+    assert "Legal may slip" in section_body(written, "Dependencies & risks")
+    assert "Ship v2 Friday" in subsection(
+        section_body(written, "Meeting notes & decisions"), "Decisions"
+    )
+    # The comment guidance is retained (still instructive when editing).
+    assert "<!-- <what they told us" in written
+
+
+def test_execute_plan_targets_team_communication_in_initiative_scaffold(
+    tmp_path: Path,
+) -> None:
+    from cp_engine.sprints import section_body, subsection
+
+    week_dir = tmp_path / "sprints" / "2026-W20"
+    week_dir.mkdir(parents=True)
+    sprint_path = week_dir / "mission-control.md"
+    body = _render_current_template_sprint_file("initiative")
+    assert "_<" not in body
+    sprint_path.write_text(body)
+
+    plan = {
+        "projects": {
+            "mission-control": {
+                "asks": [
+                    {"text": "Review the routing spec", "who": "Tony",
+                     "date": "2026-05-12"}
+                ],
+            }
+        }
+    }
+    result = execute_plan(plan, tenant_root=tmp_path, today=date(2026, 5, 12))
+    assert result.errors == []
+    written = sprint_path.read_text()
+    comm = section_body(written, "Team communication")
+    assert "Review the routing spec" in subsection(comm, "Open asks")

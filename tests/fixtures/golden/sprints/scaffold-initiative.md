@@ -47,44 +47,44 @@ Reconciled §4.2 redlines with Sam.
 ## Team communication
 
 ### Open asks
-- _<what we need from someone — `[open · date · who]` prefix; add `· by YYYY-MM-DD` when the ask has a deadline (prep + the attention digest escalate it)>_
+<!-- <what we need from someone — `[open · date · who]` prefix; add `· by YYYY-MM-DD` when the ask has a deadline (prep + the attention digest escalate it)> -->
 
 ### Slack digest
-- _<weekly summary of the initiative's Slack channel(s) — `[YYYY-W## · Slack]` prefix; one bullet per week, written by the Sunday cron>_
+<!-- <weekly summary of the initiative's Slack channel(s) — `[YYYY-W## · Slack]` prefix; one bullet per week, written by the Sunday cron> -->
 
 ## Dependencies & risks
 
-- _<risk — `[severity · category · date]` prefix>_
+<!-- <risk — `[severity · category · date]` prefix> -->
 
 ## This sprint
 
-**Allocation:** _<Drew · Nh · Tony · Nh>_
+**Allocation:** <!-- Drew · Nh · Tony · Nh -->
 
 ### Deliverables
 
-1. _<top deliverable>_
+<!-- 1. <top deliverable> -->
 
 ### Definition of done
 
-_<short prose paragraph>_
+<!-- <short prose paragraph> -->
 
 ## Horizon — 4–8 weeks out
 
 ### Milestones
-- _<calendar event — `[date]` prefix>_
+<!-- <calendar event — `[date]` prefix> -->
 
 ### Decisions due
-- _<choice — `[by W##]` prefix>_
+<!-- <choice — `[by W##]` prefix> -->
 
 ### Opportunities
-- _<early-planning note>_
+<!-- <early-planning note> -->
 
 ## Meeting notes & decisions
 
-_<filled by `deepen from transcript` during the partners' weekly review>_
+<!-- filled by `deepen from transcript` during the partners' weekly review -->
 
 ### Decisions
-- _<decision — `[decision · date]` prefix; cross-cutting flagged with `· cross-cutting`>_
+<!-- <decision — `[decision · date]` prefix; cross-cutting flagged with `· cross-cutting`> -->
 
 ### Discussion notes
-- _<notes from the session>_
+<!-- <notes from the session> -->

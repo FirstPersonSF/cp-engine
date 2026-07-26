@@ -1112,3 +1112,99 @@ def test_section_body_prefix_match_not_greedy():
     """``Horizon`` must not match ``## Horizons & roadmap`` (different word)."""
     body = "## Horizons & roadmap\nbody line\n\n## Next\nignored\n"
     assert section_body(body, "Horizon") == ""
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Scaffold placeholders are HTML comments (invisible rendered, zero
+#  ghost content when parsed) — the section HEADERS stay the ingest /
+#  deepen contract surface.
+# ──────────────────────────────────────────────────────────────────────
+
+
+_ENGAGEMENT_SECTION_HEADERS = (
+    "## Client communication",
+    "### Outbound",
+    "### Open asks",
+    "### Inbound",
+    "### Slack digest",
+    "### Stakeholders",
+    "## Dependencies & risks",
+    "## This sprint",
+    "### Deliverables",
+    "### Definition of done",
+    "## Horizon — 4–8 weeks out",
+    "### Milestones",
+    "### Decisions due",
+    "### Opportunities",
+    "## Meeting notes & decisions",
+    "### Decisions",
+    "### Discussion notes",
+)
+
+
+def test_scaffold_placeholders_are_html_comments() -> None:
+    body = _render_with_meetings(0)
+    # No visible `- _<...>_` / `_<...>_` placeholder text anywhere.
+    assert "_<" not in body
+    # Guidance survives as HTML comments instead.
+    assert "<!-- <message — `[status · date]` prefix> -->" in body
+    assert "<!-- <risk — `[severity · category · date]` prefix> -->" in body
+    # The header contract auto-ingest + deepen target is unchanged.
+    for heading in _ENGAGEMENT_SECTION_HEADERS:
+        assert heading in body, f"missing scaffold heading: {heading}"
+
+
+def test_initiative_scaffold_placeholders_are_html_comments() -> None:
+    project = ProjectState(
+        code="mission-control",
+        name="Mission Control",
+        source="initiative",
+        company_kind="self-fpsf",
+        company_code="1PI",
+        company_name="First Person",
+        status="Active",
+        is_internal=True,
+        owner="Tony",
+        last_touched=None,
+        deadline=None,
+    )
+    body = render_sprint_scaffold(
+        project=project,
+        week_iso="2026-W20",
+        week_label="W20",
+        week_start="2026-05-11",
+        week_end="2026-05-17",
+        prior_sprint=None,
+        last_sprint_hours_line=None,
+        sessions_this_week=0,
+        last_session_date=None,
+        last_session_who=None,
+        last_session_summary=None,
+        recent_commits=(),
+        open_issues=(),
+        carry_forward=CarryForward(asks=(), risks=(), horizon=()),
+        meetings_this_sprint=0,
+    )
+    assert "_<" not in body
+    assert "## Team communication" in body
+    assert "### Open asks" in body
+    assert "### Slack digest" in body
+
+
+def test_fresh_scaffold_parses_with_no_ghost_content(tmp_path: Path) -> None:
+    """A just-scaffolded file must parse as EMPTY — comment placeholders
+    must not surface as outbound/asks/deliverables/dod ghost entries the
+    way the old `- _<...>_` italic bullets could."""
+    path = tmp_path / "sprints" / "2026-W20" / "ggl-5136.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(_render_with_meetings(0))
+    sf = parse_sprint_file(path)
+    assert sf.client_outbound == ()
+    assert sf.client_open_asks == ()
+    assert sf.client_inbound == ()
+    assert sf.risks == ()
+    assert sf.horizon == ()
+    assert sf.deliverables == ()
+    assert sf.allocation == ()
+    assert sf.definition_of_done == ""
+    assert sf.decisions == ()
