@@ -510,9 +510,16 @@ def _layer_filter(value: str | None, wanted: str | None) -> bool:
     """
     if not wanted:
         return True
-    allowed = [_fold_layer(w) for w in wanted.split(",") if w.strip()]
+    terms = [w for w in wanted.split(",") if w.strip()]
+    if not terms:
+        return True  # blank comma-list = no filter (parity with _in_filter)
+    allowed = [f for f in (_fold_layer(t) for t in terms) if f]
     if not allowed:
-        return True
+        # Every term folded to "" (e.g. layer="s"): an empty term would
+        # substring-match EVERY label, silently turning a degenerate filter
+        # into match-all. Treat it as no-match instead, so the caller gets
+        # the zero-rows hint rather than the full listing.
+        return False
     if value is None:
         return False
     folded = _fold_layer(value)
@@ -707,11 +714,15 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
     call is unchanged. The `layer` filter additionally folds singular/plural
     and matches substrings (`_layer_filter`) — live layer labels drift
     ("Decisions", "Client feedback") and the filter should meet them where
-    they are. When a layer filter matches NOTHING, the result is a single
-    note row carrying a `hint` list of the distinct layer values that exist
-    on this spine — a silent `[]` would leave the caller guessing at labels.
-    Never raises: the MCP tool boundary converts failures to a structured
-    note.
+    they are. When the layer term itself matches NOTHING on the spine, the
+    result is a single note row carrying a `hint` list of the distinct layer
+    values that exist — a silent `[]` would leave the caller guessing at
+    labels. (When the layer DID match but scope/binding emptied the
+    combination, the result stays a plain `[]` — the layer vocabulary isn't
+    the problem there.) The note/hint row is returned even under
+    `compact=True`: callers iterating rows should treat a row without
+    `est_item_id` as a note, per the MCP idiom. Never raises: the MCP tool
+    boundary converts failures to a structured note.
     """
     all_rows = _one_live_per_element(_unarchived(
         _fetch_scoped(client, project_id, company_id, _SPINE_LIST_COLUMNS)
@@ -723,10 +734,17 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
     if layer and not rows:
         # A layer filter that matches nothing must be self-explaining, not a
         # silent [] — surface the labels that DO exist so the caller can
-        # re-aim (the layer vocabulary is live data, not a fixed enum).
-        layers = sorted({r.get("layer") for r in all_rows if r.get("layer")})
-        return [{"note": f"layer filter {layer!r} matched no elements",
-                 "hint": layers}]
+        # re-aim (the layer vocabulary is live data, not a fixed enum). But
+        # only blame the layer filter when the layer term ITSELF matched
+        # nothing: when it DID match and scope/binding emptied the
+        # combination, a hint would steer the caller at the wrong filter —
+        # keep those on the plain-[] contract the other filters already have.
+        if not any(_layer_filter(r.get("layer"), layer) for r in all_rows):
+            layers = sorted({r.get("layer") for r in all_rows
+                             if r.get("layer")})
+            return [{"note": f"layer filter {layer!r} matched no elements",
+                     "hint": layers}]
+        return []
     if compact:
         out = [
             {

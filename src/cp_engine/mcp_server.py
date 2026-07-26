@@ -412,9 +412,11 @@ def list_spine_elements(project_code: str, layer: str = "",
     case-insensitively: `layer` (e.g. "Note,Decision"), `scope` ("project" or
     "account"), `binding` (e.g. "unbound"). The layer filter also folds
     singular/plural and matches substrings ("decision" matches "Decisions",
-    "feedback" matches "Client feedback"); a layer filter that matches
-    nothing returns a note row with a `hint` list of the layer values that
-    actually exist on the spine. Empty filters return everything — useful
+    "feedback" matches "Client feedback"); a layer term that matches nothing
+    on the spine returns a note row (even under compact) with a `hint` list
+    of the layer values that actually exist — when the layer matched but
+    scope/binding emptied the combination, you get a plain empty list
+    instead. Empty filters return everything — useful
     defaults for a first look; filter when the account dossiers and source
     stubs drown out the authored working set.
     """

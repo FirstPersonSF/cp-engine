@@ -116,6 +116,25 @@ def test_empty_layer_filter_result_carries_hint(monkeypatch):
     assert out[0]["hint"] == ["Decisions", "Stakeholders"]  # NULL layer dropped
 
 
+def test_layer_hint_not_emitted_when_other_filter_empties(monkeypatch):
+    # The layer term DID match rows; scope emptied the combination. Blaming
+    # the layer filter (with a layer-vocabulary hint) would steer the caller
+    # at the wrong filter — this stays a plain [].
+    monkeypatch.setattr(ps, "fetch_project_done_map", lambda c, p: {})
+    rows = [_row("d", layer="Decisions", scope=None)]  # project-scoped
+    assert _list(rows, layer="decision", scope="account") == []
+
+
+def test_degenerate_layer_term_is_no_match_with_hint(monkeypatch):
+    # layer="s" folds to "" — an empty substring would match EVERY label.
+    # It must instead match nothing and surface the vocabulary hint.
+    monkeypatch.setattr(ps, "fetch_project_done_map", lambda c, p: {})
+    rows = [_row("d", layer="Decisions"), _row("n", layer="Note")]
+    out = _list(rows, layer="s")
+    assert [r for r in out if r.get("est_item_id")] == []
+    assert out[0]["hint"] == ["Decisions", "Note"]
+
+
 def test_empty_scope_filter_stays_a_plain_empty_list(monkeypatch):
     # The hint is a LAYER-filter affordance only; other filters keep the
     # original silent-[] contract.
@@ -131,15 +150,20 @@ _COMPACT_KEYS = {"est_item_id", "framing", "layer", "binding", "body_len",
 
 
 def test_compact_row_shape(monkeypatch):
-    # compact never touches the done-map — make a fetch loud if it happens
+    # compact never touches the done-map. Record any call with a flag —
+    # list_spine swallows exceptions around this fetch, so a raising stub
+    # could NOT be loud; the flag (plus the shape assertion, since a fetch
+    # implies the 13-key full path) is the real guard.
+    calls = []
     monkeypatch.setattr(ps, "fetch_project_done_map",
-                        lambda c, p: (_ for _ in ()).throw(AssertionError))
+                        lambda c, p: calls.append(p) or {})
     row = _row("a", layer="Decisions")
     row["note"] = "watch this"
     out = ps.list_spine(_client([row]), "pid", compact=True)
     assert set(out[0]) == _COMPACT_KEYS
     assert out[0]["has_note"] is True
     assert out[0]["body_len"] == 1  # body "b"
+    assert calls == []  # done-map never fetched on the compact path
 
 
 def test_compact_has_note_false_when_no_note(monkeypatch):
