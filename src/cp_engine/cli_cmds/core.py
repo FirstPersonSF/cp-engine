@@ -1,4 +1,4 @@
-"""Core tenant verbs: init, sync, render, status, refresh-pristine, resolve-engine-pin, write-region, mcp.
+"""Core tenant verbs: init, sync, render, status, brief, refresh-pristine, resolve-engine-pin, write-region, mcp.
 
 Split from cli.py (arch-phase-4, #33). Shared helpers stay in
 cp_engine.cli and are called via the module attribute so test
@@ -107,6 +107,84 @@ def _exec_summary_warnings(root: Path) -> list[str]:
             continue
         out.extend(f"{rel.parent}: {w}" for w in findings)
     return out
+
+
+@click.command("brief")
+@click.argument("code")
+def brief_cmd(code: str) -> None:
+    """Print the composed Mode-2 context pack for one project (arch-review §3).
+
+    Five sections to stdout, markdown, deterministic: Facts (cp.md engine
+    region) · Exec Summary TRIMMED (Status/Next up/Blockers verbatim, Where
+    it stands capped at 5 bullets, Updates dropped) · the standing Inputs &
+    Briefing spine element's live body (MC-2) · open commitments · the
+    Last-session pointer. Every section degrades to a one-line absence note
+    on its own — a standalone repo (no spine, no commitments store) or an
+    offline session still gets the pack. Exits non-zero only when the code
+    resolves to no working dir AND MC-2 can't see it either.
+    """
+    from cp_engine import mc2_db
+    from cp_engine.brief import (
+        compose_brief,
+        fetch_briefing_body,
+        fetch_open_commitments,
+        newest_session_capture,
+    )
+    from cp_engine.spine import SpineDirNotFound, find_spine_dir
+
+    try:
+        config = load(Path.cwd())
+    except ConfigError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+
+    # Offline half: the working dir + cp.md (Facts, trimmed Exec Summary,
+    # Last-session line, newest sessions/ capture).
+    working_dir: Path | None
+    cp_md_text: str | None = None
+    try:
+        working_dir = find_spine_dir(config.root, code)
+        cp_md = working_dir / "cp.md"
+        if cp_md.is_file():
+            cp_md_text = cp_md.read_text(encoding="utf-8")
+    except (SpineDirNotFound, OSError):
+        working_dir = None
+
+    # MC-2 half — best-effort throughout: a missing client or a failed read
+    # degrades the section to its absence note, never the command.
+    client = mc2_db.get_client(config, required=False)
+    try:
+        briefing_body, briefing_note = fetch_briefing_body(
+            client, code,
+            alt_code=working_dir.name if working_dir is not None else None,
+        )
+    except Exception as exc:  # noqa: BLE001 — section degrades, pack survives
+        briefing_body, briefing_note = None, f"Inputs & Briefing read failed: {exc}"
+    try:
+        commitments, commitments_note = fetch_open_commitments(client, code)
+    except Exception as exc:  # noqa: BLE001 — section degrades, pack survives
+        commitments, commitments_note = None, f"Commitments read failed: {exc}"
+
+    if working_dir is None and briefing_body is None and commitments is None:
+        click.echo(
+            f"'{code}' resolves to no working dir, and MC-2 has no spine or "
+            "commitments for it — nothing to brief.",
+            err=True,
+        )
+        sys.exit(1)
+
+    click.echo(
+        compose_brief(
+            code,
+            cp_md_text,
+            briefing_body,
+            briefing_note,
+            commitments,
+            commitments_note,
+            newest_session_capture(working_dir),
+        ),
+        nl=False,
+    )
 
 
 @click.command(name="refresh-pristine")
