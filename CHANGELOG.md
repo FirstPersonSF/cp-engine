@@ -4,6 +4,60 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.79.0 — 2026-07-26
+
+- **One live row per spine element — read-side dedupe + authored-live mirror
+  shield (#115, closes #113).** A spine element can no longer surface two
+  `status='live'` versions: every read path (`list_spine_elements`,
+  `pull_spine_element`, `cp spine-lint`) dedupes to the newest live row, the
+  write-path resolver (`resolve_element_versions`) applies the same dedup so
+  version bumps never inherit a stale live row's framing/sources/serves, and
+  the mirror sync's authored-live shield now supersedes the stale disk row even
+  when its `live` status was human-CONFIRMED (two live versions is an invariant
+  violation, not a field preference). Dedup identity is
+  `(est_item_id, scope, origin project)` so same-slug account twins both list.
+  Both mechanisms warn when they fire, so dirty rows self-heal visibly on the
+  next sync instead of being silently masked.
+
+- **`list_spine_elements` compact mode + layer-filter normalization (#116).**
+  New `compact=true` trims the listing to the identity columns for cheap
+  orientation passes, and `layer` filter terms normalize (case/plural/synonym
+  folding) before matching. A layer term that matches nothing on the spine
+  returns a vocabulary hint naming the layers that DO exist; when the layer
+  matched but scope/binding emptied the combination, a plain `[]` returns
+  (parity with those filters' own empty contract).
+
+- **Webhook: commitments ingest hygiene — owner resolution + off-project
+  flagging (#117, closes #114).** Auto-ingest commitment proposals now resolve
+  `owner` against MC-2 people (display name → email) instead of parking raw
+  transcript strings, and a proposal whose content clearly belongs to a
+  DIFFERENT project than the one being ingested is flagged off-project for the
+  review gate rather than filed blind.
+
+- **CLAUDE.md verb-catalog split → `/cp-tools` (#118).** The generated tenant
+  CLAUDE.md no longer carries the full cp-sources verb catalog (~1,350 words in
+  every session). The catalog — stores 1–5, standing-element contracts, and
+  the journey-step proposal discipline — moves verbatim into the new
+  engine-managed `/cp-tools` plugin command, loaded on demand during
+  spine-authoring/source work. CLAUDE.md keeps the five-store one-paragraph
+  summary, the MC-2 source-of-truth framing, the code-resolution rule, and a
+  "run /cp-tools" pointer. Generated CLAUDE.md drops to ~2,700–2,800 words
+  (budget test asserts ≤ 2,900).
+
+- **`cp exec-lint` — warn-only Exec Summary per-field word-budget lint
+  (#119).** New pure module budgets the Exec Summary fields individually
+  (Status ≤ 100 words; Where it stands ≤ 5 bullets, ≤ 40 words/bullet; Next up
+  ≤ 6 bullets; Blockers ≤ 5 bullets). Wired three ways: standalone
+  `cp exec-lint <code>`, folded into `cp spine-lint`'s cp.md pass, and echoed
+  tenant-wide after `cp render`. Warn-only — never blocks, never edits.
+
+- **Sprint scaffold placeholders emit as HTML comments (#120).** The three
+  sprint templates seed section guidance as `<!-- ... -->` comments instead of
+  literal italic placeholder bullets — invisible rendered, near-zero token
+  cost. Section headers are untouched (auto-ingest anchors intact), existing
+  sprint files are not rewritten, and legacy placeholder-skip logic stays for
+  files already on disk.
+
 ## v0.78.0 — 2026-07-24
 
 - **Email → spine ingest (Phase 2): inbound emails now distill.** The
