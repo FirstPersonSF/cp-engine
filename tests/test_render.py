@@ -377,6 +377,78 @@ def test_claude_md_includes_status_vocabulary() -> None:
     assert "`Complete`" not in out
 
 
+def test_claude_md_summarizes_five_stores_and_points_to_cp_tools() -> None:
+    """The MCP verb catalog lives in the /cp-tools plugin command; CLAUDE.md
+    keeps only a five-store summary plus the pointer."""
+    out = render_claude_md(make_tenant(name="1p"))
+    assert "/cp-tools" in out
+    for store in (
+        "RAG source store",
+        "Spine",
+        "Inbound frameworks",
+        "Commitments",
+        "Notes",
+    ):
+        assert store in out
+
+
+def test_claude_md_omits_per_verb_catalog() -> None:
+    """The per-verb signature entries must not creep back into the generated
+    file — they load on demand via /cp-tools."""
+    out = render_claude_md(make_tenant(name="1p"))
+    for signature in (
+        "pull_project_source(code, doc_title",
+        "create_spine_element(code, label",
+        "framework_decompose(code, framework",
+        "create_commitment(code, description",
+        "create_note(code, recipient",
+    ):
+        assert signature not in out
+
+
+def test_claude_md_word_count_budget() -> None:
+    """Splitting the verb catalog out brought the generated file from ~4,600
+    to ~3,300 words. Hold the line — growth here is context every session
+    pays for."""
+    for name in ("1p", "canonic"):
+        out = render_claude_md(make_tenant(name=name))
+        assert len(out.split()) <= 3400, (
+            f"CLAUDE.md for tenant {name!r} is {len(out.split())} words; "
+            "move on-demand reference content into a plugin command instead"
+        )
+
+
+def test_claude_md_render_is_idempotent() -> None:
+    """Regenerating the template with the same inputs is byte-stable."""
+    tenant = make_tenant(name="1p")
+    assert render_claude_md(tenant) == render_claude_md(tenant)
+
+
+def test_cp_tools_command_carries_the_verb_catalog() -> None:
+    """The catalog moved (not vanished): the /cp-tools plugin command holds
+    all five numbered stores and their verbs."""
+    cmd = (
+        Path(__file__).parents[1] / "plugin" / "commands" / "cp-tools.md"
+    ).read_text(encoding="utf-8")
+    assert "1 — RAG source store" in cmd
+    assert "2 — Spine" in cmd
+    assert "3 — Inbound frameworks" in cmd
+    assert "4 — Commitments" in cmd
+    assert "5 — Notes" in cmd
+    for verb in (
+        "list_project_sources",
+        "pull_document_comments",
+        "create_spine_element",
+        "pull_element_from_project",
+        "framework_decompose",
+        "create_commitment",
+        "create_note",
+    ):
+        assert verb in cmd
+    # Standing-element contracts travel with the catalog.
+    assert "Standing-element contracts" in cmd
+
+
 def test_claude_md_documents_sprint_file_deepening_path() -> None:
     body = render_claude_md(make_tenant())
     assert "sprints/" in body
