@@ -261,6 +261,53 @@ def test_list_spine_elements_delegates(monkeypatch):
     assert captured["compact"] is True
 
 
+def test_list_spine_elements_singular_query_matches_plural_layer_e2e(monkeypatch):
+    """Regression for the 2026-07-26 Phase 6 benchmark bug report: three
+    independent cold agents called `list_spine_elements(layer="Decision")`
+    (singular, per the tool's own docstring example) against live data whose
+    layer value is stored as "Decisions" (plural) and got a silent empty
+    result, forcing a fall back to an unfiltered scan.
+
+    Unlike `test_list_spine_elements_delegates` (which mocks out
+    `list_spine` entirely and can only prove parameter delegation), this
+    goes through the REAL `list_spine` / `_layer_filter` / `_fold_layer`
+    pipeline end to end via the actual MCP tool function, against a fake
+    Supabase-shaped client — closing the gap where a wrapper-level
+    regression (or a stale/rebuilt server not actually running the fixed
+    code) would slip past a fully-mocked delegation test.
+    """
+    import cp_engine.project_sources as ps
+
+    class _T:
+        def select(self, c): self._c = c; return self
+        def eq(self, c, v): return self
+        def order(self, *a, **k): return self
+        def execute(self): return type("R", (), {"data": rows})()
+
+    class _C:
+        def table(self, n): return _T()
+
+    rows = [
+        {"est_item_id": "_authored/pillar-ruling",
+         "framing": "Pillar ruling", "layer": "Decisions",
+         "binding": "unbound", "status": "live", "serves": [], "body": "b",
+         "important": False, "note": None, "scope": None,
+         "version_label": "v2", "version_date": "2026-07-26"},
+        {"est_item_id": "_authored/some-note",
+         "framing": "Some note", "layer": "Note",
+         "binding": "unbound", "status": "live", "serves": [], "body": "b",
+         "important": False, "note": None, "scope": None,
+         "version_label": "v1", "version_date": "2026-07-26"},
+    ]
+
+    monkeypatch.setattr(ps, "fetch_project_done_map", lambda c, p: {})
+    monkeypatch.setattr(srv, "_resolve", lambda code: (_C(), "pid", "cid"))
+
+    out = srv.list_spine_elements("ibx-5192", layer="Decision")
+
+    assert [r["est_item_id"] for r in out] == ["_authored/pillar-ruling"]
+
+
 def test_pull_spine_element_delegates(monkeypatch):
     """Passes the key through to pull_spine and returns its result."""
     fake_client = object()
