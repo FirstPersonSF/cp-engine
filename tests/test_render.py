@@ -377,6 +377,80 @@ def test_claude_md_includes_status_vocabulary() -> None:
     assert "`Complete`" not in out
 
 
+def test_claude_md_summarizes_five_stores_and_points_to_cp_tools() -> None:
+    """The MCP verb catalog lives in the /cp-tools plugin command; CLAUDE.md
+    keeps only a five-store summary plus the pointer."""
+    out = render_claude_md(make_tenant(name="1p"))
+    assert "/cp-tools" in out
+    for store in (
+        "RAG source store",
+        "Spine",
+        "Inbound frameworks",
+        "Commitments",
+        "Notes",
+    ):
+        assert store in out
+
+
+def test_claude_md_omits_per_verb_catalog() -> None:
+    """The per-verb signature entries must not creep back into the generated
+    file — they load on demand via /cp-tools."""
+    out = render_claude_md(make_tenant(name="1p"))
+    for signature in (
+        "pull_project_source(code, doc_title",
+        "create_spine_element(code, label",
+        "framework_decompose(code, framework",
+        "create_commitment(code, description",
+        "create_note(code, recipient",
+    ):
+        assert signature not in out
+
+
+def test_claude_md_word_count_budget() -> None:
+    """Splitting the verb catalog (and the on-demand /cp-prep and journey-step
+    detail) out of the generated file brought it from ~4,600 to the ~2,800-word
+    acceptance target (fixtures: ~2,740 for 1p, ~2,800 for canonic). The assert
+    sits at 2,900 — ~100 words of slack for per-tenant render variation (real
+    tenants aren't the fixture tenants) without letting reference content creep
+    back. Growth here is context every session pays for: move on-demand
+    reference material into a plugin command instead of raising the budget."""
+    for name in ("1p", "canonic"):
+        out = render_claude_md(make_tenant(name=name))
+        assert len(out.split()) <= 2900, (
+            f"CLAUDE.md for tenant {name!r} is {len(out.split())} words; "
+            "move on-demand reference content into a plugin command instead"
+        )
+
+
+def test_cp_tools_command_carries_the_verb_catalog() -> None:
+    """The catalog moved (not vanished): the /cp-tools plugin command holds
+    all five numbered stores and their verbs."""
+    cmd = (
+        Path(__file__).parents[1] / "plugin" / "commands" / "cp-tools.md"
+    ).read_text(encoding="utf-8")
+    assert "1 — RAG source store" in cmd
+    assert "2 — Spine" in cmd
+    assert "3 — Inbound frameworks" in cmd
+    assert "4 — Commitments" in cmd
+    assert "5 — Notes" in cmd
+    for verb in (
+        "list_project_sources",
+        "pull_document_comments",
+        "create_spine_element",
+        "pull_element_from_project",
+        "framework_decompose",
+        "create_commitment",
+        "create_note",
+    ):
+        assert verb in cmd
+    # Standing-element contracts travel with the catalog.
+    assert "Standing-element contracts" in cmd
+    # So does the journey-step proposal discipline (pointer stays in
+    # CLAUDE.md; the full rules ride with the verbs they govern).
+    assert "propose_spine_step" in cmd
+    assert "Proposing journey steps at wrap up" in cmd
+
+
 def test_claude_md_documents_sprint_file_deepening_path() -> None:
     body = render_claude_md(make_tenant())
     assert "sprints/" in body
