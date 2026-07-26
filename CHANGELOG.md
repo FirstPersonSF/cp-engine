@@ -4,6 +4,30 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.80.0 — 2026-07-26
+
+- **`cp brief <code>` — composed Mode-2 context pack (#123).** Emits a
+  deterministic orientation doc for one project: facts, trimmed Exec Summary
+  fields, the standing Brief's live body, open commitments, and the
+  last-session pointer — the single-call replacement for reading a full
+  `cp.md` plus separate spine/commitments lookups. Degrades gracefully on
+  projects with no spine or commitments (e.g. standalone repos).
+
+- **`cp close <code>` — close-out ritual scaffold (#124).** Generates a
+  checklist working file for retiring a project: final-synthesis-element
+  prompts, a terminal-form Exec Summary template, open commitments to
+  resolve, thin-stub retire candidates, and account-promotion candidates.
+  Refuses on active-looking projects without `--force`. Substance-aware
+  mirror fallback and a same-day re-run guard included.
+
+- **Layer-filter regression coverage + release-protocol note (#127, #128).**
+  Added an end-to-end test pinning the `list_spine_elements` singular/plural
+  layer-filter fold through the real MCP wrapper (not mocked), after a
+  same-day investigation traced an apparent regression to a stale
+  long-running `cp mcp` process serving pre-release bytecode rather than a
+  code defect. CLAUDE.md's template now carries a short standing note:
+  restart `cp mcp` (`/mcp`) after any release if a shipped fix seems inert.
+
 ## v0.79.0 — 2026-07-26
 
 - **One live row per spine element — read-side dedupe + authored-live mirror
