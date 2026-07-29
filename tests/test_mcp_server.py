@@ -1216,6 +1216,86 @@ def test_push_to_dropbox_delegates(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
+# Dropbox credential loading on the READ paths (#111)
+#
+# push_to_dropbox loaded DROPBOX_* before building its connector; the two read
+# verbs did not, so every Dropbox-hosted source failed with "No Dropbox
+# credentials found" while Supabase-backed verbs worked. Regression cover for
+# both, since the asymmetry is exactly what made the bug hard to see.
+# ---------------------------------------------------------------------------
+
+
+def test_pull_document_comments_loads_dropbox_creds(monkeypatch):
+    """The comment read loads DROPBOX_* before the connector self-configures."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+    creds_loaded = {}
+    monkeypatch.setattr(
+        srv, "_try_load_dropbox_creds",
+        lambda: creds_loaded.setdefault("called", True),
+    )
+
+    def fake_pull(client, pid, doc_title, dest):
+        # Creds must already be loaded by the time the download runs.
+        assert creds_loaded.get("called") is True
+        return {"title": doc_title, "provider": "dropbox", "comment_count": 2,
+                "comments": [{"author": "Kimber Myers"}, {"author": "Jaime Mehra"}]}
+
+    monkeypatch.setattr(
+        "cp_engine.project_sources.pull_document_comments", fake_pull
+    )
+
+    out = srv.pull_document_comments("ibx-5192", "deck_JM comments.pptx")
+    assert creds_loaded["called"] is True
+    assert out["comment_count"] == 2
+
+
+def test_fetch_project_source_loads_dropbox_creds(monkeypatch, tmp_path):
+    """The binary fetch loads DROPBOX_* too — same connector, same failure."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+    creds_loaded = {}
+    monkeypatch.setattr(
+        srv, "_try_load_dropbox_creds",
+        lambda: creds_loaded.setdefault("called", True),
+    )
+
+    def fake_fetch(client, pid, doc_title, dest):
+        assert creds_loaded.get("called") is True
+        return {"local_path": str(tmp_path / "deck.pptx"), "title": doc_title}
+
+    monkeypatch.setattr("cp_engine.project_sources.fetch_source", fake_fetch)
+
+    out = srv.fetch_project_source("ibx-5192", "deck.pptx")
+    assert creds_loaded["called"] is True
+    assert out["title"] == "deck.pptx"
+
+
+def test_cred_load_failure_does_not_break_the_read(monkeypatch):
+    """Cred loading is best-effort: a blowup must not fail an otherwise-fine read.
+
+    Outside a tenant repo `load_config` raises NotATenantRepo, and in the
+    webhook the creds already live in the process env. Neither should turn a
+    working Drive-hosted read into an error.
+    """
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+
+    def boom(root):
+        raise RuntimeError("No .cp-engine.toml — not a tenant repo?")
+
+    monkeypatch.setattr("cp_engine.config.load", boom)
+    monkeypatch.setattr(
+        "cp_engine.project_sources.pull_document_comments",
+        lambda client, pid, doc_title, dest: {
+            "title": doc_title, "provider": "google_drive", "comment_count": 1,
+            "comments": [{"author": "Kimber Myers"}],
+        },
+    )
+
+    out = srv.pull_document_comments("ibx-5192", "deck.pptx")
+    assert out["comment_count"] == 1
+    assert "error" not in out
+
+
+# ---------------------------------------------------------------------------
 # add_spine_document (#120 — file / ingested-source → element)
 # ---------------------------------------------------------------------------
 
