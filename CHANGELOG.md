@@ -4,7 +4,7 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## Unreleased
+## v0.80.1 — 2026-07-29
 
 - **`pull_document_comments` / `fetch_project_source` fixed on Dropbox-hosted
   binaries (#111).** Both verbs failed with `No Dropbox credentials found` on
