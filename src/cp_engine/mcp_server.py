@@ -49,6 +49,31 @@ def _tenant_root():
     return find_tenant_root(Path.cwd()) or Path.cwd().resolve()
 
 
+def _try_load_dropbox_creds() -> None:
+    """Best-effort export of DROPBOX_* into `os.environ` (#111).
+
+    The `DropboxConnector` self-configures from `os.getenv`, so a local MCP
+    session — which has the mc-2 `.env` on disk but no DROPBOX_* in its own
+    process environment — would otherwise authenticate as nobody on every
+    Dropbox-hosted read.
+
+    Deliberately swallows everything. Credential loading is an OPTIONAL
+    enrichment of the environment: outside a tenant repo `load_config` raises
+    NotATenantRepo, and in production (the ingest webhook) the creds already
+    come from the real process env. Neither case should turn a working read
+    into an error — if creds genuinely are missing, the connector raises its
+    own precise "No Dropbox credentials found" downstream, which is the more
+    actionable message.
+    """
+    try:
+        from cp_engine.config import load as load_config
+        from cp_engine.sync_mc2 import _load_dropbox_creds
+
+        _load_dropbox_creds(load_config(_tenant_root()))
+    except Exception:  # noqa: BLE001 - see docstring: never fail the caller
+        pass
+
+
 def _resolve(project_code: str):
     """Resolve a project CODE to `(client, project_id, company_id)`.
 
@@ -289,6 +314,9 @@ def fetch_project_source(project_code: str, doc_title: str) -> dict:
         if resolved is None:
             return {"error": f"project {project_code!r} not found"}
         client, pid, _cid = resolved
+        # A Dropbox-hosted source downloads through the DropboxConnector (#111).
+        # No-ops for Drive-hosted sources and when no mc-2 clone is configured.
+        _try_load_dropbox_creds()
         # TODO: cp-fetch-* temp dirs accumulate (never cleaned up); a periodic
         # sweep of stale cp-fetch-* dirs would reclaim the space. Left as-is.
         dest = tempfile.mkdtemp(prefix="cp-fetch-")
@@ -384,6 +412,11 @@ def pull_document_comments(project_code: str, doc_title: str) -> dict:
         if resolved is None:
             return {"error": f"project {project_code!r} not found"}
         client, pid, _cid = resolved
+        # A Dropbox-hosted doc is read by downloading the original binary and
+        # parsing its comment XML, which goes through the DropboxConnector's
+        # os.getenv self-configuration. Without this the verb fails with
+        # "No Dropbox credentials found" on every Dropbox source (#111).
+        _try_load_dropbox_creds()
         dest = tempfile.mkdtemp(prefix="cp-comments-")
         return _pull(client, pid, doc_title, dest)
     except Exception as exc:  # noqa: BLE001

@@ -4,6 +4,28 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+- **`pull_document_comments` / `fetch_project_source` fixed on Dropbox-hosted
+  binaries (#111).** Both verbs failed with `No Dropbox credentials found` on
+  every Dropbox source while Supabase-backed verbs worked — the asymmetry that
+  made this hard to spot. Cause was one missing call, not a broken loader:
+  `push_to_dropbox` loads `DROPBOX_*` from the mc-2 `.env` before building its
+  connector; the two READ paths never did, so the `DropboxConnector` (which
+  self-configures from `os.getenv`) authenticated as nobody. Both now load
+  creds via a new best-effort `_try_load_dropbox_creds()` helper, which
+  deliberately swallows failures — outside a tenant repo `load_config` raises
+  `NotATenantRepo`, and in the webhook the creds already come from the process
+  env; neither should turn a working Drive-hosted read into an error. Verified
+  end-to-end against a real Dropbox `.pptx` with all `DROPBOX_*` unset (28
+  reviewer comments read; the same call errors without the fix). Regression
+  cover added for both verbs plus the swallow behavior — neither read verb had
+  any behavioral test before, which is how this shipped.
+
+  *Known limitation (unchanged):* the `.pptx` comment layer may carry no
+  anchor data, in which case `anchored_text` is `null` for every comment and
+  slide attribution has to be inferred from content and order.
+
 ## v0.80.0 — 2026-07-26
 
 - **`cp brief <code>` — composed Mode-2 context pack (#123).** Emits a
