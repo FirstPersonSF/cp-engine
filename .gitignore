@@ -33,3 +33,9 @@ build/
 
 # Local git worktrees
 .worktrees/
+
+# Finder/iCloud-style duplicates (" 2" suffix) created by a sync client.
+# See cp-engine issue #133 — these also break `uv`, which parses every
+# *.dist-info name as a version and hard-errors on the space.
+* 2
+* 2.*
