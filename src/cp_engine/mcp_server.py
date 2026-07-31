@@ -30,9 +30,12 @@ from cp_engine.mc2_db import (
     _resolve_initiative_id,
     _resolve_project_id,
 )
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
-mcp = FastMCP("cp-sources")
+# mcp 2.x renamed FastMCP -> MCPServer (2026-07-28 spec release). The decorator
+# API (`@mcp.tool()`) and `run(transport="stdio")` are unchanged, so the 37 tool
+# definitions below needed no edits. See docs/2026-07-31-mcp-2x-migration.md.
+mcp = MCPServer("cp-sources")
 
 
 def _tenant_root():
