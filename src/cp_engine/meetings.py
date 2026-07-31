@@ -248,7 +248,10 @@ def promote_meeting_transcript(client, meeting_row, project_id, company_id, *,
 
 
 def _default_resolver(client, code):
-    from cp_engine.mcp_server import _resolve_project_id
+    # From mc2_db, NOT mcp_server: this runs in the webhook, which has no MCP
+    # server. Importing mcp_server here pulls in FastMCP and crashed the
+    # meeting-link step with ModuleNotFoundError (v0.80.1, Sentry).
+    from cp_engine.mc2_db import _resolve_project_id
 
     return _resolve_project_id(client, code)
 

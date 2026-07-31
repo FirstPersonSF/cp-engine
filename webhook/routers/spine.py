@@ -436,14 +436,19 @@ def _spine_promote_runs_table(client):
 def _resolve_project_id_for_promote(client, code: str) -> str | None:
     """Resolve a project_code to its `projects.id` for the promote endpoint.
 
-    Thin wrapper over cp_engine.mcp_server._resolve_project_id (a pure
+    Thin wrapper over cp_engine.mc2_db._resolve_project_id (a pure
     client+code → projects.id resolver: it does the same two-form code bridge
     the rest of the engine uses, with no MCP/stdio state). Wrapped here as a
     module-level name so tests can monkeypatch the resolve seam without
-    reaching into mcp_server, mirroring how the asset-ingest tests stub
+    reaching into mc2_db, mirroring how the asset-ingest tests stub
     resolve_project_folders.
+
+    Imported from mc2_db, NOT mcp_server: the webhook container has no MCP
+    server, and mcp_server imports FastMCP at module scope — the coupling
+    that broke the meeting-link path in v0.80.1 (Sentry
+    ModuleNotFoundError: No module named 'mcp.server.fastmcp').
     """
-    from cp_engine.mcp_server import _resolve_project_id
+    from cp_engine.mc2_db import _resolve_project_id
     return _resolve_project_id(client, code)
 
 
