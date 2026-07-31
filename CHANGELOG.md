@@ -4,6 +4,61 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.81.0 — 2026-07-31
+
+- **BREAKING (dependency): `cp mcp` now requires the MCP Python SDK 2.x
+  (`mcp>=2.0,<3`).** The 2026-07-28 spec release ships SDK 2.0.0, which
+  removes `mcp.server.fastmcp` — `FastMCP` is now `mcp.server.MCPServer`.
+  The port itself is two lines: the decorator API (`@mcp.tool()`) and
+  `run(transport="stdio")` are unchanged, so all 37 tool definitions in
+  `mcp_server.py` needed no edits. Verified against a real 2.0.0 install,
+  not signatures alone: `list_tools()` returns all 37; a live stdio
+  JSON-RPC session (`initialize` → `tools/list`) returns them with
+  `inputSchema` intact on the wire. Every other breaking change in the
+  2.0.0 notes is zero-exposure here (`Client(cache=)`,
+  `FileResource(is_binary=)`, `MCP_*` env vars, the 4 MiB
+  streamable-HTTP limit — `cp mcp` is stdio).
+
+  *Upgrade note:* the version floor moved to `>=2.0` because
+  `mcp_server.py` no longer runs on 1.x. After upgrading, restart the MCP
+  connection (`/mcp`) — `cp mcp` is long-running and keeps serving old
+  bytecode until it is, which makes a successful upgrade look broken.
+
+  *One rename that looks alarming and isn't:* `Tool.inputSchema` is now
+  `Tool.input_schema` on the Python object, but the wire format is
+  unchanged — clients see exactly what they saw before.
+
+- **Webhook no longer imports an MCP server to resolve a project id
+  (#130).** Production `ModuleNotFoundError: No module named
+  'mcp.server.fastmcp'` in `cp-engine-webhook` (v0.80.1, Sentry): the
+  meeting-link step imported `_resolve_project_id` from `mcp_server`,
+  which imports `FastMCP` at module scope — so a container that never
+  runs an MCP server still needed the MCP stack, and an unbounded
+  `mcp>=1.2` let a rebuild resolve 2.0.0 and break at import.
+
+  `_resolve_project_id` / `_resolve_initiative_id` are pure MC-2 lookups
+  and now live in `mc2_db` ("the ONE home for Supabase access", which
+  already owns `Tables`); `mcp_server` re-exports them. Two call sites
+  were affected, not just the one in the trace — `meetings.py` and
+  `webhook/routers/spine.py`, whose docstring already described the
+  helper as "pure … with no MCP/stdio state".
+
+  Impact was contained: `_link_meeting_safe` never raises, so ingest
+  still committed and pushed. What silently stopped was linking the
+  meeting row to its project and embedding its summary into RAG.
+
+  Two regression tests, both verified to fail against the pre-fix tree:
+  a grep guard that rejects borrowing non-lifecycle helpers from
+  `mcp_server` (launching it under `cp mcp` stays allowed), and a
+  behavioral test that blocks `mcp*` at the import system in a
+  subprocess and imports the resolver chain.
+
+- **`.gitignore`: Finder/iCloud `" 2"` duplicates.** A sync client was
+  creating `" 2"`-suffixed duplicates throughout dev trees. Beyond the
+  clutter they break `uv`, which parses every `*.dist-info` directory
+  name as a version and hard-errors on the space — fatal, not a warning.
+  See #133.
+
 ## v0.80.1 — 2026-07-29
 
 - **`pull_document_comments` / `fetch_project_source` fixed on Dropbox-hosted
