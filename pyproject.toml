@@ -28,14 +28,11 @@ dependencies = [
     "spine-authoring @ git+https://github.com/FirstPersonSF/1p-component-library.git@023e656#subdirectory=services/spine-authoring",
     "inbound-frameworks[anthropic] @ git+https://github.com/FirstPersonSF/1p-component-library.git@3ea70cc#subdirectory=services/inbound-frameworks",
     "voyageai>=0.4",
-    # UPPER BOUND IS LOAD-BEARING. mcp 2.0.0 (the 2026-07-28 spec release)
-    # removes `mcp.server.fastmcp` entirely — FastMCP is replaced by
-    # `mcp.server.MCPServer`. `mcp_server.py` imports FastMCP, so an
-    # unbounded `>=1.2` lets a fresh build resolve 2.0.0 and break `cp mcp`
-    # at import time. Verified: 1.29.0 has mcp.server.fastmcp, 2.0.0 does not.
-    # Lift this bound only together with a port of mcp_server.py to the 2.x
-    # server API.
-    "mcp>=1.2,<2",
+    # Floor is 2.0 and the bound is deliberate: mcp 2.x renamed
+    # FastMCP -> MCPServer, so mcp_server.py does NOT run on 1.x. Keep the
+    # upper bound — an unbounded floor is what let 2.0.0 land silently mid-
+    # deploy and break the webhook (see docs/2026-07-31-mcp-2x-migration.md).
+    "mcp>=2.0,<3",
 ]
 
 [project.optional-dependencies]
