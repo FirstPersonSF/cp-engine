@@ -414,7 +414,7 @@ def spine_recover_cmd(code: str, apply_: bool, model: str) -> None:
     from datetime import datetime, timezone
 
     from cp_engine.asset_ingest import resolve_project_folders_by_id
-    from cp_engine.mcp_server import _resolve_project_id
+    from cp_engine.mc2_db import _resolve_project_id
     from cp_engine.spine import SpineDirNotFound, find_spine_dir
     from cp_engine.spine_recover import load_legacy_elements, plan_element, recover
     from cp_engine.sync import BackendUnavailable

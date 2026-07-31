@@ -25,7 +25,11 @@ caught and converted to that note rather than propagated.
 
 from __future__ import annotations
 
-from cp_engine.mc2_db import Tables
+from cp_engine.mc2_db import (
+    Tables,
+    _resolve_initiative_id,
+    _resolve_project_id,
+)
 from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("cp-sources")
@@ -113,133 +117,12 @@ def _resolve(project_code: str):
     return client, folders.project_id, folders.company_id
 
 
-def _resolve_project_id(client, project_code: str) -> str | None:
-    """Resolve a project identifier to its `projects.id`, bridging two id forms.
-
-    The canonical key everything in MC-2 joins on is `projects.code`, which for
-    nearly every project is a company-prefixed SLUG (``IBX-platform-sales-
-    readiness-summit``, ``GGL-activation``) — NOT ``<company>-<number>``. But
-    cp-engine's working-dir slug and ``cp.md`` Facts derive a ``<company>-
-    <number>`` id (``ibx-5192``) that does NOT match ``projects.code``. So an
-    exact-code lookup misses for any caller passing the working-dir form.
-
-    Resolution order:
-      1. Exact ``projects.code`` match (handles a caller that passes the real
-         slug code, e.g. from MC-2 directly).
-      2. ``slug_full_job_name(full_job_name) == project_code`` — the canonical
-         on-disk id since v0.35.0 (``ibx-5153-ai-campaign``), what cp.md Facts,
-         the working-dir name, and CLAUDE.md all use. The number lives in the
-         MIDDLE of this slug (inside ``full_job_name``), so branch 3 below can't
-         see it; this branch reverses ``slug_full_job_name`` instead.
-      3. Fallback: parse ``<companyprefix>-<number>`` and match
-         ``companies.code`` (case-insensitive) + ``projects.number``. This is
-         the legacy bridge for the number-last form (``ibx-5192``).
-
-    Returns the project id, or ``None`` when nothing resolves.
-    """
-    from cp_engine.state import slug_full_job_name
-
-    rows = (
-        client.table(Tables.PROJECTS)
-        .select("id")
-        .eq("code", project_code)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    if rows:
-        return rows[0]["id"]
-
-    # Exact RAW full_job_name match (the display form, e.g.
-    # "IBX 5167 DDI Platform Video"). Fathom stores this verbatim in
-    # fathom_meetings.project_tags, so the meetings flow passes it here directly
-    # — it is neither the slug code nor the slugified on-disk id, so without this
-    # branch every tagged meeting fails to resolve.
-    rows = (
-        client.table(Tables.PROJECTS)
-        .select("id")
-        .eq("full_job_name", project_code)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    if rows:
-        return rows[0]["id"]
-
-    # Match the canonical on-disk id: slug_full_job_name(full_job_name).
-    # Scope the scan to company-prefixed candidates (the slug always starts with
-    # the company prefix) so this stays cheap, then compare the slugified
-    # full_job_name in Python — avoids needing a slugify function in SQL.
-    prefix = project_code.split("-", 1)[0]
-    if prefix:
-        candidates = (
-            client.table(Tables.PROJECTS)
-            .select("id, full_job_name")
-            .ilike("code", f"{prefix}-%")
-            .execute()
-            .data
-            or []
-        )
-        for row in candidates:
-            if slug_full_job_name(row.get("full_job_name")) == project_code:
-                return row["id"]
-
-    # Fallback: <companyprefix>-<number> (the legacy number-last form).
-    # An initiative slug (`mission-control`) has no trailing number, so this
-    # branch is skipped and we fall through to the initiatives lookup below.
-    prefix, sep, tail = project_code.rpartition("-")
-    if not sep or not tail.isdigit():
-        return _resolve_initiative_id(client, project_code)
-    number = int(tail)
-    # companies.code is stored UPPERCASE (e.g. `IBX`) while the working-dir
-    # prefix is lowercase (`ibx`); match case-insensitively. The prefix has no
-    # %/_ (it's a slugified company code), so ilike treats it as a literal.
-    companies = (
-        client.table(Tables.COMPANIES)
-        .select("id")
-        .ilike("code", prefix)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    if not companies:
-        return None
-    company_id = companies[0]["id"]
-    rows = (
-        client.table(Tables.PROJECTS)
-        .select("id")
-        .eq("company_id", company_id)
-        .eq("number", number)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    return rows[0]["id"] if rows else None
-
-
-def _resolve_initiative_id(client, code: str) -> str | None:
-    """Resolve an INITIATIVE slug code (`mission-control`, `storyos`) to its id.
-
-    Initiatives live in their own `initiatives` table — parallel to projects but
-    with no client/company side and no Drive/Dropbox folders — so the project
-    bridge in `_resolve_project_id` never matches them. Their id lands in
-    `spine_substance.project_id` exactly like a project's, so spine tools work
-    once we hand it back. Returns the id, or None when nothing matches.
-    """
-    rows = (
-        client.table(Tables.INITIATIVES)
-        .select("id")
-        .eq("code", code)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    return rows[0]["id"] if rows else None
+# Project / initiative id resolution lives in ``mc2_db`` — pure MC-2
+# lookups with no MCP involvement. Re-exported here because this module's
+# tools call them unqualified, and tests monkeypatch
+# ``mcp_server._resolve_project_id``. Do NOT move the bodies back: importing
+# this module pulls in FastMCP, and the webhook resolves ids without any MCP
+# server (see mc2_db for the full note).
 
 
 @mcp.tool()

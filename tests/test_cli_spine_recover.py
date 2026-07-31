@@ -108,7 +108,7 @@ def _patch(monkeypatch, client, assets=None):
         "cp_engine.mc2_db.get_client", lambda config=None, **kw: client
     )
     monkeypatch.setattr(
-        "cp_engine.mcp_server._resolve_project_id", lambda c, code: PID
+        "cp_engine.mc2_db._resolve_project_id", lambda c, code: PID
     )
     monkeypatch.setattr(
         "cp_engine.asset_ingest.resolve_project_folders_by_id",
@@ -177,7 +177,7 @@ def test_unknown_project_errors(tmp_path, monkeypatch):
         "cp_engine.mc2_db.get_client", lambda config=None, **kw: client
     )
     monkeypatch.setattr(
-        "cp_engine.mcp_server._resolve_project_id", lambda c, code: None
+        "cp_engine.mc2_db._resolve_project_id", lambda c, code: None
     )
     res = CliRunner().invoke(main, ["spine-recover", CANON])
     assert res.exit_code == 1, res.output
