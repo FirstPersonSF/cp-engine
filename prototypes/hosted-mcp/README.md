@@ -18,7 +18,7 @@ path. Nothing under `src/cp_engine/` was modified.
   `TENANT_REPO`. **The tree has no per-user RLS** — see
   [The tenant tree has no RLS](#the-tenant-tree-has-no-rls).
 
-27 tools, **41/41 smoke cases pass**.
+33 tools, **48/48 smoke cases pass**.
 
 ---
 
@@ -96,7 +96,7 @@ never reads it.
 
 ## Tools
 
-All twenty-seven run under the caller's identity, select **explicit columns only**,
+All thirty-three run under the caller's identity, select **explicit columns only**,
 and write an audit row on success.
 
 **Reads:**
@@ -140,6 +140,60 @@ and write an audit row on success.
 | `remove_element_source(project_code, key, source_title)` | `spine_substance.sources` | Inverse; detaching an unattached link is a note, not an error. |
 | `add_element_provenance(project_code, key, source_key)` | `spine_substance.sources` | Attaches `{type: spine_element, id, title, retired}`. Source **may be retired**. |
 | `remove_element_provenance(project_code, key, source_key)` | `spine_substance.sources` | Inverse. |
+
+**Retire + account scope (cp-engine #143 batch 4):**
+
+| Tool | Target | Notes |
+|---|---|---|
+| `retire_spine_element(project_code, key)` | `spine_substance` + `spine_relations` | Archives **every** version, supersedes the live row, and **deletes** the element's typed edges (#96). Returns `edges_removed`. |
+| `retire_spine_elements(project_code, keys)` | same | Batch form (#105). **Per-key results; a bad key does not abort the batch.** |
+| `retire_spine_relation(project_code, kind, from_key, to_key)` | `spine_relations` | Direct filtered DELETE. Resolution **tolerates a dead endpoint** — an unresolvable key is used verbatim as an est_item_id. |
+| `promote_stakeholder(project_code, key)` | `spine_substance` | → `scope='account'` + `company_id`. Engagements only. Non-Stakeholders layer ⇒ `warning`, promotion still applies. |
+| `demote_stakeholder(project_code, key)` | `spine_substance` | Inverse: `scope='project'`, `company_id` cleared, back to the provenance project. |
+| `set_element_account_scope(project_code, key, account=True)` | `spine_substance` | Type-agnostic generalization; **delegates** to the two above, minus the layer warning. |
+
+Like batch 3, the two mutations are guarded SECURITY DEFINER calls rather than
+table policies — shipped by `ratchet_batch4_retire_and_scope_fns`:
+
+```
+spine_retire_element(p_project_id uuid, p_est_item_id text)
+    returns jsonb {versions, edges_removed}
+spine_set_element_scope(p_project_id uuid, p_est_item_id text,
+                        p_account boolean) returns integer
+```
+
+The reason is stronger here than in batch 3. The stdio originals do their work
+as **multi-statement sequences** run with the service key — retire is four
+statements (archive every version, demote the live row, then a delete per edge
+direction). A sequence that fails halfway leaves an element archived-but-live,
+or edges dangling from a dead endpoint: exactly the graph corruption #96 was
+filed about. Folding each into one function makes it one transaction, and makes
+the guards (live-element required, engagements-only, the sibling-twin check)
+unbypassable rather than advisory.
+
+The **third** mutation needs no function: batch 4's migration also added a team
+DELETE policy on `spine_relations`, so `retire_spine_relation` is a direct
+filtered delete. The row is fully identified by `(project_id, kind,
+from_item_id, to_item_id)` and RLS is the entire authorization story.
+
+Both functions signal refusals with `RAISE EXCEPTION` (P0001) prefixed by the
+function name. `_guarded_fn_error` digs the message out of postgrest-py's
+APIError and strips that prefix, so a caller reads *"engagements only — this
+project has no company"* rather than a JSON blob. Two refusals are translated
+**before** the call instead, because they are not failures: promoting on an
+initiative, and demoting something that is not account-scoped (the function
+would move zero rows) both return a structured `note`.
+
+Two things worth knowing about the retire semantics:
+
+- **Retiring does not destroy lineage.** `add_element_provenance` writes the link
+  into the *surviving* card's `sources`, so retiring the raw card it absorbed
+  keeps the trail — and a link attached *after* retirement rides `retired: true`.
+  This is the pairing that closes gap 8 below.
+- **Edges cascade, versions archive.** Nothing is deleted from `spine_substance`;
+  the element is recoverable via a dashboard un-archive. Only `spine_relations`
+  rows are actually removed, because an `active` edge from a dead endpoint is a
+  graph an agent would still walk.
 
 These do **not** fit a table policy at all — there is no authenticated grant on
 `spine_substance.sources`, so a direct PATCH is impossible, not merely
@@ -375,9 +429,10 @@ for `ibx-5153`, of 324 total), and an empty result is a plain "0 rows".
 
 ## What is proven
 
-Verified live against the real MC-2 project — **41/41 smoke cases pass**, with an
+Verified live against the real MC-2 project — **48/48 smoke cases pass**, with an
 ES256 token for a team user. The table below covers the original read surface;
-the write, tree, update, and sources/provenance cases (N–Z7) are listed in
+the write, tree, update, sources/provenance, and retire/scope cases (N–AG) are
+listed in
 `smoke_test.py`'s docstring and run in the same suite:
 
 | # | Case | Result |
@@ -386,7 +441,7 @@ the write, tree, update, and sources/provenance cases (N–Z7) are listed in
 | B | Garbage token → 401 | ✓ |
 | C | `alg=none` token → 401 | ✓ — negative test of the ES256 path |
 | D | RFC 9728 metadata | 200, `authorization_servers: ["https://<ref>.supabase.co/auth/v1"]` |
-| E | `tools/list` | all **27 tools** (count asserted, so an unexpected extra fails too) |
+| E | `tools/list` | all **33 tools** (count asserted, so an unexpected extra fails too) |
 | F | `list_spine_elements(ibx-5153)` | **57 live elements** under the caller's `sub` |
 | G | `list_commitments(ibx-5153)` | **31 rows** — team-keyed RLS, no longer deny-all |
 | H | `whoami` | verified `sub`, `role=authenticated` |
@@ -520,15 +575,17 @@ share tokens / RLS respectively, matching `create-approval-snapshot`.
    live in both directions. Fix: revoke the table-wide UPDATE grant so the column
    grant becomes load-bearing. See "Where the engine-owned column boundary
    actually lives" above.
-8. **The retired-source provenance path is UNTESTED here.** `add_element_
-   provenance` resolves `source_key` across retired elements by design (#104) —
-   that is its main use — and the guarded function accepts a `spine_element`
-   referent at any status. But this server exposes **no retire verb**
-   (`retire_spine_element` is not in the 27), so the smoke suite cannot produce
-   a retired element to fold in. Case Z5 uses a live source and asserts
-   `retired: false` rides the link; the `retired: true` branch is exercised only
-   by the stdio verb. Porting `retire_spine_element` would close the gap and let
-   the case assert the flag in both directions.
+8. ~~**The retired-source provenance path is UNTESTED here.**~~ **CLOSED by
+   batch 4.** The gap was that `add_element_provenance` resolves `source_key`
+   across retired elements by design (#104) — its main use — but the server
+   exposed no retire verb, so the suite could not produce a retired element and
+   case Z5 could only assert `retired: false`. `retire_spine_element` now ships,
+   and **case AA** exercises the contract end to end: attach provenance while
+   the source is live, retire the source, assert the link on the **survivor**
+   still exists (surviving retirement is the entire point of storing the link on
+   the survivor), then attach the now-retired element to a third element and
+   assert `retired: true` rides the new link. Both directions of the flag are
+   now covered by the hosted suite rather than only by the stdio verb.
 9. **No internal project has ANY ingested sources.** Every other write case
    targets `mission-control` to keep mutations off client engagements, but
    `rag_assets` are a client-engagement artifact in this corpus — checked live,

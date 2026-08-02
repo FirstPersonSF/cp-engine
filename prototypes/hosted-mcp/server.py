@@ -44,6 +44,7 @@ Run:
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -495,6 +496,18 @@ _AUDIT_SAFE_ARGS = {
     # `title`, by contrast, is text the caller is WRITING, and stays redacted.
     "source_title",
     "source_key",   # an element key — the same class as `key`
+    # ── #143 batch 4 (retire + account scope) ──
+    # `key`/`kind`/`from_key`/`to_key` are already allow-listed above and carry
+    # these verbs too. The one addition is the BATCH verb's projection: `keys` is
+    # a LIST of element keys and is never logged as itself, on the same rule
+    # `order`/`order_len` set in batch 2 — a batch retire is auditable as HOW
+    # MANY elements were named, not which. The bare `keys` is on neither list,
+    # so it is DROPPED if ever passed; the verb passes `keys_count`.
+    "keys_count",
+    # `account` is a BOOLEAN direction flag (promote vs demote) — a closed
+    # two-value vocabulary, the same class as `outcome`, and the single most
+    # useful thing to know about a scope write after the element it named.
+    "account",
 }
 # Arg keys that are free text — recorded as a length only, never their content.
 # `body`/`description`/`framing`/`title` are USER PROSE: the whole point of the
@@ -2934,6 +2947,544 @@ def remove_element_provenance(
         est_item_id=est_item_id,
         versions=versions,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Retire + account scope — the guarded-function verbs (#143 batch 4)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Batch 4 is the first set whose engine originals do their work with MULTI-STEP
+# UPDATE/DELETE sequences rather than a single write. The stdio `retire_spine_
+# element`, for instance, is four statements (archive every version, demote the
+# live row, then a delete per edge direction) run with the service key. That
+# shape cannot be ported verbatim: an authenticated caller has no blanket UPDATE
+# grant on `spine_substance`, and even if it did, a sequence that fails halfway
+# leaves an element archived-but-live or edges dangling from a dead endpoint —
+# exactly the graph corruption #96 was filed about.
+#
+# So the two mutations move into SECURITY DEFINER functions
+# (mig `ratchet_batch4_retire_and_scope_fns`), each ONE transaction:
+#
+#   spine_retire_element(p_project_id uuid, p_est_item_id text)
+#       -> jsonb {versions, edges_removed}
+#     Requires a LIVE unarchived element, archives every version, supersedes
+#     the live rows, and DELETES the element's spine_relations edges (#96).
+#
+#   spine_set_element_scope(p_project_id uuid, p_est_item_id text,
+#                           p_account boolean) -> integer (rows moved)
+#     Engagements only (raises when the project has no company), with the
+#     sibling-twin guard baked in: promoting a slug that already sits at
+#     account scope from ANOTHER project raises rather than creating a twin.
+#     Demote only touches account-scoped rows, so a non-account element
+#     returns 0 — a note, not an error.
+#
+# Both raise P0001 with a `<fn_name>: <message>` prefix. `_guarded_fn_error`
+# strips that prefix so the caller reads the sentence, not the plumbing.
+#
+# The THIRD mutation needs no function: batch 4's migration also added a team
+# DELETE policy on `spine_relations`, so `retire_spine_relation` is a direct
+# filtered delete — the row is fully identified by (project_id, kind,
+# from_item_id, to_item_id) and RLS is the whole authorization story.
+
+
+def _guarded_fn_error(exc: Exception) -> str:
+    """A DB raise -> the sentence the function actually wrote.
+
+    The guarded functions signal refusals with `RAISE EXCEPTION` (P0001), and
+    postgrest-py surfaces that as an APIError whose string is a JSON blob with
+    the message buried in it. These verbs' whole contract is that a refusal
+    reads as a clean sentence ("engagements only — this project has no
+    company"), so the message is dug out and the `<fn_name>: ` prefix the
+    functions stamp on is stripped.
+    """
+    message = ""
+    for attr in ("message", "details"):
+        value = getattr(exc, attr, None)
+        if isinstance(value, str) and value.strip():
+            message = value.strip()
+            break
+    if not message:
+        raw = str(exc)
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                message = str(parsed.get("message") or parsed.get("details") or raw)
+            else:
+                message = raw
+        except (json.JSONDecodeError, TypeError):
+            message = raw
+    # Strip the `spine_retire_element: ` / `spine_set_element_scope: ` prefix.
+    for prefix in ("spine_retire_element: ", "spine_set_element_scope: "):
+        if message.startswith(prefix):
+            message = message[len(prefix):]
+    return message[:400]
+
+
+def _retire_one(client, project_id: str, key: str) -> dict[str, Any]:
+    """Retire ONE live element via the guarded function.
+
+    The shared body of `retire_spine_element` and `retire_spine_elements`,
+    mirroring the engine's `_retire_one`: resolve, call, report. A resolution
+    miss is a `{note}` and a DB refusal is an `{error}` — neither raises, so the
+    batch verb can keep going past a bad key exactly like the engine's does.
+    """
+    est_item_id, versions, err = resolve_element_versions(client, project_id, key)
+    if err is not None:
+        return err
+    if est_item_id is None:
+        return {"note": f"no single live element matching {key!r}"}
+    if _live_row(versions) is None:
+        return {"note": f"element {est_item_id!r} has no live version"}
+
+    try:
+        payload = (
+            client.rpc(
+                "spine_retire_element",
+                {"p_project_id": project_id, "p_est_item_id": est_item_id},
+            )
+            .execute()
+            .data
+        ) or {}
+    except Exception as exc:  # noqa: BLE001
+        return {"est_item_id": est_item_id, "error": _guarded_fn_error(exc)}
+
+    return {
+        "est_item_id": est_item_id,
+        "retired": True,
+        "versions": int(payload.get("versions") or 0),
+        "edges_removed": int(payload.get("edges_removed") or 0),
+    }
+
+
+@mcp_server.tool()
+def retire_spine_element(project_code: str, key: str) -> dict[str, Any]:
+    """Retire a spine element — remove it from the live spine, keeping history.
+
+    The cleanup verb for duplicates and elements that no longer belong (the same
+    source doc ingested twice, a raw card folded into a synthesis). `key`
+    resolves to ONE **live** element — an exact est_item_id or a distinct
+    `framing` substring, the same discipline as `pull_spine_element`.
+
+    Every version is marked `archived=true` and the live version is superseded,
+    so the element disappears from list/pull/resolve immediately and reaps from
+    the repo mirror on next sync. Nothing is deleted: the element is recoverable
+    via a dashboard un-archive.
+
+    Its typed edges (`spine_relations`) ARE deleted, not archived (#96) — a
+    retired element must not leave `active` edges dangling from a dead endpoint,
+    which an agent walking the graph would still follow.
+
+    LINEAGE, and why this verb is safe to use: retiring does NOT destroy the
+    element's provenance links elsewhere. `add_element_provenance` writes the
+    link into the SURVIVING card's `sources`, so folding a raw card into a
+    synthesis and then retiring the raw card keeps the lineage legible — and a
+    provenance link attached AFTER retirement rides `retired: true`. Retire the
+    raw card, keep the trail.
+
+    Returns {est_item_id, retired: true, versions, edges_removed}, or a
+    structured {note} when the key resolves to no single live element.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        key: the element to retire (est_item_id or unique framing substring).
+    """
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    result = _retire_one(client, scope["id"], key)
+    audit(
+        client,
+        "retire_spine_element",
+        {"project_code": project_code, "key": key},
+        int(result.get("versions") or 0),
+    )
+    if result.get("retired"):
+        result["project_code"] = scope["project_code"]
+        result["caller"] = caller_subject()
+    return result
+
+
+@mcp_server.tool()
+def retire_spine_elements(project_code: str, keys: list[str]) -> dict[str, Any]:
+    """Retire several spine elements in one call (#105) — batch cleanup.
+
+    Each entry of `keys` resolves and retires exactly as `retire_spine_element`
+    (archive every version, supersede the live row, cascade typed edges #96), so
+    a slot cleanup that collapses many raw cards is ONE operation instead of N.
+
+    Per-key results are returned rather than a single verdict, and a miss does
+    NOT abort the batch — this is the engine's contract and the reason the verb
+    exists: retiring nine of ten cards should not be undone because the tenth
+    key was a typo. `results` carries {key, est_item_id, retired, versions,
+    edges_removed} for each hit and {key, note} (or {key, error}) for each miss.
+
+    Returns {retired: int, edges_removed: int, results: [...]}.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        keys: element keys (est_item_ids or unique framing substrings).
+    """
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+    if not keys:
+        return {"error": "at least one key is required"}
+
+    results: list[dict[str, Any]] = []
+    retired = 0
+    edges_removed = 0
+    versions_total = 0
+    for key in keys:
+        try:
+            one = _retire_one(client, scope["id"], key)
+        except Exception as exc:  # noqa: BLE001 — one bad key must not abort the batch
+            results.append({"key": key, "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
+            continue
+        if one.get("retired"):
+            retired += 1
+            edges_removed += int(one.get("edges_removed") or 0)
+            versions_total += int(one.get("versions") or 0)
+        results.append({"key": key, **one})
+
+    # `keys` is a LIST of identifiers. It is logged as a COUNT, not as itself —
+    # the same rule `order`/`order_len` set in batch 2: an audit row records the
+    # shape of the write, and per-key detail belongs in the returned payload.
+    audit(
+        client,
+        "retire_spine_elements",
+        {"project_code": project_code, "keys_count": len(keys)},
+        versions_total,
+    )
+    return {
+        "retired": retired,
+        "edges_removed": edges_removed,
+        "results": results,
+        "project_code": scope["project_code"],
+        "caller": caller_subject(),
+    }
+
+
+@mcp_server.tool()
+def retire_spine_relation(
+    project_code: str, kind: str, from_key: str, to_key: str
+) -> dict[str, Any]:
+    """Delete a typed edge between two spine elements (#97).
+
+    The inverse of `create_spine_relation`, and the fix for a mis-recorded edge
+    (a `supersedes` that should have been `responds_to`). `kind` must be in the
+    same closed vocabulary the create verb enforces — responds_to | supersedes |
+    derives_from | informs | contradicts — rejected here rather than at the DB
+    CHECK.
+
+    Resolution deliberately TOLERATES A DEAD ENDPOINT, matching the engine: each
+    key is first resolved to a live element, and if it does not resolve, it is
+    used VERBATIM as an est_item_id. Without that fallback an edge orphaned by an
+    older retire would be permanently uncleanable — the endpoint it names no
+    longer resolves, so a live-only resolver could never name the row to delete.
+    Pass the raw est_item_ids in that case.
+
+    (Edges created by `retire_spine_element` from this point on cascade
+    automatically (#96); this fallback is for edges left behind before that
+    cascade existed, and for edges whose endpoint was retired by other means.)
+
+    Authorization is the batch-4 team DELETE policy on `spine_relations` — no
+    guarded function, because the row is fully identified by (project_id, kind,
+    from_item_id, to_item_id) and RLS is the entire authorization story.
+
+    Returns {kind, from_item_id, to_item_id, removed: int}, or a {note} when
+    there is no such edge.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        kind: responds_to | supersedes | derives_from | informs | contradicts.
+        from_key: the source element (est_item_id, framing substring, or a raw
+            est_item_id when the endpoint is already retired).
+        to_key: the target element, resolved the same way.
+    """
+    kind_n = (kind or "").strip().lower()
+    if kind_n not in _RELATION_KINDS:
+        return {"error": f"unknown relation kind {kind!r}; use one of {sorted(_RELATION_KINDS)}"}
+
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    # Live first, raw est_item_id as the fallback — a dead endpoint is expected.
+    from_eid, _ = resolve_live_element_id(client, scope["id"], from_key)
+    to_eid, _ = resolve_live_element_id(client, scope["id"], to_key)
+    from_eid = from_eid or from_key
+    to_eid = to_eid or to_key
+
+    audit_args = {
+        "project_code": project_code,
+        "kind": kind_n,
+        "from_key": from_key,
+        "to_key": to_key,
+    }
+
+    try:
+        removed_rows = (
+            client.table("spine_relations")
+            .delete()
+            .eq("project_id", scope["id"])
+            .eq("kind", kind_n)
+            .eq("from_item_id", from_eid)
+            .eq("to_item_id", to_eid)
+            .execute()
+            .data
+        ) or []
+    except Exception as exc:  # noqa: BLE001
+        audit(client, "retire_spine_relation", audit_args, 0)
+        return {"error": f"relation delete failed: {type(exc).__name__}: {str(exc)[:400]}"}
+
+    removed = len(removed_rows)
+    audit(client, "retire_spine_relation", audit_args, removed)
+    if removed == 0:
+        return {
+            "note": f"no {kind_n} edge {from_eid} -> {to_eid} to remove",
+            "kind": kind_n,
+            "from_item_id": from_eid,
+            "to_item_id": to_eid,
+            "removed": 0,
+        }
+    return {
+        "kind": kind_n,
+        "from_item_id": from_eid,
+        "to_item_id": to_eid,
+        "removed": removed,
+        "project_code": scope["project_code"],
+        "caller": caller_subject(),
+    }
+
+
+def _company_id_for(client, scope: dict[str, Any]) -> str | None:
+    """The company uuid behind a resolved write scope, or None.
+
+    An initiative has none BY DEFINITION (that is what makes it an initiative),
+    so `kind == "initiative"` short-circuits without a query. For a project the
+    column is read explicitly — account scope is a COMPANY-level fact, and both
+    stakeholder verbs need to know before they call the guarded function whether
+    "engagements only" even applies.
+    """
+    if scope.get("kind") == "initiative":
+        return None
+    rows = (
+        client.table("projects")
+        .select("company_id")
+        .eq("id", scope["id"])
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    return rows[0].get("company_id") if rows else None
+
+
+def _set_account_scope(
+    client, project_code: str, key: str, *, account: bool, tool: str
+) -> dict[str, Any]:
+    """The shared body of promote/demote — resolve, guard, call, report.
+
+    Both directions are the SAME guarded call with `p_account` flipped, so the
+    resolution, the engagements-only translation, and the read-back live once.
+    The direction-specific parts are the pre-checks (already-account vs
+    not-account) and the returned shape.
+    """
+    scope = resolve_write_scope(client, project_code)
+    audit_args = {"project_code": project_code, "key": key, "account": account}
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    # Every REFUSAL below is audited with row_count=0 before it returns, the
+    # same discipline batch 3's already/not-attached paths follow. It matters
+    # more here than it looks: `set_element_account_scope` DELEGATES to the
+    # stakeholder verbs, so if only the successful write audited, a call that
+    # was refused would leave no trace under the name the caller actually
+    # invoked — the audit log would say a promote was attempted and never that
+    # the type-agnostic verb was the thing that asked.
+    company_id = _company_id_for(client, scope)
+    if account and company_id is None:
+        # Translated BEFORE the call rather than caught after: for an initiative
+        # this is not a failure, it is the shape of the world.
+        audit(client, tool, audit_args, 0)
+        return {
+            "note": "initiatives have no company — account promotion applies to "
+            "engagements only"
+        }
+
+    est_item_id, versions, err = resolve_element_versions(client, scope["id"], key)
+    if err is not None:
+        audit(client, tool, audit_args, 0)
+        return err
+    if est_item_id is None:
+        audit(client, tool, audit_args, 0)
+        return {"note": f"no single live element matching {key!r} in {project_code!r}"}
+    live = _live_row(versions)
+    if live is None:
+        audit(client, tool, audit_args, 0)
+        return {"note": f"element {est_item_id!r} has no live version"}
+
+    current_scope = (live.get("scope") or "project").lower()
+    if account and current_scope == "account":
+        audit(client, tool, audit_args, 0)
+        return {"note": f"{est_item_id!r} is already account-scoped", "est_item_id": est_item_id}
+    if not account and current_scope != "account":
+        # The function would return 0 rows here; say what that means rather
+        # than reporting a write that moved nothing.
+        audit(client, tool, audit_args, 0)
+        return {
+            "note": f"{est_item_id!r} is not account-scoped — nothing to demote",
+            "est_item_id": est_item_id,
+        }
+
+    try:
+        moved = (
+            client.rpc(
+                "spine_set_element_scope",
+                {
+                    "p_project_id": scope["id"],
+                    "p_est_item_id": est_item_id,
+                    "p_account": account,
+                },
+            )
+            .execute()
+            .data
+        )
+    except Exception as exc:  # noqa: BLE001
+        audit(client, tool, audit_args, 0)
+        return {"error": _guarded_fn_error(exc), "est_item_id": est_item_id}
+
+    rows_moved = int(moved or 0)
+    if rows_moved == 0:
+        audit(client, tool, audit_args, 0)
+        return {
+            "note": f"no version rows moved for {est_item_id!r} — it may have been "
+            "re-scoped between resolution and write",
+            "est_item_id": est_item_id,
+        }
+
+    audit(client, tool, audit_args, rows_moved)
+    result: dict[str, Any] = {
+        "est_item_id": est_item_id,
+        "scope": "account" if account else "project",
+        "versions_moved": rows_moved,
+        "layer": live.get("layer"),
+        "project_code": scope["project_code"],
+        "caller": caller_subject(),
+    }
+    if account:
+        result["company_id"] = company_id
+    else:
+        result["returned_to_project_id"] = live.get("project_id") or scope["id"]
+    return result
+
+
+@mcp_server.tool()
+def promote_stakeholder(project_code: str, key: str) -> dict[str, Any]:
+    """Promote a project's stakeholder element to ACCOUNT scope.
+
+    Stakeholders are account-level people wearing project clothes: promotion
+    makes the element readable from EVERY project of the company (it appears in
+    their list/pull with `scope='account'`), while `project_id` stays as
+    provenance — there is always exactly one home to return to. Every version of
+    the element moves together, the same element-level discipline as
+    layer/framing/serves.
+
+    Opt-in and human-triggered. Engagement-specific reads that should NOT travel
+    to sibling projects belong in a separate project-scoped element.
+
+    Engagements only — an initiative has no company, which is reported as a
+    structured note rather than an error.
+
+    The SIBLING-TWIN guard is enforced inside the guarded function: if the same
+    slug already sits at account scope having been promoted from ANOTHER
+    project, this refuses rather than creating a duplicate person — version the
+    existing account element instead.
+
+    LAYER IS A WARNING, NOT A GATE: promoting an element whose layer is not
+    Stakeholders still applies, and rides a `warning` field. The verb is named
+    for its usual subject, but nothing about account scope is stakeholder-only —
+    `set_element_account_scope` is the same move without the sanity check.
+
+    Returns {est_item_id, scope, company_id, layer, versions_moved[, warning]},
+    or a structured {note}/{error}.
+
+    Args:
+        project_code: the engagement the element lives in.
+        key: the element to promote (est_item_id or unique framing substring).
+    """
+    client = user_client()
+    result = _set_account_scope(
+        client, project_code, key, account=True, tool="promote_stakeholder"
+    )
+    layer = (result.get("layer") or "") if isinstance(result, dict) else ""
+    if result.get("scope") == "account" and layer.lower() not in ("stakeholders", "stakeholder"):
+        result["warning"] = (
+            f"layer is {result.get('layer')!r}, not Stakeholders — promotion applied, "
+            "but check this is really an account-level element"
+        )
+    return result
+
+
+@mcp_server.tool()
+def demote_stakeholder(project_code: str, key: str) -> dict[str, Any]:
+    """Remove an element from ACCOUNT scope — the inverse of promote_stakeholder.
+
+    The element returns to its PROVENANCE project (`scope='project'`,
+    `company_id` cleared). `project_id` was never changed by promotion, so there
+    is exactly one home for it to land in. It disappears from sibling projects'
+    spines and from the account roster; NOTHING is deleted, and re-promoting
+    restores account visibility. Every version moves together.
+
+    `key` resolves the account element from ANY of the company's projects.
+    Demoting something that is not account-scoped is a structured note, not an
+    error — the guarded function touches account-scoped rows only, so that case
+    moves zero rows by design.
+
+    Returns {est_item_id, scope, returned_to_project_id, versions_moved}, or a
+    structured {note}/{error}.
+
+    Args:
+        project_code: an engagement of the company the element is scoped to.
+        key: the element to demote (est_item_id or unique framing substring).
+    """
+    client = user_client()
+    return _set_account_scope(
+        client, project_code, key, account=False, tool="demote_stakeholder"
+    )
+
+
+@mcp_server.tool()
+def set_element_account_scope(
+    project_code: str, key: str, account: bool = True
+) -> dict[str, Any]:
+    """Tag ANY spine element account-level (or return it to project scope).
+
+    The type-agnostic generalization of `promote_stakeholder`/`demote_stakeholder`:
+    use it to make a synthesis, a source, a decision — any element, not just a
+    stakeholder — readable from EVERY project of the same company
+    (`account=True`), or to pull it back to its home project (`account=False`).
+
+    Delegates to the two stakeholder verbs, exactly as the engine's original
+    does, so all three share one implementation and one set of guards. The only
+    difference is the layer sanity-check, which belongs to the stakeholder-named
+    verb: `promote_stakeholder` warns when the layer is not Stakeholders, and
+    this one does not, because "any element" is the whole point.
+
+    Engagements only; every version moves together; provenance project unchanged.
+
+    Args:
+        project_code: the engagement the element lives in.
+        key: the element (est_item_id or unique framing substring).
+        account: True to promote to account scope, False to return it to project.
+    """
+    client = user_client()
+    tool = "set_element_account_scope"
+    return _set_account_scope(client, project_code, key, account=account, tool=tool)
 
 
 @mcp_server.tool()

@@ -292,6 +292,13 @@ def case_e_tools_list(token: str) -> None:
         "remove_element_source",
         "add_element_provenance",
         "remove_element_provenance",
+        # #143 batch 4 — the guarded-function verbs (retire + account scope)
+        "retire_spine_element",
+        "retire_spine_elements",
+        "retire_spine_relation",
+        "promote_stakeholder",
+        "demote_stakeholder",
+        "set_element_account_scope",
         # Package B — read-only tenant tree (#138)
         "get_project_state",
         "read_project_file",
@@ -1509,6 +1516,440 @@ def case_z7_remove_element_provenance(token: str) -> None:
     )
 
 
+def _make_element(token: str, suffix: str) -> str | None:
+    """Create a smoke element and return its est_item_id (registering cleanup)."""
+    payload = call_tool(token, "create_spine_element", {
+        "project_code": WRITE_PROJECT_CODE,
+        "framing": f"smoke-test-{RUN_TAG} {suffix}",
+        "body": "Created by smoke_test.py (#143 batch 4). Safe to delete.",
+        "layer": "note",
+    })
+    if payload.get("row_id"):
+        created_rows.append(("spine_substance", payload["row_id"]))
+    return payload.get("element_id")
+
+
+def _read_scope_direct(token: str, element_id: str) -> list[dict[str, Any]]:
+    """Every version's scope/company_id, read STRAIGHT through PostgREST.
+
+    The scope verbs claim EVERY version moves together, and the read tools only
+    ever surface the live row — so the claim is only provable from storage.
+    """
+    supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    anon = os.environ.get("SUPABASE_ANON_KEY", "")
+    if not (supabase_url and anon):
+        return []
+    try:
+        return httpx.get(
+            f"{supabase_url}/rest/v1/spine_substance",
+            params={
+                "select": "version_label,status,scope,company_id,archived,project_id",
+                "est_item_id": f"eq.{element_id}",
+            },
+            headers={"apikey": anon, "Authorization": f"Bearer {token}"},
+            timeout=20,
+        ).json()
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _read_relations_direct(token: str, item_id: str) -> list[dict[str, Any]]:
+    """Edges on either side of an element, read straight through PostgREST."""
+    supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    anon = os.environ.get("SUPABASE_ANON_KEY", "")
+    if not (supabase_url and anon):
+        return []
+    out: list[dict[str, Any]] = []
+    for side in ("from_item_id", "to_item_id"):
+        try:
+            rows = httpx.get(
+                f"{supabase_url}/rest/v1/spine_relations",
+                params={"select": "id,kind,from_item_id,to_item_id,status", side: f"eq.{item_id}"},
+                headers={"apikey": anon, "Authorization": f"Bearer {token}"},
+                timeout=20,
+            ).json()
+            if isinstance(rows, list):
+                out.extend(rows)
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+def case_aa_retire_closes_provenance_gap(token: str) -> None:
+    """THE case batch 3's README gap 8 was opened for.
+
+    `add_element_provenance` resolves its source across RETIRED elements by
+    design (#104) — folding a raw card into the synthesis that absorbed it is
+    the main use — but batch 3 exposed no retire verb, so the suite could only
+    ever attach a LIVE source and assert `retired: false`. Both halves of the
+    lineage contract went untested. This case closes it end to end:
+
+      (a) attach provenance BEFORE retiring the source, retire it, and assert
+          the link on the SURVIVOR still exists — surviving the source's
+          retirement is the entire point of storing the link on the survivor;
+      (b) attach the NOW-RETIRED element as provenance to a THIRD element and
+          assert `retired: true` rides the new link — the branch the stdio verb
+          alone could reach until now.
+    """
+    survivor = _make_element(token, "gap8 survivor")
+    doomed = _make_element(token, "gap8 doomed source")
+    third = _make_element(token, "gap8 late attacher")
+    if not (survivor and doomed and third):
+        record("AA. retire closes the retired-provenance gap (#143 gap 8)", False,
+               f"element setup failed survivor={survivor} doomed={doomed} third={third}")
+        return
+
+    # (a) Link BEFORE retirement, with the source still live.
+    before = call_tool(token, "add_element_provenance", {
+        "project_code": WRITE_PROJECT_CODE, "key": survivor, "source_key": doomed,
+    })
+    linked_live_ok = before.get("attached") is True and (before.get("source") or {}).get(
+        "retired") is False
+
+    retired = call_tool(token, "retire_spine_element", {
+        "project_code": WRITE_PROJECT_CODE, "key": doomed,
+    })
+    retire_ok = retired.get("retired") is True and int(retired.get("versions") or 0) >= 1
+
+    # The source is really gone from the live spine...
+    rows = _read_scope_direct(token, doomed)
+    archived_ok = bool(rows) and all(r.get("archived") is True for r in rows) and not any(
+        r.get("status") == "live" for r in rows)
+
+    # ...but the SURVIVOR still carries the link. This is the assertion that
+    # justifies the whole retire-and-keep-lineage design.
+    survivor_rows = _read_versions_direct(token, survivor)
+    still_linked = [
+        r.get("version_label") for r in survivor_rows
+        if any(isinstance(s, dict) and s.get("type") == "spine_element"
+               and s.get("id") == doomed for s in (r.get("sources") or []))
+    ]
+
+    # (b) Attaching the now-retired element rides retired: true.
+    late = call_tool(token, "add_element_provenance", {
+        "project_code": WRITE_PROJECT_CODE, "key": third, "source_key": doomed,
+    })
+    late_link = late.get("source") or {}
+    late_ok = late.get("attached") is True and late_link.get("retired") is True
+
+    record(
+        "AA. provenance survives its source's retirement, and a retired source "
+        "attaches with retired:true (closes gap 8)",
+        linked_live_ok and retire_ok and archived_ok and bool(still_linked) and late_ok,
+        f"linked_live_retired_flag={(before.get('source') or {}).get('retired')} "
+        f"retire={{versions:{retired.get('versions')} edges:{retired.get('edges_removed')}}} "
+        f"source_all_archived={archived_ok} survivor_still_carrying={still_linked} "
+        f"late_attach_retired_flag={late_link.get('retired')}"
+        + (f" ERRORS={[before.get('error') or before.get('note'), retired.get('error') or retired.get('note'), late.get('error') or late.get('note')]}"
+           if not (linked_live_ok and retire_ok and late_ok) else ""),
+    )
+
+
+def case_ab_retire_cascades_edges(token: str) -> None:
+    """Retiring an element DELETES its typed edges (#96), and counts them.
+
+    An archived element leaving `active` edges behind is a silent graph
+    corruption an agent would still walk, so the cascade is the point — assert
+    it from storage, not just from the returned count.
+    """
+    left = _make_element(token, "cascade left")
+    right = _make_element(token, "cascade right")
+    if not (left and right):
+        record("AB. retire cascades typed edges (#96)", False,
+               f"element setup failed left={left} right={right}")
+        return
+
+    edge = call_tool(token, "create_spine_relation", {
+        "project_code": WRITE_PROJECT_CODE, "kind": "derives_from",
+        "from_key": left, "to_key": right,
+    })
+    edge_ok = edge.get("created") is True
+    before_edges = len(_read_relations_direct(token, right))
+
+    retired = call_tool(token, "retire_spine_element", {
+        "project_code": WRITE_PROJECT_CODE, "key": right,
+    })
+    counted = int(retired.get("edges_removed") or 0)
+    after_edges = _read_relations_direct(token, right)
+
+    record(
+        "AB. retiring an endpoint deletes its typed edges and reports the count",
+        edge_ok and retired.get("retired") is True and counted >= 1 and not after_edges,
+        f"edge_created={edge.get('created')} edges_before={before_edges} "
+        f"edges_removed_reported={counted} edges_after={len(after_edges)}"
+        + (f" ERROR={retired.get('error') or retired.get('note')}"
+           if retired.get("retired") is not True else ""),
+    )
+
+
+def case_ac_retire_batch_and_misses(token: str) -> None:
+    """The batch verb reports PER-KEY results and does not abort on a bad key.
+
+    Retiring nine of ten cards must not be undone because the tenth key was a
+    typo — that contract is the reason the batch verb exists, so the case mixes
+    a bogus key in deliberately and asserts the good ones still went through.
+    """
+    one = _make_element(token, "batch retire one")
+    two = _make_element(token, "batch retire two")
+    if not (one and two):
+        record("AC. retire_spine_elements reports per-key results", False,
+               f"element setup failed one={one} two={two}")
+        return
+
+    bogus = f"_authored/no-such-element-{RUN_TAG}-zzz"
+    payload = call_tool(token, "retire_spine_elements", {
+        "project_code": WRITE_PROJECT_CODE, "keys": [one, bogus, two],
+    })
+    results = payload.get("results") or []
+    by_key = {r.get("key"): r for r in results if isinstance(r, dict)}
+    hits_ok = (
+        by_key.get(one, {}).get("retired") is True
+        and by_key.get(two, {}).get("retired") is True
+    )
+    miss = by_key.get(bogus, {})
+    miss_ok = "note" in miss and "retired" not in miss
+    count_ok = payload.get("retired") == 2 and len(results) == 3
+
+    # And the hits really are archived in storage, despite the miss in the middle.
+    archived_ok = all(
+        bool(rows := _read_scope_direct(token, eid))
+        and all(r.get("archived") is True for r in rows)
+        for eid in (one, two)
+    )
+
+    record(
+        "AC. retire_spine_elements retires the good keys and reports the bad one "
+        "per-key without aborting",
+        hits_ok and miss_ok and count_ok and archived_ok,
+        f"retired={payload.get('retired')} results={len(results)} "
+        f"miss_note={str(miss.get('note'))[:60]!r} both_archived={archived_ok}"
+        + (f" ERROR={payload.get('error')}" if not count_ok else ""),
+    )
+
+
+def case_ad_retire_relation(token: str) -> None:
+    """Delete a typed edge; unknown kind is rejected; a dead endpoint still works.
+
+    The dead-endpoint fallback is the load-bearing part: an edge orphaned by an
+    older retire names an endpoint that no longer resolves live, so a live-only
+    resolver could never name the row to delete. Passing the raw est_item_id
+    must still work.
+    """
+    left = _make_element(token, "rel-retire left")
+    right = _make_element(token, "rel-retire right")
+    if not (left and right):
+        record("AD. retire_spine_relation deletes a typed edge", False,
+               f"element setup failed left={left} right={right}")
+        return
+
+    call_tool(token, "create_spine_relation", {
+        "project_code": WRITE_PROJECT_CODE, "kind": "informs",
+        "from_key": left, "to_key": right,
+    })
+    removed = call_tool(token, "retire_spine_relation", {
+        "project_code": WRITE_PROJECT_CODE, "kind": "informs",
+        "from_key": left, "to_key": right,
+    })
+    removed_ok = removed.get("removed") == 1 and removed.get("kind") == "informs"
+    gone = not [e for e in _read_relations_direct(token, left) if e.get("kind") == "informs"]
+
+    # Re-delete: a structured note, not an error.
+    again = call_tool(token, "retire_spine_relation", {
+        "project_code": WRITE_PROJECT_CODE, "kind": "informs",
+        "from_key": left, "to_key": right,
+    })
+    note_ok = "to remove" in str(again.get("note", "")) and "error" not in again
+
+    # Bad kind rejected before the DB CHECK ever sees it.
+    bad = call_tool(token, "retire_spine_relation", {
+        "project_code": WRITE_PROJECT_CODE, "kind": "vibes_with",
+        "from_key": left, "to_key": right,
+    })
+    bad_ok = "unknown relation kind" in str(bad.get("error", ""))
+
+    # Dead-endpoint fallback: retire `right`, leaving a NEW edge pointing at a
+    # retired element, then clean it by raw est_item_id.
+    call_tool(token, "create_spine_relation", {
+        "project_code": WRITE_PROJECT_CODE, "kind": "responds_to",
+        "from_key": left, "to_key": right,
+    })
+    call_tool(token, "retire_spine_element", {
+        "project_code": WRITE_PROJECT_CODE, "key": right,
+    })
+    # The retire cascade already removes it; re-create is impossible against a
+    # dead endpoint, so assert the fallback RESOLVES (names the raw ids) rather
+    # than erroring on an unresolvable key.
+    dead = call_tool(token, "retire_spine_relation", {
+        "project_code": WRITE_PROJECT_CODE, "kind": "responds_to",
+        "from_key": left, "to_key": right,
+    })
+    dead_ok = dead.get("to_item_id") == right and "error" not in dead
+
+    record(
+        "AD. retire_spine_relation removes an edge, notes a re-delete, rejects a "
+        "bad kind, and tolerates a dead endpoint",
+        removed_ok and gone and note_ok and bad_ok and dead_ok,
+        f"removed={removed.get('removed')} edge_gone={gone} "
+        f"redelete_note={str(again.get('note'))[:50]!r} "
+        f"bad_kind={str(bad.get('error'))[:50]!r} "
+        f"dead_endpoint_resolved_to={dead.get('to_item_id')}",
+    )
+
+
+def case_ae_promote_on_initiative(token: str) -> None:
+    """An initiative has no company — promotion is a clean note, not a raw raise.
+
+    The guarded function raises "engagements only — this project has no company";
+    the verb must translate that into a structured note, because for an
+    initiative this is the shape of the world, not a failure.
+    """
+    element = _make_element(token, "initiative promote attempt")
+    if not element:
+        record("AE. promote_stakeholder on an initiative is a clean note", False,
+               "element setup failed")
+        return
+
+    payload = call_tool(token, "promote_stakeholder", {
+        "project_code": WRITE_PROJECT_CODE, "key": element,
+    })
+    note = str(payload.get("note", ""))
+    ok = "engagements only" in note and "scope" not in payload and "error" not in payload
+
+    record(
+        "AE. promote_stakeholder on an initiative returns a clean engagements-only "
+        "note (no raw DB raise)",
+        ok,
+        f"note={note[:110]!r} keys={sorted(payload.keys())}",
+    )
+
+
+def case_af_promote_demote_roundtrip(token: str) -> None:
+    """Promote/demote against a REAL ENGAGEMENT — the only place scope exists.
+
+    WHY THIS ONE CASE TOUCHES A CLIENT PROJECT. Account scope is a COMPANY-level
+    fact and the guarded function refuses any project without a company, so an
+    initiative cannot exercise it at all. Batch 3 set the precedent (case Z runs
+    against `PROJECT_CODE` for the same structural reason): the row is
+    smoke-tagged, demoted at the end of the case, and reported for cleanup.
+
+    Asserts on BOTH versions by direct read-back, because "every version moves
+    together" is the contract and the read tools only surface the live one.
+    Also asserts the LAYER WARNING fires: the element's layer is 'Note', not
+    Stakeholders, and promotion must still apply while saying so.
+    """
+    framing = f"smoke-test-{RUN_TAG} account scope roundtrip"
+    created = call_tool(token, "create_spine_element", {
+        "project_code": PROJECT_CODE, "framing": framing,
+        "body": "Created by smoke_test.py (#143 batch 4) — safe to delete.",
+        "layer": "note",
+    })
+    if created.get("row_id"):
+        created_rows.append(("spine_substance", created["row_id"]))
+    element = created.get("element_id")
+    if not element:
+        record("AF. promote/demote round-trip on an engagement", False,
+               f"element setup failed: {created.get('error') or created.get('_http')}")
+        return
+
+    # A second version, so "every version moves together" is provable.
+    bumped = call_tool(token, "add_spine_version", {
+        "project_code": PROJECT_CODE, "element_id": element,
+        "body": "v2 — account-scope round-trip.",
+    })
+    if bumped.get("row_id"):
+        created_rows.append(("spine_substance", bumped["row_id"]))
+
+    promoted = call_tool(token, "promote_stakeholder", {
+        "project_code": PROJECT_CODE, "key": element,
+    })
+    promote_ok = (
+        promoted.get("scope") == "account"
+        and bool(promoted.get("company_id"))
+        and int(promoted.get("versions_moved") or 0) >= 2
+    )
+    # Layer is 'Note' -> the sanity-check warning must fire, promotion applied.
+    warning_ok = "not Stakeholders" in str(promoted.get("warning", ""))
+
+    after_promote = _read_scope_direct(token, element)
+    all_account = bool(after_promote) and all(
+        r.get("scope") == "account" and r.get("company_id") for r in after_promote)
+
+    # Re-promote is a note, not a second write.
+    again = call_tool(token, "promote_stakeholder", {
+        "project_code": PROJECT_CODE, "key": element,
+    })
+    already_ok = "already account-scoped" in str(again.get("note", ""))
+
+    demoted = call_tool(token, "demote_stakeholder", {
+        "project_code": PROJECT_CODE, "key": element,
+    })
+    demote_ok = (
+        demoted.get("scope") == "project"
+        and bool(demoted.get("returned_to_project_id"))
+        and int(demoted.get("versions_moved") or 0) >= 2
+    )
+    after_demote = _read_scope_direct(token, element)
+    all_project = bool(after_demote) and all(
+        r.get("scope") == "project" and not r.get("company_id") for r in after_demote)
+
+    # Re-demote: not account-scoped -> structured note (the fn moves 0 rows).
+    redemote = call_tool(token, "demote_stakeholder", {
+        "project_code": PROJECT_CODE, "key": element,
+    })
+    redemote_ok = "not account-scoped" in str(redemote.get("note", ""))
+
+    record(
+        "AF. promote/demote moves EVERY version between account and project "
+        "scope, warns on a non-Stakeholders layer, and notes both no-ops",
+        promote_ok and warning_ok and all_account and already_ok
+        and demote_ok and all_project and redemote_ok,
+        f"promote={{scope:{promoted.get('scope')} versions:{promoted.get('versions_moved')} "
+        f"company:{bool(promoted.get('company_id'))}}} "
+        f"warning={str(promoted.get('warning'))[:60]!r} "
+        f"rows_account={[(r.get('version_label'), r.get('scope')) for r in after_promote]} "
+        f"repromote_note={str(again.get('note'))[:45]!r} "
+        f"demote={{scope:{demoted.get('scope')} versions:{demoted.get('versions_moved')}}} "
+        f"rows_project={[(r.get('version_label'), r.get('scope'), r.get('company_id')) for r in after_demote]} "
+        f"redemote_note={str(redemote.get('note'))[:45]!r}"
+        + (f" ERRORS={[promoted.get('error') or promoted.get('note'), demoted.get('error') or demoted.get('note')]}"
+           if not (promote_ok and demote_ok) else ""),
+    )
+
+
+def case_ag_set_element_account_scope_delegates(token: str) -> None:
+    """The type-agnostic verb is the same move WITHOUT the layer warning.
+
+    It delegates to promote/demote exactly as the engine's original does, so on
+    an initiative it must produce the identical engagements-only note — proving
+    the delegation rather than a parallel implementation.
+    """
+    element = _make_element(token, "set-scope delegation")
+    if not element:
+        record("AG. set_element_account_scope delegates to promote/demote", False,
+               "element setup failed")
+        return
+
+    promote_shape = call_tool(token, "set_element_account_scope", {
+        "project_code": WRITE_PROJECT_CODE, "key": element, "account": True,
+    })
+    same_note_ok = "engagements only" in str(promote_shape.get("note", ""))
+    # And no layer warning is ever attached by this verb.
+    no_warning_ok = "warning" not in promote_shape
+
+    demote_shape = call_tool(token, "set_element_account_scope", {
+        "project_code": WRITE_PROJECT_CODE, "key": element, "account": False,
+    })
+    demote_note_ok = "not account-scoped" in str(demote_shape.get("note", ""))
+
+    record(
+        "AG. set_element_account_scope delegates both directions (no layer warning)",
+        same_note_ok and no_warning_ok and demote_note_ok,
+        f"promote_note={str(promote_shape.get('note'))[:70]!r} "
+        f"warning_absent={no_warning_ok} "
+        f"demote_note={str(demote_shape.get('note'))[:70]!r}",
+    )
+
+
 def case_o4_add_spine_document(token: str) -> None:
     """Phase 3 (#140): author a document into the spine via content=.
 
@@ -1733,6 +2174,13 @@ def case_m_audit_log(token: str) -> None:
         "remove_element_source",
         "add_element_provenance",
         "remove_element_provenance",
+        # #143 batch 4 — the guarded-function verbs
+        "retire_spine_element",
+        "retire_spine_elements",
+        "retire_spine_relation",
+        "promote_stakeholder",
+        "demote_stakeholder",
+        "set_element_account_scope",
     }
     missing = sorted(expected - tools_logged)
     # No free text may EVER appear in args. `query` is length-only, and so are
@@ -1767,8 +2215,17 @@ def case_m_audit_log(token: str) -> None:
     ) and (
         all("source_key" in (r.get("args") or {}) for r in prov_rows) if prov_rows else False
     )
+    # #143 batch 4: the BATCH retire logs `keys_count`, never the key list —
+    # the same projection rule `order`/`order_len` set in batch 2. Assert both
+    # faces: the count is present, and the raw `keys` never appears.
+    batch_rows = [r for r in rows if r.get("tool") == "retire_spine_elements"]
+    keys_count_present = (
+        all("keys_count" in (r.get("args") or {}) for r in batch_rows) if batch_rows else False
+    )
+    keys_leaked = [r for r in rows if "keys" in (r.get("args") or {})]
     ok = (bool(rows) and not missing and not leaked and lengths_present
-          and order_len_present and src_keys_present)
+          and order_len_present and src_keys_present
+          and keys_count_present and not keys_leaked)
     record(
         "M. audit rows appear for reads AND writes, args sanitized to lengths",
         ok,
@@ -1776,6 +2233,8 @@ def case_m_audit_log(token: str) -> None:
         f"client={rows[0].get('client') if rows else None} "
         f"order_len_present={order_len_present} "
         f"source_keys_present={src_keys_present} "
+        f"keys_count_present={keys_count_present} "
+        + ("KEYS_LEAKED " if keys_leaked else "")
         + (f"MISSING={missing} " if missing else "")
         + (f"LEAKED_FREE_TEXT={[sorted(forbidden & set((r.get('args') or {}).keys())) for r in leaked]}"
            if leaked else "no raw free text logged")
@@ -1848,6 +2307,18 @@ def main() -> int:
         case_z5_add_element_provenance(token)
         case_z6_provenance_self_and_unknown(token)
         case_z7_remove_element_provenance(token)
+
+        # ── #143 batch 4: retire + account scope. THESE RETIRE REAL ROWS. ──
+        # Ordered LAST among the writes on purpose: retiring is terminal, so a
+        # case that archives an element must not run before cases that still
+        # need it live. AA is the one that closes batch 3's README gap 8.
+        case_aa_retire_closes_provenance_gap(token)
+        case_ab_retire_cascades_edges(token)
+        case_ac_retire_batch_and_misses(token)
+        case_ad_retire_relation(token)
+        case_ae_promote_on_initiative(token)
+        case_af_promote_demote_roundtrip(token)
+        case_ag_set_element_account_scope_delegates(token)
 
         # ── Package B: read-only tenant tree ──
         cp_md = case_q_project_state(token)
