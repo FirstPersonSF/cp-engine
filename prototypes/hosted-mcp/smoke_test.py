@@ -76,8 +76,26 @@ The tree's team gate (case S2) is only tested from the POSITIVE side: $TEST_JWT
 belongs to a team member, so the suite can prove the gate does not wrongly deny,
 but not that it denies a stranger. Minting a non-team JWT means creating a
 Supabase user with no `public.profiles` row, which this script will not do
-(it creates no auth users). To check the negative path by hand: register a
-throwaway account, call `get_project_state`, and expect "tree access denied".
+(it creates no auth users).
+
+THE NEGATIVE PATH WAS VERIFIED BY HAND against the live server on 2026-08-02,
+using the standing fixture account `test-hosted-nonteam@firstperson.is`
+(no `public.profiles` row, so `is_team_member()` is false). All three layers
+behaved independently, which is the point — one valid token, three outcomes:
+
+    whoami               -> authenticated: true    (the token IS valid;
+                                                    this is not an auth failure)
+    list_spine_elements  -> 0 rows, code does not
+                            even resolve            (RLS: `initiatives` reads
+                                                    are team-keyed)
+    get_project_state    -> "tree access denied"   (the gate; RLS cannot reach
+    read_project_file    -> "tree access denied"    a git clone)
+
+To re-run it: set a known password on that account with the service key
+(`PUT /auth/v1/admin/users/<id>`), exchange it at
+`POST /auth/v1/token?grant_type=password` for an access token, and call the
+two tree tools with it. Keep the account — it is the ONLY identity that can
+exercise this path, and it holds no data and no profiles row.
 
 The token must be an ES256 Supabase user token belonging to a TEAM member (a
 `public.profiles` row). Read policies are gated on `public.is_team_member()`,
