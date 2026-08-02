@@ -473,6 +473,13 @@ _AUDIT_SAFE_ARGS = {
     "key",           # the element key steps resolve against
     "step_date",     # free-form but tiny ('7/16') — a date, not prose
     "status",        # done | active | upcoming
+    # ── #143 batch 2 (UPDATE verbs): identifiers and closed vocabularies ──
+    "step_id",       # a step uuid — an identifier
+    "outcome",       # done | dropped
+    # `order` is a LIST OF UUIDS, never logged as itself: a reorder is recorded
+    # as how many steps moved, not which. The verbs pass `order_len`, and the
+    # bare `order` key is absent from both lists so it is DROPPED if ever passed.
+    "order_len",
 }
 # Arg keys that are free text — recorded as a length only, never their content.
 # `body`/`description`/`framing`/`title` are USER PROSE: the whole point of the
@@ -1833,6 +1840,570 @@ def propose_spine_step(
     }
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  #143 batch 2 — the UPDATE-shaped verbs
+# ──────────────────────────────────────────────────────────────────────
+#
+# Batch 1 was insert-only because no authenticated UPDATE policy existed. The
+# `ratchet_batch2_update_verb_policies` migration adds exactly three, and the
+# tools below are shaped to fit them rather than to work around them:
+#
+#   spine_substance  UPDATE  using/with check (is_team_member() AND status='live')
+#   commitments      UPDATE  using (is_team_member() AND status='open')
+#                            with check (is_team_member() AND status IN ('done','dropped'))
+#   spine_steps      UPDATE/DELETE  using/with check (is_team_member())
+#
+# Two consequences the verbs encode rather than fight:
+#
+#   * `set_spine_element` can only touch LIVE rows. The engine verb writes
+#     layer/framing/serves to EVERY version of an element (they are
+#     element-level facts); the hosted policy makes superseded rows unwritable,
+#     so the hosted verb is live-row-only and SAYS SO in its return. See the
+#     docstring — this is a real semantic difference, not an oversight.
+#   * `resolve_commitment`'s USING clause means a non-open commitment matches
+#     ZERO rows. PostgREST reports that as a successful 0-row update, not an
+#     error, so the verb checks the row count and explains the denial rather
+#     than reporting a silent success.
+#
+# WHERE THE COLUMN BOUNDARY ACTUALLY LIVES (verified live 2026-08-02, and NOT
+# what the batch-2 brief assumed). The migration's per-column grant
+# `UPDATE(important, note, layer, framing, serves)` is real but INERT: the
+# table-level ACL already carries `authenticated=arwdDxtm`, and Postgres unions
+# table- and column-level grants rather than intersecting them, so the blanket
+# table grant subsumes the narrow one. Nothing is denied at the grant layer.
+#
+# What actually stops a `body`/`status`/`origin` write is the mc-2 #130
+# COLUMN-GUARD TRIGGER (`spine_substance_column_guard`), which raises SQLSTATE
+# P0130. Probed directly under the smoke user's JWT: UPDATE body -> P0130,
+# UPDATE status -> P0130, UPDATE origin -> P0130, UPDATE important -> 200.
+#
+# That trigger is an ATTRIBUTION guard, not an authorization boundary: it only
+# demands the writer name itself, and setting an `X-Spine-Writer` header
+# satisfies it. Confirmed live — the same body UPDATE that fails with P0130
+# succeeds with `X-Spine-Writer: probe` set. So engine-owned columns are
+# protected from ACCIDENT here, not from INTENT. Closing that would mean
+# revoking the table-wide UPDATE grant so the column grant becomes load-bearing.
+# Recorded as a finding; no DB change was made by this batch.
+
+
+@mcp_server.tool()
+def set_spine_element(
+    project_code: str,
+    key: str,
+    important: bool | None = None,
+    note: str | None = None,
+    layer: str | None = None,
+    framing: str | None = None,
+    serves: list[str] | None = None,
+) -> dict[str, Any]:
+    """Set `important`, `note`, `layer`, `framing` (title), and/or `serves` on a
+    spine element — the hosted port of the stdio verb (#143 batch 2).
+
+    `key` resolves to ONE live element (exact est_item_id, bare slug, or a
+    distinct `framing` substring — the same discipline as `pull_spine_element`).
+    Args left None are NOT touched: this is a partial update, and it can never
+    null a field. `layer` is normalized through the canonical vocabulary, so
+    'decision' and 'Decisions' land identically and the spine UI's by-layer
+    filters keep working. `serves` rebinds the element to work-item ids; pass
+    `[]` to unbind, and `binding` follows automatically ('live' when serves is
+    non-empty, 'unbound' when empty) — the same rule the authored-element
+    builders use.
+
+    TWO DELIBERATE DIFFERENCES from the stdio verb, both worth knowing before
+    you rely on this:
+
+    1. **LIVE ROWS ONLY.** The engine verb applies layer/framing/serves to EVERY
+       version of the element, because those are element-level facts and a
+       partial write scatters one element's history (#47). The hosted UPDATE
+       policy is `status='live'`, so superseded rows are unwritable here and
+       only the live row moves. For an element with history, its superseded rows
+       keep the OLD layer/framing/serves. The return says so explicitly
+       (`versions_updated` / `superseded_untouched`) rather than implying a
+       whole-element move. Use the stdio verb when the whole history must move.
+
+    2. **NO TRANSCRIPT PROMOTION.** The engine fires a RAG transcript promotion
+       on a genuine `important` false->true transition (engagement-only,
+       non-fatal, surfaced under `promotion`). That machinery is NOT mirrored
+       here — it ports later alongside `promote_spine_transcript`. Flipping
+       `important` to true through this tool sets the flag and NOTHING ELSE; no
+       transcript is promoted to RAG. Until that port lands, use the stdio
+       `set_spine_element` (or `promote_spine_transcript`) when promotion is the
+       point. The return carries `promotion: "not mirrored — see docstring"` so
+       a caller can never mistake silence for success.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        key: the element (est_item_id, bare slug, or unique framing substring).
+        important: element-level importance flag (no promotion side effect).
+        note: element-level annotation.
+        layer: element kind, normalized to the canonical string.
+        framing: retitle the element (est_item_id never changes).
+        serves: work-item ids to bind to; `[]` unbinds.
+    """
+    if all(v is None for v in (important, note, layer, framing, serves)):
+        return {
+            "note": "nothing to update (pass important/note/layer/framing/serves)"
+        }
+
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    est_item_id, versions, err = resolve_element_versions(client, scope["id"], key)
+    if err is not None:
+        return err
+    if est_item_id is None:
+        return {"note": f"no single live element matching {key!r} in {project_code!r}"}
+    live = next((v for v in versions if v.get("status") == "live"), None)
+    if live is None:
+        return {"error": f"element {est_item_id!r} has no live version to update"}
+
+    patch: dict[str, Any] = {}
+    if important is not None:
+        patch["important"] = bool(important)
+    if note is not None:
+        patch["note"] = note
+    canonical_layer = None
+    if layer is not None:
+        canonical_layer = canon_layer(layer)
+        patch["layer"] = canonical_layer
+    if framing is not None:
+        patch["framing"] = framing
+    if serves is not None:
+        patch["serves"] = list(serves)
+        patch["binding"] = "live" if serves else "unbound"
+
+    audit_args = {
+        "project_code": project_code,
+        "key": key,
+        "layer": canonical_layer,
+        "framing": framing,
+        "note": note,
+    }
+    try:
+        result = (
+            client.table("spine_substance")
+            .update(patch)
+            .eq("id", live["id"])
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        audit(client, "set_spine_element", audit_args, 0)
+        message = str(exc)
+        if "P0130" in message:
+            # Only reachable if a future edit adds an engine-owned column to the
+            # patch — name the guard rather than leaking a bare SQLSTATE.
+            return {
+                "error": "the mc-2 #130 column guard rejected this update: "
+                "body/status/origin are engine-owned and this verb must never "
+                f"patch them. {message[:200]}"
+            }
+        return {"error": f"update failed: {type(exc).__name__}: {message[:400]}"}
+
+    updated = result.data or []
+    if not updated:
+        # RLS matched no row: the live row is gone, or the caller is not a team
+        # member. A 0-row UPDATE is a SUCCESS to PostgREST — never report it as one.
+        audit(client, "set_spine_element", audit_args, 0)
+        return {
+            "error": f"0 rows updated for {est_item_id!r}. The UPDATE policy on "
+            "spine_substance is `is_team_member() AND status='live'` — either the "
+            "row is no longer live, or the caller is not a team member.",
+            "est_item_id": est_item_id,
+        }
+
+    row = updated[0]
+    superseded_count = sum(1 for v in versions if v.get("status") != "live")
+    audit(client, "set_spine_element", audit_args, len(updated))
+    out: dict[str, Any] = {
+        "est_item_id": est_item_id,
+        "important": row.get("important"),
+        "note": row.get("note"),
+        "caller": caller_subject(),
+        "versions_updated": len(updated),
+        # Say the quiet part out loud: the stdio verb would have moved these too.
+        "superseded_untouched": superseded_count,
+        "promotion": "not mirrored — hosted set_spine_element does not promote "
+        "transcripts; use the stdio verb or promote_spine_transcript",
+    }
+    if canonical_layer is not None:
+        out["layer"] = row.get("layer")
+    if framing is not None:
+        out["framing"] = row.get("framing")
+    if serves is not None:
+        out["serves"] = row.get("serves")
+        out["binding"] = row.get("binding")
+    if superseded_count:
+        out["note_on_scope"] = (
+            f"{superseded_count} superseded version(s) kept their prior "
+            "layer/framing/serves — the hosted UPDATE policy is live-rows-only."
+        )
+    return out
+
+
+@mcp_server.tool()
+def resolve_commitment(
+    project_code: str, key: str, outcome: str = "done"
+) -> dict[str, Any]:
+    """Close an OPEN commitment: `outcome` 'done' (delivered) or 'dropped'.
+
+    The hosted port of the stdio verb (#143 batch 2), with the engine's
+    resolution semantics intact. `key` is a commitment id (exact) or a
+    case-insensitive substring of the description, matched against the project's
+    OPEN commitments only. Ambiguity is an ERROR that returns the candidates —
+    never a guess — so a vague key makes you re-key by id rather than closing
+    the wrong obligation.
+
+    Commitments are never deleted: a dropped row stays as the archive, and its
+    `cp_hash` keeps a re-ingest of the same meeting from resurrecting it. Sets
+    `status` and `updated_at` (the table has no auto-update trigger, so
+    `updated_at` is written explicitly, mirroring the mc-2 router).
+
+    The UPDATE policy is `using (status='open')` with
+    `with check (status IN ('done','dropped'))`, so a commitment that is already
+    done/dropped matches ZERO rows. PostgREST reports that as a successful
+    0-row update; this verb detects it and explains the denial instead of
+    reporting a success that did not happen.
+
+    Args:
+        project_code: engagement or initiative code.
+        key: a commitment id, or a distinct substring of its description.
+        outcome: done | dropped.
+    """
+    if outcome not in ("done", "dropped"):
+        return {"error": "outcome must be 'done' or 'dropped'"}
+
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    column = "initiative_id" if scope["kind"] == "initiative" else "project_id"
+    open_rows = (
+        client.table("commitments")
+        .select(COMMITMENT_COLUMNS)
+        .eq(column, scope["id"])
+        .eq("status", "open")
+        .execute()
+        .data
+        or []
+    )
+
+    # Engine order: exact id first, then a case-insensitive description substring.
+    matches = [r for r in open_rows if r.get("id") == key]
+    if not matches:
+        needle = (key or "").strip().lower()
+        if needle:
+            matches = [
+                r for r in open_rows if needle in (r.get("description") or "").lower()
+            ]
+    if not matches:
+        return {
+            "error": f"no open commitment in {project_code!r} matches {key!r}",
+            "open_count": len(open_rows),
+        }
+    if len(matches) > 1:
+        return {
+            "error": f"{len(matches)} open commitments match {key!r} — pass an id instead",
+            "candidates": [
+                {"id": r.get("id"), "description": (r.get("description") or "")[:80]}
+                for r in matches[:5]
+            ],
+        }
+
+    row = matches[0]
+    audit_args = {"project_code": project_code, "key": key, "outcome": outcome}
+    try:
+        result = (
+            client.table("commitments")
+            .update(
+                {
+                    "status": outcome,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            .eq("id", row["id"])
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        audit(client, "resolve_commitment", audit_args, 0)
+        return {"error": f"update failed: {type(exc).__name__}: {str(exc)[:400]}"}
+
+    updated = result.data or []
+    if not updated:
+        audit(client, "resolve_commitment", audit_args, 0)
+        return {
+            "error": f"0 rows updated for commitment {row['id']}. The UPDATE policy "
+            "only matches OPEN commitments (`using status='open'`), so this one is "
+            "already resolved or was closed concurrently — re-read it with "
+            "list_commitments before retrying.",
+            "commitment_id": row["id"],
+        }
+
+    audit(client, "resolve_commitment", audit_args, len(updated))
+    return {
+        "resolved": row["id"],
+        "description": row.get("description"),
+        "outcome": outcome,
+        "status": updated[0].get("status"),
+        "updated_at": updated[0].get("updated_at"),
+        "caller": caller_subject(),
+    }
+
+
+@mcp_server.tool()
+def set_spine_step(
+    project_code: str,
+    key: str,
+    step_id: str,
+    title: str | None = None,
+    status: str | None = None,
+    step_date: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Update one step on a spine element's trail (#119, hosted port).
+
+    Advance a step (`status` ∈ done|active|upcoming) or edit its title/
+    step_date/note. `key` resolves the parent element; `step_id` picks the step.
+    Only the fields you pass change (None = untouched — this verb never nulls a
+    field), matching the partial-update discipline of `set_spine_element`. The
+    common move is advancing a step to `done` as the work lands.
+
+    The UPDATE is scoped by (id, project_id, est_item_id) exactly as
+    `cp_engine.spine_steps.set_step` does, so a stray `step_id` can never reach
+    another element's trail even if the id is valid elsewhere.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        key: the parent element (est_item_id or unique framing substring).
+        step_id: the step to update.
+        title: new title (non-blank).
+        status: done | active | upcoming.
+        step_date: free-form date ('7/16').
+        note: annotation (≤8000 chars).
+    """
+    if status is not None and status not in STEP_STATUSES:
+        return {"error": f"status must be one of {list(STEP_STATUSES)}"}
+    if note is not None and len(note) > STEP_NOTE_MAX:
+        return {"error": f"note exceeds {STEP_NOTE_MAX} characters"}
+
+    patch: dict[str, Any] = {}
+    if title is not None:
+        if not title.strip():
+            return {"error": "title cannot be blank"}
+        patch["title"] = title.strip()
+    if status is not None:
+        patch["status"] = status
+    if step_date is not None:
+        patch["step_date"] = step_date
+    if note is not None:
+        patch["note"] = note
+    if not patch:
+        return {"note": "nothing to update (pass title/status/step_date/note)"}
+
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    est_item_id, err = resolve_live_element_id(client, scope["id"], key)
+    if err is not None:
+        return err
+    if est_item_id is None:
+        return {"error": f"no live element matching {key!r}"}
+
+    audit_args = {
+        "project_code": project_code,
+        "key": key,
+        "step_id": step_id,
+        "status": status,
+        "step_date": step_date,
+        "title": title,
+        "note": note,
+    }
+    try:
+        result = (
+            client.table("spine_steps")
+            .update(patch)
+            .eq("id", step_id)
+            .eq("project_id", scope["id"])
+            .eq("est_item_id", est_item_id)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        audit(client, "set_spine_step", audit_args, 0)
+        return {"error": f"step update failed: {type(exc).__name__}: {str(exc)[:400]}"}
+
+    updated = result.data or []
+    if not updated:
+        audit(client, "set_spine_step", audit_args, 0)
+        return {
+            "error": f"0 rows updated — step {step_id!r} is not on element "
+            f"{est_item_id!r} in this project (or the caller is not a team member).",
+            "est_item_id": est_item_id,
+        }
+
+    audit(client, "set_spine_step", audit_args, len(updated))
+    return {
+        "est_item_id": est_item_id,
+        "step_id": step_id,
+        "caller": caller_subject(),
+        "steps": read_steps(client, scope["id"], est_item_id),
+    }
+
+
+@mcp_server.tool()
+def reorder_spine_step(
+    project_code: str, key: str, order: list[str]
+) -> dict[str, Any]:
+    """Reorder a spine element's steps (#119, hosted port).
+
+    `order` is the FULL list of the element's step_ids in the desired order;
+    positions are renumbered 1..N to match. `key` resolves the parent element.
+
+    The set is validated BEFORE anything is written: `order` must match the
+    element's current step ids EXACTLY — no extras, no omissions, no duplicates.
+    The engine helper renumbers whatever it is handed, which on a partial list
+    silently leaves the omitted steps at stale positions (two steps sharing a
+    position, or a gap). Hosted, a partial or foreign list is rejected with the
+    difference spelled out, because a half-renumbered trail is worse than an
+    unchanged one and there is no transaction here to roll back.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        key: the parent element (est_item_id or unique framing substring).
+        order: the complete list of this element's step_ids, in the new order.
+    """
+    if not order:
+        return {"error": "order (the full list of step_ids) is required"}
+
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    est_item_id, err = resolve_live_element_id(client, scope["id"], key)
+    if err is not None:
+        return err
+    if est_item_id is None:
+        return {"error": f"no live element matching {key!r}"}
+
+    existing = read_steps(client, scope["id"], est_item_id)
+    current_ids = [s["id"] for s in existing]
+    if len(set(order)) != len(order):
+        return {"error": "order contains duplicate step_ids"}
+    if set(order) != set(current_ids):
+        return {
+            "error": "order must list this element's steps EXACTLY once each — "
+            "a partial reorder would leave the omitted steps at stale positions",
+            "missing": sorted(set(current_ids) - set(order)),
+            "unknown": sorted(set(order) - set(current_ids)),
+            "expected_count": len(current_ids),
+        }
+
+    audit_args = {
+        "project_code": project_code,
+        "key": key,
+        "order_len": len(order),
+    }
+    renumbered = 0
+    try:
+        for pos, sid in enumerate(order, start=1):
+            client.table("spine_steps").update({"position": pos}).eq("id", sid).eq(
+                "project_id", scope["id"]
+            ).eq("est_item_id", est_item_id).execute()
+            renumbered += 1
+    except Exception as exc:  # noqa: BLE001
+        audit(client, "reorder_spine_step", audit_args, renumbered)
+        return {
+            "error": f"reorder failed after {renumbered}/{len(order)} steps: "
+            f"{type(exc).__name__}: {str(exc)[:300]}",
+            "steps": read_steps(client, scope["id"], est_item_id),
+        }
+
+    audit(client, "reorder_spine_step", audit_args, renumbered)
+    return {
+        "est_item_id": est_item_id,
+        "reordered": renumbered,
+        "caller": caller_subject(),
+        "steps": read_steps(client, scope["id"], est_item_id),
+    }
+
+
+@mcp_server.tool()
+def remove_spine_step(
+    project_code: str, key: str, step_id: str
+) -> dict[str, Any]:
+    """Delete one step from a spine element's trail (#119, hosted port).
+
+    `key` resolves the parent element; `step_id` picks the step. Remaining steps
+    densify to stay 1..N contiguous, exactly as
+    `cp_engine.spine_steps.remove_step` does. The DELETE is scoped by
+    (id, project_id, est_item_id) so a stray id cannot reach another element.
+
+    `spine_steps` is the ONLY table on this server with an authenticated DELETE
+    policy (`is_team_member()`), and it is deliberately narrow: a step is a
+    lightweight progress marker, not a versioned record, so removing a
+    mis-authored one is a correction rather than a loss of history. Nothing else
+    here deletes — spine versions and commitments are superseded or resolved.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        key: the parent element (est_item_id or unique framing substring).
+        step_id: the step to delete.
+    """
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    est_item_id, err = resolve_live_element_id(client, scope["id"], key)
+    if err is not None:
+        return err
+    if est_item_id is None:
+        return {"error": f"no live element matching {key!r}"}
+
+    audit_args = {"project_code": project_code, "key": key, "step_id": step_id}
+    try:
+        deleted = (
+            client.table("spine_steps")
+            .delete()
+            .eq("id", step_id)
+            .eq("project_id", scope["id"])
+            .eq("est_item_id", est_item_id)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:  # noqa: BLE001
+        audit(client, "remove_spine_step", audit_args, 0)
+        return {"error": f"step delete failed: {type(exc).__name__}: {str(exc)[:400]}"}
+
+    if not deleted:
+        audit(client, "remove_spine_step", audit_args, 0)
+        return {
+            "error": f"0 rows deleted — step {step_id!r} is not on element "
+            f"{est_item_id!r} in this project (or the caller is not a team member).",
+            "est_item_id": est_item_id,
+        }
+
+    # Densify: renumber the survivors to a contiguous 1..N.
+    for pos, step in enumerate(read_steps(client, scope["id"], est_item_id), start=1):
+        if step.get("position") != pos:
+            client.table("spine_steps").update({"position": pos}).eq(
+                "id", step["id"]
+            ).execute()
+
+    audit(client, "remove_spine_step", audit_args, len(deleted))
+    return {
+        "est_item_id": est_item_id,
+        "removed": step_id,
+        "caller": caller_subject(),
+        "steps": read_steps(client, scope["id"], est_item_id),
+    }
+
+
 @mcp_server.tool()
 def create_note(
     project_code: str,
@@ -2863,9 +3434,13 @@ def main() -> None:
         else tree_reason,
     )
     log.info(
-        "writes: create_note, create_commitment, create_spine_element, "
+        "writes (insert): create_note, create_commitment, create_spine_element, "
         "add_spine_version (+auto-step), add_spine_document, "
         "create_spine_relation, add_spine_step, propose_spine_step"
+    )
+    log.info(
+        "writes (update/delete, #143 batch 2): set_spine_element, "
+        "resolve_commitment, set_spine_step, reorder_spine_step, remove_spine_step"
     )
     log.info("audit log: mcp_audit_log as client=%s", SERVER_VERSION)
     mcp_server.run(

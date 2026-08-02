@@ -18,7 +18,7 @@ path. Nothing under `src/cp_engine/` was modified.
   `TENANT_REPO`. **The tree has no per-user RLS** — see
   [The tenant tree has no RLS](#the-tenant-tree-has-no-rls).
 
-13 tools, **21/21 smoke cases pass**.
+23 tools, **34/34 smoke cases pass**.
 
 ---
 
@@ -96,7 +96,7 @@ never reads it.
 
 ## Tools
 
-All thirteen run under the caller's identity, select **explicit columns only**,
+All twenty-three run under the caller's identity, select **explicit columns only**,
 and write an audit row on success.
 
 **Reads:**
@@ -122,8 +122,76 @@ and write an audit row on success.
 | `add_spine_version(project_code, element_id, body, version_note?)` | `spine_substance` | New vN+1 row (insert), then live→superseded on the prior row via the #142 guarded function. |
 | `add_spine_document(project_code, label, content= OR source_title=, type?)` | `spine_substance` | Phase 3 (#140): author a whole document from chat, or spine-card an ingested source with provenance attached at insert. |
 
+**Updates + deletes (cp-engine #143 batch 2):**
+
+| Tool | Target | Notes |
+|---|---|---|
+| `set_spine_element(project_code, key, important?, note?, layer?, framing?, serves?)` | `spine_substance` | Partial update of the **live row only**. No transcript promotion — see below. |
+| `resolve_commitment(project_code, key, outcome='done')` | `commitments` | `done`\|`dropped`; ambiguous key returns candidates, never guesses. |
+| `set_spine_step(project_code, key, step_id, title?, status?, step_date?, note?)` | `spine_steps` | Partial update; scoped by (id, project_id, est_item_id). |
+| `reorder_spine_step(project_code, key, order)` | `spine_steps` | `order` is the FULL step_id list; renumbers 1..N. |
+| `remove_spine_step(project_code, key, step_id)` | `spine_steps` | Deletes, then densifies positions to 1..N. |
+
+These fit three policies added by `ratchet_batch2_update_verb_policies`:
+`spine_substance` UPDATE `using/with check (is_team_member() AND status='live')`;
+`commitments` UPDATE `using (status='open')` / `with check (status IN
+('done','dropped'))`; `spine_steps` UPDATE+DELETE `using (is_team_member())`.
+
+Two deliberate semantic gaps versus the stdio verbs, both surfaced in the tools'
+own returns so a caller cannot mistake them for success:
+
+1. **`set_spine_element` is live-rows-only.** The engine verb writes
+   `layer`/`framing`/`serves` to *every* version of an element, because those are
+   element-level facts and a partial write scatters one element's history (#47).
+   The hosted UPDATE policy is `status='live'`, so superseded rows are
+   unwritable here and keep their prior values. The return reports
+   `versions_updated` and `superseded_untouched`. Use the stdio verb when the
+   whole history must move.
+2. **No transcript promotion.** The engine fires a RAG transcript promotion on a
+   genuine `important` false→true transition. That machinery is **not mirrored**
+   — it ports later with `promote_spine_transcript`. Flipping `important` here
+   sets the flag and nothing else; the return carries
+   `promotion: "not mirrored — …"`. Use the stdio `set_spine_element` (or
+   `promote_spine_transcript`) when promotion is the point.
+
+### Where the engine-owned column boundary actually lives
+
+Worth stating precisely, because it is **not** what #143's brief assumed, and
+the difference is load-bearing for anyone reasoning about this server's safety.
+
+The migration's per-column grant `UPDATE(important, note, layer, framing,
+serves)` on `spine_substance` is real but **inert**. The table-level ACL already
+carries `authenticated=arwdDxtm` — a blanket table-wide UPDATE — and Postgres
+**unions** table- and column-level grants rather than intersecting them. The
+narrow column grant therefore subsumes into the broad one and denies nothing.
+Verified by reading `pg_class.relacl` and `pg_attribute.attacl` directly.
+
+What actually stops a `body`/`status`/`origin` write is the **mc-2 #130
+column-guard trigger** (`spine_substance_column_guard`), raising SQLSTATE
+`P0130`. Probed live under the smoke user's JWT:
+
+| Direct PostgREST PATCH | Result |
+|---|---|
+| `body` | **500 `P0130`** — denied |
+| `status` | **500 `P0130`** — denied |
+| `origin` | **500 `P0130`** — denied |
+| `important` | 200, 1 row — allowed |
+
+**But that trigger is an *attribution* guard, not an authorization boundary.**
+It only requires the writer to name itself, and an `X-Spine-Writer` header
+satisfies it. Confirmed live: the same `body` PATCH that fails with `P0130`
+**succeeds (200)** when `X-Spine-Writer: smoke-test` is set. So engine-owned
+columns are protected from *accident*, not from *intent* — any client holding a
+team JWT can rewrite element bodies by adding one header.
+
+Closing that would mean **revoking the table-wide UPDATE grant** on
+`spine_substance` from `authenticated`, which is what makes the column grant
+load-bearing. No DB change was made by this batch; smoke case W2 asserts the
+`P0130` denial and records the header bypass as a finding.
+
 **There is still no authenticated UPDATE grant or policy on
-`spine_substance`.** The one status transition that versioning needs
+`spine_substance`** *for engine-owned columns* (`body`/`status`/`origin` — see
+the trigger caveat directly above). The one status transition that versioning needs
 (live→superseded on prior siblings of an element whose new live row exists)
 lives in `spine_supersede_prior_versions(new_id)` — a SECURITY DEFINER
 function that requires team membership, validates the new row, satisfies the
@@ -206,7 +274,11 @@ Two rules hold it in place:
    `asset_id`, `limit`, `max_chars`) are recorded verbatim; free text
    (`query`) is recorded as a **length only** (`query_len`); anything not
    allow-listed is **dropped**. A future tool that adds a free-text param
-   therefore cannot silently start logging user content.
+   therefore cannot silently start logging user content. Batch 2 added only
+   identifier-like keys (`step_id`, `outcome`, `order_len`); `note`, `framing`,
+   and `title` stay redacted-to-length. **`order` is deliberately absent from
+   both lists** — it is a list of uuids, so a reorder is audited as *how many*
+   steps moved (`order_len`), never as which.
 2. **A logging failure must never fail the tool call.** Every path is wrapped
    and downgraded to `log.warning`.
 
@@ -247,8 +319,10 @@ for `ibx-5153`, of 324 total), and an empty result is a plain "0 rows".
 
 ## What is proven
 
-Verified live against the real MC-2 project — **13/13 smoke cases pass**, with an
-ES256 token for a team user:
+Verified live against the real MC-2 project — **34/34 smoke cases pass**, with an
+ES256 token for a team user. The table below covers the original read surface;
+the write, tree, and update cases (N–Y2) are listed in `smoke_test.py`'s
+docstring and run in the same suite:
 
 | # | Case | Result |
 |---|---|---|
@@ -256,7 +330,7 @@ ES256 token for a team user:
 | B | Garbage token → 401 | ✓ |
 | C | `alg=none` token → 401 | ✓ — negative test of the ES256 path |
 | D | RFC 9728 metadata | 200, `authorization_servers: ["https://<ref>.supabase.co/auth/v1"]` |
-| E | `tools/list` | all **8 tools** |
+| E | `tools/list` | all **23 tools** |
 | F | `list_spine_elements(ibx-5153)` | **57 live elements** under the caller's `sub` |
 | G | `list_commitments(ibx-5153)` | **31 rows** — team-keyed RLS, no longer deny-all |
 | H | `whoami` | verified `sub`, `role=authenticated` |
@@ -382,7 +456,15 @@ share tokens / RLS respectively, matching `create-approval-snapshot`.
    (`spine_substance.project_code`, the cp-tree dir-slug), and `IBX-ai-campaign`
    (`projects.code`). A hosted server needs one shared resolver, or every tool
    re-invents this. Compare the memory note on spine slug drift.
-7. **Ingest embeds with Voyage, but the brief assumed OpenAI.** Both keys sit in
+7. **The `spine_substance` column grant is inert, and the trigger guarding
+   engine-owned columns is bypassable by a header.** The table-wide
+   `authenticated=arwdDxtm` grant subsumes the narrow per-column grant (Postgres
+   unions them), so the only thing stopping a `body`/`status`/`origin` write is
+   the mc-2 #130 trigger — which an `X-Spine-Writer` header satisfies. Verified
+   live in both directions. Fix: revoke the table-wide UPDATE grant so the column
+   grant becomes load-bearing. See "Where the engine-owned column boundary
+   actually lives" above.
+8. **Ingest embeds with Voyage, but the brief assumed OpenAI.** Both keys sit in
    the same `.env`, and only one of them produces meaningful vectors against this
    corpus. Nothing in the schema records which model wrote `asset_embeddings`, so
    the answer had to be recovered by reading `asset_ingest.py` and probing the

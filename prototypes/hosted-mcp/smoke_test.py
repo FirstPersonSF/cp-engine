@@ -35,6 +35,12 @@ Cases:
   U. add_spine_step        -> a LIVE human step (not auto/proposed)
   U2. add_spine_step       -> a status outside done|active|upcoming REJECTED
   V. propose_spine_step    -> an auto/proposed step; re-propose is a no-op
+  W. set_spine_element     -> important flips on the LIVE row; superseded row untouched
+  W2. (direct PostgREST)   -> UPDATE of `body` DENIED under the user JWT (P0130)
+  X. resolve_commitment    -> closes it; re-resolving is clearly refused
+  X2. resolve_commitment   -> an outcome outside done|dropped REJECTED
+  Y. set/reorder/remove    -> step round-trip; positions stay 1..N; partial order refused
+  Y2. set_spine_step       -> a step_id from another element is out of scope
   Q. get_project_state     -> ibx-5153's Exec Summary + current sprint file
   R. read_project_file     -> a real file read from the clone
   S. read_project_file     -> path traversal REJECTED
@@ -264,13 +270,19 @@ def case_e_tools_list(token: str) -> None:
         "create_spine_relation",
         "add_spine_step",
         "propose_spine_step",
+        # #143 batch 2 — the UPDATE-shaped verbs
+        "set_spine_element",
+        "resolve_commitment",
+        "set_spine_step",
+        "reorder_spine_step",
+        "remove_spine_step",
         # Package B — read-only tenant tree (#138)
         "get_project_state",
         "read_project_file",
     }
     missing = sorted(expected - set(names))
     record(
-        "E. tools/list exposes all 18 tools",
+        "E. tools/list exposes all 23 tools",
         not missing,
         f"tools={names}" + (f" MISSING={missing}" if missing else ""),
     )
@@ -844,6 +856,327 @@ def case_v_propose_spine_step(token: str) -> None:
     )
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  #143 batch 2 — the UPDATE-shaped verbs. THESE MUTATE REAL ROWS.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def case_w_set_spine_element(token: str) -> None:
+    """Flip `important` on the smoke element, and prove the blast radius.
+
+    Runs AFTER case O3, so the element has a live v2 AND a superseded v1 — which
+    is the point. The hosted UPDATE policy is `status='live'`, so this must
+    change the live row and leave the superseded row untouched. Both halves are
+    asserted by reading the rows back through PostgREST directly, rather than
+    trusting the tool's own report of what it did.
+    """
+    element_id = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
+    payload = call_tool(
+        token,
+        "set_spine_element",
+        {
+            "project_code": WRITE_PROJECT_CODE,
+            "key": element_id,
+            "important": True,
+            "note": f"smoke-test-{RUN_TAG} importance flip",
+            "layer": "decision",  # canon_layer -> 'Decisions'
+        },
+    )
+    tool_ok = (
+        payload.get("important") is True
+        and payload.get("layer") == "Decisions"
+        and payload.get("versions_updated") == 1
+        and "not mirrored" in str(payload.get("promotion", ""))
+    )
+
+    # Read both versions back independently: live changed, superseded did NOT.
+    live_important = superseded_important = None
+    superseded_layer = None
+    supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    anon = os.environ.get("SUPABASE_ANON_KEY", "")
+    if supabase_url and anon:
+        try:
+            rows = httpx.get(
+                f"{supabase_url}/rest/v1/spine_substance",
+                params={
+                    "select": "id,version_label,status,important,layer",
+                    "est_item_id": f"eq.{element_id}",
+                },
+                headers={"apikey": anon, "Authorization": f"Bearer {token}"},
+                timeout=20,
+            ).json()
+            for r in rows:
+                if r.get("status") == "live":
+                    live_important = r.get("important")
+                else:
+                    superseded_important = r.get("important")
+                    superseded_layer = r.get("layer")
+        except Exception:  # noqa: BLE001
+            pass
+
+    # The superseded v1 was created BEFORE the flip, so it must still be False
+    # and still carry its original layer — the policy's live-only scope, proven.
+    isolation_ok = live_important is True and superseded_important is False
+    record(
+        "W. set_spine_element flips important on the LIVE row only "
+        "(superseded row untouched)",
+        tool_ok and isolation_ok,
+        f"live.important={live_important} superseded.important={superseded_important} "
+        f"superseded.layer={superseded_layer!r} versions_updated={payload.get('versions_updated')} "
+        f"superseded_untouched={payload.get('superseded_untouched')} "
+        f"promotion={str(payload.get('promotion'))[:40]!r}"
+        + (f" ERROR={payload.get('error') or payload.get('_http')}" if not tool_ok else ""),
+    )
+
+
+def case_w2_engine_owned_columns(token: str) -> None:
+    """The engine-owned column boundary, probed DIRECTLY (not through a tool).
+
+    This is a control on the storage layer itself: a raw PostgREST PATCH of
+    `body` under the smoke user's own JWT. If this ever succeeds, the hosted
+    server's insert-only-plus-guarded-transition story is void, because any
+    client with a team token could rewrite element bodies at will.
+
+    History: when batch 2 first landed, the per-column grant was INERT — the
+    table ACL still carried a table-wide authenticated UPDATE, and Postgres
+    UNIONS grants rather than intersecting them. The only denial then was the
+    mc-2 #130 column-guard TRIGGER (P0130) — an attribution guard satisfied by
+    any X-Spine-Writer header, i.e. bypassable. Migration
+    `fix_batch2_grants_union_flaw` revoked the table-wide grant, making the
+    column grant load-bearing: the write must now fail on the GRANT (42501/403)
+    — before the trigger, before RLS — and the X-Spine-Writer header must make
+    NO difference. Both are asserted.
+    """
+    element_id = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
+    supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    anon = os.environ.get("SUPABASE_ANON_KEY", "")
+    if not supabase_url or not anon:
+        record(
+            "W2. direct PostgREST UPDATE of `body` is DENIED under the user JWT",
+            False,
+            "SUPABASE_URL/SUPABASE_ANON_KEY not in this shell's env",
+        )
+        return
+
+    headers = {
+        "apikey": anon,
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+        "Prefer": "return=representation",
+    }
+    params = {"est_item_id": f"eq.{element_id}", "status": "eq.live"}
+    try:
+        resp = httpx.patch(
+            f"{supabase_url}/rest/v1/spine_substance",
+            params=params,
+            headers=headers,
+            json={"body": "SMOKE TEST SHOULD NEVER LAND THIS"},
+            timeout=20,
+        )
+    except Exception as exc:  # noqa: BLE001
+        record("W2. direct PostgREST UPDATE of `body` is DENIED under the user JWT",
+               False, f"{type(exc).__name__}: {exc}")
+        return
+
+    # Post-fix contract: denied on the GRANT (403/42501), not merely the
+    # attribution trigger (P0130) — and the header must not change the answer.
+    denied_on_grant = resp.status_code == 403 and "P0130" not in resp.text
+    header_still_denied = None
+    try:
+        bypass = httpx.patch(
+            f"{supabase_url}/rest/v1/spine_substance",
+            params=params,
+            headers={**headers, "X-Spine-Writer": "smoke-test"},
+            timeout=20,
+            json={"body": "SMOKE TEST SHOULD NEVER LAND THIS"},
+        )
+        header_still_denied = bypass.status_code == 403
+    except Exception:  # noqa: BLE001
+        pass
+
+    record(
+        "W2. direct `body` UPDATE is DENIED ON THE GRANT, header or not "
+        "(fix_batch2_grants_union_flaw)",
+        denied_on_grant and header_still_denied is True,
+        f"no-header status={resp.status_code} | with X-Spine-Writer "
+        f"still_denied={header_still_denied} | body={resp.text[:100]!r}",
+    )
+
+
+def case_x_resolve_commitment(token: str) -> None:
+    """Resolve the smoke commitment, then prove a re-resolve is clearly refused."""
+    description_key = f"smoke-test-{RUN_TAG} — hosted-mcp write verification"
+    payload = call_tool(
+        token,
+        "resolve_commitment",
+        {
+            "project_code": WRITE_PROJECT_CODE,
+            "key": description_key,
+            "outcome": "done",
+        },
+    )
+    resolved_ok = (
+        bool(payload.get("resolved"))
+        and payload.get("outcome") == "done"
+        and payload.get("status") == "done"
+    )
+
+    # Re-resolving a now-closed commitment: the USING clause matches no OPEN
+    # row, so the resolver reports no match rather than silently "succeeding".
+    again = call_tool(
+        token,
+        "resolve_commitment",
+        {
+            "project_code": WRITE_PROJECT_CODE,
+            "key": description_key,
+            "outcome": "done",
+        },
+    )
+    error = str(again.get("error", ""))
+    # Either face of the same refusal is correct and clear: the row is no longer
+    # among the open set, or the policy matched zero rows. What must NOT happen
+    # is a reported success.
+    refused_ok = "resolved" not in again and (
+        "no open commitment" in error or "0 rows updated" in error
+    )
+    record(
+        "X. resolve_commitment closes an open commitment; re-resolving is clearly refused",
+        resolved_ok and refused_ok,
+        f"resolved={payload.get('resolved')} status={payload.get('status')} "
+        f"updated_at={payload.get('updated_at')} | re-resolve error={error[:110]!r}"
+        + (f" ERROR={payload.get('error') or payload.get('_http')}" if not resolved_ok else ""),
+    )
+
+
+def case_x2_bad_outcome(token: str) -> None:
+    """`outcome` is a closed vocabulary: done | dropped."""
+    payload = call_tool(
+        token,
+        "resolve_commitment",
+        {
+            "project_code": WRITE_PROJECT_CODE,
+            "key": "smoke-test",
+            "outcome": "completed",
+        },
+    )
+    ok = "resolved" not in payload and "outcome must be" in str(payload.get("error", ""))
+    record(
+        "X2. resolve_commitment rejects an outcome outside done|dropped",
+        ok,
+        f"error={str(payload.get('error'))[:120]!r}",
+    )
+
+
+def case_y_step_roundtrip(token: str) -> None:
+    """set -> reorder -> remove, round-tripped on the smoke element's trail.
+
+    Reads the trail back after each move rather than trusting the tool's own
+    echo, and asserts the invariant that matters for an ordered list: positions
+    stay contiguous 1..N after a delete.
+    """
+    element_id = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
+    args = {"project_code": WRITE_PROJECT_CODE, "key": element_id}
+
+    # The trail so far (cases U and V put steps here, O3 auto-journalled one).
+    listing = call_tool(token, "add_spine_step", {
+        **args, "title": f"smoke-test-{RUN_TAG} step to reorder", "status": "upcoming",
+    })
+    steps = listing.get("steps") or []
+    if listing.get("step_id"):
+        created_rows.append(("spine_steps", listing["step_id"]))
+    if len(steps) < 2:
+        record("Y. set/reorder/remove round-trip on a step trail", False,
+               f"need >=2 steps to exercise reorder, have {len(steps)}: "
+               f"{listing.get('error') or listing.get('_http')}")
+        return
+
+    target = listing["step_id"]
+
+    # 1. set: advance it to done and retitle.
+    set_payload = call_tool(token, "set_spine_step", {
+        **args, "step_id": target, "status": "done",
+        "title": f"smoke-test-{RUN_TAG} step advanced",
+    })
+    after_set = {s["id"]: s for s in (set_payload.get("steps") or [])}
+    set_ok = (
+        after_set.get(target, {}).get("status") == "done"
+        and "advanced" in (after_set.get(target, {}).get("title") or "")
+    )
+
+    # 2. reorder: reverse the full trail, then confirm 1..N in the new order.
+    current = [s["id"] for s in (set_payload.get("steps") or [])]
+    reversed_order = list(reversed(current))
+    reorder_payload = call_tool(token, "reorder_spine_step", {**args, "order": reversed_order})
+    after_reorder = reorder_payload.get("steps") or []
+    reorder_ok = (
+        [s["id"] for s in after_reorder] == reversed_order
+        and [s["position"] for s in after_reorder] == list(range(1, len(reversed_order) + 1))
+    )
+
+    # 2b. a PARTIAL order must be refused (the engine would half-renumber).
+    partial = call_tool(token, "reorder_spine_step", {**args, "order": reversed_order[:1]})
+    partial_ok = "error" in partial and "EXACTLY once" in str(partial.get("error", ""))
+
+    # 3. remove: delete the step, and assert the survivors densify to 1..N.
+    remove_payload = call_tool(token, "remove_spine_step", {**args, "step_id": target})
+    after_remove = remove_payload.get("steps") or []
+    remove_ok = (
+        remove_payload.get("removed") == target
+        and target not in [s["id"] for s in after_remove]
+        and [s["position"] for s in after_remove] == list(range(1, len(after_remove) + 1))
+    )
+    if remove_ok:
+        # It is gone — do not ask a human to clean it up.
+        created_rows[:] = [r for r in created_rows if r[1] != target]
+
+    record(
+        "Y. set_spine_step -> reorder_spine_step -> remove_spine_step round-trip "
+        "(positions stay 1..N)",
+        set_ok and reorder_ok and partial_ok and remove_ok,
+        f"set_ok={set_ok} reorder_ok={reorder_ok} partial_rejected={partial_ok} "
+        f"remove_ok={remove_ok} trail_after_remove="
+        f"{[(s['position'], (s.get('title') or '')[:24]) for s in after_remove]}"
+        + (f" SET_ERR={set_payload.get('error')}" if not set_ok else "")
+        + (f" REORDER_ERR={reorder_payload.get('error')}" if not reorder_ok else "")
+        + (f" REMOVE_ERR={remove_payload.get('error')}" if not remove_ok else ""),
+    )
+
+
+def case_y2_step_scope_isolation(token: str) -> None:
+    """A step_id that is real but belongs to ANOTHER element must not be touched.
+
+    The scoping is (id, project_id, est_item_id), so a stray-but-valid id
+    resolves to zero rows rather than reaching across the trail boundary. Uses
+    the relation-target element from case T as the foreign parent.
+    """
+    mine = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
+    other = f"_authored/smoke-test-{RUN_TAG}-relation-target"
+
+    # Put a step on the OTHER element, then try to update it via MY element's key.
+    planted = call_tool(token, "add_spine_step", {
+        "project_code": WRITE_PROJECT_CODE, "key": other,
+        "title": f"smoke-test-{RUN_TAG} foreign step", "status": "upcoming",
+    })
+    foreign_id = planted.get("step_id")
+    if not foreign_id:
+        record("Y2. a step_id from another element is out of scope", False,
+               f"could not plant the foreign step: "
+               f"{planted.get('error') or planted.get('_http')}")
+        return
+    created_rows.append(("spine_steps", foreign_id))
+
+    attempt = call_tool(token, "set_spine_step", {
+        "project_code": WRITE_PROJECT_CODE, "key": mine,
+        "step_id": foreign_id, "status": "done",
+    })
+    ok = "error" in attempt and "0 rows updated" in str(attempt.get("error", ""))
+    record(
+        "Y2. set_spine_step refuses a step_id belonging to another element",
+        ok,
+        f"error={str(attempt.get('error'))[:130]!r}",
+    )
+
+
 def case_o4_add_spine_document(token: str) -> None:
     """Phase 3 (#140): author a document into the spine via content=.
 
@@ -1029,8 +1362,9 @@ def case_m_audit_log(token: str) -> None:
                 # earliest tools scroll out of the window and read as "missing".
                 # #143 added five cases (nine audited calls) and pushed the three
                 # opening reads past a limit of 20 — the window was the bug, not
-                # the auditing. Keep headroom when adding cases.
-                "limit": "60",
+                # the auditing. Keep headroom when adding cases. Batch 2 adds
+                # ~12 more audited calls, hence 120.
+                "limit": "120",
             },
             headers={"apikey": anon, "Authorization": f"Bearer {token}"},
             timeout=20,
@@ -1056,24 +1390,38 @@ def case_m_audit_log(token: str) -> None:
         "create_spine_relation",
         "add_spine_step",
         "propose_spine_step",
+        # #143 batch 2 — the UPDATE verbs
+        "set_spine_element",
+        "resolve_commitment",
+        "set_spine_step",
+        "reorder_spine_step",
+        "remove_spine_step",
     }
     missing = sorted(expected - tools_logged)
     # No free text may EVER appear in args. `query` is length-only, and so are
     # the write tools' `body` / `description` / `framing` / `title` — the audit
     # table records that a write happened and by whom, never what it said.
-    forbidden = {"query", "body", "description", "framing", "title"}
+    # `order` joins the forbidden set for a different reason: it is a list of
+    # uuids, and a reorder is auditable as HOW MANY steps moved (`order_len`),
+    # never as which. It is on neither allow-list, so it must be dropped.
+    forbidden = {"query", "body", "description", "framing", "title", "order", "note"}
     leaked = [r for r in rows if forbidden & set((r.get("args") or {}).keys())]
+    reorder_rows = [r for r in rows if r.get("tool") == "reorder_spine_step"]
+    order_len_present = all(
+        "order_len" in (r.get("args") or {}) for r in reorder_rows
+    ) if reorder_rows else False
     # And the length-only projections must actually be there for the writes.
     write_rows = [r for r in rows if r.get("tool") in ("create_commitment", "create_spine_element")]
     lengths_present = all(
         any(k.endswith("_len") for k in (r.get("args") or {})) for r in write_rows
     ) if write_rows else False
-    ok = bool(rows) and not missing and not leaked and lengths_present
+    ok = bool(rows) and not missing and not leaked and lengths_present and order_len_present
     record(
         "M. audit rows appear for reads AND writes, args sanitized to lengths",
         ok,
         f"rows={len(rows)} tools={sorted(t for t in tools_logged if t)} "
         f"client={rows[0].get('client') if rows else None} "
+        f"order_len_present={order_len_present} "
         + (f"MISSING={missing} " if missing else "")
         + (f"LEAKED_FREE_TEXT={[sorted(forbidden & set((r.get('args') or {}).keys())) for r in leaked]}"
            if leaked else "no raw free text logged")
@@ -1124,6 +1472,16 @@ def main() -> int:
         case_u_add_spine_step(token)
         case_u2_bad_step_status(token)
         case_v_propose_spine_step(token)
+
+        # ── #143 batch 2: the UPDATE verbs. THESE MUTATE REAL ROWS. ──
+        # Ordered after O3 on purpose: the element needs a superseded v1 for
+        # case W's live-vs-superseded isolation assertion to mean anything.
+        case_w_set_spine_element(token)
+        case_w2_engine_owned_columns(token)
+        case_x_resolve_commitment(token)
+        case_x2_bad_outcome(token)
+        case_y_step_roundtrip(token)
+        case_y2_step_scope_isolation(token)
 
         # ── Package B: read-only tenant tree ──
         cp_md = case_q_project_state(token)
