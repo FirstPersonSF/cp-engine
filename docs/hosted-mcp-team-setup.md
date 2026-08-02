@@ -19,6 +19,16 @@ boundary, and every call is audit-logged.
    with Google if you aren't already — and land on a consent screen. **Approve.**
 5. Done. The same connector works on Claude mobile automatically.
 
+## Claude Code (as of option B, cp-engine #143)
+
+Nothing to configure: the cp tenant repo's `.mcp.json` now includes the
+`cp-hosted` connector. On your next session in the tenant, run `/mcp` and
+complete the one-time OAuth sign-in (Google via mc2.1p.is). Your sessions
+then use the hosted server for reads and the five write verbs — meaning your
+spine writes carry YOUR `author_id` and land in the audit log, instead of
+running anonymously under the service key. The stdio `cp-sources` server
+stays for the verbs not yet migrated (see #143's checklist).
+
 ## Requirements (already true for all partners)
 
 - You must be on the **team roster** (`profiles` row in MC-2). Not just "able
