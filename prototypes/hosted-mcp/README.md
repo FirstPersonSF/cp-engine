@@ -15,8 +15,8 @@ path. Nothing under `src/cp_engine/` was modified.
   **deferred by design** — see [Deferred: `add_spine_version`](#deferred-add_spine_version).
 - **B — read-only tenant-tree tools** (#138, review finding 1):
   `get_project_state`, `read_project_file`, served from a shallow clone of
-  `TENANT_REPO`. **The tree has no per-user RLS** — see
-  [The tenant tree has no RLS](#the-tenant-tree-has-no-rls).
+  `TENANT_REPO`. **RLS cannot scope a git clone**, so both are gated on
+  `public.is_team_member()` instead — see [Tree](#tree-read-only--cp-engine-138-review-finding-1).
 
 34 tools, **53/53 smoke cases pass**.
 
@@ -366,9 +366,26 @@ the auto-journal step (`spine_steps` has no authenticated INSERT policy).
 
 The clone is shallow, pull-on-read with a 60s debounce, authenticated by a
 **read-only** deploy key (`GIT_SSH_KEY` + `TENANT_REPO` env; absent, both tools
-degrade to a clean "tree access unavailable"). Note the tree has no per-user
-RLS: any team member with a valid JWT reads the whole tenant tree — same
-posture as the spine today.
+degrade to a clean "tree access unavailable").
+
+**The tree is gated on team membership, not RLS.** It is a git clone, so
+PostgREST is not in the path and RLS cannot scope it the way it scopes every DB
+verb here. Both tools therefore call `caller_is_team_member()` first, which
+RPCs `public.is_team_member()` under the caller's own JWT — the same predicate
+(`exists (select 1 from public.profiles where id = auth.uid())`) the spine,
+notes, and commitments policies use. The database renders the verdict; this
+server never reimplements membership. A non-member gets "tree access denied";
+any error denies (fail-closed).
+
+This gate became load-bearing on 2026-08-02, when Supabase dynamic client
+registration was enabled so MCP connectors could self-register (cp-engine
+#144). DCR is open registration by design — anyone who can reach GoTrue can
+mint a client and authenticate. RLS still zeroes a stranger's DB reads, but
+without this gate the tree tools would have served them the whole tenant repo,
+client engagement content included.
+
+Within the team the tree remains unscoped: any member reads any file — the same
+posture as the spine today (see known gap 4).
 
 ### Column choices, and why
 

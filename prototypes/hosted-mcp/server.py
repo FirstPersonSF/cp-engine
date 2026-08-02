@@ -4638,6 +4638,51 @@ def tree_available() -> tuple[bool, str]:
     return True, ""
 
 
+def caller_is_team_member() -> tuple[bool, str]:
+    """(allowed, reason) — is the caller a First Person team member?
+
+    THE TREE'S AUTHORIZATION BOUNDARY. Unlike every DB verb here, the tenant
+    tree is a git clone: PostgREST is not in the path, so RLS cannot scope it.
+    A valid JWT alone is NOT sufficient to read it.
+
+    That distinction became load-bearing on 2026-08-02, when Supabase dynamic
+    client registration was enabled so MCP connectors could self-register (see
+    cp-engine #144). DCR is open registration by design — anyone who can reach
+    GoTrue can mint a client and authenticate. RLS still zeroes their DB reads,
+    but the tree tools would otherwise hand any Supabase account the entire
+    tenant repo, client engagement content included.
+
+    The predicate is the DATABASE's, not ours: `public.is_team_member()` is
+    `exists (select 1 from public.profiles where id = auth.uid())`, STABLE
+    SECURITY DEFINER. Calling it as an RPC under the caller's own JWT means
+    `auth.uid()` resolves to that caller and Postgres renders the verdict — the
+    same function the spine/notes/commitments RLS policies use. We never
+    reimplement membership here; drift between two definitions is exactly how
+    a gate rots.
+
+    Fails CLOSED: any error (network, PostgREST, malformed response) denies.
+    """
+    try:
+        client = user_client()
+        result = client.rpc("is_team_member", {}).execute()
+    except Exception as exc:  # noqa: BLE001 — any failure denies
+        log.info("team check failed, denying: %s: %s", type(exc).__name__, exc)
+        return False, (
+            "tree access denied: could not verify team membership. This is a "
+            "fail-closed default, not a statement about your account."
+        )
+
+    # PostgREST renders a scalar-returning function as a bare JSON value.
+    if result.data is True:
+        return True, ""
+    return False, (
+        "tree access denied: the tenant tree is restricted to First Person team "
+        "members (a `public.profiles` row). Your token is valid and the "
+        "database tools remain available under your own RLS scope — the tree "
+        "specifically is not covered by RLS, so it is gated separately."
+    )
+
+
 def tree_root() -> Path:
     """The clone root, cloning on first use and pulling on read with a debounce.
 
@@ -4812,6 +4857,10 @@ def get_project_state(project_code: str) -> dict[str, Any]:
     if not usable:
         return {"project_code": project_code, "available": False, "error": reason}
 
+    allowed, denial = caller_is_team_member()
+    if not allowed:
+        return {"project_code": project_code, "available": False, "error": denial}
+
     try:
         root = tree_root()
     except Exception as exc:  # noqa: BLE001 — a clone failure has nothing to serve
@@ -4881,8 +4930,11 @@ def read_project_file(path: str) -> dict[str, Any]:
       * **Size is capped** (200 KiB by default) with an explicit
         `truncated: true` rather than a silent clip.
 
-    NOTE ON SCOPE: no per-user RLS. Any team member with a valid JWT can read
-    any file in the tenant tree through this tool.
+    NOTE ON SCOPE: gated on TEAM MEMBERSHIP, not RLS. The tree is a git clone,
+    so PostgREST/RLS is not in the path and cannot scope it per user. A valid
+    JWT alone is not enough: the caller must satisfy `public.is_team_member()`
+    (a `public.profiles` row). Within the team the tree is unscoped — any
+    member reads any file, the same posture as the spine today.
 
     Args:
         path: repo-relative path, e.g. "1p/infoblox/ibx-5153-ai-campaign/cp.md".
@@ -4890,6 +4942,10 @@ def read_project_file(path: str) -> dict[str, Any]:
     usable, reason = tree_available()
     if not usable:
         return {"path": path, "available": False, "error": reason}
+
+    allowed, denial = caller_is_team_member()
+    if not allowed:
+        return {"path": path, "available": False, "error": denial}
 
     try:
         root = tree_root().resolve()

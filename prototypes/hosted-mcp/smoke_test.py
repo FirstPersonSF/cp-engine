@@ -56,6 +56,7 @@ Cases:
   Q. get_project_state     -> ibx-5153's Exec Summary + current sprint file
   R. read_project_file     -> a real file read from the clone
   S. read_project_file     -> path traversal REJECTED
+  S2. tree team gate       -> a team member is NOT denied (gate wired, not blanket)
   M. mcp_audit_log         -> audit rows appear for the calls just made
 
 WRITE CASES CREATE REAL ROWS. They target `mission-control` (an internal
@@ -70,6 +71,13 @@ for a human to remove with the service key.
 
 Tree cases need TENANT_REPO pointed at a clone (a local path works for
 development). Without it they assert the clean-degrade path instead.
+
+The tree's team gate (case S2) is only tested from the POSITIVE side: $TEST_JWT
+belongs to a team member, so the suite can prove the gate does not wrongly deny,
+but not that it denies a stranger. Minting a non-team JWT means creating a
+Supabase user with no `public.profiles` row, which this script will not do
+(it creates no auth users). To check the negative path by hand: register a
+throwaway account, call `get_project_state`, and expect "tree access denied".
 
 The token must be an ES256 Supabase user token belonging to a TEAM member (a
 `public.profiles` row). Read policies are gated on `public.is_team_member()`,
@@ -2125,6 +2133,39 @@ def case_s_traversal(token: str) -> None:
     )
 
 
+def case_s2_tree_team_gate(token: str) -> None:
+    """The tree tools are gated on team membership, not merely on a valid JWT.
+
+    RLS cannot scope a git clone, so `caller_is_team_member()` is the tree's
+    only authorization boundary — and DCR (cp-engine #144) means any Supabase
+    account can now obtain a valid token. This asserts the gate is WIRED, from
+    the positive side: $TEST_JWT belongs to a team member, so a denial here
+    means the gate is broken (or the token's `profiles` row is missing).
+
+    The negative side needs a non-team JWT, which this suite has no way to mint
+    — see the note in the module docstring. What it CAN prove is that the
+    denial path is distinguishable from the unavailable path: the two error
+    strings are deliberately different ("denied" vs "unavailable"), so a gate
+    that wrongly denied a member could never be mistaken for an unconfigured
+    tree.
+    """
+    denied = []
+    for tool, args in (
+        ("get_project_state", {"project_code": PROJECT_CODE}),
+        ("read_project_file", {"path": "master-cp.md"}),
+    ):
+        payload = call_tool(token, tool, args)
+        error = str(payload.get("error", ""))
+        if "tree access denied" in error:
+            denied.append(f"{tool}: {error[:80]}")
+    record(
+        "S2. tree tools do NOT deny a team member (the gate is wired, not blanket-denying)",
+        not denied,
+        "; ".join(denied) if denied
+        else "neither tree tool returned 'tree access denied' for a team-member JWT",
+    )
+
+
 def case_m_audit_log(token: str) -> None:
     """Read `mcp_audit_log` back through PostgREST with the SAME JWT.
 
@@ -2579,6 +2620,7 @@ def main() -> int:
         cp_md = case_q_project_state(token)
         case_r_read_file(token, cp_md)
         case_s_traversal(token)
+        case_s2_tree_team_gate(token)
 
         # Audit rows are written fire-and-forget; read them back LAST.
         case_m_audit_log(token)
