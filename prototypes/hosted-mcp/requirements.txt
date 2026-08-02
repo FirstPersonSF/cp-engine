@@ -1,0 +1,5 @@
+# Pinned floors matching what the spike verified against in the cp-engine venv.
+mcp>=2.0,<3
+PyJWT[crypto]>=2.12
+supabase>=2.30,<3
+httpx>=0.28
