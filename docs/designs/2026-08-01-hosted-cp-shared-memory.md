@@ -1,7 +1,9 @@
 # Hosted cp — shared team memory across LLM clients
 
 **Date:** 2026-08-01
-**Status:** design, not started
+**Status:** design, not started — **revised after independent architecture review
+(see "Review findings" at the end; several claims in the original draft were wrong
+and the sizing was optimistic).**
 **Goal:** one shared memory + project space the team reaches from Claude Code,
 claude.ai, Claude mobile, ChatGPT and Codex.
 
@@ -243,7 +245,148 @@ rather than discover it.
 
 ## What this deliberately does not do
 
-- No tree-editing service, no clone-per-session, no concurrency model.
+- No tree-**editing** service, no clone-per-session, no write concurrency model.
+  (Read-only tree access IS in scope — see Review finding 1.)
 - No migration of the tree into MC-2. Git keeps history, review and offline work
   for long-form prose.
 - No backfill of historical authorship.
+
+---
+
+# Review findings (independent architecture review, 2026-08-01)
+
+Reviewed by a separate model against the codebase and live DB. Findings verified
+before adoption. **Several original claims were wrong; the sizing was optimistic by
+roughly 2x.**
+
+## 1. Read-only tree access belongs in Phase 1 — the original plan missed the goal
+
+The stated goal is mobile continuity: "where are we on ibx-5153?" The surface that
+answers that is the **Exec Summary in `cp.md`** plus the current sprint file — both
+files. Phase 1 as originally drafted left them exactly as invisible from a phone as
+they are today. The design's answer was a habit rule ("if it matters later, it goes
+in the spine"), and **habit rules fail precisely under the deadline pressure that
+produces the content worth finding later.** The doc conceded this itself:
+`board-record-companion.md` was invisible until someone remembered to run
+`add_spine_document`.
+
+Rejecting "move the tree into the DB" was right. Concluding that hosted clients
+therefore cannot *see* the tree was a non sequitur — the risky component of the old
+plan was **editing**, not reading. Reading a server-side clone needs no concurrency
+model, no conflict handling, no write allowlist. The webhook already maintains a
+deploy-key clone (`webhook/git_ops.py`).
+
+**Adopted:** add `get_project_state(code)` (Exec Summary region + current sprint
+file) and `read_project_file(path)` to Phase 1, over a pull-on-read clone.
+Without these, Phase 1 delivers *spine* continuity, not continuity.
+
+## 2. OAuth is the schedule risk, not transport
+
+The original treated transport as the work and auth as wiring. **It is the
+reverse.** "`.1p.is` SSO plugs in here" hand-waves a real build item: the MCP
+remote-connector flow expects protected-resource metadata pointing at an
+authorization server supporting dynamic client registration and PKCE. **Supabase
+Auth is not that** — it is an IdP issuing session JWTs, not an OAuth 2.1 AS with
+DCR that claude.ai's connector can register against.
+
+Between "Google SSO works" and "my phone holds a usable token" sits an AS shim
+fronting Supabase sessions, handling issuance, refresh, and the hourly expiry of
+Supabase access tokens so a phone session doesn't die mid-week. Plausibly a week
+alone, and the least familiar territory in the plan.
+
+**Adopted:** a **2-day OAuth spike before committing to any number.**
+
+## 3. The client constructor is the wrong shape for per-user JWTs
+
+The "3 call sites" claim was wrong in the flattering direction — there is exactly
+**one** `create_client` (`mc2_db.py:618`); the other greps were a comment and an
+error string. The funnel claim holds.
+
+But the constructor **caches clients keyed by `(url, key)` and mutates shared
+postgrest session headers** (`mc2_db.py:632`). A shared, header-mutating, cached
+sync client is the wrong object to thread per-user JWTs through: under concurrent
+requests that is **cross-user credential bleed** — the worst possible failure for a
+system holding four clients' confidential material. Per-user means per-request
+construction or stateless header injection. That also surfaces that supabase-py's
+sync client will block an async server's event loop — invisible today on
+single-user stdio. ~43 `get_client()` call sites assume an RLS-bypassing client.
+
+**2–3 days was credible for the read paths alone; not once cache redesign and
+concurrency testing are included.**
+
+## 4. RLS: half the work exists, and there is live write exposure
+
+**Verified better than assumed:** `spine_substance`, `spine_context`,
+`asset_chunks`, `asset_embeddings` already carry `authenticated read (true)`.
+
+**Verified worse, twice.** First, `commitments`, `notes` and `rag_assets` have RLS
+**enabled with zero policies** — deny-all under a user JWT. `list_commitments` and
+`pull_project_source` will return **empty rather than error** the day JWT-proxying
+lands. Test for it explicitly.
+
+Second, and sharper: `projects` carries a policy named **"Authenticated can update
+start_date" with `USING (true) WITH CHECK (true)` on UPDATE.** Postgres policies do
+not scope to columns — despite the name, **that permits any authenticated user to
+update any column of any project row.** Inert today only because everything uses
+service-role. The moment the server proxies user JWTs, inherited *write* policies
+are live attack surface.
+
+**Adopted:** the line item is "audit every existing policy," not "write read
+policies."
+
+**Also adopted:** key `project_members` policies on **`project_id` (uuid), never
+`project_code`** — `spine_substance.project_id` has zero nulls, and the tenant has
+known slug drift (`ibx-5153` vs `ibx-5153-ai-campaign`). And **`commitments` has 49
+rows with null `project_id`** — a per-project policy makes those invisible to
+restricted users by default. Decide whether that is intended.
+
+## 5. X-Spine-Writer was misdiagnosed — and the truth is worse
+
+I read the trigger source. `spine_substance_column_guard` checks **only `if writer
+is null`**. There is no allowlist — **any non-null string passes.** "Names an
+authorised writer" overstated it.
+
+So the dual-identity problem I flagged as needing careful design is trivial (set
+the header). **The real problem is the inverse:** the guard is accident-prevention
+lint, not authorization. It is safe today only because writes require the service
+key. The moment Phase 2 grants authenticated UPDATE on `spine_substance`, any
+user-JWT client setting any header value can rewrite engine-owned
+`body`/`status`/`origin`.
+
+**Adopted into Phase 2 scope:** what actually protects engine-owned columns once
+non-engine principals can write — trigger checks against `auth.uid()` or a role
+claim, or column-level grants.
+
+## 6. Smaller corrections
+
+- The `author_id` migration was listed under Phase 1 auth, but **nothing in Phase 1
+  stamps it.** It is a Phase 2 dependency and must not gate shipping reads.
+- **Semantic search is not a pure port** — query embedding runs via
+  `_load_ingest_creds`, so the server needs an embedding API key in env. The one
+  "read" tool that isn't free.
+- Fact corrections: **38** `@mcp.tool` decorators, not 37; tenant markdown ~1,363,
+  not 1,466. Row counts in the table above are correct as written.
+
+## 7. Missing entirely
+
+- **Audit log** (who read what, when). The Phase 4 governance conversation about
+  exposing SAP/Google/Infoblox material to a second vendor is **unanswerable
+  without one**, and it is cheap at the proxy layer on day one.
+- **Revocation.** Offboarding a freelancer must kill live refresh tokens, not just
+  future logins.
+- **Two-servers drift.** Does stdio `cp mcp` remain? If it forks from the hosted
+  server rather than sharing tool code, every future verb lands twice — the exact
+  drift problem that already bites Marcello.
+- **Prompt-injection surface.** Hosted tools feed ingested third-party documents to
+  whatever client asks. Tolerable for team reads; note it before Phase 4.
+
+## 8. Revised sizing
+
+Phases 2 and 3 at a half-week each hold. **Phase 1 is realistically 2.5–3.5 weeks**,
+dominated by the OAuth AS shim, the per-user client/concurrency redesign, and the
+inherited-policy audit.
+
+**Honest total: 3.5–4.5 weeks** — back in the range of the rejected tree-editing
+plan, with the risk moved from concurrency to auth. That does not argue for the old
+plan; it argues for **stating the trade honestly and running the 2-day OAuth spike
+before committing a number.**
