@@ -3,3 +3,6 @@ mcp>=2.0,<3
 PyJWT[crypto]>=2.12
 supabase>=2.30,<3
 httpx>=0.28
+# semantic_search embeds queries with Voyage (the ingest corpus is
+# voyage-3-large, 1024-dim — OpenAI vectors would be the wrong space).
+voyageai>=0.3
