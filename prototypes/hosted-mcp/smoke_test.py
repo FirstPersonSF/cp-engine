@@ -30,6 +30,11 @@ Cases:
   N. create_commitment     -> a REAL commitments row (insert-only write)
   O. create_spine_element  -> a REAL spine_substance row (v1, live, authored)
   P. create_note           -> the notes author_id FK/policy collision, diagnosed
+  T. create_spine_relation -> a typed edge; re-create returns already:true
+  T2. create_spine_relation-> a kind outside the closed vocabulary REJECTED
+  U. add_spine_step        -> a LIVE human step (not auto/proposed)
+  U2. add_spine_step       -> a status outside done|active|upcoming REJECTED
+  V. propose_spine_step    -> an auto/proposed step; re-propose is a no-op
   Q. get_project_state     -> ibx-5153's Exec Summary + current sprint file
   R. read_project_file     -> a real file read from the clone
   S. read_project_file     -> path traversal REJECTED
@@ -255,13 +260,17 @@ def case_e_tools_list(token: str) -> None:
         "create_spine_element",
         "add_spine_version",
         "add_spine_document",
+        # #143 batch 1 — relations + steps
+        "create_spine_relation",
+        "add_spine_step",
+        "propose_spine_step",
         # Package B — read-only tenant tree (#138)
         "get_project_state",
         "read_project_file",
     }
     missing = sorted(expected - set(names))
     record(
-        "E. tools/list exposes all 15 tools",
+        "E. tools/list exposes all 18 tools",
         not missing,
         f"tools={names}" + (f" MISSING={missing}" if missing else ""),
     )
@@ -571,6 +580,11 @@ def case_o3_add_spine_version(token: str) -> None:
     body. The demote happens inside `spine_supersede_prior_versions` — there
     is still no authenticated UPDATE grant on spine_substance, so this passing
     proves the guarded-function path, not an open door.
+
+    ALSO asserts the #143 auto-journal: the return must carry a `step` result
+    recording a created (or updated) `source='auto'`, `review='proposed'` step
+    for today. A journal miss is non-fatal to the WRITE, but it is a real
+    regression, so the smoke test treats a missing step as a failure.
     """
     element_id = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
     payload = call_tool(
@@ -596,12 +610,237 @@ def case_o3_add_spine_version(token: str) -> None:
         ok = "Version 2 body" in str(read_back.get("body", "")) and read_back.get("version_label") == "v2"
     if new_label == "v2":
         created_rows.append(("spine_substance", f"{payload.get('project_code')}/{element_id}/v2"))
+
+    # #143: the auto-journalled step must ride along with the version write.
+    step = payload.get("step") or {}
+    step_ok = bool(step.get("created") or step.get("updated")) and not step.get("error")
+    if step.get("step_id"):
+        created_rows.append(("spine_steps", step["step_id"]))
+    ok = ok and step_ok
     record(
-        "O3. add_spine_version supersedes v1 and reads back as v2 live",
+        "O3. add_spine_version supersedes v1, reads back as v2, and auto-journals a step",
         ok,
         f"version_label={new_label} superseded={superseded} "
-        f"readback_label={read_back.get('version_label')}"
+        f"readback_label={read_back.get('version_label')} "
+        f"step={{created:{step.get('created')} updated:{step.get('updated')} "
+        f"id:{step.get('step_id')}}}"
+        + (f" STEP_ERROR={step.get('error')}" if step.get("error") else "")
         + (f" ERROR={payload.get('error') or payload.get('_http')}" if not ok else ""),
+    )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #143 batch 1 — relations + steps. THESE CREATE REAL ROWS.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def case_t_create_spine_relation(token: str) -> None:
+    """A typed edge between two live elements, plus its idempotency guarantee.
+
+    Needs TWO elements, so it creates a second one (case O made the first), then
+    relates them. The re-create must return `already: true` rather than erroring
+    on the mig-117 unique constraint.
+
+    Also asserts `created_by` is the CALLER'S EMAIL — the hosted INSERT policy
+    is `created_by = auth.jwt()->>'email'`, so a row that lands at all proves
+    the stamp matched the verified claim.
+    """
+    # A second element to point the edge at.
+    partner_framing = f"smoke-test-{RUN_TAG} relation target"
+    partner = call_tool(
+        token,
+        "create_spine_element",
+        {
+            "project_code": WRITE_PROJECT_CODE,
+            "framing": partner_framing,
+            "body": "Relation target created by smoke_test.py. Safe to delete.",
+            "layer": "note",
+        },
+    )
+    if partner.get("row_id"):
+        created_rows.append(("spine_substance", partner["row_id"]))
+    to_key = partner.get("element_id")
+    from_key = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
+
+    if not to_key:
+        record(
+            "T. create_spine_relation writes a typed edge (idempotently)",
+            False,
+            f"could not create the partner element: {partner.get('error') or partner.get('_http')}",
+        )
+        return
+
+    payload = call_tool(
+        token,
+        "create_spine_relation",
+        {
+            "project_code": WRITE_PROJECT_CODE,
+            "kind": "informs",
+            "from_key": from_key,
+            "to_key": to_key,
+            "note": f"smoke-test-{RUN_TAG}",
+        },
+    )
+    rel_id = payload.get("relation_id")
+    if rel_id:
+        created_rows.append(("spine_relations", rel_id))
+    created_ok = (
+        payload.get("created") is True
+        and payload.get("kind") == "informs"
+        and payload.get("from_item_id") == from_key
+        and payload.get("to_item_id") == to_key
+    )
+
+    # Idempotency: the identical edge again must be a reported no-op.
+    again = call_tool(
+        token,
+        "create_spine_relation",
+        {
+            "project_code": WRITE_PROJECT_CODE,
+            "kind": "informs",
+            "from_key": from_key,
+            "to_key": to_key,
+        },
+    )
+    idempotent_ok = again.get("created") is False and again.get("already") is True
+
+    record(
+        "T. create_spine_relation writes a typed edge; re-create returns already:true",
+        created_ok and idempotent_ok,
+        f"relation_id={rel_id} kind={payload.get('kind')} "
+        f"created_by={payload.get('created_by')} "
+        f"recreate={{created:{again.get('created')} already:{again.get('already')}}}"
+        + (f" ERROR={payload.get('error') or payload.get('note') or payload.get('_http')}"
+           if not created_ok else "")
+        + (f" RECREATE_ERROR={again.get('error') or again.get('note')}"
+           if not idempotent_ok else ""),
+    )
+
+
+def case_t2_bad_relation_kind(token: str) -> None:
+    """An unknown kind must be rejected in-process, not left to the DB CHECK."""
+    payload = call_tool(
+        token,
+        "create_spine_relation",
+        {
+            "project_code": WRITE_PROJECT_CODE,
+            "kind": "relates_to",  # not in the closed vocabulary
+            "from_key": f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element",
+            "to_key": f"_authored/smoke-test-{RUN_TAG}-relation-target",
+        },
+    )
+    error = str(payload.get("error", ""))
+    ok = "relation_id" not in payload and "unknown relation kind" in error
+    record(
+        "T2. create_spine_relation rejects a kind outside the closed vocabulary",
+        ok,
+        f"error={error[:140]!r}",
+    )
+
+
+def case_u_add_spine_step(token: str) -> None:
+    """A LIVE human step: appended at max+1, source/review left at table defaults."""
+    element_id = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
+    payload = call_tool(
+        token,
+        "add_spine_step",
+        {
+            "project_code": WRITE_PROJECT_CODE,
+            "key": element_id,
+            "title": f"smoke-test-{RUN_TAG} human step",
+            "status": "active",
+            "step_date": "8/2",
+        },
+    )
+    step_id = payload.get("step_id")
+    if step_id:
+        created_rows.append(("spine_steps", step_id))
+    steps = payload.get("steps") or []
+    mine = next((s for s in steps if s.get("id") == step_id), {})
+    # A human step must NOT land as an auto/proposed row — that is the whole
+    # distinction from propose_spine_step.
+    ok = (
+        bool(step_id)
+        and payload.get("est_item_id") == element_id
+        and isinstance(payload.get("position"), int)
+        and mine.get("status") == "active"
+        and mine.get("review") != "proposed"
+    )
+    record(
+        "U. add_spine_step appends a live human step (not auto/proposed)",
+        ok,
+        f"step_id={step_id} position={payload.get('position')} "
+        f"status={mine.get('status')} source={mine.get('source')} "
+        f"review={mine.get('review')} trail_len={len(steps)}"
+        + (f" ERROR={payload.get('error') or payload.get('_http')}" if not ok else ""),
+    )
+
+
+def case_u2_bad_step_status(token: str) -> None:
+    """The step status vocabulary is closed: done|active|upcoming."""
+    payload = call_tool(
+        token,
+        "add_spine_step",
+        {
+            "project_code": WRITE_PROJECT_CODE,
+            "key": f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element",
+            "title": "must not be created",
+            "status": "in_progress",
+        },
+    )
+    ok = "step_id" not in payload and "status must be one of" in str(payload.get("error", ""))
+    record(
+        "U2. add_spine_step rejects a status outside done|active|upcoming",
+        ok,
+        f"error={str(payload.get('error'))[:120]!r}",
+    )
+
+
+def case_v_propose_spine_step(token: str) -> None:
+    """A review-gated proposal, and its any-review-state idempotency."""
+    element_id = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
+    title = f"smoke-test-{RUN_TAG} proposed step"
+    payload = call_tool(
+        token,
+        "propose_spine_step",
+        {
+            "project_code": WRITE_PROJECT_CODE,
+            "key": element_id,
+            "title": title,
+            "step_date": "8/2",
+        },
+    )
+    step_id = payload.get("step_id")
+    if step_id:
+        created_rows.append(("spine_steps", step_id))
+    steps = payload.get("steps") or []
+    mine = next((s for s in steps if s.get("id") == step_id), {})
+    proposed_ok = (
+        payload.get("proposed") is True
+        and mine.get("source") == "auto"
+        and mine.get("review") == "proposed"
+        and mine.get("status") == "done"  # the default: the move already happened
+    )
+
+    again = call_tool(
+        token,
+        "propose_spine_step",
+        {
+            "project_code": WRITE_PROJECT_CODE,
+            "key": element_id,
+            "title": title,
+            "step_date": "8/2",
+        },
+    )
+    idempotent_ok = again.get("proposed") is False and again.get("already") is True
+
+    record(
+        "V. propose_spine_step lands auto/proposed; re-propose is a no-op",
+        proposed_ok and idempotent_ok,
+        f"step_id={step_id} source={mine.get('source')} review={mine.get('review')} "
+        f"status={mine.get('status')} "
+        f"repropose={{proposed:{again.get('proposed')} already:{again.get('already')}}}"
+        + (f" ERROR={payload.get('error') or payload.get('_http')}" if not proposed_ok else ""),
     )
 
 
@@ -786,7 +1025,12 @@ def case_m_audit_log(token: str) -> None:
             params={
                 "select": "id,tool,args,row_count,client,at",
                 "order": "at.desc",
-                "limit": "20",
+                # Must exceed the number of audited calls ONE run makes, or the
+                # earliest tools scroll out of the window and read as "missing".
+                # #143 added five cases (nine audited calls) and pushed the three
+                # opening reads past a limit of 20 — the window was the bug, not
+                # the auditing. Keep headroom when adding cases.
+                "limit": "60",
             },
             headers={"apikey": anon, "Authorization": f"Bearer {token}"},
             timeout=20,
@@ -808,6 +1052,10 @@ def case_m_audit_log(token: str) -> None:
         "create_spine_element",
         "get_project_state",
         "read_project_file",
+        # #143 batch 1
+        "create_spine_relation",
+        "add_spine_step",
+        "propose_spine_step",
     }
     missing = sorted(expected - tools_logged)
     # No free text may EVER appear in args. `query` is length-only, and so are
@@ -869,6 +1117,13 @@ def main() -> int:
         case_o3_add_spine_version(token)
         case_o4_add_spine_document(token)
         case_p_create_note(token)
+
+        # ── #143 batch 1: relations + steps. THESE CREATE REAL ROWS. ──
+        case_t_create_spine_relation(token)
+        case_t2_bad_relation_kind(token)
+        case_u_add_spine_step(token)
+        case_u2_bad_step_status(token)
+        case_v_propose_spine_step(token)
 
         # ── Package B: read-only tenant tree ──
         cp_md = case_q_project_state(token)

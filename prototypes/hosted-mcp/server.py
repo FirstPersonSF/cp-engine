@@ -257,6 +257,24 @@ def caller_subject() -> str | None:
     return access.subject if access else None
 
 
+def caller_email() -> str | None:
+    """The caller's verified email claim, or None.
+
+    Read off the SAME verified claims the token verifier produced — never off a
+    request header or a caller-supplied argument. `spine_relations`' INSERT
+    policy is `is_team_member() AND created_by = auth.jwt()->>'email'`, so this
+    is not decoration: a row whose `created_by` disagrees with the JWT is
+    rejected by Postgres. Confirmed live: Supabase user tokens carry `email` at
+    the top level of the claim set (alongside `sub`, `role`, `aud`).
+    """
+    access = get_access_token()
+    if access is None:
+        return None
+    claims = access.claims or {}
+    email = claims.get("email")
+    return str(email) if email else None
+
+
 def user_client():
     """Build a FRESH PostgREST client bound to the caller's identity.
 
@@ -445,6 +463,16 @@ _AUDIT_SAFE_ARGS = {
     "path",
     "rel_path",
     "week",
+    # ── relations + steps (#143 batch 1): identifiers and closed vocabularies ──
+    # NOTE the asymmetry with `title`, which stays REDACTED below: these are all
+    # identifier-like (an element key, a relation kind, a step status/date), and
+    # a step's `title` is user prose like any other body field.
+    "kind",          # closed relation vocabulary
+    "from_key",      # an element key the caller named — an identifier
+    "to_key",
+    "key",           # the element key steps resolve against
+    "step_date",     # free-form but tiny ('7/16') — a date, not prose
+    "status",        # done | active | upcoming
 }
 # Arg keys that are free text — recorded as a length only, never their content.
 # `body`/`description`/`framing`/`title` are USER PROSE: the whole point of the
@@ -1158,6 +1186,13 @@ _SLUG_RE = re.compile(r"[^a-z0-9]+")
 # `commitments.direction` — mirrors the mc-2 CHECK constraint.
 _DIRECTIONS = {"us_to_them", "them_to_us", "internal"}
 
+# `spine_relations.kind` — the closed vocabulary, copied verbatim from
+# `mcp_server._RELATION_KINDS`. Validated in-process so an unknown kind is a
+# clear tool error rather than an opaque 500 from the DB CHECK.
+_RELATION_KINDS = frozenset(
+    {"responds_to", "supersedes", "derives_from", "informs", "contradicts"}
+)
+
 
 def canon_layer(type_: str) -> str:
     """Map an element `type` onto its canonical `layer` string.
@@ -1246,6 +1281,556 @@ def resolve_write_scope(client, project_code: str) -> dict[str, Any] | None:
         pass
 
     return {"id": scope_id, "kind": kind, "project_code": canonical}
+
+
+_ELEMENT_RESOLVE_COLUMNS = (
+    "id, est_item_id, project_code, project_id, phase, binding, layer, "
+    "placement, serves, version_label, version_date, status, framing, "
+    "sources, origin, important, note, scope"
+)
+
+
+def resolve_element_versions(
+    client, project_id: str, key: str
+) -> tuple[str | None, list[dict[str, Any]], dict[str, Any] | None]:
+    """`key` -> (est_item_id, all its version rows, error).
+
+    The hosted stand-in for `cp_engine.project_sources.resolve_element_versions`,
+    extracted verbatim from what `add_spine_version` already did inline so the
+    relation and step verbs resolve elements EXACTLY the way the version verb
+    does. Three key forms, in the engine's order:
+
+      1. an exact `est_item_id` (`_authored/<slug>`),
+      2. a bare slug, slugified into `_authored/<slug>`,
+      3. a case-insensitive `framing` substring — which must match exactly ONE
+         element. An ambiguous substring is an ERROR, never a silent pick: the
+         whole discipline of these verbs is "bind to one element or skip".
+
+    Scoped by project UUID, not by code string, because the caller's code form
+    and the row's stored `project_code` routinely differ (slug drift).
+    """
+    key = (key or "").strip()
+    if not key:
+        return None, [], {"error": "an element key is required"}
+
+    candidates = [key] if key.startswith("_authored/") else [f"_authored/{slugify(key)}", key]
+    for cand in candidates:
+        found = (
+            client.table("spine_substance")
+            .select(_ELEMENT_RESOLVE_COLUMNS)
+            .eq("project_id", project_id)
+            .eq("est_item_id", cand)
+            .execute()
+            .data
+            or []
+        )
+        if found:
+            return found[0]["est_item_id"], found, None
+
+    found = (
+        client.table("spine_substance")
+        .select(_ELEMENT_RESOLVE_COLUMNS)
+        .eq("project_id", project_id)
+        .ilike("framing", f"%{key}%")
+        .execute()
+        .data
+        or []
+    )
+    est_ids = {v["est_item_id"] for v in found}
+    if len(est_ids) > 1:
+        return None, [], {
+            "error": f"{key!r} matches {len(est_ids)} elements — be more specific",
+            "matches": sorted(est_ids)[:10],
+        }
+    if not found:
+        return None, [], None
+    return found[0]["est_item_id"], found, None
+
+
+def resolve_live_element_id(client, project_id: str, key: str) -> tuple[str | None, dict | None]:
+    """`key` -> the est_item_id of ONE LIVE element, mirroring the engine's
+    `resolve_live_element`. Returns (est_item_id, error_payload)."""
+    est_item_id, versions, err = resolve_element_versions(client, project_id, key)
+    if err is not None:
+        return None, err
+    if est_item_id is None:
+        return None, None
+    if not any(v.get("status") == "live" for v in versions):
+        return None, {"error": f"element {est_item_id!r} has no live version"}
+    return est_item_id, None
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Spine steps — the shared write helpers (#143 batch 1)
+# ──────────────────────────────────────────────────────────────────────
+#
+# Copied, not imported, from `cp_engine.spine_steps` — the vocabularies and
+# row fields below are that module's, verbatim:
+#
+#   STEP_STATUSES = ("done", "active", "upcoming")   NOTE_MAX = 8000
+#   add_step      -> source/review LEFT UNSET (the table's defaults stand for a
+#                    live human step: engine writes neither column)
+#   propose_step  -> source='auto', review='proposed'
+#   upsert_auto_step -> source='auto', review='proposed', status='done'
+#
+# The one hosted-specific constraint is the UPDATE policy: an authenticated
+# caller may update ONLY rows that are BOTH source='auto' AND review='proposed'.
+# That is exactly the guardrail `upsert_auto_step` already enforces in code, so
+# the engine semantics and the RLS policy agree rather than fight.
+
+STEP_STATUSES = ("done", "active", "upcoming")
+STEP_NOTE_MAX = 8000
+_STEP_SELECT = "id, est_item_id, position, title, status, step_date, note, source, review"
+
+
+def read_steps(client, project_id: str, est_item_id: str) -> list[dict[str, Any]]:
+    """This element's steps, ordered by position (the outline read order)."""
+    return (
+        client.table("spine_steps")
+        .select(_STEP_SELECT)
+        .eq("project_id", project_id)
+        .eq("est_item_id", est_item_id)
+        .order("position")
+        .execute()
+        .data
+        or []
+    )
+
+
+def next_step_position(existing: list[dict[str, Any]]) -> int:
+    return max((s.get("position") or 0 for s in existing), default=0) + 1
+
+
+def upsert_auto_step(
+    client, project_id: str, est_item_id: str, title: str, step_date: str
+) -> dict[str, Any]:
+    """Auto-journal a content-write as a step, ONE per (element, day).
+
+    Mirrors `cp_engine.spine_steps.upsert_auto_step` exactly, including the part
+    that matters most — the collapse key IGNORES title. A second version bump of
+    the same element on the same day RETITLES the day's existing proposed
+    auto-step rather than stacking a near-identical row.
+
+    Guardrails (engine semantics AND the hosted UPDATE policy, which agree): it
+    only ever touches a row that is BOTH source='auto' AND review='proposed'. A
+    human step, or an auto-step a human already CONFIRMED, is frozen. A
+    DISMISSED auto-step does not block a fresh one — the human rejected that
+    title, not the day's work.
+
+    Always status='done' (the move happened) + review='proposed' (the gate).
+    Callers treat any {error} as NON-FATAL: a journal miss must never fail the
+    content-write that triggered it.
+    """
+    if not (title and title.strip()):
+        return {"error": "title is required to journal a step"}
+
+    title_clean = title.strip()
+    existing = read_steps(client, project_id, est_item_id)
+    open_auto = next(
+        (
+            s
+            for s in existing
+            if s.get("source") == "auto"
+            and s.get("review") == "proposed"
+            and (s.get("step_date") or None) == (step_date or None)
+        ),
+        None,
+    )
+    if open_auto is not None:
+        if (open_auto.get("title") or "").strip() != title_clean:
+            client.table("spine_steps").update({"title": title_clean}).eq(
+                "id", open_auto["id"]
+            ).execute()
+        return {
+            "est_item_id": est_item_id,
+            "updated": True,
+            "step_id": open_auto["id"],
+        }
+
+    inserted = (
+        client.table("spine_steps")
+        .insert(
+            {
+                "project_id": project_id,
+                "est_item_id": est_item_id,
+                "position": next_step_position(existing),
+                "title": title_clean,
+                "status": "done",
+                "step_date": step_date,
+                "note": None,
+                "source": "auto",
+                "review": "proposed",
+            }
+        )
+        .execute()
+    )
+    step_id = inserted.data[0]["id"] if inserted.data else None
+    return {"est_item_id": est_item_id, "created": True, "step_id": step_id}
+
+
+@mcp_server.tool()
+def create_spine_relation(
+    project_code: str,
+    kind: str,
+    from_key: str,
+    to_key: str,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Create a typed directed edge between two live spine elements (#97).
+
+    The hosted port of the stdio verb, with identical semantics. `kind` is one of
+    the closed vocabulary: responds_to | supersedes | derives_from | informs |
+    contradicts — anything else is rejected HERE rather than left to reach the
+    DB CHECK (which would surface as an opaque 500). `from_key`/`to_key` each
+    resolve to ONE live element the same way `pull_spine_element` does: an exact
+    est_item_id or a distinct `framing` (title) substring.
+
+    The edge is written live (`status='active'`, `source='manual'`) and keys on
+    est_item_id — stable across version bumps, so the live version resolves at
+    READ time rather than being frozen into the edge.
+
+    Idempotent on the mig-117 unique constraint (project_id, kind, from, to): a
+    duplicate is reported as `{created: false, already: true}`, both by checking
+    first and by catching the 23505 a concurrent writer can still produce.
+
+    HOSTED DIFFERENCE from the stdio verb: `created_by` is stamped with the
+    CALLER'S VERIFIED EMAIL, not the literal "cp-sources" the service-key path
+    writes. The INSERT policy is `is_team_member() AND created_by =
+    auth.jwt()->>'email'`, so attribution is Postgres-enforced — a hosted edge
+    always names the human who drew it.
+
+    Authoring vocab (which edge for which change): responds_to = their voice
+    reacting to ours; derives_from = built from named inputs; supersedes = a
+    genuine fork (rare); informs = shaped but didn't generate; contradicts = a
+    conflicting claim.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        kind: responds_to | supersedes | derives_from | informs | contradicts.
+        from_key: the source element (est_item_id or unique framing substring).
+        to_key: the target element.
+        note: optional annotation on the edge.
+    """
+    kind_n = (kind or "").strip().lower()
+    if kind_n not in _RELATION_KINDS:
+        return {"error": f"unknown relation kind {kind!r}; use one of {sorted(_RELATION_KINDS)}"}
+
+    client = user_client()
+    email = caller_email()
+    if not email:
+        return {
+            "error": "no email claim on the caller's token — `spine_relations` "
+            "attributes every edge to a verified email (INSERT policy "
+            "`created_by = auth.jwt()->>'email'`), so an edge cannot be written "
+            "without one."
+        }
+
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    from_eid, err = resolve_live_element_id(client, scope["id"], from_key)
+    if err is not None:
+        return err
+    if from_eid is None:
+        return {"note": f"no single live element matching from_key {from_key!r}"}
+    to_eid, err = resolve_live_element_id(client, scope["id"], to_key)
+    if err is not None:
+        return err
+    if to_eid is None:
+        return {"note": f"no single live element matching to_key {to_key!r}"}
+    if from_eid == to_eid:
+        return {"error": "an element cannot relate to itself"}
+
+    audit_args = {
+        "project_code": project_code,
+        "kind": kind_n,
+        "from_key": from_key,
+        "to_key": to_key,
+    }
+
+    existing = (
+        client.table("spine_relations")
+        .select("id")
+        .eq("project_id", scope["id"])
+        .eq("kind", kind_n)
+        .eq("from_item_id", from_eid)
+        .eq("to_item_id", to_eid)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if existing:
+        audit(client, "create_spine_relation", audit_args, 0)
+        return {
+            "kind": kind_n,
+            "from_item_id": from_eid,
+            "to_item_id": to_eid,
+            "created": False,
+            "already": True,
+            "relation_id": existing[0].get("id"),
+        }
+
+    try:
+        result = (
+            client.table("spine_relations")
+            .insert(
+                {
+                    "project_id": scope["id"],
+                    "project_code": scope["project_code"],
+                    "kind": kind_n,
+                    "from_item_id": from_eid,
+                    "to_item_id": to_eid,
+                    "status": "active",
+                    "source": "manual",
+                    "note": note,
+                    "created_by": email,
+                }
+            )
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        # 23505 = the mig-117 unique constraint. A concurrent writer can win the
+        # race between the check above and this insert; that is the edge already
+        # existing, which is the SAME outcome, not a failure.
+        if "23505" in str(exc) or "duplicate key" in str(exc).lower():
+            audit(client, "create_spine_relation", audit_args, 0)
+            return {
+                "kind": kind_n,
+                "from_item_id": from_eid,
+                "to_item_id": to_eid,
+                "created": False,
+                "already": True,
+            }
+        audit(client, "create_spine_relation", audit_args, 0)
+        return {"error": f"relation insert failed: {type(exc).__name__}: {str(exc)[:400]}"}
+
+    created = (result.data or [{}])[0]
+    audit(client, "create_spine_relation", audit_args, 1)
+    return {
+        "relation_id": created.get("id"),
+        "kind": kind_n,
+        "from_item_id": from_eid,
+        "to_item_id": to_eid,
+        "created": True,
+        "project_code": scope["project_code"],
+        "created_by": email,
+        "caller": caller_subject(),
+    }
+
+
+@mcp_server.tool()
+def add_spine_step(
+    project_code: str,
+    key: str,
+    title: str,
+    status: str = "upcoming",
+    step_date: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Append an ordered STEP to a spine element's progress trail (#119).
+
+    A step is a lightweight marker of one move toward finishing the element
+    (drafted -> ratified -> rewriting -> booked) — NOT a version, source, or
+    body. `key` resolves to ONE live element (est_item_id exact, or a unique
+    framing substring — same discipline as `pull_spine_element`). The step is
+    appended at the end (position = max+1 within this (project, element)).
+
+    This writes a LIVE HUMAN step: `source` and `review` are left UNSET so the
+    table's own defaults stand, exactly as `cp_engine.spine_steps.add_step`
+    writes it. Use `propose_spine_step` instead when YOU are recording progress
+    you just made — that one lands review-gated.
+
+    `status` ∈ done|active|upcoming (default upcoming); `step_date` is free-form
+    ('7/16', optional); `note` is a sentence or two (optional, ≤8000 chars). A
+    step NEVER completes the work-item on the schedule — that stays
+    human-confirmed.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        key: the parent element (est_item_id or unique framing substring).
+        title: terse past/present-tense label for the move.
+        status: done | active | upcoming.
+        step_date: optional free-form date.
+        note: optional annotation (≤8000 chars).
+    """
+    if not (title and title.strip()):
+        return {"error": "title is required to add a step"}
+    if status not in STEP_STATUSES:
+        return {"error": f"status must be one of {list(STEP_STATUSES)}"}
+    if note is not None and len(note) > STEP_NOTE_MAX:
+        return {"error": f"note exceeds {STEP_NOTE_MAX} characters"}
+
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    est_item_id, err = resolve_live_element_id(client, scope["id"], key)
+    if err is not None:
+        return err
+    if est_item_id is None:
+        return {"error": f"no live element matching {key!r}"}
+
+    audit_args = {
+        "project_code": project_code,
+        "key": key,
+        "status": status,
+        "step_date": step_date,
+        "title": title,
+    }
+    existing = read_steps(client, scope["id"], est_item_id)
+    position = next_step_position(existing)
+    try:
+        result = (
+            client.table("spine_steps")
+            .insert(
+                {
+                    "project_id": scope["id"],
+                    "est_item_id": est_item_id,
+                    "position": position,
+                    "title": title.strip(),
+                    "status": status,
+                    "step_date": step_date,
+                    "note": note,
+                }
+            )
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        audit(client, "add_spine_step", audit_args, 0)
+        return {"error": f"step insert failed: {type(exc).__name__}: {str(exc)[:400]}"}
+
+    created = (result.data or [{}])[0]
+    audit(client, "add_spine_step", audit_args, 1)
+    return {
+        "est_item_id": est_item_id,
+        "step_id": created.get("id"),
+        "position": position,
+        "caller": caller_subject(),
+        "steps": read_steps(client, scope["id"], est_item_id),
+    }
+
+
+@mcp_server.tool()
+def propose_spine_step(
+    project_code: str,
+    key: str,
+    title: str,
+    status: str = "done",
+    step_date: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """PROPOSE a machine-authored step on an element's trail (auto-journey-steps).
+
+    Author a step as work moves DURING a session — but it lands PROPOSED, not
+    live (`source='auto'`, `review='proposed'`): a human confirms or dismisses it
+    on the spine trail. Use this (not `add_spine_step`, which writes a live human
+    step) when YOU are recording progress you just made, e.g. at the end of a
+    content/synthesis session on an engagement.
+
+    Contract (design 2026-07-21 §2): one MOVE = one step (not one edit); bind to
+    exactly ONE element (`key` resolves like `pull_spine_element` — skip rather
+    than guess if you can't attribute the work to a single element); prefer
+    `status='done'` (the move already happened); a terse past-tense `title`
+    (≤~60 chars, "Ratified the pillars", not "worked on pillars"). **Cap yourself
+    at ≤2 proposed steps per session across all elements.**
+
+    Idempotent: re-proposing the same (element, title, step_date) is a no-op in
+    ANY review state — a confirmed or already-dismissed twin is not re-proposed,
+    so a re-run never double-proposes and never resurrects a rejected step.
+    Returns {est_item_id, proposed: bool, already?: bool, steps}.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        key: the parent element (est_item_id or unique framing substring).
+        title: terse past-tense label for the move.
+        status: done | active | upcoming (default done).
+        step_date: optional free-form date.
+        note: optional annotation (≤8000 chars).
+    """
+    if not (title and title.strip()):
+        return {"error": "title is required to propose a step"}
+    if status not in STEP_STATUSES:
+        return {"error": f"status must be one of {list(STEP_STATUSES)}"}
+    if note is not None and len(note) > STEP_NOTE_MAX:
+        return {"error": f"note exceeds {STEP_NOTE_MAX} characters"}
+
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    est_item_id, err = resolve_live_element_id(client, scope["id"], key)
+    if err is not None:
+        return err
+    if est_item_id is None:
+        return {"error": f"no live element matching {key!r}"}
+
+    audit_args = {
+        "project_code": project_code,
+        "key": key,
+        "status": status,
+        "step_date": step_date,
+        "title": title,
+    }
+    title_clean = title.strip()
+    existing = read_steps(client, scope["id"], est_item_id)
+    # Idempotency guard on the natural key, matching ANY review state — a
+    # confirmed or rejected twin blocks a re-propose.
+    dup = next(
+        (
+            s
+            for s in existing
+            if (s.get("title") or "").strip().lower() == title_clean.lower()
+            and (s.get("step_date") or None) == (step_date or None)
+        ),
+        None,
+    )
+    if dup is not None:
+        audit(client, "propose_spine_step", audit_args, 0)
+        return {
+            "est_item_id": est_item_id,
+            "proposed": False,
+            "already": True,
+            "step_id": dup.get("id"),
+            "steps": existing,
+        }
+
+    position = next_step_position(existing)
+    try:
+        result = (
+            client.table("spine_steps")
+            .insert(
+                {
+                    "project_id": scope["id"],
+                    "est_item_id": est_item_id,
+                    "position": position,
+                    "title": title_clean,
+                    "status": status,
+                    "step_date": step_date,
+                    "note": note,
+                    "source": "auto",
+                    "review": "proposed",
+                }
+            )
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        audit(client, "propose_spine_step", audit_args, 0)
+        return {"error": f"step insert failed: {type(exc).__name__}: {str(exc)[:400]}"}
+
+    created = (result.data or [{}])[0]
+    audit(client, "propose_spine_step", audit_args, 1)
+    return {
+        "est_item_id": est_item_id,
+        "proposed": True,
+        "step_id": created.get("id"),
+        "position": position,
+        "caller": caller_subject(),
+        "steps": read_steps(client, scope["id"], est_item_id),
+    }
 
 
 @mcp_server.tool()
@@ -1651,8 +2236,14 @@ def add_spine_version(
     rows; the supersede function demotes every live sibling except the new id,
     so the end state is consistent even if a concurrent bump interleaves.
 
-    NOT mirrored from the engine verb (deferred): the auto-journal step —
-    `spine_steps` has no authenticated INSERT policy yet. Flagged in #142.
+    Auto-journals the move (#143): on success it upserts ONE `source='auto'`,
+    `review='proposed'` step for TODAY on this element's trail, so a
+    content-write always leaves an activity record without a manual wrap-up
+    proposal. A second bump of the same element the same day RETITLES that step
+    rather than stacking a row. Title falls back to `version_note`, else
+    "Updated <framing> (v<N>)". The auto-step is NON-FATAL: any failure
+    surfaces under `step` in the return, never as a tool `{error}` — a journal
+    miss must never fail the version write that triggered it.
 
     Args:
         project_code: engagement, initiative, or standalone-repo code.
@@ -1678,52 +2269,12 @@ def add_spine_version(
     key = (element_id or "").strip()
     if not key:
         return {"error": "element_id is required"}
-    candidates = [key] if key.startswith("_authored/") else [f"_authored/{slugify(key)}", key]
 
-    versions: list[dict[str, Any]] = []
-    for cand in candidates:
-        found = (
-            client.table("spine_substance")
-            .select(
-                "id, est_item_id, project_code, project_id, phase, binding, layer, "
-                "placement, serves, version_label, version_date, status, framing, "
-                "sources, origin, important, note, scope"
-            )
-            .eq("project_id", scope["id"])
-            .eq("est_item_id", cand)
-            .execute()
-            .data
-            or []
-        )
-        if found:
-            versions = found
-            break
-    if not versions:
-        # Last resort: framing substring, like the engine's resolver.
-        found = (
-            client.table("spine_substance")
-            .select(
-                "id, est_item_id, project_code, project_id, phase, binding, layer, "
-                "placement, serves, version_label, version_date, status, framing, "
-                "sources, origin, important, note, scope"
-            )
-            .eq("project_id", scope["id"])
-            .ilike("framing", f"%{key}%")
-            .execute()
-            .data
-            or []
-        )
-        est_ids = {v["est_item_id"] for v in found}
-        if len(est_ids) > 1:
-            return {
-                "error": f"{key!r} matches {len(est_ids)} elements — be more specific",
-                "matches": sorted(est_ids)[:10],
-            }
-        versions = found
-    if not versions:
+    est_item_id, versions, err = resolve_element_versions(client, scope["id"], key)
+    if err is not None:
+        return err
+    if est_item_id is None:
         return {"error": f"no authored element {key!r} in {project_code!r}"}
-
-    est_item_id = versions[0]["est_item_id"]
     base = next((v for v in versions if v.get("status") == "live"), versions[0])
     nums = [
         int(str(v.get("version_label", ""))[1:])
@@ -1782,7 +2333,7 @@ def add_spine_version(
         }
 
     audit(client, "add_spine_version", {"project_code": project_code, "element_id": key, "body": body}, 1)
-    return {
+    result: dict[str, Any] = {
         "element_id": est_item_id,
         "version_label": f"v{next_n}",
         "superseded": demoted,
@@ -1791,6 +2342,23 @@ def add_spine_version(
         "version_note": version_note,
         "body_chars": len(body),
     }
+    # Auto-journal the move as a review-gated step. Title priority mirrors the
+    # engine verb (minus its `step_title` arg, which this tool does not take):
+    # version_note > derived "Updated <framing> (v<N>)".
+    try:
+        step_title = version_note or (
+            f"Updated {base.get('framing') or est_item_id} (v{next_n})"
+        )
+        result["step"] = upsert_auto_step(
+            client,
+            row["project_id"],
+            est_item_id,
+            step_title,
+            step_date=now.date().isoformat(),
+        )
+    except Exception as exc:  # noqa: BLE001 — journaling is non-fatal
+        result["step"] = {"error": f"auto-step failed: {type(exc).__name__}: {str(exc)[:300]}"}
+    return result
 
 
 @mcp_server.tool()
@@ -2294,7 +2862,11 @@ def main() -> None:
         if tree_ok
         else tree_reason,
     )
-    log.info("writes: insert-only (create_note, create_commitment, create_spine_element)")
+    log.info(
+        "writes: create_note, create_commitment, create_spine_element, "
+        "add_spine_version (+auto-step), add_spine_document, "
+        "create_spine_relation, add_spine_step, propose_spine_step"
+    )
     log.info("audit log: mcp_audit_log as client=%s", SERVER_VERSION)
     mcp_server.run(
         transport="streamable-http",
