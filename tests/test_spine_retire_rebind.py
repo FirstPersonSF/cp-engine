@@ -80,7 +80,11 @@ def test_resolve_element_versions_wont_match_archived_live_row():
     assert eid is None and versions == []
 
 
-# ── set_spine_element: retitle (framing) + rebind (serves) ──────────────────
+# ── shared wrapper-test helpers ─────────────────────────────────────────────
+#
+# `set_spine_element` was ported to the hosted MCP server and deleted from stdio
+# (cp-engine #143), so its retitle/rebind wrapper tests went with it. These
+# helpers stay — retire_spine_element's tests below use them.
 
 def _patch_resolve(monkeypatch, rows, captured):
     client = _client(rows, captured)
@@ -92,48 +96,6 @@ def _element_updates(captured):
     """Updates targeted at the whole element (project_id + est_item_id)."""
     return [(p, eqs) for p, eqs in captured.get("updates", [])
             if ("project_id", "pid") in eqs]
-
-
-def test_set_spine_element_framing_retitles_all_versions(monkeypatch):
-    captured = {}
-    _patch_resolve(monkeypatch, [_row("_authored/x", framing="old title")], captured)
-    import cp_engine.mcp_server as m
-    res = m.set_spine_element("p", "_authored/x", framing="new title")
-    assert res["framing"] == "new title"
-    [(patch, eqs)] = _element_updates(captured)
-    assert patch["framing"] == "new title"
-    assert ("est_item_id", "_authored/x") in eqs      # every version, one element
-    assert not any("status" in dict(eqs) for _, eqs in _element_updates(captured))
-
-
-def test_set_spine_element_serves_rebinds_and_derives_binding(monkeypatch):
-    captured = {}
-    _patch_resolve(monkeypatch, [_row("_authored/x")], captured)
-    import cp_engine.mcp_server as m
-    res = m.set_spine_element("p", "_authored/x", serves=["work-item-1"])
-    assert res["serves"] == ["work-item-1"]
-    assert res["binding"] == "live"
-    [(patch, _)] = _element_updates(captured)
-    assert patch["serves"] == ["work-item-1"]
-    assert patch["binding"] == "live"
-
-
-def test_set_spine_element_empty_serves_unbinds(monkeypatch):
-    captured = {}
-    _patch_resolve(monkeypatch, [_row("_authored/x")], captured)
-    import cp_engine.mcp_server as m
-    res = m.set_spine_element("p", "_authored/x", serves=[])
-    assert res["binding"] == "unbound"
-    [(patch, _)] = _element_updates(captured)
-    assert patch["serves"] == [] and patch["binding"] == "unbound"
-
-
-def test_set_spine_element_framing_and_layer_share_one_update(monkeypatch):
-    captured = {}
-    _patch_resolve(monkeypatch, [_row("_authored/x")], captured)
-    import cp_engine.mcp_server as m
-    m.set_spine_element("p", "_authored/x", framing="t", layer="synthesis")
-    assert len(_element_updates(captured)) == 1      # one write for element-level facts
 
 
 # ── retire_spine_element ─────────────────────────────────────────────────────

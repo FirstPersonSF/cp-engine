@@ -6,12 +6,17 @@ a spine_substance version: no version history, sources, or body. Steps live in
 their own table `public.spine_steps`, keyed by (project_id, est_item_id), ordered
 by an explicit integer `position` (ties break by step_date).
 
-These pure helpers back the four MCP verbs (add/set/reorder/remove_spine_step).
-Each resolves the parent element's est_item_id via the same matcher the read
-tools use (exact est_item_id OR a distinct framing substring), then reads/writes
-`spine_steps` scoped to (project_id, est_item_id) so a stray id can never touch
-another element's trail. The tool wrappers just resolve the project and delegate
-here — which keeps them unit-testable with a fake client.
+These pure helpers back the step MCP verbs (add/set/reorder/remove_spine_step),
+which now live on the HOSTED MCP server (`cp-hosted` connector) — cp-engine #143
+ported them off the stdio server so the write surface exists once and carries the
+caller's identity. This module stays: `close_out.py` and `add_spine_version`'s
+auto-journal call `add_step`/`propose_step`/`upsert_auto_step` in-process.
+
+Each helper resolves the parent element's est_item_id via the same matcher the
+read tools use (exact est_item_id OR a distinct framing substring), then
+reads/writes `spine_steps` scoped to (project_id, est_item_id) so a stray id can
+never touch another element's trail. Callers just resolve the project and
+delegate here — which keeps this unit-testable with a fake client.
 
 Boundary (cp/docs/plans/2026-07-21-spine-steps-build.md §0): a step NEVER writes
 the work-item's schedule `done`. That bridge (all-steps-done -> suggest slot
@@ -236,7 +241,7 @@ def set_step(client, project_id, key, step_id, *, title=None, status=None,
              step_date=None, note=None, company_id=None):
     """Update one step's title/status/step_date/note. Only passed fields change
     (None = untouched — so you can't null a field through this verb, matching the
-    partial-update discipline of set_spine_element)."""
+    partial-update discipline the spine's other setters follow)."""
     if status is not None and status not in STEP_STATUSES:
         return {"error": f"status must be one of {list(STEP_STATUSES)}"}
     if note is not None and len(note) > NOTE_MAX:

@@ -173,10 +173,10 @@ def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
     assert srv._tenant_root() == tmp_path.resolve()
 
 
-def test_exactly_thirty_four_tools_registered():
-    """4 source-read + 1 dropbox-write + 2 spine-read + 13 spine-write +
-    1 spine-relation-write + 3 spine-step-write + 1 spine-promote +
-    1 meetings-read + 3 framework + 3 commitment + 1 note tool.
+def test_exactly_twenty_nine_tools_registered():
+    """4 source-read + 1 dropbox-write + 2 spine-read + 12 spine-write +
+    1 spine-relation-write + 1 spine-promote +
+    1 meetings-read + 3 framework + 2 commitment + 1 note tool.
 
     source-read grew 3→4 (#108 pull_document_comments); spine-write grew 8→11
     (#104 add/remove_element_provenance, #105 retire_spine_elements); create_note
@@ -187,10 +187,16 @@ def test_exactly_thirty_four_tools_registered():
     then +1 (auto-journey-steps): propose_spine_step (machine-authored, proposed
     review-state).
 
-    Then 37→34 (#143 hosted-MCP ratchet): `create_spine_relation`,
+    Then 37→34 (#143 hosted-MCP ratchet batch 1): `create_spine_relation`,
     `add_spine_step` and `propose_spine_step` were PORTED to the hosted server
-    and deleted here, so the write surface never exists twice. `retire_spine_relation`
-    and set/reorder/remove_spine_step are NOT yet ported and stay on stdio."""
+    and deleted here, so the write surface never exists twice.
+
+    Then 34→29 (#143 batch 2 — the UPDATE verbs): `set_spine_element`,
+    `resolve_commitment` and set/reorder/remove_spine_step ported and deleted.
+    `retire_spine_relation`, `retire_spine_element(s)` and the CREATE verbs are
+    NOT yet ported and stay on stdio. Caveat carried on #143:
+    `set_spine_element`'s important-flip RAG promotion is not mirrored on hosted
+    — `promote_spine_transcript` (still here) is the standalone door for it."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
         "list_project_sources",
@@ -203,7 +209,6 @@ def test_exactly_thirty_four_tools_registered():
         "create_spine_element",
         "add_spine_document",
         "add_spine_version",
-        "set_spine_element",
         "set_element_account_scope",
         "pull_element_from_project",
         "add_element_source",
@@ -213,9 +218,6 @@ def test_exactly_thirty_four_tools_registered():
         "retire_spine_element",
         "retire_spine_elements",
         "retire_spine_relation",
-        "set_spine_step",
-        "reorder_spine_step",
-        "remove_spine_step",
         "promote_stakeholder",
         "demote_stakeholder",
         "promote_spine_transcript",
@@ -225,7 +227,6 @@ def test_exactly_thirty_four_tools_registered():
         "list_project_meetings",
         "create_commitment",
         "list_commitments",
-        "resolve_commitment",
         "create_note",
     }
 
@@ -967,7 +968,12 @@ def test_module_import_is_light():
 
 
 # ---------------------------------------------------------------------------
-# Commitment tools (create_commitment / list_commitments / resolve_commitment)
+# Commitment tools (create_commitment / list_commitments)
+#
+# `resolve_commitment` was ported to the hosted MCP server and deleted from
+# stdio (cp-engine #143), so its wrapper tests went with it. The
+# cp_engine.commitments MODULE keeps close_commitment/find_open_commitment
+# (tested in tests/test_commitments.py).
 # ---------------------------------------------------------------------------
 
 
@@ -1103,42 +1109,6 @@ def test_list_commitments_unresolved(monkeypatch):
     assert "resolved to no" in out[0]["note"]
 
 
-def test_resolve_commitment_delegates(monkeypatch):
-    fake_client = object()
-    monkeypatch.setattr(srv, "_resolve_commitments",
-                        lambda code: (fake_client, _scope()))
-    row = {"id": "c1", "description": "Deliver the grids"}
-    monkeypatch.setattr("cp_engine.commitments.find_open_commitment",
-                        lambda client, owner, key: (row, None))
-    captured = {}
-    monkeypatch.setattr(
-        "cp_engine.commitments.close_commitment",
-        lambda client, cid, outcome: captured.update(cid=cid, outcome=outcome),
-    )
-    out = srv.resolve_commitment("ggl-5168", "grids", outcome="done")
-    assert out == {"resolved": "c1", "description": "Deliver the grids",
-                   "outcome": "done"}
-    assert captured == {"cid": "c1", "outcome": "done"}
-
-
-def test_resolve_commitment_bad_outcome():
-    out = srv.resolve_commitment("ggl-5168", "grids", outcome="deleted")
-    assert "outcome" in out["error"]
-
-
-def test_resolve_commitment_ambiguous_returns_error(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve_commitments",
-                        lambda code: (object(), _scope()))
-    monkeypatch.setattr("cp_engine.commitments.find_open_commitment",
-                        lambda client, owner, key: (None, "2 open commitments match"))
-    closed = []
-    monkeypatch.setattr("cp_engine.commitments.close_commitment",
-                        lambda *a: closed.append(a))
-    out = srv.resolve_commitment("ggl-5168", "the")
-    assert "match" in out["error"]
-    assert not closed
-
-
 def test_commitment_tools_resolve_raises_returns_error(monkeypatch):
     def boom(code):
         raise RuntimeError("no creds")
@@ -1146,7 +1116,6 @@ def test_commitment_tools_resolve_raises_returns_error(monkeypatch):
     monkeypatch.setattr(srv, "_resolve_commitments", boom)
     assert "no creds" in srv.create_commitment("ggl-5168", "Deliver")["error"]
     assert "no creds" in srv.list_commitments("ggl-5168")[0]["error"]
-    assert "no creds" in srv.resolve_commitment("ggl-5168", "x")["error"]
 
 
 # ---------------------------------------------------------------------------

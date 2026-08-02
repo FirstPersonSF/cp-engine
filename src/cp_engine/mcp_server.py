@@ -715,110 +715,15 @@ def add_spine_version(project_code: str, element_id: str, body: str,
         return {"error": f"failed to add version in {project_code!r}: {exc}"}
 
 
-@mcp.tool()
-def set_spine_element(project_code: str, key: str,
-                      important: bool | None = None,
-                      note: str | None = None,
-                      layer: str | None = None,
-                      framing: str | None = None,
-                      serves: list[str] | None = None) -> dict:
-    """Set `important`, `note`, `layer`, `framing` (title), and/or `serves`
-    (work-item binding) on a spine element.
-
-    `key` is an est_item_id (exact) or a case-insensitive `framing` (title)
-    substring resolved to ONE live element (same discipline as
-    pull_spine_element). Args left None are not touched (partial update). Marking
-    an element important surfaces it first in list_spine_elements and promotes
-    its source transcript to RAG. Promotion fires only on a false→true
-    transition (not when already important), is engagement-only (initiative
-    elements are deferred), and is non-fatal — its outcome surfaces under
-    `promotion` in the return, never as a tool {error}, so importance is always
-    set. `promote_spine_transcript` is the standalone tool to run/retry promotion
-    on its own. `layer` re-files the element under a spine layer (retrospective,
-    research, synthesis, decisions, client feedback, timeline, …) — the value is
-    normalized to the UI's canonical string. `framing` retitles the element (the
-    est_item_id — the machine path — never changes, so existing keys keep
-    working). `serves` rebinds the element to work-item ids (estimate
-    activities/deliverables); pass `[]` to unbind — `binding` follows
-    automatically ('live' when serves is non-empty, 'unbound' when empty).
-    Layer, framing, and serves are element-level facts, so each is applied to
-    EVERY version of the element — a partial write would scatter one element's
-    history. Returns {est_item_id, important, note[, layer][, framing]
-    [, serves][, promotion]}, or a structured {note}/{error} on miss.
-    """
-    from cp_engine.authored_element import canon_layer
-    from cp_engine.project_sources import resolve_live_element
-    try:
-        resolved = _resolve(project_code)
-        if resolved is None:
-            return {"error": f"project {project_code!r} not found"}
-        client, pid, company_id = resolved
-        row = resolve_live_element(client, pid, key, company_id)
-        if row is None:
-            return {"note": f"no single live element matching '{key}' in {project_code!r}"}
-        # Capture the PRIOR important flag before the patch so we can detect a
-        # genuine false→true transition (which triggers RAG promotion below).
-        prior_important = bool(row.get("important"))
-        patch = {}
-        if important is not None:
-            patch["important"] = bool(important)
-        if note is not None:
-            patch["note"] = note
-        # Importance is ALWAYS set first — promotion never blocks it.
-        if patch:
-            client.table(Tables.SPINE_SUBSTANCE).update(patch).eq("id", row["id"]).execute()
-        # layer / framing / serves describe the element as a whole (its kind,
-        # its title, what it's bound to), so every version row moves together —
-        # a partial move would scatter one element's history (#47).
-        element_patch = {}
-        canonical_layer = None
-        if layer is not None:
-            canonical_layer = canon_layer(layer)
-            element_patch["layer"] = canonical_layer
-        if framing is not None:
-            element_patch["framing"] = framing
-        if serves is not None:
-            element_patch["serves"] = list(serves)
-            # Same rule the authored-element builders use: bound ⇔ non-empty.
-            element_patch["binding"] = "live" if serves else "unbound"
-        if element_patch:
-            (client.table(Tables.SPINE_SUBSTANCE).update(element_patch)
-             .eq("project_id", row.get("project_id") or pid)
-             .eq("est_item_id", row["est_item_id"]).execute())
-        result = {
-            "est_item_id": row["est_item_id"],
-            "important": patch.get("important", row.get("important")),
-            "note": patch.get("note", row.get("note")),
-        }
-        if canonical_layer is not None:
-            result["layer"] = canonical_layer
-        if framing is not None:
-            result["framing"] = framing
-        if serves is not None:
-            result["serves"] = list(serves)
-            result["binding"] = element_patch["binding"]
-        # Promote the source transcript to RAG ONLY on a genuine false→true flip
-        # (not when already True — no redundant re-embed — nor when untouched/False).
-        # Promotion is NON-FATAL: a failure surfaces under "promotion", never as a
-        # tool {error}, so importance:True is always returned.
-        if important is True and not prior_important:
-            try:
-                from cp_engine.config import load as load_config
-                from cp_engine.spine_promote import promote_transcript
-                from cp_engine.sync_mc2 import _load_ingest_creds, _load_supabase_creds
-                root = _tenant_root()
-                config = load_config(root)
-                supabase_url, supabase_key = _load_supabase_creds(config)
-                _load_ingest_creds(config)
-                result["promotion"] = promote_transcript(
-                    client, root, project_code, pid, company_id, row,
-                    supabase_url=supabase_url, supabase_key=supabase_key,
-                )
-            except Exception as exc:  # noqa: BLE001 — promotion is non-fatal
-                result["promotion"] = {"ok": False, "reason": f"promotion error: {exc}"}
-        return result
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to set element '{key}' in {project_code!r}: {exc}"}
+# NOTE (cp-engine #143): `set_spine_element` now lives on the hosted MCP server
+# (`cp-hosted` connector, same verb name), where the write carries the caller's
+# identity and lands in the audit log. CAVEAT: the stdio wrapper also fired a
+# RAG transcript promotion on an `important` false→true flip; the hosted copy
+# does NOT mirror that side effect yet (tracked on #143 — it lands when
+# `promote_spine_transcript` ports). The promotion path itself is INTACT here:
+# `cp_engine.spine_promote.promote_transcript` is still called by the
+# `promote_spine_transcript` tool below, which is the standalone run/retry door
+# for exactly this promotion. Do not delete that helper.
 
 
 @mcp.tool()
@@ -873,87 +778,14 @@ def remove_element_source(project_code: str, key: str, source_title: str) -> dic
                          f"in {project_code!r}: {exc}"}
 
 
-# NOTE (cp-engine #143): the relation/step AUTHORING verbs —
-# `create_spine_relation`, `add_spine_step`, `propose_spine_step` — now live on
-# the hosted MCP server (`cp-hosted` connector, same verb names), where writes
-# carry the caller's identity and land in the audit log. They were removed from
-# this stdio server so the surface never exists twice; the underlying
-# `cp_engine.spine_steps` module stays (close_out.py and add_spine_version's
-# auto-step still call it). See docs/hosted-mcp-team-setup.md.
-
-
-
-@mcp.tool()
-def set_spine_step(
-    project_code: str, key: str, step_id: str,
-    title: str | None = None, status: str | None = None,
-    step_date: str | None = None, note: str | None = None,
-) -> dict:
-    """Update one step on a spine element's trail (#119).
-
-    Advance a step (`status` ∈ done|active|upcoming) or edit its title/step_date/
-    note. `key` resolves the parent element; `step_id` picks the step. Only the
-    fields you pass change (None = untouched — this verb never nulls a field).
-    Returns {est_item_id, step_id, steps} or {error}. The common move is
-    advancing a step to `done` as the work lands.
-    """
-    from cp_engine import spine_steps
-
-    try:
-        resolved = _resolve(project_code)
-        if resolved is None:
-            return {"error": f"project {project_code!r} not found"}
-        client, pid, cid = resolved
-        return spine_steps.set_step(client, pid, key, step_id, title=title,
-                                    status=status, step_date=step_date,
-                                    note=note, company_id=cid)
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to update step {step_id!r} on '{key}' in "
-                         f"{project_code!r}: {exc}"}
-
-
-@mcp.tool()
-def reorder_spine_step(project_code: str, key: str, order: list[str]) -> dict:
-    """Reorder a spine element's steps (#119).
-
-    `order` is the FULL list of the element's step_ids in the desired order;
-    positions are renumbered 1..N to match. `key` resolves the parent element.
-    Returns {est_item_id, steps} or {error}.
-    """
-    from cp_engine import spine_steps
-
-    try:
-        resolved = _resolve(project_code)
-        if resolved is None:
-            return {"error": f"project {project_code!r} not found"}
-        client, pid, cid = resolved
-        return spine_steps.reorder_steps(client, pid, key, order,
-                                         company_id=cid)
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to reorder steps on '{key}' in "
-                         f"{project_code!r}: {exc}"}
-
-
-@mcp.tool()
-def remove_spine_step(project_code: str, key: str, step_id: str) -> dict:
-    """Delete one step from a spine element's trail (#119).
-
-    `key` resolves the parent element; `step_id` picks the step. Remaining steps
-    densify to stay 1..N contiguous. Returns {est_item_id, removed, steps} or
-    {error}.
-    """
-    from cp_engine import spine_steps
-
-    try:
-        resolved = _resolve(project_code)
-        if resolved is None:
-            return {"error": f"project {project_code!r} not found"}
-        client, pid, cid = resolved
-        return spine_steps.remove_step(client, pid, key, step_id,
-                                       company_id=cid)
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to remove step {step_id!r} on '{key}' in "
-                         f"{project_code!r}: {exc}"}
+# NOTE (cp-engine #143): the relation/step verbs — `create_spine_relation`,
+# `add_spine_step`, `propose_spine_step` (batch 1) and `set_spine_step`,
+# `reorder_spine_step`, `remove_spine_step` (batch 2) — now live on the hosted
+# MCP server (`cp-hosted` connector, same verb names), where writes carry the
+# caller's identity and land in the audit log. They were removed from this stdio
+# server so the surface never exists twice; the underlying `cp_engine.spine_steps`
+# module stays (close_out.py and add_spine_version's auto-step still call it).
+# See docs/hosted-mcp-team-setup.md.
 
 
 @mcp.tool()
@@ -1625,33 +1457,12 @@ def list_commitments(project_code: str, status: str = "open") -> list[dict]:
         return [{"error": f"failed to list commitments for {project_code!r}: {exc}"}]
 
 
-@mcp.tool()
-def resolve_commitment(project_code: str, key: str, outcome: str = "done") -> dict:
-    """Close an OPEN commitment: `outcome` 'done' (delivered) or 'dropped' (no longer owed).
-
-    `key` is a commitment id from list_commitments or a distinct substring of
-    its description; an ambiguous key returns the candidates instead of
-    guessing. Commitments are never deleted — a dropped row stays as the
-    archive and keeps re-ingests of the same meeting from resurrecting it.
-    The wrap-up-sweep verb, mirroring weekly-cp.md's `[resolved: ...]` markers.
-    """
-    from cp_engine.commitments import close_commitment, find_open_commitment
-
-    try:
-        if outcome not in ("done", "dropped"):
-            return {"error": "outcome must be 'done' or 'dropped'"}
-        client, scope = _resolve_commitments(project_code)
-        if scope is None:
-            return {"error": f"code {project_code!r} resolved to no engagement "
-                             "or initiative"}
-        row, err = find_open_commitment(client, scope, key)
-        if err:
-            return {"error": err}
-        close_commitment(client, row["id"], outcome)
-        return {"resolved": row["id"], "description": row.get("description"),
-                "outcome": outcome}
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to resolve commitment in {project_code!r}: {exc}"}
+# NOTE (cp-engine #143): `resolve_commitment` — the wrap-up-sweep verb that
+# closes an open commitment as `done` or `dropped` — now lives on the hosted MCP
+# server (`cp-hosted` connector, same verb name), where the write carries the
+# caller's identity and lands in the audit log. The `cp_engine.commitments`
+# module stays: `close_commitment`/`find_open_commitment` remain the shared
+# implementation, and close_out.py's checklist still points humans at the verb.
 
 
 @mcp.tool()

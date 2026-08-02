@@ -66,9 +66,14 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
 - `add_spine_version(code, element_id, body, version_note?)` — supersede the prior
   live version with a new one (a targeted "what changed" update).
 - `set_spine_element(code, key, important?, note?, layer?, framing?, serves?)` —
-  partial update of an element's flags and element-level facts: retitle with
-  `framing` (the est_item_id never changes), rebind with `serves` (work-item
+  **hosted-server verb** (`cp-hosted` connector; cp-engine #143 ported it off
+  stdio) — partial update of an element's flags and element-level facts: retitle
+  with `framing` (the est_item_id never changes), rebind with `serves` (work-item
   ids; `[]` unbinds — `binding` follows automatically), re-file with `layer`.
+  NOTE: the stdio copy also promoted the element's source transcript to RAG on an
+  `important` false→true flip; the hosted copy does NOT do that yet (#143). Run
+  `promote_spine_transcript(code, key)` — still a stdio verb — to promote or retry
+  explicitly.
 - `retire_spine_element(code, key)` — remove an element from the live spine
   (duplicates, no-longer-relevant items). The element's history is archived (not
   deleted, un-archivable), and its typed edges are removed so nothing dangles.
@@ -159,9 +164,10 @@ ratifies, and the Monday partners digest reads):
 - `list_commitments(code, status?)` — the read side (`status` ∈
   `open | done | dropped | all`). Use at wrap up to reconcile promised vs.
   delivered; `date_status` shows ratification, `source_kind` shows origin.
-- `resolve_commitment(code, key, outcome?)` — close an open row as `done` or
-  `dropped` (`key` = id or distinct description substring). The wrap-up-sweep
-  verb, mirroring `weekly-cp.md`'s `[resolved: ...]` markers.
+- `resolve_commitment(code, key, outcome?)` — **hosted-server verb**
+  (`cp-hosted` connector; cp-engine #143 ported it off stdio) — close an open row
+  as `done` or `dropped` (`key` = id or distinct description substring). The
+  wrap-up-sweep verb, mirroring `weekly-cp.md`'s `[resolved: ...]` markers.
 
 Engagements and initiatives can own commitments; standalone repos cannot.
 

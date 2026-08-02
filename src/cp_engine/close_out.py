@@ -462,8 +462,9 @@ def build_close_checklist(
         lines.extend(_commitment_line(r) for r in inputs.commitments)
         lines.append("")
         lines.append(
-            "Close each with `resolve_commitment(code, key, outcome)` — "
-            "`done` or `dropped`; never leave open rows on a closed project."
+            "Close each with `resolve_commitment(code, key, outcome)` on the "
+            "`cp-hosted` connector — `done` or `dropped`; never leave open rows "
+            "on a closed project."
         )
 
     lines.extend(
