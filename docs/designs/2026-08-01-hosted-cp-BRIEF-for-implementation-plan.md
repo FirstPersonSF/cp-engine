@@ -108,19 +108,57 @@ plan's sizing depends on.
   deploy key and pushes back — the deployment precedent).
 - **Database:** Supabase project `mgheymslksfyhuvhmvmj` via
   `mcp__plugin_supabase_supabase__execute_sql`. The live-exposure findings
-  (`projects` UPDATE `USING(true)`, and RLS-on-zero-policies on
+  (`projects` open CRUD, and RLS-on-zero-policies on
   `commitments`/`notes`/`rag_assets`) are worth seeing yourself — they change what
   "flip to JWT-proxying" means operationally.
 - **Tenant:** `/Users/drewf/Documents/Python/cp` — ~1,363 markdown files.
+
+## Second-pass verification findings (2026-08-01, after the review)
+
+A second independent pass re-verified every review claim against the code and
+live DB. All held. Two things the review UNDERSTATED or missed — fold both into
+the security work item:
+
+1. **[CORRECTED 2026-08-02]** The original version of this finding claimed
+   `public.projects` had a full open-CRUD policy set. Wrong table: the
+   `USING(true)` CRUD set is on **`estimator.projects`** (the Estimator
+   extension table — a schema-unfiltered `pg_policies` query conflated the
+   two). `public.projects` had exactly the five policies mc-2 #276
+   described, and #276's migration (applied 2026-08-02) resolved them:
+   partner-roster UPDATE policy + column grant narrowing browser writes to
+   `start_date`. Still open: `estimator.projects` `DELETE USING(true)` —
+   any authenticated user can delete estimate rows; needs its own decision
+   (noted on #276).
+
+2. **[PARTIALLY RESOLVED 2026-08-02: `match_chunks_simple` and
+   `match_chunks_by_documents` flipped to SECURITY INVOKER; the other 18
+   definer functions still need the audit.]**
+   **20 SECURITY DEFINER functions in `public`, unmentioned in the design.**
+   Definer functions run with owner privileges and bypass RLS regardless of the
+   caller's JWT. Two are on this plan's read path: `match_chunks_simple` and
+   `match_chunks_by_documents` — the vector-search RPCs Phase 1's semantic search
+   will likely call. Consequence: even after JWT-proxying, semantic search
+   ignores RLS — so the promised "freelancer restriction is later a policy
+   change, not a migration" is FALSE for search unless these become
+   `SECURITY INVOKER` (or take an explicit access filter). Widen the audit line
+   item to "every policy AND every SECURITY DEFINER function."
+
+Also: `notes` is in the deny-all group and Phase 2's `create_note` needs an
+INSERT policy — the design only discusses that group's read-side implications.
+**[RESOLVED 2026-08-02: team-keyed read policies landed on the whole deny-all
+set (plus `spine_relations`/`spine_steps`, which the design also missed), and
+insert-only write policies landed for Phase 2. See migrations
+`hosted_cp_phase1_membership_and_team_reads` and
+`hosted_cp_phase2_author_id_and_write_policies`.]**
 
 ## What a good plan looks like here
 
 - **Ordered work items with explicit dependencies**, not phases-as-buckets. The
   review found `author_id` sitting in Phase 1 while nothing in Phase 1 stamps it —
   that class of error is what dependency-ordering prevents.
-- **A separate security work item.** The `projects` UPDATE policy is live exposure
-  that is currently inert only because everything uses service-role. It should not
-  be buried inside "Phase 1 auth."
+- **A separate security work item.** The `projects` exposure is live and is
+  currently inert only because everything uses service-role. It should not be
+  buried inside "Phase 1 auth."
 - **Explicit failure modes.** `list_commitments` returning *empty rather than
   error* under a user JWT is the kind of thing that must be a test, not a surprise.
 - **Honest sizing with named uncertainty.** Where the estimate is a guess, say it
