@@ -4,6 +4,40 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.82.0 — 2026-08-02
+
+- **The hosted-cp ratchet (#143): 15 DB verbs move from stdio `cp mcp` to the
+  hosted MCP server** at `https://cp.mc-2.1p.is/mcp` (the `cp-hosted`
+  connector in the tenant's `.mcp.json`). Registered stdio tools **37 → 19**;
+  what remains is the deliberate filesystem rump (Dropbox pushes, working-dir
+  pulls, document comments, framework verbs, tenant-FILE transcript
+  promotion). Moved: `create_spine_relation`, `add_spine_step`,
+  `propose_spine_step`, `set_spine_element`, `resolve_commitment`,
+  `set_spine_step`, `reorder_spine_step`, `remove_spine_step`,
+  `add_element_source`, `remove_element_source`, `add_element_provenance`,
+  `remove_element_provenance`, `retire_spine_element`,
+  `retire_spine_elements`, `retire_spine_relation`,
+  `set_element_account_scope`, `promote_stakeholder`, `demote_stakeholder`.
+  Same verb names, same semantics — now under the **caller's own identity**
+  (`author_id`/`created_by` stamping, `mcp_audit_log` rows) instead of the
+  anonymous service key.
+- **Why this is safer, not just relocated:** retire is now one atomic guarded
+  function instead of four non-atomic service-key statements; the
+  account-scope sibling-twin guard is enforced by Postgres, not application
+  code; sources/provenance writes go through a validated typed-link function;
+  and the migration surfaced + fixed the grant-union flaw (table-wide
+  authenticated UPDATE grants made column grants decorative — revoked on
+  `spine_substance` and `commitments`).
+- In-process callers of deleted wrappers were rewired to module/private
+  helpers (`add_spine_document` → `modify_element_sources`,
+  `pull_element_from_project` → `_set_account_scope`); the transcript
+  promotion helper keeps its stdio door for tenant files while the hosted
+  `promote_spine_transcript` covers Fathom meetings by delegation to mc-2's
+  authenticated endpoint.
+- `/cp-tools`, `CLAUDE.md.j2` (spine-lint + journey-steps sections), and
+  `close_out` checklists now route the moved verbs to the `cp-hosted`
+  connector. The #112 verify-per-card retire warning travels with the verb.
+
 ## v0.81.0 — 2026-07-31
 
 - **BREAKING (dependency): `cp mcp` now requires the MCP Python SDK 2.x
