@@ -480,6 +480,21 @@ _AUDIT_SAFE_ARGS = {
     # as how many steps moved, not which. The verbs pass `order_len`, and the
     # bare `order` key is absent from both lists so it is DROPPED if ever passed.
     "order_len",
+    # ── #143 batch 3 (sources/provenance): resolution keys ──
+    # Both name a REFERENT, not content, which is the line this allow-list has
+    # drawn since batch 1 (`key`/`from_key`/`to_key` are logged; `title`/`note`/
+    # `framing` are redacted to a length because they are the user's own prose).
+    #
+    # `source_title` is the one that deserves the argument spelled out, since it
+    # IS a title and `title` right below is redacted. It is not the caller's
+    # prose: it is a lookup key naming an already-ingested rag_asset — a
+    # document filename, authored elsewhere, that the tool resolves to an
+    # `asset_id` logged beside it. Redacting it to a length would make the audit
+    # row strictly less useful (you would know a source was attached but not
+    # which) while protecting nothing the `asset_id` doesn't already reveal.
+    # `title`, by contrast, is text the caller is WRITING, and stays redacted.
+    "source_title",
+    "source_key",   # an element key — the same class as `key`
 }
 # Arg keys that are free text — recorded as a length only, never their content.
 # `body`/`description`/`framing`/`title` are USER PROSE: the whole point of the
@@ -1365,6 +1380,251 @@ def resolve_live_element_id(client, project_id: str, key: str) -> tuple[str | No
     if not any(v.get("status") == "live" for v in versions):
         return None, {"error": f"element {est_item_id!r} has no live version"}
     return est_item_id, None
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Sources + provenance — shared helpers (#143 batch 3)
+# ──────────────────────────────────────────────────────────────────────
+#
+# The WRITE path here is NOT a PostgREST PATCH. `spine_substance.sources` has
+# no authenticated column grant, and the batch-2 UPDATE policy is live-rows-only
+# anyway — while the engine semantics these verbs mirror explicitly write EVERY
+# version row, because a source link is an ELEMENT-level fact like `serves`, and
+# a live-only write would scatter one element's provenance across its history.
+#
+# So the whole mutation is one guarded SECURITY DEFINER call:
+#
+#   spine_element_modify_source(p_project_id, p_est_item_id, p_entry, p_add)
+#       -> integer (rows updated)
+#
+# It validates team membership, the entry shape (type ∈ rag_asset|spine_element,
+# `id` present, `title` required on add), that the referent actually exists
+# (rag_asset by uuid; spine_element by est_item_id within the project, at ANY
+# status — a retired provenance source is the POINT, see below), dedupes by
+# (type, id), and applies to every version row of the element. The function is
+# the authorization boundary; these tools do resolution and reporting only.
+
+
+def _source_entry_attached(entries: Any, type_: str, ident: str) -> bool:
+    """Is a typed link of (type_, ident) already in this `sources` array?
+
+    Dedup is by the PAIR, matching the engine and the DB function: an element
+    link and a rag_asset link that happen to share an id string are distinct
+    entries, never collapsed into one.
+    """
+    return any(
+        isinstance(entry, dict) and entry.get("type") == type_ and entry.get("id") == ident
+        for entry in (entries or [])
+    )
+
+
+def _live_row(versions: list[dict[str, Any]]) -> dict[str, Any] | None:
+    return next((v for v in versions if v.get("status") == "live"), None)
+
+
+def _read_live_sources(client, project_id: str, est_item_id: str) -> Any:
+    """Re-read the element's LIVE row `sources` after a guarded write.
+
+    The RPC returns a row COUNT, not the rows, so the resulting array is read
+    back rather than reconstructed client-side — what the DB actually wrote is
+    the only honest thing to return.
+    """
+    rows = (
+        client.table("spine_substance")
+        .select("sources, status")
+        .eq("project_id", project_id)
+        .eq("est_item_id", est_item_id)
+        .eq("status", "live")
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    return rows[0].get("sources") if rows else None
+
+
+def _resolve_active_asset(
+    client, scope_id: str, source_title: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """`source_title` -> ONE active rag_asset, or (None, structured note).
+
+    Mirrors `modify_element_sources`' ladder: exact (case-insensitive) title
+    first, else `_title_matches` — a case-insensitive CONTAINS where the query
+    must be a substring of the stored title (query ⊆ stored, the engine's
+    direction). Ambiguity returns the candidate titles and NEVER guesses; that
+    discipline is the whole reason these verbs are safe to hand a loose title.
+
+    Superseded assets are dropped the same way `list_project_sources` does (an
+    asset with a successor pointing at it), so a stale predecessor cannot be
+    attached in place of the document that replaced it.
+    """
+    want = (source_title or "").strip()
+    if not want:
+        return None, {"note": "source_title is required"}
+
+    rows: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for column in ("project_id", "initiative_id"):
+        try:
+            for row in (
+                client.table("rag_assets")
+                .select("id, title, status, prev_asset_id")
+                .eq(column, scope_id)
+                .eq("status", "active")
+                .execute()
+                .data
+                or []
+            ):
+                if row.get("id") not in seen:
+                    seen.add(row["id"])
+                    rows.append(row)
+        except Exception:  # noqa: BLE001 — `initiative_id` may not apply
+            continue
+
+    superseded = {r["prev_asset_id"] for r in rows if r.get("prev_asset_id")}
+    rows = [r for r in rows if r.get("id") not in superseded]
+
+    exact = [r for r in rows if (r.get("title") or "").strip().lower() == want.lower()]
+    matched = exact or [r for r in rows if want.lower() in (r.get("title") or "").lower()]
+    if not matched:
+        return None, {"note": f"no active source titled {want!r}"}
+    if len(matched) > 1:
+        titles = sorted((m.get("title") or "") for m in matched)
+        return None, {
+            "note": f"ambiguous: {want!r} matched {len(matched)} sources",
+            "candidates": titles[:10],
+        }
+    return matched[0], None
+
+
+def resolve_source_element(
+    client, project_id: str, key: str
+) -> dict[str, Any] | None:
+    """`key` -> ONE element usable as PROVENANCE — **including retired ones**.
+
+    The hosted mirror of `cp_engine.project_sources._resolve_source_element`,
+    and the one resolver on this server that deliberately does NOT filter to
+    live/unarchived rows. The provenance case (#104) is precisely "fold a
+    now-retired raw card into the synthesis card that absorbed it", so an
+    archived source element is the normal input, not an edge case.
+
+    Ladder, matching the engine: exact `est_item_id` first, else a distinct
+    case-insensitive `framing` substring, across ALL of the project's elements
+    regardless of status/archived. Returns the first matching row (carrying
+    est_item_id, framing, archived) or None on no-match OR ambiguity — the same
+    "one element or nothing" rule every other resolver here follows.
+    """
+    key = (key or "").strip()
+    if not key:
+        return None
+    rows = (
+        client.table("spine_substance")
+        .select("est_item_id, framing, archived, status, version_date")
+        .eq("project_id", project_id)
+        .execute()
+        .data
+        or []
+    )
+    candidates = [key] if key.startswith("_authored/") else [key, f"_authored/{slugify(key)}"]
+    for cand in candidates:
+        exact = [r for r in rows if r.get("est_item_id") == cand]
+        if exact:
+            return exact[0]
+
+    matched = [r for r in rows if key.lower() in (r.get("framing") or "").lower()]
+    distinct = {r.get("est_item_id"): r for r in matched}
+    if len(distinct) != 1:
+        return None  # no-match or ambiguous — never guess
+    return next(iter(distinct.values()))
+
+
+def _modify_element_sources(
+    client,
+    project_code: str,
+    key: str,
+    entry: dict[str, Any],
+    *,
+    add: bool,
+    tool: str,
+    audit_args: dict[str, Any],
+    scope: dict[str, Any],
+    est_item_id: str,
+    versions: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """The shared attach/detach tail: already-checks, the RPC, the read-back.
+
+    Both quartet halves converge here once their own resolution is done, so the
+    already/not-attached semantics, the guarded call, and the returned shape are
+    written once rather than four times.
+    """
+    type_ = entry["type"]
+    ident = entry["id"]
+    live = _live_row(versions)
+    current_live = list((live or {}).get("sources") or [])
+    attached_now = _source_entry_attached(current_live, type_, ident)
+
+    # Engine parity: the LIVE row is the authority for already/not-attached.
+    if add and attached_now:
+        audit(client, tool, audit_args, 0)
+        return {
+            "est_item_id": est_item_id,
+            "source": entry,
+            "already": True,
+            "sources": current_live,
+        }
+    if not add and not attached_now:
+        audit(client, tool, audit_args, 0)
+        return {
+            "note": f"{entry.get('title') or ident!r} is not attached to {est_item_id!r}",
+            "est_item_id": est_item_id,
+            "source": entry,
+            "sources": current_live,
+        }
+
+    try:
+        updated = (
+            client.rpc(
+                "spine_element_modify_source",
+                {
+                    "p_project_id": scope["id"],
+                    "p_est_item_id": est_item_id,
+                    "p_entry": entry,
+                    "p_add": add,
+                },
+            )
+            .execute()
+            .data
+        )
+    except Exception as exc:  # noqa: BLE001
+        audit(client, tool, audit_args, 0)
+        return {
+            "error": f"guarded source write failed: {type(exc).__name__}: {str(exc)[:400]}",
+            "est_item_id": est_item_id,
+            "source": entry,
+        }
+
+    rows_updated = int(updated or 0)
+    if rows_updated == 0:
+        # The function validated but matched nothing — say so rather than
+        # reporting a success that wrote no row.
+        audit(client, tool, audit_args, 0)
+        return {
+            "error": f"0 version rows updated for {est_item_id!r} — the element "
+            "may have been retired or re-keyed between resolution and write.",
+            "est_item_id": est_item_id,
+            "source": entry,
+        }
+
+    audit(client, tool, audit_args, rows_updated)
+    return {
+        "est_item_id": est_item_id,
+        "source": entry,
+        ("attached" if add else "removed"): True,
+        "versions_updated": rows_updated,
+        "sources": _read_live_sources(client, scope["id"], est_item_id),
+        "project_code": scope["project_code"],
+        "caller": caller_subject(),
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -2404,6 +2664,278 @@ def remove_spine_step(
     }
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  #143 batch 3 — the sources / provenance quartet
+# ──────────────────────────────────────────────────────────────────────
+#
+# Four verbs, one DB write path. Unlike batch 2 — where each verb fit a
+# table-level UPDATE policy — `spine_substance.sources` is written ONLY through
+# `spine_element_modify_source`, the guarded SECURITY DEFINER function shipped
+# by `ratchet_batch3_element_sources_fn`. There are no grants on the column, so
+# a direct PATCH is not merely discouraged here, it is impossible.
+#
+# That constraint buys back a semantic the hosted server otherwise loses. Batch
+# 2's `set_spine_element` is live-rows-only (the UPDATE policy says
+# `status='live'`), so its element-level fields DIVERGE across an element's
+# history. These verbs do NOT have that gap: the function writes every version
+# row, so hosted and stdio agree exactly — a source link attached here rides the
+# whole history, which is what makes `versions_updated > 1` on an element with
+# versions the assertion worth making.
+
+
+@mcp_server.tool()
+def add_element_source(
+    project_code: str, key: str, source_title: str
+) -> dict[str, Any]:
+    """Attach an ingested source document to a spine element (#143 batch 3).
+
+    `key` resolves to ONE LIVE element (exact est_item_id, bare slug, or a
+    distinct `framing` substring — the same discipline as `pull_spine_element`);
+    `source_title` resolves to ONE of the project's ACTIVE ingested sources
+    (exact title first, else a unique case-insensitive substring, the query
+    being a substring of the stored title). Ambiguity returns the candidate
+    titles and never guesses — attaching the wrong provenance is worse than
+    attaching none.
+
+    Writes the typed link `{"type": "rag_asset", "id", "title"}` into `sources`
+    on EVERY version row, exactly as the stdio verb and MC-2's dashboard do:
+    a source is an element-level fact, like `serves`, so a partial write would
+    scatter one element's provenance across its own history. Deduped by
+    (type, id); re-attaching is a no-op reported as `already: true`.
+
+    Use it to close attach-as-source loops — an Agreement whose body says
+    "attach the signed SOW" with no attached source is exactly what
+    `cp spine-lint` flags.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        key: the element (est_item_id, bare slug, or unique framing substring).
+        source_title: the ingested source's title (see `list_project_sources`).
+    """
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    est_item_id, versions, err = resolve_element_versions(client, scope["id"], key)
+    if err is not None:
+        return err
+    if est_item_id is None:
+        return {"note": f"no single live element matching {key!r}"}
+    if _live_row(versions) is None:
+        return {"error": f"element {est_item_id!r} has no live version"}
+
+    asset, note = _resolve_active_asset(client, scope["id"], source_title)
+    if note is not None:
+        return note
+
+    entry = {"type": "rag_asset", "id": asset["id"], "title": asset.get("title")}
+    return _modify_element_sources(
+        client,
+        project_code,
+        key,
+        entry,
+        add=True,
+        tool="add_element_source",
+        audit_args={
+            "project_code": project_code,
+            "key": key,
+            "source_title": source_title,
+            "asset_id": asset["id"],
+        },
+        scope=scope,
+        est_item_id=est_item_id,
+        versions=versions,
+    )
+
+
+@mcp_server.tool()
+def remove_element_source(
+    project_code: str, key: str, source_title: str
+) -> dict[str, Any]:
+    """Detach an ingested source document from a spine element (#143 batch 3).
+
+    The inverse of `add_element_source`: resolves the element and the source the
+    same way, then removes the matching `{"type": "rag_asset", ...}` link BY
+    ASSET ID from every version's `sources`. Detaching a source that is not
+    attached is NOT an error — it returns a structured note, because "already
+    not there" is the outcome the caller wanted.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        key: the element (est_item_id, bare slug, or unique framing substring).
+        source_title: the ingested source's title.
+    """
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    est_item_id, versions, err = resolve_element_versions(client, scope["id"], key)
+    if err is not None:
+        return err
+    if est_item_id is None:
+        return {"note": f"no single live element matching {key!r}"}
+    if _live_row(versions) is None:
+        return {"error": f"element {est_item_id!r} has no live version"}
+
+    asset, note = _resolve_active_asset(client, scope["id"], source_title)
+    if note is not None:
+        return note
+
+    entry = {"type": "rag_asset", "id": asset["id"], "title": asset.get("title")}
+    return _modify_element_sources(
+        client,
+        project_code,
+        key,
+        entry,
+        add=False,
+        tool="remove_element_source",
+        audit_args={
+            "project_code": project_code,
+            "key": key,
+            "source_title": source_title,
+            "asset_id": asset["id"],
+        },
+        scope=scope,
+        est_item_id=est_item_id,
+        versions=versions,
+    )
+
+
+@mcp_server.tool()
+def add_element_provenance(
+    project_code: str, key: str, source_key: str
+) -> dict[str, Any]:
+    """Attach ANOTHER spine element as provenance to a spine element (#104).
+
+    The tiering-rule counterpart to `add_element_source`: where that attaches an
+    ingested `rag_asset`, this attaches a spine ELEMENT — the move for "this
+    synthesis card absorbed these raw cards".
+
+    The asymmetry between the two keys is the whole design and is deliberate:
+
+      * `key` (the TARGET, the survivor) must resolve to ONE **live** element.
+      * `source_key` (the folded-in raw material) resolves across ALL of the
+        project's elements **including RETIRED ones** — that is the normal case,
+        not an edge case, since the cleanup being recorded is usually "retire
+        the raw card, keep its lineage".
+
+    Writes `{"type": "spine_element", "id": <est_item_id>, "title": <framing>,
+    "retired": <bool>}` into the target's `sources` on every version. Because
+    the link is a property of the SURVIVING card, it outlives the source's
+    retirement — closing the lineage hole where retire-and-lose-the-link was the
+    only option. Deduped by (type, id), so an element link never collides with a
+    rag_asset that happens to share the id. Re-attaching returns `already: true`.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        key: the TARGET element — must be live.
+        source_key: the element to fold in as provenance; MAY be retired.
+    """
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    est_item_id, versions, err = resolve_element_versions(client, scope["id"], key)
+    if err is not None:
+        return err
+    if est_item_id is None:
+        return {"note": f"no single live element matching {key!r}"}
+    if _live_row(versions) is None:
+        return {"error": f"element {est_item_id!r} has no live version"}
+
+    src = resolve_source_element(client, scope["id"], source_key)
+    if src is None:
+        return {"note": f"no single element matching source {source_key!r}"}
+    src_eid = src.get("est_item_id")
+    if src_eid == est_item_id:
+        return {"note": "an element cannot be its own provenance"}
+
+    entry = {
+        "type": "spine_element",
+        "id": src_eid,
+        "title": src.get("framing") or src_eid,
+        "retired": bool(src.get("archived")),
+    }
+    return _modify_element_sources(
+        client,
+        project_code,
+        key,
+        entry,
+        add=True,
+        tool="add_element_provenance",
+        audit_args={
+            "project_code": project_code,
+            "key": key,
+            "source_key": source_key,
+        },
+        scope=scope,
+        est_item_id=est_item_id,
+        versions=versions,
+    )
+
+
+@mcp_server.tool()
+def remove_element_provenance(
+    project_code: str, key: str, source_key: str
+) -> dict[str, Any]:
+    """Detach a spine-element provenance link from a spine element (#104).
+
+    The inverse of `add_element_provenance`: resolves the target (live) and the
+    source (which may be retired) the same way, then removes the matching
+    `{"type": "spine_element", ...}` link BY ELEMENT ID from every version's
+    `sources`. Detaching one that is not attached returns a structured note, not
+    an error.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        key: the TARGET element — must be live.
+        source_key: the provenance element to detach; MAY be retired.
+    """
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    est_item_id, versions, err = resolve_element_versions(client, scope["id"], key)
+    if err is not None:
+        return err
+    if est_item_id is None:
+        return {"note": f"no single live element matching {key!r}"}
+    if _live_row(versions) is None:
+        return {"error": f"element {est_item_id!r} has no live version"}
+
+    src = resolve_source_element(client, scope["id"], source_key)
+    if src is None:
+        return {"note": f"no single element matching source {source_key!r}"}
+    src_eid = src.get("est_item_id")
+
+    entry = {
+        "type": "spine_element",
+        "id": src_eid,
+        "title": src.get("framing") or src_eid,
+        "retired": bool(src.get("archived")),
+    }
+    return _modify_element_sources(
+        client,
+        project_code,
+        key,
+        entry,
+        add=False,
+        tool="remove_element_provenance",
+        audit_args={
+            "project_code": project_code,
+            "key": key,
+            "source_key": source_key,
+        },
+        scope=scope,
+        est_item_id=est_item_id,
+        versions=versions,
+    )
+
+
 @mcp_server.tool()
 def create_note(
     project_code: str,
@@ -3441,6 +3973,11 @@ def main() -> None:
     log.info(
         "writes (update/delete, #143 batch 2): set_spine_element, "
         "resolve_commitment, set_spine_step, reorder_spine_step, remove_spine_step"
+    )
+    log.info(
+        "writes (sources/provenance, #143 batch 3, via the guarded "
+        "spine_element_modify_source fn): add_element_source, "
+        "remove_element_source, add_element_provenance, remove_element_provenance"
     )
     log.info("audit log: mcp_audit_log as client=%s", SERVER_VERSION)
     mcp_server.run(

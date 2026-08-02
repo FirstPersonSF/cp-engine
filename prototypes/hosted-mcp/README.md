@@ -18,7 +18,7 @@ path. Nothing under `src/cp_engine/` was modified.
   `TENANT_REPO`. **The tree has no per-user RLS** — see
   [The tenant tree has no RLS](#the-tenant-tree-has-no-rls).
 
-23 tools, **34/34 smoke cases pass**.
+27 tools, **41/41 smoke cases pass**.
 
 ---
 
@@ -96,7 +96,7 @@ never reads it.
 
 ## Tools
 
-All twenty-three run under the caller's identity, select **explicit columns only**,
+All twenty-seven run under the caller's identity, select **explicit columns only**,
 and write an audit row on success.
 
 **Reads:**
@@ -131,6 +131,51 @@ and write an audit row on success.
 | `set_spine_step(project_code, key, step_id, title?, status?, step_date?, note?)` | `spine_steps` | Partial update; scoped by (id, project_id, est_item_id). |
 | `reorder_spine_step(project_code, key, order)` | `spine_steps` | `order` is the FULL step_id list; renumbers 1..N. |
 | `remove_spine_step(project_code, key, step_id)` | `spine_steps` | Deletes, then densifies positions to 1..N. |
+
+**Sources + provenance (cp-engine #143 batch 3):**
+
+| Tool | Target | Notes |
+|---|---|---|
+| `add_element_source(project_code, key, source_title)` | `spine_substance.sources` | Attaches `{type: rag_asset, id, title}` to **every version**. |
+| `remove_element_source(project_code, key, source_title)` | `spine_substance.sources` | Inverse; detaching an unattached link is a note, not an error. |
+| `add_element_provenance(project_code, key, source_key)` | `spine_substance.sources` | Attaches `{type: spine_element, id, title, retired}`. Source **may be retired**. |
+| `remove_element_provenance(project_code, key, source_key)` | `spine_substance.sources` | Inverse. |
+
+These do **not** fit a table policy at all — there is no authenticated grant on
+`spine_substance.sources`, so a direct PATCH is impossible, not merely
+discouraged. The whole mutation is one guarded SECURITY DEFINER call shipped by
+`ratchet_batch3_element_sources_fn`:
+
+```
+spine_element_modify_source(p_project_id uuid, p_est_item_id text,
+                            p_entry jsonb, p_add boolean) returns integer
+```
+
+It validates team membership, the entry shape (`type ∈ rag_asset|spine_element`,
+`id` present, `title` required on add), that the referent exists (a `rag_asset`
+by uuid; a `spine_element` by est_item_id within the project, at **any** status),
+dedupes by `(type, id)`, and applies to every version row. The tools do
+resolution and reporting; the function is the authorization boundary.
+
+That constraint **closes** a gap batch 2 left open. `set_spine_element` is
+live-rows-only (its UPDATE policy says `status='live'`), so element-level fields
+diverge across an element's history. These verbs have no such divergence — the
+function writes every version, so hosted and stdio agree exactly. Smoke cases Z
+and Z5 assert `versions_updated=2` and read **both** the live and the superseded
+row back through PostgREST to prove it.
+
+Two resolution asymmetries worth knowing:
+
+- **`source_title` → an ACTIVE rag_asset** — exact title first, else a unique
+  case-insensitive substring where the query is a substring of the stored title
+  (the engine's direction, `query ⊆ stored`). Superseded assets are dropped, as
+  in `list_project_sources`. Ambiguity returns the candidate titles and never
+  guesses.
+- **`source_key` → an element that MAY BE RETIRED.** This is the one resolver on
+  the server that deliberately does not filter to live/unarchived rows, because
+  the provenance case (#104) *is* "fold a now-retired raw card into the synthesis
+  card that absorbed it". The target `key`, by contrast, must be live. The
+  `retired` flag rides the link, so lineage survives the source's retirement.
 
 These fit three policies added by `ratchet_batch2_update_verb_policies`:
 `spine_substance` UPDATE `using/with check (is_team_member() AND status='live')`;
@@ -279,6 +324,17 @@ Two rules hold it in place:
    and `title` stay redacted-to-length. **`order` is deliberately absent from
    both lists** — it is a list of uuids, so a reorder is audited as *how many*
    steps moved (`order_len`), never as which.
+
+   Batch 3 added `source_title` and `source_key` **verbatim**, which is worth
+   the argument since `title` right beside them is redacted. Neither is the
+   caller's prose: `source_title` is a lookup key naming an already-ingested
+   document (authored elsewhere, and resolved to an `asset_id` logged next to
+   it), and `source_key` is an element key like the already-allowed
+   `key`/`from_key`/`to_key`. Redacting them to a length would make the row
+   strictly less useful — you would know a source was attached but not which —
+   while protecting nothing the `asset_id` does not already reveal. `title`,
+   text the caller is *writing*, stays redacted. Smoke case M asserts both keys
+   are actually present, so the choice is visible in the run and not only here.
 2. **A logging failure must never fail the tool call.** Every path is wrapped
    and downgraded to `log.warning`.
 
@@ -319,10 +375,10 @@ for `ibx-5153`, of 324 total), and an empty result is a plain "0 rows".
 
 ## What is proven
 
-Verified live against the real MC-2 project — **34/34 smoke cases pass**, with an
+Verified live against the real MC-2 project — **41/41 smoke cases pass**, with an
 ES256 token for a team user. The table below covers the original read surface;
-the write, tree, and update cases (N–Y2) are listed in `smoke_test.py`'s
-docstring and run in the same suite:
+the write, tree, update, and sources/provenance cases (N–Z7) are listed in
+`smoke_test.py`'s docstring and run in the same suite:
 
 | # | Case | Result |
 |---|---|---|
@@ -330,7 +386,7 @@ docstring and run in the same suite:
 | B | Garbage token → 401 | ✓ |
 | C | `alg=none` token → 401 | ✓ — negative test of the ES256 path |
 | D | RFC 9728 metadata | 200, `authorization_servers: ["https://<ref>.supabase.co/auth/v1"]` |
-| E | `tools/list` | all **23 tools** |
+| E | `tools/list` | all **27 tools** (count asserted, so an unexpected extra fails too) |
 | F | `list_spine_elements(ibx-5153)` | **57 live elements** under the caller's `sub` |
 | G | `list_commitments(ibx-5153)` | **31 rows** — team-keyed RLS, no longer deny-all |
 | H | `whoami` | verified `sub`, `role=authenticated` |
@@ -464,7 +520,25 @@ share tokens / RLS respectively, matching `create-approval-snapshot`.
    live in both directions. Fix: revoke the table-wide UPDATE grant so the column
    grant becomes load-bearing. See "Where the engine-owned column boundary
    actually lives" above.
-8. **Ingest embeds with Voyage, but the brief assumed OpenAI.** Both keys sit in
+8. **The retired-source provenance path is UNTESTED here.** `add_element_
+   provenance` resolves `source_key` across retired elements by design (#104) —
+   that is its main use — and the guarded function accepts a `spine_element`
+   referent at any status. But this server exposes **no retire verb**
+   (`retire_spine_element` is not in the 27), so the smoke suite cannot produce
+   a retired element to fold in. Case Z5 uses a live source and asserts
+   `retired: false` rides the link; the `retired: true` branch is exercised only
+   by the stdio verb. Porting `retire_spine_element` would close the gap and let
+   the case assert the flag in both directions.
+9. **No internal project has ANY ingested sources.** Every other write case
+   targets `mission-control` to keep mutations off client engagements, but
+   `rag_assets` are a client-engagement artifact in this corpus — checked live,
+   `mission-control` and every other initiative have zero. So smoke cases Z–Z4
+   create their own `smoke-test-` element inside `$PROJECT_CODE` and attach
+   there. No client-authored row is mutated (only the smoke element's own
+   `sources`, which Z4 detaches), but the isolation the other write cases enjoy
+   is not available for a real source attach. Ingesting one document against an
+   initiative would restore it.
+10. **Ingest embeds with Voyage, but the brief assumed OpenAI.** Both keys sit in
    the same `.env`, and only one of them produces meaningful vectors against this
    corpus. Nothing in the schema records which model wrote `asset_embeddings`, so
    the answer had to be recovered by reading `asset_ingest.py` and probing the

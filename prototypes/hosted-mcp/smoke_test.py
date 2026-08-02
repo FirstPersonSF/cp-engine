@@ -41,6 +41,13 @@ Cases:
   X2. resolve_commitment   -> an outcome outside done|dropped REJECTED
   Y. set/reorder/remove    -> step round-trip; positions stay 1..N; partial order refused
   Y2. set_spine_step       -> a step_id from another element is out of scope
+  Z. add_element_source    -> a real ingested source lands on EVERY version
+  Z2. add_element_source   -> re-attaching is already:true, no duplicate entry
+  Z3. add_element_source   -> an unknown source_title is a note, not a guess
+  Z4. remove_element_source-> detaches everywhere; re-detach is a note
+  Z5. add_element_provenance   -> an element link with retired:false, on every version
+  Z6. add_element_provenance   -> self-link and unknown source_key both refused
+  Z7. remove_element_provenance-> detaches everywhere; re-detach is a note
   Q. get_project_state     -> ibx-5153's Exec Summary + current sprint file
   R. read_project_file     -> a real file read from the clone
   S. read_project_file     -> path traversal REJECTED
@@ -48,7 +55,11 @@ Cases:
 
 WRITE CASES CREATE REAL ROWS. They target `mission-control` (an internal
 initiative) and prefix every slug/description with `smoke-test-` so the rows are
-identifiable. There is no delete policy for an authenticated caller, so this
+identifiable. ONE EXCEPTION: cases Z–Z4 need a project with real ingested
+sources, and no initiative has ANY (rag_assets are a client-engagement artifact
+here — checked live). They therefore create their own `smoke-test-` element
+inside $PROJECT_CODE and attach a source to THAT. No client-authored row is
+mutated; only the smoke element's own `sources` changes, and Z4 detaches it. There is no delete policy for an authenticated caller, so this
 script cannot and does not clean up — it PRINTS the created row ids at the end
 for a human to remove with the service key.
 
@@ -276,15 +287,25 @@ def case_e_tools_list(token: str) -> None:
         "set_spine_step",
         "reorder_spine_step",
         "remove_spine_step",
+        # #143 batch 3 — the sources/provenance quartet
+        "add_element_source",
+        "remove_element_source",
+        "add_element_provenance",
+        "remove_element_provenance",
         # Package B — read-only tenant tree (#138)
         "get_project_state",
         "read_project_file",
     }
     missing = sorted(expected - set(names))
+    # Assert the COUNT too, not just containment: an unexpected extra tool is a
+    # surface the review never saw, which matters as much as a missing one.
+    extra = sorted(set(names) - expected)
     record(
-        "E. tools/list exposes all 23 tools",
-        not missing,
-        f"tools={names}" + (f" MISSING={missing}" if missing else ""),
+        f"E. tools/list exposes all {len(expected)} tools",
+        not missing and not extra,
+        f"count={len(names)} tools={names}"
+        + (f" MISSING={missing}" if missing else "")
+        + (f" UNEXPECTED={extra}" if extra else ""),
     )
 
 
@@ -1177,6 +1198,317 @@ def case_y2_step_scope_isolation(token: str) -> None:
     )
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  #143 batch 3 — sources + provenance. THESE MUTATE REAL ROWS.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _read_versions_direct(token: str, element_id: str) -> list[dict[str, Any]]:
+    """Every version row of an element, read STRAIGHT through PostgREST.
+
+    Deliberately not via a tool: the claim these cases make is that the guarded
+    function wrote EVERY version, and the hosted read tools only ever surface
+    the live one. The superseded row's `sources` is invisible from the tool
+    surface, so it has to be read from storage or the assertion is vacuous.
+    """
+    supabase_url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    anon = os.environ.get("SUPABASE_ANON_KEY", "")
+    if not (supabase_url and anon):
+        return []
+    try:
+        return httpx.get(
+            f"{supabase_url}/rest/v1/spine_substance",
+            params={
+                "select": "id,version_label,status,sources",
+                "est_item_id": f"eq.{element_id}",
+            },
+            headers={"apikey": anon, "Authorization": f"Bearer {token}"},
+            timeout=20,
+        ).json()
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def case_z_add_element_source(token: str) -> str | None:
+    """Attach a REAL ingested source, and prove the write hit EVERY version.
+
+    WHY THIS CASE RUNS AGAINST `PROJECT_CODE`, NOT `WRITE_PROJECT_CODE`. Every
+    other write case targets `mission-control`, deliberately keeping mutations
+    off client engagements. But rag_assets are a client-engagement artifact in
+    this corpus: `mission-control` has ZERO ingested sources, and so does every
+    other initiative (checked live). There is no internal project that can
+    exercise a real source attach.
+
+    So this case creates its OWN throwaway element inside the READ project and
+    attaches there. What is mutated is the smoke element's own `sources` — a row
+    this run created and tags `smoke-test-`. No client-authored element is
+    touched, and the detach case removes the link again.
+
+    The every-version assertion needs history, so the element is created AND
+    version-bumped here (live v2 + superseded v1) rather than reusing the
+    mission-control element. That is the point of the case:
+    `spine_substance.sources` is written only through the guarded
+    `spine_element_modify_source` function, which applies to every version row —
+    unlike batch 2's `set_spine_element`, whose live-only UPDATE policy leaves
+    superseded rows behind. Both rows must come back carrying the link, read
+    straight from storage rather than through a tool.
+
+    Returns the source title, for the detach cases to reuse.
+    """
+    listing = call_tool(token, "list_project_sources", {"project_code": PROJECT_CODE})
+    sources = listing.get("sources") or []
+    if not sources:
+        record("Z. add_element_source attaches a real source to EVERY version", False,
+               f"no ingested sources on {PROJECT_CODE!r} to attach "
+               f"({listing.get('error') or listing.get('_http') or 'empty list'})")
+        return None
+    asset = sources[0]
+    title = asset.get("title")
+
+    # Our own element in the source-bearing project, with a real version history.
+    framing = f"smoke-test-{RUN_TAG} source-attach target"
+    element_id = f"_authored/smoke-test-{RUN_TAG}-source-attach-target"
+    created = call_tool(token, "create_spine_element", {
+        "project_code": PROJECT_CODE, "framing": framing,
+        "body": "Created by smoke_test.py for the batch-3 source cases. Safe to delete.",
+        "layer": "note",
+    })
+    if created.get("row_id"):
+        created_rows.append(("spine_substance", created["row_id"]))
+    else:
+        record("Z. add_element_source attaches a real source to EVERY version", False,
+               f"could not create the target element: "
+               f"{created.get('error') or created.get('_http')}")
+        return None
+    bumped = call_tool(token, "add_spine_version", {
+        "project_code": PROJECT_CODE, "element_id": element_id,
+        "body": "v2 — so the element has a superseded sibling for the every-version assertion.",
+        "version_note": f"smoke-test-{RUN_TAG} batch-3 setup bump",
+    })
+    if bumped.get("version_label") == "v2":
+        created_rows.append(
+            ("spine_substance", f"{bumped.get('project_code')}/{element_id}/v2"))
+    if (bumped.get("step") or {}).get("step_id"):
+        created_rows.append(("spine_steps", bumped["step"]["step_id"]))
+
+    payload = call_tool(token, "add_element_source", {
+        "project_code": PROJECT_CODE, "key": element_id, "source_title": title,
+    })
+    tool_ok = (
+        payload.get("attached") is True
+        and (payload.get("source") or {}).get("type") == "rag_asset"
+        and (payload.get("source") or {}).get("id") == asset.get("asset_id")
+        and int(payload.get("versions_updated") or 0) >= 2
+    )
+
+    # The load-bearing read: BOTH the live and the superseded row carry it.
+    rows = _read_versions_direct(token, element_id)
+    def _has(row: dict[str, Any]) -> bool:
+        return any(
+            isinstance(s, dict) and s.get("type") == "rag_asset"
+            and s.get("id") == asset.get("asset_id")
+            for s in (row.get("sources") or [])
+        )
+    live_rows = [r for r in rows if r.get("status") == "live"]
+    sup_rows = [r for r in rows if r.get("status") != "live"]
+    live_has = bool(live_rows) and all(_has(r) for r in live_rows)
+    sup_has = bool(sup_rows) and all(_has(r) for r in sup_rows)
+
+    record(
+        "Z. add_element_source attaches a real source to EVERY version "
+        "(live AND superseded)",
+        tool_ok and live_has and sup_has,
+        f"title={str(title)[:50]!r} asset_id={asset.get('asset_id')} "
+        f"versions_updated={payload.get('versions_updated')} "
+        f"live_rows={len(live_rows)}(has={live_has}) "
+        f"superseded_rows={len(sup_rows)}(has={sup_has})"
+        + (f" ERROR={payload.get('error') or payload.get('note') or payload.get('_http')}"
+           if not tool_ok else ""),
+    )
+    return title
+
+
+def case_z2_reattach_is_noop(token: str, title: str | None) -> None:
+    """Re-attaching the same source is `already: true`, not a duplicate entry."""
+    if not title:
+        record("Z2. re-attaching the same source returns already:true", False,
+               "no source title from case Z")
+        return
+    element_id = f"_authored/smoke-test-{RUN_TAG}-source-attach-target"
+    payload = call_tool(token, "add_element_source", {
+        "project_code": PROJECT_CODE, "key": element_id, "source_title": title,
+    })
+    entries = payload.get("sources") or []
+    dupes = sum(1 for s in entries if isinstance(s, dict) and s.get("type") == "rag_asset")
+    ok = payload.get("already") is True and "attached" not in payload and dupes == 1
+    record(
+        "Z2. re-attaching the same source returns already:true (no duplicate entry)",
+        ok,
+        f"already={payload.get('already')} rag_asset_entries={dupes} "
+        f"sources_len={len(entries)}",
+    )
+
+
+def case_z3_unknown_source_title(token: str) -> None:
+    """An unresolvable source title is a structured note, never a guess."""
+    element_id = f"_authored/smoke-test-{RUN_TAG}-source-attach-target"
+    payload = call_tool(token, "add_element_source", {
+        "project_code": PROJECT_CODE, "key": element_id,
+        "source_title": f"no-such-source-{RUN_TAG}-zzz",
+    })
+    note = str(payload.get("note", ""))
+    ok = "no active source titled" in note and "attached" not in payload
+    record(
+        "Z3. an unknown source_title returns a structured note, attaches nothing",
+        ok,
+        f"note={note[:120]!r} candidates={payload.get('candidates')}",
+    )
+
+
+def case_z4_detach_source(token: str, title: str | None) -> None:
+    """Detach removes the link from every version; re-detaching is a note."""
+    if not title:
+        record("Z4. remove_element_source detaches, then reports not-attached", False,
+               "no source title from case Z")
+        return
+    element_id = f"_authored/smoke-test-{RUN_TAG}-source-attach-target"
+
+    first = call_tool(token, "remove_element_source", {
+        "project_code": PROJECT_CODE, "key": element_id, "source_title": title,
+    })
+    removed_ok = first.get("removed") is True and int(first.get("versions_updated") or 0) >= 2
+
+    # Gone from EVERY version, not just the live one.
+    rows = _read_versions_direct(token, element_id)
+    asset_id = (first.get("source") or {}).get("id")
+    still_there = [
+        r.get("version_label") for r in rows
+        if any(isinstance(s, dict) and s.get("type") == "rag_asset" and s.get("id") == asset_id
+               for s in (r.get("sources") or []))
+    ]
+
+    # Detaching what is no longer attached: a NOTE, not an error.
+    second = call_tool(token, "remove_element_source", {
+        "project_code": PROJECT_CODE, "key": element_id, "source_title": title,
+    })
+    note_ok = "not attached to" in str(second.get("note", "")) and "error" not in second
+
+    record(
+        "Z4. remove_element_source detaches from every version; "
+        "re-detaching is a structured note",
+        removed_ok and not still_there and note_ok,
+        f"removed={first.get('removed')} versions_updated={first.get('versions_updated')} "
+        f"still_carrying={still_there} "
+        f"second_note={str(second.get('note'))[:90]!r}",
+    )
+
+
+def case_z5_add_element_provenance(token: str) -> None:
+    """Fold one spine element into another as provenance.
+
+    The engine's provenance source MAY be retired — that is the design (#104),
+    since the usual move is "retire the raw card, keep its lineage". This server
+    exposes no retire verb, so the case cannot produce a retired source and
+    instead uses the LIVE `-relation-target` element from case T, asserting that
+    `retired: false` rides the link. The retired-source path is therefore
+    NOT covered here — see the run notes.
+
+    Also asserts the (type, id) dedup key is a PAIR: the element link must
+    coexist with any rag_asset link rather than colliding with it.
+    """
+    target = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
+    source = f"_authored/smoke-test-{RUN_TAG}-relation-target"
+
+    payload = call_tool(token, "add_element_provenance", {
+        "project_code": WRITE_PROJECT_CODE, "key": target, "source_key": source,
+    })
+    link = payload.get("source") or {}
+    tool_ok = (
+        payload.get("attached") is True
+        and link.get("type") == "spine_element"
+        and link.get("id") == source
+        and link.get("retired") is False      # live source -> retired:false rides the link
+        and int(payload.get("versions_updated") or 0) >= 2
+    )
+
+    rows = _read_versions_direct(token, target)
+    carrying = [
+        r.get("version_label") for r in rows
+        if any(isinstance(s, dict) and s.get("type") == "spine_element"
+               and s.get("id") == source for s in (r.get("sources") or []))
+    ]
+
+    # Re-attach: already, not a second entry.
+    again = call_tool(token, "add_element_provenance", {
+        "project_code": WRITE_PROJECT_CODE, "key": target, "source_key": source,
+    })
+    already_ok = again.get("already") is True
+
+    record(
+        "Z5. add_element_provenance links a live element (retired:false) "
+        "onto every version; re-attach is already:true",
+        tool_ok and len(carrying) >= 2 and already_ok,
+        f"link={link} versions_updated={payload.get('versions_updated')} "
+        f"carrying={carrying} re_attach_already={again.get('already')}"
+        + (f" ERROR={payload.get('error') or payload.get('note') or payload.get('_http')}"
+           if not tool_ok else ""),
+    )
+
+
+def case_z6_provenance_self_and_unknown(token: str) -> None:
+    """An element cannot be its own provenance; an unknown source_key is a note."""
+    target = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
+
+    itself = call_tool(token, "add_element_provenance", {
+        "project_code": WRITE_PROJECT_CODE, "key": target, "source_key": target,
+    })
+    self_ok = "own provenance" in str(itself.get("note", "")) and "attached" not in itself
+
+    unknown = call_tool(token, "add_element_provenance", {
+        "project_code": WRITE_PROJECT_CODE, "key": target,
+        "source_key": f"no-such-element-{RUN_TAG}-zzz",
+    })
+    unknown_ok = "no single element matching source" in str(unknown.get("note", ""))
+
+    record(
+        "Z6. provenance refuses self-linking and an unknown source_key",
+        self_ok and unknown_ok,
+        f"self_note={str(itself.get('note'))[:70]!r} "
+        f"unknown_note={str(unknown.get('note'))[:70]!r}",
+    )
+
+
+def case_z7_remove_element_provenance(token: str) -> None:
+    """Detach the element link from every version; re-detach is a note."""
+    target = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
+    source = f"_authored/smoke-test-{RUN_TAG}-relation-target"
+
+    first = call_tool(token, "remove_element_provenance", {
+        "project_code": WRITE_PROJECT_CODE, "key": target, "source_key": source,
+    })
+    removed_ok = first.get("removed") is True and int(first.get("versions_updated") or 0) >= 2
+
+    rows = _read_versions_direct(token, target)
+    still_there = [
+        r.get("version_label") for r in rows
+        if any(isinstance(s, dict) and s.get("type") == "spine_element"
+               and s.get("id") == source for s in (r.get("sources") or []))
+    ]
+
+    second = call_tool(token, "remove_element_provenance", {
+        "project_code": WRITE_PROJECT_CODE, "key": target, "source_key": source,
+    })
+    note_ok = "not attached to" in str(second.get("note", "")) and "error" not in second
+
+    record(
+        "Z7. remove_element_provenance detaches from every version; "
+        "re-detaching is a structured note",
+        removed_ok and not still_there and note_ok,
+        f"removed={first.get('removed')} versions_updated={first.get('versions_updated')} "
+        f"still_carrying={still_there} second_note={str(second.get('note'))[:90]!r}",
+    )
+
+
 def case_o4_add_spine_document(token: str) -> None:
     """Phase 3 (#140): author a document into the spine via content=.
 
@@ -1396,6 +1728,11 @@ def case_m_audit_log(token: str) -> None:
         "set_spine_step",
         "reorder_spine_step",
         "remove_spine_step",
+        # #143 batch 3
+        "add_element_source",
+        "remove_element_source",
+        "add_element_provenance",
+        "remove_element_provenance",
     }
     missing = sorted(expected - tools_logged)
     # No free text may EVER appear in args. `query` is length-only, and so are
@@ -1415,13 +1752,30 @@ def case_m_audit_log(token: str) -> None:
     lengths_present = all(
         any(k.endswith("_len") for k in (r.get("args") or {})) for r in write_rows
     ) if write_rows else False
-    ok = bool(rows) and not missing and not leaked and lengths_present and order_len_present
+    # #143 batch 3: `source_title` and `source_key` are allow-listed VERBATIM,
+    # unlike `title`. They name a referent (an ingested document, an element key)
+    # rather than carrying the caller's prose, and an audit row that recorded a
+    # source attachment without saying WHICH source would be near-useless. Assert
+    # they are actually present, so the deliberate choice is visible in the run
+    # rather than only in a comment.
+    src_rows = [r for r in rows
+                if r.get("tool") in ("add_element_source", "remove_element_source")]
+    prov_rows = [r for r in rows
+                 if r.get("tool") in ("add_element_provenance", "remove_element_provenance")]
+    src_keys_present = (
+        all("source_title" in (r.get("args") or {}) for r in src_rows) if src_rows else False
+    ) and (
+        all("source_key" in (r.get("args") or {}) for r in prov_rows) if prov_rows else False
+    )
+    ok = (bool(rows) and not missing and not leaked and lengths_present
+          and order_len_present and src_keys_present)
     record(
         "M. audit rows appear for reads AND writes, args sanitized to lengths",
         ok,
         f"rows={len(rows)} tools={sorted(t for t in tools_logged if t)} "
         f"client={rows[0].get('client') if rows else None} "
         f"order_len_present={order_len_present} "
+        f"source_keys_present={src_keys_present} "
         + (f"MISSING={missing} " if missing else "")
         + (f"LEAKED_FREE_TEXT={[sorted(forbidden & set((r.get('args') or {}).keys())) for r in leaked]}"
            if leaked else "no raw free text logged")
@@ -1482,6 +1836,18 @@ def main() -> int:
         case_x2_bad_outcome(token)
         case_y_step_roundtrip(token)
         case_y2_step_scope_isolation(token)
+
+        # ── #143 batch 3: sources + provenance. THESE MUTATE REAL ROWS. ──
+        # Ordered after O3 (which leaves a superseded v1) so the every-version
+        # write is provable, and after T (which creates the element used as a
+        # provenance source).
+        attached_title = case_z_add_element_source(token)
+        case_z2_reattach_is_noop(token, attached_title)
+        case_z3_unknown_source_title(token)
+        case_z4_detach_source(token, attached_title)
+        case_z5_add_element_provenance(token)
+        case_z6_provenance_self_and_unknown(token)
+        case_z7_remove_element_provenance(token)
 
         # ── Package B: read-only tenant tree ──
         cp_md = case_q_project_state(token)
