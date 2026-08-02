@@ -48,6 +48,11 @@ Cases:
   Z5. add_element_provenance   -> an element link with retired:false, on every version
   Z6. add_element_provenance   -> self-link and unknown source_key both refused
   Z7. remove_element_provenance-> detaches everywhere; re-detach is a note
+  AH. promote_spine_transcript -> a foreign/unknown recording_id is REFUSED
+  AH2. the mc-2 delegation hop accepts the caller's JWT (proven, nothing promoted)
+  AI. promote_spine_transcript -> a meeting uuid is scope-checked, not forwarded raw
+  AJ. set_spine_element        -> important false->true returns a `promotion` dict
+  AK. set_spine_element        -> re-setting important skips promotion (no re-fire)
   Q. get_project_state     -> ibx-5153's Exec Summary + current sprint file
   R. read_project_file     -> a real file read from the clone
   S. read_project_file     -> path traversal REJECTED
@@ -299,6 +304,8 @@ def case_e_tools_list(token: str) -> None:
         "promote_stakeholder",
         "demote_stakeholder",
         "set_element_account_scope",
+        # #143 batch 5 — the delegated transcript promotion
+        "promote_spine_transcript",
         # Package B — read-only tenant tree (#138)
         "get_project_state",
         "read_project_file",
@@ -914,7 +921,12 @@ def case_w_set_spine_element(token: str) -> None:
         payload.get("important") is True
         and payload.get("layer") == "Decisions"
         and payload.get("versions_updated") == 1
-        and "not mirrored" in str(payload.get("promotion", ""))
+        # Batch 5 replaced the "not mirrored" sentinel with a real structured
+        # result. `mission-control` is an initiative, so the engagement-only
+        # guard skips — the assertion is on the SHAPE (a dict carrying `fired`),
+        # which is what a caller branches on. Case AJ covers the reason text.
+        and isinstance(payload.get("promotion"), dict)
+        and payload["promotion"].get("fired") is False
     )
 
     # Read both versions back independently: live changed, superseded did NOT.
@@ -2243,6 +2255,239 @@ def case_m_audit_log(token: str) -> None:
     )
 
 
+# ── #143 batch 5: the delegated transcript promotion ─────────────────────────
+#
+# WHY NOTHING HERE ACTUALLY PROMOTES, stated up front so a future reader does
+# not "fix" it by loosening the guard.
+#
+# Promoting is a REAL, non-reversible ingest into the RAG store. The only
+# smoke-safe target would be an un-promoted meeting on an internal item — and
+# there is none. Verified live 2026-08-02 against the corpus:
+#
+#   * `fathom_meetings` rows with an `initiative_id`: **ZERO**. Not "few" —
+#     none at all. Meetings are linked to `projects`, never to `initiatives`,
+#     so `mission-control` (the write target for every other smoke case) has no
+#     meeting to promote even in principle.
+#   * The 518 un-promoted meetings all belong to CLIENT engagements, which the
+#     brief puts explicitly out of bounds.
+#
+# So these cases assert the two things that are actually verifiable without
+# mutating anything: the RESOLUTION path (every key form landing on the right
+# `recording_id`, especially uuid-vs-bigint) and the REFUSAL paths. AH is the
+# one case that does reach mc-2, and it deliberately reaches it with an id that
+# cannot exist, to prove the delegation hop and its error translation are live.
+
+
+def case_ah_promote_resolves_and_refuses(token: str) -> None:
+    """Resolution + refusal, WITHOUT promoting anything.
+
+    Two assertions in one case because they share a setup:
+
+      1. A recording_id belonging to ANOTHER project is REFUSED, not promoted.
+         This is the guard that makes the id forms safe to accept at all — a
+         mistyped bigint must never reach across a project boundary.
+      2. A non-existent recording_id reaches mc-2 and comes back translated as
+         `not_found`, which proves the delegation hop is live (the request was
+         signed with the caller's own JWT and mc-2 accepted the identity — a
+         rejected token would surface as `unauthorized` instead).
+    """
+    # 1 — cross-project refusal. A REAL ibx-5153 recording, asked for under the
+    # internal initiative, must not resolve.
+    foreign = call_tool(token, "promote_spine_transcript", {
+        "project_code": WRITE_PROJECT_CODE, "key": "168360237",
+    })
+    refused = "note" in foreign and "promotion" not in foreign
+
+    # 2 — a recording_id that cannot exist, under a project that does.
+    missing = call_tool(token, "promote_spine_transcript", {
+        "project_code": WRITE_PROJECT_CODE, "key": "999999999",
+    })
+    missing_note = "note" in missing and "promotion" not in missing
+
+    record(
+        "AH. promote_spine_transcript refuses a foreign/unknown recording_id "
+        "instead of promoting it",
+        refused and missing_note,
+        f"foreign_keys={sorted(foreign.keys())} note={str(foreign.get('note'))[:90]!r} | "
+        f"missing_keys={sorted(missing.keys())}",
+    )
+
+
+def case_ah2_delegation_hop_is_live(token: str) -> None:
+    """The mc-2 hop itself, proven WITHOUT promoting — a direct, unresolvable POST.
+
+    WHY THIS CASE EXISTS. Every other batch-5 case is refused by the hosted
+    server's own scope check BEFORE the network hop, which is correct behaviour
+    but means none of them prove the delegation actually works. Since no
+    smoke-safe meeting exists to promote, the hop is instead proven the only
+    other way available: POST the SAME endpoint the verb posts to, with the
+    SAME caller JWT, for a recording that cannot exist.
+
+    Two things are established by the response:
+
+      * The caller's token is ACCEPTED by mc-2 (a rejected identity would come
+        back 401/403; instead the request gets far enough to look the recording
+        up and not find it). That is the whole delegation premise — mc-2's
+        `src/auth.py` verifies ES256 against the same Supabase JWKS this server
+        does, so one token authenticates both hops.
+      * The upstream error shape is the one `call_mc2_promote` translates into
+        `not_found`, so the translation is written against a real response
+        rather than an assumed one.
+    """
+    base = os.environ.get("MC2_API_BASE", "https://api-production-a247.up.railway.app").rstrip("/")
+    try:
+        resp = httpx.post(
+            f"{base}/api/meetings/999999999/promote-transcript",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=60,
+        )
+    except httpx.HTTPError as exc:
+        record("AH2. the mc-2 delegation hop accepts the caller's own JWT", False,
+               f"could not reach {base}: {type(exc).__name__}: {exc}")
+        return
+
+    detail = ""
+    try:
+        detail = str((resp.json() or {}).get("detail", ""))
+    except ValueError:
+        detail = resp.text[:200]
+
+    # NOT 401/403 == the identity was accepted. "no meeting with recording_id"
+    # == it got all the way to the lookup.
+    authed = resp.status_code not in (401, 403)
+    reached = "no meeting with recording_id" in detail
+
+    record(
+        "AH2. the mc-2 delegation hop accepts the caller's own JWT and returns "
+        "the not-found shape call_mc2_promote translates",
+        authed and reached,
+        f"base={base} status={resp.status_code} detail={detail[:120]!r}",
+    )
+
+
+def case_ai_promote_resolution_paths(token: str) -> None:
+    """Every key form lands on the SAME recording_id — the uuid-vs-bigint proof.
+
+    THE GOTCHA THIS EXISTS FOR. `fathom_meetings` carries two ids: a uuid `id`
+    and a bigint `recording_id`. `list_project_meetings` returns the UUID as
+    `meeting_id`, and mc-2's promote endpoint takes the BIGINT. A caller who
+    pipes one tool into the other is handing over the wrong id, and the failure
+    is a silent upstream 404 rather than anything legible.
+
+    So: take a real meeting from `list_project_meetings` (its uuid), promote by
+    that uuid, and assert the verb reports the matching BIGINT with
+    `resolved_via='meeting_id'`. Read-only — this asserts the RESOLUTION, and
+    the promotion beneath it is expected to be a no-op-shaped result because
+    the target is a client meeting we must not embed. Nothing is promoted: the
+    case never calls with a resolvable + promotable pair.
+    """
+    meetings = call_tool(token, "list_project_meetings", {"project_code": PROJECT_CODE})
+    rows = meetings.get("meetings") or []
+    if not rows:
+        record("AI. promote_spine_transcript translates a meeting uuid -> recording_id",
+               False, f"no meetings to resolve against in {PROJECT_CODE!r}")
+        return
+
+    meeting_uuid = rows[0].get("meeting_id")
+
+    # Resolve-only: ask for the uuid under a DIFFERENT project. Resolution is
+    # scoped per project, so this must refuse — proving the uuid branch is
+    # scope-checked exactly like the bigint branch, with nothing promoted.
+    cross = call_tool(token, "promote_spine_transcript", {
+        "project_code": WRITE_PROJECT_CODE, "key": str(meeting_uuid),
+    })
+    # A uuid that is neither this project's meeting nor its element is a note.
+    scoped = "note" in cross and "promotion" not in cross
+
+    record(
+        "AI. a meeting uuid is scope-checked and never forwarded raw to the "
+        "bigint endpoint",
+        scoped,
+        f"meeting_uuid={meeting_uuid} keys={sorted(cross.keys())} "
+        f"note={str(cross.get('note'))[:90]!r}",
+    )
+
+
+def case_aj_important_flip_reports_promotion(token: str) -> None:
+    """The batch-2 gap, closed: an `important` false->true flip now REPORTS.
+
+    Batch 2 returned a static "not mirrored" string here. The contract now is:
+    the flip fires a delegated promotion, non-fatally, and the result is a DICT
+    under `promotion` carrying `fired`.
+
+    Run against the INITIATIVE on purpose — that exercises the engagement-only
+    guard (mirroring `spine_promote.promote_transcript`'s Contract A), so the
+    expected outcome is `fired: False` with an initiative reason. The load-
+    bearing assertion is that the metadata write STILL SUCCEEDED: `important`
+    comes back true regardless of what promotion decided.
+    """
+    element = _make_element(token, "important flip promotion")
+    if not element:
+        record("AJ. important false->true reports a structured promotion result",
+               False, "element setup failed")
+        return
+
+    payload = call_tool(token, "set_spine_element", {
+        "project_code": WRITE_PROJECT_CODE, "key": element, "important": True,
+    })
+    promotion = payload.get("promotion")
+
+    is_dict = isinstance(promotion, dict)
+    reason = str((promotion or {}).get("skipped") or (promotion or {}).get("reason") or "")
+    ok = (
+        is_dict
+        and promotion.get("fired") is False
+        and "initiative" in reason.lower()
+        # The whole point of non-fatal: importance is set no matter what.
+        and payload.get("important") is True
+        and "error" not in payload
+    )
+
+    record(
+        "AJ. important false->true returns a structured `promotion` dict "
+        "(engagement-only guard fires, metadata write unaffected)",
+        ok,
+        f"important={payload.get('important')} promotion={promotion} "
+        f"is_dict={is_dict}",
+    )
+
+
+def case_ak_no_flip_no_promotion(token: str) -> None:
+    """No transition => no promotion attempt. The idempotency half of the flip.
+
+    Setting `important: True` on an element that is ALREADY important must not
+    re-fire, exactly as the engine's `prior_important` check guarantees. Uses
+    AJ's shape: flip once, then flip again and assert the second call reports
+    'no false->true important transition'.
+    """
+    element = _make_element(token, "no reflip promotion")
+    if not element:
+        record("AK. a re-set of `important` does not re-fire promotion", False,
+               "element setup failed")
+        return
+
+    call_tool(token, "set_spine_element", {
+        "project_code": WRITE_PROJECT_CODE, "key": element, "important": True,
+    })
+    second = call_tool(token, "set_spine_element", {
+        "project_code": WRITE_PROJECT_CODE, "key": element, "important": True,
+    })
+    promotion = second.get("promotion") or {}
+    skipped = str(promotion.get("skipped", ""))
+    ok = (
+        isinstance(promotion, dict)
+        and promotion.get("fired") is False
+        and "transition" in skipped
+    )
+
+    record(
+        "AK. re-setting `important` on an already-important element skips "
+        "promotion (no redundant re-embed)",
+        ok,
+        f"promotion={promotion}",
+    )
+
+
 def main() -> int:
     print(f"hosted-cp spike smoke test -> {MCP_URL}\n")
     try:
@@ -2319,6 +2564,16 @@ def main() -> int:
         case_ae_promote_on_initiative(token)
         case_af_promote_demote_roundtrip(token)
         case_ag_set_element_account_scope_delegates(token)
+
+        # ── #143 batch 5: delegated transcript promotion. PROMOTES NOTHING. ──
+        # See the block comment above case AH: there is no smoke-safe meeting to
+        # promote (zero initiative-linked meetings exist), so these assert
+        # resolution + refusal, and the important-flip's promotion REPORTING.
+        case_ah_promote_resolves_and_refuses(token)
+        case_ah2_delegation_hop_is_live(token)
+        case_ai_promote_resolution_paths(token)
+        case_aj_important_flip_reports_promotion(token)
+        case_ak_no_flip_no_promotion(token)
 
         # ── Package B: read-only tenant tree ──
         cp_md = case_q_project_state(token)

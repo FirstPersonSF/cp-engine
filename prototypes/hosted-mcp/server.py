@@ -58,6 +58,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import httpx
 import jwt
 from jwt import PyJWKClient
 from mcp.server.auth.middleware.auth_context import get_access_token
@@ -114,6 +115,28 @@ TREE_PULL_DEBOUNCE_SECONDS = int(os.environ.get("TREE_PULL_DEBOUNCE_SECONDS", "6
 # read_project_file cap. Beyond this the file is truncated with a notice rather
 # than silently clipped or streamed whole.
 TREE_MAX_FILE_BYTES = int(os.environ.get("TREE_MAX_FILE_BYTES", str(200 * 1024)))
+
+# ── mc-2 backend (#143 batch 5) ──
+# `promote_spine_transcript` DELEGATES rather than ports. The engine's version
+# runs the full local ingest pipeline (tenant file + service key + Voyage) —
+# none of which a hosted, service-key-free server can or should do. mc-2's
+# backend already exposes the same promotion service-side at
+# `POST {MC2_API_BASE}/api/meetings/{recording_id}/promote-transcript`, and it
+# authenticates with the SAME Supabase JWTs this server verifies (its
+# `src/auth.py` validates ES256 against the same JWKS with aud=authenticated —
+# verified live 2026-08-02). So the hosted verb forwards the CALLER'S OWN token
+# and the promotion runs as that user, end to end. No new trust is minted here.
+#
+# Absent config is a CLEAN DEGRADE, never a crash: local runs without the env
+# var get a structured "promotion unavailable" note rather than a stack trace.
+MC2_API_BASE = os.environ.get(
+    "MC2_API_BASE", "https://api-production-a247.up.railway.app"
+).rstrip("/")
+# The promote hop is webhook-proxied inside mc-2 (backend -> cp-engine-webhook
+# -> ingest), so it is slower than a plain DB write. mc-2's own timeout maps to
+# a 504; ours must be no tighter than that or we would report a timeout for a
+# promotion that is still succeeding upstream.
+MC2_TIMEOUT_SECONDS = float(os.environ.get("MC2_TIMEOUT_SECONDS", "120"))
 
 # ──────────────────────────────────────────────────────────────────────
 #  Token verification — the SDK's TokenVerifier protocol
@@ -508,6 +531,19 @@ _AUDIT_SAFE_ARGS = {
     # two-value vocabulary, the same class as `outcome`, and the single most
     # useful thing to know about a scope write after the element it named.
     "account",
+    # ── #143 batch 5 (transcript promotion) ──
+    # `recording_id` is the Fathom bigint the promotion is keyed on — an
+    # identifier in the purest sense, and the ONE fact that makes a promote
+    # audit row useful (which meeting's transcript entered the RAG store).
+    # NOTE the id shape trap this records: `fathom_meetings` carries BOTH a
+    # uuid `id` and a bigint `recording_id`, and only the latter addresses the
+    # mc-2 endpoint. Logging it verbatim is what lets an auditor tell which of
+    # the two a caller actually reached.
+    "recording_id",
+    # How the recording_id was ARRIVED AT (element | meeting_id | recording_id)
+    # — a closed three-value vocabulary, not prose. Worth recording because the
+    # resolution path is the part of this verb most likely to be wrong.
+    "resolved_via",
 }
 # Arg keys that are free text — recorded as a length only, never their content.
 # `body`/`description`/`framing`/`title` are USER PROSE: the whole point of the
@@ -1217,6 +1253,13 @@ _LAYER_ALIASES = {
 }
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
+
+# Canonical uuid shape. Used by `resolve_recording_id` (#143 batch 5) to tell a
+# `fathom_meetings.id` (uuid) apart from a `recording_id` (bigint) — two ids on
+# ONE table, only one of which addresses mc-2's promote endpoint.
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
+)
 
 # `commitments.direction` — mirrors the mc-2 CHECK constraint.
 _DIRECTIONS = {"us_to_them", "them_to_us", "internal"}
@@ -2138,6 +2181,434 @@ def propose_spine_step(
 #     error, so the verb checks the row count and explains the denial rather
 #     than reporting a silent success.
 #
+# ──────────────────────────────────────────────────────────────────────
+#  Transcript promotion (#143 batch 5) — DELEGATED, not ported
+# ──────────────────────────────────────────────────────────────────────
+#
+# THE ARCHITECTURE DECISION, stated once so no future reader re-litigates it.
+#
+# The engine's `promote_spine_transcript` cannot be ported to a hosted server.
+# It resolves an element's `rel_path` to a file in a LOCAL tenant checkout,
+# copies it to a stable temp path, and runs the full ingest pipeline (Voyage
+# embeddings, a SERVICE-KEY Supabase write to `rag_assets`). A hosted server has
+# no tenant checkout it can trust as authoritative and — the whole point of this
+# prototype — no service key at all.
+#
+# mc-2's backend already does this promotion service-side, and its auth is the
+# SAME Supabase JWT this server verifies. So the hosted verb DELEGATES: it
+# resolves the caller's key to a `recording_id` and POSTs to
+# `{MC2_API_BASE}/api/meetings/{recording_id}/promote-transcript` carrying the
+# CALLER'S OWN bearer token. The promotion therefore runs as the caller, with
+# mc-2's own authorization applying — this server never becomes a confused
+# deputy, because it forwards an identity rather than substituting its own.
+#
+# WHAT DELEGATION CHANGES (both real, both surfaced in the return):
+#
+#   1. **A different promotion universe.** The engine promotes a tenant FILE
+#      (`rel_path` -> a `spine/<activity>/<deliverable>.md`), landing a
+#      `source_provider='spine-promote'` asset. mc-2 promotes a MEETING
+#      (`recording_id` -> the Fathom transcript), landing
+#      `source_provider='fathom'`. Verified live: 2 spine-promote assets vs 171
+#      fathom assets, and NO live spine element's `rel_path` points at a
+#      transcript — every one points at a spine markdown file. These are not
+#      the same operation wearing two names, and the return says which ran.
+#   2. **The id shape.** `fathom_meetings` has BOTH a uuid `id` and a bigint
+#      `recording_id`. `list_project_meetings` returns the UUID as `meeting_id`;
+#      the mc-2 endpoint takes the BIGINT. Handing it the uuid is the known
+#      call-id-vs-recording-id gotcha, and `resolve_recording_id` below exists
+#      precisely so a caller can pass either and land on the right one.
+
+
+def _meeting_scope_filter(query, scope: dict[str, Any]):
+    """Constrain a `fathom_meetings` query to one project or initiative.
+
+    `fathom_meetings` names its owner in one of two columns and the right one
+    depends on what the code resolved to — the same split `resolve_write_scope`
+    already encodes for `commitments`' num_nonnulls CHECK.
+    """
+    column = "initiative_id" if scope.get("kind") == "initiative" else "project_id"
+    return query.eq(column, scope["id"])
+
+
+def resolve_recording_id(
+    client, scope: dict[str, Any], key: str
+) -> tuple[int | None, dict[str, Any] | None, dict[str, Any] | None]:
+    """`key` -> (recording_id, meeting_row, error/note).
+
+    Mirrors the ENGINE VERB'S KEY SEMANTICS as closely as a delegating server
+    can, accepting three forms and reporting which one matched:
+
+      1. **A bare recording_id** (all digits) — the mc-2 endpoint's native key.
+         Accepted directly, but still verified to EXIST and to belong to this
+         project, so a typo'd id cannot promote another project's meeting.
+      2. **A meeting uuid** (`fathom_meetings.id`) — what `list_project_meetings`
+         hands back as `meeting_id`. This is the gotcha branch: it looks like a
+         valid id and is NOT the one the endpoint wants, so it is TRANSLATED
+         here rather than forwarded and 404'd upstream.
+      3. **A spine element key** (est_item_id / bare slug / framing substring) —
+         the engine verb's own key form. The element is resolved with the SAME
+         `resolve_element_versions` discipline every other verb uses, then
+         bridged to a meeting (see `_recording_id_for_element`).
+
+    Returns `(None, None, {...})` with a structured note/error on any miss —
+    never a guess, and never a raw exception.
+    """
+    key = (key or "").strip()
+    if not key:
+        return None, None, {"error": "a key is required (element, meeting id, or recording id)"}
+
+    # ── Form 1: a bare recording_id. Verified against THIS project's meetings. ──
+    if key.isdigit():
+        rid = int(key)
+        rows = (
+            _meeting_scope_filter(
+                client.table("fathom_meetings").select(
+                    "id, recording_id, title, meeting_date, transcript_promoted_at"
+                ),
+                scope,
+            )
+            .eq("recording_id", rid)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not rows:
+            return None, None, {
+                "note": f"no meeting with recording_id {rid} belongs to "
+                f"{scope.get('project_code')!r}. A recording_id from another "
+                "project is refused rather than promoted."
+            }
+        return rid, rows[0], None
+
+    # ── Form 2: a meeting uuid — translate, don't forward. ──
+    if _UUID_RE.match(key):
+        rows = (
+            _meeting_scope_filter(
+                client.table("fathom_meetings").select(
+                    "id, recording_id, title, meeting_date, transcript_promoted_at"
+                ),
+                scope,
+            )
+            .eq("id", key)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if rows:
+            rid = rows[0].get("recording_id")
+            if not rid:
+                return None, rows[0], {
+                    "note": f"meeting {key} has no recording_id — it cannot be "
+                    "promoted (the mc-2 endpoint is keyed on the Fathom recording)."
+                }
+            return int(rid), rows[0], None
+        # Fall through: a uuid can also be a spine element's id, so a miss here
+        # is not yet a failure.
+
+    # ── Form 3: a spine element key. ──
+    est_item_id, versions, err = resolve_element_versions(client, scope["id"], key)
+    if err is not None:
+        return None, None, err
+    if est_item_id is None:
+        return None, None, {
+            "note": f"no meeting or live element matching {key!r} in "
+            f"{scope.get('project_code')!r}"
+        }
+    live = next((v for v in versions if v.get("status") == "live"), None) or versions[0]
+    return _recording_id_for_element(client, scope, est_item_id, live)
+
+
+def _recording_id_for_element(
+    client, scope: dict[str, Any], est_item_id: str, element: dict[str, Any]
+) -> tuple[int | None, dict[str, Any] | None, dict[str, Any] | None]:
+    """Bridge a spine element to the Fathom meeting behind it, or explain why not.
+
+    THIS IS THE SEAM WHERE THE TWO PROMOTION UNIVERSES MEET, and it is worth
+    being explicit about how thin the bridge really is.
+
+    The engine promotes `element.rel_path` — a file. There is NO column linking
+    a spine element to a `fathom_meetings` row, so a delegating server cannot
+    reproduce that by construction. What it CAN do is follow the element's
+    attached sources: a meeting that has already been ingested lands a
+    `rag_assets` row with `source_provider='fathom'` and `source_file_id` = the
+    recording_id AS TEXT (verified live). If the element cites such a source,
+    that citation IS the element->meeting link, and it is exact rather than
+    guessed.
+
+    Returns a structured note (never an error) when no bridge exists — for most
+    elements this is the shape of the world, not a failure: their substance came
+    from a document, not a recording.
+    """
+    sources = element.get("sources") or []
+    asset_ids = [
+        s.get("id")
+        for s in sources
+        if isinstance(s, dict) and s.get("type") == "rag_asset" and s.get("id")
+    ]
+    if not asset_ids:
+        return None, None, {
+            "note": f"element {est_item_id!r} cites no ingested source, so no "
+            "Fathom recording can be resolved from it. Promotion is keyed on a "
+            "meeting: pass a recording_id or a meeting id directly.",
+            "est_item_id": est_item_id,
+        }
+
+    assets = (
+        client.table("rag_assets")
+        .select("id, title, source_provider, source_file_id")
+        .in_("id", asset_ids)
+        .eq("source_provider", "fathom")
+        .execute()
+        .data
+        or []
+    )
+    recording_ids = sorted(
+        {
+            int(a["source_file_id"])
+            for a in assets
+            if str(a.get("source_file_id") or "").isdigit()
+        }
+    )
+    if not recording_ids:
+        return None, None, {
+            "note": f"element {est_item_id!r} cites {len(asset_ids)} source(s), "
+            "none of which came from a Fathom recording (its substance is "
+            "document-derived). Nothing to promote.",
+            "est_item_id": est_item_id,
+        }
+    if len(recording_ids) > 1:
+        # Same discipline as every other resolver here: ambiguity is an ERROR
+        # that hands back the candidates, never a silent pick.
+        return None, None, {
+            "error": f"element {est_item_id!r} cites {len(recording_ids)} Fathom "
+            "recordings; promotion targets exactly one. Re-key by recording_id.",
+            "est_item_id": est_item_id,
+            "candidates": recording_ids,
+        }
+
+    rid = recording_ids[0]
+    rows = (
+        _meeting_scope_filter(
+            client.table("fathom_meetings").select(
+                "id, recording_id, title, meeting_date, transcript_promoted_at"
+            ),
+            scope,
+        )
+        .eq("recording_id", rid)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    return rid, (rows[0] if rows else None), None
+
+
+def call_mc2_promote(recording_id: int) -> dict[str, Any]:
+    """POST the promote to mc-2 under the CALLER'S OWN JWT. Never raises.
+
+    Response translation mirrors what mc-2 itself does one hop upstream, so a
+    caller reads one vocabulary rather than three: 2xx is `ok:true` with the
+    backend's JSON attached; a 401/403 is an AUTHORIZATION answer about the
+    caller (not a plumbing failure) and says so; a 502 carrying `no meeting
+    with recording_id` upstream is reported as not-found rather than as a
+    generic gateway error, because that is what it actually means.
+    """
+    if not MC2_API_BASE:
+        return {
+            "ok": False,
+            "reason": "promotion unavailable: MC2_API_BASE not configured",
+            "degraded": True,
+        }
+
+    url = f"{MC2_API_BASE}/api/meetings/{recording_id}/promote-transcript"
+    try:
+        token = caller_jwt()
+    except RuntimeError as exc:
+        return {"ok": False, "reason": f"no authenticated caller: {exc}"}
+
+    try:
+        resp = httpx.post(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=MC2_TIMEOUT_SECONDS,
+        )
+    except httpx.TimeoutException:
+        return {
+            "ok": False,
+            "reason": f"mc-2 promote timed out after {MC2_TIMEOUT_SECONDS:.0f}s. "
+            "The promotion may still be completing upstream — re-read the "
+            "meeting's transcript_promoted flag before retrying.",
+            "timeout": True,
+        }
+    except httpx.HTTPError as exc:
+        return {"ok": False, "reason": f"could not reach mc-2: {type(exc).__name__}: {exc}"}
+
+    try:
+        body: Any = resp.json()
+    except ValueError:
+        body = resp.text[:400]
+
+    if 200 <= resp.status_code < 300:
+        return {"ok": True, "status": resp.status_code, "backend": body}
+
+    detail = body.get("detail") if isinstance(body, dict) else str(body)
+    detail = str(detail)[:400]
+    if resp.status_code in (401, 403):
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "reason": f"mc-2 refused the caller's token: {detail}",
+            "unauthorized": True,
+        }
+    if "no meeting with recording_id" in detail:
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "reason": f"mc-2 has no meeting with recording_id {recording_id}: {detail}",
+            "not_found": True,
+        }
+    return {"ok": False, "status": resp.status_code, "reason": detail}
+
+
+def _promotion_on_important_flip(
+    client, scope: dict[str, Any], est_item_id: str, element: dict[str, Any], *, fired: bool
+) -> dict[str, Any]:
+    """The `important` false->true side effect, as a value. NEVER raises.
+
+    This closes the gap batch 2 left open: the stdio `set_spine_element` fired a
+    RAG promotion on the flip, and the hosted port returned a "not mirrored"
+    sentinel instead. It now fires the DELEGATED promotion.
+
+    Three outcomes, always shaped the same so a caller can branch on `fired`:
+
+      * `{"fired": False, "skipped": <reason>}` — no flip happened, the project
+        is an initiative (the engine's engagement-only guard, mirrored verbatim
+        because mc-2 meetings are never initiative-linked — verified live: zero
+        `fathom_meetings` rows carry an `initiative_id`), or no Fathom recording
+        resolves from the element. For most elements this LAST case is normal,
+        not broken: their substance is document-derived.
+      * `{"fired": True, "ok": True, ...}` — mc-2 accepted the promotion.
+      * `{"fired": True, "ok": False, "reason": ...}` — it did not, and the
+        metadata write still stands. That is the whole contract: importance is
+        set either way, and this key only ever REPORTS.
+    """
+    if not fired:
+        return {"fired": False, "skipped": "no false->true important transition"}
+
+    try:
+        # ENGAGEMENT-ONLY GUARD — mirrors `spine_promote.promote_transcript`'s
+        # Contract A ("initiative promotion not yet supported"), checked BEFORE
+        # any resolution work, exactly as the engine does.
+        if scope.get("kind") == "initiative":
+            return {
+                "fired": False,
+                "skipped": "initiative promotion not yet supported "
+                "(engagement-only, mirroring the engine guard)",
+            }
+
+        recording_id, meeting, problem = _recording_id_for_element(
+            client, scope, est_item_id, element
+        )
+        if problem is not None:
+            return {
+                "fired": False,
+                "skipped": problem.get("note") or problem.get("error")
+                or "no recording resolved",
+            }
+
+        result = call_mc2_promote(recording_id)
+        return {"fired": True, "recording_id": recording_id, **result}
+    except Exception as exc:  # noqa: BLE001 — promotion is NON-FATAL, always
+        return {"fired": False, "skipped": f"promotion error: {type(exc).__name__}: {exc}"}
+
+
+@mcp_server.tool()
+def promote_spine_transcript(project_code: str, key: str) -> dict[str, Any]:
+    """Promote a meeting's transcript into the RAG store, so it is retrievable.
+
+    The hosted counterpart of the stdio verb (#143 batch 5). It DELEGATES to
+    mc-2's `POST /api/meetings/{recording_id}/promote-transcript` carrying YOUR
+    token, so the promotion runs under your identity — this server holds no
+    service key and runs no ingest pipeline of its own.
+
+    `key` accepts three forms and tells you which one matched (`resolved_via`):
+    a **recording_id** (the Fathom bigint — the endpoint's native key), a
+    **meeting id** (the uuid `list_project_meetings` returns, translated here so
+    the uuid-vs-bigint mix-up cannot reach the endpoint), or a **spine element
+    key** (est_item_id / slug / unique framing substring), which is bridged to a
+    meeting through the element's own cited Fathom source.
+
+    TWO DIFFERENCES from the stdio verb worth knowing before relying on this:
+
+    1. **It promotes a MEETING, not a tenant file.** The engine verb embeds the
+       file at the element's `rel_path` (landing a `spine-promote` asset); this
+       one promotes the Fathom transcript behind the meeting (landing a
+       `fathom` asset). For most spine elements `rel_path` is a spine markdown
+       file with no recording behind it at all — those return a clean note
+       saying so rather than promoting the wrong thing.
+    2. **Idempotency is mc-2's, not ours.** Re-promoting is safe (the upstream
+       path is keyed on the recording and updates in place), and the return
+       reports `already_promoted` when the meeting was already stamped, so a
+       no-op is never mistaken for fresh work.
+
+    Returns `{recording_id, resolved_via, meeting, promotion: {ok, ...}}`, or a
+    structured `{note}`/`{error}` when nothing resolves. Never raises.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        key: a recording_id, a meeting id, or a spine element key.
+    """
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    recording_id, meeting, problem = resolve_recording_id(client, scope, key)
+    if problem is not None:
+        audit(client, "promote_spine_transcript", {"project_code": project_code, "key": key}, 0)
+        return problem
+
+    resolved_via = (
+        "recording_id" if key.strip().isdigit()
+        else "meeting_id" if (meeting and str(meeting.get("id")) == key.strip())
+        else "element"
+    )
+    already = bool((meeting or {}).get("transcript_promoted_at"))
+
+    audit_args = {
+        "project_code": project_code,
+        "key": key,
+        "recording_id": recording_id,
+        "resolved_via": resolved_via,
+    }
+
+    promotion = call_mc2_promote(recording_id)
+    audit(client, "promote_spine_transcript", audit_args, 1 if promotion.get("ok") else 0)
+
+    out: dict[str, Any] = {
+        "project_code": scope.get("project_code"),
+        "recording_id": recording_id,
+        "resolved_via": resolved_via,
+        "caller": caller_subject(),
+        "promotion": promotion,
+    }
+    if meeting:
+        out["meeting"] = {
+            "meeting_id": meeting.get("id"),
+            "title": meeting.get("title"),
+            "meeting_date": meeting.get("meeting_date"),
+        }
+    if already:
+        out["already_promoted"] = True
+        out["note"] = (
+            "this meeting was already stamped transcript_promoted_at before this "
+            "call; re-promotion updates the existing asset in place."
+        )
+    return out
+
+
 # WHERE THE COLUMN BOUNDARY ACTUALLY LIVES (verified live 2026-08-02, and NOT
 # what the batch-2 brief assumed). The migration's per-column grant
 # `UPDATE(important, note, layer, framing, serves)` is real but INERT: the
@@ -2194,15 +2665,16 @@ def set_spine_element(
        (`versions_updated` / `superseded_untouched`) rather than implying a
        whole-element move. Use the stdio verb when the whole history must move.
 
-    2. **NO TRANSCRIPT PROMOTION.** The engine fires a RAG transcript promotion
-       on a genuine `important` false->true transition (engagement-only,
-       non-fatal, surfaced under `promotion`). That machinery is NOT mirrored
-       here — it ports later alongside `promote_spine_transcript`. Flipping
-       `important` to true through this tool sets the flag and NOTHING ELSE; no
-       transcript is promoted to RAG. Until that port lands, use the stdio
-       `set_spine_element` (or `promote_spine_transcript`) when promotion is the
-       point. The return carries `promotion: "not mirrored — see docstring"` so
-       a caller can never mistake silence for success.
+    2. **TRANSCRIPT PROMOTION IS DELEGATED, AND USUALLY SKIPS.** Like the engine
+       verb, a genuine `important` false->true transition fires a transcript
+       promotion, engagement-only and strictly NON-FATAL — its outcome lands
+       under `promotion` and can never turn the metadata write into an error.
+       What differs is WHAT gets promoted: the engine embeds the tenant file at
+       the element's `rel_path`, while this fires mc-2's promotion for the
+       Fathom recording behind the element (see `promote_spine_transcript`).
+       An element that cites no Fathom source — which is MOST of them — gets
+       `promotion: {fired: false, skipped: ...}` with the reason, not a failure.
+       Use the stdio verb when the tenant FILE is what must be embedded.
 
     Args:
         project_code: engagement, initiative, or standalone-repo code.
@@ -2231,6 +2703,12 @@ def set_spine_element(
     live = next((v for v in versions if v.get("status") == "live"), None)
     if live is None:
         return {"error": f"element {est_item_id!r} has no live version to update"}
+
+    # PRE-STATE, captured BEFORE the patch: promotion fires only on a genuine
+    # false->true transition, never when the element was already important. Read
+    # off the live row the resolver already fetched — re-reading after the
+    # UPDATE would make every flip look like a no-op.
+    prior_important = bool(live.get("important"))
 
     patch: dict[str, Any] = {}
     if important is not None:
@@ -2297,8 +2775,12 @@ def set_spine_element(
         "versions_updated": len(updated),
         # Say the quiet part out loud: the stdio verb would have moved these too.
         "superseded_untouched": superseded_count,
-        "promotion": "not mirrored — hosted set_spine_element does not promote "
-        "transcripts; use the stdio verb or promote_spine_transcript",
+        # Fired ONLY on a genuine false->true flip, and never fatal — the
+        # metadata write above has already committed by the time this runs.
+        "promotion": _promotion_on_important_flip(
+            client, scope, est_item_id, live,
+            fired=(important is True and not prior_important),
+        ),
     }
     if canonical_layer is not None:
         out["layer"] = row.get("layer")

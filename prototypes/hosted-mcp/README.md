@@ -18,7 +18,7 @@ path. Nothing under `src/cp_engine/` was modified.
   `TENANT_REPO`. **The tree has no per-user RLS** — see
   [The tenant tree has no RLS](#the-tenant-tree-has-no-rls).
 
-33 tools, **48/48 smoke cases pass**.
+34 tools, **53/53 smoke cases pass**.
 
 ---
 
@@ -62,6 +62,8 @@ shell's environment too.
 | `GIT_SSH_KEY` | for an ssh remote | — | Read-only deploy key material. Required when `TENANT_REPO` is an ssh remote; **optional when it is a local path**, because a local clone needs no ssh at all. |
 | `TREE_PULL_DEBOUNCE_SECONDS` | no | `60` | Skip `git pull` if the last one was this recent. |
 | `TREE_MAX_FILE_BYTES` | no | `204800` | `read_project_file` size cap (200 KiB). |
+| `MC2_API_BASE` | for promotion | `https://api-production-a247.up.railway.app` | mc-2's backend, where `promote_spine_transcript` delegates. Already set on the deployment. Absent/blank, the verb still exists and returns a clean `promotion unavailable: MC2_API_BASE not configured`. |
+| `MC2_TIMEOUT_SECONDS` | no | `120` | Promote is webhook-proxied inside mc-2, so it is slower than a DB write. Must not be tighter than mc-2's own timeout, or a still-succeeding promotion gets reported as a timeout. |
 
 #### On `OPENAI_API_KEY` vs `VOYAGE_API_KEY`
 
@@ -96,7 +98,7 @@ never reads it.
 
 ## Tools
 
-All thirty-three run under the caller's identity, select **explicit columns only**,
+All thirty-four run under the caller's identity, select **explicit columns only**,
 and write an audit row on success.
 
 **Reads:**
@@ -108,7 +110,7 @@ and write an audit row on success.
 | `list_commitments(project_code)` | `commitments` | Real rows since the team-keyed policy pass. |
 | `list_project_sources(project_code)` | `rag_assets` | Manifest shape; drops superseded assets. |
 | `pull_project_source(asset_id, max_chars=40000)` | `asset_chunks` | Assembles document text — see below. |
-| `list_project_meetings(project_code)` | `fathom_meetings` | List shape; excludes `transcript`/`summary`. |
+| `list_project_meetings(project_code)` | `fathom_meetings` | List shape; excludes `transcript`/`summary`. **Returns the uuid `id` as `meeting_id`, NOT `recording_id`** — see batch 5. |
 | `semantic_search(query, project_code?, limit=10)` | `match_chunks_simple` RPC | Voyage-embedded query. |
 | `whoami()` | token claims | Diagnostic. |
 
@@ -126,7 +128,7 @@ and write an audit row on success.
 
 | Tool | Target | Notes |
 |---|---|---|
-| `set_spine_element(project_code, key, important?, note?, layer?, framing?, serves?)` | `spine_substance` | Partial update of the **live row only**. No transcript promotion — see below. |
+| `set_spine_element(project_code, key, important?, note?, layer?, framing?, serves?)` | `spine_substance` | Partial update of the **live row only**. An `important` false→true flip fires the delegated promotion non-fatally (batch 5). |
 | `resolve_commitment(project_code, key, outcome='done')` | `commitments` | `done`\|`dropped`; ambiguous key returns candidates, never guesses. |
 | `set_spine_step(project_code, key, step_id, title?, status?, step_date?, note?)` | `spine_steps` | Partial update; scoped by (id, project_id, est_item_id). |
 | `reorder_spine_step(project_code, key, order)` | `spine_steps` | `order` is the FULL step_id list; renumbers 1..N. |
@@ -152,8 +154,59 @@ and write an audit row on success.
 | `demote_stakeholder(project_code, key)` | `spine_substance` | Inverse: `scope='project'`, `company_id` cleared, back to the provenance project. |
 | `set_element_account_scope(project_code, key, account=True)` | `spine_substance` | Type-agnostic generalization; **delegates** to the two above, minus the layer warning. |
 
-Like batch 3, the two mutations are guarded SECURITY DEFINER calls rather than
-table policies — shipped by `ratchet_batch4_retire_and_scope_fns`:
+**Transcript promotion (cp-engine #143 batch 5):**
+
+| Tool | Target | Notes |
+|---|---|---|
+| `promote_spine_transcript(project_code, key)` | mc-2 `POST /api/meetings/{recording_id}/promote-transcript` | **Delegated, not ported.** `key` accepts a recording_id, a meeting uuid, or a spine element key; the return names which matched via `resolved_via`. |
+| `set_spine_element(..., important=True)` | same, fired non-fatally | Closes the batch-2 gap: a genuine `important` false→true flip now fires the delegated promotion and reports it under `promotion`. |
+
+#### Why batch 5 delegates instead of porting
+
+The engine's `promote_spine_transcript` is the one verb that **cannot** be
+ported. It resolves an element's `rel_path` to a file in a local tenant
+checkout, copies it to a stable temp path, and runs the full ingest pipeline —
+Voyage embeddings plus a **service-key** write to `rag_assets`. A hosted server
+has no authoritative tenant checkout and, by the entire premise of this
+prototype, no service key.
+
+mc-2's backend already performs this promotion service-side, and — the fact
+that makes delegation clean rather than a workaround — **its auth is the same
+Supabase JWT this server verifies.** `mc-2/backend/src/auth.py` validates ES256
+against the same project JWKS with `aud=authenticated`. So the hosted verb
+forwards the **caller's own bearer token** and the promotion runs as that user
+end to end. This server never mints authority it wasn't given, and never
+becomes a confused deputy.
+
+Two consequences, both surfaced in the return rather than hidden:
+
+1. **It is a different promotion universe.** The engine promotes a tenant
+   **file** (landing `source_provider='spine-promote'`); mc-2 promotes a
+   **meeting** (landing `source_provider='fathom'`). Verified live: 2
+   spine-promote assets vs 171 fathom ones, and **no** live spine element's
+   `rel_path` points at a transcript — every one points at a `spine/<activity>/
+   <deliverable>.md`. These are not one operation under two names.
+2. **`fathom_meetings` has two ids.** A uuid `id` and a bigint `recording_id`.
+   `list_project_meetings` returns the **uuid**; the mc-2 endpoint takes the
+   **bigint**. Piping one tool into the other hands over the wrong id and fails
+   as a silent upstream 404. `resolve_recording_id` accepts either and
+   translates, so the gotcha cannot reach the endpoint.
+
+The element→meeting bridge is deliberately narrow: no column links a spine
+element to a `fathom_meetings` row, so the verb follows the element's **cited
+sources** — an ingested meeting leaves a `rag_assets` row whose
+`source_file_id` is the recording_id as text. That citation is an exact link,
+not a guess. An element citing no Fathom source returns a clean note; for most
+elements that is the shape of the world, since their substance is
+document-derived.
+
+The engagement-only guard is mirrored verbatim from
+`spine_promote.promote_transcript`'s Contract A, and it is not academic:
+**zero** `fathom_meetings` rows carry an `initiative_id` (verified live), so an
+initiative has no meeting to promote even in principle.
+
+Like batch 3, the two batch-4 mutations are guarded SECURITY DEFINER calls
+rather than table policies — shipped by `ratchet_batch4_retire_and_scope_fns`:
 
 ```
 spine_retire_element(p_project_id uuid, p_est_item_id text)
@@ -246,12 +299,17 @@ own returns so a caller cannot mistake them for success:
    unwritable here and keep their prior values. The return reports
    `versions_updated` and `superseded_untouched`. Use the stdio verb when the
    whole history must move.
-2. **No transcript promotion.** The engine fires a RAG transcript promotion on a
-   genuine `important` false→true transition. That machinery is **not mirrored**
-   — it ports later with `promote_spine_transcript`. Flipping `important` here
-   sets the flag and nothing else; the return carries
-   `promotion: "not mirrored — …"`. Use the stdio `set_spine_element` (or
-   `promote_spine_transcript`) when promotion is the point.
+2. **Transcript promotion is DELEGATED, and usually skips.** *(Closed in batch
+   5 — this was an open gap through batch 4.)* Like the engine verb, a genuine
+   `important` false→true transition fires a promotion, engagement-only and
+   strictly **non-fatal**: its outcome lands under `promotion` as a dict
+   carrying `fired`, and can never turn the metadata write into an error.
+   What differs is *what* is promoted — the engine embeds the tenant file at
+   the element's `rel_path`, while this fires mc-2's promotion for the Fathom
+   recording behind the element. An element citing no Fathom source — which is
+   **most** of them — gets `{"fired": false, "skipped": "…"}` with the reason,
+   not a failure. Use the stdio verb when the tenant **file** is what must be
+   embedded.
 
 ### Where the engine-owned column boundary actually lives
 
@@ -429,9 +487,9 @@ for `ibx-5153`, of 324 total), and an empty result is a plain "0 rows".
 
 ## What is proven
 
-Verified live against the real MC-2 project — **48/48 smoke cases pass**, with an
+Verified live against the real MC-2 project — **53/53 smoke cases pass**, with an
 ES256 token for a team user. The table below covers the original read surface;
-the write, tree, update, sources/provenance, and retire/scope cases (N–AG) are
+the write, tree, update, sources/provenance, retire/scope, and promotion cases (N–AK) are
 listed in
 `smoke_test.py`'s docstring and run in the same suite:
 
@@ -441,7 +499,7 @@ listed in
 | B | Garbage token → 401 | ✓ |
 | C | `alg=none` token → 401 | ✓ — negative test of the ES256 path |
 | D | RFC 9728 metadata | 200, `authorization_servers: ["https://<ref>.supabase.co/auth/v1"]` |
-| E | `tools/list` | all **33 tools** (count asserted, so an unexpected extra fails too) |
+| E | `tools/list` | all **34 tools** (count asserted, so an unexpected extra fails too) |
 | F | `list_spine_elements(ibx-5153)` | **57 live elements** under the caller's `sub` |
 | G | `list_commitments(ibx-5153)` | **31 rows** — team-keyed RLS, no longer deny-all |
 | H | `whoami` | verified `sub`, `role=authenticated` |
