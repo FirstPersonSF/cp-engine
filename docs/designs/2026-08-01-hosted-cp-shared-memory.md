@@ -9,6 +9,22 @@ claude.ai, Claude mobile, ChatGPT and Codex.
 
 ---
 
+## Tracking
+
+| Issue | | Depends on |
+|---|---|---|
+| **#137** | Spike (2d): can Supabase Auth back an MCP OAuth flow? | — |
+| **#138** | Phase 1: hosted MCP read server + per-user auth | #137 for sizing |
+| **#139** | Phase 2: narrow spine writes (+ `author_id`) | #138 |
+| **#140** | Phase 3: simple drafting from spine context | #138, #139 |
+| **#141** | Phase 4 (GATED): ChatGPT / Codex — governance | #138 |
+
+Related: **mc-2 #276** (the `projects` RLS fix + roles model, which lands the
+`profiles` table this design depends on).
+
+**Run #137 before committing a number.** Phase 1 is 1.5wk if auth is wiring,
+2.5–3.5wk if the AS shim is real — that spread is the project's whole uncertainty.
+
 ## What this is not
 
 An earlier framing of this was "host `cp mcp`" — port the stdio server to HTTP and
