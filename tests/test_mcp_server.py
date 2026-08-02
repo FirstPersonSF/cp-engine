@@ -173,8 +173,8 @@ def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
     assert srv._tenant_root() == tmp_path.resolve()
 
 
-def test_exactly_twenty_nine_tools_registered():
-    """4 source-read + 1 dropbox-write + 2 spine-read + 12 spine-write +
+def test_exactly_twenty_five_tools_registered():
+    """4 source-read + 1 dropbox-write + 2 spine-read + 8 spine-write +
     1 spine-relation-write + 1 spine-promote +
     1 meetings-read + 3 framework + 2 commitment + 1 note tool.
 
@@ -196,7 +196,13 @@ def test_exactly_twenty_nine_tools_registered():
     `retire_spine_relation`, `retire_spine_element(s)` and the CREATE verbs are
     NOT yet ported and stay on stdio. Caveat carried on #143:
     `set_spine_element`'s important-flip RAG promotion is not mirrored on hosted
-    — `promote_spine_transcript` (still here) is the standalone door for it."""
+    — `promote_spine_transcript` (still here) is the standalone door for it.
+
+    Then 29→25 (#143 batch 3 — the sources/provenance quartet):
+    add/remove_element_source and add/remove_element_provenance ported and
+    deleted. `project_sources.modify_element_sources` stays and is still called
+    IN-PROCESS by `add_spine_document`'s source_title attach — an internal step
+    of a surviving verb, not a second write door."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
         "list_project_sources",
@@ -211,10 +217,6 @@ def test_exactly_twenty_nine_tools_registered():
         "add_spine_version",
         "set_element_account_scope",
         "pull_element_from_project",
-        "add_element_source",
-        "remove_element_source",
-        "add_element_provenance",
-        "remove_element_provenance",
         "retire_spine_element",
         "retire_spine_elements",
         "retire_spine_relation",
@@ -1318,14 +1320,46 @@ def test_add_spine_document_from_source_attaches(monkeypatch):
         srv, "create_spine_element",
         lambda *a, **k: {"element_id": "_authored/b", "version_label": "v1"},
     )
-    monkeypatch.setattr(
-        srv, "add_element_source",
-        lambda code, key, title: {"source": {"title": title}},
-    )
+    # The add_element_source TOOL moved to the hosted server (#143); this attach
+    # goes straight to the shared implementation in project_sources.
+    captured = {}
+
+    def fake_modify(client, pid, key, title, *, add, company_id=None):
+        captured["args"] = (pid, key, title, add, company_id)
+        return {"source": {"title": title}}
+
+    monkeypatch.setattr("cp_engine.project_sources.modify_element_sources",
+                        fake_modify)
     out = srv.add_spine_document("ibx-5153", "Brief card",
                                  source_title="The Brief")
     assert out["element_id"] == "_authored/b"
     assert out["source_attached"] == {"title": "The Brief"}
+    assert captured["args"] == ("pid", "_authored/b", "The Brief", True, "cid")
+
+
+def test_add_spine_document_attach_failure_is_non_fatal(monkeypatch):
+    """A failed source attach annotates the result; it never fails the write."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+    monkeypatch.setattr("cp_engine.config.load", lambda root: object())
+    monkeypatch.setattr("cp_engine.sync_mc2._load_ingest_creds", lambda config: None)
+    monkeypatch.setattr(
+        "cp_engine.project_sources.pull_source",
+        lambda client, pid, cid, title: {"chunks": ["chunk one"]},
+    )
+    monkeypatch.setattr(
+        srv, "create_spine_element",
+        lambda *a, **k: {"element_id": "_authored/b", "version_label": "v1"},
+    )
+
+    def _boom(*a, **k):
+        raise RuntimeError("supabase down")
+
+    monkeypatch.setattr("cp_engine.project_sources.modify_element_sources", _boom)
+    out = srv.add_spine_document("ibx-5153", "Brief card",
+                                 source_title="The Brief")
+    assert out["element_id"] == "_authored/b"
+    assert "attach failed" in out["source_attached"]
+    assert "supabase down" in out["source_attached"]
 
 
 def test_add_spine_document_source_needs_engagement(monkeypatch):

@@ -32,7 +32,10 @@ def test_agreement_attach_instruction_without_source_flags():
     out = lint_spine_rows([row])
     assert len(out) == 1
     assert "unexecuted attach-instruction" in out[0]
+    # The verb moved to the hosted server (#143) — the hint names the connector
+    # so the reader doesn't hunt for it on stdio.
     assert "add_element_source" in out[0]
+    assert "cp-hosted" in out[0]
 
 
 def test_agreement_with_source_or_without_instruction_is_quiet():

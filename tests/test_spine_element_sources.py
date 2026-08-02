@@ -124,47 +124,13 @@ def test_unresolvable_element_returns_note(monkeypatch):
 
 
 # --- MCP tool boundary -------------------------------------------------------
-
-def test_add_element_source_delegates(monkeypatch):
-    fake_client = object()
-    monkeypatch.setattr(srv, "_resolve", lambda code: (fake_client, "pid", "cid"))
-    captured = {}
-
-    def fake_modify(client, pid, key, title, *, add, company_id=None):
-        captured["args"] = (client, pid, key, title, add, company_id)
-        return {"est_item_id": key, "attached": True}
-
-    monkeypatch.setattr("cp_engine.project_sources.modify_element_sources",
-                        fake_modify)
-    out = srv.add_element_source("sap-5174", "_authored/sow", "SOW final")
-    assert captured["args"] == (fake_client, "pid", "_authored/sow",
-                                "SOW final", True, "cid")
-    assert out["attached"] is True
+# The add/remove_element_source TOOLS moved to the hosted MCP server (#143), so
+# the stdio-wrapper delegation tests are gone with them. This module keeps its
+# own tests above — `modify_element_sources` is still called in-process by
+# `add_spine_document`'s source_title attach (see test_mcp_server.py).
 
 
-def test_remove_element_source_delegates(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
-    captured = {}
-
-    def fake_modify(client, pid, key, title, *, add, company_id=None):
-        captured["add"] = add
-        return {"removed": True}
-
-    monkeypatch.setattr("cp_engine.project_sources.modify_element_sources",
-                        fake_modify)
-    out = srv.remove_element_source("sap-5174", "sow", "SOW final")
-    assert captured["add"] is False
-    assert out["removed"] is True
-
-
-def test_tools_never_raise(monkeypatch):
-    def _boom(code):
-        raise RuntimeError("resolver down")
-    monkeypatch.setattr(srv, "_resolve", _boom)
-    assert "error" in srv.add_element_source("x", "k", "t")
-    assert "error" in srv.remove_element_source("x", "k", "t")
-
-
-def test_unresolvable_project_is_error(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve", lambda code: None)
-    assert "not found" in srv.add_element_source("ghost", "k", "t")["error"]
+def test_stdio_no_longer_registers_the_source_tools():
+    names = {t.name for t in srv.mcp._tool_manager.list_tools()}
+    assert "add_element_source" not in names
+    assert "remove_element_source" not in names

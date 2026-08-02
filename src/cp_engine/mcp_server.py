@@ -550,8 +550,9 @@ def add_spine_document(
       `source_title` here.
     - `source_title` — pull an ALREADY-INGESTED source's text (by title, resolved
       like `pull_project_source`) as the body AND auto-attach that source to the
-      new element (the rag_asset link `add_element_source` writes), so the card
-      carries its own provenance. "Turn this ingested brief into a spine card."
+      new element (the same rag_asset link the hosted `add_element_source`
+      writes), so the card carries its own provenance. "Turn this ingested
+      brief into a spine card."
 
     Provide exactly ONE of `file_path` / `source_title`. `type` is the element
     kind (default `synthesis`; use `source` for reference material, or any kind
@@ -614,11 +615,20 @@ def add_spine_document(
             return created
 
         # ── For the ingested-source path, attach the source for provenance ──
+        # Calls `modify_element_sources` in-process: the `add_element_source`
+        # TOOL moved to the hosted server (#143), but this attach is an internal
+        # step of one stdio verb, not a second write door.
         result = dict(created)
         if source_title:
-            attached = add_element_source(
-                project_code, created["element_id"], source_title,
-            )
+            from cp_engine.project_sources import modify_element_sources
+
+            try:
+                attached = modify_element_sources(
+                    client, pid, created["element_id"], source_title,
+                    add=True, company_id=cid,
+                )
+            except Exception as exc:  # noqa: BLE001
+                attached = {"error": str(exc)}
             result["source_attached"] = (
                 attached.get("source") if "error" not in attached
                 else f"(attach failed: {attached['error']})"
@@ -726,58 +736,6 @@ def add_spine_version(project_code: str, element_id: str, body: str,
 # for exactly this promotion. Do not delete that helper.
 
 
-@mcp.tool()
-def add_element_source(project_code: str, key: str, source_title: str) -> dict:
-    """Attach an ingested source document to a spine element.
-
-    `key` resolves to ONE live element (est_item_id exact, or a unique
-    case-insensitive title substring — same discipline as pull_spine_element);
-    `source_title` resolves to ONE of the project's active ingested sources
-    (see list_project_sources; exact title first, else a unique substring).
-    Writes the typed link {"type": "rag_asset", id, title} into the element's
-    `sources` on every version — the same write MC-2's dashboard performs —
-    deduped by asset id (re-attaching is a no-op, `already: true`). Use it to
-    close attach-as-source loops, e.g. an Agreement's signed SOW. Returns
-    {est_item_id, source, attached, sources}, or a structured {note}/{error}.
-    """
-    from cp_engine.project_sources import modify_element_sources
-
-    try:
-        resolved = _resolve(project_code)
-        if resolved is None:
-            return {"error": f"project {project_code!r} not found"}
-        client, pid, cid = resolved
-        return modify_element_sources(client, pid, key, source_title,
-                                      add=True, company_id=cid)
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to attach '{source_title}' to '{key}' "
-                         f"in {project_code!r}: {exc}"}
-
-
-@mcp.tool()
-def remove_element_source(project_code: str, key: str, source_title: str) -> dict:
-    """Detach an ingested source document from a spine element.
-
-    The inverse of add_element_source: resolves the element and the source the
-    same way, then removes the matching {"type": "rag_asset", ...} link (by
-    asset id) from every version's `sources`. Removing a source that isn't
-    attached returns a structured note, not an error. Returns
-    {est_item_id, source, removed, sources}, or {note}/{error}.
-    """
-    from cp_engine.project_sources import modify_element_sources
-
-    try:
-        resolved = _resolve(project_code)
-        if resolved is None:
-            return {"error": f"project {project_code!r} not found"}
-        client, pid, cid = resolved
-        return modify_element_sources(client, pid, key, source_title,
-                                      add=False, company_id=cid)
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to detach '{source_title}' from '{key}' "
-                         f"in {project_code!r}: {exc}"}
-
-
 # NOTE (cp-engine #143): the relation/step verbs — `create_spine_relation`,
 # `add_spine_step`, `propose_spine_step` (batch 1) and `set_spine_step`,
 # `reorder_spine_step`, `remove_spine_step` (batch 2) — now live on the hosted
@@ -785,60 +743,15 @@ def remove_element_source(project_code: str, key: str, source_title: str) -> dic
 # caller's identity and land in the audit log. They were removed from this stdio
 # server so the surface never exists twice; the underlying `cp_engine.spine_steps`
 # module stays (close_out.py and add_spine_version's auto-step still call it).
+#
+# Batch 3 followed the same way: `add_element_source`, `remove_element_source`,
+# `add_element_provenance` and `remove_element_provenance` are hosted verbs now.
+# Their implementations — `project_sources.modify_element_sources` /
+# `modify_element_provenance` / `_resolve_source_element` — STAY: that module is
+# shared read/write machinery (pull_source, resolve_element_versions, …) that the
+# surviving stdio tools depend on, and `add_spine_document` calls
+# `modify_element_sources` in-process for its source_title attach.
 # See docs/hosted-mcp-team-setup.md.
-
-
-@mcp.tool()
-def add_element_provenance(project_code: str, key: str, source_key: str) -> dict:
-    """Attach ANOTHER spine element as provenance to a spine element (#104).
-
-    The tiering-rule move for "this synthesis card absorbs these raw cards":
-    where add_element_source attaches an ingested rag_asset, this attaches a
-    spine ELEMENT as provenance. `key` resolves to ONE live target element (the
-    survivor); `source_key` resolves to ONE element that MAY ALREADY BE RETIRED
-    (the folded-in raw material — the usual cleanup case). Writes the typed link
-    {"type": "spine_element", id, title, retired} into the target's `sources` on
-    every version, deduped by (type, id). Because the link is a property of the
-    surviving card, it SURVIVES the source element's retirement — closing the
-    lineage hole where retire-and-lose-the-link was the only option. Returns
-    {est_item_id, source, attached, sources}, or a structured {note}/{error}.
-    """
-    from cp_engine.project_sources import modify_element_provenance
-
-    try:
-        resolved = _resolve(project_code)
-        if resolved is None:
-            return {"error": f"project {project_code!r} not found"}
-        client, pid, cid = resolved
-        return modify_element_provenance(client, pid, key, source_key,
-                                         add=True, company_id=cid)
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to attach element '{source_key}' to '{key}' "
-                         f"in {project_code!r}: {exc}"}
-
-
-@mcp.tool()
-def remove_element_provenance(project_code: str, key: str, source_key: str) -> dict:
-    """Detach a spine-element provenance link from a spine element (#104).
-
-    The inverse of add_element_provenance: resolves the target and source the
-    same way (source may be retired), then removes the matching
-    {"type": "spine_element", ...} link (by element id) from every version's
-    `sources`. Detaching one that isn't attached returns a structured note, not
-    an error. Returns {est_item_id, source, removed, sources}, or {note}/{error}.
-    """
-    from cp_engine.project_sources import modify_element_provenance
-
-    try:
-        resolved = _resolve(project_code)
-        if resolved is None:
-            return {"error": f"project {project_code!r} not found"}
-        client, pid, cid = resolved
-        return modify_element_provenance(client, pid, key, source_key,
-                                         add=False, company_id=cid)
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to detach element '{source_key}' from '{key}' "
-                         f"in {project_code!r}: {exc}"}
 
 
 @mcp.tool()

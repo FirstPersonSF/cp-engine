@@ -56,7 +56,8 @@ def lint_spine_rows(rows: list[dict]) -> list[str]:
             out.append(
                 f"⚠ unexecuted attach-instruction: Agreement '{title}' "
                 f"({eid}) says \"attach as source\" but has no attached "
-                "source — add_element_source closes the loop")
+                "source — add_element_source on the `cp-hosted` connector "
+                "closes the loop")
     return out
 
 

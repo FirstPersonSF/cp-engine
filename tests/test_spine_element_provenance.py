@@ -130,43 +130,13 @@ def test_remove_strips_element_link(monkeypatch):
 
 
 # --- MCP tool boundary -------------------------------------------------------
-
-def test_add_element_provenance_delegates(monkeypatch):
-    fake_client = object()
-    monkeypatch.setattr(srv, "_resolve", lambda code: (fake_client, "pid", "cid"))
-    captured = {}
-
-    def fake_modify(client, pid, key, source_key, *, add, company_id=None):
-        captured["args"] = (client, pid, key, source_key, add, company_id)
-        return {"est_item_id": key, "attached": True}
-
-    monkeypatch.setattr("cp_engine.project_sources.modify_element_provenance",
-                        fake_modify)
-    out = srv.add_element_provenance("ibx-5192", "_authored/synthesis",
-                                     "_authored/email-mehul-6-18")
-    assert captured["args"] == (fake_client, "pid", "_authored/synthesis",
-                                "_authored/email-mehul-6-18", True, "cid")
-    assert out["attached"] is True
+# The add/remove_element_provenance TOOLS moved to the hosted MCP server (#143),
+# so the stdio-wrapper delegation tests are gone with them. The implementation
+# (`modify_element_provenance` + `_resolve_source_element`) stays in
+# project_sources and keeps its own tests above.
 
 
-def test_remove_element_provenance_delegates(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
-    captured = {}
-
-    def fake_modify(client, pid, key, source_key, *, add, company_id=None):
-        captured["add"] = add
-        return {"removed": True}
-
-    monkeypatch.setattr("cp_engine.project_sources.modify_element_provenance",
-                        fake_modify)
-    out = srv.remove_element_provenance("ibx-5192", "synthesis", "email")
-    assert captured["add"] is False
-    assert out["removed"] is True
-
-
-def test_provenance_tools_never_raise(monkeypatch):
-    def _boom(code):
-        raise RuntimeError("resolver down")
-    monkeypatch.setattr(srv, "_resolve", _boom)
-    assert "error" in srv.add_element_provenance("x", "k", "s")
-    assert "error" in srv.remove_element_provenance("x", "k", "s")
+def test_stdio_no_longer_registers_the_provenance_tools():
+    names = {t.name for t in srv.mcp._tool_manager.list_tools()}
+    assert "add_element_provenance" not in names
+    assert "remove_element_provenance" not in names

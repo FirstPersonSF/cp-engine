@@ -80,12 +80,19 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
 - `retire_spine_elements(code, keys)` — batch retire (slot cleanup): retire a
   list of elements in one call, each exactly as `retire_spine_element`. Returns
   per-key results so a resolution miss doesn't fail the batch.
-- `add_element_provenance(code, key, source_key)` — attach ANOTHER spine element
-  as provenance to `key` (the tiering-rule move for "this synthesis card absorbs
-  these raw cards"). `source_key` MAY be already-retired; the link is a property
-  of the surviving card, so it survives the source's retirement. Inverse:
-  `remove_element_provenance(code, key, source_key)`. Distinct from
-  `add_element_source`, which attaches an ingested rag_asset.
+- `add_element_provenance(code, key, source_key)` — **hosted-server verb**
+  (`cp-hosted` connector; cp-engine #143 ported it off stdio) — attach ANOTHER
+  spine element as provenance to `key` (the tiering-rule move for "this synthesis
+  card absorbs these raw cards"). `source_key` MAY be already-retired; the link is
+  a property of the surviving card, so it survives the source's retirement.
+  Inverse: `remove_element_provenance(code, key, source_key)` — also hosted.
+- `add_element_source(code, key, source_title)` — **hosted-server verb**
+  (`cp-hosted` connector; cp-engine #143 ported it off stdio) — attach an
+  INGESTED source (a rag_asset, resolved like `list_project_sources`) to `key`,
+  writing the typed link onto every version. The verb that closes an Agreement's
+  "attach as source" loop, and what `cp spine-lint` points you at. Re-attaching
+  is a no-op. Inverse: `remove_element_source(code, key, source_title)` — also
+  hosted. Distinct from `add_element_provenance`, which attaches a spine ELEMENT.
 - `create_spine_relation(code, kind, from_key, to_key, note?)` — **hosted-server
   verb** (`cp-hosted` connector; cp-engine #143 ported it off stdio) — author a
   typed directed edge between two live elements. `kind` ∈ responds_to | supersedes |

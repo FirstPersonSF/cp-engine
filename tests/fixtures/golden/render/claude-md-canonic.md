@@ -413,8 +413,10 @@ Alongside word-count discipline, run `cp spine-lint <code>` once for each
 project the session touched. It is WARN-ONLY (never blocks, never
 auto-fixes) and flags mechanical hygiene drift: elements flagged important
 yet unbound and serving nothing; Agreements whose body says "attach as
-source" with no attached source (close the loop with `add_element_source`);
-scaffold template placeholders still sitting in `cp.md`. Surface any
+source" with no attached source (close the loop with `add_element_source`
+on the **hosted** `cp-hosted` connector — cp-engine #143 moved the
+sources/provenance verbs off stdio); scaffold template placeholders still
+sitting in `cp.md`. Surface any
 findings to the user and fix only what they confirm.
 
 ## After a cp-engine release: restart `cp mcp`
