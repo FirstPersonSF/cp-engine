@@ -1,6 +1,11 @@
 # tests/test_spine_steps.py — #119 add/set/reorder/remove_spine_step
+#
+# The MCP WRAPPERS for add_spine_step/propose_spine_step were ported to the
+# hosted server and deleted from stdio (cp-engine #143), so their thin
+# delegation tests went with them. The cp_engine.spine_steps MODULE stays —
+# close_out.py and add_spine_version's auto-step call it — so every test that
+# exercises steps.add_step/propose_step/upsert_auto_step directly is kept.
 import cp_engine.spine_steps as steps
-import cp_engine.mcp_server as srv
 
 
 class _FakeSteps:
@@ -179,32 +184,6 @@ def test_writes_are_scoped_to_element(monkeypatch):
     assert foreign["status"] == "upcoming"  # untouched
 
 
-# --- tool-layer delegation ---------------------------------------------------
-
-def test_tool_delegates_and_catches(monkeypatch):
-    fake_client = object()
-    monkeypatch.setattr(srv, "_resolve",
-                        lambda code: (fake_client, "pid", "cid"))
-    captured = {}
-
-    def fake_add(client, pid, key, title, *, status, step_date, note,
-                 company_id=None):
-        captured["args"] = (client, pid, key, title, status, company_id)
-        return {"est_item_id": key, "position": 1}
-
-    monkeypatch.setattr("cp_engine.spine_steps.add_step", fake_add)
-    out = srv.add_spine_step("ibx-5153", "sow", "a move")
-    assert out == {"est_item_id": "sow", "position": 1}
-    assert captured["args"] == (fake_client, "pid", "sow", "a move",
-                                "upcoming", "cid")
-
-
-def test_tool_unknown_project_errors(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve", lambda code: None)
-    out = srv.add_spine_step("nope", "sow", "x")
-    assert "error" in out and "not found" in out["error"]
-
-
 # --- propose_step (auto-journey-steps: machine-authored, review-gated) --------
 
 
@@ -259,12 +238,6 @@ def test_propose_rejects_bad_status_and_blank_title(monkeypatch):
     c = _FakeSteps()
     assert "error" in steps.propose_step(c, "pid", "sow", "x", status="bogus")
     assert "error" in steps.propose_step(c, "pid", "sow", "   ")
-
-
-def test_propose_tool_unknown_project_errors(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve", lambda code: None)
-    out = srv.propose_spine_step("nope", "sow", "x")
-    assert "error" in out and "not found" in out["error"]
 
 
 # --- upsert_auto_step (auto-step on content-write, collapse-per-day) ----------

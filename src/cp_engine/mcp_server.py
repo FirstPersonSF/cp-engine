@@ -873,78 +873,14 @@ def remove_element_source(project_code: str, key: str, source_title: str) -> dic
                          f"in {project_code!r}: {exc}"}
 
 
-@mcp.tool()
-def add_spine_step(
-    project_code: str, key: str, title: str,
-    status: str = "upcoming", step_date: str | None = None,
-    note: str | None = None,
-) -> dict:
-    """Append an ordered STEP to a spine element's progress trail (#119).
+# NOTE (cp-engine #143): the relation/step AUTHORING verbs —
+# `create_spine_relation`, `add_spine_step`, `propose_spine_step` — now live on
+# the hosted MCP server (`cp-hosted` connector, same verb names), where writes
+# carry the caller's identity and land in the audit log. They were removed from
+# this stdio server so the surface never exists twice; the underlying
+# `cp_engine.spine_steps` module stays (close_out.py and add_spine_version's
+# auto-step still call it). See docs/hosted-mcp-team-setup.md.
 
-    A step is a lightweight marker of one move toward finishing the element
-    (drafted -> ratified -> rewriting -> booked) — NOT a version, source, or
-    body. `key` resolves to ONE live element (est_item_id exact, or a unique
-    framing substring — same discipline as pull_spine_element). The step is
-    appended at the end (position = max+1). `status` ∈ done|active|upcoming
-    (default upcoming); `step_date` is free-form ('7/16', optional); `note` is a
-    sentence or two (optional, ≤8000 chars). A step NEVER completes the
-    work-item on the schedule — that stays human-confirmed. Returns
-    {est_item_id, position, steps} or {error}. Author steps as the work moves.
-    """
-    from cp_engine import spine_steps
-
-    try:
-        resolved = _resolve(project_code)
-        if resolved is None:
-            return {"error": f"project {project_code!r} not found"}
-        client, pid, cid = resolved
-        return spine_steps.add_step(client, pid, key, title, status=status,
-                                    step_date=step_date, note=note,
-                                    company_id=cid)
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to add step to '{key}' in "
-                         f"{project_code!r}: {exc}"}
-
-
-@mcp.tool()
-def propose_spine_step(
-    project_code: str, key: str, title: str,
-    status: str = "done", step_date: str | None = None,
-    note: str | None = None,
-) -> dict:
-    """PROPOSE a machine-authored step on an element's trail (auto-journey-steps).
-
-    Author a step as work moves DURING a session — but it lands PROPOSED, not
-    live: a human confirms or dismisses it on the spine trail (the review-gate).
-    Use this (not `add_spine_step`, which writes a live human step) when YOU are
-    recording progress you just made on a work-item, e.g. at the end of a
-    content/synthesis session on an engagement.
-
-    Contract (design 2026-07-21 §2): one MOVE = one step (not one edit); bind to
-    exactly ONE element (`key` resolves like pull_spine_element — skip rather
-    than guess if you can't attribute the work to a single element); prefer
-    `status='done'` (the move already happened); a terse past-tense `title`
-    (≤~60 chars, "Ratified the pillars", not "worked on pillars"). Cap yourself
-    at ≤2 proposed steps per session across all elements.
-
-    Idempotent: re-proposing the same (element, title, step_date) is a no-op in
-    ANY review state — a confirmed or already-dismissed twin is not re-proposed.
-    Returns {est_item_id, proposed: bool, already?: bool, steps} or {error}.
-    A step NEVER completes the work-item on the schedule — that stays human-only.
-    """
-    from cp_engine import spine_steps
-
-    try:
-        resolved = _resolve(project_code)
-        if resolved is None:
-            return {"error": f"project {project_code!r} not found"}
-        client, pid, cid = resolved
-        return spine_steps.propose_step(client, pid, key, title, status=status,
-                                        step_date=step_date, note=note,
-                                        company_id=cid)
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to propose step on '{key}' in "
-                         f"{project_code!r}: {exc}"}
 
 
 @mcp.tool()
@@ -1179,76 +1115,13 @@ _RELATION_KINDS = frozenset(
 
 
 @mcp.tool()
-def create_spine_relation(
-    project_code: str, kind: str, from_key: str, to_key: str,
-    note: str | None = None,
-) -> dict:
-    """Create a typed directed edge between two live spine elements (#97).
-
-    `kind` is one of the closed vocabulary: responds_to | supersedes |
-    derives_from | informs | contradicts. `from_key`/`to_key` each resolve to
-    ONE live element the same way `pull_spine_element` resolves — an exact
-    est_item_id or a distinct `framing` (title) substring. The edge is written
-    live (`status='active'`, `source='manual'`) into spine_relations and keys on
-    est_item_id (stable across version bumps), so the live version resolves at
-    read time. Idempotent on the mig-117 unique constraint
-    (project_id, kind, from, to) — a re-create of the same edge is a no-op.
-    Returns {kind, from_item_id, to_item_id, created: bool}, or {note}/{error}.
-
-    Authoring vocab (which edge for which change) lives in the synthesis-session
-    protocol: responds_to = their voice reacting to ours; derives_from = built
-    from named inputs; supersedes = a genuine fork (rare); informs = shaped but
-    didn't generate; contradicts = conflicting claim.
-    """
-    from cp_engine.project_sources import resolve_live_element
-
-    try:
-        kind_n = (kind or "").strip().lower()
-        if kind_n not in _RELATION_KINDS:
-            return {"error": f"unknown relation kind {kind!r}; "
-                             f"use one of {sorted(_RELATION_KINDS)}"}
-        resolved = _resolve(project_code)
-        if resolved is None:
-            return {"error": f"project {project_code!r} not found"}
-        client, pid, cid = resolved
-        src = resolve_live_element(client, pid, from_key, cid)
-        if src is None:
-            return {"note": f"no single live element matching from_key '{from_key}'"}
-        dst = resolve_live_element(client, pid, to_key, cid)
-        if dst is None:
-            return {"note": f"no single live element matching to_key '{to_key}'"}
-        from_eid, to_eid = src["est_item_id"], dst["est_item_id"]
-        if from_eid == to_eid:
-            return {"error": "an element cannot relate to itself"}
-        # Idempotent: the mig-117 unique constraint means a duplicate edge is a
-        # no-op, but check first so we return created=False rather than swallow a
-        # constraint error.
-        existing = (client.table(Tables.SPINE_RELATIONS).select("id")
-                    .eq("project_id", pid).eq("kind", kind_n)
-                    .eq("from_item_id", from_eid).eq("to_item_id", to_eid)
-                    .limit(1).execute().data or [])
-        if existing:
-            return {"kind": kind_n, "from_item_id": from_eid,
-                    "to_item_id": to_eid, "created": False}
-        client.table(Tables.SPINE_RELATIONS).insert({
-            "project_id": pid, "project_code": project_code, "kind": kind_n,
-            "from_item_id": from_eid, "to_item_id": to_eid,
-            "status": "active", "source": "manual",
-            "note": note, "created_by": "cp-sources",
-        }).execute()
-        return {"kind": kind_n, "from_item_id": from_eid,
-                "to_item_id": to_eid, "created": True}
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to create relation in {project_code!r}: {exc}"}
-
-
-@mcp.tool()
 def retire_spine_relation(
     project_code: str, kind: str, from_key: str, to_key: str,
 ) -> dict:
     """Delete a typed edge between two spine elements (#97).
 
-    The inverse of `create_spine_relation`: resolves `from_key`/`to_key` to live
+    The inverse of `create_spine_relation` (which lives on the hosted server —
+    cp-engine #143): resolves `from_key`/`to_key` to live
     elements (or accepts raw est_item_ids for edges whose endpoint is already
     retired), then deletes the matching `kind` edge from spine_relations. Use to
     fix a mis-recorded edge (e.g. a wrong `supersedes` that should be
@@ -1427,7 +1300,8 @@ def pull_element_from_project(
     est_item_id in one project's space), so cross-project lineage is recorded as
     provenance IN the copied element — the origin line + version note — rather
     than a dangling edge. Within `to_code`, wire a `derives_from` edge from the
-    copy to any local element it builds on with `create_spine_relation`.
+    copy to any local element it builds on with `create_spine_relation` (hosted
+    server verb — cp-engine #143).
 
     Returns {element_id, version_label, origin, account_scoped}, or a structured
     {error}. Does NOT move the original — the source project keeps its element.

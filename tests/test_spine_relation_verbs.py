@@ -1,5 +1,9 @@
 # tests/test_spine_relation_verbs.py — issues #96 + #97:
-# create/retire_spine_relation MCP verbs + retire_spine_element edge cascade.
+# retire_spine_relation MCP verb + retire_spine_element edge cascade.
+#
+# `create_spine_relation` was ported to the hosted MCP server and deleted from
+# this stdio server (cp-engine #143, docs/hosted-mcp-team-setup.md), so its
+# wrapper tests moved with it. `retire_spine_relation` is NOT yet ported.
 import cp_engine.mcp_server as srv
 
 
@@ -67,54 +71,6 @@ class _Client:
 
     def table(self, name):
         return _Table(name, self.log, self.existing)
-
-
-# ── create_spine_relation ───────────────────────────────────────────────────
-
-def test_create_relation_happy(monkeypatch):
-    log = {}
-    client = _Client(log, {})
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-    _patch_resolve_client(monkeypatch, client, {"a", "b"})
-    out = srv.create_spine_relation("ibx-5192", "responds_to", "a", "b")
-    assert out == {"kind": "responds_to", "from_item_id": "a",
-                   "to_item_id": "b", "created": True}
-    assert log["inserts"][0][0] == "spine_relations"
-    assert log["inserts"][0][1]["kind"] == "responds_to"
-
-
-def test_create_relation_rejects_unknown_kind(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
-    out = srv.create_spine_relation("ibx-5192", "supercedes", "a", "b")  # typo
-    assert "unknown relation kind" in out["error"]
-
-
-def test_create_relation_rejects_self_edge(monkeypatch):
-    log = {}
-    client = _Client(log, {})
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-    _patch_resolve_client(monkeypatch, client, {"a"})
-    out = srv.create_spine_relation("ibx-5192", "informs", "a", "a")
-    assert out["error"] == "an element cannot relate to itself"
-
-
-def test_create_relation_idempotent(monkeypatch):
-    log = {}
-    client = _Client(log, {("spine_relations", "select"): [{"id": "x"}]})
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-    _patch_resolve_client(monkeypatch, client, {"a", "b"})
-    out = srv.create_spine_relation("ibx-5192", "informs", "a", "b")
-    assert out["created"] is False
-    assert "inserts" not in log  # existing edge → no insert
-
-
-def test_create_relation_unresolved_from(monkeypatch):
-    log = {}
-    client = _Client(log, {})
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-    _patch_resolve_client(monkeypatch, client, {"b"})  # 'a' missing
-    out = srv.create_spine_relation("ibx-5192", "informs", "a", "b")
-    assert "from_key" in out["note"]
 
 
 # ── retire_spine_relation ───────────────────────────────────────────────────

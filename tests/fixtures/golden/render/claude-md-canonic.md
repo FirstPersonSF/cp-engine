@@ -387,8 +387,11 @@ the master roll-up and to run word-count discipline on each sprint file.
 
 Spine content-writes journal themselves (one review-gated auto-step per
 element per day). Hand-propose a step (`propose_spine_step`) only for a
-move the auto-step doesn't capture, ≤2 per session. Full discipline:
-`/cp-tools`.
+move the auto-step doesn't capture, ≤2 per session. Step and relation
+authoring (`propose_spine_step`, `add_spine_step`,
+`create_spine_relation`) runs on the **hosted** server — same verb names,
+the `cp-hosted` connector — so the write carries your identity. Full
+discipline: `/cp-tools`.
 
 ## Word-count discipline
 

@@ -81,8 +81,9 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   of the surviving card, so it survives the source's retirement. Inverse:
   `remove_element_provenance(code, key, source_key)`. Distinct from
   `add_element_source`, which attaches an ingested rag_asset.
-- `create_spine_relation(code, kind, from_key, to_key, note?)` — author a typed
-  directed edge between two live elements. `kind` ∈ responds_to | supersedes |
+- `create_spine_relation(code, kind, from_key, to_key, note?)` — **hosted-server
+  verb** (`cp-hosted` connector; cp-engine #143 ported it off stdio) — author a
+  typed directed edge between two live elements. `kind` ∈ responds_to | supersedes |
   derives_from | informs | contradicts. Keys resolve like `pull_spine_element`
   (est_item_id or distinct title substring). Idempotent. Edge vocab: responds_to
   = their voice reacting to ours; derives_from = built from named inputs;
@@ -189,7 +190,10 @@ move's words ("Built Mehul's cube framing into deck v09") rather than the
 derived "Updated <framing> (v<N>)".
 
 Hand-author a step with `propose_spine_step(code, key, title, status="done",
-step_date=<today>)` only for a move the auto-step DOESN'T capture or undersells:
+step_date=<today>)` — a **hosted-server verb** (`cp-hosted` connector; cp-engine
+#143 ported `propose_spine_step`, `add_spine_step` and `create_spine_relation`
+off the stdio server so the write surface exists once and carries your identity)
+— only for a move the auto-step DOESN'T capture or undersells:
 
 - A move that is NOT a content-write — a decision ratified across several
   elements, a version sent to a stakeholder, a deck booked, a feature wired.
