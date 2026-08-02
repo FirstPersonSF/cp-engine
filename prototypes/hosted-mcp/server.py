@@ -1460,6 +1460,7 @@ def create_spine_element(
     slug: str | None = None,
     important: bool = False,
     note: str | None = None,
+    sources: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Create a new AUTHORED spine element (live v1), under the caller's identity.
 
@@ -1568,7 +1569,11 @@ def create_spine_element(
         "status": "live",
         "framing": label,
         "body": body,
-        "sources": [],
+        # Provenance must ride the INSERT: there is no authenticated UPDATE
+        # path on spine_substance, so post-insert attachment is impossible.
+        # Entries follow the engine's typed-link shape:
+        # {"type": "rag_asset", "id": <asset uuid>, "title": <title>}.
+        "sources": sources or [],
         "origin": "authored",
         "version_note": None,
         "rel_path": None,
@@ -1615,6 +1620,258 @@ def create_spine_element(
         "framing": label,
         "body_chars": len(body),
     }
+
+
+@mcp_server.tool()
+def add_spine_version(
+    project_code: str,
+    element_id: str,
+    body: str,
+    version_note: str | None = None,
+) -> dict[str, Any]:
+    """Add a new version to an existing authored spine element (cp-engine #142).
+
+    Two steps, mirroring the engine verb's semantics exactly:
+
+    1. INSERT the new live version row — vN+1, carrying forward the live row's
+       framing/layer/serves/sources/important/note (a routine bump must not
+       drop provenance, #110), `author_id` stamped from the JWT and enforced
+       by the INSERT policy.
+    2. Demote the prior live row via `spine_supersede_prior_versions(new_id)` —
+       a SECURITY DEFINER function that is the ONLY authenticated write path
+       to engine-owned `status`, and can only perform live->superseded on
+       sibling versions of an element whose new live row already exists.
+       There is still no authenticated UPDATE grant on `spine_substance`.
+
+    Team-wide by decision (2026-08-02): any team member may supersede any
+    element's prior version — the same trust model as a Claude Code session;
+    the new row's `author_id` records who did it.
+
+    Ordering note: between steps 1 and 2 the element briefly has two live
+    rows; the supersede function demotes every live sibling except the new id,
+    so the end state is consistent even if a concurrent bump interleaves.
+
+    NOT mirrored from the engine verb (deferred): the auto-journal step —
+    `spine_steps` has no authenticated INSERT policy yet. Flagged in #142.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        element_id: the element's est_item_id (`_authored/<slug>`), bare slug,
+            or a distinct framing substring — same keys the read path takes.
+        body: the new version's full body (markdown).
+        version_note: optional "what changed" line, stored on the new version.
+    """
+    if not (body or "").strip():
+        return {"error": "body is required"}
+
+    client = user_client()
+    subject = caller_subject()
+    if not subject:
+        return {"error": "no authenticated caller in context"}
+
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    # Resolve the element within the project by UUID scope; accept the same
+    # key forms the read path does (est_item_id, bare slug, framing substring).
+    key = (element_id or "").strip()
+    if not key:
+        return {"error": "element_id is required"}
+    candidates = [key] if key.startswith("_authored/") else [f"_authored/{slugify(key)}", key]
+
+    versions: list[dict[str, Any]] = []
+    for cand in candidates:
+        found = (
+            client.table("spine_substance")
+            .select(
+                "id, est_item_id, project_code, project_id, phase, binding, layer, "
+                "placement, serves, version_label, version_date, status, framing, "
+                "sources, origin, important, note, scope"
+            )
+            .eq("project_id", scope["id"])
+            .eq("est_item_id", cand)
+            .execute()
+            .data
+            or []
+        )
+        if found:
+            versions = found
+            break
+    if not versions:
+        # Last resort: framing substring, like the engine's resolver.
+        found = (
+            client.table("spine_substance")
+            .select(
+                "id, est_item_id, project_code, project_id, phase, binding, layer, "
+                "placement, serves, version_label, version_date, status, framing, "
+                "sources, origin, important, note, scope"
+            )
+            .eq("project_id", scope["id"])
+            .ilike("framing", f"%{key}%")
+            .execute()
+            .data
+            or []
+        )
+        est_ids = {v["est_item_id"] for v in found}
+        if len(est_ids) > 1:
+            return {
+                "error": f"{key!r} matches {len(est_ids)} elements — be more specific",
+                "matches": sorted(est_ids)[:10],
+            }
+        versions = found
+    if not versions:
+        return {"error": f"no authored element {key!r} in {project_code!r}"}
+
+    est_item_id = versions[0]["est_item_id"]
+    base = next((v for v in versions if v.get("status") == "live"), versions[0])
+    nums = [
+        int(str(v.get("version_label", ""))[1:])
+        for v in versions
+        if str(v.get("version_label", "")).startswith("v")
+        and str(v.get("version_label", ""))[1:].isdigit()
+    ]
+    next_n = (max(nums) + 1) if nums else 1
+    # Carry the row's OWN canonical code, not the caller's form (slug drift).
+    row_code = base.get("project_code") or scope["project_code"]
+
+    now = datetime.now(timezone.utc)
+    new_id = f"{row_code}/{est_item_id}/v{next_n}"
+    row = {
+        "id": new_id,
+        "project_id": base.get("project_id") or scope["id"],
+        "project_code": row_code,
+        "est_item_id": est_item_id,
+        "est_item_kind": None,
+        "phase": base.get("phase"),
+        "binding": base.get("binding") or "unbound",
+        "layer": base.get("layer"),
+        "placement": base.get("placement") or "context",
+        "serves": base.get("serves") or [],
+        "version_label": f"v{next_n}",
+        "version_date": now.date().isoformat(),
+        "status": "live",
+        "framing": base.get("framing"),
+        "body": body,
+        "sources": base.get("sources") or [],
+        "origin": base.get("origin") or "authored",
+        "version_note": version_note,
+        "rel_path": None,
+        "important": bool(base.get("important", False)),
+        "note": base.get("note"),
+        "scope": base.get("scope"),
+        "author_id": subject,
+    }
+    try:
+        client.table("spine_substance").insert(row).execute()
+    except Exception as exc:  # noqa: BLE001
+        audit(client, "add_spine_version", {"project_code": project_code, "element_id": key, "body": body}, 0)
+        return {"error": f"version insert failed: {type(exc).__name__}: {str(exc)[:400]}"}
+
+    try:
+        demoted = client.rpc("spine_supersede_prior_versions", {"p_new_id": new_id}).execute().data
+    except Exception as exc:  # noqa: BLE001
+        # The new row exists but the prior live row was not demoted — surface
+        # loudly; two live versions is exactly the state to not leave silent.
+        audit(client, "add_spine_version", {"project_code": project_code, "element_id": key, "body": body}, 1)
+        return {
+            "error": f"new version {new_id} inserted but supersede failed: "
+            f"{type(exc).__name__}: {str(exc)[:300]} — the element now has two "
+            "live rows; retry or flag it.",
+            "new_id": new_id,
+        }
+
+    audit(client, "add_spine_version", {"project_code": project_code, "element_id": key, "body": body}, 1)
+    return {
+        "element_id": est_item_id,
+        "version_label": f"v{next_n}",
+        "superseded": demoted,
+        "project_code": row_code,
+        "caller": subject,
+        "version_note": version_note,
+        "body_chars": len(body),
+    }
+
+
+@mcp_server.tool()
+def add_spine_document(
+    project_code: str,
+    label: str,
+    content: str | None = None,
+    source_title: str | None = None,
+    type: str = "synthesis",
+) -> dict[str, Any]:
+    """Author a whole DOCUMENT into the spine as a new element (#140).
+
+    The hosted counterpart of the engine's `add_spine_document`, with the
+    `content=` form the design called for (a phone has no file_path). Provide
+    exactly ONE of:
+
+    - `content` — the document text itself (a draft this conversation just
+      produced, a pasted email, meeting notes). This is Phase 3's
+      "read spine context -> draft -> write back" loop closing.
+    - `source_title` — an ALREADY-INGESTED source's title (resolved like
+      `list_project_sources`: exact match first, else unique substring). Its
+      full text (assembled from chunks) becomes the element body, and the
+      source is attached as a typed provenance link on the new element —
+      "turn this ingested brief into a spine card."
+
+    `type` is the element kind (default `synthesis`). To UPDATE an existing
+    element from a document, use `add_spine_version` instead.
+    """
+    if bool(content and content.strip()) == bool(source_title and source_title.strip()):
+        return {"error": "provide exactly one of content or source_title"}
+
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    sources_link: list[dict[str, Any]] | None = None
+    if source_title:
+        want = source_title.strip()
+        rows = (
+            client.table("rag_assets")
+            .select("id, title, status")
+            .or_(f"project_id.eq.{scope['id']},initiative_id.eq.{scope['id']}")
+            .is_("archived_at", "null")
+            .execute()
+            .data
+            or []
+        )
+        exact = [r for r in rows if (r.get("title") or "").strip().lower() == want.lower()]
+        matches = exact or [r for r in rows if want.lower() in (r.get("title") or "").lower()]
+        if not matches:
+            return {"error": f"no ingested source matches {want!r} in {project_code!r}"}
+        if len(matches) > 1:
+            return {
+                "error": f"{want!r} matches {len(matches)} sources — be more specific",
+                "matches": sorted((m.get("title") or "?") for m in matches)[:10],
+            }
+        asset = matches[0]
+        pulled = pull_project_source(asset_id=asset["id"])
+        body_text = pulled.get("text") or pulled.get("body") or ""
+        if not str(body_text).strip():
+            return {
+                "error": f"source {asset.get('title')!r} resolved but has no "
+                f"assembled text ({pulled.get('error') or 'no chunks'})"
+            }
+        content = str(body_text)
+        sources_link = [{"type": "rag_asset", "id": asset["id"], "title": asset.get("title")}]
+
+    created = create_spine_element(
+        project_code=project_code,
+        framing=label,
+        body=content or "",
+        layer=type,
+        sources=sources_link,
+    )
+    if "error" in created:
+        return created
+    result = dict(created)
+    if sources_link:
+        result["source_attached"] = sources_link[0]["title"]
+    return result
 
 
 # ──────────────────────────────────────────────────────────────────────

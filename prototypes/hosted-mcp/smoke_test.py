@@ -249,25 +249,21 @@ def case_e_tools_list(token: str) -> None:
         "list_project_meetings",
         "semantic_search",
         "whoami",
-        # Package A — insert-only writes (#139)
+        # Package A — writes (#139; add_spine_version via the #142 guarded fn)
         "create_note",
         "create_commitment",
         "create_spine_element",
+        "add_spine_version",
+        "add_spine_document",
         # Package B — read-only tenant tree (#138)
         "get_project_state",
         "read_project_file",
     }
     missing = sorted(expected - set(names))
-    # `add_spine_version` is DEFERRED BY DESIGN (it needs an UPDATE to supersede
-    # the prior live row, and there is no authenticated UPDATE policy). Its
-    # ABSENCE is part of the contract, so assert it rather than merely omitting it.
-    deferred_present = "add_spine_version" in names
     record(
-        "E. tools/list exposes all 13 tools, and NOT the deferred add_spine_version",
-        not missing and not deferred_present,
-        f"tools={names}"
-        + (f" MISSING={missing}" if missing else "")
-        + (" UNEXPECTED add_spine_version present" if deferred_present else ""),
+        "E. tools/list exposes all 15 tools",
+        not missing,
+        f"tools={names}" + (f" MISSING={missing}" if missing else ""),
     )
 
 
@@ -567,6 +563,87 @@ def case_o2_collision_guard(token: str) -> None:
     )
 
 
+def case_o3_add_spine_version(token: str) -> None:
+    """Version bump via the #142 guarded supersede function.
+
+    Bumps the element case O just created: expects a v2 live row, exactly one
+    prior row demoted live->superseded, and the read path returning the v2
+    body. The demote happens inside `spine_supersede_prior_versions` — there
+    is still no authenticated UPDATE grant on spine_substance, so this passing
+    proves the guarded-function path, not an open door.
+    """
+    element_id = f"_authored/smoke-test-{RUN_TAG}-hosted-mcp-element"
+    payload = call_tool(
+        token,
+        "add_spine_version",
+        {
+            "project_code": WRITE_PROJECT_CODE,
+            "element_id": element_id,
+            "body": "Version 2 body, written by smoke_test.py via the guarded supersede path.",
+            "version_note": "smoke-test version bump",
+        },
+    )
+    new_label = payload.get("version_label")
+    superseded = payload.get("superseded")
+    ok = new_label == "v2" and superseded == 1
+    read_back = {}
+    if ok:
+        read_back = call_tool(
+            token,
+            "pull_spine_element",
+            {"element_id": element_id, "project_code": WRITE_PROJECT_CODE},
+        )
+        ok = "Version 2 body" in str(read_back.get("body", "")) and read_back.get("version_label") == "v2"
+    if new_label == "v2":
+        created_rows.append(("spine_substance", f"{payload.get('project_code')}/{element_id}/v2"))
+    record(
+        "O3. add_spine_version supersedes v1 and reads back as v2 live",
+        ok,
+        f"version_label={new_label} superseded={superseded} "
+        f"readback_label={read_back.get('version_label')}"
+        + (f" ERROR={payload.get('error') or payload.get('_http')}" if not ok else ""),
+    )
+
+
+def case_o4_add_spine_document(token: str) -> None:
+    """Phase 3 (#140): author a document into the spine via content=.
+
+    Also asserts the exactly-one-of contract rejects both-args and no-args.
+    """
+    bad = call_tool(
+        token,
+        "add_spine_document",
+        {"project_code": WRITE_PROJECT_CODE, "label": "x", "content": "a", "source_title": "b"},
+    )
+    contract_ok = "error" in bad and "exactly one" in str(bad.get("error", ""))
+
+    payload = call_tool(
+        token,
+        "add_spine_document",
+        {
+            "project_code": WRITE_PROJECT_CODE,
+            "label": f"smoke-test-{RUN_TAG} document",
+            "content": "# smoke-test document\n\nWritten by smoke_test.py via add_spine_document(content=). Safe to delete.",
+            "type": "synthesis",
+        },
+    )
+    row_id = payload.get("row_id")
+    if row_id:
+        created_rows.append(("spine_substance", row_id))
+    ok = (
+        contract_ok
+        and bool(row_id)
+        and payload.get("version_label") == "v1"
+        and payload.get("status") == "live"
+    )
+    record(
+        "O4. add_spine_document(content=) authors a document element",
+        ok,
+        f"row_id={row_id} layer={payload.get('layer')} contract_ok={contract_ok}"
+        + (f" ERROR={payload.get('error') or payload.get('_http')}" if not ok else ""),
+    )
+
+
 def case_p_create_note(token: str) -> None:
     """The notes write, via the entities email-bridge (decided 2026-08-02).
 
@@ -789,6 +866,8 @@ def main() -> int:
         case_n2_bad_due_date(token)
         case_o_create_spine_element(token)
         case_o2_collision_guard(token)
+        case_o3_add_spine_version(token)
+        case_o4_add_spine_document(token)
         case_p_create_note(token)
 
         # ── Package B: read-only tenant tree ──

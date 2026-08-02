@@ -112,20 +112,25 @@ and write an audit row on success.
 | `semantic_search(query, project_code?, limit=10)` | `match_chunks_simple` RPC | Voyage-embedded query. |
 | `whoami()` | token claims | Diagnostic. |
 
-**Writes (insert-only — cp-engine #139):**
+**Writes (cp-engine #139 + #140 — inserts, plus one guarded transition):**
 
 | Tool | Target | Notes |
 |---|---|---|
-| `create_note(project_code, body, title?)` | `notes` | `author_id` stamped from the JWT; Postgres enforces `author_id = auth.uid()`. |
+| `create_note(project_code, body, title?, recipient_email?)` | `notes` | Via the entities email-bridge; policy enforces author = caller's own entity. |
 | `create_commitment(project_code, description, owner_email?, due_date?)` | `commitments` | ISO-validated due date. |
-| `create_spine_element(project_code, slug, framing, body, ...)` | `spine_substance` | Version-1 row, `_authored/` convention, author stamped. |
+| `create_spine_element(project_code, framing, body, ...)` | `spine_substance` | Version-1 row, `_authored/` convention, author stamped. |
+| `add_spine_version(project_code, element_id, body, version_note?)` | `spine_substance` | New vN+1 row (insert), then live→superseded on the prior row via the #142 guarded function. |
+| `add_spine_document(project_code, label, content= OR source_title=, type?)` | `spine_substance` | Phase 3 (#140): author a whole document from chat, or spine-card an ingested source with provenance attached at insert. |
 
-`add_spine_version` is **deferred by design**: superseding the prior version is
-an UPDATE of engine-owned `status`, and there is deliberately NO authenticated
-UPDATE path on `spine_substance` (the column-guard trigger accepts any non-null
-`X-Spine-Writer`, so a plain grant would be an open door). It needs the guarded
-transition function cp-engine #139 describes — a decision, then a small
-migration.
+**There is still no authenticated UPDATE grant or policy on
+`spine_substance`.** The one status transition that versioning needs
+(live→superseded on prior siblings of an element whose new live row exists)
+lives in `spine_supersede_prior_versions(new_id)` — a SECURITY DEFINER
+function that requires team membership, validates the new row, satisfies the
+column-guard via a transaction-local `app.spine_writer`, and can do nothing
+else. Decided on cp-engine #142 (option 1); team-wide supersede per the same
+trust model as a Claude Code session. Not yet mirrored from the engine verb:
+the auto-journal step (`spine_steps` has no authenticated INSERT policy).
 
 **Tree (read-only — cp-engine #138, review finding 1):**
 
