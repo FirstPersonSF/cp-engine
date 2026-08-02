@@ -466,7 +466,19 @@ def sanitize_audit_args(args: dict[str, Any]) -> dict[str, Any]:
         if key in _AUDIT_REDACTED_ARGS:
             out[f"{key}_len"] = len(str(value))
         elif key in _AUDIT_SAFE_ARGS:
-            out[key] = value
+            if key in ("path", "rel_path") and isinstance(value, str):
+                # Path args are recorded, but neutralized first: a traversal
+                # ATTEMPT (../..., absolute /etc/...) recorded verbatim reads
+                # as an attack payload to Supabase's Cloudflare WAF, which
+                # then 403s the whole audit INSERT (seen live 2026-08-02).
+                # The tool already rejected the read; the audit row only needs
+                # to say a bad path was tried, not replay it.
+                cleaned = value.replace("..", "~UP~").lstrip("/")[:200]
+                out[key] = cleaned
+                if cleaned != value[:200]:
+                    out[f"{key}_neutralized"] = True
+            else:
+                out[key] = value
     return out
 
 
