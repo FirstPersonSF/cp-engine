@@ -1,0 +1,79 @@
+# Railway service config for the hosted-cp MCP server.
+#
+# ── WHERE THIS ACTUALLY LIVES ──────────────────────────────────────────
+#
+# Project:     Mission Control   (9d463e04-7f42-455b-884a-c7718dc6f6f2)
+# Environment: production        (6db33527-d0f9-4a3d-98a6-65b27385afa6)
+# Service:     hosted-mcp        (42ca79bc-c416-45cd-93ce-77ecee3c6179)
+# Domain:      https://cp.mc-2.1p.is  ->  /mcp
+#
+# It is in the MISSION CONTROL project, NOT the separate `hosted-cp`
+# Railway project. That project has a same-named service whose every
+# deployment is REMOVED and whose *.up.railway.app URL 404s with
+# `x-railway-fallback: true` — it is dead, and deploying to it changes
+# nothing. Same-project coexistence with mc-2 was deliberate: it beats the
+# `*.1p.is` wildcard-overlap error (see the initiative CP, 2026-08-02).
+#
+# ── HOW TO DEPLOY ──────────────────────────────────────────────────────
+#
+# THIS SERVICE HAS NO GITHUB CONNECTION (`repo: None`). Pushing to
+# cp-engine `main` deploys NOTHING. Deploys are local-source uploads, run
+# from THIS directory:
+#
+#   cd prototypes/hosted-mcp
+#   railway up --detach -m "<what changed>" \
+#     --project     9d463e04-7f42-455b-884a-c7718dc6f6f2 \
+#     --environment 6db33527-d0f9-4a3d-98a6-65b27385afa6 \
+#     --service     42ca79bc-c416-45cd-93ce-77ecee3c6179
+#
+# `railway up` returning only means the build was QUEUED. Poll until the
+# newest deployment is terminal before believing it shipped:
+#
+#   railway deployment list --service hosted-mcp --json
+#
+# `railway redeploy` re-runs the LAST UPLOADED SOURCE. After a code change
+# that is the old code — use `railway up`, not redeploy.
+#
+# Build context is this directory (the Dockerfile does a bare
+# `COPY requirements.txt .`), which is why `railway up` is run from here
+# and not from the repo root. Contrast webhook/railway.toml, which builds
+# from the repo root and must say so explicitly.
+#
+# ── ENV (set on the service, not here) ─────────────────────────────────
+#
+# Required:  SUPABASE_URL, SUPABASE_ANON_KEY
+#   The ANON key, never the service key — the server's whole security
+#   model is that it acts only as the calling user, with RLS as the
+#   boundary. See the `user_client()` docstring in server.py.
+# Tree:      TENANT_REPO, GIT_SSH_KEY (read-only deploy key)
+#   Absent, the tree tools degrade cleanly to "tree access unavailable".
+# Search:    VOYAGE_API_KEY  (voyage-3-large / 1024-dim — matches the
+#            ingested corpus; an OpenAI embedding is the wrong vector
+#            space AND the wrong dimension. See the README.)
+# Promote:   MC2_API_BASE, MC2_TIMEOUT_SECONDS
+# Identity:  RESOURCE_URL — this server's public /mcp URL, published in
+#            the RFC 9728 protected-resource document.
+#
+# HOST is set to 0.0.0.0 in the Dockerfile; Railway injects PORT.
+#
+# ── AUTH ───────────────────────────────────────────────────────────────
+#
+# Supabase is the authorization server; this is a resource server only.
+# MCP clients self-register via dynamic client registration, which
+# requires "Allow Dynamic OAuth Apps" ON in the Supabase dashboard
+# (Authentication → OAuth server). With it off, connectors fail at
+# discovery with "does not support dynamic client registration" and
+# `registration_endpoint` is absent from the AS metadata. See cp-engine
+# #144.
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# No healthcheckPath: every route is auth-gated, so an unauthenticated
+# probe gets a 401 and Railway would read that as a failed check. The
+# 401 challenge itself is the liveness signal — it proves the ASGI app
+# and the auth middleware are both up.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3

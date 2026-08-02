@@ -22,6 +22,15 @@ path. Nothing under `src/cp_engine/` was modified.
 
 ---
 
+## Deploy it
+
+Live at **`https://cp.mc-2.1p.is/mcp`**, served by the `hosted-mcp` service in
+the **Mission Control** Railway project (not the separate, dead `hosted-cp`
+project). **The service has no GitHub connection — pushing to `main` deploys
+nothing**; deploys are local-source uploads via `railway up` from this
+directory. Full IDs, the deploy command, and the env-var contract are
+documented in [`railway.toml`](railway.toml).
+
 ## Run it
 
 ```bash
