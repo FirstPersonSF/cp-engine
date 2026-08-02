@@ -751,165 +751,30 @@ def add_spine_version(project_code: str, element_id: str, body: str,
 # shared read/write machinery (pull_source, resolve_element_versions, …) that the
 # surviving stdio tools depend on, and `add_spine_document` calls
 # `modify_element_sources` in-process for its source_title attach.
+#
+# Batch 4 took the retire/scope guarded verbs: `retire_spine_element`,
+# `retire_spine_elements`, `retire_spine_relation`, `promote_stakeholder`,
+# `demote_stakeholder` and `set_element_account_scope` are hosted verbs now,
+# where the retire is one atomic guarded function (the stdio copy was four
+# service-key statements with a mid-failure corruption window) and the
+# engagements-only + sibling-twin scope guards live in the DB.
+# `project_sources.resolve_live_element` STAYS — it is the shared element
+# matcher behind `pull_spine_element`, `pull_element_from_project` and the
+# framework verbs, not retire-specific machinery. And the account-scope MOVE
+# stays in-process as `_set_account_scope` below, because
+# `pull_element_from_project(account=True)` needs it as an internal step of a
+# surviving verb (the same shape as batch 3's `add_spine_document` attach) —
+# an internal helper, not a second write door.
 # See docs/hosted-mcp-team-setup.md.
 
 
-@mcp.tool()
-def retire_spine_element(project_code: str, key: str) -> dict:
-    """Retire a spine element — remove it from the live spine, keeping history.
-
-    Use for duplicates and elements that no longer belong (e.g. the same source
-    doc ingested twice). `key` is an est_item_id (exact) or a case-insensitive
-    `framing` (title) substring resolved to ONE live element (same discipline
-    as pull_spine_element). Every version of the element is marked
-    `archived=true` and its live version is superseded, so it disappears from
-    list/pull/resolve immediately and reaps from the repo mirror on next sync —
-    the element itself is recoverable via a dashboard un-archive. Its typed
-    edges (spine_relations) ARE deleted, not archived (#96) — a retired element
-    must not leave `active` edges dangling from a dead endpoint. Returns
-    {est_item_id, retired: true, edges_removed: int}, or {note}/{error} on miss.
-    """
-    try:
-        resolved = _resolve(project_code)
-        if resolved is None:
-            return {"error": f"project {project_code!r} not found"}
-        client, pid, cid = resolved
-        return _retire_one(client, pid, cid, key)
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to retire '{key}' in {project_code!r}: {exc}"}
-
-
-def _retire_one(client, pid: str, cid: str | None, key: str) -> dict:
-    """Retire a single live element (the shared body of retire_spine_element and
-    retire_spine_elements). Resolves `key`, archives every version, demotes the
-    live row, and cascades the element's typed edges (#96). Returns
-    {est_item_id, retired: true, edges_removed} or a {note} on a resolution miss.
-    Raises are left to the caller's try/except boundary."""
-    from cp_engine.project_sources import resolve_live_element
-
-    row = resolve_live_element(client, pid, key, cid)
-    if row is None:
-        return {"note": f"no single live element matching '{key}'"}
-    eid = row["est_item_id"]
-    row_pid = row.get("project_id") or pid
-    # Archive EVERY version (element-level retire), then demote the live
-    # row(s). Two targeted updates, ordered so a failure between them leaves
-    # the element archived (hidden from reads, #47's filter) rather than
-    # superseded-but-unarchived with no live version.
-    (client.table(Tables.SPINE_SUBSTANCE).update({"archived": True})
-     .eq("project_id", row_pid).eq("est_item_id", eid).execute())
-    (client.table(Tables.SPINE_SUBSTANCE).update({"status": "superseded"})
-     .eq("project_id", row_pid).eq("est_item_id", eid)
-     .eq("status", "live").execute())
-    # Cascade to the element's typed edges (#96): archiving substance alone
-    # left spine_relations rows `active` but dangling from a now-dead
-    # endpoint — a silent graph corruption an agent would still walk. Delete
-    # every edge on either side of this element. Edges key on est_item_id
-    # (mig 117), so this is a straight two-sided delete; PostgREST has no OR
-    # across columns, so run one delete per direction.
-    edges_removed = 0
-    for side in ("from_item_id", "to_item_id"):
-        res = (client.table(Tables.SPINE_RELATIONS).delete()
-               .eq("project_id", row_pid).eq(side, eid).execute())
-        edges_removed += len(res.data or [])
-    return {"est_item_id": eid, "retired": True, "edges_removed": edges_removed}
-
-
-@mcp.tool()
-def retire_spine_elements(project_code: str, keys: list[str]) -> dict:
-    """Retire several spine elements in one call (#105) — batch cleanup.
-
-    Each entry of `keys` resolves and retires exactly as retire_spine_element
-    (archive every version, supersede the live row, cascade typed edges #96).
-    A slot cleanup that collapses many raw cards is one operation instead of
-    N. Per-key results are returned so a partial resolution miss doesn't fail
-    the batch: `results` is a list of {key, est_item_id, retired, edges_removed}
-    for hits and {key, note} for a key that resolved to no single live element.
-    Returns {retired: int, edges_removed: int, results: [...]}, or {error}.
-    """
-    try:
-        resolved = _resolve(project_code)
-        if resolved is None:
-            return {"error": f"project {project_code!r} not found"}
-        client, pid, cid = resolved
-        results: list[dict] = []
-        retired = 0
-        edges_removed = 0
-        for key in keys:
-            try:
-                r = _retire_one(client, pid, cid, key)
-            except Exception as exc:  # noqa: BLE001 — one bad key must not abort the batch
-                results.append({"key": key, "error": str(exc)})
-                continue
-            if r.get("retired"):
-                retired += 1
-                edges_removed += r.get("edges_removed", 0)
-            results.append({"key": key, **r})
-        return {"retired": retired, "edges_removed": edges_removed,
-                "results": results}
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to batch-retire in {project_code!r}: {exc}"}
-
-
-# The closed relation vocabulary (mig 117's CHECK). Kept here as the MCP's own
-# source of truth so a bad kind is rejected with a readable error before it ever
-# reaches the DB CHECK (which would surface as an opaque 500).
-_RELATION_KINDS = frozenset(
-    {"responds_to", "supersedes", "derives_from", "informs", "contradicts"}
-)
-
-
-@mcp.tool()
-def retire_spine_relation(
-    project_code: str, kind: str, from_key: str, to_key: str,
-) -> dict:
-    """Delete a typed edge between two spine elements (#97).
-
-    The inverse of `create_spine_relation` (which lives on the hosted server —
-    cp-engine #143): resolves `from_key`/`to_key` to live
-    elements (or accepts raw est_item_ids for edges whose endpoint is already
-    retired), then deletes the matching `kind` edge from spine_relations. Use to
-    fix a mis-recorded edge (e.g. a wrong `supersedes` that should be
-    `responds_to`). Returns {kind, from_item_id, to_item_id, removed: int}, or
-    {note}/{error}.
-
-    Resolution tolerates a dead endpoint: if `from_key`/`to_key` doesn't resolve
-    to a LIVE element it is used verbatim as an est_item_id, so an orphaned edge
-    left by an older retire can still be cleaned by passing the raw ids.
-    """
-    from cp_engine.project_sources import resolve_live_element
-
-    try:
-        kind_n = (kind or "").strip().lower()
-        if kind_n not in _RELATION_KINDS:
-            return {"error": f"unknown relation kind {kind!r}; "
-                             f"use one of {sorted(_RELATION_KINDS)}"}
-        resolved = _resolve(project_code)
-        if resolved is None:
-            return {"error": f"project {project_code!r} not found"}
-        client, pid, cid = resolved
-        src = resolve_live_element(client, pid, from_key, cid)
-        dst = resolve_live_element(client, pid, to_key, cid)
-        # Fall back to the raw key as an est_item_id so orphaned edges (endpoint
-        # already retired) remain cleanable.
-        from_eid = src["est_item_id"] if src else from_key
-        to_eid = dst["est_item_id"] if dst else to_key
-        res = (client.table(Tables.SPINE_RELATIONS).delete()
-               .eq("project_id", pid).eq("kind", kind_n)
-               .eq("from_item_id", from_eid).eq("to_item_id", to_eid)
-               .execute())
-        removed = len(res.data or [])
-        if removed == 0:
-            return {"note": f"no {kind_n} edge {from_eid} -> {to_eid} to remove"}
-        return {"kind": kind_n, "from_item_id": from_eid,
-                "to_item_id": to_eid, "removed": removed}
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"failed to retire relation in {project_code!r}: {exc}"}
-
-
-@mcp.tool()
-def promote_stakeholder(project_code: str, key: str) -> dict:
+def _promote_stakeholder(project_code: str, key: str) -> dict:
     """Promote a project's stakeholder element to ACCOUNT scope.
+
+    In-process helper only — the `promote_stakeholder` TOOL moved to the hosted
+    server (#143). This body survives as the implementation behind
+    `_set_account_scope`, which `pull_element_from_project(account=True)` calls
+    as an internal step.
 
     Stakeholders are account-level people wearing project clothes: promotion
     makes the element readable from EVERY project of the company (it appears
@@ -963,9 +828,10 @@ def promote_stakeholder(project_code: str, key: str) -> dict:
         return {"error": f"failed to promote '{key}' in {project_code!r}: {exc}"}
 
 
-@mcp.tool()
-def demote_stakeholder(project_code: str, key: str) -> dict:
-    """Remove an element from ACCOUNT scope — the inverse of promote_stakeholder.
+def _demote_stakeholder(project_code: str, key: str) -> dict:
+    """Remove an element from ACCOUNT scope — the inverse of _promote_stakeholder.
+
+    In-process helper only (see `_promote_stakeholder`); the tool is hosted.
 
     The element returns to its PROVENANCE project (scope='project',
     company_id cleared; project_id never changed, so there is exactly one
@@ -999,13 +865,18 @@ def demote_stakeholder(project_code: str, key: str) -> dict:
         return {"error": f"failed to demote '{key}' in {project_code!r}: {exc}"}
 
 
-@mcp.tool()
-def set_element_account_scope(
+def _set_account_scope(
     project_code: str, key: str, account: bool = True,
 ) -> dict:
     """Tag ANY spine element account-level (or return it to project scope).
 
-    The type-agnostic generalization of `promote_stakeholder`/`demote_stakeholder`:
+    In-process helper only — the `set_element_account_scope` TOOL, like
+    `promote_stakeholder`/`demote_stakeholder`, moved to the hosted server
+    (#143). It stays here because `pull_element_from_project(account=True)`
+    account-tags the copy it just authored as an internal step of that
+    surviving verb.
+
+    The type-agnostic generalization of promote/demote stakeholder:
     use it to make a synthesis, a source, a decision — any element, not just a
     stakeholder — readable from EVERY project of the same company (`account=True`,
     scope='account', company_id set, provenance project unchanged), or to pull it
@@ -1015,12 +886,12 @@ def set_element_account_scope(
     in a project-scoped element. Returns
     {est_item_id, scope, company_id?, returned_to_project_id?}, or {note}/{error}.
 
-    (For a stakeholder specifically, `promote_stakeholder` is the same move with a
-    layer sanity-check — prefer it there; this is for everything else.)
+    (For a stakeholder specifically, the hosted `promote_stakeholder` is the same
+    move with a layer sanity-check — prefer it there; this is for everything else.)
     """
     if account:
-        return promote_stakeholder(project_code, key)
-    return demote_stakeholder(project_code, key)
+        return _promote_stakeholder(project_code, key)
+    return _demote_stakeholder(project_code, key)
 
 
 @mcp.tool()
@@ -1083,7 +954,7 @@ def pull_element_from_project(
         # provenance in the body (above) + the return payload. Account-tag if asked.
         account_scoped = False
         if account:
-            promoted = set_element_account_scope(to_code, created["element_id"], True)
+            promoted = _set_account_scope(to_code, created["element_id"], True)
             account_scoped = promoted.get("scope") == "account"
 
         return {

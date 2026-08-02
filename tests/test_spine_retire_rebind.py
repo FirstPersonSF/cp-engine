@@ -1,5 +1,13 @@
-# tests/test_spine_retire_rebind.py — issue #47: retitle / rebind / retire
-# verbs + archived rows hidden from every spine read path.
+# tests/test_spine_retire_rebind.py — issue #47: archived rows are hidden from
+# every spine read path.
+#
+# The retitle/rebind/retire MCP WRAPPERS are all gone from stdio: `set_spine_element`
+# ported to the hosted MCP server in cp-engine #143 batch 2, and
+# `retire_spine_element(s)` in batch 4 (docs/hosted-mcp-team-setup.md). Their
+# wrapper tests — and the `_patch_resolve`/`_element_updates` helpers that only
+# they used — went with them. What remains is the read-path invariant those
+# verbs exist to produce, which is pure `project_sources` and stays here: a
+# retired (archived) element must be invisible to list / pull / resolve.
 from cp_engine.project_sources import (
     list_spine,
     pull_spine,
@@ -78,59 +86,3 @@ def test_resolve_element_versions_wont_match_archived_live_row():
         _client(rows, captured), "pid", "retired", columns="id, est_item_id"
     )
     assert eid is None and versions == []
-
-
-# ── shared wrapper-test helpers ─────────────────────────────────────────────
-#
-# `set_spine_element` was ported to the hosted MCP server and deleted from stdio
-# (cp-engine #143), so its retitle/rebind wrapper tests went with it. These
-# helpers stay — retire_spine_element's tests below use them.
-
-def _patch_resolve(monkeypatch, rows, captured):
-    client = _client(rows, captured)
-    monkeypatch.setattr("cp_engine.mcp_server._resolve",
-                        lambda code: (client, "pid", "cid"))
-
-
-def _element_updates(captured):
-    """Updates targeted at the whole element (project_id + est_item_id)."""
-    return [(p, eqs) for p, eqs in captured.get("updates", [])
-            if ("project_id", "pid") in eqs]
-
-
-# ── retire_spine_element ─────────────────────────────────────────────────────
-
-def test_retire_archives_all_versions_then_supersedes_live(monkeypatch):
-    captured = {}
-    _patch_resolve(monkeypatch, [_row("_authored/dupe")], captured)
-    import cp_engine.mcp_server as m
-    res = m.retire_spine_element("p", "_authored/dupe")
-    assert res == {"est_item_id": "_authored/dupe", "retired": True,
-                   "edges_removed": 0}
-    # retire cascades to the element's edges (#96): two deletes on
-    # spine_relations, one per direction (from_item_id + to_item_id).
-    assert len(captured.get("deletes", [])) == 2
-    updates = captured["updates"]
-    archive = [(p, eqs) for p, eqs in updates if p == {"archived": True}]
-    demote = [(p, eqs) for p, eqs in updates if p == {"status": "superseded"}]
-    assert len(archive) == 1 and len(demote) == 1
-    # archive targets EVERY version; demote targets only the live row(s)
-    assert ("status", "live") not in archive[0][1]
-    assert ("status", "live") in demote[0][1]
-    # archive happens FIRST so a failure in between leaves the element hidden
-    assert updates.index(archive[0]) < updates.index(demote[0])
-
-
-def test_retire_no_match_returns_structured_note(monkeypatch):
-    captured = {}
-    _patch_resolve(monkeypatch, [], captured)
-    import cp_engine.mcp_server as m
-    res = m.retire_spine_element("p", "missing")
-    assert "note" in res and "retired" not in res
-
-
-def test_retire_unresolvable_project_returns_error(monkeypatch):
-    monkeypatch.setattr("cp_engine.mcp_server._resolve", lambda code: None)
-    import cp_engine.mcp_server as m
-    res = m.retire_spine_element("nope", "x")
-    assert "error" in res

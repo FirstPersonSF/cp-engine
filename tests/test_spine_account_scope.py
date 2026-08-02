@@ -1,6 +1,15 @@
-# tests/test_spine_account_scope.py — the scope ladder (mig 104):
-# account-scoped elements read from every project of the company, and
-# promote_stakeholder moves a project element up.
+# tests/test_spine_account_scope.py — the scope ladder (mig 104): account-scoped
+# elements read from every project of the company.
+#
+# The verbs that MOVE an element up or down the ladder — `promote_stakeholder`,
+# `demote_stakeholder`, `set_element_account_scope` — were ported to the hosted
+# MCP server and deleted from stdio (cp-engine #143 batch 4,
+# docs/hosted-mcp-team-setup.md), where the engagements-only and sibling-twin
+# guards live in the DB; their wrapper tests moved with them. What stays here is
+# the READ half of the ladder, which is pure `project_sources`. The one surviving
+# in-process caller of the move — `pull_element_from_project(account=True)` via
+# the private `_set_account_scope` — is covered in
+# tests/test_mcp_server.py::test_pull_element_from_project_account_tag.
 from cp_engine.project_sources import (
     _fetch_scoped,
     list_spine,
@@ -123,89 +132,3 @@ def test_fetch_scoped_defaults_missing_scope_to_project():
     client = _TwoArmClient(project_rows=[legacy], account_rows=[])
     rows = _fetch_scoped(client, "p1", "sap", _COLS)
     assert [r["est_item_id"] for r in rows] == ["_authored/old"]
-
-
-# ── promote_stakeholder ──────────────────────────────────────────────────────
-
-def _wire(monkeypatch, client, cid="sap"):
-    import cp_engine.mcp_server as m
-    monkeypatch.setattr(m, "_resolve", lambda code: (client, "p1", cid))
-    return m
-
-
-def test_promote_moves_every_version_to_account_scope(monkeypatch):
-    client = _TwoArmClient(project_rows=[_row("_authored/fred")], account_rows=[])
-    m = _wire(monkeypatch, client)
-    res = m.promote_stakeholder("p", "fred")
-    assert res == {"est_item_id": "_authored/fred", "scope": "account",
-                   "company_id": "sap", "layer": "Stakeholders"}
-    [(patch, eqs)] = client.updates
-    assert patch == {"scope": "account", "company_id": "sap"}
-    assert eqs.get("project_id") == "p1"              # element-level, all versions
-    assert eqs.get("est_item_id") == "_authored/fred"
-    assert "status" not in eqs
-
-
-def test_promote_initiative_is_a_structured_note(monkeypatch):
-    m = _wire(monkeypatch, _TwoArmClient([], []), cid=None)
-    res = m.promote_stakeholder("mission-control", "anyone")
-    assert "note" in res and "initiative" in res["note"]
-
-
-def test_promote_already_account_is_a_note_not_rewrite(monkeypatch):
-    client = _sap()
-    m = _wire(monkeypatch, client)
-    res = m.promote_stakeholder("p", "fred")
-    assert "note" in res and client.updates == []
-
-
-def test_promote_sibling_collision_is_an_error(monkeypatch):
-    """Same slug already promoted from ANOTHER project → version that element,
-    don't create a twin."""
-    twin = _row("_authored/fred", pid="p9", scope="account", cid="sap")
-    client = _TwoArmClient(project_rows=[_row("_authored/fred")], account_rows=[twin])
-    m = _wire(monkeypatch, client)
-    res = m.promote_stakeholder("p", "_authored/fred")
-    # resolution prefers the caller's own project arm; the collision guard
-    # then sees the sibling twin and refuses the move
-    assert "error" in res and "add_spine_version" in res["error"]
-    assert client.updates == []
-
-
-def test_promote_non_stakeholder_layer_warns_but_applies(monkeypatch):
-    client = _TwoArmClient(
-        project_rows=[_row("_authored/x", layer="Note")], account_rows=[])
-    m = _wire(monkeypatch, client)
-    res = m.promote_stakeholder("p", "x")
-    assert res["scope"] == "account" and "warning" in res
-    assert client.updates
-
-
-# ── demote_stakeholder ───────────────────────────────────────────────────────
-
-def test_demote_returns_element_to_provenance(monkeypatch):
-    client = _sap()                               # fred is account, provenance p1
-    m = _wire(monkeypatch, client)                # caller resolves as p1
-    res = m.demote_stakeholder("p", "fred")
-    assert res == {"est_item_id": "_authored/fred", "scope": "project",
-                   "returned_to_project_id": "p1"}
-    [(patch, eqs)] = client.updates
-    assert patch == {"scope": "project", "company_id": None}
-    assert eqs.get("project_id") == "p1"          # provenance, all versions
-
-
-def test_demote_from_sibling_targets_provenance_not_caller(monkeypatch):
-    client = _sap()
-    import cp_engine.mcp_server as m
-    monkeypatch.setattr(m, "_resolve", lambda code: (client, "p2", "sap"))
-    res = m.demote_stakeholder("sibling", "fred")
-    assert res["returned_to_project_id"] == "p1"
-    [(patch, eqs)] = client.updates
-    assert eqs.get("project_id") == "p1"
-
-
-def test_demote_project_scoped_element_is_a_note(monkeypatch):
-    client = _TwoArmClient(project_rows=[_row("_authored/olivia")], account_rows=[])
-    m = _wire(monkeypatch, client)
-    res = m.demote_stakeholder("p", "olivia")
-    assert "note" in res and client.updates == []

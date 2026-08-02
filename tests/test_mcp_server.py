@@ -173,10 +173,9 @@ def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
     assert srv._tenant_root() == tmp_path.resolve()
 
 
-def test_exactly_twenty_five_tools_registered():
-    """4 source-read + 1 dropbox-write + 2 spine-read + 8 spine-write +
-    1 spine-relation-write + 1 spine-promote +
-    1 meetings-read + 3 framework + 2 commitment + 1 note tool.
+def test_exactly_nineteen_tools_registered():
+    """4 source-read + 1 dropbox-write + 2 spine-read + 5 spine-write +
+    1 spine-promote + 1 meetings-read + 3 framework + 2 commitment + 1 note.
 
     source-read grew 3→4 (#108 pull_document_comments); spine-write grew 8→11
     (#104 add/remove_element_provenance, #105 retire_spine_elements); create_note
@@ -202,7 +201,16 @@ def test_exactly_twenty_five_tools_registered():
     add/remove_element_source and add/remove_element_provenance ported and
     deleted. `project_sources.modify_element_sources` stays and is still called
     IN-PROCESS by `add_spine_document`'s source_title attach — an internal step
-    of a surviving verb, not a second write door."""
+    of a surviving verb, not a second write door.
+
+    Then 25→19 (#143 batch 4 — the retire/scope guarded verbs):
+    `retire_spine_element(s)`, `retire_spine_relation`,
+    `promote_stakeholder`/`demote_stakeholder` and `set_element_account_scope`
+    ported and deleted. `project_sources.resolve_live_element` stays (the shared
+    element matcher behind pull_spine_element / pull_element_from_project /
+    the framework verbs). The account-scope MOVE also stays, as the PRIVATE
+    `_set_account_scope`: `pull_element_from_project(account=True)` account-tags
+    the copy it authored as an internal step of a surviving verb."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
         "list_project_sources",
@@ -215,13 +223,7 @@ def test_exactly_twenty_five_tools_registered():
         "create_spine_element",
         "add_spine_document",
         "add_spine_version",
-        "set_element_account_scope",
         "pull_element_from_project",
-        "retire_spine_element",
-        "retire_spine_elements",
-        "retire_spine_relation",
-        "promote_stakeholder",
-        "demote_stakeholder",
         "promote_spine_transcript",
         "framework_readiness",
         "framework_decompose",
@@ -1370,18 +1372,23 @@ def test_add_spine_document_source_needs_engagement(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# pull_element_from_project + set_element_account_scope (#120)
+# pull_element_from_project + _set_account_scope (#120)
+#
+# The `set_element_account_scope` / `promote_stakeholder` / `demote_stakeholder`
+# TOOLS moved to the hosted server (#143 batch 4). The move itself survives here
+# as the private `_set_account_scope`, because `pull_element_from_project`
+# account-tags in-process.
 # ---------------------------------------------------------------------------
 
 
-def test_set_element_account_scope_dispatches(monkeypatch):
+def test_set_account_scope_dispatches(monkeypatch):
     """account=True → promote, account=False → demote."""
-    monkeypatch.setattr(srv, "promote_stakeholder",
+    monkeypatch.setattr(srv, "_promote_stakeholder",
                         lambda code, key: {"scope": "account"})
-    monkeypatch.setattr(srv, "demote_stakeholder",
+    monkeypatch.setattr(srv, "_demote_stakeholder",
                         lambda code, key: {"scope": "project"})
-    assert srv.set_element_account_scope("ibx-5153", "k", True)["scope"] == "account"
-    assert srv.set_element_account_scope("ibx-5153", "k", False)["scope"] == "project"
+    assert srv._set_account_scope("ibx-5153", "k", True)["scope"] == "account"
+    assert srv._set_account_scope("ibx-5153", "k", False)["scope"] == "project"
 
 
 def test_pull_element_from_project_copies_with_provenance(monkeypatch):
@@ -1410,8 +1417,44 @@ def test_pull_element_from_project_copies_with_provenance(monkeypatch):
 
 
 def test_pull_element_from_project_account_tag(monkeypatch):
-    """account=True promotes the copy to account scope."""
-    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+    """account=True promotes the copy to account scope.
+
+    Exercises the REAL `_set_account_scope` → `_promote_stakeholder` path (only
+    the DB client is faked), not a stubbed wrapper: the `set_element_account_scope`
+    TOOL is hosted now (#143 batch 4), so this in-process step is the contract
+    that has to keep working.
+    """
+    captured_update = {}
+
+    class _T:
+        def __init__(self, name):
+            self.name, self._eqs, self._op = name, [], None
+
+        def select(self, *_a, **_k):
+            self._op = "select"
+            return self
+
+        def update(self, patch):
+            self._op, self._patch = "update", patch
+            return self
+
+        def eq(self, col, val):
+            self._eqs.append((col, val))
+            return self
+
+        def limit(self, *_a):
+            return self
+
+        def execute(self):
+            if self._op == "update":
+                captured_update["patch"] = self._patch
+                captured_update["eqs"] = dict(self._eqs)
+                return type("R", (), {"data": []})()
+            # select: the collision-guard sibling-twin probe finds nothing
+            return type("R", (), {"data": []})()
+
+    client = type("C", (), {"table": lambda self, n: _T(n)})()
+    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
     monkeypatch.setattr(
         "cp_engine.project_sources.pull_spine",
         lambda client, pid, key, cid: {
@@ -1422,10 +1465,15 @@ def test_pull_element_from_project_account_tag(monkeypatch):
         srv, "create_spine_element",
         lambda *a, **k: {"element_id": "_authored/x-copy", "version_label": "v1"},
     )
-    monkeypatch.setattr(srv, "set_element_account_scope",
-                        lambda code, key, account: {"scope": "account"})
+    monkeypatch.setattr(
+        "cp_engine.project_sources.resolve_live_element",
+        lambda *_a, **_k: {"est_item_id": "_authored/x-copy", "project_id": "pid",
+                           "scope": "project", "layer": "Stakeholders"},
+    )
     out = srv.pull_element_from_project("ggl-5168", "ibx-5153", "X", account=True)
     assert out["account_scoped"] is True
+    assert captured_update["patch"] == {"scope": "account", "company_id": "cid"}
+    assert captured_update["eqs"]["est_item_id"] == "_authored/x-copy"
 
 
 def test_pull_element_from_project_source_miss(monkeypatch):

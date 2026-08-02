@@ -475,7 +475,8 @@ def build_close_checklist(
             f"Candidates = live body < {THIN_STUB_BODY_LEN} chars AND serving "
             "nothing. **Do not batch-retire**: pull each card first "
             "(`pull_spine_element`) — the #112 lesson: 2 of 3 \"redundant\" "
-            "cards were load-bearing.",
+            "cards were load-bearing. Retire the survivors one at a time with "
+            "`retire_spine_element(code, key)` on the `cp-hosted` connector.",
             "",
         ]
     )
@@ -499,7 +500,8 @@ def build_close_checklist(
             "",
             "Anything account-durable (stakeholder dossiers, client-voice "
             "syntheses) compounds across future engagements with this client. "
-            "Promote with `set_element_account_scope(code, key, account=true)`:",
+            "Promote with `set_element_account_scope(code, key, account=true)` "
+            "on the `cp-hosted` connector:",
             "",
         ]
     )

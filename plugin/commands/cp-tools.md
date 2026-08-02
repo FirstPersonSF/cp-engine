@@ -74,12 +74,19 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   `important` false→true flip; the hosted copy does NOT do that yet (#143). Run
   `promote_spine_transcript(code, key)` — still a stdio verb — to promote or retry
   explicitly.
-- `retire_spine_element(code, key)` — remove an element from the live spine
-  (duplicates, no-longer-relevant items). The element's history is archived (not
-  deleted, un-archivable), and its typed edges are removed so nothing dangles.
-- `retire_spine_elements(code, keys)` — batch retire (slot cleanup): retire a
-  list of elements in one call, each exactly as `retire_spine_element`. Returns
-  per-key results so a resolution miss doesn't fail the batch.
+- `retire_spine_element(code, key)` — **hosted-server verb** (`cp-hosted`
+  connector; cp-engine #143 ported it off stdio) — remove an element from the
+  live spine (duplicates, no-longer-relevant items). The element's history is
+  archived (not deleted, un-archivable), and its typed edges are removed so
+  nothing dangles. On hosted this is ONE atomic guarded function, so a
+  mid-failure can no longer leave the element half-retired.
+- `retire_spine_elements(code, keys)` — **hosted-server verb** (`cp-hosted`
+  connector; cp-engine #143 ported it off stdio) — batch retire (slot cleanup):
+  retire a list of elements in one call, each exactly as `retire_spine_element`.
+  Returns per-key results so a resolution miss doesn't fail the batch.
+  **Do not batch-retire without verifying per card**: pull each card first
+  (`pull_spine_element`) — the #112 lesson: 2 of 3 "redundant" cards were
+  load-bearing.
 - `add_element_provenance(code, key, source_key)` — **hosted-server verb**
   (`cp-hosted` connector; cp-engine #143 ported it off stdio) — attach ANOTHER
   spine element as provenance to `key` (the tiering-rule move for "this synthesis
@@ -101,20 +108,26 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   = their voice reacting to ours; derives_from = built from named inputs;
   supersedes = a genuine fork (rare); informs = shaped but didn't generate;
   contradicts = conflicting claim.
-- `retire_spine_relation(code, kind, from_key, to_key)` — delete one edge (fix a
-  mis-recorded relation). Tolerates a dead endpoint: pass raw est_item_ids to
-  clean an orphaned edge left by an older retire.
-- `promote_stakeholder(code, key)` — promote a stakeholder element to ACCOUNT
-  scope: it becomes readable from every project of the same company (rows
-  carry `scope: "account"` in list/pull). Engagements only; opt-in — keep
+- `retire_spine_relation(code, kind, from_key, to_key)` — **hosted-server verb**
+  (`cp-hosted` connector; cp-engine #143 ported it off stdio) — delete one edge
+  (fix a mis-recorded relation). Tolerates a dead endpoint: pass raw est_item_ids
+  to clean an orphaned edge left by an older retire.
+- `promote_stakeholder(code, key)` — **hosted-server verb** (`cp-hosted`
+  connector; cp-engine #143 ported it off stdio) — promote a stakeholder element
+  to ACCOUNT scope: it becomes readable from every project of the same company
+  (rows carry `scope: "account"` in list/pull). Engagements only; opt-in — keep
   engagement-specific reads in a separate project-scoped element.
-- `demote_stakeholder(code, key)` — the inverse: the element returns to its
-  provenance project and leaves the account roster. Nothing is deleted.
-- `set_element_account_scope(code, key, account?)` — the type-AGNOSTIC promote:
-  tag ANY element (a synthesis, a source, a decision — not just a stakeholder)
-  account-level (`account=true`, readable from every sibling project) or return
-  it to project scope (`account=false`). Same mechanism as promote_stakeholder,
-  without the stakeholder-layer sanity check. Engagements only.
+- `demote_stakeholder(code, key)` — **hosted-server verb** (`cp-hosted`
+  connector; cp-engine #143 ported it off stdio) — the inverse: the element
+  returns to its provenance project and leaves the account roster. Nothing is
+  deleted.
+- `set_element_account_scope(code, key, account?)` — **hosted-server verb**
+  (`cp-hosted` connector; cp-engine #143 ported it off stdio) — the type-AGNOSTIC
+  promote: tag ANY element (a synthesis, a source, a decision — not just a
+  stakeholder) account-level (`account=true`, readable from every sibling
+  project) or return it to project scope (`account=false`). Same mechanism as
+  promote_stakeholder, without the stakeholder-layer sanity check. Engagements
+  only.
 - `pull_element_from_project(from_code, to_code, key, type?, account?)` — copy a
   spine element FROM another project INTO this one. Resolves `key` in `from_code`
   (est_item_id or distinct title substring), authors a COPY of its body in
