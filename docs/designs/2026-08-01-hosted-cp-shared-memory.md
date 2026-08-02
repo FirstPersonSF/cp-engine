@@ -136,8 +136,10 @@ creds, deploy key, and an already-proven deployment path).
    code path that assumes it can read anything.
 3. OAuth in the MCP handshake — claude.ai and ChatGPT both support it; `.1p.is`
    SSO plugs in here.
-4. RLS policies for reads. Probably permissive within the team, but decided rather
-   than defaulted.
+4. RLS policies for reads — **permissive within the team, but on a
+   `project_members` schema** so freelancer restriction is a later policy change,
+   not a migration. Account-scoped elements need a separate grant from
+   project-scoped ones (see Resolved question 1).
 
 **`_tenant_root()` must go.** It walks up from cwd to find `.cp-engine.toml`;
 server-side there is no cwd. Read tools that need config resolve it from app state.
@@ -178,14 +180,66 @@ a decision — make it explicitly rather than discovering it after wiring.
 **~2.5 weeks**, versus 3–4 for the tree-editing plan — and without its riskiest
 component.
 
-## Open questions
+## Resolved questions (2026-08-01)
 
-1. **Read policy scope.** Can every team member read every project's spine, or is
-   it per-project? Affects RLS design in Phase 1.
-2. **Codex specifically.** Codex is a coding agent; its use case here is unclear
-   versus Claude Code. Worth confirming it is genuinely wanted before building for it.
-3. **Service-role audit.** How many current code paths assume service-role access?
-   Sizes the risk in Phase 1 step 2 — the estimate assumes a manageable number.
+### 1. Read scope — everyone reads everything, but model restriction now
+
+**Decision (Drew): everyone can read for now; freelancers may need restricted
+access later.**
+
+Ship permissive policies, but land the *schema* in Phase 1. Retrofitting access
+control means auditing every existing row for what a restricted user must not see;
+modelling it up front costs a `project_members` table and policies keyed on it, and
+tightening later becomes a policy change rather than a migration.
+
+**The distinction worth getting right now: per-project vs per-account.**
+Freelancers (Jack, Derek, Kyle) work on specific engagements — but the spine has
+**account-scoped** elements that span a company's projects (`scope='account'`,
+promoted stakeholder dossiers, `set_element_account_scope`). A freelancer on
+`ggl-5177` must not automatically inherit every Google account dossier. Model the
+grant as per-project, and make account-scoped elements require a separate grant.
+Hard to add later, cheap now.
+
+### 2. Codex — not a requirement, do not design for it
+
+**Decision (Drew): "might not be necessary, but nice to sometimes have additional
+tools for synthesis or analysis."**
+
+That is a want, not a requirement, and it should not shape the design. A
+spec-compliant remote MCP server works with any compliant client — so once Phase 1
+ships, pointing Codex at it is configuration, not a phase. Try it afterwards.
+
+Keep it separate from the ChatGPT decision: both are governance calls about a
+second vendor, but the pull toward Codex is much weaker than the pull toward mobile
+continuity, and it must not gate anything.
+
+### 3. Service-role audit — smaller than first assessed
+
+**Not a Dropbox/Google question.** Those are separate credential paths
+(`_load_dropbox_creds`, `_load_ingest_creds`) used to fetch source documents.
+Service-role is purely the *Supabase* connection.
+
+`SUPABASE_SERVICE_KEY` bypasses Row Level Security entirely — every table, every
+row, regardless of policy. That is correct today because invoking it requires the
+key on your laptop.
+
+Hosted, it breaks: if the server holds the service key and the user only
+authenticates *to the server*, RLS never runs and the policies are decorative —
+access control collapses into application code. The server must instead take the
+user's JWT and pass it to Supabase so Postgres enforces policy.
+
+**Good news on sizing.** Every MC-2 call funnels through one client constructor in
+`mc2_db.py` (`create_client`, 3 call sites). There is no scattered service-role
+usage to untangle.
+
+**One wrinkle.** The constructor stamps `X-Spine-Writer: cp-engine` on every
+client — a DB trigger (mc-2 #130) rejects UPDATEs to engine-owned columns
+(`body`/`status`/`origin`) unless that header names an authorised writer. Per-user
+connections must carry *both* identities on the same request: the acting user (for
+RLS and `author_id`) and the engine (for the column guard). Solvable, but design it
+rather than discover it.
+
+**Revised estimate: 2–3 days, not a week.**
 
 ## What this deliberately does not do
 
