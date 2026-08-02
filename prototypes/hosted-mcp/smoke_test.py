@@ -568,18 +568,17 @@ def case_o2_collision_guard(token: str) -> None:
 
 
 def case_p_create_note(token: str) -> None:
-    """The notes write, and the schema collision it surfaces.
+    """The notes write, via the entities email-bridge (decided 2026-08-02).
 
-    `notes.author_id` is FK->entities(id) while the INSERT policy demands
-    `author_id = auth.uid()`; auth ids and entity ids are disjoint, so no value
-    satisfies both. `notes.recipient_id` is separately NOT NULL with the same FK.
+    `notes.author_id` stays FK->entities(id) — the Notes feature's own identity
+    model. The INSERT policy enforces `author_id = caller_entity_id()`, a
+    definer helper mapping the caller's login email to their entities row (the
+    same bridge the mc-2 backend's `_acting_entity` uses). Recipient defaults
+    to the author's own entity (self-note).
 
-    Postgres evaluates the NOT NULL constraint FIRST, so the error a caller
-    actually sees is the recipient one — the author_id FK collision sits behind
-    it and only surfaces once a recipient is supplied. Both are the SAME schema
-    gap (the notes identity model predates the auth.uid() policy), so a PASS is
-    either diagnosis, precisely worded rather than a raw Postgres code. If the
-    schema is later fixed, a real note_id is equally a pass.
+    PASS = a real note_id (the token's user must have an entities row). The
+    no-entities-row error is also a precise diagnosis, but for the smoke user
+    an entity row is provisioned, so this case demands the happy path.
     """
     payload = call_tool(
         token,

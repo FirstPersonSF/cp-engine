@@ -1237,38 +1237,29 @@ def resolve_write_scope(client, project_code: str) -> dict[str, Any] | None:
 
 
 @mcp_server.tool()
-def create_note(project_code: str, body: str, title: str | None = None) -> dict[str, Any]:
+def create_note(
+    project_code: str,
+    body: str,
+    title: str | None = None,
+    recipient_email: str | None = None,
+) -> dict[str, Any]:
     """Create a partner Note against a project, under the caller's identity.
 
-    INSERT-only into `public.notes`, stamping `author_id` with the caller's
-    `sub` claim — which is what the INSERT policy
-    `is_team_member() AND author_id = auth.uid()` requires.
+    INSERT-only into `public.notes`. The Notes feature's identity model is the
+    `entities` registry (author_id and recipient_id are FK->entities), and the
+    caller is bridged to their own entity row BY EMAIL — the same bridge the
+    mc-2 backend's `_acting_entity` uses. The INSERT policy enforces
+    `author_id = caller_entity_id()` (a definer helper doing that email
+    lookup), so self-attribution is Postgres-enforced without repointing the
+    feature's FKs. Decided with Drew 2026-08-02.
 
-    KNOWN BLOCKER, surfaced by this tool rather than worked around: on the live
-    database those two requirements are mutually unsatisfiable. `notes.author_id`
-    carries a FOREIGN KEY to `public.entities(id)`, but the policy demands it
-    equal `auth.uid()` — and auth-user ids and `entities` ids are DISJOINT
-    namespaces (verified live: Drew's entity id has no `profiles` row, and no
-    `profiles` id appears in `entities`). So a policy-satisfying value fails the
-    FK, and an FK-satisfying value fails the policy. The tool therefore returns a
-    structured, diagnosable error naming the exact collision instead of a raw
-    Postgres 23503. Closing it is a schema decision (repoint the FK at
-    `auth.users`, or add an `author_entity_id` alongside), not something a
-    client can paper over.
+    `recipient_email` addresses the note to another entity (partner ping);
+    omitted, the note is a self-note (recipient = the author's own entity).
+    Slack delivery is NOT triggered from here (`slack_delivery='skipped'`) —
+    the hosted path records; the mc-2 backend owns DM side effects.
 
-    `notes.recipient_id` is additionally NOT NULL with the same FK, and this
-    tool's signature takes no recipient — a second reason the hosted note path
-    needs the schema question answered before it can work.
-
-    There is NO `title` column on `notes` (live columns: id, project_code,
-    author_id, recipient_id, body, status, slack_ts, slack_delivery, created_at,
-    read_at, done_at). `title`, when given, is prepended to the body as a
-    markdown H3 rather than dropped — the body is markdown and renders in-app.
-
-    Args:
-        project_code: engagement, initiative, or standalone-repo code.
-        body: markdown note text.
-        title: optional heading, folded into the body (no `title` column exists).
+    There is NO `title` column on `notes`; `title`, when given, is prepended
+    to the body as a markdown H3 — the body is markdown and renders in-app.
     """
     text = (body or "").strip()
     if not text:
@@ -1285,11 +1276,35 @@ def create_note(project_code: str, body: str, title: str | None = None) -> dict[
     if scope is None:
         return {"error": f"no project or initiative resolves for code {project_code!r}"}
 
+    try:
+        entity_id = (client.rpc("caller_entity_id").execute().data) or None
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"entity lookup failed: {type(exc).__name__}: {str(exc)[:200]}"}
+    if not entity_id:
+        return {
+            "error": "no entities row matches your login email — the Notes "
+            "feature identifies people via the entities registry. Ask a "
+            "partner to add you (mc-2 → entities) and retry."
+        }
+
+    recipient_id = entity_id
+    if recipient_email and recipient_email.strip():
+        found = (
+            client.table("entities")
+            .select("id, name")
+            .ilike("email", recipient_email.strip())
+            .limit(1)
+            .execute()
+        )
+        if not found.data:
+            return {"error": f"no entities row with email {recipient_email!r}"}
+        recipient_id = found.data[0]["id"]
+
     row = {
         "id": str(uuid.uuid4()),
         "project_code": project_code,
-        # The policy's requirement. It is also the FK collision described above.
-        "author_id": subject,
+        "author_id": entity_id,
+        "recipient_id": recipient_id,
         "body": text,
         "status": "unread",
         "slack_delivery": "skipped",
@@ -1300,23 +1315,6 @@ def create_note(project_code: str, body: str, title: str | None = None) -> dict[
     except Exception as exc:  # noqa: BLE001
         message = str(exc)
         audit(client, "create_note", {"project_code": project_code, "body": text}, 0)
-        if "notes_author_id_fkey" in message or "23503" in message:
-            return {
-                "error": "notes.author_id is FK->entities(id) but the INSERT "
-                "policy requires author_id = auth.uid(); auth-user ids and "
-                "entities ids are disjoint namespaces, so no value satisfies "
-                "both. This is a schema gap, not a client error.",
-                "detail": message[:400],
-                "project_code": project_code,
-                "caller": subject,
-            }
-        if "recipient_id" in message:
-            return {
-                "error": "notes.recipient_id is NOT NULL (FK->entities) and this "
-                "tool takes no recipient — the hosted note path needs the "
-                "author/recipient identity model resolved first.",
-                "detail": message[:400],
-            }
         return {"error": f"insert failed: {type(exc).__name__}: {message[:400]}"}
 
     created = (result.data or [{}])[0]
