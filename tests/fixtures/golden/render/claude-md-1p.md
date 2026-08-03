@@ -189,6 +189,17 @@ relations, provenance); **3 — Inbound frameworks** (INTERNAL-only);
 framework, commitment, or notes work — per-verb signatures and usage
 discipline live there, not here.
 
+## Authority precedence (enforced)
+
+When sources conflict: **partner directive** > **project canon** (the
+standing Inputs & Briefing element and what's pinned to it) >
+**delivered artifacts** > **stakeholder signals** > **working
+notes/ephemera**.
+
+**Stakeholder memory advises; it never vetoes.** Execute the partner's
+direction and surface the conflict in one line ("Heads up — Janet said X
+on 5/27; proceeding as you asked").
+
 ---
 
 # Part 2 — How to read and edit it
@@ -379,10 +390,8 @@ the master roll-up and to run word-count discipline on each sprint file.
 Spine content-writes journal themselves (one review-gated auto-step per
 element per day). Hand-propose a step (`propose_spine_step`) only for a
 move the auto-step doesn't capture, ≤2 per session. Step and relation
-authoring (`propose_spine_step`, `add_spine_step`,
-`create_spine_relation`) runs on the **hosted** server — same verb names,
-the `cp-hosted` connector — so the write carries your identity. Full
-discipline: `/cp-tools`.
+authoring runs on the hosted `cp-hosted` connector, so the write carries
+your identity. Full discipline: `/cp-tools`.
 
 ## Word-count discipline
 
@@ -392,30 +401,25 @@ Per bootstrap v2:
 
 The engine enforces both checks during `cp render` and `wrap up`.
 
-**Exempt:** per-meeting artifacts under any `meetings/` directory
-(`<scope>/<code>/meetings/*.md` and `*.txt`). These carry a meeting
-synthesis plus a verbatim transcript and are legitimately long — they
-are a fixed-per-meeting record, not an accreting CP file. Do not audit
-or rotate them.
+**Exempt:** per-meeting artifacts under any `meetings/` directory (a
+synthesis plus verbatim transcript — a fixed per-meeting record, not an
+accreting CP file, legitimately long). Do not audit or rotate them.
 
 ## Spine lint at wrap up
 
 Alongside word-count discipline, run `cp spine-lint <code>` once for each
 project the session touched. It is WARN-ONLY (never blocks, never
-auto-fixes) and flags mechanical hygiene drift: elements flagged important
-yet unbound and serving nothing; Agreements whose body says "attach as
-source" with no attached source (close the loop with `add_element_source`
-on the **hosted** `cp-hosted` connector — cp-engine #143 moved the
-sources/provenance verbs off stdio); scaffold template placeholders still
-sitting in `cp.md`. Surface any
-findings to the user and fix only what they confirm.
+auto-fixes) and flags mechanical hygiene drift: important-yet-unbound
+elements, Agreements missing their attached source (close with
+`add_element_source` on `cp-hosted`), scaffold placeholders left in
+`cp.md`. Surface findings; fix only what the user confirms.
 
 ## After a cp-engine release: restart `cp mcp`
 
-`cp mcp` is long-running — a session started before a release keeps serving
-old bytecode after `cp sync` upgrades the CLI; `cp sync` doesn't own that
-process. If a spine tool seems to ignore a fix the release notes say
-shipped, restart the MCP connection (`/mcp`) before assuming it's broken.
+`cp mcp` is long-running — a session started before a release keeps
+serving old bytecode after `cp sync` upgrades the CLI. If a spine tool
+ignores a fix the release notes say shipped, restart the MCP connection
+(`/mcp`) before assuming it's broken.
 
 ## Spec
 
