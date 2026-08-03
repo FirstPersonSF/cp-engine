@@ -3,8 +3,9 @@
 **What this is:** the cp-engine MCP server, hosted, reachable from claude.ai,
 Claude mobile, and Claude Code — no local install, no git checkout. You get
 live access to the spine, commitments, project sources, meetings, semantic
-search, and the tenant tree (Exec Summaries, sprint files), plus the ability
-to add spine elements, commitments, and notes from anywhere. Everything runs
+search, and the tenant tree (Exec Summaries, sprint files), plus full spine
+authoring — elements, versions, relations, journey steps, stakeholders,
+commitments, and notes — from anywhere. Everything runs
 under **your own identity**: Postgres row-level security is the authorization
 boundary, and every call is audit-logged.
 
@@ -24,18 +25,26 @@ boundary, and every call is audit-logged.
 Nothing to configure: the cp tenant repo's `.mcp.json` now includes the
 `cp-hosted` connector. On your next session in the tenant, run `/mcp` and
 complete the one-time OAuth sign-in (Google via mc2.1p.is). Your sessions
-then use the hosted server for reads and the five write verbs — meaning your
-spine writes carry YOUR `author_id` and land in the audit log, instead of
-running anonymously under the service key. The stdio `cp-sources` server
-stays for the verbs not yet migrated (see #143's checklist).
+then use the hosted server for reads *and* writes — meaning your spine
+writes carry YOUR `author_id` and land in the audit log, instead of running
+anonymously under the service key.
+
+The stdio `cp-sources` server stays connected for seven verbs that haven't
+migrated: the three framework verbs (`framework_compose`,
+`framework_decompose`, `framework_readiness`), plus `push_to_dropbox`,
+`pull_document_comments`, `pull_element_from_project`, and
+`fetch_project_source`. Everything else `cp-sources` does, hosted now does
+too — under your identity rather than the service key.
 
 ## Requirements (already true for all partners)
 
 - You must be on the **team roster** (`profiles` row in MC-2). Not just "able
   to log in" — an account without a roster row authenticates fine but reads
   **zero rows everywhere**. That's the security model working, not a bug.
-- For `create_note` specifically you also need an **entities row** with your
-  email (the Notes feature's people registry). Partners all have one.
+- For `create_note` specifically you also need an **entities row** whose
+  email matches your login email (the Notes feature's people registry; the
+  match is case-insensitive). All five partners have one. Every other tool
+  works without it — this requirement is `create_note`-only.
 
 ## What you can do
 
@@ -46,20 +55,34 @@ spine note that the client confirmed the Q4 date". Under the hood:
 | | Tools |
 |---|---|
 | Project state | `get_project_state` (Exec Summary + current sprint file), `read_project_file` |
-| Spine | `list_spine_elements`, `pull_spine_element`, `create_spine_element` |
-| Commitments | `list_commitments`, `create_commitment` |
-| Sources & meetings | `list_project_sources`, `pull_project_source`, `list_project_meetings` |
 | Search | `semantic_search` (vector search over the ingested corpus) |
+| Sources & meetings | `list_project_sources`, `pull_project_source`, `list_project_meetings` |
+| Spine — read | `list_spine_elements`, `pull_spine_element` |
+| Spine — author | `create_spine_element`, `set_spine_element`, `add_spine_version`, `add_spine_document`, `promote_spine_transcript` |
+| Spine — retire | `retire_spine_element`, `retire_spine_elements` |
+| Spine — sources & provenance | `add_element_source`, `remove_element_source`, `add_element_provenance`, `remove_element_provenance`, `set_element_account_scope` |
+| Spine — relations | `create_spine_relation`, `retire_spine_relation` |
+| Spine — journey steps | `propose_spine_step`, `add_spine_step`, `set_spine_step`, `reorder_spine_step`, `remove_spine_step` |
+| Stakeholders | `promote_stakeholder`, `demote_stakeholder` |
+| Commitments | `list_commitments`, `create_commitment`, `resolve_commitment` |
 | Notes | `create_note` (self-note, or `recipient_email` to ping a partner) |
+| Identity | `whoami` (who the server thinks you are — start here when reads come back empty) |
 
-Not available (by design, for now): editing existing spine versions
-(`add_spine_version` — see cp-engine #142), long-form document authoring
-(that stays in Claude Code where diffs and review work).
+That's the full surface — 34 tools. For per-verb signatures and usage
+discipline (when to propose a step vs. let one auto-journal, version status
+vocabulary, etc.), run `/cp-tools` in Claude Code; this page deliberately
+doesn't duplicate it.
+
+Not available by design: long-form document authoring and edits to the
+tenant tree itself. Those stay in Claude Code, where diffs and review work —
+the hosted server can read the tree (`read_project_file`) but never writes
+to it.
 
 ## Troubleshooting
 
-- **Every tool returns 0 rows** → you're authenticated but not on the roster;
-  ask Drew to add you to `profiles`.
+- **Every tool returns 0 rows** → run `whoami` first. If it answers with your
+  email, you're authenticated but not on the roster — ask Drew to add you to
+  `profiles`. If it fails outright, it's the connection, not permissions.
 - **`create_note` says "no entities row"** → ask a partner to add you to the
   entities registry in MC-2.
 - **Connector won't finish OAuth** → make sure you completed the Google
