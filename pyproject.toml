@@ -21,10 +21,10 @@ dependencies = [
     "anthropic>=0.40",
     "pypdf>=4.0",
     "slack-sdk>=3.27",
-    "document-ingest[llm,docx,pptx,pdf,spreadsheet,supabase,web,voyage] @ git+https://github.com/FirstPersonSF/1p-component-library.git@3ea70cc#subdirectory=starters/document-ingest",
-    "cloud-storage[all] @ git+https://github.com/FirstPersonSF/1p-component-library.git@3ea70cc#subdirectory=integrations/cloud-storage",
+    "document-ingest[llm,docx,pptx,pdf,spreadsheet,supabase,web,voyage] @ git+https://github.com/FirstPersonSF/1p-component-library.git@6009cfb#subdirectory=starters/document-ingest",
+    "cloud-storage[all] @ git+https://github.com/FirstPersonSF/1p-component-library.git@6009cfb#subdirectory=integrations/cloud-storage",
     "resilience @ git+https://github.com/FirstPersonSF/1p-component-library.git@94eb35a#subdirectory=patterns/resilience",
-    "visual-document-capture @ git+https://github.com/FirstPersonSF/1p-component-library.git@3ea70cc#subdirectory=processors/visual-document-capture",
+    "visual-document-capture @ git+https://github.com/FirstPersonSF/1p-component-library.git@6009cfb#subdirectory=processors/visual-document-capture",
     "spine-authoring @ git+https://github.com/FirstPersonSF/1p-component-library.git@023e656#subdirectory=services/spine-authoring",
     "inbound-frameworks[anthropic] @ git+https://github.com/FirstPersonSF/1p-component-library.git@3ea70cc#subdirectory=services/inbound-frameworks",
     "voyageai>=0.4",
@@ -60,7 +60,7 @@ build-backend = "hatchling.build"
 # (subdirectories, not yet on PyPI). Pinning rules — the resolver requires
 # IDENTICAL URLs for the same package, so:
 #   - document-ingest / cloud-storage / visual-document-capture: pin all
-#     to one SHA (currently a7214a7 = inbound-frameworks landing).
+#     to one SHA (currently 6009cfb = Drive export-suffix fix).
 #   - resilience: its URL must BYTE-MATCH the resilience URL inside
 #     cloud-storage's own pyproject.toml at the pinned cloud-storage SHA
 #     (currently @94eb35a — content-identical to HEAD; resilience hasn't

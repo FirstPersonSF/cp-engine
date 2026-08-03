@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.84.1 — 2026-08-03
+
+- **Drive ingest: Google Slides/Sheets exports no longer land as `.docx`.**
+  The cloud-storage connector hard-coded `.docx` for every Google-native
+  export, so a Slides deck exported pptx bytes under a `.docx` name and
+  python-docx failed the ingest ("file … is not a Word file, content type
+  is '…presentationml…'" — found live on "Behind Every Win VOC Brand
+  Campaign"). The suffix now derives from the exported MIME (component
+  library 6009cfb; document-ingest / cloud-storage / visual-document-capture
+  pins bumped to it). Also fixes dot-bearing Drive titles ("Notes v1.2")
+  shipping with no usable extension and being silently skipped.
+
 ## v0.84.0 — 2026-08-03
 
 - **Canon reaches the engine's read surfaces (#149).** `cp brief` gains a
