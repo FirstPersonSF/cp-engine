@@ -112,6 +112,23 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   (`cp-hosted` connector; cp-engine #143 ported it off stdio) — delete one edge
   (fix a mis-recorded relation). Tolerates a dead endpoint: pass raw est_item_ids
   to clean an orphaned edge left by an older retire.
+- `promote_to_canon(code, key, replaces_key?, note?)` — **hosted-server verb**
+  (spec v04 §2, #147) — promote an element into the project's CANON: the small
+  curated "current truth" set anchored on the standing Inputs & Briefing element
+  (membership = active `canon_of` edge member → brief). Deliberate and
+  DISPLACING: with `replaces_key` it also writes `supersedes` (new → old) and
+  removes the old member's canon edge. Warns past 7 members — displace, don't
+  accrete. Journals one review-gated step on the brief. Authority ordering:
+  canon outranks delivered artifacts and stakeholder signals; only a live
+  partner directive outranks canon.
+- `seal_to_deliverable(code, deliverable_key, absorbed_keys[], note?)` —
+  **hosted-server verb** (spec v04 §3, #148) — a shipped deliverable is a
+  COMPRESSION EVENT: batch-write `absorbed_by` edges from the elements it was
+  synthesized from. Absorbed elements disappear from `list_spine_elements`
+  defaults (`absorbed_hidden` count reported) and return annotated with
+  `include_absorbed=true` (retrospective mode). Absorbed ≠ archived — one hop
+  behind the deliverable, not gone. Idempotent per pair; one journal step on
+  the deliverable.
 - `promote_stakeholder(code, key)` — **hosted-server verb** (`cp-hosted`
   connector; cp-engine #143 ported it off stdio) — promote a stakeholder element
   to ACCOUNT scope: it becomes readable from every project of the same company

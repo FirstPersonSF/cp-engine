@@ -62,13 +62,14 @@ spine note that the client confirmed the Q4 date". Under the hood:
 | Spine — retire | `retire_spine_element`, `retire_spine_elements` |
 | Spine — sources & provenance | `add_element_source`, `remove_element_source`, `add_element_provenance`, `remove_element_provenance`, `set_element_account_scope` |
 | Spine — relations | `create_spine_relation`, `retire_spine_relation` |
+| Spine — lifecycle (spec v04) | `promote_to_canon` (curate the ≤7-element "current truth" set on the Inputs & Briefing anchor), `seal_to_deliverable` (absorb research into a shipped deliverable; hidden from list defaults, back via `include_absorbed=true`) |
 | Spine — journey steps | `propose_spine_step`, `add_spine_step`, `set_spine_step`, `reorder_spine_step`, `remove_spine_step` |
 | Stakeholders | `promote_stakeholder`, `demote_stakeholder` |
 | Commitments | `list_commitments`, `create_commitment`, `resolve_commitment` |
 | Notes | `create_note` (self-note, or `recipient_email` to ping a partner) |
 | Identity | `whoami` (who the server thinks you are — start here when reads come back empty) |
 
-That's the full surface — 34 tools. For per-verb signatures and usage
+That's the full surface — 36 tools. For per-verb signatures and usage
 discipline (when to propose a step vs. let one auto-journal, version status
 vocabulary, etc.), run `/cp-tools` in Claude Code; this page deliberately
 doesn't duplicate it.
