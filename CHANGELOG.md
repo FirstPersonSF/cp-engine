@@ -4,6 +4,28 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.84.0 — 2026-08-03
+
+- **Canon reaches the engine's read surfaces (#149).** `cp brief` gains a
+  `## Canon — current truth` section listing the elements pinned to the
+  standing Inputs & Briefing anchor via active `canon_of` edges (slug-native
+  + dir-slug fallback, degrades to an absence note like every section).
+  `cp spine-lint` gains the spec-v04 lifecycle checks: canon oversized
+  (> 7 members), absorbed-but-serving (sealed element still bound to live
+  work), and stale canon member (a member that is itself absorbed or that a
+  `supersedes` edge points at — deliberately NOT a date comparison against
+  the brief, which would flag every member on any brief re-version).
+  The stdio `_RELATION_KINDS` bullet of #149 is moot: #143 removed the
+  relation verbs (and their vocabulary) from the stdio server entirely.
+- **`actor` — who is speaking (#146 slice 2, mc-2 mig 126).**
+  `spine_substance.actor` (`partner | client | vendor | inferred`, default
+  `inferred`) gives retrieval the datum behind the v0.83.0
+  authority-precedence rule; `origin` tracks write-path, this tracks voice.
+  Hosted `set_spine_element` gains the `actor` param; `list_spine_elements`
+  and `pull_spine_element` surface it. Backfill: only the unambiguous
+  mapping (layer `Client feedback` → `client`); everything else stays
+  `inferred` — tagging is deliberate.
+
 ## v0.83.0 — 2026-08-03
 
 - **Authority precedence rule in the session protocol** (#146, slice 1 of the

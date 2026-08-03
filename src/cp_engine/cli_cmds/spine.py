@@ -729,6 +729,23 @@ def spine_lint_cmd(code: str) -> None:
         sys.exit(1)
     warnings.extend(lint_spine_rows(rows))
 
+    # Spec-v04 lifecycle checks (#149) — best-effort: a project with no
+    # edges (or a read failure on the relations table) lints the rest.
+    from cp_engine.spine_lint import lint_lifecycle
+    try:
+        relations = (
+            client.table(mc2_db.Tables.SPINE_RELATIONS)
+            .select("kind, from_item_id, to_item_id")
+            .eq("project_code", code)
+            .eq("status", "active")
+            .in_("kind", ["canon_of", "absorbed_by", "supersedes"])
+            .execute()
+            .data
+        ) or []
+        warnings.extend(lint_lifecycle(rows, relations))
+    except Exception:  # noqa: BLE001 — lifecycle checks degrade, lint survives
+        pass
+
     # cp.md placeholder check — best-effort, offline (skip silently when the
     # working dir doesn't resolve; the spine checks already ran).
     try:

@@ -127,6 +127,7 @@ def brief_cmd(code: str) -> None:
     from cp_engine.brief import (
         compose_brief,
         fetch_briefing_body,
+        fetch_canon_members,
         fetch_open_commitments,
         newest_session_capture,
     )
@@ -164,6 +165,13 @@ def brief_cmd(code: str) -> None:
         commitments, commitments_note = fetch_open_commitments(client, code)
     except Exception as exc:  # noqa: BLE001 — section degrades, pack survives
         commitments, commitments_note = None, f"Commitments read failed: {exc}"
+    try:
+        canon, canon_note = fetch_canon_members(
+            client, code,
+            alt_code=working_dir.name if working_dir is not None else None,
+        )
+    except Exception as exc:  # noqa: BLE001 — section degrades, pack survives
+        canon, canon_note = None, f"Canon read failed: {exc}"
 
     if working_dir is None and briefing_body is None and commitments is None:
         click.echo(
@@ -182,6 +190,8 @@ def brief_cmd(code: str) -> None:
             commitments,
             commitments_note,
             newest_session_capture(working_dir),
+            canon=canon,
+            canon_note=canon_note,
         ),
         nl=False,
     )

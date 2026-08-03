@@ -74,3 +74,55 @@ def test_placeholders_collapse_to_one_warning():
 def test_no_placeholders_no_warning():
     assert lint_cp_placeholders("# cp\n- real line\n") == []
     assert lint_cp_placeholders("") == []
+
+
+# ── spec-v04 lifecycle checks (#149) ─────────────────────────────────────
+
+
+def _lrow(eid, **kw):
+    base = {"est_item_id": eid, "framing": kw.pop("framing", eid),
+            "layer": "Synthesis", "binding": "unbound", "serves": [],
+            "important": False, "body": "", "sources": [],
+            "version_date": "2026-07-01"}
+    base.update(kw)
+    return base
+
+
+def _edge(kind, frm, to):
+    return {"kind": kind, "from_item_id": frm, "to_item_id": to}
+
+
+def test_lifecycle_clean_canon_and_seal():
+    from cp_engine.spine_lint import lint_lifecycle
+    rows = [_lrow("brief"), _lrow("a"), _lrow("b"), _lrow("sealed")]
+    rels = [_edge("canon_of", "a", "brief"), _edge("canon_of", "b", "brief"),
+            _edge("absorbed_by", "sealed", "deliv")]
+    assert lint_lifecycle(rows, rels) == []
+
+
+def test_lifecycle_canon_oversized():
+    from cp_engine.spine_lint import lint_lifecycle
+    rows = [_lrow(f"m{i}") for i in range(8)]
+    rels = [_edge("canon_of", f"m{i}", "brief") for i in range(8)]
+    out = lint_lifecycle(rows, rels)
+    assert len(out) == 1 and "canon oversized" in out[0]
+
+
+def test_lifecycle_absorbed_but_serving():
+    from cp_engine.spine_lint import lint_lifecycle
+    rows = [_lrow("sealed", binding="live", serves=["work-item"])]
+    rels = [_edge("absorbed_by", "sealed", "deliv")]
+    out = lint_lifecycle(rows, rels)
+    assert len(out) == 1 and "absorbed-but-serving" in out[0]
+
+
+def test_lifecycle_stale_canon_member_absorbed_and_superseded():
+    from cp_engine.spine_lint import lint_lifecycle
+    rows = [_lrow("old"), _lrow("gone"), _lrow("new")]
+    rels = [_edge("canon_of", "old", "brief"),
+            _edge("canon_of", "gone", "brief"),
+            _edge("supersedes", "new", "old"),
+            _edge("absorbed_by", "gone", "deliv")]
+    out = lint_lifecycle(rows, rels)
+    assert len(out) == 2
+    assert all("stale canon member" in w for w in out)

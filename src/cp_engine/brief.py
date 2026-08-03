@@ -146,6 +146,22 @@ def briefing_section(body: str | None, note: str | None) -> str:
     return f"_{note or 'No Inputs & Briefing available.'}_"
 
 
+def canon_section(members: list[dict] | None, note: str | None) -> str:
+    """The project canon (spec v04 §2): current-truth elements pinned to the
+    brief via active `canon_of` edges. One line per member."""
+    if members is None:
+        return f"_{note or 'Canon unavailable.'}_"
+    if not members:
+        return ("_No canon members yet — `promote_to_canon` (cp-hosted) pins "
+                "the current-truth set to this brief._")
+    lines = [
+        f"- **{(m.get('framing') or m.get('est_item_id') or '').strip()}** "
+        f"(`{m.get('est_item_id')}`)"
+        for m in members
+    ]
+    return "\n".join(lines)
+
+
 def commitments_section(rows: list[dict] | None, note: str | None) -> str:
     """Open commitments as one line each: description — owner, due date."""
     if rows is None:
@@ -185,12 +201,16 @@ def compose_brief(
     commitments: list[dict] | None,
     commitments_note: str | None,
     newest_capture: str | None,
+    canon: list[dict] | None = None,
+    canon_note: str | None = None,
 ) -> str:
-    """Assemble the five-section context pack. Pure and deterministic —
-    identical inputs compose byte-identical output."""
+    """Assemble the six-section context pack. Pure and deterministic —
+    identical inputs compose byte-identical output. `canon`/`canon_note`
+    default to the absence shape so pre-v04 callers compose unchanged."""
     sections = (
         ("Facts", facts_section(cp_md_text)),
         ("Exec Summary (trimmed)", exec_summary_section(cp_md_text)),
+        ("Canon — current truth", canon_section(canon, canon_note)),
         ("Inputs & Briefing", briefing_section(briefing_body, briefing_note)),
         ("Open commitments", commitments_section(commitments,
                                                  commitments_note)),
@@ -267,6 +287,62 @@ def fetch_briefing_body(
     if not body:
         return None, "Inputs & Briefing element exists but its body is empty."
     return body, None
+
+
+def fetch_canon_members(
+    client, code: str, alt_code: str | None = None
+) -> tuple[list[dict] | None, str | None]:
+    """The project's canon members: `([{est_item_id, framing}, …], note)`.
+
+    Reads active `canon_of` edges by project_code (same slug-native + dir-slug
+    fallback as `fetch_briefing_body`), then titles the members from their
+    live `spine_substance` rows. A project with no edges returns `([], None)`
+    — the section renders its promote_to_canon hint, not an absence note.
+    """
+    from cp_engine import mc2_db
+
+    if client is None:
+        return None, "MC-2 unreachable — canon not read."
+
+    def _edges(project_code: str) -> list[dict]:
+        return (
+            client.table(mc2_db.Tables.SPINE_RELATIONS)
+            .select("from_item_id, to_item_id")
+            .eq("project_code", project_code)
+            .eq("kind", "canon_of")
+            .eq("status", "active")
+            .execute()
+            .data
+        ) or []
+
+    resolved = code
+    edges = _edges(code)
+    if not edges and alt_code and alt_code != code:
+        resolved = alt_code
+        edges = _edges(alt_code)
+    member_ids = [e["from_item_id"] for e in edges]
+    if not member_ids:
+        return [], None
+
+    titles: dict[str, str] = {}
+    try:
+        for r in (
+            client.table(mc2_db.Tables.SPINE_SUBSTANCE)
+            .select("est_item_id, framing")
+            .eq("project_code", resolved)
+            .eq("status", "live")
+            .in_("est_item_id", member_ids)
+            .execute()
+            .data
+            or []
+        ):
+            titles[r["est_item_id"]] = r.get("framing")
+    except Exception:  # noqa: BLE001 — titles are a nicety, ids suffice
+        pass
+    return (
+        [{"est_item_id": m, "framing": titles.get(m)} for m in member_ids],
+        None,
+    )
 
 
 def fetch_open_commitments(client, code) -> tuple[list[dict] | None, str | None]:

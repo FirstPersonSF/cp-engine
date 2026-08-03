@@ -65,11 +65,14 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   text to `add_spine_version` instead.
 - `add_spine_version(code, element_id, body, version_note?)` — supersede the prior
   live version with a new one (a targeted "what changed" update).
-- `set_spine_element(code, key, important?, note?, layer?, framing?, serves?)` —
+- `set_spine_element(code, key, important?, note?, layer?, framing?, serves?, actor?)` —
   **hosted-server verb** (`cp-hosted` connector; cp-engine #143 ported it off
   stdio) — partial update of an element's flags and element-level facts: retitle
   with `framing` (the est_item_id never changes), rebind with `serves` (work-item
-  ids; `[]` unbinds — `binding` follows automatically), re-file with `layer`.
+  ids; `[]` unbinds — `binding` follows automatically), re-file with `layer`,
+  and tag WHO IS SPEAKING with `actor` (partner | client | vendor | inferred —
+  the schema half of the v04 authority ordering; list/pull surface it, and a
+  `client`-actor element is a stakeholder signal: it advises, never vetoes).
   NOTE: the stdio copy also promoted the element's source transcript to RAG on an
   `important` false→true flip; the hosted copy does NOT do that yet (#143). Run
   `promote_spine_transcript(code, key)` — still a stdio verb — to promote or retry

@@ -414,8 +414,12 @@ mcp_server = MCPServer(
 # analogue and is what these tools return.
 SPINE_LIST_COLUMNS = (
     "est_item_id, framing, layer, binding, status, important, archived, "
-    "scope, project_id, version_label, version_date, synced_at"
+    "scope, project_id, version_label, version_date, synced_at, actor"
 )
+
+# `spine_substance.actor` (mig 126) — who is speaking, for the v04
+# authority-precedence ordering (#146). Tag deliberately; default 'inferred'.
+_ACTORS = frozenset({"partner", "client", "vendor", "inferred"})
 SPINE_PULL_COLUMNS = SPINE_LIST_COLUMNS + ", body, sources, note, project_code, rel_path"
 COMMITMENT_COLUMNS = (
     "id, description, owner_email, owner_name, direction, due_date, "
@@ -739,6 +743,7 @@ def list_spine_elements(
                 # `synced_at` stands in for the requested `updated_at`, which
                 # this table does not have.
                 "synced_at": r.get("synced_at"),
+                "actor": r.get("actor"),
                 **({"canon": True} if eid in canon_ids else {}),
                 **(
                     {"absorbed_by": absorbed_into[eid]}
@@ -832,6 +837,7 @@ def pull_spine_element(element_id: str, project_code: str | None = None) -> dict
         "version_date": row.get("version_date"),
         "synced_at": row.get("synced_at"),
         "note": row.get("note"),
+        "actor": row.get("actor"),
         "sources": row.get("sources"),
         "body": row.get("body"),
         "versions_visible": len(rows),
@@ -3020,9 +3026,11 @@ def set_spine_element(
     layer: str | None = None,
     framing: str | None = None,
     serves: list[str] | None = None,
+    actor: str | None = None,
 ) -> dict[str, Any]:
-    """Set `important`, `note`, `layer`, `framing` (title), and/or `serves` on a
-    spine element — the hosted port of the stdio verb (#143 batch 2).
+    """Set `important`, `note`, `layer`, `framing` (title), `serves`, and/or
+    `actor` on a spine element — the hosted port of the stdio verb (#143
+    batch 2; `actor` added by #146/mig 126).
 
     `key` resolves to ONE live element (exact est_item_id, bare slug, or a
     distinct `framing` substring — the same discipline as `pull_spine_element`).
@@ -3065,11 +3073,15 @@ def set_spine_element(
         layer: element kind, normalized to the canonical string.
         framing: retitle the element (est_item_id never changes).
         serves: work-item ids to bind to; `[]` unbinds.
+        actor: who is speaking — partner | client | vendor | inferred
+            (spec v04 authority ordering; tag deliberately).
     """
-    if all(v is None for v in (important, note, layer, framing, serves)):
+    if all(v is None for v in (important, note, layer, framing, serves, actor)):
         return {
-            "note": "nothing to update (pass important/note/layer/framing/serves)"
+            "note": "nothing to update (pass important/note/layer/framing/serves/actor)"
         }
+    if actor is not None and actor.strip().lower() not in _ACTORS:
+        return {"error": f"unknown actor {actor!r}; use one of {sorted(_ACTORS)}"}
 
     client = user_client()
     scope = resolve_write_scope(client, project_code)
@@ -3105,6 +3117,8 @@ def set_spine_element(
     if serves is not None:
         patch["serves"] = list(serves)
         patch["binding"] = "live" if serves else "unbound"
+    if actor is not None:
+        patch["actor"] = actor.strip().lower()
 
     audit_args = {
         "project_code": project_code,
@@ -3170,6 +3184,8 @@ def set_spine_element(
     if serves is not None:
         out["serves"] = row.get("serves")
         out["binding"] = row.get("binding")
+    if actor is not None:
+        out["actor"] = row.get("actor")
     if superseded_count:
         out["note_on_scope"] = (
             f"{superseded_count} superseded version(s) kept their prior "
