@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.83.0 — 2026-08-03
+
+- **Authority precedence rule in the session protocol** (#146, slice 1 of the
+  canon/lifecycle design — `docs/specs/cp-engine-spec-v04-canon-and-lifecycle.md`).
+  `CLAUDE.md` gains an enforced "Authority precedence" section: partner
+  directive → project canon → delivered artifacts → stakeholder signals →
+  working notes. Stakeholder memory advises, never vetoes — on conflict the
+  agent executes the partner's direction and surfaces the remembered signal
+  in one line. Companion issues filed for the schema/verb slices: per-project
+  canon anchored on the standing Inputs & Briefing element (#147) and
+  seal-on-delivery with `absorbed_by` retrieval filtering (#148).
+
 ## v0.82.0 — 2026-08-02
 
 - **The hosted-cp ratchet (#143): 15 DB verbs move from stdio `cp mcp` to the
