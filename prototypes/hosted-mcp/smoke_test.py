@@ -335,6 +335,9 @@ def case_e_tools_list(token: str) -> None:
         # Package B — read-only tenant tree (#138)
         "get_project_state",
         "read_project_file",
+        # Spec v04 — the lifecycle verbs (#147 canon, #148 seal)
+        "promote_to_canon",
+        "seal_to_deliverable",
     }
     missing = sorted(expected - set(names))
     # Assert the COUNT too, not just containment: an unexpected extra tool is a

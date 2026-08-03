@@ -659,12 +659,22 @@ def embed_query(text: str) -> list[float]:
 
 
 @mcp_server.tool()
-def list_spine_elements(project_code: str) -> dict[str, Any]:
+def list_spine_elements(
+    project_code: str, include_absorbed: bool = False
+) -> dict[str, Any]:
     """List live spine elements for a project, under the caller's identity.
+
+    Lifecycle-aware (spec v04): an element with an active `absorbed_by` edge
+    was sealed into a shipped deliverable and is HISTORICAL — excluded by
+    default, with the count reported as `absorbed_hidden`. Pass
+    `include_absorbed=true` (retrospective mode) to include them, each
+    annotated with the deliverable that absorbed it. Canon members (active
+    `canon_of` edge to the standing brief) carry `canon: true`.
 
     Args:
         project_code: engagement, initiative, or standalone-repo code
                       (e.g. "ibx-5153", "mission-control").
+        include_absorbed: retrospective mode — include sealed elements.
     """
     client = user_client()
     project_id = resolve_project_id(client, project_code)
@@ -685,30 +695,80 @@ def list_spine_elements(project_code: str) -> dict[str, Any]:
         .data
         or []
     )
-    elements = [
-        {
-            "slug": r.get("est_item_id"),
-            "framing": r.get("framing"),
-            "status": r.get("status"),
-            "layer": r.get("layer"),
-            "binding": r.get("binding"),
-            "important": bool(r.get("important")),
-            "version_label": r.get("version_label"),
-            "version_date": r.get("version_date"),
-            # `synced_at` stands in for the requested `updated_at`, which this
-            # table does not have.
-            "synced_at": r.get("synced_at"),
-        }
-        for r in rows
-        if not r.get("archived")
-    ]
-    audit(client, "list_spine_elements", {"project_code": project_code}, len(elements))
+
+    # One edge read serves both annotations: canon membership and absorption.
+    absorbed_into: dict[str, str] = {}
+    canon_ids: set[str] = set()
+    try:
+        for e in (
+            client.table("spine_relations")
+            .select("kind, from_item_id, to_item_id")
+            .eq("project_id", project_id)
+            .eq("status", "active")
+            .in_("kind", ["canon_of", "absorbed_by"])
+            .execute()
+            .data
+            or []
+        ):
+            if e["kind"] == "canon_of":
+                canon_ids.add(e["from_item_id"])
+            else:
+                absorbed_into[e["from_item_id"]] = e["to_item_id"]
+    except Exception:  # noqa: BLE001 — annotations degrade, the list survives
+        pass
+
+    elements = []
+    absorbed_hidden = 0
+    for r in rows:
+        if r.get("archived"):
+            continue
+        eid = r.get("est_item_id")
+        if eid in absorbed_into and not include_absorbed:
+            absorbed_hidden += 1
+            continue
+        elements.append(
+            {
+                "slug": eid,
+                "framing": r.get("framing"),
+                "status": r.get("status"),
+                "layer": r.get("layer"),
+                "binding": r.get("binding"),
+                "important": bool(r.get("important")),
+                "version_label": r.get("version_label"),
+                "version_date": r.get("version_date"),
+                # `synced_at` stands in for the requested `updated_at`, which
+                # this table does not have.
+                "synced_at": r.get("synced_at"),
+                **({"canon": True} if eid in canon_ids else {}),
+                **(
+                    {"absorbed_by": absorbed_into[eid]}
+                    if eid in absorbed_into
+                    else {}
+                ),
+            }
+        )
+    audit(
+        client,
+        "list_spine_elements",
+        {"project_code": project_code, "include_absorbed": include_absorbed},
+        len(elements),
+    )
     return {
         "project_code": project_code,
         "project_id": project_id,
         "caller": caller_subject(),
         "count": len(elements),
         "elements": elements,
+        **({"canon_size": len(canon_ids)} if canon_ids else {}),
+        **(
+            {
+                "absorbed_hidden": absorbed_hidden,
+                "note_on_absorbed": "sealed into a deliverable; pass "
+                "include_absorbed=true for retrospective mode",
+            }
+            if absorbed_hidden
+            else {}
+        ),
         **({"note": TEAM_EMPTY_HINT} if not elements else {}),
     }
 
@@ -1264,12 +1324,30 @@ _UUID_RE = re.compile(
 # `commitments.direction` — mirrors the mc-2 CHECK constraint.
 _DIRECTIONS = {"us_to_them", "them_to_us", "internal"}
 
-# `spine_relations.kind` — the closed vocabulary, copied verbatim from
-# `mcp_server._RELATION_KINDS`. Validated in-process so an unknown kind is a
-# clear tool error rather than an opaque 500 from the DB CHECK.
+# `spine_relations.kind` — the closed vocabulary. The first five are copied
+# verbatim from `mcp_server._RELATION_KINDS`; mig 125 added the two lifecycle
+# kinds (spec v04: canon #147, seal-on-delivery #148). Validated in-process so
+# an unknown kind is a clear tool error rather than an opaque 500 from the DB
+# CHECK.
 _RELATION_KINDS = frozenset(
-    {"responds_to", "supersedes", "derives_from", "informs", "contradicts"}
+    {
+        "responds_to",
+        "supersedes",
+        "derives_from",
+        "informs",
+        "contradicts",
+        "canon_of",
+        "absorbed_by",
+    }
 )
+
+# The per-project canon anchor: the standing Inputs & Briefing element
+# (spec v04 §2). Canon membership = an active `canon_of` edge member -> brief.
+BRIEF_ITEM_ID = "_authored/inputs-briefing"
+
+# Canon size target (spec v04): promotion past this succeeds but warns —
+# scarcity is the feature; the warn mirrors spine-lint's posture, not a block.
+CANON_TARGET_MAX = 7
 
 
 def canon_layer(type_: str) -> str:
@@ -1941,6 +2019,309 @@ def create_spine_relation(
         "created_by": email,
         "caller": caller_subject(),
     }
+
+
+def _live_framing(client, project_id: str, est_item_id: str) -> str | None:
+    rows = (
+        client.table("spine_substance")
+        .select("framing")
+        .eq("project_id", project_id)
+        .eq("est_item_id", est_item_id)
+        .eq("status", "live")
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    return rows[0].get("framing") if rows else None
+
+
+def _insert_lifecycle_edge(
+    client,
+    scope: dict[str, Any],
+    kind: str,
+    from_eid: str,
+    to_eid: str,
+    email: str,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Idempotent active-edge insert, shared by the two lifecycle verbs.
+
+    Same discipline as `create_spine_relation`: check-first, then treat a
+    concurrent 23505 as the edge already existing rather than a failure.
+    Returns {created: bool, already?: bool} or {error}.
+    """
+    existing = (
+        client.table("spine_relations")
+        .select("id")
+        .eq("project_id", scope["id"])
+        .eq("kind", kind)
+        .eq("from_item_id", from_eid)
+        .eq("to_item_id", to_eid)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if existing:
+        return {"created": False, "already": True, "relation_id": existing[0].get("id")}
+    try:
+        result = (
+            client.table("spine_relations")
+            .insert(
+                {
+                    "project_id": scope["id"],
+                    "project_code": scope["project_code"],
+                    "kind": kind,
+                    "from_item_id": from_eid,
+                    "to_item_id": to_eid,
+                    "status": "active",
+                    "source": "manual",
+                    "note": note,
+                    "created_by": email,
+                }
+            )
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        if "23505" in str(exc) or "duplicate key" in str(exc).lower():
+            return {"created": False, "already": True}
+        return {"error": f"{kind} insert failed: {type(exc).__name__}: {str(exc)[:400]}"}
+    return {"created": True, "relation_id": (result.data or [{}])[0].get("id")}
+
+
+def _canon_member_ids(client, project_id: str) -> list[str]:
+    """est_item_ids with an active canon_of edge in this project."""
+    rows = (
+        client.table("spine_relations")
+        .select("from_item_id")
+        .eq("project_id", project_id)
+        .eq("kind", "canon_of")
+        .eq("status", "active")
+        .execute()
+        .data
+        or []
+    )
+    return [r["from_item_id"] for r in rows]
+
+
+@mcp_server.tool()
+def promote_to_canon(
+    project_code: str,
+    key: str,
+    replaces_key: str | None = None,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Promote an element into the project's canon (#147, spec v04 §2).
+
+    The canon is the small curated "current truth" set, anchored on the
+    standing Inputs & Briefing element (`_authored/inputs-briefing`): membership
+    is an active `canon_of` edge member -> brief. Promotion is DELIBERATE AND
+    DISPLACING — when `replaces_key` is given, this verb also writes a
+    `supersedes` edge (new -> old) so the lineage survives, and removes the old
+    member's `canon_of` edge. Scarcity is the feature: past ~7 members the verb
+    still succeeds but returns a warning (spine-lint posture, not a block).
+
+    The move is auto-journaled as ONE review-gated step on the BRIEF element
+    (the canon's trail lives on its anchor). Journaling is non-fatal.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        key: the element to promote (est_item_id or unique framing substring).
+        replaces_key: optional canon member this one displaces.
+        note: optional one-line "why" stored on the canon_of edge.
+    """
+    client = user_client()
+    email = caller_email()
+    if not email:
+        return {"error": "no email claim on the caller's token — canon edges are attributed."}
+
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    brief_eid, err = resolve_live_element_id(client, scope["id"], BRIEF_ITEM_ID)
+    if err is not None:
+        return err
+    if brief_eid is None:
+        return {
+            "error": f"no live standing Inputs & Briefing element "
+            f"({BRIEF_ITEM_ID!r}) in {project_code!r} — the canon anchors on the "
+            "brief; scaffold/author it first."
+        }
+
+    member_eid, err = resolve_live_element_id(client, scope["id"], key)
+    if err is not None:
+        return err
+    if member_eid is None:
+        return {"note": f"no single live element matching key {key!r}"}
+    if member_eid == brief_eid:
+        return {"error": "the brief anchors the canon; it cannot be a member of itself"}
+
+    audit_args = {"project_code": project_code, "key": key, "replaces_key": replaces_key}
+    edge = _insert_lifecycle_edge(
+        client, scope, "canon_of", member_eid, brief_eid, email, note
+    )
+    if edge.get("error"):
+        audit(client, "promote_to_canon", audit_args, 0)
+        return edge
+
+    out: dict[str, Any] = {
+        "project_code": scope["project_code"],
+        "promoted": member_eid,
+        "canon_anchor": brief_eid,
+        "created": edge.get("created", False),
+        **({"already": True} if edge.get("already") else {}),
+        "caller": caller_subject(),
+    }
+
+    if replaces_key:
+        # Live first, raw est_item_id fallback — the displaced member may
+        # already be retired (same tolerance as retire_spine_relation).
+        old_eid, _ = resolve_live_element_id(client, scope["id"], replaces_key)
+        old_eid = old_eid or replaces_key
+        if old_eid == member_eid:
+            out["replaces"] = {"note": "replaces_key resolves to the promoted element; skipped"}
+        else:
+            supersede = _insert_lifecycle_edge(
+                client, scope, "supersedes", member_eid, old_eid, email,
+                note or "displaced from canon",
+            )
+            removed = (
+                client.table("spine_relations")
+                .delete()
+                .eq("project_id", scope["id"])
+                .eq("kind", "canon_of")
+                .eq("from_item_id", old_eid)
+                .eq("to_item_id", brief_eid)
+                .execute()
+                .data
+            ) or []
+            out["replaces"] = {
+                "displaced": old_eid,
+                "supersedes_edge": supersede,
+                "canon_edge_removed": len(removed),
+            }
+
+    members = _canon_member_ids(client, scope["id"])
+    out["canon_size"] = len(members)
+    if len(members) > CANON_TARGET_MAX:
+        out["warning"] = (
+            f"canon has {len(members)} members (target ≤{CANON_TARGET_MAX}). "
+            "Scarcity is the feature — consider displacing (replaces_key) "
+            "rather than accreting."
+        )
+
+    if edge.get("created"):
+        try:
+            framing = _live_framing(client, scope["id"], member_eid) or member_eid
+            out["step"] = upsert_auto_step(
+                client,
+                scope["id"],
+                brief_eid,
+                f"Canon: promoted {framing}"[:120],
+                step_date=date.today().isoformat(),
+            )
+        except Exception as exc:  # noqa: BLE001 — journaling is non-fatal
+            out["step"] = {"error": f"auto-step failed: {type(exc).__name__}: {str(exc)[:300]}"}
+
+    audit(client, "promote_to_canon", audit_args, 1 if edge.get("created") else 0)
+    return out
+
+
+@mcp_server.tool()
+def seal_to_deliverable(
+    project_code: str,
+    deliverable_key: str,
+    absorbed_keys: list[str],
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Seal elements into a shipped deliverable (#148, spec v04 §3).
+
+    A shipped deliverable is a COMPRESSION EVENT: it absorbs the elements it
+    was synthesized from. This verb batch-writes `absorbed_by` edges
+    (source element -> deliverable element). An element with an active
+    `absorbed_by` edge is HISTORICAL on the read side — excluded from
+    `list_spine_elements` by default, included (annotated) with
+    `include_absorbed=true`. Absorbed is NOT archived: the element stays one
+    hop behind its deliverable for retrospectives.
+
+    The whole seal journals as ONE review-gated step on the DELIVERABLE
+    element ("Sealed N elements on delivery"). Journaling is non-fatal.
+    Idempotent per pair: re-sealing reports `already` per element.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        deliverable_key: the absorbing deliverable (est_item_id or unique
+            framing substring).
+        absorbed_keys: the elements it absorbed.
+        note: optional one-line annotation stored on each edge (e.g. the
+            delivery date or deliverable version).
+    """
+    client = user_client()
+    email = caller_email()
+    if not email:
+        return {"error": "no email claim on the caller's token — seal edges are attributed."}
+
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    deliv_eid, err = resolve_live_element_id(client, scope["id"], deliverable_key)
+    if err is not None:
+        return err
+    if deliv_eid is None:
+        return {"note": f"no single live element matching deliverable_key {deliverable_key!r}"}
+
+    sealed: list[str] = []
+    already: list[str] = []
+    skipped: list[dict[str, str]] = []
+    for k in absorbed_keys or []:
+        eid, err = resolve_live_element_id(client, scope["id"], k)
+        if err is not None or eid is None:
+            skipped.append({"key": k, "reason": "no single live element match"})
+            continue
+        if eid == deliv_eid:
+            skipped.append({"key": k, "reason": "is the deliverable itself"})
+            continue
+        edge = _insert_lifecycle_edge(
+            client, scope, "absorbed_by", eid, deliv_eid, email, note
+        )
+        if edge.get("error"):
+            skipped.append({"key": k, "reason": edge["error"]})
+        elif edge.get("already"):
+            already.append(eid)
+        else:
+            sealed.append(eid)
+
+    audit_args = {
+        "project_code": project_code,
+        "deliverable_key": deliverable_key,
+        "absorbed_count": len(absorbed_keys or []),
+    }
+    out: dict[str, Any] = {
+        "project_code": scope["project_code"],
+        "deliverable": deliv_eid,
+        "sealed": sealed,
+        "already": already,
+        "skipped": skipped,
+        "caller": caller_subject(),
+    }
+
+    if sealed:
+        try:
+            out["step"] = upsert_auto_step(
+                client,
+                scope["id"],
+                deliv_eid,
+                f"Sealed {len(sealed)} element(s) on delivery",
+                step_date=date.today().isoformat(),
+            )
+        except Exception as exc:  # noqa: BLE001 — journaling is non-fatal
+            out["step"] = {"error": f"auto-step failed: {type(exc).__name__}: {str(exc)[:300]}"}
+
+    audit(client, "seal_to_deliverable", audit_args, len(sealed))
+    return out
 
 
 @mcp_server.tool()

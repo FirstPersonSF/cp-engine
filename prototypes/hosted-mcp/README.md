@@ -18,7 +18,7 @@ path. Nothing under `src/cp_engine/` was modified.
   `TENANT_REPO`. **RLS cannot scope a git clone**, so both are gated on
   `public.is_team_member()` instead — see [Tree](#tree-read-only--cp-engine-138-review-finding-1).
 
-34 tools, **53/53 smoke cases pass**.
+36 tools (34 + the spec-v04 lifecycle verbs `promote_to_canon` / `seal_to_deliverable`), **53/53 smoke cases pass** as of the last full run.
 
 ---
 
@@ -525,7 +525,7 @@ listed in
 | B | Garbage token → 401 | ✓ |
 | C | `alg=none` token → 401 | ✓ — negative test of the ES256 path |
 | D | RFC 9728 metadata | 200, `authorization_servers: ["https://<ref>.supabase.co/auth/v1"]` |
-| E | `tools/list` | all **34 tools** (count asserted, so an unexpected extra fails too) |
+| E | `tools/list` | all **36 tools** (count asserted, so an unexpected extra fails too) |
 | F | `list_spine_elements(ibx-5153)` | **57 live elements** under the caller's `sub` |
 | G | `list_commitments(ibx-5153)` | **31 rows** — team-keyed RLS, no longer deny-all |
 | H | `whoami` | verified `sub`, `role=authenticated` |
