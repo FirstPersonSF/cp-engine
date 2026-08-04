@@ -2298,3 +2298,29 @@ def test_announce_new_sources_tolerates_missing_dates(tmp_path):
     ]
     n = announce_new_sources("ggl-5168", sprint, assets, today=_date(2026, 5, 15))
     assert n == 0
+
+
+def test_announce_new_sources_skips_prior_week_announcements(tmp_path):
+    from datetime import date as _date
+
+    from cp_engine.ingest import announce_new_sources
+
+    prior = tmp_path / "2026-W19" / "ggl-5168.md"
+    current = tmp_path / "2026-W20" / "ggl-5168.md"
+    _scaffold_minimal_sprint_file(prior)
+    _scaffold_minimal_sprint_file(current)
+
+    assets = [{"id": "a", "title": "Boundary  Doc.docx", "source_type": "doc",
+               "created_at": "2026-05-14T00:00:00Z"}]
+
+    n1 = announce_new_sources(
+        "ggl-5168", prior, assets, today=_date(2026, 5, 15)
+    )
+    # New week: fresh (hash-free) file, source still inside the window.
+    n2 = announce_new_sources(
+        "ggl-5168", current, assets, today=_date(2026, 5, 18),
+        also_seen=(prior,),
+    )
+
+    assert (n1, n2) == (1, 0)
+    assert "Boundary" not in current.read_text()

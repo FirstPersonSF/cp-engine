@@ -707,6 +707,7 @@ def sync_tenant(
         from cp_engine.ingest import announce_new_sources
 
         announce_week = current_sprint_week_iso(sync_clock)
+        announce_prior_week = prior_sprint_week_iso(sync_clock)
         for project in projects:
             assets = manifest_assets.get(project.code)
             if not assets:
@@ -722,6 +723,15 @@ def sync_tenant(
                     announce_path,
                     assets,
                     today=sync_clock.date(),
+                    # A boundary-week source is still in the window when the
+                    # new week's (hash-free) file scaffolds — the prior week's
+                    # markers count as already-announced.
+                    also_seen=(
+                        config.root
+                        / "sprints"
+                        / announce_prior_week
+                        / f"{project.code}.md",
+                    ),
                 )
             except Exception as exc:  # noqa: BLE001 — announcements never block sync
                 logger.warning(

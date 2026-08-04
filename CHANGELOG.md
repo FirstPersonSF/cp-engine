@@ -4,6 +4,17 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.85.1 — 2026-08-03
+
+- **New-source announcements: tighter window + cross-week dedupe.** The live
+  v0.85.0 launch pass showed the 14-day window dumping ~24 backlog bullets on
+  one active project, drowning the real inbound entries — the window is now
+  7 days. And a source ingested near the week boundary would have re-announced
+  into the next week's (hash-free) sprint file: `announce_new_sources` gains
+  `also_seen`, and sync passes the prior week's file so its cp:hash markers
+  count as already-announced (hashed post-sanitize, so double-space titles
+  can't defeat the check).
+
 ## v0.85.0 — 2026-08-03
 
 - **Stale-MCP failures now name themselves (#150).** `cp mcp` is long-lived,

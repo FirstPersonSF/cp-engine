@@ -747,8 +747,10 @@ def _write_inbound(
 # Only sources ingested within this window get an arrival bullet — the guard
 # that keeps the FIRST announcement pass from flooding a sprint file with a
 # project's entire historical source backlog. The cp:hash marker (not this
-# window) is what prevents re-announcement.
-_ANNOUNCE_WINDOW_DAYS = 14
+# window) is what prevents re-announcement. 7 days, not 14 — the live launch
+# pass (2026-08-03) showed 14 dumping ~24 backlog bullets on one active
+# project, drowning the real inbound entries.
+_ANNOUNCE_WINDOW_DAYS = 7
 
 
 def announce_new_sources(
@@ -758,6 +760,7 @@ def announce_new_sources(
     *,
     today: date,
     window_days: int = _ANNOUNCE_WINDOW_DAYS,
+    also_seen: tuple[Path, ...] = (),
 ) -> int:
     """Announce recently ingested source docs in the sprint file (#153).
 
@@ -768,7 +771,19 @@ def announce_new_sources(
     machinery meetings use, so the cp.md inbound strip aggregates it for free
     and the cp:hash marker makes announcement idempotent across syncs and
     machines. Returns the number of bullets actually appended.
+
+    ``also_seen`` names OTHER sprint files whose hash markers also count as
+    already-announced — sync passes the prior week's file, since a source
+    ingested near the week boundary is still inside the window when the new
+    week's (hash-free) file scaffolds and would otherwise re-announce.
     """
+    seen_elsewhere = ""
+    for prior in also_seen:
+        try:
+            seen_elsewhere += prior.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
     count = 0
     for asset in assets:
         title = (asset.get("title") or "").strip()
@@ -786,6 +801,13 @@ def announce_new_sources(
             f"**New source ingested:** {title} ({source_type}) — "
             "full text via `pull_project_source`."
         )
+        # Hash exactly what _write_inbound will hash (it sanitizes first) —
+        # a double-space in a title would otherwise defeat the pre-check.
+        if seen_elsewhere and _already_present(
+            seen_elsewhere,
+            _content_hash(code, "record-inbound", _sanitize_inline_text(text)),
+        ):
+            continue
         item = {"text": text, "date": created.isoformat(), "who": "source ingest"}
         if _write_inbound(code, item, sprint_path, today=today):
             count += 1
