@@ -536,9 +536,16 @@ def _promote_as_new_serving_element(
         slug = f"{base_slug}-{n}"
     est_id = authored_est_item_id(slug)
 
+    # Cards carry whatever code the ingest caller used (often the short
+    # `ibx-5192` form); the spine's canonical spelling is the dir-slug.
+    # Writing the card's code verbatim is how drift seeded (mig 129).
+    from cp_engine.mc2_db import canonical_spine_code
+
+    code = canonical_spine_code(client, card.project_id, card.project_code)
+
     rows = build_create_rows(
         project_id=card.project_id,
-        project_code=card.project_code,
+        project_code=code,
         label=framing,
         type_=kind,
         body=body,
@@ -550,7 +557,7 @@ def _promote_as_new_serving_element(
     # (possibly collision-suffixed) slug chosen above.
     for r in rows:
         r["est_item_id"] = est_id
-        r["id"] = f"{card.project_code}/{est_id}/{r['version_label']}"
+        r["id"] = f"{code}/{est_id}/{r['version_label']}"
 
     client.table(_SUBSTANCE_TABLE).upsert(rows, on_conflict="id").execute()
     path = write_authored_element(

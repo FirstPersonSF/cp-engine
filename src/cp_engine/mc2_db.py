@@ -732,6 +732,32 @@ def upsert_spine_snapshot(client: "Client", row: dict) -> None:
 # broke Supabase-only code that never used MCP. See the v0.80.1 webhook
 # ModuleNotFoundError. ``mcp_server`` now re-exports both for its own use.
 
+def canonical_spine_code(client, project_id: str, fallback: str) -> str:
+    """The canonical spine `project_code` for a project — read off its own
+    `spine_substance` rows (uniform dir-slug since mig 129 + the sync
+    healers). Writers that receive a caller-supplied code (webhook inbox
+    promote, relations propose) MUST write this spelling, not the caller's —
+    short-code writes are how 45 drifted edges accumulated. Falls back to
+    the caller's code for a project with no spine rows yet (its first write
+    DEFINES the spelling — pass the dir-slug).
+    """
+    try:
+        rows = (
+            client.table(Tables.SPINE_SUBSTANCE)
+            .select("project_code")
+            .eq("project_id", project_id)
+            .order("created_at", desc=True)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+        if rows and rows[0].get("project_code"):
+            return rows[0]["project_code"]
+    except Exception:  # noqa: BLE001 — canonicalization must never block a write
+        pass
+    return fallback
+
+
 def _resolve_project_id(client, project_code: str) -> str | None:
     """Resolve a project identifier to its `projects.id`, bridging two id forms.
 

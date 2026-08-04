@@ -277,6 +277,32 @@ def _rehome_authored_codes(client, *, project_id, project_code):
     return n
 
 
+_RELATIONS_TABLE = Tables.SPINE_RELATIONS
+
+
+def _rehome_relation_codes(client, *, project_id, project_code):
+    """Re-home spine_relations rows whose project_code drifted (2026-08-03).
+
+    The missing sibling of the substance/snapshot healers: substance
+    self-healed every sync while relations accumulated short-code edges
+    (45 found across 3 projects, invisible to dir-slug-scoped readers —
+    mc-2 migration 129 cleaned the backlog; this keeps it clean). Edges
+    carry no code-bearing id, so it's a pure column update keyed on
+    project_id. Returns the number of rows re-homed."""
+    rows = (client.table(_RELATIONS_TABLE)
+        .select("id, project_code")
+        .eq("project_id", project_id).execute().data) or []
+    n = 0
+    for r in rows:
+        if r.get("project_code") == project_code:
+            continue
+        client.table(_RELATIONS_TABLE).update(
+            {"project_code": project_code}
+        ).eq("id", r["id"]).execute()
+        n += 1
+    return n
+
+
 _SNAPSHOT_TABLE = Tables.SPINE_SNAPSHOTS
 
 
@@ -353,6 +379,9 @@ def sync_spine_substance(
     # Snapshots are CLI-written and code-prefixed too; re-home them on the same
     # project_id key so a code change doesn't strand them (mig 078).
     _rehome_snapshot_codes(client, project_id=project_id, project_code=project_code)
+    # Relations too — the healer that was missing while 45 short-code edges
+    # accumulated (mig 129 cleaned the backlog; this keeps it clean).
+    _rehome_relation_codes(client, project_id=project_id, project_code=project_code)
 
     parsed, malformed = _load_substance_items(project_dir)
     if malformed_out is not None:

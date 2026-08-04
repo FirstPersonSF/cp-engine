@@ -1432,6 +1432,10 @@ def resolve_write_scope(client, project_code: str) -> dict[str, Any] | None:
             client.table("spine_substance")
             .select("project_code")
             .eq("project_id", scope_id)
+            # Deterministic pick: newest row's spelling. Unordered limit(1)
+            # was a coin-flip on a drifted project (pre-mig-129); the store
+            # is uniform now, but never leave the pick to physical order.
+            .order("created_at", desc=True)
             .limit(1)
             .execute()
             .data

@@ -86,10 +86,16 @@ def propose_responds_to_edge(
             summary["reason"] = f"edge already exists ({existing[0].get('status')})"
             return summary
 
+        # Canonical spelling, not the caller's — short-code edge writes are
+        # how the mig-129 drift accumulated.
+        from cp_engine.mc2_db import canonical_spine_code
+
         client.table(Tables.SPINE_RELATIONS).insert(
             {
                 "project_id": project_id,
-                "project_code": project_code,
+                "project_code": canonical_spine_code(
+                    client, project_id, project_code
+                ),
                 "kind": "responds_to",
                 "from_item_id": new_est_item_id,
                 "to_item_id": guessed_est_item_id,

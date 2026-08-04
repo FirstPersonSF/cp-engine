@@ -4,6 +4,23 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.86.1 — 2026-08-03
+
+- **Spine slug-drift fixed at the root.** spine_substance self-healed every
+  sync but spine_relations never did: 45 edges sat under short codes
+  (`ibx-5153`, `ibx-5192`, `sap-5174`) plus one mangled spelling, invisible
+  to dir-slug-scoped readers (brief canon reads, lifecycle lint). Fixes, all
+  layers: mc-2 migration 129 normalized the backlog (zero edge collisions,
+  verified first); sync gains `_rehome_relation_codes` (the missing sibling
+  of the substance/snapshot healers) so relation drift can never accumulate
+  again; the inbox promote + relations-propose writers stamp
+  `canonical_spine_code(client, project_id, fallback)` (new `mc2_db` helper
+  — the project's own spine spelling, not the caller's short code); the
+  hosted resolver's unordered `.limit(1)` pick is now deterministic; and
+  mc-2's dashboard writers (spine_capture create + version,
+  spine_relations) canonicalize too, retiring the docstring that codified
+  the short code as canonical.
+
 ## v0.86.0 — 2026-08-03
 
 - **Source-store curation verbs (#126).** The RAG store had no cleanup path —
