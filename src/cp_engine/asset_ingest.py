@@ -1110,7 +1110,7 @@ def _adapt_pipeline_for_initiative(pipeline, initiative_id: str) -> None:
             .select("id, file_hash, status")
             .eq("initiative_id", initiative_id)
             .eq("file_path", file_path)
-            .eq("status", "active")
+            .in_("status", ["active", "archived"])
             .order("created_at", desc=True)
             .limit(1)
             .execute()
@@ -1121,6 +1121,19 @@ def _adapt_pipeline_for_initiative(pipeline, initiative_id: str) -> None:
                 action="new", reason="File path not found in database"
             )
         row = rows[0]
+        # Archived-guard parity with the lib's project path (#126): a
+        # curator's archive survives re-ingest; changed content is new.
+        if row.get("status") == "archived":
+            if row["file_hash"] == file_hash:
+                return DedupeDecision(
+                    action="skip",
+                    existing_asset_id=row["id"],
+                    reason="Asset was archived by a curator (unchanged content)",
+                )
+            return DedupeDecision(
+                action="new",
+                reason="Prior copy archived; file content has since changed",
+            )
         if row["file_hash"] == file_hash:
             return DedupeDecision(
                 action="skip",

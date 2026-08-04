@@ -308,6 +308,63 @@ def fetch_project_source(project_code: str, doc_title: str) -> dict:
 
 
 @_tool
+def archive_project_source(project_code: str, doc_title_or_id: str) -> dict:
+    """Archive one ingested source doc — the RAG-store cleanup verb (#126).
+
+    Soft delete (status → 'archived', same semantics as the dashboard's
+    archive): the row, chunks, and spine provenance survive, but the doc
+    leaves every active read (list, pull, retrieval ranking). Durable — the
+    ingest dedup guard respects archived rows, so a file still sitting in
+    Drive/Dropbox is NOT re-ingested unless its content changes.
+
+    `doc_title_or_id` is an asset uuid or EXACT title; an ambiguous title
+    returns the candidates (id + created_at) to pick from. Use for true
+    duplicates and no-longer-relevant docs; for same-title DISTINCT docs,
+    use `rename_project_source` instead — archiving would lose content.
+    """
+    from cp_engine.project_sources import archive_source
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"code '{project_code}' resolved to no project"}
+        client, pid, _cid = resolved
+        return archive_source(client, pid, doc_title_or_id)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "error": f"failed to archive source for '{project_code}': {exc}"
+        }
+
+
+@_tool
+def rename_project_source(
+    project_code: str, doc_title_or_id: str, new_title: str
+) -> dict:
+    """Retitle one ingested source doc (#126).
+
+    The tool for same-title DISTINCT documents (recurring recordings always
+    export under one title) that predate ingest-time date-suffixing —
+    retitle instead of archiving real content. Readers resolve by title, so
+    the new title is live immediately; `_sources.md` follows on next sync.
+
+    `doc_title_or_id` resolves like `archive_project_source` (uuid or exact
+    title; ambiguous titles return candidates to pick from).
+    """
+    from cp_engine.project_sources import rename_source
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"code '{project_code}' resolved to no project"}
+        client, pid, _cid = resolved
+        return rename_source(client, pid, doc_title_or_id, new_title)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "error": f"failed to rename source for '{project_code}': {exc}"
+        }
+
+
+@_tool
 def push_to_dropbox(
     project_code: str, local_path: str, dest_name: str | None = None,
     overwrite: bool = False,

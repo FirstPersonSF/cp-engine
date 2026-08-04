@@ -358,6 +358,10 @@ class _InsertRecordingTable:
         self._filters[col] = val
         return self
 
+    def in_(self, col, vals):
+        self._filters[col] = tuple(vals)
+        return self
+
     def order(self, col, desc=False):
         return self
 
@@ -379,7 +383,11 @@ class _InsertRecordingTable:
         rows = [
             r
             for r in self._client.rows
-            if all(r.get(c) == v for c, v in self._filters.items() if c in r)
+            if all(
+                (r.get(c) in v if isinstance(v, tuple) else r.get(c) == v)
+                for c, v in self._filters.items()
+                if c in r
+            )
         ]
         return _Resp(rows)
 

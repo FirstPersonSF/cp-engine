@@ -210,7 +210,11 @@ def test_exactly_nineteen_tools_registered():
     element matcher behind pull_spine_element / pull_element_from_project /
     the framework verbs). The account-scope MOVE also stays, as the PRIVATE
     `_set_account_scope`: `pull_element_from_project(account=True)` account-tags
-    the copy it authored as an internal step of a surviving verb."""
+    the copy it authored as an internal step of a surviving verb.
+
+    Then 19→21 (#126): archive_project_source + rename_project_source — the
+    source-store curation pair (STORE cleanup, distinct from the spine
+    retire verbs that live on hosted)."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
         "list_project_sources",
@@ -218,6 +222,8 @@ def test_exactly_nineteen_tools_registered():
         "fetch_project_source",
         "pull_document_comments",
         "push_to_dropbox",
+        "archive_project_source",
+        "rename_project_source",
         "list_spine_elements",
         "pull_spine_element",
         "create_spine_element",

@@ -768,3 +768,115 @@ def test_resolve_element_versions_scopes_by_project_id():
     )
     assert eid == "_authored/hyp"
     assert versions[0]["project_code"] == "ibx-5153-ai-campaign"
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  archive_source / rename_source (#126) — source-store curation
+# ──────────────────────────────────────────────────────────────────────
+
+from cp_engine.project_sources import archive_source, rename_source
+
+
+class _CurationQuery:
+    def __init__(self, client):
+        self._c = client
+        self._filters = {}
+        self._update = None
+
+    def select(self, _cols):
+        return self
+
+    def or_(self, _expr):
+        return self
+
+    def eq(self, col, val):
+        self._filters[col] = val
+        return self
+
+    def order(self, _col, desc=False):
+        return self
+
+    def limit(self, _n):
+        return self
+
+    def update(self, payload):
+        self._update = payload
+        return self
+
+    def execute(self):
+        if self._update is not None:
+            self._c.updates.append((self._filters, self._update))
+            return _FakeExecute([])
+        rows = list(self._c.rows)
+        if "id" in self._filters:
+            rows = [r for r in rows if r["id"] == self._filters["id"]]
+        if "title" in self._filters:
+            rows = [r for r in rows if r["title"] == self._filters["title"]]
+        if "status" in self._filters:
+            rows = [r for r in rows if r["status"] == self._filters["status"]]
+        return _FakeExecute(rows)
+
+
+class _CurationClient:
+    def __init__(self, rows):
+        self.rows = rows
+        self.updates: list = []
+
+    def table(self, _name):
+        return _CurationQuery(self)
+
+
+_UUID_A = "11111111-2222-3333-4444-555555555555"
+_UUID_B = "66666666-7777-8888-9999-000000000000"
+
+
+def _curation_rows():
+    return [
+        {"id": _UUID_A, "title": "Weekly Sync", "source_type": "doc",
+         "status": "active", "created_at": "2026-08-03T00:00:00Z"},
+        {"id": _UUID_B, "title": "Weekly Sync", "source_type": "doc",
+         "status": "active", "created_at": "2026-07-23T00:00:00Z"},
+        {"id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee", "title": "Solo Doc",
+         "source_type": "pdf", "status": "active",
+         "created_at": "2026-07-01T00:00:00Z"},
+    ]
+
+
+def test_archive_source_by_unique_title():
+    client = _CurationClient(_curation_rows())
+    out = archive_source(client, "proj-1", "Solo Doc")
+    assert out["archived"] is True
+    assert client.updates[0][1] == {"status": "archived"}
+
+
+def test_archive_source_ambiguous_title_returns_candidates():
+    client = _CurationClient(_curation_rows())
+    out = archive_source(client, "proj-1", "Weekly Sync")
+    assert "candidates" in out and len(out["candidates"]) == 2
+    assert client.updates == []  # nothing archived on ambiguity
+
+
+def test_archive_source_by_id_disambiguates():
+    client = _CurationClient(_curation_rows())
+    out = archive_source(client, "proj-1", _UUID_B)
+    assert out["archived"] is True and out["id"] == _UUID_B
+
+
+def test_archive_source_miss_returns_error():
+    client = _CurationClient(_curation_rows())
+    out = archive_source(client, "proj-1", "Nope")
+    assert "error" in out and client.updates == []
+
+
+def test_rename_source_by_id():
+    client = _CurationClient(_curation_rows())
+    out = rename_source(client, "proj-1", _UUID_B, "Weekly Sync (2026-07-23)")
+    assert out["renamed"] is True
+    assert out["old_title"] == "Weekly Sync"
+    assert client.updates[0][1] == {"title": "Weekly Sync (2026-07-23)"}
+
+
+def test_rename_source_rejects_empty_title():
+    client = _CurationClient(_curation_rows())
+    out = rename_source(client, "proj-1", _UUID_B, "  ")
+    assert "error" in out and client.updates == []

@@ -289,6 +289,104 @@ def pull_source(
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  Curate the SOURCE STORE — archive / rename ingested assets (#126)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _resolve_source_asset(client, owner_id: str, key: str):
+    """Resolve `key` (asset uuid or EXACT title) to ONE active asset.
+
+    Owner-scoped across both owner columns (engagement `project_id` OR
+    initiative `initiative_id` — the caller's resolved id lives in exactly
+    one). Returns the asset row, or `{"candidates": [...]}` when an exact
+    title matches several rows (recurring recordings share titles — the
+    caller picks an id), or None when nothing matches.
+    """
+    from cp_engine.mc2_db import Tables
+
+    query = (
+        client.table(Tables.RAG_ASSETS)
+        .select("id, title, source_type, status, created_at")
+        .or_(f"project_id.eq.{owner_id},initiative_id.eq.{owner_id}")
+        .eq("status", "active")
+    )
+    import re as _re
+
+    if _re.fullmatch(r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}", key.lower()):
+        rows = query.eq("id", key).limit(2).execute().data or []
+    else:
+        rows = query.eq("title", key).order("created_at", desc=True).execute().data or []
+    if not rows:
+        return None
+    if len(rows) > 1:
+        return {
+            "candidates": [
+                {"id": r["id"], "title": r["title"], "created_at": r["created_at"]}
+                for r in rows
+            ]
+        }
+    return rows[0]
+
+
+def archive_source(client, owner_id: str, key: str) -> dict:
+    """Archive one ingested source: status active → 'archived' (#126).
+
+    Same soft-delete semantics as mc-2's archive route (mig 115): the row,
+    its chunks, and spine provenance survive; the doc leaves every active
+    read (list, pull, retrieval RPC). Durable against re-ingest since the
+    dedup guard respects archived rows (document-ingest 491fa2f).
+    """
+    resolved = _resolve_source_asset(client, owner_id, key)
+    if resolved is None:
+        return {"error": f"no active source matching '{key}' for this project"}
+    if "candidates" in resolved:
+        return {
+            "note": f"'{key}' matches {len(resolved['candidates'])} active "
+            "sources — pass an id",
+            **resolved,
+        }
+    from cp_engine.mc2_db import Tables
+
+    client.table(Tables.RAG_ASSETS).update({"status": "archived"}).eq(
+        "id", resolved["id"]
+    ).eq("status", "active").execute()
+    return {"archived": True, "id": resolved["id"], "title": resolved["title"]}
+
+
+def rename_source(client, owner_id: str, key: str, new_title: str) -> dict:
+    """Retitle one ingested source (#126).
+
+    The tool for same-title DISTINCT documents (recurring recordings) that
+    predate ingest-time date-suffixing — retitle the older copy instead of
+    archiving real content. Readers resolve by title, so the new title is
+    live immediately; `_sources.md` follows on next sync.
+    """
+    new_title = (new_title or "").strip()
+    if not new_title:
+        return {"error": "new_title must be non-empty"}
+    resolved = _resolve_source_asset(client, owner_id, key)
+    if resolved is None:
+        return {"error": f"no active source matching '{key}' for this project"}
+    if "candidates" in resolved:
+        return {
+            "note": f"'{key}' matches {len(resolved['candidates'])} active "
+            "sources — pass an id",
+            **resolved,
+        }
+    from cp_engine.mc2_db import Tables
+
+    client.table(Tables.RAG_ASSETS).update({"title": new_title}).eq(
+        "id", resolved["id"]
+    ).execute()
+    return {
+        "renamed": True,
+        "id": resolved["id"],
+        "old_title": resolved["title"],
+        "new_title": new_title,
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Read the SPINE — a project's authored/distilled elements
 # ──────────────────────────────────────────────────────────────────────
 #

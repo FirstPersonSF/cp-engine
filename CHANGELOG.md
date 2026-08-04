@@ -4,6 +4,24 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.86.0 — 2026-08-03
+
+- **Source-store curation verbs (#126).** The RAG store had no cleanup path —
+  duplicate ingests competed in retrieval ranking and the regenerated
+  `_sources.md` can't be hand-edited. Two new MCP verbs:
+  `archive_project_source(code, doc_title_or_id)` soft-deletes a row
+  (status → 'archived', dashboard semantics: chunks + spine provenance
+  survive, every active read excludes it), and
+  `rename_project_source(code, doc_title_or_id, new_title)` retitles —
+  the right tool for same-title DISTINCT docs (recurring recordings) that
+  predate v0.85.2's ingest-time date suffix. Both resolve by asset uuid or
+  exact title and return candidates on ambiguity instead of guessing.
+  **Archives are now durable against re-ingest**: the dedup lookup (project
+  path in document-ingest 491fa2f, initiative mirror here) sees archived
+  rows — unchanged content skips out of respect for the archive, changed
+  content ingests fresh. Previously a doc still sitting in Drive/Dropbox
+  came back on the next run (mc-2's archive route documented the hole).
+
 ## v0.85.2 — 2026-08-03
 
 - **Same-title sources no longer merge on pull.** Slack-call recordings
