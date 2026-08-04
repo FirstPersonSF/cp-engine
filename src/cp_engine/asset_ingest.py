@@ -1146,6 +1146,16 @@ def _adapt_pipeline_for_initiative(pipeline, initiative_id: str) -> None:
         # Mirrors StorageService.create_asset with the initiative owner column;
         # `project_id` is ignored (see _check_asset). project_id stays absent
         # from the INSERT so migration 081's exactly-one-owner CHECK holds.
+        # Same-title disambiguation as the project path (lib helper, rebound
+        # onto the initiative owner column) — recurring recordings share a
+        # title and title-pulls must not merge distinct documents.
+        try:
+            title = storage._disambiguate_title(
+                initiative_id, title, prev_asset_id,
+                owner_column="initiative_id",
+            )
+        except AttributeError:
+            pass  # older lib pin without the helper — keep the raw title
         result = (
             storage.client.table(Tables.RAG_ASSETS)
             .insert(

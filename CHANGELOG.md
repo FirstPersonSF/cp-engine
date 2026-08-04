@@ -4,6 +4,19 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.85.2 — 2026-08-03
+
+- **Same-title sources no longer merge on pull.** Slack-call recordings
+  always export under one title, so a project accretes distinct assets with
+  identical titles — and `pull_project_source`'s exact-title path selected
+  them all, silently interleaving two documents' chunks. New assets whose
+  title collides with an active same-owner asset now get a date suffix at
+  ingest ("Title (2026-08-03)", same-day repeats "#2"…), for both the
+  project path (component library dc7eec2, pins bumped) and the
+  initiative-rebound path. Version chains keep their title — supersede is
+  untouched. Existing duplicate rows are unchanged (rename needs the #126
+  RAG-row verbs).
+
 ## v0.85.1 — 2026-08-03
 
 - **New-source announcements: tighter window + cross-week dedupe.** The live
