@@ -969,6 +969,23 @@ def test_module_import_is_light():
                 sys.modules[mod] = obj
             else:
                 sys.modules.pop(mod, None)
+            # The re-import above also rebound the PARENT PACKAGE attribute
+            # (`cp_engine.mcp_server` etc.) to the fresh module object.
+            # Restoring sys.modules alone leaves that attribute pointing at
+            # the orphan copy — and `monkeypatch.setattr("cp_engine.
+            # mcp_server.run_stdio", ...)` resolves through the attribute
+            # while `from cp_engine.mcp_server import ...` resolves through
+            # sys.modules, so a later test patches one module and runs the
+            # other (bit test_cli_mcp when files ran out of alphabetical
+            # order). Restore the attribute too.
+            parent_name, _, child = mod.rpartition(".")
+            parent = sys.modules.get(parent_name)
+            if parent is None:
+                continue
+            if obj is not None:
+                setattr(parent, child, obj)
+            elif hasattr(parent, child):
+                delattr(parent, child)
 
 
 # ---------------------------------------------------------------------------
