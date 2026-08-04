@@ -293,6 +293,10 @@ def sync_tenant(
         if not p.is_internal
     }
 
+    # Asset entries from each project's manifest regeneration, consumed by the
+    # new-source announcement pass after sprint files exist (#153).
+    manifest_assets: dict[str, list[dict]] = {}
+
     for project in projects:
         if project.is_internal:
             continue
@@ -573,7 +577,9 @@ def sync_tenant(
 
                 folders = resolve_project_folders_by_id(client, project.mc2_id)
                 if folders is not None:
-                    write_sources_manifest(
+                    # Kept for the post-sprint-files announcement pass (#153):
+                    # sprint files don't exist yet on the week's first sync.
+                    manifest_assets[project.code] = write_sources_manifest(
                         client,
                         project_dir,
                         folders.project_id,
@@ -692,6 +698,36 @@ def sync_tenant(
             ),
         )
         files_written.extend(sprint_paths)
+
+        # New-source announcements (#153) — every asset ingested in the last
+        # two weeks gets one `### Inbound` bullet in the project's CURRENT
+        # sprint file (cp:hash-idempotent), which the cp.md inbound strip
+        # then aggregates for free. Runs after ensure_sprint_files so the
+        # week's file exists; best-effort like the manifest pass.
+        from cp_engine.ingest import announce_new_sources
+
+        announce_week = current_sprint_week_iso(sync_clock)
+        for project in projects:
+            assets = manifest_assets.get(project.code)
+            if not assets:
+                continue
+            announce_path = (
+                config.root / "sprints" / announce_week / f"{project.code}.md"
+            )
+            if not announce_path.is_file():
+                continue
+            try:
+                announce_new_sources(
+                    project.code,
+                    announce_path,
+                    assets,
+                    today=sync_clock.date(),
+                )
+            except Exception as exc:  # noqa: BLE001 — announcements never block sync
+                logger.warning(
+                    "new-source announcements skipped for %s: %s",
+                    project.code, exc, exc_info=True,
+                )
 
         # Splice the rendered "Current sprint" block into each project's
         # cp.md. New scaffolds already carry the `current-sprint` markers

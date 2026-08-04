@@ -611,6 +611,60 @@ def test_pull_source_query_mode_genuine_miss_still_reports_after_widen():
     assert "no source named 'Nonexistent Doc'" in out["note"]
 
 
+def test_pull_source_no_query_sorts_by_chunk_index():
+    # #152: the RPC's per-doc order used to be arbitrary (created_at ties for
+    # every chunk of one doc). meta.chunk_index now records document order —
+    # the no-query path must sort by it regardless of RPC return order.
+    rows = [
+        {"text": "third", "title": "Doc A", "scope": "project",
+         "citation_url": "u", "chunk_index": 2, "page": None},
+        {"text": "first", "title": "Doc A", "scope": "project",
+         "citation_url": "u", "chunk_index": 0, "page": None},
+        {"text": "second", "title": "Doc A", "scope": "project",
+         "citation_url": "u", "chunk_index": 1, "page": None},
+    ]
+    out = pull_source(_FakeRpcClient(rows), "proj-1", "co-9", doc_title="Doc A")
+    assert out["chunks"] == ["first", "second", "third"]
+
+
+def test_pull_source_no_query_pre_stamp_rows_keep_rpc_order():
+    # Rows ingested before chunk_index existed (no key at all) must keep the
+    # RPC's order — the sort is stable and unkeyed rows all tie.
+    rows = [
+        {"text": "one", "title": "Doc A", "scope": "project", "citation_url": "u"},
+        {"text": "two", "title": "Doc A", "scope": "project", "citation_url": "u"},
+    ]
+    out = pull_source(_FakeRpcClient(rows), "proj-1", "co-9", doc_title="Doc A")
+    assert out["chunks"] == ["one", "two"]
+
+
+def test_pull_source_no_query_page_orders_unstamped_pdf_rows():
+    # Pre-stamp PDF ingests carry meta.page — used as the fallback ordinal.
+    rows = [
+        {"text": "p2", "title": "Doc A", "scope": "project",
+         "citation_url": "u", "chunk_index": None, "page": 2},
+        {"text": "p1", "title": "Doc A", "scope": "project",
+         "citation_url": "u", "chunk_index": None, "page": 1},
+    ]
+    out = pull_source(_FakeRpcClient(rows), "proj-1", "co-9", doc_title="Doc A")
+    assert out["chunks"] == ["p1", "p2"]
+
+
+def test_pull_source_query_mode_keeps_relevance_order():
+    # A query ranks by relevance — the doc-order sort must NOT apply.
+    rows = [
+        {"text": "best hit", "title": "Doc A", "scope": "project",
+         "citation_url": "u", "chunk_index": 5, "page": None},
+        {"text": "next hit", "title": "Doc A", "scope": "project",
+         "citation_url": "u", "chunk_index": 0, "page": None},
+    ]
+    out = pull_source(
+        _FakeRpcClient(rows), "proj-1", "co-9", doc_title="Doc A",
+        query="anything", embedder=_FakeEmbedder([0.1]),
+    )
+    assert out["chunks"] == ["best hit", "next hit"]
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  resolve_element_versions — the write-path element resolver
 # ──────────────────────────────────────────────────────────────────────

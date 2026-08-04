@@ -138,7 +138,7 @@ def test_first_run_writes_manifest_and_cache(tmp_path):
 
     n = write_sources_manifest(client, tmp_path, "proj-1", "co-9", llm=llm)
 
-    assert n == 2
+    assert len(n) == 2
     assert llm.calls == 2  # one per asset
 
     manifest = _read_manifest(tmp_path)
@@ -167,7 +167,7 @@ def test_second_run_same_assets_is_cache_hit_no_llm(tmp_path):
 
     # Second run, identical inputs → ZERO additional llm calls.
     n = write_sources_manifest(client, tmp_path, "proj-1", "co-9", llm=llm)
-    assert n == 2
+    assert len(n) == 2
     assert llm.calls == 2  # unchanged
 
     manifest = _read_manifest(tmp_path)
@@ -196,7 +196,7 @@ def test_new_asset_summarized_only_for_the_new_one(tmp_path):
     client2 = _FakeClient(assets2, chunks)
     n = write_sources_manifest(client2, tmp_path, "proj-1", "co-9", llm=llm)
 
-    assert n == 3
+    assert len(n) == 3
     assert llm.calls == 3  # only the new doc summarized
     cache = _read_cache(tmp_path)
     assert set(cache) == {"a", "b", "c"}
@@ -214,7 +214,7 @@ def test_removed_asset_drops_from_manifest_and_cache(tmp_path):
     client2 = _FakeClient(assets2, chunks)
     n = write_sources_manifest(client2, tmp_path, "proj-1", "co-9", llm=llm)
 
-    assert n == 1
+    assert len(n) == 1
     manifest = _read_manifest(tmp_path)
     assert "Alpha Doc" in manifest
     assert "Beta Doc" not in manifest
@@ -249,7 +249,7 @@ def test_llm_failure_yields_unavailable_and_completes(tmp_path):
 
     n = write_sources_manifest(client, tmp_path, "proj-1", "co-9", llm=llm)
 
-    assert n == 2
+    assert len(n) == 2
     manifest = _read_manifest(tmp_path)
     assert "**Alpha Doc** · drive — (summary unavailable)" in manifest
     # Beta still got a real summary.
@@ -265,7 +265,7 @@ def test_corrupt_cache_tolerated(tmp_path):
 
     n = write_sources_manifest(client, tmp_path, "proj-1", "co-9", llm=llm)
 
-    assert n == 1
+    assert len(n) == 1
     assert llm.calls == 1  # corrupt cache → re-summarized, no crash
 
 
@@ -318,7 +318,7 @@ def test_summary_cap_limits_new_calls(tmp_path):
         client, tmp_path, "proj-1", "co-9", llm=llm, max_new_summaries=10
     )
 
-    assert n == 30
+    assert len(n) == 30
     assert llm.calls == 10  # capped
     cache = _read_cache(tmp_path)
     assert len(cache) == 10  # only the summarized ones cached

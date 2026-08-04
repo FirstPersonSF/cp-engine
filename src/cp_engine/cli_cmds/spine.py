@@ -708,10 +708,28 @@ def spine_lint_cmd(code: str) -> None:
         click.echo(f"cp spine-lint needs MC-2 for the spine checks: {exc}",
                    err=True)
         sys.exit(1)
+
+    # Accept the same codes the MCP verbs do (#151): resolve the caller's
+    # code to the working dir and query every project_code spelling the
+    # spine may be keyed under — short code AND dir-slug. Drifted projects
+    # carry live rows under both (the ibx-5153 case), so this is a set,
+    # not a translation.
+    try:
+        mc2_id = mc2_db._resolve_project_id(client, code)
+    except Exception:  # noqa: BLE001 — resolution is best-effort; lint survives
+        mc2_id = None
+    try:
+        spine_dir = find_spine_dir(config.root, code, mc2_id=mc2_id)
+    except SpineDirNotFound:
+        spine_dir = None
+    codes = [code]
+    if spine_dir is not None and spine_dir.name != code:
+        codes.append(spine_dir.name)
+
     rows = (
         client.table(mc2_db.Tables.SPINE_SUBSTANCE)
         .select(mc2_db.SPINE_LINT_COLUMNS)
-        .eq("project_code", code)
+        .in_("project_code", codes)
         .eq("status", "live")
         .execute()
         .data
@@ -721,9 +739,10 @@ def spine_lint_cmd(code: str) -> None:
     from cp_engine.project_sources import _one_live_per_element
     rows = _one_live_per_element([r for r in rows if not r.get("archived")])
     if not rows:
+        tried = "' / '".join(codes)
         click.echo(
-            f"No live spine for '{code}' — spine-lint resolves by the "
-            "project's dir-slug code (the spine_substance project_code).",
+            f"No live spine for '{tried}' — no live spine_substance rows "
+            "under any spelling of this project's code.",
             err=True,
         )
         sys.exit(1)
@@ -736,7 +755,7 @@ def spine_lint_cmd(code: str) -> None:
         relations = (
             client.table(mc2_db.Tables.SPINE_RELATIONS)
             .select("kind, from_item_id, to_item_id")
-            .eq("project_code", code)
+            .in_("project_code", codes)
             .eq("status", "active")
             .in_("kind", ["canon_of", "absorbed_by", "supersedes"])
             .execute()
@@ -749,7 +768,7 @@ def spine_lint_cmd(code: str) -> None:
     # cp.md placeholder check — best-effort, offline (skip silently when the
     # working dir doesn't resolve; the spine checks already ran).
     try:
-        cp_md = find_spine_dir(config.root, code) / "cp.md"
+        cp_md = (spine_dir or find_spine_dir(config.root, code)) / "cp.md"
         if cp_md.is_file():
             cp_md_text = cp_md.read_text(encoding="utf-8")
             warnings.extend(lint_cp_placeholders(cp_md_text))

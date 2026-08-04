@@ -37,6 +37,98 @@ from mcp.server import MCPServer
 # definitions below needed no edits. See docs/2026-07-31-mcp-2x-migration.md.
 mcp = MCPServer("cp-sources")
 
+# ── Version stamping (#150) ───────────────────────────────────────────────
+#
+# `cp mcp` is a long-lived process: after a release upgrades the CLI on disk,
+# this server keeps serving the OLD bytecode until the user restarts /mcp —
+# and its failures then wear misleading masks (a missing-credential message
+# for what is really a restart-needed condition). Two defenses:
+#
+#   * every error payload carries `server_version`, so a failure is always
+#     attributable to the code that produced it;
+#   * every tool result is checked against the version installed ON DISK
+#     (re-read per call — the whole point is catching post-import drift), and
+#     a mismatch injects `engine_version_warning` telling the caller to
+#     restart /mcp.
+#
+# `__version__` is frozen at process import → it IS the server's version.
+# The disk read deliberately uses importlib.metadata (NOT `__version__`,
+# which release.py's docstring rules out as the canonical source): a broken
+# or missing dist returns None and we stay silent rather than false-alarm.
+
+_SERVER_VERSION: str | None = None  # populated lazily; import stays light
+
+
+def _server_version() -> str | None:
+    global _SERVER_VERSION
+    if _SERVER_VERSION is None:
+        try:
+            from cp_engine import __version__
+
+            _SERVER_VERSION = __version__
+        except Exception:  # noqa: BLE001 — stamping must never break a tool
+            pass
+    return _SERVER_VERSION
+
+
+def _installed_version() -> str | None:
+    """The cp-engine version currently installed on disk (fresh read)."""
+    try:
+        import importlib.metadata as _md
+
+        return _md.version("cp-engine")
+    except Exception:  # noqa: BLE001 — unknown disk state = no warning
+        return None
+
+
+def _stamp_versions(result):
+    """Annotate a tool result in place with version facts (#150).
+
+    Error dicts (an `error` key, top-level or as a list item) gain
+    `server_version`. On a server-vs-disk version mismatch, dict results and
+    error/note list items also gain `engine_version_warning`. Non-dict
+    results and clean rows pass through untouched.
+    """
+    server = _server_version()
+    disk = _installed_version()
+    warning = None
+    if server and disk and server != disk:
+        warning = (
+            f"cp mcp server is v{server} but v{disk} is installed on disk — "
+            "restart the MCP connection (/mcp) to pick up the new release"
+        )
+
+    def _annotate(d: dict) -> None:
+        if "error" in d and server:
+            d.setdefault("server_version", server)
+        if warning:
+            d.setdefault("engine_version_warning", warning)
+
+    if isinstance(result, dict):
+        _annotate(result)
+    elif isinstance(result, list):
+        for item in result:
+            if isinstance(item, dict) and ("error" in item or "note" in item):
+                _annotate(item)
+    return result
+
+
+def _tool(fn):
+    """`@mcp.tool()` plus the #150 version stamp on every result.
+
+    Preserves the wrapped function's signature explicitly so MCPServer's
+    schema introspection sees the tool's real parameters, not `*args`.
+    """
+    import functools
+    import inspect
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        return _stamp_versions(fn(*args, **kwargs))
+
+    wrapper.__signature__ = inspect.signature(fn)
+    return mcp.tool()(wrapper)
+
 
 def _tenant_root():
     """Resolve the tenant root by walking UP from the current working dir.
@@ -128,7 +220,7 @@ def _resolve(project_code: str):
 # server (see mc2_db for the full note).
 
 
-@mcp.tool()
+@_tool
 def list_project_sources(project_code: str) -> list[dict]:
     """List a project's ingested source documents (title, type) for this tenant."""
     from cp_engine.project_sources import list_sources
@@ -145,7 +237,7 @@ def list_project_sources(project_code: str) -> list[dict]:
         return [{"error": f"failed to list sources for '{project_code}': {exc}"}]
 
 
-@mcp.tool()
+@_tool
 def pull_project_source(
     project_code: str, doc_title: str, query: str | None = None
 ) -> dict:
@@ -183,7 +275,7 @@ def pull_project_source(
         }
 
 
-@mcp.tool()
+@_tool
 def fetch_project_source(project_code: str, doc_title: str) -> dict:
     """Download an ingested source's ORIGINAL file to a local path and return it.
 
@@ -215,7 +307,7 @@ def fetch_project_source(project_code: str, doc_title: str) -> dict:
         }
 
 
-@mcp.tool()
+@_tool
 def push_to_dropbox(
     project_code: str, local_path: str, dest_name: str | None = None,
     overwrite: bool = False,
@@ -271,7 +363,7 @@ def push_to_dropbox(
         }
 
 
-@mcp.tool()
+@_tool
 def pull_document_comments(project_code: str, doc_title: str) -> dict:
     """Read the reviewer COMMENTS on an ingested document (#108).
 
@@ -310,7 +402,7 @@ def pull_document_comments(project_code: str, doc_title: str) -> dict:
                          f"in '{project_code}': {exc}"}
 
 
-@mcp.tool()
+@_tool
 def list_spine_elements(project_code: str, layer: str = "",
                         scope: str = "", binding: str = "",
                         compact: bool = False) -> list[dict]:
@@ -357,7 +449,7 @@ def list_spine_elements(project_code: str, layer: str = "",
         return [{"error": f"failed to list spine for '{project_code}': {exc}"}]
 
 
-@mcp.tool()
+@_tool
 def pull_spine_element(project_code: str, key: str) -> dict:
     """Pull ONE live spine element's full body by est_item_id or title.
 
@@ -432,7 +524,7 @@ def pull_spine_element(project_code: str, key: str) -> dict:
         }
 
 
-@mcp.tool()
+@_tool
 def list_project_meetings(project_code: str) -> list[dict]:
     """List a project's linked Fathom meetings (works for engagements + initiatives).
 
@@ -465,7 +557,7 @@ def list_project_meetings(project_code: str) -> list[dict]:
         return [{"error": f"failed to list meetings for '{project_code}': {exc}"}]
 
 
-@mcp.tool()
+@_tool
 def create_spine_element(project_code: str, label: str, type: str,
                          body: str = "", serves: list[str] | None = None,
                          step_title: str | None = None) -> dict:
@@ -532,7 +624,7 @@ def create_spine_element(project_code: str, label: str, type: str,
         return {"error": f"failed to create element in {project_code!r}: {exc}"}
 
 
-@mcp.tool()
+@_tool
 def add_spine_document(
     project_code: str, label: str, type: str = "synthesis",
     file_path: str | None = None, source_title: str | None = None,
@@ -638,7 +730,7 @@ def add_spine_document(
         return {"error": f"failed to add document to {project_code!r}: {exc}"}
 
 
-@mcp.tool()
+@_tool
 def add_spine_version(project_code: str, element_id: str, body: str,
                       version_note: str | None = None,
                       step_title: str | None = None) -> dict:
@@ -894,7 +986,7 @@ def _set_account_scope(
     return _demote_stakeholder(project_code, key)
 
 
-@mcp.tool()
+@_tool
 def pull_element_from_project(
     from_code: str, to_code: str, key: str, type: str = "synthesis",
     account: bool = False,
@@ -969,7 +1061,7 @@ def pull_element_from_project(
                          f"{to_code!r}: {exc}"}
 
 
-@mcp.tool()
+@_tool
 def promote_spine_transcript(project_code: str, key: str) -> dict:
     """Promote a spine element's source transcript into the RAG store.
 
@@ -1009,7 +1101,7 @@ def promote_spine_transcript(project_code: str, key: str) -> dict:
         return {"error": f"failed to promote '{key}' in {project_code!r}: {exc}"}
 
 
-@mcp.tool()
+@_tool
 def framework_readiness(layer: str | None = None) -> dict:
     """List the curated inbound frameworks (the synthesis menu) + snapshot identity.
 
@@ -1027,7 +1119,7 @@ def framework_readiness(layer: str | None = None) -> dict:
         return {"error": f"failed to list frameworks: {exc}"}
 
 
-@mcp.tool()
+@_tool
 def framework_decompose(project_code: str, framework: str,
                         source_keys: list[str],
                         baseline: dict | None = None) -> dict:
@@ -1087,7 +1179,7 @@ def framework_decompose(project_code: str, framework: str,
         return {"error": f"failed to decompose {framework!r} in {project_code!r}: {exc}"}
 
 
-@mcp.tool()
+@_tool
 def framework_compose(framework: str, field_values: dict,
                       target_element_type: str | None = None) -> dict:
     """Compose draft element content from human-confirmed framework field values.
@@ -1163,7 +1255,7 @@ def _resolve_commitments(project_code: str):
     return client, _commitment_scope(client, project_code)
 
 
-@mcp.tool()
+@_tool
 def create_commitment(project_code: str, description: str, owner: str = "",
                       due_date: str = "", direction: str = "internal") -> dict:
     """Register a dated commitment (who owes what by when) in MC-2's commitments store.
@@ -1217,7 +1309,7 @@ def create_commitment(project_code: str, description: str, owner: str = "",
         return {"error": f"failed to create commitment in {project_code!r}: {exc}"}
 
 
-@mcp.tool()
+@_tool
 def list_commitments(project_code: str, status: str = "open") -> list[dict]:
     """List a project's or initiative's commitments (due-date ascending, undated last).
 
@@ -1249,7 +1341,7 @@ def list_commitments(project_code: str, status: str = "open") -> list[dict]:
 # implementation, and close_out.py's checklist still points humans at the verb.
 
 
-@mcp.tool()
+@_tool
 def create_note(project_code: str, recipient: str, body: str,
                 author: str = "") -> dict:
     """Leave a partner a Note against a project (in-app unread + Slack DM).

@@ -4,6 +4,43 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.85.0 — 2026-08-03
+
+- **Stale-MCP failures now name themselves (#150).** `cp mcp` is long-lived,
+  and after a release it keeps serving old bytecode whose failures wear
+  misleading masks (a v0.84.1 Drive-creds message for a restart-needed
+  condition cost a live root-cause detour). Every tool error payload now
+  carries `server_version`, and every result is checked against the version
+  installed on disk (fresh `importlib.metadata` read per call) — a mismatch
+  injects `engine_version_warning: "…restart the MCP connection (/mcp)…"`.
+  All 19 tools route through one `_tool` decorator; signatures preserved for
+  schema introspection.
+- **`cp spine-lint` accepts short codes (#151).** The CLI resolved only the
+  dir-slug while every MCP verb took `ibx-5192`. It now resolves via
+  `_resolve_project_id` + `find_spine_dir` and queries EVERY project_code
+  spelling the spine may be keyed under (short code AND dir-slug — drifted
+  projects carry live rows under both), fixing the resolver inconsistency
+  and partially defusing the slug-drift trap in one move.
+- **`pull_project_source` returns chunks in document order (#152).** The
+  no-query path ordered by the asset's `created_at`, which ties for every
+  chunk of one document — within a doc the order was arbitrary (an outline
+  pulled for a same-day deck build came back shuffled). Chunks now carry
+  `meta.chunk_index` stamped at ingest (component library 6a0f2db; all three
+  1p-lib pins bumped), the `read_scoped_asset_chunks` RPC returns
+  `chunk_index` + `page` and orders by them on the no-query path (mc-2
+  migration 128), and `pull_source` sorts as belt-and-braces. Pre-stamp rows
+  keep RPC order (PDFs fall back to `meta.page`); query mode keeps relevance
+  ranking untouched.
+- **Newly ingested source docs announce themselves (#153).** Document
+  arrivals were silent — only meetings surfaced in the working tree, and a
+  week's governing artifact could land in the source store invisibly. Sync
+  now appends one `### Inbound` bullet per source ingested in the last 14
+  days (`[<date> · source ingest] **New source ingested:** <title> …`) via
+  the same cp:hash-idempotent machinery meeting ingest uses, so the cp.md
+  inbound strip aggregates arrivals for free. The 14-day window keeps a
+  first announcement pass from flooding a file with historical backlog;
+  `write_sources_manifest` now returns the asset entries it wrote.
+
 ## v0.84.1 — 2026-08-03
 
 - **Drive ingest: Google Slides/Sheets exports no longer land as `.docx`.**

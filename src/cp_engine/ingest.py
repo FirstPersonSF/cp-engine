@@ -744,6 +744,54 @@ def _write_inbound(
     return True
 
 
+# Only sources ingested within this window get an arrival bullet — the guard
+# that keeps the FIRST announcement pass from flooding a sprint file with a
+# project's entire historical source backlog. The cp:hash marker (not this
+# window) is what prevents re-announcement.
+_ANNOUNCE_WINDOW_DAYS = 14
+
+
+def announce_new_sources(
+    code: str,
+    sprint_path: Path,
+    assets: list[dict],
+    *,
+    today: date,
+    window_days: int = _ANNOUNCE_WINDOW_DAYS,
+) -> int:
+    """Announce recently ingested source docs in the sprint file (#153).
+
+    Document arrivals used to be silent — only meetings announced themselves,
+    and a newly ingested doc (even a week's governing artifact) surfaced
+    nowhere in the working tree. Each asset ingested within ``window_days``
+    of ``today`` gets one `### Inbound` bullet via the same `_write_inbound`
+    machinery meetings use, so the cp.md inbound strip aggregates it for free
+    and the cp:hash marker makes announcement idempotent across syncs and
+    machines. Returns the number of bullets actually appended.
+    """
+    count = 0
+    for asset in assets:
+        title = (asset.get("title") or "").strip()
+        created_raw = (asset.get("created_at") or "")[:10]
+        if not title or not created_raw:
+            continue
+        try:
+            created = date.fromisoformat(created_raw)
+        except ValueError:
+            continue
+        if not (0 <= (today - created).days <= window_days):
+            continue
+        source_type = (asset.get("source_type") or "doc").strip()
+        text = (
+            f"**New source ingested:** {title} ({source_type}) — "
+            "full text via `pull_project_source`."
+        )
+        item = {"text": text, "date": created.isoformat(), "who": "source ingest"}
+        if _write_inbound(code, item, sprint_path, today=today):
+            count += 1
+    return count
+
+
 def _write_ask(
     code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
 ) -> bool:

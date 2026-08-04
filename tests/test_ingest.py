@@ -2228,3 +2228,73 @@ def test_execute_plan_targets_team_communication_in_initiative_scaffold(
     written = sprint_path.read_text()
     comm = section_body(written, "Team communication")
     assert "Review the routing spec" in subsection(comm, "Open asks")
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  announce_new_sources (#153) — document arrivals surface in the tree
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _assets_for_announce() -> list[dict]:
+    return [
+        {"id": "a-new", "title": "Jaime v3 Outline.docx", "source_type": "doc",
+         "created_at": "2026-05-14T10:00:00Z"},
+        {"id": "a-old", "title": "Ancient Brief.pdf", "source_type": "pdf",
+         "created_at": "2026-01-02T00:00:00Z"},
+    ]
+
+
+def test_announce_new_sources_appends_recent_only(tmp_path):
+    from datetime import date as _date
+
+    from cp_engine.ingest import announce_new_sources
+
+    sprint = tmp_path / "ggl-5168.md"
+    _scaffold_minimal_sprint_file(sprint)
+
+    n = announce_new_sources(
+        "ggl-5168", sprint, _assets_for_announce(), today=_date(2026, 5, 15)
+    )
+
+    body = sprint.read_text()
+    assert n == 1
+    assert "**New source ingested:** Jaime v3 Outline.docx (doc)" in body
+    assert "[2026-05-14 · source ingest]" in body
+    assert "Ancient Brief" not in body  # outside the window — backlog stays silent
+    assert "cp:hash=" in body
+
+
+def test_announce_new_sources_idempotent_across_syncs(tmp_path):
+    from datetime import date as _date
+
+    from cp_engine.ingest import announce_new_sources
+
+    sprint = tmp_path / "ggl-5168.md"
+    _scaffold_minimal_sprint_file(sprint)
+
+    first = announce_new_sources(
+        "ggl-5168", sprint, _assets_for_announce(), today=_date(2026, 5, 15)
+    )
+    second = announce_new_sources(
+        "ggl-5168", sprint, _assets_for_announce(), today=_date(2026, 5, 16)
+    )
+
+    assert (first, second) == (1, 0)
+    assert sprint.read_text().count("Jaime v3 Outline.docx") == 1
+
+
+def test_announce_new_sources_tolerates_missing_dates(tmp_path):
+    from datetime import date as _date
+
+    from cp_engine.ingest import announce_new_sources
+
+    sprint = tmp_path / "ggl-5168.md"
+    _scaffold_minimal_sprint_file(sprint)
+
+    assets = [
+        {"id": "x", "title": "No Date.docx", "source_type": "doc"},
+        {"id": "y", "title": "", "created_at": "2026-05-14T00:00:00Z"},
+        {"id": "z", "title": "Bad Date.docx", "created_at": "not-a-date"},
+    ]
+    n = announce_new_sources("ggl-5168", sprint, assets, today=_date(2026, 5, 15))
+    assert n == 0

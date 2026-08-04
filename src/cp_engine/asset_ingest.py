@@ -2213,7 +2213,8 @@ def read_scoped_chunks(
     that SQL is a Postgres function. So this calls a DB RPC and returns its rows;
     the SQL stays in the database where it belongs.
 
-    REQUIRED — Phase B migration (056) MUST create this RPC. Expected signature:
+    REQUIRED — Phase B migration (056) created this RPC; migration 128 (mc-2)
+    reshaped it for document order (#152). Expected signature:
 
         read_scoped_asset_chunks(
             p_project_id     uuid,
@@ -2224,7 +2225,9 @@ def read_scoped_chunks(
             text         text,
             citation_url text,
             title        text,
-            scope        text
+            scope        text,
+            chunk_index  integer,   -- meta.chunk_index (null pre-stamp)
+            page         numeric    -- meta.page (PDF ingests; else null)
         )
 
       Body contract:
@@ -2233,14 +2236,14 @@ def read_scoped_chunks(
           AND ( (a.scope = 'project' AND a.project_id = p_project_id)
              OR (a.scope = 'account' AND a.company_id = p_company_id) )
           -- archived rows are excluded by status='active' + the scope union
-        - ORDER BY c.embedding <=> p_query_embedding when p_query_embedding IS NOT
-          NULL, else by a.created_at DESC (recency fallback)
+        - ORDER BY c.embedding <=> p_query_embedding when p_query_embedding IS
+          NOT NULL, else by a.created_at DESC, then chunk_index / page nulls
+          last (document order within a doc — #152)
         - LIMIT p_limit
-        - select explicit columns only (c.text, c.meta->>'citation_url', a.title,
-          a.scope) — never SELECT *.
+        - select explicit columns only — never SELECT *.
 
     Returns the RPC's `.data` (a list of dict rows shaped {text, citation_url,
-    title, scope}).
+    title, scope, chunk_index, page}).
     """
     resp = client.rpc(
         "read_scoped_asset_chunks",

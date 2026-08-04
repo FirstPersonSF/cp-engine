@@ -264,6 +264,19 @@ def pull_source(
             ),
         }
 
+    # Document order on the no-query path (#152): the RPC returns
+    # meta.chunk_index (stamped at ingest since 1p-lib 6a0f2db) and meta.page;
+    # pre-stamp rows have neither and keep their RPC order (stable sort).
+    # A query ranks by relevance — leave that order alone.
+    if query is None:
+        def _doc_order(r: dict) -> tuple:
+            ci, page = r.get("chunk_index"), r.get("page")
+            return (
+                0 if ci is not None else 1, ci if ci is not None else 0,
+                0 if page is not None else 1, page if page is not None else 0,
+            )
+        selected = sorted(selected, key=_doc_order)
+
     first = selected[0]
     return {
         "title": first.get("title"),
@@ -1327,14 +1340,15 @@ def write_sources_manifest(
     llm=None,
     today=None,
     max_new_summaries: int = 25,
-) -> int:
+) -> list[dict]:
     """Write `<project_dir>/_sources.md` — one entry per active source doc.
 
     Each entry carries a short LLM summary cached per-doc in
     `<project_dir>/_sources.cache.json` keyed by a content hash (`file_hash`),
     so unchanged docs are NEVER re-summarized across runs. The manifest is fully
     regenerated from the current `list_sources`, so removed assets drop out; we
-    prune their cache entries too. Returns the number of assets written.
+    prune their cache entries too. Returns the written asset entries (the #153
+    announcement pass consumes their `created_at`; count = ``len()``).
 
     `llm` is an injected `(prompt: str) -> str` callable (for tests); the default
     is one Anthropic call (`claude-opus-4-7`). `today` is accepted for signature
@@ -1405,4 +1419,6 @@ def write_sources_manifest(
     _atomic_write(
         cache_path, json.dumps(new_cache, indent=2, sort_keys=True)
     )
-    return len(assets)
+    # The full entry list (id/title/source_type/created_at/summary) — sync's
+    # new-source announcements (#153) consume it; `len()` is the old count.
+    return assets

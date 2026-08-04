@@ -1485,3 +1485,50 @@ def test_pull_element_from_project_source_miss(monkeypatch):
     )
     out = srv.pull_element_from_project("ggl-5168", "ibx-5153", "ghost")
     assert "ggl-5168" in out["error"] and "no spine element" in out["error"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #150 — version stamping on tool results
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_error_payloads_carry_server_version(monkeypatch):
+    """A tool failure names the code that produced it."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (_ for _ in ()).throw(
+        RuntimeError("boom")))
+    monkeypatch.setattr(srv, "_SERVER_VERSION", "9.9.9")
+    monkeypatch.setattr(srv, "_installed_version", lambda: "9.9.9")
+
+    out = srv.list_project_sources("IBX-5153")
+
+    assert out[0]["server_version"] == "9.9.9"
+    assert "engine_version_warning" not in out[0]
+
+
+def test_version_mismatch_warns_to_restart(monkeypatch):
+    """Server ≠ disk → every dict result tells the caller to restart /mcp."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (_ for _ in ()).throw(
+        RuntimeError("No valid credentials found")))
+    monkeypatch.setattr(srv, "_SERVER_VERSION", "0.84.0")
+    monkeypatch.setattr(srv, "_installed_version", lambda: "0.84.1")
+
+    out = srv.list_project_sources("IBX-5153")
+
+    assert out[0]["server_version"] == "0.84.0"
+    assert "restart" in out[0]["engine_version_warning"]
+    assert "0.84.1" in out[0]["engine_version_warning"]
+
+
+def test_matched_versions_leave_success_results_untouched(monkeypatch):
+    """No mismatch, no error → results pass through byte-identical."""
+    fake_client = object()
+    monkeypatch.setattr(srv, "_resolve", lambda code: (fake_client, "pid", "cid"))
+    monkeypatch.setattr(srv, "_installed_version", lambda: None)
+    monkeypatch.setattr(
+        "cp_engine.project_sources.list_sources",
+        lambda client, pid, cid: [{"id": "a1", "title": "Doc"}],
+    )
+
+    out = srv.list_project_sources("IBX-5153")
+
+    assert out == [{"id": "a1", "title": "Doc"}]
