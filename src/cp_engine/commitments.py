@@ -23,6 +23,8 @@ re-appears in a re-ingested meeting must not resurrect.
 from __future__ import annotations
 
 import logging
+import re
+import time
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -30,6 +32,24 @@ from cp_engine.clickup_routing import engagement_number
 from cp_engine.mc2_db import Tables
 
 log = logging.getLogger(__name__)
+
+# Fathom diarization labels — never a person's name (mirrors the webhook's
+# resolve_action_owner guard, which predates this module-level resolution).
+_DIARIZATION_RE = re.compile(r"^speaker\s*\d+$", re.IGNORECASE)
+_EMAILISH_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+_PAREN_RE = re.compile(r"\s*\([^)]*\)")
+
+# entities kinds that are PEOPLE. The registry also carries expense buckets
+# and vendor orgs ("American Express Company") — matching a person name
+# against those would be nonsense, so they're excluded at fetch time.
+_PERSON_KINDS = ("staff", "freelancer")
+
+# Per-process cache of the person roster: (fetched_at, rows). The roster
+# changes rarely; a 5-minute TTL keeps webhook fan-outs from re-reading it
+# per commitment while staying fresh enough for same-day entity edits.
+_PEOPLE_CACHE: list | None = None
+_PEOPLE_CACHE_AT: float = 0.0
+_PEOPLE_CACHE_TTL = 300.0
 
 # Directions (mirrors the mc-2 CHECK constraint).
 US_TO_THEM = "us_to_them"
@@ -123,6 +143,117 @@ def _valid_due_date(raw: str | None) -> str | None:
         return None
 
 
+def _entity_people(client: Any) -> list[dict]:
+    """The person roster from ``entities`` (staff + freelancers), cached.
+
+    Archived rows are included but sorted last so an active duplicate of
+    the same name wins (e.g. the two "Eric Seanor" rows). Never raises —
+    a roster fetch failure returns [] and the caller keeps raw values.
+    """
+    global _PEOPLE_CACHE, _PEOPLE_CACHE_AT
+    now = time.monotonic()
+    if _PEOPLE_CACHE is not None and now - _PEOPLE_CACHE_AT < _PEOPLE_CACHE_TTL:
+        return _PEOPLE_CACHE
+    try:
+        resp = (
+            client.table(Tables.ENTITIES)
+            .select("name, email, archived_at")
+            .in_("kind", list(_PERSON_KINDS))
+            .execute()
+        )
+        rows = [r for r in (resp.data or []) if (r.get("name") or "").strip()]
+        rows.sort(key=lambda r: r.get("archived_at") is not None)
+        _PEOPLE_CACHE, _PEOPLE_CACHE_AT = rows, now
+    except Exception as exc:  # noqa: BLE001 — resolution is enrichment, never a gate
+        log.warning("commitments: entities roster fetch failed: %s", exc)
+        return _PEOPLE_CACHE or []
+    return _PEOPLE_CACHE
+
+
+def _clean_owner_name(raw: str) -> str:
+    """Normalize a transcript-shaped display name to a plain person name.
+
+    Strips parentheticals ("Marcello Grande (He/Him/His)"), splits glued
+    CamelCase ("GeoffAhmann"), collapses whitespace. Returns "" for
+    diarization labels — "Speaker 1" is not a name.
+    """
+    name = _PAREN_RE.sub("", raw or "").strip()
+    if not name or _DIARIZATION_RE.match(name):
+        return ""
+    if " " not in name:
+        # GeoffAhmann → Geoff Ahmann; leaves "drew"/"Marcello" untouched.
+        name = re.sub(r"(?<=[a-z])(?=[A-Z])", " ", name)
+    return re.sub(r"\s+", " ", name).strip()
+
+
+def resolve_owner_identity(
+    client: Any,
+    owner_name: str | None,
+    owner_email: str | None,
+) -> tuple[str | None, str | None]:
+    """Canonicalize an owner against the ``entities`` person roster (#157).
+
+    Owner strings arrive from four writers with no shared convention —
+    Zoom display names, Fathom diarization labels, bare first names,
+    emails-used-as-names — and the commitments filter keys on the raw
+    strings, so every variant becomes a distinct "person". This resolves
+    to the registry spelling wherever a confident match exists:
+
+    1. email match on ``entities.email`` (case-insensitive) → canonical
+       ``(entity.name, email)``;
+    2. cleaned-name exact match (case-insensitive) → canonical name +
+       the entity's email when it has one;
+    3. unique containment ("kelly" ⊂ "Kelly Anderson", ≥3 chars) among
+       ACTIVE people only — ambiguity keeps the raw name, never guesses;
+    4. no match → cleaned name + email as given (client-side people are
+       legitimately not in the registry).
+
+    A name that is literally an email address migrates to the email slot
+    rather than staying a display name. Never raises.
+    """
+    email = (owner_email or "").strip().lower() or None
+    raw_name = (owner_name or "").strip()
+    if raw_name and _EMAILISH_RE.match(raw_name):
+        email = email or raw_name.lower()
+        raw_name = ""
+    name = _clean_owner_name(raw_name)
+
+    try:
+        people = _entity_people(client)
+        if email:
+            for p in people:
+                if (p.get("email") or "").strip().lower() == email:
+                    return p["name"].strip(), email
+        if name:
+            needle = name.lower()
+            exact = [
+                p for p in people
+                if p["name"].strip().lower() == needle
+            ]
+            if exact:
+                hit = exact[0]
+                return (
+                    hit["name"].strip(),
+                    email or (hit.get("email") or "").strip().lower() or None,
+                )
+            if len(needle) >= 3:
+                active = [p for p in people if p.get("archived_at") is None]
+                fuzzy = [
+                    p for p in active
+                    if needle in p["name"].strip().lower()
+                ]
+                if len(fuzzy) == 1:
+                    hit = fuzzy[0]
+                    return (
+                        hit["name"].strip(),
+                        email or (hit.get("email") or "").strip().lower() or None,
+                    )
+    except Exception as exc:  # noqa: BLE001 — see docstring: never a gate
+        log.warning("commitments: owner resolution failed: %s", exc)
+
+    return name or None, email
+
+
 def write_commitment(
     client: Any,
     *,
@@ -152,6 +283,13 @@ def write_commitment(
             cp_hash, owner["code"],
         )
         return "duplicate"
+
+    # #157: canonicalize the owner against the entities person roster so
+    # every writer (ingest verbs, webhook, MCP) stores one spelling per
+    # person. Unresolvable owners (client-side people) pass through.
+    owner_name, owner_email = resolve_owner_identity(
+        client, owner_name, owner_email
+    )
 
     row = {
         "description": description,

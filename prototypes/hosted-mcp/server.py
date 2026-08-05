@@ -4522,10 +4522,31 @@ def create_commitment(
     if scope is None:
         return {"error": f"no project or initiative resolves for code {project_code!r}"}
 
+    # #157: resolve the owner email against the entities person roster so
+    # the stored row carries the canonical display name (the commitments
+    # filter labels rows by owner_name and keys on the email). Best-effort:
+    # an unknown email stays name-less rather than blocking the insert.
+    email_norm = (owner_email or "").strip().lower() or None
+    resolved_name: str | None = None
+    if email_norm:
+        try:
+            ent = (
+                client.table("entities")
+                .select("name")
+                .ilike("email", email_norm)
+                .in_("kind", ["staff", "freelancer"])
+                .limit(1)
+                .execute()
+            )
+            if ent.data:
+                resolved_name = (ent.data[0].get("name") or "").strip() or None
+        except Exception:  # noqa: BLE001 — enrichment only
+            pass
+
     row: dict[str, Any] = {
         "description": text,
-        "owner_email": (owner_email or "").strip() or None,
-        "owner_name": None,
+        "owner_email": email_norm,
+        "owner_name": resolved_name,
         "direction": direction,
         "due_date": due_iso,
         "date_status": "proposed",

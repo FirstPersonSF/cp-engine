@@ -4,6 +4,25 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.88.0 — 2026-08-05
+
+- **Commitments owners canonicalize against the entities roster (#157).**
+  Four writers stored free-text owner name/email with no shared
+  convention — Zoom display names with pronoun suffixes, glued
+  "GeoffAhmann", bare "kelly", diarization labels, emails-as-names —
+  and the mc-2 owner filter keys on raw strings, so one person surfaced
+  as up to four dropdown entries. New `resolve_owner_identity` runs at
+  the `write_commitment` choke point (covers ingest verbs, webhook, and
+  stdio MCP): email match → exact name match → unique containment
+  against the `entities` person roster (staff+freelancer, active rows
+  preferred, 5-min cache); "Speaker N" and email-shaped strings are
+  never stored as names; resolution failures never block the insert.
+  Hosted `create_commitment` and mc-2's manual create route fill
+  `owner_name` from the roster by email. mc-2 **mig 131** healed the
+  backlog (one entry per person; 25 unknowable "Speaker" rows left
+  as-is) and backfilled `entities.email` for Geoff Ahmann, Derek
+  Dighton, and Jessica Schorer from their own attendee records.
+
 ## v0.87.0 — 2026-08-05
 
 - **Ingest routes by meeting date, not by the day you run it (#156).**
