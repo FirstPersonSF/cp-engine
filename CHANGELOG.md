@@ -4,6 +4,26 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.86.2 — 2026-08-05
+
+- **`cp ingest-assets` auto-loads Dropbox credentials (#154).** The CLI
+  asset-ingest path constructed `DropboxConnector()` directly and relied on
+  ambient `DROPBOX_*` env vars, so a bare-terminal run failed with "No
+  Dropbox credentials found" while the identical ingest succeeded from
+  cron/Railway (env preset) and `cp mcp` (#111 loads creds per-verb). All
+  four constructions in `asset_ingest.py` now route through a
+  `_dropbox_connector()` helper that best-effort fills `DROPBOX_*` from the
+  mc-2 clone's `.env` (already-set env vars win) before constructing —
+  CLI, webhook, and MCP paths now behave identically.
+- **`meta.page` range-string contract codified (#155).** The 2026-08-04
+  prod hotfix for `read_scoped_asset_chunks` (PDF chunks spanning pages
+  stamp `page = "17-18"`, which 22P02-poisoned every
+  `pull_project_source` in the project under mig 128's `::numeric` cast)
+  is now committed as mc-2 migration 130. Contract: `meta.page` is a page
+  label, not guaranteed numeric; the RPC extracts the leading number (a
+  range orders by its first page, non-numeric sorts last). Audit found no
+  other `meta->>'page'` numeric casts in mc-2 or cp-engine.
+
 ## v0.86.1 — 2026-08-03
 
 - **Spine slug-drift fixed at the root.** spine_substance self-healed every

@@ -749,6 +749,33 @@ def _effective_allowlist(
     return (only_folder,) if permitted else _MATCH_NOTHING
 
 
+def _dropbox_connector():
+    """Construct a `DropboxConnector` with DROPBOX_* creds ensured first (#154).
+
+    The connector self-configures from `os.getenv`, which works on Railway/cron
+    (env preset) and under `cp mcp` (#111 loads creds per-verb) but NOT from a
+    bare-terminal CLI run — the .env auto-load exports only SUPABASE_*, so the
+    same ingest that succeeds everywhere else fails locally with "No Dropbox
+    credentials found". Best-effort fill DROPBOX_* from the mc-2 clone's .env
+    before constructing (already-set env vars WIN, matching
+    `mc2_db.load_dropbox_creds`). Loader errors are swallowed: outside a tenant
+    repo there is nothing to load, and in that case the connector's own
+    "No Dropbox credentials found" is the actionable message.
+    """
+    from cloud_storage.dropbox_connector import DropboxConnector
+
+    try:
+        from cp_engine import config as cp_config
+        from cp_engine import mc2_db
+        from cp_engine.capture_session import find_tenant_root
+
+        root = find_tenant_root(Path.cwd()) or Path.cwd()
+        mc2_db.load_dropbox_creds(cp_config.load(root))
+    except Exception:  # noqa: BLE001 — creds loading is optional enrichment
+        pass
+    return DropboxConnector()
+
+
 def list_files(
     folders: ProjectFolders,
     drive_connector=None,
@@ -840,9 +867,7 @@ def list_files(
         if folders.mc_dropbox_folder_id:
             try:
                 if dropbox_connector is None:
-                    from cloud_storage.dropbox_connector import DropboxConnector
-
-                    dropbox_connector = DropboxConnector()
+                    dropbox_connector = _dropbox_connector()
                 _conn = dropbox_connector
                 _fid = folders.mc_dropbox_folder_id
                 results.extend(
@@ -928,9 +953,7 @@ def download_file(
 
     if file_ref.source == "dropbox":
         if dropbox_connector is None:
-            from cloud_storage.dropbox_connector import DropboxConnector
-
-            dropbox_connector = DropboxConnector()
+            dropbox_connector = _dropbox_connector()
         # WORKAROUND: the Dropbox connector has no download_file; using the SDK
         # client's files_download directly. Retire when the component adds
         # download_file. Fetch by path_display (the value `list_files` stored on
@@ -1404,9 +1427,7 @@ def ingest_project_assets(
             drive_connector = None
     if dropbox_connector is None and getattr(folders, "enable_dropbox", False):
         try:
-            from cloud_storage.dropbox_connector import DropboxConnector
-
-            dropbox_connector = DropboxConnector()
+            dropbox_connector = _dropbox_connector()
         except Exception:  # noqa: BLE001 — list_files handles + notes the failure
             dropbox_connector = None
 
@@ -2001,9 +2022,7 @@ def list_project_files_annotated(
             drive_connector = None
     if getattr(folders, "enable_dropbox", False):
         try:
-            from cloud_storage.dropbox_connector import DropboxConnector
-
-            dropbox_connector = DropboxConnector()
+            dropbox_connector = _dropbox_connector()
         except Exception:  # noqa: BLE001 — list_files notes the per-source failure
             dropbox_connector = None
 
