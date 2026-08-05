@@ -291,9 +291,15 @@ def execute_plan(
     function. Idempotent — appending the same (project, verb, text)
     twice is a no-op (skipped_duplicate counter increments).
 
-    `week_iso` overrides the default of "current week derived from `today`".
-    Used by the Slack-digest pipeline (P.3+): the Sunday cron runs in
-    week N+1 but writes to week N's sprint files.
+    Week resolution (#156): `week_iso`, when given, always wins (the
+    Slack-digest pipeline uses it: the Sunday cron runs in week N+1 but
+    writes to week N's sprint files). Otherwise the target week derives
+    from the plan's OWN entry dates (`plan_week_iso`) — an ingest
+    captures a meeting that already happened, so the meeting's date
+    picks the sprint, not the day the ingest runs. Only a plan with no
+    dated entries falls back to `today`'s calendar week — deliberately
+    NOT `_planning_monday`'s Wed→next-week roll, which routed a Tuesday
+    meeting ingested on Wednesday into the following sprint.
 
     `supabase` is an optional Supabase client used by the ClickUp-proposal
     verbs (``set-milestone`` / ``set-client-ask-task``). When absent, those
@@ -304,7 +310,7 @@ def execute_plan(
     """
     _validate_plan(plan)
     result = IngestPlanResult()
-    week_iso = week_iso or _current_week_iso(today)
+    week_iso = week_iso or plan_week_iso(plan) or _calendar_week_iso(today)
 
     projects_block = plan.get("projects") or {}
     for code, entries in projects_block.items():
@@ -387,8 +393,30 @@ def execute_plan(
     if themes:
         week_path = tenant_root / "sprints" / week_iso / "_week.md"
         if not week_path.exists():
-            result.errors.append(f"_week.md missing: {week_path}")
-        else:
+            # Race ahead of sync, same as the project-file scaffold above:
+            # a week dir sync hasn't visited yet has no _week.md, and
+            # dropping the themes (#156) loses tenant-wide content that
+            # nothing re-derives. Scaffold it exactly as sync would.
+            try:
+                from cp_engine.render import render_sprint_week
+                from cp_engine.sprints import _iso_week_dates, _short_md_date
+
+                start, end = _iso_week_dates(week_iso)
+                week_num = week_iso.split("-W", 1)[-1]
+                week_dates = (
+                    f"{_short_md_date(start.isoformat())} – "
+                    f"{_short_md_date(end.isoformat())}"
+                )
+                week_path.parent.mkdir(parents=True, exist_ok=True)
+                week_path.write_text(render_sprint_week(
+                    week_iso=week_iso,
+                    week_label=f"W{week_num}",
+                    week_dates=week_dates,
+                ))
+                logger.info("auto-scaffolded %s (week %s)", week_path, week_iso)
+            except Exception as exc:
+                result.errors.append(f"_week.md missing: {week_path} ({exc})")
+        if week_path.exists():
             for item in themes:
                 try:
                     written = _write_theme(item, week_path)
@@ -1497,17 +1525,63 @@ def _today_iso() -> str:
     return datetime.now().date().isoformat()
 
 
-def _current_week_iso(today: date) -> str:
-    """Return the cp-engine sprint week label for `today` (e.g. "2026-W21").
+def _calendar_week_iso(today: date) -> str:
+    """ISO week label for the calendar week containing `today`.
 
-    Delegates to `sprints.current_sprint_week_iso`. As of v0.10.0 the
-    underlying helper uses ISO 8601 throughout, so this function and
-    the sprint-file scaffolding agree on the label. (Pre-v0.10.0 they
-    diverged because `sprints` used `%W` and this function delegated.
-    Now everyone uses ISO and there's no fork.)
+    Deliberately NOT `sprints.current_sprint_week_iso`: that helper
+    applies `_planning_monday`'s Wed→next-Monday roll, which is a
+    PLANNING anchor (prep-planning on a Thursday targets next sprint).
+    Ingest captures meetings that already happened, so a "current week"
+    fallback must mean the literal calendar week (#156). Only reached
+    when a plan carries no dated entries — see `plan_week_iso`.
     """
-    from datetime import datetime as _dt
+    iso = today.isocalendar()
+    return f"{iso.year}-W{iso.week:02d}"
 
-    from cp_engine.sprints import current_sprint_week_iso
 
-    return current_sprint_week_iso(_dt.combine(today, _dt.min.time()))
+def plan_week_iso(plan: dict) -> str | None:
+    """Derive the target sprint week from the plan's own entry dates.
+
+    Collects every parseable ISO `date` field across project entries and
+    themes and returns the label of the most common date's calendar week
+    (ties break toward the latest date). A meeting's entries are stamped
+    with the meeting date, so this routes the ingest to the sprint the
+    meeting belongs to regardless of when the ingest runs (#156 — a
+    Tuesday scrum ingested on Wednesday previously rolled into NEXT
+    week's dir via `_planning_monday`). Returns None when no entry
+    carries a parseable date (caller falls back to the calendar week).
+    """
+    from collections import Counter
+
+    # Only these verbs' `date` is the MEETING date (the signal date).
+    # Commitment/proposal verbs (set-milestone, set-client-ask-task)
+    # carry DUE dates — often weeks out — and must not steer routing.
+    signal_verbs = {
+        "record-inbound",
+        "record-ask",
+        "add-decision",
+        "record-risk",
+    }
+    dates: Counter[date] = Counter()
+    for entries in (plan.get("projects") or {}).values():
+        for verb, items in (entries or {}).items():
+            if _normalize_verb(verb) not in signal_verbs:
+                continue
+            for item in items or []:
+                if not isinstance(item, dict):
+                    continue
+                raw = item.get("date")
+                try:
+                    dates[date.fromisoformat(str(raw))] += 1
+                except (TypeError, ValueError):
+                    continue
+    for item in plan.get("themes") or []:
+        if isinstance(item, dict):
+            try:
+                dates[date.fromisoformat(str(item.get("date")))] += 1
+            except (TypeError, ValueError):
+                continue
+    if not dates:
+        return None
+    best = max(dates.items(), key=lambda kv: (kv[1], kv[0]))[0]
+    return _calendar_week_iso(best)

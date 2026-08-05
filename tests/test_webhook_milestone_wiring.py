@@ -105,11 +105,12 @@ def test_ingest_one_project_passes_supabase_and_meeting_id_to_execute_plan(
 
     # Minimal tenant with a W22 sprint file.
     tenant = tmp_path
-    # Use the current ISO week so execute_plan's `_current_week_iso`
-    # finds the sprint file. Compute it the same way execute_plan does.
-    from cp_engine.sprints import current_sprint_week_iso
+    # Use the week execute_plan will target. The fake plan's only dated
+    # entry is a set-milestone DUE date, which is excluded from routing
+    # (#156), so execute_plan falls back to today's calendar week.
+    from cp_engine.ingest import _calendar_week_iso
     from datetime import datetime
-    week = current_sprint_week_iso(datetime.now())
+    week = _calendar_week_iso(datetime.now().date())
     _scaffold_sprint_file(tenant, week=week, code="ggl-5168")
 
     config = TenantConfig(

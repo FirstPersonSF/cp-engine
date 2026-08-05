@@ -336,11 +336,12 @@ def test_execute_plan_auto_scaffolds_missing_sprint_file(tmp_path: Path) -> None
             }
         }
     }
-    # Wed May 20 2026 = weekday 2, so _planning_monday rolls forward to
-    # next Monday (May 25, ISO W22).
+    # #156: the entry date (Fri May 22, ISO W21) picks the target week —
+    # NOT _planning_monday's roll from `today`. W21 has no sprint file
+    # yet, so the scaffold-from-prior path still exercises.
     result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 20))
     assert result.errors == []
-    target = tenant / "sprints" / "2026-W22" / "ggl-5168.md"
+    target = tenant / "sprints" / "2026-W21" / "ggl-5168.md"
     assert target.exists()
     body = target.read_text()
     assert "Late-week meeting note" in body
@@ -455,7 +456,7 @@ def test_execute_plan_close_ask_flips_open_to_closed(tmp_path: Path) -> None:
     plan_open = {
         "projects": {
             "ggl-5168": {
-                "asks": [{"text": "Approve Round 3", "who": "Rena", "date": "2026-05-08"}],
+                "asks": [{"text": "Approve Round 3", "who": "Rena", "date": "2026-05-12"}],
             }
         }
     }
@@ -471,8 +472,8 @@ def test_execute_plan_close_ask_flips_open_to_closed(tmp_path: Path) -> None:
     result = execute_plan(plan_close, tenant_root=tenant, today=date(2026, 5, 12))
     assert result.errors == []
     body = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
-    assert "[open · 2026-05-08" not in body
-    assert "[closed · 2026-05-08" in body
+    assert "[open · 2026-05-12" not in body
+    assert "[closed · 2026-05-12" in body
 
 
 def test_close_ask_appends_closed_by_marker_when_provided(tmp_path):

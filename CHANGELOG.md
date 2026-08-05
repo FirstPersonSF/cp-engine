@@ -4,6 +4,29 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.87.0 — 2026-08-05
+
+- **Ingest routes by meeting date, not by the day you run it (#156).**
+  `cp ingest` resolved its target week from `today` via `_planning_monday`,
+  whose Wed→next-Monday roll is a PLANNING anchor (MC-2 parity) — so any
+  Wed–Sun ingest of a Mon–Wed meeting silently landed in NEXT week's
+  sprint dir (observed: the Tuesday 1P scrum ingested Wednesday went to
+  W33 instead of W32, per-project bullets scattered across 19 wrong
+  files). The target week now derives from the plan's own entry dates
+  (`plan_week_iso`: most common signal date wins, ties break latest);
+  commitment/proposal verbs' DUE dates are excluded from routing. A plan
+  with no dated entries falls back to today's CALENDAR week — never the
+  planning roll. New `--week 2026-W##` CLI flag overrides explicitly, and
+  `--dry-run` output now reports `target_week` so the /cp-ingest plugin
+  can surface the destination before writes. The planning-week roll is
+  unchanged where it belongs (prep-planning, sprint scaffolding, the
+  Current sprint strip).
+- **Themes survive racing ahead of sync (#156).** When ingest targets a
+  week dir sync hasn't created yet, project files auto-scaffolded but
+  `_week.md` did not — the themes block hard-errored and tenant-wide
+  content was dropped. Ingest now scaffolds `_week.md` exactly as sync
+  would (same template + date format) before writing themes.
+
 ## v0.86.2 — 2026-08-05
 
 - **`cp ingest-assets` auto-loads Dropbox credentials (#154).** The CLI

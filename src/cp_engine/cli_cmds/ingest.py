@@ -28,11 +28,27 @@ import cp_engine.cli as _cli
     is_flag=True,
     help="Validate the plan and print what would happen, but don't write files.",
 )
-def ingest_cmd(plan: Path, dry_run: bool) -> None:
+@click.option(
+    "--week",
+    "week_iso",
+    default=None,
+    metavar="YYYY-W##",
+    help=(
+        "Target sprint week override (e.g. 2026-W32). Default: derived "
+        "from the plan's entry dates (the meeting date), falling back to "
+        "today's calendar week when the plan carries no dates."
+    ),
+)
+def ingest_cmd(plan: Path, dry_run: bool, week_iso: str | None) -> None:
     """Execute an ingest plan against the cp tenant.
 
     The plan is a YAML file produced by /cp-ingest (or hand-authored).
     Schema: {transcript: ..., projects: {<code>: {<verb>: [items]}}, themes: [...]}
+
+    The target sprint week derives from the plan's entry dates (the
+    meeting date) — never from the planning-week roll-forward, which
+    routed early-week meetings ingested Wed–Sun into next week's dir
+    (#156). Use --week to override explicitly.
 
     On success: writes bullets to the right sprint-file subsections; the
     plan is saved (separately, by the plugin) to sprints/<W##>/_ingest-log/
@@ -40,14 +56,27 @@ def ingest_cmd(plan: Path, dry_run: bool) -> None:
     content-hash deduplication.
     """
     import json
+    import re as _re
 
     import yaml
 
-    from cp_engine.ingest import IngestPlanError, execute_plan
+    from cp_engine.ingest import (
+        IngestPlanError,
+        _calendar_week_iso,
+        execute_plan,
+        plan_week_iso,
+    )
+
+    if week_iso is not None and not _re.fullmatch(r"\d{4}-W\d{2}", week_iso):
+        click.echo(
+            f"--week must look like 2026-W32 (got {week_iso!r})", err=True
+        )
+        sys.exit(1)
 
     plan_data = yaml.safe_load(plan.read_text(encoding="utf-8"))
     config = _cli._load_config_or_die()
     today = datetime.now().date()
+    resolved_week = week_iso or plan_week_iso(plan_data) or _calendar_week_iso(today)
 
     if dry_run:
         # Just validate the plan; report what would happen.
@@ -62,6 +91,7 @@ def ingest_cmd(plan: Path, dry_run: bool) -> None:
         account_decisions = plan_data.get("account_decisions") or []
         summary = {
             "valid": True,
+            "target_week": resolved_week,
             "projects_touched": list(projects.keys()),
             "verb_counts": {
                 code: {_normalize_verb(v): len(items) for v, items in entries.items()}
@@ -74,7 +104,12 @@ def ingest_cmd(plan: Path, dry_run: bool) -> None:
         return
 
     try:
-        result = execute_plan(plan_data, tenant_root=config.root, today=today)
+        result = execute_plan(
+            plan_data,
+            tenant_root=config.root,
+            today=today,
+            week_iso=resolved_week,
+        )
     except IngestPlanError as exc:
         click.echo(f"Plan validation failed: {exc}", err=True)
         sys.exit(1)
