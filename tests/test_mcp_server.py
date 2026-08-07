@@ -214,13 +214,17 @@ def test_exactly_nineteen_tools_registered():
 
     Then 19→21 (#126): archive_project_source + rename_project_source — the
     source-store curation pair (STORE cleanup, distinct from the spine
-    retire verbs that live on hosted)."""
+    retire verbs that live on hosted).
+
+    Then +1 (#160): compare_project_sources — the structural diff verb for
+    feedback that arrives as a revised copy of the artifact."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
         "list_project_sources",
         "pull_project_source",
         "fetch_project_source",
         "pull_document_comments",
+        "compare_project_sources",
         "push_to_dropbox",
         "archive_project_source",
         "rename_project_source",
@@ -254,10 +258,12 @@ def test_list_spine_elements_delegates(monkeypatch):
     captured = {}
 
     def fake_list_spine(client, project_id, company_id=None, *,
-                        layer=None, scope=None, binding=None, compact=False):
+                        layer=None, scope=None, binding=None, compact=False,
+                        tier=None):
         captured["args"] = (client, project_id)
         captured["filters"] = (layer, scope, binding)
         captured["compact"] = compact
+        captured["tier"] = tier
         return [{"est_item_id": "_authored/brief", "framing": "Brief"}]
 
     monkeypatch.setattr("cp_engine.project_sources.list_spine", fake_list_spine)
