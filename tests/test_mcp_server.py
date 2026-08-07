@@ -173,7 +173,7 @@ def test_tenant_root_uses_cwd_when_no_config_found(tmp_path, monkeypatch):
     assert srv._tenant_root() == tmp_path.resolve()
 
 
-def test_exactly_nineteen_tools_registered():
+def test_stdio_surface_is_local_io_plus_reads():
     """4 source-read + 1 dropbox-write + 2 spine-read + 5 spine-write +
     1 spine-promote + 1 meetings-read + 3 framework + 2 commitment + 1 note.
 
@@ -217,31 +217,30 @@ def test_exactly_nineteen_tools_registered():
     retire verbs that live on hosted).
 
     Then +1 (#160): compare_project_sources — the structural diff verb for
-    feedback that arrives as a revised copy of the artifact."""
+    feedback that arrives as a revised copy of the artifact.
+
+    Then 22→13 (#138 ratchet, final batch): the remaining dual write verbs
+    (create_spine_element, add_spine_document, add_spine_version,
+    promote_spine_transcript, create_commitment, create_note) and the
+    portable curation/copy verbs (archive_project_source,
+    rename_project_source, pull_element_from_project) moved to hosted.
+    stdio is now the LOCAL-I/O + READS surface: things that need this
+    machine's disk or credentials the hosted env deliberately lacks."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
         "list_project_sources",
         "pull_project_source",
         "fetch_project_source",
+        "push_to_dropbox",
         "pull_document_comments",
         "compare_project_sources",
-        "push_to_dropbox",
-        "archive_project_source",
-        "rename_project_source",
         "list_spine_elements",
         "pull_spine_element",
-        "create_spine_element",
-        "add_spine_document",
-        "add_spine_version",
-        "pull_element_from_project",
-        "promote_spine_transcript",
         "framework_readiness",
         "framework_decompose",
         "framework_compose",
         "list_project_meetings",
-        "create_commitment",
         "list_commitments",
-        "create_note",
     }
 
 
@@ -504,45 +503,10 @@ class _FakeWriteClient:
         return _FakeWriteQuery(name, self)
 
 
-def test_create_spine_element_writes_authored_v1(monkeypatch):
-    """Creates a live v1 authored row and writes it via upsert."""
-    client = _FakeWriteClient(select_rows=[])  # existing-check finds nothing
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-
-    out = srv.create_spine_element("ibx-5192", "Email from Janet", "email", "Hi", [])
-
-    assert out["element_id"] == "_authored/email-from-janet"
-    assert out["version_label"] == "v1"
-    assert len(client.upserts) == 1
-    table, rows, _ = client.upserts[0]
-    assert table == "spine_substance"
-    row = rows[0]
-    assert row["origin"] == "authored"
-    assert row["project_code"] == "ibx-5192"
-    assert row["status"] == "live"
-    assert row["version_label"] == "v1"
 
 
-def test_create_spine_element_conflict(monkeypatch):
-    """An existing element with the same slug → error, no clobbering upsert."""
-    client = _FakeWriteClient(select_rows=[{
-        "id": "ibx-5192/_authored/email-from-janet/v1",
-        "project_id": "pid",
-        "est_item_id": "_authored/email-from-janet",
-    }])
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-
-    out = srv.create_spine_element("ibx-5192", "Email from Janet", "email", "Hi", [])
-
-    assert "already exists" in out["error"]
-    assert client.upserts == []
 
 
-def test_create_spine_element_unresolved(monkeypatch):
-    """An unresolvable code → structured error containing 'not found'."""
-    monkeypatch.setattr(srv, "_resolve", lambda code: None)
-    out = srv.create_spine_element("nope", "X", "note")
-    assert "not found" in out["error"]
 
 
 def _prior_v1(**over):
@@ -572,83 +536,14 @@ def _prior_v1(**over):
     return row
 
 
-def test_add_spine_version(monkeypatch):
-    """Demotes the prior live v1 then upserts a new live v2 with the note."""
-    client = _FakeWriteClient(select_rows=[_prior_v1()])
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-
-    out = srv.add_spine_version("ibx-5153", "_authored/hyp", "new", "changed")
-
-    assert out["element_id"] == "_authored/hyp"
-    assert out["version_label"] == "v2"
-    # prior live v1 demoted via targeted update
-    assert client.updates == [("spine_substance", {"status": "superseded"})]
-    # new live v2 upserted carrying the version_note
-    assert len(client.upserts) == 1
-    _, rows, _ = client.upserts[0]
-    assert len(rows) == 1
-    row = rows[0]
-    assert row["version_label"] == "v2"
-    assert row["status"] == "live"
-    assert row["version_note"] == "changed"
-    assert row["body"] == "new"
-    # New rows carry the element's OWN stored slug, not the caller's short code.
-    assert row["project_code"] == "ibx-5153-ai-campaign"
 
 
-def test_add_spine_version_resolves_by_project_id_not_code(monkeypatch):
-    """REGRESSION: caller passes `ibx-5153`, the row stores the full slug
-    `ibx-5153-ai-campaign`. The old code filtered `.eq("project_code", <short>)`
-    and returned 'no authored element' despite a resolvable project + element.
-    The fix filters by project_id (the resolved UUID)."""
-    client = _FakeWriteClient(select_rows=[_prior_v1()])
-    # _resolve maps EITHER code form to the same project_id 'pid'.
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-
-    out = srv.add_spine_version("ibx-5153", "_authored/hyp", "new", "changed")
-
-    assert "error" not in out
-    assert out["element_id"] == "_authored/hyp"
-    assert out["version_label"] == "v2"
 
 
-def test_add_spine_version_by_framing_substring(monkeypatch):
-    """The key may be a framing (title) substring, like pull_spine_element."""
-    client = _FakeWriteClient(select_rows=[_prior_v1()])
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-
-    out = srv.add_spine_version("ibx-5153", "latest hypothesis", "new", "changed")
-
-    assert out["element_id"] == "_authored/hyp"
-    assert out["version_label"] == "v2"
 
 
-def test_add_spine_version_picks_next_number_across_history(monkeypatch):
-    """Prior versions of any status are fetched, so the new label is v3 when a
-    superseded v1 and a live v2 already exist."""
-    client = _FakeWriteClient(select_rows=[
-        _prior_v1(id="a/v1", version_label="v1", status="superseded", body="oldest"),
-        _prior_v1(id="a/v2", version_label="v2", status="live", body="current"),
-    ])
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-
-    out = srv.add_spine_version("ibx-5153", "_authored/hyp", "newer", "changed")
-
-    assert out["version_label"] == "v3"
-    # Only the LIVE v2 gets demoted (one update), not the already-superseded v1.
-    assert client.updates == [("spine_substance", {"status": "superseded"})]
 
 
-def test_add_spine_version_unknown_element(monkeypatch):
-    """No prior versions for the element → error, no writes."""
-    client = _FakeWriteClient(select_rows=[])
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-
-    out = srv.add_spine_version("ibx-5153", "_authored/missing", "new", "changed")
-
-    assert "no authored element" in out["error"]
-    assert client.upserts == []
-    assert client.updates == []
 
 
 # --- auto-step wiring on content-writes (2026-07-23-auto-step-on-version-write)
@@ -668,93 +563,18 @@ def _capture_auto_step(monkeypatch):
     return captured
 
 
-def test_add_spine_version_auto_steps_with_explicit_title(monkeypatch):
-    client = _FakeWriteClient(select_rows=[_prior_v1()])
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-    cap = _capture_auto_step(monkeypatch)
-
-    out = srv.add_spine_version("ibx-5153", "_authored/hyp", "new", "changed",
-                                step_title="Built the cube slide")
-
-    assert out["step"] == {"est_item_id": "_authored/hyp", "created": True}
-    assert cap["title"] == "Built the cube slide"  # explicit wins
-    assert cap["key"] == "_authored/hyp"
-    assert cap["company_id"] == "cid"
 
 
-def test_add_spine_version_auto_step_falls_back_to_version_note(monkeypatch):
-    client = _FakeWriteClient(select_rows=[_prior_v1()])
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-    cap = _capture_auto_step(monkeypatch)
-
-    srv.add_spine_version("ibx-5153", "_authored/hyp", "new", "Folded in redlines")
-
-    assert cap["title"] == "Folded in redlines"  # version_note fallback
 
 
-def test_add_spine_version_auto_step_derived_title_when_no_note(monkeypatch):
-    client = _FakeWriteClient(select_rows=[_prior_v1()])
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-    cap = _capture_auto_step(monkeypatch)
-
-    srv.add_spine_version("ibx-5153", "_authored/hyp", "new")  # no note
-
-    assert cap["title"] == "Updated Latest hypothesis (v2)"  # framing + version
 
 
-def test_add_spine_version_auto_step_is_non_fatal(monkeypatch):
-    client = _FakeWriteClient(select_rows=[_prior_v1()])
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-
-    def boom(*a, **k):
-        raise RuntimeError("journal down")
-
-    monkeypatch.setattr("cp_engine.spine_steps.upsert_auto_step", boom)
-    out = srv.add_spine_version("ibx-5153", "_authored/hyp", "new", "changed")
-
-    # version write still succeeds; the step failure is captured, not raised
-    assert out["version_label"] == "v2"
-    assert "error" in out["step"] and "journal down" in out["step"]["error"]
 
 
-def test_create_spine_element_auto_steps(monkeypatch):
-    client = _FakeWriteClient(select_rows=[])
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-    cap = _capture_auto_step(monkeypatch)
-
-    out = srv.create_spine_element("ibx-5192", "Email from Janet", "email", "Hi", [])
-
-    assert out["step"]["created"] is True
-    assert cap["title"] == "Created Email from Janet"  # derived from label
-    assert cap["key"] == "_authored/email-from-janet"
 
 
-def test_create_spine_element_auto_step_explicit_title(monkeypatch):
-    client = _FakeWriteClient(select_rows=[])
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-    cap = _capture_auto_step(monkeypatch)
-
-    srv.create_spine_element("ibx-5192", "Email from Janet", "email", "Hi", [],
-                             step_title="Captured Janet's kickoff email")
-
-    assert cap["title"] == "Captured Janet's kickoff email"
 
 
-def test_create_spine_element_conflict_detected_across_code_forms(monkeypatch):
-    """REGRESSION twin: the collision guard scopes by project_id, so an existing
-    element is detected even when the row stores a different code slug than the
-    caller passes — the old project_code filter would MISS it and clobber."""
-    existing = _prior_v1(
-        est_item_id="_authored/email-from-janet",
-        project_code="ibx-5153-ai-campaign",
-    )
-    client = _FakeWriteClient(select_rows=[existing])
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-
-    out = srv.create_spine_element("ibx-5153", "Email from Janet", "email", "Hi", [])
-
-    assert "already exists" in out["error"]
-    assert client.upserts == []
 
 
 class _FakeQuery:
@@ -1039,80 +859,18 @@ def test_commitment_scope_unresolved(monkeypatch):
     assert srv._commitment_scope(object(), "cp-engine") is None
 
 
-def test_create_commitment_delegates(monkeypatch):
-    fake_client = object()
-    monkeypatch.setattr(srv, "_resolve_commitments",
-                        lambda code: (fake_client, _scope()))
-    captured = {}
-
-    def fake_write(client, **kwargs):
-        captured["client"] = client
-        captured.update(kwargs)
-        return "inserted"
-
-    monkeypatch.setattr("cp_engine.commitments.write_commitment", fake_write)
-    out = srv.create_commitment(
-        "ggl-5168", "  Deliver the grids  ", owner="drew@firstperson.is",
-        due_date="2026-07-20", direction="us_to_them",
-    )
-    assert out["result"] == "inserted"
-    assert out["kind"] == "project"
-    assert captured["client"] is fake_client
-    assert captured["description"] == "Deliver the grids"
-    assert captured["direction"] == "us_to_them"
-    assert captured["owner_email"] == "drew@firstperson.is"
-    assert captured["owner_name"] is None
-    assert captured["due_date"] == "2026-07-20"
-    assert captured["source_kind"] == "session"
-    assert captured["cp_hash"] == out["cp_hash"]
 
 
-def test_create_commitment_name_owner(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve_commitments",
-                        lambda code: (object(), _scope()))
-    captured = {}
-    monkeypatch.setattr(
-        "cp_engine.commitments.write_commitment",
-        lambda client, **kw: captured.update(kw) or "inserted",
-    )
-    srv.create_commitment("ggl-5168", "Deliver", owner="Marcello")
-    assert captured["owner_name"] == "Marcello"
-    assert captured["owner_email"] is None
-    assert captured["direction"] == "internal"
 
 
-def test_create_commitment_bad_direction():
-    out = srv.create_commitment("ggl-5168", "Deliver", direction="sideways")
-    assert "direction" in out["error"]
 
 
-def test_create_commitment_bad_due_date():
-    out = srv.create_commitment("ggl-5168", "Deliver", due_date="next Tuesday")
-    assert "ISO" in out["error"]
 
 
-def test_create_commitment_empty_description():
-    out = srv.create_commitment("ggl-5168", "   ")
-    assert "description" in out["error"]
 
 
-def test_create_commitment_unresolved(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve_commitments", lambda code: (object(), None))
-    out = srv.create_commitment("nope-1", "Deliver")
-    assert "resolved to no" in out["error"]
 
 
-def test_create_commitment_hash_uses_owner_id(monkeypatch):
-    """Two code forms for the same project must produce the same cp_hash."""
-    monkeypatch.setattr(
-        srv, "_resolve_commitments",
-        lambda code: (object(), {"id": "own-1", "code": code, "kind": "project"}),
-    )
-    monkeypatch.setattr("cp_engine.commitments.write_commitment",
-                        lambda client, **kw: "inserted")
-    a = srv.create_commitment("ibx-5153", "Deliver the thing")
-    b = srv.create_commitment("ibx-5153-ai-campaign", "Deliver the thing")
-    assert a["cp_hash"] == b["cp_hash"]
 
 
 def test_list_commitments_delegates(monkeypatch):
@@ -1142,13 +900,6 @@ def test_list_commitments_unresolved(monkeypatch):
     assert "resolved to no" in out[0]["note"]
 
 
-def test_commitment_tools_resolve_raises_returns_error(monkeypatch):
-    def boom(code):
-        raise RuntimeError("no creds")
-
-    monkeypatch.setattr(srv, "_resolve_commitments", boom)
-    assert "no creds" in srv.create_commitment("ggl-5168", "Deliver")["error"]
-    assert "no creds" in srv.list_commitments("ggl-5168")[0]["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -1304,100 +1055,16 @@ def test_cred_load_failure_does_not_break_the_read(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_add_spine_document_requires_exactly_one_source():
-    """Neither file_path nor source_title, or both, is a usage error."""
-    assert "exactly one" in srv.add_spine_document("ibx-5153", "L")["error"]
-    assert "exactly one" in srv.add_spine_document(
-        "ibx-5153", "L", file_path="/a", source_title="b"
-    )["error"]
 
 
-def test_add_spine_document_from_file(monkeypatch, tmp_path):
-    """Reads a UTF-8 file and authors an element from its text."""
-    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
-    captured = {}
-
-    def fake_create(code, label, type_, body="", serves=None):
-        captured.update(label=label, type=type_, body=body)
-        return {"element_id": "_authored/l", "version_label": "v1"}
-
-    monkeypatch.setattr(srv, "create_spine_element", fake_create)
-
-    f = tmp_path / "synth.md"
-    f.write_text("# Synthesis\n\nBody text.", encoding="utf-8")
-    out = srv.add_spine_document("ibx-5153", "My synth", file_path=str(f))
-    assert captured["type"] == "synthesis"
-    assert "Body text." in captured["body"]
-    assert out["element_id"] == "_authored/l"
-    assert "source_attached" not in out  # file path never attaches a source
 
 
-def test_add_spine_document_missing_file(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
-    out = srv.add_spine_document("ibx-5153", "L", file_path="/no/such/file.md")
-    assert "file not found" in out["error"]
 
 
-def test_add_spine_document_from_source_attaches(monkeypatch):
-    """Pulls an ingested source's text as body AND attaches the source."""
-    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
-    monkeypatch.setattr("cp_engine.config.load", lambda root: object())
-    monkeypatch.setattr("cp_engine.sync_mc2._load_ingest_creds", lambda config: None)
-    monkeypatch.setattr(
-        "cp_engine.project_sources.pull_source",
-        lambda client, pid, cid, title: {"chunks": ["chunk one", "chunk two"]},
-    )
-    monkeypatch.setattr(
-        srv, "create_spine_element",
-        lambda *a, **k: {"element_id": "_authored/b", "version_label": "v1"},
-    )
-    # The add_element_source TOOL moved to the hosted server (#143); this attach
-    # goes straight to the shared implementation in project_sources.
-    captured = {}
-
-    def fake_modify(client, pid, key, title, *, add, company_id=None):
-        captured["args"] = (pid, key, title, add, company_id)
-        return {"source": {"title": title}}
-
-    monkeypatch.setattr("cp_engine.project_sources.modify_element_sources",
-                        fake_modify)
-    out = srv.add_spine_document("ibx-5153", "Brief card",
-                                 source_title="The Brief")
-    assert out["element_id"] == "_authored/b"
-    assert out["source_attached"] == {"title": "The Brief"}
-    assert captured["args"] == ("pid", "_authored/b", "The Brief", True, "cid")
 
 
-def test_add_spine_document_attach_failure_is_non_fatal(monkeypatch):
-    """A failed source attach annotates the result; it never fails the write."""
-    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
-    monkeypatch.setattr("cp_engine.config.load", lambda root: object())
-    monkeypatch.setattr("cp_engine.sync_mc2._load_ingest_creds", lambda config: None)
-    monkeypatch.setattr(
-        "cp_engine.project_sources.pull_source",
-        lambda client, pid, cid, title: {"chunks": ["chunk one"]},
-    )
-    monkeypatch.setattr(
-        srv, "create_spine_element",
-        lambda *a, **k: {"element_id": "_authored/b", "version_label": "v1"},
-    )
-
-    def _boom(*a, **k):
-        raise RuntimeError("supabase down")
-
-    monkeypatch.setattr("cp_engine.project_sources.modify_element_sources", _boom)
-    out = srv.add_spine_document("ibx-5153", "Brief card",
-                                 source_title="The Brief")
-    assert out["element_id"] == "_authored/b"
-    assert "attach failed" in out["source_attached"]
-    assert "supabase down" in out["source_attached"]
 
 
-def test_add_spine_document_source_needs_engagement(monkeypatch):
-    """An initiative (cid=None) can't use source_title (no ingested sources)."""
-    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", None))
-    out = srv.add_spine_document("mission-control", "L", source_title="X")
-    assert "engagements" in out["error"]
 
 
 # ---------------------------------------------------------------------------
@@ -1410,110 +1077,12 @@ def test_add_spine_document_source_needs_engagement(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def test_set_account_scope_dispatches(monkeypatch):
-    """account=True → promote, account=False → demote."""
-    monkeypatch.setattr(srv, "_promote_stakeholder",
-                        lambda code, key: {"scope": "account"})
-    monkeypatch.setattr(srv, "_demote_stakeholder",
-                        lambda code, key: {"scope": "project"})
-    assert srv._set_account_scope("ibx-5153", "k", True)["scope"] == "account"
-    assert srv._set_account_scope("ibx-5153", "k", False)["scope"] == "project"
 
 
-def test_pull_element_from_project_copies_with_provenance(monkeypatch):
-    """Reads source element, authors a copy carrying an origin line in the body."""
-    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
-    monkeypatch.setattr(
-        "cp_engine.project_sources.pull_spine",
-        lambda client, pid, key, cid: {
-            "est_item_id": "_authored/insight", "framing": "Key insight",
-            "body": "The insight body.",
-        },
-    )
-    captured = {}
-
-    def fake_create(code, label, type_, body="", serves=None):
-        captured.update(code=code, label=label, body=body)
-        return {"element_id": "_authored/insight-copy", "version_label": "v1"}
-
-    monkeypatch.setattr(srv, "create_spine_element", fake_create)
-    out = srv.pull_element_from_project("ggl-5168", "ibx-5153", "Key insight")
-    assert captured["code"] == "ibx-5153"          # authored INTO the target
-    assert "Pulled from **ggl-5168**" in captured["body"]
-    assert "The insight body." in captured["body"]
-    assert out["origin"]["project"] == "ggl-5168"
-    assert out["account_scoped"] is False
 
 
-def test_pull_element_from_project_account_tag(monkeypatch):
-    """account=True promotes the copy to account scope.
-
-    Exercises the REAL `_set_account_scope` → `_promote_stakeholder` path (only
-    the DB client is faked), not a stubbed wrapper: the `set_element_account_scope`
-    TOOL is hosted now (#143 batch 4), so this in-process step is the contract
-    that has to keep working.
-    """
-    captured_update = {}
-
-    class _T:
-        def __init__(self, name):
-            self.name, self._eqs, self._op = name, [], None
-
-        def select(self, *_a, **_k):
-            self._op = "select"
-            return self
-
-        def update(self, patch):
-            self._op, self._patch = "update", patch
-            return self
-
-        def eq(self, col, val):
-            self._eqs.append((col, val))
-            return self
-
-        def limit(self, *_a):
-            return self
-
-        def execute(self):
-            if self._op == "update":
-                captured_update["patch"] = self._patch
-                captured_update["eqs"] = dict(self._eqs)
-                return type("R", (), {"data": []})()
-            # select: the collision-guard sibling-twin probe finds nothing
-            return type("R", (), {"data": []})()
-
-    client = type("C", (), {"table": lambda self, n: _T(n)})()
-    monkeypatch.setattr(srv, "_resolve", lambda code: (client, "pid", "cid"))
-    monkeypatch.setattr(
-        "cp_engine.project_sources.pull_spine",
-        lambda client, pid, key, cid: {
-            "est_item_id": "_authored/x", "framing": "X", "body": "b",
-        },
-    )
-    monkeypatch.setattr(
-        srv, "create_spine_element",
-        lambda *a, **k: {"element_id": "_authored/x-copy", "version_label": "v1"},
-    )
-    monkeypatch.setattr(
-        "cp_engine.project_sources.resolve_live_element",
-        lambda *_a, **_k: {"est_item_id": "_authored/x-copy", "project_id": "pid",
-                           "scope": "project", "layer": "Stakeholders"},
-    )
-    out = srv.pull_element_from_project("ggl-5168", "ibx-5153", "X", account=True)
-    assert out["account_scoped"] is True
-    assert captured_update["patch"] == {"scope": "account", "company_id": "cid"}
-    assert captured_update["eqs"]["est_item_id"] == "_authored/x-copy"
 
 
-def test_pull_element_from_project_source_miss(monkeypatch):
-    """A miss in the source project surfaces as an error, never raises."""
-    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
-    monkeypatch.setattr(
-        "cp_engine.project_sources.pull_spine",
-        lambda client, pid, key, cid: {"body": "", "error": "no spine element"},
-    )
-    out = srv.pull_element_from_project("ggl-5168", "ibx-5153", "ghost")
-    assert "ggl-5168" in out["error"] and "no spine element" in out["error"]
 
 
 # ──────────────────────────────────────────────────────────────────────

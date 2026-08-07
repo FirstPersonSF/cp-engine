@@ -212,32 +212,7 @@ def test_note_dm_failure_records_failed(monkeypatch):
 
 # ── MCP tool boundary ────────────────────────────────────────────────────────
 
-def test_create_note_tool_delegates(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid-1", "cid"))
-    monkeypatch.setattr("cp_engine.config.load", lambda root: object())
-    captured = {}
-
-    def _fake_write(client, config, *, project_code, project_id, recipient,
-                    body, author):
-        captured.update(project_code=project_code, project_id=project_id,
-                        recipient=recipient, author=author)
-        return {"note_id": "n1", "slack_delivery": "sent"}
-    monkeypatch.setattr("cp_engine.notes.write_note", _fake_write)
-
-    out = srv.create_note("ibx-5192", "Marcello", "hi")
-    assert out["slack_delivery"] == "sent"
-    assert captured["project_id"] == "pid-1"
-    assert captured["author"] is None      # empty author → None (default applies)
 
 
-def test_create_note_tool_unknown_project(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve", lambda code: None)
-    out = srv.create_note("ghost", "Marcello", "hi")
-    assert "not found" in out["error"]
 
 
-def test_create_note_tool_never_raises(monkeypatch):
-    def _boom(code):
-        raise RuntimeError("resolver down")
-    monkeypatch.setattr(srv, "_resolve", _boom)
-    assert "error" in srv.create_note("x", "Marcello", "hi")
