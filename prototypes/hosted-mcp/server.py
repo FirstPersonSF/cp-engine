@@ -779,6 +779,120 @@ def list_spine_elements(
 
 
 @mcp_server.tool()
+def list_spine_relations(
+    project_code: str, element_key: str | None = None
+) -> dict[str, Any]:
+    """List the typed edges of a project's spine graph (#125).
+
+    The read counterpart to `create_spine_relation` / `retire_spine_relation`:
+    verify a just-authored edge actually landed, or audit everything an element
+    derives from / informs / contradicts before touching it.
+
+    With `element_key`, returns that element's edges in BOTH directions, each
+    annotated with `direction` ("out" = the element is `from`, "in" = it is
+    `to`). The key resolves like `pull_spine_element` (exact est_item_id or a
+    unique framing substring); a key that resolves to no LIVE element is used
+    verbatim as an est_item_id so a retired element's surviving edges stay
+    auditable. Without `element_key`, returns every active edge in the project.
+
+    Each edge carries `from_framing` / `to_framing` (the live endpoint titles,
+    `null` for a retired endpoint) so the graph is readable without a second
+    lookup.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        element_key: optional — one element's edges (est_item_id or unique
+                     framing substring); omit for the whole project.
+    """
+    client = user_client()
+    project_id = resolve_project_id(client, project_code)
+    if project_id is None:
+        return {
+            "project_code": project_code,
+            "caller": caller_subject(),
+            "error": f"no project or initiative resolves for code {project_code!r}",
+            "relations": [],
+        }
+
+    eid: str | None = None
+    if element_key is not None:
+        eid, err = resolve_live_element_id(client, project_id, element_key)
+        if err is not None:
+            return err
+        if eid is None:
+            # No single live match — treat the key as a raw est_item_id so the
+            # edges of a retired element remain auditable (same dead-endpoint
+            # tolerance as retire_spine_relation).
+            eid = element_key
+
+    query = (
+        client.table("spine_relations")
+        .select("id, kind, from_item_id, to_item_id, note, status, source, created_by, created_at")
+        .eq("project_id", project_id)
+        .eq("status", "active")
+    )
+    if eid is not None:
+        query = query.or_(f"from_item_id.eq.{eid},to_item_id.eq.{eid}")
+    rows = query.order("created_at").execute().data or []
+
+    # Annotate endpoints with live framings so edges read as titles, not ids.
+    endpoint_ids = {r["from_item_id"] for r in rows} | {r["to_item_id"] for r in rows}
+    framings: dict[str, str] = {}
+    if endpoint_ids:
+        try:
+            for s in (
+                client.table("spine_substance")
+                .select("est_item_id, framing")
+                .eq("project_id", project_id)
+                .eq("status", "live")
+                .in_("est_item_id", sorted(endpoint_ids))
+                .execute()
+                .data
+                or []
+            ):
+                framings[s["est_item_id"]] = s.get("framing")
+        except Exception:  # noqa: BLE001 — annotations degrade, the list survives
+            pass
+
+    relations = []
+    for r in rows:
+        relations.append(
+            {
+                "relation_id": r.get("id"),
+                "kind": r.get("kind"),
+                "from_item_id": r.get("from_item_id"),
+                "to_item_id": r.get("to_item_id"),
+                "from_framing": framings.get(r.get("from_item_id")),
+                "to_framing": framings.get(r.get("to_item_id")),
+                "note": r.get("note"),
+                "source": r.get("source"),
+                "created_by": r.get("created_by"),
+                "created_at": r.get("created_at"),
+                **(
+                    {"direction": "out" if r.get("from_item_id") == eid else "in"}
+                    if eid is not None
+                    else {}
+                ),
+            }
+        )
+    audit(
+        client,
+        "list_spine_relations",
+        {"project_code": project_code, "element_key": element_key},
+        len(relations),
+    )
+    return {
+        "project_code": project_code,
+        "project_id": project_id,
+        "caller": caller_subject(),
+        **({"element": eid} if eid is not None else {}),
+        "count": len(relations),
+        "relations": relations,
+        **({"note": TEAM_EMPTY_HINT} if not relations else {}),
+    }
+
+
+@mcp_server.tool()
 def pull_spine_element(element_id: str, project_code: str | None = None) -> dict[str, Any]:
     """Pull one spine element's body + metadata, under the caller's identity.
 

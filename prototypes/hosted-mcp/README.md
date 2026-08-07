@@ -18,7 +18,7 @@ path. Nothing under `src/cp_engine/` was modified.
   `TENANT_REPO`. **RLS cannot scope a git clone**, so both are gated on
   `public.is_team_member()` instead — see [Tree](#tree-read-only--cp-engine-138-review-finding-1).
 
-36 tools (34 + the spec-v04 lifecycle verbs `promote_to_canon` / `seal_to_deliverable`), **53/53 smoke cases pass** as of the last full run.
+40 tools (the 36 through spec-v04, + the #159 commitments-lifecycle trio `resolve_commitments` / `resolve_commitments_by_meeting` / `route_commitment`, + the #125 read verb `list_spine_relations`), **53/53 smoke cases pass** as of the last full run before the #159/#125 additions.
 
 ---
 
@@ -107,7 +107,7 @@ never reads it.
 
 ## Tools
 
-All thirty-four run under the caller's identity, select **explicit columns only**,
+All forty run under the caller's identity, select **explicit columns only**,
 and write an audit row on success.
 
 **Reads:**
@@ -115,6 +115,7 @@ and write an audit row on success.
 | Tool | Source | Notes |
 |---|---|---|
 | `list_spine_elements(project_code)` | `spine_substance` | Live, non-archived elements. |
+| `list_spine_relations(project_code, element_key?)` | `spine_relations` | Active edges — one element's (both directions, retired-tolerant key) or the whole project's; endpoints annotated with live framings (#125). |
 | `pull_spine_element(element_id, project_code?)` | `spine_substance` | Body + metadata; newest version wins. |
 | `list_commitments(project_code)` | `commitments` | Real rows since the team-keyed policy pass. |
 | `list_project_sources(project_code)` | `rag_assets` | Manifest shape; drops superseded assets. |

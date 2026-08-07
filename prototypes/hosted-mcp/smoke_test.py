@@ -295,6 +295,7 @@ def case_e_tools_list(token: str) -> None:
     names = sorted(t["name"] for t in msg.get("result", {}).get("tools", []))
     expected = {
         "list_spine_elements",
+        "list_spine_relations",  # #125 — read counterpart to the edge writes
         "pull_spine_element",
         "list_commitments",
         "list_project_sources",
@@ -338,6 +339,10 @@ def case_e_tools_list(token: str) -> None:
         # Spec v04 — the lifecycle verbs (#147 canon, #148 seal)
         "promote_to_canon",
         "seal_to_deliverable",
+        # #159 — commitments lifecycle (v0.89–0.90)
+        "resolve_commitments",
+        "resolve_commitments_by_meeting",
+        "route_commitment",
     }
     missing = sorted(expected - set(names))
     # Assert the COUNT too, not just containment: an unexpected extra tool is a
