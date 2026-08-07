@@ -280,8 +280,9 @@ conversation is about.
 | `also load <code>` | additive | Layer that project's `cp.md` onto the current mode. |
 | `switch to <code>` | replace → 2 | Discard previous mode; load that project's `cp.md`. |
 | `deepen from transcript` | (during weekly review) | Begin deepening pass. |
-| `wrap up` | (during weekly review) | Finalize: author each touched project's Exec Summary, word-count checks, master-CP roll-up, commit, push. |
+| `wrap up` | (during weekly review) | Finalize: author each touched project's Exec Summary, word-count checks, improvements-log sweep, master-CP roll-up, commit, push. |
 | `rotate the CP` | any | Manually trigger archive rotation on the focused CP. |
+| `sweep improvements` | any | Cluster open `improvements.md` entries, propose which become cp-engine/mc-2 issues; the human decides. |
 
 ## Reference style
 
@@ -419,6 +420,32 @@ The engine enforces both checks during `cp render` and `wrap up`.
 **Exempt:** per-meeting artifacts under any `meetings/` directory (a
 synthesis plus verbatim transcript — a fixed per-meeting record, not an
 accreting CP file, legitimately long). Do not audit or rotate them.
+
+## Improvements log
+
+Whenever a session notices the system not working as it should —
+friction, awkwardness, workarounds, unused surfaces — append a dated
+bullet to `improvements.md` at the tenant root, **at the moment of
+friction** (one line, no ceremony):
+
+```
+- <date> · `area` — <observation>
+```
+
+Areas: `engine | mcp | dashboard | mc2 | protocol | other`. Scope is
+below-issue-bar observations only — actual bugs still go straight to
+cp-engine/mc-2 GitHub issues. Sparing "worked better than expected"
+entries are welcome too.
+
+Entries are never deleted; the harvest marks each one
+`[→ cp-engine #N]` / `[→ mc-2 #N]` / `[fixed: <date>]` /
+`[dropped: <reason>]`.
+
+**At wrap up:** one sweep step — check whether any friction from this
+session went unlogged; log it now.
+
+`sweep improvements` (any mode) triggers the harvest: cluster open
+entries, propose which become issues; the human decides.
 
 ## Spine lint at wrap up
 
