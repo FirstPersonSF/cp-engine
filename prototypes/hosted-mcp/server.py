@@ -5289,6 +5289,7 @@ def add_spine_version(
     element_id: str,
     body: str,
     version_note: str | None = None,
+    step_title: str | None = None,
 ) -> dict[str, Any]:
     """Add a new version to an existing authored spine element (cp-engine #142).
 
@@ -5327,6 +5328,10 @@ def add_spine_version(
             or a distinct framing substring — same keys the read path takes.
         body: the new version's full body (markdown).
         version_note: optional "what changed" line, stored on the new version.
+        step_title: optional title for the auto-journal step — give it the
+            real move's words ("Built Mehul's cube framing into the arc")
+            instead of the derived "Updated <framing> (vN)" (#145 parity
+            with the engine verb).
     """
     if not (body or "").strip():
         return {"error": "body is required"}
@@ -5419,17 +5424,17 @@ def add_spine_version(
         "body_chars": len(body),
     }
     # Auto-journal the move as a review-gated step. Title priority mirrors the
-    # engine verb (minus its `step_title` arg, which this tool does not take):
-    # version_note > derived "Updated <framing> (v<N>)".
+    # engine verb (#145 parity): explicit step_title > version_note > derived
+    # "Updated <framing> (v<N>)".
     try:
-        step_title = version_note or (
+        title = step_title or version_note or (
             f"Updated {base.get('framing') or est_item_id} (v{next_n})"
         )
         result["step"] = upsert_auto_step(
             client,
             row["project_id"],
             est_item_id,
-            step_title,
+            title,
             step_date=now.date().isoformat(),
         )
     except Exception as exc:  # noqa: BLE001 — journaling is non-fatal

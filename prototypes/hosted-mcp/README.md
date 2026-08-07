@@ -364,8 +364,10 @@ lives in `spine_supersede_prior_versions(new_id)` — a SECURITY DEFINER
 function that requires team membership, validates the new row, satisfies the
 column-guard via a transaction-local `app.spine_writer`, and can do nothing
 else. Decided on cp-engine #142 (option 1); team-wide supersede per the same
-trust model as a Claude Code session. Not yet mirrored from the engine verb:
-the auto-journal step (`spine_steps` has no authenticated INSERT policy).
+trust model as a Claude Code session. The auto-journal step IS mirrored
+(#145): `spine_steps` has authenticated team-member INSERT/UPDATE/DELETE
+policies, and the verb upserts the same review-gated one-auto-step-per-
+element-per-day record as the engine, with `step_title` parity.
 
 **Tree (read-only — cp-engine #138, review finding 1):**
 
