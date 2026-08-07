@@ -274,8 +274,9 @@ conversation is about.
 | `also load <code>` | additive | Layer that project's `cp.md` onto the current mode. |
 | `switch to <code>` | replace → 2 | Discard previous mode; load that project's `cp.md`. |
 | `deepen from transcript` | (during weekly review) | Begin deepening pass. |
-| `wrap up` | (during weekly review) | Finalize: author each touched project's Exec Summary, word-count checks, master-CP roll-up, commit, push. |
+| `wrap up` | (during weekly review) | Finalize: author each touched project's Exec Summary, word-count checks, improvements-log sweep, master-CP roll-up, commit, push. |
 | `rotate the CP` | any | Manually trigger archive rotation on the focused CP. |
+| `sweep improvements` | any | Harvest `improvements.md`: cluster entries, propose issues. |
 
 ## Reference style
 
@@ -318,12 +319,11 @@ carries the full six-section contract and the every-active-project-
 appears-exactly-once invariant. Ad-hoc scoped prep (e.g. one client
 meeting): `/cp-prep <code> [<code> ...]`.
 
-After the meeting runs, the canonical capture path is to tag the
-Fathom recording in the dashboard as `sprint_planning_scope='1p' |
-'fpsf' | 'canonic' | 'storyos-mc'`. The auto-ingest webhook handles
-per-project routing + a tenant-wide summary in `weekly-cp.md`'s
-`## Account summaries`. Don't hand-write per-project bullets when the
-auto-ingest path is available.
+After the meeting, tag the Fathom recording in the dashboard as
+`sprint_planning_scope='1p' | 'fpsf' | 'canonic' | 'storyos-mc'` — the
+auto-ingest webhook handles per-project routing + the tenant-wide
+summary in `weekly-cp.md`'s `## Account summaries`. Don't hand-write
+per-project bullets when auto-ingest is available.
 
 ## Authoring the Exec Summary at wrap up
 
@@ -336,13 +336,12 @@ not.** The engine only scaffolds the region, migrates the old Quick
 Resume into it on `cp sync`, and reads it for `/cp-prep`.
 
 **Exception: the `**Last session:**` line is DERIVED, not authored** —
-it's a projection of the newest file under the working dir's `sessions/`
-directory, recomputed by `cp capture-session` and re-converged on every
-`cp sync`. Don't hand-edit it (the next sync overwrites it), and if a
-merge ever conflicts on that line, keep either side and run `cp sync` —
-it self-heals to the newest capture. Auto-ingest no longer writes
-project `cp.md` state at all — per-meeting truth lands in the sprint file
-only, and the Exec Summary is refreshed by you at `wrap up`.
+a projection of the newest file under `sessions/`, recomputed by
+`cp capture-session` and re-converged on every `cp sync`. Don't
+hand-edit it; on a merge conflict keep either side and run `cp sync` —
+it self-heals. Auto-ingest never writes project `cp.md` state —
+per-meeting truth lands in the sprint file; you refresh the Exec
+Summary at `wrap up`.
 
 At `wrap up`, for **each project the session touched**, refresh its Exec
 Summary by editing directly between the `exec-summary` markers (Edit
@@ -389,7 +388,7 @@ sections. Engine-managed regions inside the sprint file (`sprint-facts`,
 
 Project `cp.md` still receives durable updates — the **Exec Summary**
 (authored at `wrap up`, above), plus Project Notes and Stakeholders;
-transient weekly material belongs in the sprint file, not in `cp.md`.
+transient weekly material belongs in the sprint file.
 
 `wrap up` extends to commit the entire `sprints/<YYYY-W##>/` directory alongside
 the master roll-up and to run word-count discipline on each sprint file.
@@ -398,9 +397,9 @@ the master roll-up and to run word-count discipline on each sprint file.
 
 Spine content-writes journal themselves (one review-gated auto-step per
 element per day). Hand-propose a step (`propose_spine_step`) only for a
-move the auto-step doesn't capture, ≤2 per session. Step and relation
-authoring runs on the hosted `cp-hosted` connector, so the write carries
-your identity. Full discipline: `/cp-tools`.
+move the auto-step doesn't capture, ≤2 per session; authoring runs on
+`cp-hosted`, so the write carries your identity. Full discipline:
+`/cp-tools`.
 
 ## Word-count discipline
 
@@ -410,25 +409,32 @@ Per bootstrap v2:
 
 The engine enforces both checks during `cp render` and `wrap up`.
 
-**Exempt:** per-meeting artifacts under any `meetings/` directory (a
-synthesis plus verbatim transcript — a fixed per-meeting record, not an
-accreting CP file, legitimately long). Do not audit or rotate them.
+**Exempt:** per-meeting artifacts under any `meetings/` directory
+(fixed per-meeting records — synthesis + verbatim transcript —
+legitimately long); do not audit or rotate them.
+
+## Improvements log
+
+When the system fights you — friction, workarounds, unused surfaces —
+log a dated bullet in `improvements.md` (tenant root) **at the moment
+of friction**: `- <date> · \`area\` — <observation>`. Full protocol
+lives in that file's header. Real bugs still go to GitHub issues; never
+delete entries. `wrap up` sweeps for unlogged friction;
+`sweep improvements` harvests.
 
 ## Spine lint at wrap up
 
-Alongside word-count discipline, run `cp spine-lint <code>` once for each
-project the session touched. It is WARN-ONLY (never blocks, never
-auto-fixes) and flags mechanical hygiene drift: important-yet-unbound
-elements, Agreements missing their attached source (close with
-`add_element_source` on `cp-hosted`), scaffold placeholders left in
-`cp.md`. Surface findings; fix only what the user confirms.
+Alongside word-count discipline, run `cp spine-lint <code>` for each
+project touched. WARN-ONLY: flags important-yet-unbound elements,
+Agreements missing their source (close via `add_element_source` on
+`cp-hosted`), scaffold placeholders in `cp.md`. Surface findings; fix
+only what the user confirms.
 
 ## After a cp-engine release: restart `cp mcp`
 
-`cp mcp` is long-running — a session started before a release keeps
-serving old bytecode after `cp sync` upgrades the CLI. If a spine tool
-ignores a fix the release notes say shipped, restart the MCP connection
-(`/mcp`) before assuming it's broken.
+`cp mcp` outlives a release and keeps serving old bytecode after
+`cp sync` upgrades the CLI. If a spine tool ignores a shipped fix,
+restart the MCP connection (`/mcp`) before assuming it's broken.
 
 ## Spec
 
