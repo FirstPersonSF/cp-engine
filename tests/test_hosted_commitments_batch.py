@@ -175,3 +175,53 @@ def test_batch_policy_denial_keeps_row_in_snapshot(srv):
 
 def test_commitment_columns_include_source_meeting_id(srv):
     assert "source_meeting_id" in srv.COMMITMENT_COLUMNS
+
+
+# ── #159 part 3: off-project partition + routed-copy construction ───────
+
+def test_partition_off_project_splits_on_annotation(srv):
+    rows = [
+        _row("aaa", "ship the deck"),
+        _row("bbb", "Move GGL 5179 to Holding [off-project? → mission-control]"),
+    ]
+    clean, flagged = srv._partition_off_project(rows)
+    assert [r["id"] for r in clean] == ["aaa"]
+    assert [r["id"] for r in flagged] == ["bbb"]
+
+
+def test_routed_copy_strips_annotation_adds_provenance(srv):
+    row = {
+        **_row("bbb", "Fix the budget field [off-project? → mission-control]",
+               meeting="m1"),
+        "owner_email": "drew@firstperson.is",
+        "owner_name": "Drew Fiero",
+        "direction": "internal",
+        "due_date": "2026-08-10",
+        "date_status": "agreed",
+        "source_kind": "meeting_ingest",
+    }
+    copy = srv._routed_copy_row(row, "ibx-5192", {"kind": "initiative", "id": "init-1"})
+    assert copy["description"] == "Fix the budget field [routed from ibx-5192]"
+    assert copy["status"] == "open"
+    assert copy["owner_email"] == "drew@firstperson.is"
+    assert copy["date_status"] == "agreed"          # ratification survives
+    assert copy["source_kind"] == "meeting_ingest"  # origin survives
+    assert copy["source_meeting_id"] == "m1"        # sweep linkage survives
+    assert copy["initiative_id"] == "init-1" and "project_id" not in copy
+
+
+def test_routed_copy_targets_project_column_for_engagements(srv):
+    copy = srv._routed_copy_row(_row("aaa", "d"), "src", {"kind": "project", "id": "p1"})
+    assert copy["project_id"] == "p1" and "initiative_id" not in copy
+
+
+def test_routed_copy_defaults_when_source_fields_null(srv):
+    copy = srv._routed_copy_row(
+        {"id": "aaa", "description": "d", "owner_email": None, "owner_name": None,
+         "direction": None, "due_date": None, "date_status": None,
+         "source_kind": None, "source_meeting_id": None},
+        "src", {"kind": "project", "id": "p1"},
+    )
+    assert copy["direction"] == "internal"
+    assert copy["date_status"] == "proposed"
+    assert copy["source_kind"] == "session"

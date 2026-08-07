@@ -77,7 +77,7 @@ log = logging.getLogger("hosted-mcp")
 #  Config
 # ──────────────────────────────────────────────────────────────────────
 
-SERVER_VERSION = "hosted-cp-spike/0.0.4"
+SERVER_VERSION = "hosted-cp-spike/0.0.5"
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
@@ -3341,6 +3341,55 @@ def resolve_commitment(
     return {**closed, "caller": caller_subject()}
 
 
+# The ingest's off-project detection annotation (webhook/commitments_propose.py
+# #114): display-only, appended to the description, never part of cp_hash.
+_OFF_PROJECT_ANNOTATION_RE = re.compile(r"\s*\[off-project\?\s*→\s*[^\]]+\]")
+
+
+def _partition_off_project(
+    rows: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Split rows into (clean, off_project_flagged) by the #114 annotation."""
+    flagged = [
+        r for r in rows
+        if _OFF_PROJECT_ANNOTATION_RE.search(r.get("description") or "")
+    ]
+    flagged_ids = {r.get("id") for r in flagged}
+    return [r for r in rows if r.get("id") not in flagged_ids], flagged
+
+
+def _routed_copy_row(
+    row: dict[str, Any], source_code: str, target_scope: dict[str, Any]
+) -> dict[str, Any]:
+    """Build the target-project INSERT row for a routed commitment.
+
+    The off-project annotation is STRIPPED (it described the mis-scope this
+    route fixes) and a `[routed from <source-code>]` provenance marker is
+    appended. Owner, direction, due date, ratification state, and the source
+    meeting linkage all survive — the row keeps its history; only its home
+    changes. `cp_hash` follows the hosted create_commitment semantics
+    (unique-per-call, not the engine's content hash).
+    """
+    clean = _OFF_PROJECT_ANNOTATION_RE.sub("", row.get("description") or "").strip()
+    copy: dict[str, Any] = {
+        "description": f"{clean} [routed from {source_code}]",
+        "owner_email": row.get("owner_email"),
+        "owner_name": row.get("owner_name"),
+        "direction": row.get("direction") or "internal",
+        "due_date": row.get("due_date"),
+        "date_status": row.get("date_status") or "proposed",
+        "status": "open",
+        "source_kind": row.get("source_kind") or "session",
+        "source_meeting_id": row.get("source_meeting_id"),
+        "cp_hash": uuid.uuid4().hex[:8],
+    }
+    if target_scope["kind"] == "initiative":
+        copy["initiative_id"] = target_scope["id"]
+    else:
+        copy["project_id"] = target_scope["id"]
+    return copy
+
+
 def _resolve_commitment_batch(
     client, open_rows: list[dict[str, Any]], keys: list[str], outcome: str
 ) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
@@ -3441,6 +3490,7 @@ def resolve_commitments_by_meeting(
     outcome: str = "done",
     except_keys: list[str] | None = None,
     dry_run: bool = False,
+    include_off_project: bool = False,
 ) -> dict[str, Any]:
     """Close every OPEN commitment proposed by the named meetings (#159) —
     the delivery-event sweep.
@@ -3458,6 +3508,12 @@ def resolve_commitments_by_meeting(
     distinct description substring). An except_key that matches nothing or
     ambiguously is a HARD error and nothing is written — an exclusion that
     silently failed would resolve exactly the row the caller meant to keep.
+
+    Rows carrying the ingest's `[off-project? → <code>]` annotation are
+    SKIPPED by default and reported under `off_project_skipped` — a delivery
+    sweep must not close the very rows that belong to another project; route
+    them first (`route_commitment`) or pass `include_off_project=true` to
+    sweep them anyway.
 
     ALWAYS preview first: `dry_run=true` returns the would-resolve rows
     grouped by meeting, writes nothing, and is the confirm surface — show the
@@ -3501,6 +3557,13 @@ def resolve_commitments_by_meeting(
         excepted.append({"id": row["id"], "description": row.get("description")})
         candidates = [r for r in candidates if r.get("id") != row["id"]]
 
+    off_project_skipped: list[dict[str, Any]] = []
+    if not include_off_project:
+        candidates, flagged = _partition_off_project(candidates)
+        off_project_skipped = [
+            {"id": r.get("id"), "description": r.get("description")} for r in flagged
+        ]
+
     groups: dict[str, list[dict[str, Any]]] = {}
     for r in candidates:
         groups.setdefault(r["source_meeting_id"], []).append(
@@ -3517,6 +3580,7 @@ def resolve_commitments_by_meeting(
             "would_resolve": len(candidates),
             "groups": groups,
             "excepted": excepted,
+            "off_project_skipped": off_project_skipped,
             "meetings_with_no_open_rows": sorted(wanted - set(groups)),
         }
 
@@ -3549,9 +3613,101 @@ def resolve_commitments_by_meeting(
         "resolved": resolved,
         "groups": groups,
         "excepted": excepted,
+        "off_project_skipped": off_project_skipped,
         "results": results,
         "meetings_with_no_open_rows": sorted(wanted - set(groups)),
         "project_code": scope["project_code"],
+        "caller": caller_subject(),
+    }
+
+
+@mcp_server.tool()
+def route_commitment(
+    project_code: str, key: str, target_code: str
+) -> dict[str, Any]:
+    """Move a mis-scoped OPEN commitment to the project it belongs to (#159
+    part 3) — the action behind the ingest's `[off-project? → <code>]` flag.
+
+    The ingest DETECTS mis-scoped rows but deliberately never auto-routes
+    (detection is heuristic; #114). Until now the only disposition was a
+    lossy drop on the wrong project. This verb completes the loop:
+
+    1. a COPY of the row is inserted OPEN on the target project — the
+       off-project annotation stripped, `[routed from <source-code>]`
+       appended, and owner/direction/due-date/ratification/source-meeting
+       linkage all preserved (the row keeps its history; only its home
+       changes). The copy is a proposal on the target exactly like any
+       ingested row — review-gated there, nothing auto-confirmed.
+    2. only after the target insert SUCCEEDS is the source row closed
+       (status `dropped` — the archive state; a true `routed` status
+       needs an mc-2 policy migration, tracked in #159). The route is
+       recorded on the surviving row, in the audit log, and in this
+       payload — nothing is lost.
+
+    Insert-fails-leave-everything-untouched: a failed target write returns
+    an error with the source row still open, so a bad target code can never
+    strand the obligation.
+
+    Args:
+        project_code: the project the row currently (wrongly) lives on.
+        key: commitment id or distinct description substring, open rows only.
+        target_code: the engagement or initiative that should own it.
+    """
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+    target = resolve_write_scope(client, target_code)
+    if target is None:
+        return {"error": f"no project or initiative resolves for target {target_code!r}"}
+    if target["id"] == scope["id"]:
+        return {"error": "target_code resolves to the SAME project — nothing to route"}
+
+    open_rows = _fetch_open_commitments(client, scope)
+    row, match_err = _match_open_commitment(open_rows, key)
+    if match_err is not None:
+        return match_err
+
+    copy = _routed_copy_row(row, scope["project_code"], target)
+    audit_args = {
+        "project_code": project_code,
+        "key": key,
+        "target_code": target_code,
+        "commitment_id": row["id"],
+    }
+    try:
+        inserted = client.table("commitments").insert(copy).execute()
+    except Exception as exc:  # noqa: BLE001
+        audit(client, "route_commitment", audit_args, 0)
+        return {
+            "error": f"target insert failed — source row untouched: "
+            f"{type(exc).__name__}: {str(exc)[:400]}"
+        }
+    new_row = (inserted.data or [{}])[0]
+
+    closed = _close_commitment_row(client, row, "dropped")
+    if "error" in closed:
+        # The copy exists; the source close was denied (likely resolved
+        # concurrently). Surface both facts — do NOT report failure of the
+        # route itself, the obligation is safely on the target.
+        audit(client, "route_commitment", audit_args, 1)
+        return {
+            "routed": row["id"],
+            "target_commitment_id": new_row.get("id"),
+            "target_code": target["project_code"],
+            "warning": "target copy created but the source row would not close: "
+            + closed["error"],
+            "caller": caller_subject(),
+        }
+
+    audit(client, "route_commitment", audit_args, 1)
+    return {
+        "routed": row["id"],
+        "description": copy["description"],
+        "source_code": scope["project_code"],
+        "source_status": "dropped",
+        "target_code": target["project_code"],
+        "target_commitment_id": new_row.get("id"),
         "caller": caller_subject(),
     }
 

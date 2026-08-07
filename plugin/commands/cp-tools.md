@@ -220,7 +220,16 @@ ratifies, and the Monday partners digest reads):
   (an exclusion that doesn't resolve uniquely is a HARD error — nothing
   writes). **Always run `dry_run=true` first** and show the human the grouped
   preview before the real pass; manual/session rows (no source meeting) are
-  never swept.
+  never swept, and `[off-project? → …]`-flagged rows are skipped by default
+  (reported as `off_project_skipped`) — route them first, or pass
+  `include_off_project=true`.
+- `route_commitment(code, key, target_code)` — **hosted-server verb** (#159
+  part 3) — move a mis-scoped open row to the project it belongs to: a copy
+  lands OPEN on the target (off-project annotation stripped, `[routed from
+  <code>]` appended, owner/dates/ratification/meeting linkage preserved),
+  and only after that insert succeeds is the source row closed. The action
+  behind the ingest's `[off-project? → <code>]` flag — never auto-fired;
+  a human (or agent at wrap-up) invokes it per row.
 
 Engagements and initiatives can own commitments; standalone repos cannot.
 

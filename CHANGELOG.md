@@ -4,6 +4,29 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.90.0 — 2026-08-07
+
+- **Off-project commitments get routed, not dropped (#159 part 3 — closes
+  #159).** The ingest's `[off-project? → <code>]` annotation (#114,
+  detection-only by design) finally has its action:
+  - `route_commitment(code, key, target_code)` — hosted verb: inserts a COPY
+    of the row OPEN on the target project (annotation stripped, `[routed
+    from <code>]` provenance appended; owner, direction, due date,
+    ratification state, and source-meeting linkage all preserved), then —
+    only after the insert succeeds — closes the source row. A failed target
+    insert leaves the source row untouched, so a bad target code can never
+    strand an obligation. The source closes as `dropped` (the archive
+    state); a first-class `routed` status needs an mc-2 policy migration
+    (`with check (status IN ...)`) and is noted on #159 as a follow-up, not
+    smuggled in here.
+  - `resolve_commitments_by_meeting` now SKIPS off-project-flagged rows by
+    default (`off_project_skipped` in the payload) — a delivery sweep must
+    not close the very rows that belong to another project. Override with
+    `include_off_project=true`.
+  Helpers (`_partition_off_project`, `_routed_copy_row`) are pure and unit
+  tested; hosted spike → 0.0.5; `/cp-tools` + team-setup docs updated
+  (39 tools).
+
 ## v0.89.0 — 2026-08-07
 
 - **Commitments close in batches, and a delivery closes a meeting's worth
