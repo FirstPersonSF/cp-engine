@@ -77,7 +77,7 @@ log = logging.getLogger("hosted-mcp")
 #  Config
 # ──────────────────────────────────────────────────────────────────────
 
-SERVER_VERSION = "hosted-cp-spike/0.0.5"
+SERVER_VERSION = "hosted-cp-spike/0.0.6"
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
@@ -3638,11 +3638,11 @@ def route_commitment(
        linkage all preserved (the row keeps its history; only its home
        changes). The copy is a proposal on the target exactly like any
        ingested row — review-gated there, nothing auto-confirmed.
-    2. only after the target insert SUCCEEDS is the source row closed
-       (status `dropped` — the archive state; a true `routed` status
-       needs an mc-2 policy migration, tracked in #159). The route is
-       recorded on the surviving row, in the audit log, and in this
-       payload — nothing is lost.
+    2. only after the target insert SUCCEEDS is the source row closed as
+       `routed` — a first-class terminal state (mc-2 mig 132 extended the
+       status CHECK and the resolve policy's WITH CHECK), distinct from
+       `dropped`: not abandoned, moved. The route is recorded on the
+       surviving row, in the audit log, and in this payload.
 
     Insert-fails-leave-everything-untouched: a failed target write returns
     an error with the source row still open, so a bad target code can never
@@ -3685,7 +3685,7 @@ def route_commitment(
         }
     new_row = (inserted.data or [{}])[0]
 
-    closed = _close_commitment_row(client, row, "dropped")
+    closed = _close_commitment_row(client, row, "routed")
     if "error" in closed:
         # The copy exists; the source close was denied (likely resolved
         # concurrently). Surface both facts — do NOT report failure of the
@@ -3705,7 +3705,7 @@ def route_commitment(
         "routed": row["id"],
         "description": copy["description"],
         "source_code": scope["project_code"],
-        "source_status": "dropped",
+        "source_status": "routed",
         "target_code": target["project_code"],
         "target_commitment_id": new_row.get("id"),
         "caller": caller_subject(),

@@ -4,6 +4,17 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.90.1 — 2026-08-07
+
+- **Routed commitments get their first-class status (#159 follow-up 1).**
+  mc-2 **mig 132** (applied live) extends the commitments status CHECK and
+  the resolve policy's WITH CHECK with `'routed'`; `route_commitment` now
+  closes the source row as `routed` instead of `dropped` — not abandoned,
+  moved. mc-2 frontend renders it (status union + Drop hidden on routed
+  rows); mc-2 API needed no change (string list filter, PATCH Literal
+  deliberately still excludes `routed` — the state must come from the
+  routing verb, never hand-set). Hosted spike → 0.0.6.
+
 ## v0.90.0 — 2026-08-07
 
 - **Off-project commitments get routed, not dropped (#159 part 3 — closes

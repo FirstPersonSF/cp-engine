@@ -227,7 +227,7 @@ ratifies, and the Monday partners digest reads):
   part 3) — move a mis-scoped open row to the project it belongs to: a copy
   lands OPEN on the target (off-project annotation stripped, `[routed from
   <code>]` appended, owner/dates/ratification/meeting linkage preserved),
-  and only after that insert succeeds is the source row closed. The action
+  and only after that insert succeeds does the source close as `routed` — a first-class terminal state (mc-2 mig 132), distinct from dropped. The action
   behind the ingest's `[off-project? → <code>]` flag — never auto-fired;
   a human (or agent at wrap-up) invokes it per row.
 
