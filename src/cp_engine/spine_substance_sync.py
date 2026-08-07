@@ -510,6 +510,25 @@ def sync_spine_substance(
         row["field_states"] = field_states
         row["review_flags"] = review_flags
 
+    # Equal-label collision shield (#121): a disk row whose id matches an
+    # existing AUTHORED row is the distill-minted-the-same-label case — the
+    # strict-less-than shield above can't see it (equal, not less), and the
+    # on_conflict upsert would clobber the authored content. The disk scan
+    # skips _authored/ files, so a colliding disk row is never the authored
+    # element's own mirror — drop it, authored wins.
+    kept = []
+    for row in rows:
+        if (existing_by_id.get(row["id"]) or {}).get("origin") == "authored":
+            logger.warning(
+                "authored-collision shield (#121): disk row %s carries the "
+                "same id as an authored MC-2 row — dropping the disk version "
+                "(the file is stale; re-distill lands on the next label)",
+                row["id"],
+            )
+            continue
+        kept.append(row)
+    rows = kept
+
     if rows:
         client.table(_SUBSTANCE_TABLE).upsert(rows, on_conflict="id").execute()
 

@@ -514,3 +514,56 @@ def test_created_element_is_invisible_to_promote_targeting(tmp_path: Path):
     )
     assert path == first
     assert parse_substance(path).live_version().label == "v2"
+
+
+# ---- #121: next label from max(disk, DB), not disk alone --------------------
+
+
+def test_promote_next_label_respects_db_authored_max(tmp_path: Path):
+    """Disk says v1, but MC-2 holds an authored v2 for the element — the next
+    distill must mint v3, not the colliding v2 (#121)."""
+    spine_root = tmp_path / "spine"
+    _write_item(spine_root, "phase-0", "thing", est_item_id="d1")
+    client = _FakeClient(substance=[{
+        "id": "ibx-5153/d1/v2", "project_code": "ibx-5153",
+        "est_item_id": "d1", "version_label": "v2", "origin": "authored",
+    }])
+    path = promote_card(
+        _card(), framing="f2", est_item_id="d1", kind="deliverable",
+        project_dir=tmp_path, sources=["s1"], distiller=_distiller("new body"),
+        model="m", client=client,
+    )
+    item = parse_substance(path)
+    labels = [v.label for v in item.versions]
+    assert "v3" in labels and "v2" not in labels
+    assert item.live_version().label == "v3"
+
+
+def test_promote_no_disk_file_continues_db_sequence(tmp_path: Path):
+    """No disk file but the DB already holds v1 — creating another 'v1' is the
+    same id collision (#121); the fresh file starts at v2."""
+    client = _FakeClient(substance=[{
+        "id": "ibx-5153/d9/v1", "project_code": "ibx-5153",
+        "est_item_id": "d9", "version_label": "v1", "origin": "authored",
+    }])
+    path = promote_card(
+        _card(est_item_id="d9"), framing="f", est_item_id="d9",
+        kind="deliverable", project_dir=tmp_path, sources=["s1"],
+        distiller=_distiller("body"), model="m", client=client,
+        name="fresh", phase="P0",
+    )
+    item = parse_substance(path)
+    assert [v.label for v in item.versions] == ["v2"]
+
+
+def test_promote_without_client_keeps_disk_behavior(tmp_path: Path):
+    """client=None (offline promote) falls back to disk-only labeling."""
+    spine_root = tmp_path / "spine"
+    _write_item(spine_root, "phase-0", "thing", est_item_id="d1")
+    path = promote_card(
+        _card(), framing="f", est_item_id="d1", kind="deliverable",
+        project_dir=tmp_path, sources=["s1"], distiller=_distiller("b"),
+        model="m", client=None,
+    )
+    item = parse_substance(path)
+    assert item.live_version().label == "v2"

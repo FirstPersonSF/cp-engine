@@ -1436,3 +1436,26 @@ def test_sync_shield_overrides_confirmed_live_status(tmp_path):
     # The override is visible: the drift flag reconcile raised survives.
     flags = by_id["proj-1/d1/v2"].get("review_flags") or []
     assert any(f.get("field") == "status" for f in flags)
+
+
+def test_sync_equal_label_collision_shields_authored_row(tmp_path):
+    """#121: disk mints the SAME label as an existing authored row — the
+    strict-less-than shield can't see it (equal, not less), and the upsert
+    would clobber the authored body. The colliding disk row is dropped;
+    authored content survives byte-for-byte; lower disk versions still sync."""
+    proj = tmp_path / "1p/acct/proj-1"
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")  # disk v1+v2
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "proj-1/d1/v2", "est_item_id": "d1", "project_id": "u1",
+        "project_code": "proj-1", "version_label": "v2", "status": "live",
+        "origin": "authored", "archived": False,
+        "framing": "authored framing", "body": "AUTHORED BODY — must survive",
+        "field_states": {}, "review_flags": [],
+    }]
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj, estimate=_FakeEstimate({"d1"}))
+    rows = {r["id"]: r for r in client.store["spine_substance"]}
+    assert rows["proj-1/d1/v2"]["body"] == "AUTHORED BODY — must survive"
+    assert rows["proj-1/d1/v2"]["origin"] == "authored"
+    assert "proj-1/d1/v1" in rows  # non-colliding disk version still lands

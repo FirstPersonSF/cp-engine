@@ -44,6 +44,7 @@ from cp_engine.substance import (
     is_skipped_spine_dir,
     parse_substance,
     render_substance,
+    version_number,
 )
 
 _INBOX_TABLE = Tables.SPINE_INBOX
@@ -394,6 +395,8 @@ def promote_card(
         if other.est_item_id == est_item_id:
             bound.append(md)
 
+    db_max = _db_max_version(client, card.project_code, est_item_id)
+
     if len(bound) > 1:
         raise ValueError(
             f"est_item_id {est_item_id!r} is bound by {len(bound)} substance "
@@ -434,7 +437,13 @@ def promote_card(
                 flip_card=flip_card,
                 today_iso=today_iso,
             )
-        n = max(int(v.label[1:]) for v in existing.versions) + 1
+        # Next label from the MAX of disk and DB (#121): the DB is the
+        # superset — an authored version lands there first, and a disk-only
+        # computation can mint an EQUAL label whose id collides with the
+        # authored row (the #115 shield only catches strict-less-than, so
+        # disk-wins reconcile would clobber the authored content).
+        n_disk = max(int(v.label[1:]) for v in existing.versions)
+        n = max(n_disk, db_max or 0) + 1
         version = SubstanceVersion(
             label=f"v{n}", date=today_iso, status="live",
             framing=framing, sources=sources_tuple, body=body,
@@ -447,8 +456,11 @@ def promote_card(
         if item.layer is None:
             item = replace(item, layer=canon_layer(kind))
     else:
+        # No disk file, but MC-2 may already hold versions for this element
+        # (authored rows sync file-ward later) — creating "v1" over a DB v1
+        # is the same id collision (#121). Continue the DB sequence.
         version = SubstanceVersion(
-            label="v1", date=today_iso, status="live",
+            label=f"v{(db_max or 0) + 1}", date=today_iso, status="live",
             framing=framing, sources=sources_tuple, body=body,
         )
         item = WorkItemSubstance(
@@ -466,6 +478,34 @@ def promote_card(
         ).execute()
 
     return target
+
+
+def _db_max_version(client, project_code: str, est_item_id: str) -> int | None:
+    """Highest version number MC-2 holds for this element, or None.
+
+    The #121 fix's data source: authored versions land in `spine_substance`
+    first and the disk file learns of them later (or never), so the next
+    distill label must come from max(disk, DB). None on no client, no
+    rows, or an unreachable DB — callers fall back to disk alone, which
+    is the pre-#121 behavior and correct when the element has no DB rows.
+    """
+    if client is None:
+        return None
+    try:
+        rows = (
+            client.table(Tables.SPINE_SUBSTANCE)
+            .select("version_label")
+            .eq("project_code", project_code)
+            .eq("est_item_id", est_item_id)
+            .execute()
+            .data
+            or []
+        )
+    except Exception:  # noqa: BLE001 — unreachable DB → disk fallback
+        return None
+    nums = [version_number(r.get("version_label")) for r in rows]
+    nums = [n for n in nums if n >= 0]
+    return max(nums) if nums else None
 
 
 def _authored_slug_taken(client, card: InboxCard, spine_root: Path, slug: str) -> bool:
