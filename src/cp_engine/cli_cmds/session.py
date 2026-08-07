@@ -42,8 +42,9 @@ from cp_engine.config import ConfigError, load
 )
 @click.option(
     "--user",
-    required=True,
-    help="Display name for the session author (e.g. \"Drew\").",
+    default=None,
+    help="Display name for the session author (e.g. \"Drew\"). "
+    "Defaults to `git config user.name`'s first name (#160).",
 )
 @click.option(
     "--cp-tenant",
@@ -56,7 +57,7 @@ def capture_session_cmd(
     source_repo: Path | None,
     working_dir: Path | None,
     summary_file: Path,
-    user: str,
+    user: str | None,
     cp_tenant: Path | None,
     no_commit: bool,
     no_push: bool,
@@ -90,6 +91,26 @@ def capture_session_cmd(
             "Error: pass --source-repo or --working-dir, not both.", err=True
         )
         sys.exit(2)
+
+    if user is None:
+        # #160 friction: --user was required with no default, costing a trial
+        # run to discover. First name from git config is right for this tenant.
+        import subprocess
+
+        try:
+            full = subprocess.run(
+                ["git", "config", "user.name"],
+                capture_output=True, text=True, check=True,
+            ).stdout.strip()
+        except (subprocess.CalledProcessError, OSError):
+            full = ""
+        user = full.split()[0] if full else ""
+        if not user:
+            click.echo(
+                "Error: --user not given and `git config user.name` is unset.",
+                err=True,
+            )
+            sys.exit(2)
 
     summary_text = summary_file.read_text(encoding="utf-8")
 

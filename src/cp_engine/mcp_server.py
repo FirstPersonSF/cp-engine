@@ -308,6 +308,59 @@ def fetch_project_source(project_code: str, doc_title: str) -> dict:
 
 
 @_tool
+def compare_project_sources(project_code: str, doc_a: str, doc_b: str) -> dict:
+    """Structural text diff between two versions of a document (#160).
+
+    The read for feedback that arrives as a REVISED COPY of the artifact
+    ("comments added" = comments resolved in): per-slide (pptx) or
+    per-section (docx/md) text, aligned by best-match similarity — NOT by
+    index, decks get reordered — reporting matched pairs (similarity +
+    unchanged/edited/moved), cut units, new units, and thin placeholder
+    units. `overall_similarity` also answers "are these duplicates?"
+    (#158) without pulling either doc into context.
+
+    `doc_a` / `doc_b` are each an ingested source title (fetched like
+    `fetch_project_source`) or a local file path. Output is data — narrate
+    it into a worklist.
+    """
+    import tempfile
+    from pathlib import Path as _Path
+
+    from cp_engine.project_sources import fetch_source
+    from cp_engine.source_compare import compare_files
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"error": f"project {project_code!r} not found"}
+        client, pid, _cid = resolved
+        _try_load_dropbox_creds()
+
+        def _local(doc: str, side: str) -> str | dict:
+            if _Path(doc).is_file():
+                return doc
+            dest = tempfile.mkdtemp(prefix="cp-fetch-")
+            fetched = fetch_source(client, pid, doc, dest)
+            if fetched.get("error"):
+                return {"error": f"{side}: {fetched['error']}"}
+            return fetched["local_path"]
+
+        path_a = _local(doc_a, "doc_a")
+        if isinstance(path_a, dict):
+            return path_a
+        path_b = _local(doc_b, "doc_b")
+        if isinstance(path_b, dict):
+            return path_b
+        return compare_files(path_a, path_b)
+    except ValueError as exc:  # unsupported extension — actionable as-is
+        return {"error": str(exc)}
+    except Exception as exc:  # noqa: BLE001 — MCP boundary, never raise
+        return {
+            "error": f"compare failed for '{doc_a}' vs '{doc_b}': {exc}"
+        }
+
+
+@_tool
 def archive_project_source(project_code: str, doc_title_or_id: str) -> dict:
     """Archive one ingested source doc — the RAG-store cleanup verb (#126).
 
