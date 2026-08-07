@@ -27,6 +27,7 @@ dependencies = [
     "visual-document-capture @ git+https://github.com/FirstPersonSF/1p-component-library.git@491fa2f#subdirectory=processors/visual-document-capture",
     "spine-authoring @ git+https://github.com/FirstPersonSF/1p-component-library.git@023e656#subdirectory=services/spine-authoring",
     "inbound-frameworks[anthropic] @ git+https://github.com/FirstPersonSF/1p-component-library.git@3ea70cc#subdirectory=services/inbound-frameworks",
+    "note-dm-format @ git+https://github.com/FirstPersonSF/1p-component-library.git@a9ab75e#subdirectory=utilities/note-dm-format",
     "voyageai>=0.4",
     # Floor is 2.0 and the bound is deliberate: mcp 2.x renamed
     # FastMCP -> MCPServer, so mcp_server.py does NOT run on 1.x. Keep the

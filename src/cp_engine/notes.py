@@ -15,20 +15,18 @@ Recipient/author resolve by NAME or EMAIL against `entities` (agents know
 "Marcello", not a UUID). Delivery never blocks the insert: the note exists in-app
 regardless, and `slack_delivery` records what happened — parity with the endpoint.
 
-Cross-repo note: the DM block format is duplicated from mc-2
-`src/notes_slack.py`. cp-engine #107 tracks consolidating this; keep the two in
-sync (header shape + the /jobs/{project_id} deep link) if either changes.
+The DM block layout is the shared `note-dm-format` component
+(1p-component-library), also used by mc-2's `src/notes_slack.py` — one
+definition for both senders (#161).
 """
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
-from cp_engine.mc2_db import Tables
+from note_dm_format import note_dm_blocks
 
-# Mirror of mc-2 notes_slack.py — keep in sync (see module docstring / #107).
-_WORKSPACE_BASE = "https://mc2.1p.is"
-_SLACK_SECTION_MAX = 2800
+from cp_engine.mc2_db import Tables
 # The tenant's default acting partner when no author is given (the MCP runs as
 # Drew). Overridable per call; resolved against entities like any recipient.
 _DEFAULT_AUTHOR_EMAIL = "drew@firstperson.is"
@@ -56,38 +54,6 @@ def _resolve_entity(client, who: str) -> Optional[dict]:
     ) or []
     distinct = {r["id"]: r for r in rows}
     return next(iter(distinct.values())) if len(distinct) == 1 else None
-
-
-def _truncate_for_slack(body: str) -> str:
-    if len(body) <= _SLACK_SECTION_MAX:
-        return body
-    tail = "…\n\n_(truncated — open in workspace for the full note)_"
-    return body[: _SLACK_SECTION_MAX - len(tail)].rstrip() + tail
-
-
-def _blocks(author_name: str, project_label: str, body: str,
-            project_id: str) -> tuple[str, list[dict]]:
-    """Plain-text fallback + Block Kit blocks — mirror of mc-2 notes_slack.py.
-    The deep link targets /jobs/{project_id} (the MC project UUID; the short
-    code 404s the workspace)."""
-    header = f"📝 Note from {author_name} · {project_label}"
-    dm_body = _truncate_for_slack(body)
-    fallback = f"{header}\n{dm_body}"
-    blocks: list[dict] = [
-        {"type": "section", "text": {"type": "mrkdwn", "text": f"*{header}*"}},
-        {"type": "section", "text": {"type": "mrkdwn", "text": dm_body}},
-        {
-            "type": "actions",
-            "elements": [
-                {
-                    "type": "button",
-                    "text": {"type": "plain_text", "text": "Open in workspace"},
-                    "url": f"{_WORKSPACE_BASE}/jobs/{project_id}",
-                }
-            ],
-        },
-    ]
-    return fallback, blocks
 
 
 def _deliver_dm(client, config, *, recipient: dict, author_name: str,
@@ -125,7 +91,7 @@ def _deliver_dm(client, config, *, recipient: dict, author_name: str,
         except Exception:  # noqa: BLE001
             pass
 
-    fallback, blocks = _blocks(author_name, project_label, body, project_id)
+    fallback, blocks = note_dm_blocks(author_name, project_label, body, project_id)
     try:
         ts = slack_mod.post_dm(web, user_id=sid, text=fallback, blocks=blocks)
         return "sent", ts

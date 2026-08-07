@@ -594,7 +594,7 @@ toml = [
 
 [[package]]
 name = "cp-engine"
-version = "0.90.0"
+version = "0.90.1"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -604,6 +604,7 @@ dependencies = [
     { name = "inbound-frameworks", extra = ["anthropic"] },
     { name = "jinja2" },
     { name = "mcp" },
+    { name = "note-dm-format" },
     { name = "packaging" },
     { name = "pygithub" },
     { name = "pypdf" },
@@ -640,6 +641,7 @@ requires-dist = [
     { name = "jinja2", specifier = ">=3.1" },
     { name = "mcp", specifier = ">=2.0,<3" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.10" },
+    { name = "note-dm-format", git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=utilities%2Fnote-dm-format&rev=a9ab75e" },
     { name = "packaging", specifier = ">=24.0" },
     { name = "pygithub", specifier = ">=2.0" },
     { name = "pypdf", specifier = ">=4.0" },
@@ -2028,6 +2030,11 @@ sdist = { url = "https://files.pythonhosted.org/packages/a2/6e/371856a3fb9d31ca8
 wheels = [
     { url = "https://files.pythonhosted.org/packages/79/7b/2c79738432f5c924bef5071f933bcc9efd0473bac3b4aa584a6f7c1c8df8/mypy_extensions-1.1.0-py3-none-any.whl", hash = "sha256:1be4cccdb0f2482337c4743e60421de3a356cd97508abadd57d47403e94f5505", size = 4963, upload-time = "2025-04-22T14:54:22.983Z" },
 ]
+
+[[package]]
+name = "note-dm-format"
+version = "0.1.0"
+source = { git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=utilities%2Fnote-dm-format&rev=a9ab75e#a9ab75e2a7b4f1061ad1029f9d559881f68ec3e7" }
 
 [[package]]
 name = "numpy"
