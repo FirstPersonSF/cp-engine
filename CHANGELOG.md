@@ -4,6 +4,64 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.92.0 — 2026-08-07
+
+The end-of-backlog ship: eleven issues closed in one release.
+
+- **Commitments get a lifecycle floor (#134, #135, #136).** Undated
+  `meeting_ingest` rows still `proposed` after 14 days now EXPIRE in the weekly
+  dates loop (`status='expired'`, mc-2 mig 133; post-send only), with a
+  one-week warning in the project posts and a named list in the partners
+  rollup — nothing dies silently, dating a row cancels the TTL, and expired
+  rows still block re-ingest resurrection. New `cp commitments-sweep <code> |
+  --all` renders the review surface (age, UNDATED/SLIPPED, source, owner,
+  TTL markers; `--undated/--older-than/--stale` filters). The CLAUDE.md
+  template's wrap-up now mandates a commitments sweep per touched project.
+- **`compare_project_sources` — feedback that arrives as a revised deck
+  (#160).** Structural diff between two document versions: per-slide (pptx) /
+  per-section (docx/md) units aligned by best-match similarity (never index),
+  reporting matched pairs (similarity, unchanged/edited/moved), cut, new, and
+  placeholder units, plus `overall_similarity` for the #158 duplicate check.
+  Sides resolve as ingested titles or local paths. Validated live on the
+  ibx-5192 Mehul Rv3 pair. Also: `capture-session --user` defaults from
+  `git config user.name`.
+- **Distill can no longer clobber authored versions (#121).** Next labels
+  compute from max(disk, DB); sync drops any disk row whose id collides with
+  an authored row (the equal-label case the #115 shield couldn't see).
+- **Spine curation, both halves (#112, #158).** Four new warn-only lint rules
+  (unauthored standing Brief; time-bound cards past their date and unversioned
+  since; >10KB pastes on distillation layers; unlayered / instruction-shaped
+  framings — layer comparison normalized to the DB's spaced names). Ingest
+  junk filter (Office lock files, COPY ME/XXX 0000/v000 scaffolds,
+  duplicate-marker twins of existing sources) — every skip a logged
+  source_note. `tier="working"` facet on `list_spine_elements` (both servers)
+  drops per-doc source stubs from orientation (ibx-5192: 73 → 39). mc-2 side:
+  archive now cascades typed edges like retire, and routed-doc stubs are born
+  with an extractive first-chunk note.
+- **The two-server split is finished (#138).** The last portable verbs ported
+  to hosted (43 tools): `archive_project_source` / `rename_project_source`
+  (via mc-2 mig-134 guarded functions — `rag_assets` stays SELECT-only under
+  RLS) and `pull_element_from_project`. The stdio server ratcheted 22 → 13:
+  reads + `pull_document_comments` + local-I/O (`fetch_project_source`,
+  `push_to_dropbox`, `compare_project_sources`) + the INTERNAL frameworks
+  trio; every write now exists ONCE, caller-attributed and audited. Drift is
+  fenced mechanically: `tests/test_read_parity.py` pins the six
+  deliberately-dual read signatures to a checked-in contract and fails on any
+  write appearing twice. First catch backfilled in the same commit: hosted
+  `list_commitments` gained the `status` filter (its default narrowed from
+  everything to `open`, stdio parity). Hosted `add_spine_version` also gained
+  `step_title` parity (#145).
+- **Webhook replay protection, caller side (#132 step 1).** All three
+  fathom-meeting-sync POST sites now send `X-Webhook-Timestamp` and sign
+  `hmac(secret, ts.body)`, re-stamped per retry. The
+  `WEBHOOK_REQUIRE_TIMESTAMP` flip follows once the legacy-shape warning goes
+  quiet in Sentry.
+- **" 2" duplicate plague tooling (#133).** `scripts/sweep_dupes.py` removes
+  Finder/iCloud collision names only when a canonical twin verifies identical
+  (file MD5 / recursive dir diff; tracked files never touched) — 223 swept
+  across clones. release.py preflight now fails loudly on ` N.dist-info` dirs
+  in any venv, naming the sweep command uv's own error never names.
+
 ## v0.91.0 — 2026-08-07
 
 - **Spine edges are readable (#125).** New hosted verb
