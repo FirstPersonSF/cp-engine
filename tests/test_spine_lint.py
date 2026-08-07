@@ -126,3 +126,76 @@ def test_lifecycle_stale_canon_member_absorbed_and_superseded():
     out = lint_lifecycle(rows, rels)
     assert len(out) == 2
     assert all("stale canon member" in w for w in out)
+
+
+# ── Curation checks (#112 P3 + #158 gaps 2–4) ────────────────────────────
+
+from datetime import date as _d
+
+from cp_engine.spine_lint import lint_curation
+
+_TODAY = _d(2026, 8, 6)
+
+
+def _crow(**kw) -> dict:
+    row = {
+        "est_item_id": "e1", "framing": "A card", "layer": "Synthesis",
+        "binding": "live", "serves": [], "important": False,
+        "body": "x" * 500, "sources": [], "version_date": "2026-08-01",
+    }
+    row.update(kw)
+    return row
+
+
+def test_curation_flags_scaffold_brief() -> None:
+    warns = lint_curation([_crow(
+        framing="Inputs & Briefing", layer="Brief", body="- _<fill this in>_",
+    )], today=_TODAY)
+    assert any("unauthored standing Brief" in w for w in warns)
+    # An authored Brief is clean.
+    assert not lint_curation([_crow(
+        framing="Inputs & Briefing", layer="Brief", body="w" * 900,
+    )], today=_TODAY)
+
+
+def test_curation_flags_past_date_untouched() -> None:
+    warns = lint_curation([_crow(
+        framing="Feedback we will receive on monday 7-27",
+        body="placeholder", version_date="2026-07-20",
+    )], today=_TODAY)
+    assert any("time-bound and past" in w and "2026-07-27" in w for w in warns)
+    # Versioned AFTER the referenced date → the outcome was captured; clean.
+    assert not lint_curation([_crow(
+        framing="Feedback we will receive on monday 7-27",
+        body="the outcome", version_date="2026-07-28",
+    )], today=_TODAY)
+    # Future dates never flag.
+    assert not lint_curation([_crow(
+        framing="Workshop on 9/15", version_date="2026-08-01",
+    )], today=_TODAY)
+
+
+def test_curation_flags_raw_paste_on_distill_layer() -> None:
+    warns = lint_curation([_crow(
+        framing="Feedback from Janet + Mehul r3", layer="ClientFeedback",
+        body="y" * 17_000,
+    )], today=_TODAY)
+    assert any("undistilled capture" in w for w in warns)
+    # Same size on SourceMaterial (a pointer layer) is fine.
+    assert not lint_curation([_crow(
+        framing="Raw deck text", layer="SourceMaterial", body="y" * 17_000,
+    )], today=_TODAY)
+
+
+def test_curation_flags_unlayered_and_instruction_framing() -> None:
+    warns = lint_curation([_crow(
+        framing="This is our post meeting conversation. You can capture our "
+                "initial reactions",
+        layer=None,
+    )], today=_TODAY)
+    assert any("unlayered element" in w for w in warns)
+    assert any("instruction-shaped framing" in w for w in warns)
+
+
+def test_curation_clean_rows_are_clean() -> None:
+    assert lint_curation([_crow()], today=_TODAY) == []

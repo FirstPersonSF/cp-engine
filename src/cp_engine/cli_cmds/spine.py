@@ -765,6 +765,12 @@ def spine_lint_cmd(code: str) -> None:
     except Exception:  # noqa: BLE001 — lifecycle checks degrade, lint survives
         pass
 
+    # Curation checks (#112 P3 + #158 gaps 2–4): scaffold Brief, time-bound
+    # cards past their moment, raw pastes on distillation layers, unlayered /
+    # instruction-shaped elements. Same warn-only surface.
+    from cp_engine.spine_lint import lint_curation
+    warnings.extend(lint_curation(rows))
+
     # cp.md placeholder check — best-effort, offline (skip silently when the
     # working dir doesn't resolve; the spine checks already ran).
     try:

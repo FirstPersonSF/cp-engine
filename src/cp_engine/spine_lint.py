@@ -126,6 +126,113 @@ def lint_lifecycle(rows: list[dict], relations: list[dict]) -> list[str]:
     return out
 
 
+# ── Curation checks (#112 P3 + #158 gaps 2–4) ────────────────────────────
+
+# The standing front-door elements (#112 P3): a Brief that is still the
+# scaffold weeks in means the spine has no front door and nothing says so.
+_STANDING_BRIEF_RE = re.compile(
+    r"inputs\s*&?\s*briefing|statement\s+of\s+work|^sow\b", re.IGNORECASE)
+# Below this the "Brief" is a title + pointer, not an authored brief.
+BRIEF_MIN_CHARS = 300
+
+# Date tokens a time-bound card carries in its framing ("feedback on monday
+# 7-27", "workshop 2026-07-30"): ISO first, then M/D or M-D shapes.
+_FRAMING_DATE_RE = re.compile(
+    r"\b(?:(?P<iso>\d{4}-\d{2}-\d{2})|(?P<m>\d{1,2})[/-](?P<d>\d{1,2}))\b")
+STALE_AFTER_DAYS = 7
+
+# Raw-capture size ceiling (#158 gap 3) on layers whose value IS the
+# distillation — a 16KB ClientFeedback card is a paste, not a distillation.
+DISTILL_LAYERS = frozenset({"ClientFeedback", "Synthesis", "Decisions"})
+DISTILL_BODY_MAX = 10_000
+
+# Instruction-shaped framing (#158 gap 4): a pasted prompt, not a title.
+_INSTRUCTION_FRAMING_RE = re.compile(
+    r"\byou\s+(?:can|should|will|need)\b|^please\s|\bcapture\s+our\b",
+    re.IGNORECASE)
+
+
+def lint_curation(rows: list[dict], *, today=None) -> list[str]:
+    """Curation drift over live rows (#112 P3, #158 gaps 2–4). Pure, warn-only.
+
+    Needs the SPINE_LINT_COLUMNS shape plus `version_date`.
+    """
+    from datetime import date as _date
+
+    today = today or _date.today()
+    out: list[str] = []
+    for row in rows:
+        eid = row.get("est_item_id") or "(unknown)"
+        title = row.get("framing") or eid
+        body = row.get("body") or ""
+        layer = row.get("layer")
+
+        # #112 P3 — standing Brief still the scaffold.
+        if (((layer or "") == "Brief"
+                or _STANDING_BRIEF_RE.search(row.get("framing") or ""))
+                and (len(body) < BRIEF_MIN_CHARS or _PLACEHOLDER_RE.search(body))):
+            out.append(
+                f"⚠ unauthored standing Brief: '{title}' ({eid}) is still a "
+                f"{len(body)}-char scaffold — the spine has no front door "
+                "until it's authored (draft-and-confirm; never auto-written)")
+
+        # #158 gap 2 — time-bound card whose moment has passed, untouched since.
+        stale_date = _past_framing_date(row.get("framing") or "", today)
+        if stale_date is not None:
+            moved = (row.get("version_date") or "") >= stale_date.isoformat()
+            if not moved:
+                out.append(
+                    f"⚠ time-bound and past: '{title}' ({eid}) references "
+                    f"{stale_date.isoformat()} ({(today - stale_date).days}d "
+                    "ago) and hasn't been versioned since — capture the "
+                    "outcome or retire it")
+
+        # #158 gap 3 — raw paste on a distillation layer.
+        if layer in DISTILL_LAYERS and len(body) > DISTILL_BODY_MAX:
+            out.append(
+                f"⚠ undistilled capture: '{title}' ({eid}) is "
+                f"{len(body):,} chars on the {layer} layer — distill into "
+                "the card and attach the raw text as a source instead")
+
+        # #158 gap 4 — unlayered, or framing that is a pasted instruction.
+        if layer is None:
+            out.append(
+                f"⚠ unlayered element: '{title}' ({eid}) has layer: null — "
+                "the UI can't file it; set a layer")
+        if _INSTRUCTION_FRAMING_RE.search(row.get("framing") or ""):
+            out.append(
+                f"⚠ instruction-shaped framing: '{title}' ({eid}) reads as a "
+                "pasted prompt, not a title — reframe it as what the card "
+                "holds")
+    return out
+
+
+def _past_framing_date(framing: str, today) -> "object | None":
+    """Newest date token in a framing that is ≥STALE_AFTER_DAYS past, or None.
+
+    M/D shapes assume the current year (and the prior year when that lands
+    in the future — a December card read in January must not flag)."""
+    from datetime import date as _date
+
+    best = None
+    for m in _FRAMING_DATE_RE.finditer(framing):
+        try:
+            if m.group("iso"):
+                d = _date.fromisoformat(m.group("iso"))
+            else:
+                month, day = int(m.group("m")), int(m.group("d"))
+                d = _date(today.year, month, day)
+                if d > today:
+                    d = _date(today.year - 1, month, day)
+        except ValueError:
+            continue
+        if best is None or d > best:
+            best = d
+    if best is not None and (today - best).days >= STALE_AFTER_DAYS:
+        return best
+    return None
+
+
 def lint_cp_placeholders(cp_md_text: str) -> list[str]:
     """Check 3: scaffold placeholders still in a `cp.md`.
 
