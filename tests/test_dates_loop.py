@@ -270,3 +270,87 @@ def test_cli_nothing_delivered_exits_one(monkeypatch) -> None:
     )
     out = _run_cli(monkeypatch, result)
     assert out.exit_code == 1
+
+
+# ── TTL expiry for undated meeting-ingest rows (#136) ──────────────────
+
+
+def _ingest_c(id: str, desc: str, created: str, **kw) -> dict:
+    c = _c(id, desc, None, **kw)
+    c["source_kind"] = "meeting_ingest"
+    c["created_at"] = created + "T12:00:00+00:00"
+    return c
+
+
+def test_ttl_bucket_eligibility() -> None:
+    from cp_engine.dates_loop import _ttl_bucket
+
+    # 14+ days undated meeting-ingest proposed → expire.
+    assert _ttl_bucket(_ingest_c("a", "old", "2026-06-20"), _TODAY) == "expire"
+    # 7–13 days → warn.
+    assert _ttl_bucket(_ingest_c("b", "warm", "2026-06-28"), _TODAY) == "warn"
+    # Fresh → None.
+    assert _ttl_bucket(_ingest_c("c", "new", "2026-07-05"), _TODAY) is None
+    # A due date cancels the TTL.
+    dated = _ingest_c("d", "dated", "2026-06-01")
+    dated["due_date"] = "2026-08-01"
+    assert _ttl_bucket(dated, _TODAY) is None
+    # A ratified/changed date_status cancels it.
+    agreed = _ingest_c("e", "agreed", "2026-06-01", date_status="agreed")
+    assert _ttl_bucket(agreed, _TODAY) is None
+    # Human-authored rows are exempt regardless of age.
+    session = _ingest_c("f", "session row", "2026-06-01")
+    session["source_kind"] = "session"
+    assert _ttl_bucket(session, _TODAY) is None
+    # Unparseable created_at → never expire.
+    broken = _ingest_c("g", "broken", "2026-06-01")
+    broken["created_at"] = "not-a-date"
+    assert _ttl_bucket(broken, _TODAY) is None
+
+
+def test_render_marks_warn_and_excludes_expiring() -> None:
+    warn = _ingest_c("w", "Warn thing", "2026-06-28")
+    gone = _ingest_c("x", "Expiring thing", "2026-06-20")
+    fresh = _ingest_c("f", "Fresh thing", "2026-07-05")
+    text, included = _render_project_post(
+        code="sap-5174", name="SAP 5174",
+        commitments=[warn, gone, fresh],
+        milestones=[], today=_TODAY, window_days=14,
+        ttl_buckets={"w": "warn", "x": "expire"},
+    )
+    assert "Warn thing" in text
+    assert "expires next Monday unless dated" in text
+    assert "Expiring thing" not in text  # terminal this run, not "needs a date"
+    assert "1 undated meeting-ingest commitment auto-expired" in text
+    # Expiring row is out of the ratification set; the others stay.
+    assert set(included) == {"w", "f"}
+
+
+def test_partners_rollup_expiry_lines() -> None:
+    text = _render_partners_rollup(
+        dated_events=[], slipped_total=0, undated_total=2,
+        today=_TODAY, window_days=14,
+        expire_warn=[("sap-5174", "Warn thing"), ("ibx-5153", "Other thing")],
+        expired_total=3,
+    )
+    assert text is not None
+    assert "2 undated commitments expire next Monday unless dated" in text
+    assert "`sap-5174` Warn thing" in text
+    assert "3 undated meeting-ingest commitments auto-expired this week" in text
+
+
+def test_apply_expiry_writes_only_expire_bucket() -> None:
+    from cp_engine.dates_loop import _apply_expiry
+
+    client, updates = _fake_update_client()
+    rows = [
+        _ingest_c("x", "Expiring", "2026-06-20"),
+        _ingest_c("w", "Warned", "2026-06-28"),
+        _c("d", "Dated", "2026-07-10"),
+    ]
+    result = DatesLoopResult()
+    _apply_expiry(client, result, rows, {"x": "expire", "w": "warn"})
+    by_id = {cid: fields for fields, cid in updates}
+    assert by_id["x"]["status"] == "expired"
+    assert "w" not in by_id and "d" not in by_id
+    assert result.expired_stamped == 1

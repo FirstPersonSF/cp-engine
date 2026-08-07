@@ -482,6 +482,61 @@ def _fetch_pending_cross_project() -> list[dict]:
 
 
 
+@click.command("commitments-sweep")
+@click.argument("code", required=False)
+@click.option("--all", "sweep_all", is_flag=True, help="Tenant-wide, grouped by project.")
+@click.option("--undated", is_flag=True, help="Only rows with no due date.")
+@click.option("--older-than", type=int, default=None, metavar="DAYS", help="Only rows at least DAYS old.")
+@click.option("--stale", is_flag=True, help="Undated AND ≥14d old — the \"is this still real?\" bucket.")
+@click.option(
+    "--today",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Override today's date (YYYY-MM-DD). Useful for testing.",
+)
+def commitments_sweep_cmd(
+    code: str | None, sweep_all: bool, undated: bool,
+    older_than: int | None, stale: bool, today,
+) -> None:
+    """Surface stale/undated open commitments for review (read-only).
+
+    One project (CODE) or tenant-wide (--all). Rows group by project and
+    sort oldest-first with age, date status, source, and owner — the
+    fields that drive a keep/close decision. Rows the dates-loop TTL
+    (#136) is about to expire are marked. Closing stays a deliberate act
+    via resolve_commitment; this just makes the decision cheap.
+    """
+    from datetime import date as _date
+
+    from cp_engine import mc2_db
+    from cp_engine.commitments_sweep import render_sweep, sweep
+
+    if bool(code) == sweep_all:
+        click.echo("Error: pass a project CODE or --all (exactly one).", err=True)
+        raise SystemExit(2)
+    try:
+        config = load(Path.cwd())
+    except ConfigError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+
+    today_d = today.date() if today else _date.today()
+    client = mc2_db.get_client(config)
+    try:
+        groups = sweep(
+            client,
+            code=code,
+            today=today_d,
+            undated_only=undated,
+            older_than=older_than,
+            stale_only=stale,
+        )
+    except ValueError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        raise SystemExit(1)
+    click.echo(render_sweep(groups, today=today_d))
+
+
 @click.command("dates-loop")
 @click.option(
     "--post",
@@ -551,6 +606,11 @@ def dates_loop_cmd(post: bool, window_days: int | None, today) -> None:
             f"{result.agreed_promoted} promoted to agreed · "
             f"{result.slipped_stamped} stamped slipped"
         )
+        if result.expired_stamped or result.expire_warned:
+            click.echo(
+                f"ttl (#136): {result.expired_stamped} expired · "
+                f"{result.expire_warned} in the warn window"
+            )
     if result.errors:
         for err in result.errors:
             click.echo(f"error: {err}", err=True)

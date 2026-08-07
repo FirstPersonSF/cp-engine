@@ -34,13 +34,51 @@ log = logging.getLogger(__name__)
 
 _COMMITMENT_COLUMNS = (
     "id, description, owner_email, owner_name, direction, due_date, "
-    "date_status, project_id, initiative_id, status, posted_count"
+    "date_status, project_id, initiative_id, status, posted_count, "
+    "source_kind, created_at"
 )
 
 # Posts with an unchanged date needed before proposed → agreed. The mc-2
 # PATCH endpoint resets posted_count on any due_date change, so
 # posted_count is by construction "posts at the current date".
 _RATIFY_AFTER_POSTS = 2
+
+# TTL for undated auto-ingested commitments (#136). A transcript rarely
+# states a date, so meeting-ingest rows land undated — an UNCONFIRMED
+# PROPOSAL, not an agreed obligation, and structurally invisible to
+# 'slipped' (which needs a past due date). Rows still undated + 'proposed'
+# after _EXPIRE_AFTER_DAYS auto-close to status='expired' (mc-2 mig 133);
+# rows entering the warn window are flagged in the posts one loop-run
+# ahead so nothing dies silently. Dating the row or any date_status
+# change cancels the TTL. Only source_kind='meeting_ingest' — session,
+# manual, and migration rows were human-authored on purpose.
+_EXPIRE_AFTER_DAYS = 14
+_EXPIRE_WARN_AFTER_DAYS = 7
+
+
+def _ttl_bucket(c: dict, today: date) -> str | None:
+    """'expire' | 'warn' | None for one open commitment row.
+
+    Age counts from created_at. warn = would expire by the next weekly
+    run; expire = past the TTL now.
+    """
+    if (
+        c.get("due_date")
+        or c.get("source_kind") != "meeting_ingest"
+        or (c.get("date_status") or "proposed") != "proposed"
+    ):
+        return None
+    raw = c.get("created_at") or ""
+    try:
+        created = datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+    age = (today - created).days
+    if age >= _EXPIRE_AFTER_DAYS:
+        return "expire"
+    if age >= _EXPIRE_WARN_AFTER_DAYS:
+        return "warn"
+    return None
 
 # MC-2 app_config key holding the partners-rollup channel id. Channel
 # configuration lives in MC-2 (one home), not in .cp-engine.toml — same
@@ -96,6 +134,8 @@ class DatesLoopResult:
     slipped_stamped: int = 0
     agreed_promoted: int = 0
     posted_count_bumped: int = 0
+    expired_stamped: int = 0  # undated meeting-ingest rows past the TTL (#136)
+    expire_warned: int = 0  # rows entering the warn window this run
     errors: list[str] = field(default_factory=list)
 
 
@@ -130,6 +170,7 @@ def _render_project_post(
     milestones: list[tuple[date, str]],
     today: date,
     window_days: int,
+    ttl_buckets: dict[str, str] | None = None,
 ) -> tuple[str, list[str]]:
     """Render one project's post; returns (text, commitment_ids_included).
 
@@ -184,9 +225,23 @@ def _render_project_post(
         sections.append(
             f"*Due in the next {window_days} days*\n" + "\n".join(lines)
         )
-    if undated:
-        lines = "\n".join(_fmt_commitment(c, with_date=False) for c in undated)
-        sections.append("*Needs a date*\n" + lines)
+    buckets = ttl_buckets or {}
+    expiring_now = [c for c in undated if buckets.get(c["id"]) == "expire"]
+    undated = [c for c in undated if buckets.get(c["id"]) != "expire"]
+    if undated or expiring_now:
+        lines = []
+        for c in undated:
+            line = _fmt_commitment(c, with_date=False)
+            if buckets.get(c["id"]) == "warn":
+                line += " — _expires next Monday unless dated_"
+            lines.append(line)
+        if expiring_now:
+            lines.append(
+                f"_{len(expiring_now)} undated meeting-ingest "
+                f"commitment{'s' if len(expiring_now) != 1 else ''} auto-expired "
+                f"(14+ days without a date)_"
+            )
+        sections.append("*Needs a date*\n" + "\n".join(lines))
 
     if not sections:
         return "", []
@@ -207,9 +262,18 @@ def _render_partners_rollup(
     undated_total: int,
     today: date,
     window_days: int,
+    expire_warn: list[tuple[str, str]] | None = None,  # (code, description)
+    expired_total: int = 0,
 ) -> str | None:
     """Tenant-wide pile-up view for the partners channel."""
-    if not dated_events and not slipped_total and not undated_total:
+    expire_warn = expire_warn or []
+    if (
+        not dated_events
+        and not slipped_total
+        and not undated_total
+        and not expire_warn
+        and not expired_total
+    ):
         return None
     lines = [
         f":date: *Tenant dates — next {window_days} days* (week of {_fmt_day(today)})"
@@ -223,6 +287,19 @@ def _render_partners_rollup(
         tail.append(f":grey_question: {undated_total} open commitments with no date")
     if tail:
         lines.append(" · ".join(tail))
+    if expire_warn:
+        lines.append(
+            f":hourglass_flowing_sand: *{len(expire_warn)} undated "
+            f"commitment{'s' if len(expire_warn) != 1 else ''} expire next "
+            "Monday unless dated:*"
+        )
+        lines.extend(f"• `{code}` {desc}" for code, desc in expire_warn)
+    if expired_total:
+        lines.append(
+            f"_{expired_total} undated meeting-ingest "
+            f"commitment{'s' if expired_total != 1 else ''} auto-expired this "
+            "week (14+ days without a date)_"
+        )
     # Name the pile-up when one exists: >3 events inside any 10-day span.
     dates = sorted(d for d, _, _ in dated_events)
     for i in range(len(dates)):
@@ -298,11 +375,32 @@ def run_dates_loop(
         if owner_id:
             by_owner.setdefault(owner_id, []).append(c)
 
+    # TTL buckets for undated meeting-ingest rows (#136) — computed over
+    # ALL open commitments, mapped channel or not, so expiry can't be
+    # dodged by an unmapped project.
+    ttl_buckets = {
+        c["id"]: b for c in commitments if (b := _ttl_bucket(c, today))
+    }
+    result.expire_warned = sum(1 for b in ttl_buckets.values() if b == "warn")
+
     rows = [r for r in slack_mod.list_channel_map(config) if r.owner_id]
+    code_by_owner = {r.owner_id: r.code for r in rows}
     horizon = today + timedelta(days=window_days)
     dated_events: list[tuple[date, str, str]] = []
     slipped_total = 0
     undated_total = 0
+    expire_warn: list[tuple[str, str]] = []
+    expired_total = 0
+    for c in commitments:
+        bucket = ttl_buckets.get(c["id"])
+        if bucket is None:
+            continue
+        owner_id = c.get("project_id") or c.get("initiative_id")
+        code = code_by_owner.get(owner_id, "?")
+        if bucket == "warn":
+            expire_warn.append((code, c["description"]))
+        else:
+            expired_total += 1
 
     for row in rows:
         row_commitments = by_owner.get(row.owner_id, [])
@@ -314,7 +412,9 @@ def run_dates_loop(
         # Tenant rollup accumulates across ALL mapped rows, channel or not.
         for c in row_commitments:
             if not c.get("due_date"):
-                undated_total += 1
+                # Rows expiring this run are terminal — not "needs a date".
+                if ttl_buckets.get(c["id"]) != "expire":
+                    undated_total += 1
                 continue
             d = date.fromisoformat(c["due_date"])
             if d < today:
@@ -332,6 +432,7 @@ def run_dates_loop(
             milestones=milestones,
             today=today,
             window_days=window_days,
+            ttl_buckets=ttl_buckets,
         )
         if not text:
             continue
@@ -354,6 +455,8 @@ def run_dates_loop(
         undated_total=undated_total,
         today=today,
         window_days=window_days,
+        expire_warn=expire_warn,
+        expired_total=expired_total,
     )
 
     if not post:
@@ -391,7 +494,31 @@ def run_dates_loop(
             )
 
     _apply_ratification(client, result, commitments, today=today)
+    _apply_expiry(client, result, commitments, ttl_buckets)
     return result
+
+
+def _apply_expiry(
+    client: Any,
+    result: DatesLoopResult,
+    commitments: list[dict],
+    ttl_buckets: dict[str, str],
+) -> None:
+    """Close undated meeting-ingest rows past the TTL as status='expired'
+    (#136, mc-2 mig 133). Post-send only, like ratification — a dry run
+    reports what would expire and writes nothing. Expired rows keep their
+    cp_hash, so re-ingesting the same meeting cannot resurrect them."""
+    now = datetime.now(timezone.utc).isoformat()
+    for c in commitments:
+        if ttl_buckets.get(c["id"]) != "expire":
+            continue
+        try:
+            client.table(Tables.COMMITMENTS).update(
+                {"status": "expired", "updated_at": now}
+            ).eq("id", c["id"]).eq("status", "open").execute()
+            result.expired_stamped += 1
+        except Exception as exc:  # noqa: BLE001 — count and continue
+            result.errors.append(f"expire/{c['id']}: {exc}")
 
 
 def _apply_ratification(
