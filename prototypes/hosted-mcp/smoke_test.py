@@ -343,6 +343,10 @@ def case_e_tools_list(token: str) -> None:
         "resolve_commitments",
         "resolve_commitments_by_meeting",
         "route_commitment",
+        # #138 ratchet — the last portable stdio verbs
+        "archive_project_source",   # mig-134 guarded fn
+        "rename_project_source",    # mig-134 guarded fn
+        "pull_element_from_project",
     }
     missing = sorted(expected - set(names))
     # Assert the COUNT too, not just containment: an unexpected extra tool is a

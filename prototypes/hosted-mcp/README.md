@@ -18,7 +18,7 @@ path. Nothing under `src/cp_engine/` was modified.
   `TENANT_REPO`. **RLS cannot scope a git clone**, so both are gated on
   `public.is_team_member()` instead — see [Tree](#tree-read-only--cp-engine-138-review-finding-1).
 
-40 tools (the 36 through spec-v04, + the #159 commitments-lifecycle trio `resolve_commitments` / `resolve_commitments_by_meeting` / `route_commitment`, + the #125 read verb `list_spine_relations`), **53/53 smoke cases pass** as of the last full run before the #159/#125 additions.
+43 tools (the 36 through spec-v04, + the #159 commitments-lifecycle trio, + the #125 read verb `list_spine_relations`, + the #138-ratchet ports `archive_project_source` / `rename_project_source` (mig-134 guarded fns) / `pull_element_from_project`), **53/53 smoke cases pass** as of the last full run before the #159/#125/#138 additions.
 
 ---
 
@@ -107,8 +107,8 @@ never reads it.
 
 ## Tools
 
-All forty run under the caller's identity, select **explicit columns only**,
-and write an audit row on success.
+All forty-three run under the caller's identity, select **explicit columns
+only**, and write an audit row on success.
 
 **Reads:**
 

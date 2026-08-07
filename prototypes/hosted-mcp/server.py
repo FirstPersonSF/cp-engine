@@ -1101,6 +1101,130 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
     }
 
 
+def _resolve_source_asset(client, project_id: str, key: str) -> dict | None:
+    """One ACTIVE rag_asset for `key` (uuid or exact title, case-insensitive)
+    under either owner column. None = no match; {'candidates': [...]} =
+    ambiguous exact-title (pass an id). Mirrors the stdio resolver (#126)."""
+    key = (key or "").strip()
+    if not key:
+        return None
+    hits: list[dict] = []
+    seen: set[str] = set()
+    for column in ("project_id", "initiative_id"):
+        try:
+            q = (
+                client.table("rag_assets")
+                .select("id, title, status")
+                .eq(column, project_id)
+                .eq("status", "active")
+            )
+            for r in q.execute().data or []:
+                if r["id"] in seen:
+                    continue
+                seen.add(r["id"])
+                if r["id"] == key or (r.get("title") or "").strip().lower() == key.lower():
+                    hits.append(r)
+        except Exception:  # noqa: BLE001 — initiative_id may not apply
+            continue
+    if not hits:
+        return None
+    if len(hits) > 1:
+        return {"candidates": [{"id": h["id"], "title": h["title"]} for h in hits]}
+    return hits[0]
+
+
+@mcp_server.tool()
+def archive_project_source(project_code: str, doc_title_or_id: str) -> dict[str, Any]:
+    """Archive one ingested source doc — the RAG-store cleanup verb (#126),
+    hosted port under the caller's identity.
+
+    Soft delete: status active → 'archived' via the mig-134 guarded function
+    (`rag_assets` deliberately has no authenticated UPDATE — the function can
+    do exactly this one move). The row, chunks, and spine provenance survive;
+    the doc leaves every active read, and the ingest dedup guard respects
+    archived rows so an unchanged file is NOT re-ingested. `doc_title_or_id`
+    is an asset uuid or EXACT title; an ambiguous title returns candidates.
+    For same-title DISTINCT docs use `rename_project_source` instead.
+    """
+    client = user_client()
+    project_id = resolve_project_id(client, project_code)
+    if project_id is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+    resolved = _resolve_source_asset(client, project_id, doc_title_or_id)
+    if resolved is None:
+        return {"error": f"no active source matching '{doc_title_or_id}' for this project"}
+    if "candidates" in resolved:
+        return {
+            "note": f"'{doc_title_or_id}' matches "
+            f"{len(resolved['candidates'])} active sources — pass an id",
+            **resolved,
+        }
+    try:
+        affected = client.rpc(
+            "rag_asset_archive", {"p_asset_id": resolved["id"]}
+        ).execute().data
+    except Exception as exc:  # noqa: BLE001
+        audit(client, "archive_project_source",
+              {"project_code": project_code, "key": doc_title_or_id}, 0)
+        return {"error": f"archive failed: {type(exc).__name__}: {str(exc)[:300]}"}
+    audit(client, "archive_project_source",
+          {"project_code": project_code, "key": doc_title_or_id}, int(affected or 0))
+    return {
+        "archived": bool(affected),
+        "id": resolved["id"],
+        "title": resolved["title"],
+        "caller": caller_subject(),
+    }
+
+
+@mcp_server.tool()
+def rename_project_source(
+    project_code: str, doc_title_or_id: str, new_title: str
+) -> dict[str, Any]:
+    """Retitle one ingested source doc (#126), hosted port.
+
+    The tool for same-title DISTINCT documents (recurring recordings export
+    under one title) — retitle instead of archiving real content. Readers
+    resolve by title, so the new title is live immediately. Writes through
+    the mig-134 guarded function (title is the ONLY column it can touch).
+    `doc_title_or_id` resolves like `archive_project_source`.
+    """
+    new_title = (new_title or "").strip()
+    if not new_title:
+        return {"error": "new_title must be non-empty"}
+    client = user_client()
+    project_id = resolve_project_id(client, project_code)
+    if project_id is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+    resolved = _resolve_source_asset(client, project_id, doc_title_or_id)
+    if resolved is None:
+        return {"error": f"no active source matching '{doc_title_or_id}' for this project"}
+    if "candidates" in resolved:
+        return {
+            "note": f"'{doc_title_or_id}' matches "
+            f"{len(resolved['candidates'])} active sources — pass an id",
+            **resolved,
+        }
+    try:
+        affected = client.rpc(
+            "rag_asset_rename",
+            {"p_asset_id": resolved["id"], "p_new_title": new_title},
+        ).execute().data
+    except Exception as exc:  # noqa: BLE001
+        audit(client, "rename_project_source",
+              {"project_code": project_code, "key": doc_title_or_id}, 0)
+        return {"error": f"rename failed: {type(exc).__name__}: {str(exc)[:300]}"}
+    audit(client, "rename_project_source",
+          {"project_code": project_code, "key": doc_title_or_id}, int(affected or 0))
+    return {
+        "renamed": bool(affected),
+        "id": resolved["id"],
+        "old_title": resolved["title"],
+        "new_title": new_title,
+        "caller": caller_subject(),
+    }
+
+
 @mcp_server.tool()
 def pull_project_source(asset_id: str, max_chars: int = 40000) -> dict[str, Any]:
     """Pull one source document's extracted text, under the caller's identity.
@@ -5456,6 +5580,77 @@ def add_spine_version(
     except Exception as exc:  # noqa: BLE001 — journaling is non-fatal
         result["step"] = {"error": f"auto-step failed: {type(exc).__name__}: {str(exc)[:300]}"}
     return result
+
+
+@mcp_server.tool()
+def pull_element_from_project(
+    from_code: str, to_code: str, key: str, type: str = "synthesis",
+    account: bool = False,
+) -> dict[str, Any]:
+    """Copy a spine element FROM another project INTO this one, with lineage
+    — the hosted port of the stdio verb (#138 ratchet), caller-attributed.
+
+    Resolves `key` to ONE live element in `from_code` (est_item_id or a
+    distinct framing substring), then authors a COPY of its body as a new
+    element in `to_code`. The copy's body head carries a legible origin line
+    (`Pulled from <from_code> · <est_item_id>`); cross-project lineage lives
+    IN the element (edges are within-project). `type` sets the copy's layer
+    (default `synthesis` — a cross-project pull is usually re-synthesis).
+    With `account=true` the copy is account-tagged immediately, readable
+    from every sibling project. Does NOT move the original.
+    """
+    client = user_client()
+    from_id = resolve_project_id(client, from_code)
+    if from_id is None:
+        return {"error": f"source project {from_code!r} not found"}
+    eid, err = resolve_live_element_id(client, from_id, key)
+    if err is not None:
+        return err
+    if eid is None:
+        return {"note": f"no single live element matching {key!r} in {from_code!r}"}
+    rows = (
+        client.table("spine_substance")
+        .select("est_item_id, framing, body, status")
+        .eq("project_id", from_id)
+        .eq("est_item_id", eid)
+        .eq("status", "live")
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        return {"error": f"element {eid!r} in {from_code!r} has no live row"}
+    src = rows[0]
+    body = src.get("body") or ""
+    if not body.strip():
+        return {"error": f"source element {eid!r} in {from_code!r} has an "
+                         "empty body — nothing to pull"}
+    origin_framing = src.get("framing") or eid
+    origin_line = f"> _Pulled from **{from_code}** · `{eid}` ({origin_framing})_"
+    label = f"{origin_framing} (from {from_code})"
+
+    created = create_spine_element(
+        to_code, label, f"{origin_line}\n\n{body}", layer=type
+    )
+    if created.get("error"):
+        return created
+
+    account_scoped = False
+    if account:
+        promoted = set_element_account_scope(to_code, created["element_id"], True)
+        account_scoped = promoted.get("scope") == "account"
+
+    audit(client, "pull_element_from_project",
+          {"from_code": from_code, "to_code": to_code, "key": key,
+           "account": account}, 1)
+    return {
+        "element_id": created["element_id"],
+        "version_label": created.get("version_label"),
+        "origin": {"project": from_code, "est_item_id": eid,
+                   "framing": origin_framing},
+        "account_scoped": account_scoped,
+        "caller": caller_subject(),
+    }
 
 
 @mcp_server.tool()
