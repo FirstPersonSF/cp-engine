@@ -348,10 +348,9 @@ aspect must not wipe the rest:
 4. **Append ONE dated Update** capturing this session's delta:
    `- <today> — <what changed>`.
 5. **Roll off Updates older than ~4 weeks** so the history stays tight.
-6. **Stamp `· updated <today>`** on the `## Exec Summary` heading line.
-   `/cp-prep` reads this stamp to flag stale project state going into
-   sprint planning — an unstamped or old summary gets a STALE warning in
-   the planning bundle.
+6. **Stamp `· updated <today>`** on the `## Exec Summary` heading line —
+   `/cp-prep` flags an unstamped or old summary as STALE in the
+   planning bundle.
 
 This is the durable project-state surface; transient weekly material
 belongs in the sprint file, not the Exec Summary.
@@ -361,14 +360,17 @@ The `## Decisions (cross-cutting, last 4 weeks)` section accretes
 auto-ingested entries that nothing expires, and it feeds sprint
 planning's "Decisions partners owe each other" list. Once per wrap up:
 
-- Scan the section for entries that are DONE or EXPIRED — the decision
-  was made, the scheduled event has passed, the due date embedded in the
-  text is behind us. Append `[resolved: <today> — <one-line outcome>]`
-  to each (the planner then drops them). When the outcome isn't obvious,
-  ask rather than guess.
-- Entries with no date at all: add the date if it's recoverable from
-  context; otherwise leave them — the planner flags them as undated.
+- Append `[resolved: <today> — <one-line outcome>]` to entries that are
+  DONE or EXPIRED (decision made, event passed, due date behind us) —
+  the planner then drops them. Ask when the outcome isn't obvious.
+- Undated entries: add the date if recoverable; otherwise leave them
+  (the planner flags them).
 - Never delete entries; the resolved marker IS the archive.
+
+**Also at wrap up — sweep the touched projects' open commitments.**
+`cp commitments-sweep <code>` (or `list_commitments`) per touched
+project: resolve what the session completed, drop what it made moot,
+question undated rows ≥2 weeks old — the TTL expires them otherwise.
 
 ## Deepening from transcript
 
