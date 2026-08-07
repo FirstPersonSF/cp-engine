@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -63,13 +64,16 @@ class ReleaseError(RuntimeError):
     """Raised on any pre-flight or step failure."""
 
 
-def run(cmd: list[str], *, capture: bool = False, check: bool = True) -> subprocess.CompletedProcess[str]:
+def run(
+    cmd: list[str], *, capture: bool = False, check: bool = True, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         cmd,
         cwd=REPO_ROOT,
         check=check,
         capture_output=capture,
         text=True,
+        env=env,
     )
 
 
@@ -274,8 +278,15 @@ def main() -> int:
         # rebuilds the editable cp-engine install — same invocation
         # that works in development. Avoids "pytest not found" when the
         # release script's own env doesn't have pytest.
+        # PYTHONPATH=src: Python 3.14's site.py skips .pth files carrying
+        # the macOS hidden flag (which a sync agent keeps re-applying), so
+        # the editable install's .pth can silently not load (#122).
+        pytest_env = os.environ.copy()
+        src = str(REPO_ROOT / "src")
+        prior = pytest_env.get("PYTHONPATH")
+        pytest_env["PYTHONPATH"] = f"{src}{os.pathsep}{prior}" if prior else src
         try:
-            run(["uv", "run", "--with", "pytest", "python", "-m", "pytest", "-q"])
+            run(["uv", "run", "--with", "pytest", "python", "-m", "pytest", "-q"], env=pytest_env)
         except subprocess.CalledProcessError:
             raise SystemExit("[release] tests failed; aborting before commit.")
 
