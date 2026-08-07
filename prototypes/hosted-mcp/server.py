@@ -975,7 +975,7 @@ def pull_spine_element(element_id: str, project_code: str | None = None) -> dict
 
 
 @mcp_server.tool()
-def list_commitments(project_code: str) -> dict[str, Any]:
+def list_commitments(project_code: str, status: str = "open") -> dict[str, Any]:
     """List commitments for a project, under the caller's identity.
 
     As of the 2026-08-01 policy pass, `commitments` is no longer deny-all: SELECT
@@ -985,6 +985,8 @@ def list_commitments(project_code: str) -> dict[str, Any]:
 
     Args:
         project_code: engagement, initiative, or standalone-repo code.
+        status: open (default) | done | dropped | routed | expired | all —
+                stdio-parity filter; "all" returns every lifecycle state.
     """
     client = user_client()
     project_id = resolve_project_id(client, project_code)
@@ -998,15 +1000,21 @@ def list_commitments(project_code: str) -> dict[str, Any]:
 
     # A code resolves to ONE uuid, but that uuid lands in `project_id` for an
     # engagement and `initiative_id` for an initiative. Query both and dedupe.
+    status_n = (status or "open").strip().lower()
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     errors: list[str] = []
     for column in ("project_id", "initiative_id"):
         try:
-            for row in (
+            q = (
                 client.table("commitments")
                 .select(COMMITMENT_COLUMNS)
                 .eq(column, project_id)
+            )
+            if status_n != "all":
+                q = q.eq("status", status_n)
+            for row in (
+                q
                 .execute()
                 .data
                 or []
@@ -1017,7 +1025,7 @@ def list_commitments(project_code: str) -> dict[str, Any]:
         except Exception as exc:  # noqa: BLE001 — a policy denial can surface as an error
             errors.append(f"{column}: {type(exc).__name__}: {exc}")
 
-    audit(client, "list_commitments", {"project_code": project_code}, len(rows))
+    audit(client, "list_commitments", {"project_code": project_code, "status": status_n}, len(rows))
     result: dict[str, Any] = {
         "project_code": project_code,
         "project_id": project_id,
