@@ -4,6 +4,31 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.89.0 — 2026-08-07
+
+- **Commitments close in batches, and a delivery closes a meeting's worth
+  at once (#159, parts 1–2).** The ibx-5192 build week accreted ~60 open
+  auto-proposed commitment rows; triaging them took 56 individual
+  `resolve_commitment` calls. Two new hosted-server verbs
+  (`prototypes/hosted-mcp`, spike 0.0.4):
+  - `resolve_commitments(code, keys, outcome)` — batch resolve on the
+    `retire_spine_elements` (#105) contract: per-key results, a miss never
+    aborts the batch, and each closed row leaves the matching snapshot so a
+    substring key can never take a row an earlier key already closed.
+  - `resolve_commitments_by_meeting(code, meeting_ids, outcome, except_keys?,
+    dry_run?)` — the delivery-event sweep: close every open row proposed by
+    the named meetings in one call. `dry_run=true` returns the would-resolve
+    rows grouped by meeting (the confirm surface); `except_keys` protects
+    still-live rows, and an exclusion that doesn't resolve uniquely is a hard
+    error that writes nothing. Manual/session rows (no `source_meeting_id`)
+    are never swept.
+  Shared matching/closing logic extracted to pure helpers
+  (`_match_open_commitment`, `_close_commitment_row`,
+  `_resolve_commitment_batch`) with the hosted surface's first unit tests
+  (`tests/test_hosted_commitments_batch.py`); hosted `COMMITMENT_COLUMNS` now
+  carries `source_meeting_id` so `list_commitments` exposes the sweep's
+  grouping key. Part 3 of #159 (off-project routing) remains open.
+
 ## v0.88.0 — 2026-08-05
 
 - **Commitments owners canonicalize against the entities roster (#157).**

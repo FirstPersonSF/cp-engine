@@ -208,6 +208,19 @@ ratifies, and the Monday partners digest reads):
   (`cp-hosted` connector; cp-engine #143 ported it off stdio) — close an open row
   as `done` or `dropped` (`key` = id or distinct description substring). The
   wrap-up-sweep verb, mirroring `weekly-cp.md`'s `[resolved: ...]` markers.
+- `resolve_commitments(code, keys, outcome?)` — **hosted-server verb** (#159) —
+  batch close: each key resolves exactly as `resolve_commitment`, per-key
+  results, a miss never aborts the batch (the `retire_spine_elements`
+  contract), and a closed row leaves the matching snapshot so two keys can
+  never take the same row. Use for any wrap-up sweep bigger than a few rows.
+- `resolve_commitments_by_meeting(code, meeting_ids, outcome?, except_keys?,
+  dry_run?)` — **hosted-server verb** (#159) — the delivery-event sweep: close
+  every open row proposed by the named meetings (`source_meeting_id` values,
+  from `list_commitments`) in one call. `except_keys` protects still-live rows
+  (an exclusion that doesn't resolve uniquely is a HARD error — nothing
+  writes). **Always run `dry_run=true` first** and show the human the grouped
+  preview before the real pass; manual/session rows (no source meeting) are
+  never swept.
 
 Engagements and initiatives can own commitments; standalone repos cannot.
 

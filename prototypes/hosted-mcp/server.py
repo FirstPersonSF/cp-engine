@@ -77,7 +77,7 @@ log = logging.getLogger("hosted-mcp")
 #  Config
 # ──────────────────────────────────────────────────────────────────────
 
-SERVER_VERSION = "hosted-cp-spike/0.0.3"
+SERVER_VERSION = "hosted-cp-spike/0.0.4"
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
 SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY", "")
@@ -423,7 +423,7 @@ _ACTORS = frozenset({"partner", "client", "vendor", "inferred"})
 SPINE_PULL_COLUMNS = SPINE_LIST_COLUMNS + ", body, sources, note, project_code, rel_path"
 COMMITMENT_COLUMNS = (
     "id, description, owner_email, owner_name, direction, due_date, "
-    "date_status, status, source_kind, created_at, updated_at"
+    "date_status, status, source_kind, source_meeting_id, created_at, updated_at"
 )
 
 # `rag_assets` — manifest list shape, mirroring `mc2_db.RAG_ASSET_LIST_COLUMNS`.
@@ -3198,6 +3198,93 @@ def set_spine_element(
     return out
 
 
+def _match_open_commitment(
+    open_rows: list[dict[str, Any]], key: str
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Resolve `key` to exactly ONE row of `open_rows` — engine order.
+
+    Exact id first, then a case-insensitive description substring. Returns
+    `(row, None)` on a unique hit and `(None, error_payload)` otherwise; the
+    ambiguity payload carries up to five candidates so the caller can re-key
+    by id. Pure — no client, no I/O — so the batch verbs and the single verb
+    share one matching truth and the contract is unit-testable.
+    """
+    matches = [r for r in open_rows if r.get("id") == key]
+    if not matches:
+        needle = (key or "").strip().lower()
+        if needle:
+            matches = [
+                r for r in open_rows if needle in (r.get("description") or "").lower()
+            ]
+    if not matches:
+        return None, {
+            "error": f"no open commitment matches {key!r}",
+            "open_count": len(open_rows),
+        }
+    if len(matches) > 1:
+        return None, {
+            "error": f"{len(matches)} open commitments match {key!r} — pass an id instead",
+            "candidates": [
+                {"id": r.get("id"), "description": (r.get("description") or "")[:80]}
+                for r in matches[:5]
+            ],
+        }
+    return matches[0], None
+
+
+def _fetch_open_commitments(client, scope: dict[str, Any]) -> list[dict[str, Any]]:
+    """The project's OPEN commitment rows, engagement or initiative scoped."""
+    column = "initiative_id" if scope["kind"] == "initiative" else "project_id"
+    return (
+        client.table("commitments")
+        .select(COMMITMENT_COLUMNS)
+        .eq(column, scope["id"])
+        .eq("status", "open")
+        .execute()
+        .data
+        or []
+    )
+
+
+def _close_commitment_row(client, row: dict[str, Any], outcome: str) -> dict[str, Any]:
+    """UPDATE one commitment row to `outcome`, detecting the 0-row denial.
+
+    The UPDATE policy is `using (status='open')`, so a row resolved
+    concurrently matches ZERO rows — PostgREST reports that as success, and
+    this helper converts it into an explicit error instead of a phantom win.
+    """
+    try:
+        result = (
+            client.table("commitments")
+            .update(
+                {
+                    "status": outcome,
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+            .eq("id", row["id"])
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"update failed: {type(exc).__name__}: {str(exc)[:400]}"}
+    updated = result.data or []
+    if not updated:
+        return {
+            "error": f"0 rows updated for commitment {row['id']}. The UPDATE policy "
+            "only matches OPEN commitments (`using status='open'`), so this one is "
+            "already resolved or was closed concurrently — re-read it with "
+            "list_commitments before retrying.",
+            "commitment_id": row["id"],
+        }
+    return {
+        "resolved": row["id"],
+        "description": row.get("description"),
+        "outcome": outcome,
+        "status": updated[0].get("status"),
+        "updated_at": updated[0].get("updated_at"),
+    }
+
+
 @mcp_server.tool()
 def resolve_commitment(
     project_code: str, key: str, outcome: str = "done"
@@ -3235,75 +3322,236 @@ def resolve_commitment(
     if scope is None:
         return {"error": f"no project or initiative resolves for code {project_code!r}"}
 
-    column = "initiative_id" if scope["kind"] == "initiative" else "project_id"
-    open_rows = (
-        client.table("commitments")
-        .select(COMMITMENT_COLUMNS)
-        .eq(column, scope["id"])
-        .eq("status", "open")
-        .execute()
-        .data
-        or []
+    open_rows = _fetch_open_commitments(client, scope)
+    row, match_err = _match_open_commitment(open_rows, key)
+    if match_err is not None:
+        if "no open commitment" in match_err.get("error", ""):
+            match_err["error"] = (
+                f"no open commitment in {project_code!r} matches {key!r}"
+            )
+        return match_err
+
+    audit_args = {"project_code": project_code, "key": key, "outcome": outcome}
+    closed = _close_commitment_row(client, row, outcome)
+    if "error" in closed:
+        audit(client, "resolve_commitment", audit_args, 0)
+        return closed
+
+    audit(client, "resolve_commitment", audit_args, 1)
+    return {**closed, "caller": caller_subject()}
+
+
+def _resolve_commitment_batch(
+    client, open_rows: list[dict[str, Any]], keys: list[str], outcome: str
+) -> tuple[int, list[dict[str, Any]], list[dict[str, Any]]]:
+    """The batch loop behind `resolve_commitments`, extracted for testability.
+
+    Matches each key against a SHRINKING snapshot: a closed row leaves
+    `open_rows`, so a substring can never re-match a row an earlier key took,
+    and a key error never aborts the batch. Returns
+    `(resolved_count, per_key_results, remaining_rows)`.
+    """
+    remaining = list(open_rows)
+    results: list[dict[str, Any]] = []
+    resolved = 0
+    for key in keys:
+        try:
+            row, match_err = _match_open_commitment(remaining, key)
+            if match_err is not None:
+                results.append({"key": key, **match_err})
+                continue
+            closed = _close_commitment_row(client, row, outcome)
+        except Exception as exc:  # noqa: BLE001 — one bad key must not abort the batch
+            results.append({"key": key, "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
+            continue
+        if "error" in closed:
+            results.append({"key": key, **closed})
+            continue
+        resolved += 1
+        remaining = [r for r in remaining if r.get("id") != row["id"]]
+        results.append({"key": key, **closed})
+    return resolved, results, remaining
+
+
+@mcp_server.tool()
+def resolve_commitments(
+    project_code: str, keys: list[str], outcome: str = "done"
+) -> dict[str, Any]:
+    """Close several OPEN commitments in one call (#159) — batch cleanup.
+
+    Each entry of `keys` resolves and closes exactly as `resolve_commitment`
+    (exact id first, then a distinct description substring, matched against
+    OPEN rows only), so a wrap-up sweep that closes forty delivered rows is
+    ONE operation instead of forty.
+
+    Per-key results are returned rather than a single verdict, and a miss does
+    NOT abort the batch — the `retire_spine_elements` (#105) contract:
+    resolving thirty-nine of forty rows should not be undone because the
+    fortieth key was a typo. `results` carries {key, resolved, description,
+    outcome} for each hit and {key, error, candidates?} for each miss.
+
+    The open-row snapshot is fetched ONCE and each closed row leaves it, so a
+    substring key can never re-match a row an earlier key already closed, and
+    two keys naming the same row report the second as already-taken instead
+    of double-writing.
+
+    Returns {resolved: int, results: [...], remaining_open: int}.
+
+    Args:
+        project_code: engagement or initiative code.
+        keys: commitment ids or distinct description substrings.
+        outcome: done | dropped — applied to every key in the batch.
+    """
+    if outcome not in ("done", "dropped"):
+        return {"error": "outcome must be 'done' or 'dropped'"}
+    if not keys:
+        return {"error": "at least one key is required"}
+
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    remaining = _fetch_open_commitments(client, scope)
+    resolved, results, remaining = _resolve_commitment_batch(
+        client, remaining, keys, outcome
     )
 
-    # Engine order: exact id first, then a case-insensitive description substring.
-    matches = [r for r in open_rows if r.get("id") == key]
-    if not matches:
-        needle = (key or "").strip().lower()
-        if needle:
-            matches = [
-                r for r in open_rows if needle in (r.get("description") or "").lower()
-            ]
-    if not matches:
-        return {
-            "error": f"no open commitment in {project_code!r} matches {key!r}",
-            "open_count": len(open_rows),
-        }
-    if len(matches) > 1:
-        return {
-            "error": f"{len(matches)} open commitments match {key!r} — pass an id instead",
-            "candidates": [
-                {"id": r.get("id"), "description": (r.get("description") or "")[:80]}
-                for r in matches[:5]
-            ],
-        }
-
-    row = matches[0]
-    audit_args = {"project_code": project_code, "key": key, "outcome": outcome}
-    try:
-        result = (
-            client.table("commitments")
-            .update(
-                {
-                    "status": outcome,
-                    "updated_at": datetime.now(timezone.utc).isoformat(),
-                }
-            )
-            .eq("id", row["id"])
-            .execute()
-        )
-    except Exception as exc:  # noqa: BLE001
-        audit(client, "resolve_commitment", audit_args, 0)
-        return {"error": f"update failed: {type(exc).__name__}: {str(exc)[:400]}"}
-
-    updated = result.data or []
-    if not updated:
-        audit(client, "resolve_commitment", audit_args, 0)
-        return {
-            "error": f"0 rows updated for commitment {row['id']}. The UPDATE policy "
-            "only matches OPEN commitments (`using status='open'`), so this one is "
-            "already resolved or was closed concurrently — re-read it with "
-            "list_commitments before retrying.",
-            "commitment_id": row["id"],
-        }
-
-    audit(client, "resolve_commitment", audit_args, len(updated))
+    # `keys` is a LIST of identifiers — logged as a COUNT, per the batch-2
+    # audit rule; per-key detail belongs in the returned payload.
+    audit(
+        client,
+        "resolve_commitments",
+        {"project_code": project_code, "keys_count": len(keys), "outcome": outcome},
+        resolved,
+    )
     return {
-        "resolved": row["id"],
-        "description": row.get("description"),
-        "outcome": outcome,
-        "status": updated[0].get("status"),
-        "updated_at": updated[0].get("updated_at"),
+        "resolved": resolved,
+        "results": results,
+        "remaining_open": len(remaining),
+        "project_code": scope["project_code"],
+        "caller": caller_subject(),
+    }
+
+
+@mcp_server.tool()
+def resolve_commitments_by_meeting(
+    project_code: str,
+    meeting_ids: list[str],
+    outcome: str = "done",
+    except_keys: list[str] | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    """Close every OPEN commitment proposed by the named meetings (#159) —
+    the delivery-event sweep.
+
+    A build sprint's commitments are meeting-scoped tasks, and the delivery
+    is the natural resolution event for all of them at once: "everything
+    proposed from these three working sessions shipped Thursday night." This
+    verb turns that sentence into one call instead of one call per row.
+
+    `meeting_ids` are `source_meeting_id` values (list_commitments returns
+    them). Rows whose source meeting is not in the list are untouched — rows
+    with NO source meeting (manual/session rows) are never swept by this verb.
+
+    `except_keys` protects still-live rows inside a swept meeting (id or
+    distinct description substring). An except_key that matches nothing or
+    ambiguously is a HARD error and nothing is written — an exclusion that
+    silently failed would resolve exactly the row the caller meant to keep.
+
+    ALWAYS preview first: `dry_run=true` returns the would-resolve rows
+    grouped by meeting, writes nothing, and is the confirm surface — show the
+    groups, get a yes, then run with `dry_run=false`.
+
+    Returns {groups: {meeting_id: [...]}, would_resolve|resolved: int,
+    excepted: [...], results?: [...]}.
+
+    Args:
+        project_code: engagement or initiative code.
+        meeting_ids: source_meeting_id values whose open rows should close.
+        outcome: done | dropped — applied to every swept row.
+        except_keys: rows inside the swept meetings to leave open.
+        dry_run: True → report the sweep without writing (default False).
+    """
+    if outcome not in ("done", "dropped"):
+        return {"error": "outcome must be 'done' or 'dropped'"}
+    if not meeting_ids:
+        return {"error": "at least one meeting_id is required"}
+
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    open_rows = _fetch_open_commitments(client, scope)
+    wanted = set(meeting_ids)
+    candidates = [r for r in open_rows if r.get("source_meeting_id") in wanted]
+
+    # Exclusions resolve against the CANDIDATES (not all open rows): an
+    # except_key exists to protect a row the sweep would otherwise take.
+    excepted: list[dict[str, Any]] = []
+    for ek in except_keys or []:
+        row, match_err = _match_open_commitment(candidates, ek)
+        if match_err is not None:
+            return {
+                "error": f"except_key {ek!r} did not resolve to one swept row — "
+                "nothing was written. Fix the exclusion and re-run.",
+                "detail": match_err,
+            }
+        excepted.append({"id": row["id"], "description": row.get("description")})
+        candidates = [r for r in candidates if r.get("id") != row["id"]]
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for r in candidates:
+        groups.setdefault(r["source_meeting_id"], []).append(
+            {
+                "id": r.get("id"),
+                "description": r.get("description"),
+                "owner_name": r.get("owner_name"),
+            }
+        )
+
+    if dry_run:
+        return {
+            "dry_run": True,
+            "would_resolve": len(candidates),
+            "groups": groups,
+            "excepted": excepted,
+            "meetings_with_no_open_rows": sorted(wanted - set(groups)),
+        }
+
+    results: list[dict[str, Any]] = []
+    resolved = 0
+    for row in candidates:
+        try:
+            closed = _close_commitment_row(client, row, outcome)
+        except Exception as exc:  # noqa: BLE001 — one bad row must not abort the sweep
+            results.append({"id": row.get("id"), "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
+            continue
+        if "error" in closed:
+            results.append({"id": row.get("id"), **closed})
+            continue
+        resolved += 1
+        results.append(closed)
+
+    audit(
+        client,
+        "resolve_commitments_by_meeting",
+        {
+            "project_code": project_code,
+            "meetings_count": len(meeting_ids),
+            "outcome": outcome,
+            "excepted_count": len(excepted),
+        },
+        resolved,
+    )
+    return {
+        "resolved": resolved,
+        "groups": groups,
+        "excepted": excepted,
+        "results": results,
+        "meetings_with_no_open_rows": sorted(wanted - set(groups)),
+        "project_code": scope["project_code"],
         "caller": caller_subject(),
     }
 
