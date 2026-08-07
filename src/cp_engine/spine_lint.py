@@ -143,8 +143,14 @@ STALE_AFTER_DAYS = 7
 
 # Raw-capture size ceiling (#158 gap 3) on layers whose value IS the
 # distillation — a 16KB ClientFeedback card is a paste, not a distillation.
-DISTILL_LAYERS = frozenset({"ClientFeedback", "Synthesis", "Decisions"})
+# Layer values drift between CamelCase (code) and spaced ("Client feedback",
+# the live DB shape) — compare normalized.
+DISTILL_LAYERS = frozenset({"clientfeedback", "synthesis", "decisions"})
 DISTILL_BODY_MAX = 10_000
+
+
+def _norm_layer(layer) -> str:
+    return re.sub(r"[^a-z]", "", str(layer or "").lower())
 
 # Instruction-shaped framing (#158 gap 4): a pasted prompt, not a title.
 _INSTRUCTION_FRAMING_RE = re.compile(
@@ -168,7 +174,7 @@ def lint_curation(rows: list[dict], *, today=None) -> list[str]:
         layer = row.get("layer")
 
         # #112 P3 — standing Brief still the scaffold.
-        if (((layer or "") == "Brief"
+        if ((_norm_layer(layer) == "brief"
                 or _STANDING_BRIEF_RE.search(row.get("framing") or ""))
                 and (len(body) < BRIEF_MIN_CHARS or _PLACEHOLDER_RE.search(body))):
             out.append(
@@ -188,7 +194,7 @@ def lint_curation(rows: list[dict], *, today=None) -> list[str]:
                     "outcome or retire it")
 
         # #158 gap 3 — raw paste on a distillation layer.
-        if layer in DISTILL_LAYERS and len(body) > DISTILL_BODY_MAX:
+        if _norm_layer(layer) in DISTILL_LAYERS and len(body) > DISTILL_BODY_MAX:
             out.append(
                 f"⚠ undistilled capture: '{title}' ({eid}) is "
                 f"{len(body):,} chars on the {layer} layer — distill into "

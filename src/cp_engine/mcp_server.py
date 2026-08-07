@@ -515,7 +515,7 @@ def pull_document_comments(project_code: str, doc_title: str) -> dict:
 @_tool
 def list_spine_elements(project_code: str, layer: str = "",
                         scope: str = "", binding: str = "",
-                        compact: bool = False) -> list[dict]:
+                        compact: bool = False, tier: str = "") -> list[dict]:
     """List a project's LIVE spine elements (the distilled-memory index).
 
     Returns one row per element: est_item_id, framing (title), layer, binding,
@@ -538,8 +538,12 @@ def list_spine_elements(project_code: str, layer: str = "",
     of the layer values that actually exist — when the layer matched but
     scope/binding emptied the combination, you get a plain empty list
     instead. Empty filters return everything — useful
-    defaults for a first look; filter when the account dossiers and source
-    stubs drown out the authored working set.
+    defaults for a first look.
+
+    `tier` is the signal/noise facet (#158): "working" (or "authored")
+    drops the per-doc source stubs so orientation reads the authored
+    working set; "stubs" shows only them; ""/"all" shows everything.
+    Prefer `tier="working", compact=true` as the first call on a big spine.
     """
     from cp_engine.project_sources import list_spine
 
@@ -552,7 +556,7 @@ def list_spine_elements(project_code: str, layer: str = "",
         client, pid, cid = resolved
         return list_spine(client, pid, cid, layer=layer or None,
                           scope=scope or None, binding=binding or None,
-                          compact=compact)
+                          compact=compact, tier=tier or None)
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,
         # actionable error note instead of propagating a protocol error.

@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 
 from cp_engine.asset_ingest import FileRef, download_file, read_scoped_chunks
@@ -657,6 +658,23 @@ def _fold_layer(value: str) -> str:
     return value[:-1] if value.endswith("s") else value
 
 
+# Signal/noise facet (#158 gap 5): the auto-stub layers — one row per
+# ingested doc, a pointer not a card. tier='working' is the orientation
+# call ("show me the authored working set"); tier='stubs' is the inverse.
+_STUB_LAYERS = frozenset({"sourcematerial"})
+
+
+def _tier_filter(layer, tier: str | None) -> bool:
+    if not tier or tier.lower() in ("", "all"):
+        return True
+    is_stub = re.sub(r"[^a-z]", "", str(layer or "").lower()) in _STUB_LAYERS
+    if tier.lower() in ("working", "authored"):
+        return not is_stub
+    if tier.lower() == "stubs":
+        return is_stub
+    return True  # unknown tier value: pass everything rather than hide rows
+
+
 def _layer_filter(value: str | None, wanted: str | None) -> bool:
     """True when a row's `layer` passes a comma-list layer filter.
 
@@ -845,7 +863,8 @@ def modify_element_provenance(client, project_id: str, key: str,
 
 def list_spine(client, project_id: str, company_id: str | None = None, *,
                layer: str | None = None, scope: str | None = None,
-               binding: str | None = None, compact: bool = False) -> list[dict]:
+               binding: str | None = None, compact: bool = False,
+               tier: str | None = None) -> list[dict]:
     """List a project's LIVE spine elements (index, not bodies).
 
     Returns `[{est_item_id, framing, layer, binding, status, serves_count,
@@ -888,7 +907,8 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
     rows = [r for r in all_rows
             if _layer_filter(r.get("layer"), layer)
             and _in_filter(_row_scope(r), scope)
-            and _in_filter(r.get("binding"), binding)]
+            and _in_filter(r.get("binding"), binding)
+            and _tier_filter(r.get("layer"), tier)]
     if layer and not rows:
         # A layer filter that matches nothing must be self-explaining, not a
         # silent [] — surface the labels that DO exist so the caller can

@@ -664,7 +664,7 @@ def embed_query(text: str) -> list[float]:
 
 @mcp_server.tool()
 def list_spine_elements(
-    project_code: str, include_absorbed: bool = False
+    project_code: str, include_absorbed: bool = False, tier: str = ""
 ) -> dict[str, Any]:
     """List live spine elements for a project, under the caller's identity.
 
@@ -675,10 +675,15 @@ def list_spine_elements(
     annotated with the deliverable that absorbed it. Canon members (active
     `canon_of` edge to the standing brief) carry `canon: true`.
 
+    `tier` is the signal/noise facet (#158): "working"/"authored" drops the
+    per-doc source stubs so orientation reads the authored working set;
+    "stubs" shows only them; ""/"all" shows everything.
+
     Args:
         project_code: engagement, initiative, or standalone-repo code
                       (e.g. "ibx-5153", "mission-control").
         include_absorbed: retrospective mode — include sealed elements.
+        tier: "" | "all" | "working" | "authored" | "stubs".
     """
     client = user_client()
     project_id = resolve_project_id(client, project_code)
@@ -721,6 +726,8 @@ def list_spine_elements(
     except Exception:  # noqa: BLE001 — annotations degrade, the list survives
         pass
 
+    tier_n = (tier or "all").lower()
+    stubs_hidden = 0
     elements = []
     absorbed_hidden = 0
     for r in rows:
@@ -729,6 +736,13 @@ def list_spine_elements(
         eid = r.get("est_item_id")
         if eid in absorbed_into and not include_absorbed:
             absorbed_hidden += 1
+            continue
+        # Signal/noise facet (#158 gap 5): source stubs are pointers, not cards.
+        is_stub = re.sub(r"[^a-z]", "", str(r.get("layer") or "").lower()) == "sourcematerial"
+        if tier_n in ("working", "authored") and is_stub:
+            stubs_hidden += 1
+            continue
+        if tier_n == "stubs" and not is_stub:
             continue
         elements.append(
             {
@@ -755,7 +769,8 @@ def list_spine_elements(
     audit(
         client,
         "list_spine_elements",
-        {"project_code": project_code, "include_absorbed": include_absorbed},
+        {"project_code": project_code, "include_absorbed": include_absorbed,
+         "tier": tier},
         len(elements),
     )
     return {
@@ -764,6 +779,7 @@ def list_spine_elements(
         "caller": caller_subject(),
         "count": len(elements),
         "elements": elements,
+        **({"stubs_hidden": stubs_hidden} if stubs_hidden else {}),
         **({"canon_size": len(canon_ids)} if canon_ids else {}),
         **(
             {
