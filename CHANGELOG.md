@@ -4,6 +4,39 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.91.0 — 2026-08-07
+
+- **Spine edges are readable (#125).** New hosted verb
+  `list_spine_relations(project_code, element_key?)` — the read counterpart
+  to `create_spine_relation` / `retire_spine_relation`, which shipped
+  write-only, so verifiers had to mark edge claims "unverified" and cold
+  agents couldn't traverse a project's graph. Returns active edges: one
+  element's in BOTH directions (`direction: out|in`; the key resolves like
+  `pull_spine_element`, falling back to the raw est_item_id so a retired
+  element's surviving edges stay auditable) or the whole project's. Endpoints
+  carry live framings so edges read as titles, not ids. Also trues up the
+  hosted smoke test's expected tools/list set (the #159 commitments trio had
+  shipped without being added) and the README count: 36 → 40 tools. Hosted
+  spike → redeploy to pick up.
+- **Notes DM layout consolidated (#161).** The partner-Note Slack DM's Block
+  Kit blocks + truncation were copy-pasted between `cp_engine/notes.py` and
+  mc-2's `notes_slack.py`. Both now import the packaged `note-dm-format`
+  component (1p-component-library @a9ab75e) — one definition, a format tweak
+  lands in both senders at once. No behavior change.
+- **CLAUDE.md template teaches the improvements-log protocol (#92).** The
+  tenant's `improvements.md` friction-capture (log at the moment of friction,
+  below-issue-bar scope, harvest markers, `sweep improvements` trigger, wrap-up
+  sweep step) lived only in one user's session memory; the generated template
+  now carries its pointer form, so the behavior is inherited by every user.
+  The render stays inside the 2,900-word budget — the new section is paid for
+  by compressing filler in five existing passages, no semantics changed.
+- **release.py pytest step survives Python 3.14 + the macOS hidden-flag (#122).**
+  3.14's site.py skips `.pth` files carrying the macOS `hidden` flag, which a
+  file-sync agent keeps re-applying to the venv's editable-install `.pth` — so
+  the release's pytest subprocess couldn't import `cp_engine`, forcing
+  `--skip-tests`. The step now exports `PYTHONPATH=src` (prepended), robust to
+  the flag regardless of venv state.
+
 ## v0.90.1 — 2026-08-07
 
 - **Routed commitments get their first-class status (#159 follow-up 1).**
