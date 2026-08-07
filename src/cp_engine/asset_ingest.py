@@ -442,6 +442,55 @@ _DRIVE_MAX_DEPTH = 10
 # miscounted as ingest "failures".
 _NON_INGESTABLE_EXTENSIONS = (".url", ".lnk", ".webloc")
 
+# Junk filter (#158 gap 1). Template scaffolds and lock files skip outright;
+# duplicate-marker names skip only when the canonical stem already exists as
+# a source (a "(2)" that is the ONLY copy still ingests). Skips are always
+# logged as source_notes — the xlsx lesson: an unlogged skip reads as
+# "covered" when it isn't.
+_TEMPLATE_MARKER_RE = re.compile(r"copy\s*me|xxx\s*0{3,4}|\bv000\b", re.IGNORECASE)
+_DUP_MARKER_RE = re.compile(r"^(?P<stem>.+?)(?: - copy(?: \d+)?| ?\((?:\d+)\))(?P<ext>\.[^.]+)?$",
+                            re.IGNORECASE)
+
+
+def _junk_reason(name: str, existing_titles) -> str | None:
+    """Why this filename should skip ingest, or None to proceed.
+
+    `existing_titles` is a zero-arg callable returning the project's current
+    source titles lowercased (or a plain set) — callable so the titles read
+    only happens when a duplicate-marker name is actually present.
+    """
+    if name.startswith("~$"):
+        return "Office lock file (~$…)"
+    if _TEMPLATE_MARKER_RE.search(name):
+        return "template scaffold (COPY ME / XXX 0000 / v000)"
+    m = _DUP_MARKER_RE.match(name)
+    if m:
+        canonical = f"{m.group('stem')}{m.group('ext') or ''}".strip().lower()
+        titles = existing_titles() if callable(existing_titles) else existing_titles
+        if canonical in titles:
+            return f"duplicate-marker name; canonical source '{canonical}' already ingested"
+    return None
+
+
+def _existing_source_titles(client, owner_col: str, owner_val: str) -> set[str]:
+    """Lowercased active source titles for the junk filter's dup check.
+
+    Best-effort: an unreachable read returns empty (dup-marker files then
+    ingest rather than silently vanish — fail open, never fail silent)."""
+    try:
+        rows = (
+            client.table(Tables.RAG_ASSETS)
+            .select("title")
+            .eq(owner_col, owner_val)
+            .eq("status", "active")
+            .execute()
+            .data
+            or []
+        )
+    except Exception:  # noqa: BLE001
+        return set()
+    return {(r.get("title") or "").strip().lower() for r in rows}
+
 
 # ──────────────────────────────────────────────────────────────────────
 #  In-process TTL listing cache (the SECOND ingest cache)
@@ -1020,6 +1069,12 @@ class IngestRunResult:
     # from `skipped` (pipeline same-path), `deduped` (cross-path content dup), and
     # `skipped_shortcuts` (pointer files). Zero when use_cache=False or no hits.
     skipped_unchanged: int = 0
+    # Junk filter (#158 gap 1): template scaffolds ("COPY ME", "XXX 0000",
+    # "v000"), Office lock files ("~$…"), and Finder/Windows duplicate names
+    # ("- Copy", "(2)") whose canonical-stem source already exists. Skipped
+    # BEFORE download, each with a logged source_note — never silent (the
+    # xlsx-ingest lesson).
+    skipped_junk: int = 0
     # Prior active assets superseded by a same-title re-ingest (#57): the doc's
     # CONTENT changed since its last ingest, so the pipeline created a brand-new
     # row (hash dedup can't catch it, and the path-keyed dedup only versions
@@ -1475,12 +1530,29 @@ def ingest_project_assets(
     run_root = Path(tmp_root) if tmp_root is not None else Path(tempfile.gettempdir())
     run_root.mkdir(parents=True, exist_ok=True)
 
+    _titles_cache: list[set[str] | None] = [None]
+
+    def _junk_titles() -> set[str]:
+        if _titles_cache[0] is None:
+            _titles_cache[0] = _existing_source_titles(client, owner_col, owner_val)
+        return _titles_cache[0]
+
     for file_ref in files:
         name = file_ref.name or ""
         if name.lower().endswith(_NON_INGESTABLE_EXTENSIONS):
             # Shortcut/pointer file — nothing to embed. Skip before download so
             # it doesn't churn the pipeline or get miscounted as a `failed`.
             result.skipped_shortcuts += 1
+            continue
+        junk = _junk_reason(name, _junk_titles)
+        if junk is not None:
+            # #158 gap 1 — logged, never silent.
+            result.skipped_junk += 1
+            result.source_notes.append(
+                {"source": name, "note": f"junk filter: {junk}"}
+            )
+            print(f"[asset-ingest] junk filter: skipping {name!r} — {junk}",
+                  file=sys.stderr)
             continue
         # Ingest cache: if this file is unchanged since its last ingest (active
         # rag_asset's meta.change_token == the freshly-listed token), skip it

@@ -900,3 +900,65 @@ def test_run_configured_project_is_not_gated(monkeypatch, tmp_path):
     result = ingest_project_assets("acme-1", client=object(), tmp_root=tmp_path)
 
     assert result.unconfigured_reason is None
+
+
+# ── Junk filter (#158 gap 1) ─────────────────────────────────────────────
+
+
+def test_junk_reason_shapes():
+    from cp_engine.asset_ingest import _junk_reason
+
+    existing = {"deck.pptx"}
+    assert "lock file" in _junk_reason("~$deck.pptx", existing)
+    assert "template scaffold" in _junk_reason(
+        "XXX 0000 Creative Brief v000 COPY ME.docx", existing)
+    assert "template scaffold" in _junk_reason("Outline v000.docx", existing)
+    # Duplicate markers skip only when the canonical stem is already a source.
+    assert "already ingested" in _junk_reason("deck - Copy.pptx", existing)
+    assert "already ingested" in _junk_reason("deck (2).pptx", existing)
+    assert _junk_reason("solo (2).pptx", existing) is None  # only copy → ingest
+    # Normal names pass.
+    assert _junk_reason("deck.pptx", existing) is None
+    assert _junk_reason("v0001 roadmap.docx", existing) is None
+
+
+def test_run_skips_junk_with_logged_notes(monkeypatch, tmp_path):
+    """Template scaffolds and dup-marker twins skip BEFORE download, each with
+    a source_note (#158 gap 1: skips must be logged, never silent). A '(2)'
+    with no canonical twin still ingests."""
+    files = [
+        _ref("Creative Brief v000 COPY ME.docx"),
+        _ref("deck - Copy.pptx"),
+        _ref("solo (2).pptx"),
+        _ref("real.docx"),
+    ]
+    _patch_resolve_and_list(monkeypatch, _FOLDERS, files)
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest._existing_source_titles",
+        lambda client, col, val: {"deck.pptx"},
+    )
+
+    downloaded = []
+
+    def _fake_download(file_ref, tmp_dir, drive_connector=None, dropbox_connector=None):
+        downloaded.append(file_ref.name)
+        p = Path(tmp_dir) / file_ref.name
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"content-of-" + file_ref.name.encode())
+        return p
+
+    monkeypatch.setattr("cp_engine.asset_ingest.download_file", _fake_download)
+    pipeline = _FakePipeline({"solo (2).pptx": "created", "real.docx": "created"})
+    client = _FakeClient()
+
+    result = ingest_project_assets(
+        "acme-1", client=client, pipeline=pipeline, tmp_root=tmp_path
+    )
+
+    assert downloaded == ["solo (2).pptx", "real.docx"]
+    assert result.skipped_junk == 2
+    assert result.created == 2
+    junk_notes = [n for n in result.source_notes if "junk filter" in n.get("note", "")]
+    assert len(junk_notes) == 2
+    assert any("template scaffold" in n["note"] for n in junk_notes)
+    assert any("already ingested" in n["note"] for n in junk_notes)
