@@ -121,6 +121,22 @@ def preflight(new: str) -> tuple[Version, Version]:
     if branch != "main":
         raise ReleaseError(f"Releases must be cut from `main`. Currently on `{branch}`.")
 
+    # Doctor check (#133): Finder/iCloud " 2" collision names inside a venv's
+    # dist-info are FATAL to uv (it parses the dir name as a version), and
+    # uv's own error never names the real cause. Fail loudly with the fix.
+    dupes = [
+        str(p.relative_to(REPO_ROOT))
+        for venv in REPO_ROOT.glob(".venv*")
+        for p in venv.glob("lib/python*/site-packages/* [2-9].dist-info")
+    ]
+    if dupes:
+        raise ReleaseError(
+            "Duplicate ' N.dist-info' dirs in the venv (iCloud/Finder sync "
+            "collisions, #133) — uv will hard-fail. Sweep them first:\n"
+            "  python3 scripts/sweep_dupes.py . --delete\n"
+            + "\n".join(f"  {d}" for d in dupes[:10])
+        )
+
     changelog = CHANGELOG.read_text()
     if not re.search(rf"^## v{re.escape(new)} ", changelog, flags=re.MULTILINE):
         raise ReleaseError(
