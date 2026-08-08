@@ -50,24 +50,25 @@ top-level items.
 ├── master-cp.md                          ← index across everything
 ├── weekly-cp.md                          ← tenant-wide partners' review surface
 │
-├── 1p/<code>/cp.md                       ← client engagements
-│   ├── ggl-5168-activation/cp.md
-│   ├── ibx-5153-ai-campaign/cp.md
-│   └── …
+├── 1p/<company>/<code>/cp.md             ← client engagements, nested by company
+│   └── infoblox/
+│       ├── cp.md                         ← company-level CP + shared dirs
+│       ├── ibx-5153-ai-campaign/cp.md
+│       ├── ibx-5192-platform-sales-readiness-summit/cp.md
+│       └── inactive/<code>/              ← closed/archived engagements
 │
-├── firstpersonsf/                        ← First Person internal: initiatives + standalone repos
+├── firstpersonsf/                        ← First Person internal (flat: no company level)
 │   ├── mission-control/cp.md             ← initiative (slug code, no number)
-│   │   ├── _repo-mc-2.md                 ← linked repo surfaces here
-│   │   └── _repo-cp-engine.md            ← linked repo surfaces here
-│   ├── first-person-website/cp.md        ← initiative (no linked repo yet)
+│   │   ├── _repo-mc-2.md                 ← linked repos surface here
+│   │   └── _repo-cp-engine.md
+│   ├── first-person-website/cp.md
 │   ├── first-person-sales/cp.md
-│   ├── first-person-operations/cp.md
 │   ├── market-scorecard/cp.md
 │   ├── 1p-component-library/cp.md        ← standalone repo
-│   └── fathom-meeting-sync/cp.md         ← standalone repo
+│   └── inactive/<code>/
 │
-├── canonic/                              ← Canonic internal: initiatives + standalone repos
-│   ├── storyos/cp.md                     ← initiative (with linked storyos repo)
+├── canonic/                              ← Canonic internal (same shape)
+│   ├── storyos/cp.md
 │   └── unf-forge/cp.md                   ← standalone repo
 │
 └── sprints/<YYYY-W##>/                   ← per-sprint working files
@@ -80,9 +81,9 @@ top-level items.
 initiative's working dir, not as separate top-level dirs. A repo dual-linked to
 both an engagement and an initiative appears in both places.
 
-**Inactive items** (status changed, archived, marked internal) move to
-`<scope>/inactive/<code>/`. They flip back to live automatically if the row
-re-enters sync's view; nothing is destroyed.
+**Inactive items** (status changed, archived, marked internal) move to an
+`inactive/<code>/` dir beside their live siblings. They flip back to live
+automatically if the row re-enters sync's view; nothing is destroyed.
 
 Each working dir is a place for *everything* related to that item: the `cp.md`
 itself, optional `_dropbox.md` link to media, plus any hand-added text artifacts
@@ -215,10 +216,13 @@ NOT loaded: `<scope>/<code>/cp.md` files, `weekly-cp.md`{% if has_sprint %}, `ca
 Triggered by: any session opened in this tenant without a scoping phrase.
 
 ### Mode 2 — Single-project
-Loaded: `master-cp.md` + the `cp.md` for one project (at `<scope>/<dir_slug>/cp.md`)
+Loaded: `master-cp.md` + the `cp.md` for one project
 NOT loaded: other projects' `cp.md` files, `weekly-cp.md`
 Triggered by: `update <code>`, `check status <code>`, `switch to <code>`, or
 opening a session in a tracked project repo (auto-loads its CP).
+
+**Get the path from `master-cp.md`; never construct it** — engagement dirs
+are company-nested and the slug is longer than the code.
 
 `<code>` works the same way for engagements (`ggl-5168`), initiatives
 (`mission-control`), and standalone repos (`cp-engine`).
@@ -260,17 +264,16 @@ Project source repos (those configured in `.cp-engine.toml [[projects]]`) are
 opt-in: the user must say "also load <code>" or "switch to <code>", or open a
 session inside that repo's directory.
 
-This rule is relative to the *set of currently connected tenant repositories*,
-not a single repo. A user with `cp-1p` and `cp-canonic` connected via Claude
-Desktop's GitHub MCP has both in scope; Claude reads from whichever the
-conversation is about.
+The rule spans *all* connected tenant repositories, not one: with `cp-1p`
+and `cp-canonic` both connected, read from whichever the conversation is
+about.
 
 ## Trigger phrases
 
 | Phrase | Mode | Action |
 |---|---|---|
 | (no phrase) | 1 | Default. Read `master-cp.md` only. |
-| `update <code>` | 2 | Open the project's `cp.md` (at `<scope>/<dir_slug>/cp.md`) for editing. |
+| `update <code>` | 2 | Open the project's `cp.md` (path via `master-cp.md`) for editing. |
 | `check status <code>` | 2 | Read the project's `cp.md`; summarize without editing. |
 {%- if has_sprint %}
 | `update sprint` | 3 | Open `canonic/sprint-cp.md` for editing. |
