@@ -69,10 +69,11 @@ top-level items.
 │
 ├── canonic/                              ← Canonic internal (same shape)
 │   ├── storyos/cp.md
-│   └── unf-forge/cp.md                   ← standalone repo
+│   │   └── _repo-unf-forge.md
+│   └── icp-personas/cp.md                ← standalone repo
 │
 └── sprints/<YYYY-W##>/                   ← per-sprint working files
-    ├── <code>.md                          ← one per active engagement OR initiative
+    ├── <code>.md                          ← one per active engagement/initiative
     ├── _week.md                           ← tenant-wide weekly cross-references
     └── _ingest-log/                       ← auto-ingest audit log
 ```
