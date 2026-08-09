@@ -2308,6 +2308,136 @@ def _live_framing(client, project_id: str, est_item_id: str) -> str | None:
     return rows[0].get("framing") if rows else None
 
 
+def _element_meta(
+    client, project_id: str, est_item_ids: list[str]
+) -> list[dict[str, str]]:
+    """(framing, layer) for each live element, for the synthesis draft's
+    absorbed list. Best-effort: a metadata miss must never fail a seal."""
+    if not est_item_ids:
+        return []
+    try:
+        rows = (
+            client.table("spine_substance")
+            .select("est_item_id, framing, layer")
+            .eq("project_id", project_id)
+            .in_("est_item_id", est_item_ids)
+            .eq("status", "live")
+            .execute()
+        ).data or []
+    except Exception:  # noqa: BLE001
+        rows = []
+    by_id = {r.get("est_item_id"): r for r in rows}
+    return [
+        {
+            "est_item_id": eid,
+            "framing": (by_id.get(eid) or {}).get("framing") or eid,
+            "layer": (by_id.get(eid) or {}).get("layer") or "",
+        }
+        for eid in est_item_ids
+    ]
+
+
+def _insert_authored_element(
+    client,
+    scope: dict[str, Any],
+    *,
+    framing: str,
+    body: str,
+    layer: str,
+    note: str | None,
+    subject: str,
+) -> dict[str, Any]:
+    """INSERT one authored live-v1 element. Mirrors create_spine_element's row
+    builder exactly — same composite id, same engine-owned defaults — so a
+    seal-drafted synthesis is indistinguishable from a hand-authored one."""
+    canonical_code = scope["project_code"]
+    est_item_id = f"_authored/{slugify(framing)}"
+    now = datetime.now(timezone.utc)
+    row = {
+        "id": f"{canonical_code}/{est_item_id}/v1",
+        "project_id": scope["id"],
+        "project_code": canonical_code,
+        "est_item_id": est_item_id,
+        "est_item_kind": None,
+        "phase": None,
+        "binding": "unbound",
+        "layer": canon_layer(layer),
+        "placement": "context",
+        "serves": [],
+        "version_label": "v1",
+        "version_date": now.date().isoformat(),
+        "status": "live",
+        "framing": framing,
+        "body": body,
+        "sources": [],
+        "origin": "authored",
+        "version_note": None,
+        "rel_path": None,
+        "important": False,
+        "note": note,
+        "author_id": subject,
+    }
+    try:
+        result = client.table("spine_substance").insert(row).execute()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"insert failed: {type(exc).__name__}: {str(exc)[:300]}"}
+    created = (result.data or [{}])[0]
+    return {
+        "est_item_id": created.get("est_item_id", est_item_id),
+        "framing": created.get("framing", framing),
+        "layer": created.get("layer"),
+        "version_label": created.get("version_label", "v1"),
+    }
+
+
+def _draft_synthesis_body(
+    deliverable_framing: str,
+    absorbed: list[dict[str, str]],
+    note: str | None,
+) -> str:
+    """The scaffold a sealed round hands to the human (#166).
+
+    NOT a concatenation of what was absorbed. The one synthesis in the tenant
+    that actually works — ibx-5153's "Perspectives & Possibilities" — is ~300
+    chars: what it is, what it decided, what it feeds, and a pointer to the
+    full document. That register is the target, so this emits the SHAPE and
+    leaves the thinking to the person.
+
+    Prompts are written as questions the author answers and deletes. A draft
+    that reads as finished prose invites a rubber-stamp; one that reads as an
+    outline invites editing, which is the point of a review gate.
+    """
+    lines = [
+        f"_Draft synthesis from sealing **{deliverable_framing}**. "
+        "Replace these prompts — this is a scaffold, not a summary._",
+        "",
+        "## What this settles",
+        "",
+        "- _One line: the argument or decision this round landed._",
+        "",
+        "## What it feeds",
+        "",
+        "- _Which activity or deliverable picks this up next?_",
+        "",
+    ]
+    if note:
+        lines += [f"**Seal note:** {note}", ""]
+    if absorbed:
+        lines += [
+            f"## Absorbed ({len(absorbed)})",
+            "",
+            "_These are now historical — out of retrieval defaults, kept one hop "
+            "behind this synthesis for retrospectives._",
+            "",
+        ]
+        for a in absorbed:
+            layer = f" · {a['layer']}" if a.get("layer") else ""
+            lines.append(f"- {a['framing']}{layer}")
+        lines.append("")
+    lines += ["## Full document", "", "- _Link the deck/doc/video this became._"]
+    return "\n".join(lines)
+
+
 def _insert_lifecycle_edge(
     client,
     scope: dict[str, Any],
@@ -2507,6 +2637,8 @@ def seal_to_deliverable(
     deliverable_key: str,
     absorbed_keys: list[str],
     note: str | None = None,
+    draft_synthesis: bool = False,
+    synthesis_framing: str | None = None,
 ) -> dict[str, Any]:
     """Seal elements into a shipped deliverable (#148, spec v04 §3).
 
@@ -2522,6 +2654,19 @@ def seal_to_deliverable(
     element ("Sealed N elements on delivery"). Journaling is non-fatal.
     Idempotent per pair: re-sealing reports `already` per element.
 
+    SEALING CAN ALSO PRODUCE (#166). With `draft_synthesis=True` the seal
+    creates a Synthesis element scaffolding what the round settled — because
+    the process is a loop, not a terminus: a sealed round yields the distillate
+    that feeds the next activity. The draft is prompts, not prose, and a human
+    finishes it; a synthesis is a real client deliverable, not a system
+    artifact. Opt-in rather than automatic — not every seal is a compression
+    worth carrying forward, and silently minting an element on every call would
+    be worse than the accumulation it fixes.
+
+    Failure of the draft NEVER fails the seal: the edges have already
+    committed by then, so a draft error is reported and the caller can retry
+    with `create_spine_element`.
+
     Args:
         project_code: engagement, initiative, or standalone-repo code.
         deliverable_key: the absorbing deliverable (est_item_id or unique
@@ -2529,6 +2674,8 @@ def seal_to_deliverable(
         absorbed_keys: the elements it absorbed.
         note: optional one-line annotation stored on each edge (e.g. the
             delivery date or deliverable version).
+        draft_synthesis: emit a Synthesis element scaffolding this round.
+        synthesis_framing: its title; defaults to "Synthesis — <deliverable>".
     """
     client = user_client()
     email = caller_email()
@@ -2591,6 +2738,47 @@ def seal_to_deliverable(
             )
         except Exception as exc:  # noqa: BLE001 — journaling is non-fatal
             out["step"] = {"error": f"auto-step failed: {type(exc).__name__}: {str(exc)[:300]}"}
+
+    # #166: sealing should PRODUCE, not just end. Drew: "we will need to
+    # produce synthesis documents when we seal an activity or deliverable and
+    # that synthesis should then feed the next activity/deliverable."
+    #
+    # Opt-in (`draft_synthesis=True`) rather than automatic: not every seal is
+    # a compression worth carrying forward, and a verb that silently mints an
+    # element on every call would be worse than the accumulation it fixes.
+    #
+    # The draft is a SCAFFOLD the human finishes — Drew: "often generated md
+    # files in a Claude session, but then further edited by a human and shared
+    # with the client as a deliverable." It is a first-class card because a
+    # synthesis IS a deliverable, not a system artifact.
+    if draft_synthesis and sealed:
+        try:
+            absorbed_meta = _element_meta(client, scope["id"], sealed)
+            deliv_framing = (
+                _element_meta(client, scope["id"], [deliv_eid])[0]["framing"]
+            )
+            framing = (synthesis_framing or "").strip() or (
+                f"Synthesis — {deliv_framing}"
+            )
+            out["synthesis"] = _insert_authored_element(
+                client,
+                scope,
+                framing=framing,
+                body=_draft_synthesis_body(deliv_framing, absorbed_meta, note),
+                layer="Synthesis",
+                note="Draft from seal (#166) — replace the scaffold prompts.",
+                subject=caller_subject(),
+            )
+            # Lineage: the synthesis records what it was built from, so the
+            # absorbed elements stay reachable from the thing that replaced
+            # them rather than only from the deliverable.
+            if not out["synthesis"].get("error"):
+                out["synthesis"]["absorbed_from"] = [a["est_item_id"] for a in absorbed_meta]
+        except Exception as exc:  # noqa: BLE001 — never fail a committed seal
+            out["synthesis"] = {
+                "error": f"draft failed: {type(exc).__name__}: {str(exc)[:300]}",
+                "note": "the seal itself committed; re-draft with create_spine_element",
+            }
 
     audit(client, "seal_to_deliverable", audit_args, len(sealed))
     return out
