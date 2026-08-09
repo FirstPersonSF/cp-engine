@@ -1570,7 +1570,13 @@ _LAYER_ALIASES = {
     "stakeholders": "Stakeholders",
     "agreement": "Agreement",
     "synthesis": "Synthesis",
-    "output": "Output",
+    # `output` folds into Deliverables (#172). It was mapped to a layer of its
+    # own here, but "Output" is NOT in cp_engine.spine.LAYERS — so every write
+    # through this alias minted a layer the engine does not recognise, and
+    # readers that compare `layer == "Deliverables"` silently skipped them
+    # (spine_stats counts zero of the 9; spine_recover never flags them for
+    # rebind). One concept, one name.
+    "output": "Deliverables",
     "activity": "Activity",
     "retrospective": "Retrospective",
     "research": "Research",

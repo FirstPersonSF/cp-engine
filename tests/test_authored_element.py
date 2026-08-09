@@ -16,7 +16,11 @@ def test_canon_layer_maps_lowercase_mcp_vocab_to_titlecase():
     assert canon_layer("stakeholder") == "Stakeholders"
     assert canon_layer("agreement") == "Agreement"
     assert canon_layer("synthesis") == "Synthesis"
-    assert canon_layer("output") == "Output"
+    # #172: `output` folds into Deliverables. It used to map to a layer of its
+    # own, but "Output" is not in cp_engine.spine.LAYERS, so the alias minted a
+    # layer no reader recognised — spine_stats saw 2 of ibx-5192's 6
+    # deliverables and 0 of sap-5174's 2.
+    assert canon_layer("output") == "Deliverables"
 
 
 def test_canon_layer_collapses_spelling_and_case_variants():

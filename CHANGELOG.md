@@ -4,6 +4,25 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.93.1 — 2026-08-09
+
+- **`output` folds into `Deliverables` (#172).** The shared `spine-authoring`
+  alias table mapped `output` to a layer of its own, but "Output" is not in
+  `cp_engine.spine.LAYERS` — so every write through that alias minted a layer
+  the engine does not recognise, and every reader comparing
+  `layer == "Deliverables"` skipped those rows in silence. Measured on the live
+  tenant before the fix: `spine_stats` saw 2 of ibx-5192's 6 deliverables and
+  **0 of sap-5174's 2**, reporting a project with deliverables as having none.
+  The 9 affected rows are unambiguously deliverables (SRS Arc A/B, the Jaime
+  outline, a workshop run-of-show). Fixed at the source in
+  `1p-component-library` (`b660dab`) with the pin bumped here, and mirrored in
+  the hosted MCP server's copy of the table.
+- **The invariant that was missing.** `CANONICAL_LAYERS` is DERIVED from
+  `LAYER_ALIASES`, so it can never disagree with it — every existing test
+  checked internal consistency while nothing checked against the engine's own
+  vocabulary, which is how this drifted in unnoticed. The library now pins
+  `CANONICAL_LAYERS` against `cp_engine.spine.LAYERS`.
+
 ## v0.93.0 — 2026-08-09
 
 The spine-primitives series (#162–#170), and the CLAUDE.md tree correction that
