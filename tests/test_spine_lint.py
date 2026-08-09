@@ -116,6 +116,49 @@ def test_lifecycle_absorbed_but_serving():
     assert len(out) == 1 and "absorbed-but-serving" in out[0]
 
 
+def test_dead_end_activity_is_flagged():
+    """#163: an Activity feeding no deliverable strands its whole stream."""
+    from cp_engine.spine_lint import lint_lifecycle
+    rows = [_lrow("discovery", layer="Activity", framing="Stakeholder interviews"),
+            _lrow("deck", layer="Deliverables")]
+    out = lint_lifecycle(rows, [])
+    assert len(out) == 1
+    assert "dead-end activity" in out[0]
+    assert "Stakeholder interviews" in out[0]
+
+
+def test_activity_feeding_a_deliverable_is_clean():
+    from cp_engine.spine_lint import lint_lifecycle
+    rows = [_lrow("discovery", layer="Activity"), _lrow("deck", layer="Deliverables")]
+    assert lint_lifecycle(rows, [_edge("informs", "discovery", "deck")]) == []
+    # derives_from counts too — both already carry activity -> deliverable.
+    assert lint_lifecycle(rows, [_edge("derives_from", "discovery", "deck")]) == []
+
+
+def test_activity_feeding_only_a_non_deliverable_is_still_a_dead_end():
+    """An edge into another source note is not reaching the work."""
+    from cp_engine.spine_lint import lint_lifecycle
+    rows = [_lrow("discovery", layer="Activity"), _lrow("note")]
+    out = lint_lifecycle(rows, [_edge("informs", "discovery", "note")])
+    assert len(out) == 1 and "dead-end activity" in out[0]
+
+
+def test_absorbed_activity_is_exempt_from_the_dead_end_check():
+    """Absorbed = finished. Flagging it would make every sealed round noisier
+    than the last."""
+    from cp_engine.spine_lint import lint_lifecycle
+    rows = [_lrow("discovery", layer="Activity")]
+    out = lint_lifecycle(rows, [_edge("absorbed_by", "discovery", "deck")])
+    assert out == []
+
+
+def test_output_layer_counts_as_a_deliverable():
+    """Both 'Deliverables' and 'Output' are live layer values in the tenant."""
+    from cp_engine.spine_lint import lint_lifecycle
+    rows = [_lrow("discovery", layer="Activity"), _lrow("deck", layer="Output")]
+    assert lint_lifecycle(rows, [_edge("informs", "discovery", "deck")]) == []
+
+
 def test_lifecycle_stale_canon_member_absorbed_and_superseded():
     from cp_engine.spine_lint import lint_lifecycle
     rows = [_lrow("old"), _lrow("gone"), _lrow("new")]

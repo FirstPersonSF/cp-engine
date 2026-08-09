@@ -81,6 +81,10 @@ def lint_lifecycle(rows: list[dict], relations: list[dict]) -> list[str]:
          deliverable, or that a `supersedes` edge points at. (NOT a
          date comparison against the brief: any brief re-version would
          instantly flag every member, and noisy lint is dead lint.)
+      7. a dead-end activity (#163) — an active Activity with no outgoing
+         `informs`/`derives_from` edge to any deliverable, so the stream
+         bound to it is unreachable from the work it fed. Absorbed
+         activities are exempt: they are finished by definition.
 
     Pure and warn-only, like every check here.
     """
@@ -108,6 +112,44 @@ def lint_lifecycle(rows: list[dict], relations: list[dict]) -> list[str]:
                 f"⚠ absorbed-but-serving: '{title}' ({eid}) is sealed into "
                 f"{deliverable} yet still serves live work — either the seal "
                 "fired early or the binding outlived delivery")
+
+    # 7. Dead-end activity (#163): an active Activity with no outgoing edge to
+    #    any deliverable. Its stream — the sources, meetings and decisions
+    #    bound to it — is then unreachable from the work it was supposed to
+    #    feed, which is how a discovery activity quietly stops counting.
+    #
+    #    Read via `informs` / `derives_from` rather than a dedicated `feeds`
+    #    kind: those two ALREADY carry activity -> deliverable, many-to-many,
+    #    and are what sealFeeders offers at seal time. A third near-synonym in
+    #    a seven-kind vocabulary would split the same meaning across three
+    #    edges and make the picker worse.
+    #
+    #    Absorbed activities are exempt — they are finished by definition, and
+    #    flagging them would make every sealed round noisier than the last.
+    feeds_out: dict[str, list[str]] = {}
+    for e in relations:
+        if e.get("kind") not in ("informs", "derives_from"):
+            continue
+        feeds_out.setdefault(e.get("from_item_id"), []).append(e.get("to_item_id"))
+
+    deliverable_ids = {
+        r.get("est_item_id") for r in rows
+        if _norm_layer(r.get("layer")) in ("deliverables", "output")
+    }
+    for row in rows:
+        if _norm_layer(row.get("layer")) != "activity":
+            continue
+        eid = row.get("est_item_id")
+        if eid in absorbed:
+            continue
+        if any(t in deliverable_ids for t in feeds_out.get(eid, [])):
+            continue
+        title = row.get("framing") or eid
+        out.append(
+            f"⚠ dead-end activity: '{title}' ({eid}) feeds no deliverable — "
+            "its sources and decisions are unreachable from the work they "
+            "informed; add an informs/derives_from edge to the deliverable "
+            "it fed, or seal it if it is finished")
 
     superseded = {e.get("to_item_id") for e in relations
                   if e.get("kind") == "supersedes"}
