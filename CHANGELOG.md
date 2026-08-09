@@ -4,6 +4,62 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.93.0 — 2026-08-09
+
+The spine-primitives series (#162–#170), and the CLAUDE.md tree correction that
+started it.
+
+- **CLAUDE.md documented a working tree that stopped existing at the account
+  restructure.** The layout diagram showed a flat `1p/<code>/cp.md`; the real
+  shape is `1p/<company>/<code>/cp.md`, with a company-level `cp.md` and
+  `inactive/` beside the live engagements. Worse, Mode 2 and the trigger table
+  published a *constructible* path (`<scope>/<dir_slug>/cp.md`) — an invitation
+  to guess. Both now say to resolve via `master-cp.md`, which carries every
+  active item's real link. Also corrected: `unf-forge` was listed as a
+  top-level standalone repo, but MC-2 has it Active with `initiative_id` →
+  StoryOS since 2026-06-04, so it surfaces as `_repo-unf-forge.md` under
+  `canonic/storyos/`. `icp-personas` is Canonic's only genuine standalone.
+- **Dead-end activity lint (#163).** `lint_lifecycle` gains a seventh check: an
+  active Activity with no outgoing `informs`/`derives_from` edge to any
+  deliverable strands its own stream — the sources, meetings and decisions
+  bound to it become unreachable from the work they informed. Warn-only.
+  Absorbed activities are exempt; both `Deliverables` and `Output` count as
+  deliverable layers. First run on the live tenant: **19 findings across 5
+  projects**, including all 16 sap-5174 stakeholder interviews with zero edges
+  in either direction. The issue's proposed `feeds` relation kind was NOT
+  added — `informs`/`derives_from` already carry activity→deliverable
+  many-to-many and are what mc-2's `sealFeeders` reads; a third near-synonym in
+  a seven-kind vocabulary would split one meaning across three edges.
+- **Renames leave an audit trail (#165).** `set_spine_element` could always
+  retitle, but journaled nothing — so a rename destroyed its own evidence and
+  "why doesn't this slug match its title?" had no answer. A retitle now
+  auto-journals a step carrying both halves (`Renamed: "X" → "Y"`), skipped
+  with a reason when nothing changed, when only whitespace differs, or when the
+  card had no prior title. **The slug stays frozen**, deliberately: relations
+  key on the `est_item_id` string (mig 117), and nine columns across seven
+  tables carry it with no foreign keys, so moving one means an atomic nine-way
+  rewrite — and mig 129 exists because exactly this class of id drifted before.
+- **Sealing produces a synthesis (#166).** `seal_to_deliverable` compressed
+  inputs into a deliverable and then emitted nothing, so a sealed round was a
+  terminus rather than a step in a loop. `draft_synthesis=True` now creates a
+  Synthesis element scaffolding what the round settled — prompts, not prose,
+  modelled on the one synthesis in the tenant that works (ibx-5153's
+  "Perspectives & Possibilities", ~300 chars: what it is, what it decided, what
+  it feeds). Opt-in; a draft failure never fails the seal.
+- **A sealed round proposes what carries forward (#167).** The seal returns a
+  `canon` proposal naming both the deliverable (the baseline the next work
+  builds on) and the synthesis (what the round settled). Proposes, never
+  writes: canon targets ≤7 and ibx-5153 already carries 9 deliverables against
+  7 members, but more fundamentally, deciding what displaces what is the
+  editorial act the review gate exists for. Over-target is reported rather than
+  blocked — a canon creeping past target is the signal that a round replaced
+  nothing.
+
+**Companion mc-2 work** (shipped to production 2026-08-09, 13 commits): the
+spine view now gives cards only to work, activity containers report what they
+hold, feedback is item-grained (mig 136), and the Status header leads with what
+is attached to no work at all.
+
 ## v0.92.0 — 2026-08-07
 
 The end-of-backlog ship: eleven issues closed in one release.
