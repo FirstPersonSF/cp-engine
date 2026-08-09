@@ -107,3 +107,111 @@ def test_element_meta_preserves_caller_order(srv):
 
     out = srv._element_meta(Fake(), "proj-1", ["_authored/a", "_authored/b"])
     assert [o["framing"] for o in out] == ["A", "B"]
+
+
+# ---- #167: what carries forward -------------------------------------------
+
+
+class _FakeCanonClient:
+    """Minimal PostgREST shape: canon edges + element metadata."""
+
+    def __init__(self, canon_ids, meta):
+        self._canon_ids = canon_ids
+        self._meta = meta
+        self._table = None
+        self._filters = {}
+
+    def table(self, name):
+        self._table = name
+        self._filters = {}
+        return self
+
+    def select(self, _c):
+        return self
+
+    def eq(self, col, val):
+        self._filters[col] = val
+        return self
+
+    def in_(self, _col, vals):
+        self._filters["in"] = list(vals)
+        return self
+
+    def limit(self, _n):
+        return self
+
+    def execute(self):
+        if self._table == "spine_relations":
+            return type("R", (), {
+                "data": [{"from_item_id": i} for i in self._canon_ids]
+            })()
+        wanted = self._filters.get("in", [])
+        return type("R", (), {
+            "data": [m for m in self._meta if m["est_item_id"] in wanted]
+        })()
+
+
+SCOPE = {"id": "proj-1", "project_code": "ibx-5192"}
+DELIV = {"est_item_id": "_authored/arc-b", "framing": "SRS Arc B", "layer": "Output"}
+SYN = {"est_item_id": "_authored/syn", "framing": "Synthesis — SRS Arc B", "layer": "Synthesis"}
+
+
+def test_proposes_both_the_deliverable_and_the_synthesis(srv, monkeypatch):
+    """The deck is the baseline; the synthesis is the thinking. Both feed
+    forward, and they are not the same thing."""
+    monkeypatch.setattr(srv, "resolve_live_element_id", lambda *a: ("brief", None))
+    client = _FakeCanonClient([], [DELIV, SYN])
+    out = srv._canon_proposal(client, SCOPE, [DELIV, SYN])
+    assert [p["est_item_id"] for p in out["proposed"]] == [
+        "_authored/arc-b",
+        "_authored/syn",
+    ]
+    assert out["verb"] == "promote_to_canon"
+
+
+def test_never_writes_only_proposes(srv, monkeypatch):
+    """Deciding what displaces what IS the editorial act."""
+    monkeypatch.setattr(srv, "resolve_live_element_id", lambda *a: ("brief", None))
+    monkeypatch.setattr(
+        srv, "_insert_lifecycle_edge",
+        lambda *a, **k: pytest.fail("proposal must not write an edge"),
+    )
+    srv._canon_proposal(_FakeCanonClient([], [DELIV]), SCOPE, [DELIV])
+
+
+def test_skips_what_is_already_canon(srv, monkeypatch):
+    monkeypatch.setattr(srv, "resolve_live_element_id", lambda *a: ("brief", None))
+    client = _FakeCanonClient(["_authored/arc-b"], [DELIV, SYN])
+    out = srv._canon_proposal(client, SCOPE, [DELIV, SYN])
+    assert [p["est_item_id"] for p in out["proposed"]] == ["_authored/syn"]
+    assert [a["est_item_id"] for a in out["already_canon"]] == ["_authored/arc-b"]
+
+
+def test_flags_when_promotion_would_exceed_the_target(srv, monkeypatch):
+    """ibx-5153 carries 9 deliverables against a 7-member canon. Past target
+    is a SIGNAL that the round replaced nothing — surfaced, not suppressed."""
+    monkeypatch.setattr(srv, "resolve_live_element_id", lambda *a: ("brief", None))
+    existing = [
+        {"est_item_id": f"_authored/m{i}", "framing": f"M{i}", "layer": "Decisions"}
+        for i in range(srv.CANON_TARGET_MAX)
+    ]
+    client = _FakeCanonClient([m["est_item_id"] for m in existing], existing + [DELIV])
+    out = srv._canon_proposal(client, SCOPE, [DELIV])
+    assert out["displacement_needed"] is True
+    assert "replaces_key" in out["note"]
+    # Still proposed — the caller decides, the verb does not block.
+    assert len(out["proposed"]) == 1
+
+
+def test_stays_quiet_when_within_target(srv, monkeypatch):
+    monkeypatch.setattr(srv, "resolve_live_element_id", lambda *a: ("brief", None))
+    out = srv._canon_proposal(_FakeCanonClient([], [DELIV]), SCOPE, [DELIV])
+    assert "displacement_needed" not in out
+
+
+def test_explains_itself_when_the_project_has_no_brief_anchor(srv, monkeypatch):
+    """Canon anchors on the brief; without one there is nothing to promote to."""
+    monkeypatch.setattr(srv, "resolve_live_element_id", lambda *a: (None, None))
+    out = srv._canon_proposal(_FakeCanonClient([], []), SCOPE, [DELIV])
+    assert out["proposed"] == []
+    assert "anchors" in out["note"]

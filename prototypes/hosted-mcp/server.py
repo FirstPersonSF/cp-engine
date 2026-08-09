@@ -2308,6 +2308,84 @@ def _live_framing(client, project_id: str, est_item_id: str) -> str | None:
     return rows[0].get("framing") if rows else None
 
 
+def _canon_proposal(
+    client, scope: dict[str, Any], candidates: list[dict[str, str]]
+) -> dict[str, Any]:
+    """What a sealed round should promote to canon, as a PROPOSAL (#167).
+
+    Drew, 2026-08-09: a shipped deliverable plays two roles, and the model only
+    knew one. As output it is the thing feedback answers; as INPUT it is the
+    baseline the next work builds on — and only 4 ad-hoc edges tenant-wide ever
+    expressed that, so the chain dead-ends at every delivery. Canon is the fix:
+    it is the curated "current truth" set that persists until displaced, which
+    is exactly "goes forward as a valuable input until superseded by a more
+    refined version."
+
+    BOTH the deliverable and its synthesis are candidates. The deck is the
+    baseline; the synthesis is the thinking. They are not the same thing and
+    both feed forward.
+
+    PROPOSES, never writes. Two reasons, and the second is the real one:
+
+      1. Canon targets ≤7 and ibx-5153 already carries 9 deliverables against
+         7 members — auto-promoting every seal would blow the budget on the
+         first project tried.
+      2. Deciding what displaces what IS the editorial act. A verb that made
+         that call silently would be asserting current truth on the user's
+         behalf, which is precisely the judgement the review gate exists for.
+
+    Returns the candidates, the live canon, and whether promoting would exceed
+    the target — enough for the caller to run `promote_to_canon(replaces_key=…)`
+    without a second lookup.
+    """
+    try:
+        brief_eid, _ = resolve_live_element_id(client, scope["id"], BRIEF_ITEM_ID)
+    except Exception:  # noqa: BLE001
+        brief_eid = None
+    if brief_eid is None:
+        return {
+            "proposed": [],
+            "note": (
+                f"no live {BRIEF_ITEM_ID!r} in this project — the canon anchors "
+                "on the brief, so nothing can be promoted until it exists."
+            ),
+        }
+
+    try:
+        edges = (
+            client.table("spine_relations")
+            .select("from_item_id")
+            .eq("project_id", scope["id"])
+            .eq("kind", "canon_of")
+            .eq("status", "active")
+            .execute()
+        ).data or []
+    except Exception:  # noqa: BLE001
+        edges = []
+    member_ids = [e.get("from_item_id") for e in edges if e.get("from_item_id")]
+    members = _element_meta(client, scope["id"], member_ids)
+    already = {m["est_item_id"] for m in members}
+
+    proposed = [c for c in candidates if c["est_item_id"] not in already]
+    would_be = len(members) + len(proposed)
+    out: dict[str, Any] = {
+        "proposed": proposed,
+        "canon_now": members,
+        "already_canon": [c for c in candidates if c["est_item_id"] in already],
+        "verb": "promote_to_canon",
+    }
+    if would_be > CANON_TARGET_MAX:
+        # Not an error. A canon creeping past target is the signal that a round
+        # did not actually REPLACE anything — worth surfacing, not suppressing.
+        out["displacement_needed"] = True
+        out["note"] = (
+            f"promoting all {len(proposed)} would put canon at {would_be} "
+            f"(target ≤{CANON_TARGET_MAX}). Pass `replaces_key` — scarcity is "
+            "the feature, and a round that replaces nothing is worth a second look."
+        )
+    return out
+
+
 def _element_meta(
     client, project_id: str, est_item_ids: list[str]
 ) -> list[dict[str, str]]:
@@ -2667,6 +2745,13 @@ def seal_to_deliverable(
     committed by then, so a draft error is reported and the caller can retry
     with `create_spine_element`.
 
+    AND IT PROPOSES WHAT CARRIES FORWARD (#167). A sealed round returns a
+    `canon` proposal naming both the DELIVERABLE (the baseline the next work
+    builds on) and the synthesis (what the round settled). Proposed, never
+    written: canon targets ≤7, and deciding what displaces what is the
+    editorial act the review gate exists for. Run `promote_to_canon` with
+    `replaces_key` to act on it.
+
     Args:
         project_code: engagement, initiative, or standalone-repo code.
         deliverable_key: the absorbing deliverable (est_item_id or unique
@@ -2778,6 +2863,31 @@ def seal_to_deliverable(
             out["synthesis"] = {
                 "error": f"draft failed: {type(exc).__name__}: {str(exc)[:300]}",
                 "note": "the seal itself committed; re-draft with create_spine_element",
+            }
+
+    # #167: what should carry forward as standing input. Both the DELIVERABLE
+    # (the baseline the next work builds on) and the SYNTHESIS (what the round
+    # settled) are candidates — Drew: "we should add that deliverable as an
+    # input and have all of the feedback build on that source."
+    #
+    # Proposed, never written: see _canon_proposal. Non-fatal like the rest of
+    # the post-seal work.
+    if sealed:
+        try:
+            candidates = _element_meta(client, scope["id"], [deliv_eid])
+            syn = out.get("synthesis") or {}
+            if syn.get("est_item_id"):
+                candidates.append(
+                    {
+                        "est_item_id": syn["est_item_id"],
+                        "framing": syn.get("framing") or syn["est_item_id"],
+                        "layer": syn.get("layer") or "Synthesis",
+                    }
+                )
+            out["canon"] = _canon_proposal(client, scope, candidates)
+        except Exception as exc:  # noqa: BLE001
+            out["canon"] = {
+                "error": f"proposal failed: {type(exc).__name__}: {str(exc)[:300]}"
             }
 
     audit(client, "seal_to_deliverable", audit_args, len(sealed))
