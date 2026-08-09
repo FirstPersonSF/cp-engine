@@ -3125,6 +3125,55 @@ def call_mc2_promote(recording_id: int) -> dict[str, Any]:
     return {"ok": False, "status": resp.status_code, "reason": detail}
 
 
+def _journal_rename(
+    client, scope: dict[str, Any], est_item_id: str,
+    prior_framing: str, new_framing: str | None,
+) -> dict[str, Any]:
+    """Record a retitle as a journal step (#165). NEVER raises.
+
+    A rename is the one metadata change that destroys its own evidence: the old
+    title lives nowhere on the row once the UPDATE lands, so the "why doesn't
+    this slug match its title?" question has no answer afterwards. The step
+    carries BOTH halves, which is the whole point.
+
+    Deliberately NOT renaming the slug. `est_item_id` is the lineage key —
+    nine columns across seven tables carry it with no FKs (mig 117's choice:
+    "endpoints are the element lineage, NOT the substance row id"), so moving
+    it means an atomic nine-way rewrite, and mig 129 exists because exactly
+    that class of multi-table id drifted before. The slug is opaque and never
+    rendered; only the disk-mirror FILENAME keeps the old name, which is a
+    cosmetic cost paid once against a whole class of orphaned rows.
+
+    Same shape as the other side-effect reporters so a caller can branch on
+    `journaled`, and non-fatal for the same reason: the rename has already
+    committed by the time this runs.
+    """
+    if new_framing is None:
+        return {"journaled": False, "skipped": "no framing change"}
+    new_clean = new_framing.strip()
+    if not new_clean or new_clean == prior_framing:
+        return {"journaled": False, "skipped": "framing unchanged"}
+    # A first-time title on an untitled card is a fill-in, not a rename —
+    # journaling it would add noise with no lost information to preserve.
+    if not prior_framing:
+        return {"journaled": False, "skipped": "element had no prior title"}
+
+    try:
+        return {
+            "journaled": True,
+            "step": upsert_auto_step(
+                client,
+                scope["id"],
+                est_item_id,
+                f"Renamed: “{prior_framing}” → “{new_clean}”",
+                date.today().isoformat(),
+            ),
+            "prior_framing": prior_framing,
+        }
+    except Exception as exc:  # noqa: BLE001 — journaling is never fatal
+        return {"journaled": False, "error": f"{type(exc).__name__}: {str(exc)[:200]}"}
+
+
 def _promotion_on_important_flip(
     client, scope: dict[str, Any], est_item_id: str, element: dict[str, Any], *, fired: bool
 ) -> dict[str, Any]:
@@ -3337,7 +3386,12 @@ def set_spine_element(
         important: element-level importance flag (no promotion side effect).
         note: element-level annotation.
         layer: element kind, normalized to the canonical string.
-        framing: retitle the element (est_item_id never changes).
+        framing: retitle the element. The est_item_id NEVER changes — it is the
+            lineage key nine columns across seven tables join on without FKs,
+            so it stays opaque and frozen (#165). A retitle auto-journals a
+            step carrying both the old and new title, since the old one is
+            otherwise gone the moment the write lands; only the disk-mirror
+            filename keeps the pre-rename slug.
         serves: work-item ids to bind to; `[]` unbinds.
         actor: who is speaking — partner | client | vendor | inferred
             (spec v04 authority ordering; tag deliberately).
@@ -3368,6 +3422,10 @@ def set_spine_element(
     # off the live row the resolver already fetched — re-reading after the
     # UPDATE would make every flip look like a no-op.
     prior_important = bool(live.get("important"))
+    # Same reason, for the rename journal (#165): the OLD title is gone the
+    # moment the UPDATE lands, and it is the only half of "X became Y" that
+    # isn't recoverable from the row afterwards.
+    prior_framing = (live.get("framing") or "").strip()
 
     patch: dict[str, Any] = {}
     if important is not None:
@@ -3441,6 +3499,14 @@ def set_spine_element(
         "promotion": _promotion_on_important_flip(
             client, scope, est_item_id, live,
             fired=(important is True and not prior_important),
+        ),
+        # #165: a rename is the one metadata change that destroys its own
+        # evidence — after the UPDATE nothing on the row remembers what the
+        # card used to be called, so "why does this slug not match its title?"
+        # becomes unanswerable. Journal the transition. Non-fatal like every
+        # other auto-step: the rename has already committed.
+        "rename_journaled": _journal_rename(
+            client, scope, est_item_id, prior_framing, framing,
         ),
     }
     if canonical_layer is not None:
