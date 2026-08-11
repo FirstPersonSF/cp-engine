@@ -189,6 +189,13 @@ SEAL_SWEEP_COLUMNS = (
     "est_item_id, framing, layer, status, archived, version_label, "
     "version_date, serves, project_id"
 )
+# cp stub-sweep — empty Source-material cards and where their provenance
+# belongs (#178). Needs `body` (to measure emptiness and match the ingest
+# boilerplate), `sources` (what would move) and `serves` (where it would go).
+STUB_SWEEP_COLUMNS = (
+    "est_item_id, framing, layer, status, archived, body, sources, serves, "
+    "project_id"
+)
 SPINE_SOURCES_EDIT_COLUMNS = (
     "id, est_item_id, framing, status, archived, scope, company_id, "
     "project_id, sources"

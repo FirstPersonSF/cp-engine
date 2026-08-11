@@ -917,6 +917,73 @@ def seal_sweep_cmd(
     click.echo(render_sweep(rounds, code=code))
 
 
+@click.command("stub-sweep")
+@click.argument("code")
+def stub_sweep_cmd(code: str) -> None:
+    """Empty Source-material cards, and where their provenance belongs (#178).
+
+    A card whose body is only the ingest's boilerplate ("Ingested document:
+    **X** (doc)") is a wrapper around a rag_asset already in its own `sources`
+    array. But most carry a `serves` binding — the routing judgement saying
+    which activity or slot the document belongs to — so the move is a
+    TRANSFER, not a delete: attach the source to what the stub served, then
+    retire the card.
+
+    Stubs routed to a bare estimate slot have nothing to attach to; they are
+    reported and nothing is proposed for them.
+
+    READ-ONLY. Retiring a card and moving its provenance is a real mutation —
+    this makes the decision cheap, not automatic.
+    """
+    from cp_engine.spine import SpineDirNotFound, find_spine_dir
+    from cp_engine.stub_sweep import find_stubs, render_sweep
+    from cp_engine.sync import BackendUnavailable
+
+    config = _cli._load_config_or_die()
+    try:
+        client = mc2_db.get_client(config)
+    except BackendUnavailable as exc:
+        click.echo(f"cp stub-sweep needs MC-2: {exc}", err=True)
+        sys.exit(1)
+
+    try:
+        mc2_id = mc2_db._resolve_project_id(client, code)
+    except Exception:  # noqa: BLE001 — resolution is best-effort
+        mc2_id = None
+    try:
+        spine_dir = find_spine_dir(config.root, code, mc2_id=mc2_id)
+    except SpineDirNotFound:
+        spine_dir = None
+    codes = [code]
+    if spine_dir is not None and spine_dir.name != code:
+        codes.append(spine_dir.name)
+
+    rows = (
+        client.table(mc2_db.Tables.SPINE_SUBSTANCE)
+        .select(mc2_db.STUB_SWEEP_COLUMNS)
+        .in_("project_code", codes)
+        .eq("status", "live")
+        .execute()
+        .data
+    ) or []
+    rows = [r for r in rows if not r.get("archived")]
+    if not rows:
+        tried = "' / '".join(codes)
+        click.echo(f"No live spine for '{tried}'.", err=True)
+        sys.exit(1)
+
+    relations = (
+        client.table(mc2_db.Tables.SPINE_RELATIONS)
+        .select("kind, from_item_id, to_item_id")
+        .in_("project_code", codes)
+        .eq("status", "active")
+        .execute()
+        .data
+    ) or []
+
+    click.echo(render_sweep(find_stubs(rows, relations), code=code))
+
+
 @click.command("exec-lint")
 @click.argument("code")
 def exec_lint_cmd(code: str) -> None:
