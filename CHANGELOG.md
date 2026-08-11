@@ -4,6 +4,67 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.94.0 — 2026-08-11
+
+Closing the compression loop (#175, #174, #177, #176) — and correcting the
+diagnosis the plan was built on.
+
+- **`cp seal-sweep <code>` — ask what a shipped round consumed (#175).**
+  `absorbed_by` had fired TWICE in the tenant's history. Not a discipline
+  failure: nothing ever asked. `wrap up` checked word counts, spine lint and
+  commitments, never *"this deliverable shipped a version; what did it
+  consume?"* — so the spine only accumulated. For each deliverable versioned
+  in the last 14 days the sweep lists what fed it and prints the
+  `seal_to_deliverable` call. Read-only; sealing stays a deliberate act.
+  Holds back inputs still feeding an unshipped deliverable (#164 step 2) and
+  skips what is already absorbed.
+- **The premise of #174 was wrong, and the correction is the point.** The
+  plan said `seal_to_deliverable` walks feeds edges, so "86% of the spine can
+  never be absorbed". It does not — it takes `absorbed_keys` explicitly with
+  no eligibility check, so anything was always sealable. The measurements were
+  right; the mechanism attached to them was invented. Nothing was blocking
+  absorption except the absence of the question.
+- **`serves` does not point at deliverables (#174, re-scoped).** Of 165
+  routings tenant-wide, 104 target a bare estimate slot, 43 an Activity, 18 a
+  Deliverable — and those 18 are mostly cards #177 flags as misfiled. The
+  intended source→deliverable proposal targets a relationship that does not
+  occur, and the implied source→activity→deliverable chain has exactly ONE
+  second hop tenant-wide. The bulk backfill was dropped rather than
+  manufactured from coincidence: a wrong feeds edge teaches the sweep to
+  absorb live work. Instead **seal-sweep walks the chain** — an element routed
+  to an activity that feeds a shipped deliverable is a candidate, marked
+  `via <activity>` and sorted below every direct edge. On real sap-5174 rows,
+  adding one activity→deliverable edge turns 1 candidate into 22. That is the
+  unit of work: ~43 decisions tenant-wide, one per activity, each already
+  named by spine-lint as a dead-end activity.
+- **spine-lint checks CLASSIFICATION, not just content (#177).** The
+  Deliverables layer is what a cold reader trusts to answer "what are we
+  making?", and three of five cards on ibx-5192's were something else. Two
+  checks: a framing that reads as an event or a reaction rather than an
+  artifact ("Kick off and direction for Geoff Ahmann", "Initial feedback on
+  Derek's designs"), and a thin first-version card that points nowhere. The
+  issue's check 1 (`layer IS NULL`) already shipped in #158.
+- **spine-lint: archived-but-referenced and partially-archived (#176).** A
+  live card pointing at an archived one sends the reader nowhere. Matched by
+  active edge, by id, and by the archived element's TITLE quoted in prose —
+  that last shape is how the motivating case is actually written
+  (``superseded by `SRS Arc B — v08→r01 build delta` ``), so an id-only check
+  would have missed it. Separately, `retire` is element-level while the plain
+  archive action writes only the selected rows, leaving elements half-hidden;
+  two in the tenant are in that state.
+- **Fixed: the dead-end-activity check never saw a feeds edge.** `spine-lint`
+  fetched only `canon_of`/`absorbed_by`/`supersedes`, but check 7 (shipped
+  v0.93.0) reads `informs`/`derives_from` — so it flagged EVERY activity as a
+  dead end. Now fetches all active edges; ibx-5153 drops from flagging every
+  activity to one genuine case.
+- **Two defects the live runs caught that fixtures did not.** The rendered
+  seal call was space-separated, not comma-separated — valid-looking, invalid
+  Python, and every "is the key in the text?" assertion passed it; the test
+  now `ast.parse()`s it. And an empty candidate list was reported as "already
+  compressed" even when the real cause was NO EDGES AT ALL — sap-5171 has 27
+  live elements, 2 shipped deliverables and zero feed edges, so the sweep is
+  BLIND there, which is not a clean bill. It now says which.
+
 ## v0.93.1 — 2026-08-09
 
 - **`output` folds into `Deliverables` (#172).** The shared `spine-authoring`
