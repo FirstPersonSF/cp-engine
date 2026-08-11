@@ -365,3 +365,95 @@ def test_misfiled_wins_over_thin_so_one_card_gets_one_verdict() -> None:
             if "misfiled on Deliverables" in w or "empty deliverable" in w]
     assert len(hits) == 1
     assert "misfiled" in hits[0]
+
+
+# --- #176: archive integrity -----------------------------------------------
+
+from cp_engine.spine_lint import lint_archived_referrers, lint_partial_archive
+
+
+def _arow(eid, framing, **kw):
+    row = {"est_item_id": eid, "framing": framing, "body": "", "sources": [],
+           "archived": False, "layer": "Deliverables"}
+    row.update(kw)
+    return row
+
+
+def test_archived_element_named_by_TITLE_in_prose_is_flagged() -> None:
+    """The motivating case writes the reference as a quoted TITLE, not an id:
+    '[HISTORICAL — superseded by `SRS Arc B — v08→r01 build delta`]'. An
+    id-only check would miss the very card the issue was filed about."""
+    archived = [_arow("_authored/srs-arc-b-delta",
+                      "SRS Arc B — v08→r01 build delta", archived=True)]
+    live = [_arow("_authored/srs-response", "SRS Response",
+                  body="> **[HISTORICAL — superseded by "
+                       "`SRS Arc B — v08→r01 build delta`]**")]
+    warns = lint_archived_referrers(live, archived, [])
+    assert any("archived but still referenced" in w for w in warns)
+    assert any("SRS Response" in w for w in warns)
+
+
+def test_archived_element_referenced_by_id_is_flagged() -> None:
+    archived = [_arow("_authored/gone", "A gone card", archived=True)]
+    live = [_arow("_authored/here", "A live card",
+                  body="see _authored/gone for the detail")]
+    assert lint_archived_referrers(live, archived, [])
+
+
+def test_archived_element_referenced_by_active_edge_is_flagged() -> None:
+    archived = [_arow("_authored/gone", "A gone card", archived=True)]
+    live = [_arow("_authored/deck", "The deck")]
+    warns = lint_archived_referrers(
+        live, archived,
+        [{"kind": "informs", "from_item_id": "_authored/gone",
+          "to_item_id": "_authored/deck"}],
+    )
+    assert any("(edge)" in w for w in warns)
+
+
+def test_unreferenced_archived_element_is_silent() -> None:
+    archived = [_arow("_authored/gone", "A gone card", archived=True)]
+    live = [_arow("_authored/here", "A live card", body="unrelated prose")]
+    assert lint_archived_referrers(live, archived, []) == []
+
+
+def test_short_titles_do_not_match_ordinary_prose() -> None:
+    """A framing like 'Notes' or a person's name collides with normal text;
+    matching it would fire on every card that used the word."""
+    archived = [_arow("_authored/n", "Notes", archived=True)]
+    live = [_arow("_authored/here", "A live card",
+                  body="Notes from the call are below.")]
+    assert lint_archived_referrers(live, archived, []) == []
+
+
+def test_half_archived_element_is_not_reported_as_dangling() -> None:
+    """If some versions are still live the element remains readable — that is
+    the partial-archive defect, not a dangling pointer. Reporting both would
+    double-count one problem."""
+    archived = [_arow("_authored/half", "A half-archived card", archived=True)]
+    live = [_arow("_authored/half", "A half-archived card"),
+            _arow("_authored/ref", "Referrer",
+                  body="points at _authored/half")]
+    assert lint_archived_referrers(live, archived, []) == []
+
+
+def test_partial_archive_is_flagged() -> None:
+    rows = [
+        _arow("_authored/x", "Held deck", archived=True),
+        _arow("_authored/x", "Held deck", archived=False),
+    ]
+    warns = lint_partial_archive(rows)
+    assert any("partially archived" in w for w in warns)
+    assert any("1 archived version(s) and 1 live" in w for w in warns)
+
+
+def test_fully_archived_and_fully_live_elements_are_silent() -> None:
+    all_archived = [_arow("_authored/a", "A", archived=True),
+                    _arow("_authored/a", "A", archived=True)]
+    all_live = [_arow("_authored/b", "B"), _arow("_authored/b", "B")]
+    assert lint_partial_archive(all_archived) == []
+    assert lint_partial_archive(all_live) == []
+
+
+def test_no_archived_rows_short_circuits() -> None:
+    assert lint_archived_referrers([_arow("_authored/x", "X")], [], []) == []

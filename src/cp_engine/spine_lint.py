@@ -234,6 +234,15 @@ def _first_version(label) -> bool:
     return bool(_FIRST_VERSION_RE.match(str(label or "")))
 
 
+# #176 — a live card's prose names its successor by TITLE, not by id:
+#   > **[HISTORICAL — superseded by `SRS Arc B — v08→r01 build delta`]**
+# An id-only reference check would miss the very case the issue was filed
+# about, so framings are matched too. Only titles this long are matched — a
+# short framing ("Notes", "Marcello Grande") collides with ordinary prose and
+# would fire on every card that happened to use the word.
+REFERENCE_TITLE_MIN_CHARS = 18
+
+
 def lint_curation(rows: list[dict], *, today=None) -> list[str]:
     """Curation drift over live rows (#112 P3, #158 gaps 2–4). Pure, warn-only.
 
@@ -360,3 +369,110 @@ def lint_cp_placeholders(cp_md_text: str) -> list[str]:
     return [f"⚠ scaffold placeholders: cp.md still carries {len(hits)} "
             f"template bullet(s), e.g. `{first}`{more} — write a real line "
             "or note that state lives in the Exec Summary + spine"]
+
+
+def lint_archived_referrers(
+    live_rows: list[dict],
+    archived_rows: list[dict],
+    relations: list[dict],
+) -> list[str]:
+    """Live elements that point at something ARCHIVED (#176).
+
+    Archiving says "this shouldn't exist". When a live card names an archived
+    one, the reader is told where to go next and the destination is hidden —
+    found in use on ibx-5192, where a HISTORICAL banner names its successor
+    and that successor is archived.
+
+    Three reference shapes, because the real cases use different ones:
+
+      - an **active typed edge** to or from the archived element;
+      - the archived element's **est_item_id** in a live body or `sources`;
+      - the archived element's **framing** quoted in a live body — which is
+        how the motivating case is actually written (``superseded by `SRS
+        Arc B — v08→r01 build delta` ``), so an id-only check would miss it.
+
+    Warn-only and never a block: archiving a referenced element is sometimes
+    right. It should be a decision, not a surprise.
+    """
+    if not archived_rows:
+        return []
+
+    live_by_id = {r.get("est_item_id"): r for r in live_rows if r.get("est_item_id")}
+    edges_by_endpoint: dict[str, set[str]] = {}
+    for e in relations:
+        for near, far in (("from_item_id", "to_item_id"),
+                          ("to_item_id", "from_item_id")):
+            a, b = e.get(near), e.get(far)
+            if a and b and b in live_by_id:
+                edges_by_endpoint.setdefault(a, set()).add(b)
+
+    out: list[str] = []
+    seen: set[str] = set()
+    for arch in archived_rows:
+        eid = arch.get("est_item_id")
+        if not eid or eid in seen or eid in live_by_id:
+            # `eid in live_by_id` is the half-archived case: some versions
+            # archived, some live. That is its own defect (below), not a
+            # dangling reference — the element is still readable.
+            continue
+        seen.add(eid)
+        title = arch.get("framing") or eid
+
+        referrers: list[str] = []
+        for ref_id in sorted(edges_by_endpoint.get(eid, ())):
+            referrers.append(f"{live_by_id[ref_id].get('framing') or ref_id} (edge)")
+        for ref_id, row in live_by_id.items():
+            body = row.get("body") or ""
+            src_blob = str(row.get("sources") or "")
+            hit = eid in body or eid in src_blob
+            if (not hit and len(str(title)) >= REFERENCE_TITLE_MIN_CHARS
+                    and str(title) in body):
+                hit = True
+            if hit:
+                label = f"{row.get('framing') or ref_id} (names it)"
+                if label not in referrers:
+                    referrers.append(label)
+        if not referrers:
+            continue
+
+        shown = "; ".join(referrers[:3])
+        more = f" (+{len(referrers) - 3} more)" if len(referrers) > 3 else ""
+        out.append(
+            f"⚠ archived but still referenced: '{title}' ({eid}) is archived, "
+            f"yet {len(referrers)} live element(s) point at it — {shown}{more}. "
+            "Following the pointer leads nowhere: un-archive it, absorb it "
+            "into what replaced it, or fix the referrer")
+
+    return out
+
+
+def lint_partial_archive(all_rows: list[dict]) -> list[str]:
+    """Elements archived on SOME versions but not others (#176).
+
+    `retire` is element-level — it archives every version of an est_item_id.
+    The plain archive action writes only the selected row ids, so archiving
+    from a version view leaves the rest live and the element reads
+    inconsistently: hidden in one view, present in another. Two elements in
+    the tenant are in this state.
+
+    `all_rows` is every row for the project, archived and live alike.
+    """
+    versions: dict[str, list[dict]] = {}
+    for r in all_rows:
+        eid = r.get("est_item_id")
+        if eid:
+            versions.setdefault(eid, []).append(r)
+
+    out: list[str] = []
+    for eid, rows in sorted(versions.items()):
+        archived = [r for r in rows if r.get("archived")]
+        live = [r for r in rows if not r.get("archived")]
+        if not archived or not live:
+            continue
+        title = (archived[0].get("framing") or live[0].get("framing") or eid)
+        out.append(
+            f"⚠ partially archived: '{title}' ({eid}) has "
+            f"{len(archived)} archived version(s) and {len(live)} live — the "
+            "element is half-hidden and reads inconsistently across views. "
+            "Archive is element-level like retire: archive all versions or none")
+    return out
