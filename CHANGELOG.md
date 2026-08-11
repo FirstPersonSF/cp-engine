@@ -4,6 +4,33 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.95.0 — 2026-08-11
+
+- **`cp stub-sweep <code>` — empty Source-material cards, and where their
+  provenance belongs (#178).** 82 live elements are Source-material cards under
+  200 chars whose bodies are pure ingest boilerplate (`Ingested document: **X**
+  (doc)` plus a rag_asset line) — with the SAME rag_asset already sitting in the
+  card's own `sources` array. The card is a wrapper around a pointer it
+  duplicates.
+- **But it is a transfer, not a delete — the issue's fix would have destroyed
+  real input.** 79 of the 82 carry a `serves` binding: the routing judgement
+  naming which activity or slot the document belongs to, and exactly what
+  `seal-sweep`'s chain walk reads. "Attach where they informed something,
+  retire where they informed nothing" as written deletes all 79. The sweep
+  instead proposes moving the source onto the element the stub served, then
+  retiring the card. (Also corrected: these carry `origin='authored'`, so "every
+  ingest mints an element" does not describe what produced them either.)
+- **Two things it refuses to do.** 14 stubs serve a bare estimate slot that is
+  not a spine element — nothing to attach to, so nothing is proposed; inventing
+  a target is the mistake that killed #174's backfill. And 34 of the 65
+  attachable stubs route to a card with `layer: null`, which `spine-lint`
+  already flags as unfilable — moving real provenance onto a broken card buries
+  it, so those carry an explicit ordering constraint: fix the destination (#177)
+  first. On ibx-5192 that is 16 of 23, all pointing at the same pasted-prompt
+  card.
+- Read-only, like `seal-sweep` and `commitments-sweep`. Nothing is migrated;
+  this is the decision surface.
+
 ## v0.94.0 — 2026-08-11
 
 Closing the compression loop (#175, #174, #177, #176) — and correcting the

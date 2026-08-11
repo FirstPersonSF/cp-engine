@@ -169,6 +169,18 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   feed edges, so the sweep can propose nothing there. Wire the edge, re-run.
   Absorbing is a compression event; sealing the wrong element silently drops
   live work out of the default read, which is why nothing here is automatic.
+- `cp stub-sweep <code>` — **CLI, read-only** (#178) — empty Source-material
+  cards and where their provenance belongs. A card whose body is only the
+  ingest's boilerplate (`Ingested document: **X** (doc)`) wraps a rag_asset
+  already in its own `sources`. But most carry a `serves` binding — the routing
+  judgement `seal-sweep`'s chain walk reads — so the move is a TRANSFER:
+  `add_element_source` onto the element the stub served, THEN retire the card.
+  Retiring first loses the routing.
+
+  Two categories it deliberately leaves alone: stubs serving a bare estimate
+  slot (nothing to attach to) and stubs whose target has `layer: null` (moving
+  provenance onto a card spine-lint calls unfilable buries it — fix the
+  destination first). Not a wrap-up ritual; run it when curating a project.
 - `promote_stakeholder(code, key)` — **hosted-server verb** (`cp-hosted`
   connector; cp-engine #143 ported it off stdio) — promote a stakeholder element
   to ACCOUNT scope: it becomes readable from every project of the same company
