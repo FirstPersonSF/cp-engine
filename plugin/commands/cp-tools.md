@@ -152,6 +152,23 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   `include_absorbed=true` (retrospective mode). Absorbed ≠ archived — one hop
   behind the deliverable, not gone. Idempotent per pair; one journal step on
   the deliverable.
+- `cp seal-sweep <code> [--all] [--within DAYS]` — **CLI, read-only** (#175) —
+  the question that makes the verb above get used. For each deliverable that
+  shipped a version in the last 14 days, lists the elements that fed it —
+  `derives_from` (built from) / `informs` (shaped) / `responds_to` (feedback
+  this version answered) — and prints the `seal_to_deliverable` call for
+  copy-paste. Skips anything already absorbed, and anything still feeding a
+  deliverable that has NOT shipped (that is live work for another round).
+  `--all` drops the date window for a project never swept before.
+
+  **Read the output carefully — two different states look alike.** A round
+  with no candidates is reported as either *"already compressed"* (its inputs
+  were absorbed) or *"⚠ No edges into this deliverable"* (nothing ever
+  recorded what fed it, so the sweep is BLIND). The second is not a clean
+  bill: sap-5171 carries 27 live elements, 2 shipped deliverables and zero
+  feed edges, so the sweep can propose nothing there. Wire the edge, re-run.
+  Absorbing is a compression event; sealing the wrong element silently drops
+  live work out of the default read, which is why nothing here is automatic.
 - `promote_stakeholder(code, key)` — **hosted-server verb** (`cp-hosted`
   connector; cp-engine #143 ported it off stdio) — promote a stakeholder element
   to ACCOUNT scope: it becomes readable from every project of the same company

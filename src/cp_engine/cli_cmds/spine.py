@@ -790,6 +790,108 @@ def spine_lint_cmd(code: str) -> None:
         click.echo(f"{code} — spine lint clean.")
 
 
+@click.command("seal-sweep")
+@click.argument("code")
+@click.option(
+    "--all",
+    "all_deliverables",
+    is_flag=True,
+    help="Every deliverable regardless of version date, not just recent ones. "
+    "Use for a project that has never been swept.",
+)
+@click.option(
+    "--within",
+    type=int,
+    default=None,
+    metavar="DAYS",
+    help="Recency window for 'shipped a version' (default 14).",
+)
+@click.option(
+    "--today",
+    type=click.DateTime(formats=["%Y-%m-%d"]),
+    default=None,
+    help="Override today's date (YYYY-MM-DD). Useful for testing.",
+)
+def seal_sweep_cmd(
+    code: str, all_deliverables: bool, within: int | None, today
+) -> None:
+    """Ask what a shipped round consumed — the seal prompt (#175).
+
+    For each deliverable that shipped a version recently, lists the elements
+    it plausibly absorbed (`derives_from` / `informs` / `responds_to` edges
+    into it), skipping anything already absorbed and anything still feeding a
+    deliverable that has NOT shipped. Prints the `seal_to_deliverable` call
+    for what survives review.
+
+    READ-ONLY. Sealing moves elements out of the default read, so it stays a
+    deliberate act on the `cp-hosted` connector — this makes the decision
+    cheap, not automatic. Run per touched project at `wrap up`, alongside
+    spine-lint and the commitments sweep.
+    """
+    from datetime import date as _date
+
+    from cp_engine.seal_sweep import (
+        DEFAULT_SHIPPED_WITHIN_DAYS,
+        build_rounds,
+        render_sweep,
+    )
+    from cp_engine.spine import SpineDirNotFound, find_spine_dir
+    from cp_engine.sync import BackendUnavailable
+
+    config = _cli._load_config_or_die()
+    try:
+        client = mc2_db.get_client(config)
+    except BackendUnavailable as exc:
+        click.echo(f"cp seal-sweep needs MC-2: {exc}", err=True)
+        sys.exit(1)
+
+    # Same dual-spelling resolution as spine-lint (#151): a drifted project
+    # carries live rows under both the short code and the dir slug.
+    try:
+        mc2_id = mc2_db._resolve_project_id(client, code)
+    except Exception:  # noqa: BLE001 — resolution is best-effort
+        mc2_id = None
+    try:
+        spine_dir = find_spine_dir(config.root, code, mc2_id=mc2_id)
+    except SpineDirNotFound:
+        spine_dir = None
+    codes = [code]
+    if spine_dir is not None and spine_dir.name != code:
+        codes.append(spine_dir.name)
+
+    rows = (
+        client.table(mc2_db.Tables.SPINE_SUBSTANCE)
+        .select(mc2_db.SEAL_SWEEP_COLUMNS)
+        .in_("project_code", codes)
+        .eq("status", "live")
+        .execute()
+        .data
+    ) or []
+    rows = [r for r in rows if not r.get("archived")]
+    if not rows:
+        tried = "' / '".join(codes)
+        click.echo(f"No live spine for '{tried}'.", err=True)
+        sys.exit(1)
+
+    relations = (
+        client.table(mc2_db.Tables.SPINE_RELATIONS)
+        .select("kind, from_item_id, to_item_id")
+        .in_("project_code", codes)
+        .eq("status", "active")
+        .execute()
+        .data
+    ) or []
+
+    rounds = build_rounds(
+        rows,
+        relations,
+        today=today.date() if today else _date.today(),
+        within_days=within if within is not None else DEFAULT_SHIPPED_WITHIN_DAYS,
+        all_deliverables=all_deliverables,
+    )
+    click.echo(render_sweep(rounds, code=code))
+
+
 @click.command("exec-lint")
 @click.argument("code")
 def exec_lint_cmd(code: str) -> None:

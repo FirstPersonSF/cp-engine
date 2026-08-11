@@ -360,21 +360,17 @@ This is the durable project-state surface; transient weekly material
 belongs in the sprint file, not the Exec Summary.
 
 **Also at wrap up — sweep `weekly-cp.md`'s cross-cutting decisions.**
-The `## Decisions (cross-cutting, last 4 weeks)` section accretes
-auto-ingested entries that nothing expires, and it feeds sprint
-planning's "Decisions partners owe each other" list. Once per wrap up:
-
-- Append `[resolved: <today> — <one-line outcome>]` to entries that are
-  DONE or EXPIRED (decision made, event passed, due date behind us) —
-  the planner then drops them. Ask when the outcome isn't obvious.
-- Undated entries: add the date if recoverable; otherwise leave them
-  (the planner flags them).
-- Never delete entries; the resolved marker IS the archive.
+`## Decisions (cross-cutting, last 4 weeks)` accretes auto-ingested
+entries that nothing expires, and feeds sprint planning. Once per wrap
+up: append `[resolved: <today> — <outcome>]` to entries that are done or
+expired (decision made, event passed, date behind us) so the planner
+drops them; ask when the outcome isn't obvious. Never delete — the
+resolved marker IS the archive.
 
 **Also at wrap up — sweep the touched projects' open commitments.**
-`cp commitments-sweep <code>` (or `list_commitments`) per touched
-project: resolve what the session completed, drop what it made moot,
-question undated rows ≥2 weeks old — the TTL expires them otherwise.
+`cp commitments-sweep <code>` per touched project: resolve what the
+session completed, drop what it made moot, question undated rows ≥2
+weeks old — the TTL expires them otherwise.
 
 ## Deepening from transcript
 
@@ -419,13 +415,19 @@ lives in that file's header. Real bugs still go to GitHub issues; never
 delete entries. `wrap up` sweeps for unlogged friction;
 `sweep improvements` harvests.
 
-## Spine lint at wrap up
+## Spine checks at wrap up
 
-Alongside word-count discipline, run `cp spine-lint <code>` for each
-project touched. WARN-ONLY: flags important-yet-unbound elements,
+Alongside word-count discipline, for each project touched:
+
+`cp spine-lint <code>` — WARN-ONLY: important-yet-unbound elements,
 Agreements missing their source (close via `add_element_source` on
 `cp-hosted`), scaffold placeholders in `cp.md`. Surface findings; fix
 only what the user confirms.
+
+`cp seal-sweep <code>` — for each deliverable that shipped a version,
+what fed it plus the `seal_to_deliverable` call. Absorbing a round's
+inputs keeps the spine distilled. Read its output carefully:
+`/cp-tools`.
 
 ## After a cp-engine release: restart `cp mcp`
 

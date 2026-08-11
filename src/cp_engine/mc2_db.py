@@ -181,6 +181,14 @@ SPINE_LINT_COLUMNS = (
 )
 # add/remove_element_source — every version row + its sources array (the
 # element-level fact moves across all versions together, like serves).
+# cp seal-sweep — "what did this shipped round consume?" (#175). Needs the
+# version bookkeeping (which deliverables shipped, when) plus enough to render
+# a candidate for review. No `body`: the sweep names elements, never quotes
+# them, so the large column stays out of the read.
+SEAL_SWEEP_COLUMNS = (
+    "est_item_id, framing, layer, status, archived, version_label, "
+    "version_date, project_id"
+)
 SPINE_SOURCES_EDIT_COLUMNS = (
     "id, est_item_id, framing, status, archived, scope, company_id, "
     "project_id, sources"
