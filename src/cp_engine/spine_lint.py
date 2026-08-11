@@ -199,6 +199,40 @@ _INSTRUCTION_FRAMING_RE = re.compile(
     r"\byou\s+(?:can|should|will|need)\b|^please\s|\bcapture\s+our\b",
     re.IGNORECASE)
 
+# #177 — framings that describe an EVENT or a REACTION rather than an
+# artifact. Every phrase here was observed on the live Deliverables layer:
+# "Kick off and direction for Geoff Ahmann", "Clarification on the
+# deliverable for Mehul", "Initial feedback on Derek's designs", "AI campaign
+# direction workshop (decision gate)". Anchored to the START of the framing —
+# a real deliverable may well mention feedback ("Response to Platform
+# Narrative Feedback") without BEING feedback.
+_NOT_A_DELIVERABLE_RE = re.compile(
+    r"^\s*(?:initial\s+)?(?:feedback\b|notes?\s+(?:from|on)\b|"
+    r"clarification\b|kick[\s-]?off\b|debrief\b|recap\b|"
+    r"(?:post[\s-])?meeting\b|discussion\b|reactions?\s+to\b)",
+    re.IGNORECASE)
+
+# A deliverable at its first version carrying less than this is thin.
+# Deliberately well under BRIEF_MIN_CHARS: the fat v1s in the tenant
+# (2.3k–24k chars) are genuine deliverables that shipped once.
+STUB_BODY_MAX = 400
+_FIRST_VERSION_RE = re.compile(r"^\s*v?0*1\s*$", re.IGNORECASE)
+
+# ...but thin is not the same as empty. A POINTER card is legitimate: it
+# summarises a deliverable whose substance lives in a file or an attached
+# source ("Delivered 6/12. See synthesis-docs/storyos_campaign_brief.md.").
+# The first live run flagged seven of these on ibx-5153 — all real,
+# delivered work. What is actually wrong is a thin card that points NOWHERE.
+_POINTER_RE = re.compile(
+    r"\bsee\s+\S+|\.(?:md|docx?|pptx?|pdf|xlsx?)\b|https?://|"
+    r"\bdeliver(?:ed|y)\b|\bdue\b|\bdraft\b",
+    re.IGNORECASE)
+
+
+def _first_version(label) -> bool:
+    """True for v1 / V1 / 1 / v01 — a deliverable that never moved."""
+    return bool(_FIRST_VERSION_RE.match(str(label or "")))
+
 
 def lint_curation(rows: list[dict], *, today=None) -> list[str]:
     """Curation drift over live rows (#112 P3, #158 gaps 2–4). Pure, warn-only.
@@ -241,6 +275,37 @@ def lint_curation(rows: list[dict], *, today=None) -> list[str]:
                 f"⚠ undistilled capture: '{title}' ({eid}) is "
                 f"{len(body):,} chars on the {layer} layer — distill into "
                 "the card and attach the raw text as a source instead")
+
+        # #177 — CLASSIFICATION, not content. The Deliverables layer is what a
+        # cold reader trusts to answer "what are we making?", and on ibx-5192
+        # three of five cards on it were something else. Both checks below are
+        # scoped tightly on purpose: 13 of the tenant's 19 shipped deliverables
+        # sit at v1, so "never versioned" alone would flag most of the layer
+        # and teach the reader to skim past the lint.
+        if _norm_layer(layer) in ("deliverables", "output"):
+            # A deliverable names an artifact; these name an EVENT or a
+            # REACTION to one. "Kick off and direction for Geoff Ahmann" and
+            # "Clarification on the deliverable for Mehul" sat here for a
+            # month; "Initial feedback on Derek's designs" still does.
+            if _NOT_A_DELIVERABLE_RE.search(row.get("framing") or ""):
+                out.append(
+                    f"⚠ misfiled on Deliverables: '{title}' ({eid}) reads as "
+                    "a meeting, a note, or feedback — not an artifact we are "
+                    "making. Reclassify (Note / Activity / Client feedback); "
+                    "the Deliverables layer is what a cold reader trusts")
+            # A thin card at v1 that points nowhere: no substance, no file,
+            # no attached source, no delivery language. A pointer card is
+            # fine — the work lives elsewhere and the card says where.
+            elif (_first_version(row.get("version_label"))
+                    and len(body) < STUB_BODY_MAX
+                    and not (row.get("sources") or [])
+                    and not _POINTER_RE.search(body)):
+                out.append(
+                    f"⚠ empty deliverable: '{title}' ({eid}) is "
+                    f"{len(body)} chars at {row.get('version_label')} with "
+                    "no attached source and no pointer to where the work "
+                    "lives — say what it is, attach it, or move it off the "
+                    "Deliverables layer")
 
         # #158 gap 4 — unlayered, or framing that is a pasted instruction.
         if layer is None:

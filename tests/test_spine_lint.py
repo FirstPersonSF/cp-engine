@@ -242,3 +242,126 @@ def test_curation_flags_unlayered_and_instruction_framing() -> None:
 
 def test_curation_clean_rows_are_clean() -> None:
     assert lint_curation([_crow()], today=_TODAY) == []
+
+
+# --- #177: classification checks on the Deliverables layer -----------------
+# Every framing below was observed live on 2026-08-11.
+
+
+def test_deliverables_layer_flags_event_and_reaction_framings() -> None:
+    for framing in (
+        "Kick off and direction for Geoff Ahmann for the PPT design",
+        "Clarification on the deliverable for Mehul",
+        "Initial feedback on Derek's designs",
+        "Notes from the 8/5 team review",
+        "Post-meeting debrief",
+    ):
+        warns = lint_curation(
+            [_crow(framing=framing, layer="Deliverables", version_label="v2",
+                   body="x" * 3000)],
+            today=_TODAY,
+        )
+        assert any("misfiled on Deliverables" in w for w in warns), framing
+
+
+def test_a_real_deliverable_mentioning_feedback_is_not_flagged() -> None:
+    """'Response to Platform Narrative Feedback' IS a deliverable — a
+    client-facing communication. The check is anchored to the start of the
+    framing so a deliverable may mention feedback without being it."""
+    warns = lint_curation(
+        [_crow(framing="SRS Response to Platform Narrative Feedback — v02",
+               layer="Deliverables", version_label="v3", body="x" * 3000)],
+        today=_TODAY,
+    )
+    assert not any("misfiled on Deliverables" in w for w in warns)
+
+
+def test_thin_v1_deliverable_pointing_nowhere_is_flagged() -> None:
+    warns = lint_curation(
+        [_crow(framing="Campaign concepts", layer="Deliverables",
+               version_label="v1", body="Some concepts.", sources=[])],
+        today=_TODAY,
+    )
+    assert any("empty deliverable" in w for w in warns)
+
+
+def test_a_thin_POINTER_card_is_not_flagged() -> None:
+    """The first live run flagged seven of these on ibx-5153 — every one a
+    real, delivered deliverable whose substance lives in a file. A card that
+    says WHERE the work is is doing its job; thin is not the same as empty."""
+    for body in (
+        "Campaign brief operationalizing the foundation. Delivered 6/12. "
+        "See synthesis-docs/storyos_campaign_brief.md.",
+        "~30-min pre-read for attendees: strategic inputs, candidate "
+        "directions, the five decisions needed. Delivered 6/12.",
+        "Client-owned; final map due 6/26. We reconcile against it.",
+    ):
+        warns = lint_curation(
+            [_crow(framing="A deliverable", layer="Deliverables",
+                   version_label="v1", body=body, sources=[])],
+            today=_TODAY,
+        )
+        assert not any("empty deliverable" in w for w in warns), body[:40]
+
+
+def test_a_thin_card_with_an_attached_source_is_not_flagged() -> None:
+    warns = lint_curation(
+        [_crow(framing="A deliverable", layer="Deliverables",
+               version_label="v1", body="Short.",
+               sources=[{"title": "the actual deck.pptx"}])],
+        today=_TODAY,
+    )
+    assert not any("empty deliverable" in w for w in warns)
+
+
+def test_a_substantial_v1_deliverable_is_left_alone() -> None:
+    """13 of the tenant's 19 shipped deliverables sit at v1; the fat ones are
+    genuine work that shipped once. Flagging them all would drown the lint."""
+    warns = lint_curation(
+        [_crow(framing="Workshop Master Run of Show v05", layer="Deliverables",
+               version_label="v1", body="x" * 16_000)],
+        today=_TODAY,
+    )
+    assert not any("empty deliverable" in w for w in warns)
+
+
+def test_a_versioned_deliverable_is_never_stub_flagged() -> None:
+    warns = lint_curation(
+        [_crow(framing="Mehul — SRS field deck", layer="Deliverables",
+               version_label="v6", body="x" * 100)],
+        today=_TODAY,
+    )
+    assert not any("empty deliverable" in w for w in warns)
+
+
+def test_output_alias_gets_the_same_classification_checks() -> None:
+    warns = lint_curation(
+        [_crow(framing="Initial feedback on the designs", layer="Output",
+               version_label="v2", body="x" * 3000)],
+        today=_TODAY,
+    )
+    assert any("misfiled on Deliverables" in w for w in warns)
+
+
+def test_classification_checks_do_not_fire_off_the_deliverables_layer() -> None:
+    warns = lint_curation(
+        [_crow(framing="Initial feedback on Derek's designs",
+               layer="Client feedback", version_label="v1", body="x" * 100)],
+        today=_TODAY,
+    )
+    assert not any("misfiled on Deliverables" in w or "empty deliverable" in w
+                   for w in warns)
+
+
+def test_misfiled_wins_over_thin_so_one_card_gets_one_verdict() -> None:
+    """A thin, event-shaped card is misfiled — saying both would double-count
+    the same defect and inflate the warning list."""
+    warns = lint_curation(
+        [_crow(framing="Kick off and direction for Geoff", layer="Deliverables",
+               version_label="v1", body="x" * 100)],
+        today=_TODAY,
+    )
+    hits = [w for w in warns
+            if "misfiled on Deliverables" in w or "empty deliverable" in w]
+    assert len(hits) == 1
+    assert "misfiled" in hits[0]

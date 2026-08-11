@@ -36,6 +36,26 @@ Elements already absorbed anywhere are excluded — absorption is not
 re-proposed. So is the deliverable itself, and anything that still feeds a
 DIFFERENT deliverable with no shipped version (#164 step 2: don't close an
 input another open round is still living on).
+
+THE CHAIN (#174, re-scoped 2026-08-11)
+--------------------------------------
+Sources do not point at deliverables. `serves` — what routing writes at
+ingest — targets an ACTIVITY or a bare estimate slot; measured tenant-wide,
+104 of 165 routings hit a slot that is not a spine element, 43 an Activity,
+18 a Deliverable. So the real shape is two hops:
+
+    source --serves--> activity --informs/derives_from--> deliverable
+
+A sweep that only read edges pointing AT the deliverable would miss
+everything that arrived through an activity, which is how the work is
+actually routed. `build_rounds` therefore walks the chain: an element routed
+to an activity that feeds this deliverable is a candidate, marked `via` so
+the reviewer can see the reasoning is indirect and weigh it lower.
+
+The chain is only as good as its second hop, and that hop is what the tenant
+lacks — 1 activity→deliverable edge across every project. `cp spine-lint`
+already names each missing one (`⚠ dead-end activity`). Until they are wired,
+most rounds report BLIND, which is the honest answer and not a clean bill.
 """
 
 from __future__ import annotations
@@ -82,19 +102,29 @@ def _as_date(value: Any) -> date | None:
 
 @dataclass
 class Candidate:
-    """One element a shipped deliverable plausibly consumed."""
+    """One element a shipped deliverable plausibly consumed.
+
+    `via` names the activity a routed source reached the deliverable
+    THROUGH — empty for a direct edge. Indirect candidates are real (that is
+    how routing works) but weaker: the human bound the source to an activity,
+    not to this deliverable, so they sort below every direct edge and say so.
+    """
 
     est_item_id: str
     framing: str
     layer: str
     kinds: list[str]
+    via: str = ""
 
     @property
     def weight(self) -> int:
-        return max((_KIND_WEIGHT.get(k, 0) for k in self.kinds), default=0)
+        direct = max((_KIND_WEIGHT.get(k, 0) for k in self.kinds), default=0)
+        return direct if not self.via else 0
 
     @property
     def evidence(self) -> str:
+        if self.via:
+            return f"via {self.via}"
         return "+".join(sorted(self.kinds, key=lambda k: -_KIND_WEIGHT.get(k, 0)))
 
 
@@ -155,6 +185,16 @@ def build_rounds(
     by_id = {r.get("est_item_id"): r for r in rows if r.get("est_item_id")}
     into, absorbed = _feeds_index(relations)
 
+    # slot -> the elements routed to it. `serves` is a jsonb array of target
+    # est_item_ids; most point at bare estimate slots that are not spine
+    # elements, which is fine — those keys simply never match an activity.
+    routed_to: dict[str, list[str]] = {}
+    for r in rows:
+        eid = r.get("est_item_id")
+        for slot in r.get("serves") or []:
+            if eid and slot:
+                routed_to.setdefault(slot, []).append(eid)
+
     # An input still feeding a deliverable that has NOT shipped is live work
     # for that other round — never propose closing it (#164 step 2).
     shipped_ids = {
@@ -176,7 +216,20 @@ def build_rounds(
             if vdate is None or (today - vdate).days > within_days:
                 continue
 
-        sources = into.get(eid, {})
+        sources = dict(into.get(eid, {}))
+
+        # Second hop: anything ROUTED to an activity that feeds this
+        # deliverable also reached it. Direct edges win — a source with both
+        # keeps its direct evidence rather than being demoted to `via`.
+        indirect: dict[str, str] = {}
+        for activity_id in list(sources):
+            if _norm(by_id.get(activity_id, {}).get("layer")) != "activity":
+                continue
+            activity_name = by_id[activity_id].get("framing") or activity_id
+            for src in routed_to.get(activity_id, ()):
+                if src not in sources and src not in indirect:
+                    indirect[src] = activity_name
+
         candidates = [
             Candidate(
                 est_item_id=src,
@@ -192,7 +245,21 @@ def build_rounds(
             and src != eid
             and src not in feeding_unshipped
         ]
-        candidates.sort(key=lambda c: (-c.weight, c.framing.lower()))
+        candidates.extend(
+            Candidate(
+                est_item_id=src,
+                framing=by_id[src].get("framing") or src,
+                layer=by_id[src].get("layer") or "—",
+                kinds=["serves"],
+                via=activity_name,
+            )
+            for src, activity_name in indirect.items()
+            if src not in absorbed
+            and src in by_id
+            and src != eid
+            and src not in feeding_unshipped
+        )
+        candidates.sort(key=lambda c: (-c.weight, bool(c.via), c.framing.lower()))
         rounds.append(
             Round(
                 est_item_id=eid,

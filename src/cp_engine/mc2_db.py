@@ -187,7 +187,7 @@ SPINE_LINT_COLUMNS = (
 # them, so the large column stays out of the read.
 SEAL_SWEEP_COLUMNS = (
     "est_item_id, framing, layer, status, archived, version_label, "
-    "version_date, project_id"
+    "version_date, serves, project_id"
 )
 SPINE_SOURCES_EDIT_COLUMNS = (
     "id, est_item_id, framing, status, archived, scope, company_id, "

@@ -281,6 +281,119 @@ def test_a_round_whose_inputs_are_all_absorbed_reads_as_compressed():
     assert "the sweep is blind" not in text
 
 
+ACTIVITY = "_authored/deck-build-activity"
+SOURCE = "_authored/some-ingested-source"
+
+
+def _row_serving(eid, framing, layer, slot):
+    row = _row(eid, framing, layer)
+    row["serves"] = [slot]
+    return row
+
+
+def test_a_source_routed_to_a_feeding_activity_is_a_candidate():
+    """The two-hop chain (#174 re-scoped). Sources are routed to ACTIVITIES,
+    not deliverables — 104 of 165 tenant routings don't even hit a spine
+    element. A sweep reading only edges INTO the deliverable misses how the
+    work is actually routed."""
+    rows = _base_rows() + [
+        _row(ACTIVITY, "Deck build", "Activity"),
+        _row_serving(SOURCE, "Ingested source doc", "Source material", ACTIVITY),
+    ]
+    rounds = build_rounds(
+        rows, [_edge("derives_from", ACTIVITY, DECK_MEHUL)], today=TODAY
+    )
+    mehul = next(r for r in rounds if r.est_item_id == DECK_MEHUL)
+    got = {c.est_item_id: c for c in mehul.candidates}
+    assert SOURCE in got
+    assert got[SOURCE].via == "Deck build"
+    assert got[SOURCE].evidence == "via Deck build"
+
+
+def test_indirect_candidates_sort_below_every_direct_edge():
+    rows = _base_rows() + [
+        _row(ACTIVITY, "Deck build", "Activity"),
+        _row_serving(SOURCE, "Ingested source doc", "Source material", ACTIVITY),
+    ]
+    rounds = build_rounds(
+        rows,
+        [
+            _edge("derives_from", ACTIVITY, DECK_MEHUL),
+            _edge("responds_to", FEEDBACK_MEHUL, DECK_MEHUL),
+        ],
+        today=TODAY,
+    )
+    mehul = next(r for r in rounds if r.est_item_id == DECK_MEHUL)
+    # responds_to is the WEAKEST direct kind and must still outrank `via`.
+    assert [c.est_item_id for c in mehul.candidates][-1] == SOURCE
+
+
+def test_a_direct_edge_beats_the_same_element_arriving_indirectly():
+    """An element both routed to the activity AND edged to the deliverable
+    keeps its direct evidence — it must not be demoted to `via`, and must
+    not appear twice."""
+    rows = _base_rows() + [
+        _row(ACTIVITY, "Deck build", "Activity"),
+        _row_serving(PILLAR_RULING, "Pillar ruling", "Decision", ACTIVITY),
+    ]
+    rounds = build_rounds(
+        rows,
+        [
+            _edge("derives_from", ACTIVITY, DECK_MEHUL),
+            _edge("informs", PILLAR_RULING, DECK_MEHUL),
+        ],
+        today=TODAY,
+    )
+    mehul = next(r for r in rounds if r.est_item_id == DECK_MEHUL)
+    hits = [c for c in mehul.candidates if c.est_item_id == PILLAR_RULING]
+    assert len(hits) == 1
+    assert hits[0].via == ""
+    assert hits[0].evidence == "informs"
+
+
+def test_routing_to_a_non_feeding_activity_yields_nothing():
+    """The chain needs BOTH hops. An activity with no edge to the deliverable
+    is a dead end — 165 of 165 routings tenant-wide are in this state, which
+    is why most rounds report blind until the edges get wired."""
+    rows = _base_rows() + [
+        _row(ACTIVITY, "Deck build", "Activity"),
+        _row_serving(SOURCE, "Ingested source doc", "Source material", ACTIVITY),
+    ]
+    rounds = build_rounds(rows, [], today=TODAY)
+    mehul = next(r for r in rounds if r.est_item_id == DECK_MEHUL)
+    assert mehul.candidates == []
+
+
+def test_serves_pointing_at_a_bare_estimate_slot_is_harmless():
+    """104 of 165 routings target a slot that is not a spine element at all."""
+    rows = _base_rows() + [
+        _row_serving(SOURCE, "Ingested source", "Source material", "not-an-element")
+    ]
+    rounds = build_rounds(
+        rows, [_edge("informs", PILLAR_RULING, DECK_MEHUL)], today=TODAY
+    )
+    mehul = next(r for r in rounds if r.est_item_id == DECK_MEHUL)
+    assert [c.est_item_id for c in mehul.candidates] == [PILLAR_RULING]
+
+
+def test_a_round_reached_only_indirectly_is_not_reported_as_blind():
+    """`via` candidates carry weight 0, which must not be confused with
+    'no candidates at all' — the blind warning is about missing EDGES, not
+    about weak ones."""
+    rows = [
+        _row(DECK_MEHUL, "Mehul — SRS field deck", "Deliverables", "v6", "2026-08-10"),
+        _row(ACTIVITY, "Deck build", "Activity"),
+        _row_serving(SOURCE, "Ingested source doc", "Source material", ACTIVITY),
+    ]
+    rounds = build_rounds(
+        rows, [_edge("derives_from", ACTIVITY, DECK_MEHUL)], today=TODAY
+    )
+    text = render_sweep(rounds, code="ibx-5192")
+    assert "the sweep is blind" not in text
+    assert "No edges into this deliverable" not in text
+    assert SOURCE in text
+
+
 def test_render_empty_points_at_the_all_flag():
     text = render_sweep([], code="ibx-5192")
     assert "Nothing to seal" in text
