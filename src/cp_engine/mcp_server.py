@@ -379,6 +379,11 @@ def compare_project_sources(project_code: str, doc_a: str, doc_b: str) -> dict:
 
 
 
+# Where generated work belongs in a project's Dropbox (Drew, 2026-08-03).
+# Kept as a constant so the default and any future caller agree on one string.
+SPINE_OUTPUT_DIR = "03 Assets/06 Spine"
+
+
 @_tool
 def push_to_dropbox(
     project_code: str, local_path: str, dest_name: str | None = None,
@@ -390,7 +395,16 @@ def push_to_dropbox(
     generated on this machine — a `.pptx` deck, a `.docx`, a PDF report — back
     into the project's Dropbox so the humans find it where they expect. Resolves
     the project's configured Dropbox folder, then uploads `local_path` there as
-    `dest_name` (defaults to the local filename).
+    `dest_name`.
+
+    **`dest_name` DEFAULTS TO `03 Assets/06 Spine/<filename>`** — the tenant's
+    home for generated work (Drew, 2026-08-03). It used to default to the bare
+    filename, which silently dropped files in the project ROOT with no error to
+    catch it; the rule was broken twice that way. Pass an explicit `dest_name`
+    to place it elsewhere, including a bare name for the root.
+
+    The connector is UPLOAD-ONLY — it has no delete or move — so a misplaced
+    copy has to be removed by hand in Dropbox. Hence the safe default.
 
     Refuses to overwrite an existing file unless `overwrite=True` (so a second
     call with the same name is a safe no-clobber by default; pass overwrite=True
@@ -422,6 +436,13 @@ def push_to_dropbox(
         from cloud_storage.dropbox_connector import DropboxConnector
 
         connector = DropboxConnector()
+        # Default into the spine folder rather than the project root. A caller
+        # who wants the root, or any other location, passes dest_name — but the
+        # UNSPECIFIED case should land where generated work belongs, because
+        # the alternative failure is silent and unfixable from a session.
+        if dest_name is None:
+            from pathlib import Path as _P
+            dest_name = f"{SPINE_OUTPUT_DIR}/{_P(local_path).name}"
         return _push(
             connector, folders.mc_dropbox_folder_id, local_path,
             dest_name=dest_name, overwrite=overwrite,

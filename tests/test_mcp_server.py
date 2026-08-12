@@ -970,6 +970,64 @@ def test_push_to_dropbox_delegates(monkeypatch, tmp_path):
     assert out["name"] == "deck.pptx"
 
 
+def _push_capture(monkeypatch, tmp_path):
+    """Shared rig: stub everything up to the push and return the captured call."""
+    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
+
+    class _Folders:
+        mc_dropbox_folder_id = "id:abc123"
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.resolve_project_folders_by_id",
+        lambda client, pid: _Folders(),
+    )
+    monkeypatch.setattr("cp_engine.config.load", lambda root: object())
+    monkeypatch.setattr(
+        "cp_engine.sync_mc2._load_dropbox_creds", lambda config: None
+    )
+    import cloud_storage.dropbox_connector as dc
+
+    monkeypatch.setattr(dc, "DropboxConnector", lambda: object())
+
+    captured = {}
+
+    def fake_push(connector, folder_id, local_path, dest_name=None, overwrite=False):
+        captured.update(dest_name=dest_name)
+        return {"dropbox_path": "x", "name": dest_name, "size": 1,
+                "overwrote": overwrite}
+
+    monkeypatch.setattr("cp_engine.project_sources.push_to_dropbox", fake_push)
+    f = tmp_path / "punchlist-v01.md"
+    f.write_text("x")
+    return captured, f
+
+
+def test_push_defaults_into_the_spine_folder(monkeypatch, tmp_path):
+    """An omitted dest_name must NOT land the file in the project root.
+
+    The parameter was optional and defaulted to the bare filename, which
+    dropped generated work loose in the Dropbox root with no error — the rule
+    was broken twice that way (2026-08-03, and the ibx-5192 Jaime punchlist on
+    2026-08-12). The connector is upload-only, so a misplace cannot be cleaned
+    up from a session; the safe default has to live here.
+    """
+    captured, f = _push_capture(monkeypatch, tmp_path)
+    srv.push_to_dropbox("ibx-5153", str(f))
+    assert captured["dest_name"] == "03 Assets/06 Spine/punchlist-v01.md"
+
+
+def test_an_explicit_dest_name_still_wins(monkeypatch, tmp_path):
+    """The default is a default, not a policy — a caller can still choose."""
+    captured, f = _push_capture(monkeypatch, tmp_path)
+    srv.push_to_dropbox("ibx-5153", str(f), dest_name="somewhere/else.md")
+    assert captured["dest_name"] == "somewhere/else.md"
+
+
+def test_the_spine_dir_is_a_named_constant(monkeypatch, tmp_path):
+    """One string, so the default and any future caller cannot disagree."""
+    assert srv.SPINE_OUTPUT_DIR == "03 Assets/06 Spine"
+
+
 # ---------------------------------------------------------------------------
 # Dropbox credential loading on the READ paths (#111)
 #
