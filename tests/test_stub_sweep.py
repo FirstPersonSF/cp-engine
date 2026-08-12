@@ -162,3 +162,42 @@ def test_a_sound_target_produces_no_warning():
     text = render_sweep(stubs, code="ibx-5192")
     assert "UNLAYERED TARGET" not in text
     assert "Fix the destination" not in text
+
+
+def _dated(eid, framing, layer, version_date):
+    row = _row(eid, framing, layer)
+    row["version_date"] = version_date
+    return row
+
+
+def test_a_doc_newer_than_its_target_is_flagged():
+    """A source cannot have fed a session that predates it. On ibx-5192 all 16
+    stubs routed to a 2026-06-27 debrief are documents from 07-21 to 08-04 —
+    a bulk route, and migrating it faithfully would have made that debrief
+    claim provenance it never consumed."""
+    act = _dated("_authored/deck-build", "Post-Mehul debrief", "Activity", "2026-06-27")
+    stub = _stub(serves=["_authored/deck-build"])
+    stub["version_date"] = "2026-07-21"
+    stubs = find_stubs([stub, act])
+    assert stubs[0].postdates_target
+    text = render_sweep(stubs, code="ibx-5192")
+    assert "DOC IS NEWER" in text
+    assert "bulk route" in text
+
+
+def test_a_doc_predating_its_target_is_clean():
+    """sap-5174's kickoff has 14 of 18 docs predating it — real curation."""
+    act = _dated("_authored/deck-build", "Kickoff meeting", "Activity", "2026-07-08")
+    stub = _stub(serves=["_authored/deck-build"])
+    stub["version_date"] = "2026-07-01"
+    stubs = find_stubs([stub, act])
+    assert not stubs[0].postdates_target
+    assert "DOC IS NEWER" not in render_sweep(stubs, code="sap-5174")
+
+
+def test_missing_dates_never_claim_a_violation():
+    """Absent data is not evidence of a bulk route."""
+    act = _dated("_authored/deck-build", "Some activity", "Activity", None)
+    stub = _stub(serves=["_authored/deck-build"])
+    stubs = find_stubs([stub, act])
+    assert not stubs[0].postdates_target

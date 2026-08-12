@@ -194,7 +194,7 @@ SEAL_SWEEP_COLUMNS = (
 # boilerplate), `sources` (what would move) and `serves` (where it would go).
 STUB_SWEEP_COLUMNS = (
     "est_item_id, framing, layer, status, archived, body, sources, serves, "
-    "project_id"
+    "version_date, project_id"
 )
 SPINE_SOURCES_EDIT_COLUMNS = (
     "id, est_item_id, framing, status, archived, scope, company_id, "

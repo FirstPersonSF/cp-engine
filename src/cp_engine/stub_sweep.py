@@ -71,6 +71,29 @@ class Stub:
     # `serves` entries that resolve to nothing — bare estimate slots.
     unresolved: list[str] = field(default_factory=list)
     has_edges: bool = False
+    # version_date of the stub and of its (first) resolved target — used by
+    # `postdates_target` to tell curation from bulk-routing.
+    _stub_date: str = ""
+    _target_date: str = ""
+
+    @property
+    def postdates_target(self) -> bool:
+        """The document is NEWER than the work it supposedly fed.
+
+        A source cannot have informed a session that happened before it
+        arrived. Found the hard way on ibx-5192: all 16 stubs routed to a
+        2026-06-27 debrief are documents from 07-21 to 08-04 — 8 Infoblox
+        use-case briefs, the corporate library deck, "Our AI Story" — a bulk
+        route that landed everything on whatever card was selected at the
+        time. Migrating them faithfully would have made that debrief claim
+        provenance it never consumed.
+
+        The check separates real curation from bulk-routing cleanly:
+        sap-5174's kickoff has 14 of 18 docs predating it; ibx-5192's debrief
+        has 0 of 16.
+        """
+        return bool(self._stub_date and self._target_date
+                    and self._stub_date > self._target_date)
 
     @property
     def unsound_targets(self) -> list[tuple[str, str, bool]]:
@@ -128,6 +151,7 @@ def find_stubs(
 
         targets: list[tuple[str, str, bool]] = []
         unresolved: list[str] = []
+        target_date = ""
         for slot in row.get("serves") or []:
             target = by_id.get(slot)
             if target is not None and slot != eid:
@@ -135,6 +159,8 @@ def find_stubs(
                 # unfilable. Provenance moved onto it is provenance buried.
                 sound = target.get("layer") is not None
                 targets.append((slot, target.get("framing") or slot, sound))
+                if not target_date:
+                    target_date = str(target.get("version_date") or "")
             else:
                 unresolved.append(slot)
 
@@ -147,6 +173,8 @@ def find_stubs(
                 targets=targets,
                 unresolved=unresolved,
                 has_edges=eid in edged,
+                _stub_date=str(row.get("version_date") or ""),
+                _target_date=target_date,
             )
         )
 
@@ -180,10 +208,25 @@ def render_sweep(stubs: list[Stub], *, code: str) -> str:
                 flag = "" if sound else "  ⚠ UNLAYERED TARGET"
                 out.append(f"    → serves: {tname}{flag}")
                 out.append(f"        {tid}")
+            if s.postdates_target:
+                out.append(
+                    f"    ⚠ DOC IS NEWER than the work it serves "
+                    f"({s._stub_date} > {s._target_date}) — it cannot have fed "
+                    "it. Almost certainly a bulk route; re-route before "
+                    "migrating, or the target claims provenance it never had")
             if s.has_edges:
                 out.append("    ⚠ has typed edges — retiring cascades them; "
                            "check what points here first")
         out.append("")
+
+        stale = [s for s in attachable if s.postdates_target]
+        if stale:
+            out.append(
+                f"  ⚠ {len(stale)} of these are NEWER than the work they "
+                "serve. On ibx-5192 that was 16 of 16 on one card — a bulk "
+                "route, not curation. Migrating them faithfully preserves the "
+                "mistake in a more permanent form.")
+            out.append("")
 
         blocked = [s for s in attachable if s.unsound_targets]
         if blocked:
