@@ -457,3 +457,39 @@ def test_fully_archived_and_fully_live_elements_are_silent() -> None:
 
 def test_no_archived_rows_short_circuits() -> None:
     assert lint_archived_referrers([_arow("_authored/x", "X")], [], []) == []
+
+
+def test_a_card_that_already_holds_the_source_is_not_a_dangling_referrer() -> None:
+    """False positive found in use on ibx-5192 (2026-08-12).
+
+    Kimber's card says "Resources attached as sources: … SRS Block Details ·
+    Platform Media Coverage" — naming its OWN attachments — and both archived
+    stubs' rag_assets already sit in its `sources`. The provenance transferred;
+    nothing dangles. Flagging it told the reader to un-archive a stub whose
+    only content was a pointer the live card already has."""
+    asset = {"id": "cde901de", "type": "rag_asset", "title": "SRS Block Details.docx"}
+    archived = [_arow("_authored/srs-block-details-docx", "SRS Block Details.docx",
+                      archived=True, sources=[asset])]
+    live = [_arow("_authored/kimber", "Kimber's feedback on Mainstage outline",
+                  body="Resources attached as sources: … SRS Block Details.docx",
+                  sources=[asset])]
+    assert lint_archived_referrers(live, archived, []) == []
+
+
+def test_a_referrer_WITHOUT_the_source_still_dangles() -> None:
+    """The narrowing must not silence the real case: a card naming an archived
+    element it does NOT hold the provenance for is still a dead pointer."""
+    archived = [_arow("_authored/gone", "SRS Arc B — v08→r01 build delta",
+                      archived=True, sources=[{"id": "x1", "type": "rag_asset"}])]
+    live = [_arow("_authored/ref", "A live card",
+                  body="superseded by `SRS Arc B — v08→r01 build delta`",
+                  sources=[])]
+    assert lint_archived_referrers(live, archived, [])
+
+
+def test_a_sourceless_archived_element_is_unaffected_by_the_narrowing() -> None:
+    """Most archived cards carry no sources at all; the transfer check must
+    not accidentally exempt them (an empty set is a subset of everything)."""
+    archived = [_arow("_authored/gone", "A gone card", archived=True, sources=[])]
+    live = [_arow("_authored/ref", "Referrer", body="see _authored/gone")]
+    assert lint_archived_referrers(live, archived, [])

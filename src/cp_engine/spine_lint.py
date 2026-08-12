@@ -421,10 +421,28 @@ def lint_archived_referrers(
         referrers: list[str] = []
         for ref_id in sorted(edges_by_endpoint.get(eid, ())):
             referrers.append(f"{live_by_id[ref_id].get('framing') or ref_id} (edge)")
+        # A live card that ATTACHED the same document is not referring to the
+        # archived stub of that document — it holds the provenance directly,
+        # which is the outcome the migration wants. Two live findings on
+        # ibx-5192 were exactly this: Kimber's card says "Resources attached
+        # as sources: … SRS Block Details · Platform Media Coverage", naming
+        # its OWN attachments, and both stubs' rag_assets already sit in its
+        # `sources`. Flagging that told the reader to un-archive a stub whose
+        # only content was a pointer the live card already has.
+        arch_asset_ids = {
+            str(s.get("id")) for s in (arch.get("sources") or [])
+            if isinstance(s, dict) and s.get("id")
+        }
         for ref_id, row in live_by_id.items():
             body = row.get("body") or ""
-            src_blob = str(row.get("sources") or "")
-            hit = eid in body or eid in src_blob
+            row_asset_ids = {
+                str(s.get("id")) for s in (row.get("sources") or [])
+                if isinstance(s, dict) and s.get("id")
+            }
+            # Provenance already transferred — nothing dangles.
+            if arch_asset_ids and arch_asset_ids <= row_asset_ids:
+                continue
+            hit = eid in body or eid in str(row.get("sources") or "")
             if (not hit and len(str(title)) >= REFERENCE_TITLE_MIN_CHARS
                     and str(title) in body):
                 hit = True
