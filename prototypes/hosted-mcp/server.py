@@ -1636,6 +1636,29 @@ def canon_layer(type_: str) -> str:
     return _LAYER_ALIASES.get(type_.lower().replace(" ", ""), type_)
 
 
+# Layers where `serves` means RELEVANCE, not a work binding (#179 step 4).
+#
+# A stakeholder dossier is account-level: `promote_stakeholder` makes it
+# readable from every project of the company, which is why sap-5171 (display
+# ads) currently reads all 16 SAP dossiers — 171k chars including the CPO and
+# the President of Concur Travel, both interviewed for sap-5174's vision work
+# and irrelevant to display ads. Drew's requirement: "we need to be able to
+# connect them to the project."
+#
+# `serves` is the column that already answers "what is this relevant to", so it
+# carries the link. But `binding` is a WORK fact and spine_lint's
+# absorbed-but-serving check (spine_lint.py:109) reads it as one — so a person
+# with serves must stay `unbound` rather than claim to be live work.
+_RELEVANCE_SERVES_LAYERS = frozenset({"stakeholders", "stakeholder"})
+
+
+def _is_relevance_serves(layer: str | None) -> bool:
+    """True when this layer's `serves` means relevance rather than work binding."""
+    return re.sub(r"[^a-z]", "", str(layer or "").lower()) in {
+        re.sub(r"[^a-z]", "", x) for x in _RELEVANCE_SERVES_LAYERS
+    }
+
+
 def slugify(text: str) -> str:
     s = _SLUG_RE.sub("-", (text or "").lower()).strip("-")
     return s or "untitled"
@@ -3696,7 +3719,11 @@ def set_spine_element(
             step carrying both the old and new title, since the old one is
             otherwise gone the moment the write lands; only the disk-mirror
             filename keeps the pre-rename slug.
-        serves: work-item ids to bind to; `[]` unbinds.
+        serves: work-item ids to bind to; `[]` unbinds. ON A STAKEHOLDER this
+            means something different — the projects/work this person is
+            RELEVANT to (#179 step 4) — so `binding` stays 'unbound' rather
+            than claiming a person is live work. Account scope makes a dossier
+            READABLE everywhere; serves is what says where it MATTERS.
         actor: who is speaking — partner | client | vendor | inferred
             (spec v04 authority ordering; tag deliberately).
     """
@@ -3744,7 +3771,21 @@ def set_spine_element(
         patch["framing"] = framing
     if serves is not None:
         patch["serves"] = list(serves)
-        patch["binding"] = "live" if serves else "unbound"
+        # `binding` is a WORK fact — "this element is bound to a live work
+        # item" — and spine_lint's absorbed-but-serving check reads it that
+        # way. For a stakeholder, `serves` means something different: the
+        # projects this person is RELEVANT to (#179 step 4). Claiming
+        # binding='live' for a person asserts they are work in progress.
+        #
+        # So binding follows serves only for elements that are work. The
+        # effective layer is the patch's if this same call is reclassifying,
+        # else the row's — otherwise a layer+serves write in one call would
+        # judge against the stale layer.
+        effective_layer = canonical_layer or live.get("layer")
+        if _is_relevance_serves(effective_layer):
+            patch["binding"] = "unbound"
+        else:
+            patch["binding"] = "live" if serves else "unbound"
     if actor is not None:
         patch["actor"] = actor.strip().lower()
 

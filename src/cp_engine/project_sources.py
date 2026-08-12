@@ -565,6 +565,50 @@ def _fetch_scoped(client, project_id: str, company_id: str | None,
     return rows
 
 
+def filter_account_by_relevance(
+    rows: list[dict], project_est_ids: set[str]
+) -> tuple[list[dict], int]:
+    """Drop account-scoped people who name no work in THIS project (#179 step 4).
+
+    The account arm above is undifferentiated: a dossier promoted to account
+    scope is readable from every project of the company. Measured 2026-08-11,
+    that means sap-5171 (display ads) reads all 16 SAP dossiers — 171k chars,
+    including the CPO and the President of Concur Travel, both interviewed for
+    sap-5174's vision work and irrelevant to display ads.
+
+    A stakeholder's `serves` names the work they are RELEVANT to (the hosted
+    `set_spine_element` writes it without claiming `binding='live'`, since a
+    person is not work in progress). This uses it to narrow the roster.
+
+    TWO DELIBERATE ABSTENTIONS, both because the links do not exist yet — 0 of
+    the tenant's 18 account stakeholders carry `serves` today:
+
+      - a dossier with EMPTY `serves` is KEPT. Hiding un-migrated data is a
+        data-loss bug wearing a feature's clothes; the roster degrades to
+        today's behaviour until someone links it.
+      - only account-scoped rows are considered. A project's own stakeholders
+        are already its own.
+
+    Returns `(rows, hidden_count)` so a caller can report what it narrowed
+    rather than silently shrinking the list.
+    """
+    kept: list[dict] = []
+    hidden = 0
+    for r in rows:
+        layer = re.sub(r"[^a-z]", "", str(r.get("layer") or "").lower())
+        serves = r.get("serves") or []
+        if (
+            layer in ("stakeholders", "stakeholder")
+            and _row_scope(r) == "account"
+            and serves
+            and not any(s in project_est_ids for s in serves)
+        ):
+            hidden += 1
+            continue
+        kept.append(r)
+    return kept, hidden
+
+
 def resolve_live_element(client, project_id: str, key: str,
                          company_id: str | None = None) -> dict | None:
     """Resolve `key` to the single matching LIVE spine_substance row, or None.
