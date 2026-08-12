@@ -57,6 +57,14 @@ _AUTHORED_SELECT = (
 # card-dashboard must survive sync rather than being clobbered from disk.
 _SUBSTANCE_TRACKED_FIELDS = (
     "framing", "body", "status", "layer", "serves", "archived",
+    # `placement` (#180): context vs item. It was recomputed from disk on every
+    # sync with no reconcile, so a human's filing decision could never persist —
+    # four orphan repairs (uuid-keyed cards whose est_item_id matches no
+    # estimate slot, filed to `context` so they stop landing in the unrendered
+    # `outline.unbound`) reverted on the very next sync. Recomputing is right
+    # for a NEW row and wrong for one somebody has deliberately filed, which is
+    # exactly what "confirmed wins" encodes.
+    "placement",
 )
 
 

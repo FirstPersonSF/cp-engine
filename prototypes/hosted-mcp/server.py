@@ -3789,6 +3789,37 @@ def set_spine_element(
     if actor is not None:
         patch["actor"] = actor.strip().lower()
 
+    # MARK WHAT WE WROTE AS CONFIRMED (#180) — otherwise `cp sync` reverts it.
+    #
+    # `spine_substance_sync` reconciles the tracked fields against the estimate
+    # on every sync: a CONFIRMED value wins and divergence flags, an unconfirmed
+    # one is overwritten. This verb wrote the value and never the mark, so every
+    # edit read `field_states: {"layer": "proposed", ...}` and sync concluded it
+    # was free to overwrite — silently, from a source weeks stale, with the verb
+    # having already returned success.
+    #
+    # It only bit ESTIMATE-DERIVED (uuid-keyed) elements: `_authored/*` rows have
+    # no estimate counterpart to be reconciled against, which is why the same
+    # session's authored edits survived and these did not. Found when five edits
+    # across three projects vanished on the 2026-08-12T14:55Z auto-sync.
+    #
+    # Mirrors mc-2's `patch_substance` (`spine_curation.py` — `confirmed_fields`
+    # merged into the row's existing field_states, plus confirmed_by/at), so the
+    # two write paths leave identical marks. `important`/`note` are deliberately
+    # NOT marked: they are standing annotations, not reconcile-tracked fields.
+    _TRACKED = {"layer", "framing", "serves", "status", "body", "archived"}
+    confirmed_fields = _TRACKED & set(patch)
+    if confirmed_fields:
+        fs = dict(live.get("field_states") or {})
+        for f in confirmed_fields:
+            fs[f] = "confirmed"
+        patch["field_states"] = fs
+        # Attribution comes off the verified JWT claim, never an argument.
+        # None is tolerable here (the MARK is what sync reads, not the name),
+        # so a tokenless path still gets its edit protected.
+        patch["confirmed_by"] = caller_email()
+        patch["confirmed_at"] = datetime.now(timezone.utc).isoformat()
+
     audit_args = {
         "project_code": project_code,
         "key": key,

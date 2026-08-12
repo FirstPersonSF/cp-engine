@@ -1459,3 +1459,51 @@ def test_sync_equal_label_collision_shields_authored_row(tmp_path):
     assert rows["proj-1/d1/v2"]["body"] == "AUTHORED BODY — must survive"
     assert rows["proj-1/d1/v2"]["origin"] == "authored"
     assert "proj-1/d1/v1" in rows  # non-colliding disk version still lands
+
+
+def test_sync_substance_preserves_confirmed_placement(tmp_path):
+    """A human's filing decision must survive sync (#180).
+
+    `placement` (context vs item) was written from disk on every sync with no
+    reconcile, so it could never persist. Four orphan repairs — uuid-keyed
+    cards whose est_item_id matches no estimate slot, filed to `context` so
+    they stop landing in the unrendered `outline.unbound` — reverted on the
+    very next sync, silently, after the write verb had returned success.
+    """
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
+        "framing": "framing", "body": "b", "status": "live",
+        "placement": "context",
+        "field_states": {"placement": "confirmed"}, "review_flags": [],
+    }]
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj,
+                         estimate=_FakeEstimate({"d1"}))
+    row = next(r for r in client.store["spine_substance"]
+               if r["id"] == "proj-1/d1/v2")
+    assert row["placement"] == "context"
+
+
+def test_sync_substance_still_sets_placement_when_unconfirmed(tmp_path):
+    """The default stays derive-from-disk — only a CONFIRMED value wins.
+
+    Recomputing placement is correct for a new or untouched row; the fix is
+    narrow, not a change of ownership.
+    """
+    proj = tmp_path / "1p/acct/proj-1"
+    client = _FakeClient()
+    client.store["spine_substance"] = [{
+        "id": "proj-1/d1/v2", "project_id": "u1", "project_code": "proj-1",
+        "framing": "framing", "body": "b", "status": "live",
+        "placement": "context", "field_states": {}, "review_flags": [],
+    }]
+    _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
+    sync_spine_substance(client, project_id="u1", project_code="proj-1",
+                         project_dir=proj,
+                         estimate=_FakeEstimate({"d1"}))
+    row = next(r for r in client.store["spine_substance"]
+               if r["id"] == "proj-1/d1/v2")
+    assert row["placement"] == "item"   # disk wins when unconfirmed
