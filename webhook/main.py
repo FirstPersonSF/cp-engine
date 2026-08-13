@@ -67,7 +67,8 @@ from datetime import datetime
 
 # tests patch `main.mc2_db.get_client` and the mutation reaches every module.
 import observability
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Response
+from starlette.requests import ClientDisconnect
 
 import cp_engine
 from cp_engine import mc2_db  # noqa: F401 — module object shared with all routers;
@@ -103,6 +104,40 @@ async def _correlation_id_middleware(request: Request, call_next):
     response = await call_next(request)
     response.headers["X-Correlation-ID"] = cid
     return response
+
+
+@app.exception_handler(ClientDisconnect)
+async def _client_disconnect_handler(request: Request, exc: ClientDisconnect):
+    """A hung-up client is not an application error — don't page for it.
+
+    Every route here reads `await request.body()` as its first statement, to
+    verify the HMAC before doing anything. If the sender has already gone
+    away, Starlette raises ClientDisconnect from that read and it surfaced as
+    an UNHANDLED exception (Sentry CP-ENGINE-WEBHOOK-3, 2026-08-13).
+
+    Why it happens, and why it is benign: fathom-meeting-sync retries a
+    delivery up to 3× with backoff, because this webhook occasionally 500s on
+    a cold start. But a real ingest — LLM classification, git commit, push —
+    outlasts the sender's patience on a large payload. The observed case was a
+    230KB transcript whose FIRST attempt succeeded and committed at 10:36:17;
+    the retry's socket was already closed 18 seconds later. So the work is
+    either already done (first attempt won) or not started (this attempt died
+    on line one, before signature verification). Nothing is half-applied.
+
+    A retry that DOES land is also safe: inbound bullets are content-addressed
+    via `cp:hash` and `_write_inbound` returns early when the marker is
+    already present, so a duplicate delivery is a no-op.
+
+    Logged at INFO with the correlation id so the pattern stays visible if it
+    ever becomes frequent — which would mean the sender's timeout is too tight
+    for real payload sizes, a genuine problem worth seeing.
+    """
+    log.info(
+        "client disconnected before body was read (%s) — no work started; "
+        "the sender is retrying or has already succeeded",
+        request.url.path,
+    )
+    return Response(status_code=499)  # nginx's "client closed request"
 
 
 @app.get("/health")
