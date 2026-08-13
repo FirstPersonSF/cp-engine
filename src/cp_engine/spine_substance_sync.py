@@ -55,16 +55,15 @@ _AUTHORED_SELECT = (
 # distilled content (framing/body/status) plus the UI-set spine placement
 # fields (layer/serves) and the UI archive flag — a confirmed edit in the MC-2
 # card-dashboard must survive sync rather than being clobbered from disk.
+# `placement` is deliberately NOT here — it is DERIVED, not verified. See
+# `derive_placement` in substance.py. Measured 2026-08-13 across all 401 live
+# rows: placement is a projection of the est_item_id key shape (368 authored ->
+# context, 32 uuid -> item, 1 exception which was itself a bug), and NOTHING
+# lands in `outline.unbound`, so the human-repair case this once protected has
+# zero instances. It was added in v0.96.0 on the premise that a human's filing
+# decision needed to survive sync; that premise did not survive measurement.
 _SUBSTANCE_TRACKED_FIELDS = (
     "framing", "body", "status", "layer", "serves", "archived",
-    # `placement` (#180): context vs item. It was recomputed from disk on every
-    # sync with no reconcile, so a human's filing decision could never persist —
-    # four orphan repairs (uuid-keyed cards whose est_item_id matches no
-    # estimate slot, filed to `context` so they stop landing in the unrendered
-    # `outline.unbound`) reverted on the very next sync. Recomputing is right
-    # for a NEW row and wrong for one somebody has deliberately filed, which is
-    # exactly what "confirmed wins" encodes.
-    "placement",
 )
 
 

@@ -1461,14 +1461,19 @@ def test_sync_equal_label_collision_shields_authored_row(tmp_path):
     assert "proj-1/d1/v1" in rows  # non-colliding disk version still lands
 
 
-def test_sync_substance_preserves_confirmed_placement(tmp_path):
-    """A human's filing decision must survive sync (#180).
+def test_sync_substance_overrides_even_a_confirmed_placement(tmp_path):
+    """`placement` is DERIVED — a confirmed mark must NOT protect it (#182).
 
-    `placement` (context vs item) was written from disk on every sync with no
-    reconcile, so it could never persist. Four orphan repairs — uuid-keyed
-    cards whose est_item_id matches no estimate slot, filed to `context` so
-    they stop landing in the unrendered `outline.unbound` — reverted on the
-    very next sync, silently, after the write verb had returned success.
+    v0.96.0 added `placement` to _SUBSTANCE_TRACKED_FIELDS on the premise that
+    a human's filing decision needed to survive sync. Measurement retired that
+    premise: across all 401 live rows placement is a projection of the
+    est_item_id key shape (368 `_authored/*` -> context, 32 uuid -> item), and
+    NOTHING lands in `outline.unbound`, so the orphan-repair case it protected
+    has zero instances.
+
+    A stale confirmed mark (they exist — they were written by hand during the
+    #180 investigation) must therefore lose to the derivation, or those rows
+    would be pinned to a wrong value forever with nothing able to correct them.
     """
     proj = tmp_path / "1p/acct/proj-1"
     client = _FakeClient()
@@ -1478,13 +1483,14 @@ def test_sync_substance_preserves_confirmed_placement(tmp_path):
         "placement": "context",
         "field_states": {"placement": "confirmed"}, "review_flags": [],
     }]
+    # uuid-shaped key -> derives to `item`, contradicting the confirmed value.
     _write_substance(tmp_path, "Phase0", "pos", est_item_id="d1")
     sync_spine_substance(client, project_id="u1", project_code="proj-1",
                          project_dir=proj,
                          estimate=_FakeEstimate({"d1"}))
     row = next(r for r in client.store["spine_substance"]
                if r["id"] == "proj-1/d1/v2")
-    assert row["placement"] == "context"
+    assert row["placement"] == "item"
 
 
 def test_sync_substance_still_sets_placement_when_unconfirmed(tmp_path):

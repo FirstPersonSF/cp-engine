@@ -6,6 +6,7 @@ from cp_engine.substance import (
     SubstanceVersion,
     WorkItemSubstance,
     add_version,
+    derive_placement,
     is_skipped_spine_dir,
     parse_substance,
     render_substance,
@@ -319,7 +320,7 @@ def test_parse_layer_and_placement_item(tmp_path):
 def test_parse_placement_context_with_serves(tmp_path):
     content = (
         "---\n"
-        "est_item_id: ctx-1\n"
+        "est_item_id: _authored/ctx-1\n"
         "est_item_kind: deliverable\n"
         "binding: live\n"
         "layer: Decisions\n"
@@ -359,7 +360,7 @@ def test_archived_true_parses_and_round_trips(tmp_path):
     and round-trip idempotently (render → re-parse → re-render is stable)."""
     content = (
         "---\n"
-        "est_item_id: ctx-1\n"
+        "est_item_id: _authored/ctx-1\n"
         "est_item_kind: deliverable\n"
         "binding: live\n"
         "layer: Decisions\n"
@@ -389,9 +390,11 @@ def test_archived_true_parses_and_round_trips(tmp_path):
 def test_new_fields_not_duplicated_in_extra(tmp_path):
     """layer/placement/serves are real fields now, NOT in extra — render must
     not double-emit them."""
+    # Authored key so the DERIVED placement is `context` — the case that
+    # actually emits a `placement:` line (an item-placement row omits it).
     content = (
         "---\n"
-        "est_item_id: abc-123\n"
+        "est_item_id: _authored/abc-123\n"
         "est_item_kind: deliverable\n"
         "binding: live\n"
         "layer: Deliverables\n"
@@ -422,7 +425,7 @@ def test_new_fields_not_duplicated_in_extra(tmp_path):
 def test_new_fields_round_trip_with_serves(tmp_path):
     content = (
         "---\n"
-        "est_item_id: ctx-1\n"
+        "est_item_id: _authored/ctx-1\n"
         "est_item_kind: deliverable\n"
         "binding: live\n"
         "layer: Decisions\n"
@@ -471,3 +474,50 @@ def test_add_version_demotes_prior_live():
     v3 = next(v for v in updated.versions if v.label == "v3")
     assert v3.status == "superseded"
     assert updated.live_version().label == "v4"
+
+
+# --- #182: placement is DERIVED from the key shape, never authored ----------
+
+
+def test_derive_placement_from_key_shape():
+    """An `_authored/*` element has no estimate slot by construction and
+    belongs on the context shelf; a uuid-keyed element IS a slot."""
+    assert derive_placement("_authored/inputs-briefing") == "context"
+    assert derive_placement("_authored/janet-noe-client-lead") == "context"
+    assert derive_placement("5fca0b9c-b1ae-4622-9b39-e187e63ff9ab") == "item"
+    assert derive_placement("d1") == "item"
+
+
+def test_derive_placement_does_not_match_a_lookalike_prefix():
+    """Only the `_authored/` PATH prefix counts — a slug that merely starts
+    with the word must not be swept into the context shelf."""
+    assert derive_placement("_authored-notes") == "item"
+    assert derive_placement("authored/thing") == "item"
+
+
+def test_frontmatter_placement_is_ignored_in_favour_of_the_key(tmp_path):
+    """A `placement:` line that contradicts the key loses.
+
+    This is the whole point of the change: placement stops being an
+    independently-editable field. `e94d0a03` is the real row this models — a
+    uuid-keyed element carrying `placement: context` on disk.
+    """
+    content = (
+        "---\n"
+        "est_item_id: e94d0a03-427d-4f26-b237-d9b732b0e402\n"
+        "est_item_kind: activity\n"
+        "binding: unbound\n"
+        "layer: Activity\n"
+        "placement: context\n"        # contradicts the uuid key
+        "---\n"
+        "## v1 — 2026-07-09 · live\n"
+        "framing: 1:1 Stakeholder Interviews\n"
+        "\n"
+        "body\n"
+    )
+    p = tmp_path / "e94d0a03.md"
+    p.write_text(content)
+    item = parse_substance(p)
+    assert item.placement == "item"
+    # ...and it does NOT leak into extra, which would double-emit on render.
+    assert "placement" not in item.extra

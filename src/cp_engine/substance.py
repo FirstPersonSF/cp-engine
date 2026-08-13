@@ -105,7 +105,10 @@ class WorkItemSubstance:
     # project's context shelf (`context`), in which case `serves` names the
     # est_item_ids it informs. `layer` is the spine layer label (free text).
     layer: str | None = None
-    placement: str = "item"  # item | context
+    # item | context — DERIVED from est_item_id's key shape; see
+    # `derive_placement`. The default suits uuid-keyed items; authored
+    # builders pass "context" explicitly and the disk reader derives it.
+    placement: str = "item"
     serves: tuple[str, ...] = ()
     # UI archive flag (Phase 3): a human can archive a substance item from the
     # MC-2 spine card-dashboard. Default False; omitted from frontmatter when
@@ -134,6 +137,32 @@ def _as_tuple(value: object) -> tuple:
     if isinstance(value, (list, tuple)):
         return tuple(value)
     return (value,)
+
+
+AUTHORED_KEY_PREFIX = "_authored/"
+
+
+def derive_placement(est_item_id: str) -> str:
+    """Where an element renders: ``context`` (the shelf) or ``item`` (a slot).
+
+    DERIVED, never authored. An ``_authored/<slug>`` element has no estimate
+    slot by construction and belongs on the context shelf; a uuid-keyed element
+    IS a slot and belongs in ``phases[].items``. Every write path already emits
+    exactly this (`spine_inbox`, `spine_recover`, `authored_mirror`); this
+    function is the single place that says so.
+
+    Measured 2026-08-13 across all 401 live `spine_substance` rows: 368
+    ``_authored/*`` -> context, 32 uuid -> item, ONE exception — and that row
+    (`e94d0a03`) was itself a defect, uuid-keyed with a stale `binding` and no
+    `rel_path`. Nothing landed in `outline.unbound`.
+
+    NOT derivable from `binding`, which is the tempting mistake: 155 rows are
+    `binding='live'` AND `placement='context'` — interview write-ups, client
+    feedback, source documents that SERVE real work without OCCUPYING a slot.
+    Keying on binding would relocate all 155 into the phase items, which is the
+    "everything is a card" failure #179 removed.
+    """
+    return "context" if str(est_item_id).startswith(AUTHORED_KEY_PREFIX) else "item"
 
 
 def is_skipped_spine_dir(parts: tuple[str, ...]) -> bool:
@@ -228,7 +257,9 @@ def parse_substance(path: Path) -> WorkItemSubstance:
     binding = str(meta.get("binding", "live"))
     phase = None if meta.get("phase") is None else str(meta["phase"])
     layer = None if meta.get("layer") is None else str(meta["layer"])
-    placement = str(meta.get("placement", "item"))
+    # DERIVED from the key shape — a `placement:` in frontmatter is ignored
+    # (kept in _KNOWN below so it doesn't surface as an unknown-key `extra`).
+    placement = derive_placement(est_item_id)
     serves = tuple(str(s) for s in _as_tuple(meta.get("serves")))
     archived = bool(meta.get("archived", False))
     steps_raw = meta.get("steps") or []
@@ -323,6 +354,14 @@ def render_substance(item: WorkItemSubstance) -> str:
         fm["layer"] = item.layer
     # Omit the default placement so files that never set it round-trip byte-for-
     # byte (mirrors how `phase` is omitted when absent). `context` is emitted.
+    #
+    # Still emitted even though placement is now DERIVED on read: 255 of the
+    # 256 on-disk files carrying `placement:` are `_authored/*`-keyed, so
+    # `derive_placement` reproduces the written value exactly. Emitting keeps
+    # them byte-for-byte stable; dropping it would rewrite 256 files to remove
+    # a line that is now merely redundant rather than wrong. (The 256th lives
+    # under `_authored/` but is uuid-KEYED — `e94d0a03`, the measurement's one
+    # exception; it is a defect, tracked on #182, not a counter-example.)
     if item.placement != "item":
         fm["placement"] = item.placement
     if item.serves:
