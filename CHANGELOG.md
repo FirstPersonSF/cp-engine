@@ -4,6 +4,32 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+- **`placement` is DERIVED from the est_item_id key shape, not authored
+  (#182).** Backs out the tracked-field entry added hours earlier in v0.96.0.
+  Measured across all 401 live `spine_substance` rows before changing
+  anything: `_authored/*` → `context` (368), uuid → `item` (32), one
+  exception — and using the outline's own predicate, the number of rows
+  landing in the unrendered `outline.unbound` is **zero**, so the
+  orphan-repair case the tracked field protected has no instances.
+  `derive_placement()` is now the single source of the rule; a contradicting
+  `placement:` line in frontmatter is ignored.
+
+  **Not derivable from `binding`**, which is the tempting mistake and the
+  reason this needed measuring rather than reasoning: 155 rows are
+  `binding='live'` AND `placement='context'` — interview write-ups, client
+  feedback, source documents that SERVE work without OCCUPYING a slot. Keying
+  on binding would relocate all 155 into `phases[].items`, the
+  "everything is a card" failure #179 removed. The first model tested was
+  exactly that, and it scored 400/401 by coincidence.
+
+  The serializer still emits `placement:`: 255 of the 256 on-disk files
+  carrying it are `_authored/*`-keyed, so the derivation reproduces them
+  byte-for-byte and dropping the emit would rewrite 256 files to delete a
+  now-redundant line. The 256th (`e94d0a03`) is an `_authored/` mirror with a
+  uuid key — a real defect, tracked as #183.
+
 ## v0.96.0 — 2026-08-13
 
 Four fixes that were written but never ran, plus two webhook observability
