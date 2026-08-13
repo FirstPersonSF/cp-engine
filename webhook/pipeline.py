@@ -702,196 +702,238 @@ def _perform_auto_ingest(
     link_url = os.environ.get("SUPABASE_URL")
     link_key = os.environ.get("SUPABASE_SERVICE_KEY")
 
-    with git_ops._cloned_tenant() as tenant_root:
-        config = _load_tenant_config(tenant_root)
-        transcript_path = _stage_transcript(tenant_root, meeting_id, transcript_text)
+    # Hoisted out of the `with` below so the failure handler at the bottom
+    # of this function can report PARTIAL state. Commits are pushed inside
+    # the per-project loop, so a mid-run crash (classically: a push that
+    # loses a concurrent-webhook race) leaves earlier projects already
+    # published and later ones not. The failure row has to say which.
+    ingested: list[dict] = []
+    commits: list[str] = []
 
-        # Fetch the meeting row once per request. We need `action_items`
-        # for the plan merge (each item becomes a deterministic
-        # record-ask) AND for the per-meeting artifact write later in
-        # this same function. Pre-Lever-1 the artifact path did its own
-        # fetch; we now share the result to avoid a redundant Supabase
-        # round-trip per auto-ingest call. Best-effort: a None here
-        # means we'll fall back to LLM-only ingest (no action_items
-        # merged) and artifact generation will skip cleanly.
-        meeting = _fetch_meeting(meeting_id)
-        action_items = (meeting or {}).get("action_items") or []
+    try:
+        with git_ops._cloned_tenant() as tenant_root:
+            config = _load_tenant_config(tenant_root)
+            transcript_path = _stage_transcript(tenant_root, meeting_id, transcript_text)
 
-        # Cross-project detection roster (#88): every active project across
-        # the tenant, fetched once per run. Best-effort — an MC-2 hiccup
-        # degrades to roster=None, which turns detection OFF for this run
-        # (the prompt tells the model to emit no cross_project fields).
-        try:
-            from cp_engine.plan_from_account_meeting import list_active_all
+            # Fetch the meeting row once per request. We need `action_items`
+            # for the plan merge (each item becomes a deterministic
+            # record-ask) AND for the per-meeting artifact write later in
+            # this same function. Pre-Lever-1 the artifact path did its own
+            # fetch; we now share the result to avoid a redundant Supabase
+            # round-trip per auto-ingest call. Best-effort: a None here
+            # means we'll fall back to LLM-only ingest (no action_items
+            # merged) and artifact generation will skip cleanly.
+            meeting = _fetch_meeting(meeting_id)
+            action_items = (meeting or {}).get("action_items") or []
 
-            roster = list_active_all(config)
-        except Exception:  # noqa: BLE001 — detection must never break ingest
-            log.warning("cross-project roster fetch failed", exc_info=True)
-            roster = None
+            # Cross-project detection roster (#88): every active project across
+            # the tenant, fetched once per run. Best-effort — an MC-2 hiccup
+            # degrades to roster=None, which turns detection OFF for this run
+            # (the prompt tells the model to emit no cross_project fields).
+            try:
+                from cp_engine.plan_from_account_meeting import list_active_all
 
-        # Per-project ingest + per-project commit. A multi-project
-        # auto-ingest call produces N commits (one per project that
-        # actually wrote files), not one combined commit. This makes
-        # the git log readable (each commit's diff scopes to one
-        # project's sprint file) and lets revert target one project
-        # without disturbing the others.
-        ingested: list[dict] = []
-        commits: list[str] = []
-        for code in project_codes:
-            entry = _ingest_one_project(
-                config=config,
-                code=code,
-                transcript_path=transcript_path,
-                action_items=action_items,
-                meeting_id=meeting_id,
-                meeting=meeting,
-                roster=roster,
-            )
-            ingested.append(entry)
+                roster = list_active_all(config)
+            except Exception:  # noqa: BLE001 — detection must never break ingest
+                log.warning("cross-project roster fetch failed", exc_info=True)
+                roster = None
 
-            # Cross-project proposals (#88) → MC-2 review gate. Best-effort:
-            # a store failure must never break the ingest or the commit.
-            if entry.get("cross_project"):
-                try:
-                    entry["cross_project_proposed"] = _propose_cross_project(
-                        meeting_id=meeting_id,
-                        source_code=code,
-                        proposals=entry["cross_project"],
-                    )
-                except Exception:  # noqa: BLE001
-                    log.warning(
-                        "cross-project proposal write failed for %s (meeting %s)",
-                        code, meeting_id, exc_info=True,
-                    )
-
-            # Persist the FULL verbatim transcript into this project's
-            # meeting-transcripts/ dir. It's the input for the
-            # workshop-synthesis pipeline and a durable project source.
-            # Best-effort: a persist failure must NEVER abort the ingest
-            # or break the commit. Only persist when we actually have a
-            # transcript. The write lands BEFORE _commit_and_push so its
-            # `git add -A` sweeps it into this project's commit.
-            transcript_persisted = False
-            if transcript_text:
-                try:
-                    project_dir = find_spine_dir(config.root, code)
-                    _persist_transcript(
-                        project_dir,
-                        str((meeting or {}).get("meeting_date") or ""),
-                        str((meeting or {}).get("title") or ""),
-                        transcript_text,
-                    )
-                    transcript_persisted = True
-                except Exception as exc:  # noqa: BLE001 — never break auto-ingest
-                    log.warning(
-                        "transcript-persist failed for %s (meeting %s)",
-                        code, meeting_id, exc_info=True,
-                    )
-                    observability.capture(exc, area="transcript_persist")
-
-            # Record per-entry whether a transcript landed so the commit
-            # message can attribute a transcript-only commit and a result
-            # consumer can tell "transcript only" from "wrote bullets".
-            entry["transcript_persisted"] = transcript_persisted
-
-            if entry["files_written"] or transcript_persisted:
-                commit_sha = git_ops._commit_and_push(
-                    tenant_root=tenant_root,
+            # Per-project ingest + per-project commit. A multi-project
+            # auto-ingest call produces N commits (one per project that
+            # actually wrote files), not one combined commit. This makes
+            # the git log readable (each commit's diff scopes to one
+            # project's sprint file) and lets revert target one project
+            # without disturbing the others.
+            ingested: list[dict] = []
+            commits: list[str] = []
+            for code in project_codes:
+                entry = _ingest_one_project(
+                    config=config,
+                    code=code,
+                    transcript_path=transcript_path,
+                    action_items=action_items,
                     meeting_id=meeting_id,
-                    ingested=[entry],
+                    meeting=meeting,
+                    roster=roster,
                 )
-                entry["commit_sha"] = commit_sha
-                commits.append(commit_sha)
-                log.info(
-                    "auto-ingest commit: meeting=%s project=%s commit=%s",
-                    meeting_id, code, commit_sha,
+                ingested.append(entry)
+
+                # Cross-project proposals (#88) → MC-2 review gate. Best-effort:
+                # a store failure must never break the ingest or the commit.
+                if entry.get("cross_project"):
+                    try:
+                        entry["cross_project_proposed"] = _propose_cross_project(
+                            meeting_id=meeting_id,
+                            source_code=code,
+                            proposals=entry["cross_project"],
+                        )
+                    except Exception:  # noqa: BLE001
+                        log.warning(
+                            "cross-project proposal write failed for %s (meeting %s)",
+                            code, meeting_id, exc_info=True,
+                        )
+
+                # Persist the FULL verbatim transcript into this project's
+                # meeting-transcripts/ dir. It's the input for the
+                # workshop-synthesis pipeline and a durable project source.
+                # Best-effort: a persist failure must NEVER abort the ingest
+                # or break the commit. Only persist when we actually have a
+                # transcript. The write lands BEFORE _commit_and_push so its
+                # `git add -A` sweeps it into this project's commit.
+                transcript_persisted = False
+                if transcript_text:
+                    try:
+                        project_dir = find_spine_dir(config.root, code)
+                        _persist_transcript(
+                            project_dir,
+                            str((meeting or {}).get("meeting_date") or ""),
+                            str((meeting or {}).get("title") or ""),
+                            transcript_text,
+                        )
+                        transcript_persisted = True
+                    except Exception as exc:  # noqa: BLE001 — never break auto-ingest
+                        log.warning(
+                            "transcript-persist failed for %s (meeting %s)",
+                            code, meeting_id, exc_info=True,
+                        )
+                        observability.capture(exc, area="transcript_persist")
+
+                # Record per-entry whether a transcript landed so the commit
+                # message can attribute a transcript-only commit and a result
+                # consumer can tell "transcript only" from "wrote bullets".
+                entry["transcript_persisted"] = transcript_persisted
+
+                if entry["files_written"] or transcript_persisted:
+                    commit_sha = git_ops._commit_and_push(
+                        tenant_root=tenant_root,
+                        meeting_id=meeting_id,
+                        ingested=[entry],
+                    )
+                    entry["commit_sha"] = commit_sha
+                    commits.append(commit_sha)
+                    log.info(
+                        "auto-ingest commit: meeting=%s project=%s commit=%s",
+                        meeting_id, code, commit_sha,
+                    )
+
+            # ADDITIVE, NON-FATAL: link the meeting to its project + embed its
+            # summary into RAG. Runs ONCE per meeting, AFTER the per-project loop —
+            # the meeting links to exactly one project (the first resolvable tag),
+            # so company_id is derived from THAT project, never from a loop `code`
+            # (which on a cross-company fan-out could be a different company and
+            # corrupt account-scoped retrieval on a retag). Independent side-work:
+            # it does not gate the commit/push above and a failure is swallowed by
+            # _link_meeting_safe. Cred split mirrors _run_promote intentionally:
+            # link_client via _create_supabase_client(), url/key from env — these
+            # match in the Railway env.
+            #
+            # NOTE (retag-trigger gap): re-tagging a meeting to its CURRENT project
+            # does NOT re-fire this webhook (a known fathom-meeting-sync trigger
+            # gap; workaround is unassign-then-reassign). So the retag re-scope
+            # cascade only fires when the webhook actually re-runs — a deploy-time
+            # dependency on fathom-meeting-sync, not fixable here.
+            if meeting and link_client is not None and link_url and link_key:
+                _link_meeting_safe(link_client, meeting, link_url, link_key)
+
+            # Stage A — propose commitments from the meeting's Fathom action
+            # items (MC-2 public.commitments; successor to the ClickUp proposal
+            # path — commitments consolidation, cp-engine #38). Independent of
+            # whether the transcript produced cp bullets; best-effort, never
+            # raises. The #88 roster (fetched once above) powers off-project
+            # flagging (#114); roster=None just turns the screen off.
+            commitments_summary = propose_commitments(
+                meeting_id, project_codes, roster=roster
+            )
+
+            # Per-meeting artifacts — synthesis + transcript into each
+            # project's meetings/ dir. Runs after the per-project bullet
+            # commits so their `git add -A` doesn't sweep these in. Reuses
+            # the meeting row already fetched above; passes it via
+            # `meeting=` to skip the redundant Supabase round-trip inside
+            # _generate_meeting_artifacts.
+            artifact_summary = _generate_meeting_artifacts(
+                tenant_root=tenant_root,
+                meeting_id=meeting_id,
+                transcript_text=transcript_text,
+                project_codes=project_codes,
+                meeting=meeting,
+            )
+
+            if not commits:
+                log.info("auto-ingest no-op: no files changed for meeting=%s", meeting_id)
+                response = {
+                    "ingested": ingested,
+                    "commit_sha": None,
+                    "skipped_no_op": True,
+                    "commitments": commitments_summary,
+                    "meeting_artifacts": artifact_summary,
+                }
+                _log_run_to_supabase(
+                    meeting_id=meeting_id,
+                    project_codes=project_codes,
+                    status=_status_from_ingested(ingested, anything_wrote=False),
+                    ingested=ingested,
+                    commit_sha=None,
                 )
+                return response
 
-        # ADDITIVE, NON-FATAL: link the meeting to its project + embed its
-        # summary into RAG. Runs ONCE per meeting, AFTER the per-project loop —
-        # the meeting links to exactly one project (the first resolvable tag),
-        # so company_id is derived from THAT project, never from a loop `code`
-        # (which on a cross-company fan-out could be a different company and
-        # corrupt account-scoped retrieval on a retag). Independent side-work:
-        # it does not gate the commit/push above and a failure is swallowed by
-        # _link_meeting_safe. Cred split mirrors _run_promote intentionally:
-        # link_client via _create_supabase_client(), url/key from env — these
-        # match in the Railway env.
-        #
-        # NOTE (retag-trigger gap): re-tagging a meeting to its CURRENT project
-        # does NOT re-fire this webhook (a known fathom-meeting-sync trigger
-        # gap; workaround is unassign-then-reassign). So the retag re-scope
-        # cascade only fires when the webhook actually re-runs — a deploy-time
-        # dependency on fathom-meeting-sync, not fixable here.
-        if meeting and link_client is not None and link_url and link_key:
-            _link_meeting_safe(link_client, meeting, link_url, link_key)
-
-        # Stage A — propose commitments from the meeting's Fathom action
-        # items (MC-2 public.commitments; successor to the ClickUp proposal
-        # path — commitments consolidation, cp-engine #38). Independent of
-        # whether the transcript produced cp bullets; best-effort, never
-        # raises. The #88 roster (fetched once above) powers off-project
-        # flagging (#114); roster=None just turns the screen off.
-        commitments_summary = propose_commitments(
-            meeting_id, project_codes, roster=roster
-        )
-
-        # Per-meeting artifacts — synthesis + transcript into each
-        # project's meetings/ dir. Runs after the per-project bullet
-        # commits so their `git add -A` doesn't sweep these in. Reuses
-        # the meeting row already fetched above; passes it via
-        # `meeting=` to skip the redundant Supabase round-trip inside
-        # _generate_meeting_artifacts.
-        artifact_summary = _generate_meeting_artifacts(
-            tenant_root=tenant_root,
-            meeting_id=meeting_id,
-            transcript_text=transcript_text,
-            project_codes=project_codes,
-            meeting=meeting,
-        )
-
-        if not commits:
-            log.info("auto-ingest no-op: no files changed for meeting=%s", meeting_id)
+            # observability: log one row per multi-project auto-ingest run
+            # against the last commit SHA. Per-project commit shas are
+            # surfaced in the `ingested` payload field.
+            last_commit = commits[-1]
+            log.info(
+                "auto-ingest done: meeting=%s commits=%d last=%s",
+                meeting_id, len(commits), last_commit,
+            )
             response = {
                 "ingested": ingested,
-                "commit_sha": None,
-                "skipped_no_op": True,
+                "commit_sha": last_commit,
+                "commit_shas": commits,
+                "skipped_no_op": False,
                 "commitments": commitments_summary,
                 "meeting_artifacts": artifact_summary,
             }
             _log_run_to_supabase(
                 meeting_id=meeting_id,
                 project_codes=project_codes,
-                status=_status_from_ingested(ingested, anything_wrote=False),
+                status="success",
                 ingested=ingested,
-                commit_sha=None,
+                commit_sha=last_commit,
             )
             return response
 
-        # observability: log one row per multi-project auto-ingest run
-        # against the last commit SHA. Per-project commit shas are
-        # surfaced in the `ingested` payload field.
-        last_commit = commits[-1]
-        log.info(
-            "auto-ingest done: meeting=%s commits=%d last=%s",
-            meeting_id, len(commits), last_commit,
+    except Exception as exc:  # noqa: BLE001 — re-raised below; see docstring
+        # A failure AFTER the per-project loop starts had no observability
+        # at all: every _log_run_to_supabase call sits on the success path,
+        # so an exception escaping the `with` above wrote NO row — neither
+        # success nor failed. auto_ingest_runs showed a clean record while
+        # commits sat unpublished in a discarded clone (observed 2026-08-12
+        # 11:21–11:31: an 11-webhook burst where losers of the push race
+        # exhausted _push_with_retry and raised CalledProcessError 128).
+        # Sentry was the only signal, which is why the runs table showed no
+        # failure since June.
+        #
+        # `commits` is the PARTIAL published set: pushes happen inside the
+        # per-project loop, so earlier projects are already on origin/main
+        # and later ones never made it. Recording the last pushed sha (not
+        # None) is what makes the row diagnosable — it's the boundary
+        # between what landed and what didn't.
+        #
+        # Re-raises: the caller must still 500 so fathom-meeting-sync
+        # retries the delivery. This adds a record; it does not swallow.
+        log.warning(
+            "auto-ingest failed: meeting=%s projects=%s commits_pushed=%d: %s",
+            meeting_id, project_codes, len(commits), exc,
         )
-        response = {
-            "ingested": ingested,
-            "commit_sha": last_commit,
-            "commit_shas": commits,
-            "skipped_no_op": False,
-            "commitments": commitments_summary,
-            "meeting_artifacts": artifact_summary,
-        }
         _log_run_to_supabase(
             meeting_id=meeting_id,
             project_codes=project_codes,
-            status="success",
+            status="failed",
             ingested=ingested,
-            commit_sha=last_commit,
+            commit_sha=commits[-1] if commits else None,
+            top_level_errors=[f"{type(exc).__name__}: {exc}"],
         )
-        return response
+        raise
 
 
 def _generate_meeting_artifacts(
