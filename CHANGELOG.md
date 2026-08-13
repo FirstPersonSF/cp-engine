@@ -4,6 +4,96 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.96.0 — 2026-08-13
+
+Four fixes that were written but never ran, plus two webhook observability
+fixes. **The release itself is the headline:** `4321211` and `79d8cd5` landed
+on `main` on 08-12 and were reported to the user as fixed, but v0.95.0 had
+already shipped — so every `cp sync` and every `push_to_dropbox` call since
+has executed the old behaviour. A fix is not delivered when it is committed.
+
+- **`push_to_dropbox` defaults into `03 Assets/06 Spine`, not the project
+  root.** The standing rule ("all elements created by cp go into 06 Spine")
+  had been broken twice the same way, both times by an optional `dest_name`
+  that silently defaulted to the bare filename — so the UNSPECIFIED case was
+  the trap. The connector is upload-only (no delete, no move), so a misplaced
+  file cannot be cleaned up from a session; it has to be fixed by hand in
+  Dropbox. An explicit `dest_name` still wins, including a bare name for the
+  root.
+
+- **`set_spine_element` stamps confirmed marks (#180).** `cp sync` silently
+  reverted five hosted-MCP edits across three projects: the verb built its
+  patch without ever touching `field_states`/`confirmed_by`, while sync's
+  reconcile only protects fields marked `confirmed`. Every edit read
+  "proposed", so sync overwrote it — and the verb had already returned
+  success, so the loss was invisible. Only estimate-derived (uuid-keyed) rows
+  were affected; `_authored/*` have no disk counterpart to reconcile against.
+  `placement` is now tracked too.
+
+  **Correcting the prior diagnosis:** the commit message for `4321211` and an
+  earlier issue comment both claim `placement` reverts because `substance.py`
+  defaults an absent frontmatter key to `"item"`, and propose changing how
+  every substance field is parsed. Verified today: that is wrong. On the
+  reverted rows `placement` IS marked confirmed, `reconcile_field` correctly
+  returns the confirmed value, and `layer`/`framing` held on the same row in
+  the same sync. The real cause is that the installed v0.95.0 build does not
+  have `placement` in `_SUBSTANCE_TRACKED_FIELDS` at all. This release is the
+  first test of the fix — if `placement` still reverts after upgrading, the
+  disk-default theory becomes live again, but it is untested until then.
+
+- **`spine-lint`: archived-but-referenced no longer flags a card that already
+  holds the source (#176).** The referrer scan matched the archived element's
+  id/title against the live row's `sources` blob as well as its body, so a
+  card that had attached the SAME document counted as referring to that
+  document's stub. The lint was telling the reader to un-archive a stub whose
+  only content was a pointer the live card already has — i.e. to resurrect
+  exactly the noise #178/#179 remove. Guarded both ways: a referrer WITHOUT
+  the source still dangles, and a sourceless archived element is unaffected.
+  ibx-5192: 10 warnings → 5.
+
+- **Stakeholder relevance: `serves` links people to projects (#179 step 4).**
+  Account scope (mig 104) made a dossier readable from every project of the
+  company, undifferentiated — sap-5171 (display ads) read all 16 SAP
+  dossiers, 171k chars. `serves` now carries the link, and
+  `set_spine_element` leaves a stakeholder `unbound` rather than claiming a
+  person is live work (`binding` is a WORK fact, and spine_lint reads it as
+  one).
+
+- **`stub-sweep` flags a stub that postdates its target (#179 step 5).** Run
+  against the first project, the migration stopped itself: ibx-5192's 23
+  attachable stubs route to a card dated 2026-06-27, but every document is
+  from 07-21 to 08-04 — they cannot have fed a debrief that happened weeks
+  earlier. It is a bulk route that landed everything on whatever card was
+  selected, and migrating faithfully would have made that card claim
+  provenance it never consumed. `postdates_target()` now surfaces that, so a
+  destination existing and having a layer is no longer mistaken for the
+  routing being meaningful. Where the routing is real (sap-5174's `1:1
+  Stakeholder Interviews`), 3 stubs migrated cleanly.
+
+- **Webhook: a failed pipeline now records a `failed` run row.** Every
+  `_log_run_to_supabase` call sat on the success path, so an exception
+  escaping the clone block wrote NO row — neither success nor failed.
+  `auto_ingest_runs` showed a clean record (most recent failure: June 7)
+  while pushes were failing; Sentry was the only signal, and it carries the
+  exception type but not the git stderr. Observed 2026-08-12 11:21–11:31: an
+  eleven-webhook burst where losers of the push race exhausted
+  `_push_with_retry` and raised `CalledProcessError 128`, recording two
+  commit shas that exist in no branch of the tenant. The row now carries the
+  PARTIAL push boundary (pushes happen inside the per-project loop, so the
+  last pushed sha separates what landed from what didn't) and re-raises so
+  fathom-meeting-sync still retries. Does not address the underlying race —
+  `max_attempts=3` with no backoff or jitter is sized for two colliding
+  writers, not eleven (#181).
+
+- **Webhook: `ClientDisconnect` is not an application error.** Every route
+  reads `await request.body()` as its first statement to verify the HMAC, so
+  a sender that has already hung up raised an UNHANDLED exception on line
+  one — before signature verification, before any work. Benign by
+  construction: the work is either already done (the first attempt won) or
+  never started. Now returns 499 and logs at INFO with the correlation id, so
+  the pattern stays visible if it ever becomes frequent — which would mean
+  the sender's timeout is too tight for real payload sizes.
+
 ## v0.95.0 — 2026-08-11
 
 - **`cp stub-sweep <code>` — empty Source-material cards, and where their
