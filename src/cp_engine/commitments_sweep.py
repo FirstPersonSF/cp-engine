@@ -111,7 +111,14 @@ def sweep(
         owner = resolve_commitment_owner(client, code)
         if owner is None:
             raise ValueError(f"no project or initiative resolves for code {code!r}")
-        col = "project_id" if owner["kind"] == "engagement" else "initiative_id"
+        # `resolve_commitment_owner` emits ONLY "project" | "initiative"
+        # (commitments.py:89/101). This previously tested for "engagement",
+        # which never matches — so every engagement fell through to
+        # `initiative_id` and silently returned zero. `cp commitments-sweep
+        # ibx-5192` reported "No open commitments match" against 72 real open
+        # rows, and that empty result was carried into a close-out retro as
+        # fact. Test for "initiative" like every other caller does.
+        col = "initiative_id" if owner["kind"] == "initiative" else "project_id"
         query = query.eq(col, owner["id"])
     rows = query.execute().data or []
 

@@ -76,3 +76,84 @@ def test_sweep_row_properties() -> None:
         due_date=None, date_status="proposed", age_days=14, ttl=None,
     )
     assert r.stale
+
+
+# --- the scope column: engagements must not fall through to initiatives ----
+
+
+class _FakeQuery:
+    """Records .eq() calls so a test can assert WHICH column was filtered."""
+
+    def __init__(self, rows: list[dict], calls: list[tuple[str, object]]):
+        self._rows, self.calls = rows, calls
+
+    def select(self, *_a, **_k):
+        return self
+
+    def eq(self, col, val):
+        self.calls.append((col, val))
+        return self
+
+    def execute(self):
+        class _R:
+            data = self._rows
+        return _R()
+
+
+class _FakeClient:
+    def __init__(self, rows: list[dict]):
+        self._rows, self.calls = rows, []
+
+    def table(self, _name):
+        return _FakeQuery(self._rows, self.calls)
+
+
+def test_sweep_scopes_an_engagement_by_project_id(monkeypatch) -> None:
+    """Regression: `resolve_commitment_owner` emits kind='project', never
+    'engagement'.
+
+    The filter previously read `"project_id" if kind == "engagement" else
+    "initiative_id"` — so EVERY engagement fell through to `initiative_id`
+    and matched nothing. `cp commitments-sweep ibx-5192` reported "No open
+    commitments match" against 72 real open rows, and that empty result was
+    carried into a close-out retro as fact.
+    """
+    from cp_engine import commitments_sweep as cs
+
+    monkeypatch.setattr(
+        cs, "_owner_codes", lambda _c: {}, raising=False
+    )
+    import cp_engine.commitments as _cmt
+    monkeypatch.setattr(
+        _cmt, "resolve_commitment_owner",
+        lambda _c, _code: {"id": "proj-uuid", "code": "ibx-5192", "kind": "project"},
+    )
+
+    client = _FakeClient([_c("c1", "a real open commitment")])
+    groups = cs.sweep(client, code="ibx-5192", today=_TODAY)
+
+    assert ("project_id", "proj-uuid") in client.calls, (
+        "an engagement must be scoped by project_id"
+    )
+    assert ("initiative_id", "proj-uuid") not in client.calls
+    assert groups, "the open commitment must survive the filter"
+
+
+def test_sweep_scopes_an_initiative_by_initiative_id(monkeypatch) -> None:
+    """The other side of the branch — guards against over-correcting."""
+    from cp_engine import commitments_sweep as cs
+
+    monkeypatch.setattr(cs, "_owner_codes", lambda _c: {}, raising=False)
+    import cp_engine.commitments as _cmt
+    monkeypatch.setattr(
+        _cmt, "resolve_commitment_owner",
+        lambda _c, _code: {
+            "id": "init-uuid", "code": "mission-control", "kind": "initiative",
+        },
+    )
+
+    client = _FakeClient([])
+    cs.sweep(client, code="mission-control", today=_TODAY)
+
+    assert ("initiative_id", "init-uuid") in client.calls
+    assert ("project_id", "init-uuid") not in client.calls
