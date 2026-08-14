@@ -4,10 +4,11 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## Unreleased
+## v0.97.0 — 2026-08-14
 
 - **`placement` is DERIVED from the est_item_id key shape, not authored
-  (#182).** Backs out the tracked-field entry added hours earlier in v0.96.0.
+  (#182).** Backs out the `placement` tracked-field entry added in v0.96.0 the
+  previous day, on a premise that did not survive measurement.
   Measured across all 401 live `spine_substance` rows before changing
   anything: `_authored/*` → `context` (368), uuid → `item` (32), one
   exception — and using the outline's own predicate, the number of rows
@@ -29,6 +30,16 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
   byte-for-byte and dropping the emit would rewrite 256 files to delete a
   now-redundant line. The 256th (`e94d0a03`) is an `_authored/` mirror with a
   uuid key — a real defect, tracked as #183.
+
+  **Note on what this release changes in practice:** the code has been live on
+  the Railway webhook since 08-13 (it auto-deploys `main`), so this release
+  does not alter webhook behaviour. What it fixes is the version strings —
+  both the webhook and an upgraded CLI were reporting `0.96.0` while running
+  code that was not in v0.96.0, so anyone reinstalling from the tag would have
+  silently got the OLD behaviour. Upgrade with
+  `uv tool install --force --reinstall …`: plain `--force` skips the
+  reinstall when the version string is unchanged, which is how this class of
+  drift goes unnoticed in the first place.
 
 ## v0.96.0 — 2026-08-13
 
