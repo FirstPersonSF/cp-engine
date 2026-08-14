@@ -2,10 +2,15 @@
 
 Concurrent webhook requests each clone independently and race on `git
 push origin main`. The loser gets a non-fast-forward rejection. The
-new ``_push_with_retry`` helper recovers with ``git pull --rebase``
-and retries up to 3 attempts; if the rebase itself conflicts, it
+``_push_with_retry`` helper recovers with ``git pull --rebase`` and
+retries up to ``_PUSH_MAX_ATTEMPTS``; if the rebase itself conflicts, it
 ``git rebase --abort``s and re-raises so the request fails cleanly
 rather than wedging the working tree.
+
+#181 added jittered backoff between attempts and took the ceiling 3 -> 5:
+retries used to fire back-to-back, which is sized for two webhooks
+colliding, not for the eleven-webhook burst that dropped commits on
+2026-08-12.
 
 We mock subprocess.run so we can drive the push/rebase exit codes
 without spinning up real git repos.
@@ -25,6 +30,17 @@ if str(_WEBHOOK) not in sys.path:
 
 import main as webhook_main  # noqa: F401 — path shim side effect
 import git_ops
+
+
+@pytest.fixture(autouse=True)
+def _no_real_sleep(monkeypatch):
+    """Never actually sleep (#181 added jittered backoff).
+
+    Without this the suite pays real wall-clock for every retry path. Patched
+    on `git_ops.time.sleep` rather than globally so a genuine sleep elsewhere
+    would still be visible.
+    """
+    monkeypatch.setattr(git_ops.time, "sleep", lambda _s: None)
 
 
 def _result(returncode: int = 0, stdout: str = "", stderr: str = "") -> MagicMock:
@@ -68,7 +84,13 @@ def test_push_retries_after_non_fast_forward(tmp_path: Path) -> None:
 
 
 def test_push_gives_up_after_max_attempts(tmp_path: Path) -> None:
-    """Three consecutive non-fast-forward rejections -> CalledProcessError."""
+    """N consecutive non-fast-forward rejections -> CalledProcessError.
+
+    Derived from `_PUSH_MAX_ATTEMPTS` rather than hardcoded, so raising the
+    ceiling (#181 took it 3 -> 5) doesn't silently leave a test asserting the
+    old shape.
+    """
+    n = git_ops._PUSH_MAX_ATTEMPTS
     push_reject = _result(
         returncode=1,
         stderr="! [rejected] (non-fast-forward) — fetch first",
@@ -76,18 +98,13 @@ def test_push_gives_up_after_max_attempts(tmp_path: Path) -> None:
     rebase_ok = _result(returncode=0)
 
     with patch.object(git_ops.subprocess, "run") as run:
-        # attempt 1: push reject -> rebase ok
-        # attempt 2: push reject -> rebase ok
-        # attempt 3: push reject -> give up
-        run.side_effect = [
-            push_reject, rebase_ok,
-            push_reject, rebase_ok,
-            push_reject,
-        ]
+        # (push reject -> rebase ok) x (n-1), then a final push reject.
+        run.side_effect = [push_reject, rebase_ok] * (n - 1) + [push_reject]
         with pytest.raises(subprocess.CalledProcessError):
             git_ops._push_with_retry(tmp_path, target_branch="main", env={})
 
-    assert run.call_count == 5
+    # n pushes + (n-1) rebases
+    assert run.call_count == 2 * n - 1
 
 
 def test_push_aborts_rebase_on_conflict_and_raises(tmp_path: Path) -> None:
@@ -206,3 +223,75 @@ def test_push_warns_when_rebase_abort_itself_fails(
         "rebase --abort failed" in r.message.lower()
         for r in caplog.records
     )
+
+
+# --- #181: jittered backoff between attempts --------------------------------
+
+
+def test_backoff_is_bounded_and_widens_with_attempt() -> None:
+    """Full jitter: a draw from [0, base * 2**attempt).
+
+    Asserts the SHAPE, not a value — the whole point is that it's random.
+    """
+    base = git_ops._PUSH_BACKOFF_BASE_SEC
+    for attempt in range(1, 6):
+        ceiling = base * (2 ** attempt)
+        draws = [git_ops._push_backoff_delay(attempt) for _ in range(200)]
+        assert all(0 <= d < ceiling for d in draws)
+        # Not a constant — a fixed delay would leave losers in lockstep,
+        # which is the actual defect #181 is about.
+        assert len(set(draws)) > 1
+
+
+def test_backoff_starts_from_zero_not_a_fixed_floor() -> None:
+    """The first retry must be able to fire almost immediately.
+
+    Fixed-delay-plus-noise would tax the common case (a lone webhook that
+    lost one race) to fix the rare one. Full jitter doesn't.
+    """
+    draws = [git_ops._push_backoff_delay(1) for _ in range(500)]
+    assert min(draws) < git_ops._PUSH_BACKOFF_BASE_SEC * 0.5
+
+
+def test_push_sleeps_between_attempts(tmp_path: Path, monkeypatch) -> None:
+    """The retry loop actually calls the backoff — once per retry, not per push."""
+    slept: list[float] = []
+    monkeypatch.setattr(git_ops.time, "sleep", lambda s: slept.append(s))
+
+    push_reject = _result(
+        returncode=1, stderr="! [rejected] main -> main (non-fast-forward)"
+    )
+    with patch.object(git_ops.subprocess, "run") as run:
+        run.side_effect = [push_reject, _result(0), _result(0)]
+        git_ops._push_with_retry(tmp_path, target_branch="main", env={})
+
+    # One rejection -> exactly one backoff, before the rebase.
+    assert len(slept) == 1
+    assert 0 <= slept[0] < git_ops._PUSH_BACKOFF_BASE_SEC * 2
+
+
+def test_no_backoff_when_the_first_push_succeeds(tmp_path: Path, monkeypatch) -> None:
+    """The uncontended path — by far the common one — pays nothing."""
+    slept: list[float] = []
+    monkeypatch.setattr(git_ops.time, "sleep", lambda s: slept.append(s))
+
+    with patch.object(git_ops.subprocess, "run") as run:
+        run.return_value = _result(returncode=0)
+        git_ops._push_with_retry(tmp_path, target_branch="main", env={})
+
+    assert slept == []
+
+
+def test_no_backoff_on_a_non_recoverable_failure(tmp_path: Path, monkeypatch) -> None:
+    """An auth/hook reject raises immediately — sleeping would just delay a 500."""
+    slept: list[float] = []
+    monkeypatch.setattr(git_ops.time, "sleep", lambda s: slept.append(s))
+
+    with patch.object(git_ops.subprocess, "run") as run:
+        run.return_value = _result(
+            returncode=128, stderr="fatal: Authentication failed"
+        )
+        with pytest.raises(subprocess.CalledProcessError):
+            git_ops._push_with_retry(tmp_path, target_branch="main", env={})
+
+    assert slept == []

@@ -10,9 +10,11 @@ from __future__ import annotations
 
 import logging
 import os
+import random
 import shutil
 import subprocess
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -115,13 +117,45 @@ _NON_FAST_FORWARD_MARKERS = (
     "fetch first",
 )
 
+# Backoff between push attempts (#181). Retries used to fire back-to-back,
+# which is sized for two webhooks colliding and not for a burst: tagging a
+# batch of meetings in the dashboard fans out N concurrent deliveries, each
+# cloning the tenant and racing to push. Observed 2026-08-12 11:21-11:31 —
+# eleven webhooks, and two losers exhausted their attempts and dropped
+# commits that exist in no branch.
+#
+# JITTER IS THE LOAD-BEARING PART, not the delay. Simultaneous losers back
+# off by the same amount and re-collide in lockstep; a random component is
+# what actually de-synchronises them. The delay is drawn from
+# [0, base * 2**attempt) — "full jitter", which beats fixed-plus-noise
+# because it also spreads the FIRST retry, where a burst's collisions are
+# densest.
+#
+# Base is deliberately small: a push against an already-fetched remote is
+# fast, and each attempt also pays a `pull --rebase`. Worst case added
+# latency across 5 attempts is ~2.3s of sleep, well inside the sender's
+# timeout — and a delivery that retries is one we'd otherwise LOSE.
+_PUSH_BACKOFF_BASE_SEC = 0.15
+_PUSH_MAX_ATTEMPTS = 5
+
+
+def _push_backoff_delay(attempt: int) -> float:
+    """Full-jitter backoff: a uniform draw from [0, base * 2**attempt).
+
+    `attempt` is 1-based, so the first retry draws from [0, 0.3), the
+    second [0, 0.6), and so on. Split out as a named function so tests can
+    assert the SHAPE (bounded, spreads with attempt) without asserting an
+    exact value, and so the sleep can be patched at one place.
+    """
+    return random.uniform(0, _PUSH_BACKOFF_BASE_SEC * (2 ** attempt))
+
 
 def _push_with_retry(
     tenant_root: Path,
     *,
     target_branch: str,
     env: dict,
-    max_attempts: int = 3,
+    max_attempts: int = _PUSH_MAX_ATTEMPTS,
 ) -> None:
     """``git push origin <branch>`` with rebase-on-reject recovery.
 
@@ -174,11 +208,16 @@ def _push_with_retry(
                 )
             raise last_err
 
+        # Jittered backoff BEFORE the rebase (#181): under a burst the
+        # rebase itself contends, so spreading here — not just before the
+        # re-push — is what breaks the lockstep.
+        delay = _push_backoff_delay(attempt)
         log.warning(
             "push rejected non-fast-forward (attempt %d/%d); "
-            "rebasing and retrying",
-            attempt, max_attempts,
+            "backing off %.2fs, then rebasing and retrying",
+            attempt, max_attempts, delay,
         )
+        time.sleep(delay)
         rebase = subprocess.run(
             ["git", "pull", "--rebase", "origin", target_branch],
             cwd=tenant_root,
