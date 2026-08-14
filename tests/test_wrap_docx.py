@@ -175,3 +175,54 @@ def test_creates_missing_parent_directories(tmp_path: Path) -> None:
         out_path=tmp_path / "deep" / "nested" / "w.docx",
     )
     assert out.exists()
+
+
+# --- inline emphasis: markers must not print as literal asterisks ----------
+
+
+def test_bold_markers_become_real_bold_runs(tmp_path: Path) -> None:
+    """Authored sections are markdown. Passing `**x**` through would print
+    asterisks in a document whose entire purpose is client readability."""
+    out = build_wrap_docx(
+        title="t", subtitle="",
+        sections=[WrapSection("S", body="This is **emphatic** prose.")],
+        out_path=tmp_path / "w.docx",
+    )
+    body = _text(out)
+    assert "<w:b/>" in body, "** ** must produce a real bold run"
+    assert "**" not in body, "literal asterisks must not reach the document"
+    assert "emphatic" in body
+
+
+def test_italic_markers_become_real_italic_runs(tmp_path: Path) -> None:
+    out = build_wrap_docx(
+        title="t", subtitle="",
+        sections=[WrapSection("S", body="A *quoted* aside.")],
+        out_path=tmp_path / "w.docx",
+    )
+    body = _text(out)
+    assert "<w:i/>" in body
+    assert "quoted" in body
+
+
+def test_emphasis_inside_bullets_is_honoured(tmp_path: Path) -> None:
+    out = build_wrap_docx(
+        title="t", subtitle="",
+        sections=[WrapSection("S", body="- **Change:** do the thing\n- plain")],
+        out_path=tmp_path / "w.docx",
+    )
+    body = _text(out)
+    assert 'w:val="ListBullet"' in body
+    assert "<w:b/>" in body
+    assert "**" not in body
+
+
+def test_unmatched_asterisk_is_left_alone(tmp_path: Path) -> None:
+    """A lone `*` is prose (a footnote marker, a multiplication sign), not a
+    broken marker to be swallowed."""
+    out = build_wrap_docx(
+        title="t", subtitle="",
+        sections=[WrapSection("S", body="5 * 3 is fifteen")],
+        out_path=tmp_path / "w.docx",
+    )
+    assert "5 * 3 is fifteen" in _text(out)

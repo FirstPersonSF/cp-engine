@@ -25,6 +25,7 @@ Both, not either.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -50,6 +51,38 @@ class WrapSection:
     level: int = 1
 
 
+def _add_rich(para: Any, text: str) -> None:
+    """Write `text` into `para`, honouring **bold** and *italic* markers.
+
+    The authored sections are markdown, so emphasis arrives as literal
+    asterisks. Dropping them loses the author's emphasis; passing them
+    through prints `**like this**` in a document whose whole purpose is
+    being readable by a client. So the markers are consumed into real Word
+    runs.
+
+    Deliberately minimal — bold and italic only. A general markdown-to-OOXML
+    converter is a different project, and this renderer takes STRUCTURED
+    input by design (see the module docstring); emphasis is the one inline
+    form that survives the structural split.
+    """
+    import re as _re
+
+    # Bold first: `**x**` would otherwise match the italic pattern twice.
+    for chunk in _re.split(r"(\*\*[^*]+\*\*|\*[^*]+\*|`[^`]+`)", text):
+        if not chunk:
+            continue
+        if chunk.startswith("**") and chunk.endswith("**") and len(chunk) > 4:
+            para.add_run(chunk[2:-2]).bold = True
+        elif chunk.startswith("*") and chunk.endswith("*") and len(chunk) > 2:
+            para.add_run(chunk[1:-1]).italic = True
+        elif chunk.startswith("`") and chunk.endswith("`") and len(chunk) > 2:
+            # Inline code reads as emphasis in prose; Word has no cheap
+            # monospace run without a style, so italic is the honest fallback.
+            para.add_run(chunk[1:-1]).italic = True
+        else:
+            para.add_run(chunk)
+
+
 def _add_table(doc: Any, rows: list[list[str]]) -> None:
     """Write a header-first table in a built-in style.
 
@@ -60,10 +93,10 @@ def _add_table(doc: Any, rows: list[list[str]]) -> None:
     if not rows:
         return
     table = doc.add_table(rows=1, cols=len(rows[0]))
-    try:
+    # The style set varies by Word build; an unstyled table still reads fine,
+    # so a missing style must not fail the document.
+    with contextlib.suppress(KeyError):
         table.style = "Light Grid Accent 1"
-    except KeyError:  # pragma: no cover — style set varies by Word build
-        pass
     for i, label in enumerate(rows[0]):
         cell = table.rows[0].cells[i]
         cell.text = ""
@@ -110,9 +143,11 @@ def build_wrap_docx(
                 lines = [ln.strip() for ln in text.split("\n") if ln.strip()]
                 if all(ln.startswith(("- ", "* ")) for ln in lines):
                     for ln in lines:
-                        doc.add_paragraph(ln[2:].strip(), style="List Bullet")
+                        _add_rich(
+                            doc.add_paragraph(style="List Bullet"), ln[2:].strip()
+                        )
                 else:
-                    doc.add_paragraph(text)
+                    _add_rich(doc.add_paragraph(), text)
         if section.table:
             _add_table(doc, section.table)
         for label in section.blanks:
