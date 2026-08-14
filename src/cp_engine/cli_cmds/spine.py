@@ -1158,3 +1158,257 @@ def close_cmd(code: str, force: bool, overwrite: bool) -> None:
     )
     click.echo("Nothing was mutated — work the checklist, then commit it "
                "with the close-out edits.")
+
+
+@click.command("wrap")
+@click.argument("code")
+@click.option(
+    "--bundle",
+    is_flag=True,
+    help="Emit the wrap-report bundle as JSON for in-session synthesis.",
+)
+@click.option(
+    "--tail-days",
+    default=14,
+    show_default=True,
+    help="Closing-window width used for the meeting tail-share signal.",
+)
+def wrap_cmd(code: str, bundle: bool, tail_days: int) -> None:
+    """Emit the deterministic raw material for a close-out wrap report.
+
+    Gathers the facts a hand-written retro forgets to look up — duration,
+    budget, RECORDED HOURS by person, meeting cadence and where it fell in
+    the timeline, deliverables, what each shipped round absorbed, open
+    commitments — and prints them as JSON for the model to synthesize
+    against a fixed section contract (`/cp-wrap`).
+
+    Facts only: this verb writes no prose and mutates nothing. The report
+    itself is authored in-session so it can be defended and revised live —
+    the same split as `cp prep-planning --bundle`.
+
+    Pairs with `cp close`: run `wrap` FIRST (it produces the learning
+    artifact), then `close` (the hygiene ritual), so the terminal Exec
+    Summary can quote the report.
+    """
+    import json
+    from datetime import date
+
+    from cp_engine import close_out as _close
+    from cp_engine import wrap_report as _wrap
+    from cp_engine.mc2_db import Tables
+    from cp_engine.spine import SpineDirNotFound
+
+    config = _cli._load_config_or_die()
+    try:
+        workdir, _parked = _close.find_close_workdir(config.root, code)
+    except SpineDirNotFound as exc:
+        click.echo(str(exc), err=True)
+        sys.exit(1)
+
+    client = mc2_db.get_client(config, required=False)
+    if client is None:
+        click.echo(
+            "REFUSING: MC-2 is unreachable and the wrap bundle is mostly "
+            "MC-2 facts (hours, budget, meeting cadence). A bundle built "
+            "from the disk mirror alone would understate effort — which is "
+            "the exact failure this verb exists to prevent.",
+            err=True,
+        )
+        sys.exit(1)
+
+    # ── Project facts ────────────────────────────────────────────────
+    row: dict = {}
+    try:
+        rows = (
+            client.table(Tables.PROJECTS)
+            .select(
+                "id, code, name, number, mc_status, start_date, budget, "
+                "target_profit_pct, account_manager"
+            )
+            .eq("code", workdir.name)
+            .execute()
+            .data
+        ) or []
+        if not rows:
+            # `projects.code` is the SHORT code, not the dir slug (the known
+            # code-vs-slug bridge). Fall back to the numeric suffix.
+            digits = "".join(ch for ch in code if ch.isdigit())
+            if digits:
+                rows = (
+                    client.table(Tables.PROJECTS)
+                    .select(
+                        "id, code, name, number, mc_status, start_date, "
+                        "budget, target_profit_pct, account_manager"
+                    )
+                    .eq("number", int(digits))
+                    .execute()
+                    .data
+                ) or []
+        row = rows[0] if rows else {}
+    except Exception as exc:  # noqa: BLE001 — degrade loudly, keep going
+        click.echo(f"(WARNING: project row read failed: {exc})", err=True)
+
+    project_id = row.get("id")
+
+    # ── Meetings ─────────────────────────────────────────────────────
+    meetings = _wrap.MeetingLoad(tail_days=tail_days)
+    if project_id:
+        try:
+            mrows = (
+                client.table(Tables.FATHOM_MEETINGS)
+                .select("id, meeting_date, title, duration_minutes")
+                .eq("project_id", project_id)
+                .execute()
+                .data
+            ) or []
+            meetings = _wrap.summarize_meetings(mrows, tail_days=tail_days)
+        except Exception as exc:  # noqa: BLE001
+            click.echo(f"(WARNING: meeting read failed: {exc})", err=True)
+
+    # ── Effort (allocated hours, NOT timesheet actuals) ───────────────
+    effort = _wrap.EffortSummary(verified=False)
+    if project_id:
+        try:
+            arows = (
+                client.table(Tables.SPRINT_ALLOCATIONS)
+                .select("entity_id, hours, week_start")
+                .eq("project_id", project_id)
+                .execute()
+                .data
+            ) or []
+            names = {
+                str(e["id"]): e.get("name") or "unattributed"
+                for e in (
+                    client.table(Tables.ENTITIES)
+                    .select("id, name")
+                    .execute()
+                    .data
+                    or []
+                )
+            }
+            effort = _wrap.summarize_effort(arows, names)
+        except Exception as exc:  # noqa: BLE001
+            click.echo(f"(WARNING: allocation read failed: {exc})", err=True)
+
+    # ── Spine: deliverables + what each round absorbed ────────────────
+    elements: list = []
+    spine_ok = True
+    try:
+        elements = [
+            _close.element_from_row(r)
+            for r in _close.fetch_live_spine_rows(client, workdir.name)
+        ]
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"(WARNING: spine read failed: {exc})", err=True)
+        spine_ok = False
+
+    deliverables = [e.title for e in elements if (e.layer or "") == "Deliverables"]
+
+    commitments = None
+    try:
+        commitments = _close.fetch_open_commitments(client, code)
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"(WARNING: commitments read failed: {exc})", err=True)
+
+    feedback = sorted(
+        p.name
+        for p in (workdir / "feedback-on-deck").glob("*.md")
+    ) if (workdir / "feedback-on-deck").is_dir() else []
+
+    b = _wrap.WrapBundle(
+        code=code,
+        name=str(row.get("name") or ""),
+        status=str(row.get("mc_status") or ""),
+        start_date=_wrap._as_date(row.get("start_date")),
+        budget=float(row["budget"]) if row.get("budget") else None,
+        target_profit_pct=(
+            float(row["target_profit_pct"]) if row.get("target_profit_pct") else None
+        ),
+        account_manager=str(row.get("account_manager") or ""),
+        meetings=meetings,
+        effort=effort,
+        deliverables=deliverables,
+        open_commitments=commitments,
+        feedback_artifacts=feedback,
+        spine_verified=spine_ok,
+    )
+
+    payload = {
+        "code": b.code,
+        "name": b.name,
+        "status": b.status,
+        "account_manager": b.account_manager,
+        "start_date": b.start_date.isoformat() if b.start_date else None,
+        "duration_days": b.duration_days,
+        "duration_weeks": b.duration_weeks,
+        "budget": b.budget,
+        "target_profit_pct": b.target_profit_pct,
+        "effort": {
+            "verified": b.effort.verified,
+            "note": (
+                "ALLOCATED hours from sprint_allocations — MC-2's planning "
+                "record, NOT timesheet actuals. Say so in the report; "
+                "presenting an allocation as an actual overstates precision."
+            ),
+            "total_hours": b.effort.total_hours,
+            "weeks": b.effort.weeks,
+            "by_person": [{"name": n, "hours": h} for n, h in b.effort.by_person],
+        },
+        "budget_per_hour": b.budget_per_hour,
+        "meetings": {
+            "count": b.meetings.count,
+            "total_hours": b.meetings.total_hours,
+            "first": b.meetings.first.isoformat() if b.meetings.first else None,
+            "last": b.meetings.last.isoformat() if b.meetings.last else None,
+            "tail_days": b.meetings.tail_days,
+            "tail_share": round(b.meetings.tail_share, 3),
+            "tail_hours": round(b.meetings.tail_minutes / 60.0, 1),
+            "head_hours": round(b.meetings.head_minutes / 60.0, 1),
+            "heaviest_days": [
+                {"date": d, "meetings": c, "minutes": m}
+                for d, c, m in b.meetings.heaviest_days
+            ],
+        },
+        "deliverables": b.deliverables,
+        "feedback_artifacts": b.feedback_artifacts,
+        "open_commitments": b.open_commitments,
+        "spine_verified": b.spine_verified,
+        "learning_axes": [{"key": k, "prompt": p} for k, p in _wrap.LEARNING_AXES],
+        "human_entry_fields": list(_wrap.HUMAN_ENTRY_FIELDS),
+        "not_assessable_from_data": _wrap.unanswerable_fields(b),
+        "generated": date.today().isoformat(),
+    }
+
+    if bundle:
+        click.echo(json.dumps(payload, indent=2))
+        return
+
+    # Human-readable default: the headline signals, not the whole payload.
+    click.echo(f"{b.code} — {b.name or '(unnamed)'}  [{b.status or 'status?'}]")
+    if b.duration_weeks is not None:
+        click.echo(f"  duration      : {b.duration_weeks} weeks "
+                   f"(from {b.start_date})")
+    if b.budget:
+        click.echo(f"  budget        : ${b.budget:,.0f}"
+                   + (f" · target {b.target_profit_pct:.0f}%"
+                      if b.target_profit_pct else ""))
+    if b.effort.verified and b.effort.total_hours:
+        click.echo(f"  hours (alloc) : {b.effort.total_hours} across "
+                   f"{len(b.effort.by_person)} people, {b.effort.weeks} weeks")
+        for n, h in b.effort.by_person:
+            click.echo(f"                  {n}: {h}h")
+        if b.budget_per_hour:
+            click.echo(f"  $/hour        : ${b.budget_per_hour}")
+    else:
+        click.echo("  hours         : UNREAD — do not report a margin")
+    click.echo(f"  meetings      : {b.meetings.count} · "
+               f"{b.meetings.total_hours}h total · "
+               f"{b.meetings.tail_share:.0%} in the last "
+               f"{b.meetings.tail_days} days")
+    click.echo(f"  deliverables  : {len(b.deliverables)}")
+    click.echo(f"  feedback docs : {len(b.feedback_artifacts)}")
+    n_open = len(b.open_commitments) if b.open_commitments else 0
+    click.echo(f"  open commits  : {n_open}")
+    click.echo("")
+    click.echo("Run with --bundle for the JSON the model synthesizes from "
+               "(see /cp-wrap). Nothing was mutated.")
