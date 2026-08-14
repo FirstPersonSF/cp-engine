@@ -8,6 +8,8 @@ monkeypatches of `cp_engine.cli.<helper>` keep working.
 from __future__ import annotations
 
 import sys
+from datetime import UTC
+from pathlib import Path
 
 import click
 
@@ -411,7 +413,7 @@ def spine_recover_cmd(code: str, apply_: bool, model: str) -> None:
     carried elements are fully idempotent.
     """
     import os
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from cp_engine.asset_ingest import resolve_project_folders_by_id
     from cp_engine.mc2_db import _resolve_project_id
@@ -484,7 +486,7 @@ def spine_recover_cmd(code: str, apply_: bool, model: str) -> None:
     report, rows = recover(
         client=client, project_id=project_id, company_id=company_id,
         project_dir=project_dir, canonical_code=canonical_code,
-        now_iso=datetime.now(timezone.utc).isoformat(),
+        now_iso=datetime.now(UTC).isoformat(),
         distiller=distiller, pull_text=pull_text, apply=apply_,
     )
 
@@ -1168,12 +1170,21 @@ def close_cmd(code: str, force: bool, overwrite: bool) -> None:
     help="Emit the wrap-report bundle as JSON for in-session synthesis.",
 )
 @click.option(
+    "--facts-docx",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Also write the FACTS as a Word doc at this path (the readable "
+    "half; the authored prose is added by /cp-wrap).",
+)
+@click.option(
     "--tail-days",
     default=14,
     show_default=True,
     help="Closing-window width used for the meeting tail-share signal.",
 )
-def wrap_cmd(code: str, bundle: bool, tail_days: int) -> None:
+def wrap_cmd(
+    code: str, bundle: bool, facts_docx: Path | None, tail_days: int
+) -> None:
     """Emit the deterministic raw material for a close-out wrap report.
 
     Gathers the facts a hand-written retro forgets to look up — duration,
@@ -1378,6 +1389,43 @@ def wrap_cmd(code: str, bundle: bool, tail_days: int) -> None:
         "not_assessable_from_data": _wrap.unanswerable_fields(b),
         "generated": date.today().isoformat(),
     }
+
+    # Word output: the FACTS half only. The authored prose comes from
+    # /cp-wrap, which re-invokes the same builder with its sections — a
+    # facts-only doc is still useful on its own (it is the scope
+    # conversation's evidence), and it keeps this verb prose-free.
+    if facts_docx is not None:
+        from cp_engine.wrap_docx import (
+            WrapSection,
+            build_wrap_docx,
+            effort_table,
+            facts_table,
+        )
+
+        sections = [WrapSection("Project facts", table=facts_table(payload))]
+        eff_rows = effort_table(payload)
+        if eff_rows:
+            sections.append(WrapSection(
+                "Effort by person",
+                body="Allocated hours from MC-2's planning record — NOT "
+                     "timesheet actuals.",
+                table=eff_rows,
+            ))
+        if payload["not_assessable_from_data"]:
+            sections.append(WrapSection(
+                "Not assessable from data — fill these in",
+                body="These are judgement calls and commercial facts the "
+                     "system cannot know. Left blank deliberately rather "
+                     "than guessed.",
+                blanks=payload["not_assessable_from_data"],
+            ))
+        written = build_wrap_docx(
+            title=f"{b.name or b.code} — Wrap Report",
+            subtitle=f"{b.code} · facts as of {payload['generated']}",
+            sections=sections,
+            out_path=facts_docx,
+        )
+        click.echo(f"Facts written: {written}")
 
     if bundle:
         click.echo(json.dumps(payload, indent=2))

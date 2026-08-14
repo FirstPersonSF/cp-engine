@@ -21,6 +21,11 @@ dependencies = [
     "anthropic>=0.40",
     "pypdf>=4.0",
     "slack-sdk>=3.27",
+    # Declared explicitly even though `document-ingest[docx]` already pulls it
+    # in transitively: `cp wrap --docx` WRITES Word files (#184), so this is a
+    # first-class capability of ours, not an artifact of someone else's extra.
+    # An undeclared transitive dep vanishes the day that extra is re-scoped.
+    "python-docx>=1.1",
     "document-ingest[llm,docx,pptx,pdf,spreadsheet,supabase,web,voyage] @ git+https://github.com/FirstPersonSF/1p-component-library.git@491fa2f#subdirectory=starters/document-ingest",
     "cloud-storage[all] @ git+https://github.com/FirstPersonSF/1p-component-library.git@491fa2f#subdirectory=integrations/cloud-storage",
     "resilience @ git+https://github.com/FirstPersonSF/1p-component-library.git@94eb35a#subdirectory=patterns/resilience",
