@@ -4,6 +4,62 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+- **`cp wrap` + `/cp-wrap` — the close-out wrap report (#184).** Ported in
+  SHAPE (not code) from social-builder-app's `generate_wrap_report`. The
+  engine emits measured facts; the model synthesizes the report in-session
+  against a fixed nine-section contract — the same split as
+  `cp prep-planning --bundle`, so the author can defend and revise it live.
+
+  **What was worth taking:** an explicit AI-fills / HUMAN-fills split where
+  human fields ship as *visible labelled blanks* rather than being silently
+  omitted (a model must never invent a budget, margin, licensing status or
+  rating, and a blank nobody can see is a blank nobody fills); FOUR learning
+  axes — project / client / vendors / scope+budget — instead of one "lessons"
+  blob, the client axis being the one with no home in cp and the one that
+  compounds across engagements; and adversarial sections by contract
+  (challenges, what-to-reconsider, relationship strength).
+
+  **What was deliberately not taken:** its Airtable → ClickUp → Slack
+  integration layer. cp retired ClickUp (mig 096) and never had Airtable;
+  the same facts live in MC-2 and the spine, richer — so this bundle
+  auto-fills *more* than the original with zero new integrations.
+
+  **The motivating failure:** ibx-5192's hand-written retro concluded
+  "actual hours: not captured" while `sprint_allocations` held 270+ hours
+  across five people, and missed that 66% of all meeting time fell in the
+  final two weeks — the single number that explains the engagement.
+
+- **`--facts-docx` renders the readable half as Word.** Markdown stays the
+  source of record (greppable, diffable, spine-attachable); the `.docx` is
+  its readable projection — real Word tables, headings, and human-entry
+  fields as visible blanks. Not a markdown converter: it lays out the
+  structured bundle, since converting the markdown would reproduce the
+  problem it exists to fix.
+
+  Word over Google Doc because Drive write lives in mc-2 behind per-user
+  OAuth and `GoogleDriveClient()` is on record hanging without a token — a
+  bad failure for a once-per-project ritual. Word over PDF because PDF
+  needed pandoc + a LaTeX engine that happen to be on one machine's PATH,
+  so `--pdf` would work for one person and fail for everyone else. A .docx
+  needs nothing, lands in Dropbox `03 Assets/06 Spine/` through the
+  existing connector, previews in browser and mobile, attaches to an email,
+  and stays editable — which matters for a document whose point is that it
+  has blanks in it. `python-docx` was already present transitively and is
+  now declared explicitly.
+
+- **Fixed: `commitments-sweep` returned zero for every engagement.**
+  `resolve_commitment_owner` emits `kind="project"`, never `"engagement"`,
+  but the sweep's scope filter tested for the latter — so every engagement
+  fell through to `initiative_id` and matched nothing. Found while building
+  the wrap bundle: the sweep reported ibx-5192 clean while the table held 72
+  open rows, 29 of them real, including the scope/budget conversation a
+  close-out retro had just recorded as still open. That empty result had
+  been carried into the retro as fact. The existing tests only covered
+  `_row`/`render` and never drove `sweep()` with a client, which is how
+  total blindness survived.
+
 ## v0.97.1 — 2026-08-14
 
 - **Jittered backoff between auto-ingest push retries; ceiling 3 → 5 (#181).**
