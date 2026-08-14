@@ -594,7 +594,7 @@ toml = [
 
 [[package]]
 name = "cp-engine"
-version = "0.97.1"
+version = "0.98.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },
@@ -608,6 +608,7 @@ dependencies = [
     { name = "packaging" },
     { name = "pygithub" },
     { name = "pypdf" },
+    { name = "python-docx" },
     { name = "python-frontmatter" },
     { name = "pyyaml" },
     { name = "resilience" },
@@ -647,6 +648,7 @@ requires-dist = [
     { name = "pypdf", specifier = ">=4.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "pytest-cov", marker = "extra == 'dev'", specifier = ">=5.0" },
+    { name = "python-docx", specifier = ">=1.1" },
     { name = "python-frontmatter", specifier = ">=1.1" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "resilience", git = "https://github.com/FirstPersonSF/1p-component-library.git?subdirectory=patterns%2Fresilience&rev=94eb35a" },
