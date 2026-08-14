@@ -54,7 +54,7 @@ import tempfile
 import threading
 import time
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -548,6 +548,11 @@ _AUDIT_SAFE_ARGS = {
     # — a closed three-value vocabulary, not prose. Worth recording because the
     # resolution path is the part of this verb most likely to be wrong.
     "resolved_via",
+    # ── wrap bundle (#184 port) ──
+    # An integer window width in days. A tuning knob, not content — and the one
+    # arg that changes what the tail-share number MEANS, so an audit row without
+    # it can't be compared against another run of the same project.
+    "tail_days",
 }
 # Arg keys that are free text — recorded as a length only, never their content.
 # `body`/`description`/`framing`/`title` are USER PROSE: the whole point of the
@@ -6625,6 +6630,569 @@ def read_project_file(path: str) -> dict[str, Any]:
     }
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  Wrap bundle — the close-out retro's raw material (#184, hosted port)
+# ──────────────────────────────────────────────────────────────────────
+#
+# A faithful copy of `cp_engine.wrap_report`'s fold logic and the payload
+# `cp wrap <code> --bundle` prints. COPIED, not imported, on the same rule the
+# rest of this prototype follows: hosted-mcp never imports cp_engine, so that
+# the server can be deployed without the engine package and so that no import
+# can smuggle in a cached service-role client (`mc2_db.get_client`).
+#
+# The duplication is the known cost. The mitigation is that both halves are
+# pure functions over row dicts with a test suite on the engine side
+# (`tests/test_wrap_report.py`) — if this copy drifts, it drifts visibly in the
+# tail-share number, which is the one figure the report is built around.
+
+# Fields the model MUST NOT invent. Each ships as a labelled placeholder so a
+# human sees a prompt rather than an omission.
+WRAP_HUMAN_ENTRY_FIELDS: tuple[str, ...] = (
+    "Actual profitability %",
+    "Work-page candidate (Yes/No)",
+    "OK to post publicly (Yes/No)",
+    "Project rating (1-5)",
+    "Non-royalty-free content / talent / music licensing",
+    "Link to final client-held artifact",
+)
+
+# The learning axes, in the order the report renders them. Four, not one — the
+# client axis is the one with no home in cp today and the one that compounds
+# across engagements.
+WRAP_LEARNING_AXES: tuple[tuple[str, str], ...] = (
+    ("project", "What we learned about the project — what worked, what was "
+                "challenging, key decisions, how the work evolved"),
+    ("client", "What we learned about the client — communication style, "
+               "decision-making, feedback patterns, who could actually end a "
+               "round"),
+    ("vendors", "What we learned about freelancers/vendors — who performed, "
+                "delivery reliability, what to change next time"),
+    ("scope_budget", "What we learned about scope & budget — was the original "
+                     "scope realistic, what changed, what would we price "
+                     "differently"),
+)
+
+WRAP_EFFORT_NOTE = (
+    "ALLOCATED hours from sprint_allocations — MC-2's planning "
+    "record, NOT timesheet actuals. Say so in the report; "
+    "presenting an allocation as an actual overstates precision."
+)
+
+_WRAP_PROJECT_COLUMNS = (
+    "id, code, name, number, mc_status, start_date, budget, "
+    "target_profit_pct, account_manager"
+)
+_WRAP_SPINE_COLUMNS = (
+    "id, est_item_id, framing, layer, status, version_label, "
+    "version_date, body, serves, scope, archived, project_id"
+)
+_WRAP_VERSION_NUM_RE = re.compile(r"\s*v?(\d+)", re.IGNORECASE)
+
+
+def _wrap_as_date(value: Any) -> date | None:
+    """Parse a date or ISO-ish timestamp defensively. None on anything else.
+
+    Mirrors `wrap_report._as_date`. Defensive because PostgREST hands back
+    `date` columns as bare strings and `timestamptz` columns with a time and a
+    zone suffix — and because ONE malformed row must not fail a wrap bundle.
+    """
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def wrap_summarize_meetings(rows: list[dict], tail_days: int = 14) -> dict[str, Any]:
+    """Fold `fathom_meetings` rows into the bundle's `meetings` block.
+
+    The DISTRIBUTION is the point, not the total. On ibx-5192, 66% of all
+    meeting time landed in the final two weeks of a 7.6-week engagement — the
+    signature of decisions being made at the end instead of the beginning, and
+    invisible in a headline count.
+
+    THE TRAP, and the reason this function exists rather than a one-line
+    comprehension: the tail window ALWAYS closes on the LAST MEETING, never on
+    today. A wrap run weeks after delivery must describe the engagement, not the
+    silence since — anchoring on `today` slides the window past every meeting
+    and reports a 0% tail share for a project that was in fact entirely
+    back-loaded. `tests/test_wrap_report.py::
+    test_tail_window_anchors_on_the_last_meeting_not_today` pins this on the
+    engine side; `tests/test_hosted_wrap_bundle.py` pins it on THIS copy —
+    both a parity check against the engine and a source-level guard. Do not
+    "fix" it by reaching for `date.today()`.
+
+    Tolerates missing/malformed dates and durations — a wrap report must not
+    fail because one meeting row is odd.
+    """
+    dated: list[tuple[date, int]] = []
+    for r in rows:
+        day = _wrap_as_date(r.get("meeting_date"))
+        if day is None:
+            continue
+        try:
+            minutes = int(r.get("duration_minutes") or 0)
+        except (TypeError, ValueError):
+            minutes = 0
+        dated.append((day, max(0, minutes)))
+
+    if not dated:
+        return {
+            "count": 0,
+            "total_hours": 0.0,
+            "first": None,
+            "last": None,
+            "tail_days": tail_days,
+            "tail_share": 0.0,
+            "tail_hours": 0.0,
+            "head_hours": 0.0,
+            "heaviest_days": [],
+        }
+
+    dated.sort()
+    first, last = dated[0][0], dated[-1][0]
+    cutoff = last - timedelta(days=tail_days)  # anchored on `last`, never today
+
+    per_day_minutes: dict[str, int] = {}
+    per_day_count: dict[str, int] = {}
+    tail = head = 0
+    for day, minutes in dated:
+        key = day.isoformat()
+        per_day_minutes[key] = per_day_minutes.get(key, 0) + minutes
+        per_day_count[key] = per_day_count.get(key, 0) + 1
+        if day > cutoff:
+            tail += minutes
+        else:
+            head += minutes
+
+    heaviest = sorted(
+        ((d, per_day_count[d], m) for d, m in per_day_minutes.items()),
+        key=lambda t: (-t[2], t[0]),
+    )[:5]
+
+    total_minutes = sum(m for _, m in dated)
+    return {
+        "count": len(dated),
+        "total_hours": round(total_minutes / 60.0, 1),
+        "first": first.isoformat(),
+        "last": last.isoformat(),
+        "tail_days": tail_days,
+        "tail_share": round((tail / total_minutes) if total_minutes else 0.0, 3),
+        "tail_hours": round(tail / 60.0, 1),
+        "head_hours": round(head / 60.0, 1),
+        "heaviest_days": [
+            {"date": d, "meetings": c, "minutes": m} for d, c, m in heaviest
+        ],
+    }
+
+
+def wrap_summarize_effort(
+    rows: list[dict], names: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """Fold `sprint_allocations` rows into per-person hours.
+
+    NOTE the honesty constraint carried in `WRAP_EFFORT_NOTE`: these are
+    ALLOCATED hours, which is what MC-2 records. They are not timesheet
+    actuals, and presenting an allocation as an actual is the kind of quiet
+    overstatement that makes a margin number worse than no number.
+
+    `verified` is True here because this function only ever sees rows that were
+    successfully READ. The False case is set by the caller when the read itself
+    failed — the distinction that keeps a permission error from rendering as
+    "this project used no hours". Same None-vs-empty discipline as commitments.
+    """
+    names = names or {}
+    by: dict[str, float] = {}
+    weeks: set[str] = set()
+    total = 0.0
+    for r in rows:
+        try:
+            hours = float(r.get("hours") or 0)
+        except (TypeError, ValueError):
+            continue
+        who = names.get(str(r.get("entity_id")), "unattributed")
+        by[who] = by.get(who, 0.0) + hours
+        total += hours
+        if r.get("week_start"):
+            weeks.add(str(r["week_start"])[:10])
+    return {
+        "verified": True,
+        "note": WRAP_EFFORT_NOTE,
+        "total_hours": round(total, 1),
+        "weeks": len(weeks),
+        "by_person": [
+            {"name": n, "hours": round(h, 1)}
+            for n, h in sorted(by.items(), key=lambda kv: (-kv[1], kv[0]))
+        ],
+    }
+
+
+def _wrap_version_rank(row: dict[str, Any]) -> tuple[int, str]:
+    """Version ordering for rows of ONE element: numeric label, then date.
+
+    "v10" must beat "v9", which string comparison gets wrong. An unparseable
+    label ranks -1 and loses to any parseable one — the date is the tie-break.
+    """
+    m = _WRAP_VERSION_NUM_RE.match(str(row.get("version_label") or ""))
+    return (int(m.group(1)) if m else -1, str(row.get("version_date") or ""))
+
+
+def _wrap_one_live_per_element(rows: list[dict]) -> list[dict]:
+    """Collapse duplicate live rows to ONE per element (the #113 defense).
+
+    `spine_substance` stores one row per VERSION and a live-only fetch SHOULD
+    yield one row per element — but the live data carries elements with two
+    `status='live'` rows (sap-5174's e94d0a03: an authored v7 beside a
+    distilled v6 the mirror re-flipped live). A deliverables list that emits
+    the same title twice reads as two deliverables in the retro.
+
+    Keyed on `(est_item_id, scope, origin project_id for account rows)`:
+    authored ids are `_authored/<slug>` and only unique per project, so two
+    sibling projects can each legitimately promote `_authored/janet-dossier`.
+    Rows with no `est_item_id` are unidentifiable, never merged, and appended
+    at the end.
+    """
+    best: dict[tuple, dict] = {}
+    order: list[tuple] = []
+    passthrough: list[dict] = []
+    for r in rows:
+        if not r.get("est_item_id"):
+            passthrough.append(r)
+            continue
+        scope = r.get("scope") or "project"
+        key = (
+            r.get("est_item_id"),
+            scope,
+            r.get("project_id") if scope == "account" else None,
+        )
+        if key not in best:
+            best[key] = r
+            order.append(key)
+        elif _wrap_version_rank(r) >= _wrap_version_rank(best[key]):
+            best[key] = r
+    return [best[k] for k in order] + passthrough
+
+
+def _wrap_feedback_artifacts(project_code: str) -> tuple[list[str], str | None]:
+    """(filenames, note) for `<workdir>/feedback-on-deck/*.md` in the tenant tree.
+
+    The CLI reads this off the local tenant checkout. Hosted has the same tree
+    via the shallow clone that backs `get_project_state`, so this is a real
+    read, not a stub — but it is the ONE part of the bundle that can be
+    unavailable independently of MC-2 (no TENANT_REPO configured, a caller who
+    is not a team member, a clone failure). In every one of those cases it
+    returns `[]` PLUS a note naming the reason, never a bare empty list: an
+    empty feedback list and an unreadable tree read identically in the report
+    otherwise, and "no client feedback was captured" is a very different retro
+    finding from "we could not look".
+    """
+    usable, reason = tree_available()
+    if not usable:
+        return [], f"feedback_artifacts not read: {reason}"
+    allowed, denial = caller_is_team_member()
+    if not allowed:
+        return [], f"feedback_artifacts not read: {denial}"
+    try:
+        root = tree_root()
+    except Exception as exc:  # noqa: BLE001 — degrade; the DB half still stands
+        return [], f"feedback_artifacts not read: tree clone failed: {type(exc).__name__}"
+    project_dir = find_project_dir(root, project_code)
+    if project_dir is None:
+        return [], (
+            f"feedback_artifacts not read: no working dir in the tree for "
+            f"{project_code!r} (a closed project may be parked under inactive/, "
+            "which find_project_dir skips by design)"
+        )
+    deck = project_dir / "feedback-on-deck"
+    if not deck.is_dir():
+        return [], None  # genuinely absent — a real, informative empty
+    try:
+        return sorted(p.name for p in deck.glob("*.md")), None
+    except OSError as exc:
+        return [], f"feedback_artifacts not read: {exc}"
+
+
+@mcp_server.tool()
+def wrap_bundle(project_code: str, tail_days: int = 14) -> dict[str, Any]:
+    """Deterministic raw material for a close-out wrap report, under the caller's identity.
+
+    The hosted port of `cp wrap <code> --bundle` (#184) — same payload, same
+    keys. Gathers the facts a hand-written retro forgets to look up: duration,
+    budget, RECORDED HOURS by person, meeting cadence and WHERE it fell in the
+    timeline, deliverables, open commitments — so the model can synthesize the
+    report against a fixed section contract without inventing a single number.
+
+    The motivating failure: ibx-5192's retro was written by hand and concluded
+    "actual hours: not captured". `sprint_allocations` held 192.5 hours across
+    four people the whole time.
+
+    FACTS ONLY. This tool writes no prose and mutates nothing. The report is
+    authored in-session so its author can defend and revise it live — the same
+    split as `cp prep-planning --bundle`.
+
+    DEGRADATION IS THE DESIGN, not an afterthought. Every read is wrapped
+    individually and a failure NEVER renders as a zero:
+
+      * `effort.verified` goes False (and `total_hours` stays 0) when the
+        allocation read fails. A False here means "we could not look", and the
+        report must say so rather than report a project that used no hours.
+        `sprint_allocations_read_authenticated` grants SELECT to `authenticated`
+        with USING(true), so a failure here is an outage or a schema change,
+        not the normal case.
+      * `spine_verified` goes False when the spine read fails, so an empty
+        `deliverables` list can be told apart from an unread one.
+      * `open_commitments` is None (not `[]`) when the code owns no commitments
+        scope or the read failed — the same None-vs-empty discipline.
+      * `errors` lists what degraded, so nothing fails silently.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code
+                      (e.g. "ibx-5192", "mission-control").
+        tail_days: width of the closing window used for the meeting tail-share
+                   signal. The window closes on the LAST MEETING, never on
+                   today — see `wrap_summarize_meetings`.
+    """
+    client = user_client()
+    errors: list[str] = []
+
+    try:
+        tail_days = max(1, int(tail_days))
+    except (TypeError, ValueError):
+        tail_days = 14
+
+    project_id = resolve_project_id(client, project_code)
+    if project_id is None:
+        audit(client, "wrap_bundle", {"project_code": project_code}, 0)
+        return {
+            "code": project_code,
+            "error": f"no project or initiative resolves for code {project_code!r}",
+        }
+
+    # ── Project facts ────────────────────────────────────────────────
+    # Keyed on the resolved uuid rather than the CLI's code-then-number
+    # fallback: `resolve_project_id` already did that disambiguation (three
+    # distinct strings name one project), so re-deriving it here would be a
+    # second, differently-wrong resolver. An INITIATIVE code resolves to an
+    # `initiatives.id`, which matches no `projects` row — that is expected, and
+    # leaves the commercial fields (budget, target_profit_pct) empty rather
+    # than mis-attributed. Initiatives have no client budget to report.
+    row: dict[str, Any] = {}
+    try:
+        rows = (
+            client.table("projects")
+            .select(_WRAP_PROJECT_COLUMNS)
+            .eq("id", project_id)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+        row = rows[0] if rows else {}
+    except Exception as exc:  # noqa: BLE001 — degrade loudly, keep going
+        errors.append(f"project row read failed: {type(exc).__name__}: {exc}")
+
+    # ── Meetings ─────────────────────────────────────────────────────
+    # One uuid lands in `project_id` for an engagement and `initiative_id` for
+    # an initiative; query both and dedupe on the meeting id, exactly as
+    # `list_project_meetings` does.
+    #
+    # Each arm's failure is RECORDED rather than swallowed. `initiative_id` not
+    # applying to an engagement is the normal case and would fill `errors` with
+    # noise — but a bundle where BOTH arms failed reports zero meetings, which
+    # is a materially wrong retro finding, so that case is named explicitly.
+    meeting_rows: list[dict[str, Any]] = []
+    seen: set[Any] = set()
+    meeting_failures: list[str] = []
+    for column in ("project_id", "initiative_id"):
+        try:
+            for r in (
+                client.table("fathom_meetings")
+                .select("id, meeting_date, title, duration_minutes")
+                .eq(column, project_id)
+                .execute()
+                .data
+                or []
+            ):
+                if r.get("id") not in seen:
+                    seen.add(r.get("id"))
+                    meeting_rows.append(r)
+        except Exception as exc:  # noqa: BLE001 — `initiative_id` may not apply
+            meeting_failures.append(f"{column}: {type(exc).__name__}: {exc}")
+    if len(meeting_failures) == 2:
+        errors.append(
+            "meeting read failed on BOTH scope columns — the zero meeting "
+            "count below is unread, not empty: " + "; ".join(meeting_failures)
+        )
+    meetings = wrap_summarize_meetings(meeting_rows, tail_days=tail_days)
+
+    # ── Effort (ALLOCATED hours, NOT timesheet actuals) ───────────────
+    effort: dict[str, Any] = {
+        "verified": False,
+        "note": WRAP_EFFORT_NOTE,
+        "total_hours": 0.0,
+        "weeks": 0,
+        "by_person": [],
+    }
+    try:
+        arows = (
+            client.table("sprint_allocations")
+            .select("entity_id, hours, week_start")
+            .eq("project_id", project_id)
+            .execute()
+            .data
+        ) or []
+        # `entities` is fetched WHOLE (it is a small people table) and used only
+        # as an id→name map, matching the CLI. A failure to name people must not
+        # lose the hours, so the name lookup is its own try.
+        names: dict[str, str] = {}
+        try:
+            for e in (
+                client.table("entities").select("id, name").execute().data or []
+            ):
+                names[str(e["id"])] = e.get("name") or "unattributed"
+        except Exception as exc:  # noqa: BLE001
+            errors.append(
+                f"entity name read failed (hours kept, attributed to "
+                f"'unattributed'): {type(exc).__name__}: {exc}"
+            )
+        effort = wrap_summarize_effort(arows, names)
+    except Exception as exc:  # noqa: BLE001 — verified stays False. See docstring.
+        errors.append(f"allocation read failed: {type(exc).__name__}: {exc}")
+
+    # ── Spine: deliverables ──────────────────────────────────────────
+    # The CLI filters `spine_substance` on `project_code` (the DIR-SLUG). Here
+    # the resolved uuid is authoritative and always present, so this filters on
+    # `project_id` — equivalent for the project arm and immune to the dir-slug
+    # drift that `resolve_project_id` documents. Account-scoped elements
+    # promoted OUT of this project still carry its project_id as provenance and
+    # so still appear, which matches the CLI's project_code filter.
+    deliverables: list[str] = []
+    spine_verified = True
+    try:
+        srows = (
+            client.table("spine_substance")
+            .select(_WRAP_SPINE_COLUMNS)
+            .eq("project_id", project_id)
+            .eq("status", "live")
+            .execute()
+            .data
+        ) or []
+        live = _wrap_one_live_per_element([r for r in srows if not r.get("archived")])
+        deliverables = [
+            str(r.get("framing") or r.get("est_item_id") or r.get("id") or "")
+            for r in live
+            if (r.get("layer") or "") == "Deliverables"
+        ]
+    except Exception as exc:  # noqa: BLE001
+        errors.append(f"spine read failed: {type(exc).__name__}: {exc}")
+        spine_verified = False
+
+    # ── Open commitments ─────────────────────────────────────────────
+    # None (not []) when nothing could be read: a standalone repo owns no
+    # commitments scope at all, and "no open commitments" is a finding while
+    # "could not read commitments" is not.
+    open_commitments: list[dict[str, Any]] | None = None
+    commit_rows: list[dict[str, Any]] = []
+    commit_seen: set[Any] = set()
+    commit_failures: list[str] = []
+    for column in ("project_id", "initiative_id"):
+        try:
+            for r in (
+                client.table("commitments")
+                .select(COMMITMENT_COLUMNS)
+                .eq(column, project_id)
+                .eq("status", "open")
+                .order("due_date", nullsfirst=False)
+                .execute()
+                .data
+                or []
+            ):
+                if r.get("id") not in commit_seen:
+                    commit_seen.add(r.get("id"))
+                    commit_rows.append(r)
+        except Exception as exc:  # noqa: BLE001
+            commit_failures.append(f"{column}: {type(exc).__name__}: {exc}")
+    if len(commit_failures) == 2:
+        # Both arms failed: leave `open_commitments` as None so the report
+        # cannot read the absence as "nothing outstanding".
+        errors.append("commitments read failed: " + "; ".join(commit_failures))
+    else:
+        open_commitments = commit_rows
+
+    # ── Feedback artifacts (tenant tree, not MC-2) ────────────────────
+    feedback, feedback_note = _wrap_feedback_artifacts(project_code)
+    if feedback_note:
+        errors.append(feedback_note)
+
+    # ── Derived ──────────────────────────────────────────────────────
+    start_date = _wrap_as_date(row.get("start_date"))
+    end_iso = meetings["last"]
+    duration_days: int | None = None
+    if start_date is not None and end_iso:
+        duration_days = (date.fromisoformat(end_iso) - start_date).days
+    duration_weeks = None if duration_days is None else round(duration_days / 7.0, 1)
+
+    budget = float(row["budget"]) if row.get("budget") else None
+    total_hours = float(effort.get("total_hours") or 0)
+    budget_per_hour = (
+        round(budget / total_hours, 2) if (budget and total_hours) else None
+    )
+
+    # Which human-entry fields this bundle genuinely cannot frame. Naming the
+    # gap IS the feature: ibx-5192's hand-written retro silently omitted
+    # licensing, work-page candidacy and per-person vendor assessment, and
+    # nobody noticed until the template was applied afterwards.
+    not_assessable = list(WRAP_HUMAN_ENTRY_FIELDS)
+    if budget and total_hours:
+        not_assessable = [
+            f for f in not_assessable if not f.startswith("Actual profitability")
+        ]
+
+    payload: dict[str, Any] = {
+        "code": project_code,
+        "name": str(row.get("name") or ""),
+        "status": str(row.get("mc_status") or ""),
+        "account_manager": str(row.get("account_manager") or ""),
+        "start_date": start_date.isoformat() if start_date else None,
+        "duration_days": duration_days,
+        "duration_weeks": duration_weeks,
+        "budget": budget,
+        "target_profit_pct": (
+            float(row["target_profit_pct"]) if row.get("target_profit_pct") else None
+        ),
+        "effort": effort,
+        "budget_per_hour": budget_per_hour,
+        "meetings": meetings,
+        "deliverables": deliverables,
+        "feedback_artifacts": feedback,
+        "open_commitments": open_commitments,
+        "spine_verified": spine_verified,
+        "learning_axes": [{"key": k, "prompt": p} for k, p in WRAP_LEARNING_AXES],
+        "human_entry_fields": list(WRAP_HUMAN_ENTRY_FIELDS),
+        "not_assessable_from_data": not_assessable,
+        "generated": date.today().isoformat(),
+    }
+    # Hosted-only additions, appended AFTER the CLI's key set so a consumer
+    # diffing the two sees additions rather than a changed shape.
+    payload["project_id"] = project_id
+    payload["caller"] = caller_subject()
+    if errors:
+        payload["errors"] = errors
+
+    audit(
+        client,
+        "wrap_bundle",
+        {"project_code": project_code, "tail_days": tail_days},
+        meetings["count"],
+    )
+    return payload
+
+
 @mcp_server.tool()
 def whoami() -> dict[str, Any]:
     """Echo the verified identity of the caller (spike diagnostic)."""
@@ -6673,6 +7241,10 @@ def main() -> None:
         "writes (sources/provenance, #143 batch 3, via the guarded "
         "spine_element_modify_source fn): add_element_source, "
         "remove_element_source, add_element_provenance, remove_element_provenance"
+    )
+    log.info(
+        "reads (bundles, #184): wrap_bundle — MC-2 facts + tenant-tree "
+        "feedback artifacts, degrading per-source rather than as zeros"
     )
     log.info("audit log: mcp_audit_log as client=%s", SERVER_VERSION)
     mcp_server.run(
