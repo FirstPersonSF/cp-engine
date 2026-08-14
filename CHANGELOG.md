@@ -4,6 +4,33 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.97.1 — 2026-08-14
+
+- **Jittered backoff between auto-ingest push retries; ceiling 3 → 5 (#181).**
+  Retries fired back-to-back with no delay, which is sized for two webhooks
+  colliding and not for a burst: tagging a batch of meetings in the dashboard
+  fans out N concurrent deliveries, each cloning the tenant and racing to
+  push. Observed 2026-08-12 11:21–11:31 — eleven webhooks, and two losers
+  exhausted their attempts and dropped commits that exist in no branch of the
+  tenant.
+
+  **The jitter is the load-bearing part, not the delay.** Simultaneous losers
+  back off by the same amount and re-collide in lockstep; the random
+  component is what de-synchronises them. Uses full jitter — a draw from
+  `[0, base * 2**attempt)` — which also spreads the FIRST retry, where a
+  burst's collisions are densest, and doesn't tax the common case (a lone
+  webhook that lost one race) the way fixed-delay-plus-noise would. The sleep
+  runs BEFORE the `pull --rebase`, not just before the re-push, because under
+  a burst the rebase itself contends.
+
+  Base 0.15s over 5 attempts is a worst case of ~2.3s added sleep — well
+  inside the sender's timeout, and a delivery that retries is one that would
+  otherwise be lost.
+
+  Paired with v0.96.0's failed-run row: a push that still exhausts its
+  retries now both backs off properly on the way and leaves a diagnosable
+  record when it gives up.
+
 ## v0.97.0 — 2026-08-14
 
 - **`placement` is DERIVED from the est_item_id key shape, not authored
