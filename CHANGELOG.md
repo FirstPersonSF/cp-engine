@@ -4,7 +4,7 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## Unreleased
+## v0.98.0 — 2026-08-14
 
 - **`cp wrap` + `/cp-wrap` — the close-out wrap report (#184).** Ported in
   SHAPE (not code) from social-builder-app's `generate_wrap_report`. The
@@ -48,6 +48,27 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
   and stays editable — which matters for a document whose point is that it
   has blanks in it. `python-docx` was already present transitively and is
   now declared explicitly.
+
+- **`wrap_bundle` on the hosted MCP server.** The same payload, under the
+  caller's own identity, so a team member can generate a wrap report without
+  a CLI install. Follows hosted's standing convention of copying row shapes
+  rather than importing `cp_engine` — and because that convention lets a fix
+  on one side silently miss the other, `tests/test_hosted_wrap_bundle.py`
+  lifts the copied fold out by AST and checks it against the engine's. The
+  tail-window rule carries two guards (parity + a source-level check that it
+  never reaches for `date.today()`), since anchoring on today reports a 0%
+  tail share for an entirely back-loaded project.
+
+  Known gap, documented rather than faked: `find_project_dir` skips
+  `inactive/` by design, so for an already-parked project hosted returns
+  empty `feedback_artifacts` with a note naming the reason, where the CLI
+  finds them.
+
+- **NOTE — `/cp-wrap` needs this release to become invokable.** Slash
+  commands load from the plugin cache, which is a git clone pinned to a
+  released SHA; a command added after the last release is invisible until
+  the next one. Nothing is wrong if `/cp-wrap` doesn't appear before
+  updating the plugin.
 
 - **Fixed: `commitments-sweep` returned zero for every engagement.**
   `resolve_commitment_owner` emits `kind="project"`, never `"engagement"`,
