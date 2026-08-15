@@ -93,7 +93,17 @@ def generate_plan(
         roster=roster,
     )
 
-    response_text = _call_claude(prompt, model=model, api_key=api_key)
+    # Judgment priors (mig 139), resolved for THIS project so a per-project
+    # override applies. Fail-soft: an unresolvable code yields tenant-global
+    # priors, and an empty store yields no system prompt at all.
+    from cp_engine.priors import project_id_for_code
+
+    response_text = _call_claude(
+        prompt,
+        model=model,
+        api_key=api_key,
+        project_id=project_id_for_code(project_code, config=config),
+    )
     yaml_text = _extract_yaml(response_text)
 
     try:
@@ -715,9 +725,25 @@ projects: {{}}
 
 
 def _call_claude(
-    prompt: str, *, model: str, api_key: str | None, timeout: float = 120
+    prompt: str,
+    *,
+    model: str,
+    api_key: str | None,
+    timeout: float = 120,
+    project_id: str | None = None,
+    priors: str | None = None,
 ) -> str:
-    """Single Anthropic API call. Raises PlanGenerationError on transport failure."""
+    """Single Anthropic API call. Raises PlanGenerationError on transport failure.
+
+    ``project_id`` resolves the master prompt (mig 139) and sends it as
+    ``system=`` — the judgment priors every call in this engine ran without
+    until 2026-08-15. ``priors`` injects the text directly, bypassing the
+    lookup, for tests and for callers that already resolved it.
+
+    Both are optional and both fail soft: with no priors set, no prompt store
+    reachable, or no project id to key on, ``system=`` is omitted entirely and
+    the call behaves exactly as it did before.
+    """
     try:
         from anthropic import Anthropic
     except ImportError as exc:
@@ -737,9 +763,21 @@ def _call_claude(
     # plans, which carry a much larger prompt and routinely 8k+ token
     # responses) pass a larger budget.
     client = Anthropic(api_key=key, timeout=timeout)
+
+    # Judgment priors (mig 139). `priors=""` from a caller means "deliberately
+    # none" and is honoured; `priors=None` means "look it up". An empty result
+    # omits `system=` rather than sending an empty string, so a tenant with no
+    # prompt authored gets byte-identical behaviour to before this landed.
+    if priors is None:
+        from cp_engine.priors import resolve_priors
+
+        priors = resolve_priors(project_id)
+    system_kwargs = {"system": priors} if priors else {}
+
     try:
         response = client.messages.create(
             model=model,
+            **system_kwargs,
             # 16k headroom — multi-project plans (account meetings,
             # sprint planning across 20+ projects) routinely produce
             # 8k+ token responses. The earlier 4k ceiling silently

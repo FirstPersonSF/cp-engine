@@ -68,6 +68,12 @@ class Tables:
     CLICKUP_TASK_PROPOSALS = "clickup_task_proposals"
     COMMITMENTS = "commitments"
     APP_CONFIG = "app_config"  # tenant-level key/value settings (jsonb)
+    # The master prompt (mig 139). Judgment priors sent as `system=` on every
+    # LLM call; NOT project canon, which stays as canon_of edges per spec v04.
+    # Reads go through the `cp_prompt_resolve` RPC (see cp_engine.priors);
+    # writes go through the team-gated definer fns — never a direct upsert.
+    CP_PROMPT = "cp_prompt"
+    CP_PROMPT_OVERRIDE = "cp_prompt_override"
 
     # public — spine
     SPINE_SUBSTANCE = "spine_substance"

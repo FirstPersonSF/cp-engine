@@ -210,7 +210,15 @@ def _stub_claude_response(monkeypatch, yaml_body: str) -> None:
 
     cleaned = textwrap.dedent(yaml_body).strip()
 
-    def fake_call_claude(prompt: str, *, model: str, api_key: str | None) -> str:
+    def fake_call_claude(
+        prompt: str,
+        *,
+        model: str,
+        api_key: str | None,
+        timeout: float = 120,
+        project_id: str | None = None,
+        priors: str | None = None,
+    ) -> str:
         return f"```yaml\n{cleaned}\n```"
 
     monkeypatch.setattr(
