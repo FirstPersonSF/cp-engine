@@ -1460,3 +1460,52 @@ def wrap_cmd(
     click.echo("")
     click.echo("Run with --bundle for the JSON the model synthesizes from "
                "(see /cp-wrap). Nothing was mutated.")
+
+
+@click.command("card-kinds")
+@click.argument("code", required=False)
+@click.option("--apply", "do_apply", is_flag=True,
+              help="Write the plan. Without this, prints what would change.")
+def card_kinds_cmd(code: str | None, do_apply: bool) -> None:
+    """Persist `card_kind` where it follows from structure (#179 / mig 140).
+
+    `card_class.classify()` has always read a `card_kind` column that did not
+    exist until mig 140, so every row inferred forever and the module's
+    "migration aid with a known end date" could never end. This sets the
+    column for rows whose kind is STRUCTURAL — the engagement element, the
+    Deliverables layer, and item-vs-context placement — and leaves genuinely
+    ambiguous rows NULL so `is_ambiguous()` keeps meaning something.
+
+    Dry-run by default. Pass CODE to scope to one project.
+    """
+    from cp_engine.card_kind_write import run
+
+    config = _cli._load_config_or_die()
+
+    try:
+        plan, written = run(config=config, project_code=code, apply=do_apply)
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    for kind, n in sorted(plan.counts.items(), key=lambda kv: -kv[1]):
+        click.echo(f"  {kind:<12} {n:>4}")
+    cards = sum(n for k, n in plan.counts.items() if k != "attachment")
+    click.echo(f"\n  {cards} cards, {plan.counts.get('attachment', 0)} attachments")
+
+    if plan.already_set:
+        click.echo(f"  {plan.already_set} already set (skipped)")
+    if plan.left_null:
+        click.echo(f"  {len(plan.left_null)} left NULL — genuinely ambiguous:")
+        for row_id, why in plan.left_null[:10]:
+            click.echo(f"    {row_id} — {why}")
+        if len(plan.left_null) > 10:
+            click.echo(f"    … and {len(plan.left_null) - 10} more")
+
+    if do_apply:
+        click.echo(f"\nWrote card_kind on {written} rows.")
+    elif plan.to_set:
+        click.echo(f"\nDry run — {len(plan.to_set)} rows would change. "
+                   "Re-run with --apply to write.")
+    else:
+        click.echo("\nNothing to do.")
