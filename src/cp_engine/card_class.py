@@ -141,6 +141,30 @@ def classify(row: dict) -> CardKind:
     layer = _norm(row.get("layer"))
     if layer in {_norm(x) for x in _DELIVERABLE_LAYERS}:
         return CardKind.DELIVERABLE
+
+    # PLACEMENT resolves the Activity straddle that layer alone cannot.
+    #
+    # Measured 2026-08-15 on all 271 live rows: every `placement='item'` row is
+    # a uuid-keyed estimate slot — "Kickoff meeting with the larger team",
+    # "Post-Mehul debrief" — i.e. the work itself. Every sap-5174 interview
+    # write-up ("Jeanne Dion Interview", "Michelle Craig Interview") is
+    # `placement='context'` and `_authored/*`-keyed: the CONTENTS of an
+    # activity, which is exactly the distinction this module's docstring says
+    # the layer fallback could not make.
+    #
+    # So placement is asked FIRST, before the ambiguous-layer check: it is a
+    # structural fact (derived from key shape, per `substance.derive_placement`)
+    # rather than a topic tag, and structure beats topic.
+    placement = str(row.get("placement") or "").strip().lower()
+    if placement == "item":
+        return CardKind.ACTIVITY
+    if placement == "context":
+        # Context never occupies a slot, so it is never a card — including the
+        # Activity-layer write-ups that the layer rule would have promoted.
+        return CardKind.ATTACHMENT
+
+    # No placement recorded (pre-mig-070 rows, or a caller passing a partial
+    # dict). Fall back to the original layer rule.
     if layer in {_norm(x) for x in _ACTIVITY_LAYERS}:
         return CardKind.ACTIVITY
     return CardKind.ATTACHMENT
@@ -170,8 +194,15 @@ def is_ambiguous(row: dict) -> bool:
     `Email` carries both scheduling notes and real client feedback; `Activity`
     carries both genuine activities and the 14 sap-5174 interview write-ups.
     Only meaningful while `card_kind` is unset — an explicit kind settles it.
+
+    A recorded `placement` ALSO settles it: placement is structural (item =
+    occupies an estimate slot, context = does not), so a row that carries one
+    is no longer guessing about card-ness even on a straddling layer. Only a
+    row with a straddling layer AND no placement is genuinely ambiguous.
     """
     if not classify_is_inferred(row):
+        return False
+    if str(row.get("placement") or "").strip().lower() in {"item", "context"}:
         return False
     return _norm(row.get("layer")) in {_norm(x) for x in AMBIGUOUS_LAYERS}
 

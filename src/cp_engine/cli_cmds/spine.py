@@ -1460,3 +1460,163 @@ def wrap_cmd(
     click.echo("")
     click.echo("Run with --bundle for the JSON the model synthesizes from "
                "(see /cp-wrap). Nothing was mutated.")
+
+
+@click.command("card-kinds")
+@click.argument("code", required=False)
+@click.option("--apply", "do_apply", is_flag=True,
+              help="Write the plan. Without this, prints what would change.")
+def card_kinds_cmd(code: str | None, do_apply: bool) -> None:
+    """Persist `card_kind` where it follows from structure (#179 / mig 140).
+
+    `card_class.classify()` has always read a `card_kind` column that did not
+    exist until mig 140, so every row inferred forever and the module's
+    "migration aid with a known end date" could never end. This sets the
+    column for rows whose kind is STRUCTURAL — the engagement element, the
+    Deliverables layer, and item-vs-context placement — and leaves genuinely
+    ambiguous rows NULL so `is_ambiguous()` keeps meaning something.
+
+    Dry-run by default. Pass CODE to scope to one project.
+    """
+    from cp_engine.card_kind_write import run
+
+    config = _cli._load_config_or_die()
+
+    try:
+        plan, written = run(config=config, project_code=code, apply=do_apply)
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    for kind, n in sorted(plan.counts.items(), key=lambda kv: -kv[1]):
+        click.echo(f"  {kind:<12} {n:>4}")
+    cards = sum(n for k, n in plan.counts.items() if k != "attachment")
+    click.echo(f"\n  {cards} cards, {plan.counts.get('attachment', 0)} attachments")
+
+    if plan.already_set:
+        click.echo(f"  {plan.already_set} already set (skipped)")
+    if plan.left_null:
+        click.echo(f"  {len(plan.left_null)} left NULL — genuinely ambiguous:")
+        for row_id, why in plan.left_null[:10]:
+            click.echo(f"    {row_id} — {why}")
+        if len(plan.left_null) > 10:
+            click.echo(f"    … and {len(plan.left_null) - 10} more")
+
+    if do_apply:
+        click.echo(f"\nWrote card_kind on {written} rows.")
+    elif plan.to_set:
+        click.echo(f"\nDry run — {len(plan.to_set)} rows would change. "
+                   "Re-run with --apply to write.")
+    else:
+        click.echo("\nNothing to do.")
+
+
+@click.command("weekly-sort")
+@click.argument("code", required=False)
+@click.option("--apply", "do_apply", is_flag=True,
+              help="Write the structurally-decided lifetimes.")
+@click.option("--propose", "do_propose", is_flag=True,
+              help="Ask the model for a lifetime on everything structure can't decide.")
+@click.option("--model", default="claude-opus-4-7", show_default=True,
+              help="Model for the proposal pass.")
+def weekly_sort_cmd(code: str | None, do_apply: bool,
+                    do_propose: bool, model: str) -> None:
+    """Give every unclassified thing a lifetime, or surface it for judgement.
+
+    Operates on the two piles that have no working disposition path: spine
+    rows with no `lifetime` (mig 140 seeded only the unambiguous ones) and
+    inbox cards still `proposed`. Commitments and sprint asks are NOT swept —
+    measured 2026-08-15, both are being dispositioned fine, and a ritual that
+    reports on healthy systems trains you to skip it.
+
+    Cards (activity/deliverable/engagement) are excluded: a deliverable is the
+    WORK, not context about work, so it has no lifetime.
+
+    Dry-run by default.
+    """
+    from cp_engine.weekly_sort import run
+
+    config = _cli._load_config_or_die()
+
+    # The proposal pass carries the MASTER PROMPT as system=, resolved for the
+    # project when the run is scoped to one. That is where "what counts as
+    # canon" lives — this module supplies only the task. A tenant with no
+    # priors published still works; the model just runs without them.
+    llm = None
+    if do_propose:
+        from cp_engine.plan_from_transcript import _call_claude
+        from cp_engine.priors import project_id_for_code
+
+        pid = project_id_for_code(code, config=config) if code else None
+
+        def llm(prompt: str) -> str:  # noqa: F811
+            return _call_claude(prompt, model=model, api_key=None, project_id=pid)
+
+    try:
+        queue, written, proposed = run(
+            config=config, project_code=code, apply=do_apply, llm=llm
+        )
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    if not queue.total:
+        click.echo("Nothing to sort — everything carries a lifetime.")
+        return
+
+    if queue.structural:
+        click.echo(f"\nDecided by structure ({len(queue.structural)}):")
+        by_kind: dict[str, int] = {}
+        for p in queue.structural:
+            by_kind[p.proposed] = by_kind.get(p.proposed, 0) + 1
+        for kind, n in sorted(by_kind.items(), key=lambda kv: -kv[1]):
+            click.echo(f"  {kind:<12} {n:>4}")
+
+    if queue.needs_judgement:
+        with_prop = [p for p in queue.needs_judgement if p.proposed]
+        without = [p for p in queue.needs_judgement if not p.proposed]
+
+        if with_prop:
+            click.echo(f"\nModel proposals ({len(with_prop)}) — "
+                       "confirm or override, nothing is written:")
+            for p in with_prop[:15]:
+                click.echo(f"  {p.proposed:<11} [{p.project_code}] "
+                           f"{p.framing[:56]}")
+                click.echo(f"              {p.why}")
+            if len(with_prop) > 15:
+                click.echo(f"  … and {len(with_prop) - 15} more")
+
+        if without:
+            label = ("Model unsure" if do_propose else "Needs judgement")
+            click.echo(f"\n{label} ({len(without)}) — read these and decide:")
+            for p in without[:10]:
+                click.echo(f"  [{p.project_code}] {p.framing[:64]}")
+                click.echo(f"      {p.why}")
+            if len(without) > 10:
+                click.echo(f"  … and {len(without) - 10} more")
+
+    if queue.inbox:
+        click.echo(f"\nInbox cards awaiting framing ({len(queue.inbox)}):")
+        per: dict[str, int] = {}
+        for card in queue.inbox:
+            pc = card.get("project_code", "?")
+            per[pc] = per.get(pc, 0) + 1
+        for pc, n in sorted(per.items(), key=lambda kv: -kv[1])[:8]:
+            click.echo(f"  {pc:<44} {n:>3}")
+        click.echo("  frame them with: cp spine-frame <code>")
+
+    if queue.work_excluded:
+        click.echo(f"\n{queue.work_excluded} work cards excluded "
+                   "(a deliverable has no lifetime).")
+
+    if do_apply:
+        click.echo(f"\nWrote lifetime on {written} rows (structural only — "
+                   "a model proposal is never written without a human).")
+        click.echo(f"{len(queue.needs_judgement)} still need a human.")
+    elif queue.structural:
+        click.echo(f"\nDry run — {len(queue.structural)} would be written. "
+                   "Re-run with --apply.")
+
+    if do_propose:
+        click.echo(f"\nModel proposed {proposed} of "
+                   f"{len(queue.needs_judgement)}; the rest it could not call.")

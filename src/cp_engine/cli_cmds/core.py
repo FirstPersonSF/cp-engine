@@ -384,3 +384,93 @@ def mcp_cmd() -> None:
     run_stdio()
 
 
+
+
+@click.command("priors")
+@click.option("--code", default=None, help="Resolve for one project/initiative code.")
+@click.option("--publish", "publish_path", type=click.Path(exists=True, dir_okay=False),
+              default=None, help="Publish a new GLOBAL version from a markdown file.")
+@click.option("--set-override", "override_path", type=click.Path(exists=True, dir_okay=False),
+              default=None, help="Set this project's override from a markdown file (needs --code).")
+@click.option("--note", default=None, help="Change note recorded with a publish or override.")
+@click.option("--history", is_flag=True, help="List global versions instead of resolving.")
+def priors_cmd(code, publish_path, override_path, note, history) -> None:
+    """Show or edit the master prompt — the judgment priors sent as `system=`.
+
+    With no options: prints the resolved tenant-global priors. With `--code`:
+    prints what that project actually resolves to (global + its override, in
+    the order the model receives them).
+
+    This is the terminal-side surface for the mc-2 editor. Publishing
+    supersedes the current version rather than mutating it, so `--history`
+    always shows how the prompt got here.
+
+    Writes go through the definer functions (mig 139/141), which accept a
+    team member OR a service-role connection — the CLI holds the service key,
+    so `author_email` records 'service-role' rather than a person. A human
+    publishing from the mc-2 editor is recorded by email.
+    """
+    from cp_engine.mc2_db import Tables, get_client
+    from cp_engine.priors import project_id_for_code
+
+    try:
+        config = load(Path.cwd())
+    except ConfigError:
+        config = None
+
+    client = get_client(config, required=False)
+    if client is None:
+        click.echo("MC-2 unreachable — priors resolve to empty (no system prompt).", err=True)
+        sys.exit(1)
+
+    project_id = None
+    if code:
+        project_id = project_id_for_code(code, config=config)
+        if project_id is None:
+            click.echo(f"Error: no project or initiative with code {code!r}", err=True)
+            sys.exit(2)
+
+    if override_path and not code:
+        click.echo("Error: --set-override needs --code.", err=True)
+        sys.exit(2)
+
+    try:
+        if publish_path:
+            body = Path(publish_path).read_text(encoding="utf-8").strip()
+            client.rpc("cp_prompt_publish",
+                       {"p_body": body, "p_change_note": note}).execute()
+            click.echo(f"Published global priors ({len(body.split())} words).")
+            return
+
+        if override_path:
+            body = Path(override_path).read_text(encoding="utf-8").strip()
+            client.rpc("cp_prompt_set_override",
+                       {"p_project_id": project_id, "p_body": body,
+                        "p_change_note": note}).execute()
+            click.echo(f"Set override for {code} ({len(body.split())} words).")
+            return
+
+        if history:
+            rows = (client.table(Tables.CP_PROMPT)
+                    .select("version, status, change_note, author_email, created_at")
+                    .order("version", desc=True).execute().data or [])
+            if not rows:
+                click.echo("No global priors have been published yet.")
+                return
+            for r in rows:
+                mark = "*" if r.get("status") == "active" else " "
+                click.echo(f"{mark} v{r['version']:<3} {str(r.get('created_at'))[:10]}  "
+                           f"{r.get('author_email') or '—':<28} {r.get('change_note') or ''}")
+            return
+
+        resolved = (client.rpc("cp_prompt_resolve",
+                               {"p_project_id": project_id}).execute().data or "")
+        if not resolved:
+            click.echo(
+                "No priors set — every LLM call runs with no system prompt.\n"
+                "Publish with: cp priors --publish <file.md>", err=True)
+            sys.exit(1)
+        click.echo(resolved)
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
