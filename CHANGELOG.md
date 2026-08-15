@@ -4,6 +4,83 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.99.0 — 2026-08-15
+
+- **The master prompt — judgment priors on every LLM call (mc-2 migs 139–141).**
+  Until now every Anthropic call cp-engine made ran with **no system prompt at
+  all**: `_call_claude` is the universal transport for ~9 of 11 prompt sites,
+  and `grep system= src/` returned nothing. `templates/CLAUDE.md.j2` carries
+  the authority-precedence rules but shapes only the *session agent* — it is
+  never sent on an API call. So the judgments landing in sprint files were made
+  with no standing instruction about how the firm thinks.
+
+  `cp_engine.priors.resolve_priors()` calls the `cp_prompt_resolve` RPC (cached
+  per project id for the life of the process) and `_call_claude` sends it as
+  `system=`. **With no priors published, `system=` is omitted entirely** — not
+  sent empty — so a tenant with an empty prompt store gets byte-identical
+  behaviour to before. Every failure path (no creds, no supabase, RPC missing,
+  network down) resolves to `""` and degrades to that same no-op.
+
+  Scope is global with a per-project override that **APPENDS and can never
+  replace or fork the global**; if it could, N projects drift into N
+  philosophies and the global stops meaning anything.
+
+- **`cp priors`** — show what resolves (globally or `--code`), publish a new
+  version from a markdown file, set a project override, list history.
+  Publishing supersedes rather than mutating, and rollback publishes a *copy*
+  so history stays append-only. The terminal surface for the mc-2 editor that
+  does not exist yet.
+
+- **`cp card-kinds` — closes a three-year-shaped gap in one pass.**
+  `card_class.classify()` has always read `row["card_kind"]` and fallen back to
+  layer inference "for rows written before the field existed". No such column
+  ever existed, so `classify_is_inferred()` returned true for **every row in
+  the tenant** and the documented "migration aid with a known end date" was the
+  only path, permanently.
+
+  **`placement` resolves what the module said was unresolvable.** `card_class`
+  names `Activity` as a straddling layer — but every `placement='item'` row is
+  a uuid-keyed estimate slot ("Kickoff meeting with the larger team") and every
+  sap-5174 interview write-up is `placement='context'`. That is exactly the
+  contents-of-an-activity vs activity distinction, and it is structural rather
+  than a topic tag. Two independent measurements agreed: 43 cards by placement,
+  39 by the earlier layer route.
+
+  Only structural kinds are persisted; a straddling layer with no placement is
+  left NULL so `is_ambiguous()` keeps meaning something. Writing a flagged
+  inference into the column would launder it into unflagged fact.
+
+- **`cp weekly-sort` — the ritual that gives things a lifetime.** Proposes a
+  lifetime (`background | feedback | canon`) for unclassified spine rows and
+  surfaces inbox cards nobody framed. Dry-run by default.
+
+  **Scoped by measurement, not by design.** The original sketch swept feedback,
+  commitments and sprint asks together; measured 2026-08-15, three of those are
+  healthy (commitments 40 open of 523, sprint asks 21 → 10 → 4 → 1 across
+  W31–W34). A ritual that reports on healthy systems trains you to skip it.
+
+  **Cards do not get a lifetime** — a deliverable or activity IS the work, not
+  context about work. 32 work cards are excluded and counted.
+
+- **`--propose` — the model pre-pass.** Structure alone decides only 3 of 129
+  rows, so the rest are handed to the model *carrying the master prompt as
+  `system=`*, batched per project so a run of near-identical items (the 14
+  sap-5174 interview write-ups) is judged as a set. Bodies are clipped to 600
+  chars and flagged as excerpts — 82 of 129 rows are pointer cards whose
+  filename is the entire signal.
+
+  **Every failure path drops the item** so it reaches the human blank: a
+  confirmed fabrication is worse than a blank field. **Nothing proposed is ever
+  written** — `--apply` still writes only structurally-decided rows.
+
+  Live against production: 97 of 126 proposed, 29 honest `unsure`.
+
+- **`project_id_for_code` goes spine-first.** Three code shapes exist for one
+  project and none is canonical — cp code `ibx-5153`, dir slug
+  `ibx-5153-ai-campaign`, MC-2 row code `IBX-ai-campaign`. A naive
+  `.eq("code", …)` matches none of them; `spine_substance` carries both the
+  slug and the uuid, so a prefix match there resolves the common case.
+
 ## v0.98.0 — 2026-08-14
 
 - **`cp wrap` + `/cp-wrap` — the close-out wrap report (#184).** Ported in
