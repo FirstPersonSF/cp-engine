@@ -1509,3 +1509,73 @@ def card_kinds_cmd(code: str | None, do_apply: bool) -> None:
                    "Re-run with --apply to write.")
     else:
         click.echo("\nNothing to do.")
+
+
+@click.command("weekly-sort")
+@click.argument("code", required=False)
+@click.option("--apply", "do_apply", is_flag=True,
+              help="Write the structurally-decided lifetimes.")
+def weekly_sort_cmd(code: str | None, do_apply: bool) -> None:
+    """Give every unclassified thing a lifetime, or surface it for judgement.
+
+    Operates on the two piles that have no working disposition path: spine
+    rows with no `lifetime` (mig 140 seeded only the unambiguous ones) and
+    inbox cards still `proposed`. Commitments and sprint asks are NOT swept —
+    measured 2026-08-15, both are being dispositioned fine, and a ritual that
+    reports on healthy systems trains you to skip it.
+
+    Cards (activity/deliverable/engagement) are excluded: a deliverable is the
+    WORK, not context about work, so it has no lifetime.
+
+    Dry-run by default.
+    """
+    from cp_engine.weekly_sort import run
+
+    config = _cli._load_config_or_die()
+    try:
+        queue, written = run(config=config, project_code=code, apply=do_apply)
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    if not queue.total:
+        click.echo("Nothing to sort — everything carries a lifetime.")
+        return
+
+    if queue.structural:
+        click.echo(f"\nDecided by structure ({len(queue.structural)}):")
+        by_kind: dict[str, int] = {}
+        for p in queue.structural:
+            by_kind[p.proposed] = by_kind.get(p.proposed, 0) + 1
+        for kind, n in sorted(by_kind.items(), key=lambda kv: -kv[1]):
+            click.echo(f"  {kind:<12} {n:>4}")
+
+    if queue.needs_judgement:
+        click.echo(f"\nNeeds judgement ({len(queue.needs_judgement)}) — "
+                   "read these and decide:")
+        for p in queue.needs_judgement[:15]:
+            click.echo(f"  [{p.project_code}] {p.framing[:64]}")
+            click.echo(f"      {p.why}")
+        if len(queue.needs_judgement) > 15:
+            click.echo(f"  … and {len(queue.needs_judgement) - 15} more")
+
+    if queue.inbox:
+        click.echo(f"\nInbox cards awaiting framing ({len(queue.inbox)}):")
+        per: dict[str, int] = {}
+        for card in queue.inbox:
+            pc = card.get("project_code", "?")
+            per[pc] = per.get(pc, 0) + 1
+        for pc, n in sorted(per.items(), key=lambda kv: -kv[1])[:8]:
+            click.echo(f"  {pc:<44} {n:>3}")
+        click.echo("  frame them with: cp spine-frame <code>")
+
+    if queue.work_excluded:
+        click.echo(f"\n{queue.work_excluded} work cards excluded "
+                   "(a deliverable has no lifetime).")
+
+    if do_apply:
+        click.echo(f"\nWrote lifetime on {written} rows. "
+                   f"{len(queue.needs_judgement)} still need a human.")
+    elif queue.structural:
+        click.echo(f"\nDry run — {len(queue.structural)} would be written. "
+                   "Re-run with --apply.")
