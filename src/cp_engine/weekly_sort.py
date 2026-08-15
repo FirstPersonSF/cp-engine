@@ -186,11 +186,53 @@ def apply_structural(client, proposals: list[Proposal]) -> int:
     return written
 
 
+def attach_proposals(queue: SortQueue, rows: list[dict], *, llm) -> int:
+    """Ask the model for a lifetime on everything structure could not decide.
+
+    Fills `Proposal.proposed` in place for the `needs_judgement` list, moving
+    nothing between lists: a model proposal is still a proposal, and the human
+    pass is what turns it into a lifetime. An item the model returns `unsure`
+    for keeps `proposed=None` and reaches the human blank, which is honest.
+
+    Returns the number of items that came back with a usable lifetime.
+    """
+    from cp_engine.sort_propose import propose
+
+    if not queue.needs_judgement:
+        return 0
+
+    wanted = {p.row_id for p in queue.needs_judgement}
+    items = [r for r in rows if r["id"] in wanted]
+    by_id = {p.row_id: p for p in queue.needs_judgement}
+
+    filled = 0
+    for prop in propose(items, llm=llm):
+        target = by_id.get(prop.row_id)
+        if target is None or prop.lifetime == "unsure":
+            continue
+        target.proposed = prop.lifetime
+        target.why = f"proposed: {prop.why}" if prop.why else "proposed by model"
+        filled += 1
+    return filled
+
+
 def run(
-    *, config=None, project_code: str | None = None, apply: bool = False
-) -> tuple[SortQueue, int]:
+    *,
+    config=None,
+    project_code: str | None = None,
+    apply: bool = False,
+    llm=None,
+) -> tuple[SortQueue, int, int]:
+    """Fetch, queue, optionally propose, optionally write.
+
+    Returns (queue, rows_written, proposals_filled). Only STRUCTURAL decisions
+    are ever written — a model proposal reaches the database solely through a
+    human confirming it, so `--apply` and `--propose` are independent.
+    """
     client = get_client(config, required=True)
     rows, inbox = fetch(client, project_code=project_code)
     queue = build_queue(rows, inbox)
+
+    proposed = attach_proposals(queue, rows, llm=llm) if llm else 0
     written = apply_structural(client, queue.structural) if apply else 0
-    return queue, written
+    return queue, written, proposed

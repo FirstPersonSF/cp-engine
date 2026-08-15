@@ -1515,7 +1515,12 @@ def card_kinds_cmd(code: str | None, do_apply: bool) -> None:
 @click.argument("code", required=False)
 @click.option("--apply", "do_apply", is_flag=True,
               help="Write the structurally-decided lifetimes.")
-def weekly_sort_cmd(code: str | None, do_apply: bool) -> None:
+@click.option("--propose", "do_propose", is_flag=True,
+              help="Ask the model for a lifetime on everything structure can't decide.")
+@click.option("--model", default="claude-opus-4-7", show_default=True,
+              help="Model for the proposal pass.")
+def weekly_sort_cmd(code: str | None, do_apply: bool,
+                    do_propose: bool, model: str) -> None:
     """Give every unclassified thing a lifetime, or surface it for judgement.
 
     Operates on the two piles that have no working disposition path: spine
@@ -1532,8 +1537,25 @@ def weekly_sort_cmd(code: str | None, do_apply: bool) -> None:
     from cp_engine.weekly_sort import run
 
     config = _cli._load_config_or_die()
+
+    # The proposal pass carries the MASTER PROMPT as system=, resolved for the
+    # project when the run is scoped to one. That is where "what counts as
+    # canon" lives — this module supplies only the task. A tenant with no
+    # priors published still works; the model just runs without them.
+    llm = None
+    if do_propose:
+        from cp_engine.plan_from_transcript import _call_claude
+        from cp_engine.priors import project_id_for_code
+
+        pid = project_id_for_code(code, config=config) if code else None
+
+        def llm(prompt: str) -> str:  # noqa: F811
+            return _call_claude(prompt, model=model, api_key=None, project_id=pid)
+
     try:
-        queue, written = run(config=config, project_code=code, apply=do_apply)
+        queue, written, proposed = run(
+            config=config, project_code=code, apply=do_apply, llm=llm
+        )
     except Exception as exc:  # noqa: BLE001
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
@@ -1551,13 +1573,27 @@ def weekly_sort_cmd(code: str | None, do_apply: bool) -> None:
             click.echo(f"  {kind:<12} {n:>4}")
 
     if queue.needs_judgement:
-        click.echo(f"\nNeeds judgement ({len(queue.needs_judgement)}) — "
-                   "read these and decide:")
-        for p in queue.needs_judgement[:15]:
-            click.echo(f"  [{p.project_code}] {p.framing[:64]}")
-            click.echo(f"      {p.why}")
-        if len(queue.needs_judgement) > 15:
-            click.echo(f"  … and {len(queue.needs_judgement) - 15} more")
+        with_prop = [p for p in queue.needs_judgement if p.proposed]
+        without = [p for p in queue.needs_judgement if not p.proposed]
+
+        if with_prop:
+            click.echo(f"\nModel proposals ({len(with_prop)}) — "
+                       "confirm or override, nothing is written:")
+            for p in with_prop[:15]:
+                click.echo(f"  {p.proposed:<11} [{p.project_code}] "
+                           f"{p.framing[:56]}")
+                click.echo(f"              {p.why}")
+            if len(with_prop) > 15:
+                click.echo(f"  … and {len(with_prop) - 15} more")
+
+        if without:
+            label = ("Model unsure" if do_propose else "Needs judgement")
+            click.echo(f"\n{label} ({len(without)}) — read these and decide:")
+            for p in without[:10]:
+                click.echo(f"  [{p.project_code}] {p.framing[:64]}")
+                click.echo(f"      {p.why}")
+            if len(without) > 10:
+                click.echo(f"  … and {len(without) - 10} more")
 
     if queue.inbox:
         click.echo(f"\nInbox cards awaiting framing ({len(queue.inbox)}):")
@@ -1574,8 +1610,13 @@ def weekly_sort_cmd(code: str | None, do_apply: bool) -> None:
                    "(a deliverable has no lifetime).")
 
     if do_apply:
-        click.echo(f"\nWrote lifetime on {written} rows. "
-                   f"{len(queue.needs_judgement)} still need a human.")
+        click.echo(f"\nWrote lifetime on {written} rows (structural only — "
+                   "a model proposal is never written without a human).")
+        click.echo(f"{len(queue.needs_judgement)} still need a human.")
     elif queue.structural:
         click.echo(f"\nDry run — {len(queue.structural)} would be written. "
                    "Re-run with --apply.")
+
+    if do_propose:
+        click.echo(f"\nModel proposed {proposed} of "
+                   f"{len(queue.needs_judgement)}; the rest it could not call.")
