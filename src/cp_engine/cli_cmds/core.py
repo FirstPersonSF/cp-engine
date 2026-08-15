@@ -405,8 +405,10 @@ def priors_cmd(code, publish_path, override_path, note, history) -> None:
     supersedes the current version rather than mutating it, so `--history`
     always shows how the prompt got here.
 
-    Writes go through the team-gated definer functions (mig 139), so this
-    needs MC-2 credentials that carry a `profiles` row.
+    Writes go through the definer functions (mig 139/141), which accept a
+    team member OR a service-role connection — the CLI holds the service key,
+    so `author_email` records 'service-role' rather than a person. A human
+    publishing from the mc-2 editor is recorded by email.
     """
     from cp_engine.mc2_db import Tables, get_client
     from cp_engine.priors import project_id_for_code
