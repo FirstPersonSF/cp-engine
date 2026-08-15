@@ -54,6 +54,8 @@ import json
 import logging
 from dataclasses import dataclass
 
+from cp_engine.mc2_db import Tables
+
 log = logging.getLogger(__name__)
 
 # Enough to carry the framing of a long body; a thin card is under this anyway.
@@ -99,7 +101,12 @@ interview write-ups); classify them consistently.
 Return ONLY a JSON array, one object per item, in the order given:
 
 [{{"id": "<the id given>", "lifetime": "background|feedback|canon|unsure", \
-"why": "<up to 15 words>"}}]
+"confidence": 0.0-1.0, "why": "<up to 15 words>"}}]
+
+`confidence` is how sure you are, and it is used: below 0.70 a human reads the \
+item individually; at or above 0.80 similar items are confirmed in a batch on \
+your word. Report it honestly — an overconfident wrong answer costs more than \
+a hedged right one, because the batch path trusts it.
 
 No prose, no markdown fence, no preamble."""
 
@@ -109,6 +116,10 @@ class Proposed:
     row_id: str
     lifetime: str  # one of _LIFETIMES
     why: str
+    # 0..1. Drives the surface's three bands: <0.70 is judged individually,
+    # >=0.80 groups arrive pre-selected. None when the model omitted it — the
+    # UI then treats the item as needing an eye rather than inventing a number.
+    confidence: float | None = None
 
 
 def _clip(text: str | None, limit: int = _BODY_CHARS) -> str:
@@ -166,8 +177,93 @@ def parse_response(text: str, batch: list[dict]) -> list[Proposed]:
         lifetime = str(row.get("lifetime") or "").strip().lower()
         if row_id not in known or lifetime not in _LIFETIMES:
             continue
-        out.append(Proposed(row_id, lifetime, str(row.get("why") or "")[:120]))
+        # A malformed or out-of-range confidence becomes None rather than being
+        # clamped: the UI treats None as "needs an eye", which is the safe
+        # reading of a model that could not express its own certainty.
+        conf: float | None
+        try:
+            conf = float(row["confidence"])
+            if not 0.0 <= conf <= 1.0:
+                conf = None
+        except (KeyError, TypeError, ValueError):
+            conf = None
+        out.append(
+            Proposed(row_id, lifetime, str(row.get("why") or "")[:120], conf)
+        )
     return out
+
+
+def persist(
+    client,
+    items: list[dict],
+    proposals: list[Proposed],
+    *,
+    prompt_version: int | None = None,
+    model: str | None = None,
+) -> int:
+    """Write proposals to `spine_sort_proposals` (mig 142). Returns rows written.
+
+    SUPERSEDE, NEVER OVERWRITE. A re-run demotes the prior active proposal for
+    each substance row and inserts a new one, so the history shows that the
+    answer CHANGED when the priors changed — which is the only way to tell
+    whether editing the master prompt improved anything. `prompt_version` is
+    recorded for the same reason: a proposal made under v1 and one made under
+    v4 are not the same claim.
+
+    `unsure` IS persisted. The master prompt explicitly tells the model to
+    decline rather than guess, and knowing WHICH items it declined is a signal
+    about the priors — dropping them would hide it.
+
+    A resolved proposal (accepted/rejected) is NOT superseded: those are
+    terminal records of what a human decided, and re-running the pre-pass must
+    not erase them. Only `active` rows are demoted.
+    """
+    if not proposals:
+        return 0
+
+    by_id = {it["id"]: it for it in items}
+    written = 0
+    for p in proposals:
+        row = by_id.get(p.row_id)
+        if row is None:
+            continue
+        # Demote only the ACTIVE prior — accepted/rejected rows are history.
+        client.table(Tables.SPINE_SORT_PROPOSALS).update(
+            {"status": "superseded"}
+        ).eq("substance_id", p.row_id).eq("status", "active").execute()
+        client.table(Tables.SPINE_SORT_PROPOSALS).insert(
+            {
+                "substance_id": p.row_id,
+                "project_id": row.get("project_id"),
+                "project_code": row.get("project_code"),
+                "est_item_id": row.get("est_item_id"),
+                "proposal": p.lifetime,
+                "confidence": p.confidence,
+                "reason": p.why or None,
+                "status": "active",
+                "prompt_version": prompt_version,
+                "model": model,
+            }
+        ).execute()
+        written += 1
+    return written
+
+
+def active_prompt_version(client) -> int | None:
+    """The `cp_prompt` version in force, or None. Best-effort — a missing
+    prompt store must not stop a proposal run."""
+    try:
+        rows = (
+            client.table(Tables.CP_PROMPT)
+            .select("version")
+            .eq("status", "active")
+            .limit(1)
+            .execute()
+        ).data or []
+        return rows[0].get("version") if rows else None
+    except Exception as exc:  # noqa: BLE001
+        log.debug("prompt version lookup failed (%s: %s)", type(exc).__name__, exc)
+        return None
 
 
 def propose(
