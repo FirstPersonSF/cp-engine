@@ -1554,7 +1554,11 @@ def weekly_sort_cmd(code: str | None, do_apply: bool,
 
     try:
         queue, written, proposed = run(
-            config=config, project_code=code, apply=do_apply, llm=llm
+            config=config,
+            project_code=code,
+            apply=do_apply,
+            llm=llm,
+            model=model if do_propose else None,
         )
     except Exception as exc:  # noqa: BLE001
         click.echo(f"Error: {exc}", err=True)

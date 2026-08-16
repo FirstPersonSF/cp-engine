@@ -49,13 +49,19 @@ where the master prompt does its work.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 
 from cp_engine.mc2_db import Tables, get_client
 
+log = logging.getLogger(__name__)
+
 _SUBSTANCE_COLUMNS = (
-    "id, project_code, est_item_id, layer, card_kind, lifetime, framing, "
-    "version_date, serves"
+    # project_id is carried for the proposal write (mig 142), which stores it
+    # alongside the code so the sort tab can read a whole project's proposals
+    # in one query. `body` feeds the model's excerpt.
+    "id, project_id, project_code, est_item_id, layer, card_kind, lifetime, "
+    "framing, body, version_date, serves"
 )
 _INBOX_COLUMNS = "id, project_code, source_ref, guessed_type, status, created_at"
 
@@ -186,7 +192,14 @@ def apply_structural(client, proposals: list[Proposal]) -> int:
     return written
 
 
-def attach_proposals(queue: SortQueue, rows: list[dict], *, llm) -> int:
+def attach_proposals(
+    queue: SortQueue,
+    rows: list[dict],
+    *,
+    llm,
+    client=None,
+    model: str | None = None,
+) -> int:
     """Ask the model for a lifetime on everything structure could not decide.
 
     Fills `Proposal.proposed` in place for the `needs_judgement` list, moving
@@ -196,7 +209,7 @@ def attach_proposals(queue: SortQueue, rows: list[dict], *, llm) -> int:
 
     Returns the number of items that came back with a usable lifetime.
     """
-    from cp_engine.sort_propose import propose
+    from cp_engine.sort_propose import active_prompt_version, persist, propose
 
     if not queue.needs_judgement:
         return 0
@@ -205,8 +218,30 @@ def attach_proposals(queue: SortQueue, rows: list[dict], *, llm) -> int:
     items = [r for r in rows if r["id"] in wanted]
     by_id = {p.row_id: p for p in queue.needs_judgement}
 
+    proposals = propose(items, llm=llm)
+
+    # Persist BEFORE filtering `unsure` out of the terminal display. Knowing
+    # which items the model declined is a signal about the priors — the master
+    # prompt tells it to decline rather than guess, so the declines are data,
+    # not noise. The UI reads them and routes those items to a human.
+    if client is not None:
+        try:
+            persist(
+                client,
+                items,
+                proposals,
+                prompt_version=active_prompt_version(client),
+                model=model,
+            )
+        except Exception as exc:  # noqa: BLE001 — a failed write must not lose the run
+            log.warning(
+                "proposals computed but not persisted (%s: %s)",
+                type(exc).__name__,
+                exc,
+            )
+
     filled = 0
-    for prop in propose(items, llm=llm):
+    for prop in proposals:
         target = by_id.get(prop.row_id)
         if target is None or prop.lifetime == "unsure":
             continue
@@ -222,6 +257,7 @@ def run(
     project_code: str | None = None,
     apply: bool = False,
     llm=None,
+    model: str | None = None,
 ) -> tuple[SortQueue, int, int]:
     """Fetch, queue, optionally propose, optionally write.
 
@@ -233,6 +269,10 @@ def run(
     rows, inbox = fetch(client, project_code=project_code)
     queue = build_queue(rows, inbox)
 
-    proposed = attach_proposals(queue, rows, llm=llm) if llm else 0
+    proposed = (
+        attach_proposals(queue, rows, llm=llm, client=client, model=model)
+        if llm
+        else 0
+    )
     written = apply_structural(client, queue.structural) if apply else 0
     return queue, written, proposed

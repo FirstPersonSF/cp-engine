@@ -84,6 +84,11 @@ class Tables:
     SPINE_PROMOTE_RUNS = "spine_promote_runs"
     SPINE_RELATIONS = "spine_relations"  # typed element->element edges (mig 117)
     SPINE_STEPS = "spine_steps"  # ordered progress trail inside an element (mig 119)
+    # Weekly-sort pre-pass output (mig 142). One ACTIVE proposal per substance
+    # row; a re-run supersedes rather than overwrites, so a prompt edit that
+    # changes an answer is visible. Never writes spine_substance.lifetime — a
+    # human confirming does that.
+    SPINE_SORT_PROPOSALS = "spine_sort_proposals"
 
     # estimator schema
     EST_PROJECTS = "projects"
