@@ -1383,26 +1383,23 @@ def semantic_search(
     """Vector-search ingested chunk text, under the caller's identity.
 
     The query is embedded with the SAME model the corpus was ingested with
-    (`voyage-3-large`, 1024-dim) and passed to the `match_chunks_simple` RPC.
-    That RPC is SECURITY INVOKER, so PostgREST executes it as the caller and RLS
-    applies inside it — the same authorization boundary as a plain table read,
-    which is what makes vector search safe to expose here at all.
+    (`voyage-3-large`, 1024-dim) and passed to the `match_chunks_for_project`
+    RPC. That RPC is SECURITY INVOKER, so PostgREST executes it as the caller
+    and RLS applies inside it — the same authorization boundary as a plain
+    table read, which is what makes vector search safe to expose here at all.
 
-    Two constraints worth stating:
+    `project_code` filters SERVER-SIDE (mc-2 mig 144), so `limit` means what it
+    says. Until that migration the scoped RPC was broken — it joined a relation
+    `assets` that does not exist — so this over-fetched `limit * 20` chunks
+    corpus-wide and intersected them in Python, which meant a small project
+    could return fewer than `limit` rows even when more matches existed.
 
-      * `match_chunks_by_documents` — the RPC that would let this filter server-
-        side by asset — is BROKEN on the live database: it references a relation
-        `assets` that does not exist (Postgres 42P01). So `project_code` is
-        applied as a POST-FILTER here: search runs corpus-wide, then results are
-        intersected with that project's asset ids. The `limit` is therefore
-        applied to the pre-filter candidate set, and a narrow project may return
-        fewer than `limit` rows. Fixing the RPC would make this exact and cheap.
       * With no embedding key configured the tool still EXISTS and returns a
         clear unavailable message rather than crashing the server.
 
     Args:
         query: natural-language search text.
-        project_code: optional project scope (post-filter, see above).
+        project_code: optional project scope, applied server-side.
         limit: maximum chunks to return.
     """
     usable, reason = embedding_available()
@@ -1417,7 +1414,6 @@ def semantic_search(
 
     client = user_client()
 
-    asset_ids: set[str] | None = None
     project_id: str | None = None
     if project_code:
         project_id = resolve_project_id(client, project_code)
@@ -1428,20 +1424,6 @@ def semantic_search(
                 "error": f"no project or initiative resolves for code {project_code!r}",
                 "results": [],
             }
-        asset_ids = set()
-        for column in ("project_id", "initiative_id"):
-            try:
-                for row in (
-                    client.table("rag_assets")
-                    .select("id")
-                    .eq(column, project_id)
-                    .execute()
-                    .data
-                    or []
-                ):
-                    asset_ids.add(row["id"])
-            except Exception:  # noqa: BLE001
-                continue
 
     try:
         vector = embed_query(query)
@@ -1454,18 +1436,22 @@ def semantic_search(
             "results": [],
         }
 
-    # Over-fetch when post-filtering, so a project scope has candidates to keep.
-    match_count = limit * 20 if asset_ids is not None else limit
+    # `match_chunks_for_project` filters SERVER-SIDE (mc-2 mig 144), so `limit`
+    # means what it says. The previous shape over-fetched limit*20 corpus-wide
+    # and intersected in Python because the scoped RPC was broken — which also
+    # meant a small project could return fewer than `limit` rows even when more
+    # matches existed. It under-returned silently, which was the worse half.
     try:
         rows = (
             client.rpc(
-                "match_chunks_simple",
+                "match_chunks_for_project",
                 {
                     # PostgREST sends the vector as a JSON string; the RPC's
                     # `query_embedding text` param takes the pgvector literal.
                     "query_embedding": "[" + ",".join(str(f) for f in vector) + "]",
                     "match_threshold": 0.0,
-                    "match_count": match_count,
+                    "match_count": limit,
+                    "filter_project_id": project_id,
                 },
             )
             .execute()
@@ -1476,30 +1462,13 @@ def semantic_search(
         return {
             "query_len": len(query),
             "caller": caller_subject(),
-            "error": f"match_chunks_simple failed: {type(exc).__name__}: {exc}",
+            "error": f"match_chunks_for_project failed: {type(exc).__name__}: {exc}",
             "results": [],
         }
 
-    if asset_ids is not None:
-        rows = [r for r in rows if r.get("asset_id") in asset_ids]
-    rows = rows[:limit]
-
-    # Title the chunks from their assets, in one batched read.
-    titles: dict[str, str] = {}
-    hit_assets = [r.get("asset_id") for r in rows if r.get("asset_id")]
-    if hit_assets:
-        try:
-            for row in (
-                client.table("rag_assets")
-                .select("id, title")
-                .in_("id", list(set(hit_assets)))
-                .execute()
-                .data
-                or []
-            ):
-                titles[row["id"]] = row.get("title")
-        except Exception:  # noqa: BLE001 — titles are a nicety, not the result
-            pass
+    # The RPC returns the asset title with each row (mig 144), so the batched
+    # rag_assets read this used to need is gone.
+    titles = {r.get("asset_id"): r.get("title") for r in rows if r.get("asset_id")}
 
     results = [
         {
@@ -1525,7 +1494,7 @@ def semantic_search(
         "caller": caller_subject(),
         "available": True,
         "embed_model": EMBED_MODEL,
-        "scope": "project (post-filtered)" if asset_ids is not None else "corpus-wide",
+        "scope": "project" if project_id else "corpus-wide",
         "count": len(results),
         "results": results,
     }
