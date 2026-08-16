@@ -4,6 +4,57 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.100.0 — 2026-08-16
+
+- **Weekly-sort proposals persist (mc-2 mig 142).** `cp weekly-sort --propose`
+  printed its answers to stdout and stored nothing, so the Weekly Sort tab had
+  nowhere to read a proposal from — the confidence grouping and pre-selected
+  batches were built and dormant.
+
+  **A table, not columns on `spine_substance`.** A proposal is not a property of
+  the element; it is *one run's judgment* about it, made under one version of
+  the master prompt. Columns would overwrite silently on a re-run, losing the
+  fact that the answer **changed** when the priors changed — which is the only
+  way to tell whether editing the prompt improved anything.
+
+  One active proposal per substance row; a re-run supersedes rather than
+  overwrites, and only `active` priors are demoted (accepted/rejected are
+  terminal records of what a human decided). `prompt_version` and `model` are
+  stamped on every row.
+
+  **`unsure` is persisted.** The priors tell the model to decline rather than
+  guess, so knowing *which* items it declined is a signal about the priors.
+  Confidence is requested and parsed; a malformed or out-of-range value becomes
+  `None` rather than being clamped, because `None` routes the item to a human,
+  which is the safe reading of a model that could not express its own certainty.
+
+  Three findings from the live runs, all visible only because we supersede:
+  the model is **not deterministic** on borderline items (two pointer cards
+  moved `unsure`(0.5) → `background`(0.7) between identical runs, right at the
+  threshold that decides whether a human reads them); asking for calibrated
+  confidence made it **more cautious** (14 classified before, 13 after); and one
+  decline — *"Body is empty/error, cannot classify content"* — was a **data bug**
+  the priors caught, not an ambiguity.
+
+- **`semantic_search` filters server-side (mc-2 mig 144).** It had been
+  post-filtering in Python because the scoped RPC was broken: over-fetching
+  `limit * 20` chunks corpus-wide, intersecting them with the project's asset
+  ids, then truncating. A `limit=10` search read 200 chunks — and `limit`
+  applied to the **pre-filter** candidate set, so a small project could return
+  fewer than `limit` rows even when more matches existed. It under-returned
+  silently, which is the worse half.
+
+  Two distinct faults were behind it, and the note on record named the wrong
+  function. `match_chunks` joined `public.assets`, which does not exist (42P01).
+  `match_chunks_by_documents` failed on `extensions.vector <=> extensions.vector`
+  (42883) because its `search_path` was pinned to `'public'` alone — and
+  **pgvector installs `<=>` in `extensions` on Supabase**, so correct-looking
+  hardening silently removed the operator the function is built around.
+  `match_chunks_simple` works precisely *because* it sets no search_path.
+
+  The new `match_chunks_for_project` also returns the asset title, so the
+  batched `rag_assets` read for titles is gone.
+
 ## v0.99.0 — 2026-08-15
 
 - **The master prompt — judgment priors on every LLM call (mc-2 migs 139–141).**
