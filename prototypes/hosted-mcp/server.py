@@ -1380,7 +1380,25 @@ def list_project_meetings(project_code: str) -> dict[str, Any]:
 def semantic_search(
     query: str, project_code: str | None = None, limit: int = 10
 ) -> dict[str, Any]:
-    """Vector-search ingested chunk text, under the caller's identity.
+    """Search the project's memory: distilled spine context, then raw chunks.
+
+    THE SPINE LEADS (mig 146). `spine_context` carries the matching canon,
+    decisions and syntheses — what we have ESTABLISHED — and `results` carries
+    the raw chunks they were drawn from. Read the spine first: it is the layer
+    that holds judgement, and before this it was invisible to search entirely
+    (spine rows are hand-written prose with no rag_asset, so the vector index
+    cannot see them — asking for a ruling that existed verbatim as a canon
+    element returned five meeting transcripts and a SOW).
+
+    The spine also EXPANDS the query. Canon was written from this corpus, so its
+    vocabulary sits closer to the chunks than a user's phrasing does; measured
+    on one question, enrichment moved the top hit 0.41 → 0.56 and surfaced the
+    reorder spec the naive query missed. `query_expanded` says whether it fired,
+    so a surprising ranking is diagnosable rather than mysterious.
+
+    Background is excluded from `spine_context` by default — it belongs to no
+    work item, and leading with it reproduces the filename-wall problem.
+
 
     The query is embedded with the SAME model the corpus was ingested with
     (`voyage-3-large`, 1024-dim) and passed to the `match_chunks_for_project`
@@ -1425,8 +1443,53 @@ def semantic_search(
                 "results": [],
             }
 
+    # THE SPINE SHAPES THE SEARCH (mig 146). Two effects, one fetch.
+    #
+    # The distilled layer is NOT in the vector index — spine rows are
+    # hand-written prose with no rag_asset, so `match_chunks_for_project`
+    # cannot see them. Measured 2026-08-16: asking for a ruling that exists
+    # verbatim as a canon element returned five transcripts and a SOW.
+    #
+    # (1) EXPANSION. Canon was written FROM this corpus, so its vocabulary sits
+    #     closer to the chunks than a user's phrasing does. Measured on the same
+    #     question, enriching the query moved the top hit 0.41 → 0.56 and
+    #     surfaced the actual reorder spec the naive query missed.
+    # (2) CONTEXT. The matching elements come back ABOVE the chunks, so an
+    #     answer leads with what we decided and then shows the evidence.
+    #
+    # Fail-soft: a spine lookup that errors must not take the search with it.
+    # Search without the spine is what shipped before this and still works.
+    spine: list[dict[str, Any]] = []
     try:
-        vector = embed_query(query)
+        spine = (
+            client.rpc(
+                "match_spine_context",
+                {
+                    "search_text": query,
+                    "filter_project_id": project_id,
+                    "match_count": 5,
+                },
+            )
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.warning("spine context lookup failed (%s: %s)", type(exc).__name__, exc)
+
+    # Framings only, not bodies: a 6,000-char distillation would drown the
+    # user's own question in the embedded vector. The titles carry the
+    # project's vocabulary, which is the part that helps.
+    expanded = query
+    if spine:
+        framings = " ".join(
+            (row.get("framing") or "").strip() for row in spine[:3]
+        ).strip()
+        if framings:
+            expanded = f"{query}\n\nProject context: {framings}"
+
+    try:
+        vector = embed_query(expanded)
     except Exception as exc:  # noqa: BLE001 — an embedding-provider failure
         return {
             "query_len": len(query),
@@ -1495,6 +1558,25 @@ def semantic_search(
         "available": True,
         "embed_model": EMBED_MODEL,
         "scope": "project" if project_id else "corpus-wide",
+        # What we have ESTABLISHED, read first. Distilled elements carry the
+        # judgement; the chunks below are the raw material they were drawn from.
+        "spine_context": [
+            {
+                "framing": row.get("framing"),
+                "layer": row.get("layer"),
+                "lifetime": row.get("lifetime"),
+                "est_item_id": row.get("est_item_id"),
+                "version_date": row.get("version_date"),
+                # Enough to answer from; the full element is one
+                # `pull_spine_element` away.
+                "body": (row.get("body") or "")[:2000],
+            }
+            for row in spine
+        ],
+        # Stated so a caller can tell whether the ranking below reflects their
+        # words or the project's. Silent enrichment would make a surprising
+        # result impossible to diagnose.
+        "query_expanded": expanded != query,
         "count": len(results),
         "results": results,
     }
