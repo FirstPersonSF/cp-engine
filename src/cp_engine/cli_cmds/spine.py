@@ -1624,3 +1624,77 @@ def weekly_sort_cmd(code: str | None, do_apply: bool,
     if do_propose:
         click.echo(f"\nModel proposed {proposed} of "
                    f"{len(queue.needs_judgement)}; the rest it could not call.")
+
+
+@click.command("route-queue")
+@click.argument("code", required=False)
+@click.option("--propose", "do_propose", is_flag=True,
+              help="Ask the model where each homeless item belongs.")
+@click.option("--model", default="claude-opus-4-7", show_default=True,
+              help="Model for the proposal pass.")
+def route_queue_cmd(code: str | None, do_propose: bool, model: str) -> None:
+    """What still has no home, and optionally where the model thinks it goes.
+
+    The companion to `weekly-sort`. That asks how long something stays true;
+    this asks what work it belongs to. They are separate acts and the sort
+    tracked only the first — measured 2026-08-16, ibx-5192's sort queue hit
+    ZERO with 42 of its 74 classified rows still attached to nothing.
+
+    BACKGROUND IS EXCLUDED, along with work cards and the standing
+    Inputs & Briefing / SOW elements. Background belongs to no single work item
+    by definition; queueing the Infoblox corporate library would ask you to
+    file it under one deliverable. That is what cuts ibx-5192 from 42 to 21.
+
+    `--propose` NEVER writes `serves`. It fills a proposal a human accepts in
+    the Route tab, and every id the model returns is checked against the
+    project's real estimate — an invented slot is dropped, not repaired.
+    """
+    from cp_engine.route_queue import run
+
+    config = _cli._load_config_or_die()
+    try:
+        queue, proposed = run(
+            config=config,
+            project_code=code,
+            propose=do_propose,
+            model=model if do_propose else None,
+        )
+    except Exception as exc:  # noqa: BLE001
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(1)
+
+    if not queue:
+        click.echo("Nothing waiting for a home.")
+        return
+
+    per_project: dict[str, dict[str, int]] = {}
+    for h in queue:
+        bucket = per_project.setdefault(h.project_code, {})
+        key = h.lifetime or "unclassified"
+        bucket[key] = bucket.get(key, 0) + 1
+
+    click.echo(f"\n{len(queue)} waiting for a home:\n")
+    for pc, kinds in sorted(
+        per_project.items(), key=lambda kv: -sum(kv[1].values())
+    ):
+        total = sum(kinds.values())
+        detail = " · ".join(
+            f"{n} {k}" for k, n in sorted(kinds.items(), key=lambda kv: -kv[1])
+        )
+        click.echo(f"  {pc:<46} {total:>3}  ({detail})")
+
+    # Canon first in the sample: it outlives the project, and an unrouted canon
+    # element is unreachable from the work it describes.
+    canon = [h for h in queue if h.lifetime == "canon"]
+    if canon:
+        click.echo(f"\nUnrouted canon ({len(canon)}) — the costliest kind:")
+        for h in canon[:10]:
+            click.echo(f"  [{h.project_code}] {h.layer or '—'}: {h.framing[:56]}")
+        if len(canon) > 10:
+            click.echo(f"  … and {len(canon) - 10} more")
+
+    if do_propose:
+        click.echo(f"\nModel proposed a destination for {proposed} of "
+                   f"{len(queue)}; accept them in the Route tab.")
+    else:
+        click.echo("\nRun with --propose to have the model suggest destinations.")
