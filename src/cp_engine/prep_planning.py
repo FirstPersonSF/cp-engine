@@ -50,6 +50,7 @@ from cp_engine.agenda import (
 from cp_engine.config import TenantConfig
 from cp_engine.render import (
     exec_summary_is_authored,
+    exec_summary_placeholder_fields as _placeholder_fields,
     slice_exec_summary_region,
 )
 from cp_engine.sprints import (
@@ -166,6 +167,10 @@ class ProjectPlanningBlock:
     # which project states to distrust.
     exec_summary_updated: str | None = None
     exec_summary_age_days: int | None = None
+    # Authored fields still carrying scaffold placeholders (#190). Non-empty
+    # means the region is only PARTIALLY authored, so its `· updated` stamp
+    # overstates how much state is really there.
+    exec_summary_placeholder_fields: tuple[str, ...] = ()
     # Estimate-drift warnings (cp-engine #65): undone estimate items past due
     # with no done-mark, or whose linked meeting's actual date diverges from
     # the estimated date — the same lines the Agreement projection appends to
@@ -1150,6 +1155,8 @@ def _detect_urgent(
     *,
     today: date | None = None,
     sprint_file_body: str | None = None,
+    commitments: tuple[Milestone, ...] = (),
+    drift: tuple[str, ...] = (),
 ) -> list[dict]:
     """Surface this-week-attention items for the project's planning block.
 
@@ -1168,6 +1175,14 @@ def _detect_urgent(
       3. **past_due_ask** — sprint_ask with ``by`` strictly before today.
       4. **escalated_risk** — entry under ``## Dependencies & risks`` whose
          bracket-meta begins with ``escalated``.
+      5. **past_due_ask** (commitments) — an OPEN MC-2 commitment whose
+         ``due_date`` is strictly before today. Rule 3 only reads sprint-file
+         asks, so before #191 a slipped commitment — the store the dates loop
+         actually chases — produced no flag at all.
+      6. **slip_risk** (drift) — an estimate-drift warning of the "past due,
+         no done-mark" shape. 24 of 29 projects carry no schedule milestones,
+         so rule 1 can never fire for them while their estimate lines quietly
+         drift months past due.
 
     Sprint-file-sourced rules (2 + 4) take the raw markdown body as a
     keyword arg so tests don't need a full scaffold and the caller stays
@@ -1260,6 +1275,46 @@ def _detect_urgent(
                     }
                 )
 
+    # Rule 5 — past_due_ask from MC-2 commitments (#191). Rule 3 sees only
+    # sprint-file asks; the commitments store is where the dates loop and the
+    # Monday digest actually live, so an overdue row there is the strongest
+    # past-due signal available and was previously invisible to the counters.
+    for c in commitments:
+        due = c.get("date") or ""
+        if not due:
+            continue
+        if (c.get("status") or "open").lower() not in ("open", ""):
+            continue
+        try:
+            due_date = date.fromisoformat(due)
+        except ValueError:
+            continue
+        if due_date >= today:
+            continue
+        age_days = (today - due_date).days
+        flags.append(
+            {
+                "type": "past_due_ask",
+                "text": f"{c.get('deliverable') or '(untitled)'} "
+                f"({age_days}d past due)",
+                "severity": "warn" if age_days < _URGENT_HORIZON_DAYS else "alert",
+            }
+        )
+
+    # Rule 6 — slip_risk from estimate drift (#191). The drift lines already
+    # say "past due ~<date>, no done-mark"; they just were not wired to the
+    # counters, so a bundle could report zero slip risks while displaying
+    # eighteen drift warnings.
+    for w in drift:
+        if "past due" in w.lower():
+            flags.append(
+                {
+                    "type": "slip_risk",
+                    "text": w.lstrip("⚠ ").strip(),
+                    "severity": "warn",
+                }
+            )
+
     return flags
 
 
@@ -1345,12 +1400,18 @@ def build_project_block(
         sorted(milestones, key=lambda m: (m.get("date") or "9999-99-99"))
     )
 
+    # Fetched BEFORE _detect_urgent so drift + commitments can feed the
+    # urgent counters (#191) rather than only rendering as display strips.
+    drift = _fetch_drift_warnings(supabase_client, project, today)
+
     urgent_list = _detect_urgent(
         project,
         milestones,
         sprint_asks,
         today=today,
         sprint_file_body=sprint_file_body,
+        commitments=client_asks + our_commitments,
+        drift=drift,
     )
 
     # Opt-in whole-project sweep synthesis (Project Spine slice 3, Phase B).
@@ -1371,7 +1432,6 @@ def build_project_block(
 
     deliverable_lines = _fetch_deliverable_lines(supabase_client, project)
 
-    drift = _fetch_drift_warnings(supabase_client, project, today)
 
     slack_digest = _parse_prior_slack_digest(config.root, project.code, week_iso)
 
@@ -1382,6 +1442,9 @@ def build_project_block(
             age_days = (today - date.fromisoformat(updated)).days
         except ValueError:
             updated = None
+    # A region can pass the authored-check on ONE real field while the rest
+    # stay scaffold; the stamp would then render it FRESH (#190).
+    placeholder_fields = _placeholder_fields(exec_summary or "")
 
     return ProjectPlanningBlock(
         project=project,
@@ -1398,6 +1461,7 @@ def build_project_block(
         sweep_synthesis=sweep_synthesis,
         exec_summary_updated=updated,
         exec_summary_age_days=age_days,
+        exec_summary_placeholder_fields=placeholder_fields,
     )
 
 
@@ -2083,6 +2147,14 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
             line += (
                 " ⚠ **STALE — predates the last sprint; treat Status/"
                 "Next-up/Blockers as unverified and confirm verbally.**"
+            )
+        # A recent stamp over a half-scaffold region is worse than a stale
+        # one: it reads as current while carrying no state (#190).
+        if block.exec_summary_placeholder_fields:
+            missing = ", ".join(block.exec_summary_placeholder_fields)
+            line += (
+                f" ⚠ **PARTIAL — still scaffold: {missing}. The stamp is"
+                " fresher than the content; confirm these fields verbally.**"
             )
         out.append(line)
     elif block.exec_summary:

@@ -1032,6 +1032,69 @@ def exec_summary_is_authored(region: str) -> bool:
     return False
 
 
+# The six fields the wrap-up protocol authors, in the order they appear.
+# `Last session:` is DERIVED (recomputed by capture-session / sync), so it is
+# deliberately excluded — a derived field being filled says nothing about
+# whether a human authored the state.
+EXEC_SUMMARY_AUTHORED_FIELDS = (
+    "Objective",
+    "Status",
+    "Where it stands",
+    "Next up",
+    "Blockers",
+    "Updates",
+)
+
+
+def exec_summary_placeholder_fields(region: str) -> tuple[str, ...]:
+    """The authored fields still carrying scaffold placeholders.
+
+    ``exec_summary_is_authored`` answers "did a human touch this at all?" —
+    ANY one real field makes it True. That is the right question for
+    "should we show this region", but the wrong one for "can we trust its
+    freshness stamp": a summary with one real field and five placeholders
+    reads as authored, so its `· updated` stamp is taken at face value and
+    the region renders as FRESH.
+
+    This returns the field labels still unfilled, so callers can qualify the
+    freshness verdict. Empty tuple = fully authored (or region absent).
+
+    A field counts as a placeholder when its inline value is `_<...>_` AND
+    the bullets beneath it (up to the next field or blank-line break) are all
+    placeholder seeds or the auto-stamped migration bullet.
+    """
+    if not region:
+        return ()
+    filled: set[str] = set()
+    seen: set[str] = set()
+    current: str | None = None
+    for raw in region.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        field = re.match(r"^\*\*(?P<label>[^*]+?):\*\*\s*(?P<value>.*)$", line)
+        if field is not None:
+            label = field.group("label").strip()
+            value = field.group("value").strip()
+            if label in EXEC_SUMMARY_AUTHORED_FIELDS:
+                seen.add(label)
+                current = label
+                if value and "_<" not in value:
+                    filled.add(label)
+            else:
+                current = None
+            continue
+        if line.startswith("- ") and current is not None:
+            if "_<" in line:
+                continue
+            if EXEC_SUMMARY_MIGRATION_BULLET_RE.match(line):
+                continue
+            filled.add(current)
+    # Only report on fields the region actually declares — a region that
+    # omits a field entirely is a different (structural) problem.
+    return tuple(f for f in EXEC_SUMMARY_AUTHORED_FIELDS if f in seen and f not in filled)
+
+
 def splice_managed_region(file_contents: str, region: str, new_body: str) -> str:
     """Replace the body between
     `<!-- cp-engine:start <region> -->` and the matching end marker.
