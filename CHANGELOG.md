@@ -4,6 +4,53 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.100.2 — 2026-08-19
+
+- **Carried-forward risks were invisible to every dashboard surface.**
+  `canonic/storyos/cp.md` rendered **"Active risks (0)"** while the project
+  carried seven risks, one of them ESCALATED (the ServiceNow deal funding two
+  badged contractors rather than four — two partners potentially going
+  in-house while the Google book runs ~60h/week).
+
+  Sync writes a prior week's unresolved risks into the engine-managed
+  `carry-forward` region as `- [risk · <sev> · <cat> · <date>]` bullets, but
+  `render_current_sprint_block` read only the hand-written
+  `## Dependencies & risks` section. A risk that was CARRIED rather than
+  re-typed therefore stopped counting — and the same undercount reached the
+  sprint-index README. That is backwards: surviving a week makes a risk more
+  worth surfacing, not less, so the rollover was quietly demoting every
+  carried risk to invisible.
+
+  New `_active_risks()` unions both regions, dedupes on
+  `(severity, category, text)` so a risk carried AND restated in the same week
+  counts once (the live section wins — a hand-restated risk may carry updated
+  wording), and sorts escalated ahead of watching so the strip's three-item
+  preview can never show three watch-items while hiding an escalation. Both
+  call sites use it, so the two surfaces cannot disagree about what "active"
+  means. The ask path already had this carry-forward fallback; risks are now
+  symmetric with it.
+
+  **Expect visible movement across the tenant:** projects reporting zero
+  active risks will begin showing the ones they carry. Golden fixtures were
+  regenerated — the old ones encoded the bug.
+
+- **New: `cp merge-check` — prove a merge didn't silently drop content.**
+  The tenant convention "resolve generated files `--ours`" is right only when
+  your side is genuinely newer. Merging 19 remote commits on 08-19 produced
+  add/add conflicts on 39 sprint-scaffold files while the auto-ingest webhook
+  had been writing to the remote; blanket `--ours` would have discarded seven
+  ingest-written bullets, including the escalated risk above. Nothing errors,
+  the merge commits, and the content is simply gone — a silent drop is
+  indistinguishable from a clean resolution.
+
+  `cp merge-check --ref origin/main` set-differences the `cp:hash` markers on
+  the ref's version of every tracked markdown file against the working tree
+  and reports what vanished, with enough of each bullet to recognize and
+  recover it. Exits 1 on loss. Deliberately not scoped to git-reported
+  conflicts: a bad `checkout --ours`, an over-eager `git restore`, or a
+  truncating hand-merge lose content the same way. Verified both directions
+  against the real 08-19 merge.
+
 ## v0.100.1 — 2026-08-19
 
 - **The planning bundle's urgent counters were blind to the two stores that
