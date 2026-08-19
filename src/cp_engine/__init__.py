@@ -5,7 +5,7 @@ See `docs/specs/cp-engine-spec-v02.md` for the canonical spec.
 
 # NOTE: keep this string in sync with pyproject.toml's [project].version.
 # scripts/release.py bumps both atomically — never edit only one.
-__version__ = "0.100.0"
+__version__ = "0.100.1"
 
 from cp_engine.config import (
     CommittedConfigInvalid,
