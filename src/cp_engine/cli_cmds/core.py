@@ -54,11 +54,26 @@ def sync() -> None:
         click.echo(f"Sync failed: {exc}", err=True)
         sys.exit(1)
 
+    # Best-effort warnings are reported on the outcome line (#197): a cycle
+    # that stranded an element still "succeeds", and the count is the only
+    # thing distinguishing it from a clean run without reading the scrollback.
+    warned = getattr(result, "warnings", 0)
+    suffix = f" ({warned} warning{'s' if warned != 1 else ''})" if warned else ""
+
+    note = (
+        f"  {warned} warning{'s' if warned != 1 else ''} logged above — "
+        "some content may not have been written"
+    )
+
     if result.no_op:
-        click.echo(f"No changes ({result.projects_seen} projects checked).")
+        click.echo(f"No changes ({result.projects_seen} projects checked){suffix}.")
+        if warned:
+            click.echo(note, err=True)
         return
 
-    click.echo(f"Synced {result.projects_seen} projects.")
+    click.echo(f"Synced {result.projects_seen} projects{suffix}.")
+    if warned:
+        click.echo(note, err=True)
     for path in result.files_written:
         click.echo(f"  wrote    {path.relative_to(config.root)}")
     for path in result.files_deactivated:
