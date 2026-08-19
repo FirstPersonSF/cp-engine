@@ -4,6 +4,63 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.101.2 — 2026-08-19
+
+- **A promoted spine element could be torn in half, and the mirror crash it
+  caused took a whole company's stakeholder files with it (#197, #198).**
+  `add_spine_version` carried an element's `scope` forward onto each new
+  version but not its `company_id` — the field was missing from
+  `_ELEMENT_RESOLVE_COLUMNS`, so the carry-forward read `None`. An
+  account-scoped row with a NULL company matches **neither** read arm (the
+  account arm filters `company_id=X AND scope='account'`, the project arm
+  `scope='project'`), so the live version went invisible at account scope
+  while the stale superseded row stayed the only thing sibling projects could
+  see. The two fields are a pair; they are now selected and carried together.
+
+  Downstream, the resulting zero-live version group tripped
+  `write_authored_element`'s one-live guard — correctly — but
+  `_mirror_account_elements` had no per-element `try/except`, unlike the
+  sibling project loop that carries a comment explaining why it needs one. A
+  single raise aborted the entire company's mirror.
+
+  **On ibx-5192 that meant Janet's account dossier sat stale at its Jul 26
+  content for 24 days, Kimber's was never written at all, both kept stale
+  project-side duplicates, and ibx-5153 read the pre-correction stakeholder
+  dossiers the whole time** — while `cp sync` printed `Synced 37 projects.`
+  and exited 0.
+
+  The account mirror now has the per-element guard. **The filename is claimed
+  BEFORE the write is attempted:** `expected` drives the reap that deletes
+  every file it does not name, so an element that fails to mirror must still
+  claim its name or the reap escalates a transient write failure into deleting
+  the last good copy of that dossier. The project-side file is removed only
+  once the account-side write has succeeded, so a failure never leaves an
+  element with no file on either side.
+
+  Tenant-wide scan at the time of the fix: 2 of 330 authored elements were
+  split, both on ibx-5192, both promoted 07-26 and re-versioned the same day.
+  Data repaired by hand. Regression query for the split state:
+
+  ```sql
+  select est_item_id, array_agg(distinct coalesce(scope,'project')) as scopes
+  from spine_substance where origin='authored'
+  group by est_item_id having count(distinct coalesce(scope,'project')) > 1;
+  ```
+
+- **A degraded sync no longer reads exactly like a clean one (#197).** Sync is
+  best-effort in a dozen places by design — one malformed element should not
+  cost the other 36 projects their sync — but the outcome line said
+  `Synced N projects.` whether or not anything had been stranded, so the only
+  way to notice was to read the scrollback. Warnings logged during a cycle are
+  now counted onto `SyncResult` and reported: `Synced 37 projects (1 warning).`
+
+- **Routine summary truncation moved from WARNING to DEBUG.** The 120-char
+  master-CP cell cap is a designed constraint that most project summaries
+  exceed, so it fired ~23 times on a typical tenant-wide sync. With the new
+  count that read `24 warnings` when exactly one meant anything — the other 23
+  were the cap doing its job. A count that is 96% noise teaches the reader to
+  ignore it, which is worse than no count at all.
+
 ## v0.101.1 — 2026-08-19
 
 - **A brand-new project's first meeting no longer drops its plan.** v0.101.0's
