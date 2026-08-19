@@ -393,6 +393,39 @@ def compute_carry_forward(prior_path: Path) -> CarryForward:
     return CarryForward(asks=asks, risks=risks, horizon=horizon)
 
 
+def _active_risks(sf) -> list["Risk"]:
+    """Active risks for the dashboard surfaces: this week's own risks PLUS
+    the ones carried forward from the prior sprint.
+
+    Carry-forward risks used to be invisible here. Sync writes a prior week's
+    unresolved risks into the engine-managed ``carry-forward`` region as
+    ``- [risk · <sev> · <cat> · <date>]`` bullets, while this function read
+    only the hand-written ``## Dependencies & risks`` section — so a risk that
+    was CARRIED rather than re-typed silently stopped counting. That is
+    backwards: surviving a week makes a risk more worth surfacing, not less.
+    Live case that surfaced it — storyos rendered "Active risks (0)" while
+    carrying seven, one of them escalated.
+
+    Deduped on (severity, category, text) so a risk present in both regions
+    (carried forward AND restated by hand this week) is counted once. The
+    live section wins, since a hand-restated risk may carry updated wording.
+    """
+    active = [r for r in sf.risks if r.severity in ("escalated", "watching")]
+    seen = {(r.severity, r.category, r.text.strip()) for r in active}
+    for r in sf.carry_forward.risks:
+        if r.severity not in ("escalated", "watching"):
+            continue
+        key = (r.severity, r.category, r.text.strip())
+        if key in seen:
+            continue
+        seen.add(key)
+        active.append(r)
+    # Escalated ahead of watching so the strip's 3-item preview can never
+    # show three watch-items while hiding an escalation.
+    active.sort(key=lambda r: 0 if r.severity == "escalated" else 1)
+    return active
+
+
 def _parse_carry_forward(body: str) -> CarryForward:
     try:
         region = _extract_region(body, "carry-forward")
@@ -744,7 +777,7 @@ def render_current_sprint_block(sf: SprintFile, link_path: str) -> str:
     if len(asks) < 3:
         asks.extend(sf.carry_forward.asks[: 3 - len(asks)])
     asks = asks[:3]
-    active = [r for r in sf.risks if r.severity in ("escalated", "watching")]
+    active = _active_risks(sf)
     risks = active[:3]
 
     def _hours(h: float) -> str:
@@ -784,8 +817,9 @@ def render_sprint_index(
     """Render the per-week sprint-index README listing every active project.
 
     The Risks column counts active risks (severity in ``escalated`` or
-    ``watching``) — same definition used by the master-CP agenda's risk
-    rollup, so the two surfaces stay consistent. Decisions due counts
+    ``watching``, this week's plus carried-forward — see ``_active_risks``)
+    — same definition used by the cp.md strip and the master-CP agenda's
+    risk rollup, so the surfaces stay consistent. Decisions due counts
     horizon items with bucket ``decision``.
     """
     week_label = week_iso.split("-")[1] if "-" in week_iso else week_iso
@@ -801,9 +835,9 @@ def render_sprint_index(
             or "—"
         )
         decisions = sum(1 for h in sf.horizon if h.bucket == "decision")
-        active_risks = sum(
-            1 for r in sf.risks if r.severity in ("escalated", "watching")
-        )
+        # Same definition as the cp.md strip — carry-forward risks included,
+        # so the two surfaces can't disagree about what "active" means.
+        active_risks = len(_active_risks(sf))
         lines.append(
             f"| `{sf.project_code}` | {alloc} | "
             f"{len(sf.client_open_asks)} | {active_risks} | "
