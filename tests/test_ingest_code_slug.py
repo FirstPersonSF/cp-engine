@@ -141,3 +141,143 @@ def test_unresolvable_code_still_reports_the_error(tmp_path):
 
     assert len(result.errors) == 1
     assert "sprint file missing for zzz-9999" in result.errors[0]
+
+
+# --- the new-project case: no sprint file exists anywhere yet ---------------
+#
+# The on-disk branches of resolve_sprint_code can only match a project that
+# ALREADY has a sprint file. A brand-new engagement's first meeting has none,
+# so before the MC-2 fallback it dropped the plan — and that is the worst
+# time to lose one. slt-5196 was created 2026-07-24 and its very first ingest
+# failed the same day.
+
+
+class _FakeResult:
+    def __init__(self, data):
+        self.data = data
+
+
+class _FakeQuery:
+    def __init__(self, data):
+        self._data = data
+
+    def select(self, *_a, **_k):
+        return self
+
+    def eq(self, *_a, **_k):
+        return self
+
+    def limit(self, *_a, **_k):
+        return self
+
+    def execute(self):
+        return _FakeResult(self._data)
+
+
+class _FakeClient:
+    """Minimal Supabase stand-in returning one project row."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def table(self, _name):
+        return _FakeQuery(self._rows)
+
+
+def test_new_project_resolves_via_mc2(sprints_root, monkeypatch):
+    """No sprint file anywhere -> MC-2 supplies the stem sync would use."""
+    monkeypatch.setattr(
+        "cp_engine.mc2_db._resolve_project_id",
+        lambda _c, _code: "proj-uuid",
+    )
+    client = _FakeClient(
+        [{
+            "full_job_name": "SLT 9999 Brand New Thing",
+            "name": "Brand New Thing",
+            "companies": {"code": "SLT", "name": "Salesloft"},
+        }]
+    )
+
+    assert (
+        resolve_sprint_code(sprints_root, "slt-9999", supabase=client)
+        == "slt-9999-brand-new-thing"
+    )
+
+
+def test_on_disk_match_wins_over_mc2(sprints_root, monkeypatch):
+    """MC-2 is a FALLBACK — never consulted when the tree already answers,
+    so a rename in MC-2 can't split a project's history across two files."""
+    def _boom(*_a, **_k):
+        raise AssertionError("MC-2 must not be consulted when the tree matches")
+
+    monkeypatch.setattr("cp_engine.mc2_db._resolve_project_id", _boom)
+
+    assert (
+        resolve_sprint_code(sprints_root, "slt-5196", supabase=object())
+        == "slt-5196-brand-campaign-26"
+    )
+
+
+def test_mc2_failure_falls_through_quietly(sprints_root, monkeypatch):
+    """A resolution problem must never break an ingest — pass the code
+    through so the caller's missing-file error fires as before."""
+    def _boom(*_a, **_k):
+        raise RuntimeError("supabase down")
+
+    monkeypatch.setattr("cp_engine.mc2_db._resolve_project_id", _boom)
+
+    assert (
+        resolve_sprint_code(sprints_root, "slt-9999", supabase=object())
+        == "slt-9999"
+    )
+
+
+def test_no_supabase_client_is_unchanged_behavior(sprints_root):
+    assert resolve_sprint_code(sprints_root, "slt-9999") == "slt-9999"
+
+
+def test_first_ever_meeting_scaffolds_and_writes(tmp_path, monkeypatch):
+    """End to end: a brand-new project's FIRST meeting. No sprint file exists
+    in any week. Before the fix this dropped the plan outright; now MC-2
+    supplies the identity, the file is scaffolded, and the content lands."""
+    from datetime import date
+
+    from cp_engine.ingest import execute_plan
+
+    monkeypatch.setattr(
+        "cp_engine.mc2_db._resolve_project_id",
+        lambda _c, _code: "proj-uuid",
+    )
+    client = _FakeClient(
+        [{
+            "full_job_name": "SLT 9999 Brand New Thing",
+            "name": "Brand New Thing",
+            "companies": {"code": "SLT", "name": "Salesloft"},
+        }]
+    )
+
+    tenant = tmp_path
+    (tenant / "sprints" / "2026-W20").mkdir(parents=True)
+
+    plan = {
+        "projects": {
+            "slt-9999": {
+                "inbound": [{
+                    "text": "Kickoff: scope agreed, shoot week locked",
+                    "date": "2026-05-12",
+                    "who": "Leah",
+                }]
+            }
+        }
+    }
+
+    result = execute_plan(
+        plan, tenant_root=tenant, today=date(2026, 5, 12), supabase=client
+    )
+
+    assert result.errors == []
+    created = tenant / "sprints" / "2026-W20" / "slt-9999-brand-new-thing.md"
+    assert created.is_file(), "first-ever sprint file should have been scaffolded"
+    body = created.read_text(encoding="utf-8")
+    assert "Kickoff: scope agreed, shoot week locked" in body
+    assert "cp:hash=" in body
