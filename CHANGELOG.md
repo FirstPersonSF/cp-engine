@@ -4,6 +4,47 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.101.0 — 2026-08-19
+
+- **Auto-ingest silently discarded 1,375 bullets over three months (#194).**
+  `execute_plan` built its write target as `sprints/<week>/{code}.md` from the
+  plan's project key VERBATIM. Plans name projects however the model wrote
+  them — often the SHORT CODE (`slt-5196`) rather than the directory SLUG the
+  sprint file uses (`slt-5196-brand-campaign-26`). The path did not exist,
+  `scaffold_from_prior` failed the same way for the same reason, and the whole
+  per-project plan was dropped with `continue` — after the model had already
+  computed it.
+
+  **123 runs, 2026-05-14 → 2026-08-19:** 559 inbound, 367 decisions, 207
+  stakeholders, 121 asks, 121 risks. Worst hit ibx-5192 (40 runs), sap-5174
+  (27), ibx-5153 (11), sap-5171 (8), slt-5195 (7). Every failing key was a
+  short code; every clean run used the full slug — in one 08-19 batch
+  `ggl-5197` failed while `ggl-5197-go-readiness-2026` succeeded in the same
+  webhook invocation.
+
+  New `resolve_sprint_code()` maps a plan key to the stem it actually writes
+  to. Deliberately CONSERVATIVE, because writing a meeting's decisions into
+  the wrong project is worse than the drop it fixes: an exact stem wins
+  outright (initiatives are unaffected), else a single unambiguous `<code>-*`
+  prefix match, and anything ambiguous or unmatched passes through unchanged
+  so the caller's missing-file error still fires.
+
+- **Partial failures were reported as success, which is why the above hid for
+  three months.** The commit-and-push branch hardcoded `status="success"`.
+  Something always commits there — the transcript and `meeting-history.md`
+  writes happen on a different path from the sprint-file writes — so the
+  branch fired on every run and stamped success over real per-project errors.
+  **117 of the 123 error-carrying runs are recorded `success`.**
+
+  The failure was therefore invisible from every direction: git history looked
+  normal (a commit landed), the runs table looked clean, and the sprint file
+  got a plausible `New source ingested:` stub. The only trace was an `errors`
+  array nobody reads. Status now derives from `_status_from_ingested`, which
+  already had the right logic and simply was not called on that path.
+
+  **Expect the runs table to start showing `failed` where it used to show
+  `success`.** That is the fix working, not a regression.
+
 ## v0.100.2 — 2026-08-19
 
 - **Carried-forward risks were invisible to every dashboard surface.**
