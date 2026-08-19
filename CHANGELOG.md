@@ -4,6 +4,48 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.100.1 — 2026-08-19
+
+- **The planning bundle's urgent counters were blind to the two stores that
+  actually carry overdue work (#191).** W35's bundle reported
+  `slip_risk 0 · decision_due 0 · past_due_ask 0 · escalated_risk 0` while the
+  same file displayed 18 estimate-drift warnings, a client findings deck
+  slipped 28 days, and a delivery 5 days overdue. "Urgent attention items: none
+  flagged" is an active reassurance, not a neutral absence — a partner reading
+  the summary line would conclude nothing was late.
+
+  Two rules had obvious inputs going unused. `past_due_ask` read only
+  sprint-file `[open · … · by <date>]` bullets and never MC-2 commitments —
+  the store the weekly dates loop and the Monday digest actually chase, and
+  where `[slipped]` rows are recorded. `slip_risk` required a schedule
+  milestone carrying a risk signal, but **24 of 29 projects have no milestones
+  at all**, so it could never fire for them however far their estimate lines
+  drifted.
+
+  Adds rule 5 (open commitments past their due date) and rule 6 (drift lines
+  of the `past due …, no done-mark` shape; linked-meeting date skew is drift,
+  not slip, and is excluded). `_fetch_drift_warnings` now runs before
+  `_detect_urgent` so it feeds the counters rather than only rendering as a
+  display strip. Live against the tenant: **slip_risk 0 → 16,
+  past_due_ask 0 → 6**, matching what a human found by reading the body.
+
+- **A half-authored Exec Summary rendered as fresh (#190).**
+  `exec_summary_is_authored` returns True on *any one* real field — the right
+  question for "should we show this region," the wrong one for "can we trust
+  its `· updated` stamp." A summary with `Status` filled and the other five
+  fields still `_<placeholder>_` passed the check, had its stamp taken at face
+  value, and rendered as current while carrying almost no state. That is the
+  shape a rushed wrap-up produces, so it is the likely failure, not an edge
+  case. (A *pristine* scaffold was already handled correctly — it returns
+  `None` upstream and shows the unauthored marker.)
+
+  Adds `exec_summary_placeholder_fields()` beside the existing check rather
+  than changing its semantics, which four callers depend on. The bundle now
+  appends a `⚠ PARTIAL — still scaffold: <fields>` qualifier naming what is
+  unfilled. `Last session` is excluded from the field set: it is derived by
+  `capture-session`/`sync`, so its being filled says nothing about whether a
+  human authored the state.
+
 ## v0.100.0 — 2026-08-16
 
 - **Weekly-sort proposals persist (mc-2 mig 142).** `cp weekly-sort --propose`
