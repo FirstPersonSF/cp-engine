@@ -1208,3 +1208,86 @@ def test_fresh_scaffold_parses_with_no_ghost_content(tmp_path: Path) -> None:
     assert sf.allocation == ()
     assert sf.definition_of_done == ""
     assert sf.decisions == ()
+
+
+# --- carry-forward risks reach the dashboard surfaces -----------------------
+#
+# storyos rendered "Active risks (0)" while carrying seven risks, one of them
+# ESCALATED. Sync writes a prior week's unresolved risks into the
+# engine-managed `carry-forward` region; the strip read only the hand-written
+# `## Dependencies & risks` section, so a CARRIED risk silently stopped
+# counting — backwards, since surviving a week makes a risk more notable.
+
+
+def _risk(text, severity="watching", category="delivery", raised="2026-08-18"):
+    from cp_engine.sprints import Risk
+
+    return Risk(
+        text=text,
+        severity=severity,
+        category=category,
+        raised_date=raised,
+    )
+
+
+class _FakeSF:
+    """Minimal stand-in carrying just the fields _active_risks reads."""
+
+    def __init__(self, risks=(), carried=()):
+        from cp_engine.sprints import CarryForward
+
+        self.risks = list(risks)
+        self.carry_forward = CarryForward(asks=(), risks=tuple(carried), horizon=())
+
+
+def test_carried_risks_count_as_active():
+    from cp_engine.sprints import _active_risks
+
+    sf = _FakeSF(risks=(), carried=(_risk("Deal funds 2 contractors, not 4",
+                                          severity="escalated"),))
+    active = _active_risks(sf)
+    assert len(active) == 1
+    assert active[0].severity == "escalated"
+
+
+def test_live_and_carried_risks_combine():
+    from cp_engine.sprints import _active_risks
+
+    sf = _FakeSF(
+        risks=(_risk("Client bandwidth"),),
+        carried=(_risk("Regional site access"),),
+    )
+    assert len(_active_risks(sf)) == 2
+
+
+def test_duplicate_risk_counted_once():
+    """A risk both carried forward AND restated by hand this week is ONE risk."""
+    from cp_engine.sprints import _active_risks
+
+    same = "Rob Katzenstein stuck — carried from W33."
+    sf = _FakeSF(risks=(_risk(same),), carried=(_risk(same),))
+    assert len(_active_risks(sf)) == 1
+
+
+def test_escalated_sorts_ahead_of_watching():
+    """The strip previews only 3 — an escalation must never be crowded out."""
+    from cp_engine.sprints import _active_risks
+
+    sf = _FakeSF(
+        risks=(_risk("w1"), _risk("w2"), _risk("w3")),
+        carried=(_risk("the escalated one", severity="escalated"),),
+    )
+    active = _active_risks(sf)
+    assert active[0].severity == "escalated"
+    assert active[0].text == "the escalated one"
+    # ...and it survives the 3-item preview slice the renderer applies.
+    assert any(r.severity == "escalated" for r in active[:3])
+
+
+def test_dependency_severity_still_excluded():
+    """Only escalated + watching are dashboard-worthy; carry-forward is not a
+    backdoor for informational dependency risks."""
+    from cp_engine.sprints import _active_risks
+
+    sf = _FakeSF(carried=(_risk("informational", severity="dependency"),))
+    assert _active_risks(sf) == []

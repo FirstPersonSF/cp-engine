@@ -12,6 +12,7 @@ from pathlib import Path
 
 import click
 
+from cp_engine.merge_check import check_merge
 from cp_engine.config import CommittedConfigMissing, ConfigError, load
 from cp_engine.init import InitAborted, run_init
 from cp_engine.sync import SyncError, sync_tenant
@@ -282,6 +283,77 @@ def status() -> None:
     )
     for path in result.files_written:
         click.echo(f"  would write    {path.relative_to(config.root)}")
+
+
+@click.command(name="merge-check")
+@click.option(
+    "--ref",
+    default="MERGE_HEAD",
+    show_default=True,
+    help=(
+        "Commit to compare against. After resolving a merge --ours, the "
+        "interesting side is the REMOTE one — MERGE_HEAD during a merge, or "
+        "origin/main once it is committed."
+    ),
+)
+def merge_check_cmd(ref: str) -> None:
+    """Prove a merge didn't silently drop ingest-written content.
+
+    Resolving generated files `--ours` is right only when your side is newer.
+    When the auto-ingest webhook has been writing to the remote while you
+    worked locally, `--ours` throws that content away — and the result looks
+    exactly like a clean resolution: nothing errors, the merge commits, the
+    bullets are simply gone.
+
+    This compares every `cp:hash` marker on <ref>'s version of each tracked
+    markdown file against the working tree, and reports any that vanished.
+    Run it after ANY conflicted merge, before committing the resolution.
+
+    Exit 0 when nothing was lost, 1 when something was.
+    """
+    root = Path.cwd()
+    while root != root.parent and not (root / ".git").exists():
+        root = root.parent
+    if not (root / ".git").exists():
+        click.echo("Error: not inside a git repository.", err=True)
+        sys.exit(2)
+
+    lost, checked = check_merge(root, ref=ref)
+
+    if not checked:
+        click.echo(
+            f"No files with cp:hash markers found on '{ref}' — nothing to "
+            "compare. Check the ref name (MERGE_HEAD only exists mid-merge; "
+            "use origin/main after committing)."
+        )
+        return
+
+    if not lost:
+        click.echo(
+            f"✓ No content lost — every cp:hash on '{ref}' survives in the "
+            f"working tree ({checked} file(s) checked)."
+        )
+        return
+
+    click.echo(
+        f"⚠ {len(lost)} tracked bullet(s) present on '{ref}' are MISSING from "
+        f"the working tree ({checked} file(s) checked):\n",
+        err=True,
+    )
+    by_file: dict[str, list] = {}
+    for item in lost:
+        by_file.setdefault(item.path, []).append(item)
+    for path, items in sorted(by_file.items()):
+        click.echo(f"  {path}", err=True)
+        for item in items:
+            click.echo(f"    {item.hash}  {item.snippet}", err=True)
+    click.echo(
+        "\nRecover with:  git checkout " + ref + " -- <path>   "
+        "(or merge the missing bullets by hand if your side has real edits "
+        "the remote lacks).",
+        err=True,
+    )
+    sys.exit(1)
 
 
 @click.command(name="resolve-engine-pin")
