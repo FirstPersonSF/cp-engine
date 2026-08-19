@@ -313,7 +313,15 @@ def execute_plan(
     week_iso = week_iso or plan_week_iso(plan) or _calendar_week_iso(today)
 
     projects_block = plan.get("projects") or {}
-    for code, entries in projects_block.items():
+    for plan_code, entries in projects_block.items():
+        # Plans name projects however the model wrote them — often the short
+        # code ("slt-5196") rather than the directory slug the sprint file
+        # uses ("slt-5196-brand-campaign-26"). Resolve before building the
+        # path; an unresolvable code passes through unchanged so the
+        # missing-file error below still fires. See resolve_sprint_code.
+        from cp_engine.sprints import resolve_sprint_code
+
+        code = resolve_sprint_code(tenant_root / "sprints", plan_code)
         sprint_path = tenant_root / "sprints" / week_iso / f"{code}.md"
         if not sprint_path.exists():
             # v0.13.0: race ahead of sync. The most common cause of "missing
@@ -331,8 +339,12 @@ def execute_plan(
                 target_week_iso=week_iso,
             )
             if scaffolded is None:
+                seen_as = (
+                    f"{plan_code}" if plan_code == code
+                    else f"{plan_code} -> {code}"
+                )
                 result.errors.append(
-                    f"sprint file missing for {code} (week {week_iso}) "
+                    f"sprint file missing for {seen_as} (week {week_iso}) "
                     f"and no prior sprint file to scaffold from: {sprint_path}"
                 )
                 continue

@@ -970,6 +970,43 @@ _CP_LINK_RE = re.compile(
 )
 
 
+def resolve_sprint_code(sprints_root: Path, code: str) -> str:
+    """Map a project key to the sprint-file stem it actually writes to.
+
+    Auto-ingest plans name projects however the model wrote them — often the
+    SHORT CODE (``slt-5196``) rather than the directory SLUG the sprint file
+    uses (``slt-5196-brand-campaign-26``). `execute_plan` built its write path
+    from that key verbatim, so a short-code plan targeted a file that does not
+    exist, `scaffold_from_prior` failed the same way for the same reason, and
+    the whole per-project plan was dropped — after the model had computed it.
+    123 runs between 2026-05-14 and 2026-08-19 discarded 1,375 bullets this
+    way, recorded as `status: "success"`.
+
+    Resolution is deliberately CONSERVATIVE — writing a meeting's decisions
+    into the wrong project is worse than the drop this fixes:
+
+      * an exact ``<code>.md`` in any sprint week wins outright;
+      * otherwise a ``<code>-*.md`` prefix match, and ONLY when every week
+        agrees on a single candidate stem;
+      * anything ambiguous (or unmatched) returns `code` unchanged, so the
+        caller's existing missing-file path still reports the error.
+
+    Returns the resolved stem, never a path. Pure lookup, no writes.
+    """
+    if not sprints_root.is_dir():
+        return code
+    if any(sprints_root.glob(f"*/{code}.md")):
+        return code
+    candidates = {
+        p.stem
+        for p in sprints_root.glob(f"*/{code}-*.md")
+        if not p.stem.startswith("_")
+    }
+    if len(candidates) == 1:
+        return candidates.pop()
+    return code
+
+
 def scaffold_from_prior(
     *,
     tenant_root: Path,
@@ -993,6 +1030,10 @@ def scaffold_from_prior(
     if not sprints_root.is_dir():
         return None
 
+    # A short-code caller (e.g. "slt-5196" for
+    # "slt-5196-brand-campaign-26") would otherwise find no prior week and
+    # return None, which is how execute_plan came to drop whole plans.
+    project_code = resolve_sprint_code(sprints_root, project_code)
     prior_weeks = sorted(
         (p.parent.name for p in sprints_root.glob(f"*/{project_code}.md")),
         reverse=True,
