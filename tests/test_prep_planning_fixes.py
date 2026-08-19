@@ -293,3 +293,187 @@ def test_binding_falls_back_to_owner_of_record_labeled(tmp_path):
     body = "\n".join(_render_cross_cutting(result))
     assert "**brandon** — owner-of-record on 6 projects" in body
     assert "not planned hours" in body
+
+
+# --- #190: freshness verdict vs. partially-authored regions -----------------
+
+
+def test_placeholder_fields_flags_full_scaffold():
+    """A pristine scaffold reports every authored field as unfilled."""
+    from cp_engine.render import exec_summary_placeholder_fields
+
+    region = (
+        "## Exec Summary  ·  updated 2026-08-10\n\n"
+        "**Last session:** _<date>_\n"
+        "**Objective:** _<one line — what this project delivers>_\n"
+        "**Status:** _<current state in a phrase>_\n\n"
+        "**Where it stands:**\n- _<2-4 dense bullets of current reality>_\n\n"
+        "**Next up:**\n- _<concrete near-term moves>_\n\n"
+        "**Blockers:**\n- _<what's stuck>_\n\n"
+        "**Updates:**\n- _<dated>_\n"
+    )
+    assert exec_summary_placeholder_fields(region) == (
+        "Objective",
+        "Status",
+        "Where it stands",
+        "Next up",
+        "Blockers",
+        "Updates",
+    )
+
+
+def test_placeholder_fields_flags_partial_authoring():
+    """The #190 case: one real field passes exec_summary_is_authored, so the
+    `· updated` stamp would render the region FRESH — but five fields are
+    still scaffold. Those five must be reported."""
+    from cp_engine.render import (
+        exec_summary_is_authored,
+        exec_summary_placeholder_fields,
+    )
+
+    region = (
+        "**Last session:** _<date>_\n"
+        "**Objective:** _<one line>_\n"
+        "**Status:** Actively rebuilding the GRR sheet.\n\n"
+        "**Where it stands:**\n- _<2-4 dense bullets>_\n\n"
+        "**Next up:**\n- Ship the Firebase requirements doc.\n\n"
+        "**Blockers:**\n- _<what's stuck>_\n\n"
+        "**Updates:**\n- 2026-07-01 — migrated from Quick Resume\n"
+    )
+    # Reads as authored — that is exactly why the stamp was trusted.
+    assert exec_summary_is_authored(region) is True
+    assert exec_summary_placeholder_fields(region) == (
+        "Objective",
+        "Where it stands",
+        "Blockers",
+        "Updates",
+    )
+
+
+def test_placeholder_fields_empty_for_fully_authored():
+    """A real summary reports nothing, so the freshness verdict is unqualified."""
+    from cp_engine.render import exec_summary_placeholder_fields
+
+    region = (
+        "**Last session:** 2026-08-18 (Drew) — shipped the close loop.\n"
+        "**Objective:** Keep MC-2 running as the canonical store.\n"
+        "**Status:** The close loop is complete and visible.\n\n"
+        "**Where it stands:**\n- MC-2 is the canonical store.\n\n"
+        "**Next up:**\n- Verify the webhook reports 0.100.0.\n\n"
+        "**Blockers:**\n- None acute.\n\n"
+        "**Updates:**\n- 2026-08-18 — the close loop shipped.\n"
+    )
+    assert exec_summary_placeholder_fields(region) == ()
+
+
+def test_migration_bullet_does_not_count_as_authored():
+    """The auto-stamped migration line is not human authoring."""
+    from cp_engine.render import exec_summary_placeholder_fields
+
+    region = (
+        "**Objective:** _<one line>_\n\n"
+        "**Updates:**\n- 2026-07-01 — migrated from Quick Resume\n"
+    )
+    assert "Updates" in exec_summary_placeholder_fields(region)
+
+
+# --- #191: urgent counters read commitments + drift -------------------------
+
+
+def _milestone(**kw):
+    from cp_engine.prep_planning import Milestone
+
+    base = dict(
+        id="c1",
+        task_type="milestone",
+        deliverable="Findings deck to Louise",
+        date="",
+        owner="Tony Welch",
+        confidence="",
+        depends_on=[],
+        status="open",
+        linked_to=[],
+        source="commitments",
+    )
+    base.update(kw)
+    return Milestone(**base)
+
+
+def test_overdue_commitment_raises_past_due_ask():
+    """#191: an open commitment past its due date must count, even with no
+    sprint-file ask and no milestone."""
+    from datetime import date as _date
+
+    from cp_engine.prep_planning import _detect_urgent
+
+    flags = _detect_urgent(
+        project=None,
+        milestones=(),
+        sprint_asks=(),
+        today=_date(2026, 8, 19),
+        commitments=(_milestone(date="2026-07-22"),),
+    )
+    past_due = [f for f in flags if f["type"] == "past_due_ask"]
+    assert len(past_due) == 1
+    assert "28d past due" in past_due[0]["text"]
+    # 28 days out is well beyond the horizon — escalate, don't just warn.
+    assert past_due[0]["severity"] == "alert"
+
+
+def test_future_and_closed_commitments_do_not_flag():
+    from datetime import date as _date
+
+    from cp_engine.prep_planning import _detect_urgent
+
+    flags = _detect_urgent(
+        project=None,
+        milestones=(),
+        sprint_asks=(),
+        today=_date(2026, 8, 19),
+        commitments=(
+            _milestone(date="2026-09-30"),  # future
+            _milestone(date="2026-07-22", status="done"),  # already closed
+            _milestone(date=""),  # undated
+        ),
+    )
+    assert [f for f in flags if f["type"] == "past_due_ask"] == []
+
+
+def test_drift_warning_raises_slip_risk():
+    """#191: the bundle showed 18 drift lines while reporting 0 slip risks."""
+    from datetime import date as _date
+
+    from cp_engine.prep_planning import _detect_urgent
+
+    flags = _detect_urgent(
+        project=None,
+        milestones=(),
+        sprint_asks=(),
+        today=_date(2026, 8, 19),
+        drift=(
+            "⚠ Creative Concept Development — past due ~2026-08-17, no done-mark",
+            "⚠ Narrative Messaging Architecture — linked meeting 2026-06-30 vs "
+            "estimate ~2026-04-27 (+64d)",
+        ),
+    )
+    slips = [f for f in flags if f["type"] == "slip_risk"]
+    # Only the past-due line counts; the linked-meeting skew is drift, not slip.
+    assert len(slips) == 1
+    assert slips[0]["text"].startswith("Creative Concept Development")
+
+
+def test_no_commitments_or_drift_is_still_quiet():
+    """A genuinely calm project must not gain phantom flags."""
+    from datetime import date as _date
+
+    from cp_engine.prep_planning import _detect_urgent
+
+    assert (
+        _detect_urgent(
+            project=None,
+            milestones=(),
+            sprint_asks=(),
+            today=_date(2026, 8, 19),
+        )
+        == []
+    )
