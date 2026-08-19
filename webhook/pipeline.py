@@ -893,10 +893,17 @@ def _perform_auto_ingest(
                 "commitments": commitments_summary,
                 "meeting_artifacts": artifact_summary,
             }
+            # NOT hardcoded "success": something always commits here (the
+            # transcript + meeting-history writes happen regardless of
+            # whether any per-project plan landed), so this branch fired on
+            # every run and stamped success over real per-project errors.
+            # 117 of 123 runs carrying a "sprint file missing" error were
+            # recorded as success between 2026-05-14 and 2026-08-19 — the
+            # reason 1,375 discarded bullets went unnoticed for three months.
             _log_run_to_supabase(
                 meeting_id=meeting_id,
                 project_codes=project_codes,
-                status="success",
+                status=_status_from_ingested(ingested, anything_wrote=True),
                 ingested=ingested,
                 commit_sha=last_commit,
             )
@@ -986,9 +993,13 @@ def _generate_meeting_artifacts(
 def _status_from_ingested(ingested: list[dict], *, anything_wrote: bool) -> str:
     """Derive the auto_ingest_runs.status enum value.
 
-    - 'failed': at least one project errored out
+    - 'failed': at least one project errored out. This includes PARTIAL
+      failures — a run that committed a transcript but dropped a project's
+      plan is a failure, because the thing the run exists to do did not
+      happen. Reporting those as success is what hid the code-vs-slug bug
+      (#194) for three months.
     - 'skipped_no_op': nothing wrote AND nothing errored (clean no-op)
-    - 'success': we wrote files (used in the commit-and-push branch)
+    - 'success': we wrote files and NO project errored
     """
     if any(entry.get("errors") for entry in ingested):
         return "failed"
