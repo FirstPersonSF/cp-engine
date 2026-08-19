@@ -4,6 +4,28 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.101.1 — 2026-08-19
+
+- **A brand-new project's first meeting no longer drops its plan.** v0.101.0's
+  `resolve_sprint_code` resolves a short code by globbing the sprints tree,
+  which only finds a project that ALREADY has a sprint file. A new
+  engagement's first meeting has none, so a short-code plan still resolved to
+  nothing, `scaffold_from_prior` still found no prior week, and the plan was
+  still dropped — the worst possible time to lose one (slt-5196 was created
+  2026-07-24 and its very first ingest failed the same day).
+
+  Two MC-2 fallbacks, both gated on a Supabase client and both best-effort:
+  `resolve_sprint_code` asks MC-2 and slugifies `full_job_name` (exactly how
+  sync derives the stem, so the two agree by construction), and
+  `scaffold_from_prior` builds a minimal ProjectState from MC-2 to create a
+  first-ever sprint file rather than returning None.
+
+  **On-disk matches still win outright** — MC-2 is never consulted when the
+  tree already answers, so a rename there can't split a project's history
+  across two files. Every failure path returns the code unchanged, so a
+  resolution problem can never break an ingest that would otherwise partially
+  succeed.
+
 ## v0.101.0 — 2026-08-19
 
 - **Auto-ingest silently discarded 1,375 bullets over three months (#194).**
