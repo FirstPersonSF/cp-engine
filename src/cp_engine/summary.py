@@ -39,12 +39,18 @@ def enforce_summary_cap(summary: str) -> str:
     """Trim `summary` to ≤120 chars, single line, no markdown.
 
     Strips newlines and common markdown markers. Truncates with `…` if
-    over-length and logs at WARNING.
+    over-length, logged at DEBUG.
+
+    Deliberately NOT a warning (#197): the cap is a designed constraint on a
+    master-CP cell, and most project summaries are longer than 120 chars — a
+    typical tenant-wide sync trips it ~23 times. Logging routine, expected
+    behavior at WARNING drowns the warnings that mean something (one stranded
+    element hid among 23 of these) and teaches the reader to ignore the count.
     """
     cleaned = " ".join(summary.split())
     cleaned = cleaned.replace("**", "").replace("__", "").replace("`", "")
     if len(cleaned) > MAX_SUMMARY_LEN:
-        logger.warning("Summary truncated: %d chars → %d", len(cleaned), MAX_SUMMARY_LEN)
+        logger.debug("Summary truncated: %d chars → %d", len(cleaned), MAX_SUMMARY_LEN)
         cleaned = cleaned[: MAX_SUMMARY_LEN - 1].rstrip() + "…"
     return cleaned
 

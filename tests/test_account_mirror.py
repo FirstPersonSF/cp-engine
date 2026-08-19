@@ -152,3 +152,58 @@ def test_reap_spares_non_md_files(tmp_path):
     _mirror_account_elements(client, project_id="pid", project_code="c",
                              project_dir=project_dir)
     assert keep.exists()
+
+
+# ── #197: one malformed element must not strand the rest of the company ──
+
+
+def test_malformed_element_does_not_abort_the_sweep(tmp_path):
+    """A zero-live element (the state a split-scope element produces, #198)
+    used to raise out of the loop, stranding every LATER element. On Infoblox
+    that left one sibling's mirror stale for 24 days and another's never
+    written. The bad element is skipped; its siblings still mirror."""
+    project_dir = tmp_path / "1p" / "infoblox" / "ibx-5192"
+    project_dir.mkdir(parents=True)
+    rows = [
+        _row("_authored/aaa-good"),
+        # zero live: only a superseded row survived at account scope
+        _row("_authored/bbb-broken", version="v1", status="superseded"),
+        _row("_authored/ccc-good"),
+    ]
+    n = _mirror_account_elements(_Client("cid", rows), project_id="pid",
+                                 project_code="ibx-5192", project_dir=project_dir)
+    stake = tmp_path / "1p" / "infoblox" / "_stakeholders"
+    assert (stake / "aaa-good.md").is_file()
+    assert (stake / "ccc-good.md").is_file(), "later element was stranded"
+    assert not (stake / "bbb-broken.md").exists()
+    assert n == 2, "written count must exclude the skipped element"
+
+
+def test_failed_element_keeps_its_existing_file(tmp_path):
+    """The reap deletes every file `expected` does not name. A failing element
+    must still claim its filename, or a transient write failure escalates into
+    deleting the last good copy of that dossier."""
+    project_dir = tmp_path / "1p" / "infoblox" / "ibx-5192"
+    project_dir.mkdir(parents=True)
+    stake = tmp_path / "1p" / "infoblox" / "_stakeholders"
+    stake.mkdir(parents=True)
+    good = stake / "bbb-broken.md"
+    good.write_text("last known good dossier")
+    rows = [_row("_authored/bbb-broken", version="v1", status="superseded")]
+    _mirror_account_elements(_Client("cid", rows), project_id="pid",
+                             project_code="ibx-5192", project_dir=project_dir)
+    assert good.is_file(), "reap deleted the file of an element that failed to write"
+    assert good.read_text() == "last known good dossier"
+
+
+def test_failed_element_keeps_its_project_side_copy(tmp_path):
+    """The project-side file is only removed once the account write SUCCEEDS —
+    otherwise a failure leaves the element with no file on either side."""
+    project_dir = tmp_path / "1p" / "infoblox" / "ibx-5192"
+    stale = project_dir / "spine" / "_authored" / "bbb-broken.md"
+    stale.parent.mkdir(parents=True)
+    stale.write_text("pre-promotion mirror")
+    rows = [_row("_authored/bbb-broken", version="v1", status="superseded")]
+    _mirror_account_elements(_Client("cid", rows), project_id="pid",
+                             project_code="ibx-5192", project_dir=project_dir)
+    assert stale.is_file(), "project-side copy dropped despite the account write failing"

@@ -157,6 +157,41 @@ class SyncResult:
     files_written: tuple[Path, ...]   # generated/scaffolded files
     files_deactivated: tuple[Path, ...]  # working dirs moved to <scope>/inactive/<code>/
     no_op: bool                       # True iff nothing changed on disk
+    # Warnings logged during the cycle (#197). Sync is best-effort in many
+    # places by design — a malformed element, a missing table, an orphaned
+    # asset id degrade to a logged warning rather than failing the run. That
+    # is right, but it meant a cycle that stranded an entire company's mirror
+    # still printed "Synced N projects." and exited 0, indistinguishable from
+    # a clean run unless someone read the scrollback. The count travels to the
+    # summary so the last line reflects what actually happened.
+    warnings: int = 0
+
+
+class _WarningCounter(logging.Handler):
+    """Counts WARNING+ records emitted by cp_engine during one sync cycle (#197).
+
+    Sync degrades to `logger.warning` in a dozen best-effort places rather than
+    failing the run — the right call, since one malformed element should not
+    cost the other 36 projects their sync. The cost was that the outcome line
+    said "Synced N projects." whether or not anything had gone wrong. This
+    counts the warnings so the CLI can say so; it never suppresses or reformats
+    them, and never raises (a broken counter must not break a sync).
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.WARNING)
+        self.count = 0
+
+    def emit(self, record: logging.LogRecord) -> None:  # noqa: D102
+        # Only `emit` increments — `Handler.handle()` calls `emit()`, so
+        # counting in both would double every warning.
+        try:
+            self.count += 1
+        except Exception:  # noqa: BLE001 — never let counting break a sync
+            pass
+
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: D102, N802
+        pass  # a counting failure is never worth stderr noise
 
 
 def sync_tenant(
@@ -185,6 +220,30 @@ def sync_tenant(
     factory = backend_factory or _default_backend_factory
     sync_clock = now or datetime.now(timezone.utc)
 
+    # Count this cycle's best-effort warnings so the summary can report them
+    # (#197). Attached to the `cp_engine` package logger, so every module's
+    # `logger.warning` is seen; removed in the `finally` below.
+    counter = _WarningCounter()
+    pkg_logger = logging.getLogger("cp_engine")
+    pkg_logger.addHandler(counter)
+    try:
+        return _sync_tenant_inner(
+            config, factory=factory, sync_clock=sync_clock, dry_run=dry_run,
+            counter=counter,
+        )
+    finally:
+        pkg_logger.removeHandler(counter)
+
+
+def _sync_tenant_inner(
+    config: TenantConfig,
+    *,
+    factory: BackendFactory,
+    sync_clock: datetime,
+    dry_run: bool,
+    counter: "_WarningCounter | None" = None,
+) -> SyncResult:
+    """The sync cycle proper — see `sync_tenant` for the contract."""
     backend = factory(config.sync.backend)
     projects = backend.read_projects(config)
 
@@ -967,6 +1026,7 @@ def sync_tenant(
         files_written=tuple(files_written),
         files_deactivated=tuple(files_deactivated),
         no_op=not (files_written or files_deactivated),
+        warnings=counter.count if counter is not None else 0,
     )
 
 

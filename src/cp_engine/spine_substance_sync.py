@@ -690,23 +690,50 @@ def _mirror_account_elements(client, *, project_id: str, project_code: str,
 
     stakeholders_dir = project_dir.parent / "_stakeholders"
     written = 0
+    failed = 0
     expected: set[str] = set()
     for est_item_id, group in groups.items():
         # Element-level archive (retire) → skip the mirror entirely.
         if all(r.get("archived") for r in group):
             continue
-        write_authored_element(
-            project_dir, project_code=project_code,
-            est_item_id=est_item_id, rows=group,
-            out_dir=stakeholders_dir,
-        )
+        slug = est_item_id.split("/", 1)[1] if "/" in est_item_id else est_item_id
+        # Claim the filename BEFORE attempting the write (#197). `expected`
+        # drives the reap below, which deletes every file it does not name —
+        # so an element that fails to mirror must still be claimed, or the
+        # reap turns a transient write failure into deletion of the last good
+        # copy. Claim first, write second.
+        expected.add(f"{slug}.md")
+        # Per-element best-effort, matching the project loop above: one
+        # malformed element (e.g. the zero/two-live state a split-scope
+        # element produces, #198) must not abort the sweep and strand every
+        # LATER element in this company — which is exactly what happened to
+        # Infoblox, where one bad element left a sibling's mirror stale for
+        # 24 days and another's never written at all.
+        try:
+            write_authored_element(
+                project_dir, project_code=project_code,
+                est_item_id=est_item_id, rows=group,
+                out_dir=stakeholders_dir,
+            )
+        except Exception as exc:  # noqa: BLE001 — one bad element
+            failed += 1
+            logger.warning(
+                "account element mirror skipped for %s / %s: %s",
+                project_code, est_item_id, exc,
+            )
+            continue
         written += 1
         # Pre-promotion mirror file under this project's spine/_authored/ is
-        # now stale (the element moved up the scope ladder) — remove it.
-        slug = est_item_id.split("/", 1)[1] if "/" in est_item_id else est_item_id
-        expected.add(f"{slug}.md")
+        # now stale (the element moved up the scope ladder) — remove it. Only
+        # once the account-side write SUCCEEDED, so a failure never leaves the
+        # element with no file on either side.
         stale = project_dir / "spine" / "_authored" / f"{slug}.md"
         stale.unlink(missing_ok=True)
+    if failed:
+        logger.warning(
+            "account mirror for %s: %d element(s) skipped, %d written",
+            project_code, failed, written,
+        )
 
     # Reap (the mirror's other half): a file whose element left the account
     # scope — demoted back to its provenance project, or retired — must not

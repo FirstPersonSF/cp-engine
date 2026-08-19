@@ -1799,8 +1799,16 @@ def resolve_write_scope(client, project_code: str) -> dict[str, Any] | None:
 _ELEMENT_RESOLVE_COLUMNS = (
     "id, est_item_id, project_code, project_id, phase, binding, layer, "
     "placement, serves, version_label, version_date, status, framing, "
-    "sources, origin, important, note, scope"
+    "sources, origin, important, note, scope, company_id"
 )
+# `company_id` travels WITH `scope` (#198). An account-scoped element is
+# addressed by the pair — the account mirror and every sibling-project read
+# query `company_id=X AND scope='account'` — so carrying `scope` forward onto
+# a new version while dropping `company_id` produces a row that matches
+# NEITHER arm: invisible at account scope, and invisible to the project arm
+# too. That strands the live version and leaves the stale superseded row as
+# the only thing the account side can see. Select them together, carry them
+# together.
 
 
 def resolve_element_versions(
@@ -6037,7 +6045,9 @@ def add_spine_version(
         "rel_path": None,
         "important": bool(base.get("important", False)),
         "note": base.get("note"),
+        # Scope and company_id are a PAIR — see _ELEMENT_RESOLVE_COLUMNS (#198).
         "scope": base.get("scope"),
+        "company_id": base.get("company_id"),
         "author_id": subject,
     }
     try:
