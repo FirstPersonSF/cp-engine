@@ -892,6 +892,49 @@ def _resolve_project_id(client, project_code: str) -> str | None:
     return rows[0]["id"] if rows else None
 
 
+def project_sprint_identity(client, project_code: str) -> dict | None:
+    """The name + company facts cp-engine needs to NAME and SCAFFOLD a sprint
+    file for `project_code`, or None.
+
+    Two callers in `sprints.py` need this and neither has MC-2 access of its
+    own: `resolve_sprint_code` (turn a short code into the sprint-file stem)
+    and `_project_state_from_mc2` (scaffold a first-ever sprint file). Both
+    used to reach for `client.table("projects")` directly, which bypasses the
+    Tables registry — so the query lives here instead.
+
+    Returns ``{"full_job_name", "name", "company_code", "company_name"}``.
+    Resolution goes through `_resolve_project_id`, which already handles the
+    working-dir `<company>-<number>` form vs. `projects.code`'s
+    company-prefixed slug. Best-effort: any failure returns None.
+    """
+    if client is None:
+        return None
+    try:
+        project_id = _resolve_project_id(client, project_code)
+        if not project_id:
+            return None
+        row = (
+            client.table(Tables.PROJECTS)
+            .select("full_job_name, name, companies(code, name)")
+            .eq("id", project_id)
+            .limit(1)
+            .execute()
+        )
+        data = getattr(row, "data", None) or []
+        if not data:
+            return None
+        r = data[0]
+        company = r.get("companies") or {}
+        return {
+            "full_job_name": r.get("full_job_name"),
+            "name": r.get("name"),
+            "company_code": (company.get("code") or "").lower() or None,
+            "company_name": company.get("name"),
+        }
+    except Exception:  # noqa: BLE001 — never break an ingest over resolution
+        return None
+
+
 def _resolve_initiative_id(client, code: str) -> str | None:
     """Resolve an INITIATIVE slug code (`mission-control`, `storyos`) to its id.
 

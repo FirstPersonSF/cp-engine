@@ -970,7 +970,12 @@ _CP_LINK_RE = re.compile(
 )
 
 
-def resolve_sprint_code(sprints_root: Path, code: str) -> str:
+def resolve_sprint_code(
+    sprints_root: Path,
+    code: str,
+    *,
+    supabase: object | None = None,
+) -> str:
     """Map a project key to the sprint-file stem it actually writes to.
 
     Auto-ingest plans name projects however the model wrote them — often the
@@ -988,10 +993,20 @@ def resolve_sprint_code(sprints_root: Path, code: str) -> str:
       * an exact ``<code>.md`` in any sprint week wins outright;
       * otherwise a ``<code>-*.md`` prefix match, and ONLY when every week
         agrees on a single candidate stem;
+      * with a `supabase` client, a code matching NO sprint file falls back
+        to MC-2: resolve the project and slugify its `full_job_name`, which
+        is exactly how sync derives the stem. This is the NEW-PROJECT case —
+        a first meeting has no prior sprint file to match against, so the
+        on-disk branches above cannot see it, and that is precisely when
+        losing the plan hurts most (slt-5196 was created 2026-07-24 and its
+        first ingest failed the same day).
       * anything ambiguous (or unmatched) returns `code` unchanged, so the
         caller's existing missing-file path still reports the error.
 
-    Returns the resolved stem, never a path. Pure lookup, no writes.
+    Returns the resolved stem, never a path. Pure lookup, no writes. The
+    MC-2 fallback is best-effort: any failure returns `code` unchanged rather
+    than raising, because a resolution problem must never break an ingest
+    that would otherwise partially succeed.
     """
     if not sprints_root.is_dir():
         return code
@@ -1004,7 +1019,30 @@ def resolve_sprint_code(sprints_root: Path, code: str) -> str:
     }
     if len(candidates) == 1:
         return candidates.pop()
+    if supabase is not None:
+        resolved = _stem_from_mc2(supabase, code)
+        if resolved:
+            return resolved
     return code
+
+
+def _stem_from_mc2(client, code: str) -> str | None:
+    """The sprint-file stem MC-2 implies for `code`, or None.
+
+    Mirrors how sync names sprint files: `ProjectState.code` is
+    `slug_full_job_name(full_job_name)`. Initiatives keep their slug code
+    as-is and need no translation. Best-effort — returns None on any failure.
+    """
+    try:
+        from cp_engine.mc2_db import project_sprint_identity
+        from cp_engine.state import slug_full_job_name
+
+        identity = project_sprint_identity(client, code)
+        if not identity:
+            return None
+        return slug_full_job_name(identity.get("full_job_name")) or None
+    except Exception:  # noqa: BLE001 — never break an ingest over resolution
+        return None
 
 
 def scaffold_from_prior(
@@ -1012,6 +1050,7 @@ def scaffold_from_prior(
     tenant_root: Path,
     project_code: str,
     target_week_iso: str,
+    supabase: object | None = None,
 ) -> Path | None:
     """Create a sprint file for `target_week_iso` based on the most recent
     prior sprint file for the same project.
@@ -1022,9 +1061,14 @@ def scaffold_from_prior(
     sprint dir, which sync hasn't created yet). Rather than dropping the
     plan, race ahead of sync and scaffold the file.
 
-    Returns the created path. Returns ``None`` when no prior sprint file
-    exists for the project (first-ever-ingest edge case) — the caller
-    should fall back to logging the error.
+    With a `supabase` client, a project with NO prior sprint file anywhere
+    (a brand-new engagement's first meeting) is scaffolded from MC-2 instead
+    of returning None. That case used to drop the plan outright, and it is
+    the worst time to lose one: slt-5196 was created 2026-07-24 and its very
+    first ingest failed the same day.
+
+    Returns the created path, or ``None`` when the project cannot be
+    resolved at all — the caller then logs the error.
     """
     sprints_root = tenant_root / "sprints"
     if not sprints_root.is_dir():
@@ -1033,19 +1077,26 @@ def scaffold_from_prior(
     # A short-code caller (e.g. "slt-5196" for
     # "slt-5196-brand-campaign-26") would otherwise find no prior week and
     # return None, which is how execute_plan came to drop whole plans.
-    project_code = resolve_sprint_code(sprints_root, project_code)
+    project_code = resolve_sprint_code(
+        sprints_root, project_code, supabase=supabase
+    )
     prior_weeks = sorted(
         (p.parent.name for p in sprints_root.glob(f"*/{project_code}.md")),
         reverse=True,
     )
     prior_weeks = [w for w in prior_weeks if w < target_week_iso]
-    if not prior_weeks:
-        return None
 
-    prior_week = prior_weeks[0]
-    prior_path = sprints_root / prior_week / f"{project_code}.md"
-
-    project = _project_state_from_sprint_file(prior_path, project_code)
+    if prior_weeks:
+        prior_week = prior_weeks[0]
+        prior_path = sprints_root / prior_week / f"{project_code}.md"
+        project = _project_state_from_sprint_file(prior_path, project_code)
+        cf = compute_carry_forward(prior_path)
+    else:
+        # First-ever ingest: nothing on disk to copy from. Build a minimal
+        # ProjectState from MC-2 rather than dropping the plan.
+        prior_week = None
+        project = _project_state_from_mc2(supabase, project_code)
+        cf = CarryForward(asks=(), risks=(), horizon=())
     if project is None:
         return None
 
@@ -1053,8 +1104,6 @@ def scaffold_from_prior(
     week_start = week_start_date.isoformat()
     week_end = week_end_date.isoformat()
     week_label = f"W{target_week_iso.split('-W')[1]}"
-
-    cf = compute_carry_forward(prior_path)
 
     new_body = render_sprint_scaffold(
         project=project,
@@ -1078,6 +1127,42 @@ def scaffold_from_prior(
     target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_text(new_body)
     return target_path
+
+
+def _project_state_from_mc2(client, project_code: str) -> "ProjectState | None":
+    """A minimal ProjectState for a project with no sprint file yet.
+
+    Only what the scaffold renderer needs: code, name, and company context
+    for the CP navigation link. Everything else is left empty — sync fills
+    the real values on its next pass, and the point here is to have SOMEWHERE
+    to write the meeting's content now rather than drop it.
+
+    Best-effort: returns None on any failure, so the caller reports the
+    missing-file error exactly as before.
+    """
+    try:
+        from cp_engine.mc2_db import project_sprint_identity
+
+        identity = project_sprint_identity(client, project_code)
+        if not identity:
+            return None
+        return ProjectState(
+            code=project_code,
+            name=identity.get("full_job_name")
+            or identity.get("name")
+            or project_code,
+            source="engagement",
+            company_kind="client",
+            company_code=identity.get("company_code"),
+            company_name=identity.get("company_name"),
+            status=None,
+            is_internal=False,
+            owner=None,
+            last_touched=None,
+            deadline=None,
+        )
+    except Exception:  # noqa: BLE001 — never break an ingest over resolution
+        return None
 
 
 def _iso_week_dates(week_iso: str) -> tuple[date, date]:

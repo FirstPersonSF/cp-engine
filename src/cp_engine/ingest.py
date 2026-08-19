@@ -321,7 +321,9 @@ def execute_plan(
         # missing-file error below still fires. See resolve_sprint_code.
         from cp_engine.sprints import resolve_sprint_code
 
-        code = resolve_sprint_code(tenant_root / "sprints", plan_code)
+        code = resolve_sprint_code(
+            tenant_root / "sprints", plan_code, supabase=supabase
+        )
         sprint_path = tenant_root / "sprints" / week_iso / f"{code}.md"
         if not sprint_path.exists():
             # v0.13.0: race ahead of sync. The most common cause of "missing
@@ -337,6 +339,7 @@ def execute_plan(
                 tenant_root=tenant_root,
                 project_code=code,
                 target_week_iso=week_iso,
+                supabase=supabase,
             )
             if scaffolded is None:
                 seen_as = (
