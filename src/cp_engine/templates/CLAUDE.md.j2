@@ -43,54 +43,6 @@ and Closed-recent collapse to `<details>` blocks; Archived items drop off.
 initiatives are the proper home for internal work and surface as first-class
 top-level items.
 
-## Working tree layout (v0.7+)
-
-```
-<tenant root>/
-├── master-cp.md                          ← index across everything
-├── weekly-cp.md                          ← tenant-wide partners' review surface
-│
-├── 1p/<company>/<code>/cp.md             ← client engagements, nested by company
-│   └── infoblox/
-│       ├── cp.md                         ← company-level CP + shared dirs
-│       ├── ibx-5153-ai-campaign/cp.md
-│       ├── ibx-5192-platform-sales-readiness-summit/cp.md
-│       └── inactive/<code>/              ← closed/archived engagements
-│
-├── firstpersonsf/                        ← First Person internal (flat: no company level)
-│   ├── mission-control/cp.md             ← initiative (slug code, no number)
-│   │   ├── _repo-mc-2.md                 ← linked repos surface here
-│   │   └── _repo-cp-engine.md
-│   ├── first-person-website/cp.md
-│   ├── first-person-sales/cp.md
-│   ├── market-scorecard/cp.md
-│   ├── 1p-component-library/cp.md        ← standalone repo
-│   └── inactive/<code>/
-│
-├── canonic/                              ← Canonic internal (same shape)
-│   ├── storyos/cp.md
-│   │   └── _repo-unf-forge.md
-│   └── icp-personas/cp.md                ← standalone repo
-│
-└── sprints/<YYYY-W##>/                   ← per-sprint working files
-    ├── <code>.md                          ← one per active engagement/initiative
-    ├── _week.md                           ← tenant-wide weekly cross-references
-    └── _ingest-log/                       ← auto-ingest audit log
-```
-
-**Initiative-linked repos** surface as `_repo-<name>.md` files under their
-initiative's working dir, not as separate top-level dirs. A repo dual-linked to
-both an engagement and an initiative appears in both places.
-
-**Inactive items** (status changed, archived, marked internal) move to an
-`inactive/<code>/` dir beside their live siblings. They flip back to live
-automatically if the row re-enters sync's view; nothing is destroyed.
-
-Each working dir is a place for *everything* related to that item: the `cp.md`
-itself, optional `_dropbox.md` link to media, plus any hand-added text artifacts
-(transcripts, syntheses, action items). Binary content lives in Dropbox per
-`.gitignore`.
-
 ## How meetings get into the tree
 
 Fathom meetings flow into per-sprint files via four assignment shapes from the
@@ -129,31 +81,6 @@ Cross-cutting content lives in `weekly-cp.md`:
 
 Sync never overwrites `weekly-cp.md` (almost entirely human territory plus
 auto-appended bullets). Word-count discipline applies.
-
-## Sprint files
-
-Each active engagement OR initiative has a per-sprint working file at
-`sprints/<YYYY-W##>/<code>.md`. The file scaffolds itself on first sync of the
-week.
-
-**Engagement sprint files** carry a `## Client communication` section with
-subsections: `Outbound`, `Inbound`, `Open asks`, `Slack digest`, `Stakeholders`.
-
-**Initiative sprint files** carry a `## Team communication` section instead,
-with `Open asks` and `Slack digest` only (no Outbound/Inbound/Stakeholders since
-there's no client side).
-
-Both types share:
-
-- `## Where it stands` (engine-managed)
-- `## Carried over from <prior-W##>` (engine-managed)
-- `## Dependencies & risks`
-- `## This sprint` (Allocation, Deliverables, Definition of done)
-- `## Horizon — 4–8 weeks out` (Milestones, Decisions due, Opportunities)
-- `## Meeting notes & decisions` (Decisions, Discussion notes)
-
-The auto-ingest verbs auto-detect which section to write into based on which
-header the file uses, so the same ingest plan works for both shapes.
 
 ## Local-link traversal (v0.5+)
 
@@ -284,7 +211,7 @@ about.
 | `also load <code>` | additive | Layer that project's `cp.md` onto the current mode. |
 | `switch to <code>` | replace → 2 | Discard previous mode; load that project's `cp.md`. |
 | `deepen from transcript` | (during weekly review) | Begin deepening pass. |
-| `wrap up` | (during weekly review) | Finalize: author each touched project's Exec Summary, word-count checks, improvements-log sweep, master-CP roll-up, commit, push. |
+| `wrap up` | any | Close out the session — **run `/cp-wrapup`**, which carries the full ritual (Exec Summaries, decision + commitment sweeps, spine and word-count checks, commit, push). Also closes a `run weekly review` block. |
 | `rotate the CP` | any | Manually trigger archive rotation on the focused CP. |
 | `sweep improvements` | any | Harvest `improvements.md`: cluster entries, propose issues. |
 
@@ -335,58 +262,6 @@ auto-ingest webhook handles per-project routing + the tenant-wide
 summary in `weekly-cp.md`'s `## Account summaries`. Don't hand-write
 per-project bullets when auto-ingest is available.
 
-## Authoring the Exec Summary at wrap up
-
-Each project `cp.md` carries a model-authored `## Exec Summary` region
-(between `<!-- cp-engine:start exec-summary -->` and
-`<!-- cp-engine:end exec-summary -->`) with six fields — **Objective /
-Status / Where it stands / Next up / Blockers / Updates** — plus a
-`**Last session:**` line. **You author the six fields; the engine does
-not.** The engine only scaffolds the region, migrates the old Quick
-Resume into it on `cp sync`, and reads it for `/cp-prep`.
-
-**Exception: the `**Last session:**` line is DERIVED, not authored** —
-a projection of the newest file under `sessions/`, recomputed by
-`cp capture-session` and re-converged on every `cp sync`. Don't
-hand-edit it; on a merge conflict keep either side and run `cp sync` —
-it self-heals. Auto-ingest never writes project `cp.md` state —
-per-meeting truth lands in the sprint file; you refresh the Exec
-Summary at `wrap up`.
-
-At `wrap up`, for **each project the session touched**, refresh its Exec
-Summary by editing directly between the `exec-summary` markers (Edit
-tool). It's a **merge, not a regenerate** — a session that touched one
-aspect must not wipe the rest:
-
-1. **Read the prior Exec Summary** — its six fields and the full Updates
-   history.
-2. **Read this session's changes** — the sprint-file edits, spine
-   updates, and any recent meeting ingests for this project.
-3. **Rewrite the six fields against current reality**, carrying forward
-   everything that's still true and revising only what changed.
-4. **Append ONE dated Update** capturing this session's delta:
-   `- <today> — <what changed>`.
-5. **Roll off Updates older than ~4 weeks** so the history stays tight.
-6. **Stamp `· updated <today>`** on the `## Exec Summary` heading line —
-   `/cp-prep` flags an unstamped or old summary as STALE in the
-   planning bundle.
-
-This is the durable project-state surface; transient weekly material
-belongs in the sprint file, not the Exec Summary.
-
-**Also at wrap up — sweep `weekly-cp.md`'s cross-cutting decisions.**
-`## Decisions (cross-cutting, last 4 weeks)` accretes auto-ingested
-entries that nothing expires, and feeds sprint planning. Once per wrap
-up: append `[resolved: <today> — <outcome>]` to entries that are done or
-expired (decision made, event passed, date behind us) so the planner
-drops them; ask when the outcome isn't obvious. Never delete — the
-resolved marker IS the archive.
-
-**Also at wrap up — sweep the touched projects' open commitments.**
-`cp commitments-sweep <code>` per touched project: resolve what the
-session completed, drop what it made moot, question undated rows ≥2
-weeks old — the TTL expires them otherwise.
-
 ## Deepening from transcript
 
 During `deepen from transcript`, write meeting notes, decisions, new client
@@ -395,31 +270,8 @@ sections. Engine-managed regions inside the sprint file (`sprint-facts`,
 `where-it-stands`, `carry-forward`) MUST NOT be edited — sync owns them.
 
 Project `cp.md` still receives durable updates — the **Exec Summary**
-(authored at `wrap up`, above), plus Project Notes and Stakeholders;
-transient weekly material belongs in the sprint file.
-
-`wrap up` extends to commit the entire `sprints/<YYYY-W##>/` directory alongside
-the master roll-up and to run word-count discipline on each sprint file.
-
-## Proposing journey steps at wrap up
-
-Spine content-writes journal themselves (one review-gated auto-step per
-element per day). Hand-propose a step (`propose_spine_step`) only for a
-move the auto-step doesn't capture, ≤2 per session; authoring runs on
-`cp-hosted`, so the write carries your identity. Full discipline:
-`/cp-tools`.
-
-## Word-count discipline
-
-Per bootstrap v2:
-- >2,500 words on a CP file → duplication audit on next wrap-up
-- >3,500 words → archive rotation forced before commit
-
-The engine enforces both checks during `cp render` and `wrap up`.
-
-**Exempt:** per-meeting artifacts under any `meetings/` directory
-(fixed per-meeting records — synthesis + verbatim transcript —
-legitimately long); do not audit or rotate them.
+(authored at `wrap up`; run `/cp-wrapup`), plus Project Notes and
+Stakeholders; transient weekly material belongs in the sprint file.
 
 ## Improvements log
 
@@ -429,20 +281,6 @@ of friction**: `- <date> · \`area\` — <observation>`. Full protocol
 lives in that file's header. Real bugs still go to GitHub issues; never
 delete entries. `wrap up` sweeps for unlogged friction;
 `sweep improvements` harvests.
-
-## Spine checks at wrap up
-
-Alongside word-count discipline, for each project touched:
-
-`cp spine-lint <code>` — WARN-ONLY: important-yet-unbound elements,
-Agreements missing their source (close via `add_element_source` on
-`cp-hosted`), scaffold placeholders in `cp.md`. Surface findings; fix
-only what the user confirms.
-
-`cp seal-sweep <code>` — for each deliverable that shipped a version,
-what fed it plus the `seal_to_deliverable` call. Absorbing a round's
-inputs keeps the spine distilled. Read its output carefully:
-`/cp-tools`.
 
 ## After a cp-engine release: restart `cp mcp`
 

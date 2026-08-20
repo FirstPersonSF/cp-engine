@@ -14,6 +14,7 @@ from cp_engine.claude_settings import (
     _MCP_SERVER_NAME,
     install_into_tenant,
     merge_mcp_config,
+    merge_permissions,
     merge_settings,
 )
 
@@ -61,8 +62,14 @@ def test_merge_preserves_tenant_hooks():
         for h in e["hooks"]
     ]
     assert "echo tenant-own" in cmds
-    # unrelated sections + keys untouched
-    assert merged["hooks"]["PreToolUse"] == tenant["hooks"]["PreToolUse"]
+    # the tenant's own PreToolUse entry survives, first and unmodified; the
+    # engine's region guard (#205) is appended after it, never in place of it
+    pre_tool = merged["hooks"]["PreToolUse"]
+    assert pre_tool[0] == tenant["hooks"]["PreToolUse"][0]
+    guard_cmds = [
+        h["command"] for e in pre_tool for h in e["hooks"]
+    ]
+    assert any("guard-engine-regions.py" in c for c in guard_cmds)
     assert merged["someOtherKey"] == {"keep": "me"}
     # exactly one engine entry
     assert len(_engine_entries(merged)) == 1
@@ -181,5 +188,50 @@ def test_install_preserves_existing_tenant_settings_on_disk(tmp_path: Path):
     )
     install_into_tenant(tmp_path)
     data = json.loads((claude / "settings.json").read_text())
-    assert data["permissions"] == {"allow": ["Bash(ls:*)"]}
+    # the tenant's allow list is untouched; the engine only ADDS its own
+    # credential deny rules (#205), never rewrites what the tenant wrote
+    assert data["permissions"]["allow"] == ["Bash(ls:*)"]
+    assert "Read(**/.env)" in data["permissions"]["deny"]
     assert len(_engine_entries(data)) == 1
+
+
+# ── permissions.deny (#205) ───────────────────────────────────────────
+# The deny list is a flat array of strings with nowhere to hang a sentinel,
+# so _ENGINE_DENY_RULES itself is the engine's claim. That makes
+# additive-only behavior the property to protect: a re-sync must never
+# remove or reorder a rule the tenant wrote.
+
+
+def test_deny_rules_are_added_to_an_empty_file():
+    merged, changed = merge_permissions(None)
+    assert changed is True
+    assert "Read(**/.env)" in merged["permissions"]["deny"]
+
+
+def test_deny_merge_is_idempotent():
+    merged, _ = merge_permissions(None)
+    again, changed = merge_permissions(merged)
+    assert changed is False
+    assert again["permissions"]["deny"] == merged["permissions"]["deny"]
+
+
+def test_deny_merge_preserves_tenant_rules_and_order():
+    tenant = {
+        "permissions": {
+            "deny": ["Read(**/my-secret)"],
+            "allow": ["Bash(uv run *)"],
+        },
+        "model": "keep-me",
+    }
+    merged, changed = merge_permissions(tenant)
+    assert changed is True
+    # tenant's rule stays first; engine rules append after it
+    assert merged["permissions"]["deny"][0] == "Read(**/my-secret)"
+    assert merged["permissions"]["allow"] == ["Bash(uv run *)"]
+    assert merged["model"] == "keep-me"
+
+
+def test_deny_merge_does_not_mutate_its_input():
+    tenant = {"permissions": {"deny": ["Read(**/mine)"]}}
+    merge_permissions(tenant)
+    assert tenant["permissions"]["deny"] == ["Read(**/mine)"]

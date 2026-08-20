@@ -99,6 +99,10 @@ def render() -> None:
         config = load(Path.cwd())
         for warning in _exec_summary_warnings(config.root):
             click.echo(warning, err=True)
+        from cp_engine.word_count_lint import word_count_warnings
+
+        for warning in word_count_warnings(config.root):
+            click.echo(warning, err=True)
     except Exception:  # noqa: BLE001 — advisory pass, never fail a render
         pass
 
