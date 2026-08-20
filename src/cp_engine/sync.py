@@ -1858,6 +1858,31 @@ def _project_parent_dirs(tenant_root: Path, scope: str) -> list[Path]:
     return parents
 
 
+# Engagement codes: `<letters>-<4+ digits>` (`ggl-5168`, `ibx-5153`). The
+# 4-digit floor is what separates them from repo slugs ending in a short
+# number (`mc-2`), which must NOT be treated as prefix-matchable.
+_ENGAGEMENT_CODE_RE = re.compile(r"[a-z0-9]+-\d{4,}")
+
+
+def _code_takes_slug(code: str) -> bool:
+    """True if `code` can appear as `<code>-<slug>` on a working dir.
+
+    Engagement codes are `<prefix>-<digits>` (`ggl-5168`) and their dirs
+    carry a name tail (`ggl-5168-activation`). Initiative and repo codes
+    are ALREADY the full slug (`mission-control`, `cp`, `storyos`) — a dir
+    for them is named exactly the code, never `<code>-<something>`.
+
+    The distinction matters because a prefix match on a slug-form code is
+    unsound: it makes `cp` claim `cp-engine/`, `cp-context-protocol/`, and
+    anything else starting `cp-` (#207).
+
+    Engagement job numbers are 4+ digits, which keeps repo slugs that end
+    in a short number — `mc-2` most importantly — on the slug side where
+    they belong.
+    """
+    return bool(_ENGAGEMENT_CODE_RE.fullmatch(code))
+
+
 def _dir_code(name: str) -> str:
     """Extract the project code from a working-dir name.
 
@@ -2128,8 +2153,18 @@ def _deactivate_stale_cps(
 
                 # Fallback: a dir is "live" if its name matches a known
                 # live project code in either form (bare or `<code>-<slug>`).
+                #
+                # The `<code>-<slug>` form is ONLY valid for codes that can
+                # carry a slug tail — engagement codes (`ggl-5168` →
+                # `ggl-5168-activation`). A repo/initiative code is already
+                # the full slug (`cp`, `storyos`), so accepting a prefix
+                # match there makes one dir shield every dir that merely
+                # starts with its name: live code `cp` kept the orphaned
+                # `cp-engine/` dir alive for 14 weeks, because
+                # `"cp-engine".startswith("cp-")` (#207).
                 if any(
-                    path.name == code or path.name.startswith(f"{code}-")
+                    path.name == code
+                    or (_code_takes_slug(code) and path.name.startswith(f"{code}-"))
                     for code in live_codes
                 ):
                     continue

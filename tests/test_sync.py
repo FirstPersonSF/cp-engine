@@ -2732,3 +2732,65 @@ def test_drift_rename_with_no_sprint_files_is_fine(tmp_path: Path) -> None:
 
     assert (tmp_path / "1p" / "google" / "ggl-5177-new").exists()
     assert not (tmp_path / "1p" / "google" / "ggl-5177-old").exists()
+
+
+# ── #207: a slug-form code must not prefix-shield its neighbours ──────
+
+
+def test_code_takes_slug_distinguishes_engagements_from_repo_slugs():
+    from cp_engine.sync import _code_takes_slug
+
+    # Engagement codes carry a name tail on their dir: ggl-5168-activation
+    for code in ("ggl-5168", "ibx-5153", "sap-5174", "slt-5196"):
+        assert _code_takes_slug(code), code
+
+    # Initiative/repo codes ARE the full slug — the dir is named exactly
+    # the code. `mc-2` is the one that makes a naive isdigit() check wrong.
+    for code in (
+        "cp",
+        "cp-engine",
+        "mc-2",
+        "storyos",
+        "mission-control",
+        "unf-forge",
+        "1p-component-library",
+    ):
+        assert not _code_takes_slug(code), code
+
+
+def test_stale_repo_dir_is_not_shielded_by_a_shorter_live_code(tmp_path):
+    """`cp` must not keep `cp-engine/` alive just by being its prefix.
+
+    The real #207: cp-engine is an initiative-linked repo (no top-level
+    dir of its own), but the orphan dir survived 14 weeks of syncs because
+    the live repo code `cp` prefix-matched it.
+    """
+    from cp_engine.sync import _deactivate_stale_cps
+
+    scope = tmp_path / "firstpersonsf"
+    for name in ("cp", "cp-engine"):
+        d = scope / name
+        d.mkdir(parents=True)
+        (d / "cp.md").write_text("# no MC-id stamp\n")
+
+    # Only `cp` is live.
+    moved = _deactivate_stale_cps(tmp_path, {("firstpersonsf", "cp", "")})
+
+    assert (scope / "cp").is_dir(), "the live dir must stay"
+    assert not (scope / "cp-engine").exists(), "the orphan must be reaped"
+    assert scope / "inactive" / "cp-engine" in moved
+
+
+def test_engagement_slug_dirs_still_match_their_code(tmp_path):
+    """The `<code>-<slug>` fallback must keep working for engagements."""
+    from cp_engine.sync import _deactivate_stale_cps
+
+    parent = tmp_path / "1p" / "google"
+    d = parent / "ggl-5168-activation"
+    d.mkdir(parents=True)
+    (d / "cp.md").write_text("# no stamp\n")
+
+    moved = _deactivate_stale_cps(tmp_path, {("1p/google", "ggl-5168", "")})
+
+    assert d.is_dir(), "an engagement's slugged dir must not be reaped"
+    assert moved == []
