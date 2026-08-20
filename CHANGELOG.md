@@ -4,6 +4,29 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.101.6 — 2026-08-20
+
+- **A stale working dir survived 14 weeks of syncs because a shorter live
+  code prefix-matched it (#207).** `firstpersonsf/cp-engine/` sat frozen at
+  W19 — no exec-summary region, presenting months-old state as current, one
+  directory away from the live `_repo-cp-engine.md` it had been superseded
+  by. `_deactivate_stale_cps` ran on every sync and declined to move it.
+
+  The sweep keeps a dir whose name matches a live code in bare (`<code>`) or
+  slugged (`<code>-<slug>`) form. The slugged form is only meaningful for
+  engagement codes — `ggl-5168` → `ggl-5168-activation`. Repo and initiative
+  codes ARE already the full slug, so a prefix match there is unsound: the
+  live repo code `cp` matched `"cp-engine".startswith("cp-")` and shielded
+  the orphan indefinitely.
+
+  `_code_takes_slug()` now gates the prefix branch on the engagement-code
+  shape `<letters>-<4+ digits>`. The digit floor is load-bearing: a plain
+  `tail.isdigit()` classifies `mc-2` as an engagement code and would
+  recreate the same bug one repo over.
+
+  Note this also corrects the issue's own framing — filed as "nothing reaps
+  orphan dirs", when in fact the reaper existed and had a hole in it.
+
 ## v0.101.5 — 2026-08-20
 
 - **The region guard blocked the one region it was never meant to guard
