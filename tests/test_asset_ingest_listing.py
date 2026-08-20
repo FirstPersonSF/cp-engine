@@ -685,3 +685,71 @@ def test_list_dropbox_paginates_has_more() -> None:
     assert {f.name for f in out} == {"p1.pdf", "p2.pdf"}
     # The cursor was drained exactly once (one continue call for the 2nd page).
     assert len(dropbox.dbx.continue_calls) == 1
+
+
+# ── #201: a standalone repo is an expected None, not a dangling reference ──
+
+
+class _KindedFakeClient:
+    """Serves different rows per table, so the three-kind resolution order
+    (projects → initiatives → repos) can be exercised independently."""
+
+    def __init__(self, projects=(), initiatives=(), repos=()):
+        self._by_table = {
+            "projects": list(projects),
+            "initiatives": list(initiatives),
+            "repos": list(repos),
+            "project_integrations": [],
+        }
+        self.tables_hit: list = []
+
+    def table(self, name):
+        self.tables_hit.append(name)
+        return _FakeQuery(self._by_table.get(name, []), {})
+
+
+def test_standalone_repo_resolves_to_none_quietly(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The tenant's four standalone repos (cp, cp-engine's siblings…) carry an
+    MC-id like any other working dir, but have no Drive/Dropbox binding and
+    cannot have one. None is right; the stderr line was not."""
+    client = _KindedFakeClient(repos=[{"id": "repo-uuid"}])
+    assert resolve_project_folders_by_id(client, "repo-uuid") is None
+    assert capsys.readouterr().err == "", "a known standalone repo must not warn"
+
+
+def test_genuinely_missing_id_still_warns(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The quiet path must not swallow a real dangling reference."""
+    client = _KindedFakeClient()  # matches nothing, anywhere
+    assert resolve_project_folders_by_id(client, "ghost-id") is None
+    assert "no MC-2 project or initiative with id=ghost-id" in capsys.readouterr().err
+
+
+def test_repos_is_checked_only_after_projects_and_initiatives(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Resolution order matters: a project id must never pay for a repos
+    lookup, and an initiative must still win before repos is consulted."""
+    client = _KindedFakeClient(initiatives=[{"id": "init-uuid", "company_id": "co"}])
+    folders = resolve_project_folders_by_id(client, "init-uuid")
+    assert folders is not None and folders.is_initiative
+    assert "repos" not in client.tables_hit
+
+
+def test_repo_lookup_failure_falls_back_to_the_warning(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Best-effort: if the repos probe itself fails, surface the original miss
+    rather than silently swallowing an id that may be genuinely dangling."""
+
+    class _Boom(_KindedFakeClient):
+        def table(self, name):
+            if name == "repos":
+                raise RuntimeError("repos table unavailable")
+            return super().table(name)
+
+    assert resolve_project_folders_by_id(_Boom(), "unknown-id") is None
+    assert "no MC-2 project or initiative" in capsys.readouterr().err

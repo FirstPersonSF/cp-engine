@@ -310,6 +310,31 @@ def _initiative_row_to_folders(row: dict) -> ProjectFolders:
     )
 
 
+def _is_standalone_repo(client, mc_id: str) -> bool:
+    """True when `mc_id` is a `repos.id` (#201).
+
+    Standalone repos are the tenant's third kind of trackable item, alongside
+    engagements and initiatives, and they carry an `MC-id` in their `cp.md`
+    exactly like the other two. They have no Drive/Dropbox binding — the
+    bindings table has no repo column — so they are never an asset-ingest
+    target; this exists only to tell "not an ingest target" apart from "id
+    matches nothing", which the caller cannot otherwise distinguish.
+
+    Best-effort: any lookup failure returns False, which falls through to the
+    original miss message rather than silencing a genuine dangling reference.
+    """
+    try:
+        return bool(
+            client.table(Tables.REPOS)
+            .select("id")
+            .eq("id", mc_id)
+            .execute()
+            .data
+        )
+    except Exception:  # noqa: BLE001 — never let the quiet-path check raise
+        return False
+
+
 def resolve_project_folders_by_id(
     client, mc_project_id: str
 ) -> ProjectFolders | None:
@@ -324,6 +349,17 @@ def resolve_project_folders_by_id(
     On a `projects.id` miss, falls back to the `initiatives` table by id
     (mc-2 #192) — the initiative workspace's button passes `initiatives.id`
     through the same field. Returns None when neither table matches.
+
+    THIRD KIND (#201): a `repos.id` is also a legitimate `MC-id`. The tenant
+    tracks standalone repos — repos linked to neither an engagement nor an
+    initiative — as first-class working dirs with their own `cp.md`, so sync
+    hands their ids to this resolver like any other. A standalone repo has no
+    Drive or Dropbox binding and cannot have one (`project_integrations` has
+    only `project_id` and `initiative_id` columns), so it is not an ingest
+    target and `None` is the correct answer — but it is an EXPECTED None, not
+    a dangling reference. Recognising the id lets us return quietly instead of
+    printing a "no MC-2 project or initiative" line to stderr on every sync
+    for all four standalone repos, which read as errors and were not.
     """
     rows = (
         client.table(Tables.PROJECTS)
@@ -346,6 +382,10 @@ def resolve_project_folders_by_id(
             return _initiative_row_to_folders(
                 _hydrate_initiative(client, init_rows[0])
             )
+        # A standalone repo (#201): a real row, just not an ingest target.
+        # Checked BEFORE the miss message so an expected None stays quiet.
+        if _is_standalone_repo(client, mc_project_id):
+            return None
         print(
             f"[asset-ingest] no MC-2 project or initiative with "
             f"id={mc_project_id}",
