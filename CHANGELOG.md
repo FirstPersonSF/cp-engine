@@ -4,6 +4,24 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.101.5 — 2026-08-20
+
+- **The region guard blocked the one region it was never meant to guard
+  (#205 follow-up).** v0.101.4 shipped the `PreToolUse` guard and the
+  `/cp-wrapup` skill in the same release, and they contradicted each other.
+  The guard treated every `cp-engine:start/end` region as engine-owned;
+  `exec-summary` is the deliberate exception — the engine scaffolds it,
+  migrates the old Quick Resume into it, and reads it for `/cp-prep`, but the
+  six fields are authored at wrap up. The skill's step 1 says "Edit directly
+  between the `exec-summary` markers"; the guard blocked exactly that.
+
+  Caught the same day by running the skill: the first real wrap up after
+  release failed on its own first instruction. The exemption now lives in
+  `_regions()` rather than at each call site, so Edit, MultiEdit, and Write's
+  region-preservation check honor it identically. Verified not otherwise
+  weakened — other regions still block, and a `Write` that drops a guarded
+  region still blocks even when `exec-summary` survives.
+
 ## v0.101.4 — 2026-08-20
 
 - **The resident layer stated rules that nothing enforced (#203, #204, #205).**
