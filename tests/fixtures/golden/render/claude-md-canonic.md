@@ -43,54 +43,6 @@ and Closed-recent collapse to `<details>` blocks; Archived items drop off.
 initiatives are the proper home for internal work and surface as first-class
 top-level items.
 
-## Working tree layout (v0.7+)
-
-```
-<tenant root>/
-├── master-cp.md                          ← index across everything
-├── weekly-cp.md                          ← tenant-wide partners' review surface
-│
-├── 1p/<company>/<code>/cp.md             ← client engagements, nested by company
-│   └── infoblox/
-│       ├── cp.md                         ← company-level CP + shared dirs
-│       ├── ibx-5153-ai-campaign/cp.md
-│       ├── ibx-5192-platform-sales-readiness-summit/cp.md
-│       └── inactive/<code>/              ← closed/archived engagements
-│
-├── firstpersonsf/                        ← First Person internal (flat: no company level)
-│   ├── mission-control/cp.md             ← initiative (slug code, no number)
-│   │   ├── _repo-mc-2.md                 ← linked repos surface here
-│   │   └── _repo-cp-engine.md
-│   ├── first-person-website/cp.md
-│   ├── first-person-sales/cp.md
-│   ├── market-scorecard/cp.md
-│   ├── 1p-component-library/cp.md        ← standalone repo
-│   └── inactive/<code>/
-│
-├── canonic/                              ← Canonic internal (same shape)
-│   ├── storyos/cp.md
-│   │   └── _repo-unf-forge.md
-│   └── icp-personas/cp.md                ← standalone repo
-│
-└── sprints/<YYYY-W##>/                   ← per-sprint working files
-    ├── <code>.md                          ← one per active engagement/initiative
-    ├── _week.md                           ← tenant-wide weekly cross-references
-    └── _ingest-log/                       ← auto-ingest audit log
-```
-
-**Initiative-linked repos** surface as `_repo-<name>.md` files under their
-initiative's working dir, not as separate top-level dirs. A repo dual-linked to
-both an engagement and an initiative appears in both places.
-
-**Inactive items** (status changed, archived, marked internal) move to an
-`inactive/<code>/` dir beside their live siblings. They flip back to live
-automatically if the row re-enters sync's view; nothing is destroyed.
-
-Each working dir is a place for *everything* related to that item: the `cp.md`
-itself, optional `_dropbox.md` link to media, plus any hand-added text artifacts
-(transcripts, syntheses, action items). Binary content lives in Dropbox per
-`.gitignore`.
-
 ## How meetings get into the tree
 
 Fathom meetings flow into per-sprint files via four assignment shapes from the
@@ -129,31 +81,6 @@ Cross-cutting content lives in `weekly-cp.md`:
 
 Sync never overwrites `weekly-cp.md` (almost entirely human territory plus
 auto-appended bullets). Word-count discipline applies.
-
-## Sprint files
-
-Each active engagement OR initiative has a per-sprint working file at
-`sprints/<YYYY-W##>/<code>.md`. The file scaffolds itself on first sync of the
-week.
-
-**Engagement sprint files** carry a `## Client communication` section with
-subsections: `Outbound`, `Inbound`, `Open asks`, `Slack digest`, `Stakeholders`.
-
-**Initiative sprint files** carry a `## Team communication` section instead,
-with `Open asks` and `Slack digest` only (no Outbound/Inbound/Stakeholders since
-there's no client side).
-
-Both types share:
-
-- `## Where it stands` (engine-managed)
-- `## Carried over from <prior-W##>` (engine-managed)
-- `## Dependencies & risks`
-- `## This sprint` (Allocation, Deliverables, Definition of done)
-- `## Horizon — 4–8 weeks out` (Milestones, Decisions due, Opportunities)
-- `## Meeting notes & decisions` (Decisions, Discussion notes)
-
-The auto-ingest verbs auto-detect which section to write into based on which
-header the file uses, so the same ingest plan works for both shapes.
 
 ## Local-link traversal (v0.5+)
 
@@ -409,11 +336,14 @@ Per bootstrap v2:
 - >2,500 words on a CP file → duplication audit on next wrap-up
 - >3,500 words → archive rotation forced before commit
 
-The engine enforces both checks during `cp render` and `wrap up`.
+`cp render` warns on both thresholds (warn-only — it never blocks a
+commit and never edits). Acting on the warning is yours: the audit and
+the rotation are manual.
 
 **Exempt:** per-meeting artifacts under any `meetings/` directory
 (fixed per-meeting records — synthesis + verbatim transcript —
-legitimately long); do not audit or rotate them.
+legitimately long) and `spine/Retrospective/meeting-history.md`; do not
+audit or rotate them.
 
 ## Improvements log
 

@@ -36,6 +36,12 @@ _HOOK_SENTINEL = "check-cp-engine-version.py"
 
 _HOOK_SCRIPT_NAME = "check-cp-engine-version.py"
 
+# PreToolUse guard for engine-managed regions (#205). Same distribution
+# discipline as the version hook: packaged under src/cp_engine/hooks/,
+# copied into the tenant on sync, recognized by its own sentinel.
+_GUARD_SENTINEL = "guard-engine-regions.py"
+_GUARD_SCRIPT_NAME = "guard-engine-regions.py"
+
 # The command Claude Code runs for the SessionStart hook. $CLAUDE_PROJECT_DIR
 # is expanded by Claude Code to the tenant root, so the path is portable
 # across machines and users.
@@ -44,9 +50,32 @@ _HOOK_COMMAND = (
 )
 
 
-def _packaged_hook_source() -> str:
-    """Return the text of the packaged hook script."""
-    return (resources.files("cp_engine") / "hooks" / _HOOK_SCRIPT_NAME).read_text()
+def _packaged_hook_source(name: str = _HOOK_SCRIPT_NAME) -> str:
+    """Return the text of a packaged hook script."""
+    return (resources.files("cp_engine") / "hooks" / name).read_text()
+
+
+_GUARD_COMMAND = (
+    'python3 "$CLAUDE_PROJECT_DIR/.claude/hooks/' + _GUARD_SCRIPT_NAME + '"'
+)
+
+
+def _guard_entry() -> dict:
+    """The engine's PreToolUse matcher entry, in Claude Code's schema."""
+    return {
+        "matcher": "Edit|MultiEdit|Write|NotebookEdit",
+        "hooks": [{"type": "command", "command": _GUARD_COMMAND}],
+    }
+
+
+def _is_guard_entry(entry: object) -> bool:
+    """True if `entry` is (a prior version of) the engine's guard entry."""
+    if not isinstance(entry, dict):
+        return False
+    for h in entry.get("hooks", []):
+        if isinstance(h, dict) and _GUARD_SENTINEL in str(h.get("command", "")):
+            return True
+    return False
 
 
 def _hook_entry() -> dict:
@@ -85,10 +114,63 @@ def merge_settings(existing: dict | None) -> tuple[dict, bool]:
     others = [e for e in session_start if not _is_engine_entry(e)]
     new_session_start = [*others, desired]
 
-    changed = session_start != new_session_start
+    pre_tool = list(hooks.get("PreToolUse") or [])
+    guard_others = [e for e in pre_tool if not _is_guard_entry(e)]
+    new_pre_tool = [*guard_others, _guard_entry()]
+
+    changed = session_start != new_session_start or pre_tool != new_pre_tool
     hooks["SessionStart"] = new_session_start
+    hooks["PreToolUse"] = new_pre_tool
     settings["hooks"] = hooks
     return settings, changed
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  permissions.deny — credential paths the model must never read
+# ──────────────────────────────────────────────────────────────────────
+
+# Rules the engine owns in `permissions.deny`. Unlike the hook entry — which
+# carries `_HOOK_SENTINEL` inside its command string — a deny rule is a bare
+# string with nowhere to hang a marker. The rules themselves ARE the
+# sentinel: this frozen set is the engine's claim, so a re-sync can add
+# what's missing without touching a single rule the tenant wrote. Removing a
+# pattern from this set intentionally orphans it (it stays in tenant files
+# until hand-removed) — that is safer than the engine deleting deny rules.
+#
+# Scope is credential safety, NOT locking down ordinary work: nothing here
+# touches the tenant's own `.md` files, `git`, or the `cp` CLI. `cp sync`
+# auto-loads `SUPABASE_*` from an `.env` outside the tenant, and this tenant
+# has committed-credential history (2026-07-31), so a read-deny on secrets
+# is the one rule that must not be merely advisory. See #205.
+_ENGINE_DENY_RULES = (
+    "Read(**/.env)",
+    "Read(**/.env.*)",
+    "Read(**/*.pem)",
+    "Read(**/*.key)",
+    "Read(**/id_rsa)",
+    "Read(**/credentials.json)",
+)
+
+
+def merge_permissions(existing: dict | None) -> tuple[dict, bool]:
+    """Return (merged settings, changed) ensuring the engine's deny rules.
+
+    Additive only. Every rule the tenant added — in `deny`, `allow`, or
+    `ask` — is preserved in order; the engine appends only its own missing
+    rules. `changed` is False iff every engine rule was already present.
+    """
+    settings: dict = dict(existing) if isinstance(existing, dict) else {}
+
+    permissions = dict(settings.get("permissions") or {})
+    deny = list(permissions.get("deny") or [])
+
+    missing = [r for r in _ENGINE_DENY_RULES if r not in deny]
+    if not missing:
+        return settings, False
+
+    permissions["deny"] = [*deny, *missing]
+    settings["permissions"] = permissions
+    return settings, True
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -133,13 +215,14 @@ def install_into_tenant(tenant_root: Path) -> list[Path]:
     hooks_dir = claude_dir / "hooks"
 
     # 1. Hook script — overwrite if content differs (engine-owned file).
-    script_dest = hooks_dir / _HOOK_SCRIPT_NAME
-    source = _packaged_hook_source()
-    if not script_dest.exists() or script_dest.read_text() != source:
-        hooks_dir.mkdir(parents=True, exist_ok=True)
-        script_dest.write_text(source)
-        script_dest.chmod(0o755)
-        written.append(script_dest)
+    for script_name in (_HOOK_SCRIPT_NAME, _GUARD_SCRIPT_NAME):
+        script_dest = hooks_dir / script_name
+        source = _packaged_hook_source(script_name)
+        if not script_dest.exists() or script_dest.read_text() != source:
+            hooks_dir.mkdir(parents=True, exist_ok=True)
+            script_dest.write_text(source)
+            script_dest.chmod(0o755)
+            written.append(script_dest)
 
     # 2. settings.json — merge, preserving tenant content.
     settings_path = claude_dir / "settings.json"
@@ -154,7 +237,9 @@ def install_into_tenant(tenant_root: Path) -> list[Path]:
         if not isinstance(existing, dict):
             return written
 
-    merged, changed = merge_settings(existing)
+    merged, hook_changed = merge_settings(existing)
+    merged, perms_changed = merge_permissions(merged)
+    changed = hook_changed or perms_changed
     if changed:
         claude_dir.mkdir(parents=True, exist_ok=True)
         settings_path.write_text(json.dumps(merged, indent=2) + "\n")
