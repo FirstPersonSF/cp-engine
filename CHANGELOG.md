@@ -4,6 +4,33 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.101.3 — 2026-08-19
+
+- **A standalone repo is an expected `None`, not a dangling MC-id (#201).**
+  Every `cp sync` printed four error-shaped lines to stderr:
+  `[asset-ingest] no MC-2 project or initiative with id=…`. All four ids are
+  valid `repos` rows — the tenant's four standalone repos (`icp-personas`,
+  `fathom-meeting-sync`, `1p-component-library`, `cp`), each with
+  `project_id` and `initiative_id` NULL. They are the third kind of trackable
+  item, they carry an `MC-id` in their `cp.md` like any other working dir, and
+  sync hands that id to `resolve_project_folders_by_id` — which only knew
+  about `projects` and `initiatives`.
+
+  **Nothing was broken.** The resolver returned `None`, the caller skipped the
+  sources manifest, and that is correct: a standalone repo has no Drive or
+  Dropbox binding and *cannot* have one, since `project_integrations` has only
+  `project_id` and `initiative_id` columns. There is nowhere to ingest from.
+  The defect was that an expected `None` announced itself as a lookup failure,
+  four times, on every sync — and being a bare `print` to stderr rather than a
+  `logger.warning`, it never reached the v0.101.2 warning count either.
+
+  The resolver now checks `repos` after the initiatives fallback so it can
+  tell "not an ingest target" from "id matches nothing", and returns quietly
+  in the first case. Resolution order is preserved — a project or initiative
+  id never pays for the extra lookup. **A genuinely dangling id still warns**,
+  and so does a failure of the repos probe itself, so the quiet path can never
+  swallow a real miss.
+
 ## v0.101.2 — 2026-08-19
 
 - **A promoted spine element could be torn in half, and the mirror crash it
