@@ -40,15 +40,36 @@ from pathlib import Path
 _START = re.compile(r"<!--\s*cp-engine:start\s+([\w-]+)\s*-->")
 _END = re.compile(r"<!--\s*cp-engine:end\s+([\w-]+)\s*-->")
 
+# Regions that are marker-wrapped but AUTHORED, not engine-owned.
+#
+# `exec-summary` is the deliberate exception to "sync owns the markers": the
+# engine only scaffolds the region and migrates the old Quick Resume into it,
+# then reads it for `/cp-prep`. The six fields are written by a human or the
+# model at `wrap up` — which is exactly what `/cp-wrapup` step 1 instructs
+# ("Edit directly between the `exec-summary` markers"). Guarding it blocks
+# the single most common legitimate edit in the tenant.
+#
+# The `**Last session:**` line inside it IS derived, but it self-heals on the
+# next `cp sync`, so a stray edit there costs nothing and does not justify
+# blocking the whole region.
+_AUTHORED_REGIONS = frozenset({"exec-summary"})
+
 # Tools whose payloads can modify a file's bytes.
 _GUARDED_TOOLS = frozenset({"Edit", "MultiEdit", "Write", "NotebookEdit"})
 
 
 def _regions(text: str) -> list[tuple[int, int, str]]:
-    """(start_offset, end_offset, name) for each engine-managed region."""
+    """(start_offset, end_offset, name) for each GUARDED region.
+
+    Authored regions (`_AUTHORED_REGIONS`) are excluded here rather than at
+    each call site, so every path — Edit, MultiEdit, and Write's
+    region-preservation check — honors the exemption identically.
+    """
     out: list[tuple[int, int, str]] = []
     for m in _START.finditer(text):
         name = m.group(1)
+        if name in _AUTHORED_REGIONS:
+            continue
         end = None
         for e in _END.finditer(text, m.end()):
             if e.group(1) == name:
