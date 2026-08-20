@@ -196,7 +196,7 @@ about.
 | `also load <code>` | additive | Layer that project's `cp.md` onto the current mode. |
 | `switch to <code>` | replace → 2 | Discard previous mode; load that project's `cp.md`. |
 | `deepen from transcript` | (during weekly review) | Begin deepening pass. |
-| `wrap up` | (during weekly review) | Finalize: author each touched project's Exec Summary, word-count checks, improvements-log sweep, master-CP roll-up, commit, push. |
+| `wrap up` | any | Close out the session — **run `/cp-wrapup`**, which carries the full ritual (Exec Summaries, decision + commitment sweeps, spine and word-count checks, commit, push). Also closes a `run weekly review` block. |
 | `rotate the CP` | any | Manually trigger archive rotation on the focused CP. |
 | `sweep improvements` | any | Harvest `improvements.md`: cluster entries, propose issues. |
 
@@ -247,58 +247,6 @@ auto-ingest webhook handles per-project routing + the tenant-wide
 summary in `weekly-cp.md`'s `## Account summaries`. Don't hand-write
 per-project bullets when auto-ingest is available.
 
-## Authoring the Exec Summary at wrap up
-
-Each project `cp.md` carries a model-authored `## Exec Summary` region
-(between `<!-- cp-engine:start exec-summary -->` and
-`<!-- cp-engine:end exec-summary -->`) with six fields — **Objective /
-Status / Where it stands / Next up / Blockers / Updates** — plus a
-`**Last session:**` line. **You author the six fields; the engine does
-not.** The engine only scaffolds the region, migrates the old Quick
-Resume into it on `cp sync`, and reads it for `/cp-prep`.
-
-**Exception: the `**Last session:**` line is DERIVED, not authored** —
-a projection of the newest file under `sessions/`, recomputed by
-`cp capture-session` and re-converged on every `cp sync`. Don't
-hand-edit it; on a merge conflict keep either side and run `cp sync` —
-it self-heals. Auto-ingest never writes project `cp.md` state —
-per-meeting truth lands in the sprint file; you refresh the Exec
-Summary at `wrap up`.
-
-At `wrap up`, for **each project the session touched**, refresh its Exec
-Summary by editing directly between the `exec-summary` markers (Edit
-tool). It's a **merge, not a regenerate** — a session that touched one
-aspect must not wipe the rest:
-
-1. **Read the prior Exec Summary** — its six fields and the full Updates
-   history.
-2. **Read this session's changes** — the sprint-file edits, spine
-   updates, and any recent meeting ingests for this project.
-3. **Rewrite the six fields against current reality**, carrying forward
-   everything that's still true and revising only what changed.
-4. **Append ONE dated Update** capturing this session's delta:
-   `- <today> — <what changed>`.
-5. **Roll off Updates older than ~4 weeks** so the history stays tight.
-6. **Stamp `· updated <today>`** on the `## Exec Summary` heading line —
-   `/cp-prep` flags an unstamped or old summary as STALE in the
-   planning bundle.
-
-This is the durable project-state surface; transient weekly material
-belongs in the sprint file, not the Exec Summary.
-
-**Also at wrap up — sweep `weekly-cp.md`'s cross-cutting decisions.**
-`## Decisions (cross-cutting, last 4 weeks)` accretes auto-ingested
-entries that nothing expires, and feeds sprint planning. Once per wrap
-up: append `[resolved: <today> — <outcome>]` to entries that are done or
-expired (decision made, event passed, date behind us) so the planner
-drops them; ask when the outcome isn't obvious. Never delete — the
-resolved marker IS the archive.
-
-**Also at wrap up — sweep the touched projects' open commitments.**
-`cp commitments-sweep <code>` per touched project: resolve what the
-session completed, drop what it made moot, question undated rows ≥2
-weeks old — the TTL expires them otherwise.
-
 ## Deepening from transcript
 
 During `deepen from transcript`, write meeting notes, decisions, new client
@@ -307,34 +255,8 @@ sections. Engine-managed regions inside the sprint file (`sprint-facts`,
 `where-it-stands`, `carry-forward`) MUST NOT be edited — sync owns them.
 
 Project `cp.md` still receives durable updates — the **Exec Summary**
-(authored at `wrap up`, above), plus Project Notes and Stakeholders;
-transient weekly material belongs in the sprint file.
-
-`wrap up` extends to commit the entire `sprints/<YYYY-W##>/` directory alongside
-the master roll-up and to run word-count discipline on each sprint file.
-
-## Proposing journey steps at wrap up
-
-Spine content-writes journal themselves (one review-gated auto-step per
-element per day). Hand-propose a step (`propose_spine_step`) only for a
-move the auto-step doesn't capture, ≤2 per session; authoring runs on
-`cp-hosted`, so the write carries your identity. Full discipline:
-`/cp-tools`.
-
-## Word-count discipline
-
-Per bootstrap v2:
-- >2,500 words on a CP file → duplication audit on next wrap-up
-- >3,500 words → archive rotation forced before commit
-
-`cp render` warns on both thresholds (warn-only — it never blocks a
-commit and never edits). Acting on the warning is yours: the audit and
-the rotation are manual.
-
-**Exempt:** per-meeting artifacts under any `meetings/` directory
-(fixed per-meeting records — synthesis + verbatim transcript —
-legitimately long) and `spine/Retrospective/meeting-history.md`; do not
-audit or rotate them.
+(authored at `wrap up`; run `/cp-wrapup`), plus Project Notes and
+Stakeholders; transient weekly material belongs in the sprint file.
 
 ## Improvements log
 
@@ -344,20 +266,6 @@ of friction**: `- <date> · \`area\` — <observation>`. Full protocol
 lives in that file's header. Real bugs still go to GitHub issues; never
 delete entries. `wrap up` sweeps for unlogged friction;
 `sweep improvements` harvests.
-
-## Spine checks at wrap up
-
-Alongside word-count discipline, for each project touched:
-
-`cp spine-lint <code>` — WARN-ONLY: important-yet-unbound elements,
-Agreements missing their source (close via `add_element_source` on
-`cp-hosted`), scaffold placeholders in `cp.md`. Surface findings; fix
-only what the user confirms.
-
-`cp seal-sweep <code>` — for each deliverable that shipped a version,
-what fed it plus the `seal_to_deliverable` call. Absorbing a round's
-inputs keeps the spine distilled. Read its output carefully:
-`/cp-tools`.
 
 ## After a cp-engine release: restart `cp mcp`
 
