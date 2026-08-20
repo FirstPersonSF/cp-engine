@@ -154,3 +154,51 @@ def test_unterminated_region_is_not_treated_as_a_region(tmp_path: Path):
     """
     mod = _load()
     assert mod._regions("<!-- cp-engine:start orphan -->\nbody\n") == []
+
+
+# ── the authored-region exemption ─────────────────────────────────────
+# `exec-summary` is marker-wrapped but authored, not engine-owned: the
+# engine scaffolds it and reads it, the model writes the six fields at
+# wrap up. Guarding it blocked the single most common legitimate edit in
+# the tenant — caught the same day the guard shipped, by /cp-wrapup step 1
+# failing against its own instruction to "edit directly between the
+# exec-summary markers".
+
+_AUTHORED_DOC = """<!-- cp-engine:start project-facts -->
+ENGINE OWNED
+<!-- cp-engine:end project-facts -->
+
+<!-- cp-engine:start exec-summary -->
+## Exec Summary  ·  updated 2026-08-18
+**Status:** authored by the model at wrap up.
+<!-- cp-engine:end exec-summary -->
+"""
+
+
+def test_exec_summary_region_is_editable(tmp_path: Path):
+    f = tmp_path / "cp.md"
+    f.write_text(_AUTHORED_DOC)
+    assert _run(_edit(f, "## Exec Summary  ·  updated 2026-08-18")).returncode == 0
+    assert _run(_edit(f, "**Status:** authored by the model at wrap up.")).returncode == 0
+
+
+def test_exemption_does_not_leak_to_other_regions(tmp_path: Path):
+    """A file containing exec-summary still guards everything else."""
+    f = tmp_path / "cp.md"
+    f.write_text(_AUTHORED_DOC)
+    assert _run(_edit(f, "ENGINE OWNED")).returncode == 2
+
+
+def test_write_still_guards_when_only_authored_regions_survive(tmp_path: Path):
+    """Dropping a guarded region is blocked even if exec-summary is kept."""
+    f = tmp_path / "cp.md"
+    f.write_text(_AUTHORED_DOC)
+    kept_only_authored = (
+        "<!-- cp-engine:start exec-summary -->\nx\n"
+        "<!-- cp-engine:end exec-summary -->\n"
+    )
+    event = {
+        "tool_name": "Write",
+        "tool_input": {"file_path": str(f), "content": kept_only_authored},
+    }
+    assert _run(event).returncode == 2

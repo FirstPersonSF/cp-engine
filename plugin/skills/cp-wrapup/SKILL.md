@@ -132,7 +132,10 @@ roll-up and each touched project's `cp.md`. Then push.
 - **Engine-managed regions are off-limits.** Anything between
   `cp-engine:start` / `cp-engine:end` markers belongs to sync — the one
   exception is the `exec-summary` region, which you author (step 1). A
-  `PreToolUse` guard blocks edits to the others.
+  `PreToolUse` guard blocks edits to the others and exempts `exec-summary`
+  by name, so step 1 works with no ceremony. If the guard ever blocks an
+  edit you believe is legitimate, that is a bug in the guard — say so
+  rather than working around it.
 - **Weekly review.** `wrap up` also closes a `run weekly review` block; the
   prior mode persists if the session continues.
 - **After a cp-engine release**, `cp mcp` keeps serving old bytecode.
