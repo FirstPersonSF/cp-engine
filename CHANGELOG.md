@@ -4,6 +4,57 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.101.4 — 2026-08-20
+
+- **The resident layer stated rules that nothing enforced (#203, #204, #205).**
+  An audit of what loads into every tenant session found one theme in three
+  places: `CLAUDE.md` asserted behavior the engine did not have.
+
+  **The file was 442 lines against a ~200-line target** — and instructions are
+  followed *less* reliably as a file grows, so the excess was not merely
+  wasteful. Two sections described structure readable off disk in one command
+  (`ls -d 1p/*/ …`, `grep '^##' sprints/<W##>/<code>.md`). The working-tree
+  diagram had also drifted: 6 `firstpersonsf/` entries listed against 11 on
+  disk, so it could return a *wrong* answer where the filesystem returns a
+  right one. Both cut.
+
+  **A quarter of the file was `wrap up` procedure**, scattered across five
+  sections plus two stray paragraphs — resident on every `check status`
+  session though it applies only at the end of one. Extracted to a new
+  `/cp-wrapup` skill. `/cp-wrap` could not absorb it: that command authors the
+  nine-section close-out *report* for a finished engagement, so the
+  per-session ritual had no home at all, which is why it accreted.
+  **442 → 280 rendered lines.**
+
+- **Word-count discipline was documented as enforced and was not (#204).**
+  `CLAUDE.md` claimed "The engine enforces both checks during `cp render` and
+  `wrap up`" for the >2,500/>3,500-word thresholds. Nothing measured
+  whole-file word counts; the only such constant was a char cap in
+  `plan_from_account_meeting` that never surfaces to a human. Three project
+  CPs sat over budget while `cp render` reported nothing.
+
+  A rule documented as enforced is worse than an unenforced rule honestly
+  labelled — it *suppresses* the manual check that would otherwise catch the
+  drift. New `word_count_lint`: warn-only, worst-first, echoed after render
+  beside `exec_summary_lint`, exempting `meetings/` and
+  `spine/Retrospective/meeting-history.md`. The template now says what it
+  does: warns, never blocks.
+
+- **Tenants shipped zero `deny` rules (#205).** `cp sync` auto-loads
+  `SUPABASE_*` from an `.env` outside the tenant, and 2,111 engine-managed
+  regions across 574 files were guarded only by a "MUST NOT be edited"
+  sentence — instructions are context, not enforced configuration.
+  `claude_settings` now ships credential deny rules and a `PreToolUse` guard.
+
+  The deny list is a flat string array with nowhere to hang a sentinel, so
+  `_ENGINE_DENY_RULES` is itself the engine's claim and the merge is
+  **additive-only** — a tenant's own rules are never removed or reordered.
+  The region guard **fails open** on every unexpected condition (unreadable
+  file, malformed JSON, unknown schema): a guard that blocked when it could
+  not parse its input would make a tenant un-editable the moment a payload
+  shape changed. Its block message names `cp write-region`, so the model gets
+  a next action rather than a dead end.
+
 ## v0.101.3 — 2026-08-19
 
 - **A standalone repo is an expected `None`, not a dangling MC-id (#201).**
