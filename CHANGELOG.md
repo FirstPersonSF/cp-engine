@@ -4,6 +4,73 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.101.7 — 2026-08-21
+
+- **`cp sync` warned misleadingly on every run — two independent bugs that
+  looked like one (#211, #212).** The output was:
+
+  ```
+  Loaded SUPABASE_* from /path/to/mc-2/backend/.env
+  MC-2 client unavailable (credential resolution): ... Tried: environment only
+  (no tenant config available, so the ... fallbacks don't apply).
+  No changes (37 projects checked) (1 warning).
+    1 warning logged above — some content may not have been written
+  ```
+
+  The second line contradicts the first, and nothing was logged above.
+
+  **#211 — resolved creds were never published.** `load_supabase_creds`
+  resolves through three tiers (env → 1Password → `<mc-2 clone>/backend/.env`)
+  but only tier 1 reads the environment, and it returned tier-2/tier-3 creds
+  without exporting them. Any later `get_client(config=None)` caller re-entered
+  the tier-1-only branch, found a bare environment, and reported the fallbacks
+  "don't apply" one line after they had succeeded. `_creds_cache` doesn't
+  bridge it either — keyed on `getattr(config, "root", None)`, a config-less
+  caller misses the entry stored under the tenant root.
+
+  The fix mirrors `load_ingest_creds` / `load_dropbox_creds`, which already
+  export their own key sets for exactly this reason — their docstrings say a
+  process holding the `.env` on disk but not in its environment "would
+  authenticate as nobody and fail." `load_supabase_creds` was the only one of
+  the three that didn't; the DROPBOX_* variant of the same gap was fixed in
+  v0.86.2 (#154). `os.environ.setdefault` keeps the "already-set env var WINS"
+  rule, and the fail-soft contract is unchanged — the webhook still finds a
+  bare environment and still degrades to `None`.
+
+  **#212 — the warning counter counted records nothing printed.**
+  `_WarningCounter` (#197) counts every `logger.warning` a cycle emits, and the
+  summary told the user to read them. But the CLI installs no logging handler
+  for the `cp_engine` logger — no `basicConfig`, no `StreamHandler`, nothing in
+  `cli.py` or `cli_cmds/` — so Python's last-resort behaviour discarded every
+  record. Content was declared possibly missing with no way to learn what; the
+  only recovery was re-running the whole tenant pass and diffing.
+
+  It also hid a real condition. The single warning on the 1P tenant was worth
+  reading: an `authored-live shield (#113)` report that a stale on-disk
+  substance mirror claimed live while a newer authored version was live. The
+  shield worked exactly as designed and told nobody.
+
+  The counter now retains each formatted message — module name included, since
+  "which subsystem" is most of what makes one actionable — and `SyncResult`
+  carries them to the CLI. Retention caps at 20 with the count left exact;
+  truncation says "… and N more", and with no retained messages it falls back
+  to a bare count rather than printing a continuation line with nothing above
+  it, which would repeat the very fault being fixed.
+
+  **Scope is deliberately sync-only.** A global stderr handler would fix the
+  underlying asymmetry — `mc2_db` uses raw `print`, the rest of the sync path
+  uses `logger.warning`, and whether a warning reaches the user currently
+  depends on which its author picked — across all 58 call sites at once, but
+  changes output for every `cp` command. Measured against a real tenant,
+  exactly ONE warning fires per full 37-project sync, so the narrow fix
+  addresses the symptom with no blast radius. The broader question is left
+  documented for a separate decision.
+
+  Note the two only looked like one problem because of that same asymmetry:
+  fixing #211 removed the only visible message and left the count at 1, which
+  is what exposed #212. Neither is a regression — #211 dates to `fd2757b`
+  (2026-07-03, arch-phase-3 DAL), #212 to #197.
+
 ## v0.101.6 — 2026-08-20
 
 - **A stale working dir survived 14 weeks of syncs because a shorter live
