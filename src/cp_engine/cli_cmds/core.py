@@ -60,20 +60,43 @@ def sync() -> None:
     warned = getattr(result, "warnings", 0)
     suffix = f" ({warned} warning{'s' if warned != 1 else ''})" if warned else ""
 
-    note = (
-        f"  {warned} warning{'s' if warned != 1 else ''} logged above — "
-        "some content may not have been written"
-    )
+    def _emit_warnings() -> None:
+        """Print what actually went wrong (#212).
+
+        The old text said "N warnings logged above", but the CLI installs no
+        logging handler, so nothing was ever printed above — the records were
+        counted and discarded. The user was told content might be missing and
+        given no way to find out what; the only recovery was re-running the
+        whole tenant pass and diffing. Sync's counter now retains the messages,
+        so we name them here instead of alluding to them.
+        """
+        messages = getattr(result, "warning_messages", ())
+        for message in messages:
+            click.echo(f"  ⚠ {message}", err=True)
+        if warned > len(messages):
+            # The counter caps retention, so say what is not shown rather than
+            # truncating silently. With NO messages at all (an older
+            # SyncResult, or a counter that could not retain), fall back to the
+            # bare count — "… and N more" with nothing above it would repeat
+            # the very sin this fixes: text pointing at output that isn't there.
+            remaining = warned - len(messages)
+            click.echo(
+                f"  … and {remaining} more"
+                if messages
+                else f"  ⚠ {remaining} warning{'s' if remaining != 1 else ''} "
+                "(detail unavailable)",
+                err=True,
+            )
 
     if result.no_op:
         click.echo(f"No changes ({result.projects_seen} projects checked){suffix}.")
         if warned:
-            click.echo(note, err=True)
+            _emit_warnings()
         return
 
     click.echo(f"Synced {result.projects_seen} projects{suffix}.")
     if warned:
-        click.echo(note, err=True)
+        _emit_warnings()
     for path in result.files_written:
         click.echo(f"  wrote    {path.relative_to(config.root)}")
     for path in result.files_deactivated:
