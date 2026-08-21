@@ -394,6 +394,26 @@ def load_dropbox_creds(config: "TenantConfig") -> None:
             os.environ[key] = file_creds[key]
 
 
+def _export_supabase_creds(url: str, key: str) -> None:
+    """Publish resolved creds into `os.environ` so later callers can find them.
+
+    `load_supabase_creds` resolves through three tiers, but only tier 1 reads
+    the environment. Without this, a tier-2/tier-3 success is invisible to any
+    later `get_client(config=None)` caller — it re-enters the tier-1-only
+    branch, finds a bare environment, and reports "no tenant config available,
+    so the 1Password and mc-2/backend/.env fallbacks don't apply" moments after
+    those very fallbacks succeeded (cp-engine #211).
+
+    Mirrors `load_ingest_creds` / `load_dropbox_creds`, which already do this
+    for their own key sets and for the same reason. An already-set env var
+    WINS, preserving CI and explicit shell exports.
+    """
+    if url:
+        os.environ.setdefault("SUPABASE_URL", url)
+    if key:
+        os.environ.setdefault("SUPABASE_SERVICE_KEY", key)
+
+
 def load_supabase_creds(config: "TenantConfig | None" = None) -> tuple[str, str]:
     """Resolve `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` for the MC-2 client.
 
@@ -440,6 +460,7 @@ def load_supabase_creds(config: "TenantConfig | None" = None) -> tuple[str, str]
     op_creds = _resolve_op_creds(config)
     if op_creds is not None:
         print("Resolved SUPABASE_* from 1Password (op://)", file=sys.stderr)
+        _export_supabase_creds(*op_creds)
         return op_creds
 
     env_file = _mc2_env_file(config)
@@ -448,6 +469,7 @@ def load_supabase_creds(config: "TenantConfig | None" = None) -> tuple[str, str]
     key = key or file_creds.get("SUPABASE_SERVICE_KEY")
     if url and key:
         print(f"Loaded SUPABASE_* from {env_file}", file=sys.stderr)
+        _export_supabase_creds(url, key)
         return url, key
 
     tried = "environment"
