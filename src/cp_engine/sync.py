@@ -165,6 +165,12 @@ class SyncResult:
     # a clean run unless someone read the scrollback. The count travels to the
     # summary so the last line reflects what actually happened.
     warnings: int = 0
+    # The formatted warning texts themselves (#212). The count alone told the
+    # user "some content may not have been written" and gave them no way to
+    # learn WHAT — the CLI configures no logging handler, so every counted
+    # record was discarded unread. Carrying the messages lets the summary name
+    # what happened instead of only that something did.
+    warning_messages: tuple[str, ...] = ()
 
 
 class _WarningCounter(logging.Handler):
@@ -174,19 +180,29 @@ class _WarningCounter(logging.Handler):
     failing the run — the right call, since one malformed element should not
     cost the other 36 projects their sync. The cost was that the outcome line
     said "Synced N projects." whether or not anything had gone wrong. This
-    counts the warnings so the CLI can say so; it never suppresses or reformats
-    them, and never raises (a broken counter must not break a sync).
+    counts the warnings so the CLI can say so, and retains their text so the
+    CLI can name them (#212 — nothing else prints them, so the count alone was
+    unactionable). It never suppresses them, and never raises (a broken counter
+    must not break a sync).
     """
+
+    # Retained messages are capped so a pathological run (one warning per
+    # project per element) cannot balloon the summary or hold megabytes of
+    # strings. The count is still exact; only the printed detail is bounded.
+    MAX_RETAINED = 20
 
     def __init__(self) -> None:
         super().__init__(level=logging.WARNING)
         self.count = 0
+        self.messages: list[str] = []
 
     def emit(self, record: logging.LogRecord) -> None:  # noqa: D102
         # Only `emit` increments — `Handler.handle()` calls `emit()`, so
         # counting in both would double every warning.
         try:
             self.count += 1
+            if len(self.messages) < self.MAX_RETAINED:
+                self.messages.append(f"[{record.name}] {record.getMessage()}")
         except Exception:  # noqa: BLE001 — never let counting break a sync
             pass
 
@@ -1027,6 +1043,7 @@ def _sync_tenant_inner(
         files_deactivated=tuple(files_deactivated),
         no_op=not (files_written or files_deactivated),
         warnings=counter.count if counter is not None else 0,
+        warning_messages=tuple(counter.messages) if counter is not None else (),
     )
 
 
