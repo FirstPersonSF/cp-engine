@@ -23,7 +23,7 @@ Design notes:
   unknown schema — exits 0. A guard that blocks work because it couldn't
   parse its own input is worse than no guard: it would make the engine
   un-editable the moment a payload shape changed.
-- The escape hatch is `cp write-region`, which is how the engine itself
+- The escape hatch is `cxp write-region`, which is how the engine itself
   splices these regions. The block message names it, so the model has a
   correct next action rather than a dead end.
 - No third-party imports: runs under bare system python3, same as the
@@ -165,7 +165,7 @@ def main() -> int:
         f"hand-edit (see cp-engine #180).\n\n"
         f"Write outside the cp-engine:start/end markers instead. If the "
         f"region's CONTENT genuinely must change, that is an engine change — "
-        f"use `cp write-region`, or fix the source the region is rendered "
+        f"use `cxp write-region`, or fix the source the region is rendered "
         f"from.\n"
     )
     return 2

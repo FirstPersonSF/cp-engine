@@ -582,7 +582,7 @@ def priors_cmd(code, publish_path, override_path, note, history) -> None:
         if not resolved:
             click.echo(
                 "No priors set — every LLM call runs with no system prompt.\n"
-                "Publish with: cp priors --publish <file.md>", err=True)
+                "Publish with: cxp priors --publish <file.md>", err=True)
             sys.exit(1)
         click.echo(resolved)
     except Exception as exc:  # noqa: BLE001

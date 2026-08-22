@@ -869,7 +869,7 @@ def seal_sweep_cmd(
     try:
         client = mc2_db.get_client(config)
     except BackendUnavailable as exc:
-        click.echo(f"cp seal-sweep needs MC-2: {exc}", err=True)
+        click.echo(f"cxp seal-sweep needs MC-2: {exc}", err=True)
         sys.exit(1)
 
     # Same dual-spelling resolution as spine-lint (#151): a drifted project
@@ -945,7 +945,7 @@ def stub_sweep_cmd(code: str) -> None:
     try:
         client = mc2_db.get_client(config)
     except BackendUnavailable as exc:
-        click.echo(f"cp stub-sweep needs MC-2: {exc}", err=True)
+        click.echo(f"cxp stub-sweep needs MC-2: {exc}", err=True)
         sys.exit(1)
 
     try:

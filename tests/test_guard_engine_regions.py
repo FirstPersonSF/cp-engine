@@ -70,7 +70,7 @@ def test_blocks_edit_inside_region(tmp_path: Path):
     assert result.returncode == 2
     assert "project-facts" in result.stderr
     # the message must name the escape hatch, not just refuse
-    assert "cp write-region" in result.stderr
+    assert "cxp write-region" in result.stderr
 
 
 def test_allows_edit_outside_region(tmp_path: Path):
