@@ -4,6 +4,52 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.102.0 — 2026-08-22
+
+- **The CLI is now `cxp`, not `cp` (breaking).** The console script was named
+  `cp`, which shadowed `/bin/cp` on PATH — `~/.local/bin` precedes `/bin` on a
+  standard macOS setup, so every bare `cp` in a shell ran this CLI instead of
+  the copy command:
+
+  ```
+  $ cp a.txt b.txt
+  Usage: cp [OPTIONS] COMMAND [ARGS]...
+  Error: No such command 'a.txt'.
+  ```
+
+  **Migration is automatic.** The SessionStart hook refreshes the marketplace
+  clone, sees the version drift, and `uv tool install --force` swaps the CLI.
+  Nothing to run by hand. Inside a tenant the Python hook does the same via
+  the tenant pin.
+
+  **Retype `cp <subcommand>` as `cxp <subcommand>`.** That is the whole
+  user-visible change. The `/cp-*` slash commands are unchanged — they were
+  already hyphen-namespaced and collided with nothing.
+
+  No `cp` alias is retained: the alias *is* the bug.
+
+  Under the hood this also required (each one independently breaks a
+  different cohort if missed):
+
+  - both version probes — `sync-cli-version.sh` and the tenant's
+    `check-cp-engine-version.py`. Probing `cp --version` post-rename hits
+    `/bin/cp`, which exits non-zero, reads as permanent drift, and reinstalls
+    on every session start.
+  - the generated `.mcp.json` command (`claude_settings._mcp_server_entry`).
+    A stale entry points at a binary that no longer exists and takes the whole
+    `cp-sources` server — every tool on it — offline. The tenant hook now
+    repairs a stale `"command": "cp"` in place, because fixing it via
+    `cxp sync` would need the CLI the broken config is meant to launch.
+  - `allowed-tools: Bash(cp:*)` in five slash-command frontmatters, and ~36
+    `cp <subcommand>` invocations inside the command and skill bodies — those
+    are executable instructions to the model, not prose.
+  - 33 user-facing `click.echo`/error strings that tell you what to run next.
+
+  Also prunes a stale `~/.local/bin/cp` symlink, guarded to only unlink one
+  resolving into a uv cp-engine tools dir. Current `uv` already removes the
+  orphan on upgrade; this covers older uv and pip installs, where a surviving
+  shim would silently reinstate the bug.
+
 ## v0.101.7 — 2026-08-21
 
 - **`cp sync` warned misleadingly on every run — two independent bugs that
