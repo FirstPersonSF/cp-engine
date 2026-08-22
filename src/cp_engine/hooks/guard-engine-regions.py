@@ -161,7 +161,7 @@ def main() -> int:
 
     sys.stderr.write(
         f"BLOCKED: this edit lands inside the engine-managed region "
-        f"'{hit}'. `cp sync` owns that region and will revert or fight any "
+        f"'{hit}'. `cxp sync` owns that region and will revert or fight any "
         f"hand-edit (see cp-engine #180).\n\n"
         f"Write outside the cp-engine:start/end markers instead. If the "
         f"region's CONTENT genuinely must change, that is an engine change — "

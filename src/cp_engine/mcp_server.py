@@ -94,7 +94,7 @@ def _stamp_versions(result):
     warning = None
     if server and disk and server != disk:
         warning = (
-            f"cp mcp server is v{server} but v{disk} is installed on disk — "
+            f"cxp mcp server is v{server} but v{disk} is installed on disk — "
             "restart the MCP connection (/mcp) to pick up the new release"
         )
 

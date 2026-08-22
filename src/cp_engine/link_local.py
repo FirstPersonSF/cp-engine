@@ -202,7 +202,7 @@ def link_local(config: TenantConfig) -> tuple[LinkResult, ...]:
     if unmatched:
         raise NoMatchingCpWorkingDir(
             f"No cp working dir found for: {', '.join(unmatched)}. "
-            "Run `cp sync` first so each project has a `_repo.md`, or remove "
+            "Run `cxp sync` first so each project has a `_repo.md`, or remove "
             "the unknown entries from [local-repos]."
         )
 

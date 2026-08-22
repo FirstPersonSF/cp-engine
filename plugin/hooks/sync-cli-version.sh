@@ -1,10 +1,16 @@
 #!/usr/bin/env bash
-# sync-cli-version.sh — keep the `cp` CLI in lockstep with the plugin.
+# sync-cli-version.sh — keep the `cxp` CLI in lockstep with the plugin.
 #
 # Reads the version baked into the plugin's plugin.json and compares it
-# to the installed `cp --version`. If they don't match (or `cp` is
+# to the installed `cxp --version`. If they don't match (or `cxp` is
 # missing), runs `uv tool install --force --from
 # git+https://github.com/FirstPersonSF/cp-engine.git@v<version> cp-engine`.
+#
+# The CLI was named `cp` before 2026-08-22. That shadowed /bin/cp on PATH
+# (~/.local/bin precedes /bin), so every bare `cp` in a shell ran this CLI
+# instead of the copy command. Current `uv` prunes the orphaned `cp` script
+# on upgrade, but older uv and pip installs do not — so this hook also
+# prunes it defensively (see "Stale `cp` shim" below).
 #
 # Policy decisions (per docs/specs/cp-engine-spec-v03-version-distribution.md):
 # - Print errors but never block session start. The next /cp-summarize
@@ -26,7 +32,7 @@ REPO_URL="https://github.com/FirstPersonSF/cp-engine.git"
 # Inside a cp tenant, the TENANT PIN (.cp-engine.toml [engine].version)
 # is the single truth source for the cp CLI version, enforced by the
 # tenant's own SessionStart hook (check-cp-engine-version.py, installed
-# by `cp sync`). Two hooks keyed off different truths (plugin version
+# by `cxp sync`). Two hooks keyed off different truths (plugin version
 # vs tenant pin) can disagree and fight over the installed CLI — so
 # when a session starts anywhere under a tenant root, this hook defers
 # entirely. Outside a tenant there is no pin, and plugin-version
@@ -79,9 +85,50 @@ if [ -z "$PLUGIN_VERSION" ]; then
     exit 0
 fi
 
-# `cp --version` prints "cp, version X.Y.Z" (Click default). Awk the last field.
-# If `cp` isn't on PATH, INSTALLED_VERSION stays empty and we treat as drift.
-INSTALLED_VERSION=$(cp --version 2>/dev/null | awk '{print $NF}' || true)
+# ── Stale `cp` shim (rename cleanup, 2026-08-22) ─────────────────────
+# Until v0.102.0 this package installed its entry point as `cp`, which
+# shadowed /bin/cp on PATH. Current `uv` removes the orphaned script on
+# upgrade (verified 2026-08-22), but older uv and pip installs leave it,
+# and a surviving shim silently reinstates the exact bug this rename
+# exists to fix. Cheap to run, so we prune unconditionally.
+#
+# Deliberately narrow: we unlink ONLY a symlink that resolves into a uv
+# tools directory for cp-engine. A regular file, a symlink pointing
+# anywhere else, or the real /bin/cp is never touched.
+prune_stale_cp_shim() {
+    _shim="$HOME/.local/bin/cp"
+
+    # Must exist AND be a symlink. A regular file here is not ours.
+    [ -L "$_shim" ] || return 0
+
+    # Resolve one hop; readlink -f is unavailable on stock macOS bash.
+    _target=$(readlink "$_shim" 2>/dev/null) || return 0
+
+    case "$_target" in
+        *"/uv/tools/cp-engine/"*)
+            if rm -f "$_shim" 2>/dev/null; then
+                echo "[cp-engine] removed stale 'cp' shim at ${_shim} — /bin/cp is no longer shadowed."
+            else
+                echo "[cp-engine] could not remove stale 'cp' shim at ${_shim}; remove it manually so /bin/cp works." >&2
+            fi
+            ;;
+        *)
+            # Someone else's `cp`. Leave it alone.
+            ;;
+    esac
+}
+
+# Runs on EVERY invocation, before the version checks below. A user whose
+# CLI is already current takes an early `exit 0` at the version comparison,
+# so pruning only after an install would strand the shim on exactly the
+# machines that need no upgrade.
+prune_stale_cp_shim
+
+# `cxp --version` prints "cxp, version X.Y.Z" (Click default). Awk the last
+# field. If `cxp` isn't on PATH, INSTALLED_VERSION stays empty and we treat
+# as drift. Must NOT probe `cp`: post-rename that resolves to /bin/cp, which
+# exits non-zero, so every session would see phantom drift and reinstall.
+INSTALLED_VERSION=$(cxp --version 2>/dev/null | awk '{print $NF}' || true)
 
 if [ "$PLUGIN_VERSION" = "$INSTALLED_VERSION" ]; then
     exit 0
@@ -103,9 +150,9 @@ fi
 # `uv tool install` can take a few seconds and silent latency is worse
 # than a one-line "we're updating cp".
 if [ -z "$INSTALLED_VERSION" ]; then
-    echo "[cp-engine] cp CLI not installed — installing v${PLUGIN_VERSION}..."
+    echo "[cp-engine] cxp CLI not installed — installing v${PLUGIN_VERSION}..."
 else
-    echo "[cp-engine] cp CLI version drift: plugin=${PLUGIN_VERSION} installed=${INSTALLED_VERSION}. Updating..."
+    echo "[cp-engine] cxp CLI version drift: plugin=${PLUGIN_VERSION} installed=${INSTALLED_VERSION}. Updating..."
 fi
 
 if ! command -v uv >/dev/null 2>&1; then
@@ -117,11 +164,11 @@ fi
 if uv tool install --force \
     --from "git+${REPO_URL}@v${PLUGIN_VERSION}" \
     cp-engine >/dev/null 2>&1; then
-    echo "[cp-engine] cp CLI updated to v${PLUGIN_VERSION}."
+    echo "[cp-engine] cxp CLI updated to v${PLUGIN_VERSION}."
 else
     # Don't block the session — the next /cp-summarize will fail loud
     # with EngineVersionMismatch and tell the user what to fix.
-    echo "[cp-engine] auto-install of cp v${PLUGIN_VERSION} failed (offline? auth?). The next /cp-summarize will fail with EngineVersionMismatch — re-run this manually:" >&2
+    echo "[cp-engine] auto-install of cxp v${PLUGIN_VERSION} failed (offline? auth?). The next /cp-summarize will fail with EngineVersionMismatch — re-run this manually:" >&2
     echo "[cp-engine]   uv tool install --force --from 'git+${REPO_URL}@v${PLUGIN_VERSION}' cp-engine" >&2
 fi
 

@@ -427,7 +427,7 @@ def render_agenda_markdown(
         f"# Sprint {header.week_iso} Planning Agenda — {header.week_dates}"
     )
     lines.append(
-        f"_Generated {generated_at} by `cp prep-agenda` · "
+        f"_Generated {generated_at} by `cxp prep-agenda` · "
         f"{header.project_count} active projects · "
         f"est. {header.estimated_minutes} min @ 3min/project_"
     )

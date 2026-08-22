@@ -86,7 +86,7 @@ WEBHOOK_HMAC_SECRET=$SECRET curl -X POST http://localhost:8000/api/auto-ingest \
 The auto-commit step is the riskiest part. Safety nets:
 
 1. **HMAC signature** on every request — only fathom-meeting-sync (the secret holder) can trigger an ingest.
-2. **Plan validation is byte-identical to `cp ingest --dry-run`.** Same `_validate_plan` call. If Claude produces a malformed plan, we never write.
+2. **Plan validation is byte-identical to `cxp ingest --dry-run`.** Same `_validate_plan` call. If Claude produces a malformed plan, we never write.
 3. **Idempotency markers** in the plan executor mean re-firing the same meeting can never duplicate content.
 4. **`[auto-ingest]` commit prefix** makes auto-generated commits trivially identifiable and revertible.
 

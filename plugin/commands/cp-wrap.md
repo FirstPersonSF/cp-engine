@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(cp:*), Bash(cat:*), Bash(ls:*), Bash(mkdir:*), Bash(date:*), Bash(test:*), Bash(jq:*), Bash(echo:*), Read, Write
+allowed-tools: Bash(cxp:*), Bash(cat:*), Bash(ls:*), Bash(mkdir:*), Bash(date:*), Bash(test:*), Bash(jq:*), Bash(echo:*), Read, Write
 description: Author a close-out wrap report — the learning artifact for a finished engagement.
 ---
 
@@ -7,11 +7,11 @@ description: Author a close-out wrap report — the learning artifact for a fini
 
 Author the **wrap report** for a finished (or finishing) engagement: the
 durable record of what the work taught the firm. The engine emits a
-**bundle** of measured facts (`cp wrap <code> --bundle`) and **you
+**bundle** of measured facts (`cxp wrap <code> --bundle`) and **you
 synthesize** the report against a fixed nine-section contract, then render
 it as a Word document a human will actually read.
 
-**This is not `cp close`.** `cp close` is the internal hygiene ritual —
+**This is not `cxp close`.** `cxp close` is the internal hygiene ritual —
 spine tidying, stub retires, terminal Exec Summary. `/cp-wrap` produces the
 artifact you read a year later before pitching the same client again. Run
 `/cp-wrap` FIRST, so the close-out's terminal Exec Summary can quote it.
@@ -48,7 +48,7 @@ Not there → stop: "Run /cp-wrap from the cp tenant root."
 ### 2. Get the bundle
 
 ```bash
-BUNDLE=$(cp wrap "$CODE" --bundle)
+BUNDLE=$(cxp wrap "$CODE" --bundle)
 echo "$BUNDLE" | jq .
 ```
 
@@ -113,7 +113,7 @@ so two wrap reports are comparable:
 Markdown is the source of record; the `.docx` is what people read.
 
 ```bash
-cp wrap "$CODE" --facts-docx "<workdir>/wrap-report-<code>-<date>-v01.docx"
+cxp wrap "$CODE" --facts-docx "<workdir>/wrap-report-<code>-<date>-v01.docx"
 ```
 
 That writes the **facts half**. Then extend it with your authored sections
@@ -186,7 +186,7 @@ in a filename.
 
 ## Failure modes
 
-- **`cp wrap` refuses: MC-2 unreachable.** Deliberate. The bundle is mostly
+- **`cxp wrap` refuses: MC-2 unreachable.** Deliberate. The bundle is mostly
   MC-2 facts; one built from the disk mirror would understate effort, which
   is the exact failure this exists to prevent. Restore connectivity.
 - **`effort.total_hours` is 0 with `verified: true`.** The project genuinely
@@ -195,12 +195,12 @@ in a filename.
   `cp commitments-sweep <code>`. (That verb was blind for every engagement
   until 2026-08-14 — a wrong empty is a known failure shape here.)
 - **The `.docx` lands at the Dropbox project root.** `push_to_dropbox` was
-  called with a bare `dest_name`, or `cp mcp` is serving stale bytecode —
+  called with a bare `dest_name`, or `cxp mcp` is serving stale bytecode —
   check its version warning and restart `/mcp`.
 
 ## What this command doesn't do
 
-- Doesn't run the close-out ritual — that's `cp close`, and it comes after.
+- Doesn't run the close-out ritual — that's `cxp close`, and it comes after.
 - Doesn't mutate the spine beyond the one retrospective element.
 - Doesn't resolve commitments or archive anything.
 - Doesn't decide whether the project was a success. It assembles the

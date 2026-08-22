@@ -262,13 +262,13 @@ def test_plugin_hook_defers_inside_tenant(tmp_path: Path) -> None:
 
 def test_plugin_hook_still_checks_outside_tenant(tmp_path: Path) -> None:
     """Outside a tenant the plugin-version check must still run: with a
-    stubbed `cp` matching plugin.json it exits 0 silently (happy path)."""
+    stubbed `cxp` matching plugin.json it exits 0 silently (happy path)."""
     workdir = tmp_path / "not-a-tenant"
     workdir.mkdir()
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    stub = bindir / "cp"
-    stub.write_text("#!/usr/bin/env bash\necho 'cp, version 1.2.3'\n")
+    stub = bindir / "cxp"
+    stub.write_text("#!/usr/bin/env bash\necho 'cxp, version 1.2.3'\n")
     stub.chmod(0o755)
     out = _run_hook(workdir, _plugin_root(tmp_path, "1.2.3"), extra_path=bindir)
     assert out.returncode == 0
@@ -282,8 +282,8 @@ def test_plugin_hook_reports_drift_outside_tenant(tmp_path: Path) -> None:
     workdir.mkdir()
     bindir = tmp_path / "bin"
     bindir.mkdir()
-    stub = bindir / "cp"
-    stub.write_text("#!/usr/bin/env bash\necho 'cp, version 0.0.1'\n")
+    stub = bindir / "cxp"
+    stub.write_text("#!/usr/bin/env bash\necho 'cxp, version 0.0.1'\n")
     stub.chmod(0o755)
     # Constrain PATH so `uv` is absent — the hook prints its manual-install
     # advice and exits 0 rather than mutating the real uv tool env.

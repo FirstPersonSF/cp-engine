@@ -34,7 +34,7 @@ Before the slash commands work, run a one-time setup on each machine:
 1. Clone the cp tenant repo (e.g. `cp`).
 2. Add a `[local-repos]` section to `.cp-engine.local.toml` mapping each
    source repo's name to its local clone path.
-3. Run `cp link-local` from inside the cp tenant clone. This writes
+3. Run `cxp link-local` from inside the cp tenant clone. This writes
    `.cp-link` files into each source repo and adds them to
    `.git/info/exclude`.
 

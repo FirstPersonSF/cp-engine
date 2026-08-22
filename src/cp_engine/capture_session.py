@@ -415,7 +415,7 @@ def _resolve_destination(
     if cp_tenant is None:
         raise CpLinkUnresolvable(
             f"{source_repo} has no .cp-link and no --cp-tenant was provided. "
-            "Either run `cp link-local` from your cp tenant clone or pass "
+            "Either run `cxp link-local` from your cp tenant clone or pass "
             "--cp-tenant pointing at it."
         )
 

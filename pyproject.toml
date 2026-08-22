@@ -1,6 +1,6 @@
 [project]
 name = "cp-engine"
-version = "0.101.7"
+version = "0.102.0"
 description = "Context Protocol Engine — framework for First Person and Canonic CP corpora"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -22,7 +22,7 @@ dependencies = [
     "pypdf>=4.0",
     "slack-sdk>=3.27",
     # Declared explicitly even though `document-ingest[docx]` already pulls it
-    # in transitively: `cp wrap --docx` WRITES Word files (#184), so this is a
+    # in transitively: `cxp wrap --docx` WRITES Word files (#184), so this is a
     # first-class capability of ours, not an artifact of someone else's extra.
     # An undeclared transitive dep vanishes the day that extra is re-scoped.
     "python-docx>=1.1",
@@ -56,7 +56,9 @@ dev = [
 ]
 
 [project.scripts]
-cp = "cp_engine.cli:main"
+# Renamed from `cp` (2026-08-22): the old name shadowed /bin/cp on PATH,
+# so every bare `cp` in a shell ran this CLI instead of the copy command.
+cxp = "cp_engine.cli:main"
 
 [build-system]
 requires = ["hatchling"]

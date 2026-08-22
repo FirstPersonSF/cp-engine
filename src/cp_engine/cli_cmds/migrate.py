@@ -28,7 +28,7 @@ def migrate_to_v03(dry_run: bool) -> None:
 
     Uses `git mv` to preserve rename detection. Refuses to run on a dirty
     working tree — commit or stash first. After this runs cleanly, regular
-    `cp sync` keeps using the new layout."""
+    `cxp sync` keeps using the new layout."""
     try:
         config = load(Path.cwd())
     except ConfigError as exc:
@@ -175,7 +175,7 @@ def migrate_accounts_cmd(dry_run: bool) -> None:
 
     if dry_run:
         click.echo(
-            "\nWill run: cp sync (scaffolds account cp.md files, "
+            "\nWill run: cxp sync (scaffolds account cp.md files, "
             "re-renders master-cp)"
         )
         if result.residue:

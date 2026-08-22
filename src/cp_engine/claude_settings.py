@@ -174,7 +174,7 @@ def merge_permissions(existing: dict | None) -> tuple[dict, bool]:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  .mcp.json — registers the `cp-sources` stdio MCP server (`cp mcp`)
+#  .mcp.json — registers the `cp-sources` stdio MCP server (`cxp mcp`)
 # ──────────────────────────────────────────────────────────────────────
 
 # Name of the engine's MCP server entry in a tenant's `.mcp.json`. Stable so
@@ -183,8 +183,14 @@ _MCP_SERVER_NAME = "cp-sources"
 
 
 def _mcp_server_entry() -> dict:
-    """The engine's `cp-sources` server entry, in Claude Code's `.mcp.json` schema."""
-    return {"command": "cp", "args": ["mcp"]}
+    """The engine's `cp-sources` server entry, in Claude Code's `.mcp.json` schema.
+
+    The command was `cp` before 2026-08-22. Tenants synced under the old name
+    carry a stale entry pointing at a binary that no longer exists, which takes
+    the whole `cp-sources` server (and every tool on it) down. `merge_mcp_config`
+    rewrites on difference, so any sync repairs it.
+    """
+    return {"command": "cxp", "args": ["mcp"]}
 
 
 def merge_mcp_config(existing: dict | None) -> tuple[dict, bool]:

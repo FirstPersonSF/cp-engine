@@ -42,7 +42,7 @@ class CommittedConfigMissing(ConfigError):
 
 
 class LocalConfigMissing(ConfigError):
-    """`.cp-engine.local.toml` doesn't exist; user needs to run `cp init`."""
+    """`.cp-engine.local.toml` doesn't exist; user needs to run `cxp init`."""
 
 
 class CommittedConfigInvalid(ConfigError):
@@ -61,7 +61,7 @@ class ProjectsMissingFromLocal(ConfigError):
         super().__init__(
             "Missing local repo paths for: "
             + ", ".join(missing)
-            + ". Run `cp init` to configure, or edit .cp-engine.local.toml directly."
+            + ". Run `cxp init` to configure, or edit .cp-engine.local.toml directly."
         )
 
 
@@ -538,7 +538,7 @@ def _load_local(tenant_root: Path, *, committed_has_projects: bool) -> dict:
         if not committed_has_projects:
             return {"repos": {}, "local_repos": {}}
         raise LocalConfigMissing(
-            f"No {LOCAL_FILENAME} at {tenant_root}. Run `cp init` to configure."
+            f"No {LOCAL_FILENAME} at {tenant_root}. Run `cxp init` to configure."
         )
 
     with path.open("rb") as fh:

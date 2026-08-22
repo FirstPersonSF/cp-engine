@@ -26,12 +26,12 @@ Each project `cp.md` carries a model-authored `## Exec Summary` region
 Status / Where it stands / Next up / Blockers / Updates** — plus a
 `**Last session:**` line. **You author the six fields; the engine does
 not.** The engine only scaffolds the region, migrates the old Quick Resume
-into it on `cp sync`, and reads it for `/cp-prep`.
+into it on `cxp sync`, and reads it for `/cp-prep`.
 
 > **The `**Last session:**` line is DERIVED, not authored** — a projection
-> of the newest file under `sessions/`, recomputed by `cp capture-session`
-> and re-converged on every `cp sync`. Don't hand-edit it; on a merge
-> conflict keep either side and run `cp sync` — it self-heals.
+> of the newest file under `sessions/`, recomputed by `cxp capture-session`
+> and re-converged on every `cxp sync`. Don't hand-edit it; on a merge
+> conflict keep either side and run `cxp sync` — it self-heals.
 
 Auto-ingest never writes project `cp.md` state — per-meeting truth lands in
 the sprint file; you refresh the Exec Summary here.
@@ -138,6 +138,6 @@ roll-up and each touched project's `cp.md`. Then push.
   rather than working around it.
 - **Weekly review.** `wrap up` also closes a `run weekly review` block; the
   prior mode persists if the session continues.
-- **After a cp-engine release**, `cp mcp` keeps serving old bytecode.
+- **After a cp-engine release**, `cxp mcp` keeps serving old bytecode.
   Restart the MCP connection (`/mcp`) before assuming a spine tool is
   broken.

@@ -130,7 +130,7 @@ def test_it_names_the_known_commitments_blindness(skill: str) -> None:
 def test_it_distinguishes_itself_from_cp_close(skill: str) -> None:
     """Two close-out verbs that look alike will be used interchangeably
     unless the difference is stated up front."""
-    assert "This is not `cp close`" in skill
+    assert "This is not `cxp close`" in skill
     assert "FIRST" in skill  # ordering: wrap before close
 
 

@@ -283,7 +283,7 @@ def test_committed_duplicate_project_codes(tmp_path: Path) -> None:
 
 def test_local_missing(tmp_path: Path) -> None:
     write_committed(tmp_path)
-    with pytest.raises(LocalConfigMissing, match="cp init"):
+    with pytest.raises(LocalConfigMissing, match="cxp init"):
         load(tmp_path)
 
 

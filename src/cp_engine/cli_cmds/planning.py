@@ -40,7 +40,7 @@ from cp_engine.config import ConfigError, load
     "--no-sync",
     is_flag=True,
     help="Skip the automatic sync-if-stale check at the start. "
-    "By default, prep-agenda auto-runs `cp sync` if master-cp's last sync "
+    "By default, prep-agenda auto-runs `cxp sync` if master-cp's last sync "
     "is more than 10 minutes old, so the agenda never shows stale data.",
 )
 def prep_agenda_cmd(
@@ -71,7 +71,7 @@ def prep_agenda_cmd(
     from cp_engine.sync import _default_backend_factory, sync_tenant
 
     click.echo(
-        "warning: 'cp prep-agenda' is deprecated and will be removed in a future "
+        "warning: 'cxp prep-agenda' is deprecated and will be removed in a future "
         "release. Use 'cp prep-planning' instead.",
         err=True,
     )
@@ -82,7 +82,7 @@ def prep_agenda_cmd(
     # owner data" footgun. Opt-out via --no-sync for environments where
     # the network round-trip isn't acceptable (CI dry-runs, etc.).
     if not no_sync and is_sync_stale(config):
-        click.echo("master-cp sync is stale; running cp sync first…", err=True)
+        click.echo("master-cp sync is stale; running cxp sync first…", err=True)
         try:
             sync_tenant(config)
         except Exception as exc:
@@ -210,11 +210,11 @@ def prep_planning_cmd(
     """
     if not (summary or bundle or legacy_render):
         click.echo(
-            "cp prep-planning no longer renders the planning doc directly.\n"
+            "cxp prep-planning no longer renders the planning doc directly.\n"
             "Supported flows:\n"
-            "  cp prep-planning --bundle    # raw material for /cp-prep "
+            "  cxp prep-planning --bundle    # raw material for /cp-prep "
             "in-session synthesis\n"
-            "  cp prep-planning --summary   # JSON metrics\n"
+            "  cxp prep-planning --summary   # JSON metrics\n"
             "The deprecated engine-rendered inventory is available behind "
             "--legacy-render (works with --out).",
             err=True,

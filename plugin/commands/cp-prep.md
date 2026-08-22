@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(cp:*), Bash(cat:*), Bash(ls:*), Bash(mkdir:*), Bash(date:*), Bash(test:*), Bash(jq:*), Bash(echo:*), Read, Write
+allowed-tools: Bash(cxp:*), Bash(cat:*), Bash(ls:*), Bash(mkdir:*), Bash(date:*), Bash(test:*), Bash(jq:*), Bash(echo:*), Read, Write
 description: Prepare a forward-looking sprint planning doc from current cp tenant state.
 ---
 
@@ -313,7 +313,7 @@ churn distracting). Default: don't auto-commit. Tell the user:
 ### 7. Re-running
 
 `/cp-prep` is idempotent — re-running overwrites `_planning.md` in place
-with fresh state. Safe to re-run after a `cp sync`, after a `/cp-ingest`,
+with fresh state. Safe to re-run after a `cxp sync`, after a `/cp-ingest`,
 or anytime new content lands (including after adding/closing milestones
 in the MC-2 schedule or commitments in MC-2).
 
@@ -389,5 +389,5 @@ in the MC-2 schedule or commitments in MC-2).
   path touches ClickUp at all anymore.)
 - Doesn't ingest transcripts (that's `/cp-ingest`).
 - Doesn't update master-cp.md or weekly-cp.md (those have their own
-  paths via `cp sync` and `/cp-ingest` respectively).
+  paths via `cxp sync` and `/cp-ingest` respectively).
 - Doesn't auto-commit.

@@ -2095,7 +2095,7 @@ def render_planning_doc_markdown(result: PlanningResult) -> str:
         f"# Sprint {result.week_iso} Planning — {result.week_dates}"
     )
     lines.append(
-        f"_Generated {result.generated_at} by `cp prep-planning "
+        f"_Generated {result.generated_at} by `cxp prep-planning "
         f"--legacy-render` · "
         f"{result.project_count} active projects · "
         f"{result.estimated_minutes} min target_"
@@ -2215,7 +2215,7 @@ def render_planning_bundle(result: PlanningResult) -> str:
         f"# Sprint {result.week_iso} Planning Bundle — {result.week_dates}"
     )
     lines.append(
-        f"_Generated {result.generated_at} by `cp prep-planning --bundle` · "
+        f"_Generated {result.generated_at} by `cxp prep-planning --bundle` · "
         f"{result.project_count} active projects · "
         f"{result.estimated_minutes} min target_"
     )

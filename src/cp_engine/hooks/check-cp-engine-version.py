@@ -35,6 +35,7 @@ Design notes:
 from __future__ import annotations
 
 import contextlib
+import json
 import subprocess
 import sys
 import tomllib
@@ -83,13 +84,13 @@ def _read_repo_path(root: Path) -> Path | None:
 def _installed_version() -> str | None:
     try:
         out = subprocess.run(
-            ["cp", "--version"], capture_output=True, text=True, timeout=10
+            ["cxp", "--version"], capture_output=True, text=True, timeout=10
         )
     except (FileNotFoundError, subprocess.SubprocessError):
         return None
     if out.returncode != 0:
         return None
-    # "cp, version 0.16.0" -> "0.16.0"
+    # "cxp, version 0.16.0" -> "0.16.0"
     parts = out.stdout.strip().split()
     return parts[-1] if parts else None
 
@@ -167,10 +168,48 @@ def _reinstall(repo: Path) -> bool:
     return True
 
 
+
+def _repair_mcp_command(root: Path) -> None:
+    """Rewrite a stale `"command": "cp"` in the tenant's .mcp.json to `cxp`.
+
+    Rename cleanup (2026-08-22). A tenant last synced under the old name has
+    an entry pointing at a binary that no longer exists, which takes the whole
+    cp-sources server — and every tool on it — offline. `cxp sync` fixes this
+    via merge_mcp_config, but a user who never syncs would stay broken, and
+    syncing needs a working CLI. So repair it here, on session start.
+
+    Deliberately narrow: only the cp-sources entry, only when its command is
+    exactly "cp". Never blocks; any failure is silent beyond a note.
+    """
+    path = root / ".mcp.json"
+    if not path.is_file():
+        return
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return  # malformed or unreadable — leave it for `cxp sync` to rewrite
+
+    entry = (data.get("mcpServers") or {}).get("cp-sources")
+    if not isinstance(entry, dict) or entry.get("command") != "cp":
+        return
+
+    entry["command"] = "cxp"
+    try:
+        path.write_text(json.dumps(data, indent=2) + "\n")
+    except OSError:
+        return
+    _note(f"repaired stale 'cp' command in {path} -> 'cxp'.")
+
+
 def main() -> int:
     root = _tenant_root()
     if root is None:
         return 0  # not in a cp tenant; nothing to do
+
+    # Before any version logic: the repair must run even on the healthy
+    # early-return paths below, or a tenant whose CLI is already current
+    # keeps a dead MCP server forever.
+    _repair_mcp_command(root)
 
     pin = _read_pin(root)
     if pin is None:
@@ -179,8 +218,8 @@ def main() -> int:
     installed = _installed_version()
     if installed is None:
         _note(
-            "cp CLI not found or not runnable; skipping "
-            "(run `cp sync` to see the install error)."
+            "cxp CLI not found or not runnable; skipping "
+            "(run `cxp sync` to see the install error)."
         )
         return 0
 
@@ -193,15 +232,15 @@ def main() -> int:
     repo = _read_repo_path(root)
     if repo is None:
         _note(
-            f"cp {installed} does not satisfy pin '{pin}', and no local cp-engine "
+            f"cxp {installed} does not satisfy pin '{pin}', and no local cp-engine "
             f"clone is configured in .cp-engine.local.toml. Reinstall manually."
         )
         return 0
 
-    _note(f"cp {installed} does not satisfy pin '{pin}'; self-healing.")
+    _note(f"cxp {installed} does not satisfy pin '{pin}'; self-healing.")
     if _reinstall(repo):
         new = _installed_version()
-        _note(f"cp now at {new}.")
+        _note(f"cxp now at {new}.")
     return 0
 
 

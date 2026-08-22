@@ -1,10 +1,12 @@
-"""The `cp` CLI — entry point for tenant operations.
+"""The `cxp` CLI — entry point for tenant operations.
+
+Named `cp` until 2026-08-22; renamed because it shadowed /bin/cp on PATH.
 
 Subcommands per spec v02 §2.1:
-  cp init     → walk through populating .cp-engine.local.toml
-  cp sync     → run one sync cycle locally (same logic as the Action)
-  cp render   → re-render generated files (master-cp.md, CLAUDE.md)
-  cp status   → show what would change without writing
+  cxp init     → walk through populating .cp-engine.local.toml
+  cxp sync     → run one sync cycle locally (same logic as the Action)
+  cxp render   → re-render generated files (master-cp.md, CLAUDE.md)
+  cxp status   → show what would change without writing
 """
 
 from __future__ import annotations
@@ -114,7 +116,7 @@ def _load_config_or_die() -> "TenantConfig":  # noqa: F821
         return load(Path.cwd())
     except CommittedConfigMissing:
         click.echo(
-            "No .cp-engine.toml in this directory. Run `cp init` "
+            "No .cp-engine.toml in this directory. Run `cxp init` "
             "or cd into the cp tenant root.",
             err=True,
         )

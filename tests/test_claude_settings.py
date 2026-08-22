@@ -99,7 +99,7 @@ def test_merge_replaces_stale_engine_entry_no_duplicates():
 def test_merge_mcp_into_none_adds_cp_sources():
     merged, changed = merge_mcp_config(None)
     assert changed is True
-    assert merged["mcpServers"][_MCP_SERVER_NAME] == {"command": "cp", "args": ["mcp"]}
+    assert merged["mcpServers"][_MCP_SERVER_NAME] == {"command": "cxp", "args": ["mcp"]}
 
 
 def test_merge_mcp_is_idempotent():
@@ -121,7 +121,7 @@ def test_merge_mcp_preserves_other_servers():
     # tenant's own server survived untouched
     assert merged["mcpServers"]["tenant-own"] == {"command": "node", "args": ["server.js"]}
     # cp-sources added
-    assert merged["mcpServers"][_MCP_SERVER_NAME] == {"command": "cp", "args": ["mcp"]}
+    assert merged["mcpServers"][_MCP_SERVER_NAME] == {"command": "cxp", "args": ["mcp"]}
     # unrelated keys untouched
     assert merged["someOtherKey"] == {"keep": "me"}
 
@@ -141,7 +141,7 @@ def test_install_writes_script_and_settings(tmp_path: Path):
     mcp = tmp_path / ".mcp.json"
     assert mcp in written and mcp.exists()
     mcp_data = json.loads(mcp.read_text())
-    assert mcp_data["mcpServers"][_MCP_SERVER_NAME] == {"command": "cp", "args": ["mcp"]}
+    assert mcp_data["mcpServers"][_MCP_SERVER_NAME] == {"command": "cxp", "args": ["mcp"]}
 
 
 def test_install_preserves_tenant_mcp_servers(tmp_path: Path):
@@ -151,7 +151,7 @@ def test_install_preserves_tenant_mcp_servers(tmp_path: Path):
     install_into_tenant(tmp_path)
     data = json.loads((tmp_path / ".mcp.json").read_text())
     assert data["mcpServers"]["tenant-own"] == {"command": "node"}
-    assert data["mcpServers"][_MCP_SERVER_NAME] == {"command": "cp", "args": ["mcp"]}
+    assert data["mcpServers"][_MCP_SERVER_NAME] == {"command": "cxp", "args": ["mcp"]}
 
 
 def test_install_does_not_clobber_malformed_mcp(tmp_path: Path):

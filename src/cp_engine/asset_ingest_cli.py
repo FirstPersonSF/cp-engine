@@ -123,7 +123,7 @@ class _ProjectOutcome:
 
 @dataclass
 class FanOutResult:
-    """Aggregate of a `cp ingest-assets --all` run."""
+    """Aggregate of a `cxp ingest-assets --all` run."""
 
     outcomes: list[_ProjectOutcome] = field(default_factory=list)
 

@@ -2221,7 +2221,7 @@ def _extract_region(full_body: str, region: str) -> str:
 
 def _default_backend_factory(name: str) -> Backend:
     """Resolve a backend name to an instance. Lazy-imports backend modules
-    so e.g. `cp init` doesn't pay the cost of importing supabase."""
+    so e.g. `cxp init` doesn't pay the cost of importing supabase."""
     if name == "mc-2":
         from cp_engine.sync_mc2 import MC2Backend
         return MC2Backend()

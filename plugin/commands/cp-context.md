@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(cp:*), Bash(git:*), Bash(test:*), Bash(pwd:*), Read
+allowed-tools: Bash(cxp:*), Bash(git:*), Bash(test:*), Bash(pwd:*), Read
 description: Show recent activity (commits + session captures) for the current cp working dir.
 ---
 

@@ -265,7 +265,7 @@ def _frame_promote_in_tree(
 
     # Mirror the new version into spine_substance so the UI sees it
     # immediately (idempotent reconcile of ALL of this project's substance,
-    # exactly like `cp sync`). Best-effort: a mirror failure must NOT lose
+    # exactly like `cxp sync`). Best-effort: a mirror failure must NOT lose
     # the click — the markdown + git push still land and the next sync
     # reconciles. So we record mirrored=false and keep going.
     mirrored = True

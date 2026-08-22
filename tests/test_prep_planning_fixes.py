@@ -78,7 +78,7 @@ def test_legacy_render_header_stamps_provenance():
     from cp_engine.prep_planning import render_planning_doc_markdown
 
     doc = render_planning_doc_markdown(r)
-    assert "by `cp prep-planning --legacy-render`" in doc
+    assert "by `cxp prep-planning --legacy-render`" in doc
 
 
 # ──────────────────────────────────────────────────────────────────────

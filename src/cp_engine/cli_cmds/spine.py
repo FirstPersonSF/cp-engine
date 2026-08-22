@@ -102,7 +102,7 @@ def where_cmd(code: str) -> None:
         click.echo(
             f"No spine substance for '{code}'. `cp where` resolves the project "
             f"via its substance rows — frame at least one work item "
-            f"(cp spine-frame) first, or check the dir-slug code.",
+            f"(cxp spine-frame) first, or check the dir-slug code.",
             err=True,
         )
         sys.exit(1)
@@ -230,7 +230,7 @@ def spine_frame_cmd(card_id, framing, est_item_id, kind, sources, model) -> None
     try:
         client = mc2_db.get_client(config)
     except BackendUnavailable as exc:
-        click.echo(f"cp spine-frame needs MC-2: {exc}", err=True)
+        click.echo(f"cxp spine-frame needs MC-2: {exc}", err=True)
         sys.exit(1)
 
     card = load_card(client, card_id)
@@ -435,7 +435,7 @@ def spine_recover_cmd(code: str, apply_: bool, model: str) -> None:
     try:
         client = mc2_db.get_client(config)
     except BackendUnavailable as exc:
-        click.echo(f"cp spine-recover needs MC-2: {exc}", err=True)
+        click.echo(f"cxp spine-recover needs MC-2: {exc}", err=True)
         sys.exit(1)
 
     project_id = _resolve_project_id(client, canonical_code)
@@ -707,7 +707,7 @@ def spine_lint_cmd(code: str) -> None:
     try:
         client = mc2_db.get_client(config)
     except BackendUnavailable as exc:
-        click.echo(f"cp spine-lint needs MC-2 for the spine checks: {exc}",
+        click.echo(f"cxp spine-lint needs MC-2 for the spine checks: {exc}",
                    err=True)
         sys.exit(1)
 
@@ -1607,7 +1607,7 @@ def weekly_sort_cmd(code: str | None, do_apply: bool,
             per[pc] = per.get(pc, 0) + 1
         for pc, n in sorted(per.items(), key=lambda kv: -kv[1])[:8]:
             click.echo(f"  {pc:<44} {n:>3}")
-        click.echo("  frame them with: cp spine-frame <code>")
+        click.echo("  frame them with: cxp spine-frame <code>")
 
     if queue.work_excluded:
         click.echo(f"\n{queue.work_excluded} work cards excluded "

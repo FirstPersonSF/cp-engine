@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(cp:*), Bash(cat:*), Bash(mktemp:*), Bash(rm:*), Bash(ls:*), Bash(mkdir:*), Bash(date:*), Bash(git:*), Read, Write
+allowed-tools: Bash(cxp:*), Bash(cat:*), Bash(mktemp:*), Bash(rm:*), Bash(ls:*), Bash(mkdir:*), Bash(date:*), Bash(git:*), Read, Write
 description: Ingest a transcript into the cp tenant — classify, plan, confirm, execute.
 ---
 
@@ -7,7 +7,7 @@ description: Ingest a transcript into the cp tenant — classify, plan, confirm,
 
 Ingest a meeting transcript into the cp tenant. Read it, classify which
 projects it touches, produce a structured plan, confirm with the user,
-then execute via the deterministic `cp ingest --plan` verb. Saves a
+then execute via the deterministic `cxp ingest --plan` verb. Saves a
 plan-log artifact regardless of outcome.
 
 **Arguments (mutually exclusive):**
@@ -206,7 +206,7 @@ PLAN=$(mktemp -t cp-ingest-plan.XXXXXX.yaml)
 ### 5. Dry-run validate
 
 ```bash
-cp ingest --plan "$PLAN" --dry-run
+cxp ingest --plan "$PLAN" --dry-run
 ```
 
 Output is JSON describing what would happen. Surface a summary to the
@@ -228,7 +228,7 @@ edit the plan and re-validate.
 ### 6. Execute
 
 ```bash
-cp ingest --plan "$PLAN"
+cxp ingest --plan "$PLAN"
 ```
 
 Output is JSON: `{files_written, skipped_duplicate, errors}`. Surface
@@ -248,7 +248,7 @@ list to the user and ask whether to retry or abort.
 
 ### 7. Save the plan to the ingest log
 
-The ingest log is bucketed by the current ISO week (UTC). `cp ingest`
+The ingest log is bucketed by the current ISO week (UTC). `cxp ingest`
 itself resolves the planning week per project; this step just stashes
 the plan YAML for audit, so use today's ISO week directly. Sprint
 files live at `sprints/<W##>/<code>.md` (one per active engagement /
@@ -307,20 +307,20 @@ prefix.
 - **No mentioned_codes AND Claude can't classify.** Probably a transcript
   with no project content (e.g. a casual call). Tell the user "this
   transcript doesn't touch any cp-tracked projects — skipping."
-- **Plan validation fails.** `cp ingest --dry-run` prints the validation
+- **Plan validation fails.** `cxp ingest --dry-run` prints the validation
   error. Fix the plan and re-dry-run. Don't proceed to execute.
 - **Sprint file missing for a referenced project code.** Plan executor
   errors with `sprint file missing for <code>`. Means the project isn't
   active this sprint per MC-2. Either the classification is wrong
   (project not really mentioned, or different code) or the project needs
-  to be re-activated in MC-2 + a `cp sync` run.
+  to be re-activated in MC-2 + a `cxp sync` run.
 
 ## What this command doesn't do
 
 - Doesn't read from Fathom directly — that's `/cp-ingest-fathom` in v0.8.7.
 - Doesn't commit changes — user reviews + commits manually.
 - Doesn't write to project `cp.md` durable sections directly. Those get
-  populated automatically on next `cp sync` from the strip regions
+  populated automatically on next `cxp sync` from the strip regions
   (which read from the sprint files this command wrote to).
 - Doesn't update `weekly-cp.md` directly. Same flow as above — write
   bracket-formatted decisions into sprint files with `cross_cutting: true`,

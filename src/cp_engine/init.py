@@ -135,7 +135,7 @@ def run_init(
 
     print(file=out)
     print(f"Wrote {local_path.relative_to(tenant_root)}.", file=out)
-    print("`cp sync` will pick up these paths.", file=out)
+    print("`cxp sync` will pick up these paths.", file=out)
     return local_path
 
 
@@ -152,7 +152,7 @@ def _load_or_create_local_doc(local_path: Path) -> TOMLDocument:
     doc.add(tomlkit.comment("cp-engine local config — gitignored, per-machine."))
     doc.add(
         tomlkit.comment(
-            "Edit by hand or re-run `cp init` after adding projects to .cp-engine.toml."
+            "Edit by hand or re-run `cxp init` after adding projects to .cp-engine.toml."
         )
     )
     doc.add(tomlkit.nl())
@@ -210,6 +210,6 @@ def _prompt_for_path(
         return raw
 
     raise InitAborted(
-        f"Too many invalid paths for {code}. Aborting; rerun `cp init` after "
+        f"Too many invalid paths for {code}. Aborting; rerun `cxp init` after "
         f"locating the repo, or edit {LOCAL_FILENAME} directly."
     )

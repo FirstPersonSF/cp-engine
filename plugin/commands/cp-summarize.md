@@ -1,5 +1,5 @@
 ---
-allowed-tools: Bash(cp:*), Bash(git:*), Bash(cat:*), Bash(mktemp:*), Bash(rm:*), Bash(ls:*), Bash(test:*), Bash(whoami:*), Bash(realpath:*), Bash(find:*), Read, Write
+allowed-tools: Bash(cxp:*), Bash(git:*), Bash(cat:*), Bash(mktemp:*), Bash(rm:*), Bash(ls:*), Bash(test:*), Bash(whoami:*), Bash(realpath:*), Bash(find:*), Read, Write
 description: Capture a session summary back to the cp working dir for the current source repo.
 ---
 
@@ -13,7 +13,7 @@ pushes the change so the cp clone stays current.
 
 Run these steps in order. **Do not skip steps; do not improvise.** The
 plumbing (path resolution, file naming, cp.md edits, git commits) lives
-in the `cp capture-session` Python command — your job is to draft a
+in the `cxp capture-session` Python command — your job is to draft a
 **good** summary and hand it off.
 
 ### 1. Detect the mode
@@ -58,7 +58,7 @@ test -f "$GIT_ROOT/.cp-link"
 
 ### 3. (Mode A only) Resolve the cp tenant root (unlinked sub-case)
 
-The `cp capture-session` command needs `--cp-tenant` for unlinked repos.
+The `cxp capture-session` command needs `--cp-tenant` for unlinked repos.
 Walk up from `.cp-link`'s target (when present) to find an ancestor
 containing `.cp-engine.toml`. If `.cp-link` is missing, look for sibling
 repos that have a `.cp-link`:
@@ -133,14 +133,14 @@ TMP=$(mktemp -t cp-summarize.XXXXXX.md)
 # Then use the Write tool to put the drafted summary into $TMP.
 ```
 
-### 7. Invoke `cp capture-session`
+### 7. Invoke `cxp capture-session`
 
 Pick the invocation that matches the mode you detected in step 1.
 
 **Mode A, linked source repo** (`.cp-link` exists at git root):
 
 ```bash
-cp capture-session \
+cxp capture-session \
     --source-repo "$GIT_ROOT" \
     --summary-file "$TMP" \
     --user "Drew"
@@ -149,7 +149,7 @@ cp capture-session \
 **Mode A, unlinked source repo** — add `--cp-tenant`:
 
 ```bash
-cp capture-session \
+cxp capture-session \
     --source-repo "$GIT_ROOT" \
     --summary-file "$TMP" \
     --user "Drew" \
@@ -161,13 +161,13 @@ cp capture-session \
 ancestors, so `--cp-tenant` isn't needed):
 
 ```bash
-cp capture-session \
+cxp capture-session \
     --working-dir "$PWD_NOW" \
     --summary-file "$TMP" \
     --user "Drew"
 ```
 
-In Mode B, `cp capture-session` automatically commits **everything text-y
+In Mode B, `cxp capture-session` automatically commits **everything text-y
 inside the working directory** — synthesis docs, transcripts, hand-written
 notes, the new session file, the `cp.md` update. Binaries (`.docx`,
 `.pptx`, `.pdf`, etc.) are excluded by the tenant `.gitignore`. **Do
@@ -191,7 +191,7 @@ Show the user a one-paragraph confirmation:
 > Captured session to `<path returned by step 7>`.
 > cp clone committed (`<sha>`) and pushed.
 
-If `cp capture-session` reports that it wrote to `exceptions/`, also
+If `cxp capture-session` reports that it wrote to `exceptions/`, also
 say:
 
 > Heads up: this repo isn't tracked in your cp tenant, so the summary
@@ -213,8 +213,8 @@ say:
   installed on this machine. Tell the user to run `uv tool install
   --from <path-to-cp-engine-repo> cp-engine` (or `pip install -e .`
   from inside that repo).
-- **`cp capture-session` reports a stale `.cp-link`.** It self-heals
+- **`cxp capture-session` reports a stale `.cp-link`.** It self-heals
   silently — no user action needed. Just continue.
-- **`cp capture-session` errors with `CpLinkUnresolvable`.** The repo
+- **`cxp capture-session` errors with `CpLinkUnresolvable`.** The repo
   has no `.cp-link` and no `--cp-tenant` was provided. Re-run step 3
   with the user-provided cp tenant path.

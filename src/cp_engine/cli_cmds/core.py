@@ -105,12 +105,12 @@ def sync() -> None:
 
 @click.command()
 def render() -> None:
-    """Re-render generated files (alias for `cp sync` in v0.1)."""
+    """Re-render generated files (alias for `cxp sync` in v0.1)."""
     # In v0.1 there's no separate render-only path — sync already writes
     # only when content changed and never reaches out to the database
     # for unchanged regions. Future: a true `--no-network` render that
     # uses cached project state.
-    click.echo("`cp render` is currently an alias for `cp sync`. Running sync…")
+    click.echo("`cxp render` is currently an alias for `cxp sync`. Running sync…")
     ctx = click.get_current_context()
     ctx.invoke(sync)
 
@@ -321,7 +321,7 @@ def status() -> None:
 
     click.echo(
         f"{len(result.files_written)} file(s) would change "
-        f"({result.projects_seen} projects checked). Run `cp sync` to apply:"
+        f"({result.projects_seen} projects checked). Run `cxp sync` to apply:"
     )
     for path in result.files_written:
         click.echo(f"  would write    {path.relative_to(config.root)}")
