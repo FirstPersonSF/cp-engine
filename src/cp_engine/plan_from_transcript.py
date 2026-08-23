@@ -67,6 +67,7 @@ def generate_plan(
     model: str = "claude-opus-4-7",
     api_key: str | None = None,
     roster: list | None = None,
+    today: str | None = None,
 ) -> GeneratedPlan:
     """Read transcript + project context, ask Claude for a plan, validate it.
 
@@ -91,6 +92,7 @@ def generate_plan(
         transcript_path=transcript_path,
         team=config.team,
         roster=roster,
+        today=today,
     )
 
     # Judgment priors (mig 139), resolved for THIS project so a per-project
@@ -134,7 +136,7 @@ def generate_plan(
     # _validate_plan here would therefore still pass — we skip it only
     # to avoid the redundant pass on a now-trusted plan.
     if action_items:
-        today_iso = datetime.now().strftime("%Y-%m-%d")
+        today_iso = today or datetime.now().strftime("%Y-%m-%d")
         ask_items = _action_items_to_ask_items(
             code=project_code, action_items=action_items, today_iso=today_iso
         )
@@ -422,8 +424,13 @@ def _build_prompt(
     transcript_path: Path,
     team: tuple[str, ...] = (),
     roster: list | None = None,
+    today: str | None = None,
 ) -> str:
-    today = datetime.now().date().isoformat()
+    # `today` anchors every date the model emits. It defaults to the wall
+    # clock, but a REPLAY of an old meeting must pass that meeting's date —
+    # otherwise recovered bullets are stamped with the day the recovery ran
+    # and two-week-old asks look brand new. See `cxp rerun-failed-ingests`.
+    today = today or datetime.now().date().isoformat()
     if team:
         team_block = (
             "These names are INTERNAL TEAM MEMBERS, not project stakeholders.\n"

@@ -279,6 +279,7 @@ def rerun_failed_ingests_cmd(
     import json as _json
     from collections import Counter
     from datetime import date, timedelta
+    from datetime import date as _date_cls
 
     from cp_engine.ingest import execute_plan
     from cp_engine.mc2_db import Tables, get_client
@@ -397,15 +398,27 @@ def rerun_failed_ingests_cmd(
                         project_code=code,
                         transcript_path=tpath,
                         action_items=meeting.get("action_items"),
+                        # Anchor the model's dates to the MEETING, not the
+                        # wall clock — this is the whole point of a replay.
+                        today=m_date,
                     )
                 except PlanGenerationError as exc:
                     click.echo(f"  ! {m_date} {code}: plan generation failed: {exc}", err=True)
                     failed += 1
                     continue
+                # `today` is the MEETING date, not the wall clock. Undated
+                # bullets fall back to it (_resolve_today_iso), so replaying
+                # weeks later would otherwise stamp two-week-old asks,
+                # decisions and risks with today's date — making recovered
+                # content look brand new and corrupting every age-based
+                # surface downstream (past-due asks, escalation windows,
+                # carry-forward). The meeting date is when this content
+                # actually happened.
+                y, mth, dy = (int(x) for x in m_date.split("-")[:3])
                 result = execute_plan(
                     gen.plan,
                     tenant_root=config.root,
-                    today=datetime.now().date(),
+                    today=_date_cls(y, mth, dy),
                     supabase=client,
                     meeting_id=run.get("meeting_id"),
                     week_iso=_week_iso_for(m_date),
