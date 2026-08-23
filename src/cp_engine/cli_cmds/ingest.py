@@ -246,6 +246,16 @@ def ingest_from_transcript_cmd(
     ),
 )
 @click.option(
+    "--skip-meeting",
+    multiple=True,
+    help=(
+        "Meeting id to skip (repeatable). The runs table cannot know a run "
+        "was already recovered by hand or by an earlier partial pass, and a "
+        "replay re-asks the model — so replaying one twice yields "
+        "differently-worded duplicates, not a no-op."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show what would be replayed and exit. No API calls, no writes.",
@@ -257,7 +267,11 @@ def ingest_from_transcript_cmd(
     help="Replay at most N runs (oldest meeting first). For a cautious first pass.",
 )
 def rerun_failed_ingests_cmd(
-    since: str | None, exclude: tuple[str, ...], dry_run: bool, limit: int | None
+    since: str | None,
+    exclude: tuple[str, ...],
+    skip_meeting: tuple[str, ...],
+    dry_run: bool,
+    limit: int | None,
 ) -> None:
     """Replay auto-ingest runs whose plans were computed but never written.
 
@@ -288,6 +302,7 @@ def rerun_failed_ingests_cmd(
     config = _cli._load_config_or_die()
     cutoff = since or (date.today() - timedelta(days=14)).isoformat()
     excluded = {e.strip() for e in exclude if e.strip()}
+    skipped_meetings = {m.strip() for m in skip_meeting if m.strip()}
 
     client = get_client(config=config)
     rows = (
@@ -321,6 +336,8 @@ def rerun_failed_ingests_cmd(
         meeting = by_id.get(r.get("meeting_id") or "")
         if not meeting:
             continue
+        if (r.get("meeting_id") or "") in skipped_meetings:
+            continue
         m_date = (meeting.get("meeting_date") or "")[:10]
         if m_date < cutoff:
             continue
@@ -350,6 +367,8 @@ def rerun_failed_ingests_cmd(
     click.echo(f"Meeting date on/after {cutoff}: {len(candidates)} run(s)")
     if excluded:
         click.echo(f"Excluded projects:             {', '.join(sorted(excluded))}")
+    if skipped_meetings:
+        click.echo(f"Skipped meetings:              {len(skipped_meetings)}")
     click.echo(f"Bullets recorded in those plans: ~{planned_bullets}")
     click.echo("")
     for code, n in per_project.most_common():
