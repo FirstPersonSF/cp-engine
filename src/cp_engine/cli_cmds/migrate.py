@@ -198,3 +198,68 @@ def migrate_accounts_cmd(dry_run: bool) -> None:
     click.echo("\nDone. Review with `git status` / `git diff`, then commit.")
 
 
+
+
+@click.command(name="adopt-orphaned-versions")
+@click.argument("project_code")
+@click.argument("est_item_id")
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Show which versions would be adopted without writing to MC-2.",
+)
+def adopt_orphaned_versions_cmd(
+    project_code: str, est_item_id: str, dry_run: bool
+) -> None:
+    """Adopt a re-keyed element's orphaned `distilled` rows (#200).
+
+    When an element is re-keyed, the old phase-dir file and the new
+    `_authored/<uuid>.md` both claim one est_item_id. Sync mirrors the stale
+    file's top version `live`, and the authored-live shield (#113) flips it
+    and warns on every sync.
+
+    Deleting the stale file alone DESTROYS its rows: the reap exempts
+    `origin='authored'` only, and an all-`proposed` distilled ladder is
+    hard-deleted rather than flagged. This flips those rows to `authored`
+    first, so they survive under MC-2 ownership.
+
+    Run this, verify, THEN remove the stale file and sync — separate steps,
+    each reviewable. Idempotent; safe to re-run.
+    """
+    from cp_engine import cli as _cli
+    from cp_engine.migrate_adopt_orphans import (
+        AdoptOrphansError,
+        adopt_orphaned_versions,
+    )
+
+    config = _cli._load_config_or_die()
+
+    try:
+        result = adopt_orphaned_versions(
+            project_code, est_item_id, config=config, dry_run=dry_run
+        )
+    except AdoptOrphansError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+
+    prefix = "Would adopt" if dry_run else "Adopted"
+    if result.adopted:
+        click.echo(
+            f"{prefix} {len(result.adopted)} version(s) "
+            f"distilled → authored: {', '.join(result.adopted)}"
+        )
+    else:
+        click.echo("Nothing to adopt — no distilled rows on this element.")
+
+    if result.already_authored:
+        click.echo(
+            f"Already authored ({len(result.already_authored)}): "
+            f"{', '.join(sorted(result.already_authored))}"
+        )
+    click.echo(f"Live version: {', '.join(result.live_rows)}")
+
+    if result.adopted and not dry_run:
+        click.echo(
+            "\nNext: remove the stale phase-dir file, then `cxp sync`. "
+            "The adopted rows are now exempt from the reap."
+        )
