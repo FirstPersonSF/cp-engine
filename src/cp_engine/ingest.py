@@ -883,6 +883,55 @@ def _write_ask(
     return True
 
 
+def _log_unmatched_hash(
+    *, verb: str, code: str, target_hash: str, body: str, sprint_path: Path,
+    settled: tuple[str, ...] = (),
+) -> None:
+    """Distinguish 'nothing to do' from 'could not parse it'.
+
+    The hash-matching writers (close-ask, resolve-risk, snooze-*) all return
+    False when their regex matches nothing, and for a long time that single
+    return value covered two unrelated outcomes:
+
+      1. The hash is not in the file. The item was already actioned and the
+         bullet rolled off, or the user clicked a stale Slack digest message.
+         Routine — stays silent.
+
+      2. The hash IS in the file, but the writer's regex still didn't match.
+         That means the bullet exists and this writer cannot parse it. That
+         is always a defect, and it is exactly how the `- [risk · …]` prefix
+         mismatch stayed invisible: the digest surfaced a risk the writer
+         could never resolve, and the click reported "already resolved."
+
+    Case 2 is logged at WARNING with the offending line so it shows up in the
+    webhook's Railway logs instead of being smoothed into a reassuring
+    no-op message. The caller's return value is unchanged either way — this
+    is observability, not control flow.
+
+    `settled` lists the status tokens that mean "this item was already
+    actioned" (e.g. `resolved` for a risk, `closed` for an ask). A bullet
+    sitting in one of those states is the ordinary idempotent rerun of case 1,
+    NOT a parse failure, so it stays silent too. Without this the second click
+    of any button would cry wolf.
+    """
+    marker = f"cp:hash={target_hash}"
+    offending = next(
+        (ln for ln in body.splitlines() if marker in ln), ""
+    )
+    if not offending:
+        # Case 1 — genuinely absent. Nothing to report.
+        return
+    # Already-actioned bullet: idempotent rerun, not a parse failure.
+    status = offending.split("]", 1)[0] if "]" in offending else offending
+    if any(f"{tok}" in status for tok in settled):
+        return
+    logger.warning(
+        "%s: hash %s IS present in %s but no bullet matched — the writer "
+        "cannot parse this line, which is a bug, not a no-op. Line: %s",
+        verb, target_hash, sprint_path.name, offending.strip()[:300],
+    )
+
+
 def _write_close_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
     """Flip an existing `[open ...]` ask to `[closed ...]`.
 
@@ -931,6 +980,14 @@ def _write_close_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
 
     new_body, n = open_bullet_re.subn(_flip, body, count=1)
     if n == 0:
+        # Hash-matched closes get the same present-but-unparseable check as
+        # resolve-risk. Text-matched closes (the legacy ClickUp/hand-written
+        # path) have no hash to look for, so there is nothing to distinguish.
+        if target_hash:
+            _log_unmatched_hash(
+                verb="close-ask", code=code, target_hash=target_hash,
+                body=body, sprint_path=sprint_path, settled=("closed",),
+            )
         return False
     sprint_path.write_text(new_body)
     return True
@@ -1024,10 +1081,15 @@ def _write_resolve_risk(
 
     new_body, n = pattern.subn(_flip, body, count=1)
     if n == 0:
-        # Either the hash isn't present at all (stale Slack-digest click on
-        # a risk that scrolled off) OR it's present but already resolved
-        # (idempotent rerun). Both are silent no-ops — caller increments
-        # skipped_duplicate, no error surfaced.
+        # Two very different situations both land here, and conflating them
+        # hid a real bug for weeks (the `risk · ` prefix mismatch). Split them:
+        #   - hash present  → already resolved / idempotent rerun. Routine.
+        #   - hash absent   → stale click, OR a bullet this writer cannot
+        #                     parse. The latter is always a defect, so say so.
+        _log_unmatched_hash(
+            verb="resolve-risk", code=code, target_hash=target_hash,
+            body=body, sprint_path=sprint_path, settled=("resolved",),
+        )
         return False
     sprint_path.write_text(new_body)
     return True
@@ -1066,8 +1128,14 @@ def _write_snooze(
     )
     m = line_re.search(body)
     if not m:
-        # Same dedupe semantic as resolve-risk: hash not in body = nothing to do.
-        # Slack-button reruns on stale messages should be silent no-ops.
+        # Same dedupe semantic as resolve-risk: hash not in body = nothing to
+        # do. Slack-button reruns on stale messages are routine no-ops — but a
+        # hash that IS present and still didn't match means this writer can't
+        # parse the bullet, which is a defect. See _log_unmatched_hash.
+        _log_unmatched_hash(
+            verb=f"snooze-{bullet_kind}", code=code, target_hash=target_hash,
+            body=body, sprint_path=sprint_path,
+        )
         return False
 
     old_line = m.group("line")

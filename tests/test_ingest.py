@@ -8,6 +8,7 @@ Three parts:
 
 from __future__ import annotations
 
+import logging
 from datetime import date
 from pathlib import Path
 
@@ -15,6 +16,8 @@ import pytest
 
 from cp_engine.ingest import (
     IngestPlanError,
+    _write_close_ask,
+    _write_resolve_risk,
     execute_plan,
     parse_transcript,
 )
@@ -1015,6 +1018,99 @@ def test_resolve_risk_matches_the_human_risk_prefix_bullet_shape(tmp_path: Path)
     assert "cp:closed-by=slack" in after
     # Not a silent no-op — this is the exact failure the bug produced.
     assert result.skipped_duplicate == 0
+
+
+def _seed_bullet(tmp_path: Path, line: str, code: str = "storyos") -> Path:
+    """Sprint file containing exactly one hand-written bullet."""
+    week_dir = tmp_path / "sprints" / "2026-W35"
+    week_dir.mkdir(parents=True, exist_ok=True)
+    _scaffold_minimal_sprint_file(week_dir / f"{code}.md", code)
+    (week_dir / "_week.md").write_text("## Themes\n\n- _<theme>_\n")
+    path = week_dir / f"{code}.md"
+    path.write_text(path.read_text().rstrip("\n") + "\n" + line + "\n")
+    return path
+
+
+def test_unmatched_hash_present_in_file_is_logged_as_a_defect(
+    tmp_path: Path, caplog
+) -> None:
+    """Hash IS in the file but no bullet matched → WARNING, not a silent no-op.
+
+    This is the observability half of the `risk · ` prefix bug. The writer
+    returning False covered two unrelated outcomes, so a regex that could not
+    parse a bullet was indistinguishable from an ordinary stale click — and
+    the Slack handler cheerfully rendered it as "already resolved". A bullet
+    that exists but cannot be parsed is always a defect and must say so.
+    """
+    path = _seed_bullet(
+        tmp_path,
+        "- [[malformed · escalated · scope · 2026-08-20] body "
+        "<!-- cp:hash=8a93518d -->",
+    )
+    with caplog.at_level(logging.WARNING, logger="cp_engine.ingest"):
+        flipped = _write_resolve_risk(
+            "storyos", {"hash": "8a93518d"}, path, today=date(2026, 8, 23)
+        )
+    assert flipped is False  # control flow unchanged — this is logging only
+    assert "cannot parse this line" in caplog.text
+    assert "8a93518d" in caplog.text
+
+
+def test_unmatched_hash_absent_from_file_stays_silent(
+    tmp_path: Path, caplog
+) -> None:
+    """Hash not in the file → stale Slack click. Routine, must NOT warn."""
+    path = _seed_bullet(
+        tmp_path,
+        "- [risk · escalated · scope · 2026-08-20] body <!-- cp:hash=deadbeef -->",
+    )
+    with caplog.at_level(logging.WARNING, logger="cp_engine.ingest"):
+        flipped = _write_resolve_risk(
+            "storyos", {"hash": "8a93518d"}, path, today=date(2026, 8, 23)
+        )
+    assert flipped is False
+    assert caplog.text == ""
+
+
+def test_already_resolved_bullet_stays_silent(tmp_path: Path, caplog) -> None:
+    """Second click on an already-resolved risk is idempotence, not a defect.
+
+    Without the `settled` check this would cry wolf on every double-click,
+    which would train the warning to be ignored — the exact failure mode the
+    logging exists to prevent.
+    """
+    path = _seed_bullet(
+        tmp_path,
+        "- [risk · resolved · scope · 2026-08-20] body <!-- cp:hash=8a93518d -->",
+    )
+    with caplog.at_level(logging.WARNING, logger="cp_engine.ingest"):
+        flipped = _write_resolve_risk(
+            "storyos", {"hash": "8a93518d"}, path, today=date(2026, 8, 23)
+        )
+    assert flipped is False
+    assert caplog.text == ""
+
+
+def test_close_ask_already_closed_stays_silent_but_malformed_warns(
+    tmp_path: Path, caplog
+) -> None:
+    """close-ask gets the same split: `closed` is settled, malformed warns."""
+    closed = _seed_bullet(
+        tmp_path, "- [closed · 2026-08-20] body <!-- cp:hash=8a93518d -->"
+    )
+    with caplog.at_level(logging.WARNING, logger="cp_engine.ingest"):
+        _write_close_ask("storyos", {"hash": "8a93518d"}, closed)
+    assert caplog.text == ""
+
+    caplog.clear()
+    malformed = _seed_bullet(
+        tmp_path,
+        "- [[open · 2026-08-20] body <!-- cp:hash=8a93518d -->",
+        code="ggl-5168",
+    )
+    with caplog.at_level(logging.WARNING, logger="cp_engine.ingest"):
+        _write_close_ask("ggl-5168", {"hash": "8a93518d"}, malformed)
+    assert "cannot parse this line" in caplog.text
 
 
 def test_resolve_risk_silently_dedupes_when_hash_not_found(tmp_path: Path) -> None:
