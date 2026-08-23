@@ -95,7 +95,7 @@ current user (or any clone for a fresh agent) and read `git log`, recent diffs,
 file contents, etc.
 
 A separate per-machine map at `.cp-engine.local.toml` under `[local-repos]`
-(gitignored) drives `cp link-local` and `cp capture-session` self-healing.
+(gitignored) drives `cxp link-local` and `cxp capture-session` self-healing.
 
 Conversely, when the working directory is a tracked source repo rather than a cp
 working dir, look for `.cp-link` at the repo root. It contains the absolute path
@@ -106,7 +106,7 @@ session summary back to the cp working dir at the end of a development session.
 ## MC-2 storage: sources + spine (the `cp-sources` MCP server)
 
 **MC-2 (Supabase) is the source of truth; reach it LIVE through the
-`cp-sources` MCP server** (`cp mcp` per `.mcp.json`). The on-disk mirrors
+`cp-sources` MCP server** (`cxp mcp` per `.mcp.json`). The on-disk mirrors
 (`_sources.md`, `spine/`) lag — prefer the MCP tools; never screenshots.
 Every tool takes a `<code>` first (engagement, initiative, or standalone
 repo). Five stores: **1 — RAG source store** (ingested Drive/Dropbox
@@ -248,7 +248,7 @@ auto-appended bullets in known sections.
 When the user asks to prep an agenda for sprint planning ("run weekly
 sprint planning", "prep sprint planning agenda", or similar), run
 `/cp-prep`. The engine emits a
-**bundle** (`cp prep-planning --bundle`) — every active project's full
+**bundle** (`cxp prep-planning --bundle`) — every active project's full
 Exec Summary plus deterministic metrics — and **you synthesize**
 `sprints/<W##>/_planning.md` from it in-session (you author the doc, so
 you can defend and revise it live in the meeting). The command itself
@@ -282,10 +282,10 @@ lives in that file's header. Real bugs still go to GitHub issues; never
 delete entries. `wrap up` sweeps for unlogged friction;
 `sweep improvements` harvests.
 
-## After a cp-engine release: restart `cp mcp`
+## After a cp-engine release: restart `cxp mcp`
 
-`cp mcp` outlives a release and keeps serving old bytecode after
-`cp sync` upgrades the CLI. If a spine tool ignores a shipped fix,
+`cxp mcp` outlives a release and keeps serving old bytecode after
+`cxp sync` upgrades the CLI. If a spine tool ignores a shipped fix,
 restart the MCP connection (`/mcp`) before assuming it's broken.
 
 ## Spec
