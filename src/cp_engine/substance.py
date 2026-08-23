@@ -85,7 +85,7 @@ class SubstanceVersion:
     date: str           # ISO date string (kept as text)
     status: str         # live | superseded
     framing: str
-    sources: tuple[str, ...]
+    sources: tuple[str | dict, ...]
     body: str
 
 
@@ -226,7 +226,14 @@ def _parse_version_section(section: str, path: Path) -> SubstanceVersion:
             raise ValueError(
                 f"{path}: version {label} sources is not a mapping"
             )
-        sources = tuple(str(s) for s in _as_tuple(parsed.get("sources")))
+        # Keep mappings as mappings: a source is `{id, title, type}` in MC-2
+        # and consumers (stub_sweep, asset_dedupe) branch on `isinstance(dict)`.
+        # `str(s)` used to flatten them to a Python repr, so a write→read→write
+        # cycle corrupted the file a second way beyond the indent bug (#216).
+        sources = tuple(
+            s if isinstance(s, dict) else str(s)
+            for s in _as_tuple(parsed.get("sources"))
+        )
     else:
         sources = ()
 
@@ -316,6 +323,24 @@ def _yaml_scalar(value: object) -> str:
     return dumped.rstrip("\n").removesuffix("\n...").rstrip("\n")
 
 
+def _yaml_list_item(value: object, indent: str = "  ") -> str:
+    """Render one `sources:` entry as a YAML block-sequence item.
+
+    A source is either a plain string or a mapping (`{id, title, type}` — the
+    shape `spine_substance.sources` holds in MC-2). `_yaml_scalar` dumps a
+    mapping to MULTIPLE lines; prefixing only the first with "- " left the rest
+    at column 0, which YAML then rejects with "mapping values are not allowed
+    here" (#216). Every continuation line has to be indented under the dash.
+    """
+    dumped = _yaml_scalar(value)
+    first, *rest = dumped.split("\n")
+    out = [f"{indent}- {first}"]
+    # Continuation lines sit two columns further in, aligning under the text
+    # that follows the "- " marker.
+    out.extend(f"{indent}  {ln}" if ln else "" for ln in rest)
+    return "\n".join(out)
+
+
 def _render_version(v: SubstanceVersion) -> str:
     """Render one version back to the canonical `## v<N> …` shape.
 
@@ -327,7 +352,7 @@ def _render_version(v: SubstanceVersion) -> str:
     lines.append(f"framing: {v.framing}")
     lines.append("sources:")
     for s in v.sources:
-        lines.append(f"  - {_yaml_scalar(s)}")
+        lines.append(_yaml_list_item(s))
     lines.append("")
     lines.append(v.body)
     return "\n".join(lines)
