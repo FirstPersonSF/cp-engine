@@ -1031,6 +1031,105 @@ def _seed_bullet(tmp_path: Path, line: str, code: str = "storyos") -> Path:
     return path
 
 
+_CF_BULLET = (
+    "- [risk · escalated · resourcing · 2026-08-20] Tony/ServiceNow capacity "
+    "<!-- cp:hash=8a93518d -->"
+)
+
+
+def _two_week_tenant(tmp_path: Path) -> tuple[Path, Path]:
+    """W34 owns the risk; W35 has it only as a carry-forward projection."""
+    w34 = tmp_path / "sprints" / "2026-W34"
+    w34.mkdir(parents=True)
+    (w34 / "storyos.md").write_text(
+        "## Dependencies & risks\n" + _CF_BULLET + "\n\n"
+        "<!-- cp-engine:start carry-forward -->\n"
+        "<!-- cp-engine:end carry-forward -->\n"
+    )
+    w35 = tmp_path / "sprints" / "2026-W35"
+    w35.mkdir(parents=True)
+    (w35 / "storyos.md").write_text(
+        "## Dependencies & risks\n\n"
+        "<!-- cp-engine:start carry-forward -->\n"
+        + _CF_BULLET + "\n"
+        "<!-- cp-engine:end carry-forward -->\n"
+    )
+    return w34 / "storyos.md", w35 / "storyos.md"
+
+
+def test_resolving_a_carried_forward_risk_writes_to_its_origin_week(
+    tmp_path: Path,
+) -> None:
+    """A Slack click on a carried-forward risk must resolve the ORIGIN file.
+
+    cp-engine #219: the carry-forward region is a projection rebuilt from the
+    prior week on every render. Resolving there looked like it worked — the
+    flip landed and the webhook committed it — and the next `cxp render`
+    silently reverted it, because W34 still said `escalated`. The digest then
+    re-surfaced the risk as though the click never happened.
+
+    Writing at the origin also gets the right UX for free: compute_carry_forward
+    drops resolved risks, so the item stops carrying forward rather than
+    lingering as a resolved line in every later week.
+    """
+    origin, projection = _two_week_tenant(tmp_path)
+
+    # The button targets the week the digest scanned — W35, the projection.
+    flipped = _write_resolve_risk(
+        "storyos", {"hash": "8a93518d", "closed_by": "slack"},
+        projection, today=date(2026, 8, 23),
+    )
+
+    assert flipped is True
+    origin_body = origin.read_text()
+    assert "[risk · resolved · resourcing · 2026-08-20]" in origin_body
+    assert "cp:resolved-at=2026-08-23" in origin_body
+    assert "cp:closed-by=slack" in origin_body
+    # The projection is left alone — render drops it on the next pass.
+    assert "escalated" in projection.read_text()
+
+
+def test_a_risk_owned_by_this_week_is_still_resolved_in_place(
+    tmp_path: Path,
+) -> None:
+    """The redirect must fire ONLY for carried-forward bullets."""
+    week = tmp_path / "sprints" / "2026-W35"
+    week.mkdir(parents=True)
+    path = week / "storyos.md"
+    own = (
+        "- [risk · escalated · scope · 2026-08-22] raised this week "
+        "<!-- cp:hash=aaaa1111 -->"
+    )
+    path.write_text(
+        "## Dependencies & risks\n" + own + "\n\n"
+        "<!-- cp-engine:start carry-forward -->\n"
+        "<!-- cp-engine:end carry-forward -->\n"
+    )
+    assert _write_resolve_risk(
+        "storyos", {"hash": "aaaa1111"}, path, today=date(2026, 8, 23)
+    )
+    assert "[risk · resolved · scope · 2026-08-22]" in path.read_text()
+
+
+def test_carried_forward_with_no_prior_week_falls_back_in_place(
+    tmp_path: Path,
+) -> None:
+    """No origin to find → write where we were told. Narrow, never drop."""
+    week = tmp_path / "sprints" / "2026-W35"
+    week.mkdir(parents=True)
+    path = week / "storyos.md"
+    path.write_text(
+        "## Dependencies & risks\n\n"
+        "<!-- cp-engine:start carry-forward -->\n"
+        + _CF_BULLET + "\n"
+        "<!-- cp-engine:end carry-forward -->\n"
+    )
+    assert _write_resolve_risk(
+        "storyos", {"hash": "8a93518d"}, path, today=date(2026, 8, 23)
+    )
+    assert "[risk · resolved · resourcing · 2026-08-20]" in path.read_text()
+
+
 def test_unmatched_hash_present_in_file_is_logged_as_a_defect(
     tmp_path: Path, caplog
 ) -> None:

@@ -883,6 +883,98 @@ def _write_ask(
     return True
 
 
+def _origin_sprint_path(sprint_path: Path, target_hash: str) -> Path:
+    """Return the sprint file that OWNS the bullet carrying `target_hash`.
+
+    Sprint files carry two kinds of bullet. Ones written this week live in
+    hand-authored sections. Ones inherited from a prior week are re-derived
+    into the engine-managed ``carry-forward`` region by ``compute_carry_forward``
+    on every render — that region is a PROJECTION of the previous file, not
+    storage.
+
+    A Slack Resolve/Snooze click targets the week the digest scanned, which for
+    a carried-forward risk is the projection. Writing there appears to work —
+    the flip lands, the webhook commits it — and is then silently undone by the
+    next ``cxp render``, which rebuilds the region from a prior file that still
+    says ``escalated`` (cp-engine #219). The digest then re-surfaces the risk as
+    though the click never happened.
+
+    So when the hash appears ONLY inside `carry-forward`, walk back through
+    earlier sprint weeks and return the newest file that carries it outside
+    that region — the file that actually owns it. Resolving there is also the
+    behaviour users want: ``compute_carry_forward`` drops resolved risks, so
+    the item stops carrying forward instead of lingering as a resolved line in
+    every subsequent week.
+
+    Falls back to the original path when there is no better candidate (hash
+    already outside the region, no prior week has it, or the layout is
+    unexpected) — this narrows where a write lands, it never drops one.
+    """
+    marker = f"cp:hash={target_hash}"
+    try:
+        body = sprint_path.read_text(encoding="utf-8")
+    except OSError:
+        return sprint_path
+    if marker not in body:
+        return sprint_path
+    # Only redirect when EVERY occurrence is inside the derived region.
+    try:
+        region = _extract_carry_forward_region(body)
+    except ValueError:
+        return sprint_path
+    if region is None or marker not in region:
+        return sprint_path
+    outside = body.replace(region, "")
+    if marker in outside:
+        return sprint_path  # owned here after all; write in place
+
+    week_dir = sprint_path.parent
+    sprints_root = week_dir.parent
+    if not sprints_root.is_dir():
+        return sprint_path
+    earlier = sorted(
+        (d for d in sprints_root.iterdir()
+         if d.is_dir() and d.name < week_dir.name),
+        key=lambda d: d.name,
+        reverse=True,
+    )
+    for prior_dir in earlier:
+        candidate = prior_dir / sprint_path.name
+        if not candidate.exists():
+            continue
+        try:
+            cand_body = candidate.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if marker not in cand_body:
+            continue
+        try:
+            cand_region = _extract_carry_forward_region(cand_body)
+        except ValueError:
+            cand_region = None
+        cand_outside = (
+            cand_body.replace(cand_region, "") if cand_region else cand_body
+        )
+        if marker in cand_outside:
+            logger.info(
+                "hash %s is carried-forward in %s; resolving at its origin %s",
+                target_hash, sprint_path.name, candidate,
+            )
+            return candidate
+    return sprint_path
+
+
+def _extract_carry_forward_region(body: str) -> str | None:
+    """The text between the carry-forward markers, or None if absent."""
+    m = re.search(
+        r"<!-- cp-engine:start carry-forward -->(.*?)"
+        r"<!-- cp-engine:end carry-forward -->",
+        body,
+        re.DOTALL,
+    )
+    return m.group(1) if m else None
+
+
 def _log_unmatched_hash(
     *, verb: str, code: str, target_hash: str, body: str, sprint_path: Path,
     settled: tuple[str, ...] = (),
@@ -1055,6 +1147,9 @@ def _write_resolve_risk(
     if not target_hash:
         raise IngestPlanError("resolve-risk item missing 'hash'")
 
+    # A carried-forward risk lives in a DERIVED region; resolving there is
+    # undone by the next render (#219). Redirect to the file that owns it.
+    sprint_path = _origin_sprint_path(sprint_path, target_hash)
     body = sprint_path.read_text(encoding="utf-8")
 
     # Match an existing escalated/watching risk bullet by hash.
@@ -1120,6 +1215,8 @@ def _write_snooze(
     except ValueError as exc:
         raise IngestPlanError(f"snooze-{bullet_kind} 'until' must be YYYY-MM-DD: {exc}") from exc
 
+    # Same derived-region hazard as resolve-risk (#219).
+    sprint_path = _origin_sprint_path(sprint_path, target_hash)
     body = sprint_path.read_text(encoding="utf-8")
 
     line_re = re.compile(
