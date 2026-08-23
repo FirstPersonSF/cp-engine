@@ -4,6 +4,35 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.103.0 — 2026-08-22
+
+- **New: `cxp adopt-orphaned-versions <project_code> <est_item_id>`** — rescues
+  a re-keyed element's version rows before its stale file is reaped (#200).
+
+  When an element is re-keyed, two disk files end up claiming one
+  `est_item_id`: the new `_authored/<uuid>.md` and the old phase-dir file still
+  carrying the pre-re-key ladder. Sync mirrors the stale file's top version
+  `live`, so the authored-live shield (#113) flips it and warns on every sync.
+
+  Deleting the stale file does **not** fix it — it destroys the rows. The reap
+  exempts `origin='authored'` only, and a re-keyed ladder is typically
+  all-`proposed`, so `_has_confirmed_field` is false and the rows are
+  hard-deleted rather than flagged.
+
+  This verb flips those rows to `origin='authored'` first, moving them under
+  MC-2 ownership and the reap's exemption, so the file can then be removed with
+  every version surviving as history.
+
+  `origin` is an engine-owned column guarded by a DB trigger (mc-2 #130). This
+  runs through `mc2_db.get_client()`, which sets `X-Spine-Writer: cp-engine` —
+  cp-engine owns the column, so this satisfies the guard rather than
+  circumventing it. A hand-rolled PATCH is refused with `P0130`, by design.
+
+  Refuses unless exactly one live row exists (adopting a double-live ladder
+  would freeze it under MC-2 ownership where the shield can no longer correct
+  it from disk). Idempotent; `--dry-run` writes nothing. Does not delete the
+  stale file — adopt, verify, then remove and sync as separate steps.
+
 ## v0.102.0 — 2026-08-22
 
 - **The CLI is now `cxp`, not `cp` (breaking).** The console script was named
