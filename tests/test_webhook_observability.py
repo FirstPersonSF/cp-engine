@@ -103,6 +103,40 @@ def test_health_response_carries_correlation_id(client: TestClient) -> None:
     assert cid and len(cid) == 12
 
 
+def test_health_reports_the_build_commit_when_railway_provides_it(
+    client: TestClient, monkeypatch
+) -> None:
+    """/health must expose the deployed commit, not just the version.
+
+    Most fixes ship without a version bump, so `cp_engine_version` is
+    identical before and after a deploy — which made "is my fix live?"
+    unanswerable from outside Railway on 2026-08-23. The commit SHA answers
+    it directly: compare against `git log` on main.
+    """
+    monkeypatch.setenv("RAILWAY_GIT_COMMIT_SHA", "f3138ae0123456789abcdef")
+    monkeypatch.setenv("RAILWAY_GIT_BRANCH", "main")
+    body = client.get("/health").json()
+    assert body["status"] == "healthy"
+    assert body["commit"] == "f3138ae01234"  # first 12 chars
+    assert body["branch"] == "main"
+
+
+def test_health_says_unknown_rather_than_faking_a_commit(
+    client: TestClient, monkeypatch
+) -> None:
+    """Local runs / non-GitHub deploys report 'unknown', never a stale guess.
+
+    An explicit unknown is honest; a plausible-looking value that isn't the
+    running build is worse than no value at all.
+    """
+    monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
+    monkeypatch.delenv("RAILWAY_GIT_BRANCH", raising=False)
+    body = client.get("/health").json()
+    assert body["commit"] == "unknown"
+    assert body["branch"] == "unknown"
+    assert body["status"] == "healthy"  # still a valid liveness probe
+
+
 def test_incoming_correlation_id_is_echoed(client: TestClient) -> None:
     resp = client.get("/health", headers={"X-Correlation-ID": "fathom-42"})
     assert resp.headers.get("x-correlation-id") == "fathom-42"

@@ -142,10 +142,27 @@ async def _client_disconnect_handler(request: Request, exc: ClientDisconnect):
 
 @app.get("/health")
 def health() -> dict:
-    """Liveness probe. Reports the cp-engine version we're running against."""
+    """Liveness probe. Reports the cp-engine version AND the build's commit.
+
+    The version alone cannot answer "is my fix deployed?" — most fixes ship
+    without a version bump, so `cp_engine_version` reads identically before
+    and after. On 2026-08-23 that made a deploy unverifiable from outside
+    Railway: the only way to tell whether a bugfix had landed was to click the
+    Slack button and see what happened.
+
+    `commit` is Railway's `RAILWAY_GIT_COMMIT_SHA`, injected automatically for
+    GitHub-triggered deploys, so `curl /health` now answers the question
+    directly: compare it against `git log` on main. It is "unknown" for local
+    runs and any non-GitHub deploy path, which is honest — better an explicit
+    unknown than a value that looks authoritative and isn't.
+    """
+    commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
     return {
         "status": "healthy",
         "cp_engine_version": cp_engine.__version__,
+        "commit": commit[:12] if commit else "unknown",
+        "branch": os.environ.get("RAILWAY_GIT_BRANCH") or "unknown",
+        "deployment_id": os.environ.get("RAILWAY_DEPLOYMENT_ID") or "unknown",
         "timestamp": datetime.utcnow().isoformat() + "Z",
     }
 
