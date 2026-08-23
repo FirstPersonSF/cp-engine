@@ -4,6 +4,27 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.103.1 — 2026-08-22
+
+- **Fix: mapping-shaped `sources:` entries now round-trip through YAML (#216).**
+  `_render_version` prefixed only the first line of a dumped source with `- `.
+  A source from MC-2 is a mapping (`{id, title, type}`), which `safe_dump`
+  renders across several lines, so `title:`/`type:` landed at column 0 and YAML
+  rejected the block with "mapping values are not allowed here". 17 files
+  across 4 active projects were unparseable.
+
+  The impact was not on sync — `_load_substance_items` skips `_authored/`
+  before parsing, and all 17 bad files live there. It was `close_out.py`, which
+  parses `_authored/` for the `/cp-wrap` checklist and skips malformed files
+  silently: those elements were missing from close-out with no indication.
+
+  Fixing the writer alone was not enough. The parser coerced every entry with
+  `str(s)`, flattening a mapping to a Python repr string, so write→read→write
+  corrupted the file a second way. Consumers already expect mappings
+  (`stub_sweep` branches on `isinstance(src, dict)`), so the coercion and the
+  `tuple[str, ...]` annotation were the wrong parts. Writer, parser, and
+  annotation are fixed together; existing files heal on re-mirror.
+
 ## v0.103.0 — 2026-08-22
 
 - **New: `cxp adopt-orphaned-versions <project_code> <est_item_id>`** — rescues
