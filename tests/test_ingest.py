@@ -973,6 +973,50 @@ def test_resolve_risk_is_idempotent(tmp_path: Path) -> None:
     assert r2.skipped_duplicate == 1
 
 
+def test_resolve_risk_matches_the_human_risk_prefix_bullet_shape(tmp_path: Path) -> None:
+    """`- [risk · escalated · ...]` resolves, not just `- [escalated · ...]`.
+
+    Two bullet shapes exist in production. `execute_plan` writes the engine
+    shape, but `sprint-cp.md.j2` / `initiative-sprint.md.j2` render the human
+    shape with a leading `risk · ` token. `attention_digest._RISK_RE` already
+    accepts both, so the digest happily surfaced a `risk · ` bullet and posted
+    a Resolve button for it — but the writer's regex anchored the severity
+    directly after `- [`, so the click silently matched nothing and the user
+    got "No matching item (already resolved or moved sprint)" on a risk that
+    was plainly still open.
+
+    Regression: reader and writer must agree on the bullet grammar.
+    """
+    week_dir = tmp_path / "sprints" / "2026-W35"
+    week_dir.mkdir(parents=True)
+    _scaffold_minimal_sprint_file(week_dir / "storyos.md", "storyos")
+    (week_dir / "_week.md").write_text("## Themes\n\n- _<theme>_\n")
+    path = week_dir / "storyos.md"
+    body = path.read_text()
+    human_bullet = (
+        "- [risk · escalated · resourcing · 2026-08-20] Tony/ServiceNow "
+        "capacity collision <!-- cp:hash=8a93518d -->"
+    )
+    path.write_text(body.rstrip("\n") + "\n" + human_bullet + "\n")
+
+    result = execute_plan(
+        {"projects": {"storyos": {"resolve-risk": [
+            {"hash": "8a93518d", "closed_by": "slack"},
+        ]}}},
+        tenant_root=tmp_path, today=date(2026, 8, 23), week_iso="2026-W35",
+    )
+
+    assert result.errors == []
+    after = path.read_text()
+    # Flipped, and the `risk · ` prefix is preserved verbatim.
+    assert "- [risk · resolved · resourcing · 2026-08-20]" in after
+    assert "escalated" not in after
+    assert "cp:resolved-at=2026-08-23" in after
+    assert "cp:closed-by=slack" in after
+    # Not a silent no-op — this is the exact failure the bug produced.
+    assert result.skipped_duplicate == 0
+
+
 def test_resolve_risk_silently_dedupes_when_hash_not_found(tmp_path: Path) -> None:
     """Hash not found in sprint file → silent no-op + skipped_duplicate increments.
 

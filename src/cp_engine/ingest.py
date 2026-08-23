@@ -1001,8 +1001,15 @@ def _write_resolve_risk(
     body = sprint_path.read_text(encoding="utf-8")
 
     # Match an existing escalated/watching risk bullet by hash.
+    #
+    # Two bullet shapes exist in production and BOTH must match — the same
+    # dual shape `attention_digest._RISK_RE` already handles:
+    #   Engine: `- [<sev> · <cat> · <date>] ...`
+    #   Human:  `- [risk · <sev> · <cat> · <date>] ...`  (sprint-cp.md.j2)
+    # The optional `risk · ` prefix is captured into `prefix` so the flip
+    # rewrites only the severity token and preserves the rest verbatim.
     pattern = re.compile(
-        r"^(?P<prefix>- \[)(?P<sev>escalated|watching)(?P<rest>[^\]]*\][^\n]*"
+        r"^(?P<prefix>- \[(?:risk · )?)(?P<sev>escalated|watching)(?P<rest>[^\]]*\][^\n]*"
         r"cp:hash=" + re.escape(target_hash) + r"[^\n]*?)$",
         re.MULTILINE,
     )
