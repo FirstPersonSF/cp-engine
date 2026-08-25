@@ -256,6 +256,16 @@ def ingest_from_transcript_cmd(
     ),
 )
 @click.option(
+    "--include-recovered",
+    is_flag=True,
+    help=(
+        "Also offer runs already stamped as recovered. Off by default: a "
+        "replay re-asks the model, so recovering the same run twice yields "
+        "differently-worded near-duplicates that content-hash dedupe CANNOT "
+        "catch."
+    ),
+)
+@click.option(
     "--dry-run",
     is_flag=True,
     help="Show what would be replayed and exit. No API calls, no writes.",
@@ -270,6 +280,7 @@ def rerun_failed_ingests_cmd(
     since: str | None,
     exclude: tuple[str, ...],
     skip_meeting: tuple[str, ...],
+    include_recovered: bool,
     dry_run: bool,
     limit: int | None,
 ) -> None:
@@ -285,15 +296,23 @@ def rerun_failed_ingests_cmd(
 
     `plan_summary` records only COUNTS, not content, so recovery means
     regenerating each plan from its transcript — one Anthropic call per
-    run. Re-running is otherwise safe: `execute_plan`'s content-hash
-    dedupe makes an unchanged bullet a no-op.
+    run.
+
+    A successful replay STAMPS `recovered_at`/`recovered_by` on the run
+    (#220), and recovered runs are excluded from selection by default.
+    This matters because re-running is NOT the no-op it looks like: a
+    replay re-asks the model, so the wording differs, the content hash
+    differs, and `execute_plan`'s dedupe cannot catch the duplicate.
+    Use --include-recovered to deliberately override.
 
     ALWAYS run --dry-run first. Without it this writes to the tenant.
     """
     import json as _json
     from collections import Counter
+    from datetime import UTC as _UTC
     from datetime import date, timedelta
     from datetime import date as _date_cls
+    from datetime import datetime as _dt
 
     from cp_engine.ingest import execute_plan
     from cp_engine.mc2_db import Tables, get_client
@@ -307,7 +326,10 @@ def rerun_failed_ingests_cmd(
     client = get_client(config=config)
     rows = (
         client.table(Tables.AUTO_INGEST_RUNS)
-        .select("id,created_at,status,project_codes,meeting_id,plan_summary,errors")
+        .select(
+            "id,created_at,status,project_codes,meeting_id,plan_summary,errors,"
+            "recovered_at,recovered_by"
+        )
         .order("created_at")
         .execute()
         .data
@@ -317,6 +339,21 @@ def rerun_failed_ingests_cmd(
     if not stranded:
         click.echo("No stranded runs found — nothing to replay.")
         return
+
+    # #220: the runs table records what the pipeline ATTEMPTED; `recovered_at`
+    # records what has since been RESTORED. Without this filter a recovered
+    # run is re-offered forever, and replaying it is not a no-op — the model
+    # re-words the plan, so content-hash dedupe cannot catch the duplicate.
+    already_recovered = [r for r in stranded if r.get("recovered_at")]
+    if not include_recovered:
+        stranded = [r for r in stranded if not r.get("recovered_at")]
+        if not stranded:
+            click.echo(
+                f"All {len(already_recovered)} stranded run(s) are already "
+                "marked recovered — nothing to replay. "
+                "Use --include-recovered to override."
+            )
+            return
 
     meeting_ids = [r["meeting_id"] for r in stranded if r.get("meeting_id")]
     meetings = (
@@ -364,6 +401,11 @@ def rerun_failed_ingests_cmd(
     planned_bullets = sum(per_project.values())
 
     click.echo(f"Stranded runs in table:        {len(stranded)}")
+    if already_recovered:
+        state = "INCLUDED (override)" if include_recovered else "excluded"
+        click.echo(
+            f"Already recovered:             {len(already_recovered)} ({state})"
+        )
     click.echo(f"Meeting date on/after {cutoff}: {len(candidates)} run(s)")
     if excluded:
         click.echo(f"Excluded projects:             {', '.join(sorted(excluded))}")
@@ -395,8 +437,10 @@ def rerun_failed_ingests_cmd(
         f"Replaying {len(candidates)} run(s) — one Anthropic call each. "
         "Writes to the tenant."
     )
-    written, failed, dupes = 0, 0, 0
+    written, failed, dupes, stamped = 0, 0, 0, 0
     for run, meeting, codes, m_date in candidates:
+        run_wrote = False
+        run_failed = False
         transcript = _normalize_meeting_transcript(meeting.get("transcript"))
         if not transcript.strip():
             click.echo(f"  ! {m_date} {codes}: no transcript — skipped", err=True)
@@ -424,6 +468,7 @@ def rerun_failed_ingests_cmd(
                 except PlanGenerationError as exc:
                     click.echo(f"  ! {m_date} {code}: plan generation failed: {exc}", err=True)
                     failed += 1
+                    run_failed = True
                     continue
                 # `today` is the MEETING date, not the wall clock. Undated
                 # bullets fall back to it (_resolve_today_iso), so replaying
@@ -445,17 +490,56 @@ def rerun_failed_ingests_cmd(
                 dupes += result.skipped_duplicate
                 if result.files_written:
                     written += len(result.files_written)
+                    run_wrote = True
                     click.echo(
                         f"  ✓ {m_date} {code}: {len(result.files_written)} file(s), "
                         f"{result.skipped_duplicate} dup(s) skipped"
                     )
+                elif result.skipped_duplicate:
+                    # Every bullet deduped: the content is already in the
+                    # tree, which is the recovered state just as much as a
+                    # fresh write is. Stamping here is what stops a
+                    # re-offer loop on a run that keeps landing as no-ops.
+                    run_wrote = True
                 for err in result.errors:
                     click.echo(f"  ! {m_date} {code}: {err}", err=True)
+                    run_failed = True
         finally:
             tpath.unlink(missing_ok=True)
 
+        # #220: stamp the row so this run stops being offered. Only when the
+        # replay both wrote (or fully deduped) AND raised nothing — a partial
+        # recovery must stay in scope, because the honest state is still
+        # "needs recovery". Best-effort: a stamp failure must not fail the
+        # recovery that already succeeded, but it MUST be loud, since the
+        # silent version of this is the bug being fixed.
+        if run_wrote and not run_failed:
+            try:
+                (
+                    client.table(Tables.AUTO_INGEST_RUNS)
+                    .update(
+                        {
+                            "recovered_at": _dt.now(_UTC).isoformat(),
+                            "recovered_by": "replay",
+                        }
+                    )
+                    .eq("id", run["id"])
+                    .execute()
+                )
+                stamped += 1
+            except Exception as exc:  # noqa: BLE001
+                click.echo(
+                    f"  ! {m_date}: recovered, but FAILED to stamp run "
+                    f"{run['id']}: {exc}. It will be re-offered — re-run with "
+                    f"--skip-meeting {run.get('meeting_id')} until fixed.",
+                    err=True,
+                )
+
     click.echo("")
-    click.echo(f"Done. {written} file-write(s), {dupes} duplicate(s) skipped, {failed} failure(s).")
+    click.echo(
+        f"Done. {written} file-write(s), {dupes} duplicate(s) skipped, "
+        f"{failed} failure(s), {stamped} run(s) stamped recovered."
+    )
     click.echo("Review with `git diff` before committing.")
 
 

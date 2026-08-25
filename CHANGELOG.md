@@ -4,6 +4,47 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## Unreleased
+
+- **Fix: recovered runs are no longer re-offered by `rerun-failed-ingests`
+  (#220).** `auto_ingest_runs` recorded what the pipeline ATTEMPTED, never what
+  had since been RESTORED, so a recovered run stayed in scope forever. This was
+  not a cosmetic re-offer: `execute_plan`'s content-hash dedupe only no-ops an
+  IDENTICAL bullet, and a replay re-asks the model, so the wording differs, the
+  hash differs, and the bullet lands twice — silently.
+
+  Webhook migration `02_auto_ingest_runs_recovery_stamp.sql` adds
+  `recovered_at`/`recovered_by` (plus a partial index on the unrecovered set).
+  A successful replay stamps the row; selection excludes stamped rows by
+  default, with `--include-recovered` as the deliberate override. Stamping is
+  guarded — a run that wrote nothing, or raised on any of its codes, stays in
+  scope, because a partial recovery's honest state is still "needs recovery".
+  A stamp failure is loud rather than silent, since the silent version is the
+  bug being fixed.
+
+  Backfilled the 2026-08-23 pass: 19 runs stamped `replay`, 3 stamped `hand`
+  (slt-5196 / ibx-5153, recovered by a person on 08-19). The ~105 pre-08-10
+  rows are deliberately left UNSTAMPED — Drew's two-week rule retired them as
+  noise, and "retired by decision" is not the same fact as "recovered".
+  Verified live: the bare command now reports 0 runs in scope where it would
+  previously have offered 19 already-recovered ones.
+
+- **Fix: internal MC-2 projects no longer resolve to undeliverable codes
+  (#221).** `tag_resolve._load_indexes` indexed every project row, so the
+  dashboard tag "CNC 9004 StoryOS" resolved to `cnc-9004` with `matched=True`
+  — DB-verified, therefore trusted — and the webhook then died in
+  `find_spine_dir` looking for a working dir that will never exist
+  (SpineDirNotFound, the meeting's bullets lost).
+
+  All four internal rows (`1pi-9001`, `1pi-9002`, `1pi-9003`, `cnc-9004`)
+  duplicate an initiative that IS the tracked home — StoryOS work belongs to
+  the `storyos` initiative — and none has a working dir, by design. The index
+  now skips `is_internal` rows, so such a tag falls through to the parse-only
+  branch (`matched=False`) that callers already treat as unconfirmed, instead
+  of minting a confident code that cannot be delivered. The initiative path is
+  untouched: the 08-20 meeting tagged `storyos` ingested fine while the 08-23
+  one tagged "CNC 9004 StoryOS" did not, and that pair is now a test.
+
 ## v0.104.0 — 2026-08-24
 
 - **New: `cxp rerun-failed-ingests`** — replays auto-ingest runs whose plans

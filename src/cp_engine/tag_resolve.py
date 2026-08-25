@@ -118,13 +118,30 @@ def _load_indexes(client: Any) -> tuple[dict, set]:
     try:
         resp = (
             client.table(Tables.PROJECTS)
-            .select("number, companies(code)")
+            .select("number, is_internal, companies(code)")
             .execute()
         )
         for row in resp.data or []:
             number = row.get("number")
             company = (row.get("companies") or {}).get("code")
             if number is None or not company:
+                continue
+            # INTERNAL rows are not ingest destinations (#221). Every one of
+            # them duplicates an initiative that IS the tracked home — CNC 9004
+            # StoryOS vs the `storyos` initiative, 1PI 9001 vs
+            # `first-person-website`, 1PI 9002 vs `first-person-sales` — and
+            # none has a working dir, by design: initiatives are where internal
+            # work lives (see the tenant CLAUDE.md's three-kinds model).
+            #
+            # Indexing them here made the collision UNRECOVERABLE downstream:
+            # the tag "CNC 9004 StoryOS" resolved to `cnc-9004` with
+            # matched=True — DB-verified and therefore trusted — and the
+            # pipeline then died in find_spine_dir looking for a directory that
+            # will never exist. Skipping them lets such a tag fall through to
+            # the parse-only branch (matched=False), which callers already
+            # treat as "not confirmed", rather than minting a confident code
+            # that cannot be delivered.
+            if row.get("is_internal"):
                 continue
             codes_by_number[int(number)] = f"{company.lower()}-{number}"
     except Exception:  # noqa: BLE001 — degrade to parse-only, never block dispatch
