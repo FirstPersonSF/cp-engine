@@ -4,6 +4,74 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.104.0 — 2026-08-24
+
+- **New: `cxp rerun-failed-ingests`** — replays auto-ingest runs whose plans
+  were computed and then dropped (#194). 127 runs recorded `status='success'`
+  while carrying errors: `execute_plan` built its sprint-file target from the
+  plan's project key verbatim (short code vs. directory slug) and the commit
+  path hardcoded success, so the runs table read clean and nothing surfaced it.
+
+  `plan_summary` stores COUNTS, not content, so recovery means regenerating each
+  plan from its transcript — one Anthropic call per project per run. **Selection
+  is the risky part, not the writes:** a replay re-asks the model, so it yields
+  differently-worded near-duplicates that content-hash dedupe CANNOT catch.
+  Hence `--since` filtering on the **meeting** date rather than the run date
+  (a recent run can carry old content, and it is the content's age that decides
+  whether a replay is recovery or noise; defaults to 14 days), plus `--exclude`,
+  `--limit`, `--skip-meeting`, and `--dry-run`. Plans target the week that OWNS
+  the meeting, not today. Writes but never commits.
+
+- **Fix: a replay's dates now anchor to the meeting, not the wall clock.**
+  Caught by a `--limit 1` trial: the first replay wrote 19 of 21 bullets dated
+  today for a two-week-old meeting, so past-due asks, decisions and risks all
+  landed looking brand new. Two date sources had to move, and the first fix
+  missed the one that mattered — `execute_plan`'s `today` is only the fallback
+  for undated bullets; the real source is the PROMPT, where `_build_prompt`
+  interpolates `datetime.now()` and instructs the model to date everything from
+  it. `generate_plan` and `_build_prompt` now take an optional `today`
+  (defaulting to the wall clock, so every existing caller is unchanged).
+  Getting this wrong would have corrupted every age-based surface at once.
+
+- **Fix: resolve/snooze write to the risk's origin week, not a projection
+  (#219).** The carry-forward region is rebuilt by `compute_carry_forward` on
+  every render — not storage. A Slack Resolve click targets the week the digest
+  scanned, so for a carried-forward risk the flip landed in the projection: it
+  appeared to work, the webhook committed it, and the next `cxp render` silently
+  reverted it. `_origin_sprint_path` walks back to the newest earlier week
+  carrying the hash outside its carry-forward region. Deliberately conservative
+  — it only redirects when every occurrence in the target file is inside the
+  derived region, and never drops a write.
+
+- **Fix: `resolve-risk` matches the human `risk · ` bullet shape.** Two bullet
+  shapes exist in production — the engine's `- [escalated · …]` and the
+  templates' `- [risk · escalated · …]`. `attention_digest._RISK_RE` accepted
+  both; `_write_resolve_risk` anchored severity directly after `- [`. So the
+  reader could surface a risk the writer could never resolve, and the digest
+  posted a button that could not work. Reader and writer now share the grammar.
+
+- **Fix: the hash-matching writers distinguish "nothing to do" from "could not
+  parse it."** All three (close-ask, resolve-risk, snooze-*) returned a bare
+  `False` covering two unrelated outcomes: hash absent (routine — already
+  actioned, or a stale click) and hash present but unparseable (always a
+  defect). Conflating them is what let the prefix mismatch above hide for
+  months. `_log_unmatched_hash()` splits the cases and logs the second at
+  WARNING with the offending line. Bullets in a settled state stay quiet, so
+  ordinary double-clicks don't train the warning to be ignored. Observability
+  only — return values are unchanged.
+
+- **New: the webhook's `/health` reports the build commit.** "Is my fix
+  deployed?" was unanswerable from outside Railway, because most fixes ship
+  without a version bump and `cp_engine_version` reads identically before and
+  after. `/health` now also returns `commit`, `branch` and `deployment_id`; all
+  three read `unknown` for local runs and non-GitHub deploys, since an explicit
+  unknown beats a plausible-looking value that isn't the running build.
+
+- **Docs: finished the `cp` → `cxp` rename in the generated `CLAUDE.md`
+  template (#218)** — 6 stale refs, plus the Marcello onboarding doc, which
+  told a human to smoke-test with `cp --version` (now `/bin/cp`), reading as a
+  broken install rather than a stale doc.
+
 ## v0.103.1 — 2026-08-22
 
 - **Fix: mapping-shaped `sources:` entries now round-trip through YAML (#216).**
