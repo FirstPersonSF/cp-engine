@@ -4,7 +4,7 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
-## Unreleased
+## v0.104.1 — 2026-08-24
 
 - **Fix: recovered runs are no longer re-offered by `rerun-failed-ingests`
   (#220).** `auto_ingest_runs` recorded what the pipeline ATTEMPTED, never what
