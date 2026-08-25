@@ -169,3 +169,48 @@ def test_endpoint_validates_body(client, monkeypatch):
         headers={"X-Webhook-Signature": _signed(body), "Content-Type": "application/json"},
     )
     assert resp.status_code == 400
+
+
+# ── #221: internal projects are not ingest destinations ─────────────────
+
+INTERNAL_PROJECTS = [
+    {"number": 5136, "companies": {"code": "GGL"}, "is_internal": False},
+    # The real shape that broke production: an internal row whose
+    # full_job_name is "CNC 9004 StoryOS", duplicating the `storyos`
+    # initiative. It has no working dir and never will.
+    {"number": 9004, "companies": {"code": "CNC"}, "is_internal": True},
+]
+
+
+def test_internal_project_tag_does_not_resolve_to_a_confident_code():
+    """#221: an internal row must not mint a matched=True code.
+
+    `cnc-9004` has no working dir — initiatives are where internal work
+    lives — so resolving it confidently sent the webhook to find_spine_dir
+    for a directory that will never exist (SpineDirNotFound, ingest lost).
+    """
+    (r,) = resolve_tags(
+        _fake_client(INTERNAL_PROJECTS, INITIATIVES), ["CNC 9004 StoryOS"]
+    )
+    assert r["matched"] is False, "an internal row must never read as DB-verified"
+
+
+def test_internal_exclusion_does_not_affect_client_projects():
+    """The narrow fix must not disturb ordinary engagement routing."""
+    (r,) = resolve_tags(
+        _fake_client(INTERNAL_PROJECTS, INITIATIVES), ["GGL 5136 go/safety"]
+    )
+    assert r == {"tag": "GGL 5136 go/safety", "code": "ggl-5136",
+                 "kind": "project", "matched": True}
+
+
+def test_the_initiative_that_internal_row_duplicates_still_resolves():
+    """`storyos` is the real home for that work and must keep resolving.
+
+    This is the pair that matters: the 08-20 meeting tagged `storyos`
+    ingested fine while the 08-23 one tagged "CNC 9004 StoryOS" died.
+    After the fix the good path is unchanged and the bad path is demoted.
+    """
+    (r,) = resolve_tags(_fake_client(INTERNAL_PROJECTS, INITIATIVES), ["storyos"])
+    assert r == {"tag": "storyos", "code": "storyos",
+                 "kind": "initiative", "matched": True}
