@@ -728,8 +728,18 @@ def list_spine_elements(
                 canon_ids.add(e["from_item_id"])
             else:
                 absorbed_into[e["from_item_id"]] = e["to_item_id"]
-    except Exception:  # noqa: BLE001 — annotations degrade, the list survives
-        pass
+    except Exception as exc:  # noqa: BLE001 — annotations degrade, the list survives
+        # Degrading is right; degrading SILENTLY is not. `absorbed_into` gates
+        # a `continue` below, so when this read fails every sealed, historical
+        # element reappears in the working set unannotated — and because
+        # `canon_size`/`absorbed_hidden` are omitted-when-falsy, the response
+        # is shaped exactly like a project with no canon and nothing sealed.
+        # A caller orienting on `tier="working"` then reads retired material
+        # as current. Say so instead.
+        annotations_error = f"{type(exc).__name__}: {exc}"
+        log.warning("spine annotations unavailable for %s: %s", project_code, annotations_error)
+    else:
+        annotations_error = None
 
     tier_n = (tier or "all").lower()
     stubs_hidden = 0
@@ -793,6 +803,17 @@ def list_spine_elements(
                 "include_absorbed=true for retrospective mode",
             }
             if absorbed_hidden
+            else {}
+        ),
+        **(
+            {
+                "annotations_available": False,
+                "annotations_error": annotations_error,
+                "note_on_annotations": "canon and absorbed-by edges could not be "
+                "read — sealed elements are NOT filtered out of this list and "
+                "canon membership is unmarked; treat lifecycle state as unknown",
+            }
+            if annotations_error
             else {}
         ),
         **({"note": TEAM_EMPTY_HINT} if not elements else {}),
@@ -1474,8 +1495,16 @@ def semantic_search(
             .data
             or []
         )
+        spine_error = None
     except Exception as exc:  # noqa: BLE001
-        log.warning("spine context lookup failed (%s: %s)", type(exc).__name__, exc)
+        # Fail-soft is right — but `spine_context: []` on failure is
+        # BYTE-IDENTICAL to a genuine no-match, so the caller silently gets the
+        # pre-mig-146 chunk-only search this tool exists to replace, while
+        # believing nothing has been established on the topic. `query_expanded:
+        # false` compounds it: it reads as "no context to expand with" rather
+        # than "the context backend was down".
+        spine_error = f"{type(exc).__name__}: {exc}"
+        log.warning("spine context lookup failed (%s)", spine_error)
 
     # Framings only, not bodies: a 6,000-char distillation would drown the
     # user's own question in the embedded vector. The titles carry the
@@ -1573,6 +1602,17 @@ def semantic_search(
             }
             for row in spine
         ],
+        **(
+            {
+                "spine_available": False,
+                "spine_error": spine_error,
+                "note_on_spine": "the spine lookup failed — these results are "
+                "chunk-only and unexpanded; an empty spine_context here does "
+                "NOT mean nothing is established on this topic",
+            }
+            if spine_error
+            else {}
+        ),
         # Stated so a caller can tell whether the ranking below reflects their
         # words or the project's. Silent enrichment would make a surprising
         # result impossible to diagnose.
@@ -2203,13 +2243,26 @@ def upsert_auto_step(
         None,
     )
     if open_auto is not None:
+        retitled = True
         if (open_auto.get("title") or "").strip() != title_clean:
-            client.table("spine_steps").update({"title": title_clean}).eq(
-                "id", open_auto["id"]
-            ).execute()
+            # The row was SELECTed as source='auto' AND review='proposed', so it
+            # should satisfy the UPDATE policy — but a human confirming the step
+            # between that read and this write flips it out of scope and the
+            # retitle becomes a 0-row no-op. Report what happened rather than
+            # asserting `updated: True` unconditionally.
+            retitled = bool(
+                client.table("spine_steps")
+                .update({"title": title_clean})
+                .eq("id", open_auto["id"])
+                .execute()
+                .data
+            )
         return {
             "est_item_id": est_item_id,
-            "updated": True,
+            "updated": retitled,
+            **({} if retitled else {"note": "step exists but the retitle was "
+                                    "refused — it is no longer an open proposed "
+                                    "auto-step (confirmed concurrently?)"}),
             "step_id": open_auto["id"],
         }
 
@@ -4636,12 +4689,28 @@ def reorder_spine_step(
         "order_len": len(order),
     }
     renumbered = 0
+    refused: list[str] = []
     try:
         for pos, sid in enumerate(order, start=1):
-            client.table("spine_steps").update({"position": pos}).eq("id", sid).eq(
-                "project_id", scope["id"]
-            ).eq("est_item_id", est_item_id).execute()
-            renumbered += 1
+            # COUNT MATCHED ROWS, NOT ITERATIONS. The spine_steps UPDATE policy
+            # (see the comment above STEP_STATUSES) matches only rows that are
+            # BOTH source='auto' AND review='proposed' — so every human-authored
+            # step and every confirmed auto-step is immune to UPDATE, and its
+            # renumber is a 0-row 200, not an error. Counting loop passes would
+            # report a full reorder while leaving exactly the partial state this
+            # verb refuses on input two blocks up.
+            result = (
+                client.table("spine_steps")
+                .update({"position": pos})
+                .eq("id", sid)
+                .eq("project_id", scope["id"])
+                .eq("est_item_id", est_item_id)
+                .execute()
+            )
+            if result.data:
+                renumbered += 1
+            else:
+                refused.append(sid)
     except Exception as exc:  # noqa: BLE001
         audit(client, "reorder_spine_step", audit_args, renumbered)
         return {
@@ -4654,6 +4723,18 @@ def reorder_spine_step(
     return {
         "est_item_id": est_item_id,
         "reordered": renumbered,
+        **(
+            {
+                "refused": refused,
+                "warning": f"{len(refused)} of {len(order)} step(s) did not "
+                "renumber — the spine_steps UPDATE policy matches only rows "
+                "that are source='auto' AND review='proposed', so human-authored "
+                "and confirmed steps are immune. The trail is now PARTIALLY "
+                "reordered; read `steps` for the true positions.",
+            }
+            if refused
+            else {}
+        ),
         "caller": caller_subject(),
         "steps": read_steps(client, scope["id"], est_item_id),
     }
@@ -4717,16 +4798,43 @@ def remove_spine_step(
         }
 
     # Densify: renumber the survivors to a contiguous 1..N.
+    #
+    # Verified per row, same reason as `reorder_spine_step`: the UPDATE policy
+    # matches only source='auto' AND review='proposed', so a trail containing
+    # human steps below the deleted one keeps its gaps and the docstring's
+    # "remaining steps densify to stay 1..N contiguous" quietly stops being
+    # true. Also scoped by project_id/est_item_id like every other step write —
+    # ids come from a scoped read so it was safe, but the inconsistency was not
+    # worth keeping.
+    densify_refused: list[str] = []
     for pos, step in enumerate(read_steps(client, scope["id"], est_item_id), start=1):
         if step.get("position") != pos:
-            client.table("spine_steps").update({"position": pos}).eq(
-                "id", step["id"]
-            ).execute()
+            moved = (
+                client.table("spine_steps")
+                .update({"position": pos})
+                .eq("id", step["id"])
+                .eq("project_id", scope["id"])
+                .eq("est_item_id", est_item_id)
+                .execute()
+            )
+            if not moved.data:
+                densify_refused.append(step["id"])
 
     audit(client, "remove_spine_step", audit_args, len(deleted))
     return {
         "est_item_id": est_item_id,
         "removed": step_id,
+        **(
+            {
+                "densify_refused": densify_refused,
+                "warning": f"{len(densify_refused)} surviving step(s) would not "
+                "renumber (UPDATE policy matches only source='auto' AND "
+                "review='proposed'), so positions are NOT contiguous 1..N; "
+                "read `steps` for the true positions.",
+            }
+            if densify_refused
+            else {}
+        ),
         "caller": caller_subject(),
         "steps": read_steps(client, scope["id"], est_item_id),
     }
@@ -6278,13 +6386,25 @@ def tree_ssh_env() -> dict[str, str]:
     is a different deployable). With no key material the env is returned
     unchanged, which is correct for a LOCAL-PATH `TENANT_REPO`: a local clone
     needs no ssh at all, so the key is optional exactly when the remote is local.
+
+    WRITTEN ONCE, not per call. `tree_root()` calls this on every invocation
+    including every debounced refresh, so a fresh `mkdtemp()` each time left an
+    unbounded pile of 0600 private-key copies under /tmp on a long-lived
+    container — eventually exhausting the ephemeral filesystem. Same uid and
+    same container, so not remotely exploitable, but multiplying key material
+    on disk is not a thing to do.
     """
     env = dict(os.environ)
     if not GIT_SSH_KEY:
         return env
-    key_path = Path(tempfile.mkdtemp(prefix="hosted-cp-key-")) / "id_ed25519"
-    key_path.write_text(GIT_SSH_KEY if GIT_SSH_KEY.endswith("\n") else GIT_SSH_KEY + "\n")
-    key_path.chmod(0o600)
+    cached = _TREE_STATE.get("ssh_key_path")
+    if cached and Path(cached).exists():
+        key_path = Path(cached)
+    else:
+        key_path = Path(tempfile.mkdtemp(prefix="hosted-cp-key-")) / "id_ed25519"
+        key_path.write_text(GIT_SSH_KEY if GIT_SSH_KEY.endswith("\n") else GIT_SSH_KEY + "\n")
+        key_path.chmod(0o600)
+        _TREE_STATE["ssh_key_path"] = str(key_path)
     env["GIT_SSH_COMMAND"] = (
         f"ssh -i {key_path} -o StrictHostKeyChecking=accept-new -o IdentitiesOnly=yes"
     )
@@ -6423,11 +6543,22 @@ def tree_root() -> Path:
             # Always advance the clock: a failing remote must not turn the
             # debounce off and retry on every single call.
             _TREE_STATE["last_pull"] = time.time()
+            # RECORD THE OUTCOME, not just the commit. `tree_head` proves WHICH
+            # commit was served; it says nothing about whether the last refresh
+            # actually succeeded. A permanently failing remote (revoked deploy
+            # key, network partition) keeps returning the last-good SHA forever,
+            # and the response stays byte-identical to a healthy one — which is
+            # the half of the 2026-08-26 stall that reporting `tree_head` alone
+            # did NOT fix. Callers need "commit X, freshly confirmed" to be
+            # distinguishable from "commit X, and we haven't reached the remote
+            # since the 17th".
+            def _fail(stage: str, stderr: str) -> None:
+                log.warning("tenant tree %s failed (serving stale): %s", stage, stderr[:200])
+                _TREE_STATE["refresh_ok"] = False
+                _TREE_STATE["refresh_error"] = f"{stage}: {stderr[:200]}"
+
             if fetch.returncode != 0:
-                log.warning(
-                    "tenant tree fetch failed (serving stale): %s",
-                    (fetch.stderr or "")[:200],
-                )
+                _fail("fetch", fetch.stderr or "")
             else:
                 reset = subprocess.run(
                     ["git", "reset", "--hard", "FETCH_HEAD"],
@@ -6437,10 +6568,7 @@ def tree_root() -> Path:
                     text=True,
                 )
                 if reset.returncode != 0:
-                    log.warning(
-                        "tenant tree reset failed (serving stale): %s",
-                        (reset.stderr or "")[:200],
-                    )
+                    _fail("reset", reset.stderr or "")
                 else:
                     _TREE_STATE["head"] = (
                         subprocess.run(
@@ -6452,7 +6580,27 @@ def tree_root() -> Path:
                         ).stdout.strip()
                         or None
                     )
+                    _TREE_STATE["refresh_ok"] = True
+                    _TREE_STATE["refresh_error"] = None
+                    _TREE_STATE["refresh_at"] = time.time()
         return root_path
+
+
+def tree_provenance() -> dict[str, Any]:
+    """Where the served files came from, and whether that is current.
+
+    Every tree read embeds this. `tree_head` alone is not enough — see the
+    comment in `tree_root()`: a frozen mirror still reports a plausible SHA.
+    `tree_stale` is the field a caller should branch on.
+    """
+    prov: dict[str, Any] = {"tree_head": _TREE_STATE.get("head")}
+    if _TREE_STATE.get("refresh_ok") is False:
+        prov["tree_stale"] = True
+        prov["tree_error"] = _TREE_STATE.get("refresh_error")
+        last = _TREE_STATE.get("refresh_at")
+        if last:
+            prov["tree_last_refreshed_seconds_ago"] = int(time.time() - float(last))
+    return prov
 
 
 def find_project_dir(root: Path, project_code: str) -> Path | None:
@@ -6628,6 +6776,12 @@ def get_project_state(project_code: str) -> dict[str, Any]:
         "project_code": project_code,
         "available": True,
         "caller": caller_subject(),
+        # Provenance matters MORE here than on read_project_file: this is the
+        # orientation call, it returns the durable project-state surface, and
+        # it sits beside DB verbs that are always current. A stale Exec Summary
+        # read as gospel next to a live spine is exactly what hid the
+        # 2026-08-26 stall.
+        **tree_provenance(),
         "working_dir": str(project_dir.relative_to(root)),
         "cp_md": str((project_dir / "cp.md").relative_to(root)),
         "exec_summary": exec_summary,
@@ -6739,13 +6893,12 @@ def read_project_file(path: str) -> dict[str, Any]:
         "path": raw,
         "available": True,
         "caller": caller_subject(),
-        # WHICH COMMIT THIS TEXT CAME FROM. The tree is a mirror that can fall
-        # behind (a failing fetch is non-fatal by design), and the DB verbs are
-        # always current — so a caller reading a stale `cp.md` alongside a live
-        # spine has no way to notice the mismatch unless the response says
-        # where the file came from. Reporting it turns a silent stall into a
-        # visible one.
-        "tree_head": _TREE_STATE.get("head"),
+        # WHICH COMMIT THIS TEXT CAME FROM, and whether that is current. The
+        # tree is a mirror that can fall behind (a failing fetch is non-fatal
+        # by design), and the DB verbs are always current — so a caller reading
+        # a stale `cp.md` alongside a live spine has no way to notice the
+        # mismatch unless the response says where the file came from.
+        **tree_provenance(),
         "bytes": size,
         "truncated": truncated,
         "text": text,
