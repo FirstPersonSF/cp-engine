@@ -7496,13 +7496,25 @@ def wrap_bundle(project_code: str, tail_days: int = 14) -> dict[str, Any]:
 
 
 @mcp_server.tool()
-def whoami() -> dict[str, Any]:
-    """Echo the verified identity of the caller (spike diagnostic)."""
+def whoami(probe_alerting: bool = False) -> dict[str, Any]:
+    """Echo the verified identity of the caller (spike diagnostic).
+
+    `probe_alerting=true` additionally routes ONE synthetic exception through
+    `observability.capture()` and reports what happened. This is the only way
+    to verify the last mile — that an alert actually reaches a human — and the
+    whole point of the alerting work is that nobody notices when it is broken.
+    A dead DSN, a paused Sentry project, or a missing alert rule all look
+    identical from the server: `capture()` is fail-soft and returns nothing.
+
+    Safe to leave in place: it does nothing unless explicitly asked, requires
+    the same auth as any other tool, and the event is tagged
+    `area=alerting_probe` so it is trivially filtered out of real alerts.
+    """
     access = get_access_token()
     if access is None:
         return {"authenticated": False}
     claims = access.claims or {}
-    return {
+    out: dict[str, Any] = {
         "authenticated": True,
         "sub": access.subject,
         "email": claims.get("email"),
@@ -7510,6 +7522,28 @@ def whoami() -> dict[str, Any]:
         "issuer": claims.get("iss"),
         "expires_at": access.expires_at,
     }
+    if probe_alerting:
+        enabled = observability.sentry_enabled()
+        if enabled:
+            observability.capture(
+                RuntimeError(
+                    "alerting probe — synthetic, ignore. Fired deliberately to "
+                    "verify the DSN, project and alert rule reach a human."
+                ),
+                area="alerting_probe",
+                subject=access.subject or "unknown",
+            )
+        out["alerting_probe"] = {
+            "sentry_enabled": enabled,
+            "captured": enabled,
+            "correlation_id": observability.current_correlation_id(),
+            "note": (
+                "one synthetic event sent; check Sentry for area=alerting_probe"
+                if enabled
+                else "SENTRY_DSN is not set — nothing was sent"
+            ),
+        }
+    return out
 
 
 def main() -> None:
