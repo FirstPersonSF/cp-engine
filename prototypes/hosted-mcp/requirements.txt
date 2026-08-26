@@ -6,3 +6,7 @@ httpx>=0.28
 # semantic_search embeds queries with Voyage (the ingest corpus is
 # voyage-3-large, 1024-dim — OpenAI vectors would be the wrong space).
 voyageai>=0.3
+# Error alerting (ported from the webhook after the 2026-08-26 audit).
+# Import is DSN-gated in observability.py, so this is only exercised on
+# Railway; a local run without SENTRY_DSN never imports it.
+sentry-sdk>=2.0

@@ -69,7 +69,16 @@ from pydantic import AnyHttpUrl
 from supabase import create_client
 from supabase.lib.client_options import SyncClientOptions
 
-logging.basicConfig(level=logging.INFO)
+import observability
+
+# [cid:...] is the per-message correlation id (observability.py). "-" outside
+# a message context (startup, the debounced tree refresh).
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s [cid:%(cid)s] %(message)s",
+)
+for _handler in logging.getLogger().handlers:
+    _handler.addFilter(observability.CorrelationIdFilter())
 log = logging.getLogger("hosted-mcp")
 
 
@@ -394,6 +403,10 @@ mcp_server = MCPServer(
         "under the calling user's Supabase identity with RLS enforced."
     ),
     version=SERVER_VERSION,
+    # One correlation id per inbound message, set before any tool code runs,
+    # so every log line and every `observability.capture()` from a
+    # swallow-and-continue block ties back to the same call.
+    middleware=[observability.correlation_middleware],
     token_verifier=SupabaseJWTVerifier(JWKS_URI, ISSUER, EXPECTED_AUDIENCE),
     auth=AuthSettings(
         # The AS that issues tokens for this resource. The SDK publishes this
@@ -607,6 +620,11 @@ def audit(client, tool: str, args: dict[str, Any], row_count: int) -> None:
         ).execute()
     except Exception as exc:  # noqa: BLE001 — auditing must never break a read
         log.warning("audit log write failed for tool %s: %s: %s", tool, type(exc).__name__, exc)
+        # Stays invisible to the CALLER by design — they are not the audience
+        # for an audit log. But it must not stay invisible to an OPERATOR: this
+        # table is the only record of who wrote what, so a sustained failure
+        # means writes are happening unlogged.
+        observability.capture(exc, area="audit_log_write", tool=tool)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -738,6 +756,7 @@ def list_spine_elements(
         # as current. Say so instead.
         annotations_error = f"{type(exc).__name__}: {exc}"
         log.warning("spine annotations unavailable for %s: %s", project_code, annotations_error)
+        observability.capture(exc, area="spine_annotations", project_code=project_code)
     else:
         annotations_error = None
 
@@ -1505,6 +1524,7 @@ def semantic_search(
         # than "the context backend was down".
         spine_error = f"{type(exc).__name__}: {exc}"
         log.warning("spine context lookup failed (%s)", spine_error)
+        observability.capture(exc, area="spine_context_lookup")
 
     # Framings only, not bodies: a 6,000-char distillation would drown the
     # user's own question in the embedded vector. The titles carry the
@@ -6556,6 +6576,13 @@ def tree_root() -> Path:
                 log.warning("tenant tree %s failed (serving stale): %s", stage, stderr[:200])
                 _TREE_STATE["refresh_ok"] = False
                 _TREE_STATE["refresh_error"] = f"{stage}: {stderr[:200]}"
+                # THE ONE THAT COST NINE DAYS. A log line here was already
+                # correct and already firing; nobody was reading it.
+                observability.capture(
+                    RuntimeError(f"tenant tree {stage} failed: {stderr[:200]}"),
+                    area="tree_refresh",
+                    stage=stage,
+                )
 
             if fetch.returncode != 0:
                 _fail("fetch", fetch.stderr or "")
@@ -7486,6 +7513,17 @@ def whoami() -> dict[str, Any]:
 
 
 def main() -> None:
+    # Error alerting. Strict no-op without SENTRY_DSN, and the log line says
+    # which — an operator should never have to guess whether alerting is on.
+    # Ported after the 2026-08-26 audit: the tenant tree was frozen for nine
+    # days while the failure logged correctly, on every read, into a void.
+    alerting = observability.init_sentry(release=SERVER_VERSION)
+    log.info(
+        "error alerting: %s",
+        "Sentry enabled"
+        if alerting
+        else "DISABLED (no SENTRY_DSN) — swallowed failures reach logs only",
+    )
     log.info("hosted-cp spike listening on http://%s:%d/mcp", HOST, PORT)
     log.info("issuer:  %s", ISSUER)
     log.info("jwks:    %s", JWKS_URI)

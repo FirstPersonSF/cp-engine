@@ -129,3 +129,57 @@ def test_no_bare_pass_on_a_swallowed_read():
         f"{bare} bare swallow-and-continue sites (was 6 at the 2026-08-26 "
         "audit) — a new one should report what it could not do"
     )
+
+
+# ── observability: the operator-facing half ──────────────────────────
+
+def test_swallowed_failures_route_to_an_alert():
+    """A log line nobody reads is not observability.
+
+    The tenant tree was frozen for nine days while `tenant tree pull failed`
+    fired correctly on every single read. Response-level provenance (above)
+    serves a caller who looks; `capture()` serves an operator who isn't
+    looking. Both halves are needed.
+    """
+    for func, area in [
+        ("tree_root", "tree_refresh"),
+        ("list_spine_elements", "spine_annotations"),
+        ("semantic_search", "spine_context_lookup"),
+        ("audit", "audit_log_write"),
+    ]:
+        fn = body_of(func)
+        assert "observability.capture(" in fn, f"{func} swallows without alerting"
+        assert area in fn, f"{func} should tag area={area}"
+
+
+def test_sentry_is_dsn_gated_and_says_which():
+    """Alerting that is silently off is worse than none — an operator would
+    assume coverage. main() must state the mode."""
+    obs = (Path(__file__).parent / "observability.py").read_text()
+    assert 'os.environ.get("SENTRY_DSN")' in obs
+    assert "if not dsn:\n        return False" in obs
+    main = body_of("main")
+    assert "error alerting" in main
+    assert "DISABLED" in main
+
+
+def test_correlation_middleware_is_registered():
+    assert "middleware=[observability.correlation_middleware]" in SRC
+
+
+def test_observability_ships_in_the_image():
+    """server.py imports it at module scope; the Dockerfile copied only
+    server.py, so this would have crashed the container at startup."""
+    dockerfile = (Path(__file__).parent / "Dockerfile").read_text()
+    assert "observability.py" in dockerfile
+    reqs = (Path(__file__).parent / "requirements.txt").read_text()
+    assert "sentry-sdk" in reqs
+
+
+def test_capture_never_raises():
+    """Called from except blocks — if it could raise it would convert a
+    degraded path into a broken one."""
+    obs = (Path(__file__).parent / "observability.py").read_text()
+    capture = obs[obs.index("def capture("):obs.index("# DIFF 3")]
+    assert "except Exception:" in capture
+    assert "pass" in capture
