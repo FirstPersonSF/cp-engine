@@ -6381,13 +6381,40 @@ def tree_root() -> Path:
             )
             _TREE_STATE["root"] = str(target)
             _TREE_STATE["last_pull"] = time.time()
-            log.info("tenant tree cloned to %s", target)
+            _TREE_STATE["head"] = (
+                subprocess.run(
+                    ["git", "rev-parse", "--short", "HEAD"],
+                    cwd=target,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                or None
+            )
+            log.info("tenant tree cloned to %s at %s", target, _TREE_STATE["head"])
             return target
 
         root_path = Path(root)
         if time.time() - float(_TREE_STATE.get("last_pull", 0)) >= TREE_PULL_DEBOUNCE_SECONDS:
-            pull = subprocess.run(
-                ["git", "pull", "--ff-only", "--depth", "1"],
+            # FETCH + RESET, never `git pull --ff-only`. On a `--depth 1` clone
+            # git holds exactly one commit and cannot prove the fetched tip
+            # descends from local HEAD, so once the clone falls behind far
+            # enough that the two are no longer trivially related, EVERY pull
+            # dies with "fatal: Not possible to fast-forward, aborting" and the
+            # tree freezes at whatever commit it last held. Because a pull
+            # failure is (correctly) non-fatal, that freeze is silent: the DB
+            # verbs keep returning today's rows while the tree serves weeks-old
+            # files, with nothing in the response saying so. Observed
+            # 2026-08-26: the clone had been pinned to an 08-17 commit for nine
+            # days. Latent since the tree tools shipped 2026-08-02.
+            #
+            # The clone is a read-only mirror with no local commits, so there is
+            # nothing to preserve and no merge to attempt — matching the remote
+            # exactly is the whole contract. `reset --hard FETCH_HEAD` needs no
+            # ancestry, is idempotent, and handles a force-push or a rewound
+            # branch, all of which `--ff-only` refuses.
+            fetch = subprocess.run(
+                ["git", "fetch", "--depth", "1", "origin", "HEAD"],
                 cwd=root_path,
                 env=env,
                 capture_output=True,
@@ -6396,8 +6423,35 @@ def tree_root() -> Path:
             # Always advance the clock: a failing remote must not turn the
             # debounce off and retry on every single call.
             _TREE_STATE["last_pull"] = time.time()
-            if pull.returncode != 0:
-                log.warning("tenant tree pull failed (serving stale): %s", (pull.stderr or "")[:200])
+            if fetch.returncode != 0:
+                log.warning(
+                    "tenant tree fetch failed (serving stale): %s",
+                    (fetch.stderr or "")[:200],
+                )
+            else:
+                reset = subprocess.run(
+                    ["git", "reset", "--hard", "FETCH_HEAD"],
+                    cwd=root_path,
+                    env=env,
+                    capture_output=True,
+                    text=True,
+                )
+                if reset.returncode != 0:
+                    log.warning(
+                        "tenant tree reset failed (serving stale): %s",
+                        (reset.stderr or "")[:200],
+                    )
+                else:
+                    _TREE_STATE["head"] = (
+                        subprocess.run(
+                            ["git", "rev-parse", "--short", "HEAD"],
+                            cwd=root_path,
+                            env=env,
+                            capture_output=True,
+                            text=True,
+                        ).stdout.strip()
+                        or None
+                    )
         return root_path
 
 
@@ -6685,6 +6739,13 @@ def read_project_file(path: str) -> dict[str, Any]:
         "path": raw,
         "available": True,
         "caller": caller_subject(),
+        # WHICH COMMIT THIS TEXT CAME FROM. The tree is a mirror that can fall
+        # behind (a failing fetch is non-fatal by design), and the DB verbs are
+        # always current — so a caller reading a stale `cp.md` alongside a live
+        # spine has no way to notice the mismatch unless the response says
+        # where the file came from. Reporting it turns a silent stall into a
+        # visible one.
+        "tree_head": _TREE_STATE.get("head"),
         "bytes": size,
         "truncated": truncated,
         "text": text,
