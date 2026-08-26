@@ -7496,6 +7496,132 @@ def wrap_bundle(project_code: str, tail_days: int = 14) -> dict[str, Any]:
 
 
 @mcp_server.tool()
+def open_workset(project_code: str, name: str) -> dict[str, Any]:
+    """Open a project's WORKSET ("tunnel") — a declared subset of its spine.
+
+    Returns the workset's members resolved to their CURRENT LIVE versions, plus
+    the note saying what the tunnel is for and what it deliberately excludes.
+    Read this INSTEAD of listing the whole project's spine when the job is one
+    the tunnel was drawn for.
+
+    WHY THIS EXISTS (cp-engine #223 / mc-2 #323). A mature engagement carries
+    far more context than any single job needs, and the excess is not merely
+    expensive — a superseded doc has the same grabbing power as the approved
+    brief, so a model reads plausibly and picks wrong. Documented on ibx-5153
+    (2026-08-26): a copywriting dry run drafted to a strategic frame the client
+    had withdrawn from two days earlier, because the July architecture element
+    gave no hint it had been overtaken. Better retrieval would not have helped;
+    the problem is authority, not volume.
+
+    MEMBERSHIP IS PINNED, CONTENT IS NOT. The stored members are spine element
+    IDs, never document references, and every read resolves to whatever version
+    is `live` right now. That is what keeps a tunnel fresh with no maintenance —
+    a document-pointed workset would rot at the first supersession and its
+    confident boundaries would then HIDE the update.
+
+    THE WALLS ARE THE POINT, AND SO IS SEEING THEM. `excluded_count` and the
+    note's deliberately-out section are not decoration: a badly-drawn workset
+    confidently omits what you needed, and the confidence is what stops you
+    noticing. If what you need is outside, say so and reach for the full spine
+    — that is an event worth witnessing, not a failure.
+
+    Step 1: hand-listed membership only. `rule` is stored but NOT evaluated
+    yet (Step 2); it is reported so you can see what the tunnel intends to
+    become.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        name: the workset's name, e.g. "copywriting".
+    """
+    client = user_client()
+    project_id = resolve_project_id(client, project_code)
+    if project_id is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    rows = (
+        client.table("worksets")
+        .select("id, name, members, rule, note, created_at, updated_at")
+        .eq("project_id", project_id)
+        .eq("name", name)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        available = [
+            r["name"]
+            for r in (
+                client.table("worksets")
+                .select("name")
+                .eq("project_id", project_id)
+                .execute()
+                .data
+                or []
+            )
+        ]
+        return {
+            "error": f"no workset named {name!r} on {project_code}",
+            "available": available,
+            "note": TEAM_EMPTY_HINT if not available else None,
+        }
+
+    ws = rows[0]
+    members: list[str] = list(ws.get("members") or [])
+
+    # Resolve to LIVE versions. A member whose element is retired or superseded
+    # out of existence is reported as missing rather than silently dropped —
+    # a tunnel quietly losing a wall is the failure this whole object exists
+    # to prevent.
+    resolved: list[dict[str, Any]] = []
+    if members:
+        resolved = (
+            client.table("spine_substance")
+            .select("est_item_id, layer, framing, body, important, version_label, "
+                    "version_date, binding, note")
+            .eq("project_id", project_id)
+            .eq("status", "live")
+            .in_("est_item_id", members)
+            .execute()
+            .data
+            or []
+        )
+    found = {r["est_item_id"] for r in resolved}
+    missing = [m for m in members if m not in found]
+
+    # How much of the project this tunnel is NOT showing. Stated so the
+    # boundary is inspectable at a glance.
+    total_live = (
+        client.table("spine_substance")
+        .select("est_item_id", count="exact")
+        .eq("project_id", project_id)
+        .eq("status", "live")
+        .execute()
+    )
+    total = total_live.count or 0
+
+    audit(client, "open_workset", {"project_code": project_code, "name": name}, len(resolved))
+    return {
+        "project_code": project_code,
+        "workset": ws["name"],
+        "caller": caller_subject(),
+        "note": ws.get("note"),
+        "count": len(resolved),
+        "excluded_count": max(total - len(resolved), 0),
+        "elements": resolved,
+        **({"missing_members": missing,
+            "warning": "member(s) listed on this workset have no live element — "
+                       "the tunnel has lost a wall; check whether they were "
+                       "retired or superseded before relying on this scope."}
+           if missing else {}),
+        **({"rule": ws["rule"],
+            "note_on_rule": "stored but NOT evaluated in Step 1 — membership "
+                            "above is hand-listed only."}
+           if ws.get("rule") else {}),
+    }
+
+
+@mcp_server.tool()
 def whoami(probe_alerting: bool = False) -> dict[str, Any]:
     """Echo the verified identity of the caller (spike diagnostic).
 
