@@ -165,12 +165,40 @@ Loaded: `master-cp.md` + `weekly-cp.md` + every active project's `cp.md` + `cano
 NOT loaded: (none — this is the heavyweight mode)
 Triggered by: `run weekly review`.
 
+### Mode 5 — Workset ("tunnel")
+Loaded: one named workset's resolved live spine elements, and nothing else
+NOT loaded: `master-cp.md`, the project `cp.md`, sprint files, the source store
+Triggered by: `open workset <code>:<name>` → `open_workset` on `cp-hosted`.
+
+A workset is a **declared** subset of a project's spine for one kind of job —
+someone decided these elements are the foundation, and that decision is
+inspectable and shareable. Use it when the job matches a tunnel that exists;
+`list_worksets <code>` says which do.
+
+**Why it is a mode and not a shortcut:** a mature engagement carries far more
+context than any job needs, and the excess is not merely expensive. A
+superseded doc has the same grabbing power as the approved brief, so a
+well-written stale frame wins on presentation. That is an authority problem,
+not a volume one — better retrieval makes it worse, not better.
+
+**The walls are visible on purpose.** `open_workset` reports `excluded_count`
+and the note's deliberately-out section; `describe_workset` names what is
+excluded, by layer. If what you need is outside: **say so, name it, then
+reach.** Reaching out is not a failure — reaching out *silently* is, because
+it hides a boundary that wants redrawing.
+
 ## Mode-switching
 
 **Replace.** These phrases switch the active mode entirely:
 - `switch to <code>` → mode 2 with `<code>`
 - `switch to sprint` → mode 3
 - `run weekly review` → mode 4
+- `open workset <code>:<name>` → mode 5
+
+A workset **replaces** rather than layers: it is a claim about what should be
+in the room, and layering it onto a loaded project defeats the point. From
+inside a workset, `also load <code>` is an explicit door-opening — take it,
+and say that you did.
 
 **Additive.** These phrases layer context onto the current mode:
 - `also load <code>` → adds that project's `cp.md`
@@ -202,6 +230,9 @@ about.
 | `update sprint` | 3 | Open `canonic/sprint-cp.md` for editing. |
 | `check status sprint` | 3 | Read `canonic/sprint-cp.md`; summarize without editing. |
 | `run weekly review` | 4 | Begin live pass of partners'-review workflow. |
+| `open workset <code>:<name>` | replace → 5 | Load only that tunnel's live elements (`open_workset`). |
+| `list worksets <code>` | any | Which tunnels exist on this project, and what each is for. |
+| `describe workset <code>:<name>` | any | What is in a tunnel and — the half that matters — what it excludes. |
 | `also load <code>` | additive | Layer that project's `cp.md` onto the current mode. |
 | `switch to <code>` | replace → 2 | Discard previous mode; load that project's `cp.md`. |
 | `deepen from transcript` | (during weekly review) | Begin deepening pass. |

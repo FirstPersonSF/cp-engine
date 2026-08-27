@@ -44,12 +44,14 @@ Run:
 
 from __future__ import annotations
 
+import importlib.util
 import json
 import logging
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -69,7 +71,25 @@ from pydantic import AnyHttpUrl
 from supabase import create_client
 from supabase.lib.client_options import SyncClientOptions
 
-import observability
+# LOADED BY PATH, NOT BY NAME, and the name collision is the reason. A bare
+# `import observability` binds to whatever is already in `sys.modules` under
+# that name — and `cp-engine/webhook/observability.py` is a DIFFERENT module
+# with the same name, imported by earlier tests in the same process. The
+# webhook's has no `correlation_middleware`, so `server.py` loaded fine and
+# then died at the MCPServer constructor with a bare AttributeError: 40
+# repo-root tests, green before the port landed, all failing on a name they
+# never mentioned.
+#
+# `sys.path` cannot fix this — the wrong module is already cached, so the
+# path is never consulted. Loading this file's own sibling explicitly is what
+# makes the two same-named modules coexist.
+_obs_spec = importlib.util.spec_from_file_location(
+    "hosted_mcp_observability",
+    Path(__file__).resolve().parent / "observability.py",
+)
+observability = importlib.util.module_from_spec(_obs_spec)
+sys.modules["hosted_mcp_observability"] = observability
+_obs_spec.loader.exec_module(observability)
 
 # [cid:...] is the per-message correlation id (observability.py). "-" outside
 # a message context (startup, the debounced tree refresh).
@@ -7592,6 +7612,129 @@ def _derive_workset_members(
 
 
 @mcp_server.tool()
+def list_worksets(project_code: str) -> dict[str, Any]:
+    """What tunnels exist on this project, and what each is for.
+
+    The cheap orientation call: run it before `open_workset` when you do not
+    already know a tunnel's name, or to check whether the job in front of you
+    already has one drawn.
+
+    A project with NO worksets is reported plainly rather than as an empty
+    list — "nobody has drawn a tunnel here yet" is a different fact from
+    "this project has no context", and the two must not read alike.
+    """
+    client = user_client()
+    project_id = resolve_project_id(client, project_code)
+    if project_id is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    rows = (
+        client.table("worksets")
+        .select("name, members, rule, note, note_author, note_dated, updated_at")
+        .eq("project_id", project_id)
+        .order("name")
+        .execute()
+        .data
+        or []
+    )
+    audit(client, "list_worksets", {"project_code": project_code}, len(rows))
+    return {
+        "project_code": project_code,
+        "caller": caller_subject(),
+        "count": len(rows),
+        "worksets": [
+            {
+                "name": r["name"],
+                "pinned": len(r.get("members") or []),
+                "derived": bool(r.get("rule")),
+                # First paragraph only — the full note comes with `open_workset`.
+                "for": (r.get("note") or "").split("\n\n")[0] or None,
+                "drawn_by": r.get("note_author"),
+                "drawn": r.get("note_dated"),
+            }
+            for r in rows
+        ],
+        **({"note": "no worksets drawn on this project yet — open the full "
+                    "spine, or draw one if this job will recur"}
+           if not rows else {}),
+    }
+
+
+@mcp_server.tool()
+def describe_workset(project_code: str, name: str) -> dict[str, Any]:
+    """What is in a tunnel, and — the half that matters — what it EXCLUDES.
+
+    Membership and reasoning WITHOUT the element bodies. Use it to audit a
+    boundary before trusting it, or to answer "why isn't X in here?" without
+    paying for the full open.
+
+    THE EXCLUSION LIST IS THE POINT. A badly-drawn workset confidently omits
+    what you needed, and the confidence is what stops you noticing — so this
+    names, by layer, what the tunnel is leaving out. If something in
+    `excluded_by_layer` looks like it should be inside, the boundary is
+    wrong and that is a finding, not an inconvenience.
+    """
+    client = user_client()
+    project_id = resolve_project_id(client, project_code)
+    if project_id is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    rows = (
+        client.table("worksets")
+        .select("name, members, rule, note, note_author, note_dated")
+        .eq("project_id", project_id)
+        .eq("name", name)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if not rows:
+        return {"error": f"no workset named {name!r} on {project_code}"}
+
+    ws = rows[0]
+    pinned = list(ws.get("members") or [])
+    derived, rule_error = _derive_workset_members(client, project_id, ws.get("rule"))
+    inside = set(pinned) | set(derived)
+
+    live = (
+        client.table("spine_substance")
+        .select("est_item_id, layer, framing, important")
+        .eq("project_id", project_id)
+        .eq("status", "live")
+        .execute()
+        .data
+        or []
+    )
+    excluded: dict[str, list[str]] = {}
+    for r in live:
+        if r["est_item_id"] in inside:
+            continue
+        excluded.setdefault(r.get("layer") or "(no layer)", []).append(
+            r.get("framing") or r["est_item_id"]
+        )
+
+    audit(client, "describe_workset", {"project_code": project_code, "name": name}, len(inside))
+    return {
+        "project_code": project_code,
+        "workset": ws["name"],
+        "caller": caller_subject(),
+        "note": ws.get("note"),
+        **({"drawn_by": ws["note_author"]} if ws.get("note_author") else {}),
+        **({"drawn": ws["note_dated"]} if ws.get("note_dated") else {}),
+        "inside": {
+            "count": len(inside),
+            "pinned": sorted(pinned),
+            "derived": sorted(m for m in derived if m not in pinned),
+            "rule": ws.get("rule"),
+        },
+        "excluded_by_layer": {k: sorted(v) for k, v in sorted(excluded.items())},
+        "excluded_count": sum(len(v) for v in excluded.values()),
+        **({"rule_error": rule_error} if rule_error else {}),
+    }
+
+
+@mcp_server.tool()
 def open_workset(project_code: str, name: str) -> dict[str, Any]:
     """Open a project's WORKSET ("tunnel") — a declared subset of its spine.
 
@@ -7741,6 +7884,20 @@ def open_workset(project_code: str, name: str) -> dict[str, Any]:
                        "evaluated — you are seeing the hand-pinned members "
                        "ONLY, and the scope is narrower than it should be."}
            if rule_error else {}),
+        # THE ESCAPE HATCH, stated in the payload rather than left to
+        # etiquette. A closed tunnel with no visible door is the cage the
+        # design warns against, and a reader who silently reaches outside
+        # defeats the boundary without anyone learning the boundary was
+        # wrong. Naming the door — and what to say when you use it — makes
+        # the reach an event, which is what makes a mis-drawn workset
+        # diagnosable after the fact.
+        "if_you_need_something_outside": (
+            "Say so explicitly, name what you needed and why, THEN reach — "
+            "`describe_workset` shows what this tunnel excludes and "
+            "`list_spine_elements` opens the full project. Reaching out is "
+            "not a failure; reaching out SILENTLY is, because it hides a "
+            "boundary that wants redrawing."
+        ),
         # A required section, per the pilot: the single most useful line in
         # the payload was the one naming a field the whole PROJECT lacks, not
         # just the tunnel. Knowing the gap was a project fact rather than a
