@@ -4,6 +4,79 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.105.0 — 2026-08-27
+
+- **New: worksets ("tunnels") — scoped context so a job-shaped session opens a
+  subset of a project, not the whole thing (#223, mc-2 #323).** A mature
+  engagement carries far more context than any single job needs, and the excess
+  is not merely expensive: a superseded doc has the same grabbing power as the
+  approved brief, so a model reads plausibly and picks wrong. Documented on
+  ibx-5153 — a copywriting dry run drafted to a strategic frame the client had
+  withdrawn from two days earlier, because the July architecture element gave
+  no hint it had been overtaken. **Better retrieval makes that worse, not
+  better; it is an authority problem.**
+
+  A workset is a *declared* subset of a project's spine — someone decided these
+  elements are the foundation, and that decision is inspectable and shareable.
+  **Membership is spine element IDs, never document references**, so content
+  resolves to whatever version is `live` at read time and the tunnel stays
+  fresh with no curator. Membership is the UNION of a stored rule (what is
+  important, recent, or ratified right now) and hand-pinned members (what no
+  predicate expresses) — checked against live data before building: of the
+  three standing elements the pilot tunnel needs, exactly one is canon.
+
+  Three verbs on the hosted server: `open_workset`, `list_worksets`,
+  `describe_workset`. **`describe_workset` names what the tunnel EXCLUDES, by
+  layer** — a badly-drawn workset confidently omits what you needed, and the
+  confidence is what stops you noticing.
+
+  **Mode 4 in the generated `CLAUDE.md`** (Mode 5 on a sprint tenant), with
+  `open workset <code>:<name>`, `list worksets <code>` and
+  `describe workset <code>:<name>`. A workset REPLACES rather than layers, and
+  reaching outside is a door-opening the payload names explicitly: say what you
+  needed, then reach. Reaching out is not a failure; reaching out *silently*
+  is, because it hides a boundary that wants redrawing.
+
+  Piloted on ibx-5153: a fresh agent given only the tunnel caught the client
+  redirect that a full-context run had missed, and named its tie-break as
+  recency over proof-quality. ~4.9k tokens against ~50.7k for the full spine.
+
+- **New: `record_round` — ideation passes that keep their kills.** Ideas
+  already iterate in the spine, but a version bump keeps the survivor and
+  silently loses the reasoning, so the next round re-proposes what the last one
+  killed. This is `add_spine_version` with the kill list first-class: both
+  `idea` and `why` are required per entry and the write is refused without
+  them, because an idea without a reason is an omission, not a kill. It does
+  not judge — it records what a human decided.
+
+- **New: error alerting on the hosted server (`observability.py`).** Ported
+  from the webhook, which has had Sentry since arch-phase-3. Correlation ids
+  ride the MCP SDK's own middleware chain, so there is one id per TOOL CALL
+  rather than per HTTP request. Strict no-op without `SENTRY_DSN`, and startup
+  logs which mode it is in — alerting that is silently off is worse than none.
+
+- **Fix: the hosted tenant tree froze at a nine-day-old commit, silently.**
+  `git pull --ff-only --depth 1` cannot fast-forward a shallow clone once it
+  ages past provable ancestry, so every pull aborted while the DB verbs beside
+  it returned current rows. **The staleness was the smaller half; the silence
+  was the bug** — a pull failure is non-fatal by design, and that same
+  non-fatality made a permanent failure invisible. Now fetch + reset, and reads
+  carry `tree_head`/`tree_stale`.
+
+- **Fix: eight more silent-degradation sites, found by auditing all 66
+  swallow-and-continue paths.** Including: a failed edge read silently
+  returning every SEALED spine element as live; `semantic_search` falling back
+  to chunk-only ranking while reporting a clean empty result; and
+  `reorder_spine_step` counting loop iterations rather than matched rows
+  against a policy that refuses human-authored rows with a 0-row 200 — the verb
+  rejects partial reorders on input, then produced one. Also
+  `tree_ssh_env` was writing the deploy key to a fresh tempdir on every call.
+
+- **Fix: the asset listing cache leaked across webhook requests.** The
+  in-process listing cache is keyed on (provider, folder_id) with no project or
+  request scoping — fine for the CLI, where each invocation is a fresh process,
+  wrong for a long-lived uvicorn worker that never cleared it.
+
 ## v0.104.1 — 2026-08-24
 
 - **Fix: recovered runs are no longer re-offered by `rerun-failed-ingests`
