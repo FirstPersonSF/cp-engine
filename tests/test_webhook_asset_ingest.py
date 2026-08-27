@@ -756,3 +756,110 @@ def test_list_502_when_listing_raises(monkeypatch, client):
     resp = _post_list(client, {"code": "ibx-5153"})
     assert resp.status_code == 502
     assert "drive down" in resp.json()["detail"]
+
+
+# ---------------------------------------------- listing-cache freshness (mc-2)
+#
+# The in-process listing cache is module-level with a 600s TTL and is keyed on
+# (provider, folder_id) only — no project, user, or request scoping. It was
+# designed for the CLI, where every invocation is a fresh process and the two
+# entry points clear it explicitly. The webhook is a long-lived uvicorn process,
+# so without the guards these tests pin, a rename in Drive/Dropbox stayed
+# invisible to the picker for up to ten minutes, and a webhook-triggered ingest
+# in that window acted on the same stale tree.
+
+
+def test_list_disables_the_listing_cache(monkeypatch, client):
+    """The picker is an interactive read: it MUST pass use_cache=False.
+
+    With the default (True) the endpoint serves a listing up to 600s old, shared
+    across every project pointing at the same folder — so renamed and newly
+    added files stay invisible for the window.
+    """
+    _wire(monkeypatch)
+    captured = {}
+
+    def _capture(code, **kwargs):
+        captured.update(kwargs)
+        return {
+            "project_found": True,
+            "unconfigured_reason": None,
+            "source_notes": [],
+            "files": [],
+        }
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.list_project_files_annotated", _capture
+    )
+
+    resp = _post_list(client, {"code": "ibx-5153"})
+
+    assert resp.status_code == 200, resp.text
+    assert captured["use_cache"] is False
+
+
+def test_runner_clears_listing_cache_before_ingesting(monkeypatch):
+    """The runner MUST clear the listing cache BEFORE ingest_project_assets.
+
+    Ordering is the whole point: clearing after the call would leave the run
+    itself operating on the stale tree. `ingest_project_assets` deliberately
+    does not clear (the CLI shares one cache across an `--all` sweep), so this
+    non-CLI caller is responsible for it.
+    """
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
+    rec = {}
+    sb = _RecordingClient(rec)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
+
+    events = []
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest._clear_listing_cache",
+        lambda: events.append("cleared"),
+    )
+
+    def _capture(code, **kwargs):
+        events.append("ingested")
+        return IngestRunResult(project_found=True)
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.ingest_project_assets", _capture
+    )
+
+    asyncio.run(webhook_main._run_asset_ingest("run-1", "ibx-5153"))
+
+    assert events == ["cleared", "ingested"]
+
+
+def test_runner_keeps_the_per_file_skip_enabled(monkeypatch):
+    """Clearing the cache must NOT come at the cost of the per-file skip.
+
+    `use_cache` on ingest_project_assets gates TWO layers: the folder listing
+    cache AND the per-file content-token skip that stops unchanged files being
+    re-downloaded and re-embedded. Passing use_cache=False to get a fresh
+    listing would silently disable the second, making every run a full re-ingest
+    — hence the explicit clear instead. The skip stays correct because it
+    compares freshly-listed tokens.
+    """
+    monkeypatch.setenv("SUPABASE_URL", "https://test.supabase.co")
+    monkeypatch.setenv("SUPABASE_SERVICE_KEY", "test-service-key")
+    rec = {}
+    sb = _RecordingClient(rec)
+    monkeypatch.setattr(pipeline, "_create_supabase_client", lambda: sb)
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest._clear_listing_cache", lambda: None
+    )
+
+    captured = {}
+
+    def _capture(code, **kwargs):
+        captured.update(kwargs)
+        return IngestRunResult(project_found=True)
+
+    monkeypatch.setattr(
+        "cp_engine.asset_ingest.ingest_project_assets", _capture
+    )
+
+    asyncio.run(webhook_main._run_asset_ingest("run-1", "ibx-5153"))
+
+    assert captured.get("use_cache", True) is True

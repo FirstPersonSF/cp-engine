@@ -57,6 +57,20 @@ async def _run_asset_ingest(
             raise RuntimeError(
                 "webhook missing SUPABASE_URL/SUPABASE_SERVICE_KEY env"
             )
+        # The in-process listing cache is TTL'd, not request-scoped, and this
+        # webhook is a long-lived uvicorn process — so without an explicit clear
+        # a run started within 600s of any earlier walk of the same
+        # (provider, folder_id) reuses that stale tree, down to which files
+        # exist and what they're named. `ingest_project_assets` deliberately
+        # does NOT clear (the CLI shares one cache across an `--all` sweep), and
+        # names its non-CLI callers responsible for doing it themselves.
+        #
+        # Clear rather than `use_cache=False`: that flag ALSO disables the
+        # per-file content-token skip, which is the thing keeping a re-run from
+        # re-downloading and re-embedding every unchanged file. We want a fresh
+        # listing AND that skip — the skip compares freshly-listed tokens, so it
+        # stays correct once the listing is fresh.
+        asset_ingest._clear_listing_cache()
         run = await asyncio.to_thread(
             asset_ingest.ingest_project_assets,
             code,
@@ -235,6 +249,18 @@ async def asset_list_endpoint(request: Request) -> Response:
     from cp_engine import asset_ingest
 
     # Listing walks the provider trees (blocking I/O) — run off the event loop.
+    #
+    # use_cache=False: the listing cache is keyed on (provider, folder_id) with a
+    # 600s TTL and no request scoping, so in this long-lived process the picker
+    # would serve a snapshot up to 10 minutes old — shared across every project
+    # and user pointing at the same folder. Renames and new files stay invisible
+    # for the window, which is precisely wrong for a user-initiated interactive
+    # read. The cache exists for the CLI's `--all` sweep, where sibling projects
+    # share a parent folder within one invocation; a single picker open has no
+    # such sibling to amortize against, so it buys nothing here. On this path the
+    # flag gates ONLY the listing (there is no per-file skip to preserve), and
+    # ttl=0 makes `_cached_listing` a pure pass-through — it neither reads the
+    # dict nor writes to it, so the ingest path's cache is left unpoisoned.
     try:
         result = await asyncio.to_thread(
             asset_ingest.list_project_files_annotated,
@@ -242,6 +268,7 @@ async def asset_list_endpoint(request: Request) -> Response:
             mc_project_id=mc_project_id,
             supabase_url=supabase_url,
             supabase_key=supabase_key,
+            use_cache=False,
         )
     except Exception as exc:  # noqa: BLE001 — surface a clean 502, capture detail
         log.warning("asset-list for %s failed: %s", code, exc, exc_info=True)
