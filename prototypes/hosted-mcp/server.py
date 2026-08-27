@@ -7495,6 +7495,102 @@ def wrap_bundle(project_code: str, tail_days: int = 14) -> dict[str, Any]:
     return payload
 
 
+def _derive_workset_members(
+    client, project_id: str, rule: dict[str, Any] | None
+) -> tuple[list[str], str | None]:
+    """Evaluate a workset's derived-membership rule against the LIVE spine.
+
+    Returns (element_ids, error). A derived workset maintains itself; a
+    hand-listed one needs a curator and goes stale — so this is the half that
+    should carry most of a mature tunnel's membership.
+
+    THE CLAUSES ARE OR'd, NOT AND'd, and that is the whole design. The pilot's
+    stored rule read as one conjunction (`layers` AND `important` AND
+    `recency`) and selected THREE of the five elements the job actually
+    needed. Each clause names a different reason an element belongs in the
+    room, and an element qualifying for any one of them qualifies:
+
+      * `important`  — {"layers": [...], "important": true}
+                       what someone flagged as must-not-miss, within layers.
+      * `recency`    — {"recency": {"layers": [...], "days": N}}
+                       Step 0 made structural: the newest client direction,
+                       which is the clause that catches a redirect before it
+                       has been flagged by anyone.
+      * `canon`      — {"canon": true}
+                       active `canon_of` edges: what the project has ratified.
+      * `pinned_to`  — {"pinned_to": "<element-id>"}
+                       everything bound to one canon element.
+
+    An empty or unrecognized rule returns ([], None) — NOT an error, and NOT
+    a silent full-spine read. A rule that selects nothing must leave the
+    hand-listed members standing rather than widening the tunnel.
+    """
+    if not isinstance(rule, dict) or not rule:
+        return [], None
+
+    found: set[str] = set()
+    try:
+        # Base read once; the clauses are cheap set operations over it. A live
+        # spine is ~100 rows, so this is one query rather than four.
+        rows = (
+            client.table("spine_substance")
+            .select("est_item_id, layer, important, version_date")
+            .eq("project_id", project_id)
+            .eq("status", "live")
+            .execute()
+            .data
+            or []
+        )
+
+        if rule.get("important") is True:
+            layers = set(rule.get("layers") or [])
+            for r in rows:
+                if r.get("important") is True and (not layers or r.get("layer") in layers):
+                    found.add(r["est_item_id"])
+
+        rec = rule.get("recency")
+        if isinstance(rec, dict) and rec.get("days"):
+            cutoff = (
+                datetime.now(timezone.utc).date() - timedelta(days=int(rec["days"]))
+            ).isoformat()
+            layers = set(rec.get("layers") or [])
+            for r in rows:
+                # `version_date` is a Postgres `date`; PostgREST serializes it
+                # as an ISO "YYYY-MM-DD" string, so a lexical >= IS a date
+                # comparison — but only for that exact shape. Anything else
+                # (null, a timestamp, a hand-typed "7/16") must be SKIPPED
+                # rather than compared, or a malformed value silently drops an
+                # element out of the tunnel.
+                vd = str(r.get("version_date") or "")[:10]
+                if len(vd) != 10 or vd[4] != "-" or vd[7] != "-":
+                    continue
+                if vd >= cutoff and (not layers or r.get("layer") in layers):
+                    found.add(r["est_item_id"])
+
+        if rule.get("canon") is True or rule.get("pinned_to"):
+            q = (
+                client.table("spine_relations")
+                .select("from_item_id, to_item_id, kind")
+                .eq("project_id", project_id)
+                .eq("status", "active")
+            )
+            edges = q.execute().data or []
+            for e in edges:
+                if rule.get("canon") is True and e.get("kind") == "canon_of":
+                    found.add(e["from_item_id"])
+                if rule.get("pinned_to") and e.get("to_item_id") == rule["pinned_to"]:
+                    found.add(e["from_item_id"])
+    except Exception as exc:  # noqa: BLE001 — degrade to hand-listed, but SAY SO
+        # Never silently narrow a tunnel: a caller acting on a partial scope
+        # believing it complete is the failure this object exists to prevent.
+        err = f"{type(exc).__name__}: {exc}"
+        log.warning("workset rule evaluation failed: %s", err)
+        observability.capture(exc, area="workset_rule")
+        return [], err
+
+    return sorted(found), None
+
+
 @mcp_server.tool()
 def open_workset(project_code: str, name: str) -> dict[str, Any]:
     """Open a project's WORKSET ("tunnel") — a declared subset of its spine.
@@ -7540,7 +7636,8 @@ def open_workset(project_code: str, name: str) -> dict[str, Any]:
 
     rows = (
         client.table("worksets")
-        .select("id, name, members, rule, note, created_at, updated_at")
+        .select("id, name, members, rule, note, note_author, note_dated, "
+                "created_at, updated_at")
         .eq("project_id", project_id)
         .eq("name", name)
         .limit(1)
@@ -7568,6 +7665,17 @@ def open_workset(project_code: str, name: str) -> dict[str, Any]:
 
     ws = rows[0]
     members: list[str] = list(ws.get("members") or [])
+    derived, rule_error = _derive_workset_members(client, project_id, ws.get("rule"))
+    # UNION, not either/or. The pilot (2026-08-27) settled this: no single
+    # marker picks the standing elements — of the three the copywriting tunnel
+    # needs, one is canon and two are neither canon nor important. A rule alone
+    # would have silently dropped `Inputs & Briefing` and the messaging
+    # architecture, which is the badly-drawn-workset failure arriving through
+    # the rule instead of the list. So the rule carries the self-maintaining
+    # part (what is important, recent, or canon RIGHT NOW) and `members` pins
+    # the standing exceptions a predicate cannot express.
+    rule_only = [m for m in derived if m not in members]
+    members = members + rule_only
 
     # Resolve to LIVE versions. A member whose element is retired or superseded
     # out of existence is reported as missing rather than silently dropped —
@@ -7606,6 +7714,12 @@ def open_workset(project_code: str, name: str) -> dict[str, Any]:
         "workset": ws["name"],
         "caller": caller_subject(),
         "note": ws.get("note"),
+        # WHO drew this boundary and WHEN. The note is directive by design;
+        # attribution is what lets a reader weigh it instead of absorbing it,
+        # and the date is what makes "drawn against a situation that has since
+        # moved" a checkable claim rather than a worry.
+        **({"note_author": ws["note_author"]} if ws.get("note_author") else {}),
+        **({"note_dated": ws["note_dated"]} if ws.get("note_dated") else {}),
         "count": len(resolved),
         "excluded_count": max(total - len(resolved), 0),
         "elements": resolved,
@@ -7615,9 +7729,30 @@ def open_workset(project_code: str, name: str) -> dict[str, Any]:
                        "retired or superseded before relying on this scope."}
            if missing else {}),
         **({"rule": ws["rule"],
-            "note_on_rule": "stored but NOT evaluated in Step 1 — membership "
-                            "above is hand-listed only."}
+            "derived_count": len(rule_only),
+            "pinned_count": len(members) - len(rule_only),
+            "note_on_rule": "membership is the UNION of the rule's live "
+                            "selection and the hand-pinned members — the rule "
+                            "maintains itself, the pins carry what a predicate "
+                            "cannot express."}
            if ws.get("rule") else {}),
+        **({"rule_error": rule_error,
+            "warning": "the derived half of this workset could not be "
+                       "evaluated — you are seeing the hand-pinned members "
+                       "ONLY, and the scope is narrower than it should be."}
+           if rule_error else {}),
+        # A required section, per the pilot: the single most useful line in
+        # the payload was the one naming a field the whole PROJECT lacks, not
+        # just the tunnel. Knowing the gap was a project fact rather than a
+        # tunnel artifact is what turned a likely fabrication into a
+        # placeholder. A note without it is a note that has not been finished.
+        **({"note_gap_warning": "this workset's note does not declare what it "
+                                "KNOWS IS MISSING. Add a 'NOT IN HERE AND YOU "
+                                "WILL NEED IT' section — naming a gap the whole "
+                                "project has is what stops a reader inventing "
+                                "it under drafting momentum."}
+           if ws.get("note") and "NOT IN HERE" not in (ws.get("note") or "")
+           else {}),
     }
 
 
