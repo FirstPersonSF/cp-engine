@@ -7612,6 +7612,82 @@ def _derive_workset_members(
 
 
 @mcp_server.tool()
+def record_round(
+    project_code: str,
+    element_id: str,
+    body: str,
+    killed: list[dict[str, str]] | None = None,
+    round_note: str | None = None,
+) -> dict[str, Any]:
+    """Record one PASS of an ideation round as a new version, kills included.
+
+    Ideas already iterate in the spine — five concepts became three directions
+    (now v4, canon) became a castable character world (v2). What the spine did
+    NOT hold is **why the rejects were rejected**. A version bump keeps the
+    survivor and silently loses the reasoning, so the next round re-proposes
+    what the last one already killed, and nobody remembers that it was tried.
+
+    This is `add_spine_version` with the kill list made first-class. The
+    survivor goes in the body as usual; each killed idea is appended under a
+    `## Killed this round` section with the reason it died — so a later reader
+    (or a later model) can see the shape of the search, not just its result.
+
+    `killed` is a list of {"idea": "...", "why": "..."} — BOTH required per
+    entry. An idea without a reason is not a kill, it is an omission, and it
+    teaches the next round nothing.
+
+    WHAT THIS DELIBERATELY DOES NOT DO: judge. It records what a human decided.
+    A round where the model picks the survivor and writes its own reasoning in
+    is a model talking to itself across sessions — which is worse than no
+    record, because it reads exactly like a human decision.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        element_id: the element this round advances (an existing live element).
+        body: the pass's surviving content — what carries forward.
+        killed: [{"idea": ..., "why": ...}] — what died and why.
+        round_note: one line on what this pass was trying to do.
+    """
+    kills = killed or []
+    bad = [k for k in kills if not (k.get("idea") or "").strip() or not (k.get("why") or "").strip()]
+    if bad:
+        return {
+            "error": "every killed entry needs BOTH `idea` and `why` — an idea "
+                     "without a reason is an omission, not a kill, and it "
+                     "teaches the next round nothing.",
+            "incomplete": bad,
+        }
+
+    composed = body.rstrip()
+    if kills:
+        lines = [f"- **{k['idea'].strip()}** — {k['why'].strip()}" for k in kills]
+        composed += (
+            "\n\n## Killed this round\n\n"
+            "_Recorded so the next pass does not re-propose what this one "
+            "already rejected._\n\n" + "\n".join(lines) + "\n"
+        )
+
+    result = add_spine_version(
+        project_code=project_code,
+        element_id=element_id,
+        body=composed,
+        version_note=round_note,
+        step_title=(f"Ideation round: {round_note}" if round_note else "Ideation round"),
+    )
+    if isinstance(result, dict) and result.get("error"):
+        return result
+    return {
+        **(result if isinstance(result, dict) else {"result": result}),
+        "killed_recorded": len(kills),
+        "note_on_round": (
+            "the survivor carries forward as the new live version; the kills "
+            "are in its body under 'Killed this round'. Read them before the "
+            "next pass."
+        ),
+    }
+
+
+@mcp_server.tool()
 def list_worksets(project_code: str) -> dict[str, Any]:
     """What tunnels exist on this project, and what each is for.
 

@@ -183,3 +183,36 @@ def test_capture_never_raises():
     capture = obs[obs.index("def capture("):obs.index("# DIFF 3")]
     assert "except Exception:" in capture
     assert "pass" in capture
+
+
+# ── rounds: the kill list is the point ───────────────────────────────
+
+def test_a_kill_needs_both_idea_and_reason():
+    """A version bump keeps the survivor and loses the reasoning, so the next
+    round re-proposes what the last one killed. An entry without a `why` is an
+    omission, not a kill, and it teaches the next pass nothing."""
+    fn = body_of("record_round")
+    assert '"idea"' in fn and '"why"' in fn
+    assert "omission, not a kill" in fn
+
+
+def test_kills_are_written_into_the_body():
+    """They must survive in the element, not just in a response a session
+    throws away."""
+    fn = body_of("record_round")
+    assert "## Killed this round" in fn
+
+
+def test_rounds_reuse_the_version_machinery():
+    """Supersede semantics are already correct in add_spine_version; a round
+    that reimplemented them would drift from it."""
+    fn = body_of("record_round")
+    assert "add_spine_version(" in fn
+
+
+def test_the_verb_does_not_judge():
+    """A model picking the survivor AND writing the reasoning is a model
+    talking to itself across sessions — worse than no record, because it reads
+    like a human decision."""
+    fn = body_of("record_round")
+    assert "does not" in fn.lower() and "judge" in fn.lower()
