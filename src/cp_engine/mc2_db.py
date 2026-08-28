@@ -217,10 +217,18 @@ SPINE_SOURCES_EDIT_COLUMNS = (
 # `prev_asset_id` (a short uuid scalar) rides along so read paths can drop
 # assets that have a SUCCESSOR — a newer asset whose prev_asset_id points at
 # them (see project_sources.drop_superseded_assets).
+# `description` / `status_note` / `supersedes_asset_id` land with mig 164: what
+# a doc IS and whether it can be trusted, carried to the point of use instead
+# of relying on whoever read it first to remember (cp-engine #210).
 RAG_ASSET_LIST_COLUMNS = (
-    "id, title, source_type, status, created_at, file_hash, prev_asset_id"
+    "id, title, source_type, status, created_at, file_hash, prev_asset_id, "
+    "description, status_note, supersedes_asset_id"
 )
-RAG_ASSET_REFETCH_COLUMNS = "title, source_provider, source_file_id, source_path, url"
+# `source_path` was always selected here and always dropped at the return —
+# which is why a correction could not find the folder it came from.
+RAG_ASSET_REFETCH_COLUMNS = (
+    "id, title, source_provider, source_file_id, source_path, url"
+)
 
 # estimator schema shapes.
 EST_PROJECT_COLUMNS = "id, mc_project_id, name, is_default"
@@ -301,6 +309,9 @@ class RagAssetRow:
     created_at: str | None = None
     file_hash: str | None = None
     prev_asset_id: str | None = None
+    description: str | None = None
+    status_note: str | None = None
+    supersedes_asset_id: str | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> "RagAssetRow":
@@ -312,6 +323,9 @@ class RagAssetRow:
             created_at=row.get("created_at"),
             file_hash=row.get("file_hash"),
             prev_asset_id=row.get("prev_asset_id"),
+            description=row.get("description"),
+            status_note=row.get("status_note"),
+            supersedes_asset_id=row.get("supersedes_asset_id"),
         )
 
 

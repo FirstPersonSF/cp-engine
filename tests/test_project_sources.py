@@ -880,3 +880,79 @@ def test_rename_source_rejects_empty_title():
     client = _CurationClient(_curation_rows())
     out = rename_source(client, "proj-1", _UUID_B, "  ")
     assert "error" in out and client.updates == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  mig 164 / #210 — source provenance reaches the caller
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_push_dest_path_skips_the_folder_lookup(tmp_path):
+    """An absolute dest_path uploads there without resolving the project root."""
+    from cp_engine import project_sources as ps
+
+    src = tmp_path / "MOTOR.md"
+    src.write_text("corrected")
+
+    class _Conn:
+        def upload_file(self, local, dest, overwrite=False):
+            self.dest = dest
+            return type("M", (), {"path_display": dest, "size": 9})()
+
+        @property
+        def dbx(self):  # a lookup here would mean the override was ignored
+            raise AssertionError("dest_path must skip the folder-id lookup")
+
+    conn = _Conn()
+    folder = "/1P Active Projects/SLT 5196/03 Assets/01 Client Assets"
+    out = ps.push_to_dropbox(conn, "id:unused", src, dest_path=folder)
+    assert out["dropbox_path"] == f"{folder}/MOTOR.md"
+
+
+def test_push_rejects_a_relative_dest_path(tmp_path):
+    """A relative dest_path is refused rather than silently misplaced."""
+    from cp_engine import project_sources as ps
+
+    src = tmp_path / "x.md"
+    src.write_text("x")
+    out = ps.push_to_dropbox(object(), "id:abc", src, dest_path="03 Assets/no-slash")
+    assert "error" in out
+    assert "absolute" in out["error"]
+
+
+def test_list_sources_carries_description_and_status_note():
+    """#210: what a doc IS and whether it can be trusted reach the caller."""
+    from cp_engine import project_sources as ps
+
+    class _Client:
+        def table(self, _n):
+            return self
+
+        def select(self, *_a, **_k):
+            return self
+
+        def eq(self, *_a, **_k):
+            return self
+
+        def order(self, *_a, **_k):
+            return self
+
+        def execute(self):
+            return type("R", (), {"data": [
+                {"id": "a", "title": "Embargoed CEO draft",
+                 "source_type": "docx", "created_at": "2026-08-20",
+                 "file_hash": "h1", "prev_asset_id": None,
+                 "description": "CEO's unreleased positioning draft",
+                 "status_note": "embargoed — never quote externally"},
+                {"id": "b", "title": "Plain doc", "source_type": "docx",
+                 "created_at": "2026-08-19", "file_hash": "h2",
+                 "prev_asset_id": None, "description": None,
+                 "status_note": None},
+            ]})()
+
+    out = ps.list_sources(_Client(), "pid", "cid")
+    assert out[0]["status_note"] == "embargoed — never quote externally"
+    assert out[0]["description"] == "CEO's unreleased positioning draft"
+    # Unset fields stay ABSENT rather than surfacing as None noise.
+    assert "status_note" not in out[1]
+    assert "description" not in out[1]

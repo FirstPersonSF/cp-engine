@@ -93,7 +93,10 @@ def list_sources(
     `status='active'` filter (superseded predecessors are status-flipped and
     their chunks deleted at supersede time).
 
-    Returns `[{id, title, source_type, created_at[, summary]}]`, newest first.
+    Returns `[{id, title, source_type, created_at, file_hash[, description]
+    [, status_note][, summary]}]`, newest first. `description` says what the
+    doc IS; `status_note` carries a trust caveat (draft / embargoed /
+    form-gated / pre-rebrand). Both omitted when unset (mig 164, #210).
     """
     resp = (
         client.table(Tables.RAG_ASSETS)
@@ -114,6 +117,12 @@ def list_sources(
             "created_at": row.created_at,
             "file_hash": row.file_hash,
         }
+        # mig 164 — omitted when unset so existing callers see no new noise,
+        # present when they answer "what is this / can I trust it" (#210).
+        if row.description:
+            entry["description"] = row.description
+        if row.status_note:
+            entry["status_note"] = row.status_note
         if summaries is not None:
             summary = summaries.get(row.id)
             if summary is not None:
@@ -1173,8 +1182,12 @@ def fetch_source(client, project_id: str, doc_title: str, dest_dir) -> dict:
     contains-or-equal match (`_title_matches`), with exact-title preferred over a
     substring match.
 
-    Returns `{local_path, title, provider, url}` on success, or a structured
-    `{error}` on any failure (no match, missing coords on a pre-live-link row,
+    Returns `{local_path, title, provider, url, source_path, source_file_id}`
+    on success, or a structured `{error}` on any failure. `source_path` is the
+    Dropbox folder this source came FROM — pass it back as `push_to_dropbox`'s
+    `dest_path` to write a correction where the original lives. It is `None`
+    for Drive (which re-fetches by id) and for pre-live-link rows; when it is
+    `None`, ask rather than guess — the connector cannot delete or move (no match, missing coords on a pre-live-link row,
     lookup error, or download error). NEVER raises — this is called by an MCP
     tool, which must surface a message rather than crash.
     """
@@ -1221,6 +1234,12 @@ def fetch_source(client, project_id: str, doc_title: str, dest_dir) -> dict:
         "title": row.get("title"),
         "provider": row["source_provider"],
         "url": row.get("url"),
+        # The folder this source came FROM. Already selected and already read
+        # into the FileRef above; dropping it here is what stranded a
+        # correction with nowhere to write back to. `None` for Drive (which
+        # re-fetches by id) and for pre-live-link rows — never guess a folder.
+        "source_path": row.get("source_path"),
+        "source_file_id": row.get("source_file_id"),
     }
 
 
@@ -1249,7 +1268,7 @@ def _dropbox_folder_path(connector, folder_id: str) -> str:
 
 def push_to_dropbox(
     connector, folder_id: str, local_path, dest_name: str | None = None,
-    overwrite: bool = False,
+    overwrite: bool = False, dest_path: str | None = None,
 ) -> dict:
     """Upload a local file INTO a project's Dropbox folder.
 
@@ -1259,6 +1278,13 @@ def push_to_dropbox(
     connector's `upload_file`, which refuses to clobber an existing file unless
     `overwrite=True`. Returns `{dropbox_path, name, size, overwrote}` on success
     or a structured `{error}` on any failure — NEVER raises (MCP tool boundary).
+
+    `dest_path` — an ABSOLUTE Dropbox folder (`/Clients/Acme/03 Assets/…`) —
+    overrides the project-root resolution entirely. Pass `fetch_source`'s
+    `source_path` (its parent folder) to send a correction back where the
+    original came from. Without it, a correction to client-supplied research
+    lands in the project root or the spine dir, and since the connector has no
+    delete or move, a wrong guess strands a copy to be cleaned by hand.
     """
     src = Path(local_path)
     if not src.exists():
@@ -1267,10 +1293,20 @@ def push_to_dropbox(
         return {"error": f"not a file: {local_path}"}
 
     name = dest_name or src.name
-    try:
-        folder_path = _dropbox_folder_path(connector, folder_id)
-    except Exception as exc:  # noqa: BLE001 — MCP tool boundary, never raise
-        return {"error": f"could not resolve Dropbox folder: {exc}"}
+    if dest_path:
+        # Caller named the folder outright (round-tripping a source back to
+        # where it came from) — trust it and skip the project-root lookup.
+        if not dest_path.startswith("/"):
+            return {
+                "error": f"dest_path must be an absolute Dropbox path "
+                f"starting with '/', got {dest_path!r}"
+            }
+        folder_path = dest_path.rstrip("/")
+    else:
+        try:
+            folder_path = _dropbox_folder_path(connector, folder_id)
+        except Exception as exc:  # noqa: BLE001 — MCP boundary, never raise
+            return {"error": f"could not resolve Dropbox folder: {exc}"}
 
     dropbox_path = f"{folder_path}/{name}"
     try:

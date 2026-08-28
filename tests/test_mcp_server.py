@@ -953,9 +953,11 @@ def test_push_to_dropbox_delegates(monkeypatch, tmp_path):
 
     captured = {}
 
-    def fake_push(connector, folder_id, local_path, dest_name=None, overwrite=False):
+    def fake_push(connector, folder_id, local_path, dest_name=None,
+                  overwrite=False, dest_path=None):
         captured.update(folder_id=folder_id, local_path=local_path,
-                        dest_name=dest_name, overwrite=overwrite)
+                        dest_name=dest_name, overwrite=overwrite,
+                        dest_path=dest_path)
         return {"dropbox_path": "/Clients/x/deck.pptx", "name": "deck.pptx",
                 "size": 10, "overwrote": overwrite}
 
@@ -991,8 +993,9 @@ def _push_capture(monkeypatch, tmp_path):
 
     captured = {}
 
-    def fake_push(connector, folder_id, local_path, dest_name=None, overwrite=False):
-        captured.update(dest_name=dest_name)
+    def fake_push(connector, folder_id, local_path, dest_name=None,
+                  overwrite=False, dest_path=None):
+        captured.update(dest_name=dest_name, dest_path=dest_path)
         return {"dropbox_path": "x", "name": dest_name, "size": 1,
                 "overwrote": overwrite}
 
@@ -1188,3 +1191,31 @@ def test_matched_versions_leave_success_results_untouched(monkeypatch):
     out = srv.list_project_sources("IBX-5153")
 
     assert out == [{"id": "a1", "title": "Doc"}]
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  mig 164 / #210 — write a correction back where the source came FROM
+#
+#  The MOTOR case: a stale stub had to be corrected, but nothing returned
+#  the folder the source came from, and the connector has no delete or
+#  move — so a guessed destination stranded a copy needing hand-cleanup.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_dest_path_overrides_the_spine_default(monkeypatch, tmp_path):
+    """An explicit dest_path wins over the `03 Assets/06 Spine` default."""
+    captured, f = _push_capture(monkeypatch, tmp_path)
+    client_folder = "/1P Active Projects/SLT 5196/03 Assets/01 Client Assets"
+    srv.push_to_dropbox("slt-5196", str(f), dest_path=client_folder)
+    assert captured["dest_path"] == client_folder
+    # dest_name must NOT carry the spine prefix, or the folder would double up.
+    assert captured["dest_name"] == "punchlist-v01.md"
+    assert srv.SPINE_OUTPUT_DIR not in (captured["dest_name"] or "")
+
+
+def test_without_dest_path_the_spine_default_still_applies(monkeypatch, tmp_path):
+    """The safe default is untouched when no dest_path is given."""
+    captured, f = _push_capture(monkeypatch, tmp_path)
+    srv.push_to_dropbox("slt-5196", str(f))
+    assert captured["dest_path"] is None
+    assert captured["dest_name"] == f"{srv.SPINE_OUTPUT_DIR}/punchlist-v01.md"
