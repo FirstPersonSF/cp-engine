@@ -36,6 +36,14 @@ WHERE_MAX_BULLETS = 5
 WHERE_MAX_WORDS_PER_BULLET = 40
 NEXT_UP_MAX_BULLETS = 6
 BLOCKERS_MAX_BULLETS = 5
+# Updates is the field every other budget pushes detail INTO ("the session
+# detail belongs in Updates and the sprint file"), and it was the only field
+# with no budget of its own — so it grew without bound and was the top
+# contributor on every CP that crossed the whole-file threshold. Per-entry,
+# because the fix is always to roll ONE fat entry to the sprint file, not to
+# thin the list evenly. 250 sits above the current healthy entries (~250-320
+# observed) and well under the 912-word entry that forced a rotation.
+UPDATES_MAX_WORDS_PER_ENTRY = 250
 
 # Every field label the exec-summary region carries (see the scaffold in
 # sync's `_build_exec_summary_region`); parsing needs the full set so a
@@ -127,6 +135,33 @@ def lint_exec_summary(cp_md_text: str) -> list[str]:
             f"⚠ exec-summary Where it stands: {len(over)} bullet(s) over "
             f"{WHERE_MAX_WORDS_PER_BULLET} words (worst {worst}) — one "
             "current-reality line per bullet, not a paragraph")
+
+    # Updates — per-entry density. Sub-bullets ride along with their parent
+    # here (unlike `_bullets`), because a fat entry is fat including its
+    # sub-detail: the entry that forced a rotation was 395 words on its own
+    # line and 912 with the detail nested beneath it.
+    updates = fields.get("Updates", "")
+    if updates and not _PLACEHOLDER_RE.search(updates):
+        entries: list[str] = []
+        current: list[str] | None = None
+        for line in updates.splitlines():
+            if line.startswith("- "):
+                if current is not None:
+                    entries.append("\n".join(current))
+                current = [line]
+            elif current is not None:
+                current.append(line)
+        if current is not None:
+            entries.append("\n".join(current))
+        fat = [e for e in entries if _word_count(e) > UPDATES_MAX_WORDS_PER_ENTRY]
+        if fat:
+            worst = max(_word_count(e) for e in fat)
+            out.append(
+                f"⚠ exec-summary Updates: {len(fat)} "
+                f"{'entry' if len(fat) == 1 else 'entries'} over "
+                f"{UPDATES_MAX_WORDS_PER_ENTRY} words (worst {worst}) — roll "
+                "the oldest to the sprint file; its outcome is already in "
+                "Status")
 
     # Next up / Blockers — bullet counts.
     for label, budget, nudge in (
