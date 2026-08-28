@@ -133,16 +133,21 @@ def render() -> None:
 def _exec_summary_warnings(root: Path) -> list[str]:
     """Exec-summary budget warnings across the tenant's live project CPs.
 
-    Scans every `cp.md` below `root` (skipping `inactive/` dirs and the
-    tenant's own top-level files), prefixing each finding with its project
+    Scans every `cp.md` below `root`, prefixing each finding with its project
     dir so tenant-wide output stays attributable. Pure read — never edits.
+
+    Exemptions come from `word_count_lint.is_exempt` so the two advisory passes
+    agree on which files are in scope: this walk used to skip only `inactive/`,
+    which meant per-meeting artifacts were exempt from the word-count pass but
+    not from this one.
     """
     out: list[str] = []
     from cp_engine.exec_summary_lint import lint_exec_summary
+    from cp_engine.word_count_lint import is_exempt
 
     for cp_md in sorted(root.rglob("cp.md")):
         rel = cp_md.relative_to(root)
-        if "inactive" in rel.parts or len(rel.parts) < 2:
+        if len(rel.parts) < 2 or is_exempt(rel):
             continue
         try:
             findings = lint_exec_summary(cp_md.read_text(encoding="utf-8"))
