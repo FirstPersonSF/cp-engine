@@ -44,6 +44,21 @@ the *source* tools return empty for them — but the *spine* tools work fully.
   #126 store curation, ported per #138) — soft-archive a duplicate/dead doc
   (row+chunks survive; re-ingest stays blocked) or retitle a same-title
   DISTINCT doc. Uuid or EXACT title; ambiguous titles return candidates.
+- `set_source_status(code, doc_title_or_id, status_note=…, description=…)` —
+  **hosted-server verb** (mig 165). Records whether a source can be RELIED ON
+  and QUOTED. Write a `status_note` the moment you learn something the title
+  does not reveal: **draft/WIP** (may contradict the final), **embargoed**
+  (never quote externally), **form-gated** (what ingested is the landing-page
+  abstract, NOT the document — its thinness is the gate, not the source),
+  **superseded**, **dated** (a 2021 case study reads authoritative until you
+  notice the year). It surfaces in `list_project_sources` and in MC-2, so the
+  caveat reaches the next reader instead of living in one session's context.
+  `description` (what the doc IS) is filled by sync — pass it here only to
+  correct it. Omitting a field leaves it untouched; `""` clears it. Resolves
+  archived/obsoleted rows too. **A caveat you are inferring rather than
+  confirming must say so in the text** ("title says DRAFT — unconfirmed"): a
+  confidently wrong note is trusted, and it is the thing standing between a
+  reader and quoting an embargoed doc in client work.
 - `compare_project_sources(code, doc_a, doc_b)` — structural text diff between
   two versions of a deck/doc (#160): per-slide/section units aligned by
   best-match similarity (never index), reporting matched (similarity,
