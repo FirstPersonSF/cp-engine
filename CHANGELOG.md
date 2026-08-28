@@ -4,6 +4,42 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.108.0 — 2026-08-28
+
+- **`set_source_status` — a writer for the trust caveat.** v0.107.0 shipped
+  `status_note` on a source row with no way to write it. `description` gets
+  filled automatically by the sync summariser; the caveat — the field that says
+  whether a source can be **relied on and quoted** — was set by hand or not at
+  all, which is backwards, because it is the more load-bearing of the two. A
+  wrong description makes you read the wrong document; a missing caveat makes
+  you quote an embargoed CEO draft in client work.
+
+  ```
+  set_source_status(code, doc_title_or_id, status_note=…, description=…)
+  ```
+
+  Write one whenever you learn something a title does not reveal: **draft/WIP**
+  (may contradict the final), **embargoed** (never quote externally),
+  **form-gated** (what ingested is the landing-page abstract, NOT the document —
+  its thinness is the gate, not the source), **superseded**, **dated** (a 2021
+  case study reads authoritative until you notice the year). On slt-5196 alone,
+  13 active sources carry a risk signal in their titles.
+
+  Hosted rather than stdio, because `rag_assets` deliberately has no
+  authenticated UPDATE: curation goes through guarded functions under the
+  caller's identity, audited. Needs **mc-2 migration 165**. Omitting a field
+  leaves it untouched; `""` clears it; archived and obsoleted rows resolve too,
+  since an obsoleted stub is exactly the row that most needs a caveat saying why.
+
+  **Deliberately not auto-classified.** `description` is summarisation — safely
+  derivable, and wrong-but-plausible costs little. A trust caveat is a judgment
+  about authority, and a confidently wrong one is worse than none: it is
+  trusted. Mark an inferred caveat as unconfirmed in the text.
+
+  Both fields now render in MC-2 — a chip on the inventory and search rows, and
+  a banner carrying the full note on the document detail page, which is the page
+  someone reads right before they quote something.
+
 ## v0.107.0 — 2026-08-28
 
 Four fixes from the week of 2026-08-24, all traced to the same shape: **the
