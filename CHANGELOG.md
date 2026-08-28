@@ -4,6 +4,41 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.106.0 — 2026-08-28
+
+- **New: `build-stakeholder` skill — a stakeholder card without an hour of
+  transcript reading.** Cards are among the highest-value spine context and
+  among the least written, because the work is tedious: grep the transcripts,
+  find the person's own words, separate what they own from what they said
+  once. So they get written for the buyer and nobody else, and the person who
+  actually gates delivery has no card until something goes wrong.
+
+  **LinkedIn is not fetchable and the skill says so first.** `WebFetch` returns
+  HTTP 999; so does curl, and scraping violates their terms. The skill asks for
+  pasted profile text, offers Chrome as a convenience that often fails, and
+  treats a missing biographical layer as a normal outcome to be marked rather
+  than a blocker — `**Role:** <as observed in project material — LinkedIn not
+  yet reviewed>`. **The URL is provenance, not a data source.**
+
+  The value is the tenant mine, which no profile scrape could produce: what
+  routes through this person, how they work in the room, what they want, and
+  the watch items. Hard rule — **never invent biographical fact.** Title,
+  tenure and employer are sourced or absent; behavioural inference is fine and
+  must be visibly grounded. A card with three sourced sentences beats one with
+  twelve plausible ones, because the second kind gets quoted back at you in a
+  client meeting.
+
+  `references/card-format.md` carries the frontmatter contract (`layer:
+  Stakeholders`, `placement: context`, `binding: unbound`), the slug convention
+  — the descriptor is **what they are to us**, not their business card — and
+  the versioning rule. Written on slt-5196 against a contact referenced across
+  a dozen spine elements with no card; the first grep pass returned a different
+  person with the same first name, which is now a documented step.
+
+  **Cards stay in their tenant.** They hold candid reads on named individuals,
+  which is what makes them useful and why the reference says plainly they never
+  go into client-facing material.
+
 ## v0.105.0 — 2026-08-27
 
 - **New: worksets ("tunnels") — scoped context so a job-shaped session opens a
