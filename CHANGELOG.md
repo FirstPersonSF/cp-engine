@@ -4,6 +4,38 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.106.1 — 2026-08-28
+
+- **Fix: `build-stakeholder` told you LinkedIn was unreadable. It is readable —
+  through the user's own signed-in Chrome.** v0.106.0 shipped paste-first with
+  Chrome as "a convenience that often fails," which was wrong and cost a real
+  session: the user supplied a profile URL, the skill reported it unfetchable,
+  and the card shipped with its biographical layer marked absent. Chrome was
+  never actually tried.
+
+  **Step 1 is now Chrome-first, and it names the step that makes it work.** The
+  main profile page returns the top card ONLY — the experience section is not in
+  that page's DOM, so scrolling and scraping `<section>` elements returns
+  nothing and reads as a failure. **`/details/experience/` returns the entire
+  history, fully expanded, in one call.** That sub-page navigate is the whole
+  trick, and it is easy to miss because the failure mode looks like a permission
+  problem rather than a wrong URL.
+
+  What does not work is now recorded as settled so no future session re-derives
+  it: `WebFetch` → 999; `curl` plain → 999; **`curl` with a browser User-Agent →
+  301, which looks promising and is not** — the redirect lands on an authwall
+  and returns 999 again. Public scraping is closed; this is not a header
+  problem. Chrome works because it is the user's own authenticated browsing, not
+  a bypass.
+
+  Two reading notes added from the same session. **A person's title and the
+  function they perform for you are often different** — someone whose title is
+  "Customer Marketing Manager" may introduce themselves as "the Customer
+  Advocacy Manager here"; record both. And **the history is where the reframe
+  hides**: prior roles routinely change how to read what someone said in a
+  meeting, which is the highest-value thing on the page and the reason the
+  biographical layer is worth fetching at all.
+
 ## v0.106.0 — 2026-08-28
 
 - **New: `build-stakeholder` skill — a stakeholder card without an hour of

@@ -1,6 +1,6 @@
 ---
 name: build-stakeholder
-description: Build a cp stakeholder dossier card for a person on an engagement or initiative — from a LinkedIn profile, pasted bio, meeting transcripts already in the tenant, or any combination. Use when the user says "create a stakeholder for X", "build a stakeholder card", "add X as a stakeholder", or supplies a LinkedIn URL for someone on a project. Writes to the project spine's Stakeholders layer via propose_spine_step, and never invents biographical fact.
+description: Build a cp stakeholder dossier card for a person on an engagement or initiative — reading their LinkedIn through the user's signed-in Chrome (the reliable path; WebFetch and curl are blocked with HTTP 999), plus a mine of the tenant's own transcripts and spine. Use when the user says "create a stakeholder for X", "build a stakeholder card", "add X as a stakeholder", or supplies a LinkedIn URL for someone on a project. Writes to the project spine's Stakeholders layer via propose_spine_step, and never invents biographical fact.
 ---
 
 # Build a stakeholder card
@@ -25,33 +25,76 @@ The second kind gets quoted back at you in a client meeting.
 
 ## Step 1 — Get the biographical layer
 
-**LinkedIn cannot be fetched.** `WebFetch` returns HTTP 999, and so does curl;
-LinkedIn blocks automated access and scraping it violates their terms. Do not
-try, and do not present a workaround as if it were reliable.
+**Chrome is the answer. Use it first.** A LinkedIn profile is fully readable
+through the user's own signed-in browser, and that is the reliable path — not a
+fallback.
 
-Three ways to get the facts, in order of preference:
+### A · Chrome (default)
 
-**A · Pasted profile text (default).** Ask the user to open the profile and
-paste the top card plus experience — headline, current role, tenure, previous
-roles, and the About section if it has one. This takes them ten seconds and is
-the only fully reliable path. If a URL was supplied without text, ask for the
-paste and say why in one line: *"LinkedIn blocks automated reads — paste the
-profile text and I'll build from that."*
+Load the browser tools per the `claude-in-chrome` skill, then **three steps**:
 
-**B · Chrome, if it is already running.** If the `mcp__claude-in-chrome__` tools
-are available AND the user is signed in to LinkedIn in Chrome, `navigate` to the
-profile and `get_page_text`. Load the browser tools per the claude-in-chrome
-skill first. Treat this as a convenience that often fails — if it errors, does
-not have permission, or returns a login wall, fall back to A immediately rather
-than retrying. **Never** report Chrome-derived content without saying it came
-from the live page.
+```
+tabs_context_mcp   {createIfEmpty: true}
+navigate           https://www.linkedin.com/in/<slug>/          → get_page_text
+navigate           https://www.linkedin.com/in/<slug>/details/experience/  → get_page_text
+```
 
-**C · No biographical source at all.** Legitimate — build the card from tenant
-evidence alone and mark the role line `**Role:** <as observed in project
-material — LinkedIn not yet reviewed>`. Say plainly in your response that the
-biographical layer is missing.
+**The second navigate is the one that matters, and it is easy to miss.** The
+main profile page returns the top card only — name, headline, location, current
+employer, school. **The experience section is not in that page's DOM at all**,
+so scrolling and scraping `<section>` elements returns nothing and looks like a
+failure. The `/details/experience/` sub-page returns the entire history, fully
+expanded, in one call. There are sibling pages (`/details/education/`,
+`/details/skills/`) but they are often empty when the top card already carries
+the summary — check the top card before spending a call.
 
-**Always keep the URL** as provenance in the card footer, whichever path ran.
+Close the tab when done (`tabs_close_mcp`).
+
+Requires: Chrome running with the extension connected, the user signed in to
+LinkedIn, and site permission granted for linkedin.com. If any of those is
+missing you will get an empty result or a permission error — fall through to B
+rather than retrying.
+
+### B · Pasted profile text
+
+When Chrome is unavailable — no extension, not signed in, permission refused.
+Ask for the top card plus experience: headline, current role, tenure, previous
+roles, and the About section. One line is enough: *"Chrome isn't connected —
+paste the profile text and I'll build from that."*
+
+**Do not ask for a paste before trying Chrome.** And when the user has already
+supplied a URL, do not imply they gave you nothing — say what failed.
+
+### C · No biographical source at all
+
+Legitimate. Build from tenant evidence alone and mark the role line
+`**Role:** <as observed in project material — LinkedIn not yet reviewed>`.
+Say plainly in your response that the layer is missing.
+
+### What does NOT work — settled, do not retry
+
+- **`WebFetch` → HTTP 999.** LinkedIn's bot block.
+- **`curl` plain → 999.** With a browser `User-Agent` → **301**, which looks
+  promising and is not: the redirect lands on an **authwall** and returns 999
+  again. Public profile scraping is closed; this is not a header problem.
+- Scraping LinkedIn outside the user's own authenticated session violates their
+  terms. Chrome works because it is the user's own logged-in browsing.
+
+**Always keep the URL** as provenance in the card, whichever path ran, and say
+when content came from a live read.
+
+### Read the title, then check it against the room
+
+The LinkedIn title is the sourced fact and belongs in the card. But people
+introduce themselves by **the function they perform for you**, which is often
+not their title — someone whose title is "Customer Marketing Manager" may say
+"I'm the Customer Advocacy Manager here." Record both, use the real title in
+writing, and note the difference rather than silently picking one.
+
+**The history is where the reframe hides.** Prior roles routinely change how to
+read what someone said in a meeting — a caution that scans as a client hedging
+reads differently from someone who has done that exact job fifty times. Look for
+that specifically; it is the highest-value thing on the page.
 
 ---
 
