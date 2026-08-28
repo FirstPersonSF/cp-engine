@@ -157,11 +157,14 @@ def _exec_summary_warnings(root: Path) -> list[str]:
 def brief_cmd(code: str) -> None:
     """Print the composed Mode-2 context pack for one project (arch-review §3).
 
-    Five sections to stdout, markdown, deterministic: Facts (cp.md engine
+    Six sections to stdout, markdown, deterministic: Facts (cp.md engine
     region) · Exec Summary TRIMMED (Status/Next up/Blockers verbatim, Where
-    it stands capped at 5 bullets, Updates dropped) · the standing Inputs &
-    Briefing spine element's live body (MC-2) · open commitments · the
-    Last-session pointer. Every section degrades to a one-line absence note
+    it stands capped at 5 bullets, Updates dropped) · Canon — current truth
+    (each canon member with a one-line gist of what it SAYS, plus any
+    `⚠ NOT settled` question it carries; the gist is what lets you check a
+    document against canon, since a title only tells you a ruling exists) ·
+    the standing Inputs & Briefing spine element's live body (MC-2) · open
+    commitments · the Last-session pointer. Every section degrades to a one-line absence note
     on its own — a standalone repo (no spine, no commitments store) or an
     offline session still gets the pack. Exits non-zero only when the code
     resolves to no working dir AND MC-2 can't see it either.
