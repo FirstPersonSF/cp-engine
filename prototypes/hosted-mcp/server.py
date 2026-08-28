@@ -1174,10 +1174,17 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
     }
 
 
-def _resolve_source_asset(client, project_id: str, key: str) -> dict | None:
-    """One ACTIVE rag_asset for `key` (uuid or exact title, case-insensitive)
+def _resolve_source_asset(
+    client, project_id: str, key: str, *, active_only: bool = True
+) -> dict | None:
+    """One rag_asset for `key` (uuid or exact title, case-insensitive)
     under either owner column. None = no match; {'candidates': [...]} =
-    ambiguous exact-title (pass an id). Mirrors the stdio resolver (#126)."""
+    ambiguous exact-title (pass an id). Mirrors the stdio resolver (#126).
+
+    `active_only=False` widens the search to archived/superseded/obsoleted
+    rows. Curation verbs that RETIRE a doc want the default (you cannot archive
+    what is already gone), but annotating one does not: an obsoleted stub is
+    exactly the row that most needs a caveat explaining why it is obsolete."""
     key = (key or "").strip()
     if not key:
         return None
@@ -1189,8 +1196,9 @@ def _resolve_source_asset(client, project_id: str, key: str) -> dict | None:
                 client.table("rag_assets")
                 .select("id, title, status")
                 .eq(column, project_id)
-                .eq("status", "active")
             )
+            if active_only:
+                q = q.eq("status", "active")
             for r in q.execute().data or []:
                 if r["id"] in seen:
                     continue
@@ -1248,6 +1256,88 @@ def archive_project_source(project_code: str, doc_title_or_id: str) -> dict[str,
         "title": resolved["title"],
         "caller": caller_subject(),
     }
+
+
+@mcp_server.tool()
+def set_source_status(
+    project_code: str,
+    doc_title_or_id: str,
+    status_note: str | None = None,
+    description: str | None = None,
+) -> dict[str, Any]:
+    """Record what a source IS and whether it can be trusted (mig 165).
+
+    `status_note` is the field that carries a caveat TO THE POINT OF USE, so a
+    later reader is not relying on whoever read the document first to remember
+    and re-explain it. Write one whenever you learn something a title does not
+    reveal:
+
+      - **draft / WIP** — not settled; may contradict the final
+      - **embargoed** — real, but never quote it externally
+      - **form-gated** — what ingested is the landing-page abstract, NOT the
+        document, so its thinness is an artefact of the gate
+      - **superseded / mixed-currency** — carries dead terminology alongside live
+      - **dated** — a 2021 case study reads authoritative until you notice the year
+
+    `description` says what the document IS in one line. The sync summariser
+    fills it automatically; pass one here only to correct or sharpen it — a
+    hand-written description outranks a generated one and sync will not
+    overwrite it.
+
+    Pass either, or both. Omitting one leaves that column untouched; passing an
+    empty string CLEARS it (the way to retract a note that no longer holds).
+    Resolves archived and obsoleted rows too, not just active ones — an
+    obsoleted stub is exactly the row that most needs a caveat saying why.
+
+    A caveat you are INFERRING rather than confirming should say so in the text
+    ("title says DRAFT — unconfirmed"). A confidently wrong note is worse than
+    no note: it is trusted, and it is the thing standing between a reader and
+    quoting an embargoed document in client work.
+    """
+    if status_note is None and description is None:
+        return {"error": "pass status_note and/or description — nothing to set"}
+    client = user_client()
+    project_id = resolve_project_id(client, project_code)
+    if project_id is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+    resolved = _resolve_source_asset(
+        client, project_id, doc_title_or_id, active_only=False
+    )
+    if resolved is None:
+        return {"error": f"no source matching '{doc_title_or_id}' for this project"}
+    if "candidates" in resolved:
+        return {
+            "note": f"'{doc_title_or_id}' matches "
+            f"{len(resolved['candidates'])} sources — pass an id",
+            **resolved,
+        }
+    try:
+        affected = client.rpc(
+            "rag_asset_set_status",
+            {
+                "p_asset_id": resolved["id"],
+                "p_status_note": status_note,
+                "p_description": description,
+            },
+        ).execute().data
+    except Exception as exc:  # noqa: BLE001
+        audit(client, "set_source_status",
+              {"project_code": project_code, "key": doc_title_or_id}, 0)
+        return {"error": f"set status failed: {type(exc).__name__}: {str(exc)[:300]}"}
+    audit(client, "set_source_status",
+          {"project_code": project_code, "key": doc_title_or_id},
+          int(affected or 0))
+    out: dict[str, Any] = {
+        "updated": bool(affected),
+        "id": resolved["id"],
+        "title": resolved["title"],
+        "caller": caller_subject(),
+    }
+    if status_note is not None:
+        out["status_note"] = status_note or None
+    if description is not None:
+        out["description"] = description or None
+    return out
 
 
 @mcp_server.tool()
