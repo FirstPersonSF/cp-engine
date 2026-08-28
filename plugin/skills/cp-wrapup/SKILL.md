@@ -90,7 +90,34 @@ For each project touched:
   what fed it plus the `seal_to_deliverable` call. Absorbing a round's
   inputs keeps the spine distilled. Read its output carefully: `/cp-tools`.
 
-## 5 — Propose journey steps (rarely)
+## 5 — Canon agreement check
+
+For each project touched **where this session authored or revised a
+document that asserts a framework** — a territory set, pillar structure,
+naming system, campaign architecture, messaging hierarchy:
+
+- **`cxp brief <code>`** — WARN-ONLY. Its **Canon — current truth** section
+  lists each canon member with a one-line gist of what it actually says,
+  and flags any member carrying an unsettled question. Compare the document
+  you wrote against it and report **one line per document**: *agrees* /
+  *diverges* / *asserts no framework*.
+
+**Diverging is not automatically wrong.** Canon evolves, and a deliberate
+departure is legitimate work. What is never acceptable is a silent one —
+so name it to the user, and let them decide whether the document changes
+or the canon does. Ask when it isn't obvious which.
+
+**Then the question that costs the most when skipped:** did anything
+authored this session **close a decision that canon still flags as open**?
+A downstream document can settle an open question purely by omission —
+picking one branch, never mentioning the other — and nothing downstream
+ever notices. The `⚠ NOT settled` lines in `cxp brief` are exactly the
+questions at risk. Surface any you closed; **never resolve one silently.**
+
+Skip this step entirely when the session wrote no framework-asserting
+document — most sessions don't.
+
+## 6 — Propose journey steps (rarely)
 
 Spine content-writes journal themselves (one review-gated auto-step per
 element per day). Hand-propose a step (`propose_spine_step`) only for a
@@ -98,7 +125,7 @@ move the auto-step doesn't capture, **≤2 per session**. Authoring runs on
 `cp-hosted`, so the write carries your identity. Full discipline:
 `/cp-tools`.
 
-## 6 — Word-count discipline
+## 7 — Word-count discipline
 
 Per bootstrap v2:
 
@@ -113,14 +140,14 @@ rotation are manual.
 per-meeting records — synthesis + verbatim transcript — legitimately long)
 and `spine/Retrospective/meeting-history.md`; do not audit or rotate them.
 
-## 7 — Improvements sweep
+## 8 — Improvements sweep
 
 Friction is logged to `improvements.md` **at the moment it happens**, not
 here. At wrap up, sweep for anything that went unlogged — a workaround you
 reached for, a surface that fought you — and add it. Real bugs still go to
 GitHub issues. Never delete entries.
 
-## 8 — Commit and push
+## 9 — Commit and push
 
 Commit the entire `sprints/<YYYY-W##>/` directory alongside the master
 roll-up and each touched project's `cp.md`. Then push.

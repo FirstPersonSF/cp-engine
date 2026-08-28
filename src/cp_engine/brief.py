@@ -146,19 +146,94 @@ def briefing_section(body: str | None, note: str | None) -> str:
     return f"_{note or 'No Inputs & Briefing available.'}_"
 
 
+# The canon gist: enough of a canon member's body to tell whether a document
+# AGREES with it. Titles alone cannot answer that — the ibx-5153 ECD deck
+# re-architected the campaign under a substituted vocabulary while every canon
+# TITLE still looked satisfied.
+#
+# Two shapes exist in practice, and a fixed head-truncation serves neither:
+#   * DECISION cards open `**Ruling: …**` — the decision in one sentence.
+#   * DOCUMENT cards open with a `#` heading, then prose.
+# Bodies run 16 to 3,761 words, and on the largest the ratified vocabulary sits
+# at word ~170 — past any short head-cut. So: take the Ruling when there is
+# one, else the leading prose, and always append the "What is NOT settled"
+# clause, which is where canon records the questions a downstream document can
+# silently close by omission.
+_RULING_RE = re.compile(r"\*\*\s*Ruling:?\s*(.+?)\*\*", re.S | re.I)
+_NOT_SETTLED_RE = re.compile(
+    r"\*\*\s*What is NOT settled:?\s*\*{0,2}\s*(.+?)(?=\*\*[A-Z]|\Z)", re.S | re.I
+)
+CANON_GIST_MAX_WORDS = 60
+
+
+def _squash(text: str) -> str:
+    """One line, markdown emphasis stripped, whitespace collapsed."""
+    flat = " ".join((text or "").split())
+    return flat.replace("**", "").replace("__", "").strip()
+
+
+def _clip(text: str, max_words: int) -> str:
+    words = _squash(text).split()
+    if len(words) <= max_words:
+        return " ".join(words)
+    return " ".join(words[:max_words]) + " …"
+
+
+def canon_gist(body: str | None, max_words: int = CANON_GIST_MAX_WORDS) -> str:
+    """The substance of a canon member in one line, plus any open question.
+
+    Returns "" for an empty body — the caller renders the title alone rather
+    than an empty bullet.
+    """
+    if not body or not body.strip():
+        return ""
+    text = body.strip()
+
+    ruling = _RULING_RE.search(text)
+    if ruling:
+        gist = _clip(ruling.group(1), max_words)
+    else:
+        # Document card: drop leading `#` headings and any blockquote/meta
+        # lines, then take the first real prose.
+        lines = [
+            ln for ln in text.splitlines()
+            # Drop headings, blockquotes, rules — and table rows, whose pipe
+            # markup reads as noise once collapsed onto one line.
+            if ln.strip()
+            and not ln.lstrip().startswith(("#", ">", "---", "|"))
+        ]
+        gist = _clip(" ".join(lines), max_words) if lines else ""
+
+    open_q = _NOT_SETTLED_RE.search(text)
+    if open_q:
+        # Never truncate this away — a decision flagged open here is exactly
+        # what a downstream document closes by omission.
+        gist = f"{gist}  ⚠ NOT settled: {_clip(open_q.group(1), 40)}"
+    return gist.strip()
+
+
 def canon_section(members: list[dict] | None, note: str | None) -> str:
     """The project canon (spec v04 §2): current-truth elements pinned to the
-    brief via active `canon_of` edges. One line per member."""
+    brief via active `canon_of` edges.
+
+    Each member renders as its title plus a one-line gist of what it actually
+    SAYS. The gist is the load-bearing half: a title tells you a ruling exists,
+    not what it ruled, so a document can contradict canon while every title
+    still looks satisfied. Members carrying an unsettled question show it
+    inline, because that is what a downstream document closes by omission.
+    """
     if members is None:
         return f"_{note or 'Canon unavailable.'}_"
     if not members:
         return ("_No canon members yet — `promote_to_canon` (cp-hosted) pins "
                 "the current-truth set to this brief._")
-    lines = [
-        f"- **{(m.get('framing') or m.get('est_item_id') or '').strip()}** "
-        f"(`{m.get('est_item_id')}`)"
-        for m in members
-    ]
+    lines = []
+    for m in members:
+        title = (m.get("framing") or m.get("est_item_id") or "").strip()
+        lines.append(f"- **{title}** (`{m.get('est_item_id')}`)")
+        gist = canon_gist(m.get("body"))
+        if gist:
+            lines.append(f"  {gist}")
     return "\n".join(lines)
 
 
@@ -292,7 +367,7 @@ def fetch_briefing_body(
 def fetch_canon_members(
     client, code: str, alt_code: str | None = None
 ) -> tuple[list[dict] | None, str | None]:
-    """The project's canon members: `([{est_item_id, framing}, …], note)`.
+    """The project's canon members: `([{est_item_id, framing, body}, …], note)`.
 
     Reads active `canon_of` edges by project_code (same slug-native + dir-slug
     fallback as `fetch_briefing_body`), then titles the members from their
@@ -325,10 +400,11 @@ def fetch_canon_members(
         return [], None
 
     titles: dict[str, str] = {}
+    bodies: dict[str, str] = {}
     try:
         for r in (
             client.table(mc2_db.Tables.SPINE_SUBSTANCE)
-            .select("est_item_id, framing")
+            .select("est_item_id, framing, body")
             .eq("project_code", resolved)
             .eq("status", "live")
             .in_("est_item_id", member_ids)
@@ -337,10 +413,18 @@ def fetch_canon_members(
             or []
         ):
             titles[r["est_item_id"]] = r.get("framing")
+            bodies[r["est_item_id"]] = r.get("body")
     except Exception:  # noqa: BLE001 — titles are a nicety, ids suffice
         pass
     return (
-        [{"est_item_id": m, "framing": titles.get(m)} for m in member_ids],
+        [
+            {
+                "est_item_id": m,
+                "framing": titles.get(m),
+                "body": bodies.get(m),
+            }
+            for m in member_ids
+        ],
         None,
     )
 
