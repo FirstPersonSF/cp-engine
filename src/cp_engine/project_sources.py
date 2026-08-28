@@ -1482,6 +1482,29 @@ def _summarize_doc(client, project_id: str, company_id: str, title: str, llm) ->
         return _SUMMARY_UNAVAILABLE
 
 
+def _persist_description(client, asset_id: str, summary: str) -> None:
+    """Write a freshly-computed summary to `rag_assets.description` (#210).
+
+    Mirrors the local cache write so the summary survives off this machine:
+    `list_project_sources` can then answer "what is in this corpus?" without
+    pulling every document. Never raises — the manifest is the caller's job and
+    a description is a bonus.
+    """
+    if not asset_id or not summary:
+        return
+    try:
+        (
+            client.table(Tables.RAG_ASSETS)
+            .update({"description": summary})
+            .eq("id", asset_id)
+            .execute()
+        )
+    except Exception as exc:  # noqa: BLE001 — advisory write, never break sync
+        logger.warning(
+            "could not persist description for asset %s: %s", asset_id, exc
+        )
+
+
 def _default_llm(prompt: str) -> str:
     """Default summary LLM: one Anthropic call via plan_from_transcript._call_claude.
 
@@ -1543,7 +1566,12 @@ def write_sources_manifest(
 
     Each entry carries a short LLM summary cached per-doc in
     `<project_dir>/_sources.cache.json` keyed by a content hash (`file_hash`),
-    so unchanged docs are NEVER re-summarized across runs. The manifest is fully
+    so unchanged docs are NEVER re-summarized across runs. Successful summaries
+    are ALSO written to `rag_assets.description` (#210, mig 164): the JSON cache
+    is gitignored and local, so without the DB copy every machine and every
+    fresh agent re-pays the cost and no MCP caller ever sees a description.
+    Cache hits with an empty `description` are backfilled on the next run, and
+    an existing description is never overwritten. The manifest is fully
     regenerated from the current `list_sources`, so removed assets drop out; we
     prune their cache entries too. Returns the written asset entries (the #153
     announcement pass consumes their `created_at`; count = ``len()``).
@@ -1593,6 +1621,11 @@ def write_sources_manifest(
             # Cache HIT — always free, never counts against the cap.
             summary = cached.get("summary") or _SUMMARY_UNAVAILABLE
             new_cache[asset_id] = {"hash": current_hash, "summary": summary}
+            # Backfill: docs summarised before mig 164 are cache hits forever,
+            # so they would never otherwise reach the DB. Fill only what is
+            # still empty — never overwrite a hand-written description.
+            if summary != _SUMMARY_UNAVAILABLE and not asset.get("description"):
+                _persist_description(client, asset_id, summary)
         elif new_summaries >= max_new_summaries:
             # Cache MISS but over this sync's cap → defer. Show unavailable, do
             # NOT cache → next sync re-tries it (uncached → miss).
@@ -1606,6 +1639,12 @@ def write_sources_manifest(
             # this run but left uncached so the next sync retries it.
             if summary != _SUMMARY_UNAVAILABLE:
                 new_cache[asset_id] = {"hash": current_hash, "summary": summary}
+                # …and durably, to the asset row (#210, mig 164). The local
+                # cache is gitignored, so without this every machine and every
+                # fresh agent re-pays the summarisation cost and no MCP caller
+                # ever sees a description. Best-effort: a write failure must
+                # never break the manifest, and the local cache still holds it.
+                _persist_description(client, asset_id, summary)
         asset["summary"] = summary
 
     # `new_cache` only holds current, successfully-summarized asset ids → removed
