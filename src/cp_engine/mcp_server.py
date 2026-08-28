@@ -222,7 +222,21 @@ def _resolve(project_code: str):
 
 @_tool
 def list_project_sources(project_code: str) -> list[dict]:
-    """List a project's ingested source documents (title, type) for this tenant."""
+    """List a project's ingested source documents for this tenant.
+
+    Returns `[{id, title, source_type, created_at, file_hash}]`, newest first,
+    plus two fields when set (mig 164 / #210):
+
+    - `description` — what the document IS, in one line. Read this before
+      pulling 38 sources to find out what a corpus contains.
+    - `status_note` — a trust caveat: draft, embargoed (never quote
+      externally), form-gated (what ingested is the landing-page abstract,
+      NOT the document), pre-rebrand. **A title does not reveal any of
+      these.** Honour it before quoting a source in client work.
+
+    Absence of either field means nobody has recorded one — not that the
+    document is current or safe to quote.
+    """
     from cp_engine.project_sources import list_sources
 
     try:
@@ -387,7 +401,7 @@ SPINE_OUTPUT_DIR = "03 Assets/06 Spine"
 @_tool
 def push_to_dropbox(
     project_code: str, local_path: str, dest_name: str | None = None,
-    overwrite: bool = False,
+    overwrite: bool = False, dest_path: str | None = None,
 ) -> dict:
     """Upload a local file INTO a project's Dropbox folder (the write-back path).
 
@@ -403,8 +417,16 @@ def push_to_dropbox(
     catch it; the rule was broken twice that way. Pass an explicit `dest_name`
     to place it elsewhere, including a bare name for the root.
 
+    **To correct a document back where it came FROM**, pass `dest_path`: the
+    absolute Dropbox folder from `fetch_project_source`'s `source_path` (its
+    parent directory). `dest_path` overrides both the spine default and the
+    project-root resolution, and `dest_name` is then just the filename. This
+    is the path for revising client-supplied material, which lives under
+    `01 Client Assets/…` rather than the spine dir.
+
     The connector is UPLOAD-ONLY — it has no delete or move — so a misplaced
-    copy has to be removed by hand in Dropbox. Hence the safe default.
+    copy has to be removed by hand in Dropbox. Hence the safe default, and
+    hence: when `source_path` is None, ASK where it goes, never guess.
 
     Refuses to overwrite an existing file unless `overwrite=True` (so a second
     call with the same name is a safe no-clobber by default; pass overwrite=True
@@ -442,10 +464,15 @@ def push_to_dropbox(
         # the alternative failure is silent and unfixable from a session.
         if dest_name is None:
             from pathlib import Path as _P
-            dest_name = f"{SPINE_OUTPUT_DIR}/{_P(local_path).name}"
+            # An explicit dest_path already names the folder, so the spine
+            # prefix would double it — use the bare filename there.
+            dest_name = (
+                _P(local_path).name if dest_path
+                else f"{SPINE_OUTPUT_DIR}/{_P(local_path).name}"
+            )
         return _push(
             connector, folders.mc_dropbox_folder_id, local_path,
-            dest_name=dest_name, overwrite=overwrite,
+            dest_name=dest_name, overwrite=overwrite, dest_path=dest_path,
         )
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,

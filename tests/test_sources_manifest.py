@@ -28,19 +28,33 @@ class _FakeExecute:
 
 
 class _FakeTableQuery:
-    def __init__(self, data):
+    def __init__(self, data, updates=None):
         self._data = data
+        self._updates = updates if updates is not None else []
+        self._pending = None
+        self._eq = {}
 
     def select(self, columns):
         return self
 
+    def update(self, payload):
+        # `_persist_description` writes here (#210); record it so tests can
+        # assert the description reached the row and not just the local cache.
+        self._pending = payload
+        return self
+
     def eq(self, col, val):
+        self._eq[col] = val
         return self
 
     def order(self, col, desc=False):
         return self
 
     def execute(self):
+        if self._pending is not None:
+            self._updates.append({"payload": self._pending, "where": dict(self._eq)})
+            self._pending = None
+            return _FakeExecute([])
         return _FakeExecute(self._data)
 
 
@@ -63,9 +77,10 @@ class _FakeClient:
     def __init__(self, assets, chunk_rows):
         self._assets = assets
         self._chunk_rows = chunk_rows
+        self.updates: list[dict] = []
 
     def table(self, name):
-        return _FakeTableQuery(self._assets)
+        return _FakeTableQuery(self._assets, self.updates)
 
     def rpc(self, name, params):
         return _FakeRpcQuery(self._chunk_rows)
@@ -354,3 +369,92 @@ def test_summary_cap_does_not_affect_cache_hits(tmp_path):
         client, tmp_path, "proj-1", "co-9", llm=llm, max_new_summaries=1
     )
     assert llm.calls == 0
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #210 / mig 164 — the summary is persisted to rag_assets.description
+#
+#  The JSON cache is gitignored and local, so a summary that lives only
+#  there is re-paid for on every machine and is invisible to every MCP
+#  caller. That is the cost #210 is about: 38 sources on slt-5196 meant
+#  38 pulls to learn what the corpus held.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_a_fresh_summary_is_written_to_the_asset_row(tmp_path):
+    assets = _assets(("a", "Alpha Doc", "h-a"))
+    chunks = [_chunk("Alpha Doc", "alpha text")]
+    client = _FakeClient(assets, chunks)
+
+    write_sources_manifest(client, tmp_path, "pid", "cid", llm=_FakeLLM())
+
+    writes = [u for u in client.updates if "description" in u["payload"]]
+    assert len(writes) == 1
+    assert writes[0]["where"]["id"] == "a"
+    assert writes[0]["payload"]["description"].startswith("Summary of prompt")
+
+
+def test_a_failed_summary_is_not_persisted(tmp_path):
+    """A sentinel in the DB would be worse than an empty column — it reads as
+    a real description and the retry mechanic would never replace it."""
+    assets = _assets(("a", "Alpha Doc", "h-a"))
+    chunks = [_chunk("Alpha Doc", "alpha text")]
+    client = _FakeClient(assets, chunks)
+
+    write_sources_manifest(
+        client, tmp_path, "pid", "cid", llm=_FakeLLM(raise_on_title="Alpha Doc")
+    )
+
+    assert [u for u in client.updates if "description" in u["payload"]] == []
+
+
+def test_a_cache_hit_backfills_an_empty_description(tmp_path):
+    """Docs summarised before mig 164 are cache hits forever, so without a
+    backfill they would never reach the DB at all."""
+    assets = _assets(("a", "Alpha Doc", "h-a"))
+    chunks = [_chunk("Alpha Doc", "alpha text")]
+
+    # Run 1 populates the local cache.
+    write_sources_manifest(_FakeClient(assets, chunks), tmp_path, "pid", "cid",
+                           llm=_FakeLLM())
+
+    # Run 2 is a pure cache hit — no LLM call, but the row is still empty.
+    client2 = _FakeClient(assets, chunks)
+    llm2 = _FakeLLM()
+    write_sources_manifest(client2, tmp_path, "pid", "cid", llm=llm2)
+
+    assert llm2.calls == 0, "cache hit must not re-summarise"
+    writes = [u for u in client2.updates if "description" in u["payload"]]
+    assert len(writes) == 1, "the empty description should be backfilled"
+
+
+def test_an_existing_description_is_never_overwritten(tmp_path):
+    """A hand-written description outranks a generated one."""
+    assets = _assets(("a", "Alpha Doc", "h-a"))
+    assets[0]["description"] = "Hand-written: the embargoed CEO draft."
+    chunks = [_chunk("Alpha Doc", "alpha text")]
+
+    write_sources_manifest(_FakeClient(assets, chunks), tmp_path, "pid", "cid",
+                           llm=_FakeLLM())
+    client2 = _FakeClient(assets, chunks)
+    write_sources_manifest(client2, tmp_path, "pid", "cid", llm=_FakeLLM())
+
+    assert [u for u in client2.updates if "description" in u["payload"]] == []
+
+
+def test_a_persist_failure_never_breaks_the_manifest(tmp_path):
+    """The manifest is the caller's job; the description is a bonus."""
+    assets = _assets(("a", "Alpha Doc", "h-a"))
+    chunks = [_chunk("Alpha Doc", "alpha text")]
+
+    class _HalfBroken(_FakeClient):
+        def table(self, name):
+            q = _FakeTableQuery(self._assets, self.updates)
+            q.update = lambda payload: (_ for _ in ()).throw(RuntimeError("42501"))
+            return q
+
+    out = write_sources_manifest(
+        _HalfBroken(assets, chunks), tmp_path, "pid", "cid", llm=_FakeLLM()
+    )
+    assert out
+    assert (tmp_path / "_sources.md").exists()
