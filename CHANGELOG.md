@@ -4,6 +4,91 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.107.0 — 2026-08-28
+
+Four fixes from the week of 2026-08-24, all traced to the same shape: **the
+engine knew something and never showed it to the person who needed it.**
+
+- **Canon is now checkable at authoring time.** An ECD deck re-architected the
+  ibx-5153 campaign under a substituted vocabulary. Structural, not cosmetic:
+  the substituted frame had no home for the heel carrying the client's
+  strongest proof, so it got no chapter in 17 routes. Nothing caught it,
+  because every canon TITLE still looked satisfied while the divergence lived
+  in the bodies.
+
+  `cxp brief`'s **Canon — current truth** section now renders a one-line gist
+  of what each member SAYS. The shape came from the corpus, not a guess: real
+  bodies run 16 → 3,761 words, and in the largest the ratified vocabulary sits
+  at word ~170 — so the short head-truncation originally planned would have cut
+  off the very thing the check exists to surface. Instead the gist takes the
+  `**Ruling:` line (5 of 11 members open with one) or the leading prose, drops
+  headings and table markup, and **always** appends the `What is NOT settled`
+  clause however deep it sits.
+
+  That last part is the half that matters. A downstream document can close an
+  open question purely by omission — picking one branch, never mentioning the
+  other — and nothing notices. The deck did exactly that, and canon still
+  records the question as open.
+
+  `/cp-wrapup` gains **step 5, Canon agreement check** (steps 5-8 renumbered to
+  6-9). Warn-only, matching `spine-lint`'s register: report agrees / diverges /
+  asserts no framework, one line per document. Diverging is not automatically
+  wrong — canon evolves — but a **silent** divergence is.
+
+- **The word-count warning names its contributors instead of sending a human to
+  guess.** Three CPs crossed the threshold in three days; three different
+  guesses were made about the cause before anyone measured, and one was written
+  into a CP file as fact ("the engine-managed strips") that measurement
+  disproved outright — strips were 516 words, Updates 1,076.
+
+  The finding now carries three buckets (Exec Summary / engine strips /
+  hand-written), the biggest Exec Summary fields, then the biggest entries in
+  the worst field. Measured, not assumed: on mission-control post-rotation the
+  top contributor is `Next up`, not Updates, so hardcoding "check Updates"
+  would have been wrong. The tenant-wide scan promptly surfaced a fourth
+  over-budget file nobody had flagged — ibx-5192, Updates at 80% of it.
+
+  **`Updates` gains a per-entry budget (250 words).** It was the only Exec
+  Summary field with no budget while `Status`'s own nudge directs detail INTO
+  it, so the one unbounded field was also the designated destination for every
+  other field's overflow. Per entry, because the fix is always to roll ONE fat
+  entry off. Entries are measured with their sub-bullets attached: the entry
+  that forced a rotation was 395 words alone and 912 with its detail.
+
+- **A source now tells you where it came from, what it is, and whether you can
+  trust it.** Correcting a document meant pushing a revision back, but nothing
+  returned the folder the source came from — and the Dropbox connector has no
+  delete or move, so a guessed destination stranded a copy needing hand
+  cleanup.
+
+  It needed no schema change. `rag_assets` has carried `source_path` since
+  mig 077, and `fetch_source` already selected it and already read it into the
+  FileRef — then dropped it from the return dict one line later. It is returned
+  now, and `push_to_dropbox` gains **`dest_path`** so a correction goes back
+  where the original lives (client research sits under `01 Client Assets/`, not
+  the spine dir).
+
+  Requires **mc-2 migration 164**, which adds `description`, `status_note` and
+  `supersedes_asset_id` to `rag_assets` plus an `obsoleted` status. Grants ship
+  in that migration rather than after it: privileges on that table are
+  column-level enumerated, so a new column arrives with no grant and the first
+  write fails 42501 — the way spine writes broke in migs 127 and 160.
+
+- **Source descriptions are persisted, not re-derived per machine.** The
+  summariser already existed — `write_sources_manifest` has computed a per-doc
+  summary since #153, with caching and retry semantics — but wrote only to
+  `_sources.cache.json`, which is gitignored and local. So every machine and
+  every fresh agent re-paid the cost and no MCP caller ever saw a description.
+  Successful summaries now also land on the asset row; failures do not (a
+  sentinel in the DB reads as real and would never be retried). Cache hits with
+  an empty description are backfilled, and an existing description is never
+  overwritten. Closes #210.
+
+`supersedes_asset_id` is a cross-title supersede pointer, distinct from
+`prev_asset_id`, which chains re-ingests of the SAME title and therefore never
+fired when a stale stub was answered by a differently-titled draft ingested in
+the same batch.
+
 ## v0.106.1 — 2026-08-28
 
 - **Fix: `build-stakeholder` told you LinkedIn was unreadable. It is readable —
