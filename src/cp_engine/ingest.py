@@ -975,6 +975,48 @@ def _extract_carry_forward_region(body: str) -> str | None:
     return m.group(1) if m else None
 
 
+def _log_duplicate_hash(
+    *, verb: str, code: str, target_hash: str, body: str, sprint_path: Path,
+) -> bool:
+    """Report a hash that identifies more than one bullet in its owning file.
+
+    Every hash-matching writer (close-ask, resolve-risk, snooze-*) acts on the
+    FIRST bullet it matches and reports success. That is correct only while a
+    hash identifies exactly one bullet in the file that owns it — the invariant
+    `_origin_sprint_path` exists to preserve, by redirecting writes away from
+    derived projections to the single owning file.
+
+    When the invariant breaks, the failure is silent and convincing. A Slack
+    Resolve click flips one copy, commits, and renders "Resolved" — while a
+    second copy carrying the same hash stays escalated, so the next digest
+    surfaces the item again as though the click never happened. That is exactly
+    how ibx-5153's budget risk survived a resolve: a duplicate risk bullet had
+    been written into `### Stakeholders`, the writer flipped THAT one, and the
+    real bullet under `## Dependencies & risks` was never touched.
+
+    Duplication is a data defect upstream of this writer, so the fix is not to
+    flip every copy — that would paper over the violation and, in a derived
+    region, be discarded by the next render (#219). Instead: say so, loudly,
+    with every offending line, so the duplicate can be repaired at its source.
+
+    Returns True when duplicates were found (caller aborts), False otherwise.
+    This one IS control flow — writing to a file whose bullets are ambiguous
+    picks an arbitrary winner, and picking silently is the bug being fixed.
+    """
+    marker = f"cp:hash={target_hash}"
+    offending = [ln for ln in body.splitlines() if marker in ln]
+    if len(offending) < 2:
+        return False
+    logger.warning(
+        "%s: hash %s matches %d bullets in %s — a hash must identify exactly "
+        "one bullet in its owning file. Refusing to guess which to write; "
+        "repair the duplicate first. Lines: %s",
+        verb, target_hash, len(offending), sprint_path.name,
+        " || ".join(ln.strip()[:200] for ln in offending),
+    )
+    return True
+
+
 def _log_unmatched_hash(
     *, verb: str, code: str, target_hash: str, body: str, sprint_path: Path,
     settled: tuple[str, ...] = (),
@@ -1064,6 +1106,14 @@ def _write_close_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
         )
     body = sprint_path.read_text(encoding="utf-8")
 
+    # Only the hash-matched path carries the one-bullet-per-hash invariant;
+    # the legacy text-match path has no hash to be ambiguous about.
+    if target_hash and _log_duplicate_hash(
+        verb="close-ask", code=code, target_hash=target_hash,
+        body=body, sprint_path=sprint_path,
+    ):
+        return False
+
     def _flip(m: re.Match) -> str:
         line = m.group("prefix") + "closed" + m.group("rest")
         if closed_by:
@@ -1152,6 +1202,15 @@ def _write_resolve_risk(
     sprint_path = _origin_sprint_path(sprint_path, target_hash)
     body = sprint_path.read_text(encoding="utf-8")
 
+    # A hash must identify exactly one bullet in its owning file; more than
+    # one and the flip below would pick an arbitrary winner and still report
+    # success. Refuse instead — see _log_duplicate_hash.
+    if _log_duplicate_hash(
+        verb="resolve-risk", code=code, target_hash=target_hash,
+        body=body, sprint_path=sprint_path,
+    ):
+        return False
+
     # Match an existing escalated/watching risk bullet by hash.
     #
     # Two bullet shapes exist in production and BOTH must match — the same
@@ -1218,6 +1277,13 @@ def _write_snooze(
     # Same derived-region hazard as resolve-risk (#219).
     sprint_path = _origin_sprint_path(sprint_path, target_hash)
     body = sprint_path.read_text(encoding="utf-8")
+
+    # Same invariant as resolve-risk: one bullet per hash in the owning file.
+    if _log_duplicate_hash(
+        verb=f"snooze-{bullet_kind}", code=code, target_hash=target_hash,
+        body=body, sprint_path=sprint_path,
+    ):
+        return False
 
     line_re = re.compile(
         r"^(?P<line>- \[[^\]]+\][^\n]*?cp:hash=" + re.escape(target_hash) + r"[^\n]*)$",

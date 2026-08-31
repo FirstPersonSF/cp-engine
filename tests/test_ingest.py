@@ -18,6 +18,7 @@ from cp_engine.ingest import (
     IngestPlanError,
     _write_close_ask,
     _write_resolve_risk,
+    _write_snooze,
     execute_plan,
     parse_transcript,
 )
@@ -2564,3 +2565,89 @@ def test_announce_new_sources_skips_prior_week_announcements(tmp_path):
 
     assert (n1, n2) == (1, 0)
     assert "Boundary" not in current.read_text()
+
+
+def _seed_two_bullets(tmp_path: Path, line_a: str, line_b: str,
+                      code: str = "storyos") -> Path:
+    """Sprint file carrying two hand-written bullets (same hash = the defect)."""
+    path = _seed_bullet(tmp_path, line_a, code=code)
+    path.write_text(path.read_text().rstrip("\n") + "\n" + line_b + "\n")
+    return path
+
+
+def test_resolve_risk_refuses_when_hash_matches_two_bullets(
+    tmp_path: Path, caplog
+) -> None:
+    """Duplicate hash → refuse + WARNING, rather than flip an arbitrary copy.
+
+    The ibx-5153 failure: a duplicate risk bullet had been written into
+    `### Stakeholders`, so Resolve flipped that copy, committed, and reported
+    success while the real bullet under `## Dependencies & risks` stayed
+    escalated. The next digest re-surfaced it as though the click never landed.
+    """
+    path = _seed_two_bullets(
+        tmp_path,
+        "- [escalated · scope · 2026-08-20] budget mismatch "
+        "<!-- cp:hash=8a93518d -->",
+        "- [escalated · scope · 2026-08-20] budget mismatch (dup) "
+        "<!-- cp:hash=8a93518d -->",
+    )
+    before = path.read_text()
+    with caplog.at_level(logging.WARNING, logger="cp_engine.ingest"):
+        flipped = _write_resolve_risk(
+            "storyos", {"hash": "8a93518d"}, path, today=date(2026, 8, 23)
+        )
+    assert flipped is False
+    assert path.read_text() == before  # nothing written — no arbitrary winner
+    assert "matches 2 bullets" in caplog.text
+    assert "8a93518d" in caplog.text
+
+
+def test_resolve_risk_still_flips_the_single_bullet_case(tmp_path: Path) -> None:
+    """The guard must not disturb the ordinary one-bullet-per-hash path."""
+    path = _seed_bullet(
+        tmp_path,
+        "- [escalated · scope · 2026-08-20] budget mismatch "
+        "<!-- cp:hash=8a93518d -->",
+    )
+    flipped = _write_resolve_risk(
+        "storyos", {"hash": "8a93518d"}, path, today=date(2026, 8, 23)
+    )
+    assert flipped is True
+    assert "- [resolved · scope · 2026-08-20]" in path.read_text()
+
+
+def test_duplicate_guard_ignores_a_different_hash(tmp_path: Path) -> None:
+    """Two bullets with DIFFERENT hashes are not a duplication defect."""
+    path = _seed_two_bullets(
+        tmp_path,
+        "- [escalated · scope · 2026-08-20] one <!-- cp:hash=8a93518d -->",
+        "- [escalated · scope · 2026-08-20] two <!-- cp:hash=1b2c3d4e -->",
+    )
+    flipped = _write_resolve_risk(
+        "storyos", {"hash": "8a93518d"}, path, today=date(2026, 8, 23)
+    )
+    assert flipped is True
+    body = path.read_text()
+    assert "- [resolved · scope · 2026-08-20] one" in body
+    assert "- [escalated · scope · 2026-08-20] two" in body
+
+
+def test_snooze_refuses_when_hash_matches_two_bullets(
+    tmp_path: Path, caplog
+) -> None:
+    """Snooze carries the same invariant as resolve-risk."""
+    path = _seed_two_bullets(
+        tmp_path,
+        "- [escalated · scope · 2026-08-20] budget <!-- cp:hash=8a93518d -->",
+        "- [escalated · scope · 2026-08-20] budget dup <!-- cp:hash=8a93518d -->",
+    )
+    before = path.read_text()
+    with caplog.at_level(logging.WARNING, logger="cp_engine.ingest"):
+        wrote = _write_snooze(
+            "storyos", {"hash": "8a93518d", "until": "2026-09-07"}, path,
+            bullet_kind="risk",
+        )
+    assert wrote is False
+    assert path.read_text() == before
+    assert "matches 2 bullets" in caplog.text
