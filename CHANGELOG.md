@@ -4,6 +4,33 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.108.1 — 2026-09-01
+
+- **A hash-keyed write now refuses when the hash matches more than one bullet.**
+  Every hash-matching writer (`close-ask`, `resolve-risk`, `snooze-*`) acts on
+  the FIRST match and reports success. That is correct only while a hash
+  identifies exactly one bullet in the file that owns it — the invariant
+  `_origin_sprint_path` exists to protect, by redirecting writes away from
+  derived carry-forward projections. Nothing enforced it.
+
+  The failure mode was silent and convincing. A Slack ✅ Resolve on ibx-5153's
+  budget risk flipped a duplicate bullet misfiled under `### Stakeholders`,
+  committed, and rendered "Resolved" — while the canonical bullet under
+  `## Dependencies & risks` stayed escalated and the next digest re-surfaced
+  it. **Six days of a confident lie**, which is worse than a visible failure,
+  because a false confirmation stops anyone from looking.
+
+  `_log_duplicate_hash` now refuses the write and logs every offending line.
+  Unlike its sibling `_log_unmatched_hash` this **is control flow**: writing to
+  an ambiguous file picks an arbitrary winner, and picking silently is the bug.
+
+  `count=1` is deliberately kept. Flipping every copy would paper over the data
+  defect and, inside a carry-forward region, be discarded by the next render
+  (#219). **The guard diagnoses; repair stays human** — a duplicate still needs
+  a person to delete the wrong copy.
+
+  (#224)
+
 ## v0.108.0 — 2026-08-28
 
 - **`set_source_status` — a writer for the trust caveat.** v0.107.0 shipped
