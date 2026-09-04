@@ -183,3 +183,74 @@ def test_outcome_vocabulary_matches_migration_check_constraint() -> None:
         "plan_error",
         "exec_error",
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  The unsatisfiable-config guard (`cxp slack-channels --check`)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _row(code: str, *, enable_slack: bool, channels: tuple[str, ...] = ()):
+    from cp_engine.slack import ChannelMapRow
+
+    return ChannelMapRow(
+        code=code,
+        name=code,
+        company_code="XXX",
+        status="Active",
+        enable_slack=enable_slack,
+        channel_ids=channels,
+        primary_channel_id=channels[0] if channels else None,
+        primary_channel_name=None,
+    )
+
+
+def test_guard_passes_when_every_enabled_row_has_a_channel() -> None:
+    from cp_engine.cli_cmds.slack import _exit_if_unsatisfiable
+
+    rows = [
+        _row("ibx-5153-ai-campaign", enable_slack=True, channels=("C1", "C2")),
+        _row("cp-context-protocol", enable_slack=False),  # off + unbound is CORRECT
+    ]
+    _exit_if_unsatisfiable(rows)  # must not raise
+
+
+def test_guard_exits_nonzero_on_enabled_row_with_no_channel() -> None:
+    """enable_slack=true + no channel is unsatisfiable, not merely untidy."""
+    import pytest as _pytest
+
+    from cp_engine.cli_cmds.slack import _exit_if_unsatisfiable
+
+    rows = [
+        _row("storyos", enable_slack=True),
+        _row("ibx-5153-ai-campaign", enable_slack=True, channels=("C1",)),
+    ]
+    with _pytest.raises(SystemExit) as exc:
+        _exit_if_unsatisfiable(rows)
+    assert exc.value.code == 1
+
+
+def test_guard_ignores_disabled_rows_without_channels() -> None:
+    """The six initiatives after the fix: OFF and unbound is the target state."""
+    from cp_engine.cli_cmds.slack import _exit_if_unsatisfiable
+
+    rows = [_row(c, enable_slack=False) for c in ("storyos", "mission-control")]
+    _exit_if_unsatisfiable(rows)  # must not raise
+
+
+def test_guard_reports_every_offender_not_just_the_first(capsys) -> None:
+    import pytest as _pytest
+
+    from cp_engine.cli_cmds.slack import _exit_if_unsatisfiable
+
+    rows = [
+        _row("storyos", enable_slack=True),
+        _row("mission-control", enable_slack=True),
+        _row("market-scorecard", enable_slack=True),
+    ]
+    with _pytest.raises(SystemExit):
+        _exit_if_unsatisfiable(rows)
+    err = capsys.readouterr().err
+    for code in ("storyos", "mission-control", "market-scorecard"):
+        assert code in err
+    assert "3 row(s)" in err

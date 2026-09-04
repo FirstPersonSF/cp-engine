@@ -28,7 +28,14 @@ import cp_engine.cli as _cli
     is_flag=True,
     help="Filter to active rows (engagements: Deal|Open; initiatives: Active).",
 )
-def slack_channels_cmd(output_format: str, active_only: bool) -> None:
+@click.option(
+    "--check",
+    is_flag=True,
+    help="Exit non-zero if any active row has enable_slack=true with no "
+    "channel bound. For CI and the digest workflow — that state is "
+    "unsatisfiable and silently skips the project every week.",
+)
+def slack_channels_cmd(output_format: str, active_only: bool, check: bool) -> None:
     """List active engagement projects + initiatives + their Slack channels.
 
     Debug command for the weekly Slack digest pipeline. Each row is one
@@ -38,6 +45,13 @@ def slack_channels_cmd(output_format: str, active_only: bool) -> None:
 
     Use this to spot rows that need a channel_id backfill in MC-2 before
     turning on the cron.
+
+    `--check` turns that from something a human has to notice into
+    something CI enforces. `enable_slack=true` with no bound channel is
+    an unsatisfiable promise: the digest skips the project as
+    `no_channels` every single week and says so only inside a merged
+    count. Six initiatives and one engagement sat in that state for
+    months (cp-engine #227) because nothing ever failed.
     """
     import json
 
@@ -69,6 +83,8 @@ def slack_channels_cmd(output_format: str, active_only: bool) -> None:
                 indent=2,
             )
         )
+        if check:
+            _exit_if_unsatisfiable(rows)
         return
 
     # Table output.
@@ -102,6 +118,41 @@ def slack_channels_cmd(output_format: str, active_only: bool) -> None:
             n_unmapped += 1
     click.echo()
     click.echo(f"{n_mapped} mapped, {n_unmapped} enable_slack=true with no channels")
+    if check:
+        _exit_if_unsatisfiable(rows)
+
+
+def _exit_if_unsatisfiable(rows) -> None:
+    """Exit 1 if any row promises a Slack read it cannot perform.
+
+    `enable_slack=true` with zero bound channels is not a warning state,
+    it is a broken one: the digest can never satisfy it, so the project
+    is skipped every week and the skip is indistinguishable from a quiet
+    channel in the commit body. Failing here is the cheap half of
+    cp-engine #227 — the run rows record the state after the fact, this
+    refuses to let it persist unnoticed.
+    """
+    bad = [r for r in rows if r.enable_slack and not r.channel_ids]
+    if not bad:
+        return
+    click.echo(err=True)
+    click.echo(
+        f"ERROR: {len(bad)} row(s) have enable_slack=true with no channel bound.",
+        err=True,
+    )
+    click.echo(
+        "Each is skipped by the weekly digest as `no_channels`, every week.",
+        err=True,
+    )
+    for r in sorted(bad, key=lambda x: x.code):
+        click.echo(f"  - {r.code} ({r.status})", err=True)
+    click.echo(err=True)
+    click.echo(
+        "Fix by binding a channel in project_integrations, or by setting "
+        "enable_slack=false if the project has no Slack channel.",
+        err=True,
+    )
+    sys.exit(1)
 
 
 def _parse_iso_week(week: str) -> tuple[datetime, datetime]:
