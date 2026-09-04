@@ -48,7 +48,22 @@ _SLACK_TOKEN_KEYS = ("SLACK_BOT_TOKEN",)
 
 
 class SlackError(Exception):
-    """Raised for Slack API or credential failures."""
+    """Raised for Slack API or credential failures.
+
+    `code` carries the machine-readable Slack error string
+    (``not_in_channel``, ``channel_not_found``, ``invalid_auth``, …) when
+    one was available, so callers can branch on the failure rather than
+    regex the message. It is None for transport/credential failures that
+    never reached the API.
+
+    cp-engine #227: the digest needs to tell "the bot cannot see this
+    channel" apart from "this channel was quiet", and that distinction
+    only exists in this field.
+    """
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        super().__init__(message)
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -95,6 +110,62 @@ class FetchedChannel:
     channel_id: str
     channel_name: str    # e.g. "ibx_5167_ddi_platform_video_team", or "" if lookup failed
     messages: tuple[SlackMessage, ...]
+
+
+# Outcome vocabulary shared with MC-2's slack_digest_runs.outcome CHECK
+# constraint (migration 168). Keep the two in sync — a value here that the
+# constraint rejects turns an observability win into a failed digest.
+OUTCOME_OK = "ok"
+OUTCOME_EMPTY = "empty"
+OUTCOME_NO_CHANNELS = "no_channels"
+OUTCOME_NOT_IN_CHANNEL = "not_in_channel"
+OUTCOME_CHANNEL_NOT_FOUND = "channel_not_found"
+OUTCOME_AUTH_FAILED = "auth_failed"
+OUTCOME_API_ERROR = "api_error"
+OUTCOME_PLAN_ERROR = "plan_error"
+OUTCOME_EXEC_ERROR = "exec_error"
+
+# Slack error string -> our outcome vocabulary. Anything unmapped becomes
+# api_error, which is deliberately the catch-all rather than a silent skip.
+_SLACK_ERROR_TO_OUTCOME = {
+    "not_in_channel": OUTCOME_NOT_IN_CHANNEL,
+    "channel_not_found": OUTCOME_CHANNEL_NOT_FOUND,
+    "is_archived": OUTCOME_CHANNEL_NOT_FOUND,
+    "invalid_auth": OUTCOME_AUTH_FAILED,
+    "not_authed": OUTCOME_AUTH_FAILED,
+    "token_revoked": OUTCOME_AUTH_FAILED,
+    "account_inactive": OUTCOME_AUTH_FAILED,
+    "missing_scope": OUTCOME_AUTH_FAILED,
+}
+
+
+def classify_slack_error(code: str | None) -> str:
+    """Map a Slack API error string onto the run-row outcome vocabulary."""
+    if not code:
+        return OUTCOME_API_ERROR
+    return _SLACK_ERROR_TO_OUTCOME.get(code, OUTCOME_API_ERROR)
+
+
+@dataclass
+class ChannelOutcome:
+    """What happened when the digest tried to read one channel.
+
+    The point of this type (cp-engine #227) is that `messages == ()` is
+    ambiguous on its own: it means "quiet week" when `outcome` is
+    ``empty``, and "we never got to look" when it is ``not_in_channel``
+    or ``auth_failed``. Callers must branch on `outcome`, not on length.
+    """
+
+    channel_id: str
+    channel_name: str
+    messages: tuple[SlackMessage, ...]
+    outcome: str
+    error_detail: str | None = None
+
+    @property
+    def readable(self) -> bool:
+        """True when Slack answered — even if the answer was zero messages."""
+        return self.outcome in (OUTCOME_OK, OUTCOME_EMPTY)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -383,6 +454,73 @@ def fetch_channels(
     return out
 
 
+def fetch_channels_with_outcomes(
+    token: str,
+    channel_ids: tuple[str, ...] | list[str],
+    week_start: datetime,
+    *,
+    week_end: datetime | None = None,
+) -> list[ChannelOutcome]:
+    """Like `fetch_channels`, but never raises for a per-channel failure.
+
+    `fetch_channels` aborts the whole project when any single channel
+    errors, so one un-invited `_team` channel takes its healthy sibling
+    down with it and the project is recorded as a blanket skip. Here each
+    channel gets its own outcome and the caller sees partial success.
+
+    Credential failures still raise, because they are not per-channel:
+    if the token is bad, every channel would report the same thing and
+    the run should stop rather than write N identical auth_failed rows.
+    """
+    try:
+        from slack_sdk import WebClient
+    except ImportError as exc:
+        raise SlackError(
+            "slack_sdk not installed. Run: pip install 'slack-sdk>=3.27'"
+        ) from exc
+
+    client = WebClient(token=token)
+    user_cache: dict[str, str] = {}
+    name_cache: dict[str, str] = {}
+    out: list[ChannelOutcome] = []
+
+    for cid in channel_ids:
+        try:
+            messages = _fetch_one(client, cid, week_start, week_end, user_cache)
+        except SlackError as exc:
+            outcome = classify_slack_error(getattr(exc, "code", None))
+            if outcome == OUTCOME_AUTH_FAILED:
+                # Not a per-channel condition — let it stop the run.
+                raise
+            out.append(
+                ChannelOutcome(
+                    channel_id=cid,
+                    channel_name="",
+                    messages=(),
+                    outcome=outcome,
+                    error_detail=str(exc),
+                )
+            )
+            continue
+
+        # Name resolution is best-effort: a readable channel with an
+        # unresolvable name is still a successful read.
+        try:
+            name = _resolve_channel_name(client, cid, name_cache)
+        except Exception:  # noqa: BLE001
+            name = ""
+
+        out.append(
+            ChannelOutcome(
+                channel_id=cid,
+                channel_name=name,
+                messages=tuple(messages),
+                outcome=OUTCOME_OK if messages else OUTCOME_EMPTY,
+            )
+        )
+    return out
+
+
 def fetch_week(
     token: str,
     channel_id: str,
@@ -454,8 +592,14 @@ def _fetch_one(
                 cursor=cursor,
             )
         except SlackApiError as exc:
+            _code = None
+            try:
+                _code = exc.response.get("error")
+            except Exception:  # noqa: BLE001 — diagnostics must not mask the raise
+                pass
             raise SlackError(
-                f"conversations.history failed for {channel_id}: {exc.response.get('error')}"
+                f"conversations.history failed for {channel_id}: {_code}",
+                code=_code,
             ) from exc
 
         raw_messages.extend(resp.get("messages") or [])
@@ -583,3 +727,71 @@ def _ts_to_iso(ts: str) -> str:
         .isoformat()
         .replace("+00:00", "Z")
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Run rows (cp-engine #227)
+# ──────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class DigestRunRow:
+    """One (week, project, channel) outcome, ready for MC-2."""
+
+    week: str
+    project_code: str
+    outcome: str
+    channel_id: str | None = None
+    channel_name: str | None = None
+    message_count: int = 0
+    error_detail: str | None = None
+
+    def to_payload(self) -> dict:
+        return {
+            "week": self.week,
+            "project_code": self.project_code,
+            # '' not None: the unique key (week, project_code, channel_id)
+            # must be comparable to serve as an ON CONFLICT target, and a
+            # NULL there would let duplicate no_channels rows accumulate.
+            "channel_id": self.channel_id or "",
+            "channel_name": self.channel_name or None,
+            "outcome": self.outcome,
+            "message_count": self.message_count,
+            "error_detail": self.error_detail,
+        }
+
+
+def record_digest_runs(config, rows: list[DigestRunRow]) -> int:
+    """Upsert digest run rows into MC-2. Returns the count written.
+
+    Deliberately best-effort: a digest that successfully wrote bullets to
+    the tree must not fail because its bookkeeping write did. The whole
+    point of #227 is to make failures visible, so a failure HERE prints
+    loudly (print, not logger — logger output is invisible outside
+    `cp sync`) and returns 0 rather than raising.
+
+    Re-running a week is idempotent: the unique index on
+    (week, project_code, coalesce(channel_id,'')) makes this an upsert,
+    so a re-run corrects a prior week's rows instead of duplicating them.
+    """
+    if not rows:
+        return 0
+
+    from cp_engine import mc2_db
+
+    try:
+        client = mc2_db.get_client(config)
+        payload = [r.to_payload() for r in rows]
+        (
+            client.schema("public")
+            .table(mc2_db.Tables.SLACK_DIGEST_RUNS)
+            .upsert(payload, on_conflict="week,project_code,channel_id")
+            .execute()
+        )
+        return len(payload)
+    except Exception as exc:  # noqa: BLE001 — bookkeeping must never break the digest
+        print(
+            f"WARNING: could not record slack_digest_runs ({len(rows)} rows): {exc}",
+            file=sys.stderr,
+        )
+        return 0
