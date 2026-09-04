@@ -4,6 +4,42 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.112.0 — 2026-09-04
+
+- **RFP v2: the `rfp-authoring` skill and `cxp redact-check`.** The build
+  spec's §2 divides the work — the skill holds the craft, CP holds the state —
+  and that division decided the shape of both halves.
+
+  **No `draft_rfp` verb, deliberately.** `create_spine_element` already lives
+  on cp-hosted and `preflight` reads the local tenant tree, so a verb spanning
+  both would have needed template prose in application code — the one thing §2
+  warns against. The skill drafts in-session and persists through the existing
+  hosted verbs, the same shape `/cp-prep` already uses: the engine emits, the
+  model synthesizes, and the author can defend and revise the document live.
+
+  **`cxp redact-check` verifies a FINISHED draft** rather than substituting
+  during generation, because substitution during generation is what produces a
+  document that looks redacted and isn't. It catches the three second-order
+  leaks from the original session, none of which a find-and-replace on the
+  client-name field would have found: the client left in **our own credentials
+  roster** (a five-name list identifies them in one step); a **set of named
+  competitors** that identifies the client by triangulation without ever naming
+  them; and a **missing NDA line**, without which an anonymous brief reads as a
+  fishing expedition and good shops pass.
+
+  It stops where judgment starts. Whether category + audience + competitor set
+  still narrow the client to a handful of companies is not a regex question —
+  the skill has to answer it explicitly, and the command's own output says so,
+  because a tool must never imply an anonymity it has not achieved.
+
+  The skill encodes the craft the spec named: one real question at the centre
+  (the 5198 AI question filtered harder than the rest of the document combined),
+  the budget stated so respondents self-select honestly, no spec concepts asked
+  for, capability claims broken into captured-vs-generated-vs-finished, named
+  people rather than roles, and short — asked of them and modelled by us. It
+  also refuses two things: generating the vendor shortlist, and synthesising a
+  contact email from a pattern.
+
 ## v0.111.0 — 2026-09-04
 
 - **A third gate: `funding_warning`.** A third live run, on ibx-5153, found the

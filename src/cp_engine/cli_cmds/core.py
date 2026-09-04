@@ -679,3 +679,64 @@ def preflight_cmd(code: str, artifact_kind: str, weeks: int, as_json: bool) -> N
         click.echo(render_report(report), nl=False)
 
     sys.exit(0 if report.ready else 1)
+
+
+@click.command("redact-check")
+@click.argument("draft_path", type=click.Path(exists=True, dir_okay=False))
+@click.option("--client", "client_name", required=True,
+              help="The client's name, as it would appear in the draft.")
+@click.option("--alias", "aliases", multiple=True,
+              help="Short forms a find-and-replace misses (e.g. 'Concur'). Repeatable.")
+@click.option("--competitor", "competitors", multiple=True,
+              help="A competitor whose name identifies the client. Repeatable.")
+@click.option("--roster", "roster", multiple=True,
+              help="A name on OUR credentials list in this document. Repeatable.")
+@click.option("--descriptor", default=None,
+              help="The replacement descriptor, e.g. 'a global enterprise software company'.")
+@click.option("--json", "as_json", is_flag=True, help="Emit the raw report dict.")
+def redact_check_cmd(draft_path: str, client_name: str, aliases: tuple[str, ...],
+                     competitors: tuple[str, ...], roster: tuple[str, ...],
+                     descriptor: str | None, as_json: bool) -> None:
+    """Verify an anonymised draft actually is anonymous.
+
+    Runs over a FINISHED draft, never as substitution during generation —
+    substitution during generation is what produces a document that looks
+    redacted and isn't.
+
+    Catches the three second-order leaks from the 2026-09-04 session, none
+    of which a find-and-replace on the client-name field would have found:
+    the client left in OUR own credentials roster; a set of named
+    competitors that identifies the client by triangulation without ever
+    naming them; and a missing NDA line, without which an anonymous brief
+    reads as a fishing expedition.
+
+    It does NOT decide whether category + audience + competitor set still
+    narrow the client to a handful of companies. That judgment belongs to
+    the person or skill doing the redaction, and must be stated rather than
+    assumed.
+
+    Exit codes: 0 clean · 1 findings remain · 2 error.
+    """
+    import json as _json
+
+    from cp_engine.redact import check_redaction, render_report
+
+    try:
+        draft = Path(draft_path).read_text(encoding="utf-8")
+    except OSError as exc:
+        click.echo(f"Error: cannot read {draft_path}: {exc}", err=True)
+        sys.exit(2)
+
+    rep = check_redaction(
+        draft,
+        client_name=client_name,
+        client_aliases=tuple(aliases),
+        competitors=tuple(competitors),
+        our_roster=tuple(roster),
+        descriptor=descriptor,
+    )
+    if as_json:
+        click.echo(_json.dumps(rep.to_dict(), indent=2))
+    else:
+        click.echo(render_report(rep), nl=False)
+    sys.exit(0 if rep.clean else 1)
