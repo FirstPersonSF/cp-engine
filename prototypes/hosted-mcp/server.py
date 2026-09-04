@@ -411,6 +411,78 @@ def resolve_project_id(client, project_code: str) -> str | None:
     return rows[0]["id"] if rows else None
 
 
+def resolve_company_id(client, project_id: str) -> str | None:
+    """The company a project belongs to, or None for an initiative.
+
+    Initiatives live in their own table and have no company, so the lookup
+    simply misses — which is exactly the "engagements only" rule the account
+    arm needs, with no `kind` plumbed through the callers.
+    """
+    rows = (
+        client.table("projects")
+        .select("company_id")
+        .eq("id", project_id)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    return rows[0].get("company_id") if rows else None
+
+
+def read_spine_rows(client, project_id: str, columns: str) -> list[dict[str, Any]]:
+    """Live spine rows visible from a project — BOTH arms of the scope ladder.
+
+    An account-scoped element (mc-2 mig 104) is a COMPANY fact: it was promoted
+    off one project but belongs to every sibling on that account. Its
+    `project_id` is retained as provenance only. So a single-arm read keyed on
+    `project_id` gets the ladder exactly backwards — the element appears on the
+    one project it came from and is invisible on every project it was promoted
+    FOR.
+
+    Two arms, mirroring `mc-2 backend/src/routers/spine_reads.py`:
+
+      1. project arm — `project_id = X`, then DROP `scope='account'` rows.
+      2. account arm — every `scope='account'` row of the project's company.
+         Engagements only; an initiative has no company and skips it.
+
+    Callers get `scope` on each row (it is already in SPINE_LIST_COLUMNS) so
+    they can badge account elements as belonging to the account, not the job.
+
+    Cost: one extra `projects` lookup plus one indexed read, only for
+    engagements. Regression: `test_account_scope_reads.py`. Filed as #225.
+    """
+    project_rows = (
+        client.table("spine_substance")
+        .select(columns)
+        .eq("project_id", project_id)
+        .eq("status", "live")
+        .execute()
+        .data
+        or []
+    )
+    rows = [r for r in project_rows if (r.get("scope") or "project") != "account"]
+
+    company_id = resolve_company_id(client, project_id)
+    if company_id:
+        seen = {r.get("est_item_id") for r in rows}
+        for r in (
+            client.table("spine_substance")
+            .select(columns)
+            .eq("company_id", company_id)
+            .eq("scope", "account")
+            .eq("status", "live")
+            .execute()
+            .data
+            or []
+        ):
+            # An element promoted off THIS project would otherwise arrive twice
+            # (dropped by arm 1, re-added by arm 2). Arm 2 is the canonical copy.
+            if r.get("est_item_id") not in seen:
+                rows.append(r)
+    return rows
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Server + tools
 # ──────────────────────────────────────────────────────────────────────
@@ -738,24 +810,25 @@ def list_spine_elements(
             "elements": [],
         }
 
-    rows = (
-        client.table("spine_substance")
-        .select(SPINE_LIST_COLUMNS)
-        .eq("project_id", project_id)
-        .eq("status", "live")
-        .execute()
-        .data
-        or []
-    )
+    # Two-arm read: project rows + this company's account-scoped rows (#225).
+    rows = read_spine_rows(client, project_id, SPINE_LIST_COLUMNS)
 
     # One edge read serves both annotations: canon membership and absorption.
     absorbed_into: dict[str, str] = {}
     canon_ids: set[str] = set()
     try:
+        # Account rows carry their HOME project's id, so an edge on one lives
+        # under that project, not this one. Read every project represented in
+        # `rows` or a sealed/canon account element silently loses its badge
+        # (no such edge exists today — this keeps it from becoming a bug when
+        # one does).
+        edge_project_ids = sorted(
+            {project_id} | {r["project_id"] for r in rows if r.get("project_id")}
+        )
         for e in (
             client.table("spine_relations")
             .select("kind, from_item_id, to_item_id")
-            .eq("project_id", project_id)
+            .in_("project_id", edge_project_ids)
             .eq("status", "active")
             .in_("kind", ["canon_of", "absorbed_by"])
             .execute()
@@ -812,6 +885,10 @@ def list_spine_elements(
                 # this table does not have.
                 "synced_at": r.get("synced_at"),
                 "actor": r.get("actor"),
+                # Account elements are company facts surfaced on every sibling
+                # project; say so, or the caller cannot tell them from job-local
+                # cards (#225). Omitted when project-scoped — the default.
+                **({"scope": "account"} if (r.get("scope") == "account") else {}),
                 **({"canon": True} if eid in canon_ids else {}),
                 **(
                     {"absorbed_by": absorbed_into[eid]}
@@ -989,7 +1066,19 @@ def pull_spine_element(element_id: str, project_code: str | None = None) -> dict
         project_id = resolve_project_id(client, project_code)
         if project_id is None:
             return {"element_id": element_id, "error": f"unknown code {project_code!r}"}
-        q = q.eq("project_id", project_id)
+        # Scope ladder (#225): an account element is pullable from ANY project of
+        # its company, so narrow to `project_id` OR this company's account rows.
+        # Narrowing on `project_id` alone made the optional `project_code` arg
+        # turn a working pull into "no element found" — the arg is a
+        # disambiguator, not a wall.
+        company_id = resolve_company_id(client, project_id)
+        if company_id:
+            q = q.or_(
+                f"project_id.eq.{project_id},"
+                f"and(company_id.eq.{company_id},scope.eq.account)"
+            )
+        else:
+            q = q.eq("project_id", project_id)
     rows = q.execute().data or []
 
     if not rows:
@@ -1024,6 +1113,10 @@ def pull_spine_element(element_id: str, project_code: str | None = None) -> dict
         "caller": caller_subject(),
         "slug": row.get("est_item_id"),
         "project_code": row.get("project_code"),
+        # For an account element `project_code` is provenance (where it was
+        # promoted from), NOT the project you asked about — the badge is what
+        # distinguishes those (#225).
+        **({"scope": "account"} if (row.get("scope") == "account") else {}),
         "framing": row.get("framing"),
         "status": row.get("status"),
         "layer": row.get("layer"),
@@ -1726,6 +1819,15 @@ def semantic_search(
                 "lifetime": row.get("lifetime"),
                 "est_item_id": row.get("est_item_id"),
                 "version_date": row.get("version_date"),
+                # An account hit is a COMPANY fact reached from this project,
+                # not a fact about it (#225; mig 166 returns the column). Named
+                # `element_scope` because the response's top-level `scope`
+                # already means project-vs-corpus-wide.
+                **(
+                    {"element_scope": "account"}
+                    if (row.get("scope") == "account")
+                    else {}
+                ),
                 # Enough to answer from; the full element is one
                 # `pull_spine_element` away.
                 "body": (row.get("body") or "")[:2000],
