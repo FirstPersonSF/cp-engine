@@ -4,6 +4,33 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.110.1 — 2026-09-04
+
+- **`preflight`'s `found` now answers instead of quoting.** Running v0.110.0
+  against the live sap-5198 exposed four extraction defects, all of the same
+  family: the report collected everything that matched rather than the best
+  thing that matched.
+
+  A single exec-summary paragraph mentioning scope, audience and usage was
+  filed verbatim under **all three** headings, so a reader scanning `audience`
+  got a sentence about scope. `Email Drew the deck` matched `\bdeck\b` and
+  became a deliverable. A stakeholder card (`[Name · role · context]`) became a
+  schedule fact. `Drew and Marcello agreed to pitch the client on…` — a
+  decision the team took, not a thing the project ships — became a deliverable.
+
+  Field patterns are now **strong** (a concrete specific: a duration, an aspect
+  ratio, an employee band, a dollar figure) or **weak** (a topic word a
+  sentence can mention while being about something else). Each line goes to its
+  single best field, and short concrete lines rank above long prose at equal
+  strength. Action items, bracketed tracking rows and internal deliberation are
+  filtered as a class.
+
+  The difference on real data: `deliverables` now leads with the locked spec
+  (30s/15s/6s, 16x9 plus 9x16 and square, source files, stills) instead of a
+  paragraph about scope; `engagement_fee` leads with `$425,000 fixed, not to
+  exceed` instead of a contractor's billed hours. Seven regression tests, one
+  per observed defect.
+
 ## v0.110.0 — 2026-09-04
 
 - **`cp preflight` — check whether a project can support an artifact before
