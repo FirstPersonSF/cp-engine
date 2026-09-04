@@ -596,3 +596,86 @@ def priors_cmd(code, publish_path, override_path, note, history) -> None:
     except Exception as exc:  # noqa: BLE001
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+
+
+@click.command("preflight")
+@click.argument("code")
+@click.option(
+    "--kind",
+    "artifact_kind",
+    default="rfp",
+    show_default=True,
+    help="What you intend to draft. Selects the readiness contract.",
+)
+@click.option(
+    "--weeks",
+    default=3,
+    show_default=True,
+    help="How many recent sprint files to read.",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit the raw report dict.")
+def preflight_cmd(code: str, artifact_kind: str, weeks: int, as_json: bool) -> None:
+    """Is this project ready for an artifact to be drafted against it?
+
+    Run BEFORE drafting an RFP, SOW, brief or estimate. Reports what CP
+    actually knows, what is missing, what contradicts, and — the check
+    that matters most — whether the project is even the right SHAPE for
+    the thing you are about to write.
+
+    Built from a real failure: a complete, plausible production RFP was
+    written against a competitive-messaging project with no video in it,
+    from a cp.md that was an empty scaffold created the day before.
+    Nothing objected. Two independent gates now catch that — the
+    unauthored-scaffold check and the shape check — because in the
+    original failure only one of them would have been available.
+
+    Exit codes: 0 ready · 1 not ready · 2 config/resolution error.
+    """
+    import json as _json
+
+    from cp_engine.preflight import (
+        ARTIFACT_KINDS,
+        collect_sprint_texts,
+        render_report,
+        run_preflight,
+    )
+    from cp_engine.spine import SpineDirNotFound, find_spine_dir
+
+    if artifact_kind.strip().lower() not in ARTIFACT_KINDS:
+        click.echo(
+            f"Error: unknown --kind {artifact_kind!r}; expected one of "
+            f"{', '.join(ARTIFACT_KINDS)}",
+            err=True,
+        )
+        sys.exit(2)
+
+    try:
+        config = load(Path.cwd())
+    except ConfigError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+
+    cp_md_text: str | None = None
+    try:
+        working_dir = find_spine_dir(config.root, code)
+        cp_md = working_dir / "cp.md"
+        if cp_md.is_file():
+            cp_md_text = cp_md.read_text(encoding="utf-8")
+        resolved_code = working_dir.name
+    except (SpineDirNotFound, OSError):
+        resolved_code = code
+
+    sprint_texts = collect_sprint_texts(config.root, resolved_code, weeks=weeks)
+    if not sprint_texts and resolved_code != code:
+        sprint_texts = collect_sprint_texts(config.root, code, weeks=weeks)
+
+    report = run_preflight(
+        code, artifact_kind, cp_md_text=cp_md_text, sprint_texts=sprint_texts
+    )
+
+    if as_json:
+        click.echo(_json.dumps(report.to_dict(), indent=2))
+    else:
+        click.echo(render_report(report), nl=False)
+
+    sys.exit(0 if report.ready else 1)
