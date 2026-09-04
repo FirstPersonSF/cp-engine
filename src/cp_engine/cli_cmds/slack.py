@@ -28,7 +28,14 @@ import cp_engine.cli as _cli
     is_flag=True,
     help="Filter to active rows (engagements: Deal|Open; initiatives: Active).",
 )
-def slack_channels_cmd(output_format: str, active_only: bool) -> None:
+@click.option(
+    "--check",
+    is_flag=True,
+    help="Exit non-zero if any active row has enable_slack=true with no "
+    "channel bound. For CI and the digest workflow — that state is "
+    "unsatisfiable and silently skips the project every week.",
+)
+def slack_channels_cmd(output_format: str, active_only: bool, check: bool) -> None:
     """List active engagement projects + initiatives + their Slack channels.
 
     Debug command for the weekly Slack digest pipeline. Each row is one
@@ -38,6 +45,13 @@ def slack_channels_cmd(output_format: str, active_only: bool) -> None:
 
     Use this to spot rows that need a channel_id backfill in MC-2 before
     turning on the cron.
+
+    `--check` turns that from something a human has to notice into
+    something CI enforces. `enable_slack=true` with no bound channel is
+    an unsatisfiable promise: the digest skips the project as
+    `no_channels` every single week and says so only inside a merged
+    count. Six initiatives and one engagement sat in that state for
+    months (cp-engine #227) because nothing ever failed.
     """
     import json
 
@@ -69,6 +83,8 @@ def slack_channels_cmd(output_format: str, active_only: bool) -> None:
                 indent=2,
             )
         )
+        if check:
+            _exit_if_unsatisfiable(rows)
         return
 
     # Table output.
@@ -102,6 +118,41 @@ def slack_channels_cmd(output_format: str, active_only: bool) -> None:
             n_unmapped += 1
     click.echo()
     click.echo(f"{n_mapped} mapped, {n_unmapped} enable_slack=true with no channels")
+    if check:
+        _exit_if_unsatisfiable(rows)
+
+
+def _exit_if_unsatisfiable(rows) -> None:
+    """Exit 1 if any row promises a Slack read it cannot perform.
+
+    `enable_slack=true` with zero bound channels is not a warning state,
+    it is a broken one: the digest can never satisfy it, so the project
+    is skipped every week and the skip is indistinguishable from a quiet
+    channel in the commit body. Failing here is the cheap half of
+    cp-engine #227 — the run rows record the state after the fact, this
+    refuses to let it persist unnoticed.
+    """
+    bad = [r for r in rows if r.enable_slack and not r.channel_ids]
+    if not bad:
+        return
+    click.echo(err=True)
+    click.echo(
+        f"ERROR: {len(bad)} row(s) have enable_slack=true with no channel bound.",
+        err=True,
+    )
+    click.echo(
+        "Each is skipped by the weekly digest as `no_channels`, every week.",
+        err=True,
+    )
+    for r in sorted(bad, key=lambda x: x.code):
+        click.echo(f"  - {r.code} ({r.status})", err=True)
+    click.echo(err=True)
+    click.echo(
+        "Fix by binding a channel in project_integrations, or by setting "
+        "enable_slack=false if the project has no Slack channel.",
+        err=True,
+    )
+    sys.exit(1)
 
 
 def _parse_iso_week(week: str) -> tuple[datetime, datetime]:
@@ -154,11 +205,18 @@ def slack_fetch_cmd(project_code: str, week: str, output_format: str) -> None:
     import json
 
     from cp_engine.slack import (
+        OUTCOME_EMPTY,
+        OUTCOME_EXEC_ERROR,
+        OUTCOME_NO_CHANNELS,
+        OUTCOME_OK,
+        OUTCOME_PLAN_ERROR,
         ChannelMapRow,
+        DigestRunRow,
         SlackError,
-        fetch_channels,
+        fetch_channels_with_outcomes,
         list_channel_map,
         load_slack_token,
+        record_digest_runs,
     )
 
     config = _cli._load_config_or_die()
@@ -319,6 +377,9 @@ def slack_digest_cmd(
         "week": week,
         "projects": [],
     }
+    # cp-engine #227: one row per (project, channel) with the real outcome,
+    # so "quiet week" stops being indistinguishable from "bot can't see it".
+    run_rows: list[DigestRunRow] = []
 
     for row in targets:
         if not row.channel_ids:
@@ -326,17 +387,51 @@ def slack_digest_cmd(
                 f"# skip {row.code}: no Slack channels", err=True
             )
             summary["projects"].append({"code": row.code, "skipped": "no_channels"})
+            run_rows.append(
+                DigestRunRow(
+                    week=week,
+                    project_code=row.code,
+                    outcome=OUTCOME_NO_CHANNELS,
+                    error_detail="enable_slack=true but no channel bound in project_integrations",
+                )
+            )
             continue
 
         try:
-            fetched = fetch_channels(
+            outcomes = fetch_channels_with_outcomes(
                 token, row.channel_ids, monday, week_end=next_monday
             )
         except SlackError as exc:
+            # Only credential failures reach here now — per-channel errors
+            # come back as outcomes. An auth failure is fatal for every
+            # remaining project, so stop rather than log it N times.
             click.echo(f"# {row.code}: fetch failed: {exc}", err=True)
             summary["projects"].append({"code": row.code, "skipped": f"fetch_error: {exc}"})
-            continue
+            record_digest_runs(config, run_rows)
+            raise
 
+        for oc in outcomes:
+            run_rows.append(
+                DigestRunRow(
+                    week=week,
+                    project_code=row.code,
+                    channel_id=oc.channel_id,
+                    channel_name=oc.channel_name,
+                    outcome=oc.outcome,
+                    message_count=len(oc.messages),
+                    error_detail=oc.error_detail,
+                )
+            )
+            if not oc.readable:
+                click.echo(
+                    f"# {row.code}: channel {oc.channel_id} unreadable "
+                    f"({oc.outcome}) — {oc.error_detail}",
+                    err=True,
+                )
+
+        # Only readable channels feed the plan; an unreadable one must not
+        # be silently folded in as if it were quiet.
+        fetched = [oc for oc in outcomes if oc.readable]
         total_msgs = sum(len(fc.messages) for fc in fetched)
         if total_msgs == 0 and skip_quiet:
             click.echo(
@@ -361,6 +456,10 @@ def slack_digest_cmd(
         except SlackPlanError as exc:
             click.echo(f"# {row.code}: plan generation failed: {exc}", err=True)
             summary["projects"].append({"code": row.code, "skipped": f"plan_error: {exc}"})
+            for rr in run_rows:
+                if rr.project_code == row.code and rr.outcome == OUTCOME_OK:
+                    rr.outcome = OUTCOME_PLAN_ERROR
+                    rr.error_detail = str(exc)
             continue
 
         if not apply:
@@ -388,6 +487,10 @@ def slack_digest_cmd(
         except IngestPlanError as exc:
             click.echo(f"# {row.code}: plan execution failed: {exc}", err=True)
             summary["projects"].append({"code": row.code, "skipped": f"exec_error: {exc}"})
+            for rr in run_rows:
+                if rr.project_code == row.code and rr.outcome == OUTCOME_OK:
+                    rr.outcome = OUTCOME_EXEC_ERROR
+                    rr.error_detail = str(exc)
             continue
 
         summary["projects"].append(
@@ -401,7 +504,27 @@ def slack_digest_cmd(
             }
         )
 
+    # Bookkeeping last, and only when we actually ran the pipeline: a
+    # dry run reports what WOULD happen and should not claim a run.
     if apply:
+        written = record_digest_runs(config, run_rows)
+        unreadable = [r for r in run_rows if r.outcome not in (OUTCOME_OK, OUTCOME_EMPTY)]
+        summary["run_rows_written"] = written
+        summary["unreadable_channels"] = [
+            {
+                "code": r.project_code,
+                "channel_id": r.channel_id,
+                "outcome": r.outcome,
+                "detail": r.error_detail,
+            }
+            for r in unreadable
+        ]
+        if unreadable:
+            click.echo(
+                f"# {len(unreadable)} channel(s) could NOT be read this week "
+                f"— see slack_digest_runs for detail",
+                err=True,
+            )
         click.echo(json.dumps(summary, indent=2))
 
 

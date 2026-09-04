@@ -62,6 +62,7 @@ class Tables:
     FATHOM_MEETINGS = "fathom_meetings"
     UNROUTED_EMAILS = "unrouted_emails"  # inbound emails w/o a routable project (mig 122)
     AUTO_INGEST_RUNS = "auto_ingest_runs"
+    SLACK_DIGEST_RUNS = "slack_digest_runs"  # per-channel digest outcomes (mig 168, #227)
     ASSET_INGEST_RUNS = "asset_ingest_runs"
     RAG_ASSETS = "rag_assets"
     ASSET_CHUNKS = "asset_chunks"  # chunk text; embeddings FK-cascade on delete

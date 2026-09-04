@@ -279,6 +279,7 @@ def test_registry_covers_known_tables() -> None:
         "github_orgs",
         "sprint_allocations", "fathom_meetings", "unrouted_emails",
         "auto_ingest_runs",
+        "slack_digest_runs",
         "asset_ingest_runs", "rag_assets", "asset_chunks",
         "clickup_task_proposals",
         "commitments", "app_config", "notes",
