@@ -221,6 +221,101 @@ def _resolve(project_code: str):
 
 
 @_tool
+def preflight(project_code: str, artifact_kind: str = "rfp") -> dict:
+    """Is this project ready for an artifact to be drafted against it?
+
+    **Run this BEFORE drafting an RFP, SOW, brief or estimate.** It answers
+    three questions, in order of severity:
+
+    1. `shape_warning` — is the project even the right KIND of thing? A
+       production RFP does not fit a strategy engagement. This fires only
+       on positive evidence of the wrong shape, never on thin data.
+    2. `found` — what CP actually knows, read broadly: the exec summary
+       AND recent sprint files. Scope often lives in sprint Inbound
+       bullets while the structured deliverables card is empty, so a
+       reader that trusts only structure sees an empty project.
+    3. `missing` / `conflicts` — what to elicit, and what two sources
+       disagree about. Conflicts are surfaced, never silently resolved.
+
+    `ready=false` means do not draft. The commonest cause is an
+    unauthored scaffold: a project that exists in MC-2 but has never been
+    written up, whose every exec-summary field is still placeholder text.
+    A document generated from one is confident, plausible and worthless.
+
+    **`partner_budget` is always reported missing for an RFP** and must be
+    supplied by a human. It is NOT the engagement fee, and this verb will
+    not infer one from the other.
+
+    `artifact_kind`: rfp | sow | brief | estimate.
+    """
+    from cp_engine.config import load as load_config
+    from cp_engine.preflight import (
+        ARTIFACT_KINDS,
+        collect_sprint_texts,
+        run_preflight,
+    )
+    from cp_engine.spine import SpineDirNotFound, find_spine_dir
+
+    kind = (artifact_kind or "rfp").strip().lower()
+    if kind not in ARTIFACT_KINDS:
+        return {
+            "error": f"unknown artifact_kind '{artifact_kind}'",
+            "expected": list(ARTIFACT_KINDS),
+        }
+
+    try:
+        root = _tenant_root()
+        config = load_config(root)
+        cp_md_text = None
+        resolved_code = project_code
+        try:
+            working_dir = find_spine_dir(config.root, project_code)
+            resolved_code = working_dir.name
+            cp_md = working_dir / "cp.md"
+            if cp_md.is_file():
+                cp_md_text = cp_md.read_text(encoding="utf-8")
+        except (SpineDirNotFound, OSError):
+            pass
+
+        sprint_texts = collect_sprint_texts(config.root, resolved_code)
+        if not sprint_texts and resolved_code != project_code:
+            sprint_texts = collect_sprint_texts(config.root, project_code)
+
+        # Spine + source titles are best-effort context: their absence
+        # thins the report, it does not fail it.
+        spine_titles: list[str] = []
+        source_titles: list[str] = []
+        try:
+            resolved = _resolve(project_code)
+            if resolved is not None:
+                from cp_engine.project_sources import list_sources, list_spine
+
+                client, pid, cid = resolved
+                for row in list_spine(client, pid, cid, compact=True) or []:
+                    title = row.get("title") if isinstance(row, dict) else None
+                    if title:
+                        spine_titles.append(str(title))
+                for row in list_sources(client, pid, cid) or []:
+                    title = row.get("title") if isinstance(row, dict) else None
+                    if title:
+                        source_titles.append(str(title))
+        except Exception:  # noqa: BLE001 — MC-2 context is optional
+            pass
+
+        report = run_preflight(
+            project_code,
+            kind,
+            cp_md_text=cp_md_text,
+            sprint_texts=sprint_texts,
+            spine_titles=spine_titles,
+            source_titles=source_titles,
+        )
+        return report.to_dict()
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"preflight failed for '{project_code}': {exc}"}
+
+
+@_tool
 def list_project_sources(project_code: str) -> list[dict]:
     """List a project's ingested source documents for this tenant.
 

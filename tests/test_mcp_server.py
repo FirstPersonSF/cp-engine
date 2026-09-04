@@ -228,6 +228,10 @@ def test_stdio_surface_is_local_io_plus_reads():
     machine's disk or credentials the hosted env deliberately lacks."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
+        # +1 (RFP build spec §7 v1): preflight — reads the tenant tree's
+        # cp.md and sprint files off THIS machine's disk, so it belongs on
+        # the local-I/O surface rather than hosted.
+        "preflight",
         "list_project_sources",
         "pull_project_source",
         "fetch_project_source",

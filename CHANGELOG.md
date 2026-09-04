@@ -4,6 +4,46 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.110.0 — 2026-09-04
+
+- **`cp preflight` — check whether a project can support an artifact before
+  drafting one.** New CLI command and MCP verb, v1 of the RFP build spec.
+
+  The failure it exists to prevent, from the 2026-09-04 session: a complete,
+  plausible, well-formatted production RFP was written against **sap-5200**, a
+  competitive-messaging project with no video in it at all. Its `cp.md` was an
+  empty scaffold created the day before — every exec-summary field still
+  placeholder text — and the generated document was indistinguishable in polish
+  from a real one. Nothing in the system objected.
+
+  Two independent gates now catch that, because in the original failure only
+  one of them would have been available. **`shape_warning`** fires when the
+  project is the wrong KIND of thing for the artifact — a production RFP does
+  not fit a strategy engagement — and only on positive evidence of the wrong
+  shape, never on thin data, so a sparse project lands in `missing` where the
+  reader can act on it. **The unauthored-scaffold check** catches a project
+  that exists in MC-2 but has never been written up.
+
+  `found` reads broadly on purpose. The real 5198 scope lived in the sprint
+  file's Inbound bullets while the structured deliverables card said
+  `(no deliverables in the estimate yet)` — the structured field was empty
+  while the knowledge was rich, so a reader that trusts only structure sees an
+  empty project and asks a human for what CP already knows.
+
+  `conflicts` surfaces contradictions rather than resolving them. Against live
+  5198 it finds the real one: the client deck says delivery Dec 2026, the exec
+  summary says post into 2027. Picking one silently would bake an unowned
+  decision into a client-facing document.
+
+  **`partner_budget` is always reported missing for an RFP** and can only be
+  supplied by a human. The $425,000 engagement fee is not the partner budget,
+  and the verb refuses to infer one from the other — there is deliberately no
+  field named `budget` anywhere in the report.
+
+  Generalized past RFPs from the start (`artifact_kind`: rfp | sow | brief |
+  estimate). The three questions are the same for every artifact, so a new kind
+  is a rules-table entry rather than a new verb.
+
 ## v0.109.0 — 2026-09-04
 
 - **The weekly Slack digest can no longer report a broken channel as a quiet
