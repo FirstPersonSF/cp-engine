@@ -4,6 +4,46 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.111.0 — 2026-09-04
+
+- **A third gate: `funding_warning`.** A third live run, on ibx-5153, found the
+  category the first two gates were blind to — a project that is the right
+  shape, fully authored, and still cannot go to market.
+
+  Preflight rated it **READY, confidence "good"** — its highest verdict of any
+  project tested. The shape check saw `campaign`, `creative`, `video` and
+  passed it, which is technically right: ibx-5153 IS creative work. But the
+  project's own record says, in its own words, *"Production remains out of
+  scope at the current budget"* — and the tool had even FOUND that line, filed
+  it under blockers, then ignored it and said good.
+
+  Shape asks "is this the right kind of project"; funding asks "can this
+  project actually commission anyone". An RFP against an unfunded scope asks a
+  partner to price work that has no money behind it, which wastes their time
+  and costs credibility with exactly the shops worth having.
+
+  The gate applies only to artifact kinds that commit outside money. A brief or
+  an estimate DESCRIBES unfunded scope — gating those on funding would be
+  backwards.
+
+  **Four false positives were harder to eliminate than the true one was to
+  catch**, and each is now a test: a single un-costed line item (sound design)
+  inside a funded engagement; a deliberately excluded one (*"CTV stays
+  unproduced unless Salesloft pays for it"*); a policy statement (*"no unfunded
+  scope absorbed"*) that states a principle rather than a status; and a
+  production partner disputing a comment as *"out of scope"*. Blocking
+  slt-5196 — locked date, four bids in hand — on any of those would be the same
+  error in the opposite direction.
+
+- **Exec-summary field bodies are unwrapped before parsing.** Hand-wrapped
+  prose split on newlines cut sentences in half, so a quoted warning truncated
+  at the wrap (*"Production remains out of scope at the"*). Bullets stay whole;
+  paragraphs rejoin.
+
+- **`\brights?\b` no longer matches creative directions**, and the action-item
+  verb list covers the vocabulary ibx-5153 actually uses (`Edit`, `Finalize`,
+  `Compile`, `Evolve`, `Reconsider`).
+
 ## v0.110.2 — 2026-09-04
 
 - **A second live run, on a differently-shaped project, found three more.**

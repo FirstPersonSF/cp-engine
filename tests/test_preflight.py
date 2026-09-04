@@ -468,3 +468,122 @@ def test_pure_logistics_with_no_spec_is_dropped_from_deliverables() -> None:
         "identification + releases with legal.",
     ])
     assert got.get("deliverables", []) == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Third live pass — the funding gate (ibx-5153)
+# ──────────────────────────────────────────────────────────────────────
+
+_UNFUNDED_CAMPAIGN = """<!-- cp-engine:start exec-summary -->
+**Objective:** Six-month flagship AI campaign — platform, messaging, activation.
+**Status:** Creative is on the wall. Production remains out of scope at the
+current budget.
+
+**Where it stands:**
+- Audience settled: CIO/CISO primary, practitioners secondary.
+- Seventeen creative routes exist; the deck needs one relabelling pass.
+<!-- cp-engine:end exec-summary -->"""
+
+
+def test_unfunded_production_blocks_an_rfp() -> None:
+    """ibx-5153: right shape, authored, and still not ready to go to market.
+
+    The shape check passed this with confidence "good" — technically
+    correct (it IS creative work) and practically wrong. An RFP asks a
+    partner to price work that has no budget.
+    """
+    rep = run_preflight("ibx-5153-ai-campaign", "rfp",
+                        cp_md_text=_UNFUNDED_CAMPAIGN)
+    assert rep.funding_warning is not None
+    assert rep.ready is False
+    assert rep.confidence == "none"
+    assert rep.shape_warning is None, "shape is fine; funding is the problem"
+
+
+def test_the_funding_warning_quotes_the_sentence_not_the_paragraph() -> None:
+    """The first live run buried the evidence in 200 chars of status prose."""
+    rep = run_preflight("ibx-5153-ai-campaign", "rfp",
+                        cp_md_text=_UNFUNDED_CAMPAIGN)
+    assert "Production remains out of scope at the current budget." in rep.funding_warning
+    assert "Audience settled" not in rep.funding_warning
+
+
+def test_a_single_uncosted_line_item_is_not_an_unfunded_project() -> None:
+    """slt-5196 has a locked date and four bids; sound design lacks a price.
+
+    That is a missing number inside a funded engagement, not a project
+    that cannot afford itself — it belongs in blockers, not a hard stop.
+    """
+    from cp_engine.preflight import _funding_check
+
+    assert _funding_check("rfp", [
+        "Sound design un-scoped and un-costed against a stated standard of "
+        "'every motion has a corresponding sound'.",
+    ]) is None
+
+
+def test_a_deliberately_excluded_line_item_is_not_an_unfunded_project() -> None:
+    from cp_engine.preflight import _funding_check
+
+    assert _funding_check("rfp", [
+        "CTV stays unproduced unless Salesloft pays for it.",
+    ]) is None
+
+
+def test_a_policy_statement_about_unfunded_scope_is_not_a_status() -> None:
+    """'No unfunded scope absorbed' states a principle, not this project."""
+    from cp_engine.preflight import _funding_check
+
+    assert _funding_check("rfp", [
+        "Applies to slt-5195's cutdown and sets the precedent here: no "
+        "unfunded scope absorbed to keep a client comfortable.",
+    ]) is None
+
+
+def test_a_production_partner_disputing_scope_is_not_a_funding_gap() -> None:
+    """The phrase 'production ... out of scope' spanning unrelated prose."""
+    from cp_engine.preflight import _funding_check
+
+    assert _funding_check("rfp", [
+        "Koala (production partner PM) is only present part-time and is "
+        "pushing back on comments as 'out of scope' (e.g. a title card).",
+    ]) is None
+
+
+def test_funding_gate_only_applies_to_commissioning_artifacts() -> None:
+    """A brief describes unfunded scope; gating it on funding is backwards."""
+    from cp_engine.preflight import _funding_check
+
+    line = ["Production remains out of scope at the current budget."]
+    assert _funding_check("rfp", line) is not None
+    assert _funding_check("brief", line) is None
+    assert _funding_check("estimate", line) is None
+
+
+def test_a_funded_production_project_is_not_funding_blocked() -> None:
+    rep = run_preflight("sap-5198-2027-ad-videos", "rfp",
+                        cp_md_text=_PRODUCTION_AUTHORED)
+    assert rep.funding_warning is None
+
+
+def test_action_item_verbs_cover_the_5153_vocabulary() -> None:
+    """'Edit video audio…' and 'Finalize the deck…' are tasks, not scope."""
+    from cp_engine.preflight import assign_fields
+
+    got = assign_fields([
+        "Edit video audio to end on logo; send revised timing to Gustavo",
+        "Finalize Infoblox deck: add SAP-style concept pages, chapter break",
+        "Compile Infoblox budget/hours; prep ask to Janet",
+    ])
+    assert got.get("deliverables", []) == []
+
+
+def test_creative_directions_are_not_usage_rights() -> None:
+    """'Six creative directions presented' was filed under `usage`."""
+    from cp_engine.preflight import assign_fields
+
+    got = assign_fields([
+        'Six creative directions presented — favourite is the "supporting '
+        'role" framing (AI is the rocket, our platform is the launchpad).',
+    ])
+    assert got.get("usage", []) == []
