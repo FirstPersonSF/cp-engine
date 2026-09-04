@@ -83,15 +83,25 @@ def test_segments_without_a_speaker_still_yield_their_text(field) -> None:
 # differs, the hash differs, and content-hash dedupe cannot catch the
 # duplicate. These pin the selection default and its override.
 
+import datetime as _dt  # noqa: E402
 from unittest.mock import MagicMock  # noqa: E402
 
 from click.testing import CliRunner  # noqa: E402
 
 from cp_engine.cli_cmds.ingest import rerun_failed_ingests_cmd  # noqa: E402
 
+# Dates are RELATIVE, not literal. The command filters stranded runs to a
+# rolling recent window, so fixtures pinned to a literal date silently age
+# out: these tests passed for weeks, then began failing on 2026-09-04 with
+# "Meeting date on/after <cutoff>: 0 runs" — a clock change, not a code
+# change. Anchor to "now" so the fixture stays inside the window forever.
+_NOW = _dt.datetime.now(_dt.timezone.utc)
+_RECENT = (_NOW - _dt.timedelta(days=3)).isoformat()
+_RECOVERED_AT = (_NOW - _dt.timedelta(days=1)).isoformat()
+
 _STRANDED_UNRECOVERED = {
     "id": "run-open",
-    "created_at": "2026-08-20T00:00:00+00:00",
+    "created_at": _RECENT,
     "status": "success",
     "errors": ["slt-5195: sprint file missing"],
     "project_codes": ["slt-5195"],
@@ -102,19 +112,19 @@ _STRANDED_UNRECOVERED = {
 }
 _STRANDED_RECOVERED = {
     "id": "run-done",
-    "created_at": "2026-08-20T00:00:00+00:00",
+    "created_at": _RECENT,
     "status": "success",
     "errors": ["ibx-5192: sprint file missing"],
     "project_codes": ["ibx-5192"],
     "meeting_id": "m-done",
     "plan_summary": {"ibx-5192": {"asks": 9}},
-    "recovered_at": "2026-08-23T00:00:00+00:00",
+    "recovered_at": _RECOVERED_AT,
     "recovered_by": "replay",
 }
 _MEETINGS = [
-    {"id": "m-open", "title": "Still owed", "meeting_date": "2026-08-20T10:00:00+00:00",
+    {"id": "m-open", "title": "Still owed", "meeting_date": _RECENT,
      "transcript": "x", "action_items": []},
-    {"id": "m-done", "title": "Already recovered", "meeting_date": "2026-08-20T10:00:00+00:00",
+    {"id": "m-done", "title": "Already recovered", "meeting_date": _RECENT,
      "transcript": "x", "action_items": []},
 ]
 
