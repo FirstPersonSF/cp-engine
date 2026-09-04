@@ -4,6 +4,48 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.109.0 — 2026-09-04
+
+- **The weekly Slack digest can no longer report a broken channel as a quiet
+  week.** Its only record was the git commit body, and that body collapsed
+  every non-success into one line: `Skipped: 11 projects (quiet weeks or
+  errors)`. A quiet channel, a channel the bot was never `/invite`d to, an
+  expired token and an API error all produced the same output.
+
+  This surfaced when coverage fell from 14 projects to 5 and stayed there for
+  three weeks. Deciding whether that was a regression took a manual
+  investigation — querying `enable_slack` and `project_integrations` by hand,
+  then re-running `cxp slack-fetch` per project per week. **The answer was
+  mixed, which is the point:** the Google channels are bound, readable and
+  genuinely empty, but roughly seven of the eleven skips were *configuration*
+  — six initiatives and `ggl-5178` had `enable_slack=true` with no channel
+  bound, so they could never have produced a digest. One merged count could
+  not tell those apart, so for two months nobody looked.
+
+  `SlackError` now carries the Slack error code as structured data rather than
+  prose (it was already extracted for diagnostics under #85, then discarded).
+  `ChannelOutcome` makes the ambiguity unrepresentable: `messages == ()` means
+  nothing on its own, and `.readable` is the only correct way to ask whether
+  Slack answered. Per-channel failures no longer abort their healthy siblings,
+  so an un-invited `_team` channel stops blanking the whole project, and
+  unreadable channels are excluded from the plan instead of being folded in as
+  quiet. Outcomes upsert to MC-2 `slack_digest_runs` (mig 168), keyed
+  `(week, project_code, channel_id)` so a re-run corrects rather than
+  duplicates. The write is best-effort by design — bookkeeping must never
+  break a digest that already wrote its bullets.
+
+- **`cxp slack-channels --check` refuses unsatisfiable Slack config.**
+  `enable_slack=true` with no bound channel is not untidy, it is a promise the
+  digest cannot keep: that project is skipped every single week. The command
+  already counted those rows and printed the number; nothing ever failed, so
+  the state persisted for months. `--check` exits 1, names every offender, and
+  says which of the two fixes applies. Wired into the digest workflow as a
+  non-blocking pre-step — the failure mode being fixed here was silence, and a
+  blocking check would trade it for noise.
+
+  Recording the state was the easy half. Refusing it is the half that keeps it
+  from happening again.
+
 ## v0.108.1 — 2026-09-01
 
 - **A hash-keyed write now refuses when the hash matches more than one bullet.**
