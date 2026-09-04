@@ -4,6 +4,39 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.113.0 — 2026-09-04
+
+- **RFP v3: the respondent pipeline and the vendor registry.** Two MCP verbs
+  (`list_rfp_respondents`, `list_vendors`) over two new MC-2 tables (mig 169).
+
+  **The registry is a table, not spine — and that answers the spec's own open
+  question 2.** §5 proposed spine elements at "account or global scope", but
+  `spine_substance.project_id` is NOT NULL and `scope` means ONE company, while
+  a production partner is reusable across every client and belongs to no
+  project. Spine storage would have needed a fake home project or a loosened
+  NOT NULL that every read path assumes. It is also the wrong shape: the spine
+  is distilled project MEMORY; a vendor is a durable business fact.
+
+  **Both §5 rules are enforced at the boundary AND in the schema**, as the spec
+  asks ("in the tool, not left to the model"). An address is storable only when
+  someone has vouched for it — `confirmed` (read off the company's own site) or
+  `likely` (two independent sources) — and an unvouched one is **refused, not
+  silently downgraded**, because storing it and hoping someone reads the flag
+  is how a synthesised address reaches a real send. Verified live: the DB
+  CHECK rejects a direct SQL write of `jane.doe@…`. `watch_outs` is a
+  first-class column and gets its own section in the render, because "feature
+  in production may constrain Q4 capacity" changes the send order.
+
+  The ladder keeps `declined` and `passed` apart — they said no, versus we did
+  not choose them. Two different facts about a relationship you will want
+  again. Backwards moves and terminal-state reopenings are allowed but
+  reported: a correction is legitimate, a silent one is not.
+
+  **Made the same 42P10 mistake twice in one day.** `rfp_respondents`' unique
+  key was a `lower(vendor_name)` expression index, which PostgREST cannot use
+  as an ON CONFLICT target — exactly what mig 168 hit hours earlier. Both
+  migration files now carry the note.
+
 ## v0.112.0 — 2026-09-04
 
 - **RFP v2: the `rfp-authoring` skill and `cxp redact-check`.** The build

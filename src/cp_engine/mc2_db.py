@@ -63,6 +63,8 @@ class Tables:
     UNROUTED_EMAILS = "unrouted_emails"  # inbound emails w/o a routable project (mig 122)
     AUTO_INGEST_RUNS = "auto_ingest_runs"
     SLACK_DIGEST_RUNS = "slack_digest_runs"  # per-channel digest outcomes (mig 168, #227)
+    VENDORS = "vendors"  # cross-client partner registry (mig 169, RFP v3 §5)
+    RFP_RESPONDENTS = "rfp_respondents"  # per-project RFP pipeline (mig 169, §3)
     ASSET_INGEST_RUNS = "asset_ingest_runs"
     RAG_ASSETS = "rag_assets"
     ASSET_CHUNKS = "asset_chunks"  # chunk text; embeddings FK-cascade on delete
