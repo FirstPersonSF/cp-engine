@@ -220,6 +220,141 @@ def _resolve(project_code: str):
 # server (see mc2_db for the full note).
 
 
+def _resolve_any_client():
+    """An MC-2 client for reads that are not scoped to a project.
+
+    The vendor registry has no home project by design, so it cannot go
+    through `_resolve`.
+    """
+    from cp_engine import mc2_db
+    from cp_engine.config import load as load_config
+
+    return mc2_db.get_client(load_config(_tenant_root()))
+
+
+@_tool
+def list_rfp_respondents(project_code: str) -> dict:
+    """Who was invited to this project's RFP, and where each one got to.
+
+    Ladder: not_sent → sent → acknowledged → responded → shortlisted →
+    selected | declined | passed. **`declined` is them saying no;
+    `passed` is us not choosing them** — two different facts about a
+    relationship you will want again.
+
+    Surfaces two things the table alone would bury: **watch-outs**, which
+    change the send order, and respondents with **no confirmed address**,
+    which must never be resolved by synthesising one from a pattern.
+    """
+    from cp_engine import mc2_db
+    from cp_engine.rfp_pipeline import Pipeline, Respondent, render_pipeline
+
+    try:
+        resolved = _resolve(project_code)
+        if resolved is None:
+            return {"note": f"code '{project_code}' resolved to no project"}
+        client, pid, _cid = resolved
+        rows = (
+            client.schema("public")
+            .table(mc2_db.Tables.RFP_RESPONDENTS)
+            .select("vendor_name,status,response_note,decline_reason,vendor_id")
+            .eq("project_id", pid)
+            .execute()
+            .data
+            or []
+        )
+        vendor_ids = [r["vendor_id"] for r in rows if r.get("vendor_id")]
+        vendors: dict[str, dict] = {}
+        if vendor_ids:
+            vrows = (
+                client.schema("public")
+                .table(mc2_db.Tables.VENDORS)
+                .select("id,city,contact_email,email_confidence,watch_outs")
+                .in_("id", vendor_ids)
+                .execute()
+                .data
+                or []
+            )
+            vendors = {v["id"]: v for v in vrows}
+
+        respondents = []
+        for r in rows:
+            v = vendors.get(r.get("vendor_id") or "", {})
+            respondents.append(
+                Respondent(
+                    vendor_name=r["vendor_name"],
+                    status=r.get("status") or "not_sent",
+                    city=v.get("city"),
+                    contact_email=v.get("contact_email"),
+                    email_confidence=v.get("email_confidence") or "unresearched",
+                    watch_outs=v.get("watch_outs"),
+                    response_note=r.get("response_note"),
+                    decline_reason=r.get("decline_reason"),
+                )
+            )
+        pipe = Pipeline(project_code=project_code, respondents=respondents)
+        return {
+            "project_code": project_code,
+            "counts": pipe.counts(),
+            "respondents": [
+                {
+                    "vendor_name": r.vendor_name,
+                    "status": r.status,
+                    "city": r.city,
+                    "contact": r.contact_display,
+                    "watch_outs": r.watch_outs,
+                    "response_note": r.response_note,
+                    "decline_reason": r.decline_reason,
+                }
+                for r in respondents
+            ],
+            "rendered": render_pipeline(pipe),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to list respondents for '{project_code}': {exc}"}
+
+
+@_tool
+def list_vendors(capability: str = "", include_archived: bool = False) -> dict:
+    """The cross-client partner registry — shops reusable on any project.
+
+    Not spine: a vendor belongs to no project (build spec §5, and the
+    answer to its open question 2). Filter by `capability` to match one
+    capability tag.
+
+    **`email_confidence` is load-bearing.** `confirmed` means read off the
+    company's own site; `likely` means two independent sources agree.
+    Anything else means there is no usable address — and the answer is
+    never to synthesise one, because a bounced RFP reads as carelessness
+    to exactly the shops you most want.
+
+    `watch_outs` is first-class on purpose: "feature in production may
+    constrain Q4 capacity" changes the send order.
+    """
+    from cp_engine import mc2_db
+
+    try:
+        config_client = _resolve_any_client()
+        q = (
+            config_client.schema("public")
+            .table(mc2_db.Tables.VENDORS)
+            .select("name,slug,city,timezone,website,key_person,contact_route,"
+                    "contact_email,email_confidence,capability_tags,watch_outs,"
+                    "notes,status")
+        )
+        if not include_archived:
+            q = q.eq("status", "active")
+        rows = q.order("name").execute().data or []
+        if capability.strip():
+            needle = capability.strip().lower()
+            rows = [
+                r for r in rows
+                if any(needle in (t or "").lower() for t in (r.get("capability_tags") or []))
+            ]
+        return {"count": len(rows), "vendors": rows}
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"failed to list vendors: {exc}"}
+
+
 @_tool
 def preflight(project_code: str, artifact_kind: str = "rfp") -> dict:
     """Is this project ready for an artifact to be drafted against it?

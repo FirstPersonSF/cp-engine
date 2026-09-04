@@ -232,6 +232,11 @@ def test_stdio_surface_is_local_io_plus_reads():
         # cp.md and sprint files off THIS machine's disk, so it belongs on
         # the local-I/O surface rather than hosted.
         "preflight",
+        # +2 (RFP build spec v3): the respondent pipeline and the vendor
+        # registry. Both are READS over MC-2 tables, and the registry has
+        # no home project by design (mig 169).
+        "list_rfp_respondents",
+        "list_vendors",
         "list_project_sources",
         "pull_project_source",
         "fetch_project_source",

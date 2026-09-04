@@ -280,6 +280,8 @@ def test_registry_covers_known_tables() -> None:
         "sprint_allocations", "fathom_meetings", "unrouted_emails",
         "auto_ingest_runs",
         "slack_digest_runs",
+        "vendors",
+        "rfp_respondents",
         "asset_ingest_runs", "rag_assets", "asset_chunks",
         "clickup_task_proposals",
         "commitments", "app_config", "notes",
