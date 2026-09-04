@@ -150,6 +150,7 @@ class PreflightReport:
     conflicts: list[str] = field(default_factory=list)
     stale: list[str] = field(default_factory=list)
     shape_warning: str | None = None
+    funding_warning: str | None = None
     sources_read: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
 
@@ -164,6 +165,7 @@ class PreflightReport:
             "conflicts": self.conflicts,
             "stale": self.stale,
             "shape_warning": self.shape_warning,
+            "funding_warning": self.funding_warning,
             "sources_read": self.sources_read,
             "notes": self.notes,
         }
@@ -228,7 +230,13 @@ _USAGE_STRONG = re.compile(
     r"\bbuyout\b",
     re.IGNORECASE,
 )
-_USAGE_WEAK = re.compile(r"\busage\b|\brights?\b|\blicen[cs]e\b", re.IGNORECASE)
+# `\brights?\b` alone matched "six creative directions" and similar prose.
+# Usage is a RIGHTS question, so require the word to sit next to one.
+_USAGE_WEAK = re.compile(
+    r"\busage\b|\blicen[cs]e\b|\brights\b\s*(?:to|for|package|clearance)?\b"
+    r"(?=.{0,60}(?:usage|term|talent|music|footage|territor|media|buyout|clear))",
+    re.IGNORECASE,
+)
 
 # (field, strong, weak) in priority order. Ties resolve leftward, so a
 # line carrying both a duration and a date files as a deliverable.
@@ -259,7 +267,9 @@ _OPERATIONAL_RE = re.compile(
 # item is a thing someone must do, not a thing the project ships.
 _ACTION_ITEM_RE = re.compile(
     r"^(?:email|send|share|chase|confirm|schedule|call|ping|ask|follow[- ]up|"
-    r"draft|review|circulate|forward|remind|check)\b",
+    r"draft|review|circulate|forward|remind|check|edit|finalize|finalise|"
+    r"compile|prep|reconsider|evolve|update|revise|deliver|build|write|"
+    r"add|explore|decide|name|price|select|chase)\b",
     re.IGNORECASE,
 )
 # Meta-commentary about the record itself, not about the work.
@@ -312,6 +322,30 @@ def _clean(text: str) -> str:
     out = out.strip().lstrip("-").strip()
     out = _BRACKET_META_RE.sub("", out)
     return re.sub(r"\s+", " ", out).strip()
+
+
+def _unwrap(body: str) -> list[str]:
+    """Split a hand-wrapped field body into whole logical lines.
+
+    A `- ` bullet starts a new line; anything else continues the current
+    one. Without this, a sentence broken across a wrap becomes two corpus
+    entries and any quote drawn from it stops at the break.
+    """
+    out: list[str] = []
+    buf: list[str] = []
+    for raw in body.splitlines():
+        s = raw.strip()
+        if not s:
+            continue
+        if s.startswith("- ") or not buf:
+            if buf:
+                out.append(" ".join(buf))
+            buf = [s]
+        else:
+            buf.append(s)
+    if buf:
+        out.append(" ".join(buf))
+    return out
 
 
 def is_unauthored_scaffold(exec_region: str | None) -> bool:
@@ -420,6 +454,81 @@ def assign_fields(texts: list[str]) -> dict[str, list[str]]:
             (ln if len(ln) <= 180 else ln[:177] + "\u2026") for _, _, ln in rows
         ]
     return out
+
+
+# A project can be the right SHAPE and still not be ready to go to
+# market: ibx-5153 is genuinely creative work whose record says, in its
+# own words, "production remains out of scope at the current budget."
+# The shape check passed it with confidence "good" — technically right,
+# practically wrong. Commissioning a partner against an unfunded scope
+# wastes their time and costs credibility with exactly the shops worth
+# having, so this is a THIRD gate, not a wording tweak to the second.
+_UNFUNDED_RE = re.compile(
+    # The whole engagement's production scope is out of budget…
+    # "Production remains out of scope" — the verb must follow the noun
+    # closely, or the gap swallows unrelated prose ("production partner PM
+    # … pushing back on comments as 'out of scope'" matched at width 60).
+    r"\bproduction\b\s+(?:remains?|is|stays?)\s+"
+    r"(?:\w+\s+){0,2}?(?:out of scope|unfunded|unsized|not (?:in|within) scope)\b"
+    r"|\b(?:out of|outside) scope at the current budget\b"
+    r"|\bwill require extending the budget\b"
+    r"|\bbudget (?:vs\.?|versus) scope mismatch\b"
+    # …or the direction itself is explicitly unsized against the budget.
+    # NOT a bare `unfunded`: it also appears in policy statements ("no
+    # unfunded scope absorbed to keep a client comfortable"), which state
+    # a principle rather than this project's status.
+    r"|\bunsized against\b"
+    r"|\b(?:is|remains?|stays?)\s+unfunded\b",
+    re.IGNORECASE,
+)
+# Deliberately NOT a funding block: "CTV stays unproduced unless Salesloft
+# pays for it" is one line item consciously excluded from a funded
+# engagement — a scope decision someone made, not a project that cannot
+# afford itself. Blocking slt-5196 (locked date, four bids in hand) on it
+# would be the same error in the other direction. Such lines belong in
+# the RFP's own exclusions, not in a gate.
+# A single craft being un-costed (sound design, a prelight day) is a
+# missing PRICE inside a funded engagement, not an unfunded project. It
+# belongs in `missing`/blockers, and treating it as a hard stop would
+# block slt-5196 — a project with a locked date and four bids in hand.
+# The artifact kinds that commission OUTSIDE money. A brief or an
+# estimate is an internal document — an unfunded scope is the very thing
+# it exists to describe, so gating those on funding would be backwards.
+_COMMISSIONING_KINDS = frozenset({"rfp"})
+
+
+def _funding_check(artifact_kind: str, corpus: list[str]) -> str | None:
+    """Does the project's own record say this scope is unfunded?
+
+    Returns a warning naming the line that says so, or None.
+
+    Only applies to artifact kinds that commit outside money. An RFP asks
+    a partner to price work; if the work has no budget, the honest answer
+    is not yet, and the record usually says so plainly.
+    """
+    if artifact_kind not in _COMMISSIONING_KINDS:
+        return None
+    for raw in corpus:
+        line = _clean(raw)
+        if not line or len(line) < 12:
+            continue
+        m = _UNFUNDED_RE.search(line)
+        if m:
+            # Quote the sentence carrying the claim, not the paragraph it
+            # sits in — the first live run quoted 200 characters of
+            # unrelated campaign status and buried the actual evidence.
+            start = line.rfind(".", 0, m.start()) + 1
+            end = line.find(".", m.end())
+            sentence = line[start : (end + 1 if end != -1 else len(line))].strip()
+            if len(sentence) > 200:
+                sentence = sentence[:197] + "\u2026"
+            return (
+                "The project's own record says this scope is not funded or "
+                "not sized: \u201c" + sentence + "\u201d Going to market against "
+                "an unfunded scope wastes a partner's time and costs "
+                "credibility. Size or fund the work first."
+            )
+    return None
 
 
 def _shape_check(rule: ArtifactRule, corpus: list[str]) -> str | None:
@@ -583,7 +692,11 @@ def run_preflight(
     for label, body in ((("cp.md Objective"), objective), ("cp.md Status", status),
                         ("cp.md Where it stands", where)):
         if body and not _PLACEHOLDER_RE.search(body):
-            corpus_lines.extend(body.splitlines())
+            # Exec-summary fields are hand-wrapped prose. Splitting on
+            # newlines cuts sentences in half, which truncates any quote
+            # taken from them ("Production remains out of scope at the" /
+            # "current budget."). Unwrap paragraphs, keep bullets whole.
+            corpus_lines.extend(_unwrap(body))
             labelled.append((label, body))
 
     for label, raw in sprint_texts:
@@ -606,6 +719,7 @@ def run_preflight(
 
     # ---- Gate 2: shape ------------------------------------------------
     rep.shape_warning = _shape_check(rule, corpus_lines)
+    rep.funding_warning = _funding_check(kind, corpus_lines)
 
     # ---- Gather found facts -------------------------------------------
     # One line goes to ONE field, best match wins. `engagement_fee` is
@@ -650,7 +764,11 @@ def run_preflight(
                 rep.stale.append(line)
 
     # ---- Verdict -------------------------------------------------------
-    hard_block = scaffold or rep.shape_warning is not None
+    hard_block = (
+        scaffold
+        or rep.shape_warning is not None
+        or rep.funding_warning is not None
+    )
     # partner_budget is elicited, not blocking on its own.
     substantive_missing = [m for m in rep.missing if m != "partner_budget"]
     rep.ready = not hard_block and not substantive_missing
@@ -689,6 +807,12 @@ def render_report(rep: PreflightReport) -> str:
         L.append("## ⛔ Wrong shape")
         L.append("")
         L.append(rep.shape_warning)
+        L.append("")
+
+    if rep.funding_warning:
+        L.append("## ⛔ Not funded")
+        L.append("")
+        L.append(rep.funding_warning)
         L.append("")
 
     if rep.found:
