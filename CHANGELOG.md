@@ -4,6 +4,35 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.110.2 — 2026-09-04
+
+- **A second live run, on a differently-shaped project, found three more.**
+  Running v0.110.1 against slt-5196 (a VOC brand campaign, vocabulary nothing
+  like SAP's) surfaced two extraction defects and one outright regex bug.
+
+  **The false conflict was the urgent one.** slt-5196 has a settled schedule —
+  Oct 15 shoot, Nov 4 launch — and was told its delivery years disagreed. The
+  "2025" came from `3M's "60% reduction in time to close" (2021, pre-rebrand)`:
+  a source's vintage, not a commitment. Date tokens now only count as schedule
+  claims when the line is actually ABOUT scheduling and is not a citation or
+  provenance note. A false conflict is worse than a missed one — it sends the
+  reader to resolve something that was never in dispute, and after one of those
+  nobody reads the section again. The real 5198 Dec-2026-vs-2027 disagreement
+  still fires; that asymmetry is the whole point.
+
+  **Logistics no longer lead `deliverables`.** Call times, per diem, LED-wall
+  setup, release paperwork and vendor status outranked the actual deliverable
+  ("one 60-second compilation, plus 30s and 15s per customer"), which sat
+  fifth. Operational lines are demoted rather than dropped — one may be the
+  only schedule signal a thin project has — but they can never lead the field
+  that answers *what does this ship*.
+
+  **`\bstills?\b` matched the adverb "still".** A one-character bug with
+  project-wide reach: any sentence containing the commonest of English adverbs
+  scored as a hard deliverables spec. Narrowed to the plural noun. Caught by a
+  test written for something else, which is the argument for writing the test
+  even when you think you know the answer.
+
 ## v0.110.1 — 2026-09-04
 
 - **`preflight`'s `found` now answers instead of quoting.** Running v0.110.0

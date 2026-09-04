@@ -185,7 +185,9 @@ class PreflightReport:
 
 _DELIVERABLE_STRONG = re.compile(
     r":\d{2}\b|\b\d+\s*x\s*\d+\b|\b\d+:\d+\b|\b\d+\s*(?:s|sec|second)s?\b"
-    r"|\bsource files?\b|\bstills?\b|\bthumbnails?\b|\bcut(?:down)?s?\b"
+    # `stills` (plural noun) only — `\bstills?\b` also matched the adverb
+    # "still", a common word, which misfiled ordinary prose as a spec.
+    r"|\bsource files?\b|\bstills\b|\bthumbnails?\b|\bcut(?:down)?s?\b"
     r"|\bspots?\b|\bletterbox",
     re.IGNORECASE,
 )
@@ -236,6 +238,20 @@ _FIELD_PATTERNS: tuple[tuple[str, re.Pattern, re.Pattern], ...] = (
     ("schedule", _SCHEDULE_STRONG, _SCHEDULE_WEAK),
     ("engagement_fee", _FEE_STRONG, _FEE_WEAK),
     ("usage", _USAGE_STRONG, _USAGE_WEAK),
+)
+
+# Operational lines: logistics, legal, releases, vendor status. These are
+# things HAPPENING on a project, not things it ships. On the slt-5196 run
+# they outranked the actual deliverable ("one 60-second compilation, plus
+# 30s and 15s per customer"), which sat fifth under a heading full of
+# call times and release paperwork.
+_OPERATIONAL_RE = re.compile(
+    r"\brelease[s]?\b.{0,30}\blegal\b|\bon camera\b|\bcall time\b|"
+    r"\bper diem\b|\btravel\b|\bequipment list\b|\bsetup\b|"
+    r"\bprelight\b|\bstudio\b|\bLED wall\b|\bdrive\b|\bvenue\b|"
+    r"\bawaiting\b|\bfeedback delivered\b|\bone round behind\b|"
+    r"\bidentification\b|\bapproval\b|\bNDA\b",
+    re.IGNORECASE,
 )
 
 # Lines that are TRACKING rows, not facts. "Email Drew the deck" matched
@@ -385,6 +401,14 @@ def assign_fields(texts: list[str]) -> dict[str, list[str]]:
                 best_field, best_score = fieldname, s
         if best_field is None:
             continue
+
+        # An operational line may legitimately be the only schedule signal
+        # a project has, so it is demoted rather than dropped — but it must
+        # never LEAD `deliverables`, where the question is what ships.
+        if best_field == "deliverables" and _OPERATIONAL_RE.search(line):
+            if best_score < 2:
+                continue  # weak match + operational = not a deliverable
+            best_score = 1
         # Prefer concrete over discursive: short lines rank above long
         # prose at the same strength.
         scored.setdefault(best_field, []).append((-best_score, len(line), line))
@@ -426,23 +450,62 @@ def _shape_check(rule: ArtifactRule, corpus: list[str]) -> str | None:
     )
 
 
+# A year inside a citation or provenance note is EVIDENCE metadata, not a
+# schedule claim. The slt-5196 run reported a 2025-vs-2026 "conflict" whose
+# 2025 came from `3M's "60% reduction in time to close" (2021, pre-rebrand)`
+# — a source's vintage. Telling someone to "resolve before drafting" a
+# citation date is worse than silence: it sends them to fix nothing.
+_CITATION_CONTEXT_RE = re.compile(
+    r"pre[- ]rebrand|published|case stud|report(?:ed)?\s+in|"
+    r"\bcited\b|\bsource\b|\bvintage\b|\bstat(?:istic)?s?\b|"
+    r"\bGartner\b|\bunverified\b|\bdraft\b|\bstale\b|\bper\s+their\b|"
+    r"\btrademark|\bmetrics?\b.{0,40}\blegal\b",
+    re.IGNORECASE,
+)
+# A year only counts as a schedule claim when the line is TALKING about
+# scheduling. "Deliver by Dec 15" is a claim; "the 2021 case study" is not.
+_SCHEDULE_CONTEXT_RE = re.compile(
+    r"\bdeliver(?:y|ed|able)?\b|\bshoot\b|\blaunch\b|\bin[- ]market\b|"
+    r"\bpost\b|\btimeline\b|\bschedule\b|\bair\b|\bgo[- ]live\b|"
+    r"\bproduction\b|\bcomplete[ds]?\b|\bfinal\b|\bdue\b|\binvoice\b",
+    re.IGNORECASE,
+)
+
+
 def _date_conflicts(labelled: list[tuple[str, str]]) -> list[str]:
-    """Surface disagreeing dates across sources.
+    """Surface disagreeing DELIVERY dates across sources.
 
     Deliberately reports rather than resolves. The 5198 delivery date was
     Dec 15 per the client deck and "post into 2027" per the exec summary;
     picking one silently would have baked an unowned decision into a
     client-facing document.
+
+    Two filters keep this from crying wolf, both learned from the
+    slt-5196 run, where a real project with a settled schedule was told
+    its years disagreed:
+
+    - the line must be ABOUT scheduling (`_SCHEDULE_CONTEXT_RE`), and
+    - it must not be a citation or provenance note
+      (`_CITATION_CONTEXT_RE`), where a year describes evidence vintage
+      rather than a commitment.
+
+    A false conflict is worse than a missed one here: it sends the reader
+    to resolve something that was never in dispute, and after one of
+    those nobody reads the section again.
     """
-    buckets: dict[str, set[str]] = {}
-    for source, text in labelled:
-        for tok in _DATE_TOKEN.findall(text):
-            buckets.setdefault(_clean(tok).lower(), set()).add(source)
     years: dict[str, set[str]] = {}
-    for tok, sources in buckets.items():
-        m = re.search(r"(20\d{2})", tok)
-        if m:
-            years.setdefault(m.group(1), set()).update(sources)
+    for source, text in labelled:
+        line = _clean(text)
+        if not line:
+            continue
+        if _CITATION_CONTEXT_RE.search(line):
+            continue
+        if not _SCHEDULE_CONTEXT_RE.search(line):
+            continue
+        for tok in _DATE_TOKEN.findall(line):
+            m = re.search(r"(20\d{2})", tok)
+            if m:
+                years.setdefault(m.group(1), set()).add(source)
     if len(years) > 1:
         parts = [f"{y} (from {', '.join(sorted(s))})" for y, s in sorted(years.items())]
         return [

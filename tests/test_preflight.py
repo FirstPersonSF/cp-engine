@@ -388,3 +388,83 @@ def test_the_fee_line_ranks_above_incidental_dollar_amounts() -> None:
     real = "Fee set at $425,000 fixed, not to exceed, travel billed separately."
     rows = assign_fields([incidental, real])["engagement_fee"]
     assert "425,000" in rows[0]
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Second live pass — the slt-5196 defects
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_citation_years_are_not_a_delivery_conflict() -> None:
+    """A source's vintage is evidence metadata, not a schedule claim.
+
+    slt-5196 was told its years disagreed because a 3M case study was
+    marked "(2021, pre-rebrand)". A false conflict is worse than a
+    missed one: after one, nobody reads the section again.
+    """
+    cp = """<!-- cp-engine:start exec-summary -->
+**Objective:** VOC brand campaign — one 60s compilation plus 30s and 15s cuts.
+**Status:** Shoot Oct 15, 2026; public launch Nov 4, 2026.
+<!-- cp-engine:end exec-summary -->"""
+    sprint = """## Dependencies & risks
+- 3M's "60% reduction in time to close" is from a 2021 case study, pre-rebrand.
+- MOTOR's figure comes from an unpublished client draft, flagged on the source.
+"""
+    rep = run_preflight("slt-5196-brand-campaign-26", "rfp", cp_md_text=cp,
+                        sprint_texts=[("sprint W35", sprint)])
+    assert rep.conflicts == [], f"false conflict: {rep.conflicts}"
+
+
+def test_a_real_delivery_disagreement_still_fires() -> None:
+    """The 5198 case must survive the citation filter."""
+    cp = """<!-- cp-engine:start exec-summary -->
+**Objective:** Brand videos — one :30 and two :15s for finance buyers.
+**Status:** Our position is shoot 2026, deliver Jan 15, 2027.
+<!-- cp-engine:end exec-summary -->"""
+    sprint = """## Client communication
+### Inbound
+- Client deck says final delivery Dec 15, 2026.
+"""
+    rep = run_preflight("sap-5198-2027-ad-videos", "rfp", cp_md_text=cp,
+                        sprint_texts=[("sprint W36", sprint)])
+    assert rep.conflicts, "the real Dec-2026-vs-2027 conflict must still fire"
+
+
+def test_years_outside_a_scheduling_context_are_ignored() -> None:
+    from cp_engine.preflight import _date_conflicts
+
+    assert _date_conflicts([
+        ("src", "The 2021 Gartner statistic and the 2024 benchmark study."),
+    ]) == []
+
+
+def test_logistics_do_not_lead_the_deliverables_field() -> None:
+    """slt-5196 filed call times and release paperwork as deliverables.
+
+    The actual deliverable — durations and counts — sat fifth under a
+    heading full of per diem and LED-wall logistics.
+    """
+    from cp_engine.preflight import assign_fields
+
+    logistics = (
+        "Production day plan + equipment list to Leah — the ~10-hour day "
+        "(7am-7pm incl. setup), LED wall + ceiling with matched lighting."
+    )
+    real = (
+        "Hold the deliverable structure as agreed in the SOW: one 60-second "
+        "compilation, plus 30s and 15s per customer."
+    )
+    rows = assign_fields([logistics, real]).get("deliverables", [])
+    assert rows, "the real deliverable must be present"
+    assert "60-second" in rows[0], f"logistics led the field: {rows[0]!r}"
+
+
+def test_pure_logistics_with_no_spec_is_dropped_from_deliverables() -> None:
+    from cp_engine.preflight import assign_fields
+
+    got = assign_fields([
+        "Even with company names withheld, some employers may still require "
+        "approval for an employee to appear on camera; Leah is working "
+        "identification + releases with legal.",
+    ])
+    assert got.get("deliverables", []) == []
