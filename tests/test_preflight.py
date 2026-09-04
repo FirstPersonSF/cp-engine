@@ -292,3 +292,99 @@ def test_render_report_shows_the_verdict_and_the_shape_warning() -> None:
     out = render_report(rep)
     assert "NOT READY" in out
     assert "Wrong shape" in out
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Extraction quality — all four regressions from the first live 5198 run
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_a_line_lands_in_one_field_not_every_field_it_brushes() -> None:
+    """The headline defect: one paragraph filed under three headings.
+
+    A sentence that mentions scope, audience AND usage was previously
+    echoed verbatim under all three, so a reader scanning `audience` got
+    a sentence about scope.
+    """
+    from cp_engine.preflight import assign_fields
+
+    line = (
+        "Scope is defined by the client's deck. Deliverables, audience "
+        "(SMB/mid-market finance decision-makers) and one-year global "
+        "usage are known; the creative brief is not."
+    )
+    got = assign_fields([line])
+    landed = [f for f, rows in got.items() if any(line[:40] in r for r in rows)]
+    assert len(landed) == 1, f"line landed in {landed}"
+
+
+def test_action_items_are_not_deliverables() -> None:
+    """'Email Drew the deck' matched \\bdeck\\b and was filed as a deliverable."""
+    from cp_engine.preflight import assign_fields
+
+    got = assign_fields([
+        "Email Drew Fiero (FirstPerson) the deck",
+        "Send the revised playbook to Rina",
+        "Confirm the video cut with the client",
+    ])
+    assert got.get("deliverables", []) == []
+
+
+def test_bracketed_tracking_rows_are_not_facts() -> None:
+    """A stakeholder card is a record about a person, not project scope."""
+    from cp_engine.preflight import assign_fields
+
+    got = assign_fields([
+        "[Tara Haney · SAP Concur brand lead · Delivered the rough "
+        "schedule and research walkthrough on 2026-09-01.]"
+    ])
+    assert got.get("schedule", []) == []
+
+
+def test_internal_deliberation_is_not_scope() -> None:
+    """'Drew and Marcello agreed to pitch X' is a decision, not a deliverable."""
+    from cp_engine.preflight import assign_fields
+
+    got = assign_fields([
+        "Drew and Marcello agreed not to bring Stefan back as creative "
+        "partner on 5198 — want a director versed in AI-enhanced production.",
+        "Marcello flagged that the November shoot is unrealistic.",
+    ])
+    assert got.get("deliverables", []) == []
+    assert got.get("schedule", []) == []
+
+
+def test_concrete_specifics_outrank_topic_mentions() -> None:
+    """A line naming :30 and 9x16 is a better answer than one saying 'video'."""
+    from cp_engine.preflight import assign_fields
+
+    vague = "The video campaign is the main workstream this quarter."
+    precise = "Deliverables: one :30, two :15s, 16x9 primary plus 9x16 cuts."
+    rows = assign_fields([vague, precise])["deliverables"]
+    assert precise[:30] in rows[0], f"precise line should rank first, got {rows[0]!r}"
+
+
+def test_assignment_is_stable_regardless_of_input_order() -> None:
+    from cp_engine.preflight import assign_fields
+
+    lines = [
+        "Deliverables: one :30 and two :15s with 9x16 cuts.",
+        "Audience is SMB and mid-market, 100-1,000 employees, CFO primary.",
+        "Fee set at $425,000 fixed, not to exceed.",
+    ]
+    a = assign_fields(lines)
+    b = assign_fields(list(reversed(lines)))
+    assert {k: sorted(v) for k, v in a.items()} == {k: sorted(v) for k, v in b.items()}
+
+
+def test_the_fee_line_ranks_above_incidental_dollar_amounts() -> None:
+    """A contractor's billed hours is not the engagement fee."""
+    from cp_engine.preflight import assign_fields
+
+    incidental = (
+        "Rob (contract writer) billed $8,043 across two payroll periods "
+        "for concepting and produced only one usable output."
+    )
+    real = "Fee set at $425,000 fixed, not to exceed, travel billed separately."
+    rows = assign_fields([incidental, real])["engagement_fee"]
+    assert "425,000" in rows[0]

@@ -173,26 +173,100 @@ class PreflightReport:
 #  Extraction
 # ──────────────────────────────────────────────────────────────────────
 
-_DELIVERABLE_HINTS = re.compile(
-    r"(:\d{2}\b|\b\d+x\d+\b|\bvideo\b|\bfilm\b|\bspot\b|\bcut\b|\bdeck\b|"
-    r"\bplaybook\b|\breport\b|\bframework\b|\bsite\b|\bwebsite\b|"
-    r"\bcampaign\b|\bstills?\b|\bsource files?\b)",
+# Field patterns come in two strengths. A **strong** hit is a concrete
+# specific — a duration, an aspect ratio, an employee band, a dollar
+# figure. A **weak** hit is a topic word that a sentence can mention
+# while being about something else entirely.
+#
+# The 5198 run showed why the distinction matters: one long exec-summary
+# paragraph mentioning scope, audience and usage was filed under all
+# three headings, so a reader scanning "audience" got a sentence about
+# scope. A line now goes to its BEST field, not to every field it brushes.
+
+_DELIVERABLE_STRONG = re.compile(
+    r":\d{2}\b|\b\d+\s*x\s*\d+\b|\b\d+:\d+\b|\b\d+\s*(?:s|sec|second)s?\b"
+    r"|\bsource files?\b|\bstills?\b|\bthumbnails?\b|\bcut(?:down)?s?\b"
+    r"|\bspots?\b|\bletterbox",
     re.IGNORECASE,
 )
-_AUDIENCE_HINTS = re.compile(
-    r"\baudience\b|\bdecision[- ]makers?\b|\bbuyers?\b|\bICP\b|"
-    r"\bCISO\b|\bCIO\b|\bpractitioners?\b|\bSMB\b|\bmid[- ]market\b|"
-    r"\benterprise\b",
+_DELIVERABLE_WEAK = re.compile(
+    r"\bvideo\b|\bfilm\b|\bdeck\b|\bplaybook\b|\breport\b|"
+    r"\bframework\b|\bwebsite\b|\bcampaign\b|\bpackage\b|\bdeliverables?\b",
     re.IGNORECASE,
 )
-_FEE_HINTS = re.compile(r"\$[\d,]+(?:k|K)?\b|\bfixed fee\b|\bnot[- ]to[- ]exceed\b")
-_SCHEDULE_HINTS = re.compile(
-    r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2}\b|"
-    r"\b\d{4}-\d{2}-\d{2}\b|\bQ[1-4]\b|\bdeliver(?:y|ed)?\b|\bshoot\b|"
-    r"\blaunch\b|\bin[- ]market\b",
+_AUDIENCE_STRONG = re.compile(
+    r"\b\d[\d,]*\s*[-–]\s*[\d,]+\s*employees?\b|\bpersona\b|"
+    r"\bdecision[- ]makers?\b|\bCFO\b|\bCISO\b|\bCIO\b|"
+    r"\bprimary\b.{0,40}\bsecondary\b",
     re.IGNORECASE,
 )
-_USAGE_HINTS = re.compile(r"\busage\b|\brights?\b|\bterm\b|\bperpetu", re.IGNORECASE)
+_AUDIENCE_WEAK = re.compile(
+    r"\baudience\b|\bbuyers?\b|\bICP\b|\bpractitioners?\b|\bSMB\b|"
+    r"\bmid[- ]market\b|\benterprise\b",
+    re.IGNORECASE,
+)
+_FEE_STRONG = re.compile(
+    r"\$[\d,]+(?:\.\d+)?\s*(?:k|K|m|M)?\b|\bnot[- ]to[- ]exceed\b|\bfixed fee\b",
+)
+_FEE_WEAK = re.compile(r"\bfee\b|\bbudget\b|\bretainer\b", re.IGNORECASE)
+_SCHEDULE_STRONG = re.compile(
+    r"\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2}\b"
+    r"|\b\d{4}-\d{2}-\d{2}\b|\bQ[1-4]\s*20\d{2}\b"
+    r"|\b(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+20\d{2}\b",
+    re.IGNORECASE,
+)
+_SCHEDULE_WEAK = re.compile(
+    r"\bdeliver(?:y|ed|able)?\b|\bshoot\b|\blaunch\b|\bin[- ]market\b|"
+    r"\btimeline\b|\bschedule\b|\bpost\b",
+    re.IGNORECASE,
+)
+_USAGE_STRONG = re.compile(
+    r"\busage rights?\b|\bglobal usage\b|\bperpetu\w*|"
+    r"\b(?:one|two|three|\d+)[- ]year\b.{0,30}\b(?:usage|term|licen[cs]e)\b|"
+    r"\bbuyout\b",
+    re.IGNORECASE,
+)
+_USAGE_WEAK = re.compile(r"\busage\b|\brights?\b|\blicen[cs]e\b", re.IGNORECASE)
+
+# (field, strong, weak) in priority order. Ties resolve leftward, so a
+# line carrying both a duration and a date files as a deliverable.
+_FIELD_PATTERNS: tuple[tuple[str, re.Pattern, re.Pattern], ...] = (
+    ("deliverables", _DELIVERABLE_STRONG, _DELIVERABLE_WEAK),
+    ("audience", _AUDIENCE_STRONG, _AUDIENCE_WEAK),
+    ("schedule", _SCHEDULE_STRONG, _SCHEDULE_WEAK),
+    ("engagement_fee", _FEE_STRONG, _FEE_WEAK),
+    ("usage", _USAGE_STRONG, _USAGE_WEAK),
+)
+
+# Lines that are TRACKING rows, not facts. "Email Drew the deck" matched
+# `\bdeck\b` and was filed as a deliverable on the 5198 run — an action
+# item is a thing someone must do, not a thing the project ships.
+_ACTION_ITEM_RE = re.compile(
+    r"^(?:email|send|share|chase|confirm|schedule|call|ping|ask|follow[- ]up|"
+    r"draft|review|circulate|forward|remind|check)\b",
+    re.IGNORECASE,
+)
+# Meta-commentary about the record itself, not about the work.
+_META_RE = re.compile(
+    r"^(?:new source ingested|source ingested|full text via|"
+    r"no deliverables|see |per the |rolled off)",
+    re.IGNORECASE,
+)
+# A whole line that is a bracketed tracking row — stakeholder cards
+# (`[Name · role · context]`) and status bullets. The leading-bracket
+# strip in `_clean` deliberately bounds itself to short prefixes so it
+# never eats real prose, which leaves these long ones intact; they are
+# records about people and process, not facts about scope.
+_BRACKET_ROW_RE = re.compile(r"^\[[^\]]+\]")
+# Internal deliberation. "Drew and Marcello agreed to pitch the client
+# on X" is a decision the team took, not something the project ships —
+# useful history, wrong answer to "what are the deliverables".
+_DELIBERATION_RE = re.compile(
+    r"^(?:[A-Z][a-z]+(?:\s+and\s+[A-Z][a-z]+)?\s+(?:agreed|decided|"
+    r"proposed|flagged|noted|wants?|feels?|thinks?)\b)|"
+    r"^(?:decision|agreed|open internal question|internal note)\b",
+    re.IGNORECASE,
+)
 
 # Date-ish tokens, for conflict detection across sources.
 _DATE_TOKEN = re.compile(
@@ -247,26 +321,80 @@ def is_unauthored_scaffold(exec_region: str | None) -> bool:
     return substantive == 0
 
 
-def _harvest(texts: list[str], pattern: re.Pattern) -> list[str]:
-    """Return cleaned lines from `texts` that match `pattern`."""
-    out: list[str] = []
+def _score(line: str, strong: re.Pattern, weak: re.Pattern) -> int:
+    """How strongly does `line` belong to this field?
+
+    2 = a concrete specific (a duration, an employee band, a dollar
+    figure). 1 = a topic mention. 0 = no claim.
+    """
+    if strong.search(line):
+        return 2
+    if weak.search(line):
+        return 1
+    return 0
+
+
+def _is_noise(line: str) -> bool:
+    """True for tracking rows, meta, and internal deliberation.
+
+    None of these are facts about what the project delivers, and each
+    appeared in the first live 5198 report under a heading it did not
+    belong to.
+    """
+    return bool(
+        _ACTION_ITEM_RE.match(line)
+        or _META_RE.match(line)
+        or _BRACKET_ROW_RE.match(line)
+        or _DELIBERATION_RE.match(line)
+    )
+
+
+def assign_fields(texts: list[str]) -> dict[str, list[str]]:
+    """Sort candidate lines into their single best field.
+
+    Two rules learned from the first live 5198 run:
+
+    1. **One line, one field.** Previously each field collected every
+       line matching its pattern, so a long paragraph touching scope,
+       audience and usage appeared verbatim under all three. A reader
+       scanning `audience` got a sentence about scope.
+    2. **Specifics beat mentions.** A line naming `:30` and `9:16` is a
+       better deliverables answer than one that merely says "video", so
+       strong matches sort above weak ones and short concrete lines
+       above long prose.
+
+    Returns `{field: [line, ...]}`, best first, deduplicated.
+    """
+    scored: dict[str, list[tuple[int, int, str]]] = {}
     seen: set[str] = set()
     for raw in texts:
         line = _clean(raw)
-        if not line or len(line) < 8:
+        if not line or len(line) < 8 or len(line) > 400:
             continue
-        if not pattern.search(line):
-            continue
-        # A 300-word exec-summary paragraph technically "matches", but a
-        # readiness report that quotes it has answered nothing. Prefer
-        # fact-shaped lines and clip the rest hard.
-        if len(line) > 400:
+        if _is_noise(line):
             continue
         key = line.lower()[:90]
         if key in seen:
             continue
         seen.add(key)
-        out.append(line if len(line) <= 180 else line[:177] + "…")
+
+        best_field, best_score = None, 0
+        for fieldname, strong, weak in _FIELD_PATTERNS:
+            s = _score(line, strong, weak)
+            if s > best_score:
+                best_field, best_score = fieldname, s
+        if best_field is None:
+            continue
+        # Prefer concrete over discursive: short lines rank above long
+        # prose at the same strength.
+        scored.setdefault(best_field, []).append((-best_score, len(line), line))
+
+    out: dict[str, list[str]] = {}
+    for fieldname, rows in scored.items():
+        rows.sort()
+        out[fieldname] = [
+            (ln if len(ln) <= 180 else ln[:177] + "\u2026") for _, _, ln in rows
+        ]
     return out
 
 
@@ -417,25 +545,22 @@ def run_preflight(
     rep.shape_warning = _shape_check(rule, corpus_lines)
 
     # ---- Gather found facts -------------------------------------------
-    deliverables = _harvest(corpus_lines, _DELIVERABLE_HINTS)
-    audience = _harvest(corpus_lines, _AUDIENCE_HINTS)
-    schedule = _harvest(corpus_lines, _SCHEDULE_HINTS)
-    fee = _harvest(corpus_lines, _FEE_HINTS)
-    usage = _harvest(corpus_lines, _USAGE_HINTS)
-
-    if deliverables:
-        rep.found["deliverables"] = deliverables[:8]
-    if audience:
-        rep.found["audience"] = audience[:3]
-    if schedule:
-        rep.found["schedule"] = schedule[:5]
-    if fee:
-        # Named `engagement_fee`, never `budget`. The $425k engagement fee
-        # is NOT the partner budget, and a field called `budget` invites
-        # exactly the conflation that would have been a serious error.
-        rep.found["engagement_fee"] = fee[:3]
-    if usage:
-        rep.found["usage"] = usage[:3]
+    # One line goes to ONE field, best match wins. `engagement_fee` is
+    # never named `budget`: the $425k engagement fee is not the partner
+    # budget, and a field by that name invites the exact conflation the
+    # spec calls a serious error.
+    assigned = assign_fields(corpus_lines)
+    _CAPS = {
+        "deliverables": 6,
+        "audience": 3,
+        "schedule": 4,
+        "engagement_fee": 3,
+        "usage": 3,
+    }
+    for fieldname, cap in _CAPS.items():
+        rows = assigned.get(fieldname)
+        if rows:
+            rep.found[fieldname] = rows[:cap]
 
     # ---- Missing ------------------------------------------------------
     for req in rule.requires:
