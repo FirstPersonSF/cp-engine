@@ -299,6 +299,10 @@ def case_e_tools_list(token: str) -> None:
         "pull_spine_element",
         "list_commitments",
         "list_project_sources",
+        # Service Library reads (2026-09-07): MC-2 is the source of truth
+        # for Activities/Outputs, so IDs are CHECKED rather than trusted.
+        "list_services",
+        "get_service",
         "pull_project_source",
         "list_project_meetings",
         "semantic_search",
