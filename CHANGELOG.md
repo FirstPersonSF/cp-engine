@@ -4,6 +4,37 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.114.0 — 2026-09-07
+
+- **The Proposal Architect comes into CP: `list_services`, `get_service`, and
+  the `proposal-architect` skill.** Tony's Custom GPT wrote Engagement
+  Summaries by reading an uploaded copy of the Service Library. That copy
+  could not enforce its own corrections — `[A.064]` Information Architecture
+  was deprecated in an Addendum and still sat unmarked in the list, so anyone
+  reading top-down selected a retired service, and two documented renames had
+  never been applied.
+
+  MC-2 became the source of truth for the library on 2026-09-07 (mc-2 #366).
+  These two hosted verbs are what make that reachable: `list_services` returns
+  only active items by default, so a deprecated one **cannot** be selected;
+  `get_service` verifies a Reference ID before it is cited, which is the only
+  place a fabricated `[A.###]` can be caught — in a finished proposal it looks
+  exactly like a real one. Both surface the `guidance` field, which is where
+  two similar-looking items are told apart, and both report the library
+  version, because the old document's version stamps disagreed with its own
+  filename.
+
+  The `proposal-architect` skill holds the craft: preflight first, establish
+  the engagement type before selecting anything (**default to the narrower
+  reading** — a client with their own campaign platform owns the strategy),
+  the seven-section structure, and the Activity / Output / **Outcome**
+  distinction that makes a summary read as a proposal rather than an invoice.
+  It persists through the existing `create_spine_element` / `add_spine_version`
+  path — no new write door.
+
+  Deliberately refuses: inventing a Reference ID, rewriting an official
+  definition, and sending anything.
+
 ## v0.113.0 — 2026-09-04
 
 - **RFP v3: the respondent pipeline and the vendor registry.** Two MCP verbs

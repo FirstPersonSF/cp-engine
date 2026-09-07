@@ -1199,6 +1199,199 @@ def list_commitments(project_code: str, status: str = "open") -> dict[str, Any]:
 
 
 @mcp_server.tool()
+def list_services(
+    kind: str = "",
+    category: str = "",
+    search: str = "",
+    include_deprecated: bool = False,
+) -> dict[str, Any]:
+    """The First Person Service Library — approved Activities and Outputs.
+
+    **MC-2 is the source of truth for this library** (2026-09-07). Use this
+    verb rather than any uploaded spreadsheet, Google Doc or Airtable link;
+    all three are retired, and a Reference ID taken from one of them is
+    indistinguishable from a correct one once it reaches a proposal.
+
+    Activities `[A.xxx]` are what First Person DOES. Outputs `[O.xxx]` are
+    what the client RECEIVES. Reference IDs are permanent — never remap,
+    reuse or invent one.
+
+    **Deprecated items are excluded by default and that is the point.**
+    `[A.064]` Information Architecture was deprecated in an Addendum and
+    still sat unmarked in the old document's list, so anyone reading it
+    top-down selected a retired service. Here it simply is not returned.
+    Pass `include_deprecated=True` only to trace an ID found in an older
+    proposal — never to select one.
+
+    Each item may carry `guidance`: the nuance that distinguishes it from a
+    similar item, what produces it, when to sequence it. Read it before
+    choosing between two items that look alike.
+
+    Args:
+        kind: "activity" | "output". Empty returns both.
+        category: e.g. "Content production", "Narrative strategy".
+        search: case-insensitive substring over name and definition.
+        include_deprecated: include retired items, marked as such.
+    """
+    client = user_client()
+    wanted = (kind or "").strip().lower()
+    if wanted not in ("", "activity", "output"):
+        return {
+            "caller": caller_subject(),
+            "error": f"kind must be 'activity' or 'output', got {kind!r}",
+            "services": [],
+        }
+
+    tables = []
+    if wanted in ("", "activity"):
+        tables.append(("activity", "activities_library"))
+    if wanted in ("", "output"):
+        tables.append(("output", "deliverable_library"))
+
+    services: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for item_kind, table in tables:
+        try:
+            q = (
+                client.schema("estimator").table(table)
+                .select("ref_id, name, short_description, category, status, "
+                        "guidance, deprecation_reason, superseded_by")
+                .not_.is_("ref_id", "null")
+            )
+            q = (q.in_("status", ["active", "deprecated"])
+                 if include_deprecated else q.eq("status", "active"))
+            if category.strip():
+                q = q.ilike("category", f"%{category.strip()}%")
+            for row in q.order("ref_id").execute().data or []:
+                if search.strip():
+                    hay = f"{row.get('name','')} {row.get('short_description','')}".lower()
+                    if search.strip().lower() not in hay:
+                        continue
+                item = {
+                    "ref_id": row.get("ref_id"),
+                    "kind": item_kind,
+                    "name": row.get("name"),
+                    "definition": row.get("short_description"),
+                    "category": row.get("category"),
+                }
+                if row.get("guidance"):
+                    item["guidance"] = row["guidance"]
+                if row.get("status") == "deprecated":
+                    item["DEPRECATED"] = True
+                    item["deprecation_reason"] = row.get("deprecation_reason")
+                    if row.get("superseded_by"):
+                        item["superseded_by"] = row["superseded_by"]
+                services.append(item)
+        except Exception as exc:  # noqa: BLE001 — degrade, never raise
+            errors.append(f"{table}: {exc}")
+
+    meta: dict[str, Any] = {}
+    try:
+        rows = (client.schema("estimator").table("service_library_meta")
+                .select("library_version, addendum_version, imported_at")
+                .execute().data or [])
+        if rows:
+            meta = rows[0]
+    except Exception:  # noqa: BLE001 — the version stamp is informational
+        pass
+
+    result = {
+        "caller": caller_subject(),
+        "count": len(services),
+        "library_version": meta.get("library_version"),
+        "services": services,
+    }
+    if errors:
+        result["errors"] = errors
+    if not services and not errors:
+        result["note"] = (
+            "No services matched. Do NOT invent a Reference ID — say the "
+            "work has no library item and ask whether to use the nearest "
+            "real one or propose a new entry for approval."
+        )
+    return result
+
+
+@mcp_server.tool()
+def get_service(ref_id: str) -> dict[str, Any]:
+    """One Service Library item by its Reference ID, verbatim.
+
+    Use this to VERIFY an ID before citing it in a proposal. A fabricated
+    `[A.###]` is indistinguishable from a real one in a finished document —
+    this verb is the only place the difference can be caught.
+
+    Returns the official name and definition unchanged. To make an item
+    client-specific, quote the definition exactly and add a separate
+    "Suggested reframing" line beneath it; never edit the definition.
+
+    A deprecated item is returned WITH its `DEPRECATED` flag and reason, so
+    an ID in an older proposal can be traced. It must not be cited in new
+    work.
+
+    Args:
+        ref_id: e.g. "A.001" or "O.030". Brackets are tolerated.
+    """
+    client = user_client()
+    wanted = (ref_id or "").strip().strip("[]").upper()
+    if not wanted:
+        return {"caller": caller_subject(), "error": "ref_id is required"}
+
+    table = ("activities_library" if wanted.startswith("A.")
+             else "deliverable_library" if wanted.startswith("O.") else None)
+    if table is None:
+        return {
+            "caller": caller_subject(),
+            "ref_id": wanted,
+            "error": "ref_id must start with 'A.' (Activity) or 'O.' (Output)",
+        }
+
+    try:
+        rows = (
+            client.schema("estimator").table(table)
+            .select("ref_id, name, short_description, category, status, "
+                    "guidance, deprecation_reason, superseded_by")
+            .eq("ref_id", wanted).execute().data or []
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"caller": caller_subject(), "ref_id": wanted,
+                "error": f"lookup failed: {exc}"}
+
+    if not rows:
+        return {
+            "caller": caller_subject(),
+            "ref_id": wanted,
+            "found": False,
+            "error": (
+                f"{wanted} is not in the Service Library. Do NOT cite it. "
+                "If the work needs describing, say the item does not exist "
+                "and ask whether to use the nearest real one or propose a "
+                "new entry for approval."
+            ),
+        }
+
+    row = rows[0]
+    out = {
+        "caller": caller_subject(),
+        "ref_id": row.get("ref_id"),
+        "found": True,
+        "kind": "activity" if wanted.startswith("A.") else "output",
+        "name": row.get("name"),
+        "definition": row.get("short_description"),
+        "category": row.get("category"),
+        "status": row.get("status"),
+    }
+    if row.get("guidance"):
+        out["guidance"] = row["guidance"]
+    if row.get("status") == "deprecated":
+        out["DEPRECATED"] = True
+        out["deprecation_reason"] = row.get("deprecation_reason")
+        out["warning"] = "Deprecated — trace only, never cite in new work."
+        if row.get("superseded_by"):
+            out["superseded_by"] = row["superseded_by"]
+    return out
+
+
+@mcp_server.tool()
 def list_project_sources(project_code: str) -> dict[str, Any]:
     """List a project's ingested RAG source documents, under the caller's identity.
 
