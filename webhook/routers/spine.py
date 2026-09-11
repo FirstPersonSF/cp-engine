@@ -14,6 +14,7 @@ import logging
 import os
 
 import git_ops
+import httpx
 import observability
 import pipeline
 import signatures
@@ -24,6 +25,65 @@ from cp_engine.mc2_db import Tables
 log = logging.getLogger("cp-engine-webhook")
 
 router = APIRouter()
+
+
+
+# Supabase closes idle pooled HTTP/2 connections with a graceful GOAWAY
+# (`ConnectionTerminated error_code:0`). The postgrest client can hand the
+# retired socket to the next request, which then dies with RemoteProtocolError
+# — a connection-reuse race, not a real failure. Observed 2026-09-11: a
+# frame-promote kickoff crashed on the run-row INSERT, FastAPI turned the
+# unhandled exception into a 500, and mc-2's proxy dutifully surfaced it to
+# the user as a 502 on a click that had done nothing wrong.
+#
+# These are the SYNCHRONOUS Supabase calls on the two kickoff routes — the
+# ones whose failure the user sees. Retrying once is enough, and this is
+# MEASURED, not assumed: against a local h2 server that answers one request
+# then sends GOAWAY(0), the next request on the same pooled client fails and
+# the retry after it succeeds on a freshly-opened connection. Mirrors mc-2's
+# own retry-exactly-once rule for a token that dies before its stated expiry
+# (mc-2 decision #93) — a blip is recoverable, a genuine outage must still
+# surface.
+#
+# The same reap shows up as MORE THAN ONE exception type, depending on whether
+# the GOAWAY lands before or after our write: RemoteProtocolError when the
+# response side dies (what prod logged), WriteError/broken pipe when the
+# request side does (what the local reproduction hit first). Catching only the
+# observed one would leave half the race unfixed. httpx.TransportError is the
+# shared base of all of these — connect, read, write, protocol — and is
+# exactly the "never reached the application" class that is safe to retry. It
+# does NOT cover HTTPStatusError, so a real 4xx/5xx from PostgREST still
+# propagates untouched.
+_TRANSIENT_DB_ERRORS = (httpx.TransportError,)
+
+
+def _db_retry_once(what: str, fn):
+    """Run `fn()`, retrying ONCE if it dies on a transient connection error.
+
+    SAFE FOR THE RUN-ROW INSERT because `run_id` is generated BEFORE the call
+    and `spine_promote_runs.id` is the primary key: if the first attempt
+    somehow reached Postgres and only its response was lost, the retry
+    collides on that key and PostgREST answers 409 — a status, not a
+    TransportError, so it propagates instead of silently writing a second row.
+
+    `what` names the call for the log line and for the 503 detail. A second
+    failure raises HTTPException(503) rather than falling through to a bare
+    500: the caller (and the human behind it) can safely just try again, which
+    a 500 does not communicate. Any non-transient exception propagates
+    untouched — this must not mask a real error.
+    """
+    try:
+        return fn()
+    except _TRANSIENT_DB_ERRORS as exc:
+        log.warning("transient Supabase error on %s, retrying once: %s", what, exc)
+    try:
+        return fn()
+    except _TRANSIENT_DB_ERRORS as exc:
+        log.error("transient Supabase error on %s persisted after retry: %s", what, exc)
+        raise HTTPException(
+            status_code=503,
+            detail=f"database connection unavailable while {what}; please retry",
+        ) from exc
 
 
 @router.post("/api/spine/promote")
@@ -117,7 +177,7 @@ async def spine_promote(request: Request) -> Response:
             status_code=500, detail="Supabase not configured for spine promote"
         )
 
-    card = load_card(client, card_id)
+    card = _db_retry_once("loading the inbox card", lambda: load_card(client, card_id))
     if card is None:
         raise HTTPException(status_code=404, detail=f"no inbox card '{card_id}'")
 
@@ -150,7 +210,7 @@ async def spine_promote(request: Request) -> Response:
     # Everything from here on (estimate resolve, clone, LLM re-distill, push,
     # card flip) is the slow tail — record a running run row and hand off.
     run_id = f"{card.project_code}/{uuid4()}"
-    _spine_promote_runs_table(client).insert({
+    _db_retry_once("recording the promote run", lambda: _spine_promote_runs_table(client).insert({
         "id": run_id,
         "project_id": card.project_id,
         "project_code": card.project_code,
@@ -159,7 +219,7 @@ async def spine_promote(request: Request) -> Response:
         "card_id": card.id,
         "status": "running",
         "started_at": _utc_now_iso(),
-    }).execute()
+    }).execute())
     pipeline._spawn_background(_run_frame_promote(
         run_id, card,
         framing=framing,
@@ -577,14 +637,18 @@ async def spine_promote_transcript(request: Request) -> Response:
 
     # Resolve project_id (two-form code bridge), company_id (via folders; None
     # for initiatives — carries through to a failed run), and the element row.
-    project_id = _resolve_project_id_for_promote(client, code)
+    project_id = _db_retry_once(
+        "resolving the project", lambda: _resolve_project_id_for_promote(client, code)
+    )
     if project_id is None:
         raise HTTPException(
             status_code=404, detail=f"no MC-2 project resolved for '{code}'"
         )
     folders = resolve_project_folders_by_id(client, project_id)
     company_id = folders.company_id if folders else None
-    element_row = resolve_live_element(client, project_id, key)
+    element_row = _db_retry_once(
+        "resolving the live element", lambda: resolve_live_element(client, project_id, key)
+    )
     if element_row is None:
         raise HTTPException(
             status_code=404,
@@ -592,14 +656,14 @@ async def spine_promote_transcript(request: Request) -> Response:
         )
 
     run_id = f"{code}/{uuid4()}"
-    _spine_promote_runs_table(client).insert({
+    _db_retry_once("recording the promote run", lambda: _spine_promote_runs_table(client).insert({
         "id": run_id,
         "project_id": project_id,
         "project_code": code,
         "est_item_id": element_row.get("est_item_id"),
         "status": "running",
         "started_at": _utc_now_iso(),
-    }).execute()
+    }).execute())
     pipeline._spawn_background(_run_promote(run_id, code, project_id, company_id, element_row))
     return Response(
         content=json.dumps({"run_id": run_id, "status": "running"}),
