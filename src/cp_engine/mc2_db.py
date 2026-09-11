@@ -615,6 +615,93 @@ def _read_dotenv(path: Path, keys: tuple[str, ...]) -> dict[str, str]:
 # ──────────────────────────────────────────────────────────────────────
 
 
+class _RetryingTransport:
+    """An httpx transport that retries ONCE through a reaped connection.
+
+    THE BUG. Supabase reaps idle pooled HTTP/2 connections with a graceful
+    GOAWAY (`ConnectionTerminated error_code:0`). httpx's pool is willing to
+    reuse a connection idle for up to `keepalive_expiry` (5s by default), so
+    inside that window it hands out a socket the server has already retired
+    and the request dies with a TransportError. Because `get_client` caches
+    clients per (url, key) for the life of the process, every long-lived
+    cp-engine process — the webhook above all, which is mostly idle between
+    requests — is exposed on its FIRST query after a lull.
+
+    Observed 2026-09-11: two frame-promote clicks ten minutes apart both
+    crashed on the run-row INSERT with the identical `last_stream_id:3`, each
+    surfacing to the user as a 502 (cp-engine #238). That is the shape of this
+    bug — positional, not random.
+
+    WHY HERE. This is the single constructor every caller goes through (11
+    webhook modules plus the CLI), so one guard covers all of them; retrofitting
+    call sites one at a time leaves gaps by construction.
+
+    WHY RETRY RATHER THAN DISABLE KEEPALIVE. `max_keepalive_connections=0` also
+    fixes it (both were measured against a local h2 server that GOAWAYs an idle
+    connection) but costs a fresh TCP+TLS handshake on EVERY query, which the
+    tight query loops — asset ingest, substance mirroring — would pay for
+    constantly. This pays only on the rare reap.
+
+    SAFETY. Only `httpx.TransportError` is caught — the "never reached the
+    application" class: connect, read, write, protocol. `HTTPStatusError` is
+    NOT a subclass, so a real PostgREST 4xx/5xx propagates untouched and
+    unretried (verified: a 500 response makes exactly one attempt). The retry
+    is strictly once, so an unreachable host raises after two attempts rather
+    than looping.
+
+    WRITES. A retry re-sends the request, so an INSERT whose response was lost
+    is re-sent. Every table cp-engine writes this way is keyed (run rows carry
+    a pre-generated id; mirrors upsert on a natural key), so the retry either
+    collides — a 409 status, which propagates — or repeats an idempotent
+    upsert. If you add a write to an UNKEYED table, that assumption is on you
+    to re-check.
+    """
+
+    def __init__(self, inner):
+        self._inner = inner
+
+    def handle_request(self, request):
+        import httpx
+
+        try:
+            return self._inner.handle_request(request)
+        except httpx.TransportError as exc:
+            # stderr, not logging: this module prints its diagnostics (see
+            # load_supabase_creds) and the webhook captures stderr.
+            print(
+                f"Supabase connection died mid-request "
+                f"({type(exc).__name__}: {exc}); retrying once on a fresh "
+                f"connection",
+                file=sys.stderr,
+            )
+        return self._inner.handle_request(request)
+
+    def __getattr__(self, name):
+        # Everything else (close, __enter__/__exit__, etc.) is the real thing.
+        return getattr(self._inner, name)
+
+
+def _install_connection_retry(client) -> None:
+    """Wrap the client's postgrest transport. Best-effort by design.
+
+    A test stub or a future supabase-py that reshapes the session must not
+    break client construction — the retry is a resilience nicety, not a
+    correctness requirement, so a failure here logs and leaves the client
+    exactly as it was.
+    """
+    try:
+        session = client.postgrest.session
+        if isinstance(session._transport, _RetryingTransport):
+            return
+        session._transport = _RetryingTransport(session._transport)
+    except Exception as exc:  # noqa: BLE001 — never fail construction over this
+        print(
+            f"could not install the Supabase connection retry: {exc!r}",
+            file=sys.stderr,
+        )
+
+
+
 _client_cache: dict[tuple[str, str], "Client"] = {}
 
 # Resolved-creds memo, keyed by tenant root (None = env-only context). Without
@@ -697,6 +784,9 @@ def get_client(
         client.postgrest.session.headers["X-Spine-Writer"] = "cp-engine"
     except AttributeError:
         pass  # test stubs without a postgrest session; real clients have one
+    # This client is about to be CACHED for the life of the process, which is
+    # exactly what exposes it to Supabase's idle-connection reap.
+    _install_connection_retry(client)
     _client_cache[(url, key)] = client
     return client
 
