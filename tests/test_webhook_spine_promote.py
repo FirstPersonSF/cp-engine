@@ -115,7 +115,6 @@ class _RecordingTable:
         self._eq = None
 
     def insert(self, data):
-        self._rec["inserts"].append({"table": self._name, "data": data})
         self._insert = data
         return self
 
@@ -129,6 +128,20 @@ class _RecordingTable:
         return self
 
     def execute(self):
+        if self._insert is not None:
+            # Transient-connection simulation: `insert_fail_once` raises on the
+            # first attempt only (the reaped-connection case, which a retry
+            # recovers); `insert_fail_always` raises every time. Attempts are
+            # counted so a test can assert we retry EXACTLY once.
+            self._rec["insert_attempts"] = self._rec.get("insert_attempts", 0) + 1
+            always = self._rec.get("insert_fail_always")
+            if always is not None:
+                raise always
+            once = self._rec.get("insert_fail_once")
+            if once is not None:
+                self._rec["insert_fail_once"] = None
+                raise once
+            self._rec["inserts"].append({"table": self._name, "data": self._insert})
         if self._update is not None:
             raises_for = self._rec.get("update_raises_for")
             if raises_for is not None and raises_for[0] == self._name:
@@ -729,3 +742,84 @@ def test_cloned_tenant_default_not_sparse(monkeypatch):
     assert "--filter=blob:none" not in clone
     assert "--sparse" not in clone
     assert not any("sparse-checkout" in c["cmd"] for c in calls)
+
+
+# ── Transient Supabase connection errors (cp-engine #—, 2026-09-11) ──────
+#
+# Supabase reaps idle pooled HTTP/2 connections with a graceful
+# GOAWAY(error_code=0). The cached, process-wide postgrest client can hand
+# that retired socket to the next request, which dies with a TransportError.
+# In prod this crashed the frame-promote kickoff at the run-row INSERT, and
+# mc-2's proxy surfaced the resulting 500 to the user as a 502 on a click
+# that had done nothing wrong (twice, ten minutes apart).
+
+
+def _transient(kind="protocol"):
+    """The two shapes the same reap takes: response side vs request side."""
+    import httpx
+    if kind == "protocol":
+        return httpx.RemoteProtocolError(
+            "<ConnectionTerminated error_code:0, last_stream_id:3>"
+        )
+    return httpx.WriteError("[Errno 32] Broken pipe")
+
+
+@pytest.mark.parametrize("kind", ["protocol", "write"])
+def test_promote_retries_transient_insert_error_and_succeeds(
+    monkeypatch, tmp_path, kind
+):
+    """A reaped connection on the run-row INSERT is retried, not surfaced.
+
+    Fails against the unpatched code: the exception escapes spine_promote,
+    FastAPI returns 500, and the card never gets a run row.
+    """
+    rec = _wire_happy(monkeypatch, tmp_path)
+    client_sb = rec["client"]
+    rec["insert_fail_once"] = _transient(kind)
+
+    resp = _post(TestClient(webhook_main.app), {
+        "card_id": "ibx-5153/inbox/mtg-1", "framing": "tighten the narrative",
+    })
+
+    assert resp.status_code == 202, resp.text
+    assert resp.json()["status"] == "running"
+    # Exactly one row landed — the retry reused the same pre-generated run_id.
+    runs = [i for i in rec["inserts"] if i["table"] == "spine_promote_runs"]
+    assert len(runs) == 1, runs
+    assert rec.get("insert_attempts") == 2, "expected one failure + one retry"
+
+
+def test_promote_surfaces_503_when_connection_error_persists(
+    monkeypatch, tmp_path
+):
+    """Two failures in a row is not a blip — say 503, not 500.
+
+    503 tells mc-2 (and the human) the click is safely retryable; a bare 500
+    is indistinguishable from a genuine upstream fault.
+    """
+    rec = _wire_happy(monkeypatch, tmp_path)
+    rec["insert_fail_always"] = _transient("protocol")
+
+    resp = _post(TestClient(webhook_main.app), {
+        "card_id": "ibx-5153/inbox/mtg-1", "framing": "tighten the narrative",
+    })
+
+    assert resp.status_code == 503, resp.text
+    assert "retry" in resp.json()["detail"].lower()
+    assert rec.get("insert_attempts") == 2, "must not retry more than once"
+
+
+def test_promote_does_not_retry_a_real_error(monkeypatch, tmp_path):
+    """A non-transport failure must propagate on the FIRST attempt.
+
+    Guards the widening to httpx.TransportError: retrying a genuine fault
+    would double any side effect it had.
+    """
+    rec = _wire_happy(monkeypatch, tmp_path)
+    rec["insert_fail_always"] = ValueError("duplicate key value violates unique constraint")
+
+    with pytest.raises(ValueError):
+        _post(TestClient(webhook_main.app, raise_server_exceptions=True), {
+            "card_id": "ibx-5153/inbox/mtg-1", "framing": "tighten the narrative",
+        })
+    assert rec.get("insert_attempts") == 1, "a real error must not be retried"
