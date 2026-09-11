@@ -395,3 +395,158 @@ def test_resolver_importable_without_the_mcp_package() -> None:
         f"{proc.stderr}"
     )
     assert "ok" in proc.stdout
+
+
+# ── The idle-connection reap (cp-engine #238 follow-up, 2026-09-11) ──────
+#
+# Supabase reaps idle pooled HTTP/2 connections with a graceful GOAWAY.
+# httpx will reuse a connection idle for up to keepalive_expiry (5s), so
+# inside that window it hands out a socket the server already retired and the
+# request dies with a TransportError. get_client caches clients for the life
+# of the process, so every long-lived cp-engine process is exposed on its
+# first query after a lull -- which is how two frame-promote clicks ten
+# minutes apart both became 502s for Drew.
+
+
+class _FlakyTransport:
+    """Inner transport that fails `fail_times` times, then answers 200."""
+
+    def __init__(self, exc, fail_times=1):
+        self._exc = exc
+        self._remaining = fail_times
+        self.attempts = 0
+        self.closed = False
+
+    def handle_request(self, request):
+        import httpx
+
+        self.attempts += 1
+        if self._remaining > 0:
+            self._remaining -= 1
+            raise self._exc
+        return httpx.Response(200, json={"ok": True})
+
+    def close(self):
+        self.closed = True
+
+
+def _goaway():
+    import httpx
+
+    return httpx.RemoteProtocolError(
+        "<ConnectionTerminated error_code:0, last_stream_id:3>"
+    )
+
+
+def _request():
+    import httpx
+
+    return httpx.Request("POST", "https://example.supabase.co/rest/v1/t")
+
+
+def test_retrying_transport_recovers_from_a_reaped_connection():
+    """One GOAWAY is absorbed; the caller sees the retry's success."""
+    from cp_engine.mc2_db import _RetryingTransport
+
+    inner = _FlakyTransport(_goaway(), fail_times=1)
+    resp = _RetryingTransport(inner).handle_request(_request())
+
+    assert resp.status_code == 200
+    assert inner.attempts == 2, "expected one failure plus one retry"
+
+
+def test_retrying_transport_gives_up_after_exactly_one_retry():
+    """A dead backend must surface, not loop."""
+    import httpx
+
+    from cp_engine.mc2_db import _RetryingTransport
+
+    inner = _FlakyTransport(_goaway(), fail_times=99)
+    with pytest.raises(httpx.RemoteProtocolError):
+        _RetryingTransport(inner).handle_request(_request())
+
+    assert inner.attempts == 2, "must retry exactly once, then raise"
+
+
+def test_retrying_transport_does_not_retry_a_real_response():
+    """A PostgREST 4xx/5xx is a RESPONSE, not a transport failure.
+
+    Guards the whole design: retrying a real error would double any write
+    that had already landed.
+    """
+    import httpx
+
+    from cp_engine.mc2_db import _RetryingTransport
+
+    class _Server500:
+        attempts = 0
+
+        def handle_request(self, request):
+            self.attempts += 1
+            return httpx.Response(500, json={"message": "boom"})
+
+    inner = _Server500()
+    resp = _RetryingTransport(inner).handle_request(_request())
+
+    assert resp.status_code == 500
+    assert inner.attempts == 1, "a real error response must not be retried"
+
+
+def test_retrying_transport_proxies_other_attributes():
+    """The wrapper must stay a drop-in — close(), context managers, etc."""
+    from cp_engine.mc2_db import _RetryingTransport
+
+    inner = _FlakyTransport(_goaway(), fail_times=0)
+    wrapper = _RetryingTransport(inner)
+    wrapper.close()
+
+    assert inner.closed is True
+
+
+def test_install_connection_retry_wraps_the_postgrest_transport():
+    """The constructor seam: a real-shaped client gets the wrapper."""
+    from cp_engine.mc2_db import _RetryingTransport, _install_connection_retry
+
+    class _Session:
+        def __init__(self):
+            self._transport = _FlakyTransport(_goaway(), fail_times=0)
+
+    class _Client:
+        def __init__(self):
+            self.postgrest = type("PG", (), {"session": _Session()})()
+
+    client = _Client()
+    _install_connection_retry(client)
+
+    assert isinstance(client.postgrest.session._transport, _RetryingTransport)
+
+
+def test_install_connection_retry_is_idempotent():
+    """Double-wrapping would retry 4x on one reap."""
+    from cp_engine.mc2_db import _RetryingTransport, _install_connection_retry
+
+    class _Session:
+        def __init__(self):
+            self._transport = _FlakyTransport(_goaway(), fail_times=0)
+
+    class _Client:
+        def __init__(self):
+            self.postgrest = type("PG", (), {"session": _Session()})()
+
+    client = _Client()
+    _install_connection_retry(client)
+    first = client.postgrest.session._transport
+    _install_connection_retry(client)
+
+    assert client.postgrest.session._transport is first
+    assert not isinstance(first._inner, _RetryingTransport)
+
+
+def test_install_connection_retry_never_breaks_construction():
+    """A stub client without a postgrest session must still be usable."""
+    from cp_engine.mc2_db import _install_connection_retry
+
+    class _Stub:
+        pass
+
+    _install_connection_retry(_Stub())  # must not raise
