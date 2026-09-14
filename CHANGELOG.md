@@ -4,6 +4,37 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.114.1 — 2026-09-14
+
+- **A nullable `position` was quietly costing a third of the tenant its
+  estimate binding (#240).** `cxp sync` had been reporting `Synced 38 projects
+  (13 warnings)`, each one `estimate fetch failed for <code> (substance →
+  unbound): '<' not supported between instances of 'NoneType' and 'NoneType'`.
+
+  `estimator.phases.position` and the `position` column on `phase_activities`
+  and `phase_deliverables` are nullable. `Estimate.from_rows` read them with
+  `.get("position", 0)` — but that default only fires when the **key is
+  absent**, and here the column is present carrying `NULL`. It returned
+  `None`, and an all-NULL set raised mid-sort.
+
+  The warning undersold it. `sync.py` catches the failure per project and
+  degrades to `estimate=None`, so every run completed and nothing errored
+  loudly — while **substance mirrored as `unbound` and the estimate binding
+  was silently lost** on ibx-5153, sap-5174, sap-5198, sap-5171, sap-5200,
+  ggl-5136, ggl-5151, ggl-5173, ibx-5167, ibx-5192, slt-5195, slt-5196 and
+  tel-5149. Nothing downstream complains about a missing binding, which is why
+  it survived every sync until someone read the warnings.
+
+  Fixed by coercing at ingest (`.get("position") or 0`) in all three sites, so
+  the dataclass never carries a `None` the sorts can choke on. `fetch_schedule`
+  already guarded exactly this hazard for `start_week`; `from_rows` did not.
+
+  Two regression tests, both verified to **fail against the old code** with the
+  same `TypeError` rather than merely passing against the new one: all-NULL
+  positions, and mixed NULL/real where a NULL must sort as 0 instead of
+  dropping the row. Live verification: `Synced 38 projects (13 warnings)` →
+  `Synced 38 projects`.
+
 ## v0.114.0 — 2026-09-07
 
 - **The Proposal Architect comes into CP: `list_services`, `get_service`, and
