@@ -47,6 +47,44 @@ def test_estimate_from_rows_builds_ordered_items():
     assert est.item_by_id("nope") is None
 
 
+def test_from_rows_tolerates_null_position_on_phases_and_items():
+    """A NULL `position` must not break the sort (cp-engine #240).
+
+    `position` is nullable in the estimator schema, so `.get("position", 0)`
+    returns None — the key IS present, the default never fires. With every row
+    NULL, the sort compares None < None and raises, which surfaced in
+    production as "estimate fetch failed for <project> (substance → unbound)"
+    on 13 of 38 projects: substance mirrored unbound and the estimate binding
+    was silently lost.
+    """
+    project_row = {"id": "est-1", "mc_project_id": "mc-1", "is_default": True, "name": "E"}
+    phases = [
+        {"id": "ph-0", "project_id": "est-1", "name": "Phase A", "overview": None, "position": None},
+        {"id": "ph-1", "project_id": "est-1", "name": "Phase B", "overview": None, "position": None},
+    ]
+    activities = [
+        {"id": "a-0", "phase_id": "ph-0", "name": "Act A", "short_description": None, "position": None, "library_item_id": None},
+        {"id": "a-1", "phase_id": "ph-0", "name": "Act B", "short_description": None, "position": None, "library_item_id": None},
+    ]
+    est = Estimate.from_rows(project_row, phases, activities, [])
+    # Both phases survive; a null position sorts as 0 rather than raising.
+    assert [p.name for p in est.phases] == ["Phase A", "Phase B"]
+    assert all(p.position == 0 for p in est.phases)
+    assert [i.name for i in est.phases[0].items] == ["Act A", "Act B"]
+    assert all(i.position == 0 for i in est.phases[0].items)
+
+
+def test_from_rows_sorts_with_mixed_null_and_real_positions():
+    """A NULL position sorts as 0 — ahead of a real position, not dropped."""
+    project_row = {"id": "est-1", "mc_project_id": "mc-1", "is_default": True, "name": "E"}
+    phases = [
+        {"id": "ph-2", "project_id": "est-1", "name": "Second", "overview": None, "position": 5},
+        {"id": "ph-1", "project_id": "est-1", "name": "First", "overview": None, "position": None},
+    ]
+    est = Estimate.from_rows(project_row, phases, [], [])
+    assert [p.name for p in est.phases] == ["First", "Second"]
+
+
 def test_from_rows_missing_required_key_raises_value_error():
     import pytest
 

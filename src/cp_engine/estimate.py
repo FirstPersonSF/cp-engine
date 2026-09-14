@@ -93,17 +93,25 @@ class Estimate:
                         id=_required(r, "id", "item"), phase_id=phase_id, kind=kind,
                         name=_required(r, "name", "item"),
                         short_description=r.get("short_description"),
-                        position=r.get("position", 0), library_item_id=r.get("library_item_id"),
+                        # `position` is nullable in the estimator schema, so
+                        # `.get(..., 0)` is not enough — the key is present and
+                        # the value is None. Coerce here so the dataclass never
+                        # carries a None the phase sort below would choke on.
+                        position=r.get("position") or 0,
+                        library_item_id=r.get("library_item_id"),
                     )
                 )
         ordered_phases = tuple(
             EstimatePhase(
                 id=_required(p, "id", "phase"), name=_required(p, "name", "phase"),
                 overview=p.get("overview"),
-                position=p.get("position", 0),
+                position=p.get("position") or 0,
                 items=tuple(sorted(by_phase.get(p["id"], []), key=lambda i: i.position)),
             )
-            for p in sorted(phases, key=lambda p: p.get("position", 0))
+            # Same nullable-`position` guard as the items above: a phase row
+            # carries the column with a NULL value, so the default never fires
+            # and an all-NULL set raises `None < None` mid-sort.
+            for p in sorted(phases, key=lambda p: p.get("position") or 0)
         )
         return cls(
             id=_required(project_row, "id", "project"),
