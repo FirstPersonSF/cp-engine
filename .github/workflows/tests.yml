@@ -1,0 +1,78 @@
+# Run the test suite on PRs and on main.
+#
+# Why this exists: until now the only check on this repo was GitGuardian, so
+# "merged" meant "someone ran pytest locally and said it passed". That is fine
+# while one person merges and remembers; it is not a gate. It also blocks
+# autodeploy for `prototypes/hosted-mcp` — auto-shipping to a service that
+# authenticates real users and reads MC-2 under RLS is only acceptable if
+# something green has to happen first.
+#
+# GOTCHA — private git dependencies. pyproject pins seven packages to
+# `git+https://github.com/FirstPersonSF/1p-component-library`, a PRIVATE repo.
+# The default GITHUB_TOKEN is scoped to THIS repo and cannot read it, so the
+# install needs a PAT with repo:read on the component library, stored as the
+# `GH_PAT` secret. The `url.insteadOf` rewrite below is what makes pip's git
+# fetches pick it up. A PAT expiry shows up here as a install-time 403 on a
+# dependency, not as a test failure — see project_ci_private_dep_auth.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  # A new push to the same ref supersedes the run in flight; main is never
+  # cancelled so the post-merge run that gates deploys always completes.
+  group: tests-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Floor from pyproject (`requires-python = ">=3.11"`). Pinned rather
+          # than "3.x" so a new CPython release cannot turn a green main red
+          # without anyone changing this file.
+          python-version: "3.12"
+          cache: pip
+
+      - name: Authenticate private git dependencies
+        env:
+          GH_PAT: ${{ secrets.GH_PAT }}
+        run: |
+          if [ -z "$GH_PAT" ]; then
+            echo "::error::GH_PAT is not set. Seven dependencies come from the" \
+                 "private FirstPersonSF/1p-component-library repo and the default" \
+                 "GITHUB_TOKEN cannot read it. Add a PAT with repo:read as the" \
+                 "GH_PAT secret."
+            exit 1
+          fi
+          # Same form the cp tenant's slack-digest workflow already uses to
+          # install cp-engine with these deps — a proven pattern, not a new one.
+          git config --global \
+            url."https://${GH_PAT}@github.com/".insteadOf "https://github.com/"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e '.[dev]'
+
+      - name: Run tests
+        # `-p no:randomly` is deliberate if a random-order plugin ever lands:
+        # the resolver-parity and hosted tests import a module by file path,
+        # and a shared module cache makes order matter.
+        run: pytest tests/ -q
+
+# NOTE — no lint job here, deliberately. `ruff check .` currently reports 727
+# pre-existing findings, so a blocking lint gate would fail every PR on day one
+# and get ignored or disabled within a week. Cleaning those up is its own piece
+# of work; adding the gate before the cleanup just trains everyone to override
+# a red check, which is worse than no check. Add the job in the same change
+# that gets the count to zero.
