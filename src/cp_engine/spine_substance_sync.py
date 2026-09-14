@@ -27,6 +27,7 @@ from pathlib import Path
 
 import frontmatter
 
+from cp_engine.authored_element import card_kind_for
 from cp_engine.authored_mirror import write_authored_element
 from cp_engine.spine_context import parse_context
 from cp_engine.mc2_db import Tables
@@ -113,6 +114,23 @@ def substance_to_rows(
                 "binding": item.binding,
                 "layer": item.layer,
                 "placement": item.placement,
+                # Stamped here for the same reason the authored write path
+                # stamps it (#179): `card_kind` was backfilled once by
+                # `cxp card-kinds` and nothing wrote it afterwards, so rows
+                # created since carried NULL — and `route_queue`/`weekly_sort`
+                # both read NULL as "not work". Measured 2026-09-14: 5 live
+                # distilled rows had drifted this way, all placement='item',
+                # i.e. real work slots invisible as work.
+                #
+                # `card_kind_for` returns None for a straddling layer, which
+                # leaves the column NULL for a human rather than laundering a
+                # guess into stored fact — the discipline card_class and
+                # card_kind_write both hold to.
+                "card_kind": card_kind_for(
+                    est_item_id=item.est_item_id,
+                    layer=item.layer,
+                    placement=item.placement,
+                ),
                 "serves": list(item.serves),
                 "archived": item.archived,
                 "version_label": v.label,

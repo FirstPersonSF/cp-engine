@@ -143,6 +143,10 @@ def test_build_create_rows_golden_vector():
         "framing": "My Label", "body": "b", "sources": [], "origin": "authored",
         "version_note": None, "rel_path": None,
         "important": False, "note": None,
+        # Stamped at write time (#179) so the column cannot go stale the way
+        # the one-time mig-140 backfill did — every authored element is
+        # placement='context', which is an attachment by construction.
+        "card_kind": "attachment",
     }]
 
 
