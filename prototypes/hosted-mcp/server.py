@@ -357,6 +357,36 @@ def user_client():
     return client
 
 
+_SLUG_NON_ALPHANUM = re.compile(r"[^a-z0-9]+")
+
+
+def _slug_full_job_name(full_job_name: str | None) -> str:
+    """Slugify MC-2's `full_job_name` into the canonical on-disk project id.
+
+    "SAP 5198 2027 Ad Videos" -> "sap-5198-2027-ad-videos". Mirrors
+    `cp_engine.state.slug_full_job_name`; kept local because this prototype
+    deliberately does not import cp_engine (same convention as the spine
+    authoring constants below). Keep in sync with that function.
+    """
+    if not full_job_name:
+        return ""
+    return _SLUG_NON_ALPHANUM.sub("-", full_job_name.lower()).strip("-")
+
+
+def _looks_like_uuid(value: str) -> bool:
+    """True when `value` parses as a UUID, so it can be used as an id filter.
+
+    Parsing rather than regex-matching keeps the accepted set exactly what
+    Postgres will accept for a uuid column, and keeps a malformed code from
+    reaching the DB as a uuid filter (which errors rather than missing).
+    """
+    try:
+        uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
+
+
 def resolve_project_id(client, project_code: str) -> str | None:
     """`<code>` -> a uuid usable as `spine_substance.project_id`.
 
@@ -381,7 +411,36 @@ def resolve_project_id(client, project_code: str) -> str | None:
     (`ibx-5153`, `ibx-5153-ai-campaign`, `IBX-ai-campaign`). A hosted server
     needs one resolver all clients share, or every tool re-invents this.
     Explicit columns only.
+
+    **The spine is a fast path, never the only path (#236).** Branches 1 and 3
+    don't apply to an engagement, so resolving an engagement *through
+    `spine_substance`* means a project with zero spine rows is invisible to
+    every hosted verb — and it fails in the worst direction: a mature project
+    has spine rows and resolves, while a NEW project has none, and a new
+    project is exactly where the unsettled commitments and the first spine card
+    live. Two live instances: `sap-5198` (the tenant's largest engagement, 11
+    open commitments unreachable) and `ggl-5179` (a held deal that could not
+    receive its first card). So branches 4-6 below reach `projects` directly,
+    mirroring `cp_engine.mc2_db._resolve_project_id`'s order.
+
+    A bare `projects.id` UUID is accepted first of all: it is the one
+    identifier that can never be ambiguous across the three naming strings, and
+    `cp.md`'s `MC-id:` anchor already carries it, so an agent reading the tenant
+    tree has it in hand.
     """
+    # 0. A bare UUID is unambiguous — try it as a project id, then as an
+    #    initiative id (both land in `spine_substance.project_id`). Guarded by
+    #    a parse so a malformed code never reaches the DB as a uuid filter.
+    if _looks_like_uuid(project_code):
+        for table in ("projects", "initiatives"):
+            rows = (
+                client.table(table).select("id").eq("id", project_code).limit(1).execute().data
+                or []
+            )
+            if rows:
+                return rows[0]["id"]
+        return None
+
     rows = (
         client.table("initiatives").select("id").eq("code", project_code).limit(1).execute().data
         or []
@@ -406,6 +465,61 @@ def resolve_project_id(client, project_code: str) -> str | None:
 
     rows = (
         client.table("projects").select("id").eq("code", project_code).limit(1).execute().data
+        or []
+    )
+    if rows:
+        return rows[0]["id"]
+
+    # 4. Raw `full_job_name` (the display form, "SAP 5198 2027 Ad Videos").
+    rows = (
+        client.table("projects")
+        .select("id")
+        .eq("full_job_name", project_code)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if rows:
+        return rows[0]["id"]
+
+    # 5. The canonical on-disk dir-slug, reversed out of `full_job_name`. The
+    #    number sits in the MIDDLE of this slug, so branch 6 can't see it.
+    #    Scope the scan by company prefix so it stays cheap, then slugify in
+    #    Python (no slugify in SQL).
+    prefix = project_code.split("-", 1)[0]
+    if prefix:
+        candidates = (
+            client.table("projects")
+            .select("id, full_job_name")
+            .ilike("code", f"{prefix}-%")
+            .execute()
+            .data
+            or []
+        )
+        for row in candidates:
+            if _slug_full_job_name(row.get("full_job_name")) == project_code:
+                return row["id"]
+
+    # 6. Legacy `<companyprefix>-<number>` via the companies/number join.
+    #    `companies.code` is stored UPPERCASE while the working-dir prefix is
+    #    lowercase, so match case-insensitively.
+    head, sep, tail = project_code.rpartition("-")
+    if not sep or not tail.isdigit():
+        return None
+    companies = (
+        client.table("companies").select("id").ilike("code", head).limit(1).execute().data or []
+    )
+    if not companies:
+        return None
+    rows = (
+        client.table("projects")
+        .select("id")
+        .eq("company_id", companies[0]["id"])
+        .eq("number", int(tail))
+        .limit(1)
+        .execute()
+        .data
         or []
     )
     return rows[0]["id"] if rows else None
