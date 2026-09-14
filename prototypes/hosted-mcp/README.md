@@ -133,6 +133,7 @@ only**, and write an audit row on success.
 | `create_spine_element(project_code, framing, body, ...)` | `spine_substance` | Version-1 row, `_authored/` convention, author stamped. |
 | `add_spine_version(project_code, element_id, body, version_note?)` | `spine_substance` | New vN+1 row (insert), then live→superseded on the prior row via the #142 guarded function. |
 | `add_spine_document(project_code, label, content= OR source_title=, type?)` | `spine_substance` | Phase 3 (#140): author a whole document from chat, or spine-card an ingested source with provenance attached at insert. |
+| `capture_session(project_code, summary, when?)` | the **tenant repo** | #247. The ONE write that lands a FILE, not a row — `**Last session:**` is derived by globbing `sessions/` on disk, so a DB row would never move it. Delegates via mc-2 → cp-engine-webhook (the only service with a write key), exactly like `promote_spine_transcript`. **The author is derived from the caller's token and cannot be set.** |
 
 **Updates + deletes (cp-engine #143 batch 2):**
 
