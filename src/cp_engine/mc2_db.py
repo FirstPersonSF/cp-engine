@@ -25,6 +25,7 @@ import os
 import subprocess
 import sys
 import tomllib
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -913,6 +914,20 @@ def canonical_spine_code(client, project_id: str, fallback: str) -> str:
     return fallback
 
 
+def _looks_like_uuid(value) -> bool:
+    """True when `value` parses as a UUID, so it is safe as an id filter.
+
+    Parsing rather than regex-matching keeps the accepted set exactly what
+    Postgres accepts for a uuid column. Mirrors `_looks_like_uuid` in
+    `prototypes/hosted-mcp/server.py` — see `tests/test_resolver_parity.py`.
+    """
+    try:
+        uuid.UUID(str(value))
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
+
+
 def _resolve_project_id(client, project_code: str) -> str | None:
     """Resolve a project identifier to its `projects.id`, bridging two id forms.
 
@@ -935,9 +950,38 @@ def _resolve_project_id(client, project_code: str) -> str | None:
          ``companies.code`` (case-insensitive) + ``projects.number``. This is
          the legacy bridge for the number-last form (``ibx-5192``).
 
+    Ahead of all four, a bare ``projects.id`` (or ``initiatives.id``) UUID is
+    accepted (#243). It is the one identifier that can never be ambiguous
+    across the three naming strings, and ``cp.md``'s ``MC-id:`` anchor already
+    carries it — so an agent reading the tenant tree has it in hand. The parse
+    guard matters twice over: filtering a uuid column with a malformed string
+    ERRORS in Postgres rather than missing, and without the short-circuit
+    branch 3 below would split a uuid on its first ``-`` and scan
+    ``ilike("code", "4e39be45-%")`` — a table scan on a hex fragment that can
+    never be a company code.
+
+    Kept behaviourally identical to ``resolve_project_id`` in
+    ``prototypes/hosted-mcp/server.py``; ``tests/test_resolver_parity.py``
+    fails if the two drift.
+
     Returns the project id, or ``None`` when nothing resolves.
     """
     from cp_engine.state import slug_full_job_name
+
+    if _looks_like_uuid(project_code):
+        for table in (Tables.PROJECTS, Tables.INITIATIVES):
+            rows = (
+                client.table(table)
+                .select("id")
+                .eq("id", project_code)
+                .limit(1)
+                .execute()
+                .data
+                or []
+            )
+            if rows:
+                return rows[0]["id"]
+        return None
 
     rows = (
         client.table(Tables.PROJECTS)
