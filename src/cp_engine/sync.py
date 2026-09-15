@@ -269,7 +269,11 @@ def _sync_tenant_inner(
     # when the CP doesn't exist or has no human-written content yet — in
     # that case the master-CP renders an empty summary cell.
     projects = tuple(
-        replace(p, one_line_summary=_derive_summary(config, p))
+        replace(
+            p,
+            one_line_summary=_derive_summary(config, p),
+            summary_stale_days=_derive_summary_stale_days(config, p),
+        )
         for p in projects
     )
 
@@ -1837,6 +1841,65 @@ def _derive_summary(config: TenantConfig, project: ProjectState) -> str | None:
     if existing is None:
         return None
     return derive_from_project_cp(existing / "cp.md")
+
+
+def _derive_summary_stale_days(
+    config: TenantConfig, project: ProjectState
+) -> int | None:
+    """How far the project's hand-written Exec Summary trails its activity.
+
+    The summary the master-CP renders is hand-written and nothing automated
+    refreshes it (`_derive_summary` reads it; no writer maintains it), so a
+    project can be worked daily while its one-liner sits months out of date —
+    and the table presents that prose as current. This measures the gap so the
+    index can say so instead of hiding it.
+
+    Activity is measured from the project's own SPINE FILES on disk, not from
+    `project.last_touched`. That field is MC-2's `projects.updated_at`, which
+    tracks edits to the job RECORD — it read 2026-08-10 for ggl-5136 while that
+    project's spine had been authored the same morning, so using it would have
+    under-reported the very gap this measures. The spine is where the work
+    actually lands, so its newest mtime is the honest activity date.
+
+    Returns None when either date is unknown or the gap is inside the
+    threshold — see summary_stale_days.
+    """
+    from cp_engine.summary import exec_summary_updated_on, summary_stale_days
+
+    scope = account_scope_for(project)
+    existing = _find_project_dir(
+        scope_root(config.root, scope), project.code, project.mc2_id
+    )
+    if existing is None:
+        return None
+
+    return summary_stale_days(
+        exec_summary_updated_on(existing / "cp.md"),
+        _latest_spine_activity(existing),
+    )
+
+
+def _latest_spine_activity(project_dir: Path) -> date | None:
+    """Newest mtime under the project's `spine/`, or None when it has none.
+
+    Filesystem mtime is the right clock here despite being a proxy: sync writes
+    these files, so a file that changed is work that arrived, and the check is
+    "has anything happened since the summary was written" — not an audit trail.
+    """
+    spine = project_dir / "spine"
+    if not spine.is_dir():
+        return None
+    try:
+        newest = max(
+            (f.stat().st_mtime for f in spine.rglob("*.md") if f.is_file()),
+            default=None,
+        )
+    except OSError:
+        logger.exception("Could not stat spine files under %s", spine)
+        return None
+    if newest is None:
+        return None
+    return datetime.fromtimestamp(newest).date()
 
 
 _SCOPE_DIRS: tuple[str, ...] = ("1p", "firstpersonsf", "canonic")

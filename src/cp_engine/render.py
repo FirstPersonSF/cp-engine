@@ -1384,6 +1384,9 @@ def _project_view(p: ProjectState) -> dict:
         "owner": p.owner,
         "last_touched_short": _short(p.last_touched),
         "one_line_summary": p.one_line_summary,
+        # None when current/undatable; an int (days) when the hand-written
+        # Exec Summary this one-liner comes from trails real activity.
+        "summary_stale_days": p.summary_stale_days,
         # Engagement-only
         "deal_stage": p.deal_stage,
         "budget": p.budget,

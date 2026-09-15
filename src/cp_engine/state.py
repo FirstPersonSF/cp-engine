@@ -169,6 +169,13 @@ class ProjectState:
     deadline: datetime | None  # not tracked yet for either source
     one_line_summary: str | None = None  # regenerated during deepening pass
 
+    # Days the hand-written Exec Summary trails real project activity, or None
+    # when it is current / undatable. The one_line_summary above is derived
+    # from that hand-written region and nothing automated refreshes it, so a
+    # busy project can render months-old prose as current fact. Set during the
+    # same deepening pass; see summary.summary_stale_days.
+    summary_stale_days: int | None = None
+
     # MC-2 row uuid (`id`). Threaded through so the spine mirror
     # (slice 2) can key `spine_elements.project_id` without re-querying.
     # All three sources carry an `id`; None only when a fake/legacy state
