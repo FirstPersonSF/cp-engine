@@ -20,6 +20,12 @@ on:
   pull_request:
   push:
     branches: [main]
+  # Manual trigger, so the gate can be exercised without inventing a commit —
+  # the case that prompted it: verifying the GH_PAT above still authenticates
+  # after the secret is rotated. A PAT expiry otherwise stays invisible until
+  # the next PR happens to run, and then reads as an install-time 403 on a
+  # dependency rather than as an auth problem.
+  workflow_dispatch:
 
 concurrency:
   # A new push to the same ref supersedes the run in flight; main is never
