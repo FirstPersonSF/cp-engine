@@ -140,9 +140,20 @@ def test_slack_action_resolve_risk_acks_immediately_and_queues_work(
     assert resp.status_code == 200, resp.text
     assert resp.json().get("queued") is True
 
-    # Background task should have run by now.
-    for _ in range(50):
-        if called:
+    # Wait for the background task to FINISH, not to start.
+    #
+    # WHY THIS WAITS ON update_calls. The handler calls
+    # `_run_plan_for_one_item` (which fills `called`) and only then
+    # `_post_response_url_update` (which appends to `update_calls`). A loop
+    # that breaks on `called` therefore releases one call too early, and the
+    # `len(update_calls) == 1` assertion below races the task it is meant to
+    # observe. It passes on a fast machine and loses on a loaded CI runner —
+    # observed on run 35020197602, where this was the only failure in 3,187
+    # tests on a commit that changed nothing but version strings.
+    #
+    # Waiting on the LAST side effect makes the wait cover every earlier one.
+    for _ in range(200):
+        if update_calls:
             break
         time.sleep(0.01)
 
