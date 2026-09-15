@@ -74,10 +74,14 @@ def _is_stream(row: dict) -> bool:
     the field AND `classify()` itself had to infer, so a row that classifies
     confidently as a card is never re-litigated by a string list.
     """
-    from cp_engine.card_class import classify, classify_is_inferred, is_card
+    from cp_engine.card_class import classify, classify_is_inferred
 
     if not classify_is_inferred(row):
-        return not is_card(row)
+        # #179: `is_stream` is the Stream question specifically. `not is_card`
+        # would also sweep up REFERENCE — the 245 authored, deliberately
+        # unbound elements (Stakeholders, Retrospectives, unrouted synthesis)
+        # that are correct as they are and are NOT stubs to be collapsed.
+        return classify(row).is_stream
     # `classify()` guessed too — prefer the narrow historical list over its
     # broader inference, since this sweep's contract is Source material only.
     return _norm(row.get("layer")) in SOURCE_LAYERS

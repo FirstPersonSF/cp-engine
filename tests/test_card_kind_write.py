@@ -1,4 +1,9 @@
-"""`card_kind` is written only where structure decides it.
+"""#179 NOTE: a `context` row with no body and no sources is REFERENCE, not
+ATTACHMENT — authored content nobody has routed. ATTACHMENT now means capture
+specifically (short body + a pointer at the asset it wraps). The `_row`
+fixture below carries neither, so every context case here is Reference.
+
+`card_kind` is written only where structure decides it.
 
 The load-bearing property is the NEGATIVE one: a row this module cannot
 classify structurally must be left NULL, not filled with a plausible guess.
@@ -43,12 +48,12 @@ def test_context_placement_on_activity_layer_is_an_attachment():
     alone. Placement resolves it.
     """
     row = _row(layer="Activity", placement="context")
-    assert classify(row) is CardKind.ATTACHMENT
+    assert classify(row) is CardKind.REFERENCE
 
 
 def test_placement_beats_ambiguous_layer_both_ways():
     assert classify(_row(layer="Email", placement="item")) is CardKind.ACTIVITY
-    assert classify(_row(layer="Email", placement="context")) is CardKind.ATTACHMENT
+    assert classify(_row(layer="Email", placement="context")) is CardKind.REFERENCE
 
 
 def test_deliverable_layer_outranks_placement():
@@ -65,7 +70,7 @@ def test_engagement_id_wins_outright():
 def test_no_placement_falls_back_to_the_layer_rule():
     """Pre-mig-070 rows and partial dicts keep the original behaviour."""
     assert classify(_row(layer="Activity", placement=None)) is CardKind.ACTIVITY
-    assert classify(_row(layer="Note", placement=None)) is CardKind.ATTACHMENT
+    assert classify(_row(layer="Note", placement=None)) is CardKind.REFERENCE
 
 
 # ── ambiguity ─────────────────────────────────────────────────────────
@@ -115,13 +120,26 @@ def test_plan_counts_match_the_measured_shape():
         "engagement": 10,
         "deliverable": 18,
         "activity": 15,
-        "attachment": 228,
+        # #179: the old single "attachment" bucket now splits into capture
+        # (attachment) and authored-but-unrouted (reference). These fixtures
+        # carry no body or sources, so all of it lands in reference.
+        "reference": 228,
     }
-    cards = sum(n for k, n in plan.counts.items() if k != "attachment")
+    cards = sum(
+        n for k, n in plan.counts.items() if k not in ("attachment", "reference")
+    )
     assert cards == 43
 
 
 def test_an_unclassifiable_row_never_becomes_a_card_by_accident():
-    """Defence in depth: the default must be attachment, never a card kind."""
+    """Defence in depth: the default must never be a WORK kind.
+
+    #179 split the old default in two — a context row with no capture markers
+    is `reference` (authored, unrouted), and only the ingest's own wrapper is
+    `attachment`. Either is safe; what must never happen is a bare row being
+    promoted to engagement/activity/deliverable.
+    """
     plan = build_plan([_row(id="a", layer=None, placement="context")])
-    assert plan.to_set == [("a", "attachment")]
+    assert plan.to_set == [("a", "reference")]
+    kind = plan.to_set[0][1]
+    assert kind not in ("engagement", "activity", "deliverable")

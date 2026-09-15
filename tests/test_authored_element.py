@@ -144,9 +144,12 @@ def test_build_create_rows_golden_vector():
         "version_note": None, "rel_path": None,
         "important": False, "note": None,
         # Stamped at write time (#179) so the column cannot go stale the way
-        # the one-time mig-140 backfill did — every authored element is
-        # placement='context', which is an attachment by construction.
-        "card_kind": "attachment",
+        # the one-time mig-140 backfill did. Every authored element is
+        # placement='context', and #179 split context in two: REFERENCE when
+        # somebody wrote it, `attachment` only for the ingest's own wrapper
+        # (a body under 200 chars pointing at the rag_asset it duplicates).
+        # This fixture's body is "b" with no sources — authored, so reference.
+        "card_kind": "reference",
     }]
 
 

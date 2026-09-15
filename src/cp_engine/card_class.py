@@ -72,11 +72,30 @@ class CardKind(str, Enum):
     ENGAGEMENT = "engagement"
     ACTIVITY = "activity"
     DELIVERABLE = "deliverable"
+    # Authored, durable, deliberately unbound — a Stakeholder dossier, a
+    # Retrospective, a synthesis nobody has routed yet. NOT a defect (#179).
+    REFERENCE = "reference"
+    # Capture. The ingest's own wrapper around a rag_asset it already points
+    # at: body under 200 chars, no thought in it.
     ATTACHMENT = "attachment"
 
     @property
     def is_card(self) -> bool:
-        return self is not CardKind.ATTACHMENT
+        """A unit of WORK. Reference is not work, but it is not capture either.
+
+        #179's three classes are Work (engagement/activity/deliverable),
+        Reference, and Stream (attachment). `is_card` answers the Work
+        question, so Reference is False here — see `is_stream` for the
+        distinction the sweeps actually need.
+        """
+        return self in (
+            CardKind.ENGAGEMENT, CardKind.ACTIVITY, CardKind.DELIVERABLE,
+        )
+
+    @property
+    def is_stream(self) -> bool:
+        """Capture, not content. The only class `stub_sweep` should touch."""
+        return self is CardKind.ATTACHMENT
 
 
 # The standing element that IS the engagement. Present on every project with a
@@ -116,6 +135,31 @@ def _norm(value) -> str:
     Strip to letters so both compare equal — same normalisation spine_lint
     settled on."""
     return re.sub(r"[^a-z]", "", str(value or "").lower())
+
+
+# A capture card is the ingest's wrapper around a document, not a thought.
+# Two signals, and they agreed on all 374 live context rows (2026-09-15):
+#
+#   * body under 200 chars — every Stream body measured 93–175, every
+#     Reference body 98–96,889 with a median in the thousands; and
+#   * it points at the asset it wraps — either a `sources` entry (126 of 129)
+#     or a `rag_asset:` line in the body itself (the 3 without sources).
+#
+# Requiring the length AND one pointer is what keeps a short authored note out
+# of Stream: a 150-char thought with no rag_asset stays Reference. Measured:
+# zero false positives in either direction.
+_CAPTURE_BODY_MAX = 200
+
+
+def _is_capture(row: dict) -> bool:
+    """True when this context row is the ingest's wrapper, not authored content."""
+    body = str(row.get("body") or "")
+    if len(body) >= _CAPTURE_BODY_MAX:
+        return False
+    sources = row.get("sources")
+    if isinstance(sources, (list, tuple)) and len(sources) > 0:
+        return True
+    return "rag_asset:" in body
 
 
 def classify(row: dict) -> CardKind:
@@ -159,15 +203,20 @@ def classify(row: dict) -> CardKind:
     if placement == "item":
         return CardKind.ACTIVITY
     if placement == "context":
-        # Context never occupies a slot, so it is never a card — including the
+        # Context never occupies a slot, so it is never WORK — including the
         # Activity-layer write-ups that the layer rule would have promoted.
-        return CardKind.ATTACHMENT
+        # But context is two things (#179): the ingest's own wrapper around a
+        # document (Stream) and authored, durable thinking nobody has routed
+        # (Reference). Measured 2026-09-15 across all 374 live context rows:
+        # 129 Stream, 245 Reference, and the two independent signals below
+        # agree on every one.
+        return CardKind.ATTACHMENT if _is_capture(row) else CardKind.REFERENCE
 
     # No placement recorded (pre-mig-070 rows, or a caller passing a partial
     # dict). Fall back to the original layer rule.
     if layer in {_norm(x) for x in _ACTIVITY_LAYERS}:
         return CardKind.ACTIVITY
-    return CardKind.ATTACHMENT
+    return CardKind.ATTACHMENT if _is_capture(row) else CardKind.REFERENCE
 
 
 def classify_is_inferred(row: dict) -> bool:
@@ -216,7 +265,13 @@ def attaches_to_engagement(row: dict) -> bool:
     they hang off the engagement rather than off a work card — which is what
     gives the 163 otherwise-homeless elements a home.
     """
-    if classify(row) is not CardKind.ATTACHMENT:
+    # #179 split the old single non-work class in two. Engagement-level
+    # material is USUALLY Reference (a Brief, an Agreement, a Retrospective —
+    # authored and substantial), but an ingested SOW wrapper is Stream and
+    # hangs off the engagement just the same. The question here is "does this
+    # belong to the engagement rather than to a work card", which is about the
+    # LAYER, not about which of the two non-work classes it landed in.
+    if classify(row).is_card:
         return False
     return _norm(row.get("layer")) in {_norm(x) for x in ENGAGEMENT_LEVEL_LAYERS}
 
