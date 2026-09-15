@@ -4,6 +4,29 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.116.1 — 2026-09-14
+
+- **A bare-string `account_summary` no longer discards the whole plan (#254).**
+  The 1p sprint-planning ingest failed with `plan.account_summary[0] must be a
+  mapping`: the model had returned `account_summary: ["..."]` — a list of
+  strings — where the validator required a mapping.
+
+  The prompt caused it. It showed `account_summary:` followed by an indented
+  `text:` and called it "ONE entry", which reads naturally as a list of one.
+  **The cost was the entire plan:** 18 projects of correctly-routed content
+  discarded, after a ~55-second model call, because one field had the wrong
+  wrapper. `_write_account_summary` reads only `text` (company and week are
+  injected server-side), so the intent of a string was never ambiguous.
+
+  Both ends fixed: the prompt now says "A MAPPING, not a list" in both the
+  account-meeting and sprint-planning templates and names the consequence, and
+  the validator coerces a bare string to `{"text": s}`. **The caller's outer
+  shape is preserved** — a scalar in gets a scalar back, because always
+  listifying is a silent API change for `generate_account_plan`, which stamps
+  company/week onto whichever shape it produced. An empty string and a
+  non-string non-mapping still raise: coercion is for a shape mistake, not for
+  missing content.
+
 ## v0.116.0 — 2026-09-14
 
 **The Exec Summary gets a writer.** The theme of this release is one seam:
