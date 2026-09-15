@@ -319,9 +319,12 @@ projects:                     # one entry per project that has content
         category: "schedule"
         date: "YYYY-MM-DD"
 
-account_summary:              # ONE entry — paragraph capturing the gestalt
+account_summary:              # A MAPPING, not a list. Exactly one.
   text: "..."                  # 60–150 words, narrative not bullet list
   # company + week are injected server-side; you don't need them
+  # NOTE: `account_summary` takes a mapping with a `text:` key — NOT a list
+  # of strings, and NOT a bare string. A list here fails validation and the
+  # ENTIRE plan is discarded, every project's routing with it.
 
 account_decisions:            # OPTIONAL — tenant-wide decisions
   - text: "..."
@@ -769,9 +772,12 @@ projects:                     # one entry per project that has content
         category: "schedule"
         date: "YYYY-MM-DD"
 
-account_summary:              # ONE entry — paragraph capturing the gestalt
+account_summary:              # A MAPPING, not a list. Exactly one.
   text: "..."                  # 80–200 words, narrative not bullets
   # company + week injected server-side; you don't need them
+  # NOTE: `account_summary` takes a mapping with a `text:` key — NOT a list
+  # of strings, and NOT a bare string. A list here fails validation and the
+  # ENTIRE plan is discarded, every project's routing with it.
 
 account_decisions:            # OPTIONAL — tenant-wide decisions
   - text: "..."
