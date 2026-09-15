@@ -333,6 +333,14 @@ account_decisions:            # OPTIONAL — tenant-wide decisions
 
 # Rules
 
+0. **One verb name per concept, and never a global list.** Use `asks`,
+   `decisions`, `risks` — NOT their canonical aliases (`record-ask`,
+   `add-decision`, `record-risk`) — and never both. On 2026-09-15 a plan used
+   `asks` per-project AND `record-ask` carrying the same six items under all
+   18 projects: 108 bullets where 6 belonged, a Teleflex ask filed on a Google
+   project. **If an item belongs to the week rather than to a project, it does
+   not go in `projects` at all.**
+
 1. **Route per-project, don't broadcast.** A bullet for `ggl-5168` should
    only land in `projects.ggl-5168`. If content mentions multiple
    projects, split it. If it's truly cross-cutting (affects all
@@ -785,6 +793,14 @@ account_decisions:            # OPTIONAL — tenant-wide decisions
 ```
 
 # Rules
+
+0. **One verb name per concept, and never a global list.** Use `asks`,
+   `decisions`, `risks` — NOT their canonical aliases (`record-ask`,
+   `add-decision`, `record-risk`) — and never both. On 2026-09-15 a plan used
+   `asks` per-project AND `record-ask` carrying the same six items under all
+   18 projects: 108 bullets where 6 belonged, a Teleflex ask filed on a Google
+   project. **If an item belongs to the week rather than to a project, it does
+   not go in `projects` at all.**
 
 1. **Route per-project, don't broadcast.** A bullet for `ggl-5168`
    only goes in `projects.ggl-5168`. Cross-project items belong in
