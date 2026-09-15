@@ -1387,6 +1387,9 @@ def _project_view(p: ProjectState) -> dict:
         # None when current/undatable; an int (days) when the hand-written
         # Exec Summary this one-liner comes from trails real activity.
         "summary_stale_days": p.summary_stale_days,
+        # (text, ISO date) of the newest decision since the summary was
+        # written — shown beside a stale summary, never in place of it.
+        "latest_signal": p.latest_signal,
         # Engagement-only
         "deal_stage": p.deal_stage,
         "budget": p.budget,

@@ -276,6 +276,14 @@ def _sync_tenant_inner(
         )
         for p in projects
     )
+    # SECOND pass, deliberately: `_derive_latest_signal` gates on
+    # `summary_stale_days`, which the pass above is what sets. Folding it into
+    # that same `replace()` reads the value off the OLD object, where it is
+    # still None, so the signal never resolves for anyone.
+    projects = tuple(
+        replace(p, latest_signal=_derive_latest_signal(config, p))
+        for p in projects
+    )
 
     # Read sprint allocations for the prior COMPLETED week (Monday-starting).
     # Bug #11: `_last_week_monday` returns the *upcoming sprint-planning*
@@ -1877,6 +1885,35 @@ def _derive_summary_stale_days(
         exec_summary_updated_on(existing / "cp.md"),
         _latest_spine_activity(existing),
     )
+
+
+def _derive_latest_signal(
+    config: TenantConfig, project: ProjectState
+) -> tuple[str, str] | None:
+    """The newest decision recorded since this project's summary was written.
+
+    Only computed for a project whose summary is already flagged stale — a
+    current summary needs no second opinion beside it, and offering one would
+    imply the summary is wrong when it is not.
+    """
+    from cp_engine.summary import exec_summary_updated_on, latest_recorded_signal
+
+    if project.summary_stale_days is None:
+        return None
+
+    scope = account_scope_for(project)
+    existing = _find_project_dir(
+        scope_root(config.root, scope), project.code, project.mc2_id
+    )
+    if existing is None:
+        return None
+
+    found = latest_recorded_signal(
+        config.root,
+        project.code,
+        newer_than=exec_summary_updated_on(existing / "cp.md"),
+    )
+    return (found[0], found[1].isoformat()) if found else None
 
 
 def _latest_spine_activity(project_dir: Path) -> date | None:
