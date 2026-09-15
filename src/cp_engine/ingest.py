@@ -1671,6 +1671,23 @@ def _write_account_summary(item: dict, weekly_cp_path: Path) -> bool:
         next_h2 = re.compile(r"^## ", re.MULTILINE)
         next_m = next_h2.search(body, pos=sec_match.end() + 1)
         insert_pos = next_m.start() if next_m else len(body)
+        # ...but never past a cp-engine marker. WHY THIS EXISTS: "the next
+        # `## `" is only the end of the handwritten zone when no managed
+        # region intervenes. In the cp tenant the next heading is
+        # `## Themes`, which lives INSIDE `cp-engine:start themes-strip` —
+        # so this function appended into cp-engine's own derived territory
+        # and the following `cp sync` regenerated the strip and deleted the
+        # bullet. Measured 2026-09-15: of 52 account summaries ever written
+        # to that file, 3 survived; 39 were removed across 18 sync runs, and
+        # in every one the count removed equalled the count sitting after
+        # the marker. The write reported success every time, so nothing
+        # surfaced the loss. The marker is a boundary in BOTH directions:
+        # the human must not write inside it, and neither may we.
+        marker_m = re.compile(r"^<!-- cp-engine:start ", re.MULTILINE).search(
+            body, pos=sec_match.end() + 1
+        )
+        if marker_m and marker_m.start() < insert_pos:
+            insert_pos = marker_m.start()
         # Preserve trailing newline structure inside the section.
         zone = body[sec_match.end():insert_pos]
         if not zone.endswith("\n"):
