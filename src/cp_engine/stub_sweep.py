@@ -50,11 +50,37 @@ STUB_BODY_MAX = 200
 _BOILERPLATE_RE = re.compile(
     r"^\s*ingested\s+(?:document|file|source)\s*:", re.IGNORECASE)
 
+# RETAINED as the fallback only. `_is_stream` below asks `card_class` first —
+# an element that is not a card IS Stream, whatever its layer string says.
+#
+# #179: "is this work?" was inferred from layer strings in four places, each
+# with its own hand-maintained list, and that inference is what broke in #172
+# (`Output` vs `Deliverables`). `card_kind` is the explicit answer; these
+# strings only cover rows written before the field existed, which is exactly
+# the case `classify()` already handles as its own fallback.
 SOURCE_LAYERS = ("source material", "sourcematerial", "source")
 
 
 def _norm(v: Any) -> str:
     return str(v or "").strip().lower()
+
+
+def _is_stream(row: dict) -> bool:
+    """True when this element is capture, not work (#179).
+
+    Asks `card_class.classify()` first — an element whose `card_kind` says
+    `attachment` IS Stream, and that is an explicit answer rather than a guess
+    at a layer string. Falls back to SOURCE_LAYERS only when the row predates
+    the field AND `classify()` itself had to infer, so a row that classifies
+    confidently as a card is never re-litigated by a string list.
+    """
+    from cp_engine.card_class import classify, classify_is_inferred, is_card
+
+    if not classify_is_inferred(row):
+        return not is_card(row)
+    # `classify()` guessed too — prefer the narrow historical list over its
+    # broader inference, since this sweep's contract is Source material only.
+    return _norm(row.get("layer")) in SOURCE_LAYERS
 
 
 @dataclass
@@ -139,7 +165,7 @@ def find_stubs(
     out: list[Stub] = []
     for row in rows:
         eid = row.get("est_item_id")
-        if not eid or _norm(row.get("layer")) not in SOURCE_LAYERS:
+        if not eid or not _is_stream(row):
             continue
         body = row.get("body") or ""
         if len(body) > body_max:

@@ -85,6 +85,22 @@ def _norm(value: str | None) -> str:
     return (value or "").strip().lower()
 
 
+def _is_deliverable(row: dict) -> bool:
+    """True when this element is a deliverable (#179).
+
+    Asks `card_class.classify()` first — `card_kind` is the explicit answer,
+    and this is the check that broke in #172 when `Output` was collapsed into
+    `Deliverables` and the string list had to be hand-maintained in two files.
+    Falls back to DELIVERABLE_LAYERS only when `classify()` itself inferred,
+    which is the same pre-field-existed case it already handles internally.
+    """
+    from cp_engine.card_class import CardKind, classify, classify_is_inferred
+
+    if not classify_is_inferred(row):
+        return classify(row) is CardKind.DELIVERABLE
+    return _norm(row.get("layer")) in DELIVERABLE_LAYERS
+
+
 def _as_date(value: Any) -> date | None:
     """Parse a date or timestamp column; None when absent or malformed."""
     if not value:
@@ -200,7 +216,7 @@ def build_rounds(
     shipped_ids = {
         eid
         for eid, r in by_id.items()
-        if _norm(r.get("layer")) in DELIVERABLE_LAYERS and r.get("version_label")
+        if _is_deliverable(r) and r.get("version_label")
     }
     feeding_unshipped: set[str] = set()
     for dst, sources in into.items():
