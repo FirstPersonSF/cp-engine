@@ -229,6 +229,15 @@ _POINTER_RE = re.compile(
     re.IGNORECASE)
 
 
+def _is_deliverable_row(row: dict) -> bool:
+    """True when this row is a deliverable — explicit `card_kind` preferred."""
+    from cp_engine.card_class import CardKind, classify, classify_is_inferred
+
+    if not classify_is_inferred(row):
+        return classify(row) is CardKind.DELIVERABLE
+    return _norm_layer(row.get("layer")) in ("deliverables", "output")
+
+
 def _first_version(label) -> bool:
     """True for v1 / V1 / 1 / v01 — a deliverable that never moved."""
     return bool(_FIRST_VERSION_RE.match(str(label or "")))
@@ -291,7 +300,10 @@ def lint_curation(rows: list[dict], *, today=None) -> list[str]:
         # scoped tightly on purpose: 13 of the tenant's 19 shipped deliverables
         # sit at v1, so "never versioned" alone would flag most of the layer
         # and teach the reader to skim past the lint.
-        if _norm_layer(layer) in ("deliverables", "output"):
+        # #179: the same question `seal_sweep._is_deliverable` asks. The
+        # duplicated string list here is what #172 broke; prefer the explicit
+        # `card_kind` and keep the strings as the pre-field fallback.
+        if _is_deliverable_row(row):
             # A deliverable names an artifact; these name an EVENT or a
             # REACTION to one. "Kick off and direction for Geoff Ahmann" and
             # "Clarification on the deliverable for Mehul" sat here for a
