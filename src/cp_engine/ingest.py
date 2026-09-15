@@ -24,6 +24,7 @@ from __future__ import annotations
 
 from cp_engine.mc2_db import Tables
 import hashlib
+import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -557,6 +558,8 @@ def _validate_plan(plan: dict) -> None:
                     f"plan.account_decisions[{i}] must be a mapping"
                 )
 
+    _warn_on_broadcast(plan)
+
     # Phase D.4: account_summary is a single dict (or list of one dict
     # for forwards compatibility) — one paragraph per (company, week).
     #
@@ -664,6 +667,97 @@ def _execute_step(
         # Themes are handled separately at the top level.
         raise IngestPlanError(f"verb {verb!r} is not project-scoped")
     return handler(code, item, sprint_path, today=today)
+
+
+# A verb's payload repeated verbatim across this many projects is a broadcast,
+# not routing. Three is deliberate: two projects legitimately share an item
+# (a joint decision, a shared risk), while three identical copies is the
+# signature of "here is the whole week's list, filed under everyone".
+_BROADCAST_THRESHOLD = 3
+
+
+def _warn_on_broadcast(plan: dict) -> None:
+    """Log when one verb's items are identical across many projects.
+
+    THE REPORT (2026-09-15). The 1p sprint-planning ingest wrote the SAME SIX
+    asks into all 18 projects — 108 bullets where 6 belonged. A Teleflex ask
+    and a SAP Concur ask both landed in the Google 5136 sprint file. The plan
+    was structurally valid and `execute_plan` faithfully wrote what it was
+    given; the model had put a global action-item list under every project.
+
+    The tell was visible in the plan and nothing looked for it: every project
+    carried `record-ask: 6` identically while `asks`, `risks` and `decisions`
+    all varied. The model had used BOTH `asks` (shorthand, routed correctly)
+    and `record-ask` (canonical, broadcast) as if they were different fields.
+
+    This does not refuse the plan — a broadcast is a judgement call and the
+    rest of the routing is usually right, so discarding it would cost more
+    than it saves (see the account_summary lesson in `_validate_plan`). It
+    logs at WARNING so the run's own record says what happened, which is what
+    was missing: the corruption reached `attention_digest` and nothing said a
+    word.
+    """
+    projects = plan.get("projects")
+    if not isinstance(projects, dict) or len(projects) < _BROADCAST_THRESHOLD:
+        return
+
+    # verb -> fingerprint of its item list -> the codes carrying it
+    seen: dict[str, dict[str, list[str]]] = {}
+    for code, verbs in projects.items():
+        if not isinstance(verbs, dict):
+            continue
+        for verb, items in verbs.items():
+            if not isinstance(items, list) or not items:
+                continue
+            try:
+                fingerprint = json.dumps(items, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                continue
+            seen.setdefault(_normalize_verb(verb), {}).setdefault(
+                fingerprint, []
+            ).append(code)
+
+    for verb, by_fingerprint in seen.items():
+        for codes in by_fingerprint.values():
+            if len(codes) >= _BROADCAST_THRESHOLD:
+                logger.warning(
+                    "BROADCAST: %r carries an identical payload on %d projects "
+                    "(%s%s) — the prompt asks for per-project routing, so this "
+                    "is very likely one list filed under everyone. Written as "
+                    "given; check the sprint files.",
+                    verb,
+                    len(codes),
+                    ", ".join(sorted(codes)[:4]),
+                    "…" if len(codes) > 4 else "",
+                )
+
+
+def _as_text(value: Any) -> str:
+    """A plan field as a string, whatever YAML made of it.
+
+    WHY THIS EXISTS. YAML parses an unquoted `date: 2026-09-15` as a
+    `datetime.date`, not a string. Every field reader here was written as
+    `_as_text(item.get("date")) or _as_text("")`, which raises
+
+        'datetime.date' object has no attribute 'strip'
+
+    the moment a model omits the quotes — and models omit them, because the
+    prompt's own examples show `date: "YYYY-MM-DD"` but nothing enforces it.
+    Measured on the 1p sprint-planning ingest of 2026-09-15: six writes lost
+    across ibx-5153 and sap-5174 (two decisions, two risks, a milestone),
+    each one silently dropped while the run reported partial success.
+
+    A date/datetime is rendered ISO, which is what every consumer expects;
+    anything else non-empty is `str()`-ed rather than refused, because a plan
+    that is 99% right should not lose a bullet over a type.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value).strip()
 
 
 def _content_hash(code: str, verb: str, text: str) -> str:
@@ -800,8 +894,8 @@ def _write_inbound(
     code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
 ) -> bool:
     text = _sanitize_inline_text(item.get("text") or "")
-    date_s = (item.get("date") or "").strip()
-    who = (item.get("who") or "").strip()
+    date_s = _as_text(item.get("date")) or _as_text("")
+    who = _as_text(item.get("who")) or _as_text("")
     if not text:
         raise IngestPlanError("inbound item missing 'text'")
     if not date_s:
@@ -892,13 +986,13 @@ def _write_ask(
     code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
 ) -> bool:
     text = _sanitize_inline_text(item.get("text") or "")
-    who = (item.get("who") or "").strip()
+    who = _as_text(item.get("who")) or _as_text("")
     # `due` is the issue-#70 alias for `by` — both name the ask's deadline.
-    by = (item.get("by") or item.get("due") or "").strip()
+    by = _as_text(item.get("by") or item.get("due")) or _as_text("")
     asked_date = (
         item.get("date") or item.get("asked_date") or _resolve_today_iso(today)
     ).strip()
-    status = (item.get("status") or "open").strip()
+    status = _as_text(item.get("status")) or _as_text("open")
     if not text:
         raise IngestPlanError("ask item missing 'text'")
     h = _content_hash(code, "record-ask", text)
@@ -1116,8 +1210,8 @@ def _write_close_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
     Task 1.7's ClickUp-close webhook and v0.14's Slack-action handler to
     distinguish automated closes from human-run close-ask plans.
     """
-    target_hash = (item.get("hash") or "").strip()
-    closed_by = (item.get("closed_by") or "").strip()
+    target_hash = _as_text(item.get("hash")) or _as_text("")
+    closed_by = _as_text(item.get("closed_by")) or _as_text("")
     if target_hash:
         open_bullet_re = re.compile(
             r"^(?P<prefix>- `?\[)open(?P<rest>[^\]]*\][^\n]*?cp:hash="
@@ -1125,7 +1219,7 @@ def _write_close_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
             re.MULTILINE,
         )
     else:
-        match_text = (item.get("text") or item.get("match") or "").strip()
+        match_text = _as_text(item.get("text") or item.get("match")) or _as_text("")
         if not match_text:
             raise IngestPlanError("close-ask item missing 'hash' or 'text'/'match'")
         # Find the first bullet under Open asks containing match_text, with status open.
@@ -1191,8 +1285,8 @@ def _write_risk(
     code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
 ) -> bool:
     text = _sanitize_inline_text(item.get("text") or "")
-    severity = (item.get("severity") or "watching").strip()
-    category = (item.get("category") or "").strip()
+    severity = _as_text(item.get("severity")) or _as_text("watching")
+    category = _as_text(item.get("category")) or _as_text("")
     raised = (
         item.get("date") or item.get("raised_date") or _resolve_today_iso(today)
     ).strip()
@@ -1223,8 +1317,8 @@ def _write_resolve_risk(
     `_write_close_ask`. The raised_date in the bracket stays unchanged
     (historical fidelity for "when did this become a risk?").
     """
-    target_hash = (item.get("hash") or "").strip()
-    closed_by = (item.get("closed_by") or "").strip()
+    target_hash = _as_text(item.get("hash")) or _as_text("")
+    closed_by = _as_text(item.get("closed_by")) or _as_text("")
     if not target_hash:
         raise IngestPlanError("resolve-risk item missing 'hash'")
 
@@ -1294,8 +1388,8 @@ def _write_snooze(
     `$` (line-end, MULTILINE) directly after the cp:hash comment; trailing
     markers would break them. The hash comment stays at end-of-line.
     """
-    target_hash = (item.get("hash") or "").strip()
-    until = (item.get("until") or "").strip()
+    target_hash = _as_text(item.get("hash")) or _as_text("")
+    until = _as_text(item.get("until")) or _as_text("")
     if not target_hash:
         raise IngestPlanError(f"snooze-{bullet_kind} item missing 'hash'")
     if not until:
@@ -1384,7 +1478,7 @@ def _write_slack_digest(code: str, item: dict, sprint_path: Path, **_) -> bool:
     no-op — the bullet is already present.
     """
     text = _sanitize_inline_text(item.get("text") or "")
-    week = (item.get("week") or "").strip()
+    week = _as_text(item.get("week")) or _as_text("")
     if not text:
         raise IngestPlanError("slack-digest item missing 'text'")
     if not week:
@@ -1442,7 +1536,7 @@ def _resolve_project_cp_path(tenant_root: Path, code: str) -> Path | None:
 
 
 def _write_theme(item: dict, week_path: Path) -> bool:
-    text = (item.get("text") or "").strip()
+    text = _as_text(item.get("text")) or _as_text("")
     date_s = (item.get("date") or _today_iso()).strip()
     if not text:
         raise IngestPlanError("theme item missing 'text'")
@@ -1474,8 +1568,8 @@ def _write_account_decision(item: dict, weekly_cp_path: Path) -> bool:
     Idempotency via content hash on (company, "record-account-decision",
     text). Re-running the same plan is a no-op.
     """
-    text = (item.get("text") or "").strip()
-    company = (item.get("company") or "").strip().lower()
+    text = _as_text(item.get("text")) or _as_text("")
+    company = _as_text(item.get("company")) or _as_text("").lower()
     date_s = (item.get("date") or _today_iso()).strip()
     if not text:
         raise IngestPlanError("account-decision item missing 'text'")
@@ -1546,9 +1640,9 @@ def _write_account_summary(item: dict, weekly_cp_path: Path) -> bool:
     different weeks doesn't false-collide; re-running for the same
     `(company, week)` is idempotent.
     """
-    text = (item.get("text") or "").strip()
-    company = (item.get("company") or "").strip().lower()
-    week = (item.get("week") or "").strip()
+    text = _as_text(item.get("text")) or _as_text("")
+    company = _as_text(item.get("company")) or _as_text("").lower()
+    week = _as_text(item.get("week")) or _as_text("")
     if not text:
         raise IngestPlanError("account-summary item missing 'text'")
     if not company:
@@ -1675,10 +1769,10 @@ def _write_milestone(
     """
     from cp_engine import commitments as _commitments
 
-    deliverable = (item.get("deliverable") or "").strip()
-    date_str = (item.get("date") or "").strip()
-    owner = (item.get("owner") or "").strip()
-    confidence = (item.get("confidence") or "").strip()
+    deliverable = _as_text(item.get("deliverable")) or _as_text("")
+    date_str = _as_text(item.get("date")) or _as_text("")
+    owner = _as_text(item.get("owner")) or _as_text("")
+    confidence = _as_text(item.get("confidence")) or _as_text("")
     if not deliverable:
         raise IngestPlanError("set-milestone item missing 'deliverable'")
     if not date_str:
@@ -1734,9 +1828,9 @@ def _write_client_ask_task(
     """
     from cp_engine import commitments as _commitments
 
-    what = (item.get("what") or "").strip()
-    from_party = (item.get("from_party") or "").strip()
-    expected_by = (item.get("expected_by") or "").strip()
+    what = _as_text(item.get("what")) or _as_text("")
+    from_party = _as_text(item.get("from_party")) or _as_text("")
+    expected_by = _as_text(item.get("expected_by")) or _as_text("")
     if not what:
         raise IngestPlanError("set-client-ask-task item missing 'what'")
     if not from_party:
