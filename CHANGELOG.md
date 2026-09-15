@@ -4,6 +4,30 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.116.3 — 2026-09-14
+
+- **Finishes the date coercion v0.116.2 only half-applied (#256).** The
+  previous release's fix passed every test and was still broken in production.
+  `_as_text()` was correct; its APPLICATION was not — a regex converted 29 call
+  sites and silently skipped five: three with a function-call fallback
+  (`or _resolve_today_iso(today)`, whose parentheses broke the pattern) and two
+  written across multiple lines, which a single-line regex cannot see.
+
+  So `decisions` worked while `record-ask` and `risks` still raised
+  `'datetime.date' object has no attribute 'strip'`. **The half-fix was worse
+  than none:** it made the crash look addressed while three verbs kept silently
+  losing writes.
+
+  The tests could not see it because they exercised `_as_text()` directly and
+  never ran a writer — a unit test of a helper cannot tell whether the helper
+  is wired in. Two new layers close that:
+  `TestUnquotedDatesThroughTheRealWriters` drives `execute_plan` with an
+  unquoted YAML date once per writer, and
+  `test_no_plan_field_strip_survives_in_the_source` walks every `.strip()` back
+  to its opening paren and fails if the expression touches `item.get`, catching
+  a reintroduction in any formatting anywhere in the file. Both were confirmed
+  to fail against the v0.116.2 source.
+
 ## v0.116.2 — 2026-09-14
 
 Two ingest failures from the 1p sprint-planning run of 2026-09-15. Both were
