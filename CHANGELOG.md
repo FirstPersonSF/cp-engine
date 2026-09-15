@@ -4,6 +4,42 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.116.6 — 2026-09-15
+
+- **The empty-tree guard moves to the SHARED commit tail (#237, #265).** The
+  original report — snooze reports `files_written` on a no-op, then dies on
+  "nothing to commit" — was fixed in `_commit_clickup_close`. One path. Four
+  other helpers kept the bug, including `_commit_with_message_and_push`, the
+  shared tail that `_commit_and_push` (auto-ingest), `_commit_and_push_promote`
+  (spine-promote), and the sessions / project-state / email routes all delegate
+  to.
+
+  `git commit` fails when a handler wrote nothing — a snooze whose bullet an
+  earlier delivery already flipped, a plan whose every verb was a no-op — and
+  `check=True` turns that benign case into a **500 after the caller has already
+  reported success**. Guarding the tail fixes three helpers at once plus every
+  direct caller; it returns `None` on a clean tree, matching
+  `_commit_clickup_close`'s proven contract.
+
+  One hazard the change introduced and closed: `spine.py` sliced
+  `commit_sha[:8]` at two sites, which raises `TypeError` on `None`. Both now
+  read `(commit_sha or "no-op")[:8]`. `slack.py` was already guarded — and its
+  "already in sprint file" message shows the no-op case was anticipated on the
+  snooze path all along, which is exactly the path #237 reported.
+
+  7 tests against a real git repo with a bare origin; 5 confirmed to fail with
+  the guard removed, including both delegating wrappers — which is what proves
+  the shared-tail fix reaches them.
+
+- **Tests await the background task rather than polling for its side effects
+  (#266).**
+
+**Also in this window, not a code change:** `WEBHOOK_REQUIRE_TIMESTAMP=true` is
+now set in production (#132). Replay protection is enforced — a legacy
+body-only signature and a stale timestamp both 401, a correctly timestamped
+request passes. The caller side had shipped on 2026-08-07; only the gate was
+outstanding.
+
 ## v0.116.5 — 2026-09-15
 
 **An account summary must not be written into a managed region (#263).**
