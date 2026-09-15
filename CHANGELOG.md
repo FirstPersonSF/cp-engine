@@ -4,6 +4,40 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.116.4 — 2026-09-15
+
+Both fixes come from the first real hosted-session use of
+`capture_project_state`, and both were mine.
+
+- **A multi-line string is bullets, not an inline value (#259).** The first
+  hosted write to a bulleted field glued the label onto the first bullet:
+
+      **Blockers:** - **Scoper P1 baseline has not run.** …
+      - **Scoper P3+ is gated…**
+
+  The caller had sent `Blockers` as ONE string with embedded newlines and
+  `_render_field` rendered it inline; the other four bullets survived only
+  because they already carried their own `- ` prefixes. Nothing was lost, but
+  the field read wrong in a file six consumers treat as project truth.
+
+  Two causes. The verb's signature typed `where_it_stands: list[str]` but
+  `next_up: str` and `blockers: str`, though all three render as bulleted
+  fields — a caller passing a string was doing what the signature asked. Both
+  are now `list[str]` and the docstring names the three bulleted fields
+  explicitly. And `_render_field` now SPLITS a multi-line string rather than
+  gluing it, stripping any `- ` the caller already supplied: a string
+  containing a newline can only be a caller who meant a list, and refusing it
+  would cost a write for a wrapper (the #254 judgement).
+
+- **`/health` no longer imports cp_engine (#258).** The endpoint added in #257
+  to answer "is my code actually running?" 500ed on its first production
+  request with `ModuleNotFoundError: No module named 'cp_engine'`. This
+  container installs six packages and cp-engine is not among them — the
+  module's own docstring states the convention and the health route broke it.
+  It passed locally only because a dev venv has the package. `tool_count` is
+  now the single answer this container gives, which is the right one anyway:
+  a verb added to the file changes the count whether or not a version moves.
+
 ## v0.116.3 — 2026-09-14
 
 - **Finishes the date coercion v0.116.2 only half-applied (#256).** The
