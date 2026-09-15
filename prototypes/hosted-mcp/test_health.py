@@ -48,9 +48,7 @@ async def test_health_reports_the_running_code(server):
     body = json.loads(resp.body)
 
     assert body["status"] == "healthy"
-    # The version that moves on a release.
-    assert body["cp_engine_version"]
-    # The structural check a version bump cannot give.
+    # The structural check, and the ONLY one this container can give.
     assert isinstance(body["tool_count"], int) and body["tool_count"] > 0
     assert body["server_version"].startswith("hosted-cp-spike/")
 
@@ -81,3 +79,36 @@ async def test_commit_is_unknown_rather_than_wrong(server, monkeypatch):
 @pytest.fixture
 def anyio_backend():
     return "asyncio"
+
+
+@pytest.mark.anyio
+async def test_health_does_not_need_cp_engine(server, monkeypatch):
+    """The container has no cp-engine. Neither may this endpoint.
+
+    The Dockerfile COPYs `server.py` and `observability.py` and installs six
+    packages; cp-engine is not one of them, by design (the module docstring
+    says this prototype does not import it). An endpoint that reaches for it
+    500s in production while passing locally -- which is exactly what happened
+    on 2026-09-15.
+
+    Blocking the import is the point: a test that merely calls health() in a
+    venv where cp_engine is importable cannot see the bug.
+    """
+    import sys
+
+    class _Block:
+        def find_module(self, name, path=None):
+            return self if name == "cp_engine" or name.startswith("cp_engine.") else None
+
+        def load_module(self, name):
+            raise ImportError(f"No module named {name!r}")
+
+    blocker = _Block()
+    monkeypatch.setattr(sys, "meta_path", [blocker, *sys.meta_path])
+    monkeypatch.delitem(sys.modules, "cp_engine", raising=False)
+
+    import json
+
+    body = json.loads((await server.health(None)).body)
+    assert body["status"] == "healthy"
+    assert "cp_engine_version" not in body
