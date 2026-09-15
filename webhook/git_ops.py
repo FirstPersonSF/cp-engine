@@ -254,15 +254,43 @@ def _push_with_retry(
             raise last_err
 
 
-def _commit_with_message_and_push(tenant_root: Path, message: str) -> str:
+def _commit_with_message_and_push(tenant_root: Path, message: str) -> str | None:
     """Stage all, commit with `message`, branch-rename, push, return HEAD SHA.
+
+    Returns **None when the working tree was already clean** — nothing was
+    committed and nothing pushed.
 
     The shared mechanical tail used by both `_commit_and_push` (auto-ingest)
     and `_commit_and_push_promote` (spine-promote). Each caller builds only its
     own commit message and delegates the `git add -A` / commit / CP_TENANT_BRANCH
     rename / `_push_with_retry` / `git rev-parse HEAD` sequence here.
+
+    THE EMPTY-TREE GUARD (#237). `git commit` fails with "nothing to commit"
+    when a handler wrote nothing — a snooze whose bullet was already flipped by
+    an earlier delivery, a plan whose every verb was a no-op. `check=True` then
+    turns a benign no-op into a 500, after the caller has already reported
+    `files_written`. `_commit_clickup_close` has carried this guard since the
+    original report; it was added to that ONE path while four other helpers
+    kept the bug. Guarding the shared tail fixes three of them at once
+    (`_commit_and_push`, `_commit_and_push_promote`, and every direct caller:
+    sessions, project-state, email).
+
+    Callers must treat `None` as success-with-nothing-to-do, not as failure.
     """
     env = _ssh_env()
+
+    # Short-circuit BEFORE `git add`, so a clean tree costs one cheap status
+    # call rather than a staged-then-failed commit.
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=tenant_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    if not status.stdout.strip():
+        log.info("nothing to commit (clean tree); skipping: %s", message.splitlines()[0])
+        return None
 
     subprocess.run(["git", "add", "-A"], cwd=tenant_root, check=True)
     subprocess.run(
@@ -296,8 +324,9 @@ def _commit_with_message_and_push(tenant_root: Path, message: str) -> str:
 
 def _commit_and_push(
     *, tenant_root: Path, meeting_id: str, ingested: list[dict]
-) -> str:
-    """Stage + commit + push. Returns the new HEAD SHA."""
+) -> str | None:
+    """Stage + commit + push. Returns the new HEAD SHA, or None on a clean
+    tree — see `_commit_with_message_and_push` (#237)."""
     # Subject attribution: prefer the codes that actually wrote files. If
     # NONE did (a transcript-only commit — persisted a transcript but wrote
     # no bullets), fall back to ALL entries' codes so the project is still
@@ -342,8 +371,9 @@ def _correlation_trailer() -> str:
 
 def _commit_and_push_promote(
     *, tenant_root: Path, project_code: str, version_label: str, rel_path: str
-) -> str:
-    """Stage + commit + push a spine-promote markdown write. Returns HEAD SHA.
+) -> str | None:
+    """Stage + commit + push a spine-promote markdown write. Returns HEAD SHA,
+    or None on a clean tree — see `_commit_with_message_and_push` (#237).
 
     Sibling of `_commit_and_push` (whose commit message is auto-ingest-shaped).
     A promote writes exactly one substance file; we stage everything (`git add

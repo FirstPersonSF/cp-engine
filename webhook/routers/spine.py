@@ -387,14 +387,14 @@ def _frame_promote_in_tree(
             "spine-promote: card flip to 'promoted' FAILED for %s after a "
             "successful push (%s) — version is durable in the repo; card shows "
             "un-promoted and a retry will re-distill a duplicate version: %s",
-            card.id, commit_sha[:8], exc,
+            card.id, (commit_sha or "no-op")[:8], exc,
         )
         observability.capture(exc, area="spine_promote_card_flip")
         card_flipped = False
 
     log.info(
         "spine-promote: card=%s item=%s %s -> %s (mirrored=%s flipped=%s new=%s)",
-        card.id, est_item_id, version_label, commit_sha[:8],
+        card.id, est_item_id, version_label, (commit_sha or "no-op")[:8],
         mirrored, card_flipped, created_new_element,
     )
 
