@@ -776,7 +776,10 @@ _AUDIT_SAFE_ARGS = {
 # Arg keys that are free text — recorded as a length only, never their content.
 # `body`/`description`/`framing`/`title` are USER PROSE: the whole point of the
 # audit table is to record that a write happened and by whom, never what it said.
-_AUDIT_REDACTED_ARGS = {"query", "body", "description", "framing", "title"}
+# `summary` is a session narrative (#247) — recorded as a LENGTH, never as
+# prose. It joins the redacted set rather than the safe one precisely because
+# it is the free-text param the allow-list docstring warns about.
+_AUDIT_REDACTED_ARGS = {"query", "body", "description", "framing", "title", "summary"}
 
 
 def sanitize_audit_args(args: dict[str, Any]) -> dict[str, Any]:
@@ -8108,6 +8111,147 @@ def _derive_workset_members(
         return [], err
 
     return sorted(found), None
+
+
+def call_mc2_capture_session(
+    project_code: str, summary: str, when: str | None
+) -> dict[str, Any]:
+    """POST the capture to mc-2 under the CALLER'S OWN JWT. Never raises.
+
+    Same shape and the same reasoning as `call_mc2_promote`: this server holds
+    no service key and no write access to the tenant, so the write is performed
+    upstream under the caller's identity rather than minted here.
+
+    **The user is NOT sent.** mc-2 derives it from the verified token — a
+    session file names its author, and that name is the capture's whole
+    provenance value, so it must never be a field this hop can set.
+    """
+    if not MC2_API_BASE:
+        return {
+            "ok": False,
+            "reason": "session capture unavailable: MC2_API_BASE not configured",
+            "degraded": True,
+        }
+
+    payload: dict[str, Any] = {"project_code": project_code, "summary": summary}
+    if when:
+        payload["when"] = when
+
+    try:
+        token = caller_jwt()
+    except RuntimeError as exc:
+        return {"ok": False, "reason": f"no authenticated caller: {exc}"}
+
+    try:
+        resp = httpx.post(
+            f"{MC2_API_BASE}/api/sessions/capture",
+            headers={"Authorization": f"Bearer {token}"},
+            json=payload,
+            timeout=MC2_TIMEOUT_SECONDS,
+        )
+    except httpx.TimeoutException:
+        return {
+            "ok": False,
+            "reason": (
+                f"mc-2 session capture timed out after {MC2_TIMEOUT_SECONDS:.0f}s. "
+                "The capture may still have landed — check the project's "
+                "sessions/ directory before retrying, or a duplicate file "
+                "appears."
+            ),
+            "timeout": True,
+        }
+    except httpx.HTTPError as exc:
+        return {"ok": False, "reason": f"could not reach mc-2: {type(exc).__name__}: {exc}"}
+
+    try:
+        body: Any = resp.json()
+    except ValueError:
+        body = resp.text[:400]
+
+    if 200 <= resp.status_code < 300:
+        return {"ok": True, "status": resp.status_code, "backend": body}
+
+    detail = body.get("detail") if isinstance(body, dict) else str(body)
+    detail = str(detail)[:400]
+    if resp.status_code in (401, 403):
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "reason": f"mc-2 refused the caller's token: {detail}",
+            "unauthorized": True,
+        }
+    if resp.status_code == 404:
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "reason": f"no working dir for {project_code!r}: {detail}",
+            "not_found": True,
+        }
+    return {"ok": False, "status": resp.status_code, "reason": detail}
+
+
+@mcp_server.tool()
+def capture_session(
+    project_code: str, summary: str, when: str | None = None
+) -> dict[str, Any]:
+    """Write this session's summary into the project's `sessions/`, under your identity.
+
+    THE ONE WRITE THAT REACHES THE REPO. Every other verb here lands a row in
+    MC-2; this one lands a FILE, because the thing it feeds is derived from the
+    filesystem: `**Last session:**` is a projection of the working dir's
+    `sessions/` directory, recomputed by globbing it on every `cxp sync`. A
+    capture stored only as a row would never move that line.
+
+    WHY IT EXISTS (#247). `/cp-wrapup` and `cxp capture-session` are LOCAL —
+    they need a checkout — and this server holds a read-only deploy key by
+    design. So a hosted-only user could do a great deal of durable work and
+    still leave no trace of the REASONING behind it. Measured 2026-09-14: one
+    teammate had 134 writes across 11 engagements, 1 git commit ever, and 0
+    session files, while 83 of the tenant's 84 session files belonged to one
+    person. The content was never at risk; the narrative was.
+
+    The write is DELEGATED (the `promote_spine_transcript` path): your token
+    goes to mc-2, which derives your name from it and proxies to
+    cp-engine-webhook, the one service holding a write key. **You cannot set
+    the author** — a session file's whole provenance value is whose name is on
+    it.
+
+    What to write: the same thing a wrap-up would say. What you set out to do,
+    what you decided and why, what you left open. Not a diff — the commits
+    already carry that.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code
+                      (e.g. "ggl-5151-grc-narrative", "mission-control").
+        summary: the session narrative, markdown. Must be real prose.
+        when: optional ISO timestamp; defaults to now. Names the file.
+
+    Returns `{ok, backend: {session_path, commit, cp_md_updated}}` on success,
+    or `{ok: false, reason, ...}` — never raises.
+    """
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    summary = (summary or "").strip()
+    if len(summary) < 20:
+        return {
+            "ok": False,
+            "reason": (
+                "summary must be real prose — an empty capture would advance "
+                "the Last session line while saying nothing"
+            ),
+        }
+
+    result = call_mc2_capture_session(project_code, summary, when)
+    audit(
+        client,
+        "capture_session",
+        {"project_code": project_code, "summary": summary},
+        1 if result.get("ok") else 0,
+    )
+    return result
 
 
 @mcp_server.tool()
