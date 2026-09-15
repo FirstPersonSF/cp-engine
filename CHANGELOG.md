@@ -4,6 +4,75 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.116.0 — 2026-09-14
+
+**The Exec Summary gets a writer.** The theme of this release is one seam:
+the Exec Summary is the most-READ surface in the system and, until now, the
+least-WRITTEN.
+
+- **The model can write the summary it already owns (#251, #253).** Six
+  consumers treat the exec-summary region as durable project truth — the
+  master-CP one-liner, the agenda, the planning bundle, `cxp brief`, the lint,
+  and hosted MCP's own `get_project_state` — and it had three writers, none of
+  which author prose: a one-time migration, the `**Last session:**` line, and a
+  manual escape hatch. Measured on the live tenant 2026-09-14: **131 of 140**
+  exec-summary rewrites in 90 days were one person, and **13 of 23**
+  engagements carried summaries 30–62 days stale while ~7MB of meeting, sprint
+  and spine content accumulated in surfaces no index reads.
+
+  `docs/plans/2026-06-30-exec-summary.md` gave the engine *scaffold + read +
+  render* and the **model** *all prose*. That seam was right, and it assumed
+  the model would be invoked at wrap-up, per project, reliably. The move to
+  hosted MCP then put the model somewhere that **cannot write a tenant file** —
+  the hosted server holds a read-only deploy key by construction. So the model
+  owned the prose, worked from hosted, and could not put the prose where it
+  belongs. `capture_project_state` is the missing half, **not a reversal**: the
+  caller writes every word and the engine only splices it.
+
+      hosted capture_project_state  --caller's own JWT-->  mc-2
+      mc-2                          --HMAC------------->  cp-engine-webhook
+      webhook                       --write deploy key->  the repo
+
+  **Per-field, not whole-region**, and the tenant's own history is why: of 45
+  exec-summary rewrites over 60 days, **26 touched exactly one field**. A
+  whole-region verb would make that 58% case the destructive one — a caller
+  sending only `Status` silently blanks the other seven. Merging by field also
+  makes optimistic concurrency unnecessary (137 rewrites produced 6 same-DAY
+  collisions and zero same-minute), so there is no read-back round trip.
+
+  **The no-op is load-bearing:** re-sending a field's existing value returns
+  `changed: []`, commits nothing, and leaves the `· updated` stamp alone.
+  Otherwise a retry after a timeout — or any scheduled caller — would
+  manufacture freshness on a summary nobody refreshed.
+
+- **`master-cp.md` says when a summary has stopped tracking the work (#249).**
+  Renders `⚠️ summary 62d stale` when the hand-written summary trails real
+  activity by ≥30 days. Activity is measured from the project's SPINE files,
+  not `projects.updated_at` — that field tracks edits to the job record and
+  read 2026-08-10 for ggl-5136 while its spine had been authored the same
+  morning, which would have under-reported the very gap being measured. Two
+  guards, both tested: a summary written AFTER the work is current (not "-7d
+  stale"), and an unstamped summary is unknowable rather than old.
+
+- **…and what happened since (#252).** Auto-ingest has been recording dated
+  `[decision · YYYY-MM-DD]` bullets into sprint files on every meeting — 430
+  ingests in 90 days — and no renderer read them. All 13 stale engagements had
+  a decision newer than their summary. The newest one now renders beside the
+  staleness marker, attributed and dated. It authors nothing; it surfaces a
+  sentence a person already wrote.
+
+- **Hosted `capture_session` (#247, #248).** A hosted-only user could do a
+  great deal of durable work and leave no session record, because
+  `/cp-wrapup` and `cxp capture-session` are local. Measured: one teammate had
+  134 hosted writes across 11 engagements, 1 git commit ever, and 0 session
+  files; 83 of the tenant's 84 session files belonged to one person. The
+  content was never at risk — the narrative was.
+
+- **The test gate can be triggered manually (#245 follow-up).**
+  `workflow_dispatch` on `tests.yml`, so the `GH_PAT` that authenticates seven
+  private dependencies can be verified on demand rather than discovered
+  expired at the next PR.
+
 ## v0.115.0 — 2026-09-14
 
 - **`card_kind` is stamped on the sync path too, and the stamp is pinned to the
