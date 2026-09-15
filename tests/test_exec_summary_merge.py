@@ -186,3 +186,63 @@ def test_blank_list_clears_a_bulleted_field():
     assert changed == ("Where it stands",)
     assert "20% of sites reviewed" not in out
     assert "**Next up:** Medium-effort integrations." in out
+
+
+# ── a multi-line string is bullets, not an inline value ───────────────
+#
+# THE REPORT (2026-09-15). A hosted caller sent `Blockers` as ONE string with
+# embedded newlines — five `- ` bullets in a single blob — because the verb's
+# signature typed it `str`. Rendered inline, the label swallowed the first
+# bullet and the field read:
+#
+#     **Blockers:** - **Scoper P1 baseline has not run.** …
+#     - **Scoper P3+ is gated…**
+#
+# The other four survived only because they already carried their own
+# prefixes. Nothing was lost, but the field read wrong in a file six consumers
+# treat as project truth. Fixed at both ends: the verb now types the three
+# bulleted fields `list[str]`, and a multi-line string is split rather than
+# glued.
+
+
+class TestMultilineStringBecomesBullets:
+    def test_the_reported_shape(self):
+        """The exact blob that produced the glued line."""
+        blob = (
+            "- **Scoper P1 baseline has not run.** Credentials expired.\n"
+            "- **Scoper P3+ is gated on the estimator rebuild.**\n"
+            "- **5151 regression, unfixed.**"
+        )
+        out, changed = merge_exec_summary_fields(
+            _cp(FULL), {"Blockers": blob}, today=TODAY
+        )
+        assert changed == ("Blockers",)
+        # The label must stand alone — this is the assertion that failed live.
+        assert "**Blockers:**\n- **Scoper P1 baseline has not run.**" in out
+        assert "**Blockers:** - " not in out
+
+    def test_existing_bullet_markers_are_not_doubled(self):
+        out, _ = merge_exec_summary_fields(
+            _cp(FULL), {"Blockers": "- one\n- two"}, today=TODAY
+        )
+        assert "- - one" not in out
+        assert "**Blockers:**\n- one\n- two" in out
+
+    def test_lines_without_markers_still_become_bullets(self):
+        out, _ = merge_exec_summary_fields(
+            _cp(FULL), {"Blockers": "one\ntwo"}, today=TODAY
+        )
+        assert "**Blockers:**\n- one\n- two" in out
+
+    def test_a_single_line_string_stays_inline(self):
+        """Unchanged behaviour: Status and Objective are prose, not lists."""
+        out, _ = merge_exec_summary_fields(
+            _cp(FULL), {"Status": "One phrase."}, today=TODAY
+        )
+        assert "**Status:** One phrase." in out
+
+    def test_a_list_is_still_the_preferred_shape(self):
+        out, _ = merge_exec_summary_fields(
+            _cp(FULL), {"Blockers": ["one", "two"]}, today=TODAY
+        )
+        assert "**Blockers:**\n- one\n- two" in out
