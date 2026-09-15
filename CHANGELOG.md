@@ -4,6 +4,47 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.116.2 — 2026-09-14
+
+Two ingest failures from the 1p sprint-planning run of 2026-09-15. Both were
+found by running the real thing, and neither failed loudly enough to stop it.
+
+- **Typed dates no longer lose writes (#255).** YAML parses an unquoted
+  `date: 2026-09-15` as a `datetime.date`, and all 29 plan field readers were
+  written as `(item.get("date") or "").strip()`:
+
+      'datetime.date' object has no attribute 'strip'
+
+  The run reported partial success while **silently dropping two decisions,
+  two risks and a milestone** across ibx-5153 and sap-5174. Adds `_as_text()`,
+  one coercion applied at all 29 sites: a date renders ISO, anything else
+  non-empty is `str()`-ed rather than refused, because a plan that is 99% right
+  should not lose a bullet over a type. The prompt shows `date: "YYYY-MM-DD"`
+  but nothing enforced the quotes, and nothing should have to.
+
+- **A broadcast is now noticed (#255).** The same run wrote the SAME SIX asks
+  into all 18 projects — **108 bullets where 6 belonged**, a Teleflex ask filed
+  on the Google 5136 sprint file. The plan was structurally valid and
+  `execute_plan` faithfully wrote what it was given; the model had put a global
+  action-item list under every project, using `asks` (routed correctly) and
+  `record-ask` (broadcast) as if they were different fields. Every project
+  carried `record-ask: 6` identically while asks/risks/decisions all varied —
+  the tell was in the plan and nothing looked for it.
+
+  `_warn_on_broadcast()` logs at WARNING when one verb's payload is identical
+  across ≥3 projects. Three, not two: two projects legitimately share a joint
+  decision; three identical copies is the signature of one list filed under
+  everyone. Shorthand and canonical verb names are normalized before
+  comparison, since the alias split is what hid this. It **warns, never
+  refuses** — a broadcast is a judgement call and the rest of the routing is
+  usually right, the same lesson as the `account_summary` coercion in #254.
+
+  It mattered because those asks feed `attention_digest`, which escalates
+  past-due asks to Slack: left alone it would have reported 108 open asks and
+  chased the wrong person about the wrong project. Both prompt templates gain
+  a rule 0 — one verb name per concept, and an item belonging to the week does
+  not go in `projects` at all.
+
 ## v0.116.1 — 2026-09-14
 
 - **A bare-string `account_summary` no longer discards the whole plan (#254).**
