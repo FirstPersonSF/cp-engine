@@ -4,6 +4,61 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.116.5 — 2026-09-15
+
+**An account summary must not be written into a managed region (#263).**
+
+`_write_account_summary` appended its bullet before the next `^## ` heading
+after `## Account summaries`. That is only the end of the handwritten zone
+when no managed region intervenes — and in the cp tenant it does not hold.
+The next heading there is
+
+    <!-- cp-engine:start themes-strip -->
+    ## Themes (auto-aggregated from sprints/<W##>/_week.md, last 2 weeks)
+
+so the bullet landed BETWEEN the marker and its heading, inside cp-engine's
+own derived territory. The write succeeded, the commit was real, and the next
+`cp sync` regenerated the strip and deleted the paragraph.
+
+**What it cost.** Of 52 account summaries ever written to that tenant's
+`weekly-cp.md`, 3 survived. 39 were removed by `[cp-sync]` across 18 separate
+runs since 2026-05-20, and in every one of those commits the number removed
+equalled exactly the number of bullets sitting after the first marker in the
+parent — no exceptions in 18 tries. Each lost paragraph had cost a model call
+over a full meeting transcript.
+
+**Why it hid for four months.** Every angle anyone checks looked healthy: the
+ingest reported success and its commit was real; sync was doing precisely its
+job regenerating a region it owns; the deletion rode inside a `[cp-sync]`
+commit carrying legitimate churn, so no diff read as a loss; and an account
+summary is a paragraph nobody is waiting for — unlike a per-project bullet,
+nobody opens `weekly-cp.md` hunting for the W31 TEL entry, so absence never
+surfaced as a complaint.
+
+This is the inverse of the rule the markers already carry. A generated region
+is a boundary in BOTH directions: the human must not hand-edit inside it, and
+neither may we. Only one direction had ever been written down.
+
+- **Fix:** `insert_pos` clamps to the first `cp-engine:start` at or after the
+  section start. The section-CREATION path had always avoided markers on
+  purpose ("so it joins the handwritten region rather than a managed strip");
+  only the append-to-existing-section path was unguarded.
+- **Tests:** eight, two of which fail against the pre-fix code (verified by
+  stashing the change). The one that matters regenerates the strip afterwards
+  — writing and reading back in the same place proves persistence, not
+  survival, so the only real evidence is the far side of the boundary.
+- **Not changed, but the same shape:** `ingest.py`'s sprint-file subsection
+  auto-create uses the same "next `^## `" pattern, and sprint files DO carry
+  markers with `## ` headings immediately inside them. Its insert path bounds
+  on `##` *or* `###`, which is tighter, and a sweep of sprint-file history
+  found no bullets lost this way. Left alone deliberately; if that bound ever
+  loosens, this bug returns there.
+
+Tenant recovery is separate from this release: 30 of the lost summaries were
+restored to `cp` from git history with their original `cp:hash` markers. The
+12 that humans removed in wrap-up and deepen commits were left alone — those
+were editorial, not this bug.
+
 ## v0.116.4 — 2026-09-15
 
 Both fixes come from the first real hosted-session use of
