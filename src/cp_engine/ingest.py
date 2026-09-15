@@ -990,8 +990,10 @@ def _write_ask(
     # `due` is the issue-#70 alias for `by` — both name the ask's deadline.
     by = _as_text(item.get("by") or item.get("due")) or _as_text("")
     asked_date = (
-        item.get("date") or item.get("asked_date") or _resolve_today_iso(today)
-    ).strip()
+        _as_text(item.get("date"))
+        or _as_text(item.get("asked_date"))
+        or _resolve_today_iso(today)
+    )
     status = _as_text(item.get("status")) or _as_text("open")
     if not text:
         raise IngestPlanError("ask item missing 'text'")
@@ -1264,7 +1266,7 @@ def _write_decision(
     code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
 ) -> bool:
     text = _sanitize_inline_text(item.get("text") or "")
-    date_s = (item.get("date") or _resolve_today_iso(today)).strip()
+    date_s = _as_text(item.get("date")) or _resolve_today_iso(today)
     cross = bool(item.get("cross_cutting") or item.get("cross-cutting") or False)
     if not text:
         raise IngestPlanError("decision item missing 'text'")
@@ -1288,8 +1290,10 @@ def _write_risk(
     severity = _as_text(item.get("severity")) or _as_text("watching")
     category = _as_text(item.get("category")) or _as_text("")
     raised = (
-        item.get("date") or item.get("raised_date") or _resolve_today_iso(today)
-    ).strip()
+        _as_text(item.get("date"))
+        or _as_text(item.get("raised_date"))
+        or _resolve_today_iso(today)
+    )
     if not text:
         raise IngestPlanError("risk item missing 'text'")
     h = _content_hash(code, "record-risk", text)
@@ -1537,7 +1541,7 @@ def _resolve_project_cp_path(tenant_root: Path, code: str) -> Path | None:
 
 def _write_theme(item: dict, week_path: Path) -> bool:
     text = _as_text(item.get("text")) or _as_text("")
-    date_s = (item.get("date") or _today_iso()).strip()
+    date_s = _as_text(item.get("date")) or _today_iso()
     if not text:
         raise IngestPlanError("theme item missing 'text'")
     h = _content_hash("__tenant__", "record-theme", text)
@@ -1570,7 +1574,7 @@ def _write_account_decision(item: dict, weekly_cp_path: Path) -> bool:
     """
     text = _as_text(item.get("text")) or _as_text("")
     company = _as_text(item.get("company")) or _as_text("").lower()
-    date_s = (item.get("date") or _today_iso()).strip()
+    date_s = _as_text(item.get("date")) or _today_iso()
     if not text:
         raise IngestPlanError("account-decision item missing 'text'")
     if not company:
