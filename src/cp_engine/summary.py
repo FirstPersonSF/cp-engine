@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import date
 from pathlib import Path
 
 from cp_engine.render import EXEC_SUMMARY_END, EXEC_SUMMARY_START
@@ -82,6 +83,75 @@ def derive_from_project_cp(file_path: Path) -> str | None:
     if summary is None:
         return None
     return enforce_summary_cap(summary)
+
+
+# The `## Exec Summary  ·  updated <date>` heading stamp. Mirrors
+# prep_planning._EXEC_SUMMARY_STAMP_RE — kept as its own copy because this
+# module deliberately imports nothing from prep_planning (a sync-path module
+# must not pull in the planning stack).
+_EXEC_SUMMARY_STAMP_RE = re.compile(
+    r"^##\s+Exec Summary\s*·\s*updated\s+(?P<date>\d{4}-\d{2}-\d{2})",
+    re.MULTILINE,
+)
+
+# How far the summary may fall behind real activity before it is called out.
+# 30 days is a sprint-and-a-half: long enough that a quiet engagement does not
+# trip it, short enough that "this is current" stops being a safe assumption.
+STALE_AFTER_DAYS = 30
+
+
+def exec_summary_updated_on(file_path: Path) -> date | None:
+    """The date this project CP's Exec Summary was last hand-written.
+
+    Reads the `## Exec Summary · updated <date>` heading stamp. Returns None
+    when the CP is missing, unreadable, or predates the stamp — an unstamped
+    summary is NOT treated as stale, because we cannot tell the difference
+    between old and merely unstamped, and guessing would flag the whole tenant.
+    """
+    if not file_path.exists():
+        return None
+    try:
+        contents = file_path.read_text()
+    except OSError:
+        logger.exception("Could not read %s", file_path)
+        return None
+
+    m = _EXEC_SUMMARY_STAMP_RE.search(contents)
+    if m is None:
+        return None
+    try:
+        return date.fromisoformat(m.group("date"))
+    except ValueError:
+        logger.warning("Unparseable Exec Summary stamp in %s", file_path)
+        return None
+
+
+def summary_stale_days(
+    updated_on: date | None,
+    last_activity: date | None,
+) -> int | None:
+    """Days the hand-written summary trails real project activity, or None.
+
+    WHY THIS EXISTS. The master-CP one-liner is derived from the Exec Summary,
+    which is hand-written prose — no sync, spine write or ingest ever refreshes
+    it. So a project can be worked on daily while its summary sits untouched
+    for months, and the index renders that old prose as though it were current
+    fact. Measured 2026-09-14: seven Google engagements shared an identical
+    `updated 2026-07-14` stamp while their spines had been written that same
+    morning — a 62-day gap, invisible in the table.
+
+    A stale summary is worse than an empty one: empty reads as "nobody has
+    said", stale reads as "this is how it is". Same reason a figure that
+    cannot be computed prints an em dash instead of a confident `$0`.
+
+    Returns None when either date is unknown (nothing to compare) or when the
+    gap is within STALE_AFTER_DAYS. Never returns a negative: a summary written
+    AFTER the last spine write is current, not stale by -7 days.
+    """
+    if updated_on is None or last_activity is None:
+        return None
+    gap = (last_activity - updated_on).days
+    return gap if gap >= STALE_AFTER_DAYS else None
 
 
 # ──────────────────────────────────────────────────────────────────────

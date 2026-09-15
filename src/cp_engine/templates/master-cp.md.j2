@@ -80,7 +80,7 @@ Sales-stage progression: Inquiry → Negotiation → Contract.
 | Account | Code | Project | Stage | Owner | Budget | Last touched | One-line summary | CP |
 |---|---|---|---|---|---|---|---|---|
 {%- for p in active_groups.pipeline %}
-| [{{ p.account_display }}]({{ p.account_link }}) | `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.deal_stage or "—" }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
+| [{{ p.account_display }}]({{ p.account_link }}) | `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.deal_stage or "—" }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-pipeline -->
 
@@ -93,7 +93,7 @@ _{{ section_summaries.client }}_
 | Account | Code | Project | Owner | Budget | Last touched | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
 {%- for p in active_groups.client %}
-| [{{ p.account_display }}]({{ p.account_link }}) | `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
+| [{{ p.account_display }}]({{ p.account_link }}) | `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-1p -->
 
@@ -119,7 +119,7 @@ _{{ section_summaries.self_fpsf_initiatives }}_
 | Code | Initiative | Owner | Status | Last touched | One-line summary | CP |
 |---|---|---|---|---|---|---|
 {%- for p in active_groups.self_fpsf_initiatives %}
-| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.name }} | {{ p.owner or "—" }} | {{ p.status }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
+| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.name }} | {{ p.owner or "—" }} | {{ p.status }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-fpsf-initiatives -->
 
@@ -145,7 +145,7 @@ _{{ section_summaries.self_canonic_initiatives }}_
 | Code | Initiative | Owner | Status | Last touched | One-line summary | CP |
 |---|---|---|---|---|---|---|
 {%- for p in active_groups.self_canonic_initiatives %}
-| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.name }} | {{ p.owner or "—" }} | {{ p.status }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
+| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.name }} | {{ p.owner or "—" }} | {{ p.status }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-canonic-initiatives -->
 
