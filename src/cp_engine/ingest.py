@@ -559,17 +559,48 @@ def _validate_plan(plan: dict) -> None:
 
     # Phase D.4: account_summary is a single dict (or list of one dict
     # for forwards compatibility) — one paragraph per (company, week).
+    #
+    # A BARE STRING IS COERCED, not rejected. The prompt shows
+    # `account_summary:` followed by an indented `text:` and calls it "ONE
+    # entry", which a model reasonably reads as a list — and one did, on the
+    # 09-15 1p sprint-planning ingest, returning `["..."]`. The whole plan was
+    # then discarded: 18 projects of correctly-routed content thrown away,
+    # after a ~55s model call, because one field had the wrong wrapper. The
+    # intent of a string here is unambiguous (`_write_account_summary` reads
+    # only `text`; company and week are injected server-side), so refusing it
+    # is pedantry that costs a full regeneration. The prompt was tightened in
+    # the same change; this is the belt to that braces.
     account_summary = plan.get("account_summary")
     if account_summary is not None:
         items = (
             account_summary if isinstance(account_summary, list) else [account_summary]
         )
+        coerced: list[dict] = []
         for i, item in enumerate(items):
+            if isinstance(item, str):
+                text = item.strip()
+                if not text:
+                    raise IngestPlanError(
+                        f"plan.account_summary[{i}] is an empty string"
+                    )
+                coerced.append({"text": text})
+                continue
             if not isinstance(item, dict):
                 raise IngestPlanError(
-                    f"plan.account_summary[{i}] must be a mapping "
+                    f"plan.account_summary[{i}] must be a mapping or a string "
                     "(or pass a single mapping for one entry)"
                 )
+            coerced.append(item)
+        # Hand the executor the normalized shape so the coercion is not
+        # re-derived — and cannot drift — at write time. The caller's OUTER
+        # shape is preserved: a plan that passed a single mapping gets a single
+        # mapping back. Always listifying would be a silent API change for
+        # `generate_account_plan`, which stamps company/week onto whichever
+        # shape it produced (plan_from_account_meeting.py:154).
+        if isinstance(account_summary, list):
+            plan["account_summary"] = coerced
+        else:
+            plan["account_summary"] = coerced[0]
 
 
 def _normalize_verb(verb: str) -> str:
