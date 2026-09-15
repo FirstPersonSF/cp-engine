@@ -30,6 +30,91 @@ def client() -> TestClient:
     return TestClient(webhook_main.app)
 
 
+@pytest.fixture
+def ctx_client():
+    """A TestClient entered as a context manager, so `.portal` is live.
+
+    A bare `TestClient(app)` creates a fresh blocking portal per request and
+    tears it down when the response returns — `client.portal` is None outside
+    the `with` block, and the loop a background task was scheduled on is gone
+    with it. Tests that need to AWAIT that task need the portal to outlive the
+    request, which is what entering the context manager buys.
+    """
+    import main as webhook_main
+
+    with TestClient(webhook_main.app) as c:
+        yield c
+
+
+@pytest.fixture
+def spawned(monkeypatch) -> list:
+    """Capture every task `_spawn_background` creates, so a test can AWAIT it.
+
+    WHY THIS EXISTS. These tests used to poll for a side effect:
+
+        for _ in range(50):
+            if called:
+                break
+            time.sleep(0.01)
+
+    That asks "has the background task produced its FIRST side effect yet?"
+    and then asserts on its LAST one. The gap between the two is a window
+    whose width is set by how loaded the machine is, so the suite passes on a
+    laptop and loses on a CI runner — observed on run 35020197602, the only
+    failure in 3,187 tests, on a commit that changed nothing but version
+    strings, and green again on a rerun of the identical SHA.
+
+    Widening the poll would only narrow the window. This removes it: the task
+    object itself is the thing to wait on, and `asyncio.Task` already knows
+    precisely when it is done. `_background_tasks` in pipeline.py cannot serve
+    here — its done-callback discards each task on completion, so reading it
+    after the fact is the same race in a different costume.
+
+    Yields the list of spawned tasks; pair it with `drain()` below.
+    """
+    import pipeline
+
+    tasks: list = []
+    real_spawn = pipeline._spawn_background
+
+    def capturing_spawn(coro) -> None:
+        # Delegate so strong-ref retention and the done-callback still apply;
+        # reach into the module's set for the task object it just made.
+        before = set(pipeline._background_tasks)
+        real_spawn(coro)
+        new = set(pipeline._background_tasks) - before
+        tasks.extend(new)
+
+    monkeypatch.setattr(pipeline, "_spawn_background", capturing_spawn)
+    # The slack router imported the name directly, so patch that binding too.
+    monkeypatch.setattr(slack_router.pipeline, "_spawn_background", capturing_spawn)
+    return tasks
+
+
+def drain(client: TestClient, tasks: list, timeout: float = 10.0) -> None:
+    """Block until every captured background task has finished.
+
+    Runs on the app's own event loop via the TestClient's portal, so this is
+    an actual await on the task rather than a sleep that hopes. The timeout is
+    a deadlock guard, not a race window: a correct task completes immediately
+    and a hung one fails loudly instead of silently asserting on empty state.
+    """
+    import asyncio
+
+    if not tasks:
+        raise AssertionError(
+            "no background task was spawned — the handler never reached "
+            "_spawn_background, so waiting for one would hang"
+        )
+
+    async def _await_all():
+        await asyncio.wait_for(
+            asyncio.gather(*tasks, return_exceptions=True), timeout
+        )
+
+    client.portal.call(_await_all)
+
+
 def _signed_slack_request(
     payload: dict, secret: bytes = b"test-slack-secret"
 ) -> tuple[bytes, dict]:
@@ -95,7 +180,7 @@ def test_slack_signature_rejects_bad_sig(monkeypatch):
 
 
 def test_slack_action_resolve_risk_acks_immediately_and_queues_work(
-    monkeypatch, client
+    monkeypatch, ctx_client, spawned
 ):
     """A button click with value 'resolve-risk|ibx-5167|09e3d0c7':
     - Returns 200 to Slack synchronously (the 3-second ack window).
@@ -136,26 +221,12 @@ def test_slack_action_resolve_risk_acks_immediately_and_queues_work(
         "trigger_id": "trg-abc",
     }
     body, headers = _signed_slack_request(payload)
-    resp = client.post("/slack-action", content=body, headers=headers)
+    resp = ctx_client.post("/slack-action", content=body, headers=headers)
     assert resp.status_code == 200, resp.text
     assert resp.json().get("queued") is True
 
-    # Wait for the background task to FINISH, not to start.
-    #
-    # WHY THIS WAITS ON update_calls. The handler calls
-    # `_run_plan_for_one_item` (which fills `called`) and only then
-    # `_post_response_url_update` (which appends to `update_calls`). A loop
-    # that breaks on `called` therefore releases one call too early, and the
-    # `len(update_calls) == 1` assertion below races the task it is meant to
-    # observe. It passes on a fast machine and loses on a loaded CI runner —
-    # observed on run 35020197602, where this was the only failure in 3,187
-    # tests on a commit that changed nothing but version strings.
-    #
-    # Waiting on the LAST side effect makes the wait cover every earlier one.
-    for _ in range(200):
-        if update_calls:
-            break
-        time.sleep(0.01)
+    # Await the background task itself — no polling, no timing assumption.
+    drain(ctx_client, spawned)
 
     assert called == {
         "verb": "resolve-risk",
