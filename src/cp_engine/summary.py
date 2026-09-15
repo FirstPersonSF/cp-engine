@@ -154,6 +154,77 @@ def summary_stale_days(
     return gap if gap >= STALE_AFTER_DAYS else None
 
 
+def latest_recorded_signal(
+    tenant_root: Path,
+    project_code: str,
+    *,
+    newer_than: date | None = None,
+) -> tuple[str, date] | None:
+    """The most recent dated decision recorded for this project, if any.
+
+    WHY THIS EXISTS. `summary_stale_days` says a summary has stopped tracking
+    the work; it cannot say what the work is now. That answer already exists —
+    auto-ingest writes dated `[decision · YYYY-MM-DD]` bullets into the sprint
+    file on every meeting — but no renderer reads it, so the index shows
+    months-old prose while a current statement sits one directory away.
+    Measured 2026-09-14: all 13 stale engagements had a decision newer than
+    their summary; ggl-5136's summary said July while its sprint file carried
+    a 09-01 decision.
+
+    This READS ONLY. The engine owns scaffold/read/render and the model owns
+    all prose (`docs/plans/2026-06-30-exec-summary.md`) — so this surfaces a
+    sentence a person already wrote, beside the summary, and authors nothing.
+    The Exec Summary remains the only thing claiming to BE the summary.
+
+    `newer_than` filters to decisions after that date (pass the summary's own
+    stamp) so a current summary is never second-guessed by an older bullet.
+    Returns (text, date) for the newest match, or None.
+    """
+    from cp_engine.sprints import parse_sprint_file
+
+    sprints = tenant_root / "sprints"
+    if not sprints.is_dir():
+        return None
+
+    best: tuple[str, date] | None = None
+    # Newest week first: the answer is nearly always in the last week or two,
+    # and an older week can only lose the max() comparison below.
+    for week_dir in sorted(sprints.iterdir(), reverse=True):
+        path = week_dir / f"{project_code}.md"
+        if not path.is_file():
+            continue
+        try:
+            parsed = parse_sprint_file(path)
+        except Exception:  # noqa: BLE001 — one malformed file must not
+            # break a tenant-wide sync; the surface is advisory.
+            logger.warning("Could not parse sprint file %s", path, exc_info=True)
+            continue
+        for entry in getattr(parsed, "decisions", ()) or ():
+            when = _parse_iso_date(getattr(entry, "date", None))
+            text = (getattr(entry, "text", "") or "").strip()
+            if when is None or not text:
+                continue
+            if newer_than is not None and when <= newer_than:
+                continue
+            if best is None or when > best[1]:
+                best = (enforce_summary_cap(text), when)
+    return best
+
+
+def _parse_iso_date(value: str | None) -> date | None:
+    """An ISO date from a bullet's `[decision · <date>]` marker, or None.
+
+    Dates in sprint bullets are model-written, so a malformed one is a normal
+    input rather than an error — it is skipped, never raised.
+    """
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value.strip())
+    except ValueError:
+        return None
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Internals
 # ──────────────────────────────────────────────────────────────────────

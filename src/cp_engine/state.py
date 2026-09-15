@@ -176,6 +176,12 @@ class ProjectState:
     # same deepening pass; see summary.summary_stale_days.
     summary_stale_days: int | None = None
 
+    # The newest dated decision recorded for this project since the Exec
+    # Summary was written, as (text, ISO date) — None when the summary is
+    # current or nothing newer exists. Rendered BESIDE the summary, never
+    # as it: the model owns summary prose (2026-06-30-exec-summary.md).
+    latest_signal: tuple[str, str] | None = None
+
     # MC-2 row uuid (`id`). Threaded through so the spine mirror
     # (slice 2) can key `spine_elements.project_id` without re-querying.
     # All three sources carry an `id`; None only when a fake/legacy state
