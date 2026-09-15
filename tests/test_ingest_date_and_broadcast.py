@@ -134,3 +134,109 @@ class TestBroadcastDetection:
         """Never break an ingest from the advisory path."""
         assert _warn_on_broadcast({"projects": "not a dict"}) is None
         assert _warn_on_broadcast({}) is None
+
+
+# ── the write path, not just the helper ───────────────────────────────
+#
+# WHY THESE EXIST. v0.116.2 shipped a date fix that passed every test above
+# and was still broken in production. The helper was right; its APPLICATION
+# was not — a regex converted 29 call sites and silently skipped five: three
+# with a function-call fallback (`or _resolve_today_iso(today)`, whose
+# parentheses broke the pattern) and two written across multiple lines.
+#
+# `decisions` worked while `record-ask` and `risks` still crashed, and the
+# tests above could not see it because they exercise `_as_text` directly and
+# never run a writer. These drive the real write path with an unquoted YAML
+# date — the shape that actually occurs — one test per writer.
+
+import tempfile
+from pathlib import Path
+
+import yaml
+
+from cp_engine.ingest import execute_plan
+
+
+def _tenant(tmp: Path, codes: list[str]) -> Path:
+    (tmp / ".cp-engine.toml").write_text("[tenant]\nname='t'\n")
+    (tmp / "weekly-cp.md").write_text("# W\n\n## Account summaries\n\n## Decisions\n\n")
+    wk = tmp / "sprints" / "2026-W38"
+    wk.mkdir(parents=True)
+    for code in codes:
+        (wk / f"{code}.md").write_text(
+            f"---\nProject: {code}\nSprint: 2026-W38\nPriorSprint: \n---\n\n# x\n\n"
+            "## Client communication\n\n### Inbound\n\n### Open asks\n\n"
+            "### Stakeholders\n\n## Dependencies & risks\n\n"
+            "## Meeting notes & decisions\n\n### Decisions\n\n"
+        )
+    return tmp
+
+
+class TestUnquotedDatesThroughTheRealWriters:
+    """Each verb, with `date: 2026-09-15` unquoted — i.e. a `datetime.date`."""
+
+    def _run(self, verb: str, item_yaml: str) -> list[str]:
+        plan = yaml.safe_load(f"projects:\n  p1:\n    {verb}:\n      - {item_yaml}\n")
+        # Prove the premise: YAML really did give us a date object.
+        assert isinstance(plan["projects"]["p1"][verb][0]["date"], date)
+        with tempfile.TemporaryDirectory() as td:
+            root = _tenant(Path(td), ["p1"])
+            res = execute_plan(
+                plan, tenant_root=root, today=date(2026, 9, 15), week_iso="2026-W38"
+            )
+            return list(getattr(res, "errors", None) or [])
+
+    def test_decisions(self):
+        assert self._run("decisions", '{text: "d", date: 2026-09-15}') == []
+
+    def test_record_ask(self):
+        """The one v0.116.2 missed — a multiline expression."""
+        assert self._run(
+            "record-ask", '{text: "a", who: "B", date: 2026-09-15}'
+        ) == []
+
+    def test_risks(self):
+        """Also missed — same multiline shape."""
+        assert self._run(
+            "risks", '{text: "r", date: 2026-09-15, severity: watching}'
+        ) == []
+
+    def test_inbound(self):
+        assert self._run("inbound", '{text: "i", who: "C", date: 2026-09-15}') == []
+
+    def test_stakeholders(self):
+        assert self._run(
+            "stakeholders", '{name: "N", role: "R", context: "x", date: 2026-09-15}'
+        ) == []
+
+
+def test_no_plan_field_strip_survives_in_the_source():
+    """A structural guard: the regex that caused this could not see every site.
+
+    Walks each `.strip()` back to its opening paren and fails if the
+    expression touches `item.get` — which is the pattern that crashes on a
+    typed date. Catches a reintroduction anywhere in the file, in any
+    formatting, which line-by-line review demonstrably did not.
+    """
+    import re
+
+    src = Path(__file__).resolve().parent.parent / "src/cp_engine/ingest.py"
+    s = src.read_text()
+    offenders = []
+    for m in re.finditer(r"\)\s*\.strip\(\)", s):
+        end = m.start()
+        depth, i = 1, end - 1
+        while i >= 0 and depth:
+            if s[i] == ")":
+                depth += 1
+            elif s[i] == "(":
+                depth -= 1
+                if depth == 0:
+                    break
+            i -= 1
+        if "item.get" in s[i : end + 1]:
+            offenders.append(s[:i].count("\n") + 1)
+    assert not offenders, (
+        f"plan-field .strip() at line(s) {offenders} — use _as_text(), which "
+        "handles the datetime.date YAML produces for an unquoted date"
+    )
