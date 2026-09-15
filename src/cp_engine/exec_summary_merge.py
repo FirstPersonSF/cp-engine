@@ -162,9 +162,38 @@ def _apply_fields(
 
 
 def _render_field(label: str, value: str | list[str]) -> list[str]:
-    """The lines for one field: inline value, or a label with bullets beneath."""
+    """The lines for one field: inline value, or a label with bullets beneath.
+
+    A MULTI-LINE STRING IS TREATED AS BULLETS, not as an inline value. On
+    2026-09-15 a hosted caller sent `Blockers` as one string with embedded
+    newlines — five `- ` bullets in a single blob — because the verb's
+    signature typed it `str`. Rendered inline, the label swallowed the first
+    bullet:
+
+        **Blockers:** - **Scoper P1 baseline has not run.** …
+        - **Scoper P3+ is gated…**
+
+    The remaining four survived only because they already carried their own
+    prefixes. Nothing was lost, but the field read wrong in a file six
+    consumers treat as project truth.
+
+    A string containing a newline can only be a caller who meant a list, so it
+    is split rather than refused: this is the same judgement as coercing a
+    bare `account_summary` string (#254) — a caller who is 99% right should
+    not lose a write to a wrapper.
+    """
     if isinstance(value, str):
-        return [f"**{label}:** {value.strip()}"]
+        text = value.strip()
+        if "\n" in text:
+            # Split on lines, stripping any leading bullet marker the caller
+            # already supplied so it is not doubled.
+            items = [
+                re.sub(r"^[-*]\s+", "", line.strip())
+                for line in text.splitlines()
+                if line.strip()
+            ]
+            return [f"**{label}:**", *(f"- {i}" for i in items if i)]
+        return [f"**{label}:** {text}"]
     bullets = [f"- {str(v).strip()}" for v in value if str(v).strip()]
     return [f"**{label}:**", *bullets]
 

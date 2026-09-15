@@ -8335,8 +8335,8 @@ def capture_project_state(
     status: str | None = None,
     objective: str | None = None,
     where_it_stands: list[str] | None = None,
-    next_up: str | None = None,
-    blockers: str | None = None,
+    next_up: list[str] | None = None,
+    blockers: list[str] | None = None,
 ) -> dict[str, Any]:
     """Update this project's Exec Summary — the durable answer to "where does this stand".
 
@@ -8378,8 +8378,15 @@ def capture_project_state(
         objective: what this engagement is for. Rarely changes.
         where_it_stands: bullets of current reality. Replaces ALL existing
                          bullets; pass [] to clear the field.
-        next_up: what happens next.
-        blockers: what is in the way, or that nothing is.
+        next_up: bullets of what happens next. Replaces ALL existing bullets.
+        blockers: bullets of what is in the way. Replaces ALL existing
+                  bullets; pass [] when nothing is blocked.
+
+    THE THREE BULLETED FIELDS ARE `where_it_stands`, `next_up` AND `blockers`
+    — pass a list, one string per bullet. `status` and `objective` are inline
+    prose. Passing one multi-line string to a bulleted field used to glue the
+    first bullet onto the label; it is now split, but a list is the shape that
+    says what you mean.
 
     Returns `{ok, backend: {changed: [...], commit, cp_md_path}}`, where
     `changed` names the fields that actually moved — empty when your content
