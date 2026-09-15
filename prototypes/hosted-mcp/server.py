@@ -8190,6 +8190,80 @@ def call_mc2_capture_session(
     return {"ok": False, "status": resp.status_code, "reason": detail}
 
 
+def call_mc2_capture_project_state(
+    project_code: str, fields: dict[str, Any]
+) -> dict[str, Any]:
+    """POST an Exec Summary merge to mc-2 under the CALLER'S OWN JWT. Never raises.
+
+    Same hop and the same reasoning as `call_mc2_capture_session`: this server
+    holds no service key and no write access to the tenant, so the write is
+    performed upstream under the caller's identity rather than minted here.
+
+    **The user is NOT sent.** mc-2 derives it from the verified token. Unlike a
+    session file the name does not appear in the content, but it names the
+    commit — and an unattributable edit to the surface six consumers treat as
+    project truth is worse than no edit.
+    """
+    if not MC2_API_BASE:
+        return {
+            "ok": False,
+            "reason": "project-state capture unavailable: MC2_API_BASE not configured",
+            "degraded": True,
+        }
+
+    try:
+        token = caller_jwt()
+    except RuntimeError as exc:
+        return {"ok": False, "reason": f"no authenticated caller: {exc}"}
+
+    try:
+        resp = httpx.post(
+            f"{MC2_API_BASE}/api/project-state/capture",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"project_code": project_code, "fields": fields},
+            timeout=MC2_TIMEOUT_SECONDS,
+        )
+    except httpx.TimeoutException:
+        return {
+            "ok": False,
+            "reason": (
+                f"mc-2 project-state capture timed out after {MC2_TIMEOUT_SECONDS:.0f}s. "
+                "The merge may still have landed — re-read the project state "
+                "before retrying; a repeat of identical content is a no-op, so "
+                "retrying is safe."
+            ),
+            "timeout": True,
+        }
+    except httpx.HTTPError as exc:
+        return {"ok": False, "reason": f"could not reach mc-2: {type(exc).__name__}: {exc}"}
+
+    try:
+        body: Any = resp.json()
+    except ValueError:
+        body = resp.text[:400]
+
+    if 200 <= resp.status_code < 300:
+        return {"ok": True, "status": resp.status_code, "backend": body}
+
+    detail = body.get("detail") if isinstance(body, dict) else str(body)
+    detail = str(detail)[:400]
+    if resp.status_code in (401, 403):
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "reason": f"mc-2 refused the caller's token: {detail}",
+            "unauthorized": True,
+        }
+    if resp.status_code == 404:
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "reason": f"no working dir for {project_code!r}: {detail}",
+            "not_found": True,
+        }
+    return {"ok": False, "status": resp.status_code, "reason": detail}
+
+
 @mcp_server.tool()
 def capture_session(
     project_code: str, summary: str, when: str | None = None
@@ -8249,6 +8323,100 @@ def capture_session(
         client,
         "capture_session",
         {"project_code": project_code, "summary": summary},
+        1 if result.get("ok") else 0,
+    )
+    return result
+
+
+@mcp_server.tool()
+def capture_project_state(
+    project_code: str,
+    status: str | None = None,
+    objective: str | None = None,
+    where_it_stands: list[str] | None = None,
+    next_up: str | None = None,
+    blockers: str | None = None,
+) -> dict[str, Any]:
+    """Update this project's Exec Summary — the durable answer to "where does this stand".
+
+    WHY IT EXISTS (#251). The Exec Summary is the most-READ surface in the
+    system and the least-WRITTEN. Six consumers treat it as project truth: the
+    master-CP one-liner, the agenda, the planning bundle, `cxp brief`, the
+    lint, and `get_project_state` on this very server. It had three writers and
+    **none of them author prose** — a one-time migration, the Last-session
+    line, and a manual escape hatch. Measured 2026-09-14: 131 of 140 rewrites
+    in 90 days were one person, and 13 of 23 engagements carried summaries
+    30–62 days stale while ~7MB of meeting and sprint content piled up in
+    surfaces no index reads.
+
+    `docs/plans/2026-06-30-exec-summary.md` gave the MODEL all prose and the
+    engine only scaffold/read/render. That was right, and it assumed the model
+    could reach the file. Once the work moved here it could not — this server
+    holds a read-only deploy key by construction. This verb is the missing
+    half, not a reversal: **you** write every word; the engine only splices it.
+
+    PASS ONLY WHAT YOU MEAN TO CHANGE. Omitted fields are left exactly as they
+    are. This is deliberate and measured — 58% of real summary rewrites touch
+    exactly one field, so a whole-region write would make the common case the
+    destructive one. Sending only `status=` cannot blank Objective or Blockers.
+
+    Re-sending a field's existing value is a NO-OP: it neither commits nor
+    advances the `· updated` stamp, so retrying after a timeout is safe and a
+    scheduled caller cannot manufacture freshness.
+
+    Read `get_project_state` first. This replaces a field wholesale, so a
+    partial rewrite of `where_it_stands` loses the bullets you did not resend.
+
+    What to write: the state of the ENGAGEMENT, not the last meeting. Meeting
+    facts already land in the sprint file. Status is one phrase; Where it
+    stands is current reality in bullets; Next up and Blockers are forward.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        status: one phrase — the field the master-CP one-liner reads.
+        objective: what this engagement is for. Rarely changes.
+        where_it_stands: bullets of current reality. Replaces ALL existing
+                         bullets; pass [] to clear the field.
+        next_up: what happens next.
+        blockers: what is in the way, or that nothing is.
+
+    Returns `{ok, backend: {changed: [...], commit, cp_md_path}}`, where
+    `changed` names the fields that actually moved — empty when your content
+    already matched. Never raises.
+    """
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    # Label strings must match `render.EXEC_SUMMARY_AUTHORED_FIELDS` exactly;
+    # mc-2 and the engine reject an unknown label rather than writing nothing.
+    fields: dict[str, Any] = {}
+    if status is not None:
+        fields["Status"] = status
+    if objective is not None:
+        fields["Objective"] = objective
+    if where_it_stands is not None:
+        fields["Where it stands"] = where_it_stands
+    if next_up is not None:
+        fields["Next up"] = next_up
+    if blockers is not None:
+        fields["Blockers"] = blockers
+
+    if not fields:
+        return {
+            "ok": False,
+            "reason": (
+                "name at least one field to change — an empty call would "
+                "report success while writing nothing"
+            ),
+        }
+
+    result = call_mc2_capture_project_state(project_code, fields)
+    audit(
+        client,
+        "capture_project_state",
+        {"project_code": project_code, "fields": list(fields)},
         1 if result.get("ok") else 0,
     )
     return result
