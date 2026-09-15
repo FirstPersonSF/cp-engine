@@ -4,6 +4,86 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.115.0 — 2026-09-14
+
+- **`card_kind` is stamped on the sync path too, and the stamp is pinned to the
+  reader (#179, #246).** `item_to_rows` built rows straight from disk files
+  without going through the shared `_row` builder, so it wrote NULL exactly the
+  way the authored path used to. Measured live: 5 rows had drifted this way, all
+  `placement='item'` — real work slots that `route_queue` and `weekly_sort` both
+  read as "not work" because NULL means not-work to each of them. It now calls
+  the same `card_kind_for`, so there is one rule rather than two.
+
+  `card_kind` has two authorities in different repositories —
+  `spine_authoring.authored_element.card_kind_for` stamps it on write,
+  `cp_engine.card_class.classify` reads it — and they cannot be one function.
+  `tests/test_card_kind_parity.py` holds them to a contract instead: the stamp
+  may **decline** (None → NULL, for a human to settle) but may never
+  **contradict** the reader. A contradiction is worse than a NULL, because a
+  stored kind is indistinguishable from a human decision once written, so a
+  wrong stamp is laundered into fact and `classify_is_inferred()` can never flag
+  it. The guard was confirmed to fail on injected drift (`item` →
+  `'deliverable'`: 3 parity cases failed, and passed again on restore).
+
+  **Pin bumped `b660dab` → `7932303`** so the resolved package is the one that
+  actually carries `card_kind_for`. This is the half of the three-repo change
+  that was merged but never released — mc-2 bumped its own pin to `7932303` in
+  its #379, and with no cp-engine tag carrying the matching pin, any clean
+  `pip install` of mc-2's requirements hit a `ResolutionImpossible` between
+  cp-engine's `b660dab` and mc-2's `7932303`. Cutting this release is what lets
+  the two agree again.
+
+- **Engagements resolve from `projects`, not only via the spine (#236, #242).**
+  `resolve_project_id` had three branches — `initiatives.code`,
+  `spine_substance.project_code`, `projects.code` — and branches 1 and 3 do not
+  apply to an engagement, so an engagement resolved ONLY through the spine and a
+  project with zero spine rows was invisible to every hosted verb.
+
+  It failed in the worst direction: a mature project has spine rows and
+  resolves, while a NEW project has none — and a new project is exactly where
+  the unsettled commitments and the first spine card live. Two live instances:
+  sap-5198, the tenant's largest engagement at $425k, had 11 open commitments
+  that cp-sources listed and cp-hosted said did not exist; ggl-5179 could not
+  receive its first spine card at all. Both read as "no project resolves for
+  code X", which sends the caller hunting a typo rather than a missing spine.
+
+  Adds branches 4–6 mirroring `cp_engine.mc2_db._resolve_project_id` — raw
+  `full_job_name`, the dir-slug reversed out of `full_job_name`, and the legacy
+  `<prefix>-<number>` companies/number join — so the spine stays a fast path
+  rather than the only path.
+
+- **The engine resolver accepts a bare `projects.id` UUID, and the two
+  resolvers are pinned together (#243, #244).** `cp_engine.mc2_db._resolve_project_id`
+  resolved four ways and none accepted a bare UUID — the one identifier that can
+  never be ambiguous across the three naming strings, and the one `cp.md`'s
+  `MC-id:` anchor already carries. Nine call sites inherited the gap.
+
+  It was not only a miss: traced through the branches, a UUID splits on its
+  first `-` and reaches branch 3's `ilike("code", "4e39be45-%")` — a
+  company-prefix table scan on a hex fragment that can never be a company code —
+  before failing. The parse guard short-circuits that, and is load-bearing for a
+  second reason: filtering a uuid column with a malformed string ERRORS in
+  Postgres rather than returning no rows.
+
+  `tests/test_resolver_parity.py` is the durable half. It drives BOTH resolvers
+  with one fake client over one tenant across every identifier shape,
+  parameterised over an empty and a populated spine — the axis #236 turned on.
+  Verified to catch drift: removing the uuid branch from one resolver alone
+  fails six cases with an explicit RESOLVER DRIFT message.
+
+- **pytest runs on PRs and main — the repo's first test gate (#245).** Until now
+  the only check was GitGuardian, so "merged" meant "someone ran pytest locally
+  and remembered to look." Private-dep auth is what made this non-trivial:
+  pyproject pins seven packages to the private `1p-component-library`, and the
+  default `GITHUB_TOKEN` cannot read it. Uses the same `GH_PAT` +
+  `url.insteadOf` pattern the cp tenant's slack-digest workflow already runs in
+  production. No lint job, deliberately — `ruff check .` reports 727
+  pre-existing findings, so a blocking lint gate would fail every PR on day one
+  and be disabled within a week.
+
+  **NOTE:** the cp-engine repo has no secrets configured yet, so `GH_PAT` must
+  be added before this gate can pass.
+
 ## v0.114.1 — 2026-09-14
 
 - **A nullable `position` was quietly costing a third of the tenant its
