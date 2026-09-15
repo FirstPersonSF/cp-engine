@@ -8877,21 +8877,26 @@ async def health(_request):
     **`commit` is usually "unknown" here, and that is honest rather than
     broken.** Railway injects `RAILWAY_GIT_COMMIT_SHA` only for
     GitHub-triggered deploys, and this service deploys by `railway up` from a
-    CLI — so there is no commit to report. `cp_engine_version` is the value
-    that answers the question for this service: it moves on every release, and
-    a release is what carries a new verb here.
+    CLI — so there is no commit to report.
 
-    `tool_count` is the cheap structural check the version cannot give: a verb
-    added without a version bump still changes this number.
+    **There is deliberately no `cp_engine_version`.** This container installs
+    six packages and cp-engine is not among them: the Dockerfile COPYs
+    `server.py` and `observability.py` and nothing else, so the image stays
+    small and independently deployable — the same convention this module's own
+    docstring states, that the hosted prototype does not import cp_engine. The
+    first version of this endpoint imported it anyway and 500ed in production
+    with `ModuleNotFoundError`. It passed locally only because a dev venv has
+    the package installed.
+
+    So `tool_count` IS the answer here, not a supplement to a version string:
+    a verb added to this file changes the count, whatever else does or does not
+    move.
     """
-    import cp_engine
-
     tools = await mcp_server.list_tools()
     commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
     return JSONResponse(
         {
             "status": "healthy",
-            "cp_engine_version": cp_engine.__version__,
             "server_version": SERVER_VERSION,
             "tool_count": len(tools),
             # Empty on a `railway up` deploy — see the docstring.
