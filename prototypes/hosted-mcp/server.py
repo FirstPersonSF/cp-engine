@@ -67,6 +67,7 @@ from mcp.server.auth.middleware.auth_context import get_access_token
 from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
+from starlette.responses import JSONResponse
 from pydantic import AnyHttpUrl
 from supabase import create_client
 from supabase.lib.client_options import SyncClientOptions
@@ -8849,6 +8850,56 @@ def whoami(probe_alerting: bool = False) -> dict[str, Any]:
             ),
         }
     return out
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Liveness — the one unauthenticated surface
+# ──────────────────────────────────────────────────────────────────────
+
+
+@mcp_server.custom_route("/health", methods=["GET"])
+async def health(_request):
+    """Liveness probe. Reports what code is actually running here.
+
+    WHY THIS EXISTS. This service was the only one of the four that could not
+    be verified from outside Railway. `/mcp` is auth-gated by design, so the
+    tool list — the thing that would answer "is the new verb deployed?" —
+    needs a user token to read. On 2026-09-15 that turned a simple question
+    into an archaeology exercise: `capture_project_state` had been merged and
+    released in v0.116.3, the service was up and serving 200s, and the only
+    way to tell whether it had the verb was to compare a Railway deploy
+    timestamp against a git log. (It did not: the running build predated the
+    verb by six hours.)
+
+    The webhook solved this in 2026-08 for the same reason and its docstring
+    says so. This mirrors it deliberately.
+
+    **`commit` is usually "unknown" here, and that is honest rather than
+    broken.** Railway injects `RAILWAY_GIT_COMMIT_SHA` only for
+    GitHub-triggered deploys, and this service deploys by `railway up` from a
+    CLI — so there is no commit to report. `cp_engine_version` is the value
+    that answers the question for this service: it moves on every release, and
+    a release is what carries a new verb here.
+
+    `tool_count` is the cheap structural check the version cannot give: a verb
+    added without a version bump still changes this number.
+    """
+    import cp_engine
+
+    tools = await mcp_server.list_tools()
+    commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
+    return JSONResponse(
+        {
+            "status": "healthy",
+            "cp_engine_version": cp_engine.__version__,
+            "server_version": SERVER_VERSION,
+            "tool_count": len(tools),
+            # Empty on a `railway up` deploy — see the docstring.
+            "commit": commit[:12] if commit else "unknown",
+            "deployment_id": os.environ.get("RAILWAY_DEPLOYMENT_ID") or "unknown",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+    )
 
 
 def main() -> None:
