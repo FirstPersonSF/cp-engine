@@ -4,6 +4,40 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.117.1 — 2026-09-16
+
+**An unfilled standing element is not capture (#179 follow-up).** Found during
+the 2026-09-15 `card_kind` backfill: three `_authored/sow` v1 rows are the
+tenant's own scaffolding —
+
+    _Standing element — the signed scope of work._
+
+    What belongs here: the executed SOW (attach the document as a source),
+    key commitments, exclusions, and change orders as they happen.
+
+181 chars, one source, no `rag_asset`. Both of `_is_capture`'s signals fire, so
+they classified as Stream — and `stub_sweep` proposes RETIRING Stream. These
+slots exist precisely to persist until somebody writes into them, so the sweep
+would have proposed deleting the scaffolding the tenant depends on.
+
+- **The distinction is FILLED vs UNFILLED, not the marker.** `_Standing
+  element` marks 20 live rows and most are not empty — a filled SOW at 2,864
+  chars, a working brief at 5,491. Keying on the marker alone would have
+  swallowed those. Measured across all 20: 16 unfilled (every one ≤ 378 chars
+  AND carrying "What belongs here:") and 4 filled (every one ≥ 550 chars, none
+  carrying it). The two signals agree on all 20 with no overlap, so
+  `is_unfilled_placeholder` requires both.
+
+- **Verified to spare nothing it shouldn't.** Against the live tenant the guard
+  matches 16 rows and spares ZERO rows currently marked `attachment` — no real
+  stub is protected by accident, and the 130 ingest stubs `stub_sweep` finds are
+  unchanged. The negative test was seen to fail: reverting just the guard
+  produces `AssertionError: <CardKind.ATTACHMENT> is not <CardKind.REFERENCE>`
+  on the live row shape.
+
+`is_unfilled_placeholder` is public — the sweeps need to tell a placeholder
+apart from a stub, since both are short but only one should ever be retired.
+
 ## v0.117.0 — 2026-09-15
 
 **`Reference` becomes a class (#179).** Minor, not patch: `CardKind` gains a
