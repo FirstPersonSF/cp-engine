@@ -529,3 +529,107 @@ def test_the_orphan_guidance_separates_carriers_from_the_rest():
     text = render_sweep(find_stubs([carrier, bare]), code="ibx-5192")
     assert "1 of these carry a WORK-ITEM LINK" in text
     assert "The rest need a judgement" in text
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #179 option 3, part 2 — the STORED kind, and the self-clearing rule
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _carrier(eid="_authored/marcello-grande", serves=None, stored=True):
+    """A minted link-carrier as the mint now writes it: card_kind='link'."""
+    row = _stub(eid, serves=serves or ["estimator-slot-uuid"])
+    if stored:
+        row["card_kind"] = "link"
+    return row
+
+
+def _bound_deliverable(eid, serves):
+    row = _row(eid, "Concept deck", "Deliverables", body="x" * 900, serves=serves)
+    row["card_kind"] = "deliverable"
+    return row
+
+
+def test_a_stored_link_is_a_carrier_without_needing_the_derivation():
+    """The whole point of the stored kind (#179 option 3).
+
+    `carries_a_work_item_link` otherwise reads `unresolved and sources`, which
+    cannot tell a work-item mint from a card minted for a slot somebody later
+    deleted. A heuristic of that family already misfired on live data (#269).
+    """
+    row = _carrier()
+    row["sources"] = []          # the derivation would say False on both counts
+    row["serves"] = []
+    stubs = find_stubs([row])
+    assert stubs[0].carries_a_work_item_link
+
+
+def test_a_stored_link_still_enters_the_sweep():
+    """`CardKind.LINK.is_stream` is False, so the class is NOT swept as capture.
+
+    It must still be a CANDIDATE, or `link_has_a_home` could never notice that
+    the carrier has come free — the row would simply vanish from the report.
+    """
+    assert find_stubs([_carrier()]), "a stored link-carrier must be swept"
+
+
+def test_a_carrier_is_held_while_its_work_item_has_no_bound_element():
+    """Not retirable merely for being a carrier — that drops the pointer."""
+    stubs = find_stubs([_carrier(serves=["slot-uuid"])])
+    assert stubs[0].carries_a_work_item_link
+    assert not stubs[0].link_has_a_home
+    text = render_sweep(stubs, code="ibx-5192")
+    assert "carry a WORK-ITEM LINK" in text
+    assert "now FREE" not in text
+
+
+def test_a_carrier_comes_FREE_when_its_work_item_gains_a_bound_element():
+    """The self-clearing half. The document now has a real home, so the card
+    is redundant rather than load-bearing, and the sweep may propose the move."""
+    stubs = find_stubs([
+        _carrier(serves=["slot-uuid"]),
+        _bound_deliverable("_authored/concept-deck", serves=["slot-uuid"]),
+    ])
+    carrier = next(s for s in stubs if s.est_item_id == "_authored/marcello-grande")
+    assert carrier.link_has_a_home
+    assert carrier._link_home == "_authored/concept-deck"
+    text = render_sweep(stubs, code="ibx-5192")
+    assert "now FREE" in text
+    assert "_authored/concept-deck" in text
+
+
+def test_two_bound_elements_do_not_free_a_carrier():
+    """Ambiguity is a guess about WHICH deliverable a document belongs to.
+
+    Same rule the frontend's `boundElementIndex` applies, for the same reason:
+    one live work item is bound by four distinct concept docs.
+    """
+    stubs = find_stubs([
+        _carrier(serves=["slot-uuid"]),
+        _bound_deliverable("_authored/concept-a", serves=["slot-uuid"]),
+        _bound_deliverable("_authored/concept-b", serves=["slot-uuid"]),
+    ])
+    carrier = next(s for s in stubs if s.est_item_id == "_authored/marcello-grande")
+    assert not carrier.link_has_a_home
+
+
+def test_a_capture_card_does_not_free_a_carrier():
+    """Work-class only: resolving onto another capture card moves the problem."""
+    other = _stub("_authored/another-doc", serves=["slot-uuid"])
+    other["card_kind"] = "attachment"
+    stubs = find_stubs([_carrier(serves=["slot-uuid"]), other])
+    carrier = next(s for s in stubs if s.est_item_id == "_authored/marcello-grande")
+    assert not carrier.link_has_a_home
+
+
+def test_a_link_carrier_cannot_date_the_project_s_first_work():
+    """#275, which LINK would have reintroduced.
+
+    A carrier is not stream, so the old `not _is_stream(r)` test counted it as
+    work — letting a pointer minted today date the work it points at.
+    """
+    from cp_engine.stub_sweep import _is_work
+
+    carrier = _carrier()
+    carrier["version_date"] = "2026-09-16"
+    assert not _is_work(carrier)

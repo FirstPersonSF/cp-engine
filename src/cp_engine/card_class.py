@@ -41,6 +41,10 @@ Everything else — sources, feedback, emails, notes, meeting records, decisions
 awaiting ratification — is an ATTACHMENT. It keeps its substance; it stops
 competing for attention with the work it informs.
 
+    LINK         an attachment-shaped card minted ONLY because a work item has
+                 nowhere to hold a source. Not content and not a mistake; the
+                 one kind the stub sweep must not simply retire (#179 opt 3).
+
 WHAT THIS MODULE DELIBERATELY DOES NOT DO
 -----------------------------------------
 It does not guess. `classify()` reads an explicit `card_kind` when the row
@@ -78,6 +82,24 @@ class CardKind(str, Enum):
     # Capture. The ingest's own wrapper around a rag_asset it already points
     # at: body under 200 chars, no thought in it.
     ATTACHMENT = "attachment"
+    # A card minted to carry a pointer for a WORK ITEM (#179 option 3).
+    #
+    # Byte-identical to ATTACHMENT in body and shape, and NOT the same thing.
+    # A work item — an estimate deliverable or activity, an initiative
+    # milestone — has no `spine_substance` row and therefore no `sources`
+    # array, so routing a document there mints a card to hold the link,
+    # deliberately. That card is doing a job nothing else can do; an
+    # ATTACHMENT is a document that should have been attached to an element
+    # that already existed.
+    #
+    # Stored rather than derived. `stub_sweep.carries_a_work_item_link`
+    # answers the same question from `serves` + `sources`, but that derivation
+    # cannot tell "minted for a work item" from "minted for a slot somebody
+    # later deleted", and a heuristic of exactly that family already misfired
+    # on live data (#269, the `_authored/sow` placeholders the sweep proposed
+    # retiring). The mint knows which it is at the moment it writes the row;
+    # this records the answer instead of reconstructing it.
+    LINK = "link"
 
     @property
     def is_card(self) -> bool:
@@ -94,8 +116,20 @@ class CardKind(str, Enum):
 
     @property
     def is_stream(self) -> bool:
-        """Capture, not content. The only class `stub_sweep` should touch."""
+        """Capture, not content. The only class `stub_sweep` should touch.
+
+        LINK is deliberately NOT stream. It has a stream-shaped body, but
+        retiring it drops a pointer with nothing to catch it — the sweep's
+        proposals are the whole reason to tell the two apart. `stub_sweep`
+        has its own narrower rule for when a link-carrier becomes retirable
+        (its work item gained a bound element, so the pointer has a home).
+        """
         return self is CardKind.ATTACHMENT
+
+    @property
+    def is_link_carrier(self) -> bool:
+        """Minted to hold a pointer a work item could not hold (#179)."""
+        return self is CardKind.LINK
 
 
 # The standing element that IS the engagement. Present on every project with a

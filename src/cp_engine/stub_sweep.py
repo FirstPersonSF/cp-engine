@@ -87,6 +87,45 @@ def _is_stream(row: dict) -> bool:
     return _norm(row.get("layer")) in SOURCE_LAYERS
 
 
+def _is_work(row: dict) -> bool:
+    """True when this row is WORK — the only thing that can date a project.
+
+    Distinct from `not _is_stream(row)`, which was the old spelling and which
+    now also admits LINK carriers and REFERENCE. Reference was always excluded
+    by the inference fallback below; LINK would not have been (#179 opt 3).
+    """
+    from cp_engine.card_class import classify, classify_is_inferred
+
+    if not classify_is_inferred(row):
+        return classify(row).is_card
+    # Pre-field rows: the old spelling is the best available answer.
+    return not _is_stream(row)
+
+
+def _is_sweepable(row: dict) -> bool:
+    """True when this row belongs in the sweep's candidate set at all (#179).
+
+    Stream is sweepable, and so is LINK — but for different reasons, which is
+    why this is not `_is_stream`.
+
+    A link-carrier is NOT stream (`CardKind.is_stream` is False for it):
+    retiring it drops a pointer nothing else holds, so it must never be
+    proposed for retirement on the strength of being capture-shaped. But it
+    still has to ENTER the sweep, because the sweep is where
+    `link_has_a_home` notices that its work item has since gained a bound
+    element and the carrier has become free. Excluding it here would make the
+    self-clearing rule unreachable — the carriers would simply disappear from
+    the report and never be revisited.
+
+    `find_stubs` admits both; the RENDER decides what to propose for each.
+    """
+    from cp_engine.card_class import classify, classify_is_inferred
+
+    if not classify_is_inferred(row) and classify(row).is_link_carrier:
+        return True
+    return _is_stream(row)
+
+
 @dataclass
 class Stub:
     """An empty Source-material card and the element its provenance belongs on."""
@@ -101,6 +140,12 @@ class Stub:
     # `serves` entries that resolve to nothing — bare estimate slots.
     unresolved: list[str] = field(default_factory=list)
     has_edges: bool = False
+    # est_item_id of the work-class element now bound to this carrier's work
+    # item, when exactly one is (see `link_has_a_home`). "" when none is.
+    _link_home: str = ""
+    # The row's STORED card_kind, when it had one. `link` is authoritative for
+    # `carries_a_work_item_link`; anything else falls back to derivation.
+    _card_kind: str = ""
     # The DOCUMENT's arrival date (rag_assets.created_at) and its target's
     # version_date — used by `postdates_target`.
     #
@@ -197,6 +242,25 @@ class Stub:
         return not self.targets
 
     @property
+    def link_has_a_home(self) -> bool:
+        """This carrier's work item has since gained a bound WORK element, so
+        the pointer it holds now has somewhere to live (#179 option 3).
+
+        The self-clearing half of the carrier rule. A link-carrier is not
+        retirable merely for being one — retiring it would drop the link. It
+        becomes retirable when the thing it points AT acquires an element that
+        can hold a source: re-route the document there and the card is free.
+
+        Computed in `find_stubs` from the same work-item -> bound-element
+        index the frontend's routing uses (`routeDocument.boundElementIndex`),
+        so the sweep proposes a move exactly when routing would now make it.
+        Measured 2026-09-16: 0 of the tenant's 11 residue carriers resolve
+        today, which is the point — the backlog clears itself as elements
+        appear rather than needing a sweep to re-judge it.
+        """
+        return bool(self._link_home)
+
+    @property
     def carries_a_work_item_link(self) -> bool:
         """It was minted to hold a pointer for a WORK ITEM, and is doing that
         job — not a Source-material card somebody created by mistake (#179).
@@ -218,11 +282,21 @@ class Stub:
         worse — invites someone to "migrate" a card whose only job is to hold
         a pointer nothing else can hold.
 
-        The signal is a `serves` target that resolves to NO live element. That
-        is the same condition as `orphan`, read the other way round: `orphan`
-        says "nothing to attach to", which is true; this says WHY, which is
-        the part that decides whether to act.
+        STORED FIRST (#179 option 3). `card_kind='link'` is written by the
+        mint at the moment it makes this exact decision, so a row that carries
+        it needs no derivation. The `serves`-based signal below stays as the
+        fallback for rows written before the kind existed — the same
+        migration-aid shape `classify()` uses for layer inference, and it has
+        the same weakness: it cannot tell "minted for a work item" from
+        "minted for a slot somebody later deleted".
+
+        The fallback signal is a `serves` target that resolves to NO live
+        element. That is the same condition as `orphan`, read the other way
+        round: `orphan` says "nothing to attach to", which is true; this says
+        WHY, which is the part that decides whether to act.
         """
+        if self._card_kind == "link":
+            return True
         return bool(self.unresolved) and bool(self.sources)
 
 
@@ -250,12 +324,41 @@ def find_stubs(
     # The earliest dated WORK element in the project (#275). A Source-material
     # card is capture, not work, so it cannot set this floor — otherwise the
     # founding documents would define the very date they are tested against.
+    #
+    # Asked as "is it WORK" rather than "is it not stream" (#179 option 3): a
+    # LINK carrier is not stream, but it is not work either — it is a pointer
+    # minted on the day a document was routed. Letting it set the floor would
+    # reintroduce #275 exactly, with the carrier dating the work it points at.
     work_dates = [
         str(r.get("version_date") or "")
         for r in rows
-        if not _is_stream(r) and r.get("version_date")
+        if _is_work(r) and r.get("version_date")
     ]
     first_work_date = min(work_dates) if work_dates else ""
+
+    # Work item -> the ONE work-class element bound to it (#179 option 3, the
+    # self-clearing half of `link_has_a_home`). Mirrors the frontend's
+    # `routeDocument.boundElementIndex`, and for the same two reasons:
+    # work-class only (resolving onto another capture card just moves the
+    # problem) and unambiguous only (several bound elements is a guess about
+    # which deliverable a document belongs to, and this sweep's contract is to
+    # propose only what the data can settle).
+    from cp_engine.card_class import classify
+
+    _bound: dict[str, list[str]] = {}
+    for r in rows:
+        if not classify(r).is_card:
+            continue
+        self_id = r.get("est_item_id")
+        if not self_id:
+            continue
+        for slot in r.get("serves") or []:
+            if not slot or slot == self_id:
+                continue
+            seen = _bound.setdefault(slot, [])
+            if self_id not in seen:
+                seen.append(self_id)
+    link_homes = {k: v[0] for k, v in _bound.items() if len(v) == 1}
 
     edged: set[str] = set()
     for e in relations:
@@ -266,7 +369,7 @@ def find_stubs(
     out: list[Stub] = []
     for row in rows:
         eid = row.get("est_item_id")
-        if not eid or not _is_stream(row):
+        if not eid or not _is_sweepable(row):
             continue
         body = row.get("body") or ""
         if len(body) > body_max:
@@ -300,6 +403,10 @@ def find_stubs(
                 targets=targets,
                 unresolved=unresolved,
                 has_edges=eid in edged,
+                _card_kind=str(row.get("card_kind") or "").strip().lower(),
+                _link_home=next(
+                    (link_homes[u] for u in unresolved if u in link_homes), ""
+                ),
                 _doc_date=_earliest_source_date(
                     row.get("sources") or [], source_dates
                 ),
@@ -511,16 +618,34 @@ def render_sweep(stubs: list[Stub], *, code: str) -> str:
             out.append(f"    {s.est_item_id}")
         out.append("")
         carriers = [s for s in orphans if s.carries_a_work_item_link]
-        if carriers:
+        freed = [s for s in carriers if s.link_has_a_home]
+        if freed:
+            # The self-clearing half (#179 option 3). These are the only
+            # carriers this sweep may propose moving: the work item they point
+            # at has GAINED a bound element, so the document has a real home
+            # and the card is redundant rather than load-bearing.
             out.append(
-                f"  ℹ {len(carriers)} of these carry a WORK-ITEM LINK and are "
+                f"  ✅ {len(freed)} carrier(s) are now FREE — the work item "
+                "they point at has since gained a bound element, so the "
+                "document can move there and the card can be retired:")
+            out.append("")
+            for s in freed:
+                out.append(f"    {s.framing}")
+                out.append(f"      {s.est_item_id}")
+                out.append(f"      → re-route its source(s) to: {s._link_home}")
+            out.append("")
+        held = [s for s in carriers if not s.link_has_a_home]
+        if held:
+            out.append(
+                f"  ℹ {len(held)} of these carry a WORK-ITEM LINK and are "
                 "doing their job (#179). A work item — an estimate "
                 "deliverable or activity, an initiative milestone — has no "
                 "spine row and so no `sources` array; routing a document "
                 "there mints a card to hold the pointer, deliberately. They "
                 "look identical to a mistaken Source-material stub and are "
                 "not one. Retiring them would drop the link with nothing to "
-                "catch it.")
+                "catch it. They become movable on their own once the work "
+                "item gains a bound element — this sweep will say so.")
             out.append("")
         out.append(
             "  The rest need a judgement the data cannot make: either the "
