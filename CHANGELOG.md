@@ -4,6 +4,64 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.117.3 — 2026-09-16
+
+**A column that dated the wrong thing, and two parsers that were dropping
+bullets in silence.** One feature, two bug fixes, one guard. No API changes.
+
+**`master-cp.md` now dates the WORK (#260).** The date column rendered
+`ProjectState.last_touched` — MC-2's `projects.updated_at`, which moves on a
+status flip or a budget edit and does **not** move for a week of delivery. On
+2026-09-15 ten projects showed a May date while several had spine writes that
+same week. A new `ProjectState.last_activity` reads the newest human-dated
+sprint-file bullet, and the six ACTIVE tables are relabelled **Last activity**.
+
+- `last_touched` is unchanged and still rendered on the Holding and
+  Closed-recent tables, where "when did the record change" is the right
+  question (`render.is_closed_recent` depends on it).
+- **Not file mtime**, which #260 tried and reverted: one tenant-wide ingest
+  rewrites every sprint file, so every project collapsed onto the same date. A
+  column reading "today" for all 31 rows encodes when sync ran, and is worse
+  than a visibly stale date because it looks current. A test writes two sprint
+  files at the same instant and asserts their dates still differ.
+- Live: `tel-5113` 05-22 → 09-14, `ggl-5143` 06-04 → 09-14, `ggl-5136` 08-10 →
+  09-14, and **`ggl-5185` 06-19 → 08-12** — genuinely quiet since August, and
+  the column now says so. Projects with no dated bullet render `—` rather than
+  an invented date.
+
+**Backticked decision markers were dropped (#272).** `_parse_decisions`
+required a bare `[decision`, so `` - `[decision · 2026-09-15]` … `` failed the
+check. Both forms are in the tree: `cp add-decision` writes the bare one, while
+hand-written and model-written bullets routinely code-span it. 17 bullets
+across 4 files were affected, and `ibx-5153`'s W39 file parsed to **zero**
+decisions while visibly containing two.
+
+**`## Team communication` was unparseable (#273).** Initiative and
+standalone-repo sprint files head the comms section that way — the engine's own
+`initiative-sprint.md.j2` writes it — while `_parse_client_section` and
+`_parse_stakeholders` read only `## Client communication`. Every open ask,
+outbound and stakeholder bullet in **135 tenant files** was silently dropped.
+`mission-control` W20 had 5 open asks in the text and 0 parsed.
+
+**A lint so the next variant is caught immediately.** Both parser bugs were
+reader-invisible: the bullets render correctly in Markdown, so a human
+reviewing the file sees them and assumes the system does too. Neither surfaced
+on its own; #272 was found only because #260 happened to read the same parser.
+`cxp render` now warns, one line per file, when a sprint file contains dated
+bullets that produced no parsed entry — asserting the general property rather
+than checking for backticks. Silent when the corpus is clean.
+
+- **It found #273 on its first run against real data**, which is the argument
+  for it existing.
+- Tenant-wide it went 136 → 7 warnings as the real bugs and its own false
+  positives were resolved; all 7 remaining are genuine.
+
+**Known, not fixed:** the sprint entry types disagree on the date field name —
+`DecisionEntry` and `InboundUpdate` use `date`, `ClientAsk` uses `asked_date`,
+`Risk` uses `raised_date`. Any consumer doing `getattr(entry, "date", None)`
+across types silently skips two of the three; this cost three rounds of false
+positives while building the lint. Noted on #273.
+
 ## v0.117.2 — 2026-09-16
 
 **A leaked connection per `.schema()` call, and three silent casualties of
