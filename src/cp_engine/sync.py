@@ -273,6 +273,7 @@ def _sync_tenant_inner(
             p,
             one_line_summary=_derive_summary(config, p),
             summary_stale_days=_derive_summary_stale_days(config, p),
+            last_activity=_derive_last_activity(config, p),
         )
         for p in projects
     )
@@ -1885,6 +1886,26 @@ def _derive_summary_stale_days(
         exec_summary_updated_on(existing / "cp.md"),
         _latest_spine_activity(existing),
     )
+
+
+def _derive_last_activity(
+    config: TenantConfig, project: ProjectState
+) -> "date | None":
+    """When this project's WORK last moved (#260).
+
+    Reads the newest human-dated sprint-file bullet. Distinct from
+    `project.last_touched` (MC-2's `projects.updated_at`), which dates the job
+    RECORD and is left alone here — `render.is_closed_recent` asks that
+    question and is right to.
+
+    Unlike `_derive_summary_stale_days` above, this does NOT use spine mtime.
+    A tenant-wide ingest rewrites every sprint file, so mtime collapses all
+    projects onto one date; the whole point of this column is to
+    differentiate. See `summary.latest_dated_activity`.
+    """
+    from cp_engine.summary import latest_dated_activity
+
+    return latest_dated_activity(config.root, project.code)
 
 
 def _derive_latest_signal(

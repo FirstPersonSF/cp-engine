@@ -77,10 +77,10 @@ _{{ section_summaries.pipeline }}_
 
 Sales-stage progression: Inquiry → Negotiation → Contract.
 
-| Account | Code | Project | Stage | Owner | Budget | Last touched | One-line summary | CP |
+| Account | Code | Project | Stage | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|---|
 {%- for p in active_groups.pipeline %}
-| [{{ p.account_display }}]({{ p.account_link }}) | `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.deal_stage or "—" }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% if p.latest_signal %}<br>**Since then:** {{ p.latest_signal[0] }} _({{ p.latest_signal[1] }})_{% endif %}{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
+| [{{ p.account_display }}]({{ p.account_link }}) | `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.deal_stage or "—" }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_activity_short }} | {{ p.one_line_summary or "" }}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% if p.latest_signal %}<br>**Since then:** {{ p.latest_signal[0] }} _({{ p.latest_signal[1] }})_{% endif %}{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-pipeline -->
 
@@ -90,10 +90,10 @@ Sales-stage progression: Inquiry → Negotiation → Contract.
 _{{ section_summaries.client }}_
 {%- endif %}
 
-| Account | Code | Project | Owner | Budget | Last touched | One-line summary | CP |
+| Account | Code | Project | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
 {%- for p in active_groups.client %}
-| [{{ p.account_display }}]({{ p.account_link }}) | `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% if p.latest_signal %}<br>**Since then:** {{ p.latest_signal[0] }} _({{ p.latest_signal[1] }})_{% endif %}{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
+| [{{ p.account_display }}]({{ p.account_link }}) | `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_activity_short }} | {{ p.one_line_summary or "" }}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% if p.latest_signal %}<br>**Since then:** {{ p.latest_signal[0] }} _({{ p.latest_signal[1] }})_{% endif %}{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-1p -->
 
@@ -103,10 +103,10 @@ _{{ section_summaries.client }}_
 _{{ section_summaries.self_fpsf }}_
 {%- endif %}
 
-| Repo | Status | Owner | Description | Last touched | GitHub | CP |
+| Repo | Status | Owner | Description | Last activity | GitHub | CP |
 |---|---|---|---|---|---|---|
 {%- for p in active_groups.self_fpsf %}
-| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.status }} | {{ p.owner or "—" }} | {{ p.description or "" }} | {{ p.last_touched_short or "—" }} | {% if p.github_org and p.repo_name %}[{{ p.github_org }}/{{ p.repo_name }}](https://github.com/{{ p.github_org }}/{{ p.repo_name }}){% else %}—{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
+| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.status }} | {{ p.owner or "—" }} | {{ p.description or "" }} | {{ p.last_activity_short }} | {% if p.github_org and p.repo_name %}[{{ p.github_org }}/{{ p.repo_name }}](https://github.com/{{ p.github_org }}/{{ p.repo_name }}){% else %}—{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-fpsf -->
 
@@ -116,10 +116,10 @@ _{{ section_summaries.self_fpsf }}_
 _{{ section_summaries.self_fpsf_initiatives }}_
 {%- endif %}
 
-| Code | Initiative | Owner | Status | Last touched | One-line summary | CP |
+| Code | Initiative | Owner | Status | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|
 {%- for p in active_groups.self_fpsf_initiatives %}
-| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.name }} | {{ p.owner or "—" }} | {{ p.status }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% if p.latest_signal %}<br>**Since then:** {{ p.latest_signal[0] }} _({{ p.latest_signal[1] }})_{% endif %}{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
+| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.name }} | {{ p.owner or "—" }} | {{ p.status }} | {{ p.last_activity_short }} | {{ p.one_line_summary or "" }}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% if p.latest_signal %}<br>**Since then:** {{ p.latest_signal[0] }} _({{ p.latest_signal[1] }})_{% endif %}{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-fpsf-initiatives -->
 
@@ -129,10 +129,10 @@ _{{ section_summaries.self_fpsf_initiatives }}_
 _{{ section_summaries.self_canonic }}_
 {%- endif %}
 
-| Repo | Status | Owner | Description | Last touched | GitHub | CP |
+| Repo | Status | Owner | Description | Last activity | GitHub | CP |
 |---|---|---|---|---|---|---|
 {%- for p in active_groups.self_canonic %}
-| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.status }} | {{ p.owner or "—" }} | {{ p.description or "" }} | {{ p.last_touched_short or "—" }} | {% if p.github_org and p.repo_name %}[{{ p.github_org }}/{{ p.repo_name }}](https://github.com/{{ p.github_org }}/{{ p.repo_name }}){% else %}—{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
+| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.status }} | {{ p.owner or "—" }} | {{ p.description or "" }} | {{ p.last_activity_short }} | {% if p.github_org and p.repo_name %}[{{ p.github_org }}/{{ p.repo_name }}](https://github.com/{{ p.github_org }}/{{ p.repo_name }}){% else %}—{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-canonic -->
 
@@ -142,10 +142,10 @@ _{{ section_summaries.self_canonic }}_
 _{{ section_summaries.self_canonic_initiatives }}_
 {%- endif %}
 
-| Code | Initiative | Owner | Status | Last touched | One-line summary | CP |
+| Code | Initiative | Owner | Status | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|
 {%- for p in active_groups.self_canonic_initiatives %}
-| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.name }} | {{ p.owner or "—" }} | {{ p.status }} | {{ p.last_touched_short or "—" }} | {{ p.one_line_summary or "" }}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% if p.latest_signal %}<br>**Since then:** {{ p.latest_signal[0] }} _({{ p.latest_signal[1] }})_{% endif %}{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
+| `{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.name }} | {{ p.owner or "—" }} | {{ p.status }} | {{ p.last_activity_short }} | {{ p.one_line_summary or "" }}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% if p.latest_signal %}<br>**Since then:** {{ p.latest_signal[0] }} _({{ p.latest_signal[1] }})_{% endif %}{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-canonic-initiatives -->
 

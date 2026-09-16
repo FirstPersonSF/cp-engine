@@ -25,6 +25,7 @@ from cp_engine.summary import (
     MAX_SUMMARY_LEN,
     STALE_AFTER_DAYS,
     exec_summary_updated_on,
+    latest_dated_activity,
     summary_stale_days,
 )
 
@@ -213,3 +214,81 @@ def test_signal_is_length_capped(tmp_path):
             f"- [decision · 2026-09-10] {'x' * 400}\n")
     got = latest_recorded_signal(tmp_path, "p")
     assert got is not None and len(got[0]) <= MAX_SUMMARY_LEN
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #260 — "Last activity" dates the WORK, not the job record
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_last_activity_finds_the_newest_dated_bullet(tmp_path):
+    _sprint(tmp_path, "2026-W36", "ibx-5153", "- `[decision · 2026-08-31]` Old.")
+    _sprint(tmp_path, "2026-W38", "ibx-5153", "- `[decision · 2026-09-14]` New.")
+    assert latest_dated_activity(tmp_path, "ibx-5153") == date(2026, 9, 14)
+
+
+def test_last_activity_differentiates_where_mtime_collapses(tmp_path):
+    """THE POINT OF #260, and why the mtime attempt was reverted.
+
+    Both sprint files are WRITTEN NOW, so their mtimes are identical — exactly
+    what a tenant-wide ingest produces. The human-assigned dates inside them
+    still differ, so the column separates a project that moved yesterday from
+    one that has not moved since August. This is the assertion the reverted
+    mtime implementation could not make.
+    """
+    _sprint(tmp_path, "2026-W38", "ibx-5153", "- `[decision · 2026-09-14]` Moved.")
+    _sprint(tmp_path, "2026-W38", "ggl-5185", "- `[decision · 2026-08-12]` Quiet.")
+
+    assert latest_dated_activity(tmp_path, "ibx-5153") == date(2026, 9, 14)
+    assert latest_dated_activity(tmp_path, "ggl-5185") == date(2026, 8, 12)
+
+
+def test_last_activity_is_none_when_nothing_is_dated(tmp_path):
+    """6 of the rendered projects have no dated bullet. None -> em dash.
+
+    Inventing a date for these is the failure mode #260 documents: a column
+    where every row looks current is worse than one that admits it cannot say.
+    """
+    _sprint(tmp_path, "2026-W38", "cp-engine", "- A decision with no date marker.")
+    assert latest_dated_activity(tmp_path, "cp-engine") is None
+
+
+def test_last_activity_is_none_for_an_unknown_project(tmp_path):
+    (tmp_path / "sprints").mkdir()
+    assert latest_dated_activity(tmp_path, "does-not-exist") is None
+
+
+def test_last_activity_reads_more_than_decisions(tmp_path):
+    """A project can be moving without deciding anything.
+
+    Restricting to `[decision · …]` (what `latest_recorded_signal` does, for
+    its own good reasons) would blank a project whose week produced open asks
+    and client mail but no decision.
+    """
+    d = tmp_path / "sprints" / "2026-W38"
+    d.mkdir(parents=True)
+    (d / "slt-5196.md").write_text(
+        "---\n"
+        "Project: slt-5196 — Test\n"
+        "Filename: sprints/2026-W38/slt-5196.md\n"
+        "Sprint: 2026-W38\n"
+        "PriorSprint: \n"
+        "---\n\n"
+        "# slt-5196 · Sprint 2026-W38\n\n"
+        "## Client communication\n\n"
+        "### Open asks\n"
+        "- [open · 2026-09-16 · Janet] Send the estimate.\n\n"
+        "## Meeting notes & decisions\n\n"
+        "### Decisions\n"
+        "- `[decision · 2026-09-02]` Older than the ask above.\n"
+    )
+    assert latest_dated_activity(tmp_path, "slt-5196") == date(2026, 9, 16)
+
+
+def test_last_activity_survives_a_malformed_sprint_file(tmp_path):
+    """One bad file must not break a tenant-wide sync; the surface is advisory."""
+    d = tmp_path / "sprints" / "2026-W37"
+    d.mkdir(parents=True)
+    (d / "ibx-5153.md").write_text("not a sprint file at all")
+    _sprint(tmp_path, "2026-W38", "ibx-5153", "- `[decision · 2026-09-14]` Fine.")
+    assert latest_dated_activity(tmp_path, "ibx-5153") == date(2026, 9, 14)

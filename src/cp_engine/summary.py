@@ -211,6 +211,87 @@ def latest_recorded_signal(
     return best
 
 
+def latest_dated_activity(
+    tenant_root: Path,
+    project_code: str,
+) -> date | None:
+    """When the WORK last moved, from the newest human-dated sprint bullet.
+
+    WHY THIS EXISTS (#260). `master-cp.md`'s "Last touched" column renders
+    MC-2's `projects.updated_at` — the job RECORD's timestamp. That moves on a
+    status flip or a budget edit and does NOT move for a week of delivery, so
+    on 2026-09-15 ten projects showed a May date while several had spine
+    writes that same week. The column's label promises the other thing.
+
+    WHY NOT FILE MTIME. #260's first attempt reused the spine mtime
+    `summary_stale_days` reads. Every project resolved to the SAME date,
+    because one tenant-wide ingest rewrites every sprint file wholesale — a
+    column where all 31 rows read "today" encodes when sync ran, and is worse
+    than a visibly stale date because it reads as current. Dates a human wrote
+    into a bullet survive the rewrite.
+
+    Reads the same bullets `latest_recorded_signal` does, across the SAME
+    parser, so the column and the ⚠️ marker can never disagree about when
+    something happened. Unlike that function this takes every dated bullet
+    kind, not just decisions: an open ask or a client message is activity too,
+    and restricting to decisions would blank projects that are moving but have
+    not decided anything.
+
+    Returns None when nothing dated exists — the caller renders an em dash.
+    Measured 2026-09-16: 37 of 51 sprint-file projects have a dated bullet;
+    of the 14 without, only 6 render in `master-cp.md` and all are repos or
+    internal initiatives.
+    """
+    from cp_engine.sprints import parse_sprint_file
+
+    sprints = tenant_root / "sprints"
+    if not sprints.is_dir():
+        return None
+
+    best: date | None = None
+    for week_dir in sorted(sprints.iterdir(), reverse=True):
+        path = week_dir / f"{project_code}.md"
+        if not path.is_file():
+            continue
+        try:
+            parsed = parse_sprint_file(path)
+        except Exception:  # noqa: BLE001 — one malformed file must not break
+            # a tenant-wide sync; this surface is advisory.
+            logger.warning("Could not parse sprint file %s", path, exc_info=True)
+            continue
+        for field in _DATED_BULLET_FIELDS:
+            value = getattr(parsed, field, None)
+            # Only the list-shaped sections carry dated items; `carry_forward`
+            # is a single object and is skipped by this check rather than by
+            # name, so a future list-shaped field is picked up for free.
+            if not isinstance(value, (list, tuple)):
+                continue
+            for entry in value:
+                # The entry types do not agree on a field name: DecisionEntry
+                # and InboundUpdate carry `date`, ClientAsk carries
+                # `asked_date`. Reading only `date` silently skips every open
+                # ask — a whole activity kind, lost to a getattr default.
+                when = _parse_iso_date(
+                    getattr(entry, "date", None)
+                    or getattr(entry, "asked_date", None)
+                )
+                if when is not None and (best is None or when > best):
+                    best = when
+    return best
+
+
+# The sprint-file sections whose bullets carry a human-assigned date. Every
+# one of these is written as `[<kind> · YYYY-MM-DD]` by auto-ingest or by hand
+# during a deepening pass.
+_DATED_BULLET_FIELDS = (
+    "decisions",
+    "client_open_asks",
+    "client_outbound",
+    "client_inbound",
+    "risks",
+)
+
+
 def _parse_iso_date(value: str | None) -> date | None:
     """An ISO date from a bullet's `[decision · <date>]` marker, or None.
 

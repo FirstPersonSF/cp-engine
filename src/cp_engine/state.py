@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -181,6 +181,29 @@ class ProjectState:
     # current or nothing newer exists. Rendered BESIDE the summary, never
     # as it: the model owns summary prose (2026-06-30-exec-summary.md).
     latest_signal: tuple[str, str] | None = None
+
+    # When the WORK last moved, from the newest human-dated sprint-file bullet
+    # (#260). Distinct from `last_touched` above, which is MC-2's
+    # `projects.updated_at` — the job RECORD's mtime, moved by a status flip or
+    # a budget edit and not by a week of delivery. Ten projects rendered a May
+    # date on 2026-09-15 while several had spine writes that same week.
+    #
+    # `last_touched` is NOT redefined: `render.is_closed_recent` asks "when did
+    # the record change" and is right to. This is a second field, not a fix to
+    # that one.
+    #
+    # WHY NOT mtime. #260 first tried the spine-file mtime `summary_stale_days`
+    # uses. Every project landed on the SAME date, because one tenant-wide
+    # ingest rewrites every sprint file — a column reading "today" for all 31
+    # encodes when sync ran, which is worse than an obviously stale May date
+    # because it looks current. Human-assigned dates do not move when a file is
+    # rewritten; measured across 51 sprint-file projects they spread May →
+    # September and differentiate (ggl-5185 correctly reads August).
+    #
+    # None when the project has no dated bullet at all — 6 of the rendered
+    # projects, all repos/initiatives. Renders as an em dash: no signal is the
+    # honest answer, and inventing one is the failure mode above.
+    last_activity: date | None = None
 
     # MC-2 row uuid (`id`). Threaded through so the spine mirror
     # (slice 2) can key `spine_elements.project_id` without re-querying.

@@ -64,56 +64,56 @@ _Two deals in flight_
 
 Sales-stage progression: Inquiry → Negotiation → Contract.
 
-| Account | Code | Project | Stage | Owner | Budget | Last touched | One-line summary | CP |
+| Account | Code | Project | Stage | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|---|
-| [SAP](1p/sap/cp.md) | `sap-5174` | SAP All in with AI | Inquiry | Drew | — | 2026-05-12 | Kickoff July 8; workshop July 30. | [CP →](1p/sap/sap-5174/cp.md) · [W20 →](sprints/2026-W20/sap-5174.md) |
-| [Pebble Foods](1p/pebble-foods/cp.md) | `peb-5200` | Pebble Foods Discovery | Negotiation | Drew | $45k | 2026-05-12 | Pricing counter-proposal in front of Maria. | [CP →](1p/pebble-foods/peb-5200/cp.md) · [W20 →](sprints/2026-W20/peb-5200.md) |
+| [SAP](1p/sap/cp.md) | `sap-5174` | SAP All in with AI | Inquiry | Drew | — | — | Kickoff July 8; workshop July 30. | [CP →](1p/sap/sap-5174/cp.md) · [W20 →](sprints/2026-W20/sap-5174.md) |
+| [Pebble Foods](1p/pebble-foods/cp.md) | `peb-5200` | Pebble Foods Discovery | Negotiation | Drew | $45k | — | Pricing counter-proposal in front of Maria. | [CP →](1p/pebble-foods/peb-5200/cp.md) · [W20 →](sprints/2026-W20/peb-5200.md) |
 <!-- cp-engine:end active-pipeline -->
 
 <!-- cp-engine:start active-1p -->
 ## 1P — Active Engagements (2)
 _Two engagements in delivery_
 
-| Account | Code | Project | Owner | Budget | Last touched | One-line summary | CP |
+| Account | Code | Project | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
-| [Google](1p/google/cp.md) | `ggl-5168` | Playbooks (Activation)<br>_Last week: Drew 6h, Tony 2.5h (8.5h total)._ | Drew | $80k | 2026-05-12 | Storyboards in flight; client review Wed. | [CP →](1p/google/ggl-5168/cp.md) · [W20 →](sprints/2026-W20/ggl-5168.md) |
-| [Infoblox](1p/infoblox/cp.md) | `ibx-5153` | Infoblox AI Campaign<br>_Last week: Tony 8h (8h total)._ | Tony | $120k | 2026-05-12 | Carol framework deck in client review. | [CP →](1p/infoblox/ibx-5153/cp.md) · [W20 →](sprints/2026-W20/ibx-5153.md) |
+| [Google](1p/google/cp.md) | `ggl-5168` | Playbooks (Activation)<br>_Last week: Drew 6h, Tony 2.5h (8.5h total)._ | Drew | $80k | — | Storyboards in flight; client review Wed. | [CP →](1p/google/ggl-5168/cp.md) · [W20 →](sprints/2026-W20/ggl-5168.md) |
+| [Infoblox](1p/infoblox/cp.md) | `ibx-5153` | Infoblox AI Campaign<br>_Last week: Tony 8h (8h total)._ | Tony | $120k | — | Carol framework deck in client review. | [CP →](1p/infoblox/ibx-5153/cp.md) · [W20 →](sprints/2026-W20/ibx-5153.md) |
 <!-- cp-engine:end active-1p -->
 
 <!-- cp-engine:start active-fpsf -->
 ## First Person — Internal Tooling (1)
 _One tools in active build_
 
-| Repo | Status | Owner | Description | Last touched | GitHub | CP |
+| Repo | Status | Owner | Description | Last activity | GitHub | CP |
 |---|---|---|---|---|---|---|
-| `cp-engine` | Active | — | The engine behind the cp tenant. | 2026-05-06 | [FirstPersonSF/cp-engine](https://github.com/FirstPersonSF/cp-engine) | [CP →](firstpersonsf/cp-engine/cp.md) · [W20 →](sprints/2026-W20/cp-engine.md) |
+| `cp-engine` | Active | — | The engine behind the cp tenant. | — | [FirstPersonSF/cp-engine](https://github.com/FirstPersonSF/cp-engine) | [CP →](firstpersonsf/cp-engine/cp.md) · [W20 →](sprints/2026-W20/cp-engine.md) |
 <!-- cp-engine:end active-fpsf -->
 
 <!-- cp-engine:start active-fpsf-initiatives -->
 ## First Person — Initiatives (1)
 _One initiatives in motion_
 
-| Code | Initiative | Owner | Status | Last touched | One-line summary | CP |
+| Code | Initiative | Owner | Status | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|
-| `mission-control` | Mission Control | Tony | Active | 2026-05-12 | Workspace IA shipped; integrations registry live. | [CP →](firstpersonsf/mission-control/cp.md) · [W20 →](sprints/2026-W20/mission-control.md) |
+| `mission-control` | Mission Control | Tony | Active | — | Workspace IA shipped; integrations registry live. | [CP →](firstpersonsf/mission-control/cp.md) · [W20 →](sprints/2026-W20/mission-control.md) |
 <!-- cp-engine:end active-fpsf-initiatives -->
 
 <!-- cp-engine:start active-canonic -->
 ## Canonic (1)
 _One projects in flight_
 
-| Repo | Status | Owner | Description | Last touched | GitHub | CP |
+| Repo | Status | Owner | Description | Last activity | GitHub | CP |
 |---|---|---|---|---|---|---|
-| `unf-forge` | Active | — | UNF prototyping forge. | 2026-05-06 | [FirstPersonSF/unf-forge](https://github.com/FirstPersonSF/unf-forge) | [CP →](canonic/unf-forge/cp.md) · [W20 →](sprints/2026-W20/unf-forge.md) |
+| `unf-forge` | Active | — | UNF prototyping forge. | — | [FirstPersonSF/unf-forge](https://github.com/FirstPersonSF/unf-forge) | [CP →](canonic/unf-forge/cp.md) · [W20 →](sprints/2026-W20/unf-forge.md) |
 <!-- cp-engine:end active-canonic -->
 
 <!-- cp-engine:start active-canonic-initiatives -->
 ## Canonic — Initiatives (1)
 _One initiatives in motion_
 
-| Code | Initiative | Owner | Status | Last touched | One-line summary | CP |
+| Code | Initiative | Owner | Status | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|
-| `storyos` | StoryOS | Drew | Active | 2026-05-12 | Substrate design in review. | [CP →](canonic/storyos/cp.md) · [W20 →](sprints/2026-W20/storyos.md) |
+| `storyos` | StoryOS | Drew | Active | — | Substrate design in review. | [CP →](canonic/storyos/cp.md) · [W20 →](sprints/2026-W20/storyos.md) |
 <!-- cp-engine:end active-canonic-initiatives -->
 
 <!-- cp-engine:start last-week-workload -->

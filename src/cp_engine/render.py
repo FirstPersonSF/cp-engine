@@ -1383,6 +1383,13 @@ def _project_view(p: ProjectState) -> dict:
         "status": p.status,
         "owner": p.owner,
         "last_touched_short": _short(p.last_touched),
+        # When the WORK last moved, from the newest human-dated sprint bullet
+        # (#260). `last_touched_short` above dates the job RECORD and is kept
+        # for the surfaces that mean that. "—" when no dated bullet exists:
+        # showing no signal beats inventing one.
+        "last_activity_short": (
+            p.last_activity.isoformat() if p.last_activity else "—"
+        ),
         "one_line_summary": p.one_line_summary,
         # None when current/undatable; an int (days) when the hand-written
         # Exec Summary this one-liner comes from trails real activity.

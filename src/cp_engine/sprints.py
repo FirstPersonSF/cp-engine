@@ -548,11 +548,16 @@ def _parse_decisions(body: str) -> tuple[DecisionEntry, ...]:
         # without a leading `[decision` bracket are legacy freeform entries;
         # those are still captured by `_parse_meeting_notes` via the
         # numbered-list shape.
-        if not first.lstrip("- ").startswith("[decision"):
+        # Strip `- ` and any backticks wrapping the marker. Both forms occur
+        # in the wild: `cp add-decision` writes the bare `[decision · …]`, but
+        # hand-written and model-written bullets routinely code-span it as
+        # `` `[decision · …]` `` because that is how the marker renders in the
+        # file. Requiring the bare form silently dropped 17 bullets across 4
+        # files — they are in the text, visible to a reader, and invisible to
+        # every consumer of this parser (#272).
+        stripped = first.lstrip("- ").strip().replace("`", "")
+        if not stripped.startswith("[decision"):
             continue
-        # Strip the leading `[decision · YYYY-MM-DD]` and optional
-        # `[cross-cutting]` markers, then the remainder is the text.
-        stripped = first.lstrip("- ").strip()
         cross = False
         if "[cross-cutting]" in stripped:
             cross = True

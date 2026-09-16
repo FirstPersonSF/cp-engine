@@ -32,42 +32,42 @@ Author: cp-engine (sync)
 
 Sales-stage progression: Inquiry → Negotiation → Contract.
 
-| Account | Code | Project | Stage | Owner | Budget | Last touched | One-line summary | CP |
+| Account | Code | Project | Stage | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|---|
 <!-- cp-engine:end active-pipeline -->
 
 <!-- cp-engine:start active-1p -->
 ## 1P — Active Engagements (0)
 
-| Account | Code | Project | Owner | Budget | Last touched | One-line summary | CP |
+| Account | Code | Project | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
 <!-- cp-engine:end active-1p -->
 
 <!-- cp-engine:start active-fpsf -->
 ## First Person — Internal Tooling (0)
 
-| Repo | Status | Owner | Description | Last touched | GitHub | CP |
+| Repo | Status | Owner | Description | Last activity | GitHub | CP |
 |---|---|---|---|---|---|---|
 <!-- cp-engine:end active-fpsf -->
 
 <!-- cp-engine:start active-fpsf-initiatives -->
 ## First Person — Initiatives (0)
 
-| Code | Initiative | Owner | Status | Last touched | One-line summary | CP |
+| Code | Initiative | Owner | Status | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|
 <!-- cp-engine:end active-fpsf-initiatives -->
 
 <!-- cp-engine:start active-canonic -->
 ## Canonic (0)
 
-| Repo | Status | Owner | Description | Last touched | GitHub | CP |
+| Repo | Status | Owner | Description | Last activity | GitHub | CP |
 |---|---|---|---|---|---|---|
 <!-- cp-engine:end active-canonic -->
 
 <!-- cp-engine:start active-canonic-initiatives -->
 ## Canonic — Initiatives (0)
 
-| Code | Initiative | Owner | Status | Last touched | One-line summary | CP |
+| Code | Initiative | Owner | Status | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|
 <!-- cp-engine:end active-canonic-initiatives -->
 
