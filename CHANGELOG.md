@@ -4,6 +4,54 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.117.8 — 2026-09-16
+
+**Two layer-string inferences removed, and 90 mis-scored files fixed.** No API
+changes. Closes two of the three sites in #278.
+
+### `seal_sweep` disagreed with itself
+
+`build_rounds` compared the raw `DELIVERABLE_LAYERS` list by hand, while
+`shipped_ids` eleven lines above already asked `_is_deliverable()` — which
+prefers the stored `card_kind`. So the two halves of one function could
+disagree about what a deliverable is: a row carrying
+`card_kind='deliverable'` on an unlisted layer was counted as **shipped** and
+then **skipped** as a round. That is #172's failure mode inside a single
+scope. It now calls the module's own helper.
+
+### `spine.py` compared the wrong spelling — and it cost real ranking
+
+`spine.py` is the **frontmatter** domain: a `SpineElement` is parsed from
+markdown, `layer` is a required key, and there is no `card_kind` to prefer.
+These checks stay layer-keyed on purpose, and `_layer_key`'s docstring now
+records that so the next sweep for layer-string inference does not flag them.
+
+What was broken is that all six comparisons were exact-match against
+**CamelCase** constants while the tenant's frontmatter carries the **spaced**
+forms:
+
+| frontmatter value | files | in the constants? |
+|---|---|---|
+| `Source material` | 75 | ✗ (`SourceMaterial`) |
+| `Client feedback` | 15 | ✗ (`ClientFeedback`) |
+| `SourceMaterial` | 4 | ✓ |
+| `ClientFeedback` | 3 | ✓ |
+
+The DB rows were normalised by mig 129; frontmatter never was. The cost was
+silent mis-scoring rather than a crash — `LAYER_IMPORTANCE.get(el.layer, 0.5)`
+fell to its default for **90 files**, so `Client feedback` scored 0.5 instead
+of 0.80 and real client feedback ranked **below an unmapped layer** in the
+Lens. `FRAMING_LAYERS` was compared with a bare `in` too, so `layer: brief`
+silently lost its always-ambient treatment.
+
+`_layer_key` routes through the shared `canon_layer` before normalising, so
+aliases resolve as well (`Output` / `Deliverable` → `Deliverables`) and this
+module cannot drift from the vocabulary the DB and `spine-authoring` already
+agree on. `_LAYER_IMPORTANCE_KEYED` is derived from the table rather than
+written out, so adding a layer cannot forget to key it.
+
+Six tests, all verified to fail against the reverted implementation.
+
 ## v0.117.7 — 2026-09-16
 
 **`link` becomes a stored card kind.** One new `CardKind` value. No breaking
