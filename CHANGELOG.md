@@ -4,6 +4,61 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.117.2 — 2026-09-16
+
+**A leaked connection per `.schema()` call, and three silent casualties of
+migration 072.** Two independent bug fixes; neither changes an API.
+
+**The connection leak.** `SyncPostgrestClient.schema()` constructs a whole new
+client on every call — new `httpx.Client`, new pool, new TLS connection — and
+never closes it. The object is discarded at the end of the expression, but the
+socket stays ESTABLISHED until the process exits, because httpx only releases a
+pool on close. `estimate.fetch_estimate` alone makes five `.schema()` calls per
+project.
+
+- **Measured, not inferred.** Before: 199 ESTABLISHED sockets to the Supabase
+  host at t=300s, still climbing, with ZERO in any closing state — the
+  signature of sockets that are leaked rather than churned. A traced run built
+  113 httpx clients in its first 90 seconds. After: **3 sockets, flat**, and
+  the same 38-project sync completes in **95.8s** instead of exceeding 300s
+  unfinished.
+
+- **It was never the pool.** The sync path is strictly sequential, and
+  `get_client` caches the supabase client per `(url, key)` — an instrumented
+  run constructs exactly one. httpx's `max_connections=100` was unreachable:
+  each leaked client brought its OWN pool, and a per-pool limit cannot bound a
+  population of pools. Tuning the limits would have changed nothing.
+
+- Fixed at the constructor, not the 28 `.schema()` call sites, since the leak
+  is a property of the constructor and a call-site fix drifts as sites are
+  added. Opt-in construction counters (`CP_MC2_CLIENT_STATS=1`, silent and free
+  otherwise) are what separated "clients constructed repeatedly" from
+  "connections abandoned" — the distinction that located it.
+
+**Migration 072 left five references to a dropped table.** Only one announced
+itself; two had been failing silently, swallowed by best-effort excepts.
+
+- **`cp spine` showed no source documents, for every project.**
+  `fetch_project_assets` resolved a project uuid through the dead
+  `spine_elements`; the PGRST205 returned `[]` rather than raising. Repointed
+  to `spine_substance`, which carries the same `(project_code, project_id)`
+  pair. Live tenant: **0 projects resolved assets before, 8 after**.
+
+- **`cxp sweep` reported "Flagged 0 drifted element(s)" while writing
+  nothing.** Same dead table, best-effort per item. `spine_substance` carries
+  `review_flags` keyed by `id`, and the sweep's `element_id` IS that id, so the
+  key is unchanged in meaning. Verified with a live read/write/restore
+  round-trip.
+
+- **`cxp spine-stats` is retired, not repaired.** It cannot be repointed: all
+  three reports key on `type`, `stage` and `target_date`, and `spine_substance`
+  carries none of them. The estimator tables hold adjacent data in a different
+  vocabulary (`due_week`/`due_day` as week offsets, not dates), so
+  reconstruction is a design decision. The command now explains itself and
+  exits 0 instead of dying on a raw traceback. **Behaviour change:** it used to
+  exit non-zero when creds were missing; that path is no longer reached, so a
+  credential-less tenant gets the retirement notice instead.
+
 ## v0.117.1 — 2026-09-16
 
 **An unfilled standing element is not capture (#179 follow-up).** Found during
