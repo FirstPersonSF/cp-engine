@@ -999,7 +999,41 @@ def stub_sweep_cmd(code: str) -> None:
         .data
     ) or []
 
-    click.echo(render_sweep(find_stubs(rows, relations), code=code))
+    # The DOCUMENTS' arrival dates, which is what `postdates_target` must
+    # compare against — NOT the stub rows' `version_date`, which a backfill
+    # sets to the backfill date (#274). Best-effort: without it the check
+    # stays silent rather than reporting a date it did not measure.
+    source_dates: dict[str, str] = {}
+    asset_ids = sorted({
+        src["id"]
+        for r in rows
+        for src in (r.get("sources") or [])
+        if isinstance(src, dict) and src.get("id")
+    })
+    if asset_ids:
+        try:
+            for a in (
+                client.table(mc2_db.Tables.RAG_ASSETS)
+                .select("id, created_at")
+                .in_("id", asset_ids)
+                .execute()
+                .data
+            ) or []:
+                created = str(a.get("created_at") or "")
+                if a.get("id") and created:
+                    source_dates[str(a["id"])] = created[:10]
+        except Exception:  # noqa: BLE001 — advisory; a failed lookup must not
+            # break the sweep, it just silences one check.
+            click.echo(
+                "  (could not resolve source arrival dates; "
+                "the arrived-after check is silent)", err=True
+            )
+
+    click.echo(
+        render_sweep(
+            find_stubs(rows, relations, source_dates=source_dates), code=code
+        )
+    )
 
 
 @click.command("exec-lint")

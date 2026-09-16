@@ -171,28 +171,75 @@ def _dated(eid, framing, layer, version_date):
 
 
 def test_a_doc_newer_than_its_target_is_flagged():
-    """A source cannot have fed a session that predates it. On ibx-5192 all 16
-    stubs routed to a 2026-06-27 debrief are documents from 07-21 to 08-04 —
-    a bulk route, and migrating it faithfully would have made that debrief
-    claim provenance it never consumed."""
+    """A source cannot have fed a session that predates it.
+
+    Real on ibx-5192: 8 use-case briefs ingested 2026-07-21 were routed to a
+    2026-06-27 debrief. They belonged to the 07-22 metrics-inventory synthesis.
+    """
     act = _dated("_authored/deck-build", "Post-Mehul debrief", "Activity", "2026-06-27")
     stub = _stub(serves=["_authored/deck-build"])
-    stub["version_date"] = "2026-07-21"
-    stubs = find_stubs([stub, act])
+    stubs = find_stubs([stub, act], source_dates={RAG: "2026-07-21"})
     assert stubs[0].postdates_target
     text = render_sweep(stubs, code="ibx-5192")
-    assert "DOC IS NEWER" in text
-    assert "bulk route" in text
+    assert "DOC ARRIVED AFTER" in text
 
 
 def test_a_doc_predating_its_target_is_clean():
     """sap-5174's kickoff has 14 of 18 docs predating it — real curation."""
     act = _dated("_authored/deck-build", "Kickoff meeting", "Activity", "2026-07-08")
     stub = _stub(serves=["_authored/deck-build"])
-    stub["version_date"] = "2026-07-01"
-    stubs = find_stubs([stub, act])
+    stubs = find_stubs([stub, act], source_dates={RAG: "2026-07-01"})
     assert not stubs[0].postdates_target
-    assert "DOC IS NEWER" not in render_sweep(stubs, code="sap-5174")
+    assert "DOC ARRIVED AFTER" not in render_sweep(stubs, code="sap-5174")
+
+
+def test_a_backfilled_stub_is_not_flagged_when_its_doc_is_old(monkeypatch):
+    """THE #274 REGRESSION. The card is new; the document is not.
+
+    ibx-5153 minted 47 stubs in a four-minute window on 2026-08-17 for
+    documents that had arrived 2026-06-17 — the workshop's own agenda, bet
+    board and transcript, routed to that workshop. Comparing the STUB's
+    version_date reported all of them as bulk routes. Comparing the
+    DOCUMENT's arrival date reports none.
+    """
+    act = _dated("_authored/workshop", "6/17 AI Campaign Workshop", "Activity",
+                 "2026-06-17")
+    stub = _stub(serves=["_authored/workshop"])
+    stub["version_date"] = "2026-08-17"          # the backfill stamp
+    stubs = find_stubs([stub, act], source_dates={RAG: "2026-06-17"})
+    assert not stubs[0].postdates_target, (
+        "a stub created by a later backfill must not be flagged when the "
+        "document it wraps predates its target"
+    )
+    assert "DOC ARRIVED AFTER" not in render_sweep(stubs, code="ibx-5153")
+
+
+def test_the_check_is_silent_when_the_source_date_is_unknown():
+    """An unresolved arrival date is not evidence. No date, no claim."""
+    act = _dated("_authored/deck-build", "Post-Mehul debrief", "Activity", "2026-06-27")
+    stub = _stub(serves=["_authored/deck-build"])
+    stub["version_date"] = "2026-08-17"
+    stubs = find_stubs([stub, act])          # no source_dates supplied
+    assert not stubs[0].postdates_target
+    assert "DOC ARRIVED AFTER" not in render_sweep(stubs, code="ibx-5153")
+
+
+def test_the_earliest_source_date_decides():
+    """A card wrapping several docs is exonerated by its OLDEST one.
+
+    It has fed its target from the moment the first document landed; taking
+    the latest would flag a card whose bulk of material predates the work.
+    """
+    act = _dated("_authored/deck-build", "Debrief", "Activity", "2026-07-01")
+    stub = _stub(serves=["_authored/deck-build"])
+    stub["sources"] = [
+        {"id": "aaa", "type": "rag_asset", "title": "early"},
+        {"id": "bbb", "type": "rag_asset", "title": "late"},
+    ]
+    stubs = find_stubs(
+        [stub, act], source_dates={"aaa": "2026-06-20", "bbb": "2026-07-21"}
+    )
+    assert not stubs[0].postdates_target
 
 
 def test_missing_dates_never_claim_a_violation():

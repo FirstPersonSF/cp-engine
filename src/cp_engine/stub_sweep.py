@@ -101,29 +101,42 @@ class Stub:
     # `serves` entries that resolve to nothing — bare estimate slots.
     unresolved: list[str] = field(default_factory=list)
     has_edges: bool = False
-    # version_date of the stub and of its (first) resolved target — used by
-    # `postdates_target` to tell curation from bulk-routing.
-    _stub_date: str = ""
+    # The DOCUMENT's arrival date (rag_assets.created_at) and its target's
+    # version_date — used by `postdates_target`.
+    #
+    # `_doc_date` is deliberately NOT the stub row's `version_date` (#274).
+    # That is when the STUB was created, which a later backfill sets to the
+    # backfill date: ibx-5153 minted 47 stubs in a four-minute window on
+    # 2026-08-17 for documents that had arrived on 2026-06-17, and every one
+    # was reported as a bulk route. Empty when the source's date could not be
+    # resolved — the check then stays silent rather than guessing.
+    _doc_date: str = ""
     _target_date: str = ""
 
     @property
     def postdates_target(self) -> bool:
-        """The document is NEWER than the work it supposedly fed.
+        """The DOCUMENT arrived after the work it supposedly fed.
 
         A source cannot have informed a session that happened before it
-        arrived. Found the hard way on ibx-5192: all 16 stubs routed to a
-        2026-06-27 debrief are documents from 07-21 to 08-04 — 8 Infoblox
-        use-case briefs, the corporate library deck, "Our AI Story" — a bulk
-        route that landed everything on whatever card was selected at the
-        time. Migrating them faithfully would have made that debrief claim
-        provenance it never consumed.
+        arrived. Real on ibx-5192: 8 use-case briefs ingested 2026-07-21 were
+        routed to a 2026-06-27 debrief, 24 days earlier. They belonged to the
+        07-22 metrics-inventory synthesis, which is literally the synthesis of
+        those briefs.
 
-        The check separates real curation from bulk-routing cleanly:
-        sap-5174's kickoff has 14 of 18 docs predating it; ibx-5192's debrief
-        has 0 of 16.
+        MEASURE THE DOCUMENT, NOT THE CARD (#274). This compared the STUB's
+        `version_date` until 2026-09-16, which is when the card was written,
+        not when the document landed. A backfill therefore flagged everything
+        it touched: ibx-5153's 47 stubs were all stamped 2026-08-17 for
+        documents from 2026-06-17 — the workshop's own agenda, preread, bet
+        board and transcript, routed to that workshop, reported as a bulk
+        route. Re-measured against real arrival dates, 43 of 50 were correct.
+        Acting on the old flag would have detached them.
+
+        Silent when `_doc_date` is unknown: an unresolved source date is not
+        evidence of anything.
         """
-        return bool(self._stub_date and self._target_date
-                    and self._stub_date > self._target_date)
+        return bool(self._doc_date and self._target_date
+                    and self._doc_date > self._target_date)
 
     @property
     def unsound_targets(self) -> list[tuple[str, str, bool]]:
@@ -151,12 +164,19 @@ def find_stubs(
     relations: list[dict] | None = None,
     *,
     body_max: int = STUB_BODY_MAX,
+    source_dates: dict[str, str] | None = None,
 ) -> list[Stub]:
     """Empty Source-material cards with their resolved `serves` targets.
 
     `rows` are live spine_substance rows (STUB_SWEEP_COLUMNS shape). Pure —
     no I/O — so the classification is testable without a database.
+
+    `source_dates` maps a `rag_asset` id to the date that document ARRIVED
+    (`rag_assets.created_at`, ISO day). The caller fetches it; without it
+    `postdates_target` stays silent rather than falling back to the stub's own
+    `version_date`, which is what made the check wrong (#274).
     """
+    source_dates = source_dates or {}
     relations = relations or []
     by_id = {r.get("est_item_id"): r for r in rows if r.get("est_item_id")}
 
@@ -203,13 +223,34 @@ def find_stubs(
                 targets=targets,
                 unresolved=unresolved,
                 has_edges=eid in edged,
-                _stub_date=str(row.get("version_date") or ""),
+                _doc_date=_earliest_source_date(
+                    row.get("sources") or [], source_dates
+                ),
                 _target_date=target_date,
             )
         )
 
     out.sort(key=lambda s: (s.orphan, s.framing.lower()))
     return out
+
+
+
+def _earliest_source_date(
+    sources: list, source_dates: dict[str, str]
+) -> str:
+    """The arrival date of the stub's OLDEST source, or "" if unknown.
+
+    Earliest rather than latest: a card wrapping several documents has fed its
+    target from the moment the first one landed, so the earliest is the date
+    that could exonerate the routing. Picking the latest would flag a card
+    whose bulk of material predates the work.
+    """
+    dates = [
+        source_dates[sid]
+        for src in sources
+        if isinstance(src, dict) and (sid := src.get("id")) in source_dates
+    ]
+    return min(dates) if dates else ""
 
 
 def render_sweep(stubs: list[Stub], *, code: str) -> str:
@@ -240,9 +281,9 @@ def render_sweep(stubs: list[Stub], *, code: str) -> str:
                 out.append(f"        {tid}")
             if s.postdates_target:
                 out.append(
-                    f"    ⚠ DOC IS NEWER than the work it serves "
-                    f"({s._stub_date} > {s._target_date}) — it cannot have fed "
-                    "it. Almost certainly a bulk route; re-route before "
+                    f"    ⚠ DOC ARRIVED AFTER the work it serves "
+                    f"(ingested {s._doc_date} > {s._target_date}) — it cannot "
+                    "have fed it. Check where it actually belongs before "
                     "migrating, or the target claims provenance it never had")
             if s.has_edges:
                 out.append("    ⚠ has typed edges — retiring cascades them; "
