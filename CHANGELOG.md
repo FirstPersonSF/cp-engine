@@ -4,6 +4,56 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.117.7 — 2026-09-16
+
+**`link` becomes a stored card kind.** One new `CardKind` value. No breaking
+API changes; `carries_a_work_item_link` keeps working and keeps its meaning.
+
+v0.117.6 named the link-carrier by DERIVING it — `unresolved and sources`.
+That derivation cannot tell *"minted for a work item"* from *"minted for a
+slot somebody later deleted"*, and a heuristic of exactly that family already
+misfired on live data (#269, the `_authored/sow` placeholders the sweep
+proposed **retiring**). The mint knows which it is at the moment it writes the
+row. `card_kind='link'` records the answer instead of reconstructing it; the
+derived property remains as the fallback for rows written before the kind
+existed, the same migration-aid shape `classify()` uses for layer inference.
+
+**`LINK` is deliberately not stream.** Retiring a carrier drops a pointer with
+nothing to catch it, so the sweep must never propose it merely for being
+capture-shaped. Three consequences, each easy to miss:
+
+- **Admission is not class.** `is_stream` is False for `LINK`, but the row
+  must still ENTER the sweep, or `link_has_a_home` could never notice it had
+  come free — it would silently vanish from the report. `_is_sweepable` admits
+  both; the render decides what to propose for each.
+- **The work-date floor.** `not _is_stream(r)` was the old spelling of *"is
+  work"*, and a `LINK` is neither — so a pointer minted today would have dated
+  the work it points at, reintroducing #275. `_is_work` asks the positive
+  question.
+- **Carriers clear themselves.** A carrier becomes retirable when its work
+  item GAINS a bound work-class element: the document has a real home, so the
+  card is redundant rather than load-bearing. Mirrors the frontend's
+  `boundElementIndex` and its two rules — work-class only (resolving onto
+  another capture card just moves the problem) and unambiguous only (several
+  bound elements is a guess about which deliverable a document belongs to).
+
+```
+✅ 2 carrier(s) are now FREE — the work item they point at has since
+   gained a bound element, so the document can move there:
+     Marcello Grande
+       → re-route its source(s) to: _authored/concept-deck
+
+ℹ 9 of these carry a WORK-ITEM LINK and are doing their job (#179).
+  … They become movable on their own once the work item gains a bound
+  element — this sweep will say so.
+```
+
+Measured on the live tenant 2026-09-16: **0 of 11** residue carriers resolve
+today, which is the point — the backlog clears itself as elements appear
+rather than needing a sweep to re-judge it.
+
+Seven tests, each verified to fail against the reverted implementation.
+
 ## v0.117.6 — 2026-09-16
 
 **A card minted to carry a work-item link is not a mistaken stub, and the sweep
