@@ -59,8 +59,15 @@ def fetch_project_assets(client, project_code):
     """Return a project's active rag_assets as a list of dicts.
 
     Each dict carries (id, title, source_type, scope). Resolves the project's
-    uuid via spine_elements (spine_elements.project_id === rag_assets.project_id
+    uuid via spine_substance (spine_substance.project_id === rag_assets.project_id
     — NOT projects.code, which is a different slug), then queries rag_assets.
+
+    READS SUBSTANCE, NOT ELEMENTS. This resolved through `spine_elements` until
+    that table was dropped (mc-2 migration 072). Because the whole body is
+    best-effort, the dead-table lookup did not raise — it was swallowed and
+    returned [], so the 'Source documents' facet of `cp spine` silently showed
+    nothing for every project instead of erroring. `spine_substance` carries
+    the same (project_code, project_id) pair and resolves identically.
 
     Best-effort by contract: the 'Source documents' facet must never break
     `cp spine`. Returns [] if the project_id can't be resolved, if there are no
@@ -68,9 +75,10 @@ def fetch_project_assets(client, project_code):
     `meta jsonb` we must never pull)."""
     try:
         rows = (
-            client.table(Tables.SPINE_ELEMENTS)
+            client.table(Tables.SPINE_SUBSTANCE)
             .select("project_id")
             .eq("project_code", project_code)
+            .not_.is_("project_id", "null")
             .limit(1)
             .execute()
             .data

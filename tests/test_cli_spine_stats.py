@@ -1,9 +1,15 @@
+"""`cxp spine-stats` is retired — it explains itself instead of crashing.
+
+mc-2 migration 072 dropped `spine_elements`; the command queried it and died
+with a raw PGRST205 traceback. The tests that asserted its report output went
+with the reports (see tests/test_spine_stats.py for why they cannot be
+repointed). What remains worth pinning is the user-visible contract.
+"""
 from pathlib import Path
 
 from click.testing import CliRunner
 
 from cp_engine.cli import main
-from cp_engine.sync import BackendUnavailable
 
 
 def _tenant(tmp_path: Path) -> None:
@@ -16,145 +22,58 @@ def _tenant(tmp_path: Path) -> None:
     )
 
 
-# --- fake MC-2 client (reuses the _FakeTable/_FakeClient pattern) --------------
+def _explode(config=None, **kw):  # pragma: no cover - reaching it IS the failure
+    raise AssertionError("spine-stats must not open an MC-2 client while retired")
 
 
-class _FakeTable:
-    def __init__(self, rows):
-        self._rows = rows
-        self._filter = None
-
-    def select(self, cols):
-        return self
-
-    def eq(self, col, val):
-        self._filter = (col, val)
-        return self
-
-    def execute(self):
-        rows = self._rows
-        if self._filter:
-            col, val = self._filter
-            rows = [r for r in rows if r.get(col) == val]
-        return type("R", (), {"data": rows})()
-
-
-class _FakeClient:
-    def __init__(self, rows):
-        self._rows = rows
-
-    def table(self, name):
-        return _FakeTable(self._rows)
-
-
-# A wide future window so the seeded rows always fall in the default 14-day
-# horizon is brittle (depends on date.today()); instead seed dates relative to
-# today at call time. We seed absolute-ish rows and pass a big --within-days in
-# the window test, and rely on the inventory/distribution sections (date-free)
-# for the happy path.
-def _seed_rows(today_iso: str, soon_iso: str, far_iso: str):
-    return [
-        {"layer": "Deliverables", "type": "positioning-narrative",
-         "stage": "revised", "target_date": soon_iso,
-         "project_code": "ibx-5153", "title": "IBX pos"},
-        {"layer": "Deliverables", "type": "message-house",
-         "stage": "first", "target_date": far_iso,
-         "project_code": "sap-5171", "title": "SAP MH"},
-        {"layer": "Deliverables", "type": "message-house",
-         "stage": "conception", "target_date": None,
-         "project_code": "ggl-5168", "title": "GGL MH (no date)"},
-    ]
-
-
-def _patch_connect(monkeypatch, rows):
-    monkeypatch.setattr(
-        "cp_engine.mc2_db.get_client",
-        lambda config=None, **kw: _FakeClient(rows),
-    )
-
-
-def test_spine_stats_happy_path(tmp_path, monkeypatch):
-    """All three sections render: type inventory, stage distribution, due-soon."""
+def test_spine_stats_explains_retirement_and_exits_clean(tmp_path, monkeypatch):
+    """Exit 0 with a reason — not a PGRST205 traceback, not a bare '(none)'."""
     _tenant(tmp_path)
     monkeypatch.chdir(tmp_path)
-    # soon date = today (always in-window for default 14d); far date = +60d.
-    from datetime import date, timedelta
-
-    today = date.today()
-    soon = today.isoformat()
-    far = (today + timedelta(days=60)).isoformat()
-    _patch_connect(monkeypatch, _seed_rows(today.isoformat(), soon, far))
+    monkeypatch.setattr("cp_engine.mc2_db.get_client", _explode)
 
     result = CliRunner().invoke(main, ["spine-stats"])
     assert result.exit_code == 0, result.output
-
-    # type inventory: type + count
-    assert "positioning-narrative" in result.output
-    assert "message-house" in result.output
-    # stage distribution
-    assert "revised" in result.output
-    assert "first" in result.output
-    # due-soon: the in-window row shows, the +60d one does not
-    assert "IBX pos" in result.output
-    assert "SAP MH" not in result.output
+    out = result.output
+    assert "unavailable" in out
+    assert "072" in out, "the message must name the migration that caused this"
+    assert "spine_substance" in out, "and what replaced the dropped table"
+    # The old failure mode must not reappear.
+    assert "PGRST205" not in out
+    assert "Traceback" not in out
 
 
-def test_spine_stats_type_filter(tmp_path, monkeypatch):
-    """--type narrows inventory + due-soon to one type only."""
+def test_spine_stats_does_not_reach_mc2_at_all(tmp_path, monkeypatch):
+    """The retirement short-circuits BEFORE any client is built.
+
+    This is a deliberate behaviour change: the command used to exit non-zero
+    with "cross-project stats need MC-2" when creds were missing. It no longer
+    reaches that path, so a tenant with no creds gets the retirement notice
+    rather than a credentials error. Pinned so the swap is explicit rather
+    than discovered.
+    """
     _tenant(tmp_path)
     monkeypatch.chdir(tmp_path)
-    from datetime import date
+    monkeypatch.setattr("cp_engine.mc2_db.get_client", _explode)
 
-    today = date.today()
-    soon = today.isoformat()
-    _patch_connect(monkeypatch, _seed_rows(today.isoformat(), soon, soon))
+    for argv in (
+        ["spine-stats"],
+        ["spine-stats", "--type", "positioning-narrative"],
+        ["spine-stats", "--within-days", "60"],
+    ):
+        result = CliRunner().invoke(main, argv)
+        assert result.exit_code == 0, f"{argv}: {result.output}"
+        assert "unavailable" in result.output
+
+
+def test_spine_stats_options_still_parse(tmp_path, monkeypatch):
+    """Retired, but the flags must not become parse errors for scripted callers."""
+    _tenant(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("cp_engine.mc2_db.get_client", _explode)
 
     result = CliRunner().invoke(
-        main, ["spine-stats", "--type", "positioning-narrative"]
+        main, ["spine-stats", "--type", "x", "--within-days", "3"]
     )
-    assert result.exit_code == 0, result.output
-    assert "positioning-narrative" in result.output
-    # message-house is filtered out of inventory AND due-soon
-    assert "message-house" not in result.output
-    assert "SAP MH" not in result.output
-    assert "IBX pos" in result.output
-    # stage distribution stays global under --type; the header says so
-    assert "(all types)" in result.output
-
-
-def test_spine_stats_within_days_passthrough(tmp_path, monkeypatch):
-    """--within-days widens the due window so a far-future row appears."""
-    _tenant(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    from datetime import date, timedelta
-
-    today = date.today()
-    far = (today + timedelta(days=45)).isoformat()
-    _patch_connect(monkeypatch, _seed_rows(today.isoformat(), far, far))
-
-    # default 14d → the +45d rows are NOT due-soon
-    default_res = CliRunner().invoke(main, ["spine-stats"])
-    assert default_res.exit_code == 0, default_res.output
-    assert "IBX pos" not in default_res.output
-
-    # --within-days 60 → now they ARE due-soon
-    wide_res = CliRunner().invoke(main, ["spine-stats", "--within-days", "60"])
-    assert wide_res.exit_code == 0, wide_res.output
-    assert "IBX pos" in wide_res.output
-
-
-def test_spine_stats_offline_errors_no_fallback(tmp_path, monkeypatch):
-    """MC-2 unavailable → clear cross-project error + non-zero exit, NO fallback."""
-    _tenant(tmp_path)
-    monkeypatch.chdir(tmp_path)
-
-    def _raise(config=None, **kw):
-        raise BackendUnavailable("no SUPABASE creds")
-
-    monkeypatch.setattr("cp_engine.mc2_db.get_client", _raise)
-
-    result = CliRunner().invoke(main, ["spine-stats"])
-    assert result.exit_code != 0
-    assert "cross-project stats need MC-2" in result.output
-    # distinct from cp spine's fallback wording
-    assert "reading from disk" not in result.output
+    assert result.exit_code == 0
+    assert "no such option" not in result.output.lower()

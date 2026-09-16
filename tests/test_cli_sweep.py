@@ -251,7 +251,10 @@ class _DriftFakeTable:
 
 class _DriftFakeClient:
     def __init__(self, rows):
-        self.store = {"spine_elements": rows}
+        # `spine_substance` since mc-2 migration 072 dropped `spine_elements`;
+        # the row key is `id` (the substance row id), which IS the sweep's
+        # element_id — see mc2_db.fetch_element_review_flags.
+        self.store = {"spine_substance": rows}
 
     def table(self, name):
         return _DriftFakeTable(self.store, name)
@@ -260,7 +263,7 @@ class _DriftFakeClient:
 def test_write_drift_flags_lands_flag_with_source_sweep():
     from cp_engine.cli import _write_drift_flags
 
-    rows = [{"element_id": "ibx-5153/deliverable/pos", "review_flags": []}]
+    rows = [{"id": "ibx-5153/deliverable/pos", "review_flags": []}]
     client = _DriftFakeClient(rows)
     drift = [{
         "element_id": "ibx-5153/deliverable/pos",
@@ -280,7 +283,7 @@ def test_write_drift_flags_lands_flag_with_source_sweep():
 def test_write_drift_flags_keeps_one_per_field():
     from cp_engine.cli import _write_drift_flags
 
-    rows = [{"element_id": "ibx-5153/deliverable/pos", "review_flags": []}]
+    rows = [{"id": "ibx-5153/deliverable/pos", "review_flags": []}]
     client = _DriftFakeClient(rows)
     drift = [{
         "element_id": "ibx-5153/deliverable/pos",

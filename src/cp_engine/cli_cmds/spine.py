@@ -130,20 +130,36 @@ def where_cmd(code: str) -> None:
     "--within-days", default=14, show_default=True, help="Due-soon window (days)."
 )
 def spine_stats_cmd(type_filter: str | None, within_days: int) -> None:
-    """Cross-project analytics over the spine (Deliverables).
+    """Cross-project analytics over the spine (Deliverables). RETIRED.
 
-    Needs MC-2 — this is inherently the cross-project index, so there is no
-    offline/disk fallback (unlike `cp spine`). If MC-2 is unreachable this
-    prints a clear error and exits non-zero.
+    Reports nothing since mc-2 migration 072 dropped the `spine_elements`
+    table these stats were computed from; it now explains that and exits 0
+    rather than crashing on PGRST205. See `cp_engine/spine_stats.py` for what
+    reconstructing them would require.
     """
     from datetime import date
 
     from cp_engine.spine_stats import (
+        ELEMENTS_TABLE_RETIRED,
         due_soon,
         stage_distribution,
         type_inventory,
     )
     from cp_engine.sync import BackendUnavailable
+
+    if ELEMENTS_TABLE_RETIRED:
+        # Say why, once, instead of printing three "(none)" blocks that read
+        # as "your tenant has no deliverables". Exit 0: nothing failed here,
+        # the report is retired. See cp_engine/spine_stats.py.
+        click.echo(
+            "cross-project spine stats are unavailable: these reports were "
+            "built on the `spine_elements` table, dropped in mc-2 migration "
+            "072. The replacement (`spine_substance`) does not carry the "
+            "type / stage / target_date columns they report on, so they need "
+            "redesigning rather than repointing. See cp_engine/spine_stats.py.",
+            err=True,
+        )
+        return
 
     config = _cli._load_config_or_die()
     try:

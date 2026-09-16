@@ -1,6 +1,7 @@
 """Tests for the 'Source documents' facet of `cp spine`.
 
-`fetch_project_assets` resolves a project's rag_assets via spine_elements,
+`fetch_project_assets` resolves a project's rag_assets via spine_substance
+(it read `spine_elements` until mc-2 migration 072 dropped that table),
 `render_source_documents` renders them with linked-by element suffixes.
 """
 from pathlib import Path
@@ -14,19 +15,26 @@ from cp_engine.spine_sources import fetch_project_assets
 def _fake_client(*, spine_rows, asset_rows, raise_on=None):
     """Build a fake client mirroring the chained-builder style.
 
-    `spine_rows` answers the spine_elements project_id resolve; `asset_rows`
+    `spine_rows` answers the spine_substance project_id resolve; `asset_rows`
     answers the rag_assets query. `raise_on` (a table name) makes that table
     raise on .execute() to exercise the best-effort guard.
     """
     class _Q:
         def __init__(self, name):
             self._name = name
-            self._rows = spine_rows if name == "spine_elements" else asset_rows
+            self._rows = spine_rows if name == "spine_substance" else asset_rows
 
         def select(self, c):
             return self
 
         def eq(self, c, v):
+            return self
+
+        @property
+        def not_(self):
+            return self
+
+        def is_(self, c, v):
             return self
 
         def limit(self, n):

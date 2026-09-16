@@ -69,6 +69,13 @@ def _has_confirmed_field(row, tracked_fields=_TRACKED_FIELDS):
     return any(states.get(f) == "confirmed" for f in tracked_fields)
 
 
+# DEAD SINCE mc-2 MIGRATION 072. `spine_elements` was dropped; `sync.py` removed
+# its call to this function (it logged a PGRST205 on every project of every
+# sync) and `sync_spine_substance` replaced it. Kept only because
+# `tests/test_spine_sync.py` still exercises the reconcile/field-state logic
+# through it against a fake client — that logic is shared with the substance
+# mirror via `reconcile_field` / `_merge_flag`, which ARE live. Do not call
+# this against a real client: the table no longer exists.
 def sync_spine_elements(
     client,
     *,

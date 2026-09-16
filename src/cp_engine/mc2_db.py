@@ -998,11 +998,19 @@ def fetch_element_review_flags(client: "Client", element_id: str) -> list | None
     drift-flag recorder). An existing row with no flags returns ``[]`` —
     distinct from ``None`` so the caller can skip unknown elements without
     overcounting.
+
+    READS SUBSTANCE, NOT ELEMENTS. This queried the `spine_elements` table on
+    `element_id` until mc-2 migration 072 dropped it. The caller is best-effort
+    per item, so the failure was swallowed: `cxp sweep` reported "Flagged 0
+    drifted element(s)" instead of erroring. `spine_substance` carries the same
+    `review_flags` column keyed by `id`, and the sweep's ``element_id`` IS that
+    id — ``load_spine_from_mc2`` builds ``SpineElement.id`` straight from the
+    substance ``id`` column — so the lookup key is unchanged in meaning.
     """
     rows = (
-        client.table(Tables.SPINE_ELEMENTS)
+        client.table(Tables.SPINE_SUBSTANCE)
         .select("review_flags")
-        .eq("element_id", element_id)
+        .eq("id", element_id)
         .limit(1)
         .execute()
         .data
@@ -1020,10 +1028,13 @@ def update_element_review_flags(
     Caller: ``cli_cmds.spine._write_drift_flags`` — always paired with a
     prior :func:`fetch_element_review_flags` read + ``_merge_flag`` merge, so
     the write carries the merged list, never a blind append.
+
+    Repointed from `spine_elements` to `spine_substance` with its paired
+    reader; see :func:`fetch_element_review_flags` for why the key is the same.
     """
-    client.table(Tables.SPINE_ELEMENTS).update(
+    client.table(Tables.SPINE_SUBSTANCE).update(
         {"review_flags": review_flags}
-    ).eq("element_id", element_id).execute()
+    ).eq("id", element_id).execute()
 
 
 def upsert_spine_snapshot(client: "Client", row: dict) -> None:
