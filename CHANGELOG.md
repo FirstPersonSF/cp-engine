@@ -4,6 +4,54 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.117.0 — 2026-09-15
+
+**`Reference` becomes a class (#179).** Minor, not patch: `CardKind` gains a
+value and ~245 live elements classify differently than they did.
+
+- **The sweeps ask `card_class`, not a layer string (#267).** "Is this work?"
+  was inferred from layer strings in four places, each with its own
+  hand-maintained list — and that inference is what broke in #172 when `Output`
+  was collapsed into `Deliverables`. `stub_sweep`, `seal_sweep` and
+  `spine_lint` now ask the classifier. `spine_lint`'s `DISTILL_LAYERS` is
+  deliberately NOT converted: it asks "is this an editorial layer where a raw
+  paste is wrong", a question about writing rather than class.
+
+- **`attachment` was two things, and is now two values (#268).** It held 374 of
+  559 live elements — 67% of the spine. Measured 2026-09-15:
+
+      | | Stream (capture) | Reference (authored) |
+      | count | 129 | 245 |
+      | avg body | 120 chars | 4,782 chars |
+      | stubs | 129 (100%) | 28 (11%) |
+      | layers | 3 | 12 |
+
+  Not "Source material" renamed: 24 authored elements sit on that layer while
+  the 245 span twelve. The rule uses two independent signals that agreed on all
+  374 rows — a body under 200 chars AND a pointer at the asset it duplicates
+  (`sources`, or a `rag_asset:` line). Requiring the length AND a pointer keeps
+  a terse human note out of Stream.
+
+  **The noise fix, measured:** `stub_sweep` considers **374 → 129** rows, with
+  245 exempt including all 36 Stakeholders and Retrospectives. Those were never
+  stubs to collapse — the sweep was wrong, not the data. This is what makes the
+  sweeps correct BY CONSTRUCTION rather than by filtering.
+
+  **A regression the tests caught:** `attaches_to_engagement` gated on
+  `ATTACHMENT`, so the split silently broke homing for the 163 elements that
+  hang off the engagement. It asks `is_card` now.
+
+  **Pin: spine-authoring `7932303` → `765bd18`** (1p-component-library #18).
+  The write-side stamp had to split first or it would contradict the reader,
+  which `test_card_kind_parity` correctly refuses — a stored kind cannot be
+  told from a human decision, so a wrong stamp is permanent.
+
+**Not done, deliberately:** the backfill. 374 rows carry the old value and 117
+are `card_kind` null (#246 stamped writes going forward only). New writes
+classify correctly from this release; existing rows resolve through the
+inference fallback, which already produces the right answer. The migration is
+its own act.
+
 ## v0.116.6 — 2026-09-15
 
 - **The empty-tree guard moves to the SHARED commit tail (#237, #265).** The
