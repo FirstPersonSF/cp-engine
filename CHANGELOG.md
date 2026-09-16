@@ -4,6 +4,61 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.117.5 — 2026-09-16
+
+**A batch retire can no longer destroy a typed edge, and the sweep now shows
+what it was hiding.** Three fixes to `stub_sweep` and the hosted retire verb,
+all from one afternoon's transfer work on ibx-5153 and ibx-5192.
+
+**A batch retire refuses when a key carries a typed edge (#276).**
+`retire_spine_elements` resolves every key first and stops the whole batch
+before writing anything; `with_edges=True` accepts the cascade. The cascade
+itself is unchanged — #96 decided it deliberately, and `spine_relations` has no
+retired state to soft-delete into. What changed is that a BATCH hides the one
+row in thirty-one where it matters.
+
+- **Measured:** 31 keys retired in one call, `edges_removed: 1`, unrecoverable.
+  The repo mirror records `serves` and `sources` but not typed edges, so the
+  only surviving trace was the integer. `cxp stub-sweep` HAD warned, in prose,
+  on a line the retire list was not built from.
+- The guard earned itself immediately: the two stubs still standing on ibx-5153
+  carry **five active edges**, two of them `derives_from` with hand-written
+  notes tying documents to canon decisions.
+- The refusal **names each edge** rather than counting it — `edges_removed: 1`
+  is precisely what made the real loss unreconstructible.
+
+**A multi-source card no longer reads as one document (#276).** Titles were
+comma-joined onto one line, so a four-document card looked like one. A transfer
+list built from the printed titles moved one source and retired the card,
+stranding three. Cards now enumerate their sources, and the summary reports
+source POINTERS when they exceed the card count.
+
+**`cxp stub-sweep <code> --verify <est_item_id>` (#276)** answers the question
+the transfer procedure requires: is every routed stub's source already on the
+target, **and** does any stub carry an active typed edge. Both in one mode
+deliberately — a source-only verifier is exactly what greenlit the batch that
+destroyed an edge, and the mode nobody runs is the one that matters.
+
+**Founding material filed against one dated session is flagged (#275).**
+`postdates_target` cannot see this error because the dates are fine: 17 stubs
+on ibx-5153 were routed to a 07-03 walkthrough and every one predated it. They
+were the Apr 23 kickoff briefing, the 4/10 and 4/23 input briefs, the first
+pitch and an analyst report — founding material on a client feedback session
+three months later, while `_authored/inputs-briefing` named several of them in
+its own prose and carried none as sources.
+
+- The signal is that the document predates the project's **earliest work
+  element**. Source-material cards deliberately do not set that floor, or the
+  founding documents would define the date they are tested against.
+- Rendered `ℹ`, not `⚠`, and worded as a question. #274's lesson is that a
+  confidently-phrased flag gets acted on in bulk — *"almost certainly a bulk
+  route"* is what made a 70-stub migration look actionable when 43 of 50 were
+  correctly routed.
+- Zero false positives across 33 live stubs on four projects.
+
+Sixteen tests added across the three fixes; every control verified to fail with
+its fix removed rather than assumed green.
+
 ## v0.117.4 — 2026-09-16
 
 **A guard that measured the wrong date, and flagged 53 correctly-routed
