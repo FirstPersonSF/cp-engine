@@ -76,7 +76,7 @@ def test_engagement_level_material_ATTACHES_it_is_not_its_own_card(layer):
     accumulation this effort exists to stop, reintroduced one layer up. They
     are attachments that hang off the engagement."""
     row = _row(layer=layer)
-    assert classify(row) is CardKind.ATTACHMENT
+    assert classify(row) is CardKind.REFERENCE
     assert not is_card(row)
     assert attaches_to_engagement(row)
 
@@ -102,9 +102,9 @@ def test_deliverable_layers_including_the_pre_172_alias(layer):
 def test_layer_casing_and_spacing_do_not_matter():
     """Layers drift between CamelCase (code) and spaced Title Case (live DB)."""
     for spelling in ("SourceMaterial", "Source material", "source material"):
-        assert classify(_row(layer=spelling)) is CardKind.ATTACHMENT
+        assert classify(_row(layer=spelling)) is CardKind.REFERENCE
     for spelling in ("ClientFeedback", "Client feedback"):
-        assert classify(_row(layer=spelling)) is CardKind.ATTACHMENT
+        assert classify(_row(layer=spelling)) is CardKind.REFERENCE
 
 
 # --- attachments ------------------------------------------------------------
@@ -117,14 +117,14 @@ def test_layer_casing_and_spacing_do_not_matter():
 )
 def test_everything_else_attaches(layer):
     row = _row(layer=layer)
-    assert classify(row) is CardKind.ATTACHMENT
+    assert classify(row) is CardKind.REFERENCE
     assert not is_card(row)
 
 
 def test_a_missing_layer_attaches_rather_than_becoming_a_card():
     """11 live elements carry layer: null. Defaulting them to a card would put
     unfilable rows on the most-trusted surface."""
-    assert classify(_row(layer=None)) is CardKind.ATTACHMENT
+    assert classify(_row(layer=None)) is CardKind.REFERENCE
 
 
 # --- the straddling layers --------------------------------------------------
