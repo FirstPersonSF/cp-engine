@@ -667,6 +667,8 @@ class _RetryingTransport:
         try:
             return self._inner.handle_request(request)
         except httpx.TransportError as exc:
+            if _stats_enabled():
+                _client_stats["retry_after_reap"] += 1
             # stderr, not logging: this module prints its diagnostics (see
             # load_supabase_creds) and the webhook captures stderr.
             print(
@@ -680,6 +682,89 @@ class _RetryingTransport:
     def __getattr__(self, name):
         # Everything else (close, __enter__/__exit__, etc.) is the real thing.
         return getattr(self._inner, name)
+
+
+def _install_schema_client_cache(client) -> None:
+    """Memoize ``client.schema(name)`` so it stops leaking a client per call.
+
+    THE BUG (measured 2026-09-15). ``SyncClient.schema(name)`` delegates to
+    ``SyncPostgrestClient.schema``, which CONSTRUCTS A NEW CLIENT every call —
+    a new ``httpx.Client``, a new connection pool, a new TLS connection — and
+    nothing ever closes it. The object is discarded at the end of the
+    expression but the socket stays ESTABLISHED until the process exits,
+    because httpx only releases a pool on close.
+
+    `estimate.fetch_estimate` alone makes five `.schema()` calls per project;
+    across a ~30-project tenant that is ~150 abandoned clients. A traced sync
+    run built 113 httpx clients in its first 90 seconds and held 199
+    ESTABLISHED sockets to the Supabase host at the 300s mark, still climbing,
+    with ZERO in any closing state — the signature of sockets that are leaked
+    rather than churned.
+
+    WHY NOT the pool. The sync path is strictly sequential, and `get_client`
+    caches the supabase client per (url, key) — a run constructs exactly ONE
+    (create_client_calls=1, verified). So httpx's `max_connections=100` was
+    never the constraint: each leaked client brought its OWN pool, and a
+    per-pool limit cannot bound a population of pools. Raising or lowering the
+    limits would have changed nothing.
+
+    WHY HERE rather than at the 28 `.schema()` call sites. The leak is a
+    property of the constructor, not of any caller, so fixing it at the one
+    place every client is built covers all of them and cannot drift as call
+    sites are added.
+
+    KEYED BY SCHEMA NAME. Each cached sub-client is bound to its schema, so
+    the cache must be too; they are otherwise identical (same base_url, same
+    headers, same timeout).
+
+    BEST-EFFORT, like the retry above: a test stub or a reshaped supabase-py
+    must not break client construction.
+    """
+    try:
+        postgrest = client.postgrest
+        if getattr(postgrest, "_cp_schema_cache", None) is not None:
+            return
+        cache: dict[str, object] = {}
+        postgrest._cp_schema_cache = cache
+        original = postgrest.schema
+
+        def cached_schema(name: str):
+            hit = cache.get(name)
+            if hit is not None:
+                return hit
+            built = original(name)
+            # The sub-client is a fresh SyncPostgrestClient with its own
+            # session, so it needs the same writer header and reap-retry the
+            # parent got — otherwise engine-owned column UPDATEs through a
+            # non-public schema would fail the mc-2 #130 trigger guard.
+            try:
+                built.session.headers["X-Spine-Writer"] = "cp-engine"
+            except AttributeError:
+                pass
+            _install_retry_on_session(built)
+            cache[name] = built
+            return built
+
+        postgrest.schema = cached_schema
+    except Exception as exc:  # noqa: BLE001 — never fail construction over this
+        print(
+            f"could not install the Supabase schema-client cache: {exc!r}",
+            file=sys.stderr,
+        )
+
+
+def _install_retry_on_session(obj) -> None:
+    """Wrap one postgrest-ish object's transport with the reap retry."""
+    try:
+        session = obj.session
+        if isinstance(session._transport, _RetryingTransport):
+            return
+        session._transport = _RetryingTransport(session._transport)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"could not install the Supabase connection retry: {exc!r}",
+            file=sys.stderr,
+        )
 
 
 def _install_connection_retry(client) -> None:
@@ -704,6 +789,60 @@ def _install_connection_retry(client) -> None:
 
 
 _client_cache: dict[tuple[str, str], "Client"] = {}
+
+# ── Client-construction instrumentation (diagnostic; off unless asked) ──
+#
+# WHY. The sync path is strictly sequential — no threads, no asyncio, no
+# process pool in sync.py / spine_sync.py / spine_substance_sync.py — so a
+# single cached client cannot hold more than one connection open at a time
+# and httpx's pool defaults (max_connections=100) are unreachable from it.
+# That makes an observed climb in ESTABLISHED sockets during a run a claim
+# about something OTHER than pool sizing: either clients are being CONSTRUCTED
+# more than once (a cache key that varies — note `asset_ingest` injects
+# explicit url=/key= rather than deriving from config), or connections are
+# being abandoned rather than reused (every `_RetryingTransport` retry walks
+# away from a reaped socket), or the measurement is counting sockets that do
+# not belong to the process under test.
+#
+# These counters separate the first cause from the others. `create_client`
+# calls that exceed the number of distinct cache keys mean churn; equality
+# means the cache is doing its job and the sockets are coming from elsewhere.
+#
+# Enabled by CP_MC2_CLIENT_STATS=1 so that a normal run pays nothing and no
+# diagnostic noise reaches a user who did not ask for it.
+_client_stats: dict[str, int] = {
+    "get_client_calls": 0,
+    "cache_hits": 0,
+    "create_client_calls": 0,
+    "retry_after_reap": 0,
+}
+
+
+def _stats_enabled() -> bool:
+    return os.environ.get("CP_MC2_CLIENT_STATS") == "1"
+
+
+def client_stats() -> dict[str, int]:
+    """Snapshot of the construction counters, plus the distinct-key count.
+
+    ``distinct_cache_keys`` is the honest denominator: with a working cache,
+    ``create_client_calls`` equals it. Any excess is churn.
+    """
+    snap = dict(_client_stats)
+    snap["distinct_cache_keys"] = len(_client_cache)
+    return snap
+
+
+def report_client_stats(stream=None) -> None:
+    """Print the counters. No-op unless CP_MC2_CLIENT_STATS=1."""
+    if not _stats_enabled():
+        return
+    snap = client_stats()
+    print(
+        "[mc2 client stats] "
+        + " ".join(f"{k}={v}" for k, v in sorted(snap.items())),
+        file=stream if stream is not None else sys.stderr,
+    )
 
 # Resolved-creds memo, keyed by tenant root (None = env-only context). Without
 # this, every get_client call would re-run full resolution even on a client
@@ -735,6 +874,9 @@ def get_client(
     ``config=None`` restricts resolution to environment variables — the
     webhook and other tenant-less contexts.
     """
+    if _stats_enabled():
+        _client_stats["get_client_calls"] += 1
+
     try:
         from supabase import create_client
     except ImportError:
@@ -765,7 +907,20 @@ def get_client(
 
     cached = _client_cache.get((url, key))
     if cached is not None:
+        if _stats_enabled():
+            _client_stats["cache_hits"] += 1
         return cached
+
+    if _stats_enabled():
+        _client_stats["create_client_calls"] += 1
+        # The cache key is what decides reuse, so name it when it is new: a run
+        # that prints more than one of these is constructing per-caller.
+        print(
+            f"[mc2 client stats] constructing client #"
+            f"{_client_stats['create_client_calls']} for url={url!r} "
+            f"key=...{key[-6:] if key else ''}",
+            file=sys.stderr,
+        )
 
     try:
         client = create_client(url, key)
@@ -788,6 +943,9 @@ def get_client(
     # This client is about to be CACHED for the life of the process, which is
     # exactly what exposes it to Supabase's idle-connection reap.
     _install_connection_retry(client)
+    # Must come after the retry install: the schema cache copies the retry onto
+    # each sub-client it builds.
+    _install_schema_client_cache(client)
     _client_cache[(url, key)] = client
     return client
 
@@ -796,6 +954,8 @@ def reset_client_cache() -> None:
     """Drop cached clients + resolved creds (tests; after cred swaps)."""
     _client_cache.clear()
     _creds_cache.clear()
+    for _k in _client_stats:
+        _client_stats[_k] = 0
 
 
 # ──────────────────────────────────────────────────────────────────────

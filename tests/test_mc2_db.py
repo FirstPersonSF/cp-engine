@@ -550,3 +550,94 @@ def test_install_connection_retry_never_breaks_construction():
         pass
 
     _install_connection_retry(_Stub())  # must not raise
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Schema-client cache (the ESTABLISHED-socket leak)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _count_httpx_clients(monkeypatch, fn):
+    """Run `fn` and return how many httpx.Client objects it constructed."""
+    import httpx
+
+    made: list[int] = []
+    original = httpx.Client.__init__
+
+    def counting_init(self, *args, **kwargs):
+        made.append(id(self))
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(httpx.Client, "__init__", counting_init)
+    fn()
+    return len(made)
+
+
+def test_schema_calls_do_not_leak_a_client_each(monkeypatch):
+    """`.schema(name)` must reuse one client per schema, not build one per call.
+
+    supabase-py's `SyncPostgrestClient.schema()` constructs a whole new client
+    — new httpx.Client, new pool, new TLS connection — on EVERY call, and
+    never closes it. `fetch_estimate` makes five such calls per project, so a
+    ~30-project sync abandoned ~150 connections; a measured run held 199
+    ESTABLISHED sockets and was still climbing when it was killed.
+
+    The bound asserted here is per-SCHEMA, not per-call: two distinct schemas
+    may build two clients, and forty calls must not build forty.
+    """
+    from supabase import create_client
+
+    from cp_engine import mc2_db
+
+    client = create_client("https://example.supabase.co", "k" * 40)
+    mc2_db._install_schema_client_cache(client)
+
+    def hammer():
+        for _ in range(20):
+            client.schema("estimator")
+            client.schema("public")
+
+    built = _count_httpx_clients(monkeypatch, hammer)
+    assert built <= 2, (
+        f"40 .schema() calls built {built} httpx clients; expected at most one "
+        "per distinct schema. The schema-client cache has regressed and every "
+        "call is leaking a connection again."
+    )
+
+
+def test_schema_cache_returns_the_same_object_per_schema():
+    """Identity, not just count — the cache must hand back the same client."""
+    from supabase import create_client
+
+    from cp_engine import mc2_db
+
+    client = create_client("https://example.supabase.co", "k" * 40)
+    mc2_db._install_schema_client_cache(client)
+
+    assert client.schema("estimator") is client.schema("estimator")
+    assert client.schema("estimator") is not client.schema("public")
+
+
+def test_schema_cache_install_is_idempotent():
+    """Double-install must not wrap the wrapper (get_client can be re-entered)."""
+    from supabase import create_client
+
+    from cp_engine import mc2_db
+
+    client = create_client("https://example.supabase.co", "k" * 40)
+    mc2_db._install_schema_client_cache(client)
+    first = client.postgrest.schema
+    mc2_db._install_schema_client_cache(client)
+    assert client.postgrest.schema is first
+
+
+def test_schema_subclients_carry_the_spine_writer_header():
+    """A cached sub-client still needs the mc-2 #130 writer identity."""
+    from supabase import create_client
+
+    from cp_engine import mc2_db
+
+    client = create_client("https://example.supabase.co", "k" * 40)
+    mc2_db._install_schema_client_cache(client)
+    sub = client.schema("estimator")
+    assert sub.session.headers.get("X-Spine-Writer") == "cp-engine"
