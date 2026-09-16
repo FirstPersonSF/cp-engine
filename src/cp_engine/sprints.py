@@ -257,10 +257,28 @@ def bullets(body: str) -> list[tuple[str, str]]:
     return out
 
 
+
+# Engagements head this section `## Client communication`; initiatives and
+# standalone repos head it `## Team communication` — the engine's OWN
+# `initiative-sprint.md.j2` writes the latter. The parser read only the
+# client spelling, so every open ask, outbound and stakeholder bullet in an
+# initiative sprint file was silently unparsed: 135 files tenant-wide (#273).
+_COMMUNICATION_HEADINGS = ("Client communication", "Team communication")
+
+
+def _communication_section(body: str) -> str:
+    """The comms section under whichever heading this file happens to use."""
+    for heading in _COMMUNICATION_HEADINGS:
+        section = section_body(body, heading)
+        if section:
+            return section
+    return ""
+
+
 def _parse_client_section(
     body: str,
 ) -> tuple[tuple[Outbound, ...], tuple[ClientAsk, ...], tuple[InboundUpdate, ...]]:
-    section = section_body(body, "Client communication")
+    section = _communication_section(body)
     out: list[Outbound] = []
     for first, cont in bullets(subsection(section, "Outbound")):
         # Skip unfilled scaffold placeholders (e.g.
@@ -513,7 +531,7 @@ def _parse_stakeholders(body: str) -> tuple[Stakeholder, ...]:
     via the markdown content but never fails (per v0.8.5 design: aggregators
     log on bad format, don't crash).
     """
-    section = section_body(body, "Client communication")
+    section = _communication_section(body)
     out: list[Stakeholder] = []
     for first, _cont in bullets(subsection(section, "Stakeholders")):
         parsed = parse_bracketed_bullet(first)

@@ -126,6 +126,15 @@ def render() -> None:
 
         for warning in word_count_warnings(config.root):
             click.echo(warning, err=True)
+
+        # Sprint-file bullets present in the text but refused by the parser
+        # (#272). Silent when the corpus is clean; fires the moment a marker
+        # format drifts, instead of weeks later when a feature happens to
+        # read the same parser.
+        from cp_engine.sprint_bullet_lint import unparsed_bullet_warnings
+
+        for warning in unparsed_bullet_warnings(config.root):
+            click.echo(warning, err=True)
     except Exception:  # noqa: BLE001 — advisory pass, never fail a render
         pass
 
