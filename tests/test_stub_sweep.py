@@ -8,7 +8,7 @@ binding — the fact that makes this a transfer rather than a delete.
 
 from __future__ import annotations
 
-from cp_engine.stub_sweep import find_stubs, render_sweep
+from cp_engine.stub_sweep import find_stubs, render_sweep, verify_transfer
 
 RAG = "1fb5e23e-0cfe-4d85-87e8-903d46c48a33"
 BOILERPLATE = f"Ingested document: **Marcello Grande** (doc)\n\nrag_asset: `{RAG}`"
@@ -248,3 +248,121 @@ def test_missing_dates_never_claim_a_violation():
     stub = _stub(serves=["_authored/deck-build"])
     stubs = find_stubs([stub, act])
     assert not stubs[0].postdates_target
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #276 — a multi-source card must not read as one document
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _multi(eid, titles, serves):
+    """A stub wrapping several documents — the shape that hid in the output."""
+    row = _row(eid, eid.split("/")[-1], "Source material", body=BOILERPLATE,
+               serves=serves)
+    row["sources"] = [
+        {"id": str(i), "type": "rag_asset", "title": t}
+        for i, t in enumerate(titles, start=1)
+    ]
+    return row
+
+
+def test_a_multi_source_card_lists_every_document():
+    """THE #276 CONTROL. Joined onto one line, four documents read as one.
+
+    A transfer list built from the printed titles moved one and retired the
+    card; the other three lost their only pointer. Near-missed on ibx-5153's
+    `carol-s-our-ai-story-narrative-prose`, caught by a hand-written query
+    rather than by this output.
+    """
+    stub = _multi("_authored/carol", [
+        "Our AI Story - Final V1.docx", "Our AI Story Deck.pdf",
+        "Our AI Story.docx", "Our AI Story - Jun 2026.docx",
+    ], ["_authored/deck-build"])
+    text = render_sweep(find_stubs([stub, ACTIVITY]), code="ibx-5153")
+    assert "sources (4):" in text
+    for title in ("Final V1", "Deck.pdf", "Jun 2026"):
+        assert title in text
+
+
+def test_a_single_source_card_still_reads_as_one_line():
+    """The common case must not become a list of one."""
+    text = render_sweep(
+        find_stubs([_stub(serves=["_authored/deck-build"]), ACTIVITY]),
+        code="ibx-5192",
+    )
+    assert "source: Marcello Grande" in text
+    assert "sources (" not in text
+
+
+def test_the_summary_reports_pointers_when_they_exceed_cards():
+    """Cards and source pointers are different counts, and the transfer list
+    is built from the second one."""
+    stub = _multi("_authored/carol", ["a.docx", "b.pdf", "c.docx"],
+                  ["_authored/deck-build"])
+    text = render_sweep(find_stubs([stub, ACTIVITY]), code="ibx-5153")
+    assert "1 empty Source-material card(s) · 3 source pointers" in text
+
+
+def test_the_summary_stays_one_number_when_they_agree():
+    text = render_sweep(
+        find_stubs([_stub(serves=["_authored/deck-build"]), ACTIVITY]),
+        code="ibx-5192",
+    )
+    assert "source pointers" not in text
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #276 — verify_transfer checks sources AND edges
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_verify_is_safe_when_every_source_is_on_the_target():
+    stub = _stub(serves=["_authored/deck-build"])
+    report = verify_transfer(
+        find_stubs([stub, ACTIVITY]), "_authored/deck-build",
+        [{"id": RAG, "type": "rag_asset", "title": "Marcello Grande"}],
+    )
+    assert "SAFE TO RETIRE" in report
+
+
+def test_verify_names_the_sources_that_were_never_moved():
+    """The multi-source failure: three of four transferred, one forgotten."""
+    stub = _multi("_authored/carol", ["a.docx", "b.pdf", "c.docx"],
+                  ["_authored/deck-build"])
+    report = verify_transfer(
+        find_stubs([stub, ACTIVITY]), "_authored/deck-build",
+        [{"id": "1", "title": "a.docx"}, {"id": "2", "title": "b.pdf"}],
+    )
+    assert "SAFE TO RETIRE" not in report
+    assert "c.docx" in report
+
+
+def test_verify_blocks_a_stub_carrying_a_typed_edge():
+    """THE OTHER #276 CONTROL, and the one that was not a near miss.
+
+    A verifier that checked only sources would return SAFE here — which is
+    exactly what happened on 2026-09-16, when a source-provenance query
+    greenlit a batch that destroyed an edge.
+    """
+    stub = _stub(serves=["_authored/deck-build"])
+    report = verify_transfer(
+        find_stubs([stub, ACTIVITY]), "_authored/deck-build",
+        [{"id": RAG, "type": "rag_asset", "title": "Marcello Grande"}],
+        relations=[{"kind": "derives_from", "status": "active",
+                    "from_item_id": "_authored/marcello-grande",
+                    "to_item_id": "_authored/deck-build"}],
+    )
+    assert "SAFE TO RETIRE" not in report
+    assert "ACTIVE typed edge" in report
+
+
+def test_verify_ignores_a_non_active_edge():
+    stub = _stub(serves=["_authored/deck-build"])
+    report = verify_transfer(
+        find_stubs([stub, ACTIVITY]), "_authored/deck-build",
+        [{"id": RAG, "type": "rag_asset", "title": "Marcello Grande"}],
+        relations=[{"kind": "derives_from", "status": "dismissed",
+                    "from_item_id": "_authored/marcello-grande",
+                    "to_item_id": "_authored/deck-build"}],
+    )
+    assert "SAFE TO RETIRE" in report

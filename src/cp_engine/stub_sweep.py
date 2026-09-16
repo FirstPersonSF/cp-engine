@@ -253,6 +253,100 @@ def _earliest_source_date(
     return min(dates) if dates else ""
 
 
+
+def verify_transfer(
+    stubs: list[Stub],
+    target_key: str,
+    target_sources: list[dict],
+    *,
+    relations: list[dict] | None = None,
+) -> str:
+    """Is it safe to retire the stubs routed to `target_key`?
+
+    The check the transfer procedure requires, which every operator otherwise
+    reinvents as a SQL query — and reinvents INCOMPLETELY. Both halves of #276
+    are failures of a hand-rolled verification:
+
+    - A list built from the printed titles moved one source of a four-source
+      card and retired it, stranding three. Near-missed on ibx-5153.
+    - A list built from a source-provenance query retired a card carrying a
+      typed edge, destroying it. That one was NOT a near miss.
+
+    So this answers both questions at once. A verifier that checked only
+    sources would have returned green on the call that destroyed the edge,
+    which is why edges are not a separate mode.
+
+    Returns a report. `SAFE TO RETIRE` appears only when every source of every
+    stub is already on the target AND no stub carries an active typed edge.
+    """
+    relations = relations or []
+    edged: set[str] = set()
+    for e in relations:
+        if (e.get("status") or "active") != "active":
+            continue
+        for side in ("from_item_id", "to_item_id"):
+            if e.get(side):
+                edged.add(e[side])
+
+    on_target = {
+        str(src.get("id"))
+        for src in target_sources
+        if isinstance(src, dict) and src.get("id")
+    }
+
+    routed = [
+        st for st in stubs
+        if any(tid == target_key for tid, _name, _sound in st.targets)
+    ]
+    if not routed:
+        return f"No stubs route to {target_key!r}."
+
+    missing: list[tuple[str, str]] = []
+    blocked: list[str] = []
+    for st in routed:
+        for src in st.sources:
+            if not isinstance(src, dict):
+                continue
+            sid = str(src.get("id") or "")
+            if sid and sid not in on_target:
+                missing.append(
+                    (st.est_item_id, str(src.get("title") or sid))
+                )
+        if st.est_item_id in edged:
+            blocked.append(st.est_item_id)
+
+    pointers = sum(
+        len([x for x in st.sources if isinstance(x, dict)]) for st in routed
+    )
+    out = [
+        f"{len(routed)} stub(s) · {pointers} source pointer(s) routed to "
+        f"{target_key}",
+        "",
+    ]
+    if missing:
+        out.append(
+            f"✗ {len(missing)} source(s) are NOT on the target yet — "
+            "attach these before retiring, or their only pointer dies with "
+            "the card:")
+        for eid, title in missing:
+            out.append(f"    {eid}")
+            out.append(f"      · {title}")
+        out.append("")
+    if blocked:
+        out.append(
+            f"✗ {len(blocked)} stub(s) carry an ACTIVE typed edge, which "
+            "retiring DELETES and cannot restore — retire these singly, with "
+            "the edge in view:")
+        for eid in blocked:
+            out.append(f"    {eid}")
+        out.append("")
+    if not missing and not blocked:
+        out.append(
+            f"✓ SAFE TO RETIRE — all {pointers} source pointer(s) are on the "
+            "target, and no stub carries a typed edge.")
+    return "\n".join(out)
+
+
 def render_sweep(stubs: list[Stub], *, code: str) -> str:
     """The review surface: what to move where, and what cannot move."""
     if not stubs:
@@ -269,12 +363,24 @@ def render_sweep(stubs: list[Stub], *, code: str) -> str:
             "attach the source to what it served, then retire the card:")
         out.append("")
         for s in attachable:
-            titles = ", ".join(
+            titles = [
                 str(src.get("title") or src.get("id"))
-                for src in s.sources if isinstance(src, dict)) or "(no title)"
+                for src in s.sources if isinstance(src, dict)
+            ]
             out.append(f"  {s.framing}  ({s.body_len} chars)")
             out.append(f"    {s.est_item_id}")
-            out.append(f"    source: {titles}")
+            # ONE LINE PER SOURCE when a card wraps more than one (#276). The
+            # joined form read as a single document, so a transfer list built
+            # from the printed titles moved one of four and retired the card —
+            # the other three lost their only pointer. Near-missed on
+            # ibx-5153's `carol-s-our-ai-story-narrative-prose` (4 documents),
+            # caught by a hand-written verification query, not by this output.
+            if len(titles) > 1:
+                out.append(f"    sources ({len(titles)}):")
+                for t in titles:
+                    out.append(f"      · {t}")
+            else:
+                out.append(f"    source: {titles[0] if titles else '(no title)'}")
             for tid, tname, sound in s.targets:
                 flag = "" if sound else "  ⚠ UNLAYERED TARGET"
                 out.append(f"    → serves: {tname}{flag}")
@@ -325,9 +431,17 @@ def render_sweep(stubs: list[Stub], *, code: str) -> str:
             "already exists. Inventing a target would be a guess.")
         out.append("")
 
+    # Cards and source POINTERS are different counts whenever a card wraps
+    # several documents, and the difference is what a transfer list gets built
+    # from (#276). Reported only when they diverge, so the common case stays
+    # one number.
+    pointers = sum(
+        len([x for x in st.sources if isinstance(x, dict)]) for st in stubs
+    )
     out.append(
-        f"{len(stubs)} empty Source-material card(s) · {len(attachable)} "
-        f"attachable · {len(orphans)} orphaned"
+        f"{len(stubs)} empty Source-material card(s)"
+        + (f" · {pointers} source pointers" if pointers != len(stubs) else "")
+        + f" · {len(attachable)} attachable · {len(orphans)} orphaned"
         + (f" · {len(edged)} carry typed edges" if edged else ""))
     out.append(
         "Read-only. Move a source with `add_element_source` on `cp-hosted`, "

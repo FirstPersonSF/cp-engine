@@ -937,7 +937,14 @@ def seal_sweep_cmd(
 
 @click.command("stub-sweep")
 @click.argument("code")
-def stub_sweep_cmd(code: str) -> None:
+@click.option(
+    "--verify", "verify_target", metavar="EST_ITEM_ID", default=None,
+    help="Check whether the stubs routed to this target are safe to retire: "
+         "every source already attached there, and no stub carrying a typed "
+         "edge. Checks BOTH — a source-only check passes a card whose edge "
+         "the retire would destroy (#276).",
+)
+def stub_sweep_cmd(code: str, verify_target: str | None = None) -> None:
     """Empty Source-material cards, and where their provenance belongs (#178).
 
     A card whose body is only the ingest's boilerplate ("Ingested document:
@@ -1029,11 +1036,30 @@ def stub_sweep_cmd(code: str) -> None:
                 "the arrived-after check is silent)", err=True
             )
 
-    click.echo(
-        render_sweep(
-            find_stubs(rows, relations, source_dates=source_dates), code=code
+    stubs = find_stubs(rows, relations, source_dates=source_dates)
+
+    if verify_target:
+        from cp_engine.stub_sweep import verify_transfer
+
+        target = next(
+            (r for r in rows if r.get("est_item_id") == verify_target), None
         )
-    )
+        if target is None:
+            click.echo(
+                f"No live element {verify_target!r} in this project.", err=True
+            )
+            sys.exit(1)
+        click.echo(
+            verify_transfer(
+                stubs,
+                verify_target,
+                list(target.get("sources") or []),
+                relations=relations,
+            )
+        )
+        return
+
+    click.echo(render_sweep(stubs, code=code))
 
 
 @click.command("exec-lint")
