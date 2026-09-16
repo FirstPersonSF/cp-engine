@@ -4,6 +4,53 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.117.4 — 2026-09-16
+
+**A guard that measured the wrong date, and flagged 53 correctly-routed
+documents because of it.** One bug fix. No API changes.
+
+**`stub_sweep.postdates_target` compared the STUB's `version_date`** to its
+target's — that is when the *card* was written, not when the *document*
+arrived. Any stub minted by a later backfill was therefore reported as a bulk
+route, in the imperative (*"it cannot have fed it. Almost certainly a bulk
+route"*).
+
+ibx-5153 minted **47 stubs in a four-minute window on 2026-08-17** for
+documents that had arrived on **2026-06-17** — the workshop's own agenda,
+preread, bet board and transcript, routed to that workshop. All 53 attachable
+stubs were flagged. Re-measured against real arrival dates, **43 of 50 were
+correct**, and acting on the old flag would have detached them from the work
+they genuinely fed.
+
+It now reads `rag_assets.created_at`, threaded from the caller:
+
+| project | before | after | |
+|---|---|---|---|
+| ibx-5153 | 53 flagged | **0** | a backfill; routing was right |
+| ibx-5192 | 5 flagged | **5** | real, gaps of 2–24 days |
+
+That discrimination is the whole purpose of the check, and it was inverted —
+the project with correct routing was fully flagged and nothing distinguished
+it from the project with genuine errors.
+
+Three decisions worth knowing:
+
+- **Earliest source date wins** for a card wrapping several documents. It has
+  fed its target since the first one landed, so the earliest is what can
+  exonerate the routing; taking the latest would flag a card whose bulk of
+  material predates the work.
+- **Silent when the arrival date cannot be resolved**, rather than falling
+  back to `version_date`. An unknown date is not evidence — and that silent
+  fallback is what made the original wrong.
+- **Reworded** from *"DOC IS NEWER … almost certainly a bulk route"* to
+  *"DOC ARRIVED AFTER … check where it actually belongs"*. The old phrasing
+  asserted a cause it had not measured, and that unearned confidence is what
+  made a 70-stub migration look actionable.
+
+Two pre-existing tests encoded the old behaviour and were rewritten; four
+added, including the backfill regression built from ibx-5153's real shape.
+All four fail with the comparison reverted — verified, not assumed.
+
 ## v0.117.3 — 2026-09-16
 
 **A column that dated the wrong thing, and two parsers that were dropping
