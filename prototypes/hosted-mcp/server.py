@@ -5812,8 +5812,86 @@ def retire_spine_element(project_code: str, key: str) -> dict[str, Any]:
     return result
 
 
+
+def _keys_carrying_edges(
+    client, project_id: str, keys: list[str]
+) -> list[dict[str, Any]]:
+    """Which of `keys` resolve to an element with an ACTIVE typed edge.
+
+    Read-only pre-flight for `retire_spine_elements` (#276). Returns one entry
+    per offending key — {key, est_item_id, edges: [{kind, from, to, note}]} —
+    so the refusal names what would have been destroyed rather than just
+    counting it. A key that does not resolve is NOT reported here: the retire
+    path reports it as a `{note}` per-key miss, which is its job, and
+    duplicating that verdict in the guard would make a typo look like a
+    dangerous edge.
+
+    One query for the whole batch rather than one per key: a 40-key batch
+    should not cost 40 round trips to find out it is safe.
+    """
+    resolved: dict[str, str] = {}
+    for key in keys:
+        try:
+            est_item_id, _ = resolve_live_element_id(client, project_id, key)
+        except Exception:  # noqa: BLE001 — a resolution failure is the retire
+            # path's to report, not the guard's.
+            continue
+        if est_item_id:
+            resolved[key] = est_item_id
+    if not resolved:
+        return []
+
+    eids = sorted(set(resolved.values()))
+    try:
+        rows = (
+            client.table("spine_relations")
+            .select("kind, from_item_id, to_item_id, note, status")
+            .eq("project_id", project_id)
+            .eq("status", "active")
+            .or_(
+                f"from_item_id.in.({','.join(eids)}),"
+                f"to_item_id.in.({','.join(eids)})"
+            )
+            .execute()
+            .data
+        ) or []
+    except Exception:  # noqa: BLE001 — a guard that cannot read must not block
+        # the verb outright; the cascade remains as documented in #96.
+        return []
+
+    by_eid: dict[str, list[dict[str, Any]]] = {}
+    for r in rows:
+        for side in ("from_item_id", "to_item_id"):
+            eid = r.get(side)
+            if eid in eids:
+                by_eid.setdefault(eid, []).append({
+                    "kind": r.get("kind"),
+                    "from": r.get("from_item_id"),
+                    "to": r.get("to_item_id"),
+                    "note": r.get("note"),
+                })
+
+    out: list[dict[str, Any]] = []
+    for key, eid in resolved.items():
+        edges = by_eid.get(eid)
+        if edges:
+            # Dedupe: an edge whose BOTH endpoints are in the batch is one edge.
+            seen, uniq = set(), []
+            for e in edges:
+                sig = (e["kind"], e["from"], e["to"])
+                if sig not in seen:
+                    seen.add(sig)
+                    uniq.append(e)
+            out.append({"key": key, "est_item_id": eid, "edges": uniq})
+    return out
+
+
 @mcp_server.tool()
-def retire_spine_elements(project_code: str, keys: list[str]) -> dict[str, Any]:
+def retire_spine_elements(
+    project_code: str,
+    keys: list[str],
+    with_edges: bool = False,
+) -> dict[str, Any]:
     """Retire several spine elements in one call (#105) — batch cleanup.
 
     Each entry of `keys` resolves and retires exactly as `retire_spine_element`
@@ -5826,11 +5904,36 @@ def retire_spine_elements(project_code: str, keys: list[str]) -> dict[str, Any]:
     key was a typo. `results` carries {key, est_item_id, retired, versions,
     edges_removed} for each hit and {key, note} (or {key, error}) for each miss.
 
-    Returns {retired: int, edges_removed: int, results: [...]}.
+    EDGE GUARD (#276). A key carrying an ACTIVE typed edge is REFUSED by
+    default, and refused BEFORE anything is retired — the whole batch stops,
+    naming the offending keys and their edges. Pass `with_edges=True` to accept
+    the cascade.
+
+    Why the batch verb and not `retire_spine_element`: the cascade is a
+    deliberate, documented behaviour (#96 — a retired element must not leave
+    active edges dangling for an agent to walk), and retiring ONE element is an
+    act of attention where that consequence is in view. A batch is the opposite.
+    Measured 2026-09-16 on ibx-5153: 31 keys retired in one call, `edges_removed
+    = 1`, and the destroyed edge was unrecoverable — `spine_relations` has no
+    retired state, and the repo mirror records `serves`/`sources` but not typed
+    edges. The transfer list had been built from a source-provenance check that
+    never looked at edges; `cxp stub-sweep` HAD warned, in prose, on a line the
+    list was not built from.
+
+    So the guard is not about distrusting the cascade. It is that a batch hides
+    the one row in thirty-one where the cascade matters, and the cost of finding
+    out afterwards is a relationship nobody can reconstruct.
+
+    Returns {retired: int, edges_removed: int, results: [...]}, or, when the
+    guard trips, {error, blocked_by_edges: [{key, est_item_id, edges: [...]}],
+    retired: 0} with nothing written.
 
     Args:
         project_code: engagement, initiative, or standalone-repo code.
         keys: element keys (est_item_ids or unique framing substrings).
+        with_edges: accept the edge cascade instead of refusing it. Set this
+            only when the edges named in a prior refusal are ones you intend to
+            destroy.
     """
     client = user_client()
     scope = resolve_write_scope(client, project_code)
@@ -5838,6 +5941,28 @@ def retire_spine_elements(project_code: str, keys: list[str]) -> dict[str, Any]:
         return {"error": f"no project or initiative resolves for code {project_code!r}"}
     if not keys:
         return {"error": "at least one key is required"}
+
+    # PRE-FLIGHT (#276): resolve every key and refuse the WHOLE batch if any of
+    # them carries an active typed edge. Before, not during — a partial batch
+    # that stops at the offending key has already destroyed the edges of the
+    # keys ahead of it, which is the failure this guard exists to prevent.
+    if not with_edges:
+        blocked = _keys_carrying_edges(client, scope["id"], keys)
+        if blocked:
+            return {
+                "error": (
+                    f"{len(blocked)} of {len(keys)} keys carry active typed "
+                    "edges, which retiring DELETES (#96) — they are not "
+                    "recoverable. Nothing was retired. Review the edges below, "
+                    "then either retire those keys individually or re-run with "
+                    "with_edges=True."
+                ),
+                "blocked_by_edges": blocked,
+                "retired": 0,
+                "edges_removed": 0,
+                "project_code": scope["project_code"],
+                "caller": caller_subject(),
+            }
 
     results: list[dict[str, Any]] = []
     retired = 0
