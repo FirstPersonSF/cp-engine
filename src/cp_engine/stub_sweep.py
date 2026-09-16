@@ -112,6 +112,9 @@ class Stub:
     # resolved — the check then stays silent rather than guessing.
     _doc_date: str = ""
     _target_date: str = ""
+    # The project's earliest WORK element date, for `looks_foundational`
+    # (#275). "" when the project has no dated work element to compare to.
+    _first_work_date: str = ""
 
     @property
     def postdates_target(self) -> bool:
@@ -137,6 +140,41 @@ class Stub:
         """
         return bool(self._doc_date and self._target_date
                     and self._doc_date > self._target_date)
+
+    @property
+    def looks_foundational(self) -> bool:
+        """The document predates the project's own work — it is founding
+        material, and a specific dated session is the wrong home for it (#275).
+
+        THE GAP THIS CLOSES. `postdates_target` catches a document that arrived
+        AFTER the work it claims to have fed. It cannot see the opposite error,
+        because the dates are fine: on ibx-5153, 17 stubs were routed to the
+        07-03 "Campaign Opportunities Report walkthrough" and every one of them
+        PREDATED it, so the guard was correctly silent. They were the Apr 23
+        kickoff briefing, the 4/10 and 4/23 input briefs, the first pitch and an
+        analyst report — the project's founding material, filed against a
+        client feedback session three months later.
+
+        Worse, the right home was already documented: `_authored/inputs-briefing`
+        names several of those documents in its own prose while carrying none of
+        them as sources. The knowledge existed; the wiring pointed elsewhere.
+
+        The signal is that the document predates the project's EARLIEST work
+        element. A source that was in hand before any work existed cannot have
+        been produced by, or for, one particular later session — it is context
+        the whole engagement stands on.
+
+        DELIBERATELY A QUESTION, NOT A VERDICT. Rendered as `ℹ`, not `⚠`, and
+        worded as a prompt. #274's lesson is that a confidently-phrased flag
+        gets acted on in bulk: "almost certainly a bulk route" is what made a
+        70-stub migration look actionable when 43 of 50 were correct. A false
+        positive here must be cheap to dismiss.
+        """
+        if not (self._doc_date and self._first_work_date):
+            return False
+        # Equal dates are the normal case for a kickoff: the brief and the
+        # first activity land the same day. Only strictly-earlier is a signal.
+        return self._doc_date < self._first_work_date
 
     @property
     def unsound_targets(self) -> list[tuple[str, str, bool]]:
@@ -179,6 +217,16 @@ def find_stubs(
     source_dates = source_dates or {}
     relations = relations or []
     by_id = {r.get("est_item_id"): r for r in rows if r.get("est_item_id")}
+
+    # The earliest dated WORK element in the project (#275). A Source-material
+    # card is capture, not work, so it cannot set this floor — otherwise the
+    # founding documents would define the very date they are tested against.
+    work_dates = [
+        str(r.get("version_date") or "")
+        for r in rows
+        if not _is_stream(r) and r.get("version_date")
+    ]
+    first_work_date = min(work_dates) if work_dates else ""
 
     edged: set[str] = set()
     for e in relations:
@@ -227,6 +275,7 @@ def find_stubs(
                     row.get("sources") or [], source_dates
                 ),
                 _target_date=target_date,
+                _first_work_date=first_work_date,
             )
         )
 
@@ -391,6 +440,13 @@ def render_sweep(stubs: list[Stub], *, code: str) -> str:
                     f"(ingested {s._doc_date} > {s._target_date}) — it cannot "
                     "have fed it. Check where it actually belongs before "
                     "migrating, or the target claims provenance it never had")
+            if s.looks_foundational and not s.postdates_target:
+                out.append(
+                    f"    ℹ LOOKS FOUNDATIONAL — ingested {s._doc_date}, "
+                    f"before this project's first work ({s._first_work_date}), "
+                    "yet routed to one dated session. Founding material "
+                    "usually belongs on the standing Brief. Is `Inputs & "
+                    "Briefing` its home?")
             if s.has_edges:
                 out.append("    ⚠ has typed edges — retiring cascades them; "
                            "check what points here first")

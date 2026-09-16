@@ -366,3 +366,110 @@ def test_verify_ignores_a_non_active_edge():
                     "to_item_id": "_authored/deck-build"}],
     )
     assert "SAFE TO RETIRE" in report
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #275 — founding material filed against one dated session
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _work(eid, framing, layer, version_date):
+    """A real work element — not Source material, so it sets the date floor."""
+    row = _row(eid, framing, layer, body="genuine authored content")
+    row["version_date"] = version_date
+    return row
+
+
+def test_founding_material_on_a_dated_session_is_flagged():
+    """THE #275 CONTROL — the case no check could see.
+
+    ibx-5153: 17 stubs routed to the 07-03 "Campaign Opportunities Report
+    walkthrough", every one PREDATING it, so `postdates_target` was correctly
+    silent. They were the Apr 23 kickoff briefing, the 4/10 and 4/23 input
+    briefs, the first pitch and an analyst report — founding material filed
+    against a client feedback session three months later.
+    """
+    walkthrough = _work("_authored/walkthrough", "Campaign Opportunities "
+                        "Report walkthrough", "Client feedback", "2026-07-03")
+    workshop = _work("_authored/workshop", "6/17 AI Campaign Workshop",
+                     "Activity", "2026-06-17")
+    stub = _stub(serves=["_authored/walkthrough"])
+    stubs = find_stubs([stub, walkthrough, workshop],
+                       source_dates={RAG: "2026-06-13"})
+    assert stubs[0].looks_foundational
+    text = render_sweep(stubs, code="ibx-5153")
+    assert "LOOKS FOUNDATIONAL" in text
+    assert "Inputs & Briefing" in text
+
+
+def test_a_document_from_during_the_work_is_not_flagged():
+    """The common case. A source that arrived while the project was running is
+    ordinary input to whatever it was routed to."""
+    act = _work("_authored/deck-build", "Deck build", "Activity", "2026-06-17")
+    stub = _stub(serves=["_authored/deck-build"])
+    stubs = find_stubs([stub, act], source_dates={RAG: "2026-07-20"})
+    assert not stubs[0].looks_foundational
+
+
+def test_a_document_from_the_kickoff_day_itself_is_not_flagged():
+    """Equal dates are normal: the brief and the first activity land together.
+    Only strictly-earlier is a signal, or every kickoff trips it."""
+    act = _work("_authored/kickoff", "Kickoff", "Activity", "2026-06-17")
+    stub = _stub(serves=["_authored/kickoff"])
+    stubs = find_stubs([stub, act], source_dates={RAG: "2026-06-17"})
+    assert not stubs[0].looks_foundational
+
+
+def test_source_material_does_not_set_the_date_floor():
+    """Capture is not work. If Source-material cards counted, the founding
+    documents would define the very date they are tested against — and the
+    check could never fire."""
+    early_stub = _row("_authored/early-capture", "early", "Source material",
+                      body=BOILERPLATE)
+    early_stub["version_date"] = "2026-01-01"
+    act = _work("_authored/deck-build", "Deck build", "Activity", "2026-06-17")
+    stub = _stub(serves=["_authored/deck-build"])
+    stubs = find_stubs([stub, early_stub, act],
+                       source_dates={RAG: "2026-06-13"})
+    target = next(s for s in stubs if s.est_item_id == stub["est_item_id"])
+    assert target.looks_foundational, (
+        "a Source-material card must not lower the work-date floor"
+    )
+
+
+def test_the_two_checks_do_not_both_fire():
+    """`postdates_target` and `looks_foundational` are opposite errors.
+
+    A document cannot both predate the project's first work and postdate the
+    target it serves — but if it could, showing two contradictory flags on one
+    card would be worse than showing neither.
+    """
+    act = _work("_authored/deck-build", "Deck build", "Activity", "2026-06-17")
+    stub = _stub(serves=["_authored/deck-build"])
+    stubs = find_stubs([stub, act], source_dates={RAG: "2026-07-20"})
+    text = render_sweep(stubs, code="x")
+    assert not ("DOC ARRIVED AFTER" in text and "LOOKS FOUNDATIONAL" in text)
+
+
+def test_it_is_a_question_not_a_verdict():
+    """#274's lesson: a confidently-worded flag gets acted on in bulk.
+
+    'Almost certainly a bulk route' is what made a 70-stub migration look
+    actionable when 43 of 50 were correctly routed. This one asks.
+    """
+    walkthrough = _work("_authored/w", "Walkthrough", "Client feedback",
+                        "2026-07-03")
+    stub = _stub(serves=["_authored/w"])
+    text = render_sweep(
+        find_stubs([stub, walkthrough], source_dates={RAG: "2026-06-13"}),
+        code="ibx-5153",
+    )
+    assert "ℹ" in text and "⚠ LOOKS FOUNDATIONAL" not in text
+    assert text.count("Is `Inputs & Briefing` its home?") == 1
+
+
+def test_no_work_element_means_no_claim():
+    """With nothing to compare against, the check stays silent."""
+    stub = _stub(serves=["_authored/deck-build"])
+    stubs = find_stubs([stub, ACTIVITY], source_dates={RAG: "2026-06-13"})
+    assert not stubs[0].looks_foundational
