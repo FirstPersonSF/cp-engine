@@ -225,7 +225,13 @@ def build_rounds(
 
     rounds: list[Round] = []
     for eid, row in by_id.items():
-        if _norm(row.get("layer")) not in DELIVERABLE_LAYERS:
+        # `_is_deliverable`, not the raw layer list (#278). `shipped_ids` above
+        # already asks it correctly; this loop did the string comparison by
+        # hand, so the two halves of ONE function could disagree about what a
+        # deliverable is — a row whose `card_kind` says `deliverable` on a
+        # layer the list does not carry was counted as shipped and then skipped
+        # here, which is #172's failure mode inside a single scope.
+        if not _is_deliverable(row):
             continue
         vdate = _as_date(row.get("version_date"))
         if not all_deliverables:

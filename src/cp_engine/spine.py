@@ -43,6 +43,53 @@ FRAMING_LAYERS: frozenset[str] = frozenset(
 )
 
 
+def _layer_key(layer: str | None) -> str:
+    """Compare a frontmatter `layer` case- and space-insensitively (#278).
+
+    THIS MODULE IS THE FRONTMATTER DOMAIN, not the DB-row domain. A
+    `SpineElement` is parsed from markdown frontmatter (`_element_from_path`),
+    where `layer` is a required key and there is no `card_kind` column to
+    prefer — so unlike `spine_lint`, `seal_sweep` and `stub_sweep`, the
+    checks here are deliberately layer-keyed and stay that way. #278's
+    suggestion to convert them to `classify()` does not apply.
+    
+    What DID need fixing is that every comparison below was exact-match
+    against CamelCase constants (`"SourceMaterial"`, `"ClientFeedback"`),
+    while the real frontmatter overwhelmingly carries the SPACED forms.
+    Measured across the cp tenant 2026-09-16: `Source material` 75 files,
+    `Client feedback` 15, against `SourceMaterial` 4 and `ClientFeedback` 3.
+    The DB rows were normalised by mig 129; frontmatter never was.
+
+    The cost was silent mis-scoring, not a crash:
+    `LAYER_IMPORTANCE.get(el.layer, 0.5)` fell to its 0.5 default for **90
+    files**, so `Client feedback` ranked at 0.5 instead of 0.80 and
+    `Source material` at 0.5 instead of 0.45 — the Lens ordering was wrong in
+    both directions. This is #172's alias failure (`Output` vs `Deliverables`)
+    in the one place that still compared raw strings.
+
+    Routed through the shared `canon_layer` first, so ALIASES resolve too and
+    this module cannot drift from the vocabulary the DB and the authoring
+    package already agree on — `Output`/`Deliverable` → `Deliverables`,
+    `source` → `Source material`. Then normalised the same way `canon_layer`
+    itself compares (`lower().replace(" ", "")`).
+
+    A value `canon_layer` does not know is returned unchanged and still
+    normalises, so an unmapped or future layer degrades to the 0.5 default
+    rather than raising.
+    """
+    from spine_authoring.authored_element import canon_layer
+
+    raw = str(layer or "")
+    if not raw:
+        return ""
+    return canon_layer(raw).lower().replace(" ", "")
+
+
+_FRAMING_KEYS: frozenset[str] = frozenset(_layer_key(x) for x in FRAMING_LAYERS)
+_DELIVERABLES_KEY = _layer_key("Deliverables")
+
+
+
 @dataclass(frozen=True)
 class SpineElement:
     """One addressable unit in a project spine (frontmatter spine + body)."""
@@ -156,6 +203,13 @@ LAYER_IMPORTANCE: dict[str, float] = {
     "Retrospective": 0.60,
 }
 
+# The same table keyed by `_layer_key`, so the spaced frontmatter spellings
+# score identically to the CamelCase ones (#278). Derived rather than written
+# out, so adding a layer above cannot forget to add it here.
+_LAYER_IMPORTANCE_KEYED: dict[str, float] = {
+    _layer_key(k): v for k, v in LAYER_IMPORTANCE.items()
+}
+
 
 def load_spine(project_dir: Path) -> tuple[SpineElement, ...]:
     """Parse every spine element under `<project_dir>/spine/<Layer>/*.md`."""
@@ -181,7 +235,7 @@ def active_deliverable_ids(elements: tuple[SpineElement, ...]) -> set[str]:
     return {
         e.id
         for e in elements
-        if e.layer == "Deliverables"
+        if _layer_key(e.layer) == _DELIVERABLES_KEY
         and e.stage != "final"
         and e.status == "active"
     }
@@ -359,9 +413,9 @@ def _recency_term(last_touched: str, today: date) -> float:
 def _serves_active_term(el: SpineElement, active: set[str]) -> float:
     """1.0 if the element serves an active deliverable OR is a framing layer
     (always ambient); 0.35 otherwise (cold but not gone)."""
-    if el.layer in FRAMING_LAYERS:
+    if _layer_key(el.layer) in _FRAMING_KEYS:
         return 1.0
-    if el.layer == "Deliverables" and el.id in active:
+    if _layer_key(el.layer) == _DELIVERABLES_KEY and el.id in active:
         return 1.0
     if any(s in active for s in el.serves):
         return 1.0
@@ -419,11 +473,11 @@ def derive_status(el: SpineElement, by_id: dict[str, SpineElement]) -> str:
     """
     if el.status != "active":
         return el.status  # explicit non-active frontmatter wins
-    if el.layer in FRAMING_LAYERS:
+    if _layer_key(el.layer) in _FRAMING_KEYS:
         return "active"
     # Find the deliverables this element serves (or is, if it's a deliverable).
     served = [by_id[s] for s in el.serves if s in by_id]
-    if el.layer == "Deliverables" and el.id in by_id:
+    if _layer_key(el.layer) == _DELIVERABLES_KEY and el.id in by_id:
         served.append(el)
     if not served:
         return "active"
@@ -453,7 +507,7 @@ def score_element(
     the frontmatter `status` (backward compatible)."""
     recency = _recency_term(el.last_touched, today)
     serves = _serves_active_term(el, active)
-    importance = LAYER_IMPORTANCE.get(el.layer, 0.5)
+    importance = _LAYER_IMPORTANCE_KEYED.get(_layer_key(el.layer), 0.5)
     effective_status = derive_status(el, by_id) if by_id is not None else el.status
     status = _status_term(effective_status)
     return recency * serves * importance * status

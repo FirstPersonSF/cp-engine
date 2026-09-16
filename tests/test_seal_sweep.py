@@ -398,3 +398,34 @@ def test_render_empty_points_at_the_all_flag():
     text = render_sweep([], code="ibx-5192")
     assert "Nothing to seal" in text
     assert "--all" in text
+
+
+def test_card_kind_decides_a_round_even_on_an_unlisted_layer():
+    """#278: `build_rounds` compared the raw layer list by hand.
+
+    `shipped_ids` a few lines above already asked `_is_deliverable(r)`, which
+    prefers the stored `card_kind` — so the two halves of ONE function could
+    disagree about what a deliverable is. A row carrying
+    `card_kind='deliverable'` on a layer the string list does not cover was
+    counted as shipped and then skipped as a round: #172's failure mode
+    inside a single scope.
+    """
+    row = _row("_authored/on-email", "Deck sent by email", "Email", "v3", "2026-08-10")
+    row["card_kind"] = "deliverable"
+    rows = [row, _row(PILLAR_RULING, "Pillar ruling", "Decision")]
+    rounds = build_rounds(
+        rows, [_edge("informs", PILLAR_RULING, "_authored/on-email")], today=TODAY
+    )
+    assert [r.est_item_id for r in rounds] == ["_authored/on-email"]
+
+
+def test_card_kind_also_keeps_a_non_deliverable_OFF_the_sweep():
+    """The other direction: a Deliverables-layer row explicitly classified as
+    `reference` is not a round. Trusting the layer would propose closing it."""
+    row = _row("_authored/ref", "Reference doc", "Deliverables", "v1", "2026-08-10")
+    row["card_kind"] = "reference"
+    rows = [row, _row(PILLAR_RULING, "Pillar ruling", "Decision")]
+    rounds = build_rounds(
+        rows, [_edge("informs", PILLAR_RULING, "_authored/ref")], today=TODAY
+    )
+    assert rounds == []
