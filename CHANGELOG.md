@@ -4,6 +4,50 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.117.6 — 2026-09-16
+
+**A card minted to carry a work-item link is not a mistaken stub, and the sweep
+now says so.** One change. No API changes.
+
+A work item — an estimate deliverable or activity, an initiative milestone —
+has **no `spine_substance` row**, and therefore no `sources` array to attach a
+document to. Routing a document there mints a card to hold the pointer,
+deliberately: `routeTarget.ts` keeps the mint alive for exactly this case,
+because removing it would break routing wherever the target is a work item.
+
+The card that results is byte-identical to the mistaken Source-material stub
+`stub-sweep` exists to clean up — *"Ingested document: **X**"* plus the
+rag_asset already in its own sources — and the sweep filed both under
+*"orphaned — needs a judgement the data cannot make"*.
+
+`carries_a_work_item_link` names the difference, and the orphan section now
+separates them:
+
+```
+ℹ 11 of these carry a WORK-ITEM LINK and are doing their job (#179).
+  … Retiring them would drop the link with nothing to catch it.
+
+  The rest need a judgement the data cannot make: …
+```
+
+Measured 2026-09-16: **11 of ibx-5192's 14 orphans** are carriers, 1 of
+sap-5174's 6, 0 of ibx-5153's. Telling an operator all fourteen need a decision
+overstates the backlog nearly fourfold and invites retiring a card whose only
+job is to hold a pointer nothing else can hold.
+
+It does not replace `orphan`, which remains true — it says WHY, which is the
+part that decides whether to act.
+
+**This does not close the leak.** Ingest still mints where a work item is the
+target. The fix that closes it (resolve the work item to its bound spine
+element and attach there; mint only when genuinely unbound) is specced on #179,
+including the two places the raw `serves` array is dropped before reaching the
+routing decision. Of 42 live Stream elements carrying a binding, **24 resolve
+to a spine element that already has a `sources` array** — those never needed a
+card at all.
+
+Four tests; two fail with the property disabled.
+
 ## v0.117.5 — 2026-09-16
 
 **A batch retire can no longer destroy a typed edge, and the sweep now shows
