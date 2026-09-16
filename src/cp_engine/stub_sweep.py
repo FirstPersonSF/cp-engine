@@ -196,6 +196,35 @@ class Stub:
         """Routed nowhere resolvable — nothing to attach to."""
         return not self.targets
 
+    @property
+    def carries_a_work_item_link(self) -> bool:
+        """It was minted to hold a pointer for a WORK ITEM, and is doing that
+        job — not a Source-material card somebody created by mistake (#179).
+
+        THE DISTINCTION THIS DRAWS. A work item (an estimate deliverable or
+        activity, or an initiative milestone) has no `spine_substance` row, so
+        it has no `sources` array to attach a document to. Routing a document
+        there therefore MINTS a card to carry the link — deliberately, and
+        `routeTarget.ts` keeps the mint alive for exactly this reason.
+
+        The card that results looks identical to one created by the bug this
+        sweep exists to clean up: a Source-material stub whose whole body is
+        "Ingested document: **X**". Measured 2026-09-16: of 42 live Stream
+        elements carrying a binding, 24 point at a real spine element (those
+        never needed a card) and **18 point at a work item** (those are
+        link-carriers).
+
+        Calling all 42 backlog overstates the problem by more than half, and —
+        worse — invites someone to "migrate" a card whose only job is to hold
+        a pointer nothing else can hold.
+
+        The signal is a `serves` target that resolves to NO live element. That
+        is the same condition as `orphan`, read the other way round: `orphan`
+        says "nothing to attach to", which is true; this says WHY, which is
+        the part that decides whether to act.
+        """
+        return bool(self.unresolved) and bool(self.sources)
+
 
 def find_stubs(
     rows: list[dict],
@@ -481,10 +510,22 @@ def render_sweep(stubs: list[Stub], *, code: str) -> str:
             out.append(f"  {s.framing} ({where})")
             out.append(f"    {s.est_item_id}")
         out.append("")
+        carriers = [s for s in orphans if s.carries_a_work_item_link]
+        if carriers:
+            out.append(
+                f"  ℹ {len(carriers)} of these carry a WORK-ITEM LINK and are "
+                "doing their job (#179). A work item — an estimate "
+                "deliverable or activity, an initiative milestone — has no "
+                "spine row and so no `sources` array; routing a document "
+                "there mints a card to hold the pointer, deliberately. They "
+                "look identical to a mistaken Source-material stub and are "
+                "not one. Retiring them would drop the link with nothing to "
+                "catch it.")
+            out.append("")
         out.append(
-            "  These need a judgement the data cannot make: either the slot "
-            "should be a real element, or the document belongs on a card that "
-            "already exists. Inventing a target would be a guess.")
+            "  The rest need a judgement the data cannot make: either the "
+            "slot should be a real element, or the document belongs on a card "
+            "that already exists. Inventing a target would be a guess.")
         out.append("")
 
     # Cards and source POINTERS are different counts whenever a card wraps

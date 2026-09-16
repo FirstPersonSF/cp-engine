@@ -473,3 +473,59 @@ def test_no_work_element_means_no_claim():
     stub = _stub(serves=["_authored/deck-build"])
     stubs = find_stubs([stub, ACTIVITY], source_dates={RAG: "2026-06-13"})
     assert not stubs[0].looks_foundational
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #179 option 3 — a work-item link-carrier is not a mistake
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_a_card_serving_a_work_item_is_named_as_a_link_carrier():
+    """A work item has no spine row, so no `sources` array to attach to.
+
+    Routing a document there MINTS a card to hold the pointer — deliberately;
+    `routeTarget.ts` keeps the mint alive for exactly this case. The result is
+    byte-identical to a mistaken Source-material stub and is not one.
+    """
+    stub = _stub(serves=["estimator-slot-uuid"])  # resolves to no live element
+    stubs = find_stubs([stub])
+    assert stubs[0].carries_a_work_item_link
+    assert stubs[0].orphan  # still true — this says WHY, it does not replace it
+    text = render_sweep(stubs, code="ibx-5192")
+    assert "carry a WORK-ITEM LINK" in text
+
+
+def test_a_card_routed_to_a_real_element_is_not_a_link_carrier():
+    """Those never needed a card: the target has a `sources` array already.
+
+    24 of 42 live bindings are this case — the attach path existed and routing
+    did not take it.
+    """
+    stubs = find_stubs([_stub(serves=["_authored/deck-build"]), ACTIVITY])
+    assert not stubs[0].carries_a_work_item_link
+    assert stubs[0].attachable
+
+
+def test_a_card_with_no_source_is_not_a_link_carrier():
+    """A card carrying no rag_asset has no link to carry — it is just empty."""
+    row = _row("_authored/empty", "Empty", "Source material", body=BOILERPLATE,
+               serves=["estimator-slot-uuid"])
+    row["sources"] = []
+    stubs = find_stubs([row])
+    assert not stubs[0].carries_a_work_item_link
+
+
+def test_the_orphan_guidance_separates_carriers_from_the_rest():
+    """Calling all orphans 'needs a judgement' overstates the backlog.
+
+    Measured on ibx-5192: 11 of 14 orphans are link-carriers. Telling an
+    operator all 14 need a decision invites retiring a card whose only job is
+    to hold a pointer nothing else can hold.
+    """
+    carrier = _stub(eid="_authored/carrier", serves=["estimator-slot-uuid"])
+    bare = _row("_authored/bare", "Bare", "Source material", body=BOILERPLATE,
+                serves=["another-slot"])
+    bare["sources"] = []
+    text = render_sweep(find_stubs([carrier, bare]), code="ibx-5192")
+    assert "1 of these carry a WORK-ITEM LINK" in text
+    assert "The rest need a judgement" in text
