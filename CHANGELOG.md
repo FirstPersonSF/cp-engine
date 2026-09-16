@@ -48,9 +48,10 @@ capture-shaped. Three consequences, each easy to miss:
   element — this sweep will say so.
 ```
 
-Measured on the live tenant 2026-09-16: **0 of 11** residue carriers resolve
-today, which is the point — the backlog clears itself as elements appear
-rather than needing a sweep to re-judge it.
+Measured on the live tenant 2026-09-16, after mig 181 backfilled the 18
+existing carriers: **7 of 18 are already FREE** (all on ibx-5192) and 11 are
+held. The backlog clears itself as elements appear rather than needing a
+sweep to re-judge it.
 
 Seven tests, each verified to fail against the reverted implementation.
 
