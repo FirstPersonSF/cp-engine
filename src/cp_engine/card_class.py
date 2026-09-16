@@ -151,10 +151,42 @@ def _norm(value) -> str:
 _CAPTURE_BODY_MAX = 200
 
 
+# A STANDING ELEMENT that nobody has filled in yet — the SOW slot, the
+# inputs-briefing slot — is scaffolding the tenant creates deliberately. It is
+# short and it carries a source, so `_is_capture`'s two signals both fire on
+# it, and before this check it classified as Stream. That is wrong in a way
+# that COSTS something: `stub_sweep` proposes retiring Stream, and these slots
+# exist precisely to persist until somebody writes into them.
+#
+# Measured 2026-09-15 across all 20 live rows carrying the marker: 16 unfilled
+# (every one ≤ 378 chars AND carrying the instructional line) and 4 filled
+# (every one ≥ 550 chars, none carrying it). The two signals agree on all 20,
+# so both are required — the marker alone would swallow the filled SOW at
+# 2,864 chars and the working brief at 5,491.
+_PLACEHOLDER_MARKER = "_Standing element"
+_PLACEHOLDER_INSTRUCTIONS = "What belongs here:"
+
+
+def is_unfilled_placeholder(row: dict) -> bool:
+    """True when this row is a standing-element slot awaiting its content.
+
+    Not capture and not authored content — a third thing. Kept public because
+    the sweeps need to tell it apart from a stub: both are short, but a stub
+    should be retired and a placeholder must not be.
+    """
+    body = str(row.get("body") or "")
+    return (_PLACEHOLDER_MARKER in body
+            and _PLACEHOLDER_INSTRUCTIONS in body)
+
+
 def _is_capture(row: dict) -> bool:
     """True when this context row is the ingest's wrapper, not authored content."""
     body = str(row.get("body") or "")
     if len(body) >= _CAPTURE_BODY_MAX:
+        return False
+    # Asked BEFORE the source check: an unfilled slot is short and carries a
+    # source, so it would otherwise read as capture.
+    if is_unfilled_placeholder(row):
         return False
     sources = row.get("sources")
     if isinstance(sources, (list, tuple)) and len(sources) > 0:

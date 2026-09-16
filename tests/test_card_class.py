@@ -180,3 +180,57 @@ def test_card_kind_is_card_property():
     assert CardKind.ACTIVITY.is_card
     assert CardKind.DELIVERABLE.is_card
     assert not CardKind.ATTACHMENT.is_card
+
+
+# --- unfilled standing elements are not capture (#179 follow-up) ------------
+#
+# Found during the 2026-09-15 backfill: three `_authored/sow` v1 rows are the
+# tenant's own scaffolding — 181 chars, one source, no rag_asset. Both of
+# `_is_capture`'s signals fired, so they classified as Stream, and `stub_sweep`
+# would then have proposed RETIRING the slots that exist to be filled in.
+
+_PLACEHOLDER_BODY = (
+    "_Standing element — the signed scope of work._\n\n"
+    "What belongs here: the executed SOW (attach the document as a source), "
+    "key commitments, exclusions, and change orders as they happen."
+)
+
+
+def test_unfilled_standing_element_is_reference_not_capture():
+    """The live sap-5174/ibx-5192/sap-5171 `_authored/sow` v1 shape."""
+    row = _row(layer="Agreement", placement="context",
+               body=_PLACEHOLDER_BODY,
+               sources=[{"id": "abc", "title": "SOW.pdf"}])
+    assert len(row["body"]) < 200, "fixture must be short enough to look like capture"
+    assert classify(row) is CardKind.REFERENCE
+    assert not classify(row).is_stream, (
+        "a standing element awaiting content must never be swept as a stub")
+
+
+def test_filled_standing_element_stays_reference():
+    """The marker alone must not decide it — sap-5174's filled SOW v2 is 1,771
+    chars and carries no instructional line."""
+    row = _row(layer="Agreement", placement="context",
+               body="_Standing element — the signed scope of work._\n\n" + ("x" * 2000),
+               sources=[{"id": "abc"}])
+    assert classify(row) is CardKind.REFERENCE
+
+
+def test_real_capture_is_still_stream():
+    """The guard must not have widened into a hole: the ingest's own wrapper,
+    which is what `stub_sweep` exists to find, still classifies as Stream."""
+    row = _row(layer="Source material", placement="context",
+               body="Ingested document: **Marcello Grande** (doc)\n\n"
+                    "rag_asset: 1fb5e23e-0cfe-4d85-87e8-903d46c48a33",
+               sources=[{"id": "1fb5e23e"}])
+    assert classify(row) is CardKind.ATTACHMENT
+    assert classify(row).is_stream
+
+
+def test_placeholder_needs_both_signals():
+    """Marker without instructions, or instructions without marker, is not a
+    placeholder — neither alone separated the 20 live rows."""
+    from cp_engine.card_class import is_unfilled_placeholder
+    assert not is_unfilled_placeholder({"body": "_Standing element — the SOW._"})
+    assert not is_unfilled_placeholder({"body": "What belongs here: anything"})
+    assert is_unfilled_placeholder({"body": _PLACEHOLDER_BODY})
