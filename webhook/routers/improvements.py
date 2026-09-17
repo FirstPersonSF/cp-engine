@@ -67,7 +67,12 @@ async def append_improvement(request: Request):
     if not user:
         raise HTTPException(status_code=400, detail="user is required")
 
-    with git_ops._cloned_tenant(sparse_paths=[_IMPROVEMENTS]) as tenant_root:
+    # NO sparse_paths. `git sparse-checkout set` takes DIRECTORIES — passing a
+    # filename fails hard ("improvements.md is not a directory") and 500s the
+    # route. It is also unnecessary: cone mode materializes every root-level
+    # file automatically, and `improvements.md` is one. Verified against a real
+    # clone; every sibling caller passes `_SCOPE_DIRS`, i.e. directories.
+    with git_ops._cloned_tenant() as tenant_root:
         path = tenant_root / _IMPROVEMENTS
         if not path.is_file():
             raise HTTPException(
