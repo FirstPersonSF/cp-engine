@@ -105,5 +105,10 @@ target-version = "py311"
 select = ["E", "F", "I", "B", "UP", "SIM"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+# `prototypes/hosted-mcp` carries the hosted server's own suite, including the
+# production control that asserts every verb is declared before the `__main__`
+# guard. It was NOT collected until 2026-09-17: nine test files, zero of them
+# run by the release gate, which is how #283 shipped — three verbs that
+# registered and then raised ModuleNotFoundError on every call.
+testpaths = ["tests", "prototypes/hosted-mcp"]
 addopts = "-q"

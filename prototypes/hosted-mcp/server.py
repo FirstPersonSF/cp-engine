@@ -92,6 +92,25 @@ observability = importlib.util.module_from_spec(_obs_spec)
 sys.modules["hosted_mcp_observability"] = observability
 _obs_spec.loader.exec_module(observability)
 
+# ── `cp_engine` for the container ─────────────────────────────────────
+#
+# The four wrap-up verbs (#280) import `cp_engine.<module>` at CALL time, and
+# the Dockerfile ships `server.py` + `observability.py` only. So in production
+# those imports raised ModuleNotFoundError while every local test passed: the
+# suite runs inside the cp-engine repo, where the real package is importable.
+# Three of the four verbs were dead on arrival for the hosted teammates they
+# were built for (#283) — the same shape as the `__main__`-guard defect, where
+# the one condition that mattered was the one nothing exercised.
+#
+# `vendor/` carries the closure those verbs need. APPENDED, never prepended:
+# where the real `cp_engine` is installed it must win, so local runs and the
+# test suite exercise the SOURCE modules and the vendored copies are only ever
+# the container's fallback. Prepending would silently test the copies instead,
+# which is how a vendored tree drifts without anyone noticing.
+_vendor = Path(__file__).resolve().parent / "vendor"
+if _vendor.is_dir() and str(_vendor) not in sys.path:
+    sys.path.append(str(_vendor))
+
 # [cid:...] is the per-message correlation id (observability.py). "-" outside
 # a message context (startup, the debounced tree refresh).
 logging.basicConfig(
