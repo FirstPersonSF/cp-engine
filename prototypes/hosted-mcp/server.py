@@ -9805,6 +9805,16 @@ def wrap_status(project_code: str) -> dict[str, Any]:
         for name, why in _WRAP_STEPS
     ]
     missing = [s["step"] for s in steps if s["ran_at"] is None]
+
+    # THE CLOSED-WINDOW CASE. `capture_session` is both the LAST step and the
+    # thing that closes the window, so the instant a wrap-up finishes it reads
+    # as a fresh empty one — every step null, `complete: false`, five steps
+    # "missing". The boundary is right for "what is owed NOW", but reporting a
+    # just-finished wrap-up identically to an unstarted one is a lie the caller
+    # acts on. When the only thing in the window IS the capture, say so.
+    just_closed = list(seen) == ["capture_session"]
+    if just_closed:
+        missing = []
     return {
         "project_code": project_code,
         "caller": caller_subject(),
@@ -9812,6 +9822,12 @@ def wrap_status(project_code: str) -> dict[str, Any]:
         "steps": steps,
         "missing": missing,
         "complete": not missing,
+        "state": (
+            "wrapped — this window closed at the capture; the next wrap-up "
+            "starts fresh"
+            if just_closed
+            else ("complete" if not missing else "in progress")
+        ),
     }
 
 

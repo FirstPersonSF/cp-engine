@@ -807,3 +807,40 @@ def test_the_server_has_no_undefined_names() -> None:
         "server.py references undefined names — each is a NameError waiting "
         f"for the branch that reaches it:\n{result.stdout}"
     )
+
+
+def test_a_just_closed_wrap_up_does_not_read_as_an_unstarted_one(_caller):
+    """THE DESIGN FLAW THE FIRST VERSION SHIPPED WITH.
+
+    `capture_session` is both the LAST step and the thing that closes the
+    window, so the instant a wrap-up finishes it reads as a fresh empty one:
+    every step null, five steps "missing", `complete: false`. Observed live
+    immediately after completing a real wrap-up.
+
+    The boundary is right for "what is owed NOW". Reporting a just-finished
+    wrap-up identically to an unstarted one is not.
+    """
+    import ast
+    import inspect
+
+    # Assert on the CODE PATH, not the source text: a first attempt grepped
+    # for "just_closed" and passed against `just_closed = False`, which is the
+    # exact defect. The claim is that the flag is COMPUTED from what the
+    # window contains, not hardcoded.
+    tree = ast.parse(inspect.getsource(_caller.wrap_status).lstrip())
+    assigned = [
+        n for n in ast.walk(tree)
+        if isinstance(n, ast.Assign)
+        and any(getattr(t, "id", None) == "just_closed" for t in n.targets)
+    ]
+    assert assigned, "wrap_status never computes a just-closed state"
+    for node in assigned:
+        assert not (
+            isinstance(node.value, ast.Constant) and isinstance(node.value.value, bool)
+        ), (
+            "just_closed is hardcoded — a finished wrap-up will still report "
+            "five steps missing, identically to one that never started"
+        )
+        assert "capture_session" in ast.unparse(node.value), (
+            "just_closed is not derived from the capture that closed the window"
+        )
