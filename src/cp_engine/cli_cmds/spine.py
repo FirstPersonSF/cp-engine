@@ -744,86 +744,23 @@ def spine_lint_cmd(code: str) -> None:
     if spine_dir is not None and spine_dir.name != code:
         codes.append(spine_dir.name)
 
-    all_rows = (
-        client.table(mc2_db.Tables.SPINE_SUBSTANCE)
-        .select(mc2_db.SPINE_LINT_COLUMNS)
-        .in_("project_code", codes)
-        .eq("status", "live")
-        .execute()
-        .data
-    ) or []
-    # Same one-live-per-element discipline as the read paths (#113) — a
-    # double-live element must warn once, not twice.
-    from cp_engine.project_sources import _one_live_per_element
-    rows = _one_live_per_element([r for r in all_rows if not r.get("archived")])
-    if not rows:
-        tried = "' / '".join(codes)
-        click.echo(
-            f"No live spine for '{tried}' — no live spine_substance rows "
-            "under any spelling of this project's code.",
-            err=True,
-        )
-        sys.exit(1)
-    warnings.extend(lint_spine_rows(rows))
+    # ONE assembly, shared with the hosted server (#280). Which tables, which
+    # columns, the one-live-per-element discipline and the per-check degradation
+    # now live in `run_all_lints`; a second copy here would drift, which is the
+    # #172/#178 lesson and the reason project_state.py reuses the engine's own
+    # merge rather than restating it.
+    from cp_engine.spine_lint import run_all_lints
 
-    # Spec-v04 lifecycle checks (#149) — best-effort: a project with no
-    # edges (or a read failure on the relations table) lints the rest.
-    from cp_engine.spine_lint import lint_lifecycle
-    relations_all: list[dict] = []
-    try:
-        # Every active edge, not a kind subset: check 7 (dead-end activity)
-        # reads `informs`/`derives_from`, so filtering to the lifecycle kinds
-        # made it see no feeds edges at all and flag every activity. #176's
-        # referrer check needs the full set for the same reason.
-        relations_all = (
-            client.table(mc2_db.Tables.SPINE_RELATIONS)
-            .select("kind, from_item_id, to_item_id")
-            .in_("project_code", codes)
-            .eq("status", "active")
-            .execute()
-            .data
-        ) or []
-        warnings.extend(lint_lifecycle(rows, relations_all))
-    except Exception:  # noqa: BLE001 — lifecycle checks degrade, lint survives
-        pass
-
-    # Curation checks (#112 P3 + #158 gaps 2–4): scaffold Brief, time-bound
-    # cards past their moment, raw pastes on distillation layers, unlayered /
-    # instruction-shaped elements. Same warn-only surface.
-    from cp_engine.spine_lint import lint_curation
-    warnings.extend(lint_curation(rows))
-
-    # Archive integrity (#176) — best-effort, and it needs the rows every
-    # other check filters out: archived elements, at every status. A dangling
-    # pointer and a half-archived element are both invisible to a live-only
-    # read, which is exactly why they survived.
-    from cp_engine.spine_lint import lint_archived_referrers, lint_partial_archive
-    try:
-        every_row = (
-            client.table(mc2_db.Tables.SPINE_SUBSTANCE)
-            .select(mc2_db.SPINE_LINT_COLUMNS)
-            .in_("project_code", codes)
-            .execute()
-            .data
-        ) or []
-        archived_rows = [r for r in every_row if r.get("archived")]
-        warnings.extend(
-            lint_archived_referrers(rows, archived_rows, relations_all)
-        )
-        warnings.extend(lint_partial_archive(every_row))
-    except Exception:  # noqa: BLE001 — archive checks degrade, lint survives
-        pass
-
-    # cp.md placeholder check — best-effort, offline (skip silently when the
-    # working dir doesn't resolve; the spine checks already ran).
+    cp_md_text = None
     try:
         cp_md = (spine_dir or find_spine_dir(config.root, code)) / "cp.md"
         if cp_md.is_file():
             cp_md_text = cp_md.read_text(encoding="utf-8")
-            warnings.extend(lint_cp_placeholders(cp_md_text))
-            warnings.extend(lint_exec_summary(cp_md_text))
     except (SpineDirNotFound, OSError):
         pass
+
+    warnings = run_all_lints(client, codes, cp_md_text=cp_md_text)
+
 
     if warnings:
         click.echo(f"{code} — {len(warnings)} spine-lint warning(s):")

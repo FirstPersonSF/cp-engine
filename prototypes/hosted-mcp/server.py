@@ -9101,3 +9101,318 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Package: the wrap-up checks (#280)
+#
+#  The three sweeps the `wrap up` ritual runs were CLI-only, and a hosted
+#  session therefore had the verb to WRITE an Exec Summary but none of the
+#  checks that say whether the write was any good. That was not a filesystem
+#  or credential limit — measured 2026-09-17, `spine_lint`, `seal_sweep` and
+#  `commitments_sweep` contain ZERO `Path`/`read_text`/`open()` references
+#  between them. They are pure functions over rows. Only the assembly lived
+#  in the CLI command bodies.
+#
+#  So these verbs wrap the SAME functions the CLI calls — `run_all_lints`
+#  was extracted for exactly this, so the two surfaces cannot drift (the
+#  #172/#178 lesson, and the reason project_state.py reuses the engine's own
+#  merge rather than restating the field grammar).
+#
+#  Under RLS the hosted caller simply sees fewer rows. The checks are
+#  identical either way.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _project_codes_for_lint(client, project_code: str) -> list[str] | None:
+    """Every code this project answers to, or None when it does not resolve.
+
+    A project can carry live rows under both its code and its directory slug —
+    the ibx-5153 case — and the CLI passes both. There is no working dir here,
+    so the slug is read off the rows themselves rather than off disk.
+    """
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return None
+    codes = {project_code, scope.get("project_code") or project_code}
+    return sorted(c for c in codes if c)
+
+
+def _find_cp_md_text(project_code: str) -> str | None:
+    """This project's `cp.md` text from the tenant clone, or None.
+
+    Best-effort and read-only. The clone is the same one `read_project_file`
+    serves, so the team gate that protects it is already satisfied by the time
+    a caller reaches a tool that uses this. Returns None rather than raising:
+    the spine checks are the substance of the lint and must run without it.
+
+    Globbed rather than constructed, because an engagement's directory is
+    company-nested and its slug is longer than its code — the path cannot be
+    derived from the code alone.
+    """
+    try:
+        root = tree_root().resolve()
+    except Exception:  # noqa: BLE001 — no clone in this environment
+        return None
+    for scope in ("1p", "firstpersonsf", "canonic"):
+        base = root / scope
+        if not base.is_dir():
+            continue
+        for candidate in base.glob(f"**/{project_code}/cp.md"):
+            try:
+                return candidate.read_text(encoding="utf-8")
+            except OSError:
+                return None
+    return None
+
+
+def _sweep_row_dict(row: Any) -> dict[str, Any]:
+    """One commitments-sweep row as JSON — dates as ISO strings."""
+    due = getattr(row, "due_date", None)
+    return {
+        "id": getattr(row, "id", None),
+        "description": getattr(row, "description", ""),
+        "owner": getattr(row, "owner", ""),
+        "source_kind": getattr(row, "source_kind", ""),
+        "due_date": due.isoformat() if due else None,
+        "date_status": getattr(row, "date_status", ""),
+        "age_days": getattr(row, "age_days", 0),
+        # 'warn' | 'expire' | None — an UNDATED row expires at 14 days, and
+        # this is the field that says how close it is.
+        "ttl": getattr(row, "ttl", None),
+        "undated": due is None,
+    }
+
+
+def _round_dict(rnd: Any) -> dict[str, Any]:
+    """One seal-sweep round as JSON.
+
+    `via` is preserved per candidate: an indirect candidate reached the
+    deliverable THROUGH an activity, which is real but weaker evidence than a
+    direct edge — a caller deciding what to seal needs to see the difference.
+    """
+    when = getattr(rnd, "version_date", None)
+    return {
+        "est_item_id": getattr(rnd, "est_item_id", None),
+        "framing": getattr(rnd, "framing", ""),
+        "version_label": getattr(rnd, "version_label", ""),
+        "version_date": when.isoformat() if when else None,
+        "already_absorbed": getattr(rnd, "already_absorbed", 0),
+        "candidates": [
+            {
+                "est_item_id": getattr(c, "est_item_id", None),
+                "framing": getattr(c, "framing", ""),
+                "layer": getattr(c, "layer", ""),
+                "kinds": list(getattr(c, "kinds", []) or []),
+                "via": getattr(c, "via", ""),
+            }
+            for c in (getattr(rnd, "candidates", []) or [])
+        ],
+    }
+
+
+@mcp_server.tool()
+def spine_lint(project_code: str) -> dict[str, Any]:
+    """Run the spine health checks for one project — the `wrap up` pass.
+
+    WARN-ONLY, and the same checks `cxp spine-lint` runs: important-yet-unbound
+    elements, dead-end activities, stale canon members, archived-but-still-
+    referenced documents, partial archives, and the Exec Summary field budgets.
+
+    Called at wrap up, before you decide a project is in good order. A clean
+    lint is not a certificate that the work is done; it is the absence of the
+    specific structural faults this catches.
+
+    The cp.md checks (scaffold placeholders, Exec Summary budgets) need the
+    file's text. Pass it if you have read it — `read_project_file` on this
+    server can — and they are skipped rather than guessed at when you have not.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+    """
+    client = user_client()
+    codes = _project_codes_for_lint(client, project_code)
+    if codes is None:
+        return {
+            "project_code": project_code,
+            "caller": caller_subject(),
+            "error": f"no project or initiative resolves for code {project_code!r}",
+            "warnings": [],
+        }
+
+    from cp_engine.spine_lint import run_all_lints
+
+    cp_md_text = None
+    try:
+        found = _find_cp_md_text(project_code)
+        if found:
+            cp_md_text = found
+    except Exception:  # noqa: BLE001 — the spine checks still run without it
+        pass
+
+    warnings = run_all_lints(client, codes, cp_md_text=cp_md_text)
+    return {
+        "project_code": project_code,
+        "caller": caller_subject(),
+        "warnings": warnings,
+        "count": len(warnings),
+        "cp_md_read": cp_md_text is not None,
+        "clean": not warnings,
+    }
+
+
+@mcp_server.tool()
+def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dict[str, Any]:
+    """Open commitments, with the staleness verdicts the wrap-up ritual reads.
+
+    The same sweep as `cxp commitments-sweep`. Two-way by design: what we owe
+    them and what they owe us. An UNDATED commitment expires at 14 days unless
+    somebody dates it — the sweep is where that gets noticed while it still can
+    be acted on.
+
+    Args:
+        project_code: one project, or "" for every project the caller can see.
+        undated_only: only rows with no date — the ones on an expiry clock.
+    """
+    client = user_client()
+    from cp_engine.commitments_sweep import sweep
+
+    code = project_code.strip() or None
+    if code:
+        if resolve_write_scope(client, code) is None:
+            return {
+                "project_code": project_code,
+                "caller": caller_subject(),
+                "error": f"no project or initiative resolves for code {code!r}",
+            }
+
+    try:
+        result = sweep(client, code=code, undated_only=undated_only)
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "project_code": project_code,
+            "caller": caller_subject(),
+            "error": f"{type(exc).__name__}: {str(exc)[:200]}",
+        }
+
+    buckets = {k: [_sweep_row_dict(r) for r in v] for k, v in result.items()}
+    return {
+        "project_code": project_code or "(all)",
+        "caller": caller_subject(),
+        "buckets": buckets,
+        "total": sum(len(v) for v in buckets.values()),
+    }
+
+
+@mcp_server.tool()
+def seal_sweep(project_code: str, all_deliverables: bool = False) -> dict[str, Any]:
+    """For each shipped deliverable, what fed it — and what to seal.
+
+    The same sweep as `cxp seal-sweep`. A shipped deliverable is a COMPRESSION
+    event: it absorbs the elements it was synthesized from, and absorbing a
+    round's inputs is what keeps the spine distilled rather than accreting.
+
+    Read the output before acting: `seal_to_deliverable` is how you act on it,
+    and sealing the wrong inputs asserts a provenance that did not happen.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+        all_deliverables: include deliverables shipped outside the recent
+            window, not just the newest ones.
+    """
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {
+            "project_code": project_code,
+            "caller": caller_subject(),
+            "error": f"no project or initiative resolves for code {project_code!r}",
+            "rounds": [],
+        }
+
+    from cp_engine import mc2_db
+    from cp_engine.seal_sweep import build_rounds
+
+    codes = _project_codes_for_lint(client, project_code) or [project_code]
+    rows = (
+        client.table(mc2_db.Tables.SPINE_SUBSTANCE)
+        .select(mc2_db.SEAL_SWEEP_COLUMNS)
+        .in_("project_code", codes)
+        .eq("status", "live")
+        .execute()
+        .data
+    ) or []
+    relations = (
+        client.table(mc2_db.Tables.SPINE_RELATIONS)
+        .select("kind, from_item_id, to_item_id, status")
+        .in_("project_code", codes)
+        .eq("status", "active")
+        .execute()
+        .data
+    ) or []
+
+    rounds = build_rounds(rows, relations, all_deliverables=all_deliverables)
+    return {
+        "project_code": project_code,
+        "caller": caller_subject(),
+        "rounds": [_round_dict(r) for r in rounds],
+        "count": len(rounds),
+    }
+
+
+@mcp_server.tool()
+def word_count_check(project_code: str) -> dict[str, Any]:
+    """Is this project's `cp.md` over the word-count discipline? (#280)
+
+    Two thresholds, per the tenant's own rule: **>2,500 words** means a
+    duplication audit is due at the next wrap-up; **>3,500** forces archive
+    rotation before the file grows further.
+
+    REPORTING ONLY. Rotation moves text between files — the cp.md and the
+    sprint file that receives the rolled-off entries — and this server holds no
+    write access to the tenant by construction. Act on a finding here through
+    `capture_project_state`, or take it to a session with a checkout.
+
+    The finding carries a contributor breakdown beneath the threshold line:
+    three buckets (Exec Summary / engine strips / hand-written), then the
+    biggest Exec Summary fields, then the biggest entries in the worst field.
+    That exists because a bare number sent people guessing — three files
+    crossed the threshold in three days, three different guesses were made
+    before anyone measured, and one guess was written into a CP file as fact
+    and was wrong.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+    """
+    allowed, denial = caller_is_team_member()
+    if not allowed:
+        return {"project_code": project_code, "available": False, "error": denial}
+
+    text = _find_cp_md_text(project_code)
+    if text is None:
+        return {
+            "project_code": project_code,
+            "caller": caller_subject(),
+            "available": False,
+            "error": (
+                "no cp.md resolves for this code in the tenant clone — the "
+                "project may be inactive, or the clone may be unavailable here"
+            ),
+        }
+
+    from cp_engine.word_count_lint import contributors, lint_word_count
+
+    findings = lint_word_count(text, f"{project_code}/cp.md")
+    words = len(text.split())
+    return {
+        "project_code": project_code,
+        "caller": caller_subject(),
+        "available": True,
+        "words": words,
+        "over_audit_threshold": words > 2500,
+        "over_rotation_threshold": words > 3500,
+        "findings": findings,
+        # Only worth computing when something tripped; a clean file's
+        # breakdown is noise.
+        "contributors": contributors(text) if findings else [],
+    }

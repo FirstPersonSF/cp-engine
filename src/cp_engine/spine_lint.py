@@ -506,3 +506,100 @@ def lint_partial_archive(all_rows: list[dict]) -> list[str]:
             "element is half-hidden and reads inconsistently across views. "
             "Archive is element-level like retire: archive all versions or none")
     return out
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  The whole pass, assembled once (#280)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def run_all_lints(
+    client,
+    codes: list[str],
+    *,
+    cp_md_text: str | None = None,
+    today=None,
+) -> list[str]:
+    """Every spine-lint check for one project, as a flat list of warnings.
+
+    WHY THIS EXISTS. The assembly — which tables to read, which columns, the
+    one-live-per-element discipline, which checks take relations and which take
+    the archived rows too — lived only inside the `cxp spine-lint` command
+    body. A hosted caller wanting the same answer had to reimplement it, and
+    two copies of a rule drift: that is the #172 and #178 lesson, and the
+    reason `project_state.py` reuses `merge_exec_summary_fields` rather than
+    restating the field grammar.
+
+    `client` is any PostgREST client — the CLI's service-credentialed one or
+    the hosted server's per-caller one. Under RLS the hosted caller simply sees
+    fewer rows; the checks are identical either way.
+
+    `codes` is the project's code plus, where it differs, its directory slug —
+    ibx-5153 carries live rows under both. Pass every code the project answers
+    to, as the CLI does.
+
+    `cp_md_text` enables the scaffold-placeholder check. Omitted (the hosted
+    case, until a caller reads the file) it is skipped rather than guessed at.
+
+    Returns warnings in the CLI's order so the two surfaces read the same.
+    """
+    from cp_engine import mc2_db
+    from cp_engine.project_sources import _one_live_per_element
+
+    all_rows = (
+        client.table(mc2_db.Tables.SPINE_SUBSTANCE)
+        .select(mc2_db.SPINE_LINT_COLUMNS)
+        .in_("project_code", codes)
+        .eq("status", "live")
+        .execute()
+        .data
+    ) or []
+    # One live row per element (#113) — a double-live element warns once.
+    rows = _one_live_per_element([r for r in all_rows if not r.get("archived")])
+    if not rows:
+        return []
+
+    warnings: list[str] = list(lint_spine_rows(rows))
+
+    # Relations are optional: a read failure degrades the lifecycle and
+    # archived-referrer checks rather than failing the pass.
+    relations_all: list[dict] = []
+    try:
+        relations_all = (
+            client.table(mc2_db.Tables.SPINE_RELATIONS)
+            .select("kind, from_item_id, to_item_id, status")
+            .in_("project_code", codes)
+            .eq("status", "active")
+            .execute()
+            .data
+        ) or []
+        warnings.extend(lint_lifecycle(rows, relations_all))
+    except Exception:  # noqa: BLE001 — advisory pass, never fail the lint
+        pass
+
+    warnings.extend(lint_curation(rows, today=today))
+
+    try:
+        every_row = (
+            client.table(mc2_db.Tables.SPINE_SUBSTANCE)
+            .select(mc2_db.SPINE_LINT_COLUMNS)
+            .in_("project_code", codes)
+            .execute()
+            .data
+        ) or []
+        archived_rows = [r for r in every_row if r.get("archived")]
+        warnings.extend(
+            lint_archived_referrers(rows, archived_rows, relations_all)
+        )
+        warnings.extend(lint_partial_archive(every_row))
+    except Exception:  # noqa: BLE001
+        pass
+
+    if cp_md_text is not None:
+        warnings.extend(lint_cp_placeholders(cp_md_text))
+        # The Exec Summary field budgets ride the same text (#204). Kept here
+        # rather than at the call site so both surfaces get the whole pass.
+        from cp_engine.exec_summary_lint import lint_exec_summary
+
+        warnings.extend(lint_exec_summary(cp_md_text))
+    return warnings
