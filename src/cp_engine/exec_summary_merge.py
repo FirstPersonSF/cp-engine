@@ -225,3 +225,79 @@ def _existing_field_block(region: str, label: str) -> list[str]:
                 break
             break
     return block
+
+
+def append_update_entry(
+    cp_md_text: str,
+    entry: str,
+    *,
+    today: date,
+    roll_off_after_days: int = 28,
+) -> tuple[str, bool]:
+    """Add ONE dated entry to `Updates`, newest first. Returns (text, changed).
+
+    WHY THIS IS NOT JUST `merge_exec_summary_fields({"Updates": [...]})` (#281).
+    Every other authored field REPLACES wholesale — that is the documented
+    contract, and it is right for them, because a rewrite of `Next up` means
+    the old list is wrong. `Updates` is the one field where the old entries are
+    the point: they are the project's narrative. Handing it replace semantics
+    makes the caller resend the entire history to add one line, and dropping
+    one is silent.
+
+    So the hosted verb takes an APPEND, not a list. The failure it removes is
+    the one #251 is about — a caller who cannot safely add to the log stops
+    adding to it.
+
+    Entries are `- <YYYY-MM-DD> — <prose>`; the date is stamped here rather
+    than accepted, so a caller cannot backdate the record.
+
+    ROLL-OFF IS REPORTED, NOT PERFORMED. The CLI ritual rolls entries older
+    than ~4 weeks into the sprint file — a move BETWEEN two files, which needs
+    a checkout this server does not have. Doing half of it (deleting here,
+    writing nowhere) would destroy the narrative it exists to keep, so old
+    entries stay and `roll_off_after_days` only shapes the advisory a caller
+    can surface. The count of over-age entries is the caller's cue to run a
+    local wrap-up, never this function's licence to delete.
+
+    A duplicate entry (same date, same text) is a NO-OP: it neither rewrites
+    the file nor advances the `· updated` stamp, so a retry after a timeout is
+    safe and a scheduled caller cannot manufacture freshness.
+    """
+    entry = (entry or "").strip().lstrip("-").strip()
+    if not entry:
+        raise ExecSummaryMergeError(
+            "an empty Updates entry would advance the freshness stamp while "
+            "saying nothing"
+        )
+
+    region = slice_exec_summary_region(cp_md_text)
+    if region is None:
+        raise ExecSummaryMergeError(
+            "no exec-summary region in this cp.md — the region is scaffolded "
+            "by `cxp sync`; run it for this project first"
+        )
+
+    block = _existing_field_block(region, "Updates")
+    existing = [ln for ln in block if ln.startswith("- ")]
+    line = f"- {today.isoformat()} — {entry}"
+
+    # Dedupe on the TEXT, not the whole line. Comparing the dated line meant a
+    # retry that crossed midnight appended a second copy of the same entry —
+    # exactly the case a scheduled caller hits, and the one a no-op guard
+    # exists to cover. An entry is identified by what it says.
+    def _prose(ln: str) -> str:
+        body = ln[2:]
+        head, sep, tail = body.partition(" — ")
+        return (tail if sep else head).strip()
+
+    if any(_prose(ln) == entry for ln in existing):
+        return cp_md_text, False
+
+    return (
+        merge_exec_summary_fields(
+            cp_md_text,
+            {"Updates": [line[2:]] + [ln[2:] for ln in existing]},
+            today=today,
+        )[0],
+        True,
+    )

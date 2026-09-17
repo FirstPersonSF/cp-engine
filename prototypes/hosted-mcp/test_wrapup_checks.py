@@ -538,3 +538,42 @@ def test_it_reuses_the_shared_matcher(server):
     src = inspect.getsource(server.set_commitment_date)
     assert "_match_open_commitment" in src
     assert "_fetch_open_commitments" in src
+
+
+def test_log_improvement_is_append_only(server):
+    """THE BOUNDARY (#282). The harvest marks entries IN PLACE and never
+    removes them, so there is deliberately no edit or delete verb.
+
+    A verb that could rewrite an existing entry would be a verb that could
+    quietly rewrite the record of a decision — and this file is the tenant's
+    memory of what fought it.
+    """
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent / "server.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    tools = {
+        n.name for n in tree.body
+        if isinstance(n, ast.FunctionDef) and any(
+            isinstance((d.func if isinstance(d, ast.Call) else d), ast.Attribute)
+            and (d.func if isinstance(d, ast.Call) else d).attr == "tool"
+            for d in n.decorator_list
+        )
+    }
+    assert "log_improvement" in tools
+    for banned in ("edit_improvement", "remove_improvement", "delete_improvement",
+                   "resolve_improvement", "update_improvement"):
+        assert banned not in tools, (
+            f"{banned} exists — improvements.md is append-only; the harvest "
+            "marks entries in place"
+        )
+
+
+def test_log_improvement_refuses_a_thin_observation(server):
+    """A one-word entry is noise `sweep improvements` cannot cluster or act
+    on, and an unusable entry in an append-only file cannot be cleaned up."""
+    out = server.log_improvement("area", "slow")
+    assert out["ok"] is False and "real prose" in out["reason"]
+    out = server.log_improvement("", "A perfectly good observation about a thing.")
+    assert out["ok"] is False and "area" in out["reason"]

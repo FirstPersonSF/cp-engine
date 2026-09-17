@@ -179,6 +179,7 @@ from routers import integrations as _integrations_router  # noqa: E402
 from routers import meetings as _meetings_router  # noqa: E402
 from routers import sessions as _sessions_router
 from routers import project_state as _project_state_router  # noqa: E402
+from routers import improvements as _improvements_router  # noqa: E402
 from routers import slack as _slack_router  # noqa: E402
 from routers import spine as _spine_router  # noqa: E402
 
@@ -192,6 +193,7 @@ app.include_router(_slack_router.router)
 app.include_router(_email_router.router)
 app.include_router(_sessions_router.router)
 app.include_router(_project_state_router.router)
+app.include_router(_improvements_router.router)
 
 
 # ── Back-compat re-exports (arch-phase-4 split) ───────────────────────

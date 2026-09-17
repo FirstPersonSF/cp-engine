@@ -642,7 +642,7 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 18 OF THEM WRITE. The writers are the `create_*`, "
+        "MOST TOOLS READ; 19 OF THEM WRITE. The writers are the `create_*`, "
         "`set_*`, `add_*`, `promote_*`, `retire_*`, `route_*` and `capture_*` "
         "verbs — a name that sounds like a mutation is one. Every write is "
         "delegated upstream under YOUR identity; the server holds no write "
@@ -8438,6 +8438,58 @@ def call_mc2_set_commitment_date(
     }
 
 
+def call_mc2_log_improvement(area: str, observation: str) -> dict[str, Any]:
+    """POST one improvements-log entry to mc-2, under the CALLER'S OWN JWT.
+
+    Same hop and the same reasoning as `call_mc2_capture_session`: this server
+    holds no write access to the tenant tree, so the write is performed
+    upstream under the caller's identity rather than minted here. **The user is
+    NOT sent** — mc-2 derives it from the verified token and it names the
+    commit.
+
+    Never raises — returns `{ok: False, reason}` like its siblings.
+    """
+    if not MC2_API_BASE:
+        return {
+            "ok": False,
+            "reason": "improvements log unavailable: MC2_API_BASE not configured",
+            "degraded": True,
+        }
+    try:
+        token = caller_jwt()
+    except RuntimeError as exc:
+        return {"ok": False, "reason": f"no authenticated caller: {exc}"}
+
+    try:
+        resp = httpx.post(
+            f"{MC2_API_BASE}/api/improvements/append",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"area": area, "observation": observation},
+            timeout=MC2_TIMEOUT_SECONDS,
+        )
+    except httpx.TimeoutException:
+        return {
+            "ok": False,
+            "reason": (
+                f"mc-2 did not respond within {MC2_TIMEOUT_SECONDS}s. The entry "
+                "may or may not have landed — a duplicate is a no-op, so "
+                "retrying is safe."
+            ),
+        }
+    except httpx.HTTPError as exc:
+        return {"ok": False, "reason": f"could not reach mc-2: {exc}"}
+
+    if resp.status_code >= 400:
+        return {
+            "ok": False,
+            "reason": f"mc-2 refused the entry ({resp.status_code}): {resp.text[:300]}",
+        }
+    try:
+        return resp.json()
+    except ValueError:
+        return {"ok": False, "reason": "mc-2 returned a non-JSON response"}
+
+
 def call_mc2_capture_session(
     project_code: str, summary: str, when: str | None
 ) -> dict[str, Any]:
@@ -8593,6 +8645,64 @@ def call_mc2_capture_project_state(
             "not_found": True,
         }
     return {"ok": False, "status": resp.status_code, "reason": detail}
+
+
+@mcp_server.tool()
+def log_improvement(area: str, observation: str) -> dict[str, Any]:
+    """Log one friction observation to the tenant's `improvements.md` (#282).
+
+    WHEN TO CALL IT: **at the moment of friction**, not at wrap-up. That is the
+    file's own protocol, and it is why this is not really a wrap-up verb — a
+    workaround you reach for, a surface that fights you, a verb that does not
+    exist. `wrap up` sweeps for anything unlogged; this is how it gets logged
+    in the first place.
+
+    WHY IT EXISTS. `improvements.md` is a tenant FILE, so a session working
+    only through this server could READ it and had no way to add to it. That is
+    the worst arrangement for this file in particular: the sessions most likely
+    to hit friction with the hosted surface were exactly the ones that could
+    not record it, so the log under-reported where it should report most.
+
+    APPEND-ONLY. Entries are never rewritten or removed — the harvest
+    (`sweep improvements`) marks them in place with `[→ cp-engine #N]`,
+    `[fixed: <date>]` or `[dropped: …]`, and the marker IS the archive. There
+    is deliberately no edit or delete verb.
+
+    A duplicate (same area, same observation) is a no-op that returns
+    `changed: false` with no commit, so a retry after a timeout is safe.
+
+    **Real bugs still go to GitHub issues.** This file is for "works, but
+    awkward" — the layer below the issue bar.
+
+    Args:
+        area: short tag for the surface that fought you (`spine_lint`,
+              `carry-forward`, `hosted-mcp`). The harvest CLUSTERS on this, so
+              a vague tag costs the cluster rather than this call.
+        observation: what happened and why it mattered, in prose. A one-word
+              entry is refused — it is noise the harvest cannot act on.
+    """
+    area = (area or "").strip()
+    observation = (observation or "").strip()
+    if not area:
+        return {"ok": False, "reason": "area is required — the harvest clusters on it"}
+    if len(observation) < 20:
+        return {
+            "ok": False,
+            "reason": (
+                "observation must be real prose — a one-word entry is noise "
+                "the harvest cannot act on"
+            ),
+        }
+
+    client = user_client()
+    result = call_mc2_log_improvement(area, observation)
+    audit(
+        client,
+        "log_improvement",
+        {"area": area, "observation": observation},
+        1 if result.get("ok") else 0,
+    )
+    return result
 
 
 @mcp_server.tool()

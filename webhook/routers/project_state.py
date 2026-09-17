@@ -106,6 +106,7 @@ async def project_state_capture(request: Request):
     """
     from cp_engine.exec_summary_merge import (
         ExecSummaryMergeError,
+        append_update_entry,
         merge_exec_summary_fields,
     )
 
@@ -123,19 +124,29 @@ async def project_state_capture(request: Request):
 
     project_code = (payload.get("project_code") or "").strip()
     user = (payload.get("user") or "").strip()
-    fields = payload.get("fields")
+    fields = payload.get("fields") or {}
+    updates_append = (payload.get("updates_append") or "").strip()
 
     if not project_code:
         raise HTTPException(status_code=400, detail="project_code is required")
     if not user:
         raise HTTPException(status_code=400, detail="user is required")
-    if not isinstance(fields, dict) or not fields:
+    if not isinstance(fields, dict):
         raise HTTPException(
             status_code=400,
-            detail="fields must be a non-empty object of {label: value}",
+            detail="fields must be an object of {label: value}",
+        )
+    # An append ALONE is a legitimate call (#281) — a hosted session adding its
+    # session delta without touching the other five fields is the common case.
+    # So `fields` may be empty, but the request must carry one or the other:
+    # a call with neither would commit nothing and advance nothing.
+    if not fields and not updates_append:
+        raise HTTPException(
+            status_code=400,
+            detail="send `fields`, `updates_append`, or both — this call changes nothing",
         )
 
-    cleaned = _validate_fields(fields)
+    cleaned = _validate_fields(fields) if fields else {}
 
     with git_ops._cloned_tenant(sparse_paths=list(_SCOPE_DIRS)) as tenant_root:
         working_dir = _resolve_working_dir(tenant_root, project_code)
@@ -151,9 +162,22 @@ async def project_state_capture(request: Request):
 
         cp_md = working_dir / "cp.md"
         try:
+            text = cp_md.read_text()
+            # `updates_append` is handled SEPARATELY from the field map (#281).
+            # Every other field replaces wholesale; Updates is the one field
+            # whose old entries are the point, so it appends. Applied first so
+            # a single call can add the entry AND refresh the other fields, and
+            # so `changed` reports both.
+            changed_updates = False
+            if updates_append:
+                text, changed_updates = append_update_entry(
+                    text, updates_append, today=date.today()
+                )
             merged, changed = merge_exec_summary_fields(
-                cp_md.read_text(), cleaned, today=date.today()
+                text, cleaned, today=date.today()
             )
+            if changed_updates and "Updates" not in changed:
+                changed = changed + ("Updates",)
         except ExecSummaryMergeError as exc:
             # Caller error (unknown label, or a region sync has not scaffolded
             # yet). Correctable by the caller, so 400 rather than 500.
