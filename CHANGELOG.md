@@ -4,6 +4,36 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.117.10 — 2026-09-16
+
+**The bullet lint was reporting healthy rows as data loss.** One bug fix, in the
+lint itself. No API changes.
+
+After v0.117.9 healed the real truncations, seven files still flagged. **None of
+them was a defect** — the lint's date test was too narrow in two ways:
+
+- **`by W39` is a valid horizon target.** It is the sprint file's own
+  vocabulary for a decision due in a given week, and an ISO-only regex called
+  every one of them unparsed.
+- **A horizon `opportunity` carries no date by design.** Requiring a filled
+  date field reported those as unparsed too.
+
+Both come from one mistake. The lint asks *"did this bullet parse?"* and the
+implementation asked *"is it dated in a format I recognise?"* — a parsed entry
+with text is a parsed entry, dated or not.
+
+Tenant-wide: **7 warnings → 0**, with the #272 control still firing. It detects
+the same defects and has stopped over-reporting.
+
+A false positive is not a cosmetic problem here: this lint exists because a
+reader-invisible defect survived for weeks, and a warning that cries wolf is how
+the next one survives too.
+
+Both halves carry a control that fails with the fix removed. The second asserts
+at the predicate rather than end-to-end — the whole-file path cannot produce an
+undated entry without a fixture that trips other rules, and a test that passes
+with the fix disabled is not a test.
+
 ## v0.117.9 — 2026-09-16
 
 **A wrapped bullet was being stored as its first line, and carry-forward wrote
