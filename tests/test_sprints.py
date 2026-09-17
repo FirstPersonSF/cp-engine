@@ -1291,3 +1291,142 @@ def test_dependency_severity_still_excluded():
 
     sf = _FakeSF(carried=(_risk("informational", severity="dependency"),))
     assert _active_risks(sf) == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #279 — a wrapped bullet is one bullet, not its first line
+# ──────────────────────────────────────────────────────────────────────
+
+_WRAPPED = """---
+Project: ibx-5153 — Test
+Filename: sprints/2026-W38/ibx-5153.md
+Sprint: 2026-W38
+PriorSprint: 2026-W37
+---
+
+# ibx-5153 · Sprint 2026-W38
+
+## Client communication
+
+### Open asks
+
+- [open · 2026-09-03 · Jaime Mehra · by 2026-09-17] **A positive-frame counterpart
+  to "Your AI Can't"** set beside the negative lead so he can judge what the
+  positive frame loses.
+
+### Inbound
+
+- [2026-09-11 · source ingest] **Marcello's working record ingested** — the
+  Legends Room master file: three territories and the static-ad rule.
+"""
+
+
+def _wrapped(tmp_path):
+    d = tmp_path / "sprints" / "2026-W38"
+    d.mkdir(parents=True)
+    p = d / "ibx-5153.md"
+    p.write_text(_WRAPPED)
+    return p
+
+
+def test_a_wrapped_open_ask_keeps_its_whole_text(tmp_path):
+    """THE #279 CONTROL — the defect that shipped truncations forward.
+
+    `bullets()` always returned (first_line, continuation); the open-asks
+    parser bound the continuation to `_cont` and discarded it. So a
+    hand-written ask that wrapped was stored as its first line — and
+    carry-forward then rendered THAT into the next week's file, faithfully,
+    because the template writes `a.text` and the text it got was already short.
+
+    Two ibx-5153 asks propagated as `**A positive-frame counterpart` for weeks.
+    A truncated bullet still looks like a bullet, so nobody saw it.
+    """
+    from cp_engine.sprints import parse_sprint_file
+
+    sf = parse_sprint_file(_wrapped(tmp_path))
+    (ask,) = sf.client_open_asks
+    assert "positive frame loses" in ask.text, "continuation was dropped"
+    assert len(ask.text) > 100
+
+
+def test_a_wrapped_inbound_keeps_its_whole_text(tmp_path):
+    from cp_engine.sprints import parse_sprint_file
+
+    sf = parse_sprint_file(_wrapped(tmp_path))
+    (inb,) = sf.client_inbound
+    assert "static-ad rule" in inb.text
+
+
+def test_an_unwrapped_bullet_is_unchanged(tmp_path):
+    """The common case must not gain a trailing space or lose its shape."""
+    from cp_engine.sprints import parse_sprint_file
+
+    d = tmp_path / "sprints" / "2026-W38"
+    d.mkdir(parents=True)
+    p = d / "x.md"
+    p.write_text(
+        _WRAPPED.replace(
+            '''- [open · 2026-09-03 · Jaime Mehra · by 2026-09-17] **A positive-frame counterpart
+  to "Your AI Can't"** set beside the negative lead so he can judge what the
+  positive frame loses.''',
+            "- [open · 2026-09-03 · Jaime Mehra] A single-line ask.",
+        )
+    )
+    sf = parse_sprint_file(p)
+    (ask,) = sf.client_open_asks
+    assert ask.text == "A single-line ask."
+
+
+def test_the_join_is_a_space_not_a_newline():
+    """Line breaks in a wrapped bullet are typographic, not semantic.
+
+    Preserving them would re-render someone's editor width into the next
+    week's file.
+    """
+    from cp_engine.sprints import _join_bullet
+
+    assert _join_bullet("first", "second\nthird") == "first second third"
+    assert _join_bullet("only", "") == "only"
+
+
+def test_a_risks_why_it_matters_does_not_also_land_in_text(tmp_path):
+    """A structured continuation belongs to its own field, not to both.
+
+    `Why it matters:` has a column. Gluing it onto `text` as well renders it
+    twice in carry-forward — caught by the golden fixture, which was right and
+    stayed unchanged.
+    """
+    from cp_engine.sprints import parse_sprint_file
+
+    d = tmp_path / "sprints" / "2026-W38"
+    d.mkdir(parents=True)
+    p = d / "x.md"
+    p.write_text(
+        "---\nProject: x — T\nFilename: sprints/2026-W38/x.md\n"
+        "Sprint: 2026-W38\nPriorSprint: \n---\n\n# x\n\n"
+        "## Dependencies & risks\n\n"
+        "- [risk · escalated · contract · 2026-05-04] Legal turnaround may slip\n"
+        "  Why it matters: pushes contract into next sprint.\n"
+    )
+    (risk,) = parse_sprint_file(p).risks
+    assert risk.text == "Legal turnaround may slip"
+    assert risk.why_it_matters == "pushes contract into next sprint."
+
+
+def test_a_risks_wrapped_prose_still_joins(tmp_path):
+    """Ordinary wrapping is not a structured field and must be kept."""
+    from cp_engine.sprints import parse_sprint_file
+
+    d = tmp_path / "sprints" / "2026-W38"
+    d.mkdir(parents=True)
+    p = d / "y.md"
+    p.write_text(
+        "---\nProject: y — T\nFilename: sprints/2026-W38/y.md\n"
+        "Sprint: 2026-W38\nPriorSprint: \n---\n\n# y\n\n"
+        "## Dependencies & risks\n\n"
+        "- [risk · watching · scope · 2026-05-04] The client team keeps\n"
+        "  re-briefing on strategy already approved.\n"
+    )
+    (risk,) = parse_sprint_file(p).risks
+    assert "re-briefing on strategy" in risk.text
+    assert risk.why_it_matters is None

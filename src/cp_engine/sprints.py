@@ -275,6 +275,21 @@ def _communication_section(body: str) -> str:
     return ""
 
 
+
+def _join_bullet(first_text: str, continuation: str) -> str:
+    """One bullet's full text — its first line plus any wrapped remainder.
+
+    Markdown wraps a long bullet across indented lines; the record is the whole
+    thing. Joined with a single space because the line breaks are typographic,
+    not semantic — a re-render should not preserve where the original author's
+    editor happened to wrap.
+    """
+    cont = " ".join(part.strip() for part in continuation.split("\n") if part.strip())
+    if not cont:
+        return first_text
+    return f"{first_text} {cont}".strip()
+
+
 def _parse_client_section(
     body: str,
 ) -> tuple[tuple[Outbound, ...], tuple[ClientAsk, ...], tuple[InboundUpdate, ...]]:
@@ -302,19 +317,26 @@ def _parse_client_section(
                 Outbound(text=text, status="draft", date="", note=cont or None)
             )
     asks: list[ClientAsk] = []
-    for first, _cont in bullets(subsection(section, "Open asks")):
+    for first, cont in bullets(subsection(section, "Open asks")):
         parsed = parse_bracketed_bullet(first)
         if parsed:
             parts, text = parsed
             status = parts[0] if parts else "open"
             asked_date = parts[1] if len(parts) > 1 else ""
             who, by = _ask_who_and_by(parts[2:])
+            # KEEP THE CONTINUATION (#279). A hand-written ask wraps across
+            # lines; taking only `first` truncated it mid-sentence, and
+            # carry-forward then rendered that truncation into the next week's
+            # file — faithfully, because the template writes `a.text` and the
+            # text it was given was already short. Two ibx-5153 asks had been
+            # propagating as `**A positive-frame counterpart` for weeks, and a
+            # truncated bullet still LOOKS like a bullet, so nobody saw it.
             asks.append(
-                ClientAsk(text=text, asked_date=asked_date, status=status,
-                          who=who, by=by)
+                ClientAsk(text=_join_bullet(text, cont), asked_date=asked_date,
+                          status=status, who=who, by=by)
             )
     inbound: list[InboundUpdate] = []
-    for first, _ in bullets(subsection(section, "Inbound")):
+    for first, cont in bullets(subsection(section, "Inbound")):
         parsed = parse_bracketed_bullet(first)
         if parsed:
             parts, text = parsed
@@ -322,7 +344,7 @@ def _parse_client_section(
                 InboundUpdate(
                     date=parts[0] if parts else "",
                     who=parts[1] if len(parts) > 1 else "",
-                    text=text,
+                    text=_join_bullet(text, cont),
                 )
             )
     return tuple(out), tuple(asks), tuple(inbound)
@@ -339,12 +361,19 @@ def _parse_risks(body: str) -> tuple[Risk, ...]:
         severity = parts[0] if parts else "watching"
         category = parts[1] if len(parts) > 1 else ""
         raised = parts[2] if len(parts) > 2 else ""
+        # A risk's continuation is EITHER a structured `Why it matters:` field
+        # — which has its own column and must not also be glued onto `text`,
+        # or it renders twice — OR ordinary wrapped prose, which belongs in
+        # `text` like any other bullet (#279).
         why = None
         if cont.lower().startswith("why it matters:"):
             why = cont.split(":", 1)[1].strip()
+            body_cont = ""
+        else:
+            body_cont = cont
         out.append(
             Risk(
-                text=text,
+                text=_join_bullet(text, body_cont),
                 severity=severity,
                 category=category,
                 raised_date=raised,
@@ -452,7 +481,7 @@ def _parse_carry_forward(body: str) -> CarryForward:
     asks: list[ClientAsk] = []
     risks: list[Risk] = []
     horizon: list[HorizonItem] = []
-    for first, _ in bullets(region):
+    for first, cont in bullets(region):
         parsed = parse_bracketed_bullet(first)
         if not parsed:
             continue
@@ -462,7 +491,7 @@ def _parse_carry_forward(body: str) -> CarryForward:
             cf_who, cf_by = _ask_who_and_by(parts[2:])
             asks.append(
                 ClientAsk(
-                    text=text,
+                    text=_join_bullet(text, cont),
                     asked_date=parts[1] if len(parts) > 1 else "",
                     status="open",
                     who=cf_who,
@@ -472,7 +501,7 @@ def _parse_carry_forward(body: str) -> CarryForward:
         elif kind == "risk":
             risks.append(
                 Risk(
-                    text=text,
+                    text=_join_bullet(text, cont),
                     severity=parts[1] if len(parts) > 1 else "watching",
                     category=parts[2] if len(parts) > 2 else "",
                     raised_date=parts[3] if len(parts) > 3 else "",
@@ -533,7 +562,7 @@ def _parse_stakeholders(body: str) -> tuple[Stakeholder, ...]:
     """
     section = _communication_section(body)
     out: list[Stakeholder] = []
-    for first, _cont in bullets(subsection(section, "Stakeholders")):
+    for first, cont in bullets(subsection(section, "Stakeholders")):
         parsed = parse_bracketed_bullet(first)
         if not parsed:
             continue
@@ -543,6 +572,11 @@ def _parse_stakeholders(body: str) -> tuple[Stakeholder, ...]:
         name = parts[0].strip()
         role = parts[1].strip() if len(parts) > 1 and parts[1].strip() else None
         context = parts[2].strip() if len(parts) > 2 and parts[2].strip() else None
+        # A stakeholder's context is the part people actually write at length,
+        # so it wraps (#279). Without the continuation a dossier line reads as
+        # a fragment.
+        if cont.strip():
+            context = _join_bullet(context or "", cont) or None
         out.append(Stakeholder(name=name, role=role, context=context))
     return tuple(out)
 
@@ -561,7 +595,7 @@ def _parse_decisions(body: str) -> tuple[DecisionEntry, ...]:
     section = section_body(body, "Meeting notes & decisions")
     sub = subsection(section, "Decisions")
     out: list[DecisionEntry] = []
-    for first, _cont in bullets(sub):
+    for first, cont in bullets(sub):
         # Only consider bullets matching the bracketed convention. Lines
         # without a leading `[decision` bracket are legacy freeform entries;
         # those are still captured by `_parse_meeting_notes` via the
@@ -603,7 +637,7 @@ def parse_themes_from_week_file(week_md_path: Path) -> tuple[Theme, ...]:
     body = week_md_path.read_text(encoding="utf-8")
     section = section_body(body, "Themes")
     out: list[Theme] = []
-    for first, _cont in bullets(section):
+    for first, cont in bullets(section):
         stripped = first.lstrip("- ").strip()
         if not stripped.startswith("[theme"):
             continue
