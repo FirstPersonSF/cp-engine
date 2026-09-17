@@ -9855,6 +9855,10 @@ def spine_lint(project_code: str) -> dict[str, Any]:
         pass
 
     warnings = run_all_lints(client, codes, cp_md_text=cp_md_text)
+    # Audited like every other read here (11 read-only verbs already do).
+    # `wrap_status` reads this log to know the step ran — an unaudited step is
+    # one it can only ever report as missing.
+    audit(client, "spine_lint", {"project_code": project_code}, len(warnings))
     return {
         "project_code": project_code,
         "caller": caller_subject(),
@@ -9900,6 +9904,10 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
         }
 
     buckets = {k: [_sweep_row_dict(r) for r in v] for k, v in result.items()}
+    # Audited so `wrap_status` can see the step ran; an unaudited step is
+    # one it can only ever report as missing. Success only — an error
+    # return means the check did not run.
+    audit(client, "commitments_sweep", {"project_code": project_code}, len(rows))
     return {
         "project_code": project_code or "(all)",
         "caller": caller_subject(),
@@ -9956,6 +9964,10 @@ def seal_sweep(project_code: str, all_deliverables: bool = False) -> dict[str, A
     ) or []
 
     rounds = build_rounds(rows, relations, all_deliverables=all_deliverables)
+    # Audited so `wrap_status` can see the step ran; an unaudited step is
+    # one it can only ever report as missing. Success only — an error
+    # return means the check did not run.
+    audit(client, "seal_sweep", {"project_code": project_code}, len(rounds))
     return {
         "project_code": project_code,
         "caller": caller_subject(),
@@ -10008,6 +10020,12 @@ def word_count_check(project_code: str) -> dict[str, Any]:
 
     findings = lint_word_count(text, f"{project_code}/cp.md")
     words = len(text.split())
+    # Audited so `wrap_status` can see the step ran. This verb needs no client
+    # of its own — it reads the tree, gated on team membership — so one is
+    # built here purely for the audit row. NO try/except: `audit` is already
+    # fire-and-forget and never raises, and a bare swallow here would be the
+    # seventh in a file whose 2026-08-26 audit exists to keep that count down.
+    audit(user_client(), "word_count_check", {"project_code": project_code}, words)
     return {
         "project_code": project_code,
         "caller": caller_subject(),

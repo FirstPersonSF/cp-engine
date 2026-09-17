@@ -729,3 +729,44 @@ def test_no_caller_means_no_report(server, monkeypatch):
     supplied no caller, which is the guard working."""
     monkeypatch.setattr(server, "caller_subject", lambda: None)
     assert server._wrap_window_rows(_AuditClient([_row("spine_lint", "2026-09-17T22:00:00")]), ["ibx-5153"]) == []
+
+
+def test_every_tracked_step_actually_writes_an_audit_row(server):
+    """THE BUG wrap_status SHIPPED WITH, asserted so it cannot return.
+
+    `wrap_status` reads `mcp_audit_log` to know a step ran. Four of the six
+    steps did not audit — the read-only checks added the day before — so the
+    checkpoint was structurally unable to see the very steps it existed to
+    track, and reported them missing immediately after a successful run.
+
+    Verified live 2026-09-17: `spine_lint` returned clean and `wrap_status`
+    still said it had never run.
+
+    Auditing reads is the house convention here, not an exception: 11
+    read-only verbs already did it. The four new ones were the outliers.
+    """
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent / "server.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    tracked = {name for name, _ in server._WRAP_STEPS}
+
+    unaudited = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef) or node.name not in tracked:
+            continue
+        audits = any(
+            isinstance(c, ast.Call)
+            and isinstance(c.func, ast.Name)
+            and c.func.id == "audit"
+            for c in ast.walk(node)
+        )
+        if not audits:
+            unaudited.append(node.name)
+
+    assert not unaudited, (
+        f"{unaudited} are tracked by wrap_status but write no audit row — "
+        "wrap_status can only ever report them as missing, however many times "
+        "they run"
+    )
