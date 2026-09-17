@@ -155,7 +155,12 @@ def _parsed_entry_count(parsed: object) -> int:
 # field ending in `date` holding an ISO-looking string counts. A fourth entry
 # type with a fourth spelling is then free.
 _DATE_FIELD_SUFFIX = "date"
-_ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+# An ISO day, OR a sprint-week reference. Horizon items are dated `by W39` by
+# design — the sprint file's own vocabulary — and an ISO-only test reported
+# every one of them as unparsed (#280). A date field is "filled" if it holds
+# anything non-empty; the lint is asking whether the bullet PARSED, not whether
+# someone used a format it likes.
+_DATED = re.compile(r"^(?:\d{4}-\d{2}-\d{2}|by\s+W\d{1,2}|W\d{1,2})$", re.IGNORECASE)
 
 
 def _count_dated(value: object) -> int:
@@ -166,10 +171,22 @@ def _count_dated(value: object) -> int:
 
 
 def _has_date(entry: object) -> bool:
+    """Did this entry parse into something with a recognisable date?
+
+    Deliberately tolerant. An entry whose only date field is empty may still be
+    a correctly parsed bullet — a horizon `opportunity` carries no date by
+    design — so the fallback asks whether the entry has TEXT, which every
+    parser fills when it understood the line. Counting it as unparsed reported
+    healthy rows as data loss (#280).
+    """
+    has_date_field = False
     for name in dir(entry):
         if name.startswith("_") or not name.endswith(_DATE_FIELD_SUFFIX):
             continue
+        has_date_field = True
         raw = getattr(entry, name, None)
-        if isinstance(raw, str) and _ISO_DATE.match(raw.strip()):
+        if isinstance(raw, str) and _DATED.match(raw.strip()):
             return True
-    return False
+    # A parsed entry with text is a parsed entry, dated or not.
+    text = getattr(entry, "text", None)
+    return bool(has_date_field and isinstance(text, str) and text.strip())

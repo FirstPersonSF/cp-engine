@@ -199,3 +199,45 @@ def test_carry_forward_bullets_are_not_false_positives(tmp_path):
         + "<!-- cp-engine:end carry-forward -->\n"
     )
     assert unparsed_bullet_warnings(tmp_path) == []
+
+
+def test_a_sprint_week_target_is_a_date(tmp_path):
+    """#280. Horizon items are dated `by W39` — the file's own vocabulary.
+
+    An ISO-only test reported every one of them as unparsed, which is a false
+    positive on healthy data. Seven files flagged tenant-wide for this.
+    """
+    d = tmp_path / "sprints" / "2026-W39"
+    d.mkdir(parents=True)
+    (d / "x.md").write_text(
+        _FRONTMATTER.format(code="x", week="2026-W39")
+        + "<!-- cp-engine:start carry-forward -->\n"
+        + "## Carried over from 2026-W38\n"
+        + "- [decision · by W39] Reopen The Truth, or leave it retired?\n"
+        + "<!-- cp-engine:end carry-forward -->\n"
+    )
+    assert unparsed_bullet_warnings(tmp_path) == []
+
+
+def test_an_entry_with_an_empty_date_field_still_counts(tmp_path):
+    """#280, the other half. A horizon `opportunity` carries no date at all.
+
+    Requiring a filled date field reported it as unparsed — but the lint asks
+    whether the bullet PARSED, not whether someone dated it. A parsed entry
+    with text counts either way.
+
+    Asserted at the predicate, because the end-to-end path cannot produce an
+    undated entry without a fixture that also trips other rules.
+    """
+    from cp_engine.sprint_bullet_lint import _has_date
+
+    class Undated:
+        target_date = None
+        text = "The 100-line wall is a reusable asset beyond the pitch."
+
+    class Empty:
+        target_date = None
+        text = ""
+
+    assert _has_date(Undated()), "a parsed entry with text is parsed"
+    assert not _has_date(Empty()), "no date and no text is not evidence"
