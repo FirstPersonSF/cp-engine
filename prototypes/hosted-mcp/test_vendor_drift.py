@@ -122,6 +122,25 @@ def test_the_vendor_closure_EXECUTES_with_no_cp_engine_installed(tmp_path) -> No
         "  'version_label': 'v1', 'project_id': 'p1', 'version_date': '2026-09-01',\n"
         "  'note': '', 'serves': None, 'placement': None, 'sources': [],\n"
         "  'origin': None, 'scope': None, 'company_id': None, 'phase': None}]\n"
+        # A fake PostgREST client: enough chaining to let `run_all_lints`
+        # execute its REAL query construction. The AttributeError that shipped
+        # after the import fix — `mc2_db.SPINE_LINT_COLUMNS` missing from the
+        # shim — lives in that construction, and no import-level check reaches
+        # it. Constants are read as the query is built, not as it is sent.
+        "class _Q:\n"
+        "    def __init__(s, rows): s._rows = rows\n"
+        "    def select(s, *a, **k): return s\n"
+        "    def eq(s, *a, **k): return s\n"
+        "    def in_(s, *a, **k): return s\n"
+        "    def order(s, *a, **k): return s\n"
+        "    def limit(s, *a, **k): return s\n"
+        "    def execute(s): return type('R', (), {'data': s._rows})()\n"
+        "class _C:\n"
+        "    def __init__(s, rows): s._rows = rows\n"
+        "    def table(s, name): return _Q(s._rows)\n"
+        "    def schema(s, name): return s\n"
+        "from cp_engine.spine_lint import run_all_lints\n"
+        "run_all_lints(_C(rows), ['x'], cp_md_text='## Exec Summary\\n')\n"
         "list(lint_spine_rows(rows))\n"
         "list(lint_curation(rows, today=None))\n"
         "PS._one_live_per_element(rows)\n"
@@ -153,4 +172,34 @@ def test_the_dockerfile_actually_ships_the_vendor_tree() -> None:
     assert "COPY vendor" in dockerfile, (
         "the Dockerfile does not COPY vendor — the container will have no "
         "cp_engine and the wrap-up verbs will raise at call time"
+    )
+
+
+def test_every_mc2_db_constant_is_vendored_not_just_the_ones_in_use() -> None:
+    """Picking constants one at a time is how this shipped broken twice.
+
+    The first shim carried `Tables` and nothing else; `run_all_lints` reads
+    `mc2_db.SPINE_LINT_COLUMNS` while BUILDING its query, so it passed every
+    import check and raised AttributeError on the first real call — one deploy
+    after the import fix.
+
+    These column lists are also the tenant's NEVER-`SELECT *` rule in code. A
+    constant missing here becomes a wrong query, not an obvious crash.
+    """
+    src_consts = {
+        m.group(1)
+        for m in __import__("re").finditer(
+            r"^([A-Z][A-Z_]*) = ", (_SRC / "mc2_db.py").read_text(encoding="utf-8"), __import__("re").M
+        )
+    }
+    ven_consts = {
+        m.group(1)
+        for m in __import__("re").finditer(
+            r"^([A-Z][A-Z_]*) = ", (_VENDOR / "mc2_db.py").read_text(encoding="utf-8"), __import__("re").M
+        )
+    }
+    missing = src_consts - ven_consts
+    assert not missing, (
+        f"mc2_db constants not vendored: {sorted(missing)} — a verb reading one "
+        "raises AttributeError at call time while the tool still registers"
     )

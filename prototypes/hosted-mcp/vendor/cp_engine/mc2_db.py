@@ -1,12 +1,18 @@
-"""VENDORED from `cp_engine.mc2_db` — the table-name constants only.
+"""VENDORED from `cp_engine.mc2_db` — the constants only, no client code.
 
-The hosted container ships no `cp_engine` package (see the Dockerfile), and
-importing the real module would pull `config`/`packaging` and the rest of the
-CLI's dependency tree into a server that installs six packages.
+The container ships no `cp_engine` (see the Dockerfile) and the real module
+imports httpx+supabase and carries the whole DAL. The vendored lint modules
+need exactly two kinds of thing from it: the `Tables` names and the column
+lists.
 
-`Tables` is pure constants with no imports, so it is copied WHOLE rather than
-excerpted — a hand-picked subset is how two spellings of a table name start.
-A drift test asserts this matches the source class exactly.
+EVERY module-level literal constant is copied, not the ones today's callers
+happen to touch. Picking constants one at a time is how this file shipped with
+`Tables` and without `SPINE_LINT_COLUMNS` — which passed an import test and
+raised AttributeError on the first real call, one deploy after the import fix.
+
+NEVER `SELECT *`: these column lists are the reason reads stay small, and a
+missing one here becomes a wrong query, not an obvious crash. A drift test
+asserts each matches the source.
 """
 
 from __future__ import annotations
@@ -71,3 +77,146 @@ class Tables:
     EST_PHASE_ACTIVITIES = "phase_activities"
     EST_PHASE_DELIVERABLES = "phase_deliverables"
     EST_SCHEDULE_ITEMS = "schedule_items"
+
+
+PROJECTS_SYNC_COLUMNS = (
+    "id, number, full_job_name, name, mc_status, account_manager, "
+    "is_internal, deal_stage, budget, dropbox_folder_url, updated_at, "
+    "companies(code, name, kind), "
+    "repos!project_id(repo_name, status, description, github_orgs!inner(name))"
+)
+
+
+PROJECTS_SLACK_COLUMNS = (
+    "id, number, name, mc_status, is_internal, enable_slack, "
+    "full_job_name, companies!inner(code)"
+)
+
+
+PROJECTS_ESTIMATE_COLUMNS = "id, start_date"
+
+
+REPOS_SYNC_COLUMNS = (
+    "id, repo_name, status, description, owner, updated_at, "
+    "github_orgs!inner(name), "
+    "companies!inner(code, name, kind)"
+)
+
+
+INITIATIVES_SYNC_COLUMNS = (
+    "id, code, name, description, status, owner, updated_at, "
+    "enable_slack, "
+    "companies!inner(code, name, kind), "
+    "repos!initiative_id(repo_name, status, description, github_orgs!inner(name))"
+)
+
+
+INITIATIVES_SLACK_COLUMNS = (
+    "id, code, name, status, enable_slack, companies!inner(code)"
+)
+
+
+FATHOM_LIST_COLUMNS = (
+    "id, title, meeting_date, project_tags, duration_minutes, meeting_type"
+)
+
+
+FATHOM_FULL_COLUMNS = FATHOM_LIST_COLUMNS + ", transcript, summary"
+
+
+FATHOM_TRANSCRIPT_COLUMNS = "id, title, meeting_date, transcript, participants"
+
+
+FATHOM_ARTIFACT_COLUMNS = (
+    "id, title, meeting_date, summary, action_items, "
+    "participants, duration_minutes, fathom_url, "
+    "recording_id, project_tags, project_id, summary_embedded_at"
+)
+
+
+SPINE_LIST_COLUMNS = (
+    "est_item_id, framing, layer, binding, status, serves, body, important, "
+    "note, archived, scope, company_id, project_id, version_label, version_date"
+)
+
+
+SPINE_PULL_COLUMNS = (
+    "est_item_id, framing, layer, binding, status, serves, sources, "
+    "version_label, version_date, body, important, note, archived, scope, "
+    "company_id, project_id"
+)
+
+
+SPINE_RESOLVE_COLUMNS = (
+    "id, est_item_id, framing, status, important, note, rel_path, archived, "
+    "scope, company_id, project_id, layer, version_label, version_date"
+)
+
+
+SPINE_STATUS_COLUMNS = (
+    "est_item_id, status, version_date, version_label, binding, project_id"
+)
+
+
+SPINE_LINT_COLUMNS = (
+    "est_item_id, framing, layer, binding, serves, important, body, "
+    "sources, status, archived, scope, project_id, version_label, version_date"
+)
+
+
+SEAL_SWEEP_COLUMNS = (
+    "est_item_id, framing, layer, status, archived, version_label, "
+    "version_date, serves, project_id"
+)
+
+
+STUB_SWEEP_COLUMNS = (
+    "est_item_id, framing, layer, status, archived, body, sources, serves, "
+    "version_date, project_id"
+)
+
+
+SPINE_SOURCES_EDIT_COLUMNS = (
+    "id, est_item_id, framing, status, archived, scope, company_id, "
+    "project_id, sources"
+)
+
+
+RAG_ASSET_LIST_COLUMNS = (
+    "id, title, source_type, status, created_at, file_hash, prev_asset_id, "
+    "description, status_note, supersedes_asset_id"
+)
+
+
+RAG_ASSET_REFETCH_COLUMNS = (
+    "id, title, source_provider, source_file_id, source_path, url"
+)
+
+
+EST_PROJECT_COLUMNS = "id, mc_project_id, name, is_default"
+
+
+EST_PHASE_COLUMNS = "id, name, overview, position"
+
+
+EST_ITEM_COLUMNS = "id, phase_id, name, short_description, library_item_id, position"
+
+
+EST_SCHEDULE_COLUMNS = (
+    "id, project_id, phase_id, label, start_week, duration, position, "
+    "item_type, emphasis, work_item_id, work_item_kind, done"
+)
+
+
+_SUPABASE_KEYS = ("SUPABASE_URL", "SUPABASE_SERVICE_KEY")
+
+
+_INGEST_KEYS = ("OPENAI_API_KEY", "VOYAGE_API_KEY")
+
+
+_DROPBOX_KEYS = (
+    "DROPBOX_APP_KEY",
+    "DROPBOX_APP_SECRET",
+    "DROPBOX_REFRESH_TOKEN",
+    "DROPBOX_ACCESS_TOKEN",
+)
