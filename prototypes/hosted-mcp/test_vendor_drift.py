@@ -203,3 +203,26 @@ def test_every_mc2_db_constant_is_vendored_not_just_the_ones_in_use() -> None:
         f"mc2_db constants not vendored: {sorted(missing)} — a verb reading one "
         "raises AttributeError at call time while the tool still registers"
     )
+
+    # PRESENCE IS NOT ENOUGH — the VALUES must match too. #284 dropped
+    # `is_default` from `EST_PROJECT_COLUMNS`; the vendored copy kept the old
+    # spelling and this test passed, because the name was still there. A stale
+    # column list does not raise: it sends a query selecting a column that no
+    # longer exists, which is a 42703 the caller swallows.
+    import re as _re
+
+    def _consts(path):
+        out = {}
+        for m in _re.finditer(
+            r"^([A-Z][A-Z_]*) = (.+?)$", path.read_text(encoding="utf-8"), _re.M
+        ):
+            out[m.group(1)] = m.group(2).strip()
+        return out
+
+    src_vals, ven_vals = _consts(_SRC / "mc2_db.py"), _consts(_VENDOR / "mc2_db.py")
+    drifted = {
+        k: (src_vals[k], ven_vals[k])
+        for k in src_vals.keys() & ven_vals.keys()
+        if src_vals[k] != ven_vals[k]
+    }
+    assert not drifted, f"vendored mc2_db constants have drifted in VALUE: {drifted}"

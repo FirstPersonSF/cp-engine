@@ -585,6 +585,7 @@ def _fetch_mc2_schedule_milestones(
         return ()
     from cp_engine.clickup_routing import engagement_number
     from cp_engine.mc2_db import Tables
+    from cp_engine.estimate_scope import rendered_estimate
 
     number = engagement_number(project.code)
     if number is None:
@@ -603,18 +604,11 @@ def _fetch_mc2_schedule_milestones(
             return ()
         mc_project_id = rows[0]["id"]
         start = date.fromisoformat(str(rows[0]["start_date"])[:10])
-        est_rows = (
-            supabase_client.schema("estimator")
-            .table(Tables.EST_PROJECTS)
-            .select("id")
-            .eq("mc_project_id", mc_project_id)
-            .eq("is_default", True)
-            .execute()
-            .data
-            or []
-        )
-        if not est_rows:
+        # Mission Control's estimate-selection rule, shared (#284).
+        est_row = rendered_estimate(supabase_client, mc_project_id)
+        if est_row is None:
             return ()
+        est_rows = [est_row]
         items = (
             supabase_client.schema("estimator")
             .table(Tables.EST_SCHEDULE_ITEMS)
@@ -822,6 +816,7 @@ def _fetch_deliverable_lines(supabase_client, project: ProjectState) -> tuple[st
         return ()
     from cp_engine.clickup_routing import engagement_number
     from cp_engine.mc2_db import Tables
+    from cp_engine.estimate_scope import rendered_estimate
 
     if engagement_number(project.code) is None:
         return ()
@@ -836,14 +831,11 @@ def _fetch_deliverable_lines(supabase_client, project: ProjectState) -> tuple[st
             return ()
         mc_project_id = rows[0]["id"]
         start_date = rows[0].get("start_date")
-        est_rows = (
-            supabase_client.schema("estimator").table(Tables.EST_PROJECTS)
-            .select("id").eq("mc_project_id", mc_project_id)
-            .eq("is_default", True).execute().data or []
-        )
-        if not est_rows:
+        # Mission Control's estimate-selection rule, shared (#284).
+        est_row = rendered_estimate(supabase_client, mc_project_id)
+        if est_row is None:
             return ()
-        est_id = est_rows[0]["id"]
+        est_id = est_row["id"]
         phases = (
             supabase_client.schema("estimator").table(Tables.EST_PHASES)
             .select("id").eq("project_id", est_id).execute().data or []

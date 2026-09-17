@@ -4,7 +4,7 @@ The "estimate" is the live project plan that already lives in MC-2's Postgres
 under the **non-public `estimator` schema** (it drives the client portal). One
 default estimate per MC project:
 
-    estimator.projects  (is_default=true, one per mc_project_id)
+    estimator.projects  (the rendered estimate — see `estimate_scope`)
       → estimator.phases               (ordered by position)
         → estimator.phase_activities   (work items, ordered by position)
         → estimator.phase_deliverables (work items, ordered by position)
@@ -24,10 +24,12 @@ GLOBAL RULE: never `.select("*")` — always explicit columns.
 
 from __future__ import annotations
 
-from cp_engine import mc2_db
-from cp_engine.mc2_db import Tables
 from dataclasses import dataclass
 from datetime import date, timedelta
+
+from cp_engine import mc2_db
+from cp_engine.estimate_scope import rendered_estimate
+from cp_engine.mc2_db import Tables
 
 # Default estimate name when the estimator row carries no `name` (mirrors the
 # portal's "Estimate 1" default).
@@ -152,7 +154,8 @@ class ScheduleItem:
 
 
 # Explicit column lists (never `*`, per the global Supabase rule).
-_PROJECT_COLUMNS = mc2_db.EST_PROJECT_COLUMNS
+# (the estimate row itself is selected by `estimate_scope`, which owns the
+#  which-estimate-counts rule and its own column list — #284)
 _PHASE_COLUMNS = mc2_db.EST_PHASE_COLUMNS
 _ITEM_COLUMNS = mc2_db.EST_ITEM_COLUMNS
 # public.projects carries the kickoff start_date, keyed by the MC project id
@@ -180,19 +183,13 @@ def fetch_estimate(client, mc_project_id) -> Estimate | None:
     Returns `None` when there is no default estimate row yet — the
     "no-estimate-yet" fallback the binder treats as "nothing to bind to".
     """
-    proj_rows = (
-        client.schema("estimator")
-        .table(Tables.EST_PROJECTS)
-        .select(_PROJECT_COLUMNS)
-        .eq("mc_project_id", mc_project_id)
-        .eq("is_default", True)
-        .execute()
-        .data
-        or []
-    )
-    if not proj_rows:
+    # Which estimate counts is Mission Control's rule, not ours (#284) —
+    # `is_default` is dropped by mc-2 migration 183 and a filter on a missing
+    # column is a 42703 ERROR, which `sync.py` would catch and log while every
+    # spine quietly mirrored unbound.
+    project_row = rendered_estimate(client, mc_project_id)
+    if project_row is None:
         return None
-    project_row = proj_rows[0]
 
     # Kickoff date for calendar math — lives on public.projects, keyed by the
     # MC project id (nullable; Drew sets it manually at kickoff).

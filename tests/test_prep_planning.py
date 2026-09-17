@@ -1900,6 +1900,9 @@ def test_render_planning_bundle_marks_unauthored():
 
 class _Mc2Query:
     """Chainable fake for the three MC-2 schedule queries."""
+    def order(self, col, **kwargs):
+        return self
+
 
     def __init__(self, data):
         self._data = data
@@ -1941,7 +1944,13 @@ class _Mc2ScheduleClient:
             return _Mc2Query(self._items)
         if self._schema == "estimator" and name == "projects":
             self._schema = "public"
-            return _Mc2Query([{"id": "est-1"}] if self._has_estimate else [])
+            # `estimate_scope` reads status/on_schedule now that
+            # `is_default` is dropped (#284).
+            return _Mc2Query(
+                [{"id": "est-1", "mc_project_id": "mc-1", "name": "E",
+                  "status": "pending", "on_schedule": True}]
+                if self._has_estimate else []
+            )
         # public projects
         return _Mc2Query(
             [{"id": "mc-1", "start_date": self._start_date}]

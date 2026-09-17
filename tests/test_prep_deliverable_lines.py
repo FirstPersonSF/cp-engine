@@ -20,7 +20,11 @@ class _Client:
 
     def __init__(self):
         self.projects = [{"id": "mcp1", "start_date": "2026-06-15"}]
-        self.est_projects = [{"id": "est1"}]
+        # `estimate_scope` reads status/on_schedule now that `is_default`
+        # is dropped (#284); `mc_project_id` is the join key callers need.
+        self.est_projects = [{"id": "est1", "mc_project_id": "mcp1",
+                              "name": "E", "status": "pending",
+                              "on_schedule": True}]
         self.phases = [{"id": "ph1"}]
         self.deliverables = [{"id": "d1", "name": "P&P Report", "position": 1}]
         self.bars = [{"work_item_id": "d1", "start_week": 10, "done": False}]
@@ -36,6 +40,7 @@ class _Client:
             def select(self, c): return self
             def eq(self, c, v): return self
             def in_(self, c, v): return self
+            def order(self, c, **k): return self
             def execute(self):
                 data = {
                     "projects": outer.projects if not hasattr(self, "_est") else [],

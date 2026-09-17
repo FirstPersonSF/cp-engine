@@ -22,7 +22,7 @@ def test_week_to_date():
 
 
 def test_estimate_from_rows_builds_ordered_items():
-    project_row = {"id": "est-1", "mc_project_id": "mc-1", "is_default": True, "name": "Estimate 1"}
+    project_row = {"id": "est-1", "mc_project_id": "mc-1", "status": "pending", "on_schedule": True, "name": "Estimate 1"}
     phases = [
         {"id": "ph-0", "project_id": "est-1", "name": "Phase 0 Discovery", "overview": "…", "position": 0},
         {"id": "ph-1", "project_id": "est-1", "name": "Phase 1 Storybuilding", "overview": "…", "position": 1},
@@ -57,7 +57,7 @@ def test_from_rows_tolerates_null_position_on_phases_and_items():
     on 13 of 38 projects: substance mirrored unbound and the estimate binding
     was silently lost.
     """
-    project_row = {"id": "est-1", "mc_project_id": "mc-1", "is_default": True, "name": "E"}
+    project_row = {"id": "est-1", "mc_project_id": "mc-1", "status": "pending", "on_schedule": True, "name": "E"}
     phases = [
         {"id": "ph-0", "project_id": "est-1", "name": "Phase A", "overview": None, "position": None},
         {"id": "ph-1", "project_id": "est-1", "name": "Phase B", "overview": None, "position": None},
@@ -76,7 +76,7 @@ def test_from_rows_tolerates_null_position_on_phases_and_items():
 
 def test_from_rows_sorts_with_mixed_null_and_real_positions():
     """A NULL position sorts as 0 — ahead of a real position, not dropped."""
-    project_row = {"id": "est-1", "mc_project_id": "mc-1", "is_default": True, "name": "E"}
+    project_row = {"id": "est-1", "mc_project_id": "mc-1", "status": "pending", "on_schedule": True, "name": "E"}
     phases = [
         {"id": "ph-2", "project_id": "est-1", "name": "Second", "overview": None, "position": 5},
         {"id": "ph-1", "project_id": "est-1", "name": "First", "overview": None, "position": None},
@@ -138,6 +138,13 @@ class _FakeQuery:
         self.in_filters[col] = list(vals)
         return self
 
+    def order(self, col, **kwargs):
+        """Ordering passthrough — `estimate_scope` sorts oldest-first,
+        and the ROW ORDER is the rule (the first approved estimate wins),
+        not a cosmetic detail. Recorded so a test can assert on it."""
+        self.order_by = col
+        return self
+
     def execute(self):
         self.client.queries.append(self)
         # Prefer a schema-qualified key ("public.projects") so the estimator and
@@ -185,9 +192,9 @@ class _FakeClient:
 def _canned_tables():
     return {
         "projects": [
-            {"id": "est-1", "mc_project_id": "mc-1", "name": "Estimate 1", "is_default": True},
-            {"id": "est-other", "mc_project_id": "mc-2", "name": "Estimate 1", "is_default": True},
-            {"id": "est-draft", "mc_project_id": "mc-1", "name": "Draft", "is_default": False},
+            {"id": "est-1", "mc_project_id": "mc-1", "name": "Estimate 1", "status": "pending", "on_schedule": True},
+            {"id": "est-other", "mc_project_id": "mc-2", "name": "Estimate 1", "status": "pending", "on_schedule": True},
+            {"id": "est-draft", "mc_project_id": "mc-1", "name": "Draft", "status": "pending", "on_schedule": False},
         ],
         "phases": [
             {"id": "ph-0", "project_id": "est-1", "name": "Phase 0", "overview": "o", "position": 0},
@@ -231,7 +238,11 @@ def test_fetch_estimate_returns_built_default_estimate():
         q for q in client.queries
         if q.table == "projects" and q.schema_name == "estimator"
     )
-    assert proj_q.eq_filters == {"mc_project_id": "mc-1", "is_default": True}
+    # The QUERY now filters only on the job; which estimate counts is decided
+    # in Python by `estimate_scope` (status first, on_schedule as the bridge),
+    # because "approved, else on_schedule" is not expressible as one filter.
+    assert proj_q.eq_filters == {"mc_project_id": "mc-1"}
+    assert "is_default" not in (proj_q.columns or ""), "selects a dropped column"
 
 
 def test_from_rows_accepts_start_date_kwarg():
@@ -430,7 +441,7 @@ def test_fetch_estimate_with_zero_phases_skips_child_queries():
     # branch: empty phases, and NO child-table queries fired.
     tables = {
         "projects": [
-            {"id": "est-empty", "mc_project_id": "mc-empty", "name": "Estimate 1", "is_default": True},
+            {"id": "est-empty", "mc_project_id": "mc-empty", "name": "Estimate 1", "status": "pending", "on_schedule": True},
         ],
         "phases": [],
         "phase_activities": [],
