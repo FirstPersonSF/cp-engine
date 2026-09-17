@@ -229,3 +229,37 @@ def test_the_hosted_verb_reports_and_does_not_rotate(server):
         assert banned not in src, (
             f"word_count_check gained {banned!r} — it must report, not write"
         )
+
+
+def test_every_tool_is_defined_before_the_main_guard():
+    """THE PRODUCTION CONTROL. A verb after `if __name__ == "__main__"` is
+    dead code in the container and invisible in a dev import.
+
+    Measured 2026-09-17: four verbs appended to the end of this file passed
+    every local test and deployed cleanly, and `/health` still reported the
+    old tool count. In the container the process runs AS `__main__`, so
+    execution enters the guard, calls `main()`, blocks serving requests, and
+    NEVER reaches a definition below it. The test suite imported the module as
+    `server` — where the guard is false and the whole file executes — so the
+    one condition that mattered was the one nothing exercised.
+
+    Two deploys were spent looking for a stale tarball and a missing
+    dependency before the line numbers were compared.
+    """
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent / "server.py").read_text(encoding="utf-8")
+    lines = src.split("\n")
+    guard = next(
+        i for i, l in enumerate(lines) if l.startswith('if __name__ == "__main__"')
+    )
+    after = [
+        (i + 1, l)
+        for i, l in enumerate(lines[guard:], start=guard)
+        if l.startswith("@mcp_server.tool()")
+    ]
+    assert not after, (
+        f"{len(after)} tool(s) declared after the __main__ guard at line "
+        f"{guard + 1} — they will not register in the container: "
+        f"{[n for n, _ in after]}"
+    )

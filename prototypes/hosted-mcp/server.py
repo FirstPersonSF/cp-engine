@@ -9098,11 +9098,6 @@ def main() -> None:
         json_response=True,
     )
 
-
-if __name__ == "__main__":
-    main()
-
-
 # ──────────────────────────────────────────────────────────────────────
 #  Package: the wrap-up checks (#280)
 #
@@ -9416,3 +9411,6 @@ def word_count_check(project_code: str) -> dict[str, Any]:
         # breakdown is noise.
         "contributors": contributors(text) if findings else [],
     }
+
+if __name__ == "__main__":
+    main()
