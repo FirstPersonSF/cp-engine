@@ -308,13 +308,48 @@ def test_the_instructions_carry_the_partial_refresh_warning(server):
     )
 
 
-def test_the_instructions_do_not_claim_to_be_read_only(server):
-    """It says what it does. `capture_project_state` and `capture_session`
-    WRITE — delegated upstream under the caller's identity — and describing
-    the server as read-only taught callers not to expect the two verbs that
-    make a wrap-up durable."""
+def test_the_instructions_state_the_real_size_of_the_write_surface(server):
+    """It says what it does, and the NUMBER has to be true.
+
+    Two wrong versions preceded this one. "Read-only prototype" was false and
+    taught callers not to expect the verbs that make a wrap-up durable.
+    "Mostly read, but not read-only" replaced a false claim with a vague one
+    and cited two writers when there are seventeen — implying a smaller blast
+    radius than the server has, so `create_commitment` or `set_spine_element`
+    could read as safe.
+
+    The count is asserted against the AST rather than trusted, because a
+    hardcoded number in prose rots the first time somebody adds a verb.
+    """
+    import ast
+    import re
+    from pathlib import Path
+
     text = server.mcp_server.instructions
     assert "Read-only prototype" not in text, (
-        "instructions still claim read-only, but two verbs write"
+        "instructions claim read-only; 17 tools write"
     )
-    assert "capture_project_state" in text and "capture_session" in text
+
+    src = (Path(__file__).resolve().parent / "server.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    writers = set()
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        is_tool = any(
+            isinstance((d.func if isinstance(d, ast.Call) else d), ast.Attribute)
+            and (d.func if isinstance(d, ast.Call) else d).attr == "tool"
+            for d in node.decorator_list
+        )
+        if not is_tool:
+            continue
+        body = ast.dump(node)
+        if any(k in body for k in ("'insert'", "'update'", "'upsert'", "'delete'", "call_mc2_")):
+            writers.add(node.name)
+
+    stated = re.search(r"(\d+)\s+OF THEM WRITE", text)
+    assert stated, "the instructions no longer state how many tools write"
+    assert int(stated.group(1)) == len(writers), (
+        f"instructions say {stated.group(1)} tools write; the server has "
+        f"{len(writers)} — update the text: {sorted(writers)}"
+    )
