@@ -236,7 +236,7 @@ about.
 | `also load <code>` | additive | Layer that project's `cp.md` onto the current mode. |
 | `switch to <code>` | replace → 2 | Discard previous mode; load that project's `cp.md`. |
 | `deepen from transcript` | (during weekly review) | Begin deepening pass. |
-| `wrap up` | any | Close out the session — **run `/cp-wrapup`**, which carries the full ritual (Exec Summaries, decision + commitment sweeps, spine and word-count checks, commit, push). Also closes a `run weekly review` block. |
+| `wrap up` | any | Close out the session — **run `/cp-wrapup`**, which carries the full ritual (Exec Summaries, decision + commitment sweeps, spine and word-count checks, commit, push). Also closes a `run weekly review` block. **Without the plugin** (a hosted-only session), see "Wrapping up from a hosted session" below. |
 | `rotate the CP` | any | Manually trigger archive rotation on the focused CP. |
 | `sweep improvements` | any | Harvest `improvements.md`: cluster entries, propose issues. |
 
@@ -306,6 +306,39 @@ of friction**: `- <date> · \`area\` — <observation>`. Full protocol
 lives in that file's header. Real bugs still go to GitHub issues; never
 delete entries. `wrap up` sweeps for unlogged friction;
 `sweep improvements` harvests.
+
+## Wrapping up from a hosted session
+
+`/cp-wrapup` is a Claude Code **plugin** skill. It edits `cp.md` directly and
+shells out to `cxp`, so a session working only through the `cp-hosted` MCP
+server cannot run it — and the trigger table above would otherwise send you to
+a command that does not exist.
+
+The ritual is still available; it is a sequence of verbs rather than one skill:
+
+1. **`capture_project_state`** — the Exec Summary. **Pass every field you mean
+   to be current**, not just `status`: `objective`, `where_it_stands`,
+   `next_up`, `blockers`. Omitted fields are left exactly as they were, which
+   is deliberate — but a Status-only refresh advances the `· updated` stamp
+   while the rest goes stale, and the staleness check reads that stamp. That is
+   worse than not refreshing at all.
+2. **`spine_lint`** — important-yet-unbound elements, dead-end activities,
+   stale canon, archived-but-referenced documents, Exec Summary field budgets.
+3. **`commitments_sweep`** — what is owed, both directions. An UNDATED
+   commitment expires at 14 days; this is where that gets noticed in time.
+4. **`seal_sweep`** — for each shipped deliverable, what fed it. Read it before
+   acting; `seal_to_deliverable` is how you act on it.
+5. **`word_count_check`** — reporting only. Rotation moves text between files
+   and needs a checkout.
+6. **`capture_session`** — the session record, so the next reader knows this
+   happened.
+
+**What a hosted session cannot do:** commit and push, and word-count rotation.
+Both need write access to the tenant, which that server does not hold by
+construction — every write it makes is performed upstream under your own
+identity rather than minted by the server. The Exec Summary write in step 1
+goes through that path and commits for you; the rest is read-only.
+
 
 ## After a cp-engine release: restart `cxp mcp`
 
