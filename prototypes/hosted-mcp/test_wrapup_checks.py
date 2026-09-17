@@ -770,3 +770,40 @@ def test_every_tracked_step_actually_writes_an_audit_row(server):
         "wrap_status can only ever report them as missing, however many times "
         "they run"
     )
+
+
+def test_the_server_has_no_undefined_names() -> None:
+    """THE CHECK THAT WOULD HAVE CAUGHT `len(rows)`.
+
+    Adding an audit call to `commitments_sweep`, I passed `len(rows)` — a
+    variable that does not exist in that function; the count lives in
+    `buckets`. It parsed, it imported, every test passed, and it raised
+    NameError on the first real call in production.
+
+    A NameError inside a rarely-taken branch is invisible to import checks and
+    to any test that does not execute that exact line. Ruff's F821 reads the
+    whole file statically and finds them all, which is cheaper than a test per
+    branch and catches the ones nobody thought to test.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    result = subprocess.run(
+        [sys.executable, "-m", "ruff", "check", "--select", "F821", str(here / "server.py")],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return
+    # ruff absent in this environment is not a server defect — skip rather
+    # than fail, so the suite stays runnable without it.
+    if "No module named" in result.stderr:
+        import pytest
+
+        pytest.skip("ruff not installed")
+    raise AssertionError(
+        "server.py references undefined names — each is a NameError waiting "
+        f"for the branch that reaches it:\n{result.stdout}"
+    )

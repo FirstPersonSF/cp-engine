@@ -9907,7 +9907,12 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
     # Audited so `wrap_status` can see the step ran; an unaudited step is
     # one it can only ever report as missing. Success only — an error
     # return means the check did not run.
-    audit(client, "commitments_sweep", {"project_code": project_code}, len(rows))
+    audit(
+        client,
+        "commitments_sweep",
+        {"project_code": project_code},
+        sum(len(v) for v in buckets.values()),
+    )
     return {
         "project_code": project_code or "(all)",
         "caller": caller_subject(),
