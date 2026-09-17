@@ -1,6 +1,6 @@
 ---
 name: cp-wrapup
-description: Run the per-session `wrap up` ritual in a cp tenant — refresh each touched project's Exec Summary, sweep cross-cutting decisions and open commitments, run spine + word-count checks, then commit and push. Use whenever the user says "wrap up", "wrap this up", "let's close out the session", or asks to finalize a cp working session. NOT for closing out a finished engagement — that is `/cp-wrap`.
+description: Run the per-session `wrap up` ritual in a cp tenant — refresh each touched project's Exec Summary, sweep cross-cutting decisions and open commitments, run spine + word-count checks, then commit and push. Carries a hosted-session branch for sessions that reach the tenant only through the `cp-hosted` MCP server, with no `cxp` and no file access. Use whenever the user says "wrap up", "wrap this up", "let's close out the session", or asks to finalize a cp working session. NOT for closing out a finished engagement — that is `/cp-wrap`.
 ---
 
 # Wrap up a cp session
@@ -15,6 +15,24 @@ sweep you run whenever work touched a project.
 
 **Scope:** every project **the session actually touched**. A session that
 touched one project refreshes one Exec Summary. Do not sweep the tenant.
+
+---
+
+## 0 — Which path are you on?
+
+**Check before step 1, not when a command fails.** The steps below assume a
+checkout: they edit `cp.md` with the Edit tool and shell out to `cxp`. A
+session reaching this tenant only through the `cp-hosted` MCP server has
+neither, and discovering that at step 3 means the Exec Summary was already
+half-written by a path that cannot finish.
+
+You are on the **hosted path** if you have `cp-hosted` MCP tools and no
+working `cxp` and no Edit access to the tenant's files. Do not infer this
+from a tool's name — `cxp --version` answers it, and a hosted session's
+`whoami` tells you who the writes will be attributed to.
+
+If you are on the hosted path, **stop here and follow "The hosted path"
+below.** Otherwise continue to step 1.
 
 ---
 
@@ -151,6 +169,123 @@ GitHub issues. Never delete entries.
 
 Commit the entire `sprints/<YYYY-W##>/` directory alongside the master
 roll-up and each touched project's `cp.md`. Then push.
+
+---
+
+## The hosted path
+
+Every verb below is on `cp-hosted`. The order matters: the Exec Summary is
+written first because the checks in 2–5 read what you wrote.
+
+### h1 — Refresh each touched project's Exec Summary
+
+**`get_project_state <code>` first, then `capture_project_state`.** The three
+bulleted fields (`where_it_stands`, `next_up`, `blockers`) each replace ALL
+existing bullets — a partial rewrite silently drops the ones you did not
+resend, which is why you read before you write.
+
+**Pass every field you mean to be current, not just `status`.** The verb takes
+`status`, `objective`, `where_it_stands`, `next_up` and `blockers` — five of the
+six; `Updates` is the exception, below. Omitted fields
+are left exactly as they are — deliberate, because most real rewrites touch one
+field and a whole-region write would make the common case the destructive one.
+But the failure it enables is the one worth naming: a Status-only refresh
+advances the `· updated` stamp while Next up and Blockers go stale, and every
+staleness check in the system reads that stamp. **That is worse than not
+refreshing at all**, because it converts "obviously old" into "looks current."
+
+> Measured on ggl-5136, 2026-09-17: a current Status and a two-day-old stamp
+> sat above a `Next up` listing three July deadlines and naming a collaborator
+> the Status line said had left.
+
+Re-sending a field's existing value is a no-op — it neither commits nor moves
+the stamp — so a retry after a timeout is safe.
+
+**`capture_project_state` commits for you.** The write is delegated upstream
+and lands under your own identity; there is no separate commit step on this
+path.
+
+**One field has no hosted equivalent: `Updates`.** The CLI path appends one
+dated Update per session and rolls off entries older than ~4 weeks; the verb
+takes no `updates` argument, so that history does not advance from a hosted
+session. Put the session's delta in `capture_session` (h6) instead, and say so
+if the user is relying on the Updates log.
+
+### h2 — Spine checks
+
+- **`spine_lint <code>`** — WARN-ONLY. Important-yet-unbound elements,
+  Agreements missing their source (close via `add_element_source`), scaffold
+  placeholders, and the Exec Summary field budgets. Surface findings; fix only
+  what the user confirms.
+- **`seal_sweep <code>`** — for each deliverable that shipped a version, what
+  fed it. Read the `via` on each candidate: an empty `via` is a source bound
+  directly to the deliverable, a non-empty one reached it *through* an
+  activity. Both are real; the indirect one is weaker evidence, and sealing it
+  asserts a provenance nobody recorded. Act with `seal_to_deliverable`.
+
+### h3 — Sweep open commitments
+
+**`commitments_sweep <code>`** per touched project — resolve what the session
+completed (`resolve_commitment`), drop what it made moot, and question undated
+rows ≥2 weeks old. An undated commitment expires at 14 days; the `ttl` field is
+where that gets noticed in time rather than after.
+
+### h4 — Canon agreement check
+
+Only when this session authored or revised a document asserting a framework —
+a territory set, pillar structure, naming system, messaging hierarchy. Most
+sessions did not; skip it then.
+
+`cxp brief` is CLI-only. The hosted equivalent is to read canon directly:
+`list_spine_elements <code>` and `pull_spine_element` on the canon members.
+Report one line per document — *agrees* / *diverges* / *asserts no framework*.
+
+**Diverging is not automatically wrong; diverging silently is.** Name it and
+let the user decide whether the document changes or the canon does. And the
+question that costs most when skipped: did anything authored this session close
+a question canon still flags as open? A document can settle one purely by
+omission — picking a branch, never mentioning the other. **Never resolve one
+silently.**
+
+### h5 — Word count
+
+**`word_count_check <code>`** — REPORTING ONLY. It tells you a file crossed
+2,500 words (duplication audit) or 3,500 (archive rotation). It cannot act on
+either: rotation moves text between two files in one commit, which needs a
+checkout. Report the finding and say it needs a local session.
+
+### h6 — Capture the session
+
+**`capture_session <code> <summary>`** — the one verb here that writes a FILE
+rather than a row, because `**Last session:**` is a projection of the
+`sessions/` directory and a row would never move it.
+
+Write what a wrap-up would say: what you set out to do, what you decided and
+why, what you left open. Not a diff — the commits carry that. **You cannot set
+the author**; the name on the file is derived from your token, which is the
+whole of its provenance value.
+
+This is also where the session's delta goes, given h1's `Updates` gap.
+
+### What the hosted path cannot do
+
+- **Commit and push the tree.** `capture_project_state` and `capture_session`
+  commit their own writes upstream; nothing else on this path touches the repo,
+  so there is no tree to push.
+- **Word-count rotation** (h5).
+- **`weekly-cp.md`'s cross-cutting decisions sweep** (step 2 of the CLI path) —
+  it is a hand-edit of a tenant file with no verb behind it.
+- **The improvements sweep** (step 8) — `improvements.md` is a tenant file.
+
+For the last two: surface what you would have written and hand it to the user,
+rather than skipping it silently. A step nobody knows was skipped is the same
+failure as a stamp nobody knows is stale.
+
+**None of this is a permission problem to route around.** The server holds the
+caller's token and an anon key, never a service key — so every write it makes
+is performed upstream under the identity of whoever asked for it. A write key
+here would unblock the list above and destroy the attribution that makes the
+session record worth reading.
 
 ---
 
