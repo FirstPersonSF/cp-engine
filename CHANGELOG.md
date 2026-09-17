@@ -4,6 +4,76 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.118.0 — 2026-09-17
+
+**The wrap-up ritual is reachable from a hosted session.** Four new MCP verbs,
+a hosted branch in `/cp-wrapup`, and a `CLAUDE.md` section. Minor bump: the
+hosted server gains tools and the skill gains a path. No breaking changes.
+
+A teammate working through `cp-hosted` had `capture_project_state` — the verb
+that *writes* an Exec Summary — and none of the checks that say whether the
+write was any good. `spine-lint`, `commitments-sweep` and `seal-sweep` were
+CLI-only, so they could refresh a summary and had no way to ask whether the
+spine was sound, what was owed, or what needed sealing.
+
+**The constraint was never technical.** Those three contain zero
+`Path`/`read_text`/`open()` references between them — they are pure functions
+over rows. Only the *assembly* (which tables, which columns, the
+one-live-per-element discipline) lived in the CLI command bodies.
+
+### Added
+
+- **`spine_lint`, `commitments_sweep`, `seal_sweep`, `word_count_check`** on
+  `cp-hosted` (53 → 57 tools). `word_count_check` is **reporting only** —
+  rotation moves text between two files in one commit and needs a checkout.
+- **`cp_engine.spine_lint.run_all_lints`** — one shared assembly, called by
+  both the CLI and the hosted verb. The CLI's inline query is gone; two copies
+  of "which tables, which checks" is what #172 and #178 each cost.
+- **`/cp-wrapup` hosted path** — a routing step *before* step 1, and an
+  MCP-verb sequence for a session with no `cxp` and no file access. Discovering
+  the wrong path at step 3 means the Exec Summary was already half-written by a
+  path that cannot finish.
+- **`CLAUDE.md` — "Wrapping up from a hosted session"**, named by the trigger
+  table, which previously forwarded to a plugin skill a hosted session does not
+  have.
+
+### Known gaps, documented rather than papered over
+
+The hosted path states what it cannot do instead of skipping it silently — a
+step nobody knows was skipped is the same failure as a stamp nobody knows is
+stale.
+
+- **Exec Summary `Updates` does not advance** — `capture_project_state` takes
+  five of the six fields (#281). The delta goes to `capture_session`.
+- **The `weekly-cp.md` decisions and `improvements.md` sweeps are readable but
+  not writable** (#282) — `read_project_file` exists, so a hosted session can
+  see the expired decisions and cannot say so.
+- **Commit/push and word-count rotation** remain structural (#280 tier 3).
+
+### The fix worth reading
+
+The four verbs were appended **after** `if __name__ == "__main__": main()`. In
+the container the process runs *as* `__main__`, so execution entered the guard,
+called `main()`, and never reached a definition below it — dead code in
+production. Every local test passed because pytest imports the module as
+`server`, where the guard is false and the whole file executes. The one
+condition that mattered was the one nothing exercised, and two deploys were
+spent on a stale tarball and a missing dependency before the line numbers were
+compared.
+
+`test_every_tool_is_defined_before_the_main_guard` now fails against that
+layout.
+
+### On the guard against stamp-only refreshes
+
+Both the skill and `CLAUDE.md` carry it: **pass every field you mean to be
+current, not just `status`.** Omitted fields are left as they are — deliberate,
+since most real rewrites touch one field — but a Status-only refresh advances
+the `· updated` stamp while the rest goes stale, and every staleness check
+reads that stamp. Measured on ggl-5136: a current Status and a two-day-old
+stamp above a `Next up` listing three July deadlines and naming a collaborator
+the Status line said had left.
+
 ## v0.117.10 — 2026-09-16
 
 **The bullet lint was reporting healthy rows as data loss.** One bug fix, in the
