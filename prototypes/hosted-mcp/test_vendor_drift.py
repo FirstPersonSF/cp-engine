@@ -91,40 +91,59 @@ def test_vendored_ttl_clock_matches_the_real_one() -> None:
         ), f"vendored {const} has drifted"
 
 
-def test_the_vendor_tree_covers_every_cp_engine_import_the_server_makes() -> None:
-    """THE CONTROL THAT WOULD HAVE CAUGHT #283.
+def test_the_vendor_closure_EXECUTES_with_no_cp_engine_installed(tmp_path) -> None:
+    """THE CONTROL THAT ACTUALLY CATCHES #283.
 
-    Reads the `from cp_engine...` imports out of `server.py` and resolves each
-    against the VENDOR tree alone — no `src/` on the path, the way the
-    container sees it. A verb importing a module nobody vendored fails here
-    instead of in production.
+    An earlier version of this test resolved import NAMES against the vendor
+    tree and passed while production was still broken — because the real
+    breakage was NESTED imports: `run_all_lints` imports
+    `cp_engine.project_sources` inside the function body, and a
+    name-resolution check never runs the body.
+
+    So this RUNS the code, in a subprocess whose `sys.path` carries the vendor
+    tree and nothing else. A function-level import of a module nobody vendored
+    fails here, the way it failed in the container.
     """
-    import importlib.util
+    import subprocess
+    import sys
 
-    src = (_HERE / "server.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
+    probe = tmp_path / "probe.py"
+    probe.write_text(
+        "import sys\n"
+        f"sys.path.insert(0, {str(_VENDOR.parent)!r})\n"
+        "from cp_engine.spine_lint import lint_spine_rows, lint_curation\n"
+        "from cp_engine.word_count_lint import contributors\n"
+        "from cp_engine.seal_sweep import build_rounds\n"
+        "from cp_engine.exec_summary_lint import lint_exec_summary\n"
+        "import cp_engine.project_sources as PS\n"
+        "import cp_engine.commitments as C\n"
+        "rows = [{'est_item_id': '_authored/x', 'framing': 'X', 'status': 'live',\n"
+        "  'layer': 'Brief', 'binding': 'unbound', 'important': True,\n"
+        "  'version_label': 'v1', 'project_id': 'p1', 'version_date': '2026-09-01',\n"
+        "  'note': '', 'serves': None, 'placement': None, 'sources': [],\n"
+        "  'origin': None, 'scope': None, 'company_id': None, 'phase': None}]\n"
+        "list(lint_spine_rows(rows))\n"
+        "list(lint_curation(rows, today=None))\n"
+        "PS._one_live_per_element(rows)\n"
+        "contributors('word ' * 2600)\n"
+        "lint_exec_summary('<!-- cp-engine:start exec-summary -->\\n"
+        "**Status:** x\\n<!-- cp-engine:end exec-summary -->')\n"
+        "build_rounds(rows, [])\n"
+        "C.resolve_commitment_owner\n"
+        "print('VENDOR_OK')\n",
+        encoding="utf-8",
+    )
 
-    needed: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("cp_engine"):
-            needed.add(node.module)
-            if node.module == "cp_engine":
-                needed.update(f"cp_engine.{a.name}" for a in node.names)
-        elif isinstance(node, ast.Import):
-            needed.update(a.name for a in node.names if a.name.startswith("cp_engine"))
-
-    assert needed, "no cp_engine imports found — has the server stopped using them?"
-
-    missing = []
-    for mod in sorted(needed):
-        rel = Path(mod.replace(".", "/"))
-        if not ((_VENDOR.parent / rel).with_suffix(".py").exists()
-                or (_VENDOR.parent / rel / "__init__.py").exists()):
-            missing.append(mod)
-    assert not missing, (
-        f"server.py imports {missing} but the vendor tree does not carry them — "
-        "they will raise ModuleNotFoundError in the container while the tool "
-        "still registers, so /health will look healthy and every call will fail"
+    r = subprocess.run(
+        [sys.executable, str(probe)],
+        capture_output=True,
+        text=True,
+        cwd=str(tmp_path),  # nowhere near the repo, so no src/ sneaks onto the path
+        env={"PATH": "/usr/bin:/bin", "PYTHONPATH": ""},
+    )
+    assert "VENDOR_OK" in r.stdout, (
+        "the vendored closure does not execute standalone — the container will "
+        "raise at CALL time while the tool still registers:\n" + r.stderr[-2000:]
     )
 
 
