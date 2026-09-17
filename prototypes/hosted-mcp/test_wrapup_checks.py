@@ -353,3 +353,109 @@ def test_the_instructions_state_the_real_size_of_the_write_surface(server):
         f"instructions say {stated.group(1)} tools write; the server has "
         f"{len(writers)} — update the text: {sorted(writers)}"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #285 — registration is not execution
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_the_probe_executes_every_cp_engine_import_the_file_makes(server):
+    """THE GAP #285 NAMES. `tool_count` proves registration, not callability.
+
+    Three verbs raised on every call for a day while `/health` reported
+    `healthy, 57 tools`. The probe must cover every `cp_engine` import in
+    `server.py` — a probe that samples would have reported healthy, because
+    the one verb that looked fine (`word_count_check`) was the one that
+    returned before reaching its import.
+    """
+    import ast
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent / "server.py").read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("cp_engine"):
+            if node.module == "cp_engine":
+                imported.update(f"cp_engine.{a.name}" for a in node.names)
+            else:
+                imported.add(node.module)
+
+    ok, rows = server.dependency_probe()
+    probed = {r["dep"].split(":")[0] for r in rows}
+    missing = imported - probed
+    assert not missing, (
+        f"server.py imports {sorted(missing)} but the probe never exercises "
+        "them — they can break in the container while /health reports healthy"
+    )
+
+
+def test_the_probe_reaches_the_constants_not_just_the_imports(server):
+    """The THIRD costume of the same bug.
+
+    `mc2_db.SPINE_LINT_COLUMNS` is read while BUILDING a query — import-clean,
+    AttributeError on first call. That shipped one deploy after the import fix
+    because the check then in place only resolved module names.
+    """
+    _, rows = server.dependency_probe()
+    deps = {r["dep"] for r in rows}
+    assert "cp_engine.mc2_db:SPINE_LINT_COLUMNS" in deps
+    assert "cp_engine.mc2_db:Tables" in deps
+
+
+def test_the_probe_reports_rather_than_raises(server):
+    """A probe that throws takes `/health` down with it, turning a diagnostic
+    into an outage. Every failure is caught and reported as a row."""
+    import inspect
+
+    src = inspect.getsource(server.dependency_probe)
+    assert "except Exception" in src
+    ok, rows = server.dependency_probe()
+    assert isinstance(ok, bool) and isinstance(rows, list)
+    assert all("dep" in r and "ok" in r for r in rows)
+
+
+def test_the_build_fingerprint_covers_the_vendor_tree(server):
+    """`commit` is "unknown" on a `railway up` deploy, so the fingerprint is
+    the only answer to "is the container what the repo is".
+
+    It must hash `vendor/` as well as `server.py` — #283's fix lived entirely
+    in `vendor/`, so a fingerprint over server.py alone would not have moved
+    across the deploy that fixed it.
+    """
+    import inspect
+
+    src = inspect.getsource(server.build_fingerprint)
+    assert "vendor" in src, "the fingerprint ignores the vendored closure"
+    first = server.build_fingerprint()
+    assert isinstance(first, str) and len(first) == 12
+    assert first == server.build_fingerprint(), "fingerprint must be stable"
+
+
+def test_health_degrades_rather_than_lying(server):
+    """`status` must not say "healthy" when the verbs cannot run.
+
+    Railway's probe still gets a 200 — the process IS up — but a human reading
+    the payload has to be able to tell the difference, which is the entire
+    complaint in #285.
+    """
+    import ast
+    import inspect
+
+    # Assert on the CODE, not the source text: "degraded" also appears in the
+    # docstring, so a substring check passes against a handler hardcoded to
+    # "healthy" — which is the exact defect this test exists to catch.
+    tree = ast.parse(inspect.getsource(server.health).lstrip())
+    literals = {
+        n.value for n in ast.walk(tree)
+        if isinstance(n, ast.Constant) and isinstance(n.value, str)
+    }
+    docstring = ast.get_docstring(tree.body[0]) or ""
+    literals.discard(docstring)
+    assert "degraded" in literals, (
+        "/health never yields the string 'degraded' outside its docstring — "
+        "it reports healthy whatever the dependency probe says"
+    )
+    src = inspect.getsource(server.health)
+    assert "deps_ok" in src and "build" in src

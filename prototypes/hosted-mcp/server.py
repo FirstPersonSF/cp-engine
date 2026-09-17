@@ -8362,7 +8362,7 @@ def call_mc2_capture_session(
 
 
 def call_mc2_capture_project_state(
-    project_code: str, fields: dict[str, Any]
+    project_code: str, fields: dict[str, Any], updates_append: str = ""
 ) -> dict[str, Any]:
     """POST an Exec Summary merge to mc-2 under the CALLER'S OWN JWT. Never raises.
 
@@ -8391,7 +8391,13 @@ def call_mc2_capture_project_state(
         resp = httpx.post(
             f"{MC2_API_BASE}/api/project-state/capture",
             headers={"Authorization": f"Bearer {token}"},
-            json={"project_code": project_code, "fields": fields},
+            json={
+                "project_code": project_code,
+                "fields": fields,
+                # ONE dated Updates entry, appended (#281). Separate from
+                # `fields` because Updates appends where the others replace.
+                "updates_append": updates_append or None,
+            },
             timeout=MC2_TIMEOUT_SECONDS,
         )
     except httpx.TimeoutException:
@@ -8507,6 +8513,7 @@ def capture_project_state(
     where_it_stands: list[str] | None = None,
     next_up: list[str] | None = None,
     blockers: list[str] | None = None,
+    updates_append: str | None = None,
 ) -> dict[str, Any]:
     """Update this project's Exec Summary — the durable answer to "where does this stand".
 
@@ -8551,6 +8558,14 @@ def capture_project_state(
         next_up: bullets of what happens next. Replaces ALL existing bullets.
         blockers: bullets of what is in the way. Replaces ALL existing
                   bullets; pass [] when nothing is blocked.
+        updates_append: ONE dated entry appended to `Updates`, newest first.
+                  THE ONE FIELD THAT APPENDS rather than replaces (#281) — its
+                  old entries are the project's narrative, so making a caller
+                  resend the history to add a line would make dropping it the
+                  easy mistake. The date is stamped server-side, so an entry
+                  cannot be backdated. Re-sending an identical entry is a
+                  no-op. Write the session's delta here; it is what a hosted
+                  wrap-up puts in the log.
 
     THE THREE BULLETED FIELDS ARE `where_it_stands`, `next_up` AND `blockers`
     — pass a list, one string per bullet. `status` and `objective` are inline
@@ -8581,16 +8596,18 @@ def capture_project_state(
     if blockers is not None:
         fields["Blockers"] = blockers
 
-    if not fields:
+    entry = (updates_append or "").strip()
+
+    if not fields and not entry:
         return {
             "ok": False,
             "reason": (
-                "name at least one field to change — an empty call would "
-                "report success while writing nothing"
+                "name at least one field to change, or pass `updates_append` "
+                "— an empty call would report success while writing nothing"
             ),
         }
 
-    result = call_mc2_capture_project_state(project_code, fields)
+    result = call_mc2_capture_project_state(project_code, fields, entry)
     audit(
         client,
         "capture_project_state",
@@ -9034,6 +9051,88 @@ def whoami(probe_alerting: bool = False) -> dict[str, Any]:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def dependency_probe() -> tuple[bool, list[dict[str, Any]]]:
+    """Execute every `cp_engine` import this file makes, and report per-module.
+
+    WHY IT EXISTS (#285). `/health` counted `list_tools()`, which proves a
+    function object was REGISTERED at import. It proves nothing about calling
+    one. The four wrap-up verbs import `cp_engine` INSIDE their bodies, so in a
+    container without the package they registered cleanly and raised on every
+    invocation — `tool_count: 57` was true and useless while three verbs were
+    total losses (#283).
+
+    **This runs the imports rather than checking a path**, because the same bug
+    wore three costumes and only the last one is visible to a path check:
+    module-level imports, then FUNCTION-level imports, then a module CONSTANT
+    (`mc2_db.SPINE_LINT_COLUMNS`) read while BUILDING a query — import-clean,
+    AttributeError on first call.
+
+    No caller identity is needed and nothing is written: every failure in #283
+    was import- or construction-time, which is exactly the class a probe can
+    reach without auth. The verbs' RUNTIME behaviour still needs a real call;
+    this closes the gap between "deployed" and "callable", not every gap.
+
+    Returns `(all_ok, rows)`.
+    """
+    checks: list[tuple[str, Any]] = [
+        ("cp_engine.spine_lint", lambda: __import__(
+            "cp_engine.spine_lint", fromlist=["run_all_lints"]).run_all_lints),
+        ("cp_engine.commitments_sweep", lambda: __import__(
+            "cp_engine.commitments_sweep", fromlist=["sweep"]).sweep),
+        ("cp_engine.seal_sweep", lambda: __import__(
+            "cp_engine.seal_sweep", fromlist=["build_rounds"]).build_rounds),
+        ("cp_engine.word_count_lint", lambda: __import__(
+            "cp_engine.word_count_lint", fromlist=["lint_word_count"]).lint_word_count),
+        # The CONSTANT that shipped missing after the import fix was already
+        # green. Reading it is the whole check — it is read while a query is
+        # built, which no import test reaches.
+        ("cp_engine.mc2_db:SPINE_LINT_COLUMNS", lambda: __import__(
+            "cp_engine.mc2_db", fromlist=["SPINE_LINT_COLUMNS"]).SPINE_LINT_COLUMNS),
+        ("cp_engine.mc2_db:Tables", lambda: __import__(
+            "cp_engine.mc2_db", fromlist=["Tables"]).Tables.COMMITMENTS),
+    ]
+    rows: list[dict[str, Any]] = []
+    ok_all = True
+    for name, probe in checks:
+        try:
+            probe()
+            rows.append({"dep": name, "ok": True})
+        except Exception as exc:  # noqa: BLE001 — reporting, never raising
+            ok_all = False
+            rows.append({"dep": name, "ok": False,
+                         "error": f"{type(exc).__name__}: {exc}"})
+    return ok_all, rows
+
+
+def build_fingerprint() -> str:
+    """SHA-256 (12 hex) over the files that ARE the deployment.
+
+    `commit` is "unknown" on a `railway up` deploy — Railway injects
+    `RAILWAY_GIT_COMMIT_SHA` only for GitHub-triggered builds, and this service
+    has no GitHub connection. So there was no way to tell whether the container
+    held what the repo held, which is precisely what cost two deploys chasing a
+    "stale tarball" theory during #283.
+
+    Hashing the loaded files answers it without Railway's help, and answers a
+    STRONGER question than a commit would: not "what was committed" but "what
+    is actually in this container".
+    """
+    import hashlib
+
+    here = Path(__file__).resolve().parent
+    digest = hashlib.sha256()
+    paths = [here / "server.py", here / "observability.py"]
+    vendor = here / "vendor"
+    if vendor.is_dir():
+        paths += sorted(vendor.rglob("*.py"))
+    for path in paths:
+        try:
+            digest.update(path.read_bytes())
+        except OSError:
+            digest.update(b"<unreadable>")
+    return digest.hexdigest()[:12]
+
+
 @mcp_server.custom_route("/health", methods=["GET"])
 async def health(_request):
     """Liveness probe. Reports what code is actually running here.
@@ -9056,26 +9155,47 @@ async def health(_request):
     GitHub-triggered deploys, and this service deploys by `railway up` from a
     CLI — so there is no commit to report.
 
-    **There is deliberately no `cp_engine_version`.** This container installs
-    six packages and cp-engine is not among them: the Dockerfile COPYs
-    `server.py` and `observability.py` and nothing else, so the image stays
-    small and independently deployable — the same convention this module's own
-    docstring states, that the hosted prototype does not import cp_engine. The
-    first version of this endpoint imported it anyway and 500ed in production
-    with `ModuleNotFoundError`. It passed locally only because a dev venv has
-    the package installed.
+    **`tool_count` answers "is it deployed", NOT "does it work" (#285).** It
+    counts `list_tools()`, which proves a function object was registered at
+    import. On 2026-09-17 three of the four wrap-up verbs raised on every call
+    while this endpoint reported `healthy, 57 tools` all day: they import
+    `cp_engine` inside their bodies, and the container had no such package.
+    Registration and execution are different questions and this endpoint only
+    ever asked the first.
 
-    So `tool_count` IS the answer here, not a supplement to a version string:
-    a verb added to this file changes the count, whatever else does or does not
-    move.
+    So it now also reports:
+
+      * **`deps`** — `dependency_probe()` EXECUTES every `cp_engine` import
+        this file makes, plus the two module constants read while a query is
+        built. `status` degrades to `"degraded"` when any fails. No caller
+        identity needed: every #283 failure was import- or construction-time.
+      * **`build`** — a hash of `server.py`, `observability.py` and `vendor/`.
+        `commit` is "unknown" on a `railway up` deploy (Railway injects the SHA
+        only for GitHub-triggered builds), so this answers what a commit could
+        not: whether the container holds what the repo holds. Two deploys were
+        spent on a "stale tarball" theory for want of it.
+
+    **The container DOES ship cp_engine now** — `vendor/` carries the closure
+    the wrap-up verbs need (#283). An earlier version of this docstring said it
+    deliberately did not, which was true when written and is why the four verbs
+    were added without anyone noticing they broke the convention.
     """
     tools = await mcp_server.list_tools()
     commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
+    deps_ok, deps = dependency_probe()
     return JSONResponse(
         {
-            "status": "healthy",
+            # A container whose verbs cannot run is not "healthy", whatever
+            # the tool count says. Railway's probe still gets a 200 — the
+            # process IS up — but a reader sees the difference.
+            "status": "healthy" if deps_ok else "degraded",
             "server_version": SERVER_VERSION,
             "tool_count": len(tools),
+            "deps_ok": deps_ok,
+            # Only the failures, so a healthy payload stays short and a broken
+            # one names what broke.
+            "deps": [d for d in deps if not d["ok"]] or "all ok",
+            "build": build_fingerprint(),
             # Empty on a `railway up` deploy — see the docstring.
             "commit": commit[:12] if commit else "unknown",
             "deployment_id": os.environ.get("RAILWAY_DEPLOYMENT_ID") or "unknown",
@@ -9096,6 +9216,27 @@ def main() -> None:
         if alerting
         else "DISABLED (no SENTRY_DSN) — swallowed failures reach logs only",
     )
+    # #285: say at BOOT whether the verbs can actually run. Three of them were
+    # dead for a day while /health said healthy, and nothing in the logs
+    # disagreed until somebody called one. A deploy that cannot serve its verbs
+    # should announce itself, not wait to be asked.
+    deps_ok, deps = dependency_probe()
+    if deps_ok:
+        log.info("dependency probe: OK (%d cp_engine imports)", len(deps))
+    else:
+        broken = [d["dep"] for d in deps if not d["ok"]]
+        log.error(
+            "dependency probe FAILED — these verbs will raise on every call: %s",
+            ", ".join(broken),
+        )
+        for row in deps:
+            if not row["ok"]:
+                log.error("  %s -> %s", row["dep"], row["error"])
+        observability.capture(
+            RuntimeError(f"hosted-mcp dependency probe failed: {broken}"),
+            area="startup_probe",
+        )
+    log.info("build fingerprint: %s", build_fingerprint())
     log.info("hosted-cp spike listening on http://%s:%d/mcp", HOST, PORT)
     log.info("issuer:  %s", ISSUER)
     log.info("jwks:    %s", JWKS_URI)
