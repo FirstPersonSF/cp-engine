@@ -624,9 +624,31 @@ def read_spine_rows(client, project_id: str, columns: str) -> list[dict[str, Any
 mcp_server = MCPServer(
     "hosted-cp-spike",
     title="hosted-cp OAuth spike",
+    # THE ONE SURFACE EVERY SESSION SEES BEFORE ANY TOOL CALL. A Claude Code
+    # session gets the tenant protocol from the plugin and the repo checkout; a
+    # session reaching this server from the Claude app has NEITHER — plugins do
+    # not reach that client, so `/cp-wrapup` and the trigger table it lives in
+    # are simply absent. Measured 2026-09-17: `CLAUDE.md` was reachable via
+    # `read_project_file` and mentioned nowhere in this file, so a hosted
+    # caller had to already know the path to find the protocol. Available is
+    # not discoverable; this is where that gap closes.
     instructions=(
-        "Read-only prototype of a hosted cp-sources MCP server. Every tool runs "
-        "under the calling user's Supabase identity with RLS enforced."
+        "Hosted cp MCP server. Every tool runs under the calling user's "
+        "Supabase identity with RLS enforced.\n\n"
+        "THE TENANT PROTOCOL LIVES IN THE TREE, NOT IN THIS SERVER. Before "
+        "acting on a project, read it: `read_project_file(\"CLAUDE.md\")`. It "
+        "carries the reading modes, the trigger phrases, the authority "
+        "precedence order, and the wrap-up ritual — including the verb "
+        "sequence for a session like this one, which has no `cxp` and no file "
+        "editing. Read `master-cp.md` for the project index; get each "
+        "project's path from there rather than constructing it.\n\n"
+        "MOSTLY READ, BUT NOT READ-ONLY. `capture_project_state` and "
+        "`capture_session` write, delegated upstream under YOUR identity — the "
+        "server holds no write key. When refreshing an Exec Summary, pass "
+        "every field you mean to be current, not just `status`: omitted fields "
+        "are left as they were, so a status-only refresh advances the "
+        "`\u00b7 updated` stamp while the rest goes stale, and the staleness "
+        "check reads that stamp."
     ),
     version=SERVER_VERSION,
     # One correlation id per inbound message, set before any tool code runs,

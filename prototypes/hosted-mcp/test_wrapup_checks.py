@@ -263,3 +263,58 @@ def test_every_tool_is_defined_before_the_main_guard():
         f"{guard + 1} — they will not register in the container: "
         f"{[n for n, _ in after]}"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Discoverability — the instructions are the only unprompted surface
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_the_server_instructions_point_at_the_tenant_protocol(server):
+    """AVAILABLE IS NOT DISCOVERABLE.
+
+    A Claude Code session gets the tenant protocol from the plugin and the
+    checkout. A session reaching this server from the Claude app has NEITHER —
+    plugins do not reach that client, so `/cp-wrapup` and the trigger table it
+    lives in are simply absent.
+
+    Measured 2026-09-17: `CLAUDE.md` was reachable through `read_project_file`
+    and mentioned NOWHERE in server.py, so a hosted caller had to already know
+    the path to find the protocol. `instructions` is the one surface every
+    session sees before any tool call, which makes it the only place that
+    closes the gap without a plugin.
+    """
+    text = server.mcp_server.instructions
+    assert "CLAUDE.md" in text, (
+        "the instructions do not name the tenant protocol file — a hosted "
+        "session has no other way to learn it exists"
+    )
+    assert "read_project_file" in text, (
+        "the instructions name the file but not the verb that reads it"
+    )
+
+
+def test_the_instructions_carry_the_partial_refresh_warning(server):
+    """The ggl-5136 lesson, on the surface that reaches every session.
+
+    A status-only refresh advances the `· updated` stamp while the rest goes
+    stale — and the staleness check reads that stamp, so it is worse than not
+    refreshing at all. This is the single most costly thing a hosted session
+    can get wrong, and it must not depend on the caller having read CLAUDE.md.
+    """
+    text = server.mcp_server.instructions
+    assert "status" in text and "stale" in text, (
+        "the instructions omit the partial-refresh warning"
+    )
+
+
+def test_the_instructions_do_not_claim_to_be_read_only(server):
+    """It says what it does. `capture_project_state` and `capture_session`
+    WRITE — delegated upstream under the caller's identity — and describing
+    the server as read-only taught callers not to expect the two verbs that
+    make a wrap-up durable."""
+    text = server.mcp_server.instructions
+    assert "Read-only prototype" not in text, (
+        "instructions still claim read-only, but two verbs write"
+    )
+    assert "capture_project_state" in text and "capture_session" in text
