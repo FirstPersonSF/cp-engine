@@ -8878,6 +8878,38 @@ def capture_project_state(
         {"project_code": project_code, "fields": list(fields)},
         1 if result.get("ok") else 0,
     )
+
+    # THE NUDGE. Refreshing the summary is where a hosted wrap-up most often
+    # stops: it is the step that feels like the whole job, and every surface
+    # reports success afterwards whether or not the checks ran. The CLI path
+    # cannot stop here — its ritual commits everything at once — so this is
+    # the one place to say what is still owed, and it reaches a session that
+    # never read the server instructions.
+    #
+    # ADVISORY: the write already happened and is reported as ok. Nothing here
+    # can fail the call.
+    if result.get("ok"):
+        try:
+            codes = _project_codes_for_lint(client, project_code)
+            if codes:
+                rows = _wrap_window_rows(client, codes)
+                ran = {r.get("tool") for r in rows}
+                owed = [
+                    name
+                    for name, _ in _WRAP_STEPS
+                    if name != "capture_project_state" and name not in ran
+                ]
+                if owed:
+                    result = dict(result)
+                    result["wrap_up_still_owed"] = owed
+                    result["hint"] = (
+                        "The Exec Summary is written. These wrap-up steps have "
+                        "not run on this project since your last "
+                        "capture_session: " + ", ".join(owed) + ". "
+                        "`wrap_status` shows the full picture."
+                    )
+        except Exception:  # noqa: BLE001 — advisory, never fails the write
+            pass
     return result
 
 
@@ -9653,6 +9685,133 @@ def _round_dict(rnd: Any) -> dict[str, Any]:
             }
             for c in (getattr(rnd, "candidates", []) or [])
         ],
+    }
+
+
+# The wrap-up steps a hosted session can actually run, in ritual order. The
+# two the CLI path owns — rotation and the `weekly-cp.md` decisions sweep —
+# are deliberately absent: they need a checkout, and listing a step nobody
+# here can perform would make every wrap-up read as incomplete forever.
+_WRAP_STEPS: tuple[tuple[str, str], ...] = (
+    ("capture_project_state", "the Exec Summary — pass every field you mean to be current"),
+    ("spine_lint", "spine health: unbound elements, dead ends, stale canon"),
+    ("commitments_sweep", "what is owed, both directions; undated rows expire at 14d"),
+    ("seal_sweep", "what fed each shipped deliverable"),
+    ("word_count_check", "the 2,500 / 3,500-word thresholds (reporting only)"),
+    ("capture_session", "the session record — also CLOSES the window"),
+)
+
+
+def _wrap_window_rows(client, codes: list[str]) -> list[dict[str, Any]]:
+    """This caller's audited wrap-up calls on this project, newest first.
+
+    THE WINDOW IS "SINCE THE LAST `capture_session`", not a clock. A session
+    has no id the audit log can see, and a fixed lookback would either split
+    one long wrap-up in half or merge two short ones. `capture_session` is the
+    ritual's own terminator, which makes it the honest boundary: everything
+    after the last one is the work not yet written up.
+
+    Scoped to the CALLER as well as the project — Tony's wrap-up is not
+    Marcello's, and reporting one as the other would tell somebody their work
+    was done by somebody else.
+    """
+    subject = caller_subject()
+    if not subject:
+        return []
+    try:
+        rows = (
+            client.table("mcp_audit_log")
+            .select("tool, at, args")
+            .eq("user_id", subject)
+            .order("at", desc=True)
+            .limit(200)
+            .execute()
+            .data
+        ) or []
+    except Exception:  # noqa: BLE001 — advisory; never fail the caller's wrap
+        return []
+
+    wanted = {name for name, _ in _WRAP_STEPS}
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        args = row.get("args")
+        if isinstance(args, str):
+            try:
+                args = json.loads(args)
+            except ValueError:
+                args = {}
+        if not isinstance(args, dict):
+            args = {}
+        # `ibx-5153` and `ibx-5153-ai-campaign` are the same project — the
+        # drift `_project_codes_for_lint` exists to absorb. Matching on one
+        # spelling would split a single wrap-up across two buckets and report
+        # both halves incomplete.
+        if args.get("project_code") not in codes:
+            continue
+        if row.get("tool") not in wanted:
+            continue
+        out.append(row)
+        if row.get("tool") == "capture_session":
+            break  # the window closes at the previous wrap-up
+    return out
+
+
+@mcp_server.tool()
+def wrap_status(project_code: str) -> dict[str, Any]:
+    """Which wrap-up steps have run on this project, and which are still owed.
+
+    WHY IT EXISTS. The CLI ritual commits everything in one step, so an
+    unfinished wrap-up is visible as an uncommitted tree. Here every verb
+    commits independently, so a session could refresh the Exec Summary, stop,
+    and leave every surface reporting success — the sweeps never run, the
+    session is never captured, and **nothing anywhere knows**. Measured
+    2026-09-17 in this server's own audit log: a `capture_project_state` with
+    none of the five following steps, invisible to every check.
+
+    ADVISORY, NOT A GATE. It reports; it never refuses. A step nobody knows
+    was skipped is the failure this closes — not a session that skipped one
+    deliberately and said so.
+
+    The window is everything since your last `capture_session` on this
+    project, because that verb is the ritual's own terminator. Scoped to YOUR
+    calls: someone else's wrap-up is not yours.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+    """
+    client = user_client()
+    codes = _project_codes_for_lint(client, project_code)
+    if codes is None:
+        return {
+            "project_code": project_code,
+            "caller": caller_subject(),
+            "error": f"no project or initiative resolves for code {project_code!r}",
+        }
+
+    rows = _wrap_window_rows(client, codes)
+    # Newest-first; the FIRST time we see a step in the window is its latest run.
+    seen: dict[str, str] = {}
+    for row in rows:
+        tool = row.get("tool")
+        if tool and tool not in seen:
+            seen[tool] = str(row.get("at") or "")[:19]
+
+    steps = [
+        {
+            "step": name,
+            "ran_at": seen.get(name),
+            "what": why,
+        }
+        for name, why in _WRAP_STEPS
+    ]
+    missing = [s["step"] for s in steps if s["ran_at"] is None]
+    return {
+        "project_code": project_code,
+        "caller": caller_subject(),
+        "window": "since your last capture_session on this project",
+        "steps": steps,
+        "missing": missing,
+        "complete": not missing,
     }
 
 

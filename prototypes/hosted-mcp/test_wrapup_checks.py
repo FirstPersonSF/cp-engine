@@ -577,3 +577,155 @@ def test_log_improvement_refuses_a_thin_observation(server):
     assert out["ok"] is False and "real prose" in out["reason"]
     out = server.log_improvement("", "A perfectly good observation about a thing.")
     assert out["ok"] is False and "area" in out["reason"]
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  wrap_status — nothing knew whether a wrap-up FINISHED
+# ──────────────────────────────────────────────────────────────────────
+
+
+class _AuditQuery:
+    """Chainable stand-in for the audit-log read."""
+
+    def __init__(self, rows):
+        self._rows = rows
+
+    def select(self, *a, **k):
+        return self
+
+    def eq(self, *a, **k):
+        return self
+
+    def order(self, *a, **k):
+        return self
+
+    def limit(self, *a, **k):
+        return self
+
+    def execute(self):
+        return type("R", (), {"data": self._rows})()
+
+
+class _AuditClient:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def table(self, name):
+        return _AuditQuery(self._rows)
+
+
+def _row(tool, at, code="ibx-5153"):
+    return {"tool": tool, "at": at, "args": {"project_code": code}}
+
+
+@pytest.fixture
+def _caller(server, monkeypatch):
+    """A verified caller. `_wrap_window_rows` scopes to the CALLER as well as
+    the project — Tony's wrap-up is not Marcello's — and returns nothing
+    without one, which is the correct fail-closed behaviour and why these
+    tests have to supply one."""
+    monkeypatch.setattr(server, "caller_subject", lambda: "test-user-id")
+    return server
+
+
+def test_the_window_closes_at_the_previous_capture_session(_caller):
+    """THE BOUNDARY CHOICE. A session has no id the audit log can see, and a
+    fixed lookback would either split one long wrap-up or merge two short ones.
+
+    `capture_session` is the ritual's own terminator, so everything after the
+    last one is the work not yet written up. Steps from the PREVIOUS wrap-up
+    must not count toward this one.
+    """
+    rows = [
+        _row("capture_project_state", "2026-09-17T22:00:00"),
+        _row("capture_session", "2026-09-16T10:00:00"),   # ← window closes here
+        _row("spine_lint", "2026-09-16T09:00:00"),        # previous wrap-up
+        _row("seal_sweep", "2026-09-16T08:00:00"),        # previous wrap-up
+    ]
+    got = _caller._wrap_window_rows(_AuditClient(rows), ["ibx-5153"])
+    tools = [r["tool"] for r in got]
+    assert tools == ["capture_project_state", "capture_session"], (
+        "steps from the previous wrap-up leaked into this window"
+    )
+
+
+def test_both_spellings_of_a_project_count_as_one(_caller):
+    """`ibx-5153` and `ibx-5153-ai-campaign` are the same project — the drift
+    `_project_codes_for_lint` exists to absorb.
+
+    Matching one spelling would split a single wrap-up across two buckets and
+    report both halves incomplete, which is worse than reporting nothing.
+    """
+    rows = [
+        _row("capture_project_state", "2026-09-17T22:00:00", code="ibx-5153"),
+        _row("spine_lint", "2026-09-17T21:00:00", code="ibx-5153-ai-campaign"),
+    ]
+    got = _caller._wrap_window_rows(
+        _AuditClient(rows), ["ibx-5153", "ibx-5153-ai-campaign"]
+    )
+    assert {r["tool"] for r in got} == {"capture_project_state", "spine_lint"}
+
+
+def test_another_projects_calls_do_not_count(_caller):
+    rows = [
+        _row("capture_project_state", "2026-09-17T22:00:00", code="ggl-5136"),
+        _row("spine_lint", "2026-09-17T21:00:00", code="ggl-5136"),
+    ]
+    assert _caller._wrap_window_rows(_AuditClient(rows), ["ibx-5153"]) == []
+
+
+def test_an_audit_read_failure_degrades_to_silence(_caller):
+    """ADVISORY MEANS ADVISORY. A broken audit read must not fail somebody's
+    wrap-up — the write already happened."""
+
+    class _Boom:
+        def table(self, name):
+            raise RuntimeError("audit unavailable")
+
+    assert _caller._wrap_window_rows(_Boom(), ["ibx-5153"]) == []
+
+
+def test_the_steps_exclude_what_a_hosted_session_cannot_do(server):
+    """Rotation and the `weekly-cp.md` decisions sweep need a checkout.
+
+    Listing a step nobody here can perform would make every hosted wrap-up
+    read as permanently incomplete — a checklist that can never be finished
+    is one people stop reading.
+    """
+    names = {name for name, _ in server._WRAP_STEPS}
+    assert names == {
+        "capture_project_state",
+        "spine_lint",
+        "commitments_sweep",
+        "seal_sweep",
+        "word_count_check",
+        "capture_session",
+    }
+    for absent in ("rotate", "rotation", "weekly_decisions", "wrap_commit"):
+        assert absent not in names
+
+
+def test_capture_project_state_names_what_is_still_owed(server):
+    """THE NUDGE. Refreshing the summary is where a hosted wrap-up most often
+    stops — it feels like the whole job, and every surface reports success
+    afterwards whether or not the checks ran.
+
+    This reaches a session that never read the server instructions, which is
+    the case the instructions themselves cannot cover.
+    """
+    import inspect
+
+    src = inspect.getsource(server.capture_project_state)
+    assert "wrap_up_still_owed" in src
+    # It must not be able to fail the write that already succeeded.
+    assert "except Exception" in src
+    assert 'if result.get("ok")' in src
+
+
+def test_no_caller_means_no_report(server, monkeypatch):
+    """FAIL CLOSED. Without a verified caller there is no "your wrap-up" to
+    report on, and guessing would attribute someone else's steps to whoever
+    asked. Found by writing the tests: the first three failed because they
+    supplied no caller, which is the guard working."""
+    monkeypatch.setattr(server, "caller_subject", lambda: None)
+    assert server._wrap_window_rows(_AuditClient([_row("spine_lint", "2026-09-17T22:00:00")]), ["ibx-5153"]) == []
