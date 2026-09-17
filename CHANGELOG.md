@@ -4,6 +4,41 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.117.9 — 2026-09-16
+
+**A wrapped bullet was being stored as its first line, and carry-forward wrote
+the truncation forward every week.** One bug fix. No API changes.
+
+`bullets()` has always returned `(first_line, continuation)`. Five parsers bound
+the continuation to `_` or `_cont` and discarded it — so a hand-written bullet
+that wrapped across lines was stored as its opening fragment, and the
+carry-forward template then rendered *that* into the next week's file.
+Faithfully: it writes `a.text`, and the text it was handed was already short.
+
+Two ibx-5153 client asks had been propagating as `**A positive-frame
+counterpart` — **30 characters where the source carries 612.** Every consumer
+(`latest_recorded_signal`, the stale-summary line, the Last-activity column)
+read the stub, and a truncated bullet still renders as a bullet, so nobody saw
+it.
+
+- Fixed at all five sites — open asks, inbound, risks, carry-forward,
+  stakeholders — through `_join_bullet`. **Joined with a space**, because the
+  line breaks in a wrapped bullet are typographic; preserving them would
+  re-render one author's editor width into next week's file.
+- **One continuation is not a wrap.** A risk's `Why it matters:` is a
+  structured field with its own column, and gluing it onto `text` as well
+  renders it twice. The golden fixture caught that on the first attempt and was
+  right — it is unchanged, and two tests now lock the distinction.
+- Measured: 19 genuinely-wrapping bullets across the four non-ask parsers.
+
+**Found by the bullet lint shipped in v0.117.5**, on its first real run against
+the tenant. That lint was written for "the next variant"; the next variant
+arrived in under a day and was malformed *data* rather than a parser bug — the
+same check caught it because it asserts a property (a dated bullet should parse)
+rather than hunting a known defect.
+
+Four tests fail with `_join_bullet` disabled.
+
 ## v0.117.8 — 2026-09-16
 
 **Two layer-string inferences removed, and 90 mis-scored files fixed.** No API
