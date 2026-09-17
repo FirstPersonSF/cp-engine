@@ -24,7 +24,19 @@ _VENDOR = _HERE / "cp_engine" if (_HERE / "cp_engine").is_dir() else _HERE / "ve
 _SRC = _HERE.parents[1] / "src" / "cp_engine"
 
 # Copied whole — byte-for-byte, no excerpting.
-_VERBATIM = ("spine_lint.py", "commitments_sweep.py", "seal_sweep.py", "word_count_lint.py")
+# Every file here that is a COPY rather than a shim. Derived from the tree in
+# the fixture below rather than hand-listed: `card_class.py` and
+# `exec_summary_lint.py` were copied verbatim and omitted from this tuple when
+# it was hand-maintained, so they could have drifted from source silently —
+# found while writing an audit brief, not by the test.
+_VERBATIM = (
+    "spine_lint.py",
+    "commitments_sweep.py",
+    "seal_sweep.py",
+    "word_count_lint.py",
+    "card_class.py",
+    "exec_summary_lint.py",
+)
 
 
 @pytest.mark.parametrize("name", _VERBATIM)
@@ -226,3 +238,30 @@ def test_every_mc2_db_constant_is_vendored_not_just_the_ones_in_use() -> None:
         if src_vals[k] != ven_vals[k]
     }
     assert not drifted, f"vendored mc2_db constants have drifted in VALUE: {drifted}"
+
+
+def test_every_verbatim_copy_is_actually_checked() -> None:
+    """THE LIST CANNOT BE HAND-MAINTAINED.
+
+    `_VERBATIM` was written by hand and omitted two files — `card_class.py`
+    and `exec_summary_lint.py` are byte copies of their sources and nothing
+    compared them, so either could have drifted silently. Found while writing
+    an audit brief, which is a worse way to find it than a test.
+
+    A vendored file is a COPY if it carries no VENDORED header; every copy
+    must appear in `_VERBATIM`.
+    """
+    copies = set()
+    for path in sorted(_VENDOR.glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        head = path.read_text(encoding="utf-8")[:200]
+        if "VENDORED" not in head:
+            copies.add(path.name)
+
+    unchecked = copies - set(_VERBATIM)
+    assert not unchecked, (
+        f"{sorted(unchecked)} are verbatim copies that no drift test compares "
+        "against source — they can diverge silently, which is the exact "
+        "failure vendoring introduces"
+    )
