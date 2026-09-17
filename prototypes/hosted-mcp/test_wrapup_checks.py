@@ -459,3 +459,82 @@ def test_health_degrades_rather_than_lying(server):
     )
     src = inspect.getsource(server.health)
     assert "deps_ok" in src and "build" in src
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  set_commitment_date — the disposition that had no verb
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_dating_a_commitment_has_a_verb(server):
+    """THE GAP. Every other move had one: create, resolve, drop, route, list,
+    sweep. Dating did not — so `commitments-sweep` flagged a row as needing a
+    date and offered no way to give it one. The only dispositions were to
+    close it or let the TTL expire it."""
+    assert hasattr(server, "set_commitment_date")
+
+
+def test_it_refuses_an_unparseable_date(server):
+    """An invented deadline is worse than an undated row, which at least flags
+    itself as needing one."""
+    for bad in ("next Thursday", "2026-13-01", "09/24/2026", ""):
+        out = server.set_commitment_date("x", "y", bad)
+        assert "error" in out and "ISO" in out["error"], bad
+
+
+def test_a_caller_cannot_stamp_slipped(server):
+    """`slipped` is the dates loop's verdict on a PAST-DUE row, not a caller's
+    to assert. Letting one be set by hand would put a judgement in the column
+    the loop uses to make that judgement."""
+    out = server.set_commitment_date("x", "y", "2026-09-24", date_status="slipped")
+    assert "error" in out
+    assert "dates loop" in out["error"]
+
+
+def test_it_goes_through_mc2_rather_than_writing_the_column(server):
+    """THE REASON THIS IS NOT A DIRECT WRITE.
+
+    A due_date change must reset `posted_count` to 0 and return `date_status`
+    to `proposed`: the loop promotes proposed → agreed after two posts at an
+    UNCHANGED date. Writing the column directly leaves a stale count against a
+    new date, so a row can auto-ratify a date nobody posted twice. mc-2's PATCH
+    owns that rule; restating it here would be a second copy of a
+    ratification rule.
+    """
+    import inspect
+
+    src = inspect.getsource(server.call_mc2_set_commitment_date)
+    assert "/api/commitments/" in src
+    assert "httpx.patch" in src
+    # It must not reimplement the reset. The precise claim is that the helper
+    # never ASSIGNS posted_count — reading it back off mc-2's response is fine
+    # and useful; setting it here would be a second copy of a ratification
+    # rule, which is how two systems come to disagree about what was agreed.
+    import ast
+
+    tree = ast.parse(src.lstrip())
+    assigned: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Subscript) and isinstance(tgt.slice, ast.Constant):
+                    assigned.add(str(tgt.slice.value))
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            for kw in node.keywords:
+                if kw.arg:
+                    assigned.add(kw.arg)
+    assert "posted_count" not in assigned, (
+        "the helper assigns posted_count — that reset rule belongs to mc-2's "
+        "PATCH handler, which owns the ratification contract"
+    )
+
+
+def test_it_reuses_the_shared_matcher(server):
+    """One matching truth across the commitment verbs. A second `key`
+    resolution order would make the same string mean different rows in
+    `resolve_commitment` and here."""
+    import inspect
+
+    src = inspect.getsource(server.set_commitment_date)
+    assert "_match_open_commitment" in src
+    assert "_fetch_open_commitments" in src

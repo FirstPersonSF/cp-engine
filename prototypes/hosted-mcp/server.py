@@ -642,7 +642,7 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 17 OF THEM WRITE. The writers are the `create_*`, "
+        "MOST TOOLS READ; 18 OF THEM WRITE. The writers are the `create_*`, "
         "`set_*`, `add_*`, `promote_*`, `retire_*`, `route_*` and `capture_*` "
         "verbs — a name that sounds like a mutation is one. Every write is "
         "delegated upstream under YOUR identity; the server holds no write "
@@ -5031,6 +5031,95 @@ def resolve_commitments_by_meeting(
 
 
 @mcp_server.tool()
+def set_commitment_date(
+    project_code: str, key: str, due_date: str, date_status: str = ""
+) -> dict[str, Any]:
+    """Give an OPEN commitment a due date — the one disposition that was missing.
+
+    THE GAP THIS CLOSES. Every other move on a commitment had a verb: create,
+    resolve, drop, route, list, sweep. **Dating one did not.** So
+    `commitments-sweep` would flag a row as "⚠ UNDATED · 14d ← past TTL,
+    expires next dates loop", tell you to date it, and offer no way to do so —
+    the only options were to close it or let the TTL expire it. Measured
+    2026-09-17: dating one row meant writing to Supabase by hand.
+
+    WHY THAT HAND-WRITE WAS DANGEROUS, and why this goes through mc-2. A
+    due_date change has to reset the ratification state — `posted_count = 0`
+    and back to `proposed` — because the dates loop promotes proposed → agreed
+    after two posts at an UNCHANGED date. Writing the column directly leaves a
+    stale count against a new date, so a commitment can auto-ratify a date
+    nobody posted twice. The mc-2 PATCH endpoint owns that rule; this verb
+    calls it rather than restating it.
+
+    `date_status` is normally left empty: a date you just set is a PROPOSAL
+    and earns `agreed` through the loop. Pass `agreed` only for a date actually
+    agreed with the other party (a meeting, an email) — it is a claim about the
+    world, and it also cancels the TTL. `slipped` is stamped BY the loop for
+    past-due rows and is not a caller's to set.
+
+    Dating a row cancels its undated TTL either way: the expiry only reads rows
+    that are still undated AND still `proposed`.
+
+    Args:
+        project_code: engagement or initiative code.
+        key: a commitment id, or a distinct substring of its description.
+        due_date: ISO `YYYY-MM-DD`. Rejected if unparseable — an invented
+                  deadline is worse than an undated row, which at least flags
+                  itself as needing one.
+        date_status: "" (default, proposed) | "agreed".
+    """
+    from datetime import date as _date
+
+    if date_status and date_status not in ("proposed", "agreed"):
+        return {
+            "error": (
+                f"date_status must be 'proposed' or 'agreed' (got {date_status!r}). "
+                "'slipped' is stamped by the dates loop for past-due rows, "
+                "not set by a caller."
+            )
+        }
+    try:
+        parsed = _date.fromisoformat((due_date or "").strip())
+    except ValueError:
+        return {
+            "error": (
+                f"due_date must be ISO YYYY-MM-DD (got {due_date!r}) — an "
+                "unparseable date is rejected rather than guessed"
+            )
+        }
+
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    open_rows = _fetch_open_commitments(client, scope)
+    row, err = _match_open_commitment(open_rows, key)
+    if err is not None:
+        return err
+
+    result = call_mc2_set_commitment_date(
+        row["id"], parsed.isoformat(), date_status or None
+    )
+    audit(
+        client,
+        "set_commitment_date",
+        {"project_code": project_code, "key": key, "due_date": parsed.isoformat()},
+        1 if result.get("ok") else 0,
+    )
+    if not result.get("ok"):
+        return result
+    return {
+        "ok": True,
+        "id": row["id"],
+        "description": row.get("description"),
+        "due_date": parsed.isoformat(),
+        "date_status": result.get("date_status"),
+        "caller": caller_subject(),
+    }
+
+
+@mcp_server.tool()
 def route_commitment(
     project_code: str, key: str, target_code: str
 ) -> dict[str, Any]:
@@ -8282,6 +8371,71 @@ def _derive_workset_members(
         return [], err
 
     return sorted(found), None
+
+
+def call_mc2_set_commitment_date(
+    commitment_id: str, due_date: str, date_status: str | None
+) -> dict[str, Any]:
+    """PATCH a commitment's due date via mc-2, under the CALLER'S OWN JWT.
+
+    Goes through mc-2 rather than writing the column here for one reason worth
+    stating: a due_date change must reset `posted_count` to 0 and return
+    `date_status` to `proposed`, because the dates loop ratifies a date only
+    after two posts at an UNCHANGED date. A direct column write leaves a stale
+    count against a new date — the row then auto-ratifies a date nobody
+    confirmed. That rule lives in mc-2's PATCH handler and is not restated
+    here; a second copy of a ratification rule is how two systems come to
+    disagree about what was agreed.
+
+    Never raises — returns `{ok: False, reason}` like its siblings.
+    """
+    if not MC2_API_BASE:
+        return {
+            "ok": False,
+            "reason": "commitment update unavailable: MC2_API_BASE not configured",
+            "degraded": True,
+        }
+    try:
+        token = caller_jwt()
+    except RuntimeError as exc:
+        return {"ok": False, "reason": f"no authenticated caller: {exc}"}
+
+    body: dict[str, Any] = {"due_date": due_date}
+    if date_status:
+        body["date_status"] = date_status
+    try:
+        resp = httpx.patch(
+            f"{MC2_API_BASE}/api/commitments/{commitment_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            json=body,
+            timeout=MC2_TIMEOUT_SECONDS,
+        )
+    except httpx.TimeoutException:
+        return {
+            "ok": False,
+            "reason": (
+                f"mc-2 did not respond within {MC2_TIMEOUT_SECONDS}s. The date "
+                "may or may not have been set — re-read before retrying."
+            ),
+        }
+    except httpx.HTTPError as exc:
+        return {"ok": False, "reason": f"could not reach mc-2: {exc}"}
+
+    if resp.status_code >= 400:
+        return {
+            "ok": False,
+            "reason": f"mc-2 refused the update ({resp.status_code}): {resp.text[:300]}",
+        }
+    try:
+        data = resp.json()
+    except ValueError:
+        return {"ok": False, "reason": "mc-2 returned a non-JSON response"}
+    return {
+        "ok": True,
+        "due_date": data.get("due_date"),
+        "date_status": data.get("date_status"),
+        "posted_count": data.get("posted_count"),
+    }
 
 
 def call_mc2_capture_session(
