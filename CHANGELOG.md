@@ -4,6 +4,56 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.119.0 — 2026-09-17
+
+**Unblocks mc-2 migration 183.** cp-engine no longer reads
+`estimator.projects.is_default`, which that migration drops. One bug fix plus
+a new shared module. No breaking changes.
+
+**Install this before mc-2 applies migration 183.** PostgREST answers a filter
+or select on a missing column with a 42703 *error*, not an empty result — and
+`sync.py` catches that, logs it, and carries on. The failure mode was silent
+and total: every project's spine substance mirroring **unbound** while the sync
+still reported success, and `/cp-prep` quietly losing its estimate figures.
+
+### The rule, and why it is shared
+
+A job can now carry several sold estimates that sum, so one default answers
+nothing. `cp_engine.estimate_scope` mirrors
+`mc-2:backend/src/lib/estimate_scope.py`: approved estimates oldest first;
+otherwise the `on_schedule` bridge. `abandoned` counts nowhere.
+
+cp-engine is a **reader** of the estimator schema, so the rule lives in one
+module rather than at each of the three call sites — a second opinion about
+which estimate counts is how two systems come to disagree about what a job
+sold.
+
+**The bridge is load-bearing, not defensive.** Measured against production:
+52 estimate rows across 45 jobs, **zero approved**, with `on_schedule`
+partitioning them exactly as `is_default` did (45 True / 7 False). An
+approved-only rule would empty every spine the day it shipped. It closes per
+job as soon as that job approves an estimate.
+
+### Verified against live data
+
+- All 45 live jobs resolve to **exactly** the estimate `is_default` named —
+  same 45, differs 0.
+- `cxp sync` across the tenant: **zero** `estimate fetch failed`.
+- `cxp prep-planning --bundle`: 140 estimate-derived lines, intact.
+
+That live check is the only reason this is correct. The first version selected
+only the columns the *rule* reads, and `fetch_estimate` raised on all 45 jobs
+while every unit test passed — the fakes carried a field the real query no
+longer asked for. A resolver's column list is part of its contract with its
+callers, and there is now a test that reads the required keys out of
+`estimate.py` rather than restating them.
+
+### Already fixed, for the record
+
+The nullable-`position` sort error in the same file (six projects logging on
+every sync) shipped in **v0.114.1** as #240/#241. Anyone still seeing it is on
+an older CLI — `uv tool install --force --reinstall` .
+
 ## v0.118.0 — 2026-09-17
 
 **The wrap-up ritual is reachable from a hosted session.** Four new MCP verbs,
