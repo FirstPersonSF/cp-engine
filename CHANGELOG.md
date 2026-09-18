@@ -4,6 +4,38 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.120.1 — 2026-09-17
+
+**`whoami` reports the build.** Patch: additive fields on one hosted verb's
+return, no behaviour change anywhere else.
+
+`/health` has answered "what code is running here?" since #285, but over HTTP.
+A hosted-only session — no `cxp`, no shell, reaching the tenant through the MCP
+server alone — cannot curl it, and that is precisely the session that most needs
+to ask whether a just-shipped fix is the code actually answering. The answer
+existed and the asker could not reach it; the fallback was asking a human to run
+curl.
+
+`whoami` now returns `server_version`, `build` and `deployment_id` alongside
+identity, on both the authenticated and unauthenticated paths. A caller who is
+turned away still learns which server turned them away; the block reads no
+caller state, so there is nothing in it to leak.
+
+`build` is the field to trust. `SERVER_VERSION` is hand-maintained and has not
+tracked engine releases since the spike — it still reads `hosted-cp-spike/0.0.6`
+at engine 0.120.x. The fingerprint hashes the files actually loaded in the
+container, so it moves on every deploy whether or not a constant got bumped.
+The stale string is deliberately left alone: it is shared with `/health` and
+Sentry's release tag, so changing it is its own decision.
+
+Tests cover both paths plus an agreement check — `whoami` and `/health` cannot
+report different builds, because two surfaces that disagree are worse than one,
+inviting trust in the stale one.
+
+**This ships with the hosted server, not the CLI.** The verb only changes for
+callers after a `railway up` deploy of `prototypes/hosted-mcp/`; a tenant that
+upgrades the engine alone sees no difference.
+
 ## v0.120.0 — 2026-09-17
 
 **A job's spine now binds against every estimate it has sold, not the oldest
