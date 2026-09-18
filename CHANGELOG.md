@@ -4,6 +4,60 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.120.4 — 2026-09-18
+
+**Two mechanisms that existed and did not work.** Patch: a hook fix that ships
+in the plugin, and a release-time reminder.
+
+### The marketplace self-update had never executed
+
+`plugin/hooks/sync-cli-version.sh` refreshed the marketplace clone — or so its
+comment said, calling itself "the once-and-for-all downgrade fix." It derived
+the repo from `$CLAUDE_PLUGIN_ROOT`, which is the plugin **cache**: an
+extracted directory, not a git checkout. `rev-parse` failed, `_toplevel` came
+back empty, the `case` matched nothing, and the fetch never ran. Verified on
+two machines, then verified again by probe — the old derivation resolves to
+nothing, the new one resolves and fetches.
+
+The marketplace clone is a **sibling** of the cache, not an ancestor:
+
+```
+cache:       ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/
+marketplace: ~/.claude/plugins/marketplaces/<marketplace>/
+```
+
+It is now addressed directly, with the `~/.claude/plugins/` prefix check kept
+as the safety gate — now guarding a path we chose rather than one we hoped to
+derive. Confirmed live: the clone was 17 hours stale and is now at HEAD.
+
+This is how a plugin sat at 0.108.1 against a 0.119.0 CLI for twelve releases.
+The thing meant to keep it fresh was never running.
+
+### A minor release names the tenant-pin edit
+
+A **reminder, not a bump**, deliberately. `.cp-engine.toml` lives in a separate
+repository, on a clone the release script cannot assume exists; bumping it
+would mean reaching across a repo boundary into another working tree. That is
+why it was never automated — but *manual* turned out to mean *forgotten*.
+
+The pin was bumped faithfully for ~20 consecutive releases (`~= 0.23` through
+`~= 0.42`), then stopped on 2026-06-30 and has not moved through 80 releases.
+`~= 0.42` is satisfied by everything from 0.42.0 to 0.120.x, so it answers "is
+this allowed?" and has not answered "is this current?" since June. That gap is
+where a twelve-release-stale CLI ran a render and rewrote 54 provenance stamps
+backwards.
+
+Only **minor** bumps print. Tenants opt into a minor series and take patches
+automatically, so a patch release needs no tenant edit — and printing every
+time would train the reader to skip the line, which is how the practice lapsed
+in the first place.
+
+### Also
+
+The release script's own closing advice recommended bare
+`uv tool install --force`, which is the documented silent-no-op trap. Now
+`--force --reinstall`.
+
 ## v0.120.3 — 2026-09-18
 
 **A render may never move a provenance stamp backwards.** Patch: one guard at
