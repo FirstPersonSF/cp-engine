@@ -266,3 +266,79 @@ def test_doctor_full_exits_one_on_findings(monkeypatch):
     monkeypatch.setattr(health, "collect", lambda **kw: [])
     r = CliRunner().invoke(main, ["doctor"])
     assert r.exit_code == 0 and "healthy" in r.output
+
+
+# ── pin_floor / raise_pin_floor ──────────────────────────────────────────
+
+from packaging.specifiers import SpecifierSet  # noqa: E402
+
+
+def test_pin_floor_fires_on_the_thirteen_day_state():
+    """CONTROL WITH MEANING. The tenant hook's own question — `0.108.1 in
+    SpecifierSet("~= 0.42")` — was True every session for thirteen days.
+    That is the green light that could not go red. This check asks the
+    other question and fires on the same state."""
+    assert Version("0.108.1") in SpecifierSet("~= 0.42"), "the old check said healthy"
+    f = health.pin_floor("~= 0.42", "0.108.1")
+    assert f is not None and f.code == "pin_floor"
+    assert f.extra["target"] == "~= 0.108"
+    assert "cxp sync" in f.remedy
+
+
+@pytest.mark.parametrize("pin,cli,fires", [
+    ("~= 0.120", "0.120.5", False),   # floor at the running minor: capable of failing
+    ("~= 0.120", "0.121.0", True),    # one minor behind — sync has not run since a release
+    ("~= 0.120", "0.119.0", False),   # engine BEHIND the pin is EngineVersionMismatch's job
+    (">= 0.5, < 1", "0.120.5", True), # compound: floor is the highest lower bound (0.5)
+    ("not a spec", "0.120.5", False),
+    (None, "0.120.5", False),
+    ("~= 0.120", None, False),
+])
+def test_pin_floor_matrix(pin, cli, fires):
+    assert (health.pin_floor(pin, cli) is not None) is fires
+
+
+_TOML = """# tenant config — hand comments must survive
+[tenant]
+name = "cp"
+
+[engine]
+version = "~= 0.42"   # bumped by hand until 2026-06-30, then not
+
+[sync]
+backend = "mc-2"
+"""
+
+
+def test_raise_pin_floor_moves_the_incident_pin_and_keeps_formatting():
+    new_text, old, new = health.raise_pin_floor(_TOML, "0.120.5")
+    assert (old, new) == ("~= 0.42", "~= 0.120")
+    assert 'version = "~= 0.120"' in new_text
+    assert "# tenant config — hand comments must survive" in new_text
+    assert "# bumped by hand until 2026-06-30, then not" in new_text
+    assert 'backend = "mc-2"' in new_text
+
+
+def test_raise_pin_floor_never_lowers_and_is_idempotent():
+    at_floor = _TOML.replace("~= 0.42", "~= 0.120")
+    assert health.raise_pin_floor(at_floor, "0.120.5")[2] is None
+    ahead = _TOML.replace("~= 0.42", "~= 0.121")
+    text, old, new = health.raise_pin_floor(ahead, "0.120.5")
+    assert new is None and text == ahead
+
+
+def test_raise_pin_floor_honours_version_lock_and_leaves_compound_pins():
+    locked = _TOML.replace('version = "~= 0.42"', 'version = "~= 0.42"\nversion_lock = true')
+    assert health.raise_pin_floor(locked, "0.120.5")[2] is None
+    compound = _TOML.replace("~= 0.42", ">= 0.5, < 1")
+    text, old, new = health.raise_pin_floor(compound, "0.120.5")
+    assert new is None and text == compound
+
+
+def test_collect_includes_pin_floor_when_inside_a_tenant(tmp_path: Path):
+    root = tmp_path / "tenant"; root.mkdir()
+    (root / ".cp-engine.toml").write_text(_TOML)
+    env = _fake_env(tmp_path, "0.120.5")
+    findings = health.collect(cli_version="0.120.5", tenant_root=root, **env)
+    assert [f.code for f in findings] == ["pin_floor"]
+    assert health.brief(findings).startswith("[cp] This project's cp pin is behind")

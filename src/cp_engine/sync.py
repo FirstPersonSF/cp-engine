@@ -402,6 +402,7 @@ def _sync_tenant_inner(
     # _write_if_changed).
     if not dry_run:
         files_written.extend(install_into_tenant(config.root))
+        files_written.extend(_raise_pin_floor(config.root))
 
     # Project CPs — v0.7 layout: each project gets a working directory at
     # <scope>/<dir_slug>/ where dir_slug encodes both the code and a
@@ -1255,6 +1256,34 @@ def _would_change(
         except Exception:  # noqa: BLE001
             pass
     return True
+
+
+def _raise_pin_floor(root: Path) -> list[Path]:
+    """Move `[engine].version` up to the running engine's minor (#296).
+
+    The pin answers "is this install allowed?" — and for four months it said
+    yes to everything since June, because nobody bumped it. It cannot be
+    bumped from the release script (other repo). It CAN be bumped here: sync
+    runs with a known engine version, inside the tenant, and its output is
+    already committed. Never lowers; honours `version_lock`; see
+    `health.raise_pin_floor` for the rules. Returns the path if it changed.
+    """
+    from cp_engine import health
+
+    path = root / ".cp-engine.toml"
+    try:
+        text = path.read_text()
+    except OSError:
+        return []
+    new_text, old, new = health.raise_pin_floor(text, health.installed_cli_version())
+    if new is None:
+        return []
+    path.write_text(new_text)
+    print(
+        f"[cp] engine pin raised {old} → {new} — an install older than "
+        f"{new.lstrip('~= ')} now fails EngineVersionMismatch instead of passing."
+    )
+    return [path]
 
 
 def _write_if_changed(

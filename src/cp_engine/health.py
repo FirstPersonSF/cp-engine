@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Iterable
 
 from packaging.version import InvalidVersion, Version
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
 
 # ── findings ──────────────────────────────────────────────────────────────
 
@@ -284,6 +285,137 @@ def plugin_vs_cli(
     )
 
 
+# ── pin_floor ─────────────────────────────────────────────────────────────
+
+
+def find_tenant_root(start: Path | None = None) -> Path | None:
+    """Walk up from `start` (default cwd) for `.cp-engine.toml`."""
+    d = (start or Path.cwd()).resolve()
+    for cand in (d, *d.parents):
+        if (cand / ".cp-engine.toml").is_file():
+            return cand
+    return None
+
+
+def read_pin(root: Path) -> str | None:
+    """`[engine].version` from the tenant's committed config, or None."""
+    try:
+        import tomllib
+
+        data = tomllib.loads((root / ".cp-engine.toml").read_text())
+    except (OSError, ValueError):
+        return None
+    v = (data.get("engine") or {}).get("version")
+    return v if isinstance(v, str) and v else None
+
+
+def pin_floor_version(constraint: str | None) -> Version | None:
+    """The lowest version a constraint admits, or None if unreadable.
+
+    `~= 0.42` admits 0.42.0 upward, so its floor is 0.42. For a compound
+    constraint the floor is the highest lower bound among its clauses.
+    """
+    if not constraint:
+        return None
+    try:
+        spec = SpecifierSet(constraint)
+    except InvalidSpecifier:
+        return None
+    floors = []
+    for s in spec:
+        if s.operator in ("~=", ">=", "==", "==="):
+            v = parse_version(s.version.rstrip(".*"))
+            if v is not None:
+                floors.append(v)
+    return max(floors) if floors else None
+
+
+def _minor(v: Version) -> tuple[int, int]:
+    return (v.major, v.minor)
+
+
+def pin_floor(constraint: str | None, cli_version: str | None) -> Finding | None:
+    """Is the tenant pin capable of failing?
+
+    THE INCIDENT'S CHECK (plan §1, corrected timeline). For thirteen days both
+    tracks sat at 0.108.1 while the tenant pin read `~= 0.42` — a floor
+    seventy-eight releases down, satisfied by everything since June. The
+    tenant hook asked "is this allowed?" and the pin said yes every session.
+    Nothing asked "is this current?" This does.
+
+    A pin whose floor is below the running engine's minor cannot fail for an
+    install as old as the floor. `cxp sync` raises the floor automatically
+    (`raise_pin_floor`), so in steady state this fires only when sync has not
+    run since a release — which is itself worth knowing. An engine BEHIND the
+    pin is not this check's business; that is EngineVersionMismatch's, and it
+    already raises.
+    """
+    cli = parse_version(cli_version)
+    floor = pin_floor_version(constraint)
+    if cli is None or floor is None:
+        return None
+    if _minor(floor) >= _minor(cli):
+        return None
+    return Finding(
+        severity=SEV_PIN_FLOOR,
+        code="pin_floor",
+        summary=(
+            "This project's cp pin is behind the engine you're running, so an "
+            "out-of-date install would pass its check."
+        ),
+        remedy="Run cxp sync to raise it, or say \"update the cp pin\".",
+        detail=f"pin {constraint}, engine v{cli_version}",
+        extra={"pin": constraint, "floor": str(floor), "target": f"~= {cli.major}.{cli.minor}"},
+    )
+
+
+def raise_pin_floor(toml_text: str, cli_version: str | None) -> tuple[str, str | None, str | None]:
+    """Rewrite `[engine].version` to `~= <engine minor>` if that is HIGHER.
+
+    Returns `(new_text, old_pin, new_pin)`; `new_pin` is None when nothing
+    changed. Formatting and comments are preserved (tomlkit). Rules:
+
+      * Never lowers. A pin ahead of the running engine is left alone — that
+        engine is the one that needs to move.
+      * Only a single `~=` clause is rewritten. A hand-authored compound
+        constraint (`>= 0.5, < 1`) is someone's deliberate shape; not ours to
+        collapse.
+      * `[engine] version_lock = true` opts a tenant out entirely — the escape
+        hatch for a tenant that genuinely must hold, stated where the pin is.
+
+    WHY SYNC AND NOT THE RELEASE SCRIPT. `release.py` cannot reach the
+    tenant: it is another repository, on a clone it cannot assume exists. The
+    pin was bumped by hand for ~20 releases, then not for 80. Sync runs with a
+    known engine version, in the tenant, and its output is already committed —
+    so the floor moves for free, in the same commit as everything else.
+    """
+    import tomlkit
+
+    cli = parse_version(cli_version)
+    if cli is None:
+        return toml_text, None, None
+    try:
+        doc = tomlkit.parse(toml_text)
+    except Exception:  # noqa: BLE001 — unreadable config is not ours to rewrite
+        return toml_text, None, None
+    engine = doc.get("engine")
+    if engine is None:
+        return toml_text, None, None
+    old = engine.get("version")
+    if not isinstance(old, str) or not old:
+        return toml_text, None, None
+    if engine.get("version_lock"):
+        return toml_text, old, None
+    if not re.fullmatch(r"\s*~=\s*\d+\.\d+(\.\d+)?\s*", old):
+        return toml_text, old, None
+    floor = pin_floor_version(old)
+    if floor is None or _minor(floor) >= _minor(cli):
+        return toml_text, old, None
+    new = f"~= {cli.major}.{cli.minor}"
+    engine["version"] = new
+    return tomlkit.dumps(doc), old, new
+
+
 # ── stale_mcp ─────────────────────────────────────────────────────────────
 
 
@@ -376,6 +508,7 @@ def collect(
     receipt_path: Path | None = None,
     cli_version: str | None = None,
     procs: Iterable[Proc] | None = None,
+    tenant_root: Path | None = None,
 ) -> list[Finding]:
     """Run every check against the real system (or injected substitutes).
 
@@ -387,8 +520,10 @@ def collect(
     cli = cli_version if cli_version is not None else installed_cli_version()
     ps = list(procs) if procs is not None else gather_procs()
 
+    root = tenant_root if tenant_root is not None else find_tenant_root()
     findings = [
         plugin_vs_cli(read_installed_plugins(ip), cli, read_receipt_source(rp)),
+        pin_floor(read_pin(root), cli) if root else None,
         stale_mcp(ps, receipt_mtime(rp)),
     ]
     return sorted((f for f in findings if f is not None), key=lambda f: f.severity)
