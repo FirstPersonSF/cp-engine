@@ -773,12 +773,21 @@ def doctor_cmd(brief: bool) -> None:
     """
     from cp_engine import health
 
-    findings = health.collect()
     if brief:
-        line = health.brief(findings)
+        # No network, no inventory: the SessionStart path stays sub-second
+        # and works offline.
+        line = health.brief(health.collect())
         if line:
             click.echo(line)
         return
-    click.echo(health.report(findings))
+    # Full mode fetches the hosted server's /health (5s cap) and prints what
+    # is installed before what is wrong.
+    root = health.find_tenant_root()
+    hosted = None
+    if root:
+        url = health.hosted_health_url(health.read_hosted_url(root))
+        hosted = health.fetch_hosted_health(url) if url else None
+    findings = health.collect(check_hosted=True, hosted_fetch=lambda _u: hosted)
+    click.echo(health.report(findings, health.inventory(hosted=hosted)))
     if findings:
         raise SystemExit(1)

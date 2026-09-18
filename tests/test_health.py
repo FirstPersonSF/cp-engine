@@ -261,11 +261,18 @@ def test_doctor_brief_always_exits_zero_so_stdout_reaches_the_session(monkeypatc
 def test_doctor_full_exits_one_on_findings(monkeypatch):
     from cp_engine.cli import main
 
+    # Full mode reads the real machine and fetches /health; stub all of it so
+    # this test asserts the exit contract, not this laptop's state.
+    monkeypatch.setattr(health, "find_tenant_root", lambda *a, **k: None)
+    monkeypatch.setattr(health, "fetch_hosted_health", lambda *a, **k: None)
+    monkeypatch.setattr(health, "inventory", lambda **kw: {"cli": {"version": "0.0.0"}, "plugins": [],
+                                                           "marketplace": {}, "tenant": {}, "hosted": None,
+                                                           "install_record": None})
     monkeypatch.setattr(health, "collect", lambda **kw: [Finding(10, "x", "S.", "R.")])
     assert CliRunner().invoke(main, ["doctor"]).exit_code == 1
     monkeypatch.setattr(health, "collect", lambda **kw: [])
     r = CliRunner().invoke(main, ["doctor"])
-    assert r.exit_code == 0 and "no findings" in r.output
+    assert r.exit_code == 0 and "no findings" in r.output and "inventory" in r.output
 
 
 # ── pin_floor / raise_pin_floor ──────────────────────────────────────────
@@ -488,3 +495,101 @@ def test_collect_checks_install_record_only_where_a_local_file_exists(tmp_path: 
     (root / ".cp-engine.local.toml").write_text(_LOCAL)
     findings = health.collect(cli_version="0.120.5", tenant_root=root, **env)
     assert [f.code for f in findings] == ["install_record"]
+
+
+# ── hosted_vs_local + inventory (step 5) ─────────────────────────────────
+
+
+def test_hosted_health_url_and_version_parsing():
+    assert health.hosted_health_url("https://cp.mc-2.1p.is/mcp") == "https://cp.mc-2.1p.is/health"
+    assert health.hosted_health_url("https://cp.mc-2.1p.is/mcp/") == "https://cp.mc-2.1p.is/health"
+    assert health.hosted_health_url(None) is None
+    assert health.parse_hosted_version("hosted-cp/0.120.5") == "0.120.5"
+    assert health.parse_hosted_version("hosted-cp-spike/0.0.6") == "0.0.6"
+    assert health.parse_hosted_version(None) is None
+
+
+def test_hosted_vs_local_fires_in_both_directions_and_names_the_deploy():
+    behind = health.hosted_vs_local("0.120.2", "0.120.5", "dcc61c3a449c")
+    assert behind is not None and behind.code == "hosted_vs_local"
+    assert "behind" in behind.summary and "railway up" in behind.remedy
+    assert "hosted v0.120.2 build dcc61c3a449c, engine v0.120.5" == behind.detail
+    ahead = health.hosted_vs_local("0.121.0", "0.120.5")
+    assert ahead is not None and "ahead" in ahead.summary and "update cp-engine" in ahead.remedy
+    assert health.hosted_vs_local("0.120.5", "0.120.5") is None
+    assert health.hosted_vs_local(None, "0.120.5") is None
+    assert health.hosted_vs_local("0.0.6-spike", "0.120.5") is None, "non-plain: no opinion"
+
+
+def test_collect_checks_hosted_only_when_asked(tmp_path: Path):
+    root = tmp_path / "tenant"; root.mkdir()
+    (root / ".cp-engine.toml").write_text('[engine]\nversion = "~= 0.120"\n')
+    (root / ".mcp.json").write_text(json.dumps({"mcpServers": {"cp-hosted": {"url": "https://h.test/mcp"}}}))
+    env = _fake_env(tmp_path, "0.120.5")
+    calls: list[str] = []
+
+    def fake_fetch(url):
+        calls.append(url)
+        return {"server_version": "hosted-cp/0.120.2", "build": "abc"}
+
+    # Default: never fetches — this is the --brief / SessionStart path.
+    assert health.collect(cli_version="0.120.5", tenant_root=root, hosted_fetch=fake_fetch, **env) == []
+    assert calls == []
+    # Opt-in: fetches the /health URL derived from .mcp.json and reports.
+    findings = health.collect(cli_version="0.120.5", tenant_root=root, check_hosted=True, hosted_fetch=fake_fetch, **env)
+    assert calls == ["https://h.test/health"]
+    assert [f.code for f in findings] == ["hosted_vs_local"]
+    # A failed fetch is no opinion, not a finding.
+    assert health.collect(cli_version="0.120.5", tenant_root=root, check_hosted=True, hosted_fetch=lambda u: None, **env) == []
+
+
+def _git_repo_with_one_commit(d: Path) -> Path:
+    d.mkdir()
+    env = {"PATH": "/usr/bin:/bin", "HOME": str(d), "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+           "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+    for args in (["init", "-q", "--initial-branch=main"], ["commit", "-q", "--allow-empty", "-m", "x"]):
+        subprocess.run(["git", "-C", str(d), *args], check=True, env=env, capture_output=True)
+    return d
+
+
+def test_inventory_and_report_render_what_is_installed(tmp_path: Path):
+    root = tmp_path / "tenant"; root.mkdir()
+    (root / ".cp-engine.toml").write_text('[engine]\nversion = "~= 0.120"\n')
+    (root / ".mcp.json").write_text(json.dumps({"mcpServers": {"cp-hosted": {"url": "https://h.test/mcp"}}}))
+    (root / ".cp-engine.local.toml").write_text("[repos]\n")
+    health.write_install_record(root / ".cp-engine.local.toml",
+                                {"recorded_at": "2026-09-18T00:00:00Z", "installer": "agent", "cli": {"version": "0.120.5"}})
+    env = _fake_env(tmp_path, "0.120.5")
+    clone = _git_repo_with_one_commit(tmp_path / "marketplace")
+    inv = health.inventory(installed_plugins_path=env["installed_plugins_path"], receipt_path=env["receipt_path"],
+                           cli_version="0.120.5", tenant_root=root, marketplace_clone=clone,
+                           hosted={"server_version": "hosted-cp/0.120.5", "build": "abc"})
+    assert inv["cli"] == {"version": "0.120.5", "source": "git+https://example.test/r"}
+    assert inv["plugins"] == [{"version": "0.120.5", "scope": "user", "project": None}]
+    assert inv["marketplace"]["head"] and inv["marketplace"]["fetched"].endswith("ago")
+    assert inv["tenant"]["pin"] == "~= 0.120" and inv["tenant"]["hosted_url"] == "https://h.test/mcp"
+    assert inv["install_record"]["installer"] == "agent"
+    text = health.report([], inv)
+    assert "cp install — inventory" in text
+    assert "engine     v0.120.5   from git+https://example.test/r" in text
+    assert "plugin     v0.120.5   (user)" in text
+    assert "hosted     hosted-cp/0.120.5   build abc" in text
+    assert "recorded   2026-09-18T00:00:00Z by agent" in text
+    assert text.rstrip().endswith("(plugin_vs_cli, pin_floor, stale_mcp, install_record, hosted_vs_local).")
+
+
+def test_marketplace_fetch_age_is_no_opinion_for_a_non_repo(tmp_path: Path):
+    assert health.marketplace_fetch_age(tmp_path / "nope") == (None, None)
+
+
+def test_doctor_brief_never_touches_the_network(monkeypatch):
+    """--brief is the SessionStart path: sub-second, offline-safe."""
+    from cp_engine.cli import main
+
+    def boom(*a, **k):
+        raise AssertionError("--brief must not fetch")
+
+    monkeypatch.setattr(health, "fetch_hosted_health", boom)
+    monkeypatch.setattr(health, "collect", lambda **kw: [])
+    r = CliRunner().invoke(main, ["doctor", "--brief"])
+    assert r.exit_code == 0 and r.output == ""

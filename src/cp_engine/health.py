@@ -699,6 +699,140 @@ def install_record(
     )
 
 
+# ── hosted_vs_local ──────────────────────────────────────────────────────
+
+
+def hosted_health_url(mcp_url: str | None) -> str | None:
+    """`https://host/mcp` → `https://host/health`. None if unrecognisable."""
+    if not mcp_url:
+        return None
+    base = mcp_url.rstrip("/")
+    if base.endswith("/mcp"):
+        base = base[: -len("/mcp")]
+    return base + "/health"
+
+
+def parse_hosted_version(server_version: str | None) -> str | None:
+    """`hosted-cp/0.120.5` → `0.120.5`. The prefix is the server's, not ours."""
+    if not server_version:
+        return None
+    return str(server_version).rsplit("/", 1)[-1]
+
+
+def fetch_hosted_health(url: str, timeout: float = 5.0) -> dict | None:
+    """GET the hosted server's /health. Stdlib only; any failure is None.
+
+    NETWORK. Never called from `--brief`: SessionStart must not wait on a
+    round-trip or fail offline. `cxp doctor` (full) calls it because the
+    person running that has asked "what is running here?" and will wait 5s.
+    """
+    import urllib.request
+
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:  # noqa: S310 — https, our own host
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception:  # noqa: BLE001 — offline, 5xx, bad JSON: no opinion
+        return None
+
+
+def hosted_vs_local(hosted_version: str | None, cli_version: str | None, hosted_build: str | None = None) -> Finding | None:
+    """Is the hosted MCP server on the same engine as this machine?
+
+    Both servers expose the same verbs (`list_spine_elements`,
+    `pull_project_source`, ...) at independently-deployed versions: the CLI
+    ships by release, the hosted server by a manual `railway up`. So one
+    session can hold two implementations of one operation with nothing saying
+    which answered. This is the §1 failure shape one layer over, and it is the
+    check the plan's 4b.1 asked for. Low severity: the fix is a deploy, not
+    something the person at the keyboard can do — but they should know.
+    """
+    hv = plain_version(hosted_version)
+    cv = plain_version(cli_version)
+    if hv is None or cv is None or hv == cv:
+        return None
+    who = "behind" if hv < cv else "ahead of"
+    return Finding(
+        severity=SEV_HOSTED_VS_LOCAL,
+        code="hosted_vs_local",
+        summary=(
+            f"The hosted cp server is {who} the engine on this machine; the "
+            "same verb can answer differently depending on which one is asked."
+        ),
+        remedy=(
+            "Redeploy the hosted server (railway up from prototypes/hosted-mcp)"
+            if hv < cv else "Update this machine (say \"update cp-engine\")"
+        ) + " so they match.",
+        detail=f"hosted v{hosted_version}" + (f" build {hosted_build}" if hosted_build else "") + f", engine v{cli_version}",
+        extra={"hosted": hosted_version, "build": hosted_build},
+    )
+
+
+# ── inventory ────────────────────────────────────────────────────────────
+
+
+def marketplace_fetch_age(clone: Path | None = None) -> tuple[str | None, float | None]:
+    """(HEAD short sha, seconds since last fetch) for the marketplace clone.
+
+    Fetch age is FETCH_HEAD's mtime — the clone lags, and "available" is only
+    as fresh as this. Reported, never asserted: the plugin hook refreshes it
+    at session start, so a stale age here means that refresh did not run.
+    """
+    c = clone or (Path.home() / ".claude" / "plugins" / "marketplaces" / "cp-engine")
+    try:
+        sha = subprocess.run(
+            ["git", "-C", str(c), "rev-parse", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=5,
+        ).stdout.strip() or None
+    except (OSError, subprocess.SubprocessError):
+        return None, None
+    age = None
+    for marker in (c / ".git" / "FETCH_HEAD", c / ".git" / "HEAD"):
+        try:
+            age = time.time() - marker.stat().st_mtime
+            break
+        except OSError:
+            continue
+    return sha, age
+
+
+def _humanize(seconds: float | None) -> str:
+    if seconds is None:
+        return "unknown"
+    if seconds < 3600:
+        return f"{int(seconds // 60)}m ago"
+    if seconds < 86400:
+        return f"{int(seconds // 3600)}h ago"
+    return f"{int(seconds // 86400)}d ago"
+
+
+def inventory(
+    *,
+    installed_plugins_path: Path | None = None,
+    receipt_path: Path | None = None,
+    cli_version: str | None = None,
+    tenant_root: Path | None = None,
+    hosted: dict | None = None,
+    marketplace_clone: Path | None = None,
+) -> dict:
+    """Everything `cxp doctor` knows about this install, findings or not."""
+    ip = installed_plugins_path or default_installed_plugins_path()
+    rp = receipt_path or default_receipt_path()
+    root = tenant_root if tenant_root is not None else find_tenant_root()
+    src = read_receipt_source(rp)
+    sha, age = marketplace_fetch_age(marketplace_clone)
+    return {
+        "cli": {"version": cli_version if cli_version is not None else installed_cli_version(),
+                "source": (src[1] if src and src[0] == "directory" else f"git+{src[1]}" if src else None)},
+        "plugins": [{"version": p.version, "scope": p.scope, "project": p.project_path}
+                    for p in read_installed_plugins(ip)],
+        "marketplace": {"head": sha, "fetched": _humanize(age)},
+        "tenant": {"root": str(root) if root else None, "pin": read_pin(root) if root else None,
+                   "hosted_url": read_hosted_url(root) if root else None},
+        "hosted": hosted,
+        "install_record": read_install_record(root) if root else None,
+    }
+
+
 # ── collect + render ──────────────────────────────────────────────────────
 
 
@@ -709,6 +843,8 @@ def collect(
     cli_version: str | None = None,
     procs: Iterable[Proc] | None = None,
     tenant_root: Path | None = None,
+    check_hosted: bool = False,
+    hosted_fetch=fetch_hosted_health,
 ) -> list[Finding]:
     """Run every check against the real system (or injected substitutes).
 
@@ -732,6 +868,11 @@ def collect(
         stale_mcp(ps, receipt_mtime(rp)),
         install_record(read_install_record(root), cli, plugins) if has_local else None,
     ]
+    if check_hosted and root:
+        url = hosted_health_url(read_hosted_url(root))
+        data = hosted_fetch(url) if url else None
+        if data:
+            findings.append(hosted_vs_local(parse_hosted_version(data.get("server_version")), cli, data.get("build")))
     return sorted((f for f in findings if f is not None), key=lambda f: f.severity)
 
 
@@ -759,14 +900,43 @@ def brief(findings: list[Finding]) -> str:
     return "\n".join(lines)
 
 
-CHECKS = ("plugin_vs_cli", "pin_floor", "stale_mcp", "install_record")
+CHECKS = ("plugin_vs_cli", "pin_floor", "stale_mcp", "install_record", "hosted_vs_local")
 
 
-def report(findings: list[Finding]) -> str:
-    """The full `cxp doctor` text: every finding, every entry, every command."""
+def render_inventory(inv: dict) -> str:
+    """What is installed here — the answer to "what is running?" on demand."""
+    out = ["cp install — inventory"]
+    cli = inv.get("cli") or {}
+    out.append(f"  engine     v{cli.get('version') or '?'}" + (f"   from {cli['source']}" if cli.get("source") else ""))
+    for p in inv.get("plugins") or []:
+        where = f" for {p['project']}" if p.get("project") else ""
+        out.append(f"  plugin     v{p['version']}   ({p['scope']}{where})")
+    if not inv.get("plugins"):
+        out.append("  plugin     (none registered)")
+    mk = inv.get("marketplace") or {}
+    out.append(f"  marketplace {mk.get('head') or '?'}   fetched {mk.get('fetched') or 'unknown'}")
+    tn = inv.get("tenant") or {}
+    if tn.get("root"):
+        out.append(f"  tenant     {tn['root']}   pin {tn.get('pin') or '?'}")
+    hosted = inv.get("hosted")
+    if hosted:
+        out.append(f"  hosted     {hosted.get('server_version') or '?'}   build {hosted.get('build') or '?'}")
+    elif tn.get("hosted_url"):
+        out.append(f"  hosted     {tn['hosted_url']}   (not checked)")
+    rec = inv.get("install_record")
+    out.append(
+        f"  recorded   {rec.get('recorded_at')} by {rec.get('installer')}" if rec
+        else "  recorded   (no install record)"
+    )
+    return "\n".join(out)
+
+
+def report(findings: list[Finding], inv: dict | None = None) -> str:
+    """The full `cxp doctor` text: inventory, then every finding with its commands."""
+    head = [render_inventory(inv), ""] if inv else []
     if not findings:
-        return f"cp install: no findings from {len(CHECKS)} checks ({', '.join(CHECKS)})."
-    out = [f"cp install: {len(findings)} finding(s)", ""]
+        return "\n".join(head + [f"cp install: no findings from {len(CHECKS)} checks ({', '.join(CHECKS)})."])
+    out = head + [f"cp install: {len(findings)} finding(s)", ""]
     for f in findings:
         out.append(f"⚠ {f.code} — {f.summary}")
         out.append(f"    {f.remedy}")

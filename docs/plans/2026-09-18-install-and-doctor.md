@@ -350,7 +350,10 @@ healthy. Run on a tenant pinned `~= 0.42`, it must warn.
    install path, so it is in-tenant only; `bash -n` gates the chain's `|| true`.
 3. ✅ `cxp sync` raises the pin floor (§4.3); `pin_floor` check; `version_lock`.
 4. ✅ `[install]` record schema; sync refreshes it (never creates); `install_record` check.
-5. `cxp doctor` inventory; `hosted_vs_local`.
+5. ✅ `cxp doctor` inventory; `hosted_vs_local` — network, full mode only;
+   `--brief` never fetches. First live run found the hosted server still at
+   0.120.2 against a 0.120.5 engine: three releases never `railway up`'d. 4b.1's
+   question is answered by evidence — they CAN drift, and now something says so.
 6. Install payload + `mc-2` pointer — the convention issue is **#297**, filed;
    the payload writes `installer = "agent"|"human"` into the record.
 
