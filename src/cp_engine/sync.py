@@ -210,6 +210,54 @@ class _WarningCounter(logging.Handler):
         pass  # a counting failure is never worth stderr noise
 
 
+class EstimateSchemaDrift(SyncError):
+    """The estimate fetch hit a SCHEMA error — a missing column, not a missing
+    estimate. Raised through the best-effort mirrors on purpose (#291).
+
+    Every per-project mirror degrades: a project whose estimate is unreachable
+    mirrors its substance `unbound` and sync carries on. That is right for a
+    per-project condition. A 42703 is not one: the same column is missing for
+    every project, so the swallow turns "the schema moved" into 45 identical
+    warnings and a green exit — which is exactly how #284 would have landed
+    had mc-2 migration 183 run first (`is_default` gone, every spine unbound,
+    `cxp sync` reporting success).
+    """
+
+
+def _is_schema_drift(exc: BaseException) -> bool:
+    """PostgREST names a missing column with SQLSTATE 42703; older client
+    versions only carry the message. Either is drift, not data."""
+    if getattr(exc, "code", None) == "42703":
+        return True
+    msg = str(exc)
+    return "column" in msg and "does not exist" in msg
+
+
+def _fetch_estimate_or_none(client, project):
+    """`fetch_estimate`, degrading to None — except for schema drift, which
+    is raised as `EstimateSchemaDrift` so the run FAILS instead of mirroring
+    every project unbound behind a warning (#291)."""
+    from cp_engine.estimate import fetch_estimate  # lazy, like the loop's own import
+
+    try:
+        return fetch_estimate(client, project.mc2_id)
+    except Exception as exc:  # noqa: BLE001 — estimator unreachable
+        if _is_schema_drift(exc):
+            raise EstimateSchemaDrift(
+                f"estimate fetch for {project.code} hit a schema error — "
+                f"{type(exc).__name__}: {exc}. This is tenant-wide, not this "
+                "project's: every project's substance would mirror unbound "
+                "while sync reported success. Check the estimator column list "
+                "(`cp_engine.estimate._SCOPE_COLUMNS`) against mc-2's "
+                "migrations, then rerun."
+            ) from exc
+        logger.warning(
+            "estimate fetch failed for %s (substance → unbound): %s",
+            project.code, exc, exc_info=True,
+        )
+        return None
+
+
 def sync_tenant(
     config: TenantConfig,
     *,
@@ -620,14 +668,7 @@ def _sync_tenant_inner(
             # genuinely missing estimate (returns None) flows through the same
             # unbound path. Best-effort like the element/snapshot mirrors.
             try:
-                try:
-                    estimate = fetch_estimate(client, project.mc2_id)
-                except Exception as exc:  # noqa: BLE001 — estimator unreachable
-                    logger.warning(
-                        "estimate fetch failed for %s (substance → unbound): %s",
-                        project.code, exc, exc_info=True,
-                    )
-                    estimate = None
+                estimate = _fetch_estimate_or_none(client, project)
                 sync_spine_substance(
                     client,
                     project_id=project.mc2_id,
@@ -637,6 +678,8 @@ def _sync_tenant_inner(
                     now=sync_clock,
                 )
             except Exception as exc:  # noqa: BLE001 — best-effort substance mirror
+                if isinstance(exc, SyncError):
+                    raise  # schema drift is tenant-wide, not this project's
                 logger.warning(
                     "spine-substance mirror skipped for %s: %s",
                     project.code, exc, exc_info=True,
