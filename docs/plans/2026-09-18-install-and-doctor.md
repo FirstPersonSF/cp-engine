@@ -1,6 +1,6 @@
 ---
 Project: cp-engine
-Provenance: Version 02 | 2026-09-18
+Provenance: Version 03 | 2026-09-18
 Filename: 2026-09-18-install-and-doctor.md
 Author: Claude
 ---
@@ -8,8 +8,10 @@ Author: Claude
 # Close the hook gap, then report what is running
 
 **Issue:** [cp-engine #296](https://github.com/FirstPersonSF/cp-engine/issues/296)
-**Status:** v02 — rewritten against a second-machine audit that refuted v01's
-central causal claim. Five fixes already shipped; the doctor is re-scoped.
+**Status:** v03 — v02 reviewed on Tony's machine and amended. **The review found
+a defect that would have shipped Phase 1 broken** (a third silence v02 missed),
+supplied a better warning line, answered both design asks as engineering calls,
+added two findings, and reversed v02's call on when to file the convention issue.
 
 > **v01 is superseded.** It diagnosed "a handoff between two correct
 > mechanisms" and proposed a five-surface scanner plus a human-facing install
@@ -22,8 +24,16 @@ central causal claim. Five fixes already shipped; the doctor is re-scoped.
 
 ## 1. What actually failed
 
-A `cxp` twelve releases behind its plugin ran a routine render and rewrote **54
-provenance stamps backwards** across 58 files. Tony caught it by hand.
+A `cxp` twelve releases behind its plugin ran a routine render and rewrote
+**54 provenance stamps backwards, one each across 54 files**, in a commit
+touching 58 files in total (cp `393ad9c8`). Tony caught it by hand.
+
+> **The figure, pinned.** Two numbers were in circulation: "34 files"
+> (`improvements.md`, written the night of) and v02's "54 stamps across 58
+> files", which conflated stamp count with commit size. Derived from the commit:
+> `git show 393ad9c8 | awk '/^diff --git/{f=$3} /^\+Provenance.*0\.108\.1/{print f}' | sort -u`
+> → **54 distinct files**, one stamp each. The night-of 34 was an undercount.
+> Quote 54/54/58.
 
 **The mechanism, verified on two machines:**
 
@@ -68,7 +78,10 @@ healthy for thirteen days, because both halves *were* installed — the drift wa
 ### 1.2 The pin is a shared defect, and it is mine
 
 `.cp-engine.toml`'s `version = "~= 0.42"` was set by me on 2026-06-30
-(`0951d0b6`) and never moved through 80 releases. **Every tenant carrying that
+(`0951d0b6`) and never moved through 80 releases. *(Tony's audit first reported
+2026-08-28 from `git blame`; the `^` there marks a boundary commit — the oldest
+in his clone's history — so blame reported where the clone begins, not where the
+line was authored. He corrected it himself. Authorship stands, date superseded.)* **Every tenant carrying that
 pin has the same dead check.** It lives in a committed file, not on a machine —
 so no per-machine scan finds it, and fixing one laptop fixes nothing.
 
@@ -184,38 +197,110 @@ That is the actual failure, and it is still open.
 
 ## 4. Build, in order
 
+### Phase 0 — one line of SessionStart output, total
+
+**Ships before Phases 1 and 3, not after.** Retrofitting a budget onto three
+shipped hooks does not happen, and this plan is about to add two more printers to
+a surface that already has one.
+
+**The rule** (Tony's, adopted): *cp gets one line of SessionStart output, and
+everything it wants to say competes for it.* Phases 1, 2 and 3 do not each get a
+line — they each produce a **finding**, and one consolidated reporter prints the
+highest-severity finding plus a count of the rest (`+2 more, ask for details`).
+Silent when healthy.
+
+**The reasoning is this plan's own thesis, inverted.** #296 exists because a
+signal structurally unable to fail is worthless. The converse is equally true and
+less often said: **a signal that always prints is also unable to fail**, because
+it stops being read. Four independent hooks each convinced their own line matters
+is exactly how that happens, and no single author ever decides to build it.
+
+It also answers ask 1 by construction. Tony will act on SessionStart output
+*"only if it looked alarming"* — and a line that appears **only** when something
+is wrong is alarming by virtue of appearing at all. No adjective required.
+
+**Scope:** a reporter that collects findings from the existing hooks
+(`sync-cli-version.sh`, `tenant-freshness.sh`) plus the new ones, ranks them, and
+prints one line. Severity ordering and the `--details` path are the design work.
+
 ### Phase 1 — close the hook gap (the fix)
 
 **The tenant deferral in `sync-cli-version.sh` is correct and stays.** Two hooks
 installing the CLI would fight. What changes is that deferring the *install*
 must not also defer the *observation*.
 
-Inside a tenant, before `exit 0`, compare **plugin version vs installed CLI** and
-warn on mismatch. Warn only — no install, no fight. This is the comparison
-nothing performs today, in the one place every session passes through.
+> **⚠ There is a THIRD silence, and v02 missed it** (Tony's Claude, 2026-09-18;
+> verified). Below the deferral sits the no-downgrade guard:
+>
+> ```bash
+> _highest=$(printf '%s\n%s\n' "$PLUGIN_VERSION" "$INSTALLED_VERSION" | sort -V | tail -1)
+> if [ "$_highest" = "$INSTALLED_VERSION" ]; then
+>     exit 0          # installed is ahead → no-op
+> fi
+> ```
+>
+> Run against the incident's own numbers — plugin `0.108.1`, CLI `0.119.0` —
+> `sort -V` returns `0.119.0`, the guard fires, `exit 0`. **The drift on Tony's
+> machine was CLI-ahead-of-plugin**, so even with the deferral removed entirely
+> this hook would still have said nothing.
+>
+> **This would have shipped Phase 1 broken.** The natural implementation reuses
+> the comparison logic already in the file, and that logic contains the guard —
+> so the §5 control fixture (plugin 0.108.1 / CLI 0.119.0) is precisely the
+> direction the guard suppresses. The test would have passed by being silent for
+> the wrong reason.
+
+Inside a tenant, compare **plugin version vs installed CLI** and warn on any
+mismatch. Warn only — no install, no fight. Three constraints, all load-bearing:
+
+1. **Direction-agnostic.** Any mismatch warns. *"Installed is ahead"* is not a
+   healthy state; it is half of the state that caused this incident.
+2. **Placed above the equality check and the no-downgrade guard**, not below.
+   The guard keeps its job for *installing* and gets no vote on *observing* —
+   the same separation this phase already makes for the deferral, one line lower.
+3. **The remedy follows the direction.** CLI behind plugin →
+   `uv tool install --force --reinstall`. Plugin behind CLI (the incident) →
+   `claude plugin update`. A single hard-coded remedy is wrong half the time.
+
+**The warning text** — Tony's wording, chosen over v02's draft:
 
 ```
-[cp] Your cp install is out of step with itself — the slash commands are
-     v0.108.1, the engine they call is v0.119.0. Anything that renders or
-     syncs may write stale results. Ask this session to update cp-engine,
-     or run:  claude plugin update cp-engine@cp-engine
+[cp] Your cp tools are out of sync with each other and may
+     save bad data. Say "update cp-engine" and this session
+     will fix it.
+     (plugin v0.108.1, engine v0.119.0)
 ```
 
-Three deliberate choices. It names the **install**, not the spine — the spine is
-fine; the toolchain reaching it is not, and saying otherwise would send someone
-looking in the wrong place. It names the **consequence** (*stale results*) rather
-than only the numbers, because two version strings do not tell a reader whether
-to care. And it offers the **conversational path first**, because that is how the
-work is actually driven here — the typed command is the fallback, not the lead.
+Why this beats the draft it replaces:
 
-⚠ **This wording is a draft and Tony should replace it.** It is my guess at what
-he would act on at 8am, and the last time I guessed about his machine I was
-wrong in a way only he could catch. Asking him to write the line is item 2 of
-the review request.
+- **"may save bad data"**, not *"may write stale results."* *Stale* reads as
+  slightly old and survivable. The actual failure wrote wrong history into
+  committed files.
+- **One action, phrased as a sentence to say rather than a command to run.** The
+  typed command leaves the body entirely — he does not run
+  `claude plugin update`, so offering it as a co-equal branch adds a path he will
+  not take. Keep it for the log or `--verbose`.
+- **Version numbers last, parenthesised.** They are evidence for whoever debugs
+  it, not information he acts on.
+- **It survives constraint 3**: *"say update cp-engine"* is true in both drift
+  directions, because an agent can act on the intent either way. The
+  direction-specific command belongs in the verbose detail, not the line.
 
-**Control:** a fixture with plugin 0.108.1 and CLI 0.119.0 inside a tenant must
-**fail** against today's hook (silent) and warn after the change. That is the
-exact state of Tony's machine for thirteen days.
+**Alarming by placement, not by adjective.** Asked whether SessionStart output
+would reach him, Tony said *"only if it looked alarming"* — routine grey text
+gets skimmed. The answer is to make the line visually distinct (prefix, colour,
+its own position above the housekeeping) while keeping this plain wording, which
+also preserves stronger language for something that genuinely blocks.
+
+**Control — both directions, or the guard bug survives.** Today's hook is silent
+on both; a correct Phase 1 warns on both, with a *different remedy line* in each:
+
+| Fixture | Today | Required |
+|---|---|---|
+| plugin 0.108.1 / CLI 0.119.0 (the incident) | silent | warn → `claude plugin update` |
+| plugin 0.120.5 / CLI 0.119.0 | silent | warn → `uv tool install --force --reinstall` |
+
+Testing only one direction leaves the defect in place.
 
 ### Phase 2 — the pin must be capable of failing
 
@@ -243,6 +328,15 @@ and say `/mcp` restarts it.
 **Acceptance:** `--fix`, if it ever exists, must state that it cannot clear this.
 
 ### Phase 4 — the install payload, written for an agent
+
+**Where it lives — answered, asymmetrically.** Full payload in **cp-engine**,
+versioned with the thing it describes: instructions that live apart from their
+tool drift from it, which is the pin's defect class and this plan should not
+create a second instance while fixing the first. **Pointer in `mc-2`** — a few
+lines in its `CLAUDE.md` naming what cp-engine is and where the payload lives.
+Not a copy. The evidence is behavioural rather than stated: the experiment
+already ran in September, when a cold session pointed at `mc-2` got far enough to
+install four surfaces. That result beats an opinion.
 
 Not a one-pager for a human. In the repo, weighted so a cold session reads it
 first, covering: **what this is** — stated as what the tools give you access to
@@ -280,10 +374,59 @@ needs fixing — a stale subprocess — cannot be fixed by reinstalling).
 
 ---
 
+## 4b. Two findings v02 did not cover
+
+Both from Tony's review. Scoped here rather than deferred, because each is the
+§1 failure shape one layer over.
+
+### 4b.1 Hosted and local expose the same verbs, independently versioned
+
+`.mcp.json` carries `cp-hosted` (HTTP, Railway) and `cp-sources` (`cxp mcp`,
+local) **simultaneously** — that is Tony's machine and Drew's. At least six verb
+names exist on both: `list_spine_elements`, `list_project_sources`,
+`pull_spine_element`, `list_commitments`, `list_project_meetings`,
+`pull_project_source`.
+
+So one session holds two implementations of the same operation at two
+independently-deployed versions, **and nothing compares them.** Phase 5 reports
+the hosted build as inventory; inventory is not comparison.
+
+**Worse than the drift being fixed in one respect:** CLI/plugin drift produced
+wrong *output*. This can produce **two different answers to the same question
+inside one session**, with no indication which was used.
+
+**Action:** either add hosted-vs-local verb-version comparison to Phase 0's
+consolidated check, **or** state explicitly that deployment pins them together
+and they cannot drift. If that is true it is worth writing down — nothing on
+either machine currently shows it.
+
+### 4b.2 Thirteen days of stale-plugin writes were never assessed
+
+The provenance damage is known and now blocked (v0.120.3). But the plugin ran
+twelve releases behind for **thirteen days**, and the drifted half was the skills
+and slash commands. `/cp-wrapup` ran from that cache the entire time.
+
+**Nobody has asked what else it wrote.** Exec Summaries, session captures,
+decision sweeps, commitment routing — all authored by a 0.108.1 skill against a
+0.119.0 engine. This plan treats the incident as one render event; the exposure
+window is thirteen days of routine writes.
+
+**Action:** a bounded read-only pass over tenant commits in that window, before
+Phase 4. Not a phase — a couple of hours. A clean result is worth knowing; a
+dirty one changes the severity framing of the whole issue.
+
+---
+
 ## 5. Verification
 
-- **Phase 1 control:** plugin 0.108.1 + CLI 0.119.0 inside a tenant — silent
-  today, warns after. Tony's exact state.
+- **Phase 1 control — BOTH directions.** plugin 0.108.1 + CLI 0.119.0 (Tony's
+  exact state, and the direction the no-downgrade guard suppresses) *and* plugin
+  0.120.5 + CLI 0.119.0. Today's hook is silent on both; a correct Phase 1 warns
+  on both with a different remedy each. **Testing one direction leaves the guard
+  defect in place** — which is how v02 would have shipped a passing test over a
+  broken phase.
+- **Phase 0 control:** three simultaneous findings must produce one line plus a
+  count, not three lines.
 - **Phase 2 control:** a tenant pinned `~= 0.42` against engine 0.120.x must
   warn. Every tenant was in this state until today.
 - **Phase 3 control:** a `cxp mcp` process started before the install mtime must
@@ -294,29 +437,71 @@ needs fixing — a stale subprocess — cannot be fixed by reinstalling).
 
 ---
 
-## 6. Explicitly out of scope
+## 6. The convention issue — file it NOW, not after Phase 4
 
 Tony's report closes with a convention proposal: make the repository the unit of
 instruction and self-describing to a cold agent, on the argument that the native
 interface of a language model is language, and that the missing product is the
 context a machine needs to choose the right surface on a person's behalf.
 
-**The diagnosis is right and the scope is larger than #296.** It should be its
-own issue. #296 has a shippable core — close the hook gap, make the pin capable
-of failing, surface at SessionStart — and that core must not wait on an
-org-wide convention. Phase 4 builds cp-engine's instance of it; the convention
-itself is filed separately.
+**v02 said "file it separately, after the core ships." His review changed that,
+and the evidence is a table about us:**
+
+| Artifact | Addressed to | Was that reader there? |
+|---|---|---|
+| v01's install one-pager | someone who reads docs before installing | **No** — an agent installed it |
+| v01's `cxp sync` warning | someone who runs `cxp sync` | **No** — he has never run it |
+| v02's review request | someone who knows the four surfaces | **No** — two of five asks were unanswerable |
+
+**Three for three is not a series of slips. It is a pattern with a cause:** the
+default when writing is to write from inside the system, and nothing in the
+process interrupts that. Two of our five review asks could not be answered
+because they required modelling the system — *which repo should hold the
+payload*, *what is the fatigue budget* — and the terms in them (tenant-freshness
+line, version pin, background processes) had no referent for the person being
+asked.
+
+**A usable test, adopted:** can this be answered by *reacting to something*, or
+does it require *knowing how it works*? The first is a user question. The second
+is the builder's call, confirmed later by watching what the user does. We asked
+two builder questions as if they were user questions.
+
+**And the part that bites hardest:** an agent asked to draft the question does
+not fix this — **it amplifies it**, because it inherits the author's vocabulary by
+default and has no instinct to translate. That is the same mechanism that let a
+session improvise an install in September and write nothing down. *Agents
+reproduce the frame they are given unless something tells them not to.*
+
+So Phase 4's payload needs an explicit statement of **who the reader is and what
+they can be assumed to know** — not only what to install. Without it, the payload
+is one more correct artifact aimed past its audience, written by the actor most
+likely to aim it there.
+
+**Decision, reversed from v02:** file the convention issue **now**. Phase 4 will
+otherwise set the convention implicitly by shipping first — which is precisely
+how the original unsupported configuration came to exist. The shippable core
+(Phases 0–3) does not wait on it, but the convention must exist before Phase 4
+writes the payload that would silently become the standard.
 
 ---
 
 ## 7. Open questions
 
-1. **Phase 2 placement** — tenant self-check, or is `release.py`'s reminder
-   enough? (Lean self-check.)
-2. **Warning fatigue** — Phases 1 and 3 both add SessionStart output, which
-   already prints tenant-freshness. What is the budget before it becomes noise
-   nobody reads?
-3. **Does Phase 4 belong in cp-engine, or in `mc-2`** — the repo a cold session
-   was actually pointed at?
-4. **Marcello is still unaudited.** Two machines, two different shapes. A third
-   may refute something here, as the second refuted v01.
+**Answered by the review** — kept here with their answers so the reasoning is not
+lost: Q2 fatigue budget → Phase 0, one line total. Q3 payload location → Phase 4,
+cp-engine with an `mc-2` pointer. Ask 1 (would SessionStart reach him) → yes,
+*"only if it looked alarming"*, which Phase 0 satisfies by construction.
+
+Still open:
+
+1. **Phase 2 placement** — tenant self-check, or is `release.py`'s minor-bump
+   reminder enough? (Lean self-check: the reminder fires on the releaser's
+   terminal, not on the machine carrying the stale pin.)
+2. **4b.1** — add hosted-vs-local verb comparison to Phase 0, or establish that
+   deployment pins them together? Needs someone to check how the hosted server's
+   verb set is built relative to the CLI's.
+3. **Phase 0 severity ordering** — what outranks what, when three findings
+   compete for one line.
+4. **Marcello is still unaudited.** Two machines, two shapes, and the second
+   refuted v01 while the review of v02 found a shipping defect. A third may do it
+   again.
