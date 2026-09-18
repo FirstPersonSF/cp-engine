@@ -70,11 +70,23 @@ jobs:
           python -m pip install --upgrade pip
           pip install -e '.[dev]'
 
+      - name: Hosted suite is collected
+        # `pyproject.toml` `testpaths` names `prototypes/hosted-mcp`, but an
+        # explicit path argument overrides testpaths — which is how this job
+        # ran `pytest tests/` for a day after that entry was added and the
+        # nine hosted test files never executed in CI (#288). Fail loudly if
+        # the directory ever goes invisible again.
+        run: |
+          n=$(pytest --collect-only -q | grep -c '^prototypes/hosted-mcp/' || true)
+          echo "hosted-mcp tests collected: $n"
+          test "$n" -gt 0
+
       - name: Run tests
+        # No path argument: `testpaths` in pyproject.toml governs (#288).
         # `-p no:randomly` is deliberate if a random-order plugin ever lands:
         # the resolver-parity and hosted tests import a module by file path,
         # and a shared module cache makes order matter.
-        run: pytest tests/ -q
+        run: pytest -q
 
 # NOTE — no lint job here, deliberately. `ruff check .` currently reports 727
 # pre-existing findings, so a blocking lint gate would fail every PR on day one
