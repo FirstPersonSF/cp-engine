@@ -31,11 +31,14 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import date
+from dataclasses import dataclass
+from datetime import date, timedelta
 
 from cp_engine.render import (
     EXEC_SUMMARY_AUTHORED_FIELDS,
+    EXEC_SUMMARY_END,
     EXEC_SUMMARY_REGION,
+    EXEC_SUMMARY_START,
     slice_exec_summary_region,
     splice_managed_region,
 )
@@ -227,14 +230,205 @@ def _existing_field_block(region: str, label: str) -> list[str]:
     return block
 
 
+# The date of an Updates entry. The convention is `- YYYY-MM-DD — prose`,
+# but real files carry `- 2026-09-15 (eve) — …`, the rolled-off compaction
+# `- (2026-09-15 Scoper's baseline ran …` and `- (Older updates — 2026-08-17 …`.
+# So the date is SEARCHED for — first in the prefix before the ` — ` dash,
+# then anywhere in the first line — rather than anchored at column 0.
+_ENTRY_DATE_RE = re.compile(r"(?P<date>\d{4}-\d{2}-\d{2})")
+
+
+def _normalise(text: str) -> str:
+    """Whitespace-insensitive form for comparing entry prose.
+
+    Collapses every run of whitespace (spaces, tabs, newlines) to one space
+    and strips the ends. An internal double space, a trailing space, or a
+    continuation line re-wrapped by an editor must not defeat the dedupe —
+    the entry is identified by what it SAYS, and none of those change that.
+    """
+    return " ".join(text.split())
+
+
+def _entry_prose(first_line_body: str) -> str:
+    """The prose of an entry line, with the date prefix removed.
+
+    `body` is the bullet line without its `- ` marker. The prefix ends at the
+    first ` — `; a line with no dash is all prose (a hand-written entry that
+    skipped the date convention still deduplicates on its text).
+    """
+    head, sep, tail = first_line_body.partition(" — ")
+    return tail if sep else head
+
+
+@dataclass(frozen=True)
+class RollOffReport:
+    """Entries older than the roll-off threshold — REPORTED, never removed.
+
+    `dates` is in file order (newest first when the file follows its own
+    convention). `count` is what a caller surfaces as the cue to run a local
+    wrap-up; the entries themselves stay put.
+    """
+
+    threshold: date
+    dates: tuple[date, ...]
+
+    @property
+    def count(self) -> int:
+        return len(self.dates)
+
+
+@dataclass(frozen=True)
+class UpdateAppendResult:
+    """Result of `append_update_entry`.
+
+    UNPACKS AS A 2-TUPLE. The verb shipped (#281) returning `(text, changed)`
+    and the webhook caller destructures it that way. Adding the roll-off
+    report as a third tuple member would turn every `text, changed = ...` into
+    a `ValueError`, so the report rides as an attribute and iteration keeps
+    the two-value contract: `text, changed = result` still works, and
+    `result.roll_off` is there for a caller that wants the advisory.
+    """
+
+    text: str
+    changed: bool
+    roll_off: RollOffReport
+
+    def __iter__(self):
+        return iter((self.text, self.changed))
+
+
+@dataclass(frozen=True)
+class _Entry:
+    """One top-level bullet in the Updates block, with its continuation."""
+
+    index: int  # line index (within the region) of the bullet line
+    first_body: str  # the bullet line minus `- `
+    continuation: tuple[str, ...]  # nested/indented lines that belong to it
+    is_placeholder: bool
+
+    @property
+    def entry_date(self) -> date | None:
+        head, sep, _ = self.first_body.partition(" — ")
+        m = _ENTRY_DATE_RE.search(head if sep else "") or _ENTRY_DATE_RE.search(
+            self.first_body
+        )
+        if m is None:
+            return None
+        try:
+            return date.fromisoformat(m.group("date"))
+        except ValueError:
+            return None
+
+    @property
+    def normalised_first_line(self) -> str:
+        return _normalise(_entry_prose(self.first_body))
+
+    @property
+    def normalised_full(self) -> str:
+        return _normalise(
+            " ".join([_entry_prose(self.first_body), *self.continuation])
+        )
+
+    def matches(self, wanted: str) -> bool:
+        """`wanted` is already normalised.
+
+        Either shape counts: a caller re-posting a multi-paragraph entry sends
+        the whole thing; a caller re-posting its headline sends only the
+        first line. Both are the same entry, and neither may land twice.
+        """
+        return wanted in (self.normalised_first_line, self.normalised_full)
+
+
+def _updates_block(lines: list[str]) -> tuple[int | None, int]:
+    """(index of the `**Updates:**` line or None, index where its block ends).
+
+    The block runs to the next AUTHORED field line or the end of the region —
+    NOT to the first blank line. Real files carry blanks mid-block (a
+    multi-paragraph entry, an editor's spacing) and every entry after one is
+    still an Updates entry; a window that stopped there let a verbatim
+    re-post of the last entry through as "new".
+
+    A field line is one at column 0 whose label is in
+    `EXEC_SUMMARY_AUTHORED_FIELDS`. An indented `  **Also:** …` paragraph
+    inside a long entry has the field SHAPE, and cp-context-protocol has one
+    — reading it as a boundary hid six entries behind it.
+    """
+    start: int | None = None
+    for i, raw in enumerate(lines):
+        if raw[:1].isspace():
+            continue
+        m = _FIELD_RE.match(raw.strip())
+        if m is None:
+            continue
+        label = m.group("label").strip()
+        if start is None:
+            if label == "Updates":
+                start = i
+            continue
+        if label in EXEC_SUMMARY_AUTHORED_FIELDS:
+            return start, i
+    return start, len(lines)
+
+
+def _parse_entries(lines: list[str], begin: int, end: int) -> list[_Entry]:
+    """Top-level bullets in `lines[begin:end]`, each with its continuation.
+
+    A top-level entry is an UNINDENTED `- ` line. Anything indented beneath
+    it — a nested `  - sub` bullet, a wrapped continuation, an indented
+    paragraph after a blank — belongs to that entry, which is how markdown
+    reads it and how a reader does too. Those lines are never entries of
+    their own, so a nested bullet is not compared, counted, or re-emitted
+    as one.
+    """
+    entries: list[_Entry] = []
+    i = begin
+    while i < end:
+        raw = lines[i].rstrip("\r\n")
+        if not raw.startswith("- "):
+            i += 1
+            continue
+        body = raw[2:]
+        cont: list[str] = []
+        j = i + 1
+        while j < end:
+            nxt = lines[j].rstrip("\r\n")
+            if nxt.strip() == "":
+                # A blank continues the entry only if indented text follows.
+                k = j + 1
+                while k < end and lines[k].strip() == "":
+                    k += 1
+                if k < end and lines[k][:1].isspace() and lines[k].strip():
+                    j = k
+                    continue
+                break
+            if nxt[:1].isspace():
+                cont.append(nxt.strip())
+                j += 1
+                continue
+            break
+        entries.append(
+            _Entry(
+                index=i,
+                first_body=body,
+                continuation=tuple(cont),
+                is_placeholder=body.strip().startswith("_<") and body.strip().endswith(">_"),
+            )
+        )
+        i = j
+    return entries
+
+
 def append_update_entry(
     cp_md_text: str,
     entry: str,
     *,
     today: date,
     roll_off_after_days: int = 28,
-) -> tuple[str, bool]:
-    """Add ONE dated entry to `Updates`, newest first. Returns (text, changed).
+) -> UpdateAppendResult:
+    """Add ONE dated entry to `Updates`, newest first.
+
+    Returns an `UpdateAppendResult` that unpacks as `(text, changed)` and
+    carries `roll_off` (see `RollOffReport`).
 
     WHY THIS IS NOT JUST `merge_exec_summary_fields({"Updates": [...]})` (#281).
     Every other authored field REPLACES wholesale — that is the documented
@@ -248,6 +442,15 @@ def append_update_entry(
     the one #251 is about — a caller who cannot safely add to the log stops
     adding to it.
 
+    WHY IT IS AN INSERTION, NOT A RE-RENDER (#294). The first cut collected the
+    existing bullets and re-rendered the field through the replace path. A
+    round-trip of real tenant files showed what that costs: a nested
+    `  - sub` bullet came back at top level, and the blank line before the
+    end marker vanished. Neither was a lost entry, but a verb that rewrites
+    lines it did not touch is one the next reader cannot trust. So the new
+    line is spliced in directly after `**Updates:**` and every other byte of
+    the file is left exactly where it was.
+
     Entries are `- <YYYY-MM-DD> — <prose>`; the date is stamped here rather
     than accepted, so a caller cannot backdate the record.
 
@@ -256,12 +459,17 @@ def append_update_entry(
     a checkout this server does not have. Doing half of it (deleting here,
     writing nowhere) would destroy the narrative it exists to keep, so old
     entries stay and `roll_off_after_days` only shapes the advisory a caller
-    can surface. The count of over-age entries is the caller's cue to run a
+    can surface: `result.roll_off` counts the entries older than the
+    threshold and lists their dates. The count is the caller's cue to run a
     local wrap-up, never this function's licence to delete.
 
-    A duplicate entry (same date, same text) is a NO-OP: it neither rewrites
-    the file nor advances the `· updated` stamp, so a retry after a timeout is
-    safe and a scheduled caller cannot manufacture freshness.
+    A duplicate entry (same text, whitespace-insensitive, anywhere in the
+    Updates block) is a NO-OP: it neither rewrites the file nor advances the
+    `· updated` stamp, so a retry after a timeout is safe and a scheduled
+    caller cannot manufacture freshness.
+
+    The scaffold's `- _<dated — …>_` seed bullet is dropped the first time a
+    real entry lands; a placeholder is not history.
     """
     entry = (entry or "").strip().lstrip("-").strip()
     if not entry:
@@ -270,34 +478,72 @@ def append_update_entry(
             "saying nothing"
         )
 
-    region = slice_exec_summary_region(cp_md_text)
-    if region is None:
+    start = cp_md_text.find(EXEC_SUMMARY_START)
+    end = cp_md_text.find(EXEC_SUMMARY_END, start) if start != -1 else -1
+    if start == -1 or end == -1:
         raise ExecSummaryMergeError(
             "no exec-summary region in this cp.md — the region is scaffolded "
             "by `cxp sync`; run it for this project first"
         )
+    region_start = start + len(EXEC_SUMMARY_START)
+    before, region, after = (
+        cp_md_text[:region_start],
+        cp_md_text[region_start:end],
+        cp_md_text[end:],
+    )
 
-    block = _existing_field_block(region, "Updates")
-    existing = [ln for ln in block if ln.startswith("- ")]
-    line = f"- {today.isoformat()} — {entry}"
+    lines = region.splitlines(keepends=True)
+    field_idx, block_end = _updates_block(lines)
+    if field_idx is None:
+        raise ExecSummaryMergeError(
+            "no `**Updates:**` field in the exec-summary region — the field is "
+            "scaffolded by `cxp sync`; run it for this project first"
+        )
+
+    entries = _parse_entries(lines, field_idx + 1, block_end)
+    threshold = today - timedelta(days=roll_off_after_days)
+    roll_off = RollOffReport(
+        threshold=threshold,
+        dates=tuple(
+            d for e in entries
+            if not e.is_placeholder
+            and (d := e.entry_date) is not None
+            and (today - d).days > roll_off_after_days
+        ),
+    )
 
     # Dedupe on the TEXT, not the whole line. Comparing the dated line meant a
     # retry that crossed midnight appended a second copy of the same entry —
     # exactly the case a scheduled caller hits, and the one a no-op guard
     # exists to cover. An entry is identified by what it says.
-    def _prose(ln: str) -> str:
-        body = ln[2:]
-        head, sep, tail = body.partition(" — ")
-        return (tail if sep else head).strip()
+    wanted = _normalise(entry)
+    if any(e.matches(wanted) for e in entries if not e.is_placeholder):
+        return UpdateAppendResult(cp_md_text, False, roll_off)
 
-    if any(_prose(ln) == entry for ln in existing):
-        return cp_md_text, False
+    field_line = lines[field_idx]
+    eol = field_line[len(field_line.rstrip("\r\n")):] or "\n"
+    new_line = f"- {today.isoformat()} — {entry}{eol}"
 
-    return (
-        merge_exec_summary_fields(
-            cp_md_text,
-            {"Updates": [line[2:]] + [ln[2:] for ln in existing]},
-            today=today,
-        )[0],
-        True,
+    # Drop the scaffold seed(s) — the placeholder bullet and a placeholder
+    # inline value on the field line. Real content is left exactly as found.
+    drop = {e.index for e in entries if e.is_placeholder}
+    m = _FIELD_RE.match(field_line.strip())
+    if m is not None and "_<" in m.group("value"):
+        indent = field_line[: len(field_line) - len(field_line.lstrip())]
+        field_line = f"{indent}**Updates:**{eol}"
+
+    out: list[str] = []
+    for i, raw in enumerate(lines):
+        if i in drop:
+            continue
+        if i == field_idx:
+            out.append(field_line)
+            out.append(new_line)
+            continue
+        out.append(raw)
+
+    updated = f"{before}{''.join(out)}{after}"
+    updated = _STAMP_RE.sub(
+        lambda m: f"{m.group('prefix')}{today.isoformat()}", updated, count=1
     )
+    return UpdateAppendResult(updated, True, roll_off)

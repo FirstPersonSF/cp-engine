@@ -232,3 +232,55 @@ class TestCallerErrors:
         )
         assert r.status_code in (401, 403)
         assert "All five pillars" not in _cp_text(tenant)
+
+
+class TestTheRollOffIsReported:
+    """#294: `roll_off_after_days` was accepted and never read. The report
+    exists now, and the route is where a hosted wrap-up sees it — nothing
+    deletes; the count is the cue to rotate where a checkout exists."""
+
+    _WITH_UPDATES = CP_MD.replace(
+        "**Blockers:** None.\n",
+        "**Blockers:** None.\n"
+        "**Updates:**\n"
+        "- 2026-01-05 — An entry well past any roll-off threshold.\n"
+        "- 2026-01-02 — Another one, older still.\n",
+    )
+
+    def _seed(self, tenant: Path) -> None:
+        (tenant / "1p/google/ggl-5151-grc-narrative/cp.md").write_text(self._WITH_UPDATES)
+        _git("add", "-A", cwd=tenant)
+        _git("commit", "-m", "seed updates", cwd=tenant)
+        _git("push", "origin", "main", cwd=tenant)
+
+    def test_the_response_names_what_is_over_age(self, client, tenant):
+        self._seed(tenant)
+        r = _post(client, {**GOOD, "fields": {},
+                           "updates_append": "A fresh entry that lands at the top of Updates."})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "Updates" in body["changed"]
+        assert body["roll_off"]["count"] == 2
+        assert body["roll_off"]["dates"] == ["2026-01-05", "2026-01-02"]
+        assert body["roll_off"]["older_than"] < "2026-09"
+        text = _cp_text(tenant)
+        assert "2026-01-02 — Another one" in text, "roll-off must be reported, never performed"
+
+    def test_a_no_op_append_still_reports(self, client, tenant):
+        self._seed(tenant)
+        r = _post(client, {**GOOD, "fields": {},
+                           "updates_append": "An entry well past any roll-off threshold."})
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["changed"] == [] and body["commit"] is None
+        assert body["roll_off"]["count"] == 2
+
+    def test_a_field_only_call_reports_nothing(self, client, tenant):
+        r = _post(client, GOOD)
+        assert r.status_code == 200
+        assert r.json()["roll_off"] is None
+
+    def test_a_region_without_updates_is_a_400_not_a_phantom_change(self, client, tenant):
+        """The old path returned changed=True while writing nothing (#294)."""
+        r = _post(client, {**GOOD, "fields": {}, "updates_append": "Nowhere for this to go."})
+        assert r.status_code == 400, r.text

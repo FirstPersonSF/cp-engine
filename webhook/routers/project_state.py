@@ -169,10 +169,20 @@ async def project_state_capture(request: Request):
             # a single call can add the entry AND refresh the other fields, and
             # so `changed` reports both.
             changed_updates = False
+            roll_off = None
             if updates_append:
-                text, changed_updates = append_update_entry(
+                appended = append_update_entry(
                     text, updates_append, today=date.today()
                 )
+                text, changed_updates = appended
+                # #294: the roll-off is REPORTED, never performed. Nothing
+                # here deletes; the caller (a wrap-up) is told what is over
+                # age so rotation can happen where a checkout exists.
+                roll_off = {
+                    "older_than": appended.roll_off.threshold.isoformat(),
+                    "count": appended.roll_off.count,
+                    "dates": [d.isoformat() for d in appended.roll_off.dates],
+                }
             merged, changed = merge_exec_summary_fields(
                 text, cleaned, today=date.today()
             )
@@ -194,7 +204,7 @@ async def project_state_capture(request: Request):
                 "project-state capture was a no-op: %s (%s) by %s",
                 project_code, rel, user,
             )
-            return {"ok": True, "changed": [], "commit": None, "cp_md_path": rel}
+            return {"ok": True, "changed": [], "commit": None, "cp_md_path": rel, "roll_off": roll_off}
 
         cp_md.write_text(merged)
 
@@ -244,7 +254,7 @@ async def project_state_capture(request: Request):
         "ok": True,
         "changed": list(changed),
         "commit": sha,
-        "cp_md_path": rel,
+        "cp_md_path": rel, "roll_off": roll_off,
     }
 
 
