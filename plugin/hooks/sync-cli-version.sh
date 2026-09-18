@@ -54,7 +54,25 @@ done
 # current; (b) below, NEVER move the CLI backwards regardless.
 # Safety: only reset a checkout that is genuinely the marketplace clone
 # (toplevel under ~/.claude/plugins/) — never a dev working tree.
-_toplevel=$(git -C "${CLAUDE_PLUGIN_ROOT}" rev-parse --show-toplevel 2>/dev/null || true)
+#
+# ── 2026-09-18: this block had NEVER EXECUTED ─────────────────────────
+# It derived the repo from `$CLAUDE_PLUGIN_ROOT`, which is the plugin
+# CACHE (~/.claude/plugins/cache/cp-engine/cp-engine/<version>/) — an
+# extracted directory, not a git checkout. `rev-parse` therefore failed,
+# `_toplevel` was empty, the `case` matched nothing, and the fetch never
+# ran. Verified on two machines. So "the once-and-for-all downgrade fix"
+# was a comment describing code that did nothing, while the clone it was
+# meant to refresh went stale — which is how a plugin sat at 0.108.1
+# against a 0.119.0 CLI for twelve releases.
+#
+# The marketplace clone is a SIBLING of the cache, not an ancestor:
+#   cache:       ~/.claude/plugins/cache/<marketplace>/<plugin>/<version>/
+#   marketplace: ~/.claude/plugins/marketplaces/<marketplace>/
+# Address it directly. The `rev-parse` + prefix check is kept as the
+# safety gate — it now guards a path we chose rather than one we hoped
+# to derive, so a non-repo or a relocated clone still no-ops cleanly.
+_marketplace="$HOME/.claude/plugins/marketplaces/cp-engine"
+_toplevel=$(git -C "$_marketplace" rev-parse --show-toplevel 2>/dev/null || true)
 case "$_toplevel" in
     "$HOME/.claude/plugins/"*)
         if git -C "$_toplevel" fetch --quiet origin main 2>/dev/null; then

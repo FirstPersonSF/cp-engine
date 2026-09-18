@@ -231,6 +231,46 @@ def bump_webhook_pin(new: str) -> None:
     WEBHOOK_PYPROJECT.write_text(pattern.sub(f'"cp-engine=={new}"', text, count=1))
 
 
+def _print_tenant_pin_reminder(new: str, previous: str) -> None:
+    """Name the tenant-pin edit this release needs, if it needs one.
+
+    WHY THIS IS A REMINDER AND NOT A BUMP (2026-09-18). Every other version
+    mirror is bumped in-place above, because they all live in THIS repo. The
+    tenant pin does not: `.cp-engine.toml` lives in a separate repository, on a
+    clone this script cannot assume exists, and changing it means a commit in
+    someone else's working tree. So this cannot be automated from here without
+    reaching across a repo boundary, which is why it never was.
+
+    But "manual" turned out to mean "forgotten." The spec calls the pin bump
+    "Edit + commit (manual, deliberate)" and it was done faithfully for ~20
+    consecutive releases — `~= 0.23` through `~= 0.42` — then stopped on
+    2026-06-30 and has not moved through 80 releases. A pin of `~= 0.42` is
+    satisfied by every version from 0.42.0 to 0.120.x, so it answers "is this
+    allowed?" and has not answered "is this current?" since June. That gap is
+    exactly where a CLI twelve releases stale ran a render and rewrote 54
+    provenance stamps backwards.
+
+    Only MINOR bumps print. The spec's model is that tenants opt into a new
+    minor series and take patches automatically, so a patch release genuinely
+    needs no tenant edit — printing on every release would train the reader to
+    skip the line, which is how the practice lapsed the first time.
+    """
+    minor = ".".join(new.split(".")[:2])
+    # `previous` is captured by preflight BEFORE bump_pyproject rewrites the
+    # file; calling read_current_version() here would read the new version
+    # back and the comparison would never fire.
+    if ".".join(previous.split(".")[:2]) == minor:
+        return  # patch release — the existing pin already covers it
+
+    print()
+    print(f"[release] ⚠ MINOR bump: tenants are still pinned below {minor}.")
+    print("[release]   In EACH tenant, edit .cp-engine.toml:")
+    print(f'[release]       [engine]  version = "~= {minor}"')
+    print("[release]   then commit + push. Until then `cxp sync` on an older")
+    print("[release]   CLI is allowed by the pin, which is how 0.42 sat")
+    print("[release]   unchanged through 80 releases.")
+
+
 def bump_hosted_server_version(new: str) -> None:
     """Update `SERVER_VERSION = "hosted-cp/X"` in the hosted MCP server.
 
@@ -385,8 +425,9 @@ def main() -> int:
     print(f"[release] done. v{args.version} released.")
     print(
         f"[release] update local CLI: "
-        f"uv tool install --force --from {REPO_ROOT} cp-engine"
+        f"uv tool install --force --reinstall --from {REPO_ROOT} cp-engine"
     )
+    _print_tenant_pin_reminder(args.version, str(cur_v))
     return 0
 
 
