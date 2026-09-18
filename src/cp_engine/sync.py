@@ -1377,14 +1377,94 @@ def _write_if_changed(
                     path, exc,
                 )
 
-        path.write_text(merged)
+        path.write_text(_guard_provenance_regression(path, existing, merged))
         return True
 
     # File doesn't exist OR no regions to splice — full write.
     if path.exists() and path.read_text() == new_full_body:
         return False
+    if path.exists():
+        # The fully-generated path (CLAUDE.md, _repo-*.md): no splice, so
+        # `_refresh_provenance_header` never runs and the whole body — stamp
+        # included — comes from the running engine. 19 of the 54 backwards
+        # stamps on 2026-09-17 came through here.
+        new_full_body = _guard_provenance_regression(
+            path, path.read_text(), new_full_body
+        )
     path.write_text(new_full_body)
     return True
+
+
+_PROVENANCE_RE = re.compile(
+    r"^Provenance:(?: Version| cp-engine v)\s*([0-9]+(?:\.[0-9]+)*)", re.MULTILINE
+)
+
+
+def _provenance_version(body: str) -> tuple[int, ...] | None:
+    """The first `Provenance:` stamp in `body`, as a comparable tuple.
+
+    Two stamp formats exist and BOTH regressed in the 2026-09-17 incident:
+    `Provenance: Version <X>` (project CPs, spliced) and
+    `Provenance: cp-engine v<X>` (fully-generated files like CLAUDE.md).
+    Matching only one would leave half the tree unguarded.
+
+    Returns None for a stamp this function cannot parse — a two-digit
+    document version (`Version 01`), a golden fixture (`v0.0.0-golden`), or
+    no stamp at all. None means "no opinion", never "regression".
+    """
+    m = _PROVENANCE_RE.search(body)
+    if m is None:
+        return None
+    try:
+        return tuple(int(p) for p in m.group(1).split("."))
+    except ValueError:  # pragma: no cover — regex admits digits only
+        return None
+
+
+def _guard_provenance_regression(path: Path, existing: str, outgoing: str) -> str:
+    """Refuse to lower a file's provenance stamp; return the body to write.
+
+    WHY THIS EXISTS (2026-09-17). A CLI twelve releases behind its plugin ran a
+    routine `cxp render` and rewrote **54 provenance stamps backwards**,
+    0.118.0 → 0.108.1, across 58 files. Nothing raised: every write was a
+    legitimate render by a legitimate install. The damage looked like an engine
+    bug and was really version drift wearing one, and the diagnosis — not the
+    fix — was the whole cost.
+
+    The stamp is the one signal that was never silent: it records the running
+    version into every file on every render, and a backwards move is visible in
+    `git diff` before the commit. It was committed through anyway. **So the
+    detector existed and the enforcement did not.**
+
+    This is deliberately a floor, not equality. A newer engine writing a newer
+    stamp is the normal case and passes untouched. Only a strictly-lower stamp
+    is refused, because that is never a legitimate render — it means the writer
+    is older than the file it is rewriting.
+
+    The rest of the body is written as computed. Refusing the whole file would
+    make a stale CLI unable to sync at all, which is a bigger outage than a
+    frozen stamp; keeping the higher stamp preserves the audit trail while
+    letting real content through. The one-line warning is the point: it names
+    the version mismatch at the moment it would have done damage.
+    """
+    old = _provenance_version(existing)
+    new = _provenance_version(outgoing)
+    if old is None or new is None or new >= old:
+        return outgoing
+
+    fresh = _PROVENANCE_RE.search(existing)
+    stale = _PROVENANCE_RE.search(outgoing)
+    if fresh is None or stale is None:  # pragma: no cover — implied by above
+        return outgoing
+
+    dotted = lambda t: ".".join(str(p) for p in t)  # noqa: E731
+    print(
+        f"[cp-engine] {path.name}: refusing to move the provenance stamp "
+        f"backwards ({dotted(old)} → {dotted(new)}). This CLI is older than "
+        f"the file it is rewriting — upgrade with "
+        f"`uv tool install --force --reinstall`. Content written; stamp held."
+    )
+    return outgoing[: stale.start()] + fresh.group(0) + outgoing[stale.end():]
 
 
 def _refresh_provenance_header(merged: str, new_full_body: str) -> str:
