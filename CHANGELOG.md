@@ -4,6 +4,28 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.120.5 — 2026-09-18
+
+**`EngineVersionMismatch` names a fix the blocked user can actually run.**
+Patch: error-message only.
+
+Both existing options assumed a local cp-engine clone. Someone who installed
+from a published release tag — the common case — had no applicable line. The
+message named a door they do not have, at the moment they are already blocked.
+
+It also recommended bare `uv tool install --force`, which is the documented
+silent no-op. Telling a blocked user to run that is worse than saying nothing,
+because it looks like it worked.
+
+Now the no-clone path comes first, resolved through `cxp resolve-engine-pin`
+(the constraint `~= 0.120` is not a tag — `v0.120` does not exist), the clone
+path second, `claude plugin update` alongside because the two halves drift
+separately, and both upgrade traps named inline. Verified that
+`resolve-engine-pin` is reachable while blocked, so the escape hatch is not
+itself behind the gate.
+
+This ships ahead of tightening the tenant pin: the gate should teach, not trap.
+
 ## v0.120.4 — 2026-09-18
 
 **Two mechanisms that existed and did not work.** Patch: a hook fix that ships
