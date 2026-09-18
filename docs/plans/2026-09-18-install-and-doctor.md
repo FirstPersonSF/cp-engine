@@ -92,8 +92,8 @@ Two checks, each reading the other's version, and a drift test that they agree.
 
 The delivery path for the tenant side needs no action from the drifted user: CI's
 `[cp-sync]` runs at the resolved pin, rewrites `.claude/hooks/`, commits, and the
-drifted machine fast-forwards it at next session start. *(Verify CI sync commits
-hook diffs — it should; the file is tracked.)*
+drifted machine fast-forwards it at next session start. **Verified live** (§8.2):
+full checkout, unconditional `install_into_tenant`, `git add -A`.
 
 ### 2.1 And therefore: one module, not five mechanisms
 
