@@ -46,7 +46,7 @@ async def append_improvement(request: Request):
 
     400 on a malformed payload or an entry the format rejects.
     """
-    from cp_engine.improvements import ImprovementsError, append_entry
+    from cp_engine.improvements import ImprovementsError, append_entry, format_entry
 
     raw_body = await request.body()
     signatures._verify_signature(
@@ -88,7 +88,10 @@ async def append_improvement(request: Request):
             # Caller error — correctable by rewording, so 400 rather than 500.
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-        entry = updated.rstrip("\n").splitlines()[-1]
+        # The entry is BUILT, not read back off the file's last line: since
+        # #293 it lands under `## Open`, mid-file, so the last line is the
+        # newest entry under `## Resolved` — someone else's, from weeks ago.
+        entry = format_entry(area, observation, today=date.today())
 
         if not changed:
             # Already logged. Reporting ok with no commit is the honest answer:
@@ -105,13 +108,34 @@ async def append_improvement(request: Request):
 
         path.write_text(updated)
         message = f"[improvements] {area} ({user})"
+
+        def _reapply() -> bool:
+            # #290: two appends to the tail of THIS file always conflict on
+            # rebase, and this file is tenant-wide, so two hosted users
+            # wrapping up in the same minute used to cost the loser their
+            # entry. The append dedupes on content, so re-running it on the
+            # winner's tip is safe; `changed=False` here means the winner
+            # already logged the identical observation.
+            latest, changed_again = append_entry(
+                path.read_text(), area, observation, today=date.today()
+            )
+            if changed_again:
+                path.write_text(latest)
+            return changed_again
+
         try:
-            sha = git_ops._commit_with_message_and_push(tenant_root, message)
+            sha = git_ops._commit_with_message_and_push(
+                tenant_root, message, reapply=_reapply
+            )
         except Exception as exc:  # noqa: BLE001 — report, never 500 silently
             observability.capture(exc, area="improvements_append")
             raise HTTPException(
                 status_code=502,
-                detail=f"entry written but the push failed: {exc}",
+                detail=(
+                    f"entry written but the push failed: {exc} — the append "
+                    "is idempotent, so re-posting this exact call is safe; "
+                    "retry it"
+                ),
             ) from exc
 
     log.info("improvements append landed: %s by %s -> %s", area, user, sha)

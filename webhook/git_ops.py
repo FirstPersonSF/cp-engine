@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -156,6 +157,7 @@ def _push_with_retry(
     target_branch: str,
     env: dict,
     max_attempts: int = _PUSH_MAX_ATTEMPTS,
+    reapply: Callable[[], bool] | None = None,
 ) -> None:
     """``git push origin <branch>`` with rebase-on-reject recovery.
 
@@ -171,6 +173,26 @@ def _push_with_retry(
     the working tree on a clean detached state and then raise. We do
     NOT try to auto-resolve — that would silently overwrite one webhook
     call's bullet with another's.
+
+    THE APPEND EXCEPTION (#290). The rebase path only helps when the
+    concurrent writers touched DIFFERENT lines. Two appends to the tail of
+    `improvements.md` — or two `updates_append` to one cp.md, both inserting
+    directly under `**Updates:**` — conflict every time (`UU
+    improvements.md`, verified), so for a tenant-wide file the abort-and-raise
+    branch was the ONLY branch, and the loser's entry existed nowhere behind a
+    502. For those routes the write is idempotent by construction (the append
+    functions dedupe on content), so re-doing it on top of the winner's HEAD
+    is exactly what the caller asked for and loses nothing.
+
+    ``reapply``, when given, is that re-do: on a rebase conflict this helper
+    aborts the rebase, resets the clone to origin's current tip (``fetch`` +
+    ``reset --hard FETCH_HEAD``), calls ``reapply()`` — which must re-write
+    the file AND re-commit, returning ``True`` if it committed — and pushes
+    again, still bounded by ``max_attempts``. A ``False`` return means the
+    winner already landed the identical entry (the dedupe fired), so there is
+    nothing left to push and the helper returns. Callers that are NOT
+    append-only must leave it ``None``: for a field replace, a conflict is two
+    people disagreeing about the same prose, and that is not ours to settle.
 
     Modelled on src/cp_engine/capture_session.py:_push_with_retry but
     parameterized for the webhook's per-request SSH env + named-branch
@@ -232,8 +254,9 @@ def _push_with_retry(
             # original push failure: that's the operationally
             # actionable signal.
             log.warning(
-                "pull --rebase failed (%s); aborting rebase and giving up",
+                "pull --rebase failed (%s); aborting rebase and %s",
                 (rebase.stderr or "")[:240],
+                "re-applying the append" if reapply else "giving up",
             )
             abort = subprocess.run(
                 ["git", "rebase", "--abort"],
@@ -251,14 +274,71 @@ def _push_with_retry(
                     abort.returncode,
                     (abort.stderr or "")[:200],
                 )
-            raise last_err
+            if reapply is None:
+                raise last_err
+
+            # #290: the append-only recovery. Drop OUR commit entirely — the
+            # rebase just proved it cannot be replayed — and rebuild it on
+            # the winner's tip. `reset --hard FETCH_HEAD` rather than
+            # `origin/<branch>`: after a CP_TENANT_BRANCH `branch -M` the
+            # tracking ref may not exist, FETCH_HEAD always does.
+            if not _reset_to_origin_tip(tenant_root, target_branch, env):
+                raise last_err
+            if not reapply():
+                # The dedupe fired: the winner's commit already carries this
+                # exact entry, so the caller's content IS on origin. Pushing
+                # nothing is success here, not a silent drop.
+                log.info(
+                    "append already present at origin after conflict; "
+                    "nothing left to push (attempt %d/%d)",
+                    attempt, max_attempts,
+                )
+                return
 
 
-def _commit_with_message_and_push(tenant_root: Path, message: str) -> str | None:
+def _reset_to_origin_tip(tenant_root: Path, target_branch: str, env: dict) -> bool:
+    """``git fetch origin <branch>`` + ``git reset --hard FETCH_HEAD``.
+
+    The re-apply half of #290 needs a tree that is EXACTLY origin's tip, with
+    our un-replayable commit gone. Returns False (after logging) rather than
+    raising so the caller can surface the ORIGINAL push error — the thing an
+    operator can act on — instead of a secondary one from the recovery.
+    """
+    for cmd in (
+        ["git", "fetch", "origin", target_branch],
+        ["git", "reset", "--hard", "FETCH_HEAD"],
+    ):
+        r = subprocess.run(
+            cmd, cwd=tenant_root, env=env, capture_output=True, text=True
+        )
+        if r.returncode != 0:
+            log.warning(
+                "%s failed during append re-apply (rc=%d): %s",
+                " ".join(cmd), r.returncode, (r.stderr or "")[:200],
+            )
+            return False
+    return True
+
+
+def _commit_with_message_and_push(
+    tenant_root: Path,
+    message: str,
+    *,
+    reapply: Callable[[], bool] | None = None,
+) -> str | None:
     """Stage all, commit with `message`, branch-rename, push, return HEAD SHA.
 
     Returns **None when the working tree was already clean** — nothing was
     committed and nothing pushed.
+
+    ``reapply`` (#290) is for APPEND-ONLY callers: a zero-argument callable
+    that re-reads the file from disk, re-applies the append and re-writes it,
+    returning whether the file changed. When the push loses a race AND the
+    rebase conflicts, the helper resets the clone to origin's tip, calls it,
+    and — if it changed anything — re-stages and re-commits under the SAME
+    ``message`` before pushing again. The route keeps authoring the write;
+    this tail only owns the git mechanics, as it does on the happy path. Leave
+    it ``None`` for anything that replaces content rather than appending it.
 
     The shared mechanical tail used by both `_commit_and_push` (auto-ingest)
     and `_commit_and_push_promote` (spine-promote). Each caller builds only its
@@ -310,7 +390,27 @@ def _commit_with_message_and_push(tenant_root: Path, message: str) -> str | None
             cwd=tenant_root,
             check=True,
         )
-    _push_with_retry(tenant_root, target_branch=target_branch, env=env)
+    recommit: Callable[[], bool] | None = None
+    if reapply is not None:
+
+        def recommit() -> bool:
+            # Same message, same identity: the recovered commit should be
+            # indistinguishable from the one that would have landed had the
+            # race gone the other way.
+            if not reapply():
+                return False
+            subprocess.run(["git", "add", "-A"], cwd=tenant_root, check=True)
+            subprocess.run(
+                ["git", "commit", "-m", message],
+                cwd=tenant_root,
+                check=True,
+                env=env,
+            )
+            return True
+
+    _push_with_retry(
+        tenant_root, target_branch=target_branch, env=env, reapply=recommit
+    )
 
     result = subprocess.run(
         ["git", "rev-parse", "HEAD"],

@@ -199,15 +199,41 @@ async def project_state_capture(request: Request):
         cp_md.write_text(merged)
 
         message = f"[project-state] {working_dir.name}: {', '.join(changed)} ({user})"
+
+        # #290: an append-ONLY call gets the re-apply-on-conflict recovery.
+        # Two `updates_append`s to one cp.md both insert directly under
+        # `**Updates:**`, so they conflict on rebase every time, and the
+        # append dedupes on content, so redoing it on the winner's tip is
+        # exactly what the caller asked for. A call that also REPLACES fields
+        # deliberately does not get it: a conflicting Status is two people
+        # disagreeing about the same prose, and auto-resolving that would
+        # silently overwrite one of them. That case keeps today's 502.
+        reapply = None
+        if updates_append and not cleaned:
+
+            def reapply() -> bool:
+                latest, changed_again = append_update_entry(
+                    cp_md.read_text(), updates_append, today=date.today()
+                )
+                if changed_again:
+                    cp_md.write_text(latest)
+                return changed_again
+
         try:
-            sha = git_ops._commit_with_message_and_push(tenant_root, message)
+            sha = git_ops._commit_with_message_and_push(
+                tenant_root, message, reapply=reapply
+            )
         except Exception as exc:  # noqa: BLE001 — report, never 500 silently
             observability.capture(
                 exc, area="project_state_capture", project_code=project_code
             )
             raise HTTPException(
                 status_code=502,
-                detail=f"cp.md written but the push failed: {exc}",
+                detail=(
+                    f"cp.md written but the push failed: {exc} — re-sending "
+                    "this exact call is safe (identical content is a no-op); "
+                    "retry it"
+                ),
             ) from exc
 
     log.info(
