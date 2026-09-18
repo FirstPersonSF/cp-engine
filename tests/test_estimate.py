@@ -159,8 +159,21 @@ class _FakeQuery:
         for r in rows:
             if all(r.get(k) == v for k, v in self.eq_filters.items()):
                 if all(r.get(k) in vs for k, vs in self.in_filters.items()):
-                    out.append(r)
+                    out.append(self._project(r))
         return _FakeResult(out)
+
+    def _project(self, row):
+        """Return ONLY the selected columns, as PostgREST does (#292).
+
+        The canned rows used to come back whole, so a caller reading a key
+        the query never asked for passed here and raised in production
+        (#284: `mc_project_id` missing from `estimate_scope`'s SELECT failed
+        every live job while every unit test stayed green). A canned row
+        missing a selected column is a test-data bug and raises KeyError.
+        """
+        if self.columns is None:
+            return row
+        return {k: row[k] for k in (c.strip() for c in self.columns.split(",")) if k}
 
 
 class _FakeResult:
@@ -192,9 +205,9 @@ class _FakeClient:
 def _canned_tables():
     return {
         "projects": [
-            {"id": "est-1", "mc_project_id": "mc-1", "name": "Estimate 1", "status": "pending", "on_schedule": True},
-            {"id": "est-other", "mc_project_id": "mc-2", "name": "Estimate 1", "status": "pending", "on_schedule": True},
-            {"id": "est-draft", "mc_project_id": "mc-1", "name": "Draft", "status": "pending", "on_schedule": False},
+            {"id": "est-1", "mc_project_id": "mc-1", "name": "Estimate 1", "status": "pending", "on_schedule": True, "created_at": "2026-01-01T00:00:00Z"},
+            {"id": "est-other", "mc_project_id": "mc-2", "name": "Estimate 1", "status": "pending", "on_schedule": True, "created_at": "2026-01-01T00:00:00Z"},
+            {"id": "est-draft", "mc_project_id": "mc-1", "name": "Draft", "status": "pending", "on_schedule": False, "created_at": "2026-02-01T00:00:00Z"},
         ],
         "phases": [
             {"id": "ph-0", "project_id": "est-1", "name": "Phase 0", "overview": "o", "position": 0},
@@ -279,18 +292,23 @@ def test_fetch_estimate_start_date_none_when_absent():
 
 def test_fetch_schedule_orders_and_defaults_absent_columns():
     # Two bars, out of order; one milestone. The work_item_*/done columns are
-    # absent from the rows (not yet in the live schema) → default None/False.
+    # NULL on the rows (unlinked bars) → default None/False. The fake projects
+    # onto the SELECT (#292), so the canned rows carry every selected column,
+    # as a real row would.
     tables = {
         "schedule_items": [
             {"id": "s-late", "project_id": "est-1", "phase_id": "ph-1",
              "label": "Storybuilding", "start_week": 3.0, "duration": 2.0,
-             "position": 0, "item_type": "activity", "emphasis": "important"},
+             "position": 0, "item_type": "activity", "emphasis": "important",
+             "work_item_id": None, "work_item_kind": None, "done": None},
             {"id": "s-early", "project_id": "est-1", "phase_id": "ph-0",
              "label": "Kickoff", "start_week": 0.0, "duration": 1.0,
-             "position": 0, "item_type": "milestone", "emphasis": None},
+             "position": 0, "item_type": "milestone", "emphasis": None,
+             "work_item_id": None, "work_item_kind": None, "done": None},
             {"id": "s-other", "project_id": "est-other", "phase_id": "ph-x",
              "label": "Not ours", "start_week": 0.0, "duration": 1.0,
-             "position": 0, "item_type": "activity", "emphasis": None},
+             "position": 0, "item_type": "activity", "emphasis": None,
+             "work_item_id": None, "work_item_kind": None, "done": None},
         ],
     }
     client = _FakeClient(tables)
@@ -334,9 +352,10 @@ def test_fetch_schedule_coerces_numeric_and_reads_present_work_item():
     assert it.work_item_kind == "deliverable"
     assert it.done is True
     # Regression: the link columns MUST be named in the SELECT (migration 069
-    # shipped them). A fake client ignores projection, so the only way to catch
-    # "column exists in DB but not in the SELECT" — which silently nulled every
-    # bar's work_item_id in prod — is to assert the column list itself.
+    # shipped them). The fake now projects onto the SELECT (#292), so an
+    # unselected column would already come back missing above; this asserts
+    # the column list directly too, because "column exists in DB but not in
+    # the SELECT" silently nulled every bar's work_item_id in prod.
     q = next(q for q in client.queries if q.table == "schedule_items")
     assert "work_item_id" in q.columns
     assert "work_item_kind" in q.columns
@@ -350,10 +369,12 @@ def test_fetch_schedule_none_position_sorts_as_zero():
         "schedule_items": [
             {"id": "s-nullpos", "project_id": "est-1", "phase_id": "ph-1",
              "label": "Null pos", "start_week": 1.0, "duration": 1.0,
-             "position": None, "item_type": "activity", "emphasis": None},
+             "position": None, "item_type": "activity", "emphasis": None,
+             "work_item_id": None, "work_item_kind": None, "done": None},
             {"id": "s-onepos", "project_id": "est-1", "phase_id": "ph-1",
              "label": "Pos one", "start_week": 1.0, "duration": 1.0,
-             "position": 1, "item_type": "activity", "emphasis": None},
+             "position": 1, "item_type": "activity", "emphasis": None,
+             "work_item_id": None, "work_item_kind": None, "done": None},
         ],
     }
     client = _FakeClient(tables)
@@ -441,7 +462,7 @@ def test_fetch_estimate_with_zero_phases_skips_child_queries():
     # branch: empty phases, and NO child-table queries fired.
     tables = {
         "projects": [
-            {"id": "est-empty", "mc_project_id": "mc-empty", "name": "Estimate 1", "status": "pending", "on_schedule": True},
+            {"id": "est-empty", "mc_project_id": "mc-empty", "name": "Estimate 1", "status": "pending", "on_schedule": True, "created_at": "2026-01-01T00:00:00Z"},
         ],
         "phases": [],
         "phase_activities": [],

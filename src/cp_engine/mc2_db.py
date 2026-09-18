@@ -237,8 +237,9 @@ RAG_ASSET_REFETCH_COLUMNS = (
 # estimator schema shapes.
 # `is_default` was dropped by mc-2 migration 183 (#284) — a filter or select
 # on a missing column is a 42703 ERROR, not an empty result. Which estimate
-# counts now lives in `estimate_scope`, which selects its own columns.
-EST_PROJECT_COLUMNS = "id, mc_project_id, name, status, on_schedule"
+# counts lives in `estimate_scope`, which owns the `estimator.projects`
+# column list; no shared constant exists for it (the one that did had zero
+# readers, #292).
 EST_PHASE_COLUMNS = "id, name, overview, position"
 EST_ITEM_COLUMNS = "id, phase_id, name, short_description, library_item_id, position"
 EST_SCHEDULE_COLUMNS = (

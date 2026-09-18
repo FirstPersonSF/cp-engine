@@ -193,9 +193,6 @@ RAG_ASSET_REFETCH_COLUMNS = (
 )
 
 
-EST_PROJECT_COLUMNS = "id, mc_project_id, name, status, on_schedule"
-
-
 EST_PHASE_COLUMNS = "id, name, overview, position"
 
 
