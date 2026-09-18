@@ -4,6 +4,61 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.119.1 — 2026-09-17
+
+**The audit release.** A cold review of the 09-17 hosted wrap-up work (the
+brief at `cp/docs/2026-09-17-hosted-wrapup-audit-brief.md`) filed nine issues,
+#287–#295. This release carries the fixes. Bug fixes and test hardening only;
+no API changes — one return type widened, still unpacks as before.
+
+### What was actually broken in production
+
+- **Three vendored shims raised `NameError` at call time** (#287). The
+  functions were copied verbatim; the module-scope names around them were not
+  (`_VERSION_NUM_RE`, `EXEC_SUMMARY_MIGRATION_BULLET_RE`, `log`/`logger`),
+  and `_version_rank` still imported `cp_engine.substance`, which nobody
+  vendored. The drift test compared function bodies and passed. Now
+  `substance` is its own shim, every shim symbol is compared to its origin
+  (derived from the tree, not listed), and `symtable` asserts no shim
+  function loads a name its module does not define. Deployed to the hosted
+  server the same evening.
+- **`wrap_status` could never report `capture_session` missing** on a project
+  that had ever been wrapped (#289): the previous wrap-up's terminator sat
+  inside the current window, and the test asserted it. The terminator is now
+  returned separately (`window_closed_at`); the audit read filters by tool in
+  the query so its limit bounds wrap rows, not every audited read; a
+  `capture_*` row with `row_count 0` is a failed write and neither counts nor
+  closes the window. `wrap_status` and `health` are now called by tests.
+- **CI ran `pytest tests/` explicitly** (#288), overriding the `testpaths`
+  entry added that morning — the hosted suite still never ran in the gate.
+  Now `pytest -q`, preceded by a step that fails if `prototypes/hosted-mcp`
+  is not collected.
+
+### Fixed
+
+- `/health`'s dependency probe is derived from `server.py`'s own AST (#295);
+  it probed two constants the file never reads and missed two it does.
+- A tenant append that loses the push race re-applies on the winner's tip
+  instead of 502ing with the entry lost (#290). Append-only routes only; a
+  call that also replaces fields keeps the 502, since a conflicting Status is
+  two people disagreeing.
+- `cxp sync` fails (exit 1, "Sync failed") on a missing estimator column
+  instead of mirroring every project unbound behind a warning (#291). The
+  per-estimate-vs-union question in that issue is a design decision and is
+  still open.
+- `log_improvement` lands under `## Open`, not at EOF under `## Resolved`;
+  dedupe normalises both sides and sees multi-backtick areas (#293).
+- `append_update_entry` returns `UpdateAppendResult(text, changed, roll_off)`
+  — the roll-off is now REPORTED (never performed) and the webhook returns
+  it; dedupe spans the whole Updates field; round-trips of real tenant files
+  are byte-identical; a region with no `**Updates:**` raises instead of
+  reporting a phantom change (#294).
+- `estimate_scope`'s mirror test runs in CI (fixture at mc-2 `90fcaca`),
+  test fakes project onto the selected columns so an unselected key raises
+  as PostgREST would, and `scripts/estimate_scope_reconcile.py` makes the
+  "45 same / 0 differ" check repeatable (#292). `EST_PROJECT_COLUMNS` had no
+  readers and is gone.
+
 ## v0.119.0 — 2026-09-17
 
 **Unblocks mc-2 migration 183.** cp-engine no longer reads
