@@ -4,6 +4,38 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.120.0 — 2026-09-17
+
+**A job's spine now binds against every estimate it has sold, not the oldest
+one.** One behaviour change (#291), minor bump because a surface can now show
+more than it did. No API break: `Estimate.id` and the `(text, changed)`-style
+contracts are unchanged; `Estimate` gains `estimate_ids`, `EstimatePhase`
+gains `estimate_id`, and `fetch_schedule` accepts the id list.
+
+### Why now
+
+mc-2 renders every admitted estimate together (the 5195 CTV-addition case).
+cp-engine mirrored the rule and then read `rows[0]`. Five live jobs carry a
+pending addition; approving any one of them would have rendered both in
+mc-2 while cp-engine bound substance against the root only — every row
+pointing at the addition's items `unbound` on the next sync, with nothing
+raising, because nothing is wrong with the schema.
+
+cp-engine reads items, phases and schedule bars through this path, never
+hours or fees, so the union changes no figure. Same-named phases from
+different estimates stay separate.
+
+### Production, corrected
+
+Two statements in v0.119.0's notes no longer hold and should not be planned
+around: **migration 183 has landed** (`is_default` is gone — anyone on a
+cp-engine older than 0.119.0 now has the #284 failure live: `cxp sync`
+swallowing the 42703 and mirroring every spine unbound; upgrade), and
+**every estimate is approved** (45 approved, 7 pending, `on_schedule`
+exactly the approved set, so the bridge is dormant).
+`scripts/estimate_scope_reconcile.py` reports this live and is the check to
+rerun after the first addition is approved.
+
 ## v0.119.1 — 2026-09-17
 
 **The audit release.** A cold review of the 09-17 hosted wrap-up work (the
