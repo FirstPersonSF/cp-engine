@@ -112,3 +112,44 @@ async def test_health_does_not_need_cp_engine(server, monkeypatch):
     body = json.loads((await server.health(None)).body)
     assert body["status"] == "healthy"
     assert "cp_engine_version" not in body
+
+
+@pytest.mark.anyio
+async def test_whoami_reports_the_build_on_both_paths(server, monkeypatch):
+    """The build half of `whoami`, which is why it was added.
+
+    `/health` already answers "what is running here?" — but over HTTP, and a
+    hosted-only session (no `cxp`, no shell) cannot curl it. That session
+    reaches this server and nothing else, so without these fields its only
+    way to ask whether a just-shipped fix is live was to ask a human to run
+    curl. Both paths are asserted: an unauthenticated caller still gets to
+    know which server turned them away.
+    """
+    unauth = server.whoami()
+    assert unauth["authenticated"] is False
+    assert unauth["server_version"].startswith("hosted-cp-spike/")
+    assert len(unauth["build"]) == 12
+
+    class _Access:
+        subject = "user-123"
+        expires_at = 9999999999
+        claims = {"email": "drew@firstperson.is", "role": "authenticated"}
+
+    monkeypatch.setattr(server, "get_access_token", lambda: _Access())
+    auth = server.whoami()
+    assert auth["authenticated"] is True
+    assert auth["email"] == "drew@firstperson.is"
+    assert auth["server_version"].startswith("hosted-cp-spike/")
+    assert len(auth["build"]) == 12
+
+
+@pytest.mark.anyio
+async def test_whoami_and_health_cannot_disagree(server):
+    """One source of truth. Two surfaces reporting different builds is worse
+    than one surface, because it invites trusting the stale one."""
+    import json
+
+    health = json.loads((await server.health(None)).body)
+    ident = server.whoami()
+    assert ident["server_version"] == health["server_version"]
+    assert ident["build"] == health["build"]

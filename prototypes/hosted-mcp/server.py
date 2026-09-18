@@ -9293,7 +9293,20 @@ def open_workset(project_code: str, name: str) -> dict[str, Any]:
 
 @mcp_server.tool()
 def whoami(probe_alerting: bool = False) -> dict[str, Any]:
-    """Echo the verified identity of the caller (spike diagnostic).
+    """Echo the verified identity of the caller, and what code is answering.
+
+    IDENTITY plus BUILD, because the second half has no other door from inside
+    a session. `/health` reports the running build in full, but it is an HTTP
+    surface: a hosted-only session — no `cxp`, no shell, reaching the tenant
+    through this server alone — cannot curl it, and that is exactly the session
+    that most needs to ask "is the fix I just shipped the code you are running?"
+    `server_version` and `build` are the same values `/health` reports, so the
+    two surfaces cannot disagree.
+
+    `build` is the load-bearing one. `SERVER_VERSION` is a hand-maintained
+    string that has not tracked engine releases since the spike; the fingerprint
+    is a hash of the files actually loaded in this container, so it moves on
+    every deploy whether or not anyone remembered to bump a constant.
 
     `probe_alerting=true` additionally routes ONE synthetic exception through
     `observability.capture()` and reports what happened. This is the only way
@@ -9306,9 +9319,17 @@ def whoami(probe_alerting: bool = False) -> dict[str, Any]:
     the same auth as any other tool, and the event is tagged
     `area=alerting_probe` so it is trivially filtered out of real alerts.
     """
+    # Build identity is reported on BOTH paths: an unauthenticated caller still
+    # gets to know which server refused them. It reads no caller state, so
+    # there is nothing here to leak.
+    build: dict[str, Any] = {
+        "server_version": SERVER_VERSION,
+        "build": build_fingerprint(),
+        "deployment_id": os.environ.get("RAILWAY_DEPLOYMENT_ID") or "unknown",
+    }
     access = get_access_token()
     if access is None:
-        return {"authenticated": False}
+        return {"authenticated": False, **build}
     claims = access.claims or {}
     out: dict[str, Any] = {
         "authenticated": True,
@@ -9317,6 +9338,7 @@ def whoami(probe_alerting: bool = False) -> dict[str, Any]:
         "role": claims.get("role"),
         "issuer": claims.get("iss"),
         "expires_at": access.expires_at,
+        **build,
     }
     if probe_alerting:
         enabled = observability.sentry_enabled()
