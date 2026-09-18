@@ -313,9 +313,9 @@ itself is filed separately.
 
 1. **Phase 2 placement** — tenant self-check, or is `release.py`'s reminder
    enough? (Lean self-check.)
-2. **Warning fatigue** — Phases 1 and 3 both add SessionStart output to a
-   surface that already prints tenant-freshness. What is the budget before it
-   becomes noise nobody reads?
+2. **Warning fatigue** — Phases 1 and 3 both add SessionStart output, which
+   already prints tenant-freshness. What is the budget before it becomes noise
+   nobody reads?
 3. **Does Phase 4 belong in cp-engine, or in `mc-2`** — the repo a cold session
    was actually pointed at?
 4. **Marcello is still unaudited.** Two machines, two different shapes. A third
