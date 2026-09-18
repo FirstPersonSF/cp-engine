@@ -5,8 +5,10 @@ imports `asset_ingest` (openai, cloud_storage) and `spine_done` at MODULE level,
 so importing it in the container is not an option; these four functions are pure
 row manipulation and carry none of that.
 
-`version_number` is inlined from `cp_engine.substance` for the same reason —
-`_version_rank` imports it at call time and `substance` pulls frontmatter+yaml.
+`_version_rank` imports `version_number` from `cp_engine.substance` at call
+time; that module is vendored as its own shim (#287 — an earlier version inlined
+the function here, unused, while the live import still reached for a module
+nobody vendored).
 
 THE RULE THIS ENCODES (#113): `spine_substance` stores one row per VERSION and
 the data can carry TWO `status='live'` rows for one element. A read path that
@@ -19,21 +21,6 @@ from __future__ import annotations
 import logging
 
 logger = logging.getLogger(__name__)
-
-
-def version_number(label) -> int:
-    """The leading version integer of a version_label, or -1 when unparseable.
-
-    Shared version-ordering primitive (#113): both the spine read path (dedupe
-    duplicate live rows to the latest version) and the substance mirror (shield
-    a newer authored live version from a stale disk 'live') need to compare
-    version labels numerically — "v10" must beat "v9", which string comparison
-    gets wrong. Parses "v7", "V2", bare "2", "v2.1" → 2, "v2 (note)" → 2.
-    Tolerant of None/odd labels so a dirty row can't raise — but note the -1
-    fallback means a truly unparseable label LOSES to any parseable one
-    regardless of recency (callers tie-break on version_date next)."""
-    m = _VERSION_NUM_RE.match(str(label or ""))
-    return int(m.group(1)) if m else -1
 
 
 def _row_scope(row: dict) -> str:

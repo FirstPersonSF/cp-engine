@@ -16,7 +16,7 @@ COPY server.py observability.py ./
 # The four wrap-up verbs import `cp_engine.<module>` at call time and this
 # image installs no cp-engine (its dependency tree — anthropic, pypdf,
 # slack-sdk, four private git deps — dwarfs this server's six packages). The
-# vendored closure is 76K of pure-Python lint modules; `tests/test_vendor_drift.py`
+# vendored closure is 76K of pure-Python lint modules; `test_vendor_drift.py` (this directory)
 # fails if any copy stops matching its source. Without this COPY, three of the
 # four verbs raise ModuleNotFoundError at call time while still REGISTERING,
 # so /health reports them present and every invocation fails (#283).

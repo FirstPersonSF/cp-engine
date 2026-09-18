@@ -15,6 +15,15 @@ EXEC_SUMMARY_REGION = "exec-summary"
 EXEC_SUMMARY_START = f"<!-- cp-engine:start {EXEC_SUMMARY_REGION} -->"
 EXEC_SUMMARY_END = f"<!-- cp-engine:end {EXEC_SUMMARY_REGION} -->"
 
+EXEC_SUMMARY_MIGRATION_SUFFIX = " — migrated from Quick Resume"
+
+# The migration stamps `- <date> — migrated from Quick Resume` under
+# Updates. Built from the suffix (via re.escape) so producer + readers
+# can't drift.
+EXEC_SUMMARY_MIGRATION_BULLET_RE = re.compile(
+    r"^- \d{4}-\d{2}-\d{2}" + re.escape(EXEC_SUMMARY_MIGRATION_SUFFIX) + r"\s*$"
+)
+
 
 def slice_exec_summary_region(cp_md_body: str) -> str | None:
     """Return the inner text between the exec-summary markers (markers

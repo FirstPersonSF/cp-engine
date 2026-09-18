@@ -155,12 +155,25 @@ def test_the_vendor_closure_EXECUTES_with_no_cp_engine_installed(tmp_path) -> No
         "run_all_lints(_C(rows), ['x'], cp_md_text='## Exec Summary\\n')\n"
         "list(lint_spine_rows(rows))\n"
         "list(lint_curation(rows, today=None))\n"
-        "PS._one_live_per_element(rows)\n"
+        # TWO live rows for one element: the duplicate branch of
+        # `_one_live_per_element` is where `_version_rank` imports
+        # `cp_engine.substance` — a one-row control never ran it (#287).
+        "dup = dict(rows[0], version_label='v2', version_date='2026-09-02')\n"
+        "kept = PS._one_live_per_element(rows + [dup])\n"
+        "assert [r['version_label'] for r in kept] == ['v2'], kept\n"
         "contributors('word ' * 2600)\n"
         "lint_exec_summary('<!-- cp-engine:start exec-summary -->\\n"
         "**Status:** x\\n<!-- cp-engine:end exec-summary -->')\n"
+        # An exec-summary region whose only content is the migration stamp is
+        # the branch that reads EXEC_SUMMARY_MIGRATION_BULLET_RE (#287).
+        "from cp_engine.render import exec_summary_is_authored\n"
+        "assert exec_summary_is_authored("
+        "'- 2026-09-01 — migrated from Quick Resume\\n') is False\n"
         "build_rounds(rows, [])\n"
-        "C.resolve_commitment_owner\n"
+        # The no-row branch of the owner resolver is where it logs (#287:
+        # the shim defined `logger`, the function called `log`).
+        "assert C.resolve_commitment_owner(_C([]), 'ggl-9999') is None\n"
+        "assert C.resolve_commitment_owner(_C([]), 'mission-control') is None\n"
         "print('VENDOR_OK')\n",
         encoding="utf-8",
     )
@@ -264,4 +277,108 @@ def test_every_verbatim_copy_is_actually_checked() -> None:
         f"{sorted(unchecked)} are verbatim copies that no drift test compares "
         "against source — they can diverge silently, which is the exact "
         "failure vendoring introduces"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Shims: derived, not hand-listed (#287)
+# ---------------------------------------------------------------------------
+
+# A shim symbol that was inlined from a module OTHER than the shim's namesake.
+_ORIGIN = {
+    ("commitments.py", "engagement_number"): "clickup_routing.py",
+}
+
+
+def _shims() -> list[Path]:
+    return [
+        p for p in sorted(_VENDOR.glob("*.py"))
+        if p.name != "__init__.py"
+        and "VENDORED" in p.read_text(encoding="utf-8")[:200]
+    ]
+
+
+def _top_level_symbols(path: Path) -> dict[str, ast.AST]:
+    """Every top-level def / class / single-name assignment in a module."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    out: dict[str, ast.AST] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            out[node.name] = node
+        elif isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name):
+            out[node.targets[0].id] = node
+    return out
+
+
+def _segment(path: Path, node: ast.AST) -> str:
+    return ast.get_source_segment(path.read_text(encoding="utf-8"), node)
+
+
+def _shim_symbol_cases():
+    for shim in _shims():
+        for name in _top_level_symbols(shim):
+            yield pytest.param(shim.name, name, id=f"{shim.name}::{name}")
+
+
+@pytest.mark.parametrize("shim_name,symbol", list(_shim_symbol_cases()))
+def test_every_shim_symbol_matches_its_origin(shim_name: str, symbol: str) -> None:
+    """THE SHIM LIST CANNOT BE HAND-MAINTAINED EITHER.
+
+    The copy list was hand-written and wrong; the shim symbol list was
+    hand-written and covered five of ~45 symbols. Control mutations to
+    `_one_live_per_element`'s tie rule and to `slice_exec_summary_region`
+    both passed every drift test (#287). So: every top-level symbol in every
+    shim is compared to its origin, and the origin defaults to the module the
+    shim is named after.
+    """
+    shim = _VENDOR / shim_name
+    origin = _SRC / _ORIGIN.get((shim_name, symbol), shim_name)
+    src_syms = _top_level_symbols(origin)
+    assert symbol in src_syms, (
+        f"vendor/cp_engine/{shim_name}::{symbol} has no counterpart in "
+        f"src/cp_engine/{origin.name} — add it to _ORIGIN if it was inlined "
+        "from elsewhere, or remove it from the shim"
+    )
+    assert _segment(shim, _top_level_symbols(shim)[symbol]) == _segment(origin, src_syms[symbol]), (
+        f"vendor/cp_engine/{shim_name}::{symbol} has drifted from "
+        f"src/cp_engine/{origin.name}::{symbol}"
+    )
+
+
+@pytest.mark.parametrize("shim", [p.name for p in _shims()])
+def test_no_shim_references_a_name_it_does_not_define(shim: str) -> None:
+    """A function copied VERBATIM can still be broken by the module around it.
+
+    Three shims shipped this way (#287): `version_number` read a regex that
+    lived in `substance`, `exec_summary_is_authored` read a constant that
+    lived in the real `render`, and `resolve_commitment_owner` logged through
+    `log` while the shim defined `logger`. Each function matched its source
+    byte-for-byte; each raised NameError on its first real call. A per-symbol
+    source comparison cannot see that — the scope is what drifted.
+    """
+    import builtins
+    import symtable
+
+    path = _VENDOR / shim
+    src = path.read_text(encoding="utf-8")
+    top = symtable.symtable(src, str(path), "exec")
+    defined = {s.get_name() for s in top.get_symbols()
+               if s.is_assigned() or s.is_imported()}
+    defined |= set(dir(builtins)) | {"__name__", "__file__", "__doc__"}
+
+    undefined: set[str] = set()
+
+    def walk(table):
+        for sym in table.get_symbols():
+            if sym.is_global() and sym.is_referenced() and sym.get_name() not in defined:
+                undefined.add(f"{table.get_name()} -> {sym.get_name()}")
+        for child in table.get_children():
+            walk(child)
+
+    for child in top.get_children():
+        walk(child)
+    assert not undefined, (
+        f"vendor/cp_engine/{shim} references names it never defines: "
+        f"{sorted(undefined)} — NameError at call time while the tool still registers"
     )

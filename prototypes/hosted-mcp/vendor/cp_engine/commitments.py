@@ -13,7 +13,7 @@ from typing import Any
 
 from cp_engine.mc2_db import Tables
 
-logger = logging.getLogger(__name__)
+log = logging.getLogger(__name__)
 
 
 def engagement_number(code: str) -> int | None:
