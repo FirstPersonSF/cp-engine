@@ -9370,34 +9370,78 @@ def dependency_probe() -> tuple[bool, list[dict[str, Any]]]:
 
     Returns `(all_ok, rows)`.
     """
-    checks: list[tuple[str, Any]] = [
-        ("cp_engine.spine_lint", lambda: __import__(
-            "cp_engine.spine_lint", fromlist=["run_all_lints"]).run_all_lints),
-        ("cp_engine.commitments_sweep", lambda: __import__(
-            "cp_engine.commitments_sweep", fromlist=["sweep"]).sweep),
-        ("cp_engine.seal_sweep", lambda: __import__(
-            "cp_engine.seal_sweep", fromlist=["build_rounds"]).build_rounds),
-        ("cp_engine.word_count_lint", lambda: __import__(
-            "cp_engine.word_count_lint", fromlist=["lint_word_count"]).lint_word_count),
-        # The CONSTANT that shipped missing after the import fix was already
-        # green. Reading it is the whole check — it is read while a query is
-        # built, which no import test reaches.
-        ("cp_engine.mc2_db:SPINE_LINT_COLUMNS", lambda: __import__(
-            "cp_engine.mc2_db", fromlist=["SPINE_LINT_COLUMNS"]).SPINE_LINT_COLUMNS),
-        ("cp_engine.mc2_db:Tables", lambda: __import__(
-            "cp_engine.mc2_db", fromlist=["Tables"]).Tables.COMMITMENTS),
-    ]
     rows: list[dict[str, Any]] = []
     ok_all = True
-    for name, probe in checks:
+    for module, attr_path in cp_engine_dependencies():
+        name = f"{module}:{attr_path}" if attr_path else module
         try:
-            probe()
+            obj: Any = __import__(module, fromlist=["*"])
+            for attr in attr_path.split(".") if attr_path else ():
+                obj = getattr(obj, attr)
             rows.append({"dep": name, "ok": True})
         except Exception as exc:  # noqa: BLE001 — reporting, never raising
             ok_all = False
             rows.append({"dep": name, "ok": False,
                          "error": f"{type(exc).__name__}: {exc}"})
     return ok_all, rows
+
+
+def cp_engine_dependencies(source: str | None = None) -> list[tuple[str, str]]:
+    """Every `cp_engine` symbol THIS FILE reaches, read off its own AST.
+
+    `(module, attr_path)` pairs, sorted: `from cp_engine.x import a` gives
+    `("cp_engine.x", "a")`; `from cp_engine import mc2_db` followed by
+    `mc2_db.Tables.SPINE_SUBSTANCE` gives `("cp_engine.mc2_db",
+    "Tables.SPINE_SUBSTANCE")`. Function-level imports count — they are the
+    ones that fail at CALL time.
+
+    Derived rather than listed because the list drifted the first day it
+    existed: it probed `SPINE_LINT_COLUMNS` and `Tables.COMMITMENTS`, which
+    this file never reads, and missed `SEAL_SWEEP_COLUMNS` and
+    `word_count_lint.contributors`, which it does (#295). A hand list can
+    only ever describe the call path someone remembered; the file describes
+    all of them.
+    """
+    import ast
+
+    src = source if source is not None else Path(__file__).read_text(encoding="utf-8")
+    tree = ast.parse(src)
+    deps: set[tuple[str, str]] = set()
+    # Names bound by `from cp_engine import <module>` — attribute reads on
+    # those are the constants-read-while-building-a-query costume.
+    module_aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("cp_engine"):
+            for alias in node.names:
+                if node.module == "cp_engine":
+                    module_aliases[alias.asname or alias.name] = f"cp_engine.{alias.name}"
+                    deps.add((f"cp_engine.{alias.name}", ""))
+                else:
+                    deps.add((node.module, alias.name))
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Attribute):
+            continue
+        # Flatten `a.b.c` into (root name, "b.c").
+        parts: list[str] = []
+        cur: ast.AST = node
+        while isinstance(cur, ast.Attribute):
+            parts.append(cur.attr)
+            cur = cur.value
+        if isinstance(cur, ast.Name) and cur.id in module_aliases:
+            deps.add((module_aliases[cur.id], ".".join(reversed(parts))))
+    # An attribute path that is a prefix of a longer one is implied by it.
+    paths_by_module: dict[str, set[str]] = {}
+    for module, path in deps:
+        paths_by_module.setdefault(module, set()).add(path)
+    out: list[tuple[str, str]] = []
+    for module, paths in paths_by_module.items():
+        for path in paths:
+            if path == "" and len(paths) > 1:
+                continue  # the bare module is implied by any attribute read on it
+            if any(other != path and other.startswith(path + ".") for other in paths):
+                continue
+            out.append((module, path))
+    return sorted(out)
 
 
 def build_fingerprint() -> str:
@@ -9612,6 +9656,23 @@ def _project_codes_for_lint(client, project_code: str) -> list[str] | None:
     if scope is None:
         return None
     codes = {project_code, scope.get("project_code") or project_code}
+    # The audit log stores `project_code` exactly as each caller typed it, and
+    # THREE strings name one project (`resolve_project_id`): the short code,
+    # the dir-slug, and the raw `projects.code` — plus the bare uuid, which
+    # every verb also accepts. A wrap-up spread across two spellings must not
+    # read as two half-finished wrap-ups (#289).
+    if scope.get("id"):
+        codes.add(str(scope["id"]))
+    if scope.get("kind") == "project" and scope.get("id"):
+        try:
+            rows = (
+                client.table("projects").select("code").eq("id", scope["id"])
+                .limit(1).execute().data
+            ) or []
+            if rows and rows[0].get("code"):
+                codes.add(rows[0]["code"])
+        except Exception as exc:  # noqa: BLE001 — a spelling, not a requirement
+            log.debug("projects.code lookup failed for %s: %s", project_code, exc)
     return sorted(c for c in codes if c)
 
 
@@ -9702,8 +9763,20 @@ _WRAP_STEPS: tuple[tuple[str, str], ...] = (
 )
 
 
-def _wrap_window_rows(client, codes: list[str]) -> list[dict[str, Any]]:
-    """This caller's audited wrap-up calls on this project, newest first.
+# The two steps that WRITE audit on failure too (row_count 0), so a failed
+# Exec Summary or session write must not count as the step having run — and a
+# failed `capture_session` must not close the window (#289).
+_WRAP_WRITE_STEPS = frozenset({"capture_project_state", "capture_session"})
+
+# Rows are filtered by tool IN THE QUERY, so the limit bounds wrap-step rows
+# only — not every audited read on every project, which is what the first
+# version bounded and how a busy caller's steps fell off the end (#289).
+_WRAP_WINDOW_LIMIT = 500
+
+
+def _wrap_window(client, codes: list[str]) -> tuple[list[dict[str, Any]], str | None]:
+    """This caller's audited wrap-up calls on this project since their last
+    `capture_session`, newest first — and WHEN that previous capture was.
 
     THE WINDOW IS "SINCE THE LAST `capture_session`", not a clock. A session
     has no id the audit log can see, and a fixed lookback would either split
@@ -9711,27 +9784,35 @@ def _wrap_window_rows(client, codes: list[str]) -> list[dict[str, Any]]:
     ritual's own terminator, which makes it the honest boundary: everything
     after the last one is the work not yet written up.
 
+    The terminator itself is NOT in the window. The first version appended it
+    before breaking, so the previous wrap-up's capture satisfied the current
+    wrap-up's `capture_session` step — the one step the checkpoint could then
+    never report missing, on any project that had ever been wrapped (#289).
+    It is returned separately so a just-finished wrap-up can still be told
+    apart from one that never started.
+
     Scoped to the CALLER as well as the project — Tony's wrap-up is not
     Marcello's, and reporting one as the other would tell somebody their work
     was done by somebody else.
     """
     subject = caller_subject()
     if not subject:
-        return []
+        return [], None
+    wanted = sorted(name for name, _ in _WRAP_STEPS)
     try:
         rows = (
             client.table("mcp_audit_log")
-            .select("tool, at, args")
+            .select("tool, at, args, row_count")
             .eq("user_id", subject)
+            .in_("tool", wanted)
             .order("at", desc=True)
-            .limit(200)
+            .limit(_WRAP_WINDOW_LIMIT)
             .execute()
             .data
         ) or []
     except Exception:  # noqa: BLE001 — advisory; never fail the caller's wrap
-        return []
+        return [], None
 
-    wanted = {name for name, _ in _WRAP_STEPS}
     out: list[dict[str, Any]] = []
     for row in rows:
         args = row.get("args")
@@ -9748,12 +9829,22 @@ def _wrap_window_rows(client, codes: list[str]) -> list[dict[str, Any]]:
         # both halves incomplete.
         if args.get("project_code") not in codes:
             continue
-        if row.get("tool") not in wanted:
+        tool = row.get("tool")
+        if tool not in wanted:
             continue
+        if tool in _WRAP_WRITE_STEPS and row.get("row_count") == 0:
+            continue  # the write failed; the step did not run
+        if tool == "capture_session":
+            # The window closes at the previous wrap-up. The terminator belongs
+            # to THAT wrap-up, not this one.
+            return out, str(row.get("at") or "")[:19] or None
         out.append(row)
-        if row.get("tool") == "capture_session":
-            break  # the window closes at the previous wrap-up
-    return out
+    return out, None
+
+
+def _wrap_window_rows(client, codes: list[str]) -> list[dict[str, Any]]:
+    """The rows of `_wrap_window` — for callers that only ask what ran."""
+    return _wrap_window(client, codes)[0]
 
 
 @mcp_server.tool()
@@ -9788,7 +9879,7 @@ def wrap_status(project_code: str) -> dict[str, Any]:
             "error": f"no project or initiative resolves for code {project_code!r}",
         }
 
-    rows = _wrap_window_rows(client, codes)
+    rows, closed_at = _wrap_window(client, codes)
     # Newest-first; the FIRST time we see a step in the window is its latest run.
     seen: dict[str, str] = {}
     for row in rows:
@@ -9807,26 +9898,30 @@ def wrap_status(project_code: str) -> dict[str, Any]:
     missing = [s["step"] for s in steps if s["ran_at"] is None]
 
     # THE CLOSED-WINDOW CASE. `capture_session` is both the LAST step and the
-    # thing that closes the window, so the instant a wrap-up finishes it reads
-    # as a fresh empty one — every step null, `complete: false`, five steps
-    # "missing". The boundary is right for "what is owed NOW", but reporting a
-    # just-finished wrap-up identically to an unstarted one is a lie the caller
-    # acts on. When the only thing in the window IS the capture, say so.
-    just_closed = list(seen) == ["capture_session"]
+    # thing that closes the window, so the instant a wrap-up finishes the
+    # window is empty — every step null, six steps "missing". The boundary is
+    # right for "what is owed NOW", but reporting a just-finished wrap-up
+    # identically to an unstarted one is a lie the caller acts on. An empty
+    # window WITH a closing capture is "wrapped"; an empty window with no
+    # capture ever is "not started". While steps are in the window the
+    # wrap-up is in progress and `capture_session` is genuinely owed — it is
+    # the step that will close it (#289).
+    just_closed = not rows and closed_at is not None
     if just_closed:
         missing = []
     return {
         "project_code": project_code,
         "caller": caller_subject(),
         "window": "since your last capture_session on this project",
+        "window_closed_at": closed_at,
         "steps": steps,
         "missing": missing,
-        "complete": not missing,
+        "complete": just_closed,
         "state": (
-            "wrapped — this window closed at the capture; the next wrap-up "
-            "starts fresh"
+            f"wrapped — this window closed at the capture ({closed_at}); the "
+            "next wrap-up starts fresh"
             if just_closed
-            else ("complete" if not missing else "in progress")
+            else ("in progress" if rows else "not started")
         ),
     }
 

@@ -360,48 +360,101 @@ def test_the_instructions_state_the_real_size_of_the_write_surface(server):
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_the_probe_executes_every_cp_engine_import_the_file_makes(server):
-    """THE GAP #285 NAMES. `tool_count` proves registration, not callability.
-
-    Three verbs raised on every call for a day while `/health` reported
-    `healthy, 57 tools`. The probe must cover every `cp_engine` import in
-    `server.py` — a probe that samples would have reported healthy, because
-    the one verb that looked fine (`word_count_check`) was the one that
-    returned before reaching its import.
-    """
+def _cp_engine_symbols_read_by(src: str) -> set[str]:
+    """An INDEPENDENT extraction of every `cp_engine` symbol the file reads,
+    written differently from the server's own so the two can disagree."""
     import ast
+
+    out: set[str] = set()
+    aliases: dict[str, str] = {}
+    tree = ast.parse(src)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("cp_engine"):
+            for a in node.names:
+                if node.module == "cp_engine":
+                    aliases[a.asname or a.name] = f"cp_engine.{a.name}"
+                else:
+                    out.add(f"{node.module}:{a.name}")
+
+    # Attribute chains rooted at an imported module name — CODE only, which
+    # is why this is an AST walk and not a regex: the docstrings name plenty
+    # of `mc2_db.<CONSTANT>`s this file never reads.
+    def chain(node):
+        if isinstance(node, ast.Name):
+            return [node.id]
+        if isinstance(node, ast.Attribute):
+            inner = chain(node.value)
+            return inner + [node.attr] if inner else None
+        return None
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Attribute):
+            parts = chain(node)
+            if parts and parts[0] in aliases:
+                out.add(f"{aliases[parts[0]]}:{'.'.join(parts[1:])}")
+    return out
+
+
+def test_the_probe_executes_every_cp_engine_symbol_the_file_reads(server):
+    """THE GAP #285 NAMES, at SYMBOL level and in BOTH directions (#295).
+
+    The first version of this test compared MODULE names, one direction. The
+    probe it guarded checked `SPINE_LINT_COLUMNS` and `Tables.COMMITMENTS` —
+    neither read by this file — and missed `SEAL_SWEEP_COLUMNS` and
+    `word_count_lint.contributors`, which are. It passed.
+    """
     from pathlib import Path
 
     src = (Path(__file__).resolve().parent / "server.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    imported: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("cp_engine"):
-            if node.module == "cp_engine":
-                imported.update(f"cp_engine.{a.name}" for a in node.names)
-            else:
-                imported.add(node.module)
-
-    ok, rows = server.dependency_probe()
-    probed = {r["dep"].split(":")[0] for r in rows}
-    missing = imported - probed
-    assert not missing, (
-        f"server.py imports {sorted(missing)} but the probe never exercises "
+    expected = _cp_engine_symbols_read_by(src)
+    _, rows = server.dependency_probe()
+    probed = {r["dep"] for r in rows}
+    # A probed `a.b.c` covers a read of `a.b`.
+    def covered(sym):
+        return any(p == sym or p.startswith(sym + ".") for p in probed)
+    unprobed = {s for s in expected if not covered(s)}
+    assert not unprobed, (
+        f"server.py reads {sorted(unprobed)} but the probe never exercises "
         "them — they can break in the container while /health reports healthy"
     )
+    phantom = {p for p in probed if not any(p == e or p.startswith(e) or e.startswith(p) for e in expected)}
+    assert not phantom, f"the probe checks {sorted(phantom)}, which server.py never reads"
 
 
 def test_the_probe_reaches_the_constants_not_just_the_imports(server):
-    """The THIRD costume of the same bug.
-
-    `mc2_db.SPINE_LINT_COLUMNS` is read while BUILDING a query — import-clean,
-    AttributeError on first call. That shipped one deploy after the import fix
-    because the check then in place only resolved module names.
-    """
+    """The THIRD costume of the same bug: a constant read while BUILDING a
+    query — import-clean, AttributeError on first call. These are the ones
+    this file actually reads (#295)."""
     _, rows = server.dependency_probe()
     deps = {r["dep"] for r in rows}
-    assert "cp_engine.mc2_db:SPINE_LINT_COLUMNS" in deps
-    assert "cp_engine.mc2_db:Tables" in deps
+    assert "cp_engine.mc2_db:SEAL_SWEEP_COLUMNS" in deps
+    assert "cp_engine.mc2_db:Tables.SPINE_SUBSTANCE" in deps
+    assert "cp_engine.word_count_lint:contributors" in deps
+
+
+def test_health_reports_degraded_when_a_symbol_is_missing(server, monkeypatch):
+    """BEHAVIOUR: a vendored module that imports but lacks a symbol the
+    server reads must turn `/health` to `degraded` and name the symbol."""
+    import asyncio
+    import json
+    import sys
+    import types
+
+    stub = types.ModuleType("cp_engine.word_count_lint")
+    stub.lint_word_count = lambda *a, **k: None  # present
+    # `contributors` deliberately absent — the symbol the hand list missed.
+    monkeypatch.setitem(sys.modules, "cp_engine.word_count_lint", stub)
+
+    ok, rows = server.dependency_probe()
+    assert ok is False
+    bad = [r for r in rows if not r["ok"]]
+    assert bad and bad[0]["dep"] == "cp_engine.word_count_lint:contributors", bad
+
+    resp = asyncio.run(server.health(None))
+    body = json.loads(resp.body)
+    assert body["status"] == "degraded"
+    assert body["deps_ok"] is False
+    assert body["deps"][0]["dep"] == "cp_engine.word_count_lint:contributors"
 
 
 def test_the_probe_reports_rather_than_raises(server):
@@ -585,22 +638,31 @@ def test_log_improvement_refuses_a_thin_observation(server):
 
 
 class _AuditQuery:
-    """Chainable stand-in for the audit-log read."""
+    """Chainable stand-in for the audit-log read. Records every call so a
+    test can assert on the QUERY, not only on what came back."""
 
-    def __init__(self, rows):
+    def __init__(self, rows, calls):
         self._rows = rows
+        self._calls = calls
+
+    def _rec(self, name, a, k):
+        self._calls.append((name, a, k))
+        return self
 
     def select(self, *a, **k):
-        return self
+        return self._rec("select", a, k)
 
     def eq(self, *a, **k):
-        return self
+        return self._rec("eq", a, k)
+
+    def in_(self, *a, **k):
+        return self._rec("in_", a, k)
 
     def order(self, *a, **k):
-        return self
+        return self._rec("order", a, k)
 
     def limit(self, *a, **k):
-        return self
+        return self._rec("limit", a, k)
 
     def execute(self):
         return type("R", (), {"data": self._rows})()
@@ -609,13 +671,14 @@ class _AuditQuery:
 class _AuditClient:
     def __init__(self, rows):
         self._rows = rows
+        self.calls = []
 
     def table(self, name):
-        return _AuditQuery(self._rows)
+        return _AuditQuery(self._rows, self.calls)
 
 
-def _row(tool, at, code="ibx-5153"):
-    return {"tool": tool, "at": at, "args": {"project_code": code}}
+def _row(tool, at, code="ibx-5153", row_count=1):
+    return {"tool": tool, "at": at, "args": {"project_code": code}, "row_count": row_count}
 
 
 @pytest.fixture
@@ -642,11 +705,17 @@ def test_the_window_closes_at_the_previous_capture_session(_caller):
         _row("spine_lint", "2026-09-16T09:00:00"),        # previous wrap-up
         _row("seal_sweep", "2026-09-16T08:00:00"),        # previous wrap-up
     ]
-    got = _caller._wrap_window_rows(_AuditClient(rows), ["ibx-5153"])
+    got, closed_at = _caller._wrap_window(_AuditClient(rows), ["ibx-5153"])
     tools = [r["tool"] for r in got]
-    assert tools == ["capture_project_state", "capture_session"], (
+    # THE TERMINATOR IS NOT IN THE WINDOW. The first version of this test
+    # asserted `["capture_project_state", "capture_session"]` — and so locked
+    # in the defect where yesterday's capture satisfied today's
+    # `capture_session` step, on every project that had ever been wrapped
+    # (#289).
+    assert tools == ["capture_project_state"], (
         "steps from the previous wrap-up leaked into this window"
     )
+    assert closed_at == "2026-09-16T10:00:00"
 
 
 def test_both_spellings_of_a_project_count_as_one(_caller):
@@ -809,38 +878,136 @@ def test_the_server_has_no_undefined_names() -> None:
     )
 
 
-def test_a_just_closed_wrap_up_does_not_read_as_an_unstarted_one(_caller):
-    """THE DESIGN FLAW THE FIRST VERSION SHIPPED WITH.
+@pytest.fixture
+def _wrap(server, monkeypatch):
+    """`wrap_status` with the audit read faked and the resolver short-cut, so
+    the tests exercise the WINDOW LOGIC — the part that shipped wrong twice —
+    rather than the resolver."""
+    monkeypatch.setattr(server, "caller_subject", lambda: "test-user-id")
+    monkeypatch.setattr(server, "_project_codes_for_lint", lambda c, code: ["ibx-5153"])
 
-    `capture_session` is both the LAST step and the thing that closes the
-    window, so the instant a wrap-up finishes it reads as a fresh empty one:
-    every step null, five steps "missing", `complete: false`. Observed live
-    immediately after completing a real wrap-up.
+    def run(rows):
+        client = _AuditClient(rows)
+        monkeypatch.setattr(server, "user_client", lambda: client)
+        return server.wrap_status("ibx-5153"), client
 
-    The boundary is right for "what is owed NOW". Reporting a just-finished
-    wrap-up identically to an unstarted one is not.
+    return run
+
+
+_FIVE_STEPS_TODAY = [
+    _row("word_count_check", "2026-09-17T22:05:00"),
+    _row("seal_sweep", "2026-09-17T22:04:00"),
+    _row("commitments_sweep", "2026-09-17T22:03:00"),
+    _row("spine_lint", "2026-09-17T22:02:00"),
+    _row("capture_project_state", "2026-09-17T22:00:00"),
+]
+_YESTERDAYS_CAPTURE = _row("capture_session", "2026-09-16T10:00:00")
+
+
+def test_an_in_progress_wrap_up_still_owes_capture_session(_wrap):
+    """THE HOLE THE FIRST VERSION SHIPPED WITH (#289).
+
+    Five steps done today, a `capture_session` from yesterday. The first
+    version reported `complete`, `missing=[]`, with `capture_session.ran_at`
+    pointing at YESTERDAY — because the previous wrap-up's terminator was
+    inside the window. Only a first-ever wrap-up could report the step
+    missing. The test that covered this asserted the leak.
     """
-    import ast
-    import inspect
+    out, _ = _wrap(_FIVE_STEPS_TODAY + [_YESTERDAYS_CAPTURE])
+    assert out["missing"] == ["capture_session"], out
+    assert out["complete"] is False
+    assert out["state"] == "in progress"
+    ran = {s["step"]: s["ran_at"] for s in out["steps"]}
+    assert ran["capture_session"] is None, "yesterday's capture counted as today's"
+    assert out["window_closed_at"] == "2026-09-16T10:00:00"
 
-    # Assert on the CODE PATH, not the source text: a first attempt grepped
-    # for "just_closed" and passed against `just_closed = False`, which is the
-    # exact defect. The claim is that the flag is COMPUTED from what the
-    # window contains, not hardcoded.
-    tree = ast.parse(inspect.getsource(_caller.wrap_status).lstrip())
-    assigned = [
-        n for n in ast.walk(tree)
-        if isinstance(n, ast.Assign)
-        and any(getattr(t, "id", None) == "just_closed" for t in n.targets)
-    ]
-    assert assigned, "wrap_status never computes a just-closed state"
-    for node in assigned:
-        assert not (
-            isinstance(node.value, ast.Constant) and isinstance(node.value.value, bool)
-        ), (
-            "just_closed is hardcoded — a finished wrap-up will still report "
-            "five steps missing, identically to one that never started"
-        )
-        assert "capture_session" in ast.unparse(node.value), (
-            "just_closed is not derived from the capture that closed the window"
-        )
+
+def test_a_just_closed_wrap_up_does_not_read_as_an_unstarted_one(_wrap):
+    """`capture_session` is both the LAST step and the thing that closes the
+    window, so the instant a wrap-up finishes the window is empty. Reporting
+    that identically to a wrap-up that never started is a lie the caller acts
+    on. Observed live immediately after completing a real wrap-up."""
+    out, _ = _wrap([_YESTERDAYS_CAPTURE])
+    assert out["missing"] == []
+    assert out["complete"] is True
+    assert out["state"].startswith("wrapped")
+    assert "2026-09-16T10:00:00" in out["state"]
+
+
+def test_a_project_never_wrapped_owes_every_step(_wrap):
+    out, _ = _wrap([])
+    assert out["missing"] == [name for name, _ in out and _wrap.__globals__["server"]._WRAP_STEPS] if False else out["missing"]
+    assert len(out["missing"]) == 6
+    assert out["complete"] is False
+    assert out["state"] == "not started"
+    assert out["window_closed_at"] is None
+
+
+def test_a_failed_capture_session_does_not_close_the_window(_wrap):
+    """The two write steps audit on failure too (row_count 0). A failed
+    session write must not read as a finished wrap-up (#289)."""
+    out, _ = _wrap([_row("capture_session", "2026-09-17T23:00:00", row_count=0)]
+                   + _FIVE_STEPS_TODAY)
+    assert out["missing"] == ["capture_session"], out
+    assert out["state"] == "in progress"
+
+
+def test_a_failed_exec_summary_write_does_not_count_as_the_step(_wrap):
+    out, _ = _wrap([_row("capture_project_state", "2026-09-17T22:00:00", row_count=0)])
+    assert "capture_project_state" in out["missing"]
+    assert out["state"] == "not started"
+
+
+def test_the_window_query_is_bounded_on_wrap_rows_not_on_everything(_wrap):
+    """`limit(200)` on a query filtered by CALLER ONLY bounded every audited
+    read on every project — a busy caller's wrap steps fell off the end and
+    were reported missing (#289). The tool filter must be in the QUERY."""
+    _, client = _wrap(_FIVE_STEPS_TODAY)
+    names = [c[0] for c in client.calls]
+    assert "in_" in names, "tool filter is applied in Python, after the limit"
+    in_call = next(c for c in client.calls if c[0] == "in_")
+    assert in_call[1][0] == "tool"
+    assert set(in_call[1][1]) == {"capture_project_state", "spine_lint", "commitments_sweep",
+                                  "seal_sweep", "word_count_check", "capture_session"}
+    select_call = next(c for c in client.calls if c[0] == "select")
+    assert "row_count" in select_call[1][0], "cannot tell a failed write from a run"
+
+
+def test_the_nudge_names_capture_session_when_it_is_owed(server, monkeypatch):
+    """BEHAVIOUR, not source. The nudge reads the same window, so the same
+    leak hid `capture_session` from it on every previously-wrapped project."""
+    monkeypatch.setattr(server, "caller_subject", lambda: "test-user-id")
+    monkeypatch.setattr(server, "resolve_write_scope", lambda c, code: {
+        "id": "p1", "kind": "project", "project_code": "ibx-5153"})
+    monkeypatch.setattr(server, "_project_codes_for_lint", lambda c, code: ["ibx-5153"])
+    monkeypatch.setattr(server, "user_client", lambda: _AuditClient(
+        [_row("capture_project_state", "2026-09-17T22:00:00"), _YESTERDAYS_CAPTURE]))
+    monkeypatch.setattr(server, "call_mc2_capture_project_state",
+                        lambda code, fields, entry: {"ok": True})
+    out = server.capture_project_state("ibx-5153", status="A real status line for the summary.")
+    assert "capture_session" in out.get("wrap_up_still_owed", []), out
+    assert "spine_lint" in out["wrap_up_still_owed"]
+
+
+def test_every_spelling_of_a_project_is_in_its_code_set(server, monkeypatch):
+    """THREE strings name one project, plus the uuid every verb accepts. The
+    audit log stores whichever the caller typed (#289)."""
+    monkeypatch.setattr(server, "resolve_write_scope", lambda c, code: {
+        "id": "11111111-1111-1111-1111-111111111111", "kind": "project",
+        "project_code": "ibx-5153-ai-campaign"})
+
+    class _Q:
+        def __init__(s, rows): s._rows = rows
+        def select(s, *a, **k): return s
+        def eq(s, *a, **k): return s
+        def limit(s, *a, **k): return s
+        def execute(s): return type("R", (), {"data": s._rows})()
+
+    class _C:
+        def table(s, name):
+            assert name == "projects"
+            return _Q([{"code": "IBX-ai-campaign"}])
+
+    codes = server._project_codes_for_lint(_C(), "ibx-5153")
+    assert set(codes) == {"ibx-5153", "ibx-5153-ai-campaign", "IBX-ai-campaign",
+                          "11111111-1111-1111-1111-111111111111"}
