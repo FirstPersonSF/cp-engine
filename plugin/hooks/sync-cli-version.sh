@@ -28,6 +28,37 @@ set -uo pipefail
 PLUGIN_JSON="${CLAUDE_PLUGIN_ROOT}/plugin.json"
 REPO_URL="https://github.com/FirstPersonSF/cp-engine.git"
 
+# ── Observe BEFORE deferring (#296) ───────────────────────────────────
+# The deferral below hands INSTALL authority to the tenant hook inside a
+# tenant. It must not also hand over OBSERVATION — that is how a drift sat
+# for thirteen days with every check reporting healthy. The tenant hook now
+# reports plugin-vs-CLI drift in both directions via `cxp doctor --brief`,
+# but it runs FROM the installed CLI, so when the CLI is the stale half it
+# may predate that verb. This block covers the one direction only this
+# script can see: plugin AHEAD of CLI. Warn only; installs are still governed
+# by the deferral and the guard further down.
+#
+# The wording is byte-identical to cp_engine.health's `cli_behind` finding —
+# tests/test_session_start_hooks.py asserts it — so the two sides of this
+# check cannot drift apart in what they tell the user.
+_obs_plugin=""; _obs_installed=""
+if [ -f "$PLUGIN_JSON" ]; then
+    if command -v jq >/dev/null 2>&1; then
+        _obs_plugin=$(jq -r '.version // empty' "$PLUGIN_JSON" 2>/dev/null || true)
+    else
+        _obs_plugin=$(grep -E '"version"' "$PLUGIN_JSON" | head -1 \
+            | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
+    fi
+    _obs_installed=$(cxp --version 2>/dev/null | awk '{print $NF}' || true)
+fi
+if [ -n "$_obs_plugin" ] && [ -n "$_obs_installed" ] && [ "$_obs_plugin" != "$_obs_installed" ]; then
+    _obs_highest=$(printf '%s\n%s\n' "$_obs_plugin" "$_obs_installed" | sort -V | tail -1)
+    if [ "$_obs_highest" = "$_obs_plugin" ]; then
+        printf '%s\n' '[cp] Your cp tools are out of sync with each other and may save bad data. Say "update cp-engine" and this session will update them — then restart Claude Code (and /mcp) to pick it up.'
+        printf '%s\n' "     (plugin v${_obs_plugin}, engine v${_obs_installed})"
+    fi
+fi
+
 # ── Tenant deferral (arch-phase-3, issue #28) ────────────────────────
 # Inside a cp tenant, the TENANT PIN (.cp-engine.toml [engine].version)
 # is the single truth source for the cp CLI version, enforced by the

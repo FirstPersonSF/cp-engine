@@ -282,17 +282,29 @@ def _plugin_root(tmp_path: Path, version: str) -> Path:
 
 def test_plugin_hook_defers_inside_tenant(tmp_path: Path) -> None:
     """Inside a tenant (.cp-engine.toml anywhere up the tree), the plugin
-    hook must exit 0 SILENTLY without touching the CLI — the tenant pin
-    hook owns the decision. Plugin version deliberately absurd: any
-    version comparison would print/attempt an install."""
+    hook must exit 0 and must NOT touch the CLI — the tenant pin hook owns
+    installs. Plugin version deliberately absurd so any install path would
+    be visible.
+
+    HISTORY (#296). This test used to require total SILENCE here, and that
+    silence is where thirteen days of drift hid: deferring the install had
+    also deferred the observation. The hook now observes BEFORE it defers —
+    it may print the one install-health warning — but the install-path
+    messages ("Updating...", "installing", "updated to") must never appear
+    inside a tenant. That is the contract; silence never was.
+    """
     tenant = tmp_path / "tenant" / "sub" / "dir"
     tenant.mkdir(parents=True)
     (tmp_path / "tenant" / ".cp-engine.toml").write_text("[engine]\n")
     out = _run_hook(tenant, _plugin_root(tmp_path, "99.99.99"))
     assert out.returncode == 0
-    assert out.stdout.strip() == ""
-    assert out.stderr.strip() == ""
-
+    for install_marker in ("Updating", "installing", "updated to", "auto-install"):
+        assert install_marker not in out.stdout + out.stderr, (
+            f"install path ran inside a tenant: {install_marker!r}"
+        )
+    # Anything printed must be the observe warning and nothing else.
+    for line in out.stdout.splitlines():
+        assert line.startswith("[cp] ") or line.startswith("     ("), line
 
 def test_plugin_hook_still_checks_outside_tenant(tmp_path: Path) -> None:
     """Outside a tenant the plugin-version check must still run: with a

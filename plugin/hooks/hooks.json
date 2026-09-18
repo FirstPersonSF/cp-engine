@@ -1,5 +1,5 @@
 {
-  "description": "SessionStart hooks: auto-install the matching cp CLI when the plugin and CLI versions drift; tenant-clone freshness gate (fetch always, ff-only when safe, loud warning otherwise).",
+  "description": "SessionStart: ONE entry. Claude Code runs same-matcher hooks in parallel with no ordering guarantee, so the two scripts are chained by session-start.sh in a fixed order: CLI-version observe/sync, then the tenant-clone freshness gate (#296).",
   "hooks": {
     "SessionStart": [
       {
@@ -7,13 +7,8 @@
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/sync-cli-version.sh",
-            "timeout": 30
-          },
-          {
-            "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/tenant-freshness.sh",
-            "timeout": 25
+            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh",
+            "timeout": 55
           }
         ]
       }

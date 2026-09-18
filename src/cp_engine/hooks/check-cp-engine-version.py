@@ -201,6 +201,33 @@ def _repair_mcp_command(root: Path) -> None:
     _note(f"repaired stale 'cp' command in {path} -> 'cxp'.")
 
 
+def _doctor_brief() -> None:
+    """Print the one install-health line to STDOUT (#296).
+
+    `cxp doctor --brief` is the SessionStart face of `cp_engine.health`: the
+    highest-severity finding plus a count, or NOTHING when healthy. It goes to
+    stdout on purpose — Claude Code adds a SessionStart hook's stdout to the
+    session's context, so the AGENT reads it and can act on "update cp-engine"
+    whether or not the human noticed. Every other message in this file goes to
+    stderr, so stdout carries only this.
+
+    Runs from the installed CLI, which is exactly right for the incident's
+    direction (CLI current, plugin stale) and exactly why it cannot be the only
+    check: when the CLI is the stale half, this verb may not exist yet. That
+    direction is covered by the plugin hook's own observe block. Any failure —
+    old CLI without `doctor`, timeout, crash — is swallowed: a health check that
+    breaks session start is worse than one that misses a beat.
+    """
+    try:
+        out = subprocess.run(
+            ["cxp", "doctor", "--brief"], capture_output=True, text=True, timeout=20
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return
+    if out.returncode == 0 and out.stdout.strip():
+        print(out.stdout.rstrip())
+
+
 def main() -> int:
     root = _tenant_root()
     if root is None:
@@ -222,6 +249,12 @@ def main() -> int:
             "(run `cxp sync` to see the install error)."
         )
         return 0
+
+    # Observation runs on EVERY path where the CLI is runnable, including the
+    # healthy early return below. The pin check answers "is this allowed?";
+    # doctor answers "is this consistent?" — the question that went unasked
+    # for thirteen days while the pin said yes.
+    _doctor_brief()
 
     ok = _satisfies(installed, pin)
     if ok is None:
