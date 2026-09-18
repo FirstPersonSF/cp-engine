@@ -186,14 +186,28 @@ skills, and in the other direction a reinstalled binary leaves running `cxp mcp`
 processes on old bytecode. Without the restart the user does the thing and
 continues silently on stale code — the shape being fixed.
 
-**Where it prints.** The tenant hook calls `cxp doctor --brief`. The plugin hook
-keeps its own bash comparison for the plugin-ahead direction. That is **two
-registrations, so up to two lines** — one per hook system. v03's "one line
-total" assumed a consolidation mechanism across registrations that does not
-exist: Claude Code runs hooks independently and (verify) in parallel, hook
-stdout is plain transcript text, and colour will not render. Two lines, each
-silent when healthy, is the honest budget. The plugin's two existing scripts
-*can* be merged into one entry, and should be.
+**Where it prints — and who reads it.** Verified against the Claude Code hooks
+reference (2026-09-18): *"All matching hooks run in parallel"* with no ordering
+guarantee, and for SessionStart specifically, *"Claude Code adds plain-text
+stdout as context that Claude can see and act on."*
+
+Two consequences, one of them better than v03 assumed:
+
+- **Parallel, so no cross-registration consolidation is possible.** The tenant
+  hook calls `cxp doctor --brief`; the plugin hook keeps its bash comparison for
+  the plugin-ahead direction. Two registrations, **up to two lines**, each silent
+  when healthy. The plugin's two scripts *must* merge into one entry — parallel
+  execution means they cannot otherwise order their output. Colour will not
+  render; it is plain text.
+- **The line lands in the session's context, not only in front of the user.**
+  This is the strongest possible placement for someone who states intents rather
+  than typing commands: the *agent* reads the finding and can raise it in the
+  user's own vocabulary, offer the remedy, and act on "update cp-engine" without
+  the user having noticed the line at all. Tony's *"only if it looked alarming"*
+  is answered by construction — the session is what looks. The wording in §4.2
+  should therefore be written for the agent as much as the human: name the
+  condition, the consequence, the remedy, and the restart requirement, so a
+  session can act on it correctly without further lookup.
 
 ### 4.3 The pin moves with releases, from the tenant side
 
@@ -322,11 +336,14 @@ unsupported configuration came to exist.
 
 ## 8. Still open
 
-1. **Does Claude Code run same-matcher hooks in parallel?** Decides whether
-   merging the plugin's two scripts is optional or required.
-2. **Does CI's `[cp-sync]` commit `.claude/hooks/` diffs?** It is the delivery
-   path for the tenant-side check; if not, the fix reaches nobody who has not run
-   `cxp sync` by hand.
+1. ~~Parallel hooks?~~ **Resolved: yes**, per the hooks reference — merging the
+   plugin's two scripts is required, not optional (§4.2).
+2. ~~Does CI deliver hook changes?~~ **Resolved: the path is live.** CI does a
+   full checkout, `cxp sync` calls `install_into_tenant` unconditionally
+   (`sync.py:404`, gated only on `not dry_run`), and commits with `git add -A`.
+   It has never committed a hook change because the packaged and tenant hooks
+   are byte-identical — nothing to deliver since 2026-08-22. Benign silence, not
+   a dead path.
 3. **`hosted_vs_local`** — does hosted deployment pin to the CLI, or can they
    drift? Whichever is true should be written down.
 4. **The marketplace tracks `ref: "main"`; the CLI installs from a tag.** Two
