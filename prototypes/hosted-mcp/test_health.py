@@ -50,7 +50,9 @@ async def test_health_reports_the_running_code(server):
     assert body["status"] == "healthy"
     # The structural check, and the ONLY one this container can give.
     assert isinstance(body["tool_count"], int) and body["tool_count"] > 0
-    assert body["server_version"].startswith("hosted-cp-spike/")
+    # The PREFIX, not the literal: asserting "hosted-cp-spike/" is what held
+    # the stale spike string in place while it drifted nine months.
+    assert body["server_version"].startswith("hosted-cp/")
 
 
 @pytest.mark.anyio
@@ -127,7 +129,7 @@ async def test_whoami_reports_the_build_on_both_paths(server, monkeypatch):
     """
     unauth = server.whoami()
     assert unauth["authenticated"] is False
-    assert unauth["server_version"].startswith("hosted-cp-spike/")
+    assert unauth["server_version"].startswith("hosted-cp/")
     assert len(unauth["build"]) == 12
 
     class _Access:
@@ -139,7 +141,7 @@ async def test_whoami_reports_the_build_on_both_paths(server, monkeypatch):
     auth = server.whoami()
     assert auth["authenticated"] is True
     assert auth["email"] == "drew@firstperson.is"
-    assert auth["server_version"].startswith("hosted-cp-spike/")
+    assert auth["server_version"].startswith("hosted-cp/")
     assert len(auth["build"]) == 12
 
 
@@ -153,3 +155,37 @@ async def test_whoami_and_health_cannot_disagree(server):
     ident = server.whoami()
     assert ident["server_version"] == health["server_version"]
     assert ident["build"] == health["build"]
+
+
+def test_server_version_tracks_the_engine_release():
+    """`SERVER_VERSION` must match the engine version, and stay matched.
+
+    It did not, for nine months. The constant read `hosted-cp-spike/0.0.6` at
+    engine 0.120.1 — harmless while it was an internal label, actively
+    misleading the day `whoami` started returning it, because a field named
+    `server_version` next to an accurate `build` hash is where a reader looks
+    first. A fresh session was asked "what is the version number" and answered
+    "0.0.6": confident, precise, and nine months wrong.
+
+    `scripts/release.py` now rewrites it on every release. This asserts the
+    result, so the two cannot drift apart again without a red test — a release
+    script that silently stops matching is the same failure one level up.
+    """
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    engine = re.search(
+        r'^__version__ = "([^"]+)"',
+        (root / "src" / "cp_engine" / "__init__.py").read_text(),
+        re.MULTILINE,
+    ).group(1)
+    served = re.search(
+        r'SERVER_VERSION = "([^"]*)"',
+        (Path(__file__).resolve().parent / "server.py").read_text(),
+    ).group(1)
+
+    assert served == f"hosted-cp/{engine}", (
+        f"SERVER_VERSION is {served!r} but the engine is at {engine!r}. "
+        "scripts/release.py bumps this — if it drifted, that wiring broke."
+    )
