@@ -4,6 +4,81 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.121.0 — 2026-09-18
+
+**`cxp doctor`, one health module, and a tenant pin that moves with releases.**
+Minor: a new command, a SessionStart behaviour change, and `cxp sync` now writes
+one line of the tenant's committed config. Closes the build for #296.
+
+### What failed, precisely
+
+On 2026-09-17 a `cxp` at 0.108.1 — ten releases behind the tenant it was
+rendering and **equal to its own plugin** — rewrote 54 provenance stamps
+backwards. Five mechanisms existed to prevent it and every one was silent: the
+plugin hook defers inside a tenant (deliberate) and its no-downgrade guard calls
+"installed is ahead" healthy; the tenant hook compared against a pin
+seventy-eight releases wide (`~= 0.42`, bumped by hand for twenty releases and
+then never) and never read the plugin version at all; its self-heal needed a
+clone the user did not have; the MCP staleness warning speaks only inside tool
+results. The thirteen-day state was both tracks stale together, permitted by
+the pin. A bounded audit of that window found nothing else to repair.
+
+### One module, two thin shims
+
+All install-integrity checks live in `cp_engine.health` as pure functions over
+data. Callers: `cxp doctor --brief` (the one SessionStart line — silent when
+healthy, always exit 0 so its stdout reaches the session's context), `cxp doctor`
+(inventory then findings; network for the hosted check; exit 1 on any finding),
+the tenant hook, and `cxp sync`. The plugin hook keeps one bash comparison for
+the single direction it can see, and a test runs that bash literally against
+the Python to keep them agreeing.
+
+**The constraint that decided the shape:** a component that has drifted cannot
+carry the check that detects its drift — a stale plugin runs its stale hook. So
+CLI-ahead is observed from the tenant hook (packaged in the engine, delivered by
+CI sync and fast-forward), plugin-ahead from the plugin hook, and both are
+tested in both directions.
+
+### The checks
+
+- `plugin_vs_cli` — every registered plugin, every scope, either direction; a
+  remedy **per entry** (`--scope project` from inside the project — the default
+  `claude plugin update` is user-scope and was a no-op for the live finding).
+  Plain digits-and-dots versions only, on both sides: `sort -V` and `packaging`
+  disagree on prereleases.
+- `pin_floor` — the incident's check: the pin's floor is below the running
+  engine's minor. In steady state it fires only when sync has not run since a
+  release, because **`cxp sync` now raises `[engine].version` to
+  `~= <engine minor>`**, never lowers it, honours `version_lock = true`, and
+  leaves compound constraints alone. `release.py` cannot do this (other repo);
+  sync can, and its output is already committed. The cost, stated: tenants now
+  opt *out* of a minor rather than in.
+- `stale_mcp` — `cxp mcp` processes older than the install; names PIDs, says
+  `/mcp`, never kills.
+- `install_record` — `[install]` in `.cp-engine.local.toml`: what is installed
+  on this machine and who did it (`agent` | `human` | `unrecorded`). Sync
+  refreshes it and never creates it.
+- `hosted_vs_local` — the hosted server's `/health` against the local engine.
+  Its first live run found the hosted server three releases behind.
+
+### SessionStart
+
+The plugin hook **observes before it defers** (in-tenant only; outside a tenant
+the install path owns the case). The tenant hook prints `cxp doctor --brief` on
+every path where the CLI runs — including the healthy pin early-return, where
+thirteen days hid. `hooks.json` has **one** entry: same-matcher hooks run in
+parallel with no ordering, so `session-start.sh` chains the two scripts. `bash -n`
+gates the chain's `|| true`.
+
+### Also
+
+`EngineVersionMismatch` names a fix that works without a local clone (v0.120.5),
+so the raised pin teaches rather than traps. The plan and its lineage —
+including the two-machine audit, the review that found a third silence, and the
+architectural review that found the detector shipping inside the component that
+drifts — are in `docs/plans/2026-09-18-install-and-doctor.md`. The convention
+question this surfaced is #297.
+
 ## v0.120.5 — 2026-09-18
 
 **`EngineVersionMismatch` names a fix the blocked user can actually run.**
