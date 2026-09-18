@@ -4,6 +4,46 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.120.3 — 2026-09-18
+
+**A render may never move a provenance stamp backwards.** Patch: one guard at
+the write chokepoint, no behaviour change on a current install.
+
+On 2026-09-17 a `cxp` twelve releases behind its plugin ran a routine render and
+rewrote **54 provenance stamps backwards** — 0.118.0 → 0.108.1, across 58 files
+in the shared tenant. Nothing raised, because every write was a legitimate
+render by a legitimate install. The damage presented as an engine bug and was
+really version drift wearing one; the diagnosis, not the fix, was the whole cost.
+
+The stamp was never silent. `render.py` writes the running version into every
+file on every render, so the regression sat in `git diff` before the commit —
+and was committed through. **The detector existed; the enforcement did not.**
+
+`_guard_provenance_regression` now sits in `_write_if_changed`, the single
+chokepoint all sixteen write sites pass through. Both stamp formats are covered
+because both regressed: `Provenance: Version <X>` (project CPs, spliced) and
+`Provenance: cp-engine v<X>` (fully-generated files, written whole — 19 of the
+54 came through that path, which never calls `_refresh_provenance_header`).
+
+It is a **floor, not equality**: a newer engine writing a newer stamp is the
+normal case and passes untouched. Only a strictly-lower stamp is refused, and
+only the stamp is held — the rest of the body is written as computed, because
+refusing the whole file would make a stale CLI unable to sync at all. An
+unparseable stamp means "no opinion", never "regression".
+
+When it fires, it names the cause and the fix rather than failing obscurely:
+
+```
+[cp-engine] CLAUDE.md: refusing to move the provenance stamp backwards
+(0.120.2 -> 0.108.1). This CLI is older than the file it is rewriting —
+upgrade with `uv tool install --force --reinstall`. Content written; stamp held.
+```
+
+This is the first of several fixes under #296, which reframes the problem: cp
+has four-plus installable surfaces, no supported configuration, and no way to
+say who is running what. This change does not detect drift — it makes the most
+expensive consequence of drift impossible.
+
 ## v0.120.2 — 2026-09-17
 
 **`server_version` reports the engine version.** Patch, and a correction to
