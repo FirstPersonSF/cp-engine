@@ -193,7 +193,7 @@ RAG_ASSET_REFETCH_COLUMNS = (
 )
 
 
-EST_PHASE_COLUMNS = "id, name, overview, position"
+EST_PHASE_COLUMNS = "id, project_id, name, overview, position"
 
 
 EST_ITEM_COLUMNS = "id, phase_id, name, short_description, library_item_id, position"

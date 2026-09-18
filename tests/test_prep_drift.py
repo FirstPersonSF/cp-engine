@@ -61,7 +61,7 @@ def test_fetch_composes_warnings(monkeypatch):
         "cp_engine.agreement_projection.drift_warnings",
         lambda e, b, m, today=None: ["⚠ x — past due ~2026-06-22, no done-mark"])
     # fetch_schedule reads est.id
-    est_id_holder = type("E", (), {"id": "e1"})()
+    est_id_holder = type("E", (), {"id": "e1", "estimate_ids": ("e1",)})()
     monkeypatch.setattr("cp_engine.estimate.fetch_estimate",
                         lambda c, pid: est_id_holder)
     out = _fetch_drift_warnings(_C(), _state(), date(2026, 7, 11))

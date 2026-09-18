@@ -585,7 +585,7 @@ def _fetch_mc2_schedule_milestones(
         return ()
     from cp_engine.clickup_routing import engagement_number
     from cp_engine.mc2_db import Tables
-    from cp_engine.estimate_scope import rendered_estimate
+    from cp_engine.estimate_scope import rendered_estimates
 
     number = engagement_number(project.code)
     if number is None:
@@ -604,11 +604,12 @@ def _fetch_mc2_schedule_milestones(
             return ()
         mc_project_id = rows[0]["id"]
         start = date.fromisoformat(str(rows[0]["start_date"])[:10])
-        # Mission Control's estimate-selection rule, shared (#284).
-        est_row = rendered_estimate(supabase_client, mc_project_id)
-        if est_row is None:
+        # Mission Control's estimate-selection rule, shared (#284) — EVERY
+        # admitted estimate, not the oldest (#291): a milestone on an
+        # addition is due on the same calendar as one on the root.
+        est_rows = rendered_estimates(supabase_client, mc_project_id)
+        if not est_rows:
             return ()
-        est_rows = [est_row]
         items = (
             supabase_client.schema("estimator")
             .table(Tables.EST_SCHEDULE_ITEMS)
@@ -616,7 +617,7 @@ def _fetch_mc2_schedule_milestones(
                 "id, label, item_type, start_week, day_offset, "
                 "duration, duration_days, done"
             )
-            .eq("project_id", est_rows[0]["id"])
+            .in_("project_id", [r["id"] for r in est_rows])
             .in_("item_type", ["milestone", "feedback"])
             .execute()
             .data
@@ -710,7 +711,7 @@ def _fetch_drift_warnings(
         est = fetch_estimate(supabase_client, mc_project_id)
         if est is None:
             return ()
-        bars = fetch_schedule(supabase_client, est.id)
+        bars = fetch_schedule(supabase_client, est.estimate_ids)
         meetings = list_project_meetings(supabase_client, mc_project_id)
         return tuple(drift_warnings(est, bars, meetings, today=today))
     except Exception as exc:  # noqa: BLE001 — drift is best-effort
@@ -816,7 +817,7 @@ def _fetch_deliverable_lines(supabase_client, project: ProjectState) -> tuple[st
         return ()
     from cp_engine.clickup_routing import engagement_number
     from cp_engine.mc2_db import Tables
-    from cp_engine.estimate_scope import rendered_estimate
+    from cp_engine.estimate_scope import rendered_estimates
 
     if engagement_number(project.code) is None:
         return ()
@@ -831,14 +832,16 @@ def _fetch_deliverable_lines(supabase_client, project: ProjectState) -> tuple[st
             return ()
         mc_project_id = rows[0]["id"]
         start_date = rows[0].get("start_date")
-        # Mission Control's estimate-selection rule, shared (#284).
-        est_row = rendered_estimate(supabase_client, mc_project_id)
-        if est_row is None:
+        # Mission Control's estimate-selection rule, shared (#284) — every
+        # admitted estimate (#291), so a deliverable sold as an addition
+        # gets a card like one sold on the root.
+        est_rows = rendered_estimates(supabase_client, mc_project_id)
+        if not est_rows:
             return ()
-        est_id = est_row["id"]
+        est_ids = [r["id"] for r in est_rows]
         phases = (
             supabase_client.schema("estimator").table(Tables.EST_PHASES)
-            .select("id").eq("project_id", est_id).execute().data or []
+            .select("id").in_("project_id", est_ids).execute().data or []
         )
         phase_ids = [ph["id"] for ph in phases]
         if not phase_ids:
@@ -852,7 +855,7 @@ def _fetch_deliverable_lines(supabase_client, project: ProjectState) -> tuple[st
         bars = (
             supabase_client.schema("estimator").table(Tables.EST_SCHEDULE_ITEMS)
             .select("work_item_id, start_week, done")
-            .eq("project_id", est_id).execute().data or []
+            .in_("project_id", est_ids).execute().data or []
         )
         substance = (
             supabase_client.table(Tables.SPINE_SUBSTANCE)

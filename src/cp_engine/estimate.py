@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from cp_engine import mc2_db
-from cp_engine.estimate_scope import rendered_estimate
+from cp_engine.estimate_scope import rendered_estimates
 from cp_engine.mc2_db import Tables
 
 # Default estimate name when the estimator row carries no `name` (mirrors the
@@ -65,10 +65,22 @@ class EstimatePhase:
     overview: str | None
     position: int
     items: tuple[EstimateItem, ...] = ()
+    # Which of the job's admitted estimates this phase belongs to (#291). A
+    # job can carry several sold estimates that render together; same-named
+    # phases from different estimates stay separate, as mc-2's spine does.
+    estimate_id: str = ""
 
 
 @dataclass(frozen=True)
 class Estimate:
+    """The job's sold work — EVERY admitted estimate, rendered together (#291).
+
+    `id` is the oldest admitted estimate's id (the root), kept for callers
+    that key on one; `estimate_ids` carries all of them, oldest first, and is
+    what schedule reads must use. `name` joins the names when there are
+    several, so a surface that prints it says "Estimate 1 + CTV addition"
+    rather than silently naming the root.
+    """
     id: str
     mc_project_id: str
     name: str
@@ -76,9 +88,18 @@ class Estimate:
     # The project's kickoff date (public.projects.start_date), origin for
     # schedule-bar calendar math. Nullable — Drew sets it manually at kickoff.
     start_date: str | None = None
+    estimate_ids: tuple[str, ...] = ()
 
     @classmethod
-    def from_rows(cls, project_row, phases, activities, deliverables, start_date=None) -> "Estimate":
+    def from_rows(cls, project_rows, phases, activities, deliverables, start_date=None) -> "Estimate":
+        # One row (the pre-#291 signature, still used by tests and by any
+        # caller with exactly one estimate) or the admitted list, oldest first.
+        if isinstance(project_rows, dict):
+            project_rows = [project_rows]
+        project_rows = list(project_rows)
+        if not project_rows:
+            raise ValueError("Estimate.from_rows: no estimate rows")
+        estimate_ids = tuple(_required(r, "id", "project") for r in project_rows)
         by_phase: dict[str, list[EstimateItem]] = {
             _required(p, "id", "phase"): [] for p in phases
         }
@@ -103,24 +124,40 @@ class Estimate:
                         library_item_id=r.get("library_item_id"),
                     )
                 )
+        # Phases are ordered by ESTIMATE first (oldest admitted first), then
+        # by position within it — never merged by name across estimates. A
+        # phase row without `project_id` (older callers, single-estimate
+        # tests) is attributed to the root.
+        rank = {eid: n for n, eid in enumerate(estimate_ids)}
+
+        def _phase_key(p):
+            return (rank.get(p.get("project_id") or estimate_ids[0], len(rank)),
+                    p.get("position") or 0)
+
         ordered_phases = tuple(
             EstimatePhase(
                 id=_required(p, "id", "phase"), name=_required(p, "name", "phase"),
                 overview=p.get("overview"),
                 position=p.get("position") or 0,
                 items=tuple(sorted(by_phase.get(p["id"], []), key=lambda i: i.position)),
+                estimate_id=p.get("project_id") or estimate_ids[0],
             )
             # Same nullable-`position` guard as the items above: a phase row
             # carries the column with a NULL value, so the default never fires
             # and an all-NULL set raises `None < None` mid-sort.
-            for p in sorted(phases, key=lambda p: p.get("position") or 0)
+            for p in sorted(phases, key=_phase_key)
         )
+        project_row = project_rows[0]  # the root; the read-shape control scans this name
+        names = [project_row.get("name", _DEFAULT_ESTIMATE_NAME) or _DEFAULT_ESTIMATE_NAME] + [
+            r.get("name", _DEFAULT_ESTIMATE_NAME) or _DEFAULT_ESTIMATE_NAME for r in project_rows[1:]
+        ]
         return cls(
             id=_required(project_row, "id", "project"),
             mc_project_id=_required(project_row, "mc_project_id", "project"),
-            name=project_row.get("name", _DEFAULT_ESTIMATE_NAME),
+            name=" + ".join(names),
             phases=ordered_phases,
             start_date=start_date,
+            estimate_ids=estimate_ids,
         )
 
     def item_by_id(self, item_id) -> EstimateItem | None:
@@ -169,12 +206,13 @@ _SCHEDULE_COLUMNS = mc2_db.EST_SCHEDULE_COLUMNS
 
 
 def fetch_estimate(client, mc_project_id) -> Estimate | None:
-    """Read the live default estimate for an MC project, or `None` if none.
+    """Read the job's admitted estimates as ONE `Estimate`, or `None` if none.
 
     Pure read against the `estimator` schema (drives the client portal). Four
     queries, all explicit-column:
-      1. estimator.projects — the one default estimate for `mc_project_id`.
-      2. estimator.phases — its phases (by project_id).
+      1. estimator.projects — every estimate `estimate_scope` admits for
+         `mc_project_id` (approved; else the on_schedule bridge), oldest first.
+      2. estimator.phases — their phases (by project_id IN the admitted ids).
       3/4. estimator.phase_activities / phase_deliverables — scoped to those
          phase ids via `.in_("phase_id", [...])`. These child tables carry no
          project_id, only phase_id, so filtering by the estimate's phase ids is
@@ -187,9 +225,10 @@ def fetch_estimate(client, mc_project_id) -> Estimate | None:
     # `is_default` is dropped by mc-2 migration 183 and a filter on a missing
     # column is a 42703 ERROR, which `sync.py` would catch and log while every
     # spine quietly mirrored unbound.
-    project_row = rendered_estimate(client, mc_project_id)
-    if project_row is None:
+    project_rows = rendered_estimates(client, mc_project_id)
+    if not project_rows:
         return None
+    estimate_ids = [r["id"] for r in project_rows]
 
     # Kickoff date for calendar math — lives on public.projects, keyed by the
     # MC project id (nullable; Drew sets it manually at kickoff).
@@ -208,7 +247,7 @@ def fetch_estimate(client, mc_project_id) -> Estimate | None:
         client.schema("estimator")
         .table(Tables.EST_PHASES)
         .select(_PHASE_COLUMNS)
-        .eq("project_id", project_row["id"])
+        .in_("project_id", estimate_ids)
         .execute()
         .data
         or []
@@ -238,29 +277,34 @@ def fetch_estimate(client, mc_project_id) -> Estimate | None:
         activities, deliverables = [], []
 
     return Estimate.from_rows(
-        project_row, phases, activities, deliverables, start_date=start_date
+        project_rows, phases, activities, deliverables, start_date=start_date
     )
 
 
 def fetch_schedule(client, estimate_id) -> list[ScheduleItem]:
-    """Read the schedule bars (Gantt rows) for an estimate, ordered by
-    (start_week, position).
+    """Read the schedule bars (Gantt rows) for an estimate — or for every
+    admitted estimate of a job, when given `Estimate.estimate_ids` — ordered
+    by (start_week, position).
 
     `estimator.schedule_items.project_id` references the ESTIMATE id
     (estimator.projects.id), NOT the mc_project_id — so we filter by
-    `estimate_id` directly. Explicit-column read (per the global Supabase rule);
-    the not-yet-shipped work_item_id / work_item_kind / done columns are read via
-    `.get()` defaulting None/False so this tolerates their absence.
+    `estimate_id` directly. Pass the job's `estimate_ids` (#291): a bar on an
+    addition is as real as one on the root, and each already carries its own
+    week offset from the job's start date. Explicit-column read (per the
+    global Supabase rule); the not-yet-shipped work_item_id / work_item_kind /
+    done columns are read via `.get()` defaulting None/False so this
+    tolerates their absence.
     """
-    rows = (
+    query = (
         client.schema("estimator")
         .table(Tables.EST_SCHEDULE_ITEMS)
         .select(_SCHEDULE_COLUMNS)
-        .eq("project_id", estimate_id)
-        .execute()
-        .data
-        or []
     )
+    if isinstance(estimate_id, (str, bytes)):
+        query = query.eq("project_id", estimate_id)
+    else:
+        query = query.in_("project_id", list(estimate_id))
+    rows = query.execute().data or []
     # Order by (start_week, position) on the raw rows — position is a DB ordering
     # hint we don't carry onto the dataclass.
     ordered = sorted(

@@ -843,7 +843,7 @@ def pull_spine_element(project_code: str, key: str) -> dict:
                 from cp_engine.estimate import fetch_estimate, fetch_schedule
                 est = fetch_estimate(client, pid)
                 if est is not None:
-                    bars = fetch_schedule(client, est.id)
+                    bars = fetch_schedule(client, est.estimate_ids)
                     # Drift is best-effort within the best-effort block: a
                     # meetings fetch failure just means no divergence rule.
                     try:

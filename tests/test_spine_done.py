@@ -59,6 +59,7 @@ from cp_engine import spine_done
 def test_fetch_project_done_map_uses_estimate_then_schedule(monkeypatch):
     class _Est:
         id = "EST1"
+        estimate_ids = ("EST1",)
     captured = {}
     monkeypatch.setattr(spine_done, "fetch_estimate", lambda c, pid: (_Est() if pid == "pid" else None))
     def _fake_schedule(c, estimate_id):
@@ -66,7 +67,7 @@ def test_fetch_project_done_map_uses_estimate_then_schedule(monkeypatch):
         return [{"work_item_id": "w1", "done": True}]
     monkeypatch.setattr(spine_done, "fetch_schedule", _fake_schedule)
     m = spine_done.fetch_project_done_map(object(), "pid")
-    assert captured["estimate_id"] == "EST1"   # filtered by ESTIMATE id, not pid
+    assert captured["estimate_id"] == ("EST1",)   # filtered by ESTIMATE id, not pid
     assert m == {"w1": True}
 
 
@@ -80,6 +81,7 @@ def test_fetch_project_done_map_no_estimate_returns_empty(monkeypatch):
 def test_fetch_project_done_map_empty_schedule_returns_empty(monkeypatch):
     class _Est:
         id = "EST1"
+        estimate_ids = ("EST1",)
     monkeypatch.setattr(spine_done, "fetch_estimate", lambda c, pid: _Est())
     monkeypatch.setattr(spine_done, "fetch_schedule", lambda c, eid: [])
     assert spine_done.fetch_project_done_map(object(), "pid") == {}

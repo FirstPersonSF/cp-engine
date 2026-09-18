@@ -51,4 +51,4 @@ def fetch_project_done_map(client, mc_project_id) -> dict:
     est = fetch_estimate(client, mc_project_id)
     if est is None:
         return {}
-    return build_done_map(fetch_schedule(client, est.id))
+    return build_done_map(fetch_schedule(client, est.estimate_ids))

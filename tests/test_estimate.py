@@ -478,3 +478,101 @@ def test_fetch_estimate_with_zero_phases_skips_child_queries():
     queried_tables = {q.table for q in client.queries}
     assert "phase_activities" not in queried_tables
     assert "phase_deliverables" not in queried_tables
+
+
+# ── #291: a job with several sold estimates renders them TOGETHER ─────────
+
+
+def _job_5136_tables(addition_status="pending"):
+    """Job 5136 on 2026-09-17: an approved root plus a pending addition. The
+    addition later gets approved — that flip is the moment mc-2 renders both
+    and the first version of cp-engine kept reading only the root."""
+    return {
+        "projects": [
+            {"id": "root", "mc_project_id": "mc-5136", "name": "Estimate 1", "status": "approved",
+             "on_schedule": True, "created_at": "2026-04-26T00:00:00Z"},
+            {"id": "add", "mc_project_id": "mc-5136", "name": "Estimate 2", "status": addition_status,
+             "on_schedule": False, "created_at": "2026-06-11T00:00:00Z"},
+        ],
+        "phases": [
+            # Same phase NAME in both estimates — must stay two phases.
+            {"id": "ph-r1", "project_id": "root", "name": "Discovery", "overview": None, "position": 0},
+            {"id": "ph-r2", "project_id": "root", "name": "Build", "overview": None, "position": 1},
+            {"id": "ph-a1", "project_id": "add", "name": "Build", "overview": None, "position": 0},
+        ],
+        "phase_activities": [
+            {"id": "a-r", "phase_id": "ph-r1", "name": "Root act", "short_description": None, "position": 0, "library_item_id": None},
+            {"id": "a-a", "phase_id": "ph-a1", "name": "Addition act", "short_description": None, "position": 0, "library_item_id": None},
+        ],
+        "phase_deliverables": [
+            {"id": "d-r", "phase_id": "ph-r2", "name": "Root del", "short_description": None, "position": 0, "library_item_id": None},
+            {"id": "d-a", "phase_id": "ph-a1", "name": "Addition del", "short_description": None, "position": 1, "library_item_id": None},
+        ],
+        "schedule_items": [
+            {"id": "s-r", "project_id": "root", "label": "Root bar", "phase_id": "ph-r1", "start_week": 0, "duration": 2,
+             "position": 0, "item_type": "bar", "emphasis": None, "work_item_id": "a-r", "work_item_kind": "activity", "done": False},
+            {"id": "s-a", "project_id": "add", "label": "Addition bar", "phase_id": "ph-a1", "start_week": 6, "duration": 1,
+             "position": 0, "item_type": "bar", "emphasis": None, "work_item_id": "a-a", "work_item_kind": "activity", "done": False},
+        ],
+        "public.projects": [{"id": "mc-5136", "start_date": "2026-05-04"}],
+    }
+
+
+def test_a_pending_addition_is_not_rendered_yet():
+    client = _FakeClient(_job_5136_tables("pending"))
+    est = fetch_estimate(client, "mc-5136")
+    assert est.estimate_ids == ("root",)
+    assert est.id == "root" and est.name == "Estimate 1"
+    assert {i.id for i in est.all_items()} == {"a-r", "d-r"}
+
+
+def test_an_approved_addition_renders_with_the_root_and_binds_its_items():
+    """THE #291 CASE. Approve Estimate 2 on 5136: mc-2 renders both; cp-engine
+    must too, or every substance row pointing at the addition's items goes
+    `unbound` on the next sync while the sync reports success."""
+    client = _FakeClient(_job_5136_tables("approved"))
+    est = fetch_estimate(client, "mc-5136")
+
+    assert est.estimate_ids == ("root", "add"), "oldest first"
+    assert est.id == "root", "the root stays the id for callers that key on one"
+    assert est.name == "Estimate 1 + Estimate 2"
+    # Root's rows are untouched; the addition's items now resolve.
+    assert {i.id for i in est.all_items()} == {"a-r", "d-r", "a-a", "d-a"}
+    assert est.item_by_id("a-a").name == "Addition act"
+    # Phases: estimate order, then position — and same-named phases stay separate.
+    assert [(p.name, p.estimate_id) for p in est.phases] == [
+        ("Discovery", "root"), ("Build", "root"), ("Build", "add"),
+    ]
+    # The phase query asked for BOTH estimates in one IN, never `.eq` on one.
+    phase_q = next(q for q in client.queries if q.table == "phases")
+    assert phase_q.in_filters == {"project_id": ["root", "add"]} and not phase_q.eq_filters
+
+
+def test_fetch_schedule_reads_bars_from_every_admitted_estimate():
+    client = _FakeClient(_job_5136_tables("approved"))
+    est = fetch_estimate(client, "mc-5136")
+    bars = fetch_schedule(client, est.estimate_ids)
+    assert [b.id for b in bars] == ["s-r", "s-a"], "ordered by start_week across estimates"
+    sched_q = next(q for q in client.queries if q.table == "schedule_items")
+    assert sched_q.in_filters == {"project_id": ["root", "add"]}
+    # A single id still works the old way.
+    assert [b.id for b in fetch_schedule(client, "add")] == ["s-a"]
+
+
+def test_no_caller_reads_the_schedule_by_the_root_id_alone():
+    """Every `fetch_schedule` caller must pass `estimate_ids`, or an
+    addition's bars vanish from drift, done-maps and the where-it-stands
+    header the day it is approved (#291)."""
+    import ast
+    from pathlib import Path
+
+    src_dir = Path(__file__).resolve().parents[1] / "src" / "cp_engine"
+    offenders = []
+    for path in src_dir.glob("*.py"):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Call) and getattr(node.func, "id", getattr(node.func, "attr", None)) == "fetch_schedule"
+                    and len(node.args) == 2):
+                arg = ast.unparse(node.args[1])
+                if arg.endswith(".id"):
+                    offenders.append(f"{path.name}: fetch_schedule(..., {arg})")
+    assert not offenders, offenders

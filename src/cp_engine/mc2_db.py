@@ -240,7 +240,7 @@ RAG_ASSET_REFETCH_COLUMNS = (
 # counts lives in `estimate_scope`, which owns the `estimator.projects`
 # column list; no shared constant exists for it (the one that did had zero
 # readers, #292).
-EST_PHASE_COLUMNS = "id, name, overview, position"
+EST_PHASE_COLUMNS = "id, project_id, name, overview, position"
 EST_ITEM_COLUMNS = "id, phase_id, name, short_description, library_item_id, position"
 EST_SCHEDULE_COLUMNS = (
     "id, project_id, phase_id, label, start_week, duration, position, "

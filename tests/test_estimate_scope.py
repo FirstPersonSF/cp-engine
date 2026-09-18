@@ -31,7 +31,7 @@ from pathlib import Path
 
 import pytest
 
-from cp_engine.estimate_scope import rendered_estimate, rendered_estimates
+from cp_engine.estimate_scope import rendered_estimates
 
 _REPO = Path(__file__).resolve().parent.parent
 
@@ -121,20 +121,21 @@ def test_abandoned_counts_nowhere() -> None:
     """Not money, not schedule, not the spine — even when on_schedule is set."""
     c = _Client([_row(id="dead", status="abandoned", on_schedule=True)])
     assert rendered_estimates(c, "j1") == []
-    assert rendered_estimate(c, "j1") is None
+    assert rendered_estimates(c, "j1") == []
 
 
 def test_a_job_with_no_estimates_resolves_to_none() -> None:
     """The no-estimate-yet case the binder reads as 'nothing to bind to'."""
-    assert rendered_estimate(_Client([]), "j1") is None
+    assert rendered_estimates(_Client([]), "j1") == []
 
 
-def test_single_estimate_callers_get_the_oldest_approved() -> None:
-    c = _Client([
-        _row(id="first", status="approved", created_at="2026-01-01T00:00:00Z"),
-        _row(id="second", status="approved", created_at="2026-02-01T00:00:00Z"),
-    ])
-    assert rendered_estimate(c, "j1")["id"] == "first"
+def test_there_is_no_singular_rule(  ) -> None:
+    """#291. The first version had `rendered_estimate` -> `rows[0]`, and every
+    cp-engine caller went through it, so a job's second approved estimate
+    would have rendered in mc-2 and unbound its substance rows here. The
+    plural is the only rule; a singular cannot quietly come back."""
+    import cp_engine.estimate_scope as m
+    assert not hasattr(m, "rendered_estimate")
 
 
 # ── The migration-safety control ──────────────────────────────────────
@@ -398,75 +399,61 @@ def _load_reconcile():
 
 
 def _est(job, id, *, name="Estimate 1", status="pending", on_schedule=True,
-         is_default=False, created_at="2026-01-01T00:00:00Z"):
+         created_at="2026-01-01T00:00:00Z"):
     return {
         "id": id, "mc_project_id": job, "name": name, "status": status,
         "on_schedule": on_schedule, "created_at": created_at,
-        "is_default": is_default,
     }
 
 
-def test_reconcile_counts_same_and_differs_and_names_the_differing_jobs() -> None:
-    """The 45-job verification, as a function over rows instead of a docstring."""
+def test_reconcile_classifies_single_multi_bridge_and_awaiting() -> None:
+    """The production shape of 2026-09-17 evening, in miniature: every job
+    approved and single, five carrying pending additions — plus one job in
+    the state #291 exists for, two approved estimates rendering together."""
     rec = _load_reconcile()
     rows = [
-        # Bridge job: on_schedule == is_default → same.
-        _est("j1", "e1", is_default=True),
-        _est("j1", "e1-draft", name="Draft", on_schedule=False),
-        # Approved job: the approved row is also the default → same.
-        _est("j2", "e2", status="approved", is_default=True),
-        # Bridge job where the flags disagree → differs, and the report
-        # carries both names so a human can see which row each side picked.
-        _est("j3", "e3-on", name="Scoped", on_schedule=True),
-        _est("j3", "e3-def", name="Original", on_schedule=False, is_default=True),
-        # No default flagged and nothing on schedule → both None → same.
-        _est("j4", "e4", on_schedule=False),
+        _est("j1", "e1", status="approved"),                                  # single
+        _est("j2", "e2", status="approved"),                                  # single + pending addition
+        _est("j2", "e2-add", name="CTV addition", on_schedule=False),
+        _est("j3", "e3", status="approved", created_at="2026-01-01T00:00:00Z"),   # MULTI
+        _est("j3", "e3-add", name="Addition", status="approved", created_at="2026-02-01T00:00:00Z"),
+        _est("j4", "e4"),                                                     # bridge (nothing approved)
+        _est("j5", "e5", on_schedule=False),                                  # renders none
     ]
-    report = rec.reconcile(rows, {"j1": "ggl-1", "j2": "ibx-2", "j3": "sap-3"})
-
-    assert report.jobs == 4
-    assert [r.code for r in report.same] == ["ggl-1", "ibx-2", "j4"]
-    assert [r.code for r in report.differs] == ["sap-3"]
-    assert report.bridge_jobs == 3  # j2 is the only job with an approved row
-
-    d = report.differs[0]
-    assert (d.rendered_id, d.rendered_name) == ("e3-on", "Scoped")
-    assert (d.default_ids, d.default_names) == (("e3-def",), ("Original",))
+    report = rec.reconcile(rows, {"j1": "ggl-1", "j2": "slt-2", "j3": "ibx-3", "j4": "sap-4", "j5": "hex-5"})
+    assert report.jobs == 5
+    assert [r.code for r in report.single] == ["ggl-1", "slt-2", "sap-4"]
+    assert [r.code for r in report.multi] == ["ibx-3"]
+    assert [r.code for r in report.empty] == ["hex-5"]
+    assert report.bridge_jobs == 2  # j4 and j5
+    assert [(r.code, r.pending_unrendered) for r in report.awaiting] == [("slt-2", ("CTV addition",)), ("hex-5", ("Estimate 1",))]
+    m = report.multi[0]
+    assert m.rendered_ids == ("e3", "e3-add"), "oldest first, both rendered"
 
     out = rec.render(report)
-    assert "same:    3" in out and "differs: 1" in out
-    assert "sap-3: 'Scoped' [e3-on] -> 'Original' [e3-def]" in out
-
-
-def test_reconcile_compares_ids_not_names() -> None:
-    """Two estimates called "Estimate 1" on one job: a name match would hide
-    the resolver picking the wrong row."""
-    rec = _load_reconcile()
-    rows = [
-        _est("j1", "a", on_schedule=True, is_default=False),
-        _est("j1", "b", on_schedule=False, is_default=True),
-    ]
-    report = rec.reconcile(rows)
-    assert [r.mc_project_id for r in report.differs] == ["j1"]
+    assert "render several (#291):    1" in out
+    assert "ibx-3: 'Estimate 1' [e3], 'Addition' [e3-add]" in out
+    assert "slt-2: 'CTV addition'" in out
 
 
 def test_reconcile_runs_the_real_rule_not_a_restatement() -> None:
     """Abandoned-but-on_schedule is the case a hand-rolled comparison would
-    get wrong; the script must resolve it exactly as `rendered_estimate` does."""
+    get wrong; the script must resolve it exactly as `rendered_estimates` does."""
     rec = _load_reconcile()
-    rows = [_est("j1", "dead", status="abandoned", on_schedule=True, is_default=True)]
+    rows = [_est("j1", "dead", status="abandoned", on_schedule=True)]
     report = rec.reconcile(rows)
-    assert report.differs and report.differs[0].rendered_id is None
+    assert report.empty and report.empty[0].rendered_ids == ()
+    assert report.awaiting == [], "an abandoned estimate is not awaiting anything"
 
 
-def test_reconcile_selects_the_resolvers_columns_plus_the_flag() -> None:
-    """The script must read what the resolver reads (or the real rule cannot
-    run over its rows) plus `is_default` — and nothing under `src/` may."""
+def test_reconcile_selects_exactly_the_resolvers_columns() -> None:
+    """The script reads what the resolver reads (or the real rule cannot run
+    over its rows) and nothing else — `is_default` is gone from production."""
     from cp_engine.estimate_scope import _SCOPE_COLUMNS
 
     rec = _load_reconcile()
-    cols = {c.strip() for c in rec.ESTIMATE_COLUMNS.split(",")}
-    assert cols == {c.strip() for c in _SCOPE_COLUMNS.split(",")} | {"is_default"}
+    assert rec.ESTIMATE_COLUMNS == _SCOPE_COLUMNS
+    assert "is_default" not in rec.ESTIMATE_COLUMNS
     assert "*" not in rec.ESTIMATE_COLUMNS and "*" not in rec.JOB_COLUMNS
 
 
@@ -474,4 +461,4 @@ def test_reconcile_dry_run_touches_no_client(capsys) -> None:
     rec = _load_reconcile()
     assert rec.main(["--dry-run"]) == rec.EXIT_OK
     out = capsys.readouterr().out
-    assert "is_default" in out and "would run" in out
+    assert "would run" in out and "estimator." in out

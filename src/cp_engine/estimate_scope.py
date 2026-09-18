@@ -77,15 +77,10 @@ def rendered_estimates(client, mc_project_id: str) -> list[dict[str, Any]]:
     ]
 
 
-def rendered_estimate(client, mc_project_id: str) -> dict[str, Any] | None:
-    """The single estimate today's one-estimate callers should read, or None.
-
-    `fetch_estimate` and the two planning lookups each resolve exactly one
-    estimate. Keeping that signature is deliberate: a job carrying SEVERAL
-    approved estimates is a real future case, but summing them changes what
-    every downstream figure means, and doing that silently inside a
-    compatibility fix is how a scope change ships unreviewed. Oldest approved
-    wins; the multi-estimate case is tracked separately.
-    """
-    rows = rendered_estimates(client, mc_project_id)
-    return rows[0] if rows else None
+# There is deliberately NO singular `rendered_estimate` (#291). The first
+# version had one — `rows[0]` — and every cp-engine caller went through it, so
+# the day a job approved a second estimate mc-2 would have rendered both while
+# cp-engine bound substance against the oldest only and every row pointing at
+# the addition fell to `unbound`, silently (the 5195 shape). cp-engine's
+# consumers read ITEMS, PHASES and SCHEDULE BARS, never money, so the union
+# changes no figure; it only makes additions bind.
