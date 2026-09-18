@@ -1,232 +1,282 @@
 ---
 Project: cp-engine
-Provenance: Version 01 | 2026-09-18
+Provenance: Version 02 | 2026-09-18
 Filename: 2026-09-18-install-and-doctor.md
 Author: Claude
 ---
 
-# One supported install, and a doctor that can see it
+# Close the hook gap, then report what is running
 
 **Issue:** [cp-engine #296](https://github.com/FirstPersonSF/cp-engine/issues/296)
-**Status:** plan, pre-build — awaiting independent assessment
+**Status:** v02 — rewritten against a second-machine audit that refuted v01's
+central causal claim. Five fixes already shipped; the doctor is re-scoped.
+
+> **v01 is superseded.** It diagnosed "a handoff between two correct
+> mechanisms" and proposed a five-surface scanner plus a human-facing install
+> page. An adversarial review refuted the first; Tony's machine audit
+> (`docs/plans/2026-09-18-install-audit-prompt.md` → his report, 2026-09-18)
+> refuted the second and one factual claim I made about his machine. What
+> survives is smaller and lands in different places.
 
 ---
 
-## 1. What we thought the problem was, and what it actually is
+## 1. What actually failed
 
-The presenting complaint was version drift: Tony's CLI at 0.119.0 against a
-plugin at 0.108.1, twelve releases apart, discovered only because a stale CLI
-re-stamped provenance **backwards across 34 files** and that looked like an
-engine bug.
+A `cxp` twelve releases behind its plugin ran a routine render and rewrote **54
+provenance stamps backwards** across 58 files. Tony caught it by hand.
 
-The obvious reading is "people forget to upgrade." **That reading is wrong, and
-building against it would produce a tool that cannot catch the next instance.**
-
-cp-engine already ships two self-healing SessionStart hooks:
-
-| Hook | Installed by | Truth source | Behaviour |
-|---|---|---|---|
-| `plugin/hooks/sync-cli-version.sh` | the plugin | `plugin.json` version | reinstalls the CLI to match; refreshes the marketplace clone; never downgrades |
-| `.claude/hooks/check-cp-engine-version.py` | `cxp sync` into the tenant | `.cp-engine.toml [engine].version` | reinstalls the CLI when it misses the pin |
-
-Both work. Neither fired.
-
-**The plugin hook defers inside a tenant — by design.** Lines 37–50 of
-`sync-cli-version.sh` walk up for `.cp-engine.toml` and `exit 0` if found,
-because two hooks keyed to different truths would fight over the installed CLI.
-That is correct, and it means the plugin hook never runs where the work happens.
-
-**The tenant hook then checks against a range that is 78 releases wide.**
-`.cp-engine.toml` pins `[engine] version = "~= 0.42"`. Verified:
+**The mechanism, verified on two machines:**
 
 ```
-   0.40.0  satisfies ~=0.42 : False
-   0.42.0  satisfies ~=0.42 : True
-  0.108.1  satisfies ~=0.42 : True
-  0.120.2  satisfies ~=0.42 : True
+plugin/hooks/sync-cli-version.sh   compares PLUGIN vs CLI  ← the only check that
+                                                             could see this drift
+   └─ walks up for .cp-engine.toml, exit 0 inside a tenant  ← deliberate (#28)
+
+.claude/hooks/check-cp-engine-version.py   compares CLI vs TENANT PIN
+   └─ pin was `~= 0.42`, satisfied by 0.42.0 … 0.120.x     ← 78 releases wide
 ```
 
-So Tony's 0.108.1 **satisfied the pin**. The tenant hook was silent and correct
-by its own rules. Inside a tenant nothing enforces currency; outside a tenant
-the plugin hook enforces it in a place nobody works.
+Every cp session starts inside the tenant. So the check that *can* see
+plugin-vs-CLI drift disables itself exactly where all the work happens, and
+hands authority to a check that **structurally cannot see it** —
+`check-cp-engine-version.py` never reads the plugin version at all.
 
-> **The root cause is not forgetfulness. It is a handoff between two correct
-> mechanisms, where each assumes the other covers the gap, and the gap is
-> exactly where the work happens.**
+### 1.1 The correction I got wrong, and why it matters
 
-This matters for the build: **a doctor that only compares versions would not
-have caught this either**, because by the tenant's declared contract nothing was
-wrong. What was wrong is that the contract does not express "current."
+v01 claimed the tenant hook had been printing *"Reinstall manually"* at Tony for
+months, because he has no local `cp-engine` clone (confirmed: none on disk, no
+`[local-repos]` entry).
 
-### 1.1 The second finding: nobody knows who runs what
+**It printed nothing. It returned green.** Verified in the source:
 
-Drew did not know Tony used the CLI at all — assumed he was hosted-only, and
-so never sent CLI instructions. Tony assembled a working setup unaided.
-
-This is not a version problem. **Someone was running a configuration nobody
-designed, and nobody knew.** No tool that compares numbers addresses it; it
-needs a declared, checkable configuration.
-
-### 1.2 The third finding: multiplicity
-
-Scanning `~/.claude/plugins/installed_plugins.json` on one machine:
-
-```
-user scope    → 0.120.2   (lastUpdated 2026-09-18)
-project scope → 0.40.0    (ggl-5136-events-calendar, lastUpdated 2026-06-29)
+```python
+ok = _satisfies(installed, pin)
+if ok is None:  return 0   # can't evaluate
+if ok:          return 0   # healthy — the common path, fully silent
+repo = _read_repo_path(root)          # ← never reached while the pin passes
 ```
 
-Eighty releases apart, and unknown until read directly. Note 0.40.0 **fails**
-the tenant pin — so a session there would trigger a reinstall, meaning the
-project-scoped plugin and the tenant hook actively disagree.
+The missing clone never mattered. Tony confirms he has **never seen** either
+warning — predicted by the code, confirmed by the user.
 
-`ggl-5136-events-calendar` is **on hold, not abandoned** (Drew, 2026-09-18). Its
-pin is a preserved working state, not decay.
+That is a stronger result than "the self-heal was broken." **The self-heal
+reported healthy while twelve releases of drift accumulated underneath it.**
+A doctor that only compares installed versions would have called his machine
+healthy for thirteen days, because both halves *were* installed — the drift was
+*between* them, and the only surface that compares them had switched itself off.
+
+### 1.2 The pin is a shared defect, and it is mine
+
+`.cp-engine.toml`'s `version = "~= 0.42"` was set by me on 2026-06-30
+(`0951d0b6`) and never moved through 80 releases. **Every tenant carrying that
+pin has the same dead check.** It lives in a committed file, not on a machine —
+so no per-machine scan finds it, and fixing one laptop fixes nothing.
+
+Tightened to `~= 0.120` on 2026-09-18 (`4c5eb9c9`). That closes the instance,
+not the class: nothing prevents the next pin from going stale the same way.
+
+### 1.3 What reproduced on machine two, and what did not
+
+| v01 hypothesis | Tony's machine |
+|---|---|
+| Stale `cxp mcp` subprocesses | **Confirmed** — 2 of 3 stale, serving 0.119.0 bytecode, live |
+| 0.40.0 downgrade bomb | **Absent** — 2 cached versions, oldest 0.108.1, no `cp --version` probe |
+| 29 cached plugin copies, each with hooks | **Drew's machine only** — he has 2, byte-identical |
+
+One hypothesis generalised. **The stale-MCP finding is therefore the only
+machine-local item that has earned a place in v2**, and it needs its own
+acceptance criterion: neither `--fix` nor any reinstall clears a stale
+subprocess. Only killing it does. A `--fix` that reinstalls while stale servers
+keep answering would report success and change nothing the user experiences —
+the same trap shape, one layer up.
 
 ---
 
-## 2. Design principles, each earned from a specific failure
+## 2. The finding that re-scopes the work
 
-1. **Report every instance, never one per surface.** A signal reporting one
-   value for a multi-instance thing is structurally unable to see its own
-   failure — the `/health` mistake (#285: counted registration, not execution)
-   and the `SERVER_VERSION` mistake (v0.120.2: confident and nine months wrong).
-2. **Currency is not satisfaction.** The tenant pin answers "is this allowed?"
-   Doctor must answer "is this current?" These are different questions and
-   conflating them is what produced the gap.
-3. **Read-only before `--fix`.** A fixer whose diagnosis is wrong is worse than
-   no fixer.
-4. **Held ≠ stale.** A deliberately pinned project reads as *pinned*. Doctor
-   must not nag a parked project, and `--fix` must not silently revive it.
-5. **Never mutate shared infrastructure.** The hosted server is checked, never
-   changed; one person's `--fix` must not redeploy what others are using.
-6. **Surface without being sought.** The drift is invisible precisely because
-   nobody suspects it, so the check must live where people already are.
+> **Tony, asked how he installed cp-engine:** *"I pointed a Claude Code session
+> in terminal at the mc-2 repo and asked it if it knew what 'the spine and cp'
+> was, and how to set up my computer so it could access it… I did not know what
+> it did, but after that, it 'worked'."*
+
+Corroborated by timestamps: tenant hooks 09-03 07:38, plugin 09-04 07:05,
+`.cp-engine.local.toml` 07:06 — one sitting, machine-paced.
+
+**The install was authored by an agent, not a person.** v01 proposed "one-page
+install docs — the thing you can send a new person." On that machine **there was
+no new person**. A session improvised a four-surface install from a one-sentence
+goal, correctly enough to run in production for two weeks, and wrote nothing
+down — not what it installed, not at what versions, not back to the person whose
+machine it was.
+
+So the install path must be **written for an agent, placed where an agent
+looks** (in the repo, discoverable from `mc-2`), and **must emit its own
+record**, because the actor that runs it will not.
+
+### 2.1 And the warning has to land where he will see it
+
+Tony rarely types slash commands in the normal flow of work — he states intents
+(*"update the spine"*) and lets the session pick the surface. Two consequences:
+
+- **The drifted half was the half he could never see.** The twelve-release gap
+  was in the plugin — skills and slash commands. `/cp-wrapup` ran from a 0.108.1
+  cache for thirteen days. He could not notice it misbehaving because he never
+  invoked it by name.
+- **v01's item 4 was directionally right and mis-placed.** It put the warning in
+  `cxp sync`. **He does not run `cxp sync` either.** SessionStart is the only
+  surface he reliably sees — and both existing hooks already run there, so the
+  fix is placeable today.
+
+**Vocabulary:** his unit is *"the spine."* The system has four installable
+surfaces and no name he would recognise. Output in surface-speak will not be
+read.
+
+### 2.2 The profile model is refuted
+
+Tony's `.mcp.json` carries `cp-hosted` **and** `cp-sources` side by side. He runs
+hosted and local simultaneously. `full` / `hosted-only` has no name for him, and
+he is half the known population.
+
+**Drop profiles from v2.** Two shapes cannot describe two machines; a third
+invented now would be a guess. Revisit only if a real configuration needs a name.
 
 ---
 
-## 3. Build
+## 3. What is already shipped
 
-### Phase 1 — `cxp doctor`, read-only
-
-Scan and report, exit 0 clean / 1 on drift (so it can gate CI or a hook later).
-
-Surfaces, and where each is read:
-
-| Surface | Source | Notes |
+| | Release | What it does |
 |---|---|---|
-| CLI | `cp_engine.__version__` from the **installed** interpreter | never the repo — `git log` shows what is written, only the interpreter shows what runs |
-| Plugin (all installs) | `~/.claude/plugins/installed_plugins.json` | iterate **every** entry: user scope AND each project scope |
-| Marketplace (available) | `marketplaces/cp-engine/.claude-plugin/marketplace.json` | report with the clone's **fetch age** — it lags, and "available" is only as fresh as the clone |
-| Tenant pin | `.cp-engine.toml [engine].version` | report the pin **and its width** — a range satisfied by 78 releases is a finding, not a pass |
-| Hosted MCP | `GET /health` | `server_version` + `build`; degrade cleanly offline |
+| Provenance monotonicity guard | v0.120.3 | A render cannot lower a stamp. Blocks the damage. |
+| Marketplace refresh fixed | v0.120.4 | Pointed at the clone, not the cache. It had **never executed**. |
+| Minor-release pin reminder | v0.120.4 | Names the tenant edit a minor bump needs. |
+| Actionable `EngineVersionMismatch` | v0.120.5 | Names a fix that works without a local clone. |
+| Tenant pin `~= 0.42` → `~= 0.120` | tenant | The hard gate the soft checks stood in for. |
 
-Output sketch:
+Also: the 0.40.0 downgrade bomb on Drew's machine, defused and disarmed.
+
+**What none of these do:** make plugin-vs-CLI drift visible inside a tenant.
+That is the actual failure, and it is still open.
+
+---
+
+## 4. Build, in order
+
+### Phase 1 — close the hook gap (the fix)
+
+**The tenant deferral in `sync-cli-version.sh` is correct and stays.** Two hooks
+installing the CLI would fight. What changes is that deferring the *install*
+must not also defer the *observation*.
+
+Inside a tenant, before `exit 0`, compare **plugin version vs installed CLI** and
+warn on mismatch. Warn only — no install, no fight. This is the comparison
+nothing performs today, in the one place every session passes through.
 
 ```
-cp-engine doctor                          profile: full
-
-  CLI  (cxp)          0.120.2   ✓
-  Plugin (user)       0.120.2   ✓
-  Plugin (project)    0.40.0    ⚠  ggl-5136-events-calendar — pinned, 80 behind
-  Marketplace         0.120.2   ✓  fetched 17h ago
-  Tenant pin          ~= 0.42   ⚠  satisfied by 78 releases — does not enforce currency
-  Hosted MCP          0.120.2   ✓  build dcc61c3a449c
-
-  1 warning, 1 note.  Run `cxp doctor --fix` to update local surfaces.
+[cp] the spine's two halves disagree: commands are v0.108.1, the engine is
+     v0.119.0. Ask this session to update cp-engine, or run:
+       claude plugin update cp-engine@cp-engine
 ```
 
-### Phase 2 — the profile
+Written in his vocabulary, naming the conversational path first because that is
+how the work is actually driven.
 
-`full` (CLI + plugin + tenant) or `hosted-only`. Recorded per machine in
-`.cp-engine.local.toml` (already gitignored, already per-machine), asked once.
+**Control:** a fixture with plugin 0.108.1 and CLI 0.119.0 inside a tenant must
+**fail** against today's hook (silent) and warn after the change. That is the
+exact state of Tony's machine for thirteen days.
 
-**Why this and not a single blessed setup:** the hosted wrap-up path exists
-precisely so a session with no `cxp` can complete the ritual. Hosted-only is a
-designed configuration, not a degraded one. Without profiles, doctor either
-nags hosted-only users about a CLI they correctly lack, or stays silent for
-everyone.
+### Phase 2 — the pin must be capable of failing
 
-The profile is also the answer to §1.1: it makes "what is this person running?"
-a declared, checkable fact.
+A pin whose floor is 78 releases down is indistinguishable from no pin. Add a
+check — in `cxp sync` and in the tenant hook — that the pin's floor is within N
+minor versions of the installed engine, warning when it is not.
 
-### Phase 3 — `--fix`, local surfaces only
+**This is the finding no per-machine doctor can reach**, because the defect is
+in a committed file shared by every tenant. It is also the cheapest item here.
 
-Routes around both documented traps:
+Open: whether `release.py`'s existing minor-bump reminder is enough, or whether
+the tenant should self-check. Lean self-check — the reminder fires on the
+releaser's terminal, not on the machine carrying the stale pin.
 
-- **`uv tool upgrade` reports success and changes nothing** when the receipt
-  pins an exact git rev — nothing is newer at that tag. Use
-  `uv tool install --force --reinstall`, and read `uv-receipt.toml` to report
-  what the install actually points at.
-- **`claude plugin install` refuses with "already installed"** instead of
-  pointing at `claude plugin update`.
+### Phase 3 — stale `cxp mcp` detection
 
-Never touches: the hosted server, a held/pinned project (without `--include-held`),
-or the tenant pin.
+Reproduced on both machines; invisible by construction, since the tools answer
+normally from old code. Detection is read-only and needs no round-trip: a
+process whose start time predates the install mtime is stale.
 
-### Phase 4 — close the hook gap
+Report at SessionStart alongside Phase 1. **Do not auto-kill** — a running MCP
+server belongs to a live session, possibly someone else's work. Name the PIDs
+and say `/mcp` restarts it.
 
-**This is the fix for the actual root cause; the rest is visibility.** Options,
-for the reviewer to weigh:
+**Acceptance:** `--fix`, if it ever exists, must state that it cannot clear this.
 
-- **(a) Narrow the tenant pin** to `~= 0.120` so it expresses currency. Cheap,
-  but every release then needs a tenant commit, and a stale tenant clone would
-  fight the CLI.
-- **(b) Teach the tenant hook a currency check** distinct from satisfaction —
-  warn (never auto-install) when the installed CLI is far behind the
-  marketplace's available version, while keeping the pin as the hard gate.
-- **(c) Let the plugin hook run inside a tenant in warn-only mode** — no
-  install, so no fight with the tenant hook, but the drift becomes visible
-  where the work happens.
+### Phase 4 — the install payload, written for an agent
 
-**Recommendation: (b).** It keeps one installer (no hook fight), separates the
-two questions that got conflated, and warns rather than acting — which is the
-right default for something whose diagnosis is new and unproven.
+Not a one-pager for a human. In the repo, weighted so a cold session reads it
+first, covering: what this is (in "the spine" vocabulary, not surface names),
+the interaction model, and **install / verify / upgrade / uninstall as
+executable instructions**, including what a correct install looks like
+afterwards so the agent can check its own work and report it.
 
-### Phase 5 — one-page install doc
+The human interface collapses to one sentence, learnable once: *point a session
+at the repo and ask what this is and how to install it.*
 
-`docs/installing-cp.md`: what the surfaces are, which profile you want, the one
-command, and how to verify. The thing you can send a new person. Today's
-`docs/upgrading-to-cxp.md` documents a *rename*, not an install, and assumes the
-self-healing hook works — which §1 shows it does not, inside a tenant.
+**This is the phase most likely to over-run.** It is the instance of a larger
+convention question (see §6) — build the cp-engine payload, do not solve the
+org-wide version here.
 
----
+### Phase 5 — `cxp doctor`, last and smallest
 
-## 4. Verification
+Read-only. Reports every install of every surface, the pin and **its width**,
+the marketplace clone's fetch age, stale MCP processes, and the hosted build.
 
-Per the standing rule that a control test must **fail** against the unfixed
-system:
+**It is last because the audit demoted it.** It would not have caught this
+incident on either machine: both halves were installed, the drift was between
+them, and the worst defect was in a shared file. Doctor is for answering *"what
+is running here?"* on demand — a real need, but not the fix.
 
-- **The 0.40.0 project install is a live fixture.** Doctor must report it. A
-  version of doctor that reads only user scope passes on this machine and is
-  therefore wrong — that is the control.
-- **A synthetic tenant pinned `~= 0.42` with CLI 0.108.1** must produce a
-  currency warning while the pin check passes. This reproduces Tony's exact
-  state, where every existing mechanism was silent.
-- **Offline** must degrade to a clean "hosted: unreachable", not a crash or a
-  false green.
-- **`--fix` on a held project** must be a no-op without `--include-held`.
-- Verify the installed interpreter, never the source tree.
+**Dropped from v01:** profiles (§2.2), `--fix` (nothing in the audit shows a
+fix-shaped gap; the traps are discovery problems, and the one thing that most
+needs fixing — a stale subprocess — cannot be fixed by reinstalling).
 
 ---
 
-## 5. Open questions for review
+## 5. Verification
 
-1. **Is Phase 4(b) the right call**, or does narrowing the pin (a) beat teaching
-   the hook a second concept?
-2. **Should `--fix` exist at all in v1?** Principle 3 says diagnose first. The
-   counter-argument: the diagnosis is the whole cost, and a fix that requires
-   copy-paste re-introduces the discovery problem.
-3. **Is the profile over-engineering** for a two-person team, or the minimum
-   that makes "up to date" mean anything?
-4. **Does doctor belong inside `cxp sync`**, as its own command, or both?
-5. **What about Marcello?** The plan assumes two profiles. If a third
-   configuration exists in practice, the model is wrong before it ships.
+- **Phase 1 control:** plugin 0.108.1 + CLI 0.119.0 inside a tenant — silent
+  today, warns after. Tony's exact state.
+- **Phase 2 control:** a tenant pinned `~= 0.42` against engine 0.120.x must
+  warn. Every tenant was in this state until today.
+- **Phase 3 control:** a `cxp mcp` process started before the install mtime must
+  be reported. Two exist on Tony's machine right now, left running as evidence.
+- **Phase 5 control:** doctor run on a machine in the 13-day drift state must
+  **not** report healthy.
+- Verify the **installed interpreter**, never the source tree.
 
 ---
 
-## 6. Scope discipline
+## 6. Explicitly out of scope
 
-Not in scope: changing the release process itself, the hosted deploy path, or
-the tenant pin's semantics beyond Phase 4. This plan makes the install
-**legible and checkable**; it does not re-architect distribution.
+Tony's report closes with a convention proposal: make the repository the unit of
+instruction and self-describing to a cold agent, on the argument that the native
+interface of a language model is language, and that the missing product is the
+context a machine needs to choose the right surface on a person's behalf.
+
+**The diagnosis is right and the scope is larger than #296.** It should be its
+own issue. #296 has a shippable core — close the hook gap, make the pin capable
+of failing, surface at SessionStart — and that core must not wait on an
+org-wide convention. Phase 4 builds cp-engine's instance of it; the convention
+itself is filed separately.
+
+---
+
+## 7. Open questions
+
+1. **Phase 2 placement** — tenant self-check, or is `release.py`'s reminder
+   enough? (Lean self-check.)
+2. **Warning fatigue** — Phases 1 and 3 both add SessionStart output to a
+   surface that already prints tenant-freshness. What is the budget before it
+   becomes noise nobody reads?
+3. **Does Phase 4 belong in cp-engine, or in `mc-2`** — the repo a cold session
+   was actually pointed at?
+4. **Marcello is still unaudited.** Two machines, two different shapes. A third
+   may refute something here, as the second refuted v01.
