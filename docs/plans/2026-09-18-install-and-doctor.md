@@ -116,20 +116,43 @@ record**, because the actor that runs it will not.
 ### 2.1 And the warning has to land where he will see it
 
 Tony rarely types slash commands in the normal flow of work — he states intents
-(*"update the spine"*) and lets the session pick the surface. Two consequences:
+(*"update the spine"*) and lets the session choose which command to call.
+
+> **Terminology, since this plan uses one word for two things.** *Installable
+> surfaces* are the four things that get installed and can drift: the `cxp` CLI,
+> the plugin, the hosted connector, the tenant clone. *Command surfaces* are what
+> a session calls to do work — slash commands, `cxp` verbs, MCP tools. Tony
+> chooses neither by name; he states an outcome. The drift was in an installable
+> surface and showed up (invisibly) in a command surface.
+
+Two consequences:
 
 - **The drifted half was the half he could never see.** The twelve-release gap
   was in the plugin — skills and slash commands. `/cp-wrapup` ran from a 0.108.1
   cache for thirteen days. He could not notice it misbehaving because he never
   invoked it by name.
 - **v01's item 4 was directionally right and mis-placed.** It put the warning in
-  `cxp sync`. **He does not run `cxp sync` either.** SessionStart is the only
-  surface he reliably sees — and both existing hooks already run there, so the
-  fix is placeable today.
+  `cxp sync`. **He does not run `cxp sync` either.** SessionStart output is the
+  only thing he reliably reads — and both existing hooks already run there, so
+  the fix is placeable today.
 
-**Vocabulary:** his unit is *"the spine."* The system has four installable
-surfaces and no name he would recognise. Output in surface-speak will not be
-read.
+**Vocabulary — and a distinction worth keeping straight.** The spine is the
+distilled-memory layer in MC-2: versioned elements across layers, bound to
+sources and deliverables. That is what Tony names when he says *"update the
+spine"* or *"can you access the spine"* — and he is naming it correctly. It is
+the thing he works on.
+
+What has no name he would recognise is the **local toolchain that reaches it**:
+the `cxp` CLI, the Claude Code plugin, the hosted MCP connector, and the tenant
+clone. Four independently-installed surfaces, and the incident was a drift
+*between two of them*. So a warning phrased as *"your plugin is 0.108.1 and your
+CLI is 0.119.0"* names install mechanics that sit a layer below anything he
+interacts with.
+
+**The gap is not that he lacks a word for the spine. It is that the toolchain
+reaching it has four names and no collective one.** Output in surface-speak will
+not be read; output that says "the spine is broken" would be wrong, because the
+spine is fine — the install that talks to it is not.
 
 ### 2.2 The profile model is refuted
 
@@ -172,13 +195,23 @@ warn on mismatch. Warn only — no install, no fight. This is the comparison
 nothing performs today, in the one place every session passes through.
 
 ```
-[cp] the spine's two halves disagree: commands are v0.108.1, the engine is
-     v0.119.0. Ask this session to update cp-engine, or run:
-       claude plugin update cp-engine@cp-engine
+[cp] Your cp install is out of step with itself — the slash commands are
+     v0.108.1, the engine they call is v0.119.0. Anything that renders or
+     syncs may write stale results. Ask this session to update cp-engine,
+     or run:  claude plugin update cp-engine@cp-engine
 ```
 
-Written in his vocabulary, naming the conversational path first because that is
-how the work is actually driven.
+Three deliberate choices. It names the **install**, not the spine — the spine is
+fine; the toolchain reaching it is not, and saying otherwise would send someone
+looking in the wrong place. It names the **consequence** (*stale results*) rather
+than only the numbers, because two version strings do not tell a reader whether
+to care. And it offers the **conversational path first**, because that is how the
+work is actually driven here — the typed command is the fallback, not the lead.
+
+⚠ **This wording is a draft and Tony should replace it.** It is my guess at what
+he would act on at 8am, and the last time I guessed about his machine I was
+wrong in a way only he could catch. Asking him to write the line is item 2 of
+the review request.
 
 **Control:** a fixture with plugin 0.108.1 and CLI 0.119.0 inside a tenant must
 **fail** against today's hook (silent) and warn after the change. That is the
@@ -212,10 +245,17 @@ and say `/mcp` restarts it.
 ### Phase 4 — the install payload, written for an agent
 
 Not a one-pager for a human. In the repo, weighted so a cold session reads it
-first, covering: what this is (in "the spine" vocabulary, not surface names),
-the interaction model, and **install / verify / upgrade / uninstall as
-executable instructions**, including what a correct install looks like
-afterwards so the agent can check its own work and report it.
+first, covering: **what this is** — stated as what the tools give you access to
+(the spine, the tenant, the sync), not as an inventory of the four things being
+installed; **the interaction model**; and **install / verify / upgrade /
+uninstall as executable instructions**, including what a correct install looks
+like afterwards so the agent can check its own work and report it.
+
+The ordering matters and is the lesson from §2.1: a cold session pointed at this
+repo should learn *what the system does for its user* before it learns that the
+toolchain has four parts. Tony's install succeeded on exactly that framing —
+*"what is the spine and cp, and how do I set my computer up to access it"* — and
+failed only because nothing in the repo answered it.
 
 The human interface collapses to one sentence, learnable once: *point a session
 at the repo and ask what this is and how to install it.*
