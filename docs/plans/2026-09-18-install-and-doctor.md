@@ -25,9 +25,28 @@ as a whole was adding mechanisms while diagnosing that mechanisms had accreted.
 
 ## 1. What actually failed
 
-A `cxp` twelve releases behind its plugin ran a routine render and rewrote **54
-provenance stamps backwards, one each across 54 files**, in a commit touching 58
-(cp `393ad9c8`). Tony caught it by hand and committed only the roll-up.
+A `cxp` at 0.108.1 — **ten releases behind the tenant it was rendering, and
+equal to its own plugin** — ran a routine render and rewrote **54 provenance
+stamps backwards, one each across 54 files**, in a commit touching 58 (cp
+`393ad9c8`). Tony caught it by hand and committed only the roll-up.
+
+> **Timeline, corrected (2026-09-18, from the 13-day audit).** Earlier versions
+> of this plan said "a `cxp` twelve releases behind its plugin." That describes a
+> state that existed for **hours**, not thirteen days. The stamps in `393ad9c8`
+> read `0.108.1`, and a stamp is `ENGINE_VERSION` of the *rendering CLI* — so at
+> that render the CLI was 0.108.1, **the same as the plugin**. The thirteen-day
+> state was **both tracks stale together**, permitted by the wide pin. Only
+> after that render did the CLI move (0.119.0 by 23:15, 0.120.2 at 23:39) with
+> the plugin following at 23:44 — the "CLI ahead of plugin" window was minutes
+> to hours, and the audit found it wrote nothing wrong: the plugin's CLI-path
+> skills were byte-identical between 0.108.1 and 0.119.0.
+>
+> **What this changes:** the check that would have caught the thirteen days is
+> `pin_floor` with a moving floor (§4.3), not `plugin_vs_cli`. `plugin_vs_cli`
+> stays — it catches the general two-track hazard and the post-upgrade
+> half-state — but it is no longer "the incident's check." The architecture in
+> §2 is unchanged: a stale component still cannot detect its own staleness,
+> and the provenance guard (v0.120.3) is what now blocks the damage itself.
 
 > **The figure, pinned.** "34 files" (`improvements.md`, night-of) was an
 > undercount; v02's "54 across 58" conflated stamp count with commit size.
@@ -159,7 +178,10 @@ Pure functions, no side effects, no network unless asked. Each returns a
 | `install_record` | `.cp-engine.local.toml [install]` (§4.5) | absent, or older than the installed versions it describes |
 
 Severity: `plugin_vs_cli` > `pin_floor` > `stale_mcp` > `hosted_vs_local` >
-`install_record`. The first is the incident; the last is bookkeeping.
+`install_record`. Per the corrected timeline in §1, `pin_floor` is the check
+that would have caught the thirteen days and `plugin_vs_cli` the one that
+catches the two-track hazard; both say "may save bad data" and both are fixed
+by "update cp-engine," so the ordering is not load-bearing for the one line.
 
 **Control for `plugin_vs_cli` — both directions, or the guard defect survives:**
 
@@ -301,10 +323,13 @@ healthy. Run on a tenant pinned `~= 0.42`, it must warn.
 6. Install payload + `mc-2` pointer — **after** the convention issue is filed
    (§7), so the payload does not set the convention by shipping first.
 
-Before step 6, and independent of it: **a bounded read-only pass over tenant
-commits in the thirteen-day window** (2026-09-04 → 09-17) for anything else the
-0.108.1 plugin wrote. A couple of hours; a dirty result changes the severity
-framing of the whole issue.
+~~Before step 6: a read-only pass over the thirteen-day window.~~ **Done
+2026-09-18, clean.** The plugin's CLI-path skills were byte-identical between
+0.108.1 and 0.119.0 (the only substantive change was the additive hosted branch
+in `cp-wrapup`, plus two new skills Tony never invoked). All 21 of his commits in
+the window carry current-shape Exec Summaries, session captures, and sweep
+records. Nothing to repair, nothing to backfill. The one (a)-severity item was
+`393ad9c8` itself, already fixed tenant-wide.
 
 ---
 

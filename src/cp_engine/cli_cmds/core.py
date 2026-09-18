@@ -749,3 +749,36 @@ def redact_check_cmd(draft_path: str, client_name: str, aliases: tuple[str, ...]
     else:
         click.echo(render_report(rep), nl=False)
     sys.exit(0 if rep.clean else 1)
+
+
+@click.command("doctor")
+@click.option(
+    "--brief", is_flag=True,
+    help="One line for SessionStart: the worst finding, or nothing. Always exits 0.",
+)
+def doctor_cmd(brief: bool) -> None:
+    """Is this cp install consistent with itself? (#296)
+
+    Reads every registered plugin install, the installed engine version, the
+    uv receipt, and running `cxp mcp` processes, and reports what disagrees.
+    Read-only; never installs, never kills. All check logic lives in
+    `cp_engine.health` — this is its CLI face.
+
+    `--brief` is what the tenant's SessionStart hook calls. It prints the
+    highest-severity finding plus a count, or NOTHING when healthy — silence is
+    the signal — and it ALWAYS exits 0, because Claude Code adds a SessionStart
+    hook's stdout to the session's context only on exit 0; a non-zero exit
+    routes it to stderr as an error instead. Without `--brief`, prints every
+    finding with its command and exits 1 if there are any, for CI and humans.
+    """
+    from cp_engine import health
+
+    findings = health.collect()
+    if brief:
+        line = health.brief(findings)
+        if line:
+            click.echo(line)
+        return
+    click.echo(health.report(findings))
+    if findings:
+        raise SystemExit(1)
