@@ -403,6 +403,7 @@ def _sync_tenant_inner(
     if not dry_run:
         files_written.extend(install_into_tenant(config.root))
         files_written.extend(_raise_pin_floor(config.root))
+        files_written.extend(_refresh_install_record(config.root))
 
     # Project CPs — v0.7 layout: each project gets a working directory at
     # <scope>/<dir_slug>/ where dir_slug encodes both the code and a
@@ -1256,6 +1257,41 @@ def _would_change(
         except Exception:  # noqa: BLE001
             pass
     return True
+
+
+def _refresh_install_record(root: Path) -> list[Path]:
+    """Keep `[install]` in `.cp-engine.local.toml` current (#296 step 4).
+
+    REFRESH ONLY — never create. The local file is per-machine and
+    gitignored; CI runners have none, and creating one there would be a
+    record of nothing. Creation belongs to `cxp init` and the install payload.
+    When the file exists but carries no record, sync writes the first one
+    with `installer = "unrecorded"`: an install it did not witness. That
+    value is the September finding made visible in data.
+    """
+    from cp_engine import health
+
+    local_path = root / health.LOCAL_FILENAME
+    if not local_path.exists():
+        return []
+    existing = health.read_install_record(root) or {}
+    plugins = health.read_installed_plugins(health.default_installed_plugins_path())
+    record = health.build_install_record(
+        cli_version=health.installed_cli_version(),
+        plugins=plugins,
+        receipt_source=health.read_receipt_source(health.default_receipt_path()),
+        tenant_root=root,
+        pin=health.read_pin(root),
+        hosted_url=health.read_hosted_url(root),
+        installer=existing.get("installer") or "unrecorded",
+    )
+    # Unchanged apart from the timestamp → leave the file alone.
+    same = {k: v for k, v in record.items() if k != "recorded_at"}
+    prior = {k: v for k, v in existing.items() if k != "recorded_at"}
+    if same == prior:
+        return []
+    health.write_install_record(local_path, record)
+    return [local_path]
 
 
 def _raise_pin_floor(root: Path) -> list[Path]:

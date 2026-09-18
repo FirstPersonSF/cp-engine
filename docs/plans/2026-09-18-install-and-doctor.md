@@ -171,7 +171,7 @@ Pure functions, no side effects, no network unless asked. Each returns a
 
 | Check | Reads | Fires when |
 |---|---|---|
-| `plugin_vs_cli` | `installed_plugins.json` (every entry, every scope) + `cp_engine.__version__` from the **installed interpreter** | any mismatch, **either direction**; remedy follows direction |
+| `plugin_vs_cli` | `installed_plugins.json` (every entry, every scope) + `cp_engine.__version__` from the **installed interpreter** | any mismatch, **either direction**; a remedy **per entry** (project scope needs `--scope project` from inside the project). **Plain digits-and-dots versions only, on both sides**: `sort -V` and `packaging` disagree on prereleases, so both decline rather than contradict |
 | `pin_floor` | `.cp-engine.toml [engine].version` + installed version | floor is below the installed *minor* (§4.3 for why this, not "N minors") |
 | `stale_mcp` | `ps` start times vs `uv-receipt.toml` mtime | any `cxp mcp` older than the install; names PIDs, never kills |
 | `hosted_vs_local` | `/health` `server_version` vs installed (network, opt-in) | mismatch — or documents that deployment pins them, if that proves true |
@@ -200,7 +200,18 @@ healthy.** Wording is Tony's, amended per the review of v03:
      data. Say "update cp-engine" and this session will update them —
      then restart Claude Code to pick it up.  (+2 more: cxp doctor)
      (plugin v0.108.1, engine v0.119.0)
+     → claude plugin update cp-engine@cp-engine
 ```
+
+**The third line is for the agent** (added after the review of steps 1–2). The
+text lands in the session's context; an agent asked to "update cp-engine"
+needs the command that reaches the *drifted* entry, and the default one does
+not always: `claude plugin update` is `--scope user` unless told otherwise, and
+the live finding on Drew's machine was a **project-scoped** install. The bare
+command would have reported success and moved nothing — a finding re-firing
+every session with a remedy that "worked". Each drifted entry now carries its
+own command (`cd` into the project for project scope); the line shows the
+worst's, `cxp doctor` shows all.
 
 The amendment is the *restart* clause. v03's line promised *"this session will
 fix it"*; the session can update the files but has already loaded the stale
@@ -259,9 +270,21 @@ has *not* run since a release — which is itself a finding.
 Reproduced on both machines. A process whose start time predates the receipt
 mtime is serving old bytecode. `health.py` names the PIDs and says `/mcp`
 restarts it. **Nothing auto-kills** — a running server belongs to a live session,
-possibly someone else's. The existing `mcp_server.py` staleness warning (server
-vs disk, #150) covers the same condition from inside MCP results; the two must
-agree, and a test should assert they do.
+possibly someone else's.
+
+**Relation to `mcp_server.py`'s own check (#150), corrected after review.** v03
+said the two "must agree." They answer different questions and cannot: that one
+compares the server's frozen `__version__` to the on-disk version — a
+*version-string* check, from inside tool results, reactive. This one compares a
+process start time to the receipt's mtime — a *timestamp* check, from outside,
+proactive. A same-version `--force --reinstall` rewrites the receipt and fires
+here but not there; an in-place edit of a directory install fires there but not
+here. What holds, and what the test asserts, is the inclusion that matters:
+**whenever `mcp_server` would warn because a reinstall changed the version, the
+receipt was rewritten after the server started, so this fires too.** The remedy
+is identical and harmless in the false-positive case. Also gated: `is_cxp_mcp`
+is anchored to the executable, because a substring match flagged
+`grep cxp mcp` as a stale server.
 
 ### 4.5 The install record — `.cp-engine.local.toml [install]`
 
@@ -313,15 +336,23 @@ healthy. Run on a tenant pinned `~= 0.42`, it must warn.
 
 ## 5. Order of work
 
-1. `health.py` with `plugin_vs_cli` (both directions) and `stale_mcp`; tests with
+1. ✅ `health.py` with `plugin_vs_cli` (both directions) and `stale_mcp`; tests with
    both-direction fixtures and the bash-vs-Python agreement test.
-2. Tenant hook calls `cxp doctor --brief`; plugin hook gains its one-comparison
-   warn above the guard; the plugin's two scripts merge into one entry.
-3. `cxp sync` raises the pin floor (§4.3); `pin_floor` check; `version_lock`.
-4. `[install]` record schema; sync refreshes it; `install_record` check.
-5. `cxp doctor` verbose; `hosted_vs_local`.
-6. Install payload + `mc-2` pointer — **after** the convention issue is filed
-   (§7), so the payload does not set the convention by shipping first.
+2. ✅ Tenant hook calls `cxp doctor --brief`; plugin hook observes (in-tenant only)
+   above the deferral; the plugin's two scripts merge into one entry.
+   **Adversarially reviewed before release; twelve findings, the material ones
+   fixed in the same range:** a project-scoped entry needs `--scope project`
+   from inside the project (the live finding on Drew's machine had a no-op
+   remedy); `is_cxp_mcp` matched `grep cxp mcp`; `sort -V` and `packaging`
+   disagree on prereleases, so both sides now decline them; the plugin-version
+   reader took the first `"version"` LINE, so python3 on the top-level key now
+   precedes grep/sed; observing outside a tenant double-printed with the
+   install path, so it is in-tenant only; `bash -n` gates the chain's `|| true`.
+3. ✅ `cxp sync` raises the pin floor (§4.3); `pin_floor` check; `version_lock`.
+4. ✅ `[install]` record schema; sync refreshes it (never creates); `install_record` check.
+5. `cxp doctor` inventory; `hosted_vs_local`.
+6. Install payload + `mc-2` pointer — the convention issue is **#297**, filed;
+   the payload writes `installer = "agent"|"human"` into the record.
 
 ~~Before step 6: a read-only pass over the thirteen-day window.~~ **Done
 2026-09-18, clean.** The plugin's CLI-path skills were byte-identical between

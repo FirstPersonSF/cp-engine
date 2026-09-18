@@ -220,7 +220,7 @@ def _fake_env(tmp_path: Path, plugin_version: str, procs_ps: str = "") -> dict:
 def test_collect_is_silent_when_healthy(tmp_path: Path):
     assert health.collect(cli_version="0.120.5", **_fake_env(tmp_path, "0.120.5")) == []
     assert health.brief([]) == ""
-    assert health.report([]) == "cp install: healthy."
+    assert health.report([]).startswith("cp install: no findings from"), "never say healthy for checks that exist; say what ran"
 
 
 def test_collect_sorts_most_severe_first_and_brief_counts_the_rest(tmp_path: Path):
@@ -235,7 +235,7 @@ def test_collect_sorts_most_severe_first_and_brief_counts_the_rest(tmp_path: Pat
     assert "(+1 more: cxp doctor)" in line
     assert "(plugin v0.108.1 (user), engine v0.119.0)" in line
     rep = health.report(findings)
-    assert "command: claude plugin update cp-engine@cp-engine" in rep
+    assert "→ claude plugin update cp-engine@cp-engine" in rep
     assert "pid 4573, 13691, 79265" in rep  # all three predate a receipt written just now
 
 
@@ -265,7 +265,7 @@ def test_doctor_full_exits_one_on_findings(monkeypatch):
     assert CliRunner().invoke(main, ["doctor"]).exit_code == 1
     monkeypatch.setattr(health, "collect", lambda **kw: [])
     r = CliRunner().invoke(main, ["doctor"])
-    assert r.exit_code == 0 and "healthy" in r.output
+    assert r.exit_code == 0 and "no findings" in r.output
 
 
 # ── pin_floor / raise_pin_floor ──────────────────────────────────────────
@@ -342,3 +342,149 @@ def test_collect_includes_pin_floor_when_inside_a_tenant(tmp_path: Path):
     findings = health.collect(cli_version="0.120.5", tenant_root=root, **env)
     assert [f.code for f in findings] == ["pin_floor"]
     assert health.brief(findings).startswith("[cp] This project's cp pin is behind")
+
+
+# ── review fixes (2026-09-18 adversarial review of steps 1–2) ────────────
+
+
+def test_D1_project_scoped_plugin_gets_a_project_scoped_remedy():
+    """`claude plugin update` defaults to --scope user. The live finding on
+    Drew's machine was a PROJECT-scoped entry: the bare command reported
+    success and moved nothing, so the finding would re-fire every session
+    with a remedy that 'worked'."""
+    f = health.plugin_vs_cli(
+        _plugins(("0.120.5", "user"), ("0.120.2", "project", "/Users/x/ggl-5136")), "0.120.5"
+    )
+    assert f is not None and f.extra["direction"] == "plugin_behind"
+    cmd = f.extra["command"]
+    assert "--scope project" in cmd and 'cd "/Users/x/ggl-5136"' in cmd
+    assert f.extra["entries"][0]["project"] == "/Users/x/ggl-5136"
+    # And the brief line carries the exact command for the agent.
+    line = health.brief([f])
+    assert "→ (cd \"/Users/x/ggl-5136\" && claude plugin update --scope project" in line
+
+
+def test_D11_every_drifted_entry_has_its_own_command_in_the_report():
+    f = health.plugin_vs_cli(
+        _plugins(("0.40.0", "project", "/p1"), ("0.120.2", "user"), ("0.100.0", "project", "/p2")),
+        "0.120.5",
+    )
+    rep = health.report([f])
+    assert rep.count("→ ") == 3
+    assert "plugin v0.40.0 (project for /p1)" in rep and 'cd "/p1"' in rep
+    assert "plugin v0.120.2 (user)" in rep and "→ claude plugin update cp-engine@cp-engine" in rep
+    assert "plugin v0.100.0 (project for /p2)" in rep and 'cd "/p2"' in rep
+    # Worst (oldest) first, and it is the one the detail names.
+    assert "plugin v0.40.0" in f.detail
+    assert [e["label"] for e in f.extra["entries"]][0].startswith("plugin v0.40.0")
+
+
+def test_D3_is_cxp_mcp_ignores_greps_and_arguments():
+    assert not health.is_cxp_mcp("grep cxp mcp /var/log/x")
+    assert not health.is_cxp_mcp("vim /Users/x/cxp mcp notes.txt")
+    assert not health.is_cxp_mcp("/x/python /Users/t/.local/bin/cxp mcp-something")
+    assert health.is_cxp_mcp("/x/python /Users/t/.local/bin/cxp mcp")
+    assert health.is_cxp_mcp("cxp mcp")
+    assert health.is_cxp_mcp("cxp mcp --verbose")
+
+
+@pytest.mark.parametrize("a,b", [("0.120.5", "0.120.5rc1"), ("0.121.0", "0.121.0.dev1")])
+def test_D4_prereleases_are_no_opinion_on_both_sides(a: str, b: str):
+    """`sort -V` puts a suffix ABOVE the plain version; packaging puts rc/dev
+    BELOW it. Rather than pick a winner, both sides decline: bash's
+    `_is_plain_version` and this module's `plain_version` refuse anything
+    that is not digits-and-dots, and the decision is tested against the
+    bash literally."""
+    assert health.plain_version(b) is None and health.plain_version(a) is not None
+    assert health.plugin_vs_cli(_plugins((b, "user")), a) is None
+    assert health.plugin_vs_cli(_plugins((a, "user")), b) is None
+    src = PLUGIN_HOOK.read_text()
+    fn = next(l for l in src.splitlines() if l.startswith("_is_plain_version()"))
+    for v, ok in ((a, True), (b, False)):
+        r = subprocess.run(["bash", "-c", f'{fn}; _is_plain_version "{v}"'], capture_output=True)
+        assert (r.returncode == 0) is ok, (v, ok)
+
+
+def test_stale_mcp_fires_whenever_mcp_server_would_warn():
+    """The relation that holds between the two staleness checks: mcp_server
+    warns when the on-disk version differs from the server's frozen one — a
+    version change means a reinstall, which rewrote the receipt AFTER the
+    server started. So that state is a subset of what stale_mcp flags."""
+    server_started = _epoch("Thu Sep 17 12:49:12 2026")
+    reinstall_that_changed_version = _epoch("Thu Sep 17 23:39:59 2026")
+    procs = [Proc(pid=1, started=server_started, command="/x/python /y/cxp mcp")]
+    assert health.stale_mcp(procs, reinstall_that_changed_version) is not None
+
+
+def test_D12_clean_report_names_the_checks_that_ran():
+    rep = health.report([])
+    assert "healthy" not in rep
+    for c in health.CHECKS:
+        assert c in rep
+
+
+# ── install_record (step 4) ──────────────────────────────────────────────
+
+_LOCAL = """# cp-engine local config — gitignored, per-machine.
+[repos]
+"mc-2" = "/Users/x/mc-2"
+
+[local-repos]
+"cp" = "/Users/x/cp"
+"""
+
+
+def test_install_record_absent_fires_lowest_severity():
+    f = health.install_record(None, "0.120.5", _plugins(("0.120.5", "user")))
+    assert f is not None and f.code == "install_record"
+    assert f.severity == health.SEV_INSTALL_RECORD
+    assert "cxp sync" in f.remedy
+
+
+def test_install_record_matching_is_silent():
+    rec = {"cli": {"version": "0.120.5"}, "plugin": {"version": "0.120.5"}}
+    assert health.install_record(rec, "0.120.5", _plugins(("0.120.5", "user"))) is None
+
+
+def test_install_record_stale_fires_and_names_what_moved():
+    """An install happened that nothing recorded — the September shape."""
+    rec = {"cli": {"version": "0.108.1"}, "plugin": {"version": "0.108.1"}, "installer": "agent"}
+    f = health.install_record(rec, "0.120.5", _plugins(("0.120.5", "user")))
+    assert f is not None and "recorded" in f.summary
+    assert "cli 0.108.1 → 0.120.5" in f.detail and "plugin 0.108.1 → 0.120.5" in f.detail
+    assert f.extra["installer"] == "agent"
+
+
+def test_write_install_record_round_trips_and_keeps_other_tables(tmp_path: Path):
+    p = tmp_path / ".cp-engine.local.toml"
+    p.write_text(_LOCAL)
+    rec = health.build_install_record(
+        cli_version="0.120.5", plugins=_plugins(("0.120.5", "user"), ("0.120.2", "project", "/p")),
+        receipt_source=("git", "https://example.test/r"), tenant_root=tmp_path,
+        pin="~= 0.120", hosted_url="https://cp.example.test/mcp", installer="agent",
+    )
+    health.write_install_record(p, rec)
+    text = p.read_text()
+    assert "# cp-engine local config — gitignored, per-machine." in text
+    assert '"mc-2" = "/Users/x/mc-2"' in text
+    assert "[install]" in text and 'installer = "agent"' in text
+    got = health.read_install_record(tmp_path)
+    assert got["cli"]["version"] == "0.120.5" and got["cli"]["source"] == "git+https://example.test/r"
+    assert got["plugin"] == {"version": "0.120.5", "scope": "user"}
+    assert got["other_plugins"][0]["project"] == "/p"
+    assert got["tenant"]["pin"] == "~= 0.120"
+    assert got["hosted"]["url"] == "https://cp.example.test/mcp"
+    health.write_install_record(p, rec)
+    assert p.read_text().count("[install]") == 1, "a rewrite replaces the table, never duplicates it"
+
+
+def test_collect_checks_install_record_only_where_a_local_file_exists(tmp_path: Path):
+    root = tmp_path / "tenant"; root.mkdir()
+    (root / ".cp-engine.toml").write_text('[engine]\nversion = "~= 0.120"\n')
+    env = _fake_env(tmp_path, "0.120.5")
+    # No local file (CI, hosted-only): no opinion.
+    assert health.collect(cli_version="0.120.5", tenant_root=root, **env) == []
+    # Local file present, no [install]: the finding, lowest severity.
+    (root / ".cp-engine.local.toml").write_text(_LOCAL)
+    findings = health.collect(cli_version="0.120.5", tenant_root=root, **env)
+    assert [f.code for f in findings] == ["install_record"]

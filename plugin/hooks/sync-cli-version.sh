@@ -28,6 +28,37 @@ set -uo pipefail
 PLUGIN_JSON="${CLAUDE_PLUGIN_ROOT}/plugin.json"
 REPO_URL="https://github.com/FirstPersonSF/cp-engine.git"
 
+# ── Helpers shared by the observe block and the install path ─────────
+# Plugin version from plugin.json. jq if present; else python3 (on every
+# Mac) reading the TOP-LEVEL key; else grep/sed as a last resort. The
+# grep/sed form takes the FIRST line containing "version", which is the
+# wrong answer the moment plugin.json gains a nested `"version"` — so it is
+# last, not first.
+_plugin_version() {
+    if command -v jq >/dev/null 2>&1; then
+        jq -r '.version // empty' "$PLUGIN_JSON" 2>/dev/null && return 0
+    fi
+    if command -v python3 >/dev/null 2>&1; then
+        python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("version") or "")' \
+            "$PLUGIN_JSON" 2>/dev/null && return 0
+    fi
+    grep -E '"version"' "$PLUGIN_JSON" | head -1 \
+        | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/'
+}
+# Plain digits-and-dots only. `sort -V` and cp_engine.health's `packaging`
+# ordering agree on every plain version and DISAGREE on prereleases
+# (`0.120.5rc1` sorts above `0.120.5` here, below it there). The contract on
+# both sides: plain versions compare, anything else is no opinion.
+_is_plain_version() { printf '%s' "$1" | grep -Eq '^[0-9]+(\.[0-9]+)*$'; }
+
+# ── Am I inside a tenant? (decides both observe and defer) ────────────
+_in_tenant=""
+_dir="$PWD"
+while [ "$_dir" != "/" ] && [ -n "$_dir" ]; do
+    if [ -f "$_dir/.cp-engine.toml" ]; then _in_tenant=1; break; fi
+    _dir=$(dirname "$_dir")
+done
+
 # ── Observe BEFORE deferring (#296) ───────────────────────────────────
 # The deferral below hands INSTALL authority to the tenant hook inside a
 # tenant. It must not also hand over OBSERVATION — that is how a drift sat
@@ -38,24 +69,25 @@ REPO_URL="https://github.com/FirstPersonSF/cp-engine.git"
 # script can see: plugin AHEAD of CLI. Warn only; installs are still governed
 # by the deferral and the guard further down.
 #
+# ONLY inside a tenant. Outside one, the install path below handles the same
+# condition itself and prints its own line; observing there too would print
+# two messages for one condition, one of them asking the user to request an
+# update the hook is already performing.
+#
 # The wording is byte-identical to cp_engine.health's `cli_behind` finding —
 # tests/test_session_start_hooks.py asserts it — so the two sides of this
 # check cannot drift apart in what they tell the user.
-_obs_plugin=""; _obs_installed=""
-if [ -f "$PLUGIN_JSON" ]; then
-    if command -v jq >/dev/null 2>&1; then
-        _obs_plugin=$(jq -r '.version // empty' "$PLUGIN_JSON" 2>/dev/null || true)
-    else
-        _obs_plugin=$(grep -E '"version"' "$PLUGIN_JSON" | head -1 \
-            | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
-    fi
+if [ -n "$_in_tenant" ] && [ -f "$PLUGIN_JSON" ]; then
+    _obs_plugin=$(_plugin_version || true)
     _obs_installed=$(cxp --version 2>/dev/null | awk '{print $NF}' || true)
-fi
-if [ -n "$_obs_plugin" ] && [ -n "$_obs_installed" ] && [ "$_obs_plugin" != "$_obs_installed" ]; then
-    _obs_highest=$(printf '%s\n%s\n' "$_obs_plugin" "$_obs_installed" | sort -V | tail -1)
-    if [ "$_obs_highest" = "$_obs_plugin" ]; then
-        printf '%s\n' '[cp] Your cp tools are out of sync with each other and may save bad data. Say "update cp-engine" and this session will update them — then restart Claude Code (and /mcp) to pick it up.'
-        printf '%s\n' "     (plugin v${_obs_plugin}, engine v${_obs_installed})"
+    if [ -n "$_obs_plugin" ] && [ -n "$_obs_installed" ] \
+        && _is_plain_version "$_obs_plugin" && _is_plain_version "$_obs_installed" \
+        && [ "$_obs_plugin" != "$_obs_installed" ]; then
+        _obs_highest=$(printf '%s\n%s\n' "$_obs_plugin" "$_obs_installed" | sort -V | tail -1)
+        if [ "$_obs_highest" = "$_obs_plugin" ]; then
+            printf '%s\n' '[cp] Your cp tools are out of sync with each other and may save bad data. Say "update cp-engine" and this session will update them — then restart Claude Code (and /mcp) to pick it up.'
+            printf '%s\n' "     (plugin v${_obs_plugin}, engine v${_obs_installed})"
+        fi
     fi
 fi
 
@@ -68,13 +100,7 @@ fi
 # when a session starts anywhere under a tenant root, this hook defers
 # entirely. Outside a tenant there is no pin, and plugin-version
 # matching below remains the right (only) behavior.
-_dir="$PWD"
-while [ "$_dir" != "/" ] && [ -n "$_dir" ]; do
-    if [ -f "$_dir/.cp-engine.toml" ]; then
-        exit 0
-    fi
-    _dir=$(dirname "$_dir")
-done
+[ -n "$_in_tenant" ] && exit 0
 
 # ── Marketplace-clone self-update (the once-and-for-all downgrade fix) ──
 # This hook's truth source is the plugin.json in the marketplace clone at
@@ -122,13 +148,7 @@ fi
 
 # Read plugin version. jq is the dependable parser, but fall back to a
 # grep/sed pair so a missing jq doesn't break the user's session.
-if command -v jq >/dev/null 2>&1; then
-    PLUGIN_VERSION=$(jq -r '.version // empty' "$PLUGIN_JSON")
-else
-    PLUGIN_VERSION=$(grep -E '"version"' "$PLUGIN_JSON" \
-        | head -1 \
-        | sed -E 's/.*"version"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')
-fi
+PLUGIN_VERSION=$(_plugin_version || true)
 
 if [ -z "$PLUGIN_VERSION" ]; then
     exit 0

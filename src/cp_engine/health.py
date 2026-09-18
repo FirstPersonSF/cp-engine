@@ -201,34 +201,73 @@ def cli_reinstall_command(target_version: str, source: tuple[str, str] | None) -
 
 PLUGIN_UPDATE_COMMAND = "claude plugin update cp-engine@cp-engine"
 
+_PLAIN_VERSION = re.compile(r"^\d+(\.\d+)*$")
+
+
+def plain_version(v: str | None) -> Version | None:
+    """A comparable version ONLY if it is plain digits-and-dots.
+
+    The plugin hook compares with `sort -V`; this module with `packaging`.
+    They agree on every plain numeric version and DISAGREE on prereleases —
+    `sort -V` sorts `0.120.5rc1` ABOVE `0.120.5`, packaging sorts it below —
+    so a prerelease on either side would make the two halves of this check
+    print opposite directions with opposite remedies in one session. The
+    contract, enforced on both sides and tested against the bash literally:
+    plain versions compare; anything else is "no opinion".
+    """
+    if not v or not _PLAIN_VERSION.match(str(v).strip()):
+        return None
+    return parse_version(v)
+
+
+def plugin_update_command(p: PluginInstall) -> str:
+    """The `claude plugin update` that reaches THIS entry.
+
+    `claude plugin update` defaults to `--scope user`. On Drew's machine the
+    only drifted entry was PROJECT-scoped, so the bare command reported
+    success and moved nothing — the finding would re-fire every session with
+    a remedy that "worked". Project scope is keyed on the project's path, so
+    the command is issued from inside it.
+    """
+    if p.scope == "project" and p.project_path:
+        return f'(cd "{p.project_path}" && claude plugin update --scope project cp-engine@cp-engine)'
+    if p.scope != "user":
+        return f"claude plugin update --scope {p.scope} cp-engine@cp-engine"
+    return PLUGIN_UPDATE_COMMAND
+
+
+def _plugin_label(p: PluginInstall) -> str:
+    where = f" for {p.project_path}" if p.project_path else ""
+    return f"plugin v{p.version} ({p.scope}{where})"
+
 
 def plugin_vs_cli(
     plugins: Iterable[PluginInstall],
     cli_version: str | None,
     receipt_source: tuple[str, str] | None = None,
 ) -> Finding | None:
-    """The incident's check: do the plugin and the CLI agree?
+    """Do the plugin(s) and the CLI agree?
 
     DIRECTION-AGNOSTIC, and this is the whole point. The plugin hook's
     no-downgrade guard treats "installed is ahead" as healthy — correct for its
-    job of not downgrading off a stale marketplace clone, wrong as a detector,
-    because CLI-ahead is exactly the direction the incident ran. Any mismatch
-    is a finding. The remedy follows the direction: the side that is behind is
-    the side to move.
+    job of not downgrading off a stale marketplace clone, wrong as a detector.
+    Any mismatch is a finding. The remedy follows the direction, and there is
+    one PER ENTRY, because a user-scope and a project-scope install are
+    updated by different commands (`extra["entries"]`).
 
     The one-line wording is written for the agent as much as the human: the
     session can run either remedy, but it has already loaded whichever half is
     stale, so the line says to restart. Without that the user does the thing
     and continues on stale code — the shape being fixed.
     """
-    cli = parse_version(cli_version)
+    cli = plain_version(cli_version)
     if cli is None:
         return None
 
     behind_plugin: list[PluginInstall] = []
     behind_cli: list[PluginInstall] = []
     for p in plugins:
-        pv = parse_version(p.version)
+        pv = plain_version(p.version)
         if pv is None or pv == cli:
             continue
         (behind_plugin if pv < cli else behind_cli).append(p)
@@ -236,52 +275,46 @@ def plugin_vs_cli(
     if not behind_plugin and not behind_cli:
         return None
 
-    def _label(p: PluginInstall) -> str:
-        where = f" for {p.project_path}" if p.project_path else ""
-        return f"plugin v{p.version} ({p.scope}{where})"
+    summary = "Your cp tools are out of sync with each other and may save bad data."
 
     if behind_plugin:
-        # The incident direction. The plugin (skills, slash commands) is
-        # behind the engine it calls.
-        worst = min(behind_plugin, key=lambda p: parse_version(p.version) or cli)
+        # The plugin (skills, slash commands) is behind the engine it calls.
+        # Worst = oldest; every drifted entry gets its own command.
+        worst = min(behind_plugin, key=lambda p: plain_version(p.version) or cli)
+        entries = [
+            {"label": _plugin_label(p), "command": plugin_update_command(p),
+             "scope": p.scope, "project": p.project_path}
+            for p in sorted(behind_plugin, key=lambda p: plain_version(p.version) or cli)
+        ]
         return Finding(
             severity=SEV_PLUGIN_VS_CLI,
             code="plugin_vs_cli",
-            summary=(
-                "Your cp tools are out of sync with each other and may save "
-                "bad data."
-            ),
+            summary=summary,
             remedy=(
                 'Say "update cp-engine" and this session will update them — '
                 "then restart Claude Code to pick it up."
             ),
-            detail=f"{_label(worst)}, engine v{cli_version}",
-            extra={
-                "direction": "plugin_behind",
-                "command": PLUGIN_UPDATE_COMMAND,
-                "plugins": [_label(p) for p in behind_plugin],
-            },
+            detail=f"{_plugin_label(worst)}, engine v{cli_version}",
+            extra={"direction": "plugin_behind", "command": entries[0]["command"], "entries": entries},
         )
 
-    # Plugin ahead of the CLI: the engine is the stale half.
-    worst = max(behind_cli, key=lambda p: parse_version(p.version) or cli)
+    # Plugin ahead of the CLI: the engine is the stale half; one command moves it.
+    worst = max(behind_cli, key=lambda p: plain_version(p.version) or cli)
+    cmd = cli_reinstall_command(worst.version, receipt_source)
+    entries = [
+        {"label": _plugin_label(p), "command": cmd, "scope": p.scope, "project": p.project_path}
+        for p in sorted(behind_cli, key=lambda p: plain_version(p.version) or cli, reverse=True)
+    ]
     return Finding(
         severity=SEV_PLUGIN_VS_CLI,
         code="plugin_vs_cli",
-        summary=(
-            "Your cp tools are out of sync with each other and may save bad "
-            "data."
-        ),
+        summary=summary,
         remedy=(
             'Say "update cp-engine" and this session will update them — then '
             "restart Claude Code (and /mcp) to pick it up."
         ),
-        detail=f"{_label(worst)}, engine v{cli_version}",
-        extra={
-            "direction": "cli_behind",
-            "command": cli_reinstall_command(worst.version, receipt_source),
-            "plugins": [_label(p) for p in behind_cli],
-        },
+        detail=f"{_plugin_label(worst)}, engine v{cli_version}",
+        extra={"direction": "cli_behind", "command": cmd, "entries": entries},
     )
 
 
@@ -455,19 +488,39 @@ def gather_procs() -> list[Proc]:
 
 
 def is_cxp_mcp(command: str) -> bool:
-    # `.../bin/cxp mcp` — the stdio server the tenant's .mcp.json launches.
-    return bool(re.search(r"(^|/|\s)cxp\s+mcp(\s|$)", command))
+    """Is this command line a `cxp mcp` SERVER — not a grep for one?
+
+    Anchored to the executable: `cxp` (or `.../cxp`) must be the first token,
+    or the first after an interpreter (`.../python .../cxp mcp`), and `mcp`
+    the token right after it. A substring match flagged `grep cxp mcp` and
+    `vim notes-about-cxp mcp.txt` as stale servers.
+    """
+    toks = command.split()
+    for i in range(min(2, len(toks))):
+        head = toks[i]
+        if (head == "cxp" or head.endswith("/cxp")) and i + 1 < len(toks) and toks[i + 1] == "mcp":
+            return len(toks) == i + 2 or toks[i + 2].startswith("-")
+    return False
 
 
 def stale_mcp(procs: Iterable[Proc], install_mtime: float | None) -> Finding | None:
-    """`cxp mcp` processes older than the install they should be serving.
+    """`cxp mcp` processes started before cp was last installed.
 
     Reproduced on both audited machines. A `cxp mcp` server keeps serving the
     bytecode it started with; after a reinstall it answers tool calls from old
-    code, normally, with nothing to say so. `mcp_server.py` warns about the
-    same condition from INSIDE tool results (#150) — reactive, so it is seen
-    only once something is already being asked. This is the proactive read:
-    start time before install mtime means stale, no round-trip needed.
+    code, normally, with nothing to say so. Start time before the receipt's
+    mtime is the read-only, no-round-trip signal.
+
+    WHAT THIS IS NOT. `mcp_server.py` (#150) compares the server's frozen
+    `__version__` to the on-disk version from INSIDE tool results — a
+    version-string check that fires only after something is already being
+    asked. This is a timestamp check, and the two answer different questions:
+    a same-version `--force --reinstall` rewrites the receipt and fires HERE
+    (the server is, literally, older than the install) but not there; an
+    in-place edit of a directory install fires there but not here. The
+    relation that holds, and that a test asserts: whenever mcp_server would
+    warn because a reinstall changed the version, the receipt was rewritten,
+    so this fires too. The remedy is the same and harmless either way.
 
     Never kills. A running server belongs to a live session, possibly someone
     else's. It names the PIDs and the restart.
@@ -483,8 +536,8 @@ def stale_mcp(procs: Iterable[Proc], install_mtime: float | None) -> Finding | N
         severity=SEV_STALE_MCP,
         code="stale_mcp",
         summary=(
-            f"{n} cp tool server{'s' if n != 1 else ''} started before the last "
-            "update and may answer with old code."
+            f"{n} cp tool server{'s' if n != 1 else ''} started before cp was "
+            "last installed and may answer with old code."
         ),
         remedy="Run /mcp to restart them.",
         detail=f"pid {pids}",
@@ -497,6 +550,153 @@ def receipt_mtime(path: Path) -> float | None:
         return path.stat().st_mtime
     except OSError:
         return None
+
+
+# ── install_record ───────────────────────────────────────────────────────
+
+LOCAL_FILENAME = ".cp-engine.local.toml"
+
+
+def read_install_record(root: Path) -> dict | None:
+    """`[install]` from the tenant's per-machine local config, or None."""
+    try:
+        import tomllib
+
+        data = tomllib.loads((root / LOCAL_FILENAME).read_text())
+    except (OSError, ValueError):
+        return None
+    rec = data.get("install")
+    return rec if isinstance(rec, dict) else None
+
+
+def read_hosted_url(root: Path) -> str | None:
+    try:
+        data = json.loads((root / ".mcp.json").read_text())
+        return (data.get("mcpServers") or {}).get("cp-hosted", {}).get("url")
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def build_install_record(
+    *,
+    cli_version: str | None,
+    plugins: Iterable[PluginInstall],
+    receipt_source: tuple[str, str] | None,
+    tenant_root: Path | None,
+    pin: str | None,
+    hosted_url: str | None,
+    installer: str,
+) -> dict:
+    """The `[install]` table: what is installed on THIS machine, and who did it.
+
+    `installer` is the field that answers the September finding. Tony's four
+    surfaces were installed by a Claude session from a one-sentence goal, and
+    nothing recorded that anywhere — including to him. Values: "agent",
+    "human", or "unrecorded" (sync found an install it did not witness and is
+    writing the first record of it). The install payload (#296 §4.6) writes
+    the first two; sync writes the third.
+    """
+    plist = list(plugins)
+    primary = next((p for p in plist if p.scope == "user"), plist[0] if plist else None)
+    src = None
+    if receipt_source:
+        src = receipt_source[1] if receipt_source[0] == "directory" else f"git+{receipt_source[1]}"
+    rec: dict = {
+        "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "installer": installer,
+        "cli": {"version": cli_version or "", "source": src or ""},
+    }
+    if primary:
+        rec["plugin"] = {"version": primary.version, "scope": primary.scope}
+    others = [p for p in plist if p is not primary]
+    if others:
+        rec["other_plugins"] = [
+            {"version": p.version, "scope": p.scope, "project": p.project_path or ""} for p in others
+        ]
+    if tenant_root:
+        rec["tenant"] = {"path": str(tenant_root), "pin": pin or ""}
+    if hosted_url:
+        rec["hosted"] = {"url": hosted_url}
+    return rec
+
+
+def write_install_record(local_path: Path, record: dict) -> Path:
+    """Replace `[install]` in the local config, preserving everything else.
+
+    tomlkit round-trip, the same discipline `cxp init` uses on this file, so
+    hand edits and comments survive. Creates the file if absent; callers that
+    must not create (sync) check first.
+    """
+    import tomlkit
+
+    if local_path.exists():
+        doc = tomlkit.parse(local_path.read_text())
+    else:
+        doc = tomlkit.document()
+        doc.add(tomlkit.comment("cp-engine local config — gitignored, per-machine."))
+        doc.add(tomlkit.nl())
+    if "install" in doc:
+        del doc["install"]
+    tbl = tomlkit.table()
+    for k, v in record.items():
+        if isinstance(v, dict):
+            inner = tomlkit.inline_table()
+            inner.update(v)
+            tbl[k] = inner
+        elif isinstance(v, list):
+            arr = tomlkit.array()
+            for item in v:
+                it = tomlkit.inline_table()
+                it.update(item)
+                arr.append(it)
+            tbl[k] = arr
+        else:
+            tbl[k] = v
+    doc.add(tomlkit.nl())
+    doc["install"] = tbl
+    local_path.write_text(tomlkit.dumps(doc))
+    return local_path
+
+
+def install_record(
+    record: dict | None, cli_version: str | None, plugins: Iterable[PluginInstall]
+) -> Finding | None:
+    """Is there a record of this install, and does it match what is here?
+
+    Absent: nothing has ever written down what is installed on this machine
+    — the state every machine was in until #296. Stale: the recorded versions
+    differ from what is installed now, so an install or upgrade happened that
+    nothing recorded. Both are bookkeeping, lowest severity; both are fixed by
+    `cxp sync`, which refreshes the record. The point is not the nag — it is
+    that "what is installed here, and who did it" becomes a fact on disk
+    instead of an inference from timestamps.
+    """
+    plist = list(plugins)
+    primary = next((p for p in plist if p.scope == "user"), plist[0] if plist else None)
+    if record is None:
+        return Finding(
+            severity=SEV_INSTALL_RECORD,
+            code="install_record",
+            summary="There is no record of how cp was installed on this machine.",
+            remedy="Run cxp sync to write one.",
+        )
+    moved = []
+    rec_cli = (record.get("cli") or {}).get("version")
+    if rec_cli and cli_version and rec_cli != cli_version:
+        moved.append(f"cli {rec_cli} → {cli_version}")
+    rec_plugin = (record.get("plugin") or {}).get("version")
+    if rec_plugin and primary and rec_plugin != primary.version:
+        moved.append(f"plugin {rec_plugin} → {primary.version}")
+    if not moved:
+        return None
+    return Finding(
+        severity=SEV_INSTALL_RECORD,
+        code="install_record",
+        summary="cp was updated on this machine since it was last recorded.",
+        remedy="Run cxp sync to refresh the record.",
+        detail=", ".join(moved),
+        extra={"moved": moved, "installer": record.get("installer")},
+    )
 
 
 # ── collect + render ──────────────────────────────────────────────────────
@@ -521,10 +721,16 @@ def collect(
     ps = list(procs) if procs is not None else gather_procs()
 
     root = tenant_root if tenant_root is not None else find_tenant_root()
+    plugins = read_installed_plugins(ip)
+    # The install record is checked only where a local config EXISTS — a real
+    # machine. CI runners and hosted-only sessions have none, and a finding
+    # they could never act on is noise by construction.
+    has_local = bool(root) and (root / LOCAL_FILENAME).exists()
     findings = [
-        plugin_vs_cli(read_installed_plugins(ip), cli, read_receipt_source(rp)),
+        plugin_vs_cli(plugins, cli, read_receipt_source(rp)),
         pin_floor(read_pin(root), cli) if root else None,
         stale_mcp(ps, receipt_mtime(rp)),
+        install_record(read_install_record(root), cli, plugins) if has_local else None,
     ]
     return sorted((f for f in findings if f is not None), key=lambda f: f.severity)
 
@@ -534,7 +740,10 @@ def brief(findings: list[Finding]) -> str:
 
     A line that appears only when something is wrong is alarming by
     construction; one that always prints stops being read. Highest-severity
-    finding, then a count of the rest that points at the full report.
+    finding, then a count of the rest that points at the full report. A third
+    line carries the exact command, because this text lands in the SESSION'S
+    context and the agent asked to "update cp-engine" needs the command that
+    actually reaches the drifted entry — not the default one.
     """
     if not findings:
         return ""
@@ -544,23 +753,31 @@ def brief(findings: list[Finding]) -> str:
     lines = [f"[cp] {top.summary} {top.remedy}{tail}"]
     if top.detail:
         lines.append(f"     ({top.detail})")
+    cmd = top.extra.get("command")
+    if cmd:
+        lines.append(f"     → {cmd}")
     return "\n".join(lines)
 
 
+CHECKS = ("plugin_vs_cli", "pin_floor", "stale_mcp", "install_record")
+
+
 def report(findings: list[Finding]) -> str:
-    """The full `cxp doctor` text: every finding, with its command."""
+    """The full `cxp doctor` text: every finding, every entry, every command."""
     if not findings:
-        return "cp install: healthy."
+        return f"cp install: no findings from {len(CHECKS)} checks ({', '.join(CHECKS)})."
     out = [f"cp install: {len(findings)} finding(s)", ""]
     for f in findings:
         out.append(f"⚠ {f.code} — {f.summary}")
         out.append(f"    {f.remedy}")
         if f.detail:
             out.append(f"    ({f.detail})")
-        cmd = f.extra.get("command")
-        if cmd:
-            out.append(f"    command: {cmd}")
-        for p in f.extra.get("plugins", [])[1:]:
-            out.append(f"    also: {p}")
+        entries = f.extra.get("entries")
+        if entries:
+            for e in entries:
+                out.append(f"    {e['label']}")
+                out.append(f"      → {e['command']}")
+        elif f.extra.get("command"):
+            out.append(f"    → {f.extra['command']}")
         out.append("")
     return "\n".join(out).rstrip()

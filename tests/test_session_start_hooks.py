@@ -237,3 +237,94 @@ def test_chain_runs_both_scripts_in_order_and_never_fails(tmp_path: Path):
     r = _run(CHAIN, _tenant(tmp_path), _env(tmp_path, b, _plugin_root(tmp_path, "0.120.5")))
     assert r.returncode == 0
     assert r.stdout.splitlines()[0] == WARN_FIRST_LINE
+
+
+# ── review fixes (2026-09-18 adversarial review of steps 1–2) ────────────
+
+_ALL_SCRIPTS = (PLUGIN_HOOK, CHAIN, HOOKS / "tenant-freshness.sh")
+
+
+@pytest.mark.parametrize("script", _ALL_SCRIPTS, ids=lambda p: p.name)
+def test_D9_every_hook_script_parses_and_is_executable(script: Path):
+    """The chain's `|| true` would hide a syntax error in a child forever.
+    This is the gate that `|| true` needs."""
+    r = subprocess.run(["bash", "-n", str(script)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stderr
+    assert os.access(script, os.X_OK), f"{script.name} is not executable"
+
+
+def test_D6_outside_a_tenant_plugin_ahead_prints_one_message_not_two(tmp_path: Path):
+    """Outside a tenant the install path handles plugin-ahead itself and
+    prints its own line. Observing there too meant two messages for one
+    condition — one asking the user to request an update the hook was
+    already performing. The observe block is therefore in-tenant only."""
+    b = _fake_bin(tmp_path, "0.119.0")
+    outside = tmp_path / "not-a-tenant"; outside.mkdir()
+    r = _run(PLUGIN_HOOK, outside, _env(tmp_path, b, _plugin_root(tmp_path, "0.120.5")))
+    assert r.returncode == 0
+    assert WARN_FIRST_LINE not in r.stdout, "the observe line must not print outside a tenant"
+    assert "Updating" in r.stdout or "updated" in r.stdout, "the install path should own this case"
+    assert (tmp_path / "uv.log").exists(), "and it should actually try to install"
+
+
+def _tools_dir(tmp: Path, *names: str) -> Path:
+    """A PATH dir holding ONLY the named system tools, so `command -v` for
+    anything else fails — the way to force a specific fallback branch."""
+    d = tmp / ("tools-" + "-".join(names)); d.mkdir(exist_ok=True)
+    for n in names:
+        for cand in (Path("/usr/bin") / n, Path("/bin") / n):
+            if cand.exists():
+                (d / n).symlink_to(cand); break
+    return d
+
+
+def _run_plugin_version(tmp: Path, plugin_json: Path, path_dir: Path) -> str:
+    src = PLUGIN_HOOK.read_text()
+    start = src.index("_plugin_version() {"); end = src.index("\n}\n", start) + 3
+    fn = src[start:end]
+    r = subprocess.run(
+        ["/bin/bash", "-c", f'PLUGIN_JSON="{plugin_json}"\n{fn}\n_plugin_version'],  # absolute: bash is not on the restricted PATH
+        capture_output=True, text=True, env={"PATH": str(path_dir)},
+    )
+    return r.stdout.strip()
+
+
+def test_D5_plugin_version_reader_takes_the_top_level_key(tmp_path: Path):
+    """A nested `"version"` key ahead of the real one fools the grep/sed
+    fallback — it takes the first matching LINE. The shared reader tries jq,
+    then python3 on the TOP-LEVEL key, then grep/sed last. Each branch is
+    forced by a PATH that omits the tools before it."""
+    root = tmp_path / "plugin"; root.mkdir()
+    pj = root / "plugin.json"
+    pj.write_text('{\n  "schema": { "version": "2" },\n  "name": "cp-engine",\n  "version": "0.120.5"\n}\n')
+    # jq present → jq reads the top-level key.
+    if Path("/usr/bin/jq").exists():
+        assert _run_plugin_version(tmp_path, pj, _tools_dir(tmp_path, "jq", "python3", "grep", "sed", "head")) == "0.120.5"
+    # No jq → python3 reads the top-level key.
+    assert _run_plugin_version(tmp_path, pj, _tools_dir(tmp_path, "python3", "grep", "sed", "head")) == "0.120.5"
+    # No jq, no python3 → grep/sed, which takes the first LINE and gets it
+    # WRONG. Pinned on purpose: this is why it is the last resort, not the
+    # first, and why a machine with neither tool is worth knowing about.
+    assert _run_plugin_version(tmp_path, pj, _tools_dir(tmp_path, "grep", "sed", "head")) == "2"
+
+
+def test_D4_prerelease_plugin_is_silent_in_the_observe_block(tmp_path: Path):
+    b = _fake_bin(tmp_path, "0.120.5")
+    r = _run(PLUGIN_HOOK, _tenant(tmp_path), _env(tmp_path, b, _plugin_root(tmp_path, "0.121.0rc1")))
+    assert r.returncode == 0 and r.stdout == ""
+
+
+def test_chain_drains_stdin_and_both_children_run(tmp_path: Path):
+    """D10: one stdin convention. D9: the freshness child must actually run —
+    the earlier chain test only proved the FIRST child's output appeared."""
+    src = CHAIN.read_text()
+    assert "cat >/dev/null" in src and "</dev/null" not in src
+    # Make the freshness child observable: a tenant that is a git repo with
+    # a bogus upstream produces no output but must not break the chain; we
+    # prove it ran by giving it a broken `git` that logs its invocation.
+    b = _fake_bin(tmp_path, "0.120.5")
+    (b / "git").write_text(f'#!/usr/bin/env bash\necho "git $@" >> "{tmp_path}/git.log"\nexit 1\n')
+    (b / "git").chmod(0o755)
+    r = _run(CHAIN, _tenant(tmp_path), _env(tmp_path, b, _plugin_root(tmp_path, "0.120.5")))
+    assert r.returncode == 0
+    assert (tmp_path / "git.log").exists(), "tenant-freshness.sh never ran"
