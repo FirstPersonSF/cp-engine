@@ -4,6 +4,36 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.120.2 — 2026-09-17
+
+**`server_version` reports the engine version.** Patch, and a correction to
+v0.120.1.
+
+v0.120.1 made `whoami` return `server_version`, and left the constant behind it
+reading `hosted-cp-spike/0.0.6` — nine months and roughly ninety releases stale.
+The release notes called it "deliberately left alone". That was wrong: a stale
+label nobody reads is harmless, and the same label reported by the diagnostic
+verb is a trap, because it is the first field a reader checks. A fresh session
+was asked "what is the version number" and answered "0.0.6" — confident,
+precise, and nine months out of date. Worse than not shipping the field.
+
+`scripts/release.py` now bumps `SERVER_VERSION` alongside the other four
+version files, so it tracks releases without anyone remembering. It reads
+`hosted-cp/<engine version>`. A test asserts the two match, because relocating
+hand-maintenance is not removing it.
+
+Two assertions checked the literal `hosted-cp-spike/` prefix, one of them added
+in v0.120.1. They stayed green through nine months of drift — a test holding a
+defect in place rather than catching it. Both now assert the contract.
+
+`build` is unchanged and remains the field to trust when the question is "is
+this the code I just shipped": it hashes what is actually loaded in the
+container, so it catches a deploy that never happened, which a version string
+never can.
+
+**Ships with the hosted server.** Engine-only upgrades see no change until
+`prototypes/hosted-mcp/` is deployed with `railway up`.
+
 ## v0.120.1 — 2026-09-17
 
 **`whoami` reports the build.** Patch: additive fields on one hosted verb's
