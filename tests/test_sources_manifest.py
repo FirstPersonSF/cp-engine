@@ -458,3 +458,17 @@ def test_a_persist_failure_never_breaks_the_manifest(tmp_path):
     )
     assert out
     assert (tmp_path / "_sources.md").exists()
+
+
+def test_render_manifest_names_reviewer_comment_count():
+    # #297 — the manifest line carries the count so a reader scanning
+    # `_sources.md` sees which files hold client feedback.
+    from cp_engine.project_sources import _render_manifest
+
+    out = _render_manifest([
+        {"title": "Feedback.docx", "source_type": "doc", "summary": "S1",
+         "comment_count": 34},
+        {"title": "Plain.docx", "source_type": "doc", "summary": "S2"},
+    ])
+    assert "- **Feedback.docx** · doc · 34 reviewer comments — S1" in out
+    assert "- **Plain.docx** · doc — S2" in out

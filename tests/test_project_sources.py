@@ -112,7 +112,9 @@ def test_list_sources_returns_active_newest_first():
     # explicit columns, never meta/file_path/*
     select = client.recorder["select"]
     assert "*" not in select
-    assert "meta" not in select
+    # never the `meta` BLOB — a scalar projection (`meta->>comment_count`,
+    # #297) is fine; the bare column is not.
+    assert "meta" not in [c.strip() for c in select.split(",")]
     assert "file_path" not in select
     for col in ("id", "title", "source_type", "status", "created_at"):
         assert col in select
@@ -956,3 +958,114 @@ def test_list_sources_carries_description_and_status_note():
     # Unset fields stay ABSENT rather than surfacing as None noise.
     assert "status_note" not in out[1]
     assert "description" not in out[1]
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  pull_source — a title pull must return the WHOLE document (#297)
+# ──────────────────────────────────────────────────────────────────────
+#
+# The bug (2026-09-22, sap-5174): `pnp-report-client-feedback.docx` ingested
+# as 81 chunks with the 34 reviewer comments in the tail. The no-query pull
+# read a 50-chunk window across the whole project, title-filtered, and
+# returned at most 50 — silently. Nothing said "partial", the ingest bullet
+# said "full text", and the client's written feedback was invisible for 11
+# days. A document read by title must never depend on the window size.
+
+
+def _doc_rows(title: str, n: int, *, tail_text: str | None = None) -> list[dict]:
+    rows = [
+        {"text": f"{title} chunk {i}", "title": title, "scope": "project",
+         "citation_url": "u", "chunk_index": i, "page": None}
+        for i in range(n)
+    ]
+    if tail_text:
+        rows[-1]["text"] = tail_text
+    return rows
+
+
+_OTHER_ROWS = _doc_rows("Newer Unrelated Doc", 10)
+
+
+def test_pull_source_no_query_reads_whole_doc_beyond_saturated_window():
+    # First window: 50 rows exactly (saturated) — 10 newer-doc chunks + the
+    # first 40 of the 81-chunk target. Widened read: everything.
+    target = _doc_rows("pnp-report-client-feedback.docx", 81,
+                       tail_text="## Comments\n\n1. **Fredericks, Fred**: …")
+    first_window = _OTHER_ROWS + target[:40]
+    assert len(first_window) == 50
+    client = _SequencedRpcClient([first_window, _OTHER_ROWS + target])
+
+    out = pull_source(client, "proj-1", "co-9",
+                      doc_title="pnp-report-client-feedback.docx")
+
+    assert len(client.calls) == 2
+    assert client.calls[1]["params"]["p_limit"] == _MISS_RETRY_LIMIT
+    assert len(out["chunks"]) == 81
+    assert out["chunks"][-1].startswith("## Comments")
+    assert out["chunk_count"] == 81
+    assert "truncated" not in out
+    assert "note" not in out
+
+
+def test_pull_source_no_query_unsaturated_window_reads_once():
+    # Fewer rows than the window → the doc cannot extend past it → one read.
+    client = _SequencedRpcClient([_CHUNK_ROWS])
+    out = pull_source(client, "proj-1", "co-9", doc_title="Concur Storybook")
+    assert len(client.calls) == 1
+    assert out["chunks"] == ["Concur chunk one", "Concur chunk two"]
+    assert out["chunk_count"] == 2
+
+
+def test_pull_source_no_query_reports_truncation_when_widened_window_saturates():
+    # Even the widened window can fill (a corpus bigger than _MISS_RETRY_LIMIT).
+    # The pull cannot prove the doc is complete → say so, never silently cap.
+    target = _doc_rows("Huge Doc", _MISS_RETRY_LIMIT)
+    client = _SequencedRpcClient([target[:50], target])
+
+    out = pull_source(client, "proj-1", "co-9", doc_title="Huge Doc")
+
+    assert len(out["chunks"]) == _MISS_RETRY_LIMIT
+    assert out["truncated"] is True
+    assert "may be incomplete" in out["note"]
+
+
+def test_pull_source_complete_false_keeps_single_window_and_cap():
+    # The manifest summariser samples a few chunks; it opts OUT of the
+    # whole-document guarantee and keeps the old bounded read.
+    target = _doc_rows("pnp-report-client-feedback.docx", 81)
+    client = _SequencedRpcClient([(_OTHER_ROWS + target[:40]), _OTHER_ROWS + target])
+
+    out = pull_source(client, "proj-1", "co-9",
+                      doc_title="pnp-report-client-feedback.docx",
+                      limit=50, complete=False)
+
+    assert len(client.calls) == 1
+    assert len(out["chunks"]) == 40
+
+
+def test_pull_source_query_mode_still_caps_at_limit():
+    # Ranked reads are top-k by design; `limit` is the k. Unchanged.
+    target = _doc_rows("Doc A", 30)
+    client = _SequencedRpcClient([target])
+    out = pull_source(client, "proj-1", "co-9", doc_title="Doc A",
+                      query="anything", limit=5, embedder=_FakeEmbedder([0.1]))
+    assert len(out["chunks"]) == 5
+
+
+def test_list_sources_exposes_comment_count_when_present():
+    # PostgREST returns `meta->>comment_count` as TEXT under the key
+    # `comment_count`; absent/zero/blank → omitted (no noise for the 90% case).
+    rows = [
+        {"id": "a-fb", "title": "pnp-report-client-feedback.docx", "source_type": "doc",
+         "status": "active", "created_at": "2026-09-11T00:00:00Z", "file_hash": "h1",
+         "comment_count": "34"},
+        {"id": "a-plain", "title": "Plain Deck.pptx", "source_type": "doc",
+         "status": "active", "created_at": "2026-09-10T00:00:00Z", "file_hash": "h2",
+         "comment_count": "0"},
+        {"id": "a-old", "title": "Pre-stamp.pdf", "source_type": "pdf",
+         "status": "active", "created_at": "2026-09-09T00:00:00Z", "file_hash": "h3"},
+    ]
+    out = list_sources(_FakeTableClient(rows), "proj-1", "co-9")
+    assert out[0]["comment_count"] == 34
+    assert "comment_count" not in out[1]
+    assert "comment_count" not in out[2]

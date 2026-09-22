@@ -184,7 +184,12 @@ SPINE_SOURCES_EDIT_COLUMNS = (
 
 RAG_ASSET_LIST_COLUMNS = (
     "id, title, source_type, status, created_at, file_hash, prev_asset_id, "
-    "description, status_note, supersedes_asset_id"
+    "description, status_note, supersedes_asset_id, "
+    # A SCALAR projection out of the jsonb `meta` (PostgREST `->>` returns the
+    # key as a text column named `comment_count`) — NOT the blob. The parsers
+    # stamp it at ingest (document-ingest #108); listing it is how a reader
+    # learns a file carries reviewer feedback before pulling 81 chunks (#297).
+    "meta->>comment_count"
 )
 
 

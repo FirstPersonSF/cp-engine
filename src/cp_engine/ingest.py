@@ -965,8 +965,16 @@ def announce_new_sources(
         if not (0 <= (today - created).days <= window_days):
             continue
         source_type = (asset.get("source_type") or "doc").strip()
+        # #297 — a file with reviewer comments is FEEDBACK, and the comments
+        # sit in the ingested tail where a skim never reaches. Name the count
+        # here so the bullet says what the source is, not just that it came.
+        comment_count = asset.get("comment_count") or 0
+        comments = (
+            f" — **{comment_count} reviewer comments inside**"
+            if comment_count else ""
+        )
         text = (
-            f"**New source ingested:** {title} ({source_type}) — "
+            f"**New source ingested:** {title} ({source_type}){comments} — "
             "full text via `pull_project_source`."
         )
         # Hash exactly what _write_inbound will hash (it sanitizes first) —

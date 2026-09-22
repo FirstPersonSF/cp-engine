@@ -123,6 +123,11 @@ def list_sources(
             entry["description"] = row.description
         if row.status_note:
             entry["status_note"] = row.status_note
+        # #297 — reviewer comments are ingested into the doc's tail, where a
+        # skim never reaches. Say the count up front so a reader knows the
+        # file carries feedback, not just a copy of our own deliverable.
+        if row.comment_count:
+            entry["comment_count"] = row.comment_count
         if summaries is not None:
             summary = summaries.get(row.id)
             if summary is not None:
@@ -153,8 +158,25 @@ def pull_source(
     query: str | None = None,
     limit: int = 50,
     embedder=None,
+    complete: bool = True,
 ) -> dict:
     """Pull the chunk text of one named source document.
+
+    WHOLE-DOCUMENT GUARANTEE (#297): on the no-query path a title pull is a
+    DOCUMENT read, and the caller gets every chunk of that document or an
+    explicit `truncated` flag — never a silent partial. The scoped RPC reads
+    a `limit`-sized window across the WHOLE project+account pool, so an
+    81-chunk doc against a 50-chunk window came back as 50 chunks with no
+    signal (sap-5174, 2026-09-22: the 34 reviewer comments sat in the tail
+    of `pnp-report-client-feedback.docx` and were invisible for 11 days
+    while the ingest bullet promised "full text"). Now: if the first window
+    is SATURATED (`len(rows) >= limit`, so the doc may extend past it) the
+    read widens once to `_MISS_RETRY_LIMIT` and the doc's chunks are
+    returned uncapped, with `chunk_count`. If the widened window saturates
+    too, `truncated: True` + a note say the read cannot prove completeness.
+    `complete=False` opts out (the manifest summariser samples a few chunks
+    and wants the old bounded read). Query-ranked pulls are top-k by design
+    and keep `limit` as k.
 
     Reads the project's scoped chunks (its own project-scoped assets + its
     company's account-scoped assets) via the `read_scoped_asset_chunks` RPC, then
@@ -217,7 +239,15 @@ def pull_source(
     )
 
     matched = [r for r in rows if _title_matches(doc_title, r.get("title"))]
-    if not matched and limit < _MISS_RETRY_LIMIT:
+    # A no-query document read widens when the window is SATURATED, not only
+    # on a miss: a doc can be partly inside the window and partly beyond it,
+    # and a partial read is worse than a miss because nothing flags it (#297).
+    window_saturated = len(rows) >= limit
+    widen_for_completeness = (
+        complete and query is None and window_saturated and limit < _MISS_RETRY_LIMIT
+    )
+    truncated = False
+    if (not matched and limit < _MISS_RETRY_LIMIT) or widen_for_completeness:
         # The scoped read returns only the top `limit` chunks ACROSS the whole
         # scope, then we title-filter here — so a doc whose chunks fall outside
         # that window is invisible even though it EXISTS. This bites two ways:
@@ -238,6 +268,9 @@ def pull_source(
             limit=_MISS_RETRY_LIMIT,
         )
         matched = [r for r in rows if _title_matches(doc_title, r.get("title"))]
+        # The widened window filled too: a corpus larger than the widest read.
+        # We cannot prove the document is whole — say so rather than cap it.
+        truncated = complete and query is None and len(rows) >= _MISS_RETRY_LIMIT
     if not matched:
         return {
             "title": doc_title,
@@ -288,14 +321,25 @@ def pull_source(
         selected = sorted(selected, key=_doc_order)
 
     first = selected[0]
-    return {
+    # A complete no-query read returns the WHOLE document (that is the
+    # guarantee). Ranked reads and opted-out reads cap at `limit` (top-k).
+    uncapped = complete and query is None
+    chunks = [r.get("text") for r in (selected if uncapped else selected[:limit])]
+    out = {
         "title": first.get("title"),
         "citation_url": first.get("citation_url"),
         "scope": first.get("scope"),
-        # Cap at the caller's `limit` so the widened-window retry can't return
-        # more chunks than the primary path ever would.
-        "chunks": [r.get("text") for r in selected[:limit]],
+        "chunks": chunks,
+        "chunk_count": len(chunks),
     }
+    if truncated:
+        out["truncated"] = True
+        out["note"] = (
+            f"read capped at {_MISS_RETRY_LIMIT} chunks across the project — "
+            f"'{first.get('title')}' may be incomplete; narrow with `query` "
+            "or fetch the original via `fetch_project_source`"
+        )
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -1462,7 +1506,8 @@ def _summarize_doc(client, project_id: str, company_id: str, title: str, llm) ->
     """
     try:
         pulled = pull_source(
-            client, project_id, company_id, doc_title=title, limit=6
+            client, project_id, company_id, doc_title=title, limit=6,
+            complete=False,  # a sample, not the document (#297)
         )
         chunks = [c for c in (pulled.get("chunks") or []) if c]
         if not chunks:
@@ -1538,7 +1583,9 @@ def _render_manifest(assets: list[dict]) -> str:
     promised a contract the code doesn't honor — so we don't show them.
     """
     lines = [
-        f"- **{a.get('title')}** · {a.get('source_type')} — {a.get('summary')}"
+        f"- **{a.get('title')}** · {a.get('source_type')}"
+        + (f" · {a['comment_count']} reviewer comments" if a.get("comment_count") else "")
+        + f" — {a.get('summary')}"
         for a in assets
     ]
     region = "\n".join(lines)

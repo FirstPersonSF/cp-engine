@@ -696,7 +696,12 @@ COMMITMENT_COLUMNS = (
 # has NO extracted-text column at all (verified against the live schema) —
 # document text lives only in `asset_chunks.text`.
 RAG_ASSET_LIST_COLUMNS = (
-    "id, title, source_type, status, created_at, file_hash, prev_asset_id"
+    "id, title, source_type, status, created_at, file_hash, prev_asset_id, "
+    # A SCALAR projection out of `meta` (PostgREST `->>` returns it as a text
+    # column named `comment_count`), not the blob — reviewer comments are
+    # ingested into a document's TAIL, and a reader has to be told they exist
+    # before deciding how much of the document to pull (cp-engine #297).
+    "meta->>comment_count"
 )
 RAG_ASSET_PULL_COLUMNS = RAG_ASSET_LIST_COLUMNS + ", url, source_path, scope"
 
@@ -1605,6 +1610,11 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
             "source_type": r.get("source_type"),
             "status": r.get("status"),
             "created_at": r.get("created_at"),
+            # Present only when the ingest found reviewer comments (#297):
+            # the file is FEEDBACK, and its comments sit past the 40k-char
+            # default of `pull_project_source` — pull with a larger
+            # `max_chars`, or rely on the tail-preservation there.
+            **({"comment_count": _comment_count(r)} if _comment_count(r) else {}),
         }
         for r in rows
         if r.get("id") not in superseded and r.get("status") != "archived"
@@ -1891,9 +1901,7 @@ def pull_project_source(asset_id: str, max_chars: int = 40000) -> dict[str, Any]
         chunks.sort(key=lambda c: (c.get("start_seconds") is None, c.get("start_seconds") or 0))
 
     text = "\n\n".join((c.get("text") or "") for c in chunks)
-    truncated = len(text) > max_chars
-    if truncated:
-        text = text[:max_chars]
+    text, truncated, comments_kept = _truncate_keeping_comments(text, max_chars)
 
     audit(client, "pull_project_source", {"asset_id": asset_id, "max_chars": max_chars}, len(chunks))
     return {
@@ -1907,8 +1915,46 @@ def pull_project_source(asset_id: str, max_chars: int = 40000) -> dict[str, Any]
         "created_at": asset.get("created_at"),
         "chunk_count": len(chunks),
         "truncated": truncated,
+        **({"comment_count": _comment_count(asset)} if _comment_count(asset) else {}),
+        **({"note": "body truncated; the trailing `## Comments` block was kept in full"}
+           if comments_kept else {}),
         "text": text,
     }
+
+
+def _truncate_keeping_comments(text: str, max_chars: int) -> tuple[str, bool, bool]:
+    """Cap `text` at `max_chars` WITHOUT dropping a trailing `## Comments` block.
+
+    Reviewer comments are ingested as a `## Comments` block at the END of a
+    document (document-ingest #108). A character cap therefore removes exactly
+    the part a reader most needs — 34 client comments on sap-5174's P&P report
+    were invisible for 11 days this way (cp-engine #297). When the cut lands
+    before the block, the block is re-appended after a visible marker.
+
+    Returns (text, truncated, comments_kept). A block that starts INSIDE the
+    kept prefix is already there and is not duplicated.
+    """
+    if len(text) <= max_chars:
+        return text, False, False
+    marker = text.find("\n## Comments\n")
+    tail = text[marker + 1:] if marker >= max_chars else ""
+    text = text[:max_chars]
+    if not tail:
+        return text, True, False
+    return (
+        f"{text}\n\n[… body truncated at {max_chars} chars …]\n\n{tail}",
+        True,
+        True,
+    )
+
+
+def _comment_count(row: dict[str, Any]) -> int:
+    """`meta->>comment_count` arrives as TEXT (or None pre-stamp); 0 when unset."""
+    raw = row.get("comment_count")
+    try:
+        return int(raw) if raw not in (None, "") else 0
+    except (TypeError, ValueError):
+        return 0
 
 
 @mcp_server.tool()

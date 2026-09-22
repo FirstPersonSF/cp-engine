@@ -2651,3 +2651,26 @@ def test_snooze_refuses_when_hash_matches_two_bullets(
     assert wrote is False
     assert path.read_text() == before
     assert "matches 2 bullets" in caplog.text
+
+
+def test_announce_new_sources_names_reviewer_comment_count(tmp_path):
+    # #297 — a file whose ingest found reviewer comments is FEEDBACK; the
+    # bullet must say so, or it reads as a copy of our own deliverable.
+    from datetime import date as _date
+
+    from cp_engine.ingest import announce_new_sources
+
+    sprint = tmp_path / "sap-5174.md"
+    _scaffold_minimal_sprint_file(sprint)
+    assets = [
+        {"id": "a-fb", "title": "pnp-report-client-feedback.docx", "source_type": "doc",
+         "created_at": "2026-09-11T10:00:00Z", "comment_count": 34},
+        {"id": "a-plain", "title": "Plain Doc.docx", "source_type": "doc",
+         "created_at": "2026-09-11T10:00:00Z", "comment_count": 0},
+    ]
+    n = announce_new_sources("sap-5174", sprint, assets, today=_date(2026, 9, 12))
+    body = sprint.read_text()
+    assert n == 2
+    assert ("**New source ingested:** pnp-report-client-feedback.docx (doc) — "
+            "**34 reviewer comments inside** — full text") in body
+    assert "**New source ingested:** Plain Doc.docx (doc) — full text" in body

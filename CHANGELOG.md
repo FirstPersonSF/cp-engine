@@ -4,6 +4,62 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.121.1 — 2026-09-22
+
+**A title pull returns the whole document, and a file with reviewer comments
+says so.** Patch: no new commands, no schema change, one new optional field on
+three read surfaces. Closes #297.
+
+### What failed, precisely
+
+`pnp-report-client-feedback.docx` — Fred's, Kacey's, Lauren's and Fiona's
+margin comments on sap-5174's Perspectives & Possibilities report — was
+ingested on 2026-09-11 with all 34 comments intact: the document-ingest
+parsers append a `## Comments` block to the body (#108), and the row's
+`meta.comment_count` said 34. Nobody could see them for eleven days. Marcello
+drafted the vision from call transcripts and reported that the comments "didn't
+survive the ingest". They had. **The reads were partial and said nothing.**
+
+Three surfaces, one shape:
+
+- `pull_project_source` (cp-sources) read a 50-chunk window across the
+  WHOLE project pool, title-filtered, and returned at most 50 — the file has
+  81, the comments are chunks 78–81. The miss-retry widened only on ZERO
+  matches; a partial match looked like success.
+- `pull_project_source` (cp-hosted) assembles every chunk, then cuts at
+  40,000 characters — the file is 95,772. It set `truncated: true`, and the
+  cut landed exactly on the block a reader came for.
+- `list_project_sources`, `_sources.md` and the sprint file's
+  `New source ingested` bullet described the file by its body — "version 08
+  of the report" — so the feedback file read as a copy of our own deliverable.
+
+### What changed
+
+- **`pull_source` (no query) now returns the whole document.** If the first
+  window is saturated it widens once and returns every chunk uncapped, with
+  `chunk_count`. If the widened window saturates too it returns
+  `truncated: true` and a note — never a silent cap. `complete=False` keeps
+  the old bounded read for the manifest summariser. Query-ranked pulls are
+  top-k by design and are unchanged.
+- **The hosted pull keeps the `## Comments` block past its character cap**,
+  after a visible marker, and reports `comment_count` on the asset.
+- **`comment_count` surfaces where a reader decides what to pull:**
+  `list_project_sources` (both servers), the `_sources.md` manifest line, and
+  the ingest bullet (`— **34 reviewer comments inside** —`). It is a scalar
+  projection (`meta->>comment_count`), not the `meta` blob; the vendored
+  hosted shim carries the same constant.
+
+### The lesson worth keeping
+
+A read that returns SOME of a document is worse than one that returns none:
+the miss has a note and the partial has a plausible answer. Every bounded
+read now either proves completeness or says it cannot.
+
+Two tests were rewritten deliberately: `list_sources` asserted `"meta" not in
+select` (the blob rule) and now forbids the bare column while allowing a
+scalar projection; the pull tests pinned `p_limit == 50` on the first read and
+still do — the widening is a second read, not a wider first one.
+
 ## v0.121.0 — 2026-09-18
 
 **`cxp doctor`, one health module, and a tenant pin that moves with releases.**

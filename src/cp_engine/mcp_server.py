@@ -487,7 +487,11 @@ def pull_project_source(
 ) -> dict:
     """Pull a source document's content (chunked text + citation) by title.
 
-    Optionally rank by a query for relevance instead of full-doc recency.
+    Without `query` this returns the WHOLE document — every chunk, in
+    document order, with `chunk_count` — or `truncated: True` + a note when
+    the read cannot prove completeness (#297). Reviewer comments on Office
+    files are ingested into the document's tail (a `## Comments` block), so
+    read to the end. With `query` the chunks are the top-50 by relevance.
     """
     from cp_engine.config import load as load_config
     from cp_engine.project_sources import pull_source

@@ -226,7 +226,12 @@ SPINE_SOURCES_EDIT_COLUMNS = (
 # of relying on whoever read it first to remember (cp-engine #210).
 RAG_ASSET_LIST_COLUMNS = (
     "id, title, source_type, status, created_at, file_hash, prev_asset_id, "
-    "description, status_note, supersedes_asset_id"
+    "description, status_note, supersedes_asset_id, "
+    # A SCALAR projection out of the jsonb `meta` (PostgREST `->>` returns the
+    # key as a text column named `comment_count`) — NOT the blob. The parsers
+    # stamp it at ingest (document-ingest #108); listing it is how a reader
+    # learns a file carries reviewer feedback before pulling 81 chunks (#297).
+    "meta->>comment_count"
 )
 # `source_path` was always selected here and always dropped at the return —
 # which is why a correction could not find the folder it came from.
@@ -320,9 +325,15 @@ class RagAssetRow:
     description: str | None = None
     status_note: str | None = None
     supersedes_asset_id: str | None = None
+    comment_count: int | None = None
 
     @classmethod
     def from_row(cls, row: dict) -> "RagAssetRow":
+        raw_count = row.get("comment_count")
+        try:
+            comment_count = int(raw_count) if raw_count not in (None, "") else None
+        except (TypeError, ValueError):
+            comment_count = None
         return cls(
             id=row.get("id"),
             title=row.get("title"),
@@ -334,6 +345,7 @@ class RagAssetRow:
             description=row.get("description"),
             status_note=row.get("status_note"),
             supersedes_asset_id=row.get("supersedes_asset_id"),
+            comment_count=comment_count,
         )
 
 
