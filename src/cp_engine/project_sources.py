@@ -123,7 +123,7 @@ def list_sources(
             entry["description"] = row.description
         if row.status_note:
             entry["status_note"] = row.status_note
-        # #297 — reviewer comments are ingested into the doc's tail, where a
+        # #298 — reviewer comments are ingested into the doc's tail, where a
         # skim never reaches. Say the count up front so a reader knows the
         # file carries feedback, not just a copy of our own deliverable.
         if row.comment_count:
@@ -162,7 +162,7 @@ def pull_source(
 ) -> dict:
     """Pull the chunk text of one named source document.
 
-    WHOLE-DOCUMENT GUARANTEE (#297): on the no-query path a title pull is a
+    WHOLE-DOCUMENT GUARANTEE (#298): on the no-query path a title pull is a
     DOCUMENT read, and the caller gets every chunk of that document or an
     explicit `truncated` flag — never a silent partial. The scoped RPC reads
     a `limit`-sized window across the WHOLE project+account pool, so an
@@ -241,7 +241,7 @@ def pull_source(
     matched = [r for r in rows if _title_matches(doc_title, r.get("title"))]
     # A no-query document read widens when the window is SATURATED, not only
     # on a miss: a doc can be partly inside the window and partly beyond it,
-    # and a partial read is worse than a miss because nothing flags it (#297).
+    # and a partial read is worse than a miss because nothing flags it (#298).
     window_saturated = len(rows) >= limit
     widen_for_completeness = (
         complete and query is None and window_saturated and limit < _MISS_RETRY_LIMIT
@@ -1507,7 +1507,7 @@ def _summarize_doc(client, project_id: str, company_id: str, title: str, llm) ->
     try:
         pulled = pull_source(
             client, project_id, company_id, doc_title=title, limit=6,
-            complete=False,  # a sample, not the document (#297)
+            complete=False,  # a sample, not the document (#298)
         )
         chunks = [c for c in (pulled.get("chunks") or []) if c]
         if not chunks:

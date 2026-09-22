@@ -8,7 +8,7 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 **A title pull returns the whole document, and a file with reviewer comments
 says so.** Patch: no new commands, no schema change, one new optional field on
-three read surfaces. Closes #297.
+three read surfaces. Closes #298.
 
 ### What failed, precisely
 
@@ -133,7 +133,7 @@ so the raised pin teaches rather than traps. The plan and its lineage —
 including the two-machine audit, the review that found a third silence, and the
 architectural review that found the detector shipping inside the component that
 drifts — are in `docs/plans/2026-09-18-install-and-doctor.md`. The convention
-question this surfaced is #297.
+question this surfaced is #298.
 
 ## v0.120.5 — 2026-09-18
 

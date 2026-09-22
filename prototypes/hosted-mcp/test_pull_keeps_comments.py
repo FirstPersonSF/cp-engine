@@ -1,4 +1,4 @@
-"""A hosted pull must not truncate away the reviewer comments (#297).
+"""A hosted pull must not truncate away the reviewer comments (#298).
 
 `pull_project_source` caps the assembled text at `max_chars` (40k default).
 Office reviewer comments are ingested as a `## Comments` block at the END of

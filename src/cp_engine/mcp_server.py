@@ -489,7 +489,7 @@ def pull_project_source(
 
     Without `query` this returns the WHOLE document — every chunk, in
     document order, with `chunk_count` — or `truncated: True` + a note when
-    the read cannot prove completeness (#297). Reviewer comments on Office
+    the read cannot prove completeness (#298). Reviewer comments on Office
     files are ingested into the document's tail (a `## Comments` block), so
     read to the end. With `query` the chunks are the top-50 by relevance.
     """

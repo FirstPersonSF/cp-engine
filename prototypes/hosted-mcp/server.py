@@ -700,7 +700,7 @@ RAG_ASSET_LIST_COLUMNS = (
     # A SCALAR projection out of `meta` (PostgREST `->>` returns it as a text
     # column named `comment_count`), not the blob — reviewer comments are
     # ingested into a document's TAIL, and a reader has to be told they exist
-    # before deciding how much of the document to pull (cp-engine #297).
+    # before deciding how much of the document to pull (cp-engine #298).
     "meta->>comment_count"
 )
 RAG_ASSET_PULL_COLUMNS = RAG_ASSET_LIST_COLUMNS + ", url, source_path, scope"
@@ -1610,7 +1610,7 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
             "source_type": r.get("source_type"),
             "status": r.get("status"),
             "created_at": r.get("created_at"),
-            # Present only when the ingest found reviewer comments (#297):
+            # Present only when the ingest found reviewer comments (#298):
             # the file is FEEDBACK, and its comments sit past the 40k-char
             # default of `pull_project_source` — pull with a larger
             # `max_chars`, or rely on the tail-preservation there.
@@ -1928,7 +1928,7 @@ def _truncate_keeping_comments(text: str, max_chars: int) -> tuple[str, bool, bo
     Reviewer comments are ingested as a `## Comments` block at the END of a
     document (document-ingest #108). A character cap therefore removes exactly
     the part a reader most needs — 34 client comments on sap-5174's P&P report
-    were invisible for 11 days this way (cp-engine #297). When the cut lands
+    were invisible for 11 days this way (cp-engine #298). When the cut lands
     before the block, the block is re-appended after a visible marker.
 
     Returns (text, truncated, comments_kept). A block that starts INSIDE the

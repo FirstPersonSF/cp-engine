@@ -113,7 +113,7 @@ def test_list_sources_returns_active_newest_first():
     select = client.recorder["select"]
     assert "*" not in select
     # never the `meta` BLOB — a scalar projection (`meta->>comment_count`,
-    # #297) is fine; the bare column is not.
+    # #298) is fine; the bare column is not.
     assert "meta" not in [c.strip() for c in select.split(",")]
     assert "file_path" not in select
     for col in ("id", "title", "source_type", "status", "created_at"):
@@ -961,7 +961,7 @@ def test_list_sources_carries_description_and_status_note():
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  pull_source — a title pull must return the WHOLE document (#297)
+#  pull_source — a title pull must return the WHOLE document (#298)
 # ──────────────────────────────────────────────────────────────────────
 #
 # The bug (2026-09-22, sap-5174): `pnp-report-client-feedback.docx` ingested

@@ -2654,7 +2654,7 @@ def test_snooze_refuses_when_hash_matches_two_bullets(
 
 
 def test_announce_new_sources_names_reviewer_comment_count(tmp_path):
-    # #297 — a file whose ingest found reviewer comments is FEEDBACK; the
+    # #298 — a file whose ingest found reviewer comments is FEEDBACK; the
     # bullet must say so, or it reads as a copy of our own deliverable.
     from datetime import date as _date
 

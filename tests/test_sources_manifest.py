@@ -461,7 +461,7 @@ def test_a_persist_failure_never_breaks_the_manifest(tmp_path):
 
 
 def test_render_manifest_names_reviewer_comment_count():
-    # #297 — the manifest line carries the count so a reader scanning
+    # #298 — the manifest line carries the count so a reader scanning
     # `_sources.md` sees which files hold client feedback.
     from cp_engine.project_sources import _render_manifest
 

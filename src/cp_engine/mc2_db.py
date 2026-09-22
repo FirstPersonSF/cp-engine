@@ -230,7 +230,7 @@ RAG_ASSET_LIST_COLUMNS = (
     # A SCALAR projection out of the jsonb `meta` (PostgREST `->>` returns the
     # key as a text column named `comment_count`) — NOT the blob. The parsers
     # stamp it at ingest (document-ingest #108); listing it is how a reader
-    # learns a file carries reviewer feedback before pulling 81 chunks (#297).
+    # learns a file carries reviewer feedback before pulling 81 chunks (#298).
     "meta->>comment_count"
 )
 # `source_path` was always selected here and always dropped at the return —
