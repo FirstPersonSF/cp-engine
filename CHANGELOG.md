@@ -4,6 +4,34 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.122.0 — 2026-09-23
+
+**Tenant skills are discoverable from a hosted session.** Minor: three new
+surfaces on `cp-hosted`, no schema change, no CLI change. Closes #299.
+
+A Claude Code session finds `.claude/skills/<name>/SKILL.md` in its checkout
+and loads one when a task matches its description. A session on the hosted
+server has the same files — the clone is full-depth — and had no way to know
+they exist: `read_project_file` serves any path, but a path you do not know
+is not a path you can ask for. Measured 2026-09-23 with the `canonic-layers`
+skill (Tony's Canon Layer definitions), built for Marcello, who works only
+through the hosted server.
+
+- **`list_skills()`** — every skill with its `name`, `description`, path and
+  reference files, read from the SKILL.md header.
+- **`load_skill(name)`** — the SKILL.md. **`load_skill(name, reference=...)`**
+  — one document from the skill's `references/` folder, the verbatim source
+  the SKILL.md points at. Same team gate, containment check, size cap and
+  tree provenance as `read_project_file`; both arguments are validated as
+  plain names first so a traversal attempt gets a refusal, not "no such file".
+- **`skill` prompt** — the prompt-menu form of `load_skill`, for a person
+  picking one by hand in the Claude app.
+- **Server instructions** name the three, so a fresh session knows to look.
+  Same gap as CLAUDE.md on 09-17 (#287), same fix.
+
+Tests: `prototypes/hosted-mcp/test_skills.py` — real git repo, real tools,
+13 cases including the traversal refusals and the prompt.
+
 ## v0.121.1 — 2026-09-22
 
 **A title pull returns the whole document, and a file with reviewer comments

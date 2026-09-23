@@ -652,7 +652,14 @@ mcp_server = MCPServer(
         "every field you mean to be current, not just `status`: omitted fields "
         "are left as they were, so a status-only refresh advances the "
         "`\u00b7 updated` stamp while the rest goes stale, and the staleness "
-        "check reads that stamp."
+        "check reads that stamp.\n\n"
+        "TENANT SKILLS LIVE IN THE TREE TOO. A Claude Code session discovers "
+        "`.claude/skills/*/SKILL.md` on its own; this client cannot, so the "
+        "tree exposes them: `list_skills()` names each skill with the task "
+        "it is for, `load_skill(name)` returns its instructions, and "
+        "`load_skill(name, reference=...)` returns one of its reference "
+        "documents. When a task matches a skill's description, load it "
+        "BEFORE doing the work, the way a Claude Code session would."
     ),
     version=SERVER_VERSION,
     # One correlation id per inbound message, set before any tool code runs,
@@ -7758,6 +7765,171 @@ def read_project_file(path: str) -> dict[str, Any]:
         "truncated": truncated,
         "text": text,
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Tenant skills (#299)
+# ──────────────────────────────────────────────────────────────────────
+#
+# A Claude Code session finds `.claude/skills/<name>/SKILL.md` in the
+# checkout and loads one when a task matches its description. A session on
+# this server has the same files (the clone is full-depth) and NO way to
+# know they exist: `read_project_file` serves any path, but a path you do not
+# know is not a path you can ask for. Measured 2026-09-23 with the
+# `canonic-layers` skill — Marcello works only through this server. Same gap
+# as CLAUDE.md on 09-17, same fix: make the available thing discoverable.
+
+SKILLS_DIR = ".claude/skills"
+_SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,63}$")
+_SKILL_REF_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ -]{0,127}$")
+
+
+def _skill_frontmatter(text: str) -> dict[str, str]:
+    """`name` and `description` from a SKILL.md YAML header, without a YAML
+    parser: the two fields are single-line scalars by the skill convention,
+    and a dependency for two keys is not worth its failure modes."""
+    out: dict[str, str] = {}
+    if not text.startswith("---"):
+        return out
+    end = text.find("\n---", 3)
+    if end < 0:
+        return out
+    for line in text[3:end].splitlines():
+        m = re.match(r"^(name|description):\s*(.*)$", line)
+        if m:
+            out[m.group(1)] = m.group(2).strip().strip('"').strip("'")
+    return out
+
+
+@mcp_server.tool()
+def list_skills() -> dict[str, Any]:
+    """Name every tenant skill in the tree, with the task each one is for.
+
+    A skill is a directory under `.claude/skills/` holding a `SKILL.md`
+    (instructions, with a `name` and `description` header) and optionally a
+    `references/` folder of source documents. This lists them the way a
+    Claude Code session would see them, so a hosted session can load one when
+    its task matches — `canonic-layers` for anything structured for Canonic,
+    for example.
+
+    Read-only; team-gated like every tree read.
+    """
+    usable, reason = tree_available()
+    if not usable:
+        return {"available": False, "error": reason, "skills": []}
+    allowed, denial = caller_is_team_member()
+    if not allowed:
+        return {"available": False, "error": denial, "skills": []}
+    try:
+        root = tree_root().resolve()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "available": False,
+            "error": f"tree clone failed: {type(exc).__name__}: {str(exc)[:300]}",
+            "skills": [],
+        }
+
+    skills: list[dict[str, Any]] = []
+    base = root / SKILLS_DIR
+    if base.is_dir():
+        for d in sorted(base.iterdir()):
+            md = d / "SKILL.md"
+            if not d.is_dir() or not md.is_file():
+                continue
+            try:
+                head = md.read_text(encoding="utf-8", errors="replace")[:8192]
+            except OSError:
+                continue
+            fm = _skill_frontmatter(head)
+            refs_dir = d / "references"
+            refs = (
+                sorted(f.name for f in refs_dir.iterdir() if f.is_file())
+                if refs_dir.is_dir()
+                else []
+            )
+            skills.append(
+                {
+                    "name": fm.get("name") or d.name,
+                    "description": fm.get("description", ""),
+                    "path": str(md.relative_to(root)),
+                    "references": refs,
+                }
+            )
+
+    audit(user_client(), "list_skills", {}, len(skills))
+    return {
+        "available": True,
+        "caller": caller_subject(),
+        **tree_provenance(),
+        "skills": skills,
+        "how_to_load": "load_skill(name) for the instructions; "
+        "load_skill(name, reference=<file>) for one reference document.",
+    }
+
+
+@mcp_server.tool()
+def load_skill(name: str, reference: str | None = None) -> dict[str, Any]:
+    """Return a tenant skill's instructions, or one of its reference documents.
+
+    `name` is the skill directory under `.claude/skills/` (see `list_skills`).
+    Without `reference`, this is the SKILL.md — the part that says when and
+    how to apply the skill. With `reference`, it is that file from the skill's
+    `references/` folder — the verbatim source the SKILL.md points at, which is
+    the authority when the two differ.
+
+    Everything else is `read_project_file`: same team gate, same containment
+    check, same size cap with an explicit `truncated`, same tree provenance.
+    Both arguments are validated as plain names first so a traversal attempt
+    gets a clear refusal rather than a "no such file".
+    """
+    raw_name = (name or "").strip()
+    if not _SKILL_NAME_RE.match(raw_name):
+        return {
+            "skill": name,
+            "error": "skill name must be a plain directory name "
+            "(lowercase letters, digits, `.`, `_`, `-`)",
+        }
+    if reference is None:
+        rel = f"{SKILLS_DIR}/{raw_name}/SKILL.md"
+    else:
+        raw_ref = reference.strip()
+        if not _SKILL_REF_RE.match(raw_ref) or ".." in raw_ref:
+            return {
+                "skill": raw_name,
+                "reference": reference,
+                "error": "reference must be a plain file name inside the "
+                "skill's references/ folder",
+            }
+        rel = f"{SKILLS_DIR}/{raw_name}/references/{raw_ref}"
+
+    result = read_project_file(rel)
+    if result.get("error") == "no such file in the tenant tree":
+        result["error"] = (
+            f"no such skill: {raw_name!r}" if reference is None
+            else f"skill {raw_name!r} has no reference {reference!r}"
+        ) + " — `list_skills()` names what exists"
+    return {"skill": raw_name, **({"reference": reference} if reference else {}), **result}
+
+
+@mcp_server.prompt()
+def skill(name: str) -> str:
+    """Load a tenant skill's instructions into the conversation.
+
+    The prompt-menu form of `load_skill(name)`, for a person picking a skill
+    by hand in the Claude app rather than the model discovering it. Same
+    gate, same file.
+    """
+    result = load_skill(name)
+    if not result.get("available"):
+        return (
+            f"Could not load skill {name!r}: {result.get('error', 'unavailable')}. "
+            "Ask for `list_skills()` to see what exists."
+        )
+    return (
+        f"The tenant skill `{name}` follows. Apply it to this conversation. "
+        "Its reference documents are available with "
+        f"`load_skill({name!r}, reference=<file>)`.\n\n" + result["text"]
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
