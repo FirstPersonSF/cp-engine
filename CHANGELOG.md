@@ -88,6 +88,90 @@ release removes the old shape instead.
   gone). Vendor tree re-synced (`codes.py` and `commitments_sweep.py`
   verbatim; the `mc2_db` and `commitments` shims follow their origins).
 
+### #302 — recursive tree layout + `.cp-engine/paths.json` (phase 3.3)
+
+Plan §3.3, decisions D5 and D10. Nothing moves for any job whose parent is
+its account node: the account's dir is the existing `1p/<company>/`.
+
+- **`state.path_for(project, by_code)` is the one path authority.** Account
+  node → `<scope>/<company-slug>` (D5: the account CP already there becomes
+  the node's `cp.md`); any node whose parent is in the roster →
+  `<path_for(parent)>/<code>` (programs make depth unbounded:
+  `1p/google/ggl-5300-go-safety/ggl-5136-go-safety-website/`); client job
+  whose parent is unknown or held back → `<scope>/<company-slug>/<code>`
+  (today's layout); self-company top-level → `<scope>/<code>`.
+  `parent_path_for`, `dir_name_for` and `inactive_path_for`
+  (`<parent path>/inactive/<dir>` — an account's inactive jobs stay at
+  `1p/google/inactive/<code>`) derive from it. `account_scope_for`,
+  `working_dir`, `inactive_dir` and `inactive_root` are gone; every call
+  site (sync, render, sprints, agenda, prep-planning) takes the roster.
+  `resolve_project_dir(tenant_root, project)` is the index-first variant
+  for callers holding one project.
+- **Account nodes flow through `read_projects`** (`_is_account_node` no
+  longer excludes them; kept as a shape predicate). They are ProjectStates
+  with `label="account"`; the separate account pass in `sync_tenant` is
+  folded into the project loop for them (`_ensure_account_cp`: scaffold
+  from `account-cp.md.j2` when missing, re-splice `account-facts` +
+  `projects`), and the loop stamps the account `cp.md` with its `MC-id` so
+  the uuid-first lookup anchors on it. Companies whose node is absent from
+  the roster keep the old account-dir pass. `render_master_cp` never lists
+  an account node in a job table (active, holding or closed-recent) and
+  emits a new `active_groups.account` list for the tree region #303 builds.
+  Account nodes get sprint files (D8) in the initiative shape
+  (`render.uses_account_shape`); the per-week sprint index, the
+  `current-sprint` splice and the strip splices skip them (the account CP
+  has none of those regions until #303).
+- **`.cp-engine/paths.json`** is written by every real (non-dry-run) sync
+  after the moves and the sweep: `{"version": 1, "generated_at", "workstreams":
+  {code: {path, parent, has_agreement, label, mc2_id, company, status}}}`,
+  sorted keys, trailing newline, byte-stable across runs (the stamp only
+  advances when the mapping changes). `state.load_paths_index` /
+  `indexed_dir` read it. The generated `.gitignore` becomes `.cp-engine/*`
+  + `!.cp-engine/paths.json` so the index is committed and reaches the
+  webhook's sparse clone (now `_SPARSE_PATHS = (*_SCOPE_DIRS, ".cp-engine")`
+  for the sessions and project-state routers) and the hosted mirror.
+- **Every resolver reads the index first and walks recursively second,
+  skipping `inactive/`.** `state.iter_workstream_dirs` is the shared walk:
+  every direct child of a root is a candidate and is descended into; deeper
+  dirs are descended into only when they carry a `cp.md`, so a job's
+  `spine/`, `meetings/`, `sessions/` are never walked and depth is bounded
+  by the tree, not a constant. `sync._find_project_dir(parent, code,
+  mc2_id, tenant_root=)` — index (when under `parent`) → MC-id stamp →
+  exact name → `<code>-` prefix, shallower first; `sync.find_working_dir`
+  is the tenant-wide form (`spine.find_spine_dir` delegates to it);
+  `_find_inactive_dir` searches the expected parent's bin then every bin
+  in the tree, so a job parked before a program was inserted above it
+  still reactivates. `close_out.find_close_workdir` walks every bin at any
+  depth; `ingest._resolve_project_cp_path`, `plan_from_transcript.
+  _find_project_dir` (live first, parked second), the webhook's
+  `_resolve_working_dir` (live first, then its documented inactive
+  fallback) and the hosted `find_project_dir` (a local mirror of the index
+  read + walk — the server does not import cp_engine) all follow.
+  `_project_parent_dirs` and `_ACCOUNT_NESTED_SCOPES` are deleted;
+  `_SCOPE_DIRS` is re-exported from `state.SCOPE_DIRS`.
+- **Moves are `git mv`.** The sync loop finds a live dir under its expected
+  parent, then anywhere live in the tree, then in the bins; a dir that
+  exists but not at `path_for` is moved as a whole subtree with
+  `_move_dir` (git mv when the tenant is a repo, rename otherwise) —
+  a program insertion, a re-parenting or a rename all become one staged
+  rename. The deactivation sweep uses the same mover and is recursive:
+  live dirs are descended into (a program's jobs), only `cp.md`-carrying
+  dirs below the project level are candidates, and the `1p/<company>/`
+  account layer is never swept (as before — parking a whole account is a
+  deliberate act).
+- **Tests.** `tests/test_paths_tree.py`: `path_for` for every label shape
+  (account, program child, job under account, job with held-back parent,
+  self-company top-level and program child, inactive, parent cycle);
+  index byte-stability across two syncs and no write on dry-run; a
+  program insertion staged as a `git mv` rename in a git tenant, removal
+  moving the job back up, a stale job swept into the program's bin,
+  reactivation from the account's bin; depth-3 resolution via index and
+  via walk for `find_working_dir`, `_find_project_dir`, `find_spine_dir`,
+  `find_close_workdir`, the ingest, transcript, webhook and hosted
+  resolvers — with a control proving the OLD depth-2 walk misses the
+  depth-3 dir. `test_workstream_schema`'s hold-back test inverts (the
+  account node now flows through, labelled `account`). No golden changed.
+
 ## v0.123.1 — 2026-09-24
 
 **Owner-column selects follow the schema too.** Patch. The first `cxp sync`

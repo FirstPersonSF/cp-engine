@@ -157,12 +157,13 @@ def test_first_sync_creates_master_claude_and_project_cp(tmp_path: Path) -> None
     # The engine-managed `.claude/` SessionStart hook adds settings.json +
     # the hook script on first sync (self-heals a stale `cp` CLI), the
     # PreToolUse region guard (#205), and a `.mcp.json` registering the
-    # `cp-sources` MCP server.
+    # `cp-sources` MCP server. `.cp-engine/paths.json` is the path index
+    # every real sync writes (#302).
     assert written_names == {
         "master-cp.md", "CLAUDE.md", ".gitignore",
         "cp.md", "mc-2.md", "README.md", "_week.md",
         "settings.json", "check-cp-engine-version.py",
-        "guard-engine-regions.py", ".mcp.json",
+        "guard-engine-regions.py", ".mcp.json", "paths.json",
     }
 
     # Files actually exist + reference the project
@@ -1159,10 +1160,9 @@ def test_sync_writes_current_sprint_block_into_project_cp(tmp_path: Path) -> Non
     """When a sprint file exists for an active project, sync_tenant splices
     the rendered `## Current sprint` block into the project's cp.md inside
     the engine-managed `current-sprint` region."""
-    # account_scope_for includes the per-company layer for clients
-    # ("1p/<company>"), which is where the project actually lives on
-    # disk under the account-nested layout.
-    from cp_engine.state import account_scope_for, dir_slug
+    # path_for gives the tree path (#302): `1p/<company>/<code>` for a job
+    # whose account node is not in the roster.
+    from cp_engine.state import path_for
 
     config = make_config(tmp_path)
     project = make_state(code="peb", name="Pebble Foods", status="Open")
@@ -1175,9 +1175,7 @@ def test_sync_writes_current_sprint_block_into_project_cp(tmp_path: Path) -> Non
     )
 
     week_iso = "2026-W20"
-    slug = dir_slug(project.code, project.name)
-    scope = account_scope_for(project)
-    cp_path = tmp_path / scope / slug / "cp.md"
+    cp_path = tmp_path / path_for(project, {}) / "cp.md"
     body = cp_path.read_text()
 
     assert "<!-- cp-engine:start current-sprint -->" in body
@@ -1190,15 +1188,12 @@ def test_sync_splices_current_sprint_into_existing_project_cp(tmp_path: Path) ->
     """When a project's cp.md was scaffolded BEFORE the current-sprint marker
     existed (legacy file on disk), the next sync still inserts the markers +
     rendered block. Hand-written content outside the engine regions survives."""
-    # account_scope_for handles the per-account layer for clients
-    # ("1p/<company>"), matching where sync places project dirs on disk.
-    from cp_engine.state import account_scope_for, dir_slug
+    # path_for places the project where sync puts it on disk (#302).
+    from cp_engine.state import path_for
 
     config = make_config(tmp_path)
     project = make_state(code="peb", name="Pebble Foods", status="Open")
-    slug = dir_slug(project.code, project.name)
-    scope = account_scope_for(project)
-    project_dir = tmp_path / scope / slug
+    project_dir = tmp_path / path_for(project, {})
     project_dir.mkdir(parents=True)
     cp_path = project_dir / "cp.md"
     # Pre-populate a legacy cp.md missing the current-sprint marker but

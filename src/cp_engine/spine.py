@@ -17,7 +17,7 @@ import frontmatter
 import yaml
 
 from cp_engine.state import INACTIVE_DIR_NAME
-from cp_engine.sync import _SCOPE_DIRS, _find_project_dir, _project_parent_dirs
+from cp_engine.sync import _SCOPE_DIRS, find_working_dir
 from cp_engine.mc2_db import Tables
 
 # The 11 fixed layers (dir names == `layer:` values).
@@ -543,9 +543,10 @@ def find_spine_dir(
 ) -> Path:
     """Locate a project's working dir from its code, offline (no MC-2).
 
-    Reuses sync's scope/account-nesting model (`_project_parent_dirs`) and
-    prefix-matcher (`_find_project_dir`) so this stays in lockstep with how
-    sync itself lays out the tree. Raises SpineDirNotFound if nothing matches.
+    Delegates to sync's `find_working_dir` (#302: `.cp-engine/paths.json`
+    first, then a recursive walk of the scope roots that skips `inactive/`)
+    so this stays in lockstep with how sync itself lays out the tree.
+    Raises SpineDirNotFound if nothing matches.
 
     `mc2_id` (optional) is the MC-2 project UUID. When given, matching is
     UUID-first: a dir whose `cp.md` carries this `MC-id` stamp matches
@@ -560,11 +561,9 @@ def find_spine_dir(
     if code == INACTIVE_DIR_NAME:
         # Never resolve the inactive bin itself as a project.
         raise SpineDirNotFound(f"'{code}' is not a valid project code")
-    for scope in _SCOPE_DIRS:
-        for parent in _project_parent_dirs(tenant_root, scope):
-            hit = _find_project_dir(parent, code, mc2_id)
-            if hit is not None:
-                return hit
+    hit = find_working_dir(tenant_root, code, mc2_id)
+    if hit is not None:
+        return hit
     raise SpineDirNotFound(
         f"No working dir for '{code}'"
         + (f" (mc2_id={mc2_id})" if mc2_id else "")

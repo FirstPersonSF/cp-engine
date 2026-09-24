@@ -168,38 +168,21 @@ def find_close_workdir(tenant_root: Path, code: str) -> tuple[Path, bool]:
     Raises SpineDirNotFound when nothing matches anywhere.
     """
     from cp_engine.spine import SpineDirNotFound, find_spine_dir
-    from cp_engine.sync import (
-        _SCOPE_DIRS,
-        _find_project_dir,
-        _project_parent_dirs,
-        scope_root,
-    )
+    from cp_engine.sync import _SCOPE_DIRS, _find_project_dir, _inactive_bins
 
     try:
         return find_spine_dir(tenant_root, code), False
     except SpineDirNotFound:
         pass
 
-    for scope in _SCOPE_DIRS:
-        # Per-account inactive bins: 1p/<company>/inactive/<dir>/
-        for parent in _project_parent_dirs(tenant_root, scope):
-            hit = _find_project_dir(parent / INACTIVE_DIR_NAME, code)
-            if hit is not None:
-                return hit, True
-        # Scope-level inactive bin: <scope>/inactive/<dir>/ directly (non-
-        # nested scopes) or <scope>/inactive/<account>/<dir>/ (whole parked
-        # accounts under an account-nested scope).
-        scope_inactive = scope_root(tenant_root, scope) / INACTIVE_DIR_NAME
-        if not scope_inactive.is_dir():
-            continue
-        hit = _find_project_dir(scope_inactive, code)
+    # Every `inactive/` bin at any depth (#302): the scope-level bin
+    # (`1p/inactive/<account>/<dir>/` — whole parked accounts), the
+    # per-account bins (`1p/<company>/inactive/<dir>/`) and any bin under a
+    # program. Each is walked recursively.
+    for bin_dir in _inactive_bins(tenant_root):
+        hit = _find_project_dir(bin_dir, code)
         if hit is not None:
             return hit, True
-        for child in scope_inactive.iterdir():
-            if child.is_dir():
-                hit = _find_project_dir(child, code)
-                if hit is not None:
-                    return hit, True
 
     raise SpineDirNotFound(
         f"No working dir for '{code}' under {', '.join(_SCOPE_DIRS)}/ "

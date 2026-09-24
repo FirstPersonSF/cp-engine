@@ -63,7 +63,7 @@ from cp_engine.sprints import (
 )
 from cp_engine.state import (
     ProjectState,
-    account_scope_for,
+    resolve_project_dir,
     dir_slug,
     scope_for,
 )
@@ -1337,10 +1337,9 @@ def build_project_block(
     unchanged and free. Best-effort: a sweep failure (or a project with no
     backfilled spine) logs + leaves ``sweep_synthesis=None`` without aborting.
     """
-    # Exec Summary region from the project's cp.md
-    scope = account_scope_for(project)
-    slug = dir_slug(project.code, project.name)
-    cp_md_path = config.root / scope / slug / "cp.md"
+    # Exec Summary region from the project's cp.md (index first, then the
+    # path authority — #302)
+    cp_md_path = resolve_project_dir(config.root, project) / "cp.md"
     exec_summary: str | None = None
     if cp_md_path.is_file():
         try:

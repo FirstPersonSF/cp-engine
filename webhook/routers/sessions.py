@@ -39,6 +39,7 @@ from __future__ import annotations
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 
 import git_ops
 import observability
@@ -65,30 +66,45 @@ _MIN_SUMMARY_CHARS = 20
 _MAX_SUMMARY_CHARS = 100_000
 
 
+# The sparse clone materialises the scope dirs plus the engine's committed
+# path index (`.cp-engine/paths.json`, #302) — the map every resolver reads
+# before walking.
+_SPARSE_PATHS = (*_SCOPE_DIRS, ".cp-engine")
+
+
 def _resolve_working_dir(tenant_root, project_code: str):
     """The working dir for `project_code`, or None.
 
     Resolution is BY SEARCH, not by construction. `dir_slug()` would give the
-    directory NAME, but not which scope dir holds it, and engagement dirs are
-    company-nested (`1p/<company>/<slug>`) — the tenant's own CLAUDE.md is
-    explicit that the path must never be constructed. So: glob for a `cp.md`
-    whose parent matches, which also means a dir that has been re-homed (a
-    company rename) is still found.
+    directory NAME, but not where in the tree it sits — engagement dirs are
+    company-nested and, since #302, program-nested to any depth — and the
+    tenant's own CLAUDE.md is explicit that the path must never be
+    constructed. So: the engine's path index first, then a recursive walk of
+    the scope dirs for a `cp.md` whose parent matches (a dir that has been
+    re-homed is still found). The live tree is searched first, skipping
+    `inactive/`; only when nothing live matches are the bins searched too,
+    because capturing against a project that just went inactive is
+    legitimate and refusing would lose the record.
     """
-    from cp_engine.state import dir_slug
+    from cp_engine.state import (
+        SCOPE_DIRS,
+        dir_slug,
+        indexed_dir,
+        iter_workstream_dirs,
+    )
 
+    tenant_root = Path(tenant_root)
+    hit = indexed_dir(tenant_root, project_code)
+    if hit is not None and (hit / "cp.md").is_file():
+        return hit
     slug = dir_slug(project_code)
-    for scope in _SCOPE_DIRS:
-        scope_root = tenant_root / scope
-        if not scope_root.is_dir():
-            continue
-        # Depth 1 (initiatives, standalone repos) and depth 2 (company-nested
-        # engagements). `inactive/` is deliberately included: capturing against
-        # a project that just went inactive is legitimate, and refusing would
-        # lose the record.
-        for candidate in (*scope_root.glob(f"{slug}"), *scope_root.glob(f"*/{slug}")):
-            if (candidate / "cp.md").is_file():
-                return candidate
+    for include_inactive in (False, True):
+        for scope in SCOPE_DIRS:
+            for candidate in iter_workstream_dirs(
+                tenant_root / scope, include_inactive=include_inactive
+            ):
+                if candidate.name == slug and (candidate / "cp.md").is_file():
+                    return candidate
     return None
 
 
@@ -179,7 +195,7 @@ async def sessions_capture(request: Request):
         when = datetime.now()
     when = when.replace(microsecond=0)
 
-    with git_ops._cloned_tenant(sparse_paths=list(_SCOPE_DIRS)) as tenant_root:
+    with git_ops._cloned_tenant(sparse_paths=list(_SPARSE_PATHS)) as tenant_root:
         working_dir = _resolve_working_dir(tenant_root, project_code)
         if working_dir is None:
             raise HTTPException(

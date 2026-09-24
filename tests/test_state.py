@@ -18,7 +18,8 @@ from cp_engine.state import (
     SprintFacts,
     SprintFile,
     WhereItStands,
-    account_scope_for,
+    parent_path_for,
+    path_for,
     company_slug,
     dir_slug,
     scope_for,
@@ -68,7 +69,9 @@ def test_company_slug_falls_back_to_unknown_when_empty() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  account_scope_for — full project working-dir parent: <scope>/<account>
+#  parent_path_for — the dir that CONTAINS a project's working dir
+#  (the pre-#302 `account_scope_for` contract, generalised to the tree;
+#  every path shape is covered in tests/test_paths_tree.py)
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -91,30 +94,32 @@ def _project_with(*, company_kind: str, company_name: str | None) -> ProjectStat
     )
 
 
-def test_account_scope_for_client_includes_company_slug() -> None:
+def test_parent_path_for_client_includes_company_slug() -> None:
     p = _project_with(company_kind="client", company_name="Infoblox")
-    assert account_scope_for(p) == "1p/infoblox"
+    assert parent_path_for(p, {}) == "1p/infoblox"
+    assert path_for(p, {}) == "1p/infoblox/dummy"
 
 
-def test_account_scope_for_client_with_multiword_company() -> None:
+def test_parent_path_for_client_with_multiword_company() -> None:
     p = _project_with(company_kind="client", company_name="Sentinel One")
-    assert account_scope_for(p) == "1p/sentinel-one"
+    assert parent_path_for(p, {}) == "1p/sentinel-one"
 
 
-def test_account_scope_for_client_missing_name_falls_back() -> None:
+def test_parent_path_for_client_missing_name_falls_back() -> None:
     # A client row with no company_name still needs a deterministic
     # parent dir — `1p/unknown/` rather than a path with `//`.
     p = _project_with(company_kind="client", company_name=None)
-    assert account_scope_for(p) == "1p/unknown"
+    assert parent_path_for(p, {}) == "1p/unknown"
 
 
-def test_account_scope_for_non_client_is_unchanged() -> None:
+def test_parent_path_for_non_client_is_the_scope() -> None:
     # FPSF / Canonic already nest by self-company at the scope level;
-    # account_scope_for is a no-op there (= scope_for).
+    # a top-level self-company workstream sits directly under it.
     fpsf = _project_with(company_kind="self-fpsf", company_name="First Person")
     canonic = _project_with(company_kind="self-canonic", company_name="Canonic")
-    assert account_scope_for(fpsf) == "firstpersonsf"
-    assert account_scope_for(canonic) == "canonic"
+    assert parent_path_for(fpsf, {}) == "firstpersonsf"
+    assert parent_path_for(canonic, {}) == "canonic"
+    assert path_for(fpsf, {}) == "firstpersonsf/dummy"
 
 
 # ──────────────────────────────────────────────────────────────────────

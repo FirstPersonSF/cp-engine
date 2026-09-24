@@ -52,7 +52,7 @@ from cp_engine.state import (
     InboundUpdate,
     ProjectState,
     Stakeholder,
-    account_scope_for,
+    resolve_project_dir,
     dir_slug,
     scope_for,
 )
@@ -283,11 +283,9 @@ def build_project_block(
     last_sprint_hours: str | None = None,
 ) -> ProjectAgendaBlock:
     """Assemble all per-project agenda data."""
-    # Project working dir → cp.md path. account_scope_for includes the
-    # per-client nesting layer (1p/<company>/...) so the path is correct.
-    scope = account_scope_for(project)
-    slug = dir_slug(project.code, project.name)
-    cp_md_path = tenant_root / scope / slug / "cp.md"
+    # Project working dir → cp.md path: the paths index first, then the
+    # path authority (#302).
+    cp_md_path = resolve_project_dir(tenant_root, project) / "cp.md"
     quick_resume = (
         extract_quick_resume(cp_md_path.read_text(encoding="utf-8"))
         if cp_md_path.is_file()

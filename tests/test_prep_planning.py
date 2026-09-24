@@ -1157,10 +1157,8 @@ def test_render_exec_summary_when_present(tmp_path):
     config = make_config(tmp_path)
     state = make_state("ggl-5168", name="GGL 5168 Activation", company_name="Google")
     # Lay down a real cp.md at the account-scoped path.
-    from cp_engine.state import account_scope_for, dir_slug
-    scope = account_scope_for(state)
-    slug = dir_slug(state.code, state.name)
-    cp_md = tmp_path / scope / slug / "cp.md"
+    from cp_engine.state import path_for
+    cp_md = tmp_path / path_for(state, {}) / "cp.md"
     cp_md.parent.mkdir(parents=True, exist_ok=True)
     cp_md.write_text(
         "# CP\n\n"
@@ -1529,11 +1527,9 @@ def _write_spine_element(
     (``<root>/<account_scope>/<dir_slug>/spine/<Layer>/<name>.md``), computed
     via the same state helpers so the test stays in lockstep with the code.
     """
-    from cp_engine.state import account_scope_for, dir_slug
+    from cp_engine.state import path_for
 
-    scope = account_scope_for(project)
-    slug = dir_slug(project.code, project.name)
-    layer_dir = tenant_root / scope / slug / "spine" / layer
+    layer_dir = tenant_root / path_for(project, {}) / "spine" / layer
     layer_dir.mkdir(parents=True, exist_ok=True)
     el_path = layer_dir / f"{name}.md"
     fm_lines = [
@@ -1689,14 +1685,14 @@ def test_sweep_resolves_drifted_dir_via_find_spine_dir(tmp_path):
     the on-disk dir name differs from the current dir_slug because the project
     was renamed in MC-2 — still gets swept. An exact-slug match would miss it.
     """
-    from cp_engine.state import account_scope_for, dir_slug
+    from cp_engine.state import dir_slug, parent_path_for
 
     config = make_config(tmp_path)
     # State whose current slug is ggl-5168-new-name…
     state = make_state(
         "ggl-5168", name="GGL 5168 New Name", company_name="Google"
     )
-    scope = account_scope_for(state)
+    scope = parent_path_for(state, {})
     current_slug = dir_slug(state.code, state.name)
 
     # …but the spine lives under a DRIFTED dir name (old slug, same code

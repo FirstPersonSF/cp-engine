@@ -263,9 +263,10 @@ def _is_account_node(row: dict, has_children: bool) -> bool:
     No parent, no agreement, under a client company, and at least one child
     (191 only creates one where a project exists). The child condition is
     what keeps a real job with an unfilled `deal_stage` from being mistaken
-    for one. Account nodes are held back from the tree until #302 gives them
-    their working dir (the existing `1p/<company>/` account dir); until then
-    they would scaffold as a stray engagement under it.
+    for one. Since #302 account nodes flow through `read_projects` like any
+    workstream (label `account`, working dir = the existing `1p/<company>/`
+    account dir); this predicate is kept for callers that need the shape
+    without the label.
     """
     company = row.get("companies") or {}
     if not isinstance(company, dict):
@@ -287,7 +288,8 @@ def workstream_rows_to_states(rows: list[dict]) -> tuple[ProjectState, ...]:
     is itself archived, and the child renders at the top of its company).
     Internal workstreams come through exactly as MC-2 stores them — real
     `mc_status`, `is_internal=True` — and nothing downstream maps or gates
-    on either. **Account nodes** are excluded (see `_is_account_node`).
+    on either. **Account nodes** come through too (#302), labelled
+    `account`; sync gives them the existing `1p/<company>/` dir.
     """
     from dataclasses import replace
 
@@ -302,8 +304,6 @@ def workstream_rows_to_states(rows: list[dict]) -> tuple[ProjectState, ...]:
     out: list[ProjectState] = []
     for r in valid:
         has_children = children_of.get(r.get("id"), 0) > 0
-        if _is_account_node(r, has_children):
-            continue
         state = _engagement_row_to_state(r)
         parent = by_id.get(r.get("parent_id") or "")
         parent_code = _engagement_canonical_id(parent) if parent else None

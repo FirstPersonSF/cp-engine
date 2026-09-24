@@ -284,24 +284,25 @@ def _load_recent_account_decisions(tenant_root: Path, *, max_lines: int = 25) ->
 
 
 def _find_project_dir(tenant_root: Path, project_code: str) -> Path | None:
-    """Search 1p/, firstpersonsf/, canonic/ for a directory matching the code.
+    """The working dir for `project_code`, live first, then parked.
 
-    Working directories are named `<code>-<slug>` (per cp-engine v0.7+).
-    We match on the code prefix.
+    `.cp-engine/paths.json` first, then the recursive walk of every scope
+    root (#302); a live dir wins, and only when none exists is the walk
+    repeated with the `inactive/` bins included (a transcript for a project
+    that just went inactive still has a home).
     """
-    for scope in ("1p", "firstpersonsf", "canonic"):
-        scope_dir = tenant_root / scope
-        if not scope_dir.is_dir():
-            continue
-        for entry in scope_dir.iterdir():
-            if entry.is_dir() and (entry.name == project_code or entry.name.startswith(f"{project_code}-")):
-                return entry
-        # Also check inactive/
-        inactive_dir = scope_dir / "inactive"
-        if inactive_dir.is_dir():
-            for entry in inactive_dir.iterdir():
-                if entry.is_dir() and (entry.name == project_code or entry.name.startswith(f"{project_code}-")):
-                    return entry
+    from cp_engine.state import SCOPE_DIRS, indexed_dir, match_dir_by_name
+
+    hit = indexed_dir(tenant_root, project_code)
+    if hit is not None:
+        return hit
+    for include_inactive in (False, True):
+        for scope in SCOPE_DIRS:
+            hit = match_dir_by_name(
+                tenant_root / scope, project_code, include_inactive=include_inactive
+            )
+            if hit is not None:
+                return hit
     return None
 
 

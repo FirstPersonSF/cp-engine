@@ -213,7 +213,7 @@ def test_project_state_has_no_source_field():
     assert not hasattr(s, "source")
 
 
-def test_workstream_rows_derive_parent_label_and_hold_back_account_node():
+def test_workstream_rows_derive_parent_label_and_account_node_flows_through():
     account = _ws(
         id="p-ggl",
         number=5201,
@@ -244,11 +244,15 @@ def test_workstream_rows_derive_parent_label_and_hold_back_account_node():
     states = workstream_rows_to_states([account, program, job, job_no_budget])
     by_code = {s.code: s for s in states}
 
-    # the account node is held back until #302 gives it a working dir
-    assert "ggl-5201-google" not in by_code
+    # the account node flows through as a workstream (#302): label
+    # `account`, no parent, no agreement — sync gives it `1p/google/`
+    acct = by_code["ggl-5201-google"]
+    assert acct.label == "account"
+    assert acct.parent_code is None
+    assert acct.has_agreement is False
     assert by_code["ggl-5202-go-safety"].label == "program"
-    # the parent code still names the held-back account: a child directly
-    # under it must not read as parentless, or it would label "account"
+    # a child directly under the account must not read as parentless, or
+    # it would label "account"
     assert by_code["ggl-5202-go-safety"].parent_code == "ggl-5201-google"
     assert by_code["ggl-5202-go-safety"].has_agreement is False
 

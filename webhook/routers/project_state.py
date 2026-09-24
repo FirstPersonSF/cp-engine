@@ -52,7 +52,7 @@ import observability
 import signatures
 from fastapi import APIRouter, HTTPException, Request
 
-from .sessions import _SCOPE_DIRS, _resolve_working_dir
+from .sessions import _SPARSE_PATHS, _resolve_working_dir
 
 log = logging.getLogger("cp-engine-webhook")
 
@@ -148,7 +148,7 @@ async def project_state_capture(request: Request):
 
     cleaned = _validate_fields(fields) if fields else {}
 
-    with git_ops._cloned_tenant(sparse_paths=list(_SCOPE_DIRS)) as tenant_root:
+    with git_ops._cloned_tenant(sparse_paths=list(_SPARSE_PATHS)) as tenant_root:
         working_dir = _resolve_working_dir(tenant_root, project_code)
         if working_dir is None:
             raise HTTPException(

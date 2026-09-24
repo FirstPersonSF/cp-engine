@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Iterable, Iterator, Literal, Mapping
 
 # Which MC-2 company kind the workstream belongs to, from its company row.
 # Renderers group by this to produce the master-CP sections.
@@ -52,28 +52,10 @@ def company_slug(company_name: str | None) -> str:
     return slug or "unknown"
 
 
-def account_scope_for(project: "ProjectState") -> str:
-    """Project working-dir parent: `<scope>/<account>` for clients.
-
-    For client engagements this is `1p/<company-slug>` (the new account-
-    nested layout). For self-companies (FPSF / Canonic) this is just
-    `scope_for(company_kind)` — those scopes already group by self-
-    company and don't gain another layer.
-
-    Used by sync to place project dirs and by render to build navigation
-    links. Keeping a single function as the authority means a layout
-    change is one edit, not a sweep.
-    """
-    scope = scope_for(project.company_kind)
-    if project.company_kind == "client":
-        return f"{scope}/{company_slug(project.company_name)}"
-    return scope
-
-
-# v0.7 working-tree layout: working dirs live directly under their scope
-# (`<tenant>/<scope>/<dir_slug>/`), with inactive dirs under
-# `<tenant>/<scope>/inactive/<dir_slug>/`. Pre-v0.7 layouts (which had
-# an extra `projects/` segment) are migrated by `cp migrate-projects-flat`.
+# v0.7 working-tree layout: working dirs live under their scope
+# (`<tenant>/<scope>/...`), with inactive dirs under a sibling
+# `inactive/` bin next to the live dir. Pre-v0.7 layouts (which had an
+# extra `projects/` segment) are migrated by `cp migrate-projects-flat`.
 #
 # v0.7.1 renamed `archived/` → `inactive/`: projects often flip back to
 # active (engagements paused and resumed, internal flag toggled, etc.),
@@ -81,25 +63,287 @@ def account_scope_for(project: "ProjectState") -> str:
 # (which suggests a one-way trip).
 INACTIVE_DIR_NAME = "inactive"
 
+# The tenant's top-level scope dirs — the roots every resolver walks.
+SCOPE_DIRS: tuple[str, ...] = ("1p", "firstpersonsf", "canonic")
+
+# The machine-readable path index sync writes on every real run (#302,
+# plan D10). Committed (the generated .gitignore re-includes it) so the
+# webhook's sparse clone and the hosted server's mirror read the same map
+# the CLI does; every resolver reads it FIRST and walks the tree second.
+PATHS_INDEX_REL = ".cp-engine/paths.json"
+PATHS_INDEX_VERSION = 1
+
 
 def scope_root(tenant_root: Path, scope: str) -> Path:
     """Return `<tenant_root>/<scope>` — the parent of a scope's working dirs."""
     return tenant_root / scope
 
 
-def working_dir(tenant_root: Path, scope: str, dir_slug: str) -> Path:
-    """Return the working directory for a project at `<tenant_root>/<scope>/<dir_slug>/`."""
-    return tenant_root / scope / dir_slug
+# ──────────────────────────────────────────────────────────────────────
+#  Path authority (#302) — the tree is recursive; nothing constructs a
+#  path from a scope + a code any more.
+# ──────────────────────────────────────────────────────────────────────
+
+# A parent chain longer than this is a cycle in `parent_code` (MC-2 has no
+# constraint against one); fail loud rather than recurse forever.
+_MAX_TREE_DEPTH = 32
 
 
-def inactive_dir(tenant_root: Path, scope: str, dir_slug: str) -> Path:
-    """Return the inactive location for a project that's dropped out of sync's view."""
-    return tenant_root / scope / INACTIVE_DIR_NAME / dir_slug
+def path_for(project: "ProjectState", by_code: "Mapping[str, ProjectState]") -> str:
+    """The working-dir path for `project`, RELATIVE to the tenant root.
+
+    THE one authority for where a workstream lives (plan §3.3, D5, D10):
+
+    - **account node** (`label == "account"`) → `<scope>/<company-slug>`.
+      That is the EXISTING account dir, so the account CP already rendered
+      there becomes the node's own `cp.md` and nothing moves.
+    - **any node whose parent is in `by_code`** → `<path_for(parent)>/<code>`.
+      Programs make this recursive: `1p/google/ggl-5xxx-go-safety/
+      ggl-5136-go-safety-website/`.
+    - **client job whose parent is unknown or held back** →
+      `<scope>/<company-slug>/<code>` — today's layout, so a job whose
+      account node is not in the roster does not move.
+    - **self-company top-level** → `<scope>/<code>`.
+
+    `by_code` is the roster the caller has (every ProjectState sync read, or
+    an empty mapping when only one project is in hand — the fallbacks above
+    then reproduce the pre-#302 layout). The code segment is `dir_slug(code)`.
+    """
+    return _path_for(project, by_code, depth=0)
 
 
-def inactive_root(tenant_root: Path, scope: str) -> Path:
-    """Return `<tenant_root>/<scope>/inactive` — the parent of inactive dirs."""
-    return tenant_root / scope / INACTIVE_DIR_NAME
+def _path_for(project: "ProjectState", by_code: "Mapping[str, ProjectState]", *, depth: int) -> str:
+    if depth > _MAX_TREE_DEPTH:
+        raise ValueError(
+            f"parent_code chain for {project.code!r} exceeds {_MAX_TREE_DEPTH} "
+            "levels — a cycle in MC-2's parent_id"
+        )
+    scope = scope_for(project.company_kind)
+    if project.label == "account":
+        return f"{scope}/{company_slug(project.company_name)}"
+    parent = by_code.get(project.parent_code) if project.parent_code else None
+    if parent is not None and parent.code != project.code:
+        return f"{_path_for(parent, by_code, depth=depth + 1)}/{dir_slug(project.code)}"
+    if project.company_kind == "client":
+        return f"{scope}/{company_slug(project.company_name)}/{dir_slug(project.code)}"
+    return f"{scope}/{dir_slug(project.code)}"
+
+
+def parent_path_for(project: "ProjectState", by_code: "Mapping[str, ProjectState]") -> str:
+    """The directory that CONTAINS the project's working dir, tenant-relative.
+
+    `1p/google` for a job under Google, `1p` for Google's account node,
+    `1p/google/<program>` for a job under a program, `firstpersonsf` for an
+    internal workstream. This is what the pre-#302 `account_scope_for`
+    meant, generalised to the tree; templates render
+    `{{ scope }}/{{ dir_slug }}/cp.md` from it plus `dir_name_for`.
+    """
+    return path_for(project, by_code).rsplit("/", 1)[0]
+
+
+def dir_name_for(project: "ProjectState", by_code: "Mapping[str, ProjectState]") -> str:
+    """The last segment of `path_for` — `dir_slug(code)` for every node
+    except the account node, whose dir is the company slug."""
+    return path_for(project, by_code).rsplit("/", 1)[-1]
+
+
+def inactive_path_for(project: "ProjectState", by_code: "Mapping[str, ProjectState]") -> str:
+    """Where the project parks when it drops out of sync's view:
+    `<parent path>/inactive/<dir name>` — an account's inactive jobs stay
+    at `1p/google/inactive/<code>`, as before #302."""
+    parent = parent_path_for(project, by_code)
+    return f"{parent}/{INACTIVE_DIR_NAME}/{dir_name_for(project, by_code)}"
+
+
+@dataclass(frozen=True)
+class PathEntry:
+    """One row of `.cp-engine/paths.json`."""
+
+    code: str
+    path: str  # tenant-relative working-dir path
+    parent: str | None
+    has_agreement: bool
+    label: str | None
+    mc2_id: str | None
+    company: str | None  # company code (GGL, 1PI, …)
+    status: str
+
+
+def paths_index_rows(
+    projects: "Iterable[ProjectState]",
+) -> dict[str, dict]:
+    """The `workstreams` mapping of the index, from a roster."""
+    roster = tuple(projects)
+    by_code = {p.code: p for p in roster}
+    out: dict[str, dict] = {}
+    for p in roster:
+        out[p.code] = {
+            "path": path_for(p, by_code),
+            "parent": p.parent_code,
+            "has_agreement": bool(p.has_agreement),
+            "label": p.label,
+            "mc2_id": p.mc2_id,
+            "company": p.company_code,
+            "status": p.status,
+        }
+    return out
+
+
+def _dump_paths_index(workstreams: dict[str, dict], generated_at: str) -> str:
+    import json
+
+    doc = {
+        "version": PATHS_INDEX_VERSION,
+        "generated_at": generated_at,
+        "workstreams": workstreams,
+    }
+    return json.dumps(doc, indent=2, sort_keys=True, ensure_ascii=False) + "\n"
+
+
+def write_paths_index(
+    tenant_root: Path,
+    projects: "Iterable[ProjectState]",
+    *,
+    now: "datetime | None" = None,
+) -> Path | None:
+    """Write `.cp-engine/paths.json`; return its path when the bytes changed.
+
+    Byte-stable across runs when nothing changed: the `generated_at` stamp
+    only advances when the `workstreams` mapping differs from what is on
+    disk, so an unchanged tenant never produces a diff.
+    """
+    import json
+
+    target = tenant_root / PATHS_INDEX_REL
+    rows = paths_index_rows(projects)
+    if target.is_file():
+        try:
+            existing = json.loads(target.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            existing = None
+        if (
+            isinstance(existing, dict)
+            and existing.get("version") == PATHS_INDEX_VERSION
+            and existing.get("workstreams") == rows
+        ):
+            return None
+    stamp = (now or datetime.now(timezone.utc)).isoformat()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(_dump_paths_index(rows, stamp), encoding="utf-8")
+    return target
+
+
+def load_paths_index(tenant_root: Path) -> dict[str, PathEntry]:
+    """Read `.cp-engine/paths.json` → `{code: PathEntry}`; `{}` when the file
+    is absent, unreadable or not the version this engine writes (a walk
+    then resolves everything, exactly as before the index existed)."""
+    import json
+
+    target = tenant_root / PATHS_INDEX_REL
+    if not target.is_file():
+        return {}
+    try:
+        doc = json.loads(target.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(doc, dict) or doc.get("version") != PATHS_INDEX_VERSION:
+        return {}
+    rows = doc.get("workstreams")
+    if not isinstance(rows, dict):
+        return {}
+    out: dict[str, PathEntry] = {}
+    for code, row in rows.items():
+        if not isinstance(row, dict) or not isinstance(row.get("path"), str):
+            continue
+        out[code] = PathEntry(
+            code=code,
+            path=row["path"],
+            parent=row.get("parent"),
+            has_agreement=bool(row.get("has_agreement", False)),
+            label=row.get("label"),
+            mc2_id=row.get("mc2_id"),
+            company=row.get("company"),
+            status=str(row.get("status") or ""),
+        )
+    return out
+
+
+def indexed_dir(tenant_root: Path, code: str, mc2_id: str | None = None) -> Path | None:
+    """The working dir the index names for `code` — verified to exist, and
+    (when `mc2_id` is given and the dir is stamped) to carry that stamp.
+    None on any miss; the caller walks."""
+    entry = load_paths_index(tenant_root).get(code)
+    if entry is None:
+        return None
+    candidate = tenant_root / entry.path
+    if not candidate.is_dir():
+        return None
+    if mc2_id and entry.mc2_id and entry.mc2_id != mc2_id:
+        return None
+    return candidate
+
+
+def iter_workstream_dirs(parent: Path, *, include_inactive: bool = False) -> "Iterator[Path]":
+    """Breadth-first walk of the working-dir candidates under `parent`.
+
+    Every direct child of `parent` is a candidate and is descended into;
+    deeper dirs are descended into only when they carry a `cp.md` (a
+    workstream whose children may be workstreams — a program, an account).
+    A job's own subdirs (`spine/`, `meetings/`, `sessions/`) are yielded as
+    candidates at their level but never descended, so the walk is bounded
+    by the tree's shape, not by a hard-coded depth. `inactive/` bins,
+    dot-dirs and `_`-prefixed engine dirs (`_stakeholders/`) are skipped
+    unless `include_inactive` names the bins back in.
+    """
+    from collections import deque
+
+    if not parent.is_dir():
+        return
+    queue: "deque[tuple[Path, int]]" = deque([(parent, 0)])
+    while queue:
+        current, depth = queue.popleft()
+        try:
+            children = sorted(c for c in current.iterdir() if c.is_dir())
+        except OSError:
+            continue
+        for child in children:
+            name = child.name
+            if name.startswith(".") or name.startswith("_"):
+                continue
+            if name == INACTIVE_DIR_NAME and not include_inactive:
+                continue
+            yield child
+            if depth == 0 or (child / "cp.md").is_file() or name == INACTIVE_DIR_NAME:
+                queue.append((child, depth + 1))
+
+
+def match_dir_by_name(parent: Path, code: str, *, include_inactive: bool = False) -> Path | None:
+    """Name match anywhere under `parent`: an exact `<code>` dir wins over a
+    `<code>-<slug>` prefix match; at equal rank the shallower (then
+    alphabetical) dir wins. The `inactive` bin itself is never a match."""
+    if not code or code == INACTIVE_DIR_NAME:
+        return None
+    prefix = f"{code}-"
+    first_prefix: Path | None = None
+    for candidate in iter_workstream_dirs(parent, include_inactive=include_inactive):
+        if candidate.name == code:
+            return candidate
+        if first_prefix is None and candidate.name.startswith(prefix):
+            first_prefix = candidate
+    return first_prefix
+
+
+def resolve_project_dir(
+    tenant_root: Path,
+    project: "ProjectState",
+    by_code: "Mapping[str, ProjectState] | None" = None,
+) -> Path:
+    """Where `project`'s working dir is: the index's answer when it names an
+    existing dir, else `path_for` over whatever roster the caller has."""
+    hit = indexed_dir(tenant_root, project.code, project.mc2_id)
+    if hit is not None:
+        return hit
+    return tenant_root / path_for(project, by_code or {})
 
 
 _SLUG_NON_ALPHANUM = re.compile(r"[^a-z0-9]+")

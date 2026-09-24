@@ -7417,14 +7417,67 @@ def tree_provenance() -> dict[str, Any]:
     return prov
 
 
+# The engine's committed path index (cp-engine #302, `state.PATHS_INDEX_REL`).
+# Mirrored here rather than imported: this server does not import cp_engine.
+_PATHS_INDEX_REL = ".cp-engine/paths.json"
+_PATHS_INDEX_VERSION = 1
+_SCOPE_DIRS = ("1p", "firstpersonsf", "canonic")
+
+
+def _indexed_project_dir(root: Path, code: str) -> Path | None:
+    """`.cp-engine/paths.json`'s answer for `code`, when it names a dir that
+    exists and carries a cp.md. None on any miss — the walk then decides."""
+    try:
+        doc = json.loads((root / _PATHS_INDEX_REL).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(doc, dict) or doc.get("version") != _PATHS_INDEX_VERSION:
+        return None
+    rows = doc.get("workstreams")
+    entry = rows.get(code) if isinstance(rows, dict) else None
+    if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
+        return None
+    candidate = root / entry["path"]
+    return candidate if (candidate / "cp.md").is_file() else None
+
+
+def _iter_workstream_dirs(parent: Path):
+    """Breadth-first walk of working-dir candidates under `parent` — the
+    mirror of `cp_engine.state.iter_workstream_dirs`. Every direct child is
+    a candidate and is descended into; deeper dirs are descended into only
+    when they carry a `cp.md` (a program, an account), so a job's own
+    `spine/`, `meetings/`, `sessions/` are never walked. `inactive/` bins,
+    dot-dirs and `_`-prefixed engine dirs are skipped."""
+    from collections import deque
+
+    if not parent.is_dir():
+        return
+    queue = deque([(parent, 0)])
+    while queue:
+        current, depth = queue.popleft()
+        try:
+            children = sorted(c for c in current.iterdir() if c.is_dir())
+        except OSError:
+            continue
+        for child in children:
+            name = child.name
+            if name == "inactive" or name.startswith((".", "_")):
+                continue
+            yield child
+            if depth == 0 or (child / "cp.md").is_file():
+                queue.append((child, depth + 1))
+
+
 def find_project_dir(root: Path, project_code: str) -> Path | None:
     """Locate a project's working dir in the tree.
 
-    The real layout is DEEPER than a flat `<scope>/<code>/`: engagements nest
-    under a company dir (`1p/infoblox/ibx-5153-ai-campaign/`), while initiatives
-    and standalone repos sit directly under their scope
-    (`firstpersonsf/mission-control/`, `canonic/storyos/`). So this walks the
-    known scope roots to a bounded depth rather than assuming one shape.
+    The real layout is a TREE, not a flat `<scope>/<code>/`: an account node
+    is `1p/google/`, its jobs sit under it, a program under an account holds
+    its own jobs (`1p/google/ggl-5xxx-go-safety/ggl-5136-…/`), internal
+    workstreams sit directly under their scope. So this reads the engine's
+    committed path index first (cp-engine #302) and falls back to a
+    recursive walk of the scope roots, bounded by the tree's shape rather
+    than a hard-coded depth.
 
     Match order is EXACT before PREFIX: `ibx-5153-ai-campaign` must not be
     reachable-by-accident when a caller asks for something that exactly exists,
@@ -7433,22 +7486,13 @@ def find_project_dir(root: Path, project_code: str) -> Path | None:
     the project's current state.
     """
     code = project_code.strip().lower()
-    scopes = [root / "1p", root / "firstpersonsf", root / "canonic"]
+    indexed = _indexed_project_dir(root, code)
+    if indexed is not None:
+        return indexed
     exact: Path | None = None
     prefix: list[Path] = []
-    for scope in scopes:
-        if not scope.is_dir():
-            continue
-        # depth 1 (initiatives/repos) and depth 2 (company-nested engagements)
-        candidates: list[Path] = []
-        for child in scope.iterdir():
-            if not child.is_dir() or child.name == "inactive":
-                continue
-            candidates.append(child)
-            for grandchild in child.iterdir():
-                if grandchild.is_dir() and grandchild.name != "inactive":
-                    candidates.append(grandchild)
-        for candidate in candidates:
+    for scope in _SCOPE_DIRS:
+        for candidate in _iter_workstream_dirs(root / scope):
             name = candidate.name.lower()
             if not (candidate / "cp.md").is_file():
                 continue

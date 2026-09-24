@@ -23,6 +23,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from importlib import resources
 from pathlib import Path
+from typing import Mapping
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -33,7 +34,8 @@ from cp_engine.state import (
     LinkedRepo,
     ProjectState,
     SprintFile,
-    account_scope_for,
+    dir_name_for,
+    parent_path_for,
     company_slug,
     dir_slug,
     scope_for,
@@ -178,9 +180,20 @@ def render_master_cp(
             return False
         return p.status == "Closed"
 
-    active = [p for p in projects if is_active(p)]
-    holding = [p for p in projects if is_holding(p)]
-    closed_recent = [p for p in projects if is_closed_recent(p)]
+    by_code = {p.code: p for p in projects}
+
+    # Account nodes (#302) are workstreams but not jobs: they never sit in
+    # a job table. They surface as their own group (`active_groups.account`)
+    # for the tree region #303 builds.
+    def is_account(p: ProjectState) -> bool:
+        return p.label == "account"
+
+    accounts = [p for p in projects if is_account(p)]
+    active = [p for p in projects if is_active(p) and not is_account(p)]
+    holding = [p for p in projects if is_holding(p) and not is_account(p)]
+    closed_recent = [
+        p for p in projects if is_closed_recent(p) and not is_account(p)
+    ]
 
     # Group active entries by company_kind. 1P bucket gets a sub-split
     # into Pipeline (Deal status) and Active Engagements (Open status),
@@ -196,7 +209,7 @@ def render_master_cp(
         pointing at `sprints/<iso>/<code>.md` for the per-project sprint
         file. None when no current sprint is in scope.
         """
-        view = _project_view(p)
+        view = _project_view(p, by_code)
         view["allocation_line"] = _allocation_line_for(p.code, allocations)
         view["sprint_link"] = (
             f"sprints/{current_sprint_iso}/{p.code}.md"
@@ -249,6 +262,12 @@ def render_master_cp(
             "self_canonic_initiatives": [
                 to_view(p) for p in _self_initiatives("self-canonic")
             ],
+            # Every account node, whatever its status, sorted by company
+            # slug — the roots of the tree region (#303 consumes this).
+            "account": [
+                to_view(p)
+                for p in sorted(accounts, key=lambda p: (company_slug(p.company_name), p.code))
+            ],
         }
 
     # Derive the short week label ("W19") from the ISO week ("2026-W19")
@@ -274,7 +293,7 @@ def render_master_cp(
     # project has a digest this week (cron hasn't run, all channels
     # were quiet, etc.) so the template hides the section.
     slack_rollup = _compute_slack_rollup(
-        config.root, active, current_sprint_iso
+        config.root, active, current_sprint_iso, by_code
     )
     sprint_facts = (
         _compute_sprint_facts_strip(
@@ -300,8 +319,8 @@ def render_master_cp(
         section_summaries=section_summaries,
         workload_rollup=_rollup_view(allocations),
         workload_week=allocations.week_start if allocations else None,
-        holding_projects=[_project_view(p) for p in holding],
-        closed_recent=[_project_view(p) for p in closed_recent],
+        holding_projects=[_project_view(p, by_code) for p in holding],
+        closed_recent=[_project_view(p, by_code) for p in closed_recent],
         exceptions_count=exceptions_count,
         current_week_label=current_week_label,
         agenda=agenda,
@@ -519,12 +538,22 @@ def uses_initiative_shape(project: ProjectState) -> bool:
     return not project.has_agreement and project.company_kind != "client"
 
 
+def uses_account_shape(project: ProjectState) -> bool:
+    """True for a client company's account node (#302). Its cp.md is the
+    account CP (`account-cp.md.j2`); its sprint file (D8:
+    `sprints/<W##>/ggl-5216-google.md`) takes the initiative shape — no
+    client-communication surfaces of its own — until #303 unifies the
+    sprint template."""
+    return project.label == "account"
+
+
 def render_project_cp(
     config: TenantConfig,
     project: ProjectState,
     tracked_issues: tuple[Issue, ...] = (),
     current_sprint_block: str | None = None,
     project_strips: object | None = None,
+    by_code: "Mapping[str, ProjectState] | None" = None,
 ) -> str:
     """Render a project CP from the empty template.
 
@@ -558,7 +587,7 @@ def render_project_cp(
     template = _env().get_template(template_name)
     return template.render(
         tenant=config,
-        project=_project_view(project),
+        project=_project_view(project, by_code),
         engine_version=ENGINE_VERSION,
         today=_today_iso(),
         tracked_issues=[_issue_view(i) for i in tracked_issues],
@@ -711,8 +740,11 @@ Thumbs.db
 .cp-engine.local.toml
 
 # Engine state — v0.8.7: holds fathom auto-poll state (last_polled_at,
-# processed_ids). Per-machine; not shared via git.
-.cp-engine/
+# processed_ids). Per-machine; not shared via git. The path index
+# (`paths.json`, cp-engine #302) IS shared: the webhook and the hosted
+# server resolve working dirs from it.
+.cp-engine/*
+!.cp-engine/paths.json
 
 # Bytecode cache from the engine-managed .claude/ hook script.
 .claude/hooks/__pycache__/
@@ -1150,6 +1182,7 @@ def _compute_slack_rollup(
     tenant_root: Path,
     active_projects: list[ProjectState],
     current_sprint_iso: str | None,
+    by_code: "Mapping[str, ProjectState] | None" = None,
 ) -> list[dict] | None:
     """Aggregate the most recent Slack digest bullet across active projects.
 
@@ -1183,10 +1216,10 @@ def _compute_slack_rollup(
         rows.append({
             "code": p.code,
             "name": p.name,
-            # Path-building scope (includes account layer for clients) so
-            # the master-cp link `<scope>/<dir_slug>/cp.md` resolves.
-            "scope": account_scope_for(p),
-            "dir_slug": dir_slug(p.code, p.name),
+            # Path-building parent + dir name so the master-cp link
+            # `<scope>/<dir_slug>/cp.md` resolves (#302).
+            "scope": parent_path_for(p, by_code or {}),
+            "dir_slug": dir_name_for(p, by_code or {}),
             "week": m.group("week"),
             "text": m.group("text").strip(),
             "sprint_link": f"sprints/{current_sprint_iso}/{p.code}.md",
@@ -1310,13 +1343,20 @@ def _compute_sprint_facts_strip(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _project_view(p: ProjectState) -> dict:
+def _project_view(
+    p: ProjectState, by_code: "Mapping[str, ProjectState] | None" = None
+) -> dict:
     """Flatten a ProjectState into the keys the templates expect.
 
     Includes both engagement-shape and repo-shape fields. Templates
     branch on `engagement_shape` (has an agreement, or under a client
     company) to choose which to render (#301).
+
+    `by_code` is the roster `state.path_for` resolves parents from (#302);
+    without it a program child renders with its pre-#302 link, which is why
+    every multi-project renderer passes it.
     """
+    roster = by_code or {}
     # Account view fields — populated for client projects so the
     # master-cp 1P tables can render the leading Account column.
     # account_link is a literal relative path from the tenant root to
@@ -1344,10 +1384,10 @@ def _project_view(p: ProjectState) -> dict:
         "label": p.label,
         "engagement_shape": not uses_initiative_shape(p),
         "company_kind": p.company_kind,
-        # Path-building scope (includes account layer for clients).
+        # Path-building parent + dir name (#302: the tree is recursive).
         # Templates render `{{ p.scope }}/{{ p.dir_slug }}/cp.md` links.
-        "scope": account_scope_for(p),
-        "dir_slug": dir_slug(p.code, p.name),
+        "scope": parent_path_for(p, roster),
+        "dir_slug": dir_name_for(p, roster),
         "company_code": p.company_code,
         "company_name": p.company_name,
         "account_slug": account_slug_value,

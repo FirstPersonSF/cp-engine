@@ -1510,40 +1510,27 @@ def _write_slack_digest(code: str, item: dict, sprint_path: Path, **_) -> bool:
 
 
 def _resolve_project_cp_path(tenant_root: Path, code: str) -> Path | None:
-    """Locate the project cp.md by code under any scope (1p/<account>/,
-    firstpersonsf/, canonic/). Returns None if no match.
+    """Locate the project cp.md by code under any scope. Returns None if no
+    match.
 
-    Walks `<tenant_root>/<scope>/(<account>/)?<dir>/cp.md` looking for a
-    dir whose name starts with `<code>` (bare or `<code>-...`). Skips
-    `inactive/` subtrees. Same matching rule as
+    `.cp-engine/paths.json` first, then the recursive walk of every scope
+    root (#302), skipping `inactive/` subtrees — the same matching rule as
     `cp_engine.sync._find_project_dir` but without importing sync (to
-    avoid the sync↔ingest circular dependency).
+    avoid the sync↔ingest circular dependency); both use `state`'s walker.
     """
-    for scope in ("1p", "firstpersonsf", "canonic"):
-        scope_dir = tenant_root / scope
-        if not scope_dir.is_dir():
-            continue
-        # 1p has an extra per-account layer; FPSF/Canonic project dirs
-        # live directly under the scope root.
-        parents = []
-        if scope == "1p":
-            for child in scope_dir.iterdir():
-                if child.is_dir() and child.name != "inactive":
-                    parents.append(child)
-        else:
-            parents.append(scope_dir)
-        for parent in parents:
-            # Exact-match dir (bare code, like `mc-2` or `storyos`).
-            bare = parent / code / "cp.md"
-            if bare.is_file():
-                return bare
-            # Slug-prefix match (`<code>-<slug>`).
-            prefix = f"{code}-"
-            for entry in parent.iterdir():
-                if entry.is_dir() and entry.name.startswith(prefix):
-                    candidate = entry / "cp.md"
-                    if candidate.is_file():
-                        return candidate
+    from cp_engine.state import (
+        SCOPE_DIRS,
+        indexed_dir,
+        match_dir_by_name,
+    )
+
+    hit = indexed_dir(tenant_root, code)
+    if hit is not None and (hit / "cp.md").is_file():
+        return hit / "cp.md"
+    for scope in SCOPE_DIRS:
+        hit = match_dir_by_name(tenant_root / scope, code)
+        if hit is not None and (hit / "cp.md").is_file():
+            return hit / "cp.md"
     return None
 
 
