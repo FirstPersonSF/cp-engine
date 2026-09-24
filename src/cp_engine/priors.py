@@ -127,7 +127,7 @@ def project_id_for_code(code: str, *, config=None) -> str | None:
     if not code:
         return None
     try:
-        from cp_engine.mc2_db import Tables, get_client
+        from cp_engine.mc2_db import Tables, get_client, has_initiatives_table
 
         client = get_client(config, required=False)
         if client is None:
@@ -136,7 +136,10 @@ def project_id_for_code(code: str, *, config=None) -> str | None:
         # 1. Exact code on the row itself — initiatives and standalone repos
         #    match here (their code IS the slug), and so do any projects whose
         #    row code happens to agree with the cp code.
-        for table in (Tables.PROJECTS, Tables.INITIATIVES):
+        tables = [Tables.PROJECTS]
+        if has_initiatives_table(client):
+            tables.append(Tables.INITIATIVES)
+        for table in tables:
             rows = (
                 client.table(table).select("id").eq("code", code).limit(1).execute()
             ).data or []

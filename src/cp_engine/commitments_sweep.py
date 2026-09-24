@@ -20,6 +20,7 @@ from datetime import date, datetime
 from typing import Any
 
 from cp_engine.dates_loop import _EXPIRE_AFTER_DAYS, _ttl_bucket
+from cp_engine import mc2_db
 from cp_engine.mc2_db import Tables
 
 _SWEEP_COLUMNS = (
@@ -76,7 +77,10 @@ def _row(c: dict, today: date) -> SweepRow:
 def _owner_codes(client: Any) -> dict[str, str]:
     """id → code across projects and initiatives (one read each)."""
     codes: dict[str, str] = {}
-    for table in (Tables.PROJECTS, Tables.INITIATIVES):
+    tables = [Tables.PROJECTS]
+    if mc2_db.has_initiatives_table(client):
+        tables.append(Tables.INITIATIVES)
+    for table in tables:
         for r in (
             client.table(table).select("id, code").execute().data or []
         ):

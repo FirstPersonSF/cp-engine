@@ -4,6 +4,56 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.123.0 — 2026-09-24
+
+**The reader handles both sides of the workstream migration.** Minor: no
+tenant-visible change today; the shape of `ProjectState` grows. Closes #300
+(phase 1 of the company > workstream build, `cp/docs/plans/2026-09-24-company-workstream-implementation-plan.md`).
+
+mc-2 migration 190 adds `projects.parent_id`, 192 merges the seven
+`initiatives` rows into `projects`, and 194 retires the `initiatives`
+table. `read_projects` ran three queries — `projects`, standalone `repos`,
+`initiatives` — so every installed CLI, the webhook and the hosted server
+would have broken the moment 194 ran. The house rule for a cutover like
+this (mig 183 / #284) is: ship the reader that handles both shapes first,
+migrate second, delete third. This is the first step.
+
+- **`mc2_db.workstream_schema(client)`** probes `projects.parent_id` once
+  per client (the KEY must come back, not just a row). Present → one
+  stream: `projects` with `parent_id`, repos joined on `project_id`, no
+  `initiatives` or standalone-`repos` reads. Absent → the three queries,
+  unchanged. `has_initiatives_table` is the inverse, named for the question
+  the call sites ask.
+- **`ProjectState` gains `parent_code`, `has_agreement`, `label`.**
+  `has_agreement` is `deal_stage IS NOT NULL` — the commercial envelope
+  exists — set on both schemas. Budget is not the signal: live jobs 5151
+  and 5168 carry none. `label` (account | program | job | initiative) is
+  derived by `state.derive_label`, first match wins, and nothing in the
+  engine branches on it.
+- **Internal workstreams keep the initiative shape until #301.** On the
+  new schema a self-company row with no agreement gets `source=
+  "initiative"`, its `mc_status` mapped through
+  `status.INITIATIVE_STATUS_FROM_MC`, and `is_internal` cleared so the
+  scaffolding loop gives it a working dir. Every `source ==` branch and
+  every `status == "Active"` check renders exactly what it rendered
+  yesterday.
+- **Account nodes are held back.** Migration 191 creates one root
+  workstream per client company; until #302 gives it the existing
+  `1p/<company>/` dir it would scaffold as a stray engagement, so the reader
+  excludes a client row with no parent, no agreement and at least one child.
+  A job whose `deal_stage` was never filled has no children and stays.
+- **Every `initiatives` lookup is gated** on the probe: `commitments.
+  resolve_commitment_owner`, `commitments_sweep._owner_codes`, `priors`,
+  `slack` channel map, `asset_ingest` (two sites), `close_out.
+  fetch_item_status`, `mc2_db._resolve_project_id` / `_resolve_initiative_id`,
+  the webhook's `_resolve_initiative_code`, and the hosted server's
+  `resolve_project_id` / `resolve_write_scope` (local probe; the prototype
+  does not import cp_engine). Post-merge codes carry a number
+  (`1pi-9005-mission-control`), so they resolve on the projects branch.
+- Hosted vendor tree re-synced (`commitments_sweep.py` verbatim; the
+  `mc2_db` shim carries the probe and the new column constant; the
+  `commitments.py` shim's resolver matches its origin).
+
 ## v0.122.0 — 2026-09-23
 
 **Tenant skills are discoverable from a hosted session.** Minor: three new

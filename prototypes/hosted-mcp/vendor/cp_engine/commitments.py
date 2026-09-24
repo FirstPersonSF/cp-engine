@@ -11,6 +11,7 @@ import logging
 import re
 from typing import Any
 
+from cp_engine import mc2_db
 from cp_engine.mc2_db import Tables
 
 log = logging.getLogger(__name__)
@@ -58,6 +59,11 @@ def resolve_commitment_owner(client: Any, code: str) -> dict | None:
             return None
         return {"id": rows[0]["id"], "code": code, "kind": "project"}
 
+    if not mc2_db.has_initiatives_table(client):
+        # Workstream schema (#300): no bare-slug codes exist; every row has
+        # a number and resolved (or missed) on the projects branch above.
+        log.info("commitments: no project row for slug code=%s", code)
+        return None
     resp = (
         client.table(Tables.INITIATIVES)
         .select("id, code")

@@ -393,6 +393,35 @@ def _slug_full_job_name(full_job_name: str | None) -> str:
     return _SLUG_NON_ALPHANUM.sub("-", full_job_name.lower()).strip("-")
 
 
+# Workstream-schema probe (#300). mc-2 migration 190 adds `projects.parent_id`
+# and 194 retires `initiatives`; this server must answer on both sides of
+# that cutover. Mirrors `cp_engine.mc2_db.workstream_schema` — kept local
+# because this prototype does not import cp_engine (see resolve_project_id).
+# Keyed by client object; clients are per-user and short-lived here, so the
+# dict stays small, and a stale "legacy" answer only costs one extra miss.
+_WORKSTREAM_PROBE: dict[int, bool] = {}
+
+
+def _has_initiatives_table(client) -> bool:
+    """True while `initiatives` is still the home of internal work.
+
+    An unknown `parent_id` column is the legacy signal (APIError 42703);
+    any other failure also reads as legacy so a transient error never
+    hides the initiatives branch on a live legacy tenant.
+    """
+    key = id(client)
+    cached = _WORKSTREAM_PROBE.get(key)
+    if cached is not None:
+        return not cached
+    try:
+        rows = client.table("projects").select("id, parent_id").limit(1).execute().data or []
+        present = bool(rows) and isinstance(rows[0], dict) and "parent_id" in rows[0]
+    except Exception:  # noqa: BLE001
+        present = False
+    _WORKSTREAM_PROBE[key] = present
+    return not present
+
+
 def _looks_like_uuid(value: str) -> bool:
     """True when `value` parses as a UUID, so it can be used as an id filter.
 
@@ -452,7 +481,10 @@ def resolve_project_id(client, project_code: str) -> str | None:
     #    initiative id (both land in `spine_substance.project_id`). Guarded by
     #    a parse so a malformed code never reaches the DB as a uuid filter.
     if _looks_like_uuid(project_code):
-        for table in ("projects", "initiatives"):
+        tables = ["projects"]
+        if _has_initiatives_table(client):
+            tables.append("initiatives")
+        for table in tables:
             rows = (
                 client.table(table).select("id").eq("id", project_code).limit(1).execute().data
                 or []
@@ -463,8 +495,9 @@ def resolve_project_id(client, project_code: str) -> str | None:
 
     rows = (
         client.table("initiatives").select("id").eq("code", project_code).limit(1).execute().data
-        or []
-    )
+        if _has_initiatives_table(client)
+        else []
+    ) or []
     if rows:
         return rows[0]["id"]
 
@@ -2441,8 +2474,9 @@ def resolve_write_scope(client, project_code: str) -> dict[str, Any] | None:
         .limit(1)
         .execute()
         .data
-        or []
-    )
+        if _has_initiatives_table(client)
+        else []
+    ) or []
     kind = "initiative" if rows else None
     if not rows:
         pid = resolve_project_id(client, project_code)

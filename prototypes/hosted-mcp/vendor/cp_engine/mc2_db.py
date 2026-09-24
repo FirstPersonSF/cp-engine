@@ -87,6 +87,9 @@ PROJECTS_SYNC_COLUMNS = (
 )
 
 
+# projects — the sync read on the workstream schema (#300).
+PROJECTS_WORKSTREAM_SYNC_COLUMNS = PROJECTS_SYNC_COLUMNS + ", parent_id"
+
 PROJECTS_SLACK_COLUMNS = (
     "id, number, name, mc_status, is_internal, enable_slack, "
     "full_job_name, companies!inner(code)"
@@ -222,3 +225,54 @@ _DROPBOX_KEYS = (
     "DROPBOX_REFRESH_TOKEN",
     "DROPBOX_ACCESS_TOKEN",
 )
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Workstream-schema probe (#300) — copied verbatim from cp_engine.mc2_db.
+#  The vendored commitments_sweep calls `has_initiatives_table`.
+# ──────────────────────────────────────────────────────────────────────
+
+_WORKSTREAM_PROBE: dict[int, bool] = {}
+
+
+def workstream_schema(client) -> bool:
+    """True when MC-2 carries `projects.parent_id` (the workstream schema).
+
+    One `select id, parent_id ... limit 1` per client; PostgREST answers an
+    unknown column with an APIError (42703), which is the "legacy schema"
+    signal. Any other failure is also read as legacy so a transient error
+    never flips a live tenant onto the single-stream path by accident.
+    """
+    key = id(client)
+    cached = _WORKSTREAM_PROBE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        rows = (
+            client.table(Tables.PROJECTS).select("id, parent_id").limit(1).execute().data
+            or []
+        )
+        # The KEY must come back, not just a row: PostgREST returns
+        # `parent_id: null` for a real column, and a fake that ignores the
+        # column list returns rows without it — which is the legacy answer.
+        present = bool(rows) and isinstance(rows[0], dict) and "parent_id" in rows[0]
+    except Exception:  # noqa: BLE001 — legacy schema, or unreachable: read as legacy
+        present = False
+    _WORKSTREAM_PROBE[key] = present
+    return present
+
+
+def has_initiatives_table(client) -> bool:
+    """True when the `initiatives` table is still the home of internal work.
+
+    The inverse of :func:`workstream_schema`; named for the question the
+    call sites ask. On the workstream schema an initiative slug lookup has
+    nothing to find — the rows live in `projects` under their new codes —
+    so callers skip the query instead of erroring on a retired relation.
+    """
+    return not workstream_schema(client)
+
+
+def _reset_workstream_probe() -> None:
+    """Forget cached probe answers (tests, and long-lived processes across a migration)."""
+    _WORKSTREAM_PROBE.clear()

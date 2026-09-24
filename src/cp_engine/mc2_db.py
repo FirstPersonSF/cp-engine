@@ -120,6 +120,12 @@ PROJECTS_SYNC_COLUMNS = (
     "repos!project_id(repo_name, status, description, github_orgs!inner(name))"
 )
 
+# projects — the sync read on the WORKSTREAM schema (mc-2 migration 190+,
+# cp-engine #300). Same shape plus `parent_id`; the `initiatives` and
+# standalone-`repos` streams do not exist on that schema — internal
+# workstreams are `projects` rows with `deal_stage IS NULL`.
+PROJECTS_WORKSTREAM_SYNC_COLUMNS = PROJECTS_SYNC_COLUMNS + ", parent_id"
+
 # projects — the Slack channel-map read (mapping columns aren't part of sync).
 # Channel ids come from project_integrations bindings (read-flip; the flat
 # slack columns are being retired) — `id` is here so the map can join them.
@@ -1101,6 +1107,65 @@ def canonical_spine_code(client, project_id: str, fallback: str) -> str:
     return fallback
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  Workstream-schema probe (#300)
+# ──────────────────────────────────────────────────────────────────────
+#
+# mc-2 migration 190 adds `projects.parent_id`; 192 merges `initiatives`
+# into `projects`; 194 retires the `initiatives` table. Every installed
+# surface (CLI, webhook, hosted) has to keep working on BOTH sides of that
+# cutover, so the reader probes once per client and every `initiatives`
+# lookup is gated on the answer. The probe is the column, not the table:
+# the column is the first migration, and a lookup that finds no
+# `initiatives` table but no `parent_id` either is a broken database, not
+# a new one. Cached per client object; `_reset_workstream_probe()` for tests.
+
+_WORKSTREAM_PROBE: dict[int, bool] = {}
+
+
+def workstream_schema(client) -> bool:
+    """True when MC-2 carries `projects.parent_id` (the workstream schema).
+
+    One `select id, parent_id ... limit 1` per client; PostgREST answers an
+    unknown column with an APIError (42703), which is the "legacy schema"
+    signal. Any other failure is also read as legacy so a transient error
+    never flips a live tenant onto the single-stream path by accident.
+    """
+    key = id(client)
+    cached = _WORKSTREAM_PROBE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        rows = (
+            client.table(Tables.PROJECTS).select("id, parent_id").limit(1).execute().data
+            or []
+        )
+        # The KEY must come back, not just a row: PostgREST returns
+        # `parent_id: null` for a real column, and a fake that ignores the
+        # column list returns rows without it — which is the legacy answer.
+        present = bool(rows) and isinstance(rows[0], dict) and "parent_id" in rows[0]
+    except Exception:  # noqa: BLE001 — legacy schema, or unreachable: read as legacy
+        present = False
+    _WORKSTREAM_PROBE[key] = present
+    return present
+
+
+def has_initiatives_table(client) -> bool:
+    """True when the `initiatives` table is still the home of internal work.
+
+    The inverse of :func:`workstream_schema`; named for the question the
+    call sites ask. On the workstream schema an initiative slug lookup has
+    nothing to find — the rows live in `projects` under their new codes —
+    so callers skip the query instead of erroring on a retired relation.
+    """
+    return not workstream_schema(client)
+
+
+def _reset_workstream_probe() -> None:
+    """Forget cached probe answers (tests, and long-lived processes across a migration)."""
+    _WORKSTREAM_PROBE.clear()
+
+
 def _looks_like_uuid(value) -> bool:
     """True when `value` parses as a UUID, so it is safe as an id filter.
 
@@ -1156,7 +1221,10 @@ def _resolve_project_id(client, project_code: str) -> str | None:
     from cp_engine.state import slug_full_job_name
 
     if _looks_like_uuid(project_code):
-        for table in (Tables.PROJECTS, Tables.INITIATIVES):
+        tables = [Tables.PROJECTS]
+        if has_initiatives_table(client):
+            tables.append(Tables.INITIATIVES)
+        for table in tables:
             rows = (
                 client.table(table)
                 .select("id")
@@ -1303,7 +1371,13 @@ def _resolve_initiative_id(client, code: str) -> str | None:
     bridge in `_resolve_project_id` never matches them. Their id lands in
     `spine_substance.project_id` exactly like a project's, so spine tools work
     once we hand it back. Returns the id, or None when nothing matches.
+
+    On the workstream schema (#300) there is no `initiatives` table and no
+    bare-slug codes; the merged rows resolve through `_resolve_project_id`
+    under their `<co>-<number>-<slug>` codes, so this returns None.
     """
+    if not has_initiatives_table(client):
+        return None
     rows = (
         client.table(Tables.INITIATIVES)
         .select("id")

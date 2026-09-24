@@ -252,6 +252,8 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
     # Stream B: initiatives (internal workstreams). Channel ids come from
     # initiative-owned bindings ('' singleton + labeled extras). Status uses
     # the initiative vocabulary ("Active", "On hold", "Done", "Archived").
+    # On the workstream schema (#300) internal workstreams already came
+    # through Stream A as `projects` rows; there is no second table to read.
     initiative_rows = (
         client.schema("public")
         .table(Tables.INITIATIVES)
@@ -261,7 +263,7 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
         .execute()
         .data
         or []
-    )
+    ) if mc2_db.has_initiatives_table(client) else []
     initiative_bindings = fetch_binding_rows(
         client.schema("public"),
         initiative_ids=[r["id"] for r in initiative_rows if r.get("id")],

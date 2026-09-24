@@ -343,7 +343,14 @@ def _resolve_engagement_code(client, project_id: str) -> str | None:
 
 
 def _resolve_initiative_code(client, initiative_id: str) -> str | None:
-    """Resolve an initiatives.id to its slug ``code``."""
+    """Resolve an initiatives.id to its slug ``code``.
+
+    On the workstream schema (mc-2 mig 192, cp-engine #300) the proposal
+    row no longer carries `initiative_id`, so this is never reached; the
+    gate is belt-and-braces for a row written before the migration.
+    """
+    if not mc2_db.has_initiatives_table(client):
+        return None
     resp = (
         client.table(Tables.INITIATIVES)
         .select("code")

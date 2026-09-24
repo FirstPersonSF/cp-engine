@@ -226,7 +226,7 @@ def fetch_item_status(client: Any, code: str) -> tuple[str, str | None] | None:
     circuit there would make such repos permanently unresolvable.
     """
     from cp_engine.clickup_routing import engagement_number
-    from cp_engine.mc2_db import Tables
+    from cp_engine.mc2_db import Tables, has_initiatives_table
 
     number = engagement_number(code)
     if number is not None:
@@ -246,6 +246,8 @@ def fetch_item_status(client: Any, code: str) -> tuple[str, str | None] | None:
         .eq("code", code)
         .execute()
         .data
+        if has_initiatives_table(client)
+        else []
     ) or []
     if rows:
         return "initiative", rows[0].get("status")

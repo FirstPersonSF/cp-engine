@@ -47,6 +47,20 @@ INITIATIVE_STATUS_ACTIVE: dict[str, bool] = {
 }
 
 
+# One-to-one bridge from `mc_status` to the initiative vocabulary. On the
+# workstream schema (mc-2 mig 192, cp-engine #300) internal workstreams are
+# `projects` rows carrying `mc_status`; until the initiative-shaped renderers
+# retire (#301) their ProjectState still speaks this vocabulary, and the
+# reader maps on the way in so no `status == "Active"` check has to change.
+INITIATIVE_STATUS_FROM_MC: dict[str, str] = {
+    "Deal": "Active",
+    "Open": "Active",
+    "Holding": "On hold",
+    "Closed": "Done",
+    "Archived": "Archived",
+}
+
+
 def is_active_initiative_status(status: str | None) -> bool:
     """Return True if `status` is in the active subset for initiatives (Active only)."""
     return status is not None and INITIATIVE_STATUS_ACTIVE.get(status, False)

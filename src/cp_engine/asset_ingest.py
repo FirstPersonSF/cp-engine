@@ -44,6 +44,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 
+from cp_engine import mc2_db
 from cp_engine.mc2_db import Tables
 
 # Columns we read from MC-2's `projects` table. Explicit list (never `*`) per
@@ -273,8 +274,9 @@ def _resolve_initiative_folders(
         .eq("code", code)
         .execute()
         .data
-        or []
-    )
+        if mc2_db.has_initiatives_table(client)
+        else []
+    ) or []
     if not rows:
         if not quiet:
             print(
@@ -376,8 +378,9 @@ def resolve_project_folders_by_id(
             .eq("id", mc_project_id)
             .execute()
             .data
-            or []
-        )
+            if mc2_db.has_initiatives_table(client)
+            else []
+        ) or []
         if init_rows:
             return _initiative_row_to_folders(
                 _hydrate_initiative(client, init_rows[0])

@@ -235,6 +235,41 @@ class ProjectState:
     # ProjectStates.
     linked_repos: tuple[LinkedRepo, ...] = ()
 
+    # Workstream shape (mc-2 mig 190+, cp-engine #300). `parent_code` is the
+    # canonical code of the parent workstream, None at the top of a company.
+    # `has_agreement` is `deal_stage IS NOT NULL` — the commercial envelope
+    # exists — and is what the engine branches on; `label` is the DERIVED
+    # display word (account | program | job | initiative), never authored
+    # (design doc 2026-09-22, decision 3). Both default to the legacy
+    # reading so states built from the old three-stream schema are unchanged.
+    parent_code: str | None = None
+    has_agreement: bool = False
+    label: WorkstreamLabel | None = None
+
+
+# The derived display label. Evaluated in this order, first match wins:
+# account = no parent, under a client company; program = has children;
+# job = has an agreement; initiative = none of the above.
+WorkstreamLabel = Literal["account", "program", "job", "initiative"]
+
+
+def derive_label(
+    *, company_kind: str, parent_code: str | None, has_agreement: bool, has_children: bool
+) -> WorkstreamLabel:
+    """The display label for a workstream, from its shape alone.
+
+    Nothing in the engine branches on the result — it is rendering and
+    reference-style only. The engine branches on `has_agreement` and
+    `parent_code` directly.
+    """
+    if parent_code is None and company_kind == "client":
+        return "account"
+    if has_children:
+        return "program"
+    if has_agreement:
+        return "job"
+    return "initiative"
+
 
 @dataclass(frozen=True)
 class LinkedRepo:

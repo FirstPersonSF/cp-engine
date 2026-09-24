@@ -38,6 +38,7 @@ from cp_engine import mc2_db
 from cp_engine.config import TenantConfig
 from cp_engine.mc2_db import Tables
 from cp_engine.state import (
+    derive_label,
     LinkedRepo,
     PersonHours,
     PersonRollup,
@@ -79,6 +80,24 @@ class MC2Backend:
     def read_projects(self, config: TenantConfig) -> tuple[ProjectState, ...]:
         client = self._get_client(config)
 
+        # Workstream schema (mc-2 mig 190+, #300): ONE stream. Internal
+        # workstreams are `projects` rows; repos hang off `project_id`; no
+        # `initiatives` table, no standalone repos. Probed once per client so
+        # the same installed CLI works on both sides of the migration.
+        if mc2_db.workstream_schema(client):
+            rows = (
+                client.schema("public")
+                .table(Tables.PROJECTS)
+                .select(mc2_db.PROJECTS_WORKSTREAM_SYNC_COLUMNS)
+                .neq("mc_status", "Archived")
+                .order("updated_at", desc=True)
+                .execute()
+                .data
+                or []
+            )
+            return workstream_rows_to_states(rows)
+
+        # Legacy schema: three streams.
         # Stream A: engagement projects
         engagement_rows = (
             client.schema("public")
@@ -319,7 +338,86 @@ def _engagement_row_to_state(row: dict) -> ProjectState:
         budget=_parse_numeric(row.get("budget")),
         dropbox_folder_url=row.get("dropbox_folder_url") or None,
         linked_repos=_parse_linked_repos(row.get("repos")),
+        # The commercial envelope exists ⇔ the row is in a deal stage. Budget
+        # is NOT the signal: live jobs 5151/5168 carry none (plan D2).
+        has_agreement=row.get("deal_stage") is not None,
     )
+
+
+def _is_account_node(row: dict, has_children: bool) -> bool:
+    """The root workstream a client company gets in mc-2 mig 191.
+
+    No parent, no agreement, under a client company, and at least one child
+    (191 only creates one where a project exists). The child condition is
+    what keeps a real job with an unfilled `deal_stage` from being mistaken
+    for one. Account nodes are held back from the tree until #302 gives them
+    their working dir (the existing `1p/<company>/` account dir); until then
+    they would scaffold as a stray engagement under it.
+    """
+    company = row.get("companies") or {}
+    if not isinstance(company, dict):
+        company = {}
+    return (
+        row.get("parent_id") is None
+        and row.get("deal_stage") is None
+        and (company.get("kind") or "client") == "client"
+        and has_children
+    )
+
+
+def workstream_rows_to_states(rows: list[dict]) -> tuple[ProjectState, ...]:
+    """Workstream-schema `projects` rows → ProjectStates (#300).
+
+    One pass builds every state through `_engagement_row_to_state`, then:
+
+    * **parent_code / label** are filled from the row set (a parent outside
+      the non-Archived read leaves `parent_code=None`; that is a parent that
+      is itself archived, and the child renders at the top of its company).
+    * **internal workstreams** (no agreement, self company) keep the
+      initiative-shaped renderers alive until #301 retires them: `source`
+      is set to `"initiative"`, `status` is mapped to the initiative
+      vocabulary, and `is_internal` is cleared so the scaffolding loop gives
+      them a working dir — exactly the contract the old
+      `_initiative_row_to_state` documented. Their `code` is already the
+      new `<co>-<number>-<slug>` form, so the dir renames on the next sync
+      through the `MC-id:` stamp.
+    * **account nodes** are excluded (see `_is_account_node`).
+    """
+    from dataclasses import replace
+
+    from cp_engine.status import INITIATIVE_STATUS_FROM_MC
+
+    valid = [r for r in rows if _engagement_row_is_valid(r)]
+    by_id: dict[str, dict] = {r["id"]: r for r in valid if r.get("id")}
+    children_of: dict[str, int] = {}
+    for r in valid:
+        pid = r.get("parent_id")
+        if pid:
+            children_of[pid] = children_of.get(pid, 0) + 1
+
+    out: list[ProjectState] = []
+    for r in valid:
+        has_children = children_of.get(r.get("id"), 0) > 0
+        if _is_account_node(r, has_children):
+            continue
+        state = _engagement_row_to_state(r)
+        parent = by_id.get(r.get("parent_id") or "")
+        parent_code = _engagement_canonical_id(parent) if parent else None
+        label = derive_label(
+            company_kind=state.company_kind,
+            parent_code=parent_code,
+            has_agreement=state.has_agreement,
+            has_children=has_children,
+        )
+        changes: dict = {"parent_code": parent_code, "label": label}
+        if not state.has_agreement and state.company_kind != "client":
+            changes.update(
+                source="initiative",
+                status=INITIATIVE_STATUS_FROM_MC.get(state.status, state.status),
+                is_internal=False,
+            )
+        out.append(replace(state, **changes))
+    return tuple(out)
 
 
 def _parse_linked_repos(repos_payload: object) -> tuple[LinkedRepo, ...]:
