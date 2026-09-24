@@ -356,12 +356,12 @@ def _resolve_source_asset(client, owner_id: str, key: str):
     title matches several rows (recurring recordings share titles — the
     caller picks an id), or None when nothing matches.
     """
-    from cp_engine.mc2_db import Tables
+    from cp_engine.mc2_db import Tables, owner_filter
 
     query = (
         client.table(Tables.RAG_ASSETS)
         .select("id, title, source_type, status, created_at")
-        .or_(f"project_id.eq.{owner_id},initiative_id.eq.{owner_id}")
+        .or_(owner_filter(client, owner_id))
         .eq("status", "active")
     )
     import re as _re

@@ -22,7 +22,9 @@ from typing import Any
 
 BINDINGS_TABLE = "project_integrations"
 
-_SELECT = "project_id, initiative_id, service, external_ref, label"
+# Owner columns come from `mc2_db.owner_columns(client)` at call time: the
+# workstream schema (mc-2 mig 192) has no `initiative_id` on this table.
+_SELECT_TAIL = "service, external_ref, label"
 
 
 def fetch_binding_rows(
@@ -36,16 +38,21 @@ def fetch_binding_rows(
     One query per owner kind. Non-list responses (e.g. loose test mocks)
     collapse to "no rows" rather than crashing.
     """
+    from cp_engine.mc2_db import has_initiatives_table, owner_columns
+
+    if not project_ids and not initiative_ids:
+        return {}  # nothing to fetch — and no schema probe for nothing
+    select = f"{owner_columns(client)}, {_SELECT_TAIL}"
+    owners: list[tuple[str, list[str]]] = [("project_id", list(project_ids))]
+    if has_initiatives_table(client):
+        owners.append(("initiative_id", list(initiative_ids)))
     out: dict[str, list[dict]] = {}
-    for owner_col, ids in (
-        ("project_id", list(project_ids)),
-        ("initiative_id", list(initiative_ids)),
-    ):
+    for owner_col, ids in owners:
         if not ids:
             continue
         data = (
             client.table(BINDINGS_TABLE)
-            .select(_SELECT)
+            .select(select)
             .in_(owner_col, ids)
             .execute()
             .data

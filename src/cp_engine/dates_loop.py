@@ -32,11 +32,15 @@ from cp_engine.mc2_db import Tables
 
 log = logging.getLogger(__name__)
 
-_COMMITMENT_COLUMNS = (
-    "id, description, owner_email, owner_name, direction, due_date, "
-    "date_status, project_id, initiative_id, status, posted_count, "
-    "source_kind, created_at"
-)
+def _commitment_columns(client) -> str:
+    """Owner columns are schema-dependent (see `mc2_db.owner_columns`)."""
+    from cp_engine.mc2_db import owner_columns
+
+    return (
+        "id, description, owner_email, owner_name, direction, due_date, "
+        f"date_status, {owner_columns(client)}, status, posted_count, "
+        "source_kind, created_at"
+    )
 
 # Posts with an unchanged date needed before proposed → agreed. The mc-2
 # PATCH endpoint resets posted_count on any due_date change, so
@@ -317,7 +321,7 @@ def _render_partners_rollup(
 def _fetch_open_commitments(client: Any) -> list[dict]:
     resp = (
         client.table(Tables.COMMITMENTS)
-        .select(_COMMITMENT_COLUMNS)
+        .select(_commitment_columns(client))
         .eq("status", "open")
         .execute()
     )

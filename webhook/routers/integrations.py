@@ -259,7 +259,7 @@ def _lookup_proposal_by_clickup_task_id(task_id: str) -> tuple[str, str] | None:
     try:
         resp = (
             client.table(Tables.CLICKUP_TASK_PROPOSALS)
-            .select("cp_ask_hash, project_id, initiative_id")
+            .select(f"cp_ask_hash, {mc2_db.owner_columns(client)}")
             .eq("clickup_task_id", task_id)
             .limit(1)
             .execute()

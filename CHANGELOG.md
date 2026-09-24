@@ -4,6 +4,26 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.123.1 — 2026-09-24
+
+**Owner-column selects follow the schema too.** Patch. The first `cxp sync`
+after mc-2 migrations 190–194 renamed every internal workstream dir
+correctly and then skipped every project's sources manifest: the bindings
+read (`mc2_bindings.fetch_binding_rows`) still SELECTed
+`project_integrations.initiative_id`, and PostgREST answers a missing
+column with 42703. v0.123.0 gated every read *of the `initiatives` table*
+and missed the reads that merely *name the column*.
+
+- **`mc2_db.owner_columns(client)`** / **`owner_filter(client, id)`** —
+  `"project_id, initiative_id"` on the legacy schema, `"project_id"` on the
+  workstream schema. Used by the bindings read, the sources-store resolver
+  (`project_sources._resolve_source_asset`), the asset dedupe scan, the
+  commitments sweep, the dates loop, and the webhook's ClickUp task-closed
+  lookup. The hosted server's six `for column in (project_id, initiative_id)`
+  loops read `_owner_columns(client)` (local probe, as before).
+- `fetch_binding_rows` returns early on empty input instead of probing.
+- Vendor tree re-synced (sweep verbatim; `mc2_db` shim carries the helpers).
+
 ## v0.123.0 — 2026-09-24
 
 **The reader handles both sides of the workstream migration.** Minor: no

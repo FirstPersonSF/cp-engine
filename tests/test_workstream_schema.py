@@ -46,6 +46,10 @@ class _Query:
         self._filters.append(("is", k, v))
         return self
 
+    def in_(self, k, vals):
+        self._filters.append(("in", k, list(vals)))
+        return self
+
     def order(self, *a, **kw):
         return self
 
@@ -64,6 +68,8 @@ class _Query:
                 rows = [r for r in rows if r.get(k) != v]
             elif op == "is" and v == "null":
                 rows = [r for r in rows if r.get(k) is None]
+            elif op == "in":
+                rows = [r for r in rows if r.get(k) in v]
         return type("R", (), {"data": list(rows)})()
 
 
@@ -388,3 +394,34 @@ def test_resolve_project_id_uuid_branch_skips_initiatives_on_workstream_schema()
     c = _Client({"projects": [_ws(id=uid)]})
     assert mc2_db._resolve_project_id(c, uid) == uid
     assert "initiatives" not in [t for t, _ in c.calls]
+
+
+# ------------------------------------------------------------------ owner columns (v0.123.1)
+
+
+def test_owner_columns_follow_the_schema():
+    legacy = _Client({"projects": [_legacy_project()]})
+    ws = _Client({"projects": [_ws()]})
+    assert mc2_db.owner_columns(legacy) == "project_id, initiative_id"
+    assert mc2_db.owner_columns(ws) == "project_id"
+    assert mc2_db.owner_filter(ws, "x") == "project_id.eq.x"
+    assert "initiative_id.eq.x" in mc2_db.owner_filter(legacy, "x")
+
+
+def test_binding_rows_never_name_initiative_id_on_workstream_schema():
+    """The first post-migration sync skipped every sources manifest: the
+    bindings read selected `initiative_id` and PostgREST answered 42703."""
+    from cp_engine.mc2_bindings import fetch_binding_rows
+
+    c = _Client(
+        {
+            "projects": [_ws()],
+            "project_integrations": [
+                {"project_id": "p-5136", "service": "slack", "external_ref": {"id": "C1"}, "label": ""}
+            ],
+        }
+    )
+    rows = fetch_binding_rows(c, project_ids=["p-5136"], initiative_ids=["i-mc"])
+    selects = [cols for t, cols in c.calls if t == "project_integrations"]
+    assert selects and all("initiative_id" not in s for s in selects)
+    assert rows == {"p-5136": [{"project_id": "p-5136", "service": "slack", "external_ref": {"id": "C1"}, "label": ""}]}

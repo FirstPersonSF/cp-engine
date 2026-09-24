@@ -276,3 +276,24 @@ def has_initiatives_table(client) -> bool:
 def _reset_workstream_probe() -> None:
     """Forget cached probe answers (tests, and long-lived processes across a migration)."""
     _WORKSTREAM_PROBE.clear()
+
+
+def owner_columns(client) -> str:
+    """The owner column(s) an owner-scoped table carries, as a select fragment.
+
+    Legacy schema: ``"project_id, initiative_id"`` (mig 081's two-column
+    owner under a ``num_nonnulls = 1`` CHECK). Workstream schema (mc-2 mig
+    192): ``"project_id"`` — selecting a column that no longer exists is a
+    42703 that PostgREST turns into an empty read, which is how every sources
+    manifest got skipped on the first post-migration sync (v0.123.1). Use
+    this in a column list instead of naming `initiative_id` directly.
+    """
+    return "project_id" if workstream_schema(client) else "project_id, initiative_id"
+
+
+def owner_filter(client, owner_id: str) -> str:
+    """PostgREST `or=` fragment matching either owner column on the legacy
+    schema, or a plain `project_id.eq.` on the workstream schema."""
+    if workstream_schema(client):
+        return f"project_id.eq.{owner_id}"
+    return f"project_id.eq.{owner_id},initiative_id.eq.{owner_id}"

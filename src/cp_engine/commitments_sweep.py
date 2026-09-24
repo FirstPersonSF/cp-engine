@@ -23,10 +23,12 @@ from cp_engine.dates_loop import _EXPIRE_AFTER_DAYS, _ttl_bucket
 from cp_engine import mc2_db
 from cp_engine.mc2_db import Tables
 
-_SWEEP_COLUMNS = (
-    "id, description, owner_email, owner_name, due_date, date_status, "
-    "status, source_kind, project_id, initiative_id, created_at"
-)
+def _sweep_columns(client: Any) -> str:
+    """Owner columns are schema-dependent (see `mc2_db.owner_columns`)."""
+    return (
+        "id, description, owner_email, owner_name, due_date, date_status, "
+        f"status, source_kind, {mc2_db.owner_columns(client)}, created_at"
+    )
 
 # --stale: undated AND at least this old — the "is this still real?" bucket.
 STALE_DAYS = 14
@@ -106,7 +108,7 @@ def sweep(
 
     query = (
         client.table(Tables.COMMITMENTS)
-        .select(_SWEEP_COLUMNS)
+        .select(_sweep_columns(client))
         .eq("status", "open")
     )
     if code is not None:

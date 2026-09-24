@@ -422,6 +422,15 @@ def _has_initiatives_table(client) -> bool:
     return not present
 
 
+def _owner_columns(client) -> tuple[str, ...]:
+    """Owner columns an owner-scoped table carries: both on the legacy
+    schema, `project_id` alone once mc-2 mig 192 has folded `initiative_id`.
+    Mirrors `cp_engine.mc2_db.owner_columns`."""
+    if _has_initiatives_table(client):
+        return ("project_id", "initiative_id")
+    return ("project_id",)
+
+
 def _looks_like_uuid(value: str) -> bool:
     """True when `value` parses as a UUID, so it can be used as an id filter.
 
@@ -1370,7 +1379,7 @@ def list_commitments(project_code: str, status: str = "open") -> dict[str, Any]:
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
     errors: list[str] = []
-    for column in ("project_id", "initiative_id"):
+    for column in _owner_columns(client):
         try:
             q = (
                 client.table("commitments")
@@ -1626,7 +1635,7 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
 
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for column in ("project_id", "initiative_id"):
+    for column in _owner_columns(client):
         try:
             for row in (
                 client.table("rag_assets")
@@ -1689,7 +1698,7 @@ def _resolve_source_asset(
         return None
     hits: list[dict] = []
     seen: set[str] = set()
-    for column in ("project_id", "initiative_id"):
+    for column in _owner_columns(client):
         try:
             q = (
                 client.table("rag_assets")
@@ -2020,7 +2029,7 @@ def list_project_meetings(project_code: str) -> dict[str, Any]:
 
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for column in ("project_id", "initiative_id"):
+    for column in _owner_columns(client):
         try:
             for row in (
                 client.table("fathom_meetings")
@@ -2678,7 +2687,7 @@ def _resolve_active_asset(
 
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    for column in ("project_id", "initiative_id"):
+    for column in _owner_columns(client):
         try:
             for row in (
                 client.table("rag_assets")
@@ -8344,7 +8353,7 @@ def wrap_bundle(project_code: str, tail_days: int = 14) -> dict[str, Any]:
     meeting_rows: list[dict[str, Any]] = []
     seen: set[Any] = set()
     meeting_failures: list[str] = []
-    for column in ("project_id", "initiative_id"):
+    for column in _owner_columns(client):
         try:
             for r in (
                 client.table("fathom_meetings")
@@ -8436,7 +8445,7 @@ def wrap_bundle(project_code: str, tail_days: int = 14) -> dict[str, Any]:
     commit_rows: list[dict[str, Any]] = []
     commit_seen: set[Any] = set()
     commit_failures: list[str] = []
-    for column in ("project_id", "initiative_id"):
+    for column in _owner_columns(client):
         try:
             for r in (
                 client.table("commitments")

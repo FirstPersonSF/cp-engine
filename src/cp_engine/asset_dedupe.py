@@ -30,9 +30,11 @@ from cp_engine.mc2_db import Tables
 
 # Explicit columns, never `*` — rag_assets.meta and spine_substance.body are
 # the classic megabyte columns and neither is needed here.
-_ASSET_COLUMNS = (
-    "id, title, project_id, initiative_id, file_hash, created_at, prev_asset_id"
-)
+def _asset_columns(client) -> str:
+    """Owner columns are schema-dependent (see `mc2_db.owner_columns`)."""
+    from cp_engine.mc2_db import owner_columns
+
+    return f"id, title, {owner_columns(client)}, file_hash, created_at, prev_asset_id"
 _SPINE_SOURCES_COLUMNS = "id, sources"
 
 _PAGE_SIZE = 1000
@@ -78,7 +80,7 @@ def fetch_active_assets(client) -> list[dict]:
     return _paged(
         lambda: (
             client.table(Tables.RAG_ASSETS)
-            .select(_ASSET_COLUMNS)
+            .select(_asset_columns(client))
             .eq("status", "active")
             .order("created_at", desc=True)
         )

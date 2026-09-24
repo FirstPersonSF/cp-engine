@@ -54,7 +54,10 @@ class _FakeQuery:
         self._recorder = recorder
 
     def select(self, columns):
-        self._recorder["select"] = columns
+        # The workstream-schema probe (#300) selects `id, parent_id` once per
+        # client; it is not the read these tests assert on.
+        if columns != "id, parent_id":
+            self._recorder["select"] = columns
         return self
 
     def eq(self, col, val):
