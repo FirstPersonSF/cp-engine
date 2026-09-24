@@ -29,6 +29,7 @@ from cp_engine.mc2_db import (
     Tables,
     _resolve_project_id,
 )
+from cp_engine.promote_uphill import LEVEL_RULE
 from mcp.server import MCPServer
 
 # mcp 2.x renamed FastMCP -> MCPServer (2026-07-28 spec release). The decorator
@@ -1244,6 +1245,70 @@ def list_commitments(project_code: str, status: str = "open") -> list[dict]:
 # caller's identity and lands in the audit log. The `cp_engine.commitments`
 # module stays: `close_commitment`/`find_open_commitment` remain the shared
 # implementation, and close_out.py's checklist still points humans at the verb.
+
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Level (#304) — every capture names its level; promote_uphill
+# ──────────────────────────────────────────────────────────────────────
+#
+# This server's write surface moved to the hosted server (#143); what stays
+# local is the one verb that needs the CHECKOUT — a decision copy is a
+# sprint-file bullet, and the hosted server cannot write a file. The
+# commitment path works here too, for a Claude Code session that has cxp.
+
+
+def _level_for(project_code: str) -> dict:
+    """`{code, label, parent, indexed}` from the tenant's `.cp-engine/paths.json`."""
+    from cp_engine.promote_uphill import level_for
+
+    try:
+        return level_for(_tenant_root(), project_code)
+    except Exception as exc:  # noqa: BLE001 — an echo must never fail a call
+        return {"code": project_code, "label": None, "parent": None,
+                "indexed": False, "note": f"level lookup failed: {exc}"}
+
+
+def promote_uphill(
+    project_code: str, item_kind: str, item_ref: str, note: str | None = None
+) -> dict:
+    """Copy a decision or commitment from `project_code` to its PARENT workstream.
+
+    <LEVEL_RULE>
+
+    This is the explicit uphill move. `item_kind` is `decision` (a sprint-file
+    bullet, named by its `cp:hash` or exact text — copied into the parent's
+    current sprint file under `### Decisions`) or `commitment` (by id — a copy
+    is inserted on the parent with `source_kind='promoted'`; the original
+    stays). Every promotion leaves a step on the parent's `Promoted uphill`
+    spine element naming the child, so the trail is inspectable. Idempotent:
+    the same item again returns `already: true` and writes nothing. A
+    top-level workstream has no parent and the call says "no parent".
+
+    Returns the module result with `from`/`to`/`level` levels, `cp_hash`,
+    `promoted`, `already`, `step`, and for a decision `sprint_path`.
+    """
+    from cp_engine import mc2_db
+    from cp_engine.config import load as load_config
+    from cp_engine.promote_uphill import promote_uphill as _promote
+
+    try:
+        config = load_config(_tenant_root())
+        client = mc2_db.get_client(config, required=(item_kind == "commitment"))
+        return _promote(
+            client, tenant_root=config.root, code=project_code,
+            item_kind=item_kind, item_ref=item_ref, note=note,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"promote_uphill failed for {project_code!r}: {exc}",
+                "level": _level_for(project_code)}
+
+
+# A docstring is a LITERAL, so the shared rule is spliced in before the tool
+# registers (registration reads `__doc__` once). One spelling of the rule
+# across the CLI, this server and the hosted server's copy.
+promote_uphill.__doc__ = (promote_uphill.__doc__ or "").replace("<LEVEL_RULE>", LEVEL_RULE)
+promote_uphill = _tool(promote_uphill)
 
 
 

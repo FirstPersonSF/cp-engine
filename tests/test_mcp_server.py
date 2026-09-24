@@ -225,9 +225,17 @@ def test_stdio_surface_is_local_io_plus_reads():
     portable curation/copy verbs (archive_project_source,
     rename_project_source, pull_element_from_project) moved to hosted.
     stdio is now the LOCAL-I/O + READS surface: things that need this
-    machine's disk or credentials the hosted env deliberately lacks."""
+    machine's disk or credentials the hosted env deliberately lacks.
+
+    Then +1 (#304): promote_uphill — the explicit move of a decision or
+    commitment to the parent workstream. A decision copy is a sprint-file
+    bullet, i.e. a write to THIS machine's checkout, which is exactly the
+    local-I/O reason a verb stays here; the hosted twin serves commitments
+    and hands decisions back to `cxp promote-uphill`."""
     names = {t.name for t in srv.mcp._tool_manager.list_tools()}
     assert names == {
+        # +1 (#304): the one write that needs the checkout (see docstring).
+        "promote_uphill",
         # +1 (RFP build spec §7 v1): preflight — reads the tenant tree's
         # cp.md and sprint files off THIS machine's disk, so it belongs on
         # the local-I/O surface rather than hosted.
