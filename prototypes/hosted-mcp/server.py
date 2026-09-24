@@ -8928,6 +8928,90 @@ def call_mc2_capture_session(
     return {"ok": False, "status": resp.status_code, "reason": detail}
 
 
+def call_mc2_promote_uphill(
+    project_code: str, item_ref: str, note: str | None, week: str | None
+) -> dict[str, Any]:
+    """POST a DECISION promotion to mc-2 under the CALLER'S OWN JWT. Never raises.
+
+    Same hop and the same reasoning as `call_mc2_capture_session`: a decision
+    is a sprint-file bullet, this server holds no file write, and the one
+    service that clones the tenant with a write key is cp-engine-webhook —
+    reached through mc-2, which verifies WHO is asking and signs the hop.
+    mc-2 → webhook `/api/promote-uphill` runs the CLI's own
+    `promote_decision` against a fresh clone, commits, pushes, and leaves the
+    parent's spine step through the DB path.
+
+    **The actor is NOT sent.** mc-2 derives it from the verified token.
+    """
+    if not MC2_API_BASE:
+        return {
+            "ok": False,
+            "reason": "decision promotion unavailable: MC2_API_BASE not configured",
+            "degraded": True,
+        }
+
+    payload: dict[str, Any] = {
+        "project_code": project_code,
+        "item_kind": "decision",
+        "item_ref": item_ref,
+    }
+    if note and note.strip():
+        payload["note"] = note.strip()
+    if week:
+        payload["week"] = week
+
+    try:
+        token = caller_jwt()
+    except RuntimeError as exc:
+        return {"ok": False, "reason": f"no authenticated caller: {exc}"}
+
+    try:
+        resp = httpx.post(
+            f"{MC2_API_BASE}/api/promote-uphill",
+            headers={"Authorization": f"Bearer {token}"},
+            json=payload,
+            timeout=MC2_TIMEOUT_SECONDS,
+        )
+    except httpx.TimeoutException:
+        return {
+            "ok": False,
+            "reason": (
+                f"mc-2 promote-uphill timed out after {MC2_TIMEOUT_SECONDS:.0f}s. "
+                "The copy may still have landed — re-sending is safe (a second "
+                "write of the same decision is a no-op)."
+            ),
+            "timeout": True,
+        }
+    except httpx.HTTPError as exc:
+        return {"ok": False, "reason": f"could not reach mc-2: {type(exc).__name__}: {exc}"}
+
+    try:
+        body: Any = resp.json()
+    except ValueError:
+        body = resp.text[:400]
+
+    if 200 <= resp.status_code < 300:
+        return {"ok": True, "status": resp.status_code, "backend": body}
+
+    detail = body.get("detail") if isinstance(body, dict) else str(body)
+    detail = str(detail)[:400]
+    if resp.status_code in (401, 403):
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "reason": f"mc-2 refused the caller's token: {detail}",
+            "unauthorized": True,
+        }
+    if resp.status_code in (400, 404):
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "reason": f"promotion refused for {project_code!r}: {detail}",
+            "refused": True,
+        }
+    return {"ok": False, "status": resp.status_code, "reason": detail}
+
+
 def call_mc2_capture_project_state(
     project_code: str, fields: dict[str, Any], updates_append: str = ""
 ) -> dict[str, Any]:
@@ -9455,7 +9539,7 @@ def promote_uphill(
     item_ref: str,
     note: str | None = None,
 ) -> dict[str, Any]:
-    """Copy a commitment from `project_code` to its PARENT workstream, leaving a step.
+    """Copy a commitment or decision from `project_code` to its PARENT workstream, leaving a step.
 
     THE EXPLICIT MOVE UP THE TREE (plan §3.6). A capture lands on the
     workstream it was named against, and nothing infers from its content
@@ -9472,34 +9556,50 @@ def promote_uphill(
     note — so the parent's trail says where it came from. Idempotent: the
     same commitment again returns `already: true` and writes nothing.
 
-    `item_kind='decision'` is NOT served here: a decision is a sprint-file
-    bullet and this server holds no file write (the mc-2 → webhook route it
-    delegates through carries session and Exec Summary captures only). The
-    call returns `unsupported_here` and the CLI form to run instead:
-    `cxp promote-uphill <code> --decision <cp:hash or exact text>`.
+    `item_kind='decision'`, `item_ref=<cp:hash or the bullet's exact text>`:
+    a decision is a sprint-file bullet and this server holds no file write,
+    so the call is carried to mc-2 under YOUR token and on to
+    cp-engine-webhook, which runs the CLI's own `promote_decision` on a
+    fresh clone — the bullet is copied into the parent's current sprint file
+    as `<text> (promoted from <code>)` with the standard `cp:hash` trailer,
+    committed (`[promote-uphill] <code> → <parent>: …`), pushed, and the same
+    step lands on the parent's trail. The result carries `sprint_path` and
+    `commit`. Idempotent: an already-promoted decision returns `already: true`
+    and no commit. Unavailable (`degraded`) when MC2_API_BASE is unset.
 
     Args:
         project_code: the CHILD workstream the item is on today.
         item_kind: commitment | decision.
-        item_ref: the commitment id (or, for a decision, its cp:hash / text).
+        item_ref: the commitment id, or the decision's cp:hash / exact text.
         note: why it belongs one level up — kept on the step.
     """
     kind = (item_kind or "").strip().lower()
     if kind not in ("decision", "commitment"):
         return {"error": "item_kind must be one of ['decision', 'commitment']"}
     if kind == "decision":
-        return {
-            "ok": False,
-            "unsupported_here": True,
-            "item_kind": "decision",
-            "reason": (
-                "a decision is a sprint-file bullet and this server cannot write "
-                "files — run `cxp promote-uphill "
-                f"{project_code} --decision {item_ref!r}` from a checkout (it "
-                "copies the bullet into the parent's current sprint file and "
-                "leaves the same step)"
-            ),
-        }
+        ref = (item_ref or "").strip()
+        if not ref:
+            return {"error": "item_ref is required: the decision's cp:hash or exact text"}
+        # The file write happens upstream (mc-2 → webhook, the caller's own
+        # token); the level echo is the CHILD's until the backend says where
+        # the copy landed, and the backend's own `level` (the parent) wins.
+        out = call_mc2_promote_uphill(project_code, ref, note, None)
+        if not out.get("ok"):
+            return {**out, "item_kind": "decision", "item_ref": ref,
+                    "level": _level_for(project_code)}
+        backend = out.get("backend")
+        if not isinstance(backend, dict):
+            return {
+                "ok": False,
+                "item_kind": "decision",
+                "item_ref": ref,
+                "reason": "mc-2 returned a non-object response for the promotion",
+                "level": _level_for(project_code),
+            }
+        result = {**backend, "item_kind": "decision", "item_ref": backend.get("item_ref") or ref}
+        if not isinstance(result.get("level"), dict):
+            result["level"] = _level_for(backend.get("parent_code") or project_code)
+        return result
 
     ref = (item_ref or "").strip()
     if not ref:

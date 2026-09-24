@@ -4,6 +4,39 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.124.1 — 2026-09-24
+
+**Hosted `promote_uphill` carries decisions through mc-2 → webhook.** Patch.
+Closes the #304 caveat: `promote_uphill(..., item_kind="decision")` on
+`cp-hosted` no longer answers `unsupported_here`. A decision is a
+sprint-file bullet and the hosted server holds no file write, so the call
+now takes the hop the two capture verbs already take — hosted → mc-2
+(`POST /api/promote-uphill`, the caller's own JWT, actor derived from the
+verified token) → cp-engine-webhook (`POST /api/promote-uphill`,
+HMAC-signed), where a sparse clone (scope dirs + `.cp-engine` + `sprints/`)
+runs the CLI's own `cp_engine.promote_uphill.promote_decision`: the bullet
+is copied into the parent's current sprint file with the standard `cp:hash`
+trailer, committed as `[promote-uphill] <code> → <parent>: <first 60 chars>
+(<actor>)`, and pushed; the parent's `Promoted uphill` spine step goes
+through the same DB path with the webhook's service client (no client → the
+bullet still lands and `step` says the trail entry was not written, the
+CLI's contract). The hosted result is the backend's, merged with the
+`level` echo (the parent, once landed): `{ok, promoted, already,
+parent_code, sprint_path, commit, cp_hash, source, step, level}`. Already
+promoted → 200 / `already: true` / `commit: null`, matching the CLI's
+"Already promoted" exit 0; no parent, unindexed code or unknown decision →
+400; push failure → 502 with the file written and a safe retry. Unset
+`MC2_API_BASE` → `degraded`, never a pretend success. Commitments are
+unchanged (served on the hosted server directly). New:
+`webhook/routers/promote_uphill.py`, `call_mc2_promote_uphill` (hosted),
+mc-2 `backend/src/routers/promote_uphill.py`. Tests:
+`tests/test_webhook_promote_uphill.py` (real git, tmp tenant with
+`paths.json` + sprint files, already/no-parent/push-failure) and the
+decision half of `prototypes/hosted-mcp/test_promote_uphill.py` (fake
+httpx). Webhook needs `SUPABASE_URL` / `SUPABASE_SERVICE_KEY` for the step;
+mc-2 needs `CP_ENGINE_WEBHOOK_URL` / `WEBHOOK_HMAC_SECRET` (already
+required by the capture routes).
+
 ## v0.124.0 — 2026-09-24
 
 **Company > workstream: one entry kind, one tree, one code parser.** Minor.
@@ -360,13 +393,16 @@ an explicit verb, and the verb leaves a trail.
   item again returns `already: true` and writes no row, no bullet, no
   step; the decision check reads every parent sprint file, not just this
   week's. One level per call — job → program → account is two calls.
-- **The hosted decision path is refused, not faked.** The hosted server
-  has no file write, and the mc-2 → cp-engine-webhook route it delegates
-  through (`/api/sessions/capture`, `/api/project-state/capture`) carries
-  session and Exec Summary captures only — no sprint-file bullet. So
-  `promote_uphill(..., item_kind="decision")` on `cp-hosted` returns
-  `unsupported_here` with the exact `cxp promote-uphill` command to run;
-  commitments are fully served there.
+- **The hosted decision path was refused, not faked — until v0.124.1.**
+  At #304 the hosted server had no file write, and the mc-2 →
+  cp-engine-webhook route it delegates through (`/api/sessions/capture`,
+  `/api/project-state/capture`) carried session and Exec Summary captures
+  only — no sprint-file bullet — so `promote_uphill(..., item_kind=
+  "decision")` on `cp-hosted` returned `unsupported_here` with the exact
+  `cxp promote-uphill` command to run. **Superseded by v0.124.1 (above):**
+  the same hop now carries the decision to a webhook route that runs
+  `promote_decision` on a clone. Commitments were fully served there
+  throughout.
 - Tests: `tests/test_promote_uphill.py` (level lookup, commitment and
   decision paths against a fake client and a tmp tenant, CLI smoke, stdio
   verb, hosted parity for the hash / est_item_id / rule text) and

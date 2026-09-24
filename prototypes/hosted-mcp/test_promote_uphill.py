@@ -13,8 +13,12 @@ Plan §3.6. Two contracts, each with the failure it guards against:
 2. **`promote_uphill` is the only way up.** It copies a commitment to the
    PARENT from the index (never a guessed code), leaves the original,
    leaves a step on the parent's trail, and does nothing the second time.
-   The decision path is refused HERE with the CLI form to run — this server
-   cannot write a sprint file, and saying so beats pretending.
+   The decision path is CARRIED, not served: this server cannot write a
+   sprint file, so it POSTs to mc-2 under the caller's own token and mc-2
+   hands the signed hop to cp-engine-webhook, which runs the CLI's own
+   `promote_decision` on a clone (v0.124.1). The tests below fake httpx and
+   assert the payload, the merged result, and the degraded answer when
+   MC2_API_BASE is unset — never a pretend success.
 
 The tools are plain callables (`MCPServer.tool()` returns the function), so
 these call them directly with the identity, client and tree monkeypatched.
@@ -395,12 +399,143 @@ def test_unknown_item_kind_is_an_error(server, wired):
     assert "item_kind" in out["error"]
 
 
-def test_decision_path_names_the_cli_instead_of_pretending(server, wired):
-    """This server holds no file write. The honest answer is the command
-    that does — with the caller's arguments already in it."""
-    out = server.promote_uphill(CHILD, "decision", "abcd1234")
-    assert out["ok"] is False and out["unsupported_here"] is True
-    assert "cxp promote-uphill" in out["reason"]
-    assert CHILD in out["reason"] and "abcd1234" in out["reason"]
-    assert out["level"]["code"] == CHILD, "the echo still tells the caller where they are"
+class _FakeResponse:
+    def __init__(self, status_code, body):
+        self.status_code = status_code
+        self._body = body
+        self.text = json.dumps(body) if not isinstance(body, str) else body
+
+    def json(self):
+        if isinstance(self._body, str):
+            raise ValueError("not json")
+        return self._body
+
+
+def _fake_httpx(server, monkeypatch, status=200, body=None, *, raise_exc=None):
+    """Capture the POST the decision path makes and answer it."""
+    box = {}
+
+    def _post(url, headers=None, json=None, timeout=None):
+        box.update(url=url, headers=headers, payload=json, timeout=timeout)
+        if raise_exc is not None:
+            raise raise_exc
+        return _FakeResponse(status, body)
+
+    monkeypatch.setattr(server.httpx, "post", _post)
+    monkeypatch.setattr(server, "caller_jwt", lambda: "jwt-of-the-caller")
+    return box
+
+
+BACKEND_OK = {
+    "ok": True, "promoted": True, "already": False, "item_kind": "decision",
+    "item_ref": "abcd1234", "parent_code": PROGRAM,
+    "from": {"code": CHILD, "label": "job", "parent": PROGRAM, "indexed": True},
+    "to": {"code": PROGRAM, "label": "program", "parent": ACCOUNT, "indexed": True},
+    "level": {"code": PROGRAM, "label": "program", "parent": ACCOUNT, "indexed": True},
+    "cp_hash": "0badf00d", "sprint_path": f"sprints/2026-W39/{PROGRAM}.md",
+    "source": f"sprints/2026-W39/{CHILD}.md", "commit": "deadbeefcafe",
+    "step": {"est_item_id": "_authored/promoted-uphill", "position": 1},
+}
+
+
+def test_decision_path_is_carried_to_mc2_under_the_callers_token(server, wired, monkeypatch):
+    """The file write lives on the webhook; this server's job is to hand the
+    call to mc-2 with the caller's own JWT and pass the landing back."""
+    box = _fake_httpx(server, monkeypatch, 200, BACKEND_OK)
+    out = server.promote_uphill(CHILD, "decision", "abcd1234", note="account-wide")
+    assert box["url"].endswith("/api/promote-uphill")
+    assert box["headers"] == {"Authorization": "Bearer jwt-of-the-caller"}
+    assert box["payload"] == {
+        "project_code": CHILD, "item_kind": "decision",
+        "item_ref": "abcd1234", "note": "account-wide",
+    }
+    assert "actor" not in box["payload"] and "user" not in box["payload"], (
+        "identity comes from the token, never from this hop"
+    )
+    assert out["ok"] is True and out["promoted"] is True and out["already"] is False
+    assert out["item_kind"] == "decision"
+    assert out["sprint_path"] == BACKEND_OK["sprint_path"]
+    assert out["commit"] == "deadbeefcafe"
+    assert out["level"]["code"] == PROGRAM, "the echo names where the copy landed"
+    assert "unsupported_here" not in out
+    # nothing is written locally — the DB path for the step runs on the webhook
     assert not wired.rows("spine_steps") and len(wired.rows("commitments")) == 1
+
+
+def test_decision_already_promoted_passes_through(server, wired, monkeypatch):
+    body = {**BACKEND_OK, "promoted": False, "already": True, "commit": None}
+    _fake_httpx(server, monkeypatch, 200, body)
+    out = server.promote_uphill(CHILD, "decision", "abcd1234")
+    assert out["ok"] and out["already"] is True and out["promoted"] is False
+    assert out["commit"] is None and out["level"]["code"] == PROGRAM
+
+
+def test_decision_refusal_from_mc2_is_reported_not_faked(server, wired, monkeypatch):
+    _fake_httpx(server, monkeypatch, 400, {"detail": "no parent: google is a top-level workstream"})
+    out = server.promote_uphill(ACCOUNT, "decision", "abcd1234")
+    assert out["ok"] is False and out["refused"] is True
+    assert "no parent" in out["reason"]
+    assert out["level"]["code"] == ACCOUNT, "the echo still tells the caller where they are"
+    assert "promoted" not in out
+
+
+def test_decision_unauthorized_names_the_token(server, wired, monkeypatch):
+    _fake_httpx(server, monkeypatch, 401, {"detail": "expired"})
+    out = server.promote_uphill(CHILD, "decision", "abcd1234")
+    assert out["ok"] is False and out["unauthorized"] is True
+
+
+def test_decision_timeout_says_a_retry_is_safe(server, wired, monkeypatch):
+    import httpx
+
+    _fake_httpx(server, monkeypatch, raise_exc=httpx.TimeoutException("slow"))
+    out = server.promote_uphill(CHILD, "decision", "abcd1234")
+    assert out["ok"] is False and out["timeout"] is True
+    assert "no-op" in out["reason"]
+
+
+def test_decision_non_json_success_is_not_a_success(server, wired, monkeypatch):
+    _fake_httpx(server, monkeypatch, 200, "<html>gateway</html>")
+    out = server.promote_uphill(CHILD, "decision", "abcd1234")
+    assert out["ok"] is False and "non-object" in out["reason"]
+
+
+def test_decision_is_degraded_when_mc2_is_unconfigured(server, wired, monkeypatch):
+    """No MC2_API_BASE → say so. Never a pretend success, never a raise."""
+    monkeypatch.setattr(server, "MC2_API_BASE", "")
+    called = {}
+    monkeypatch.setattr(server.httpx, "post", lambda *a, **k: called.setdefault("hit", True))
+    out = server.promote_uphill(CHILD, "decision", "abcd1234")
+    assert out["ok"] is False and out["degraded"] is True
+    assert "MC2_API_BASE" in out["reason"]
+    assert "hit" not in called
+    assert out["level"]["code"] == CHILD
+
+
+def test_decision_needs_a_ref(server, wired, monkeypatch):
+    called = {}
+    monkeypatch.setattr(server.httpx, "post", lambda *a, **k: called.setdefault("hit", True))
+    out = server.promote_uphill(CHILD, "decision", "   ")
+    assert "item_ref is required" in out["error"] and "hit" not in called
+
+
+def test_call_helper_never_raises_on_a_connection_error(server, monkeypatch):
+    import httpx
+
+    _fake_httpx(server, monkeypatch, raise_exc=httpx.ConnectError("refused"))
+    out = server.call_mc2_promote_uphill(CHILD, "abcd1234", None, None)
+    assert out["ok"] is False and "could not reach mc-2" in out["reason"]
+
+
+def test_call_helper_forwards_the_week(server, monkeypatch):
+    box = _fake_httpx(server, monkeypatch, 200, BACKEND_OK)
+    server.call_mc2_promote_uphill(CHILD, "abcd1234", "  ", "2026-W38")
+    assert box["payload"]["week"] == "2026-W38"
+    assert "note" not in box["payload"], "a blank note is not sent"
+
+
+def test_the_description_no_longer_points_at_the_cli(server):
+    tool = server.mcp_server._tool_manager.get_tool("promote_uphill")
+    assert "unsupported_here" not in tool.description
+    assert "mc-2" in tool.description and "sprint file" in tool.description
+    assert "never inferred from content" in tool.description

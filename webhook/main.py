@@ -21,6 +21,7 @@ Layout (arch-phase-4, cp-engine #32 — split from a single 4k-LOC file):
   routers/integrations.py — POST /api/resolve-tags, /clickup-task-closed
   routers/sessions.py— POST /api/sessions/capture
   routers/project_state.py— POST /api/project-state/capture
+  routers/promote_uphill.py— POST /api/promote-uphill
   routers/slack.py   — POST /slack-action
 
 Endpoints:
@@ -179,6 +180,7 @@ from routers import integrations as _integrations_router  # noqa: E402
 from routers import meetings as _meetings_router  # noqa: E402
 from routers import sessions as _sessions_router
 from routers import project_state as _project_state_router  # noqa: E402
+from routers import promote_uphill as _promote_uphill_router  # noqa: E402
 from routers import improvements as _improvements_router  # noqa: E402
 from routers import slack as _slack_router  # noqa: E402
 from routers import spine as _spine_router  # noqa: E402
@@ -193,6 +195,7 @@ app.include_router(_slack_router.router)
 app.include_router(_email_router.router)
 app.include_router(_sessions_router.router)
 app.include_router(_project_state_router.router)
+app.include_router(_promote_uphill_router.router)
 app.include_router(_improvements_router.router)
 
 
