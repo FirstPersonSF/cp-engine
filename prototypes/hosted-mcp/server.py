@@ -9538,6 +9538,7 @@ def promote_uphill(
     item_kind: str,
     item_ref: str,
     note: str | None = None,
+    week: str | None = None,
 ) -> dict[str, Any]:
     """Copy a commitment or decision from `project_code` to its PARENT workstream, leaving a step.
 
@@ -9572,6 +9573,9 @@ def promote_uphill(
         item_kind: commitment | decision.
         item_ref: the commitment id, or the decision's cp:hash / exact text.
         note: why it belongs one level up — kept on the step.
+        week: decisions only — the ISO sprint week (`2026-W39`) whose sprint
+            file on the parent receives the bullet; default is the current
+            week. Ignored for commitments (rows carry no week).
     """
     kind = (item_kind or "").strip().lower()
     if kind not in ("decision", "commitment"):
@@ -9583,7 +9587,7 @@ def promote_uphill(
         # The file write happens upstream (mc-2 → webhook, the caller's own
         # token); the level echo is the CHILD's until the backend says where
         # the copy landed, and the backend's own `level` (the parent) wins.
-        out = call_mc2_promote_uphill(project_code, ref, note, None)
+        out = call_mc2_promote_uphill(project_code, ref, note, (week or "").strip() or None)
         if not out.get("ok"):
             return {**out, "item_kind": "decision", "item_ref": ref,
                     "level": _level_for(project_code)}

@@ -4,6 +4,14 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.124.2 — 2026-09-24
+
+**Hosted `promote_uphill` takes `week`.** Patch. A decision promoted from a
+hosted session always landed in the parent's CURRENT sprint week; the CLI
+had `--week` and the hosted verb did not. `week` (`2026-W39`) is forwarded
+to mc-2 and on to the webhook; blank means the current week; ignored for
+commitments, which carry no week.
+
 ## v0.124.1 — 2026-09-24
 
 **Hosted `promote_uphill` carries decisions through mc-2 → webhook.** Patch.

@@ -314,7 +314,7 @@ def test_promote_uphill_is_registered_and_counted_as_a_writer(server):
     assert "promote_uphill" in _tools(tree)
     assert "promote_uphill" in _writers(tree), "it inserts — the count must say so"
     tool = server.mcp_server._tool_manager.get_tool("promote_uphill")
-    assert list(tool.parameters["properties"]) == ["project_code", "item_kind", "item_ref", "note"]
+    assert list(tool.parameters["properties"]) == ["project_code", "item_kind", "item_ref", "note", "week"]
 
 
 def test_commitment_copy_lands_on_the_parent_with_the_original_untouched(server, wired):
@@ -539,3 +539,16 @@ def test_the_description_no_longer_points_at_the_cli(server):
     assert "unsupported_here" not in tool.description
     assert "mc-2" in tool.description and "sprint file" in tool.description
     assert "never inferred from content" in tool.description
+
+
+def test_decision_week_is_forwarded_to_mc2(server, wired, monkeypatch):
+    """A hosted caller can pick the parent's sprint week (v0.124.2); blank
+    means the current week, and commitments never carry one."""
+    box = _fake_httpx(server, monkeypatch, 200, BACKEND_OK)
+    out = server.promote_uphill(CHILD, "decision", "abcd1234", note="account-wide", week="2026-W39")
+    assert out.get("ok") is True
+    assert box["payload"]["week"] == "2026-W39"
+
+    box = _fake_httpx(server, monkeypatch, 200, BACKEND_OK)
+    server.promote_uphill(CHILD, "decision", "abcd1234", week="   ")
+    assert "week" not in box["payload"]
