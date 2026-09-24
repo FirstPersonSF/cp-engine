@@ -36,40 +36,9 @@ Sales-stage progression: Inquiry → Negotiation → Contract.
 |---|---|---|---|---|---|---|---|---|
 <!-- cp-engine:end active-pipeline -->
 
-<!-- cp-engine:start active-1p -->
-## 1P — Active Engagements (0)
-
-| Account | Code | Project | Owner | Budget | Last activity | One-line summary | CP |
-|---|---|---|---|---|---|---|---|
-<!-- cp-engine:end active-1p -->
-
-<!-- cp-engine:start active-fpsf -->
-## First Person — Internal Tooling (0)
-
-| Repo | Status | Owner | Description | Last activity | GitHub | CP |
-|---|---|---|---|---|---|---|
-<!-- cp-engine:end active-fpsf -->
-
-<!-- cp-engine:start active-fpsf-initiatives -->
-## First Person — Initiatives (0)
-
-| Code | Initiative | Owner | Status | Last activity | One-line summary | CP |
-|---|---|---|---|---|---|---|
-<!-- cp-engine:end active-fpsf-initiatives -->
-
-<!-- cp-engine:start active-canonic -->
-## Canonic (0)
-
-| Repo | Status | Owner | Description | Last activity | GitHub | CP |
-|---|---|---|---|---|---|---|
-<!-- cp-engine:end active-canonic -->
-
-<!-- cp-engine:start active-canonic-initiatives -->
-## Canonic — Initiatives (0)
-
-| Code | Initiative | Owner | Status | Last activity | One-line summary | CP |
-|---|---|---|---|---|---|---|
-<!-- cp-engine:end active-canonic-initiatives -->
+<!-- cp-engine:start active-tree -->
+## Active workstreams (0)
+<!-- cp-engine:end active-tree -->
 
 <!-- cp-engine:start last-week-workload -->
 <!-- cp-engine:end last-week-workload -->

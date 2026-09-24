@@ -1,7 +1,7 @@
 """Projections of sprint-file content into durable surfaces.
 
-Phase 1.2 (v0.8.5) introduces seven new engine-managed regions across
-`weekly-cp.md` and per-project `cp.md` files. All seven aggregate sprint-file
+Phase 1.2 (v0.8.5) introduced the engine-managed strip regions on per-project
+`cp.md` files and the cross-cutting rollup. All of them aggregate sprint-file
 handwritten content into durable, projectable views.
 
 Two aggregator functions, separated by scope:
@@ -10,9 +10,13 @@ Two aggregator functions, separated by scope:
    per-project content (Inbound, Decisions, Open asks, Stakeholders) into
    the four new regions on a project's ``cp.md``.
 
-2. ``aggregate_tenant_strips(sprint_files, themes, today)`` — projects
-   tenant-wide content (cross-cutting decisions, themes, carry-forward) into
-   the three new regions on ``weekly-cp.md``.
+2. ``aggregate_subtree_strips(root_code, sprint_files, themes, today,
+   by_code)`` — projects cross-cutting decisions, themes and carry-forward
+   for the SUBTREE rooted at ``root_code`` (``None`` = the whole tenant).
+   The tenant call feeds ``master-cp.md``'s ``agenda`` region and the prep
+   agenda header; the per-node calls feed an account node's or a program's
+   sprint file ``carry-forward`` region (cp-engine #303, plan §3.5).
+   ``aggregate_tenant_strips`` is the tenant-rooted spelling.
 
 The existing ``_compute_agenda_rollup`` in ``render.py`` shares its core logic
 with ``aggregate_tenant_strips``'s carry-forward output — same parser, same
@@ -32,14 +36,17 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, timedelta
+from typing import Mapping
 
 from cp_engine.state import (
     DecisionEntry,
     InboundUpdate,
+    ProjectState,
     Risk,
     SprintFile,
     Stakeholder,
     Theme,
+    descendants_of,
 )
 
 # Project-strip window: last 4 weeks for recent-decisions + inbound.
@@ -145,39 +152,57 @@ def aggregate_project_strips(
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Tenant strips (weekly-cp.md regions)
+#  Subtree strips (tenant root, account nodes, programs)
 # ──────────────────────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class TenantStrips:
-    """Aggregated tenant-wide content for weekly-cp.md's three engine regions.
+    """Aggregated cross-cutting content for one subtree of the tree.
 
-    - ``cross_cutting_decisions`` → ``decisions-strip``. DecisionEntry rows
-      flagged ``cross_cutting=True`` across all projects in the time window.
-    - ``themes`` → ``themes-strip``. Parsed from ``sprints/<W##>/_week.md``
-      ``## Themes`` sections in the time window.
-    - ``carry_forward`` → ``carry-forward-strip``. Open asks aged > 7 days,
-      escalated risks, decisions due — same data as master-cp.md's
-      ``agenda`` region (computed via the shared rollup below).
+    - ``cross_cutting_decisions``: DecisionEntry rows flagged
+      ``cross_cutting=True`` across the subtree's sprint files in the window.
+    - ``themes``: parsed from ``sprints/<W##>/_week.md`` ``## Themes``
+      sections in the window (tenant-wide by nature; the caller passes them).
+    - ``carry_forward``: open asks aged > 7 days, escalated risks, decisions
+      due — the same rollup ``master-cp.md``'s ``agenda`` region renders.
+    - ``root_code``: the subtree root, ``None`` for the tenant.
+    - ``workstream_count``: how many sprint files fed the rollup.
+
+    The class keeps its tenant-era name: every consumer reads the same
+    three fields whether the root is the tenant or one node.
     """
 
     cross_cutting_decisions: tuple[dict, ...]  # {project_code, text, date}
     themes: tuple[Theme, ...]
     carry_forward: dict  # {escalated_risks, stale_asks, decisions_due}
+    root_code: str | None = None
+    workstream_count: int = 0
 
 
-def aggregate_tenant_strips(
+def aggregate_subtree_strips(
+    root_code: str | None,
     sprint_files: tuple[SprintFile, ...],
     themes: tuple[Theme, ...],
     today: date,
+    by_code: "Mapping[str, ProjectState] | None" = None,
 ) -> TenantStrips:
-    """Aggregate tenant-wide content from all parsed sprint files.
+    """Aggregate cross-cutting content for the subtree rooted at ``root_code``.
+
+    ``None`` is the tenant: every sprint file contributes. Otherwise only
+    the files of ``root_code`` and its descendants (via ``parent_code`` in
+    ``by_code``) contribute — an account node's rollup is its jobs and
+    programs, a program's is its jobs. A root with no roster entry rolls up
+    only its own file.
 
     ``themes`` is passed in (rather than discovered here) because the caller
     knows the tenant root and can collect ``sprints/<W##>/_week.md`` files
     across recent weeks. Aggregator filters by recency.
     """
+    if root_code is not None:
+        in_scope = {root_code} | {p.code for p in descendants_of(root_code, by_code or {})}
+        sprint_files = tuple(sf for sf in sprint_files if sf.project_code in in_scope)
+
     cutoff_decisions = today - timedelta(days=_TENANT_DECISIONS_DAYS)
     cutoff_themes = today - timedelta(days=_TENANT_THEMES_DAYS)
 
@@ -208,11 +233,22 @@ def aggregate_tenant_strips(
         cross_cutting_decisions=tuple(cross_cutting),
         themes=filtered_themes,
         carry_forward=carry_forward,
+        root_code=root_code,
+        workstream_count=len({sf.project_code for sf in sprint_files}),
     )
 
 
+def aggregate_tenant_strips(
+    sprint_files: tuple[SprintFile, ...],
+    themes: tuple[Theme, ...],
+    today: date,
+) -> TenantStrips:
+    """The tenant-rooted subtree: ``aggregate_subtree_strips(None, …)``."""
+    return aggregate_subtree_strips(None, sprint_files, themes, today)
+
+
 # ──────────────────────────────────────────────────────────────────────
-#  Shared carry-forward rollup (master-cp.md agenda + weekly-cp.md carry-forward)
+#  Shared carry-forward rollup (master-cp.md agenda + subtree carry-forward)
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -221,7 +257,7 @@ def carry_forward_rollup(
     today: date,
 ) -> dict:
     """Public entry point for the rollup used by master-cp.md's `agenda`
-    region and weekly-cp.md's `carry-forward-strip` region.
+    region and a parent node's sprint-file `carry-forward` region.
 
     Both consumers want the same three lists; only the render template
     differs. Sharing the parser means a bug fix (or a threshold change)

@@ -906,70 +906,99 @@ def test_gitignore_written_at_root(tmp_path: Path) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_account_cp_scaffolded_for_active_client_company(tmp_path: Path) -> None:
-    """When a client project lands under `1p/<company>/`, sync also creates
-    `1p/<company>/cp.md` from the account template. Account list is
-    derived from active client projects' company_name; no separate
-    backend query."""
+def _account_node(
+    code: str = "ggl-5216-google",
+    company_code: str = "GGL",
+    company_name: str = "Google",
+) -> ProjectState:
+    """A client company's account node (#302): no agreement, no parent,
+    label `account`. Its cp.md IS the account CP (#303)."""
+    from dataclasses import replace
+
+    return replace(
+        make_state(
+            code=code, name=company_name, has_agreement=False,
+            company_code=company_code, company_name=company_name,
+        ),
+        label="account",
+        mc2_id=f"uuid-{code}",
+    )
+
+
+def _job(code: str, name: str, *, parent_code: str, **kw) -> ProjectState:
+    from dataclasses import replace
+
+    return replace(make_state(code=code, name=name, **kw), parent_code=parent_code, label="job")
+
+
+def test_account_node_cp_is_rendered_from_the_one_template(tmp_path: Path) -> None:
+    """The account node's `1p/<company>/cp.md` comes from `project-cp.md.j2`
+    like every node (#303): full region set, a `children` region listing
+    the node's children, no `envelope-strip` (no agreement), and none of
+    the retired account regions."""
     config = make_config(tmp_path)
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend(
-            (make_state(code="ggl-5168", name="Playbooks"),)
+            (
+                _account_node(),
+                _job("ggl-5168", "Playbooks", parent_code="ggl-5216-google"),
+            )
         ),
     )
 
     account_cp = tmp_path / "1p" / "google" / "cp.md"
     assert account_cp.exists()
     body = account_cp.read_text()
-    # Anchor block + heading reflect the company name.
-    assert "Google" in body
-    # Engine-managed regions for facts + project list are spliced in.
-    assert "<!-- cp-engine:start account-facts -->" in body
-    assert "<!-- cp-engine:end account-facts -->" in body
-    assert "<!-- cp-engine:start projects -->" in body
-    assert "<!-- cp-engine:end projects -->" in body
+    assert "# Google — Account CP" in body
+    assert "| **Type** | Account |" in body
+    for region in ("project-facts", "children", "current-sprint", "tracked-issues",
+                   "inbound-strip", "exec-summary"):
+        assert f"<!-- cp-engine:start {region} -->" in body, region
+    assert "<!-- cp-engine:start envelope-strip -->" not in body
+    assert "<!-- cp-engine:start account-facts -->" not in body
+    assert "<!-- cp-engine:start projects -->" not in body
+    assert "[→](ggl-5168/cp.md)" in body
 
 
-def test_account_cp_not_scaffolded_for_self_company_scopes(tmp_path: Path) -> None:
-    """FPSF and Canonic already nest by self-company at the scope level —
-    they don't get an account cp.md layer. Only `1p/` accounts do."""
+def test_no_account_cp_without_an_account_node(tmp_path: Path) -> None:
+    """A client company whose account node is not in the roster gets no
+    `1p/<company>/cp.md` (#303 retired the separate account-dir pass); the
+    job still lands under `1p/<company>/`. Self-company scopes never had
+    the layer."""
     config = make_config(tmp_path)
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend(
             (
+                make_state(code="ggl-5168", name="Playbooks"),
                 make_state(
-                    code="mc-2", name="mc-2", has_agreement=False, status="Active",
+                    code="mc-2", name="mc-2", has_agreement=False, status="Open",
                     company_kind="self-fpsf",
-                ),
-                make_state(
-                    code="storyos", name="storyos", has_agreement=False, status="Active",
-                    company_kind="self-canonic",
                 ),
             )
         ),
     )
-
-    # No spurious account-cp files at the FPSF/Canonic scope roots.
+    assert (tmp_path / "1p" / "google" / "ggl-5168" / "cp.md").exists()
+    assert not (tmp_path / "1p" / "google" / "cp.md").exists()
     assert not (tmp_path / "firstpersonsf" / "cp.md").exists()
-    assert not (tmp_path / "canonic" / "cp.md").exists()
 
 
-def test_account_cp_lists_all_active_projects_for_the_account(tmp_path: Path) -> None:
-    """The `projects` engine region in `1p/<company>/cp.md` enumerates
-    every active client project under that account, linking each to its
-    nested project cp.md."""
+def test_account_children_region_lists_only_its_own_children(tmp_path: Path) -> None:
+    """The `children` region enumerates the node's direct children (by
+    `parent_code`), each linked to its nested cp.md; another company's
+    jobs never bleed in."""
     config = make_config(tmp_path)
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend(
             (
-                make_state(code="ggl-5168-playbooks", name="Playbooks"),
-                make_state(code="ggl-5177-event-safety", name="Event Safety"),
-                # Different company → different account file, not listed here.
-                make_state(
-                    code="ibx-5153", name="AI Campaign",
+                _account_node(),
+                _job("ggl-5168-playbooks", "Playbooks", parent_code="ggl-5216-google"),
+                _job("ggl-5177-event-safety", "Event Safety", parent_code="ggl-5216-google"),
+                _account_node("ibx-5217-infoblox", "IBX", "Infoblox"),
+                _job(
+                    "ibx-5153", "AI Campaign", parent_code="ibx-5217-infoblox",
                     company_code="IBX", company_name="Infoblox",
                 ),
             )
@@ -977,55 +1006,47 @@ def test_account_cp_lists_all_active_projects_for_the_account(tmp_path: Path) ->
     )
 
     google_cp = (tmp_path / "1p" / "google" / "cp.md").read_text()
-    # Both Google projects are listed with their codes + links to the
-    # nested project cp.md (literal relative paths since projects live
-    # one level under their account).
-    assert "ggl-5168" in google_cp
     assert "ggl-5168-playbooks/cp.md" in google_cp
-    assert "ggl-5177" in google_cp
     assert "ggl-5177-event-safety/cp.md" in google_cp
-    # Infoblox project does NOT bleed into Google's account.
     assert "ibx-5153" not in google_cp
+    assert "| **Active projects** | 2 |" in google_cp
 
-    # Infoblox account file exists and lists only the Infoblox project.
     infoblox_cp = (tmp_path / "1p" / "infoblox" / "cp.md").read_text()
-    assert "Infoblox" in infoblox_cp
-    assert "ibx-5153" in infoblox_cp
+    assert "ibx-5153/cp.md" in infoblox_cp
     assert "ggl-5168" not in infoblox_cp
 
 
-def test_master_cp_active_1p_table_has_account_column(tmp_path: Path) -> None:
-    """The `active-1p` table gains a leading Account column. Rows are
-    sorted by (account_slug, code) so projects from the same account
-    cluster together. The account cell links to that account's cp.md."""
+def test_master_cp_tree_groups_by_company_with_the_account_at_depth_0(tmp_path: Path) -> None:
+    """The `active-tree` region (#303, D9): one `### <Company>` block per
+    company, clients sorted by name; the account node's row first at
+    depth 0, its jobs `└─`-indented below it in code order."""
     config = make_config(tmp_path)
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend(
             (
-                # Intentionally out of code order so we can verify the
-                # (account_slug, code) sort puts Google's two together,
-                # then Infoblox's one.
-                make_state(code="ibx-5153", name="AI Campaign",
-                           company_code="IBX", company_name="Infoblox"),
-                make_state(code="ggl-5177", name="Event Safety"),
-                make_state(code="ggl-5168", name="Playbooks"),
+                _account_node("ibx-5217-infoblox", "IBX", "Infoblox"),
+                _job(
+                    "ibx-5153", "AI Campaign", parent_code="ibx-5217-infoblox",
+                    company_code="IBX", company_name="Infoblox",
+                ),
+                _job("ggl-5177", "Event Safety", parent_code="ggl-5216-google"),
+                _account_node(),
+                _job("ggl-5168", "Playbooks", parent_code="ggl-5216-google"),
             )
         ),
     )
 
     master = (tmp_path / "master-cp.md").read_text()
-    # Account header is present
-    assert "| Account |" in master
-    # Account cell links to the account cp.md
-    assert "[Google](1p/google/cp.md)" in master
-    assert "[Infoblox](1p/infoblox/cp.md)" in master
-    # Sort order: Google's two rows come before Infoblox's, and within
-    # Google ggl-5168 comes before ggl-5177 (code order).
-    google_5168 = master.find("ggl-5168")
-    google_5177 = master.find("ggl-5177")
-    ibx = master.find("ibx-5153")
-    assert 0 < google_5168 < google_5177 < ibx
+    assert "<!-- cp-engine:start active-tree -->" in master
+    assert "<!-- cp-engine:start active-1p -->" not in master
+    google_h = master.find("### Google")
+    ibx_h = master.find("### Infoblox")
+    acct = master.find("| `ggl-5216-google` | Google | Account |")
+    g5168 = master.find("| └─ `ggl-5168` |")
+    g5177 = master.find("| └─ `ggl-5177` |")
+    ibx_acct = master.find("| `ibx-5217-infoblox` | Infoblox | Account |")
+    assert 0 < google_h < acct < g5168 < g5177 < ibx_h < ibx_acct
 
 
 def test_account_cp_preserves_hand_written_content_on_resync(tmp_path: Path) -> None:
@@ -1037,7 +1058,7 @@ def test_account_cp_preserves_hand_written_content_on_resync(tmp_path: Path) -> 
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend(
-            (make_state(code="ggl-5168", name="Playbooks"),)
+            (_account_node(), _job("ggl-5168", "Playbooks", parent_code="ggl-5216-google"))
         ),
     )
     account_cp = tmp_path / "1p" / "google" / "cp.md"
@@ -1047,17 +1068,17 @@ def test_account_cp_preserves_hand_written_content_on_resync(tmp_path: Path) -> 
     )
 
     # Add a second project under the same account → triggers a re-splice
-    # of the projects region but must leave hand content alone.
+    # of the children region but must leave hand content alone.
     sync_tenant(
         config,
         backend_factory=lambda _: FakeBackend(
             (
-                make_state(code="ggl-5168", name="Playbooks"),
-                make_state(code="ggl-5177", name="Event Safety"),
+                _account_node(),
+                _job("ggl-5168", "Playbooks", parent_code="ggl-5216-google"),
+                _job("ggl-5177", "Event Safety", parent_code="ggl-5216-google"),
             )
         ),
     )
-
     final = account_cp.read_text()
     assert "## My account notes" in final
     assert "Durable truths about Google." in final

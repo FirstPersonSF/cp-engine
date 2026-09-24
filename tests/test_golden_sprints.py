@@ -1,7 +1,7 @@
 """Golden-markdown tests for `cp_engine.sprints` (arch-phase-3, issue #26).
 
-Locks the full sprint-file scaffolds (both engagement and initiative
-shapes), the carry-forward rendering through `scaffold_from_prior`, the
+Locks the full sprint-file scaffolds (a job, and a program carrying the
+children list + subtree rollup), the carry-forward rendering through `scaffold_from_prior`, the
 dashboard current-sprint block, the per-week sprint index, and the
 parse→dict round-trip shape.
 
@@ -17,6 +17,7 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+from cp_engine.aggregators import TenantStrips
 from cp_engine.sprints import (
     parse_sprint_file,
     render_current_sprint_block,
@@ -74,6 +75,54 @@ def _initiative() -> ProjectState:
         owner="Tony",
         last_touched=_TOUCHED,
         deadline=None,
+    )
+
+
+def _program() -> ProjectState:
+    return ProjectState(
+        code="ggl-5300-go-safety",
+        name="Go Safety",
+        has_agreement=True,
+        company_kind="client",
+        company_code="GGL",
+        company_name="Google",
+        status="Open",
+        is_internal=False,
+        owner="Drew",
+        last_touched=_TOUCHED,
+        deadline=None,
+        deal_stage="Won",
+        budget=150000.0,
+        parent_code="ggl-5216-google",
+        label="program",
+    )
+
+
+def _program_rollup() -> TenantStrips:
+    """What `aggregate_subtree_strips("ggl-5300-go-safety", …)` yields over
+    the program's two jobs' current-week files."""
+    return TenantStrips(
+        cross_cutting_decisions=(
+            {"project_code": "ggl-5136-go-safety-website", "date": "2026-05-12",
+             "text": "All Google invoices route through Brandon."},
+        ),
+        themes=(),
+        carry_forward={
+            "escalated_risks": [
+                {"project_code": "ggl-5136-go-safety-website",
+                 "text": "Legal turnaround may slip past May 22"},
+            ],
+            "stale_asks": [
+                {"project_code": "ggl-5188-calendar", "aged_days": 12,
+                 "text": "Volume forecast from ops team"},
+            ],
+            "decisions_due": [
+                {"project_code": "ggl-5136-go-safety-website",
+                 "target_date": "by W21", "text": "Whether to renew for Q3"},
+            ],
+        },
+        root_code="ggl-5300-go-safety",
+        workstream_count=2,
     )
 
 
@@ -144,11 +193,52 @@ def test_golden_sprint_scaffold_engagement(golden_clock) -> None:
     assert_matches_golden("sprints/scaffold-engagement.md", out)
 
 
-def test_golden_sprint_scaffold_initiative(golden_clock) -> None:
+def test_golden_sprint_scaffold_program(golden_clock) -> None:
+    """A parent's sprint file (#303, plan §3.5): `where-it-stands` lists
+    each active child's one-liner; `carry-forward` is the subtree rollup
+    (no bracket prefixes — the parser must not read it back as the
+    parent's own asks/risks); Stage/Budget rows render (it has an
+    agreement)."""
+    out = render_sprint_scaffold(
+        project=_program(),
+        children_summaries=(
+            {"code": "ggl-5136-go-safety-website", "summary": "Launch slipped to W22."},
+            {"code": "ggl-5188-calendar", "summary": None},
+        ),
+        subtree_rollup=_program_rollup(),
+        **_scaffold_kwargs(),
+    )
+    assert "### Workstreams" in out
+    assert "## Client communication" in out
+    assert_matches_golden("sprints/scaffold-program.md", out)
+    # The rollup bullets must be invisible to the carry-forward parser.
+    parsed = parse_sprint_file(_write(out, "sprints", "ggl-5300-go-safety.md"))
+    assert parsed.carry_forward.asks == ()
+    assert parsed.carry_forward.risks == ()
+    assert parsed.carry_forward.horizon == ()
+
+
+def _write(text: str, *parts: str) -> Path:
+    import tempfile
+
+    path = Path(tempfile.mkdtemp()).joinpath(*parts)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return path
+
+
+def test_sprint_scaffold_initiative_shape(golden_clock) -> None:
+    """An internal workstream through the one template: Team heading, no
+    Stage/Budget rows, `_none_` deliverable cards, prior-week carry-forward
+    (it is not a parent). Structural — the program golden covers bytes."""
     out = render_sprint_scaffold(project=_initiative(), **_scaffold_kwargs())
     assert "## Team communication" in out
     assert "## Client communication" not in out
-    assert_matches_golden("sprints/scaffold-initiative.md", out)
+    assert "| Stage |" not in out
+    assert "| Budget |" not in out
+    assert "<!-- cp-engine:start deliverable-cards -->\n_none_\n" in out
+    assert "## Carried over from 2026-W19" in out
+    assert "Project CP](../../firstpersonsf/1pi-9005-mission-control/cp.md)" in out
 
 
 def test_golden_sprint_scaffold_minimal(golden_clock) -> None:
@@ -224,11 +314,11 @@ def test_golden_current_sprint_block(golden_clock, tmp_path: Path) -> None:
 
 def test_golden_sprint_index(golden_clock, tmp_path: Path) -> None:
     sf_peb = _parsed_scaffold("sprints/scaffold-engagement.md", tmp_path)
-    sf_mc = _parsed_scaffold("sprints/scaffold-initiative.md", tmp_path)
+    sf_prog = _parsed_scaffold("sprints/scaffold-program.md", tmp_path)
     out = render_sprint_index(
         week_iso="2026-W20",
         week_dates="May 11 – May 17",
-        sprint_files=[sf_peb, sf_mc],
+        sprint_files=[sf_peb, sf_prog],
     )
     assert_matches_golden("sprints/sprint-index.md", out)
 

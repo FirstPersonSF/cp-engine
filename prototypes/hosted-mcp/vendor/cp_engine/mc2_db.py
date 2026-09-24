@@ -54,6 +54,10 @@ class Tables:
     # writes go through the team-gated definer fns — never a direct upsert.
     CP_PROMPT = "cp_prompt"
     CP_PROMPT_OVERRIDE = "cp_prompt_override"
+    # Accept-and-flag envelope breaches (mig 193, plan D7). mc-2 owns the
+    # rows (a trigger raises and auto-resolves them); cp-engine only reads
+    # the open ones for the `envelope-strip` region (#303).
+    WORKSTREAM_FLAGS = "workstream_flags"
 
     # public — spine
     SPINE_SUBSTANCE = "spine_substance"
@@ -178,6 +182,9 @@ RAG_ASSET_REFETCH_COLUMNS = (
 
 
 EST_PHASE_COLUMNS = "id, project_id, name, overview, position"
+
+# workstream_flags — the envelope-strip read (#303); mirrored from src.
+WORKSTREAM_FLAGS_COLUMNS = "project_id, parent_id, kind, excess, raised_at"
 
 
 EST_ITEM_COLUMNS = "id, phase_id, name, short_description, library_item_id, position"

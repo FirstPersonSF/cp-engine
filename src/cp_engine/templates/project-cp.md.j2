@@ -7,9 +7,9 @@ Filename: cp.md
 Author: cp-engine (initial scaffold)
 ---
 
-# {{ project.name }} — Project CP
+# {{ project.name }} — {{ project.cp_kind }} CP
 
-> _<one-line description of what this project is and who it's for>_
+> _<one-line description of what this workstream is and who it's for>_
 
 <!-- cp-engine:start project-facts -->
 ## Facts
@@ -17,26 +17,52 @@ Author: cp-engine (initial scaffold)
 | | |
 |---|---|
 | **Code** | `{{ project.code }}` |
+| **Type** | {{ project.label_word }} |
 | **Status** | {{ project.status }} |
-{%- if project.engagement_shape %}
+{%- if project.has_agreement %}
 | **Stage** | {{ project.deal_stage or "—" }} |
 | **Budget** | {{ project.budget_short or "—" }} |
+{%- endif %}
 | **Owner** | {{ project.owner or "—" }} |
 {%- if project.company_name %}
-| **Client** | {{ project.company_name }}{% if project.company_code %} ({{ project.company_code }}){% endif %} |
+| **{{ "Account" if project.label == "account" else ("Client" if project.company_kind == "client" else "Company") }}** | {{ project.company_name }}{% if project.company_code %} ({{ project.company_code }}){% endif %} |
 {%- endif %}
-{%- else %}
-| **Owner** | {{ project.owner or "—" }} |
+{%- if project.label == "account" %}
+| **Active projects** | {{ account_facts.active_count }} |
+| **Owners** | {{ account_facts.owners or "—" }} |
+| **Last project activity** | {{ account_facts.last_activity_short or "—" }} |
+{%- endif %}
 {%- if project.github_org and project.repo_name %}
 | **GitHub** | [{{ project.github_org }}/{{ project.repo_name }}](https://github.com/{{ project.github_org }}/{{ project.repo_name }}) |
 {%- endif %}
 {%- if project.description %}
 | **Description** | {{ project.description }} |
 {%- endif %}
-{%- endif %}
 | **Last touched** | {{ project.last_touched_short or "—" }} |
 <!-- cp-engine:end project-facts -->
+{% if envelope %}
+<!-- cp-engine:start envelope-strip -->
+## Envelope
 
+| | |
+|---|---|
+| **Budget** | {{ envelope.budget_short or "—" }} |
+| **Children (sum)** | {{ envelope.children_sum_short }} |
+| **Without budget** | {{ envelope.children_without_budget_line }} |
+| **Flags** | {{ envelope.flag_line }} |
+<!-- cp-engine:end envelope-strip -->
+{% endif %}
+{%- if children %}
+<!-- cp-engine:start children -->
+## Workstreams
+
+| Code | Workstream | Label | Status | Owner | Last touched | CP |
+|---|---|---|---|---|---|---|
+{%- for c in children %}
+| `{{ c.code }}` | {{ c.display_name }} | {{ c.label_word }} | {{ c.status }} | {{ c.owner or "—" }} | {{ c.last_touched_short or "—" }} | [→]({{ c.cp_link }}) |
+{%- endfor %}
+<!-- cp-engine:end children -->
+{% endif %}
 <!-- cp-engine:start current-sprint -->
 {{ current_sprint_block or "_No active sprint file._" }}
 <!-- cp-engine:end current-sprint -->
@@ -139,14 +165,14 @@ _<per bootstrap v2 — pointers only, never raw research dumps>_
 
 _<durable conventions specific to this project that any AI assistant should know>_
 
-{% if project.engagement_shape -%}
+{% if project.company_kind == "client" -%}
 ## Stakeholders
 
 _<key contacts on the client side and internal owners>_
 {%- else -%}
-## Committers
+## Team
 
-_<who's pushing on this repo, plus internal stakeholders if any>_
+_<who's contributing to this workstream, plus internal stakeholders if any>_
 {%- endif %}
 
 ## Archive Index

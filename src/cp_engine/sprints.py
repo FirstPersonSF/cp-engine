@@ -35,11 +35,15 @@ from .state import (
     Stakeholder,
     Theme,
     WhereItStands,
+    children_of,
+    descendants_of,
+    effective_label,
     path_for,
     parent_path_for,
     dir_name_for,
     dir_slug,
     scope_for,
+    tree_depth,
 )
 from .status import is_active_status
 from .sync import _extract_region
@@ -260,10 +264,11 @@ def bullets(body: str) -> list[tuple[str, str]]:
 
 
 
-# Engagements head this section `## Client communication`; initiatives and
-# standalone repos head it `## Team communication` — the engine's OWN
-# `initiative-sprint.md.j2` writes the latter. The parser read only the
-# client spelling, so every open ask, outbound and stakeholder bullet in an
+# Client-company nodes head this section `## Client communication`; the
+# self-company ones head it `## Team communication` — the one sprint
+# template writes either, on `company_kind` (#303; before that the
+# initiative template wrote the latter). The parser read only the client
+# spelling once, so every open ask, outbound and stakeholder bullet in an
 # initiative sprint file was silently unparsed: 135 files tenant-wide (#273).
 _COMMUNICATION_HEADINGS = ("Client communication", "Team communication")
 
@@ -738,49 +743,69 @@ def render_sprint_scaffold(
     meetings_this_sprint: int = 0,
     deliverable_lines: tuple[str, ...] = (),
     by_code: "Mapping[str, ProjectState] | None" = None,
+    children_summaries: "tuple[dict, ...] | None" = None,
+    subtree_rollup: object | None = None,
 ) -> str:
-    """Render a sprint file scaffold from the Jinja template.
+    """Render a sprint file scaffold from the ONE sprint template (#303).
 
     The output round-trips through `parse_sprint_file` — the H1 date format
     ("Mon D – Mon D, YYYY") and the carry-forward bracket prefixes are
     contract surfaces between this renderer and the parser. Tests in
     `test_sprints.py` assert that contract end-to-end.
+
+    Every node renders through `sprint-cp.md.j2`; the rows and blocks are
+    derived from the node's shape: Stage/Budget facts and real deliverable
+    cards need an agreement (`deliverable-cards` renders `_none_` without
+    one), the communication heading reads Client under a client company
+    and Team otherwise.
+
+    A PARENT (an account node, a program) passes `children_summaries` —
+    `({"code", "summary"}, …)` for each active direct child, listed under
+    `where-it-stands` — and `subtree_rollup` (an
+    `aggregators.TenantStrips` for its subtree), which replaces the
+    prior-week carry-forward in `carry-forward`. The rollup bullets carry
+    no bracket prefix on purpose: the parser must not read them back as
+    the parent's own asks/risks and double-count them in the tenant rollup.
     """
     env = _render._env()
-    # Internal workstreams use a slimmer sprint scaffold without the
-    # "Client communication" section (no client side; the "Team
-    # communication" block keeps Open asks + Slack digest). Picked on shape
-    # (#301) by the same rule as the project CP template.
-    # An account node (#302) has no client-communication surfaces of its
-    # own either; it takes the same shape until #303 unifies the template.
-    template_name = (
-        "initiative-sprint.md.j2"
-        if _render.uses_initiative_shape(project) or _render.uses_account_shape(project)
-        else "sprint-cp.md.j2"
-    )
-    template = env.get_template(template_name)
+    template = env.get_template("sprint-cp.md.j2")
     week_dates = f"{_short_md_date(week_start)} – {_long_md_date(week_end)}"
     # The parent path + dir name come from the path authority (#302): the
-    # template uses them for `← Project CP` / `← Initiative CP` navigation
-    # links, so they must match the on-disk path.
+    # template uses them for the `← Project CP` navigation link, so they
+    # must match the on-disk path.
     roster = by_code or {}
     project_scope = parent_path_for(project, roster)
     project_dir_slug = dir_name_for(project, roster)
     # Relative path from the sprint file (sprints/<week>/<code>.md) to the
     # project's meetings/ dir. Used only when meetings_this_sprint > 0.
     meetings_link = f"../../{project_scope}/{project_dir_slug}/meetings/"
+    if project.has_agreement:
+        cards_block = (
+            "\n".join(f"- {line}" for line in deliverable_lines)
+            if deliverable_lines
+            else "_(no deliverables in the estimate yet)_"
+        )
+    else:
+        cards_block = "_none_"
     return template.render(
         project={
             "code": project.code,
             "name": project.name,
             "scope": project_scope,
             "dir_slug": project_dir_slug,
+            "has_agreement": project.has_agreement,
+            "company_kind": project.company_kind,
+            "label": effective_label(project, roster),
             "deal_stage": project.deal_stage,
             "owner": project.owner,
             "budget_short": _render._format_budget(project.budget),
             "last_touched_short": _render._short(project.last_touched),
             "contacts": getattr(project, "contacts", ()) or (),
         },
+        children_summaries=(
+            list(children_summaries) if children_summaries is not None else None
+        ),
+        subtree_rollup=subtree_rollup,
         engine_version=_render.ENGINE_VERSION,
         today=date.today().isoformat(),
         week_iso=week_iso,
@@ -803,12 +828,8 @@ def render_sprint_scaffold(
         # Deliverable-card lines (canonical-objects: derived from the
         # estimate + linked bars + spine serves — see sync's collector).
         # The engine-managed region shows STATE; hand-written notes below
-        # it stay human territory.
-        deliverable_cards_block=(
-            "\n".join(f"- {line}" for line in deliverable_lines)
-            if deliverable_lines
-            else "_(no deliverables in the estimate yet)_"
-        ),
+        # it stay human territory. `_none_` for a node with no agreement.
+        deliverable_cards_block=cards_block,
     )
 
 
@@ -932,6 +953,8 @@ def ensure_sprint_file(
     open_issues: tuple,
     deliverable_lines: tuple[str, ...] = (),
     by_code: "Mapping[str, ProjectState] | None" = None,
+    children_summaries: "tuple[dict, ...] | None" = None,
+    subtree_rollup: object | None = None,
 ) -> Path:
     """Create the sprint file if missing, or refresh just its engine regions.
 
@@ -992,6 +1015,8 @@ def ensure_sprint_file(
         meetings_this_sprint=meetings_this_sprint,
         deliverable_lines=deliverable_lines,
         by_code=by_code,
+        children_summaries=children_summaries,
+        subtree_rollup=subtree_rollup,
     )
 
     if not out.exists():
@@ -1426,6 +1451,50 @@ def _is_active_for_sprint(project) -> bool:
     return is_active_status(project.status)
 
 
+def _parent_rollup(
+    project,
+    *,
+    roster: "Mapping[str, ProjectState]",
+    active_codes: set[str],
+    sprint_root: Path,
+    week_iso: str,
+    today: date,
+) -> "tuple[tuple[dict, ...] | None, object | None]":
+    """The two parent-only inputs for a node's sprint file, or (None, None)
+    for a node with no active children in the roster.
+
+    Children summaries are every ACTIVE direct child's one-liner
+    (`ProjectState.one_line_summary`), sorted by code. The rollup is
+    `aggregate_subtree_strips(code, …)` over the current week's files of
+    the node's active descendants — the files this call already wrote,
+    since children are processed first. A descendant whose file is missing
+    or unparseable simply does not contribute.
+    """
+    kids = [
+        c for c in children_of(project.code, roster) if c.code in active_codes
+    ]
+    if not kids:
+        return None, None
+    from cp_engine.aggregators import aggregate_subtree_strips
+
+    summaries = tuple(
+        {"code": c.code, "summary": c.one_line_summary} for c in kids
+    )
+    files: list[SprintFile] = []
+    for d in descendants_of(project.code, roster):
+        if d.code not in active_codes:
+            continue
+        path = sprint_root / week_iso / f"{d.code}.md"
+        if not path.is_file():
+            continue
+        try:
+            files.append(parse_sprint_file(path))
+        except (ValueError, OSError):
+            continue
+    rollup = aggregate_subtree_strips(project.code, tuple(files), (), today, roster)
+    return summaries, rollup
+
+
 def ensure_sprint_files_for_active_projects(
     *,
     active_projects,
@@ -1450,11 +1519,27 @@ def ensure_sprint_files_for_active_projects(
     out: list[Path] = []
     active_projects = tuple(active_projects)
     roster = by_code if by_code is not None else {p.code: p for p in active_projects}
-    for project in active_projects:
+    active_codes = {p.code for p in active_projects if _is_active_for_sprint(p)}
+    # Children before parents (#303, plan §3.5): a parent's `where-it-
+    # stands` lists its children and its `carry-forward` is the subtree
+    # rollup, both read from the children's files written in this call.
+    # Stable on depth so the order among siblings is the caller's.
+    ordered = sorted(
+        active_projects, key=lambda p: -tree_depth(p, roster)
+    )
+    for project in ordered:
         if not _is_active_for_sprint(project):
             continue
         data = per_project_data.get(project.code, {})
         deliverable_lines = tuple(data.get("deliverable_lines", ()))
+        children_summaries, subtree_rollup = _parent_rollup(
+            project,
+            roster=roster,
+            active_codes=active_codes,
+            sprint_root=sprint_root,
+            week_iso=week_iso,
+            today=now.date(),
+        )
         # Track the mtime before so we only report paths where the call
         # actually wrote (ensure_sprint_file is idempotent — refreshing an
         # unchanged file is a no-op on disk). Without this, every resync
@@ -1479,6 +1564,8 @@ def ensure_sprint_files_for_active_projects(
             open_issues=data.get("open_issues", ()),
             deliverable_lines=deliverable_lines,
             by_code=roster,
+            children_summaries=children_summaries,
+            subtree_rollup=subtree_rollup,
         )
         after = sprint_path.stat().st_mtime_ns if sprint_path.exists() else None
         if after is not None and after != before:

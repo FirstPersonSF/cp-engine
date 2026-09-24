@@ -48,15 +48,18 @@ def test_empty_lines_render_placeholder_not_blank_region():
     assert "_(no deliverables in the estimate yet)_" in body
 
 
-def test_initiative_scaffold_has_no_cards_region():
-    """An internal workstream — no agreement, self company — takes the
-    initiative-shaped scaffold (#301), which has no cards region."""
+def test_initiative_scaffold_cards_region_renders_none():
+    """An internal workstream — no agreement, self company — renders
+    through the ONE sprint template (#303): the cards region is present
+    (so the splicer finds it) with the body `_none_`."""
     body = _render(project=_project(has_agreement=False, company_kind="self-fpsf"))
-    assert "deliverable-cards" not in body
+    assert "<!-- cp-engine:start deliverable-cards -->\n_none_\n<!-- cp-engine:end deliverable-cards -->" in body
 
 
-def test_client_job_without_deal_stage_keeps_cards_region():
-    """A client row whose deal_stage was never filled is still client-side
-    work: the engagement-shaped scaffold, cards region and all."""
+def test_client_row_without_agreement_also_renders_none():
+    """A client row with no agreement (a `deal_stage` never filled, or an
+    account node) has no estimate to card: region present, body `_none_`."""
     body = _render(project=_project(has_agreement=False))
     assert "deliverable-cards" in body
+    assert "_none_" in body
+    assert "_(no deliverables in the estimate yet)_" not in body

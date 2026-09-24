@@ -70,48 +70,35 @@ Sales-stage progression: Inquiry → Negotiation → Contract.
 | [Pebble Foods](1p/pebble-foods/cp.md) | `peb-5200` | Pebble Foods Discovery | Negotiation | Drew | $45k | — | Pricing counter-proposal in front of Maria. | [CP →](1p/pebble-foods/peb-5200/cp.md) · [W20 →](sprints/2026-W20/peb-5200.md) |
 <!-- cp-engine:end active-pipeline -->
 
-<!-- cp-engine:start active-1p -->
-## 1P — Active Engagements (3)
-_Three engagements in delivery_
+<!-- cp-engine:start active-tree -->
+## Active workstreams (5)
+_Five workstreams in motion_
 
-| Account | Code | Project | Owner | Budget | Last activity | One-line summary | CP |
+### Google
+
+| Code | Workstream | Label | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
-| [Google](1p/google/cp.md) | `ggl-5168` | Playbooks (Activation)<br>_Last week: Drew 6h, Tony 2.5h (8.5h total)._ | Drew | $80k | — | Storyboards in flight; client review Wed. | [CP →](1p/google/ggl-5168/cp.md) · [W20 →](sprints/2026-W20/ggl-5168.md) |
-| [Google](1p/google/cp.md) | `ggl-9998` | Internal Scratch | Drew | — | — |  | [CP →](1p/google/ggl-9998/cp.md) · [W20 →](sprints/2026-W20/ggl-9998.md) |
-| [Infoblox](1p/infoblox/cp.md) | `ibx-5153` | Infoblox AI Campaign<br>_Last week: Tony 8h (8h total)._ | Tony | $120k | — | Carol framework deck in client review. | [CP →](1p/infoblox/ibx-5153/cp.md) · [W20 →](sprints/2026-W20/ibx-5153.md) |
-<!-- cp-engine:end active-1p -->
+| `ggl-5168`<br>_Last week: Drew 6h, Tony 2.5h (8.5h total)._ | ggl-5168 Playbooks (Activation) | Job | Drew | $80k | — | Storyboards in flight; client review Wed. | [CP →](1p/google/ggl-5168/cp.md) · [W20 →](sprints/2026-W20/ggl-5168.md) |
+| `ggl-9998` | ggl-9998 Internal Scratch | Job | Drew | — | — |  | [CP →](1p/google/ggl-9998/cp.md) · [W20 →](sprints/2026-W20/ggl-9998.md) |
 
-<!-- cp-engine:start active-fpsf -->
-## First Person — Internal Tooling (0)
+### Infoblox
 
-| Repo | Status | Owner | Description | Last activity | GitHub | CP |
-|---|---|---|---|---|---|---|
-<!-- cp-engine:end active-fpsf -->
+| Code | Workstream | Label | Owner | Budget | Last activity | One-line summary | CP |
+|---|---|---|---|---|---|---|---|
+| `ibx-5153`<br>_Last week: Tony 8h (8h total)._ | ibx-5153 Infoblox AI Campaign | Job | Tony | $120k | — | Carol framework deck in client review. | [CP →](1p/infoblox/ibx-5153/cp.md) · [W20 →](sprints/2026-W20/ibx-5153.md) |
 
-<!-- cp-engine:start active-fpsf-initiatives -->
-## First Person — Initiatives (1)
-_One initiatives in motion_
+### First Person
 
-| Code | Initiative | Owner | Status | Last activity | One-line summary | CP |
-|---|---|---|---|---|---|---|
-| `1pi-9005-mission-control` | Mission Control | Tony | Open | — | Workspace IA shipped; integrations registry live. | [CP →](firstpersonsf/1pi-9005-mission-control/cp.md) · [W20 →](sprints/2026-W20/1pi-9005-mission-control.md) |
-<!-- cp-engine:end active-fpsf-initiatives -->
+| Code | Workstream | Label | Owner | Budget | Last activity | One-line summary | CP |
+|---|---|---|---|---|---|---|---|
+| `1pi-9005-mission-control` | Mission Control | Initiative | Tony | — | — | Workspace IA shipped; integrations registry live. | [CP →](firstpersonsf/1pi-9005-mission-control/cp.md) · [W20 →](sprints/2026-W20/1pi-9005-mission-control.md) |
 
-<!-- cp-engine:start active-canonic -->
-## Canonic (0)
+### Canonic
 
-| Repo | Status | Owner | Description | Last activity | GitHub | CP |
-|---|---|---|---|---|---|---|
-<!-- cp-engine:end active-canonic -->
-
-<!-- cp-engine:start active-canonic-initiatives -->
-## Canonic — Initiatives (1)
-_One initiatives in motion_
-
-| Code | Initiative | Owner | Status | Last activity | One-line summary | CP |
-|---|---|---|---|---|---|---|
-| `cnc-9004-storyos` | StoryOS | Drew | Open | — | Substrate design in review. | [CP →](canonic/cnc-9004-storyos/cp.md) · [W20 →](sprints/2026-W20/cnc-9004-storyos.md) |
-<!-- cp-engine:end active-canonic-initiatives -->
+| Code | Workstream | Label | Owner | Budget | Last activity | One-line summary | CP |
+|---|---|---|---|---|---|---|---|
+| `cnc-9004-storyos` | StoryOS | Initiative | Drew | — | — | Substrate design in review. | [CP →](canonic/cnc-9004-storyos/cp.md) · [W20 →](sprints/2026-W20/cnc-9004-storyos.md) |
+<!-- cp-engine:end active-tree -->
 
 <!-- cp-engine:start last-week-workload -->
 ## Last week's workload (week of 2026-05-04)

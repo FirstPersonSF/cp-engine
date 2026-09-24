@@ -169,8 +169,25 @@ def test_sync_lays_out_the_tree_and_folds_the_account_node(tmp_path: Path) -> No
     body = account_cp.read_text()
     assert "Account CP" in body
     assert f"MC-id: {ACCOUNT.mc2_id}" in body
-    assert "<!-- cp-engine:start project-facts -->" not in body
-    assert "<!-- cp-engine:start current-sprint -->" not in body
+    # #303: the one template — the account CP carries the full region set
+    # plus `children`; no agreement, so no `envelope-strip`.
+    assert "<!-- cp-engine:start project-facts -->" in body
+    assert "<!-- cp-engine:start current-sprint -->" in body
+    assert "<!-- cp-engine:start children -->" in body
+    assert "<!-- cp-engine:start envelope-strip -->" not in body
+    assert "| **Type** | Account |" in body
+    assert "[→](ggl-5300-go-safety/cp.md)" in body
+    # The program (no agreement in this roster) carries `children` but no
+    # envelope; its grandchild-depth job links through path_for.
+    program_cp = (tmp_path / "1p/google/ggl-5300-go-safety/cp.md").read_text()
+    assert "<!-- cp-engine:start children -->" in program_cp
+    assert "<!-- cp-engine:start envelope-strip -->" not in program_cp
+    assert "[→](ggl-5136-go-safety-website/cp.md)" in program_cp
+    # The job below it has an agreement and no children: envelope, no
+    # children region.
+    job_cp = (tmp_path / "1p/google/ggl-5300-go-safety/ggl-5136-go-safety-website/cp.md").read_text()
+    assert "<!-- cp-engine:start envelope-strip -->" in job_cp
+    assert "<!-- cp-engine:start children -->" not in job_cp
 
     assert (tmp_path / "1p/google/ggl-5168-activation/cp.md").is_file()
     assert (tmp_path / "1p/google/ggl-5300-go-safety/cp.md").is_file()
@@ -179,18 +196,28 @@ def test_sync_lays_out_the_tree_and_folds_the_account_node(tmp_path: Path) -> No
     # No stray `1p/ggl-5216-google/` engagement dir for the account node.
     assert not (tmp_path / "1p" / "ggl-5216-google").exists()
 
-    # master-cp: the account node is not a job row; every job is.
+    # master-cp (#303): the account node heads its company's block in the
+    # tree at depth 0; the jobs indent below it, to any depth.
     master = (tmp_path / "master-cp.md").read_text()
-    assert "`ggl-5216-google`" not in master
-    assert "`ggl-5168-activation`" in master
+    assert "<!-- cp-engine:start active-tree -->" in master
+    assert "### Google" in master
+    assert "| `ggl-5216-google` | ggl-5216-google | Account |" in master  # name == code in this roster
+    assert "| └─ `ggl-5168-activation` |" in master
+    assert "| &nbsp;&nbsp;└─ `ggl-5136-go-safety-website` |" in master
     assert "1p/google/ggl-5300-go-safety/ggl-5136-go-safety-website/cp.md" in master
 
-    # D8: the account node has a sprint file, in the initiative shape (no
-    # client-communication surfaces of its own), and is not in the index.
+    # D8: the account node has a sprint file from the one sprint template;
+    # as a parent its where-it-stands lists its children and its
+    # carry-forward is the subtree rollup. Not in the per-week index.
     week_dir = next((tmp_path / "sprints").iterdir())
     account_sprint = (week_dir / "ggl-5216-google.md").read_text()
-    assert "Initiative CP](../../1p/google/cp.md)" in account_sprint
-    assert "## Client communication" not in account_sprint
+    assert "Project CP](../../1p/google/cp.md)" in account_sprint
+    assert "### Workstreams" in account_sprint
+    assert "- **ggl-5168-activation** —" in account_sprint
+    assert "- **ggl-5300-go-safety** —" in account_sprint
+    assert "subtree rollup (" in account_sprint
+    assert "| Stage |" not in account_sprint  # no agreement → no Stage row
+    assert "_none_" in account_sprint  # deliverable-cards without an agreement
     job_sprint = (week_dir / "ggl-5136-go-safety-website.md").read_text()
     assert "Project CP](../../1p/google/ggl-5300-go-safety/ggl-5136-go-safety-website/cp.md)" in job_sprint
     index_md = (week_dir / "README.md").read_text()
@@ -199,12 +226,12 @@ def test_sync_lays_out_the_tree_and_folds_the_account_node(tmp_path: Path) -> No
     assert not result.no_op
 
 
-def test_master_cp_render_exposes_an_account_group() -> None:
+def test_master_cp_render_exposes_the_tree() -> None:
     from cp_engine.render import render_master_cp
     from cp_engine.render import _project_view  # noqa: F401 — sanity import
 
-    # The template does not render the group yet (#303 builds the tree
-    # region); the renderer already computes it.
+    # The `active_tree` view the template renders (#303): companies in
+    # order, rows depth-first with their depth.
     import cp_engine.render as render_mod
 
     captured: dict = {}
@@ -224,11 +251,19 @@ def test_master_cp_render_exposes_an_account_group() -> None:
         render_master_cp(make_config(Path("/tmp/x")), ROSTER, last_sync=_NOW)
     finally:
         render_mod._env = real_env
-    groups = captured["active_groups"]
-    assert [v["code"] for v in groups["account"]] == ["ggl-5216-google"]
-    assert groups["account"][0]["scope"] == "1p"
-    assert groups["account"][0]["dir_slug"] == "google"
-    assert "ggl-5216-google" not in {v["code"] for v in groups["client"]}
+    tree = captured["active_tree"]
+    assert [c["name"] for c in tree["companies"]] == ["Google", "First Person"]
+    google = tree["companies"][0]["rows"]
+    assert [(r["code"], r["depth"]) for r in google] == [
+        ("ggl-5216-google", 0),
+        ("ggl-5168-activation", 1),
+        ("ggl-5300-go-safety", 1),
+        ("ggl-5136-go-safety-website", 2),
+    ]
+    assert google[0]["scope"] == "1p"
+    assert google[0]["dir_slug"] == "google"
+    assert google[0]["label_word"] == "Account"
+    assert "ggl-5216-google" not in {v["code"] for v in captured["active_groups"]["pipeline"]}
 
 
 def test_paths_index_is_written_and_byte_stable_across_syncs(tmp_path: Path) -> None:

@@ -39,10 +39,11 @@ from cp_engine.render import (
     EXEC_SUMMARY_END,
     EXEC_SUMMARY_MIGRATION_SUFFIX,
     EXEC_SUMMARY_START,
+    PROJECT_CP_RETIRED_REGIONS,
     count_exceptions_in_window,
-    render_account_cp,
-    render_account_facts_body,
-    render_account_projects_body,
+    has_region,
+    migrate_regions,
+    project_cp_regions,
     render_claude_md,
     render_dropbox_md,
     render_exceptions_readme,
@@ -376,6 +377,18 @@ def _sync_tenant_inner(
         r for r in _MASTER_REGIONS
         if r not in ("agenda", "sprint-facts-strip", "slack-rollup")
     )
+    # Region-set migration (#303): retire the five old active tables and
+    # insert `active-tree` in their place BEFORE the splice — a missing
+    # region would otherwise read as a schema boundary and trigger a full
+    # rewrite, taking the hand-written areas of master-cp.md with it.
+    if master_path.exists():
+        existing_master = master_path.read_text()
+        migrated_master = migrate_regions(
+            existing_master, new_master, _MASTER_REGIONS, _MASTER_RETIRED_REGIONS
+        )
+        if migrated_master != existing_master and not dry_run:
+            master_path.write_text(migrated_master)
+            files_written.append(master_path)
     if _write_if_changed(
         master_path,
         new_master,
@@ -420,6 +433,12 @@ def _sync_tenant_inner(
     # sits.
     by_code: dict[str, ProjectState] = {p.code: p for p in projects}
 
+    # Open envelope flags (mc-2 mig 193), read ONCE for every node's
+    # `envelope-strip` (#303). None when the backend cannot hand back a
+    # client or the read fails (a database without the table included) —
+    # the strip then renders "—", never a false "none".
+    envelope_flags = _read_envelope_flags(backend)
+
     # The set of (parent path, code, mc2_id) triples that should exist as
     # live working dirs after this sync. Keyed by the containing dir (not
     # the scope) so the deactivation sweep can match each dir against its
@@ -433,14 +452,6 @@ def _sync_tenant_inner(
     # new-source announcement pass after sprint files exist (#153).
     manifest_assets: dict[str, list[dict]] = {}
 
-    # Client companies whose account node is in the roster: their account
-    # cp.md is scaffolded inside the loop below (the node is a workstream
-    # like any other). Companies whose node is absent — held back, or a
-    # roster read without one — keep the separate account-dir pass.
-    account_nodes_by_slug: dict[str, ProjectState] = {
-        company_slug(p.company_name): p for p in projects if p.label == "account"
-    }
-
     # Every workstream gets a working dir (#301): `is_internal` used to skip
     # MC-2's pseudo-projects, and the internal workstreams now ARE rows
     # carrying that flag.
@@ -448,7 +459,6 @@ def _sync_tenant_inner(
         rel_parent = parent_path_for(project, by_code)
         parent_dir = config.root / rel_parent
         project_dir = config.root / path_for(project, by_code)
-        is_account_node = project.label == "account"
 
         # Find an existing dir for this project wherever it sits: under its
         # expected parent first (name drift, legacy bare-code dirs), then
@@ -517,29 +527,16 @@ def _sync_tenant_inner(
             else:
                 project_dir.mkdir(parents=True, exist_ok=True)
 
-        if is_account_node:
-            # The account node's cp.md is the account CP (D5): scaffold it
-            # from the account template when missing and re-splice its two
-            # engine regions every sync — exactly what the separate account
-            # pass did before #302. #303 unifies the template.
-            children = tuple(
-                p for p in projects
-                if p.company_kind == "client"
-                and p.code != project.code
-                and company_slug(p.company_name) == company_slug(project.company_name)
-            )
-            files_written.extend(
-                _ensure_account_cp(
-                    project_dir,
-                    slug=company_slug(project.company_name),
-                    display=project.company_name or company_slug(project.company_name),
-                    account_projects=children,
-                )
-            )
-
+        # ONE template for every node (#303): an account node's cp.md is
+        # the account CP (D5) rendered from `project-cp.md.j2` like any
+        # other workstream — its `children` region is the old account
+        # projects table generalised, its account rows fold into Facts.
         cp_path = project_dir / "cp.md"
-        if not cp_path.exists() and not is_account_node:
-            body = render_project_cp(config, project, tracked_issues=(), by_code=by_code)
+        if not cp_path.exists():
+            body = render_project_cp(
+                config, project, tracked_issues=(), by_code=by_code,
+                envelope_flags=envelope_flags,
+            )
             cp_path.write_text(body)
             files_written.append(cp_path)
 
@@ -594,18 +591,43 @@ def _sync_tenant_inner(
         # always carry the markers, so this guard only skips genuinely-legacy
         # files (leaving them as-is, same as the current-sprint/strip splices,
         # which seed-or-skip rather than rewrite).
-        if cp_path.exists() and "<!-- cp-engine:start project-facts -->" in (
-            cp_path.read_text()
-        ):
+        #
+        # #303: the same pass first migrates the file's REGION SET to the
+        # one the unified template derives for this node — inserting a
+        # missing region at its template position with its rendered block
+        # (an account CP gains project-facts/current-sprint/tracked-issues/
+        # strips/exec-summary; an initiative CP gains tracked-issues,
+        # inbound-strip, stakeholders-strip), retiring the account CP's
+        # `account-facts` + `projects`, and dropping `children` /
+        # `envelope-strip` when the node no longer qualifies. Only files
+        # that carry at least one engine marker are touched: a marker-less
+        # hand-crafted cp.md is left alone, as before. Then `project-facts`,
+        # `envelope-strip` and `children` are spliced from the fresh render.
+        if cp_path.exists() and "<!-- cp-engine:start " in cp_path.read_text():
             facts_full_body = render_project_cp(
-                config, project, tracked_issues=(), by_code=by_code
+                config, project, tracked_issues=(), by_code=by_code,
+                envelope_flags=envelope_flags,
             )
+            wanted = project_cp_regions(project, by_code)
+            retired = PROJECT_CP_RETIRED_REGIONS + tuple(
+                r for r in ("children", "envelope-strip") if r not in wanted
+            )
+            existing_cp = cp_path.read_text()
+            migrated_cp = migrate_regions(existing_cp, facts_full_body, wanted, retired)
+            if migrated_cp != existing_cp:
+                cp_path.write_text(migrated_cp)
+                if cp_path not in files_written:
+                    files_written.append(cp_path)
             # (Unreachable under dry_run — the loop `continue`s above before
             # any filesystem mutation — so no dry_run plumbing needed here.)
+            engine_data_regions = tuple(
+                r for r in ("project-facts", "envelope-strip", "children")
+                if r in wanted and has_region(migrated_cp, r)
+            )
             if _write_if_changed(
                 cp_path,
                 facts_full_body,
-                splice_regions=("project-facts",),
+                splice_regions=engine_data_regions,
             ) and cp_path not in files_written:
                 files_written.append(cp_path)
 
@@ -739,38 +761,11 @@ def _sync_tenant_inner(
                     project.code, exc, exc_info=True,
                 )
 
-    # Account CP scaffolding (v0.8.17+, 1p-only) — for every client company
-    # WITHOUT an account node in the roster (held back, or a roster read
-    # without one), scaffold `1p/<company-slug>/cp.md` from the account
-    # template and re-splice the `account-facts` and `projects` engine
-    # regions on every sync. Companies whose account node IS in the roster
-    # got exactly this inside the project loop above (#302). FPSF/Canonic
-    # already nest by self-company at the scope level and don't get this
-    # layer.
-    accounts_to_active_projects: dict[tuple[str, str], list[ProjectState]] = {}
-    for project in projects:
-        if project.company_kind != "client":
-            continue
-        slug = company_slug(project.company_name)
-        if slug in account_nodes_by_slug:
-            continue
-        # Display name falls back to the slug if company_name is missing;
-        # company_slug already normalizes None to "unknown".
-        display = project.company_name or slug
-        accounts_to_active_projects.setdefault((slug, display), []).append(project)
-
-    for (slug, display), account_projects in accounts_to_active_projects.items():
-        if dry_run:
-            break  # account/sprint/deactivation passes are write-heavy; the
-            # dry-run report covers master-cp + CLAUDE + new project CPs.
-        files_written.extend(
-            _ensure_account_cp(
-                config.root / "1p" / slug,
-                slug=slug,
-                display=display,
-                account_projects=tuple(account_projects),
-            )
-        )
+    # No separate account-dir pass any more (#303): the account CP is the
+    # account NODE's cp.md, rendered from the one template inside the loop
+    # above. A client company whose node is held back from the roster gets
+    # no `1p/<company>/cp.md` — the tree region groups its jobs by company
+    # regardless, and an existing file there is left untouched.
 
     # Sprint files — per-project per-sprint markdown for the partners' weekly
     # review. Generated for every active project that the master CP also
@@ -888,11 +883,6 @@ def _sync_tenant_inner(
                 )
                 continue
             parsed_files.append(sf)
-            if project.code in account_codes:
-                # The account CP has no `current-sprint` region yet (#303
-                # unifies the template); seeding markers into it would
-                # rewrite a hand-maintained file.
-                continue
             link_path = f"../../sprints/{week_iso}/{project.code}.md"
             block = render_current_sprint_block(sf, link_path=link_path)
             existing = cp_path.read_text()
@@ -928,8 +918,7 @@ def _sync_tenant_inner(
 
             # `_week.md` — week-scope handwritten notes (themes, attendance,
             # meta). Created on first sync of a new week and never touched
-            # again — handwritten content is sacred, like weekly-cp.md. The
-            # weekly-cp.md `themes-strip` engine-managed region reads from
+            # again — handwritten content is sacred. The tenant rollup reads
             # this file's `## Themes` section.
             week_path = config.root / "sprints" / week_iso / "_week.md"
             if not week_path.exists():
@@ -954,7 +943,7 @@ def _sync_tenant_inner(
             today_for_strips = sync_clock.date()
             parsed_tuple = tuple(parsed_files)
             for project in projects:
-                if not _is_active_for_sprint(project) or project.code in account_codes:
+                if not _is_active_for_sprint(project):
                     continue
                 cp_path = config.root / path_for(project, by_code) / "cp.md"
                 if not cp_path.exists():
@@ -1016,43 +1005,10 @@ def _sync_tenant_inner(
             ):
                 files_written.append(master_path)
 
-        # Phase 1.2 (v0.8.5) — weekly-cp.md strip regions. Only fires when
-        # weekly-cp.md exists (it's scaffolded once per tenant; sync no
-        # longer "never touches it" — it now maintains the three engine-
-        # managed regions inside while preserving handwritten content).
-        weekly_path = config.root / "weekly-cp.md"
-        if parsed_files and weekly_path.exists():
-            from cp_engine.aggregators import aggregate_tenant_strips
-            from cp_engine.render import render_weekly_strip_bodies
-            from cp_engine.sprints import (
-                parse_themes_from_week_file,
-                prior_sprint_week_iso as _prior_iso,
-            )
-            # Collect themes from current + prior week's _week.md (covers
-            # the 2-week tenant_themes window without scanning the whole
-            # sprints/ tree).
-            themes: list = []
-            for w in (week_iso, _prior_iso(sync_clock)):
-                wpath = config.root / "sprints" / w / "_week.md"
-                themes.extend(parse_themes_from_week_file(wpath))
-            tenant_strips = aggregate_tenant_strips(
-                tuple(parsed_files), tuple(themes), sync_clock.date()
-            )
-            bodies = render_weekly_strip_bodies(tenant_strips)
-            existing_weekly = weekly_path.read_text()
-            seeded_weekly = _ensure_weekly_strip_markers(existing_weekly)
-            new_weekly = seeded_weekly
-            for region, body in bodies.items():
-                try:
-                    new_weekly = splice_managed_region(new_weekly, region, body)
-                except Exception as exc:
-                    logger.warning(
-                        "Skipping %s splice on weekly-cp.md: %s", region, exc,
-                    )
-            if new_weekly != existing_weekly:
-                weekly_path.write_text(new_weekly)
-                if weekly_path not in files_written:
-                    files_written.append(weekly_path)
+        # weekly-cp.md is no longer an engine surface (#303, plan D8): its
+        # three strip regions are gone with the template; the tenant rollup
+        # renders in master-cp.md's `agenda`, and a parent node's rollup in
+        # its own sprint file. A file still on disk is never touched here.
 
     # Exceptions README — engine-managed listing of session captures from
     # unregistered repos. Only render when the directory exists (creating it
@@ -1146,14 +1102,21 @@ _MASTER_REGIONS = (
     "slack-rollup",
     "exceptions-summary",
     "active-pipeline",
+    "active-tree",
+    "last-week-workload",
+    "holding-subtable",
+    "closed-recent",
+)
+
+# The five per-scope active tables `active-tree` replaced (#303, plan D9).
+# A master-cp.md still carrying them is migrated in place on the next
+# sync: the five blocks go, `active-tree` lands where `active-1p` was.
+_MASTER_RETIRED_REGIONS = (
     "active-1p",
     "active-fpsf",
     "active-fpsf-initiatives",
     "active-canonic",
     "active-canonic-initiatives",
-    "last-week-workload",
-    "holding-subtable",
-    "closed-recent",
 )
 
 
@@ -1857,44 +1820,6 @@ def _migrate_quick_resume_to_exec_summary(body: str, *, today: str) -> str:
     return before + _build_exec_summary_region(source, today=today) + after
 
 
-_WEEKLY_STRIP_REGIONS = (
-    "themes-strip",
-    "decisions-strip",
-    "carry-forward-strip",
-)
-
-
-def _ensure_weekly_strip_markers(body: str) -> str:
-    """Inject empty markers for the three weekly-cp.md strip regions.
-
-    Existing tenants have weekly-cp.md without these markers. Sync needs
-    to add them on first v0.8.5 sync without touching handwritten content.
-
-    Insertion anchor: immediately before `## Active research` (the natural
-    position per the new template — strips between the handwritten Quick
-    Resume / Decisions and the handwritten Active research). Falls back
-    to end-of-file if no anchor.
-
-    Idempotent: regions already present are skipped.
-    """
-    new_blocks = []
-    for region in _WEEKLY_STRIP_REGIONS:
-        start = f"<!-- cp-engine:start {region} -->"
-        if start in body:
-            continue
-        end = f"<!-- cp-engine:end {region} -->"
-        new_blocks.append(f"{start}\n{end}\n")
-    if not new_blocks:
-        return body
-    block = "\n".join(new_blocks) + "\n"
-    anchor = "## Active research"
-    if anchor in body:
-        return body.replace(anchor, block + "\n" + anchor, 1)
-    if not body.endswith("\n"):
-        body += "\n"
-    return body + "\n" + block
-
-
 # Field separator (US, ASCII 0x1F) between git-log fields. Subjects can
 # contain tabs, pipes, colons, etc. — US is reserved for this purpose and
 # never appears in real subjects.
@@ -2401,45 +2326,26 @@ def _git_mv(tenant_root: Path, src: Path, dst: Path) -> bool:
     return result.returncode == 0 and dst.exists() and not src.exists()
 
 
-def _ensure_account_cp(
-    account_dir: Path,
-    *,
-    slug: str,
-    display: str,
-    account_projects: tuple[ProjectState, ...],
-) -> list[Path]:
-    """Scaffold `<account_dir>/cp.md` from the account template when missing
-    and re-splice its `account-facts` + `projects` engine regions.
+def _read_envelope_flags(backend: Backend) -> "list[dict] | None":
+    """The open `workstream_flags` rows, or None when they cannot be read.
 
-    Returns the paths written. Re-splices even on first scaffold so first-
-    render and re-render are byte-stable — otherwise small whitespace
-    differences between the template's `{{ block }}` spacing and the
-    splicer's strip-and-rejoin make the next sync re-write the file
-    unnecessarily. Handwritten content outside the markers is byte-stable.
+    Best-effort by design: the flag state is one row of a strip, and a
+    failed read must render as UNKNOWN ("—") rather than block sync or read
+    as "none". Needs a backend that can hand back its client
+    (`SpineClientProvider`); the test fakes cannot, and render "—".
     """
-    account_cp_path = account_dir / "cp.md"
-    first_scaffold = not account_cp_path.exists()
-    if first_scaffold:
-        account_dir.mkdir(parents=True, exist_ok=True)
-        account_cp_path.write_text(render_account_cp(slug, display, account_projects))
+    if not isinstance(backend, SpineClientProvider):
+        return None
+    try:
+        client = backend.spine_client()
+        if client is None:
+            return None
+        from cp_engine import mc2_db
 
-    existing = account_cp_path.read_text()
-    new_body = existing
-    for region, body in (
-        ("account-facts", render_account_facts_body(display, account_projects)),
-        ("projects", render_account_projects_body(account_projects)),
-    ):
-        try:
-            new_body = splice_managed_region(new_body, region, body)
-        except Exception as exc:
-            logger.warning(
-                "Skipping %s splice for account %s: %s", region, slug, exc,
-            )
-    if new_body != existing:
-        account_cp_path.write_text(new_body)
-    if first_scaffold or new_body != existing:
-        return [account_cp_path]
-    return []
+        return mc2_db.fetch_open_workstream_flags(client)
+    except Exception as exc:  # noqa: BLE001 — a strip row, never a sync failure
+        logger.info("envelope flags unavailable (%s); rendering as unknown", exc)
+        return None
 
 
 def plan_sprint_renames(

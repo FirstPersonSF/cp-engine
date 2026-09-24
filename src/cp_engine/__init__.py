@@ -33,7 +33,6 @@ from cp_engine.render import (
     render_linked_repo_md,
     render_master_cp,
     render_project_cp,
-    render_weekly_cp,
     splice_managed_region,
 )
 from cp_engine.status import (
@@ -84,7 +83,6 @@ __all__ = [
     "BackendUnavailable",
     # render
     "render_master_cp",
-    "render_weekly_cp",
     "render_project_cp",
     "render_linked_repo_md",
     "render_claude_md",

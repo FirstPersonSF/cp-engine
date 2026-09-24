@@ -34,11 +34,14 @@ from cp_engine.state import (
     LinkedRepo,
     ProjectState,
     SprintFile,
+    children_of,
     dir_name_for,
+    display_name,
+    effective_label,
     parent_path_for,
+    path_for,
     company_slug,
-    dir_slug,
-    scope_for,
+    tree_depth,
 )
 from cp_engine.status import is_active_status
 
@@ -71,12 +74,31 @@ class MarkerInverted(RenderError):
 # spelled-out count: f"{Count} {state_phrase}".
 _SECTION_STATE_PHRASES: dict[str, str] = {
     "pipeline": "deals in flight",
-    "client": "engagements in delivery",
-    "self_fpsf": "tools in active build",
-    "self_canonic": "projects in flight",
-    "self_fpsf_initiatives": "initiatives in motion",
-    "self_canonic_initiatives": "initiatives in motion",
+    "tree": "workstreams in motion",
 }
+
+# The label words the tree and the Facts tables render. `ProjectState.label`
+# is the derived vocabulary (design doc 2026-09-22, decision 3); this is
+# only its capitalised spelling.
+_LABEL_WORDS: dict[str, str] = {
+    "account": "Account",
+    "program": "Program",
+    "job": "Job",
+    "initiative": "Initiative",
+}
+
+# The kind word in a scaffolded cp.md's H1 ("Google — Account CP"). A job
+# keeps the established "Project CP" phrase the sprint files link back to.
+_CP_KIND_WORDS: dict[str, str] = {
+    "account": "Account",
+    "program": "Program",
+    "job": "Project",
+    "initiative": "Initiative",
+}
+
+# Company display order in the tree region (D9): client companies first
+# (sorted by name), then First Person, then Canonic.
+_COMPANY_KIND_ORDER: dict[str, int] = {"client": 0, "self-fpsf": 1, "self-canonic": 2}
 
 # Spell out small counts; digits otherwise. Index 0 is intentionally
 # lowercase "zero" since count==0 suppresses the line (the helper
@@ -147,15 +169,15 @@ def render_master_cp(
 ) -> str:
     """Render the full master-cp.md body.
 
-    v0.2: groups entries by `companies.kind` into three sections:
-    - 1P (client engagements + repos owned by client companies)
-    - First Person (self-fpsf repos)
-    - Canonic (self-canonic repos)
+    Two active regions (#303, plan D9):
 
-    The 1P section is engagement-shaped with Stage / Budget; the FPSF and
-    Canonic sections split self-company workstreams by SHAPE (#301): the
-    ones with an agreement land in the legacy repo-shaped table, the ones
-    without in the initiative table. Nothing branches on a source kind.
+    - `active-pipeline` — Deal-stage jobs, stage-sorted, as before.
+    - `active-tree` — every other active workstream, grouped by company
+      (client companies first, sorted by name, then First Person, then
+      Canonic), each company a `### <Company>` block whose rows are the
+      company's tree: the account node at depth 0, its children indented
+      below it, programs nesting to any depth. The Label column reads the
+      derived `ProjectState.label`; Workstream reads `state.display_name`.
 
     When `current_sprint_iso` is provided (e.g. "2026-W19"), each active
     project view dict gets a `sprint_link` pointing at the per-project
@@ -183,21 +205,19 @@ def render_master_cp(
     by_code = {p.code: p for p in projects}
 
     # Account nodes (#302) are workstreams but not jobs: they never sit in
-    # a job table. They surface as their own group (`active_groups.account`)
-    # for the tree region #303 builds.
+    # the holding / closed-recent job tables. They are the roots of their
+    # company's block in the tree region.
     def is_account(p: ProjectState) -> bool:
-        return p.label == "account"
+        return effective_label(p, by_code) == "account"
 
-    accounts = [p for p in projects if is_account(p)]
     active = [p for p in projects if is_active(p) and not is_account(p)]
     holding = [p for p in projects if is_holding(p) and not is_account(p)]
     closed_recent = [
         p for p in projects if is_closed_recent(p) and not is_account(p)
     ]
 
-    # Group active entries by company_kind. 1P bucket gets a sub-split
-    # into Pipeline (Deal status) and Active Engagements (Open status),
-    # with Pipeline sorted by stage progression.
+    # Pipeline (Deal status) keeps its own region, sorted by stage
+    # progression; everything else active lands in the tree.
     _STAGE_ORDER = {"Inquiry": 0, "Negotiation": 1, "Contract": 2, "Won": 3, "Lost": 4}
 
     def to_view(p: ProjectState) -> dict:
@@ -219,56 +239,82 @@ def render_master_cp(
         return view
 
     def group(active_list: list[ProjectState]) -> dict:
-        client_entries = [p for p in active_list if p.company_kind == "client"]
         # Pipeline keeps stage-progression sort (Inquiry → Negotiation →
         # Contract); deals are usually few enough that grouping by
-        # account adds noise without value.
+        # account adds noise without value. Deal-stage rows never appear
+        # in the tree — one row per workstream across the two regions.
         pipeline = sorted(
-            (p for p in client_entries if p.status == "Deal"),
+            (p for p in active_list if p.status == "Deal"),
             key=lambda p: (_STAGE_ORDER.get(p.deal_stage or "", 99), p.code),
         )
-        # Active client engagements sort by (account_slug, code) so
-        # projects from the same account cluster — matches the new
-        # account-nested layout's grouping intent.
-        client_active = sorted(
-            (p for p in client_entries if p.status == "Open"),
-            key=lambda p: (
-                company_slug(p.company_name),
-                p.code,
-            ),
-        )
-        # Self-company workstreams split by shape (#301): with an agreement
-        # they take the legacy repo-shaped table (Description / GitHub
-        # columns); without one — the internal workstreams — the sibling
-        # initiative-shaped table. Same files, same regions, until #303.
-        def _self_repos(kind: str) -> list[ProjectState]:
-            return [
-                p for p in active_list
-                if p.company_kind == kind and p.has_agreement
-            ]
-        def _self_initiatives(kind: str) -> list[ProjectState]:
-            return [
-                p for p in active_list
-                if p.company_kind == kind and not p.has_agreement
-            ]
-        return {
-            "pipeline": [to_view(p) for p in pipeline],
-            "client": [to_view(p) for p in client_active],
-            "self_fpsf": [to_view(p) for p in _self_repos("self-fpsf")],
-            "self_canonic": [to_view(p) for p in _self_repos("self-canonic")],
-            "self_fpsf_initiatives": [
-                to_view(p) for p in _self_initiatives("self-fpsf")
-            ],
-            "self_canonic_initiatives": [
-                to_view(p) for p in _self_initiatives("self-canonic")
-            ],
-            # Every account node, whatever its status, sorted by company
-            # slug — the roots of the tree region (#303 consumes this).
-            "account": [
-                to_view(p)
-                for p in sorted(accounts, key=lambda p: (company_slug(p.company_name), p.code))
-            ],
-        }
+        return {"pipeline": [to_view(p) for p in pipeline]}
+
+    def tree(active_list: list[ProjectState]) -> dict:
+        """The `active-tree` view: companies in display order, each with
+        its rows depth-first. A row is in the tree when it is active and
+        not Deal-stage; an account node heads its block whenever it is
+        active itself OR has a row below it."""
+        in_tree = {p.code for p in active_list if p.status != "Deal"}
+        for p in projects:
+            if is_account(p) and is_active(p):
+                in_tree.add(p.code)
+
+        def _company_key(p: ProjectState) -> tuple:
+            return (
+                _COMPANY_KIND_ORDER.get(p.company_kind, 99),
+                (p.company_name or company_slug(p.company_name)).lower(),
+                p.company_name or "",
+            )
+
+        # Roots: nodes in the tree whose parent is not itself a tree row
+        # (top-level, or under a parent that is held back / inactive), plus
+        # account nodes that only head other rows.
+        def _parent_in_tree(p: ProjectState) -> bool:
+            return bool(p.parent_code) and p.parent_code in in_tree
+
+        by_company: dict[tuple, list[ProjectState]] = {}
+        for p in projects:
+            if p.code not in in_tree:
+                continue
+            if _parent_in_tree(p):
+                continue
+            by_company.setdefault(_company_key(p), []).append(p)
+        # An account node heads its company block even when inactive, as
+        # long as something below it renders; add it as a root then.
+        for p in projects:
+            if not is_account(p) or p.code in in_tree:
+                continue
+            if any(c.code in in_tree for c in children_of(p.code, by_code)):
+                in_tree.add(p.code)
+                key = _company_key(p)
+                by_company.setdefault(key, [])
+                by_company[key] = [
+                    r for r in by_company[key] if not (r.parent_code == p.code)
+                ]
+                by_company[key].append(p)
+
+        def _rows(node: ProjectState, depth: int, out: list[dict]) -> None:
+            view = to_view(node)
+            view["depth"] = depth
+            view["tree_prefix"] = _tree_prefix(depth)
+            out.append(view)
+            for child in children_of(node.code, by_code):
+                if child.code in in_tree:
+                    _rows(child, depth + 1, out)
+
+        companies: list[dict] = []
+        total = 0
+        for key in sorted(by_company):
+            roots = sorted(
+                by_company[key],
+                key=lambda p: (0 if is_account(p) else 1, p.code),
+            )
+            rows: list[dict] = []
+            for root in roots:
+                _rows(root, 0, rows)
+            total += len(rows)
+            companies.append({"name": key[2] or key[1], "rows": rows})
+        return {"companies": companies, "count": total}
 
     # Derive the short week label ("W19") from the ISO week ("2026-W19")
     # so the template doesn't have to do string ops. Drops zero-padding
@@ -304,9 +350,12 @@ def render_master_cp(
     )
 
     grouped = group(active)
+    active_tree = tree(active)
     section_summaries = {
-        key: _section_summary(len(grouped[key]), phrase)
-        for key, phrase in _SECTION_STATE_PHRASES.items()
+        "pipeline": _section_summary(
+            len(grouped["pipeline"]), _SECTION_STATE_PHRASES["pipeline"]
+        ),
+        "tree": _section_summary(active_tree["count"], _SECTION_STATE_PHRASES["tree"]),
     }
 
     template = _env().get_template("master-cp.md.j2")
@@ -316,6 +365,7 @@ def render_master_cp(
         today=_today_iso(),
         last_sync_iso=last_sync.isoformat(),
         active_groups=grouped,
+        active_tree=active_tree,
         section_summaries=section_summaries,
         workload_rollup=_rollup_view(allocations),
         workload_week=allocations.week_start if allocations else None,
@@ -329,18 +379,12 @@ def render_master_cp(
     )
 
 
-def render_weekly_cp(config: TenantConfig) -> str:
-    """Render the weekly-cp.md body (skeleton for hand-editing).
-
-    Sync never touches this file; this renderer is used only on first
-    creation or on `cp render --force-weekly`.
-    """
-    template = _env().get_template("weekly-cp.md.j2")
-    return template.render(
-        tenant=config,
-        engine_version=ENGINE_VERSION,
-        today=_today_iso(),
-    )
+def _tree_prefix(depth: int) -> str:
+    """The indentation in the tree's Code cell: nothing at depth 0, a
+    `└─ ` at depth 1, two non-breaking spaces more per level below that."""
+    if depth <= 0:
+        return ""
+    return "&nbsp;&nbsp;" * (depth - 1) + "└─ "
 
 
 def render_project_strip_bodies(project_strips: object | None) -> dict[str, str]:
@@ -434,70 +478,6 @@ stakeholders-strip===START===
 """
 
 
-def render_weekly_strip_bodies(tenant_strips: object | None) -> dict[str, str]:
-    """Render the three weekly-cp.md strip-region bodies as a dict.
-
-    Returns ``{"themes-strip": <body>, "decisions-strip": <body>,
-    "carry-forward-strip": <body>}``. Used by sync to splice these
-    regions into weekly-cp.md on every sync after the file is first
-    scaffolded.
-
-    Pass None / empty TenantStrips → renders placeholder bodies matching
-    the first-scaffold template (keeps "first sync" vs. "subsequent sync"
-    output stable).
-    """
-    return _render_strip_template(_WEEKLY_STRIPS_TEMPLATE, tenant_strips=tenant_strips)
-
-
-_WEEKLY_STRIPS_TEMPLATE = """\
-themes-strip===START===
-## Themes (auto-aggregated from sprints/<W##>/_week.md, last 2 weeks)
-{% if tenant_strips and tenant_strips.themes %}
-{% for t in tenant_strips.themes %}
-- [{{ t.date }}] {{ t.text }}
-{%- endfor %}
-{%- else %}
-- _No themes captured in the last 2 weeks._
-{%- endif %}
-===END===
-decisions-strip===START===
-## Decisions (cross-cutting, auto-aggregated from sprint files, last 4 weeks)
-{% if tenant_strips and tenant_strips.cross_cutting_decisions %}
-{% for d in tenant_strips.cross_cutting_decisions %}
-- [{{ d.date }} · `{{ d.project_code }}`] {{ d.text }}
-{%- endfor %}
-{%- else %}
-- _No cross-cutting decisions captured in the last 4 weeks._
-{%- endif %}
-===END===
-carry-forward-strip===START===
-## Carry-forward across the tenant (auto-aggregated)
-{% if tenant_strips and (tenant_strips.carry_forward.escalated_risks or tenant_strips.carry_forward.stale_asks or tenant_strips.carry_forward.decisions_due) %}
-{% if tenant_strips.carry_forward.escalated_risks %}
-**Escalated risks**
-{% for r in tenant_strips.carry_forward.escalated_risks %}
-- `{{ r.project_code }}`: {{ r.text }}
-{%- endfor %}
-{% endif %}
-{% if tenant_strips.carry_forward.stale_asks %}
-**Open asks aged > 7 days**
-{% for a in tenant_strips.carry_forward.stale_asks %}
-- `{{ a.project_code }}` ({{ a.aged_days }}d): {{ a.text }}
-{%- endfor %}
-{% endif %}
-{% if tenant_strips.carry_forward.decisions_due %}
-**Decisions due (next +2 sprints)**
-{% for d in tenant_strips.carry_forward.decisions_due %}
-- `{{ d.project_code }}`{% if d.target_date %} ({{ d.target_date }}){% endif %}: {{ d.text }}
-{%- endfor %}
-{% endif %}
-{%- else %}
-- _Nothing to carry forward._
-{%- endif %}
-===END===
-"""
-
-
 def render_sprint_week(
     *,
     week_iso: str,
@@ -510,10 +490,10 @@ def render_sprint_week(
     meta) that doesn't belong to any single project. Per-project sprint
     files hold project-specific content.
 
-    Like `weekly-cp.md`, this file is created once and never touched by
-    sync afterward — handwritten content is sacred. The `weekly-cp.md`
-    `themes-strip` engine-managed region reads from this file's
-    `## Themes` section to surface week themes at the tenant level.
+    This file is created once and never touched by sync afterward —
+    handwritten content is sacred. The tenant rollup (`aggregators.
+    aggregate_subtree_strips(None, …)`) reads this file's `## Themes`
+    section to surface week themes at the tenant level.
     """
     template = _env().get_template("sprint-week.md.j2")
     return template.render(
@@ -526,25 +506,56 @@ def render_sprint_week(
 
 
 def uses_initiative_shape(project: ProjectState) -> bool:
-    """True when a workstream renders through the initiative-shaped
-    templates: no commercial envelope and not under a client company.
+    """True for a workstream with no commercial envelope that is not under
+    a client company — the internal-initiative shape.
 
-    THE one rule (#301) that replaces `source == "initiative"` for template
-    selection (`initiative-cp.md.j2`, `initiative-sprint.md.j2`) and for
-    the `engagement_shape` view flag the project template branches on. A
-    client job whose `deal_stage` was never filled still renders
-    engagement-shaped — the client side is what the shape is about.
+    Since #303 no template is picked on this: every node renders through
+    `project-cp.md.j2` / `sprint-cp.md.j2`, and the region set is derived
+    per node (`project_cp_regions`). It remains the one rule the transcript
+    prompt chooser (`plan_from_transcript`) reads. A client job whose
+    `deal_stage` was never filled still counts as engagement-shaped — the
+    client side is what the shape is about.
     """
     return not project.has_agreement and project.company_kind != "client"
 
 
-def uses_account_shape(project: ProjectState) -> bool:
-    """True for a client company's account node (#302). Its cp.md is the
-    account CP (`account-cp.md.j2`); its sprint file (D8:
-    `sprints/<W##>/ggl-5216-google.md`) takes the initiative shape — no
-    client-communication surfaces of its own — until #303 unifies the
-    sprint template."""
-    return project.label == "account"
+# The engine-managed regions of a cp.md in template order. Every node
+# carries the base set; `envelope-strip` is present iff the node has an
+# agreement, `children` iff it has children in the roster (#303: the set
+# is DERIVED per node, not per template).
+PROJECT_CP_REGIONS: tuple[str, ...] = (
+    "project-facts",
+    "envelope-strip",
+    "children",
+    "current-sprint",
+    "tracked-issues",
+    "inbound-strip",
+    "recent-decisions-strip",
+    "open-asks-strip",
+    "stakeholders-strip",
+    "exec-summary",
+)
+
+# Regions earlier templates wrote into cp.md files that the unified
+# template no longer carries: the account CP's two regions (their content
+# folded into `project-facts` and `children`). Sync retires them on the
+# next run; hand-written text around them is untouched.
+PROJECT_CP_RETIRED_REGIONS: tuple[str, ...] = ("account-facts", "projects")
+
+
+def project_cp_regions(
+    project: ProjectState, by_code: "Mapping[str, ProjectState] | None" = None
+) -> tuple[str, ...]:
+    """The regions THIS node's cp.md carries, in template order."""
+    roster = by_code or {}
+    out: list[str] = []
+    for region in PROJECT_CP_REGIONS:
+        if region == "envelope-strip" and not project.has_agreement:
+            continue
+        if region == "children" and not children_of(project.code, roster):
+            continue
+        out.append(region)
+    return tuple(out)
 
 
 def render_project_cp(
@@ -554,11 +565,19 @@ def render_project_cp(
     current_sprint_block: str | None = None,
     project_strips: object | None = None,
     by_code: "Mapping[str, ProjectState] | None" = None,
+    envelope_flags: "list[dict] | None" = None,
 ) -> str:
-    """Render a project CP from the empty template.
+    """Render a workstream's cp.md from the one template (#303).
 
-    Only used on first creation. Subsequent updates touch only the
-    engine-managed regions via splice_managed_region.
+    Used on first creation, and re-rendered on every sync so the engine
+    regions (`project-facts`, `envelope-strip`, `children`) can be spliced
+    from it. The region set is derived per node — see `project_cp_regions`.
+
+    `by_code` is the roster: it resolves the node's children (the
+    `children` region and the account Facts rows) and their links.
+    `envelope_flags` is the open `workstream_flags` rows (each a dict with
+    `project_id`, `parent_id`, `kind`, `excess`) when the caller could
+    read them; None renders the flag row as "—" (unknown, not "none").
 
     `current_sprint_block` is the rendered "Current sprint" section
     (from `cp_engine.sprints.render_current_sprint_block`) for projects
@@ -576,130 +595,160 @@ def render_project_cp(
     empty placeholders); pass a ProjectStrips instance on subsequent
     syncs.
     """
-    # Internal workstreams use a slimmer template — no client communication
-    # surfaces, no tracked-issues table, just decisions + open asks + the
-    # standard sprint/notes structure. Picked on SHAPE (#301): no agreement
-    # and not under a client company. See docs/plans/2026-05-14-internal-
-    # initiatives.md; #303 folds the two templates into one.
-    template_name = (
-        "initiative-cp.md.j2" if uses_initiative_shape(project) else "project-cp.md.j2"
-    )
-    template = _env().get_template(template_name)
+    roster = by_code or {}
+    template = _env().get_template("project-cp.md.j2")
     return template.render(
         tenant=config,
-        project=_project_view(project, by_code),
+        project=_project_view(project, roster),
         engine_version=ENGINE_VERSION,
         today=_today_iso(),
         tracked_issues=[_issue_view(i) for i in tracked_issues],
         current_sprint_block=current_sprint_block,
         project_strips=project_strips,
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────
-#  Account CP renderers (v0.8.17+, 1p-only)
-# ──────────────────────────────────────────────────────────────────────
-
-
-def render_account_facts_body(
-    account_display: str,
-    projects_in_account: tuple[ProjectState, ...],
-) -> str:
-    """Body for the `account-facts` engine-managed region.
-
-    Small at-a-glance table mirroring the project-cp `Facts` table's
-    shape. Built from the projects already in scope, not a separate
-    backend query — `account_display` and the active-project count are
-    derivable from `projects_in_account` alone.
-
-    Returns the inner body (no marker lines) so the caller can either
-    pass it to the template on first scaffold or hand it to
-    `splice_managed_region` on subsequent syncs.
-    """
-    active_count = len(projects_in_account)
-    last_touched = max(
-        (p.last_touched for p in projects_in_account if p.last_touched),
-        default=None,
-    )
-    last_touched_short = _short(last_touched) if last_touched else "—"
-    # Owners aggregate the per-project owner field. None is filtered;
-    # duplicates collapse; the order is stable (first-seen) so re-renders
-    # are byte-stable when the project set is unchanged.
-    seen: dict[str, None] = {}
-    for p in projects_in_account:
-        if p.owner:
-            seen.setdefault(p.owner, None)
-    owners_str = ", ".join(seen) if seen else "—"
-    return (
-        f"## Facts\n\n"
-        f"| | |\n"
-        f"|---|---|\n"
-        f"| **Account** | {account_display} |\n"
-        f"| **Active projects** | {active_count} |\n"
-        f"| **Owners** | {owners_str} |\n"
-        f"| **Last project activity** | {last_touched_short} |\n"
-    )
-
-
-def render_account_projects_body(
-    projects_in_account: tuple[ProjectState, ...],
-) -> str:
-    """Body for the `projects` engine-managed region.
-
-    Lists every project under the account with code → linked dir_slug.
-    Projects live one level under their account on disk, so links are
-    literal relative paths (`<dir_slug>/cp.md`) — no `../` walk.
-
-    Empty list is allowed (e.g. an account where every project just
-    drained); the caller still calls this so the region stays in sync
-    rather than leaving stale content from a prior sync.
-    """
-    if not projects_in_account:
-        return "## Projects\n\n_No active projects._\n"
-    rows = []
-    # Stable order: by code so re-renders are byte-stable.
-    for p in sorted(projects_in_account, key=lambda x: x.code):
-        slug = dir_slug(p.code, p.name)
-        stage_or_status = p.deal_stage or p.status
-        owner = p.owner or "—"
-        last_touched_short = _short(p.last_touched) if p.last_touched else "—"
-        rows.append(
-            f"| [`{p.code}`]({slug}/cp.md) | {p.name} | {stage_or_status} | "
-            f"{owner} | {last_touched_short} |"
-        )
-    table = (
-        "## Projects\n\n"
-        "### Active\n"
-        "| Code | Project | Stage | Owner | Last touched |\n"
-        "|---|---|---|---|---|\n"
-        + "\n".join(rows)
-        + "\n"
-    )
-    return table
-
-
-def render_account_cp(
-    account_slug: str,
-    account_display: str,
-    projects_in_account: tuple[ProjectState, ...],
-) -> str:
-    """Render a full account `cp.md` from the empty template.
-
-    Only used on first scaffold of an account dir. Subsequent syncs
-    re-splice only the `account-facts` and `projects` engine regions
-    via `splice_managed_region` — handwritten content outside those
-    regions is byte-stable.
-    """
-    template = _env().get_template("account-cp.md.j2")
-    return template.render(
-        account={"slug": account_slug, "display": account_display},
-        account_facts_block=render_account_facts_body(
-            account_display, projects_in_account
+        children=_children_rows(project, roster),
+        envelope=(
+            _envelope_view(project, roster, envelope_flags)
+            if project.has_agreement
+            else None
         ),
-        projects_block=render_account_projects_body(projects_in_account),
-        engine_version=ENGINE_VERSION,
-        today=_today_iso(),
+        account_facts=_account_facts(project, roster),
     )
+
+
+def _relative_link(from_path: str, to_path: str) -> str:
+    """`to_path/cp.md` relative to the dir `from_path` (both tenant-relative,
+    POSIX). A child nested under the node needs no `../`; a child that is
+    NOT nested (a re-parented job whose dir has not moved yet) still
+    resolves."""
+    src = [seg for seg in from_path.split("/") if seg]
+    dst = [seg for seg in to_path.split("/") if seg]
+    common = 0
+    while common < len(src) and common < len(dst) and src[common] == dst[common]:
+        common += 1
+    up = [".."] * (len(src) - common)
+    return "/".join(up + dst[common:] + ["cp.md"])
+
+
+def _children_rows(
+    project: ProjectState, roster: "Mapping[str, ProjectState]"
+) -> list[dict]:
+    """Rows for the `children` region: every non-Archived direct child,
+    sorted by code, linked through `path_for` so grandchildren resolve."""
+    here = path_for(project, roster)
+    rows: list[dict] = []
+    for child in children_of(project.code, roster):
+        if child.status == "Archived":
+            continue
+        rows.append(
+            {
+                "code": child.code,
+                "display_name": display_name(child, roster),
+                "label_word": _LABEL_WORDS[effective_label(child, roster)],
+                "status": child.deal_stage if child.status == "Deal" and child.deal_stage else child.status,
+                "owner": child.owner,
+                "last_touched_short": _short(child.last_touched),
+                "cp_link": _relative_link(here, path_for(child, roster)),
+            }
+        )
+    return rows
+
+
+def _account_facts(
+    project: ProjectState, roster: "Mapping[str, ProjectState]"
+) -> dict:
+    """The three account rows folded into `project-facts` for an account
+    node (formerly the account CP's `account-facts` region): active
+    descendants, their owners (first-seen order, deduped) and the newest
+    `last_touched` below the node."""
+    from cp_engine.state import descendants_of
+
+    below = [
+        p for p in descendants_of(project.code, roster)
+        if is_active_status(p.status)
+    ]
+    owners: dict[str, None] = {}
+    for p in below:
+        if p.owner:
+            owners.setdefault(p.owner, None)
+    last = max((p.last_touched for p in below if p.last_touched), default=None)
+    return {
+        "active_count": len(below),
+        "owners": ", ".join(owners) if owners else None,
+        "last_activity_short": _short(last) if last else None,
+    }
+
+
+def _envelope_view(
+    project: ProjectState,
+    roster: "Mapping[str, ProjectState]",
+    flags: "list[dict] | None",
+) -> dict:
+    """The `envelope-strip` rows for a node with an agreement (plan D7).
+
+    Budget is the node's own; the children sum counts every non-Archived
+    direct child with a budget (mirroring mc-2 mig 193's trigger, which
+    checks one level); "without budget" counts the rest. The flag row
+    reads the open `workstream_flags` rows: as PARENT (`parent_id` is this
+    node) it names the flagged children; as CHILD (`project_id` is this
+    node) it reports the breach of its parent's envelope. `flags is None`
+    means the table could not be read — rendered "—", never "none".
+    """
+    kids = [
+        c for c in children_of(project.code, roster) if c.status != "Archived"
+    ]
+    budgeted = [c for c in kids if c.budget is not None]
+    without = len(kids) - len(budgeted)
+    total = sum(c.budget for c in budgeted) if budgeted else None
+    if not kids:
+        children_sum_short = "—"
+    else:
+        children_sum_short = (
+            f"{_format_budget(total) or '—'} across {len(budgeted)} of {len(kids)}"
+        )
+    if not kids:
+        without_line = "—"
+    elif without == 0:
+        without_line = "none"
+    else:
+        without_line = f"{without} child{'ren' if without != 1 else ''} without budget"
+
+    if flags is None:
+        flag_line = "—"
+    else:
+        me = project.mc2_id
+        by_id = {p.mc2_id: p for p in roster.values() if p.mc2_id}
+        as_parent = [f for f in flags if me and f.get("parent_id") == me]
+        as_child = [f for f in flags if me and f.get("project_id") == me]
+        parts: list[str] = []
+        if as_parent:
+            excess = max(_as_float(f.get("excess")) for f in as_parent)
+            names = sorted(
+                (by_id[f["project_id"]].code if f.get("project_id") in by_id else str(f.get("project_id")))
+                for f in as_parent
+            )
+            parts.append(
+                f"⚠️ over envelope by {_format_budget(excess) or excess}: "
+                + ", ".join(f"`{n}`" for n in names)
+            )
+        if as_child:
+            excess = max(_as_float(f.get("excess")) for f in as_child)
+            parts.append(
+                f"⚠️ over parent envelope by {_format_budget(excess) or excess}"
+            )
+        flag_line = " · ".join(parts) if parts else "none"
+    return {
+        "budget_short": _format_budget(project.budget),
+        "children_sum_short": children_sum_short,
+        "children_without_budget_line": without_line,
+        "flag_line": flag_line,
+    }
+
+
+def _as_float(value) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 _GITIGNORE_BODY = """\
@@ -1160,6 +1209,138 @@ def splice_managed_region(file_contents: str, region: str, new_body: str) -> str
 
 
 # ──────────────────────────────────────────────────────────────────────
+#  Region-set migration (#303): ensure / retire regions in place
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _region_block_re(region: str) -> "re.Pattern[str]":
+    """The whole marker block of `region` — start marker line through end
+    marker line (inclusive of its newline when present) — plus at most ONE
+    following blank line, so removing a block does not leave a double gap."""
+    esc = re.escape(region)
+    return re.compile(
+        rf"^<!-- cp-engine:start {esc} -->\n.*?^<!-- cp-engine:end {esc} -->(?:\n)?(?:\n)?",
+        re.S | re.M,
+    )
+
+
+def region_block(rendered: str, region: str) -> str:
+    """The marker block for `region` from a freshly rendered full body —
+    markers included, trailing blank line NOT included. ValueError when the
+    rendered body has no such region."""
+    start_marker = f"<!-- cp-engine:start {region} -->"
+    end_marker = f"<!-- cp-engine:end {region} -->"
+    start = rendered.find(start_marker)
+    end = rendered.find(end_marker, start if start >= 0 else 0)
+    if start < 0 or end < 0:
+        raise ValueError(f"rendered body carries no region {region!r}")
+    return rendered[start : end + len(end_marker)]
+
+
+def has_region(body: str, region: str) -> bool:
+    return f"<!-- cp-engine:start {region} -->" in body
+
+
+def retire_regions(body: str, regions: "tuple[str, ...]") -> str:
+    """Remove every listed region — markers AND body — from `body`. Text
+    outside the markers is untouched byte-for-byte; the one blank line
+    that followed a removed block goes with it."""
+    out = body
+    for region in regions:
+        if not has_region(out, region):
+            continue
+        out = _region_block_re(region).sub("", out, count=1)
+    return out
+
+
+def ensure_regions(
+    body: str,
+    rendered: str,
+    regions: "tuple[str, ...]",
+    *,
+    fallback_pos: int | None = None,
+) -> str:
+    """Insert every region of `regions` that `body` lacks, at the position
+    the template gives it, with the block `rendered` carries for it.
+
+    `regions` is the wanted set in TEMPLATE order. A missing region lands
+    after the end marker of the nearest preceding wanted region that IS in
+    the file; failing that, before the start marker of the nearest
+    following one; failing that, at `fallback_pos` (where a retired region
+    used to sit — see `migrate_regions`) or at the end of the file.
+    Hand-written text is never moved or rewritten — only marker blocks are
+    inserted, each separated from its neighbours by one blank line.
+    Idempotent: a body carrying every region is returned unchanged.
+    """
+    out = body
+    for idx, region in enumerate(regions):
+        if has_region(out, region):
+            continue
+        try:
+            block = region_block(rendered, region)
+        except ValueError:
+            continue
+        # Nearest preceding present region → insert after its end marker.
+        anchor_after = None
+        for prev in reversed(regions[:idx]):
+            if has_region(out, prev):
+                anchor_after = f"<!-- cp-engine:end {prev} -->"
+                break
+        if anchor_after is not None:
+            pos = out.index(anchor_after) + len(anchor_after)
+            out = out[:pos] + "\n\n" + block + out[pos:]
+            continue
+        anchor_before = None
+        for nxt in regions[idx + 1 :]:
+            if has_region(out, nxt):
+                anchor_before = f"<!-- cp-engine:start {nxt} -->"
+                break
+        if anchor_before is not None:
+            pos = out.index(anchor_before)
+            out = out[:pos] + block + "\n\n" + out[pos:]
+            continue
+        if fallback_pos is not None and 0 <= fallback_pos <= len(out):
+            pos = fallback_pos
+            out = out[:pos] + block + "\n\n" + out[pos:]
+            continue
+        if not out.endswith("\n"):
+            out += "\n"
+        out = out + "\n" + block + "\n"
+    return out
+
+
+def migrate_regions(
+    body: str,
+    rendered: str,
+    wanted: "tuple[str, ...]",
+    retired: "tuple[str, ...]" = (),
+) -> str:
+    """Retire `retired`, then ensure `wanted` (template order) — the one
+    pass sync runs on an existing engine file whose region set has moved
+    under it (an account CP scaffolded before #303, an initiative CP
+    without `tracked-issues`, a master-cp with the five old active tables).
+
+    When the file carries NONE of the wanted regions (the old account CP:
+    only `account-facts` + `projects`), the new set lands where the first
+    retired region stood — above the hand-written sections, as the
+    template lays it out — rather than at the end of the file.
+    """
+    first_retired: int | None = None
+    for region in retired:
+        marker = f"<!-- cp-engine:start {region} -->"
+        pos = body.find(marker)
+        if pos >= 0 and (first_retired is None or pos < first_retired):
+            first_retired = pos
+    stripped = retire_regions(body, retired)
+    fallback: int | None = None
+    if first_retired is not None and not any(has_region(stripped, r) for r in wanted):
+        # Retiring removed text BEFORE `first_retired` only if a retired
+        # block sat earlier — impossible, `first_retired` is the earliest.
+        fallback = min(first_retired, len(stripped))
+    return ensure_regions(stripped, rendered, wanted, fallback_pos=fallback)
+
+
+# ──────────────────────────────────────────────────────────────────────
 #  Agenda rollup
 # ──────────────────────────────────────────────────────────────────────
 
@@ -1357,8 +1538,9 @@ def _project_view(
     every multi-project renderer passes it.
     """
     roster = by_code or {}
+    label = effective_label(p, roster)
     # Account view fields — populated for client projects so the
-    # master-cp 1P tables can render the leading Account column.
+    # master-cp pipeline table can render the leading Account column.
     # account_link is a literal relative path from the tenant root to
     # the account cp.md (`1p/<slug>/cp.md`). For non-client projects
     # both are None and the template's account column simply renders
@@ -1377,12 +1559,15 @@ def _project_view(
         # MC-2 row uuid — stamped into cp.md frontmatter so dir-location
         # can anchor on the stable id instead of the (renameable) code.
         "mc2_id": p.mc2_id,
-        # Workstream shape (#301). `engagement_shape` is the one boolean the
-        # templates branch on — the same rule that picks the template file.
+        # Workstream shape (#301/#303). Templates branch on `has_agreement`,
+        # `label` and `company_kind` directly; nothing picks a template.
         "has_agreement": p.has_agreement,
         "parent_code": p.parent_code,
-        "label": p.label,
-        "engagement_shape": not uses_initiative_shape(p),
+        "label": label,
+        "label_word": _LABEL_WORDS[label],
+        "cp_kind": _CP_KIND_WORDS[label],
+        "display_name": display_name(p, roster),
+        "depth": tree_depth(p, roster),
         "company_kind": p.company_kind,
         # Path-building parent + dir name (#302: the tree is recursive).
         # Templates render `{{ p.scope }}/{{ p.dir_slug }}/cp.md` links.

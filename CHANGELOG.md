@@ -172,6 +172,128 @@ its account node: the account's dir is the existing `1p/<company>/`.
   depth-3 dir. `test_workstream_schema`'s hold-back test inverts (the
   account node now flows through, labelled `account`). No golden changed.
 
+### #303 — template collapse, `active-tree`, subtree rollup strips (phase 3.4–3.5)
+
+Plan §3.4–3.5, decision D9. ONE template per surface; the region set a
+node carries is DERIVED from its shape, never from a template choice.
+
+- **Five templates deleted:** `initiative-cp.md.j2`, `initiative-sprint.md.j2`,
+  `repo.md.j2` (unused since #301), `account-cp.md.j2`, `weekly-cp.md.j2`.
+  With them: `render_weekly_cp`, `render_weekly_strip_bodies`,
+  `_WEEKLY_STRIPS_TEMPLATE`, `render_account_cp`,
+  `render_account_facts_body`, `render_account_projects_body`,
+  `uses_account_shape`, sync's weekly-strip splice,
+  `_ensure_weekly_strip_markers`, `_ensure_account_cp` and the separate
+  account-dir pass. `weekly-cp.md` is no longer an engine surface (D8):
+  sync never touches it; a file still on disk is left alone, and every
+  reader (agenda, prep-planning, ingest, modes, attention digest — #305's)
+  already guards its absence. `uses_initiative_shape` stays as the rule
+  the transcript prompt chooser reads.
+- **`project-cp.md.j2` for every node.** All engagement regions kept, plus
+  two optional ones: **`children`** (the old account-CP projects table
+  generalised — Code | Workstream | Label | Status | Owner | Last touched |
+  CP, every non-Archived direct child, linked through `path_for` so a
+  grandchild-depth job resolves) rendered iff the node has children in the
+  roster, and **`envelope-strip`** (Budget · Children (sum) · Without
+  budget · Flags) rendered iff `has_agreement`. The flag row reads the
+  OPEN `workstream_flags` rows (mc-2 mig 193; `mc2_db.Tables.
+  WORKSTREAM_FLAGS`, `fetch_open_workstream_flags`, explicit columns), as
+  parent ("over envelope by $Xk: `child`, …") and as child ("over parent
+  envelope by $Xk"); a read that fails — a database without the table
+  included — renders "—", never a false "none". The account CP's
+  `account-facts` rows (Account · Active projects · Owners · Last project
+  activity) fold into `project-facts` for `label == "account"`; Facts
+  gains a `Type` row (the label word) for every node; the H1 reads
+  "Account CP" / "Program CP" / "Initiative CP" / "Project CP" (job).
+  `render.project_cp_regions(project, by_code)` is the derived set;
+  `PROJECT_CP_RETIRED_REGIONS = ("account-facts", "projects")`.
+- **`sprint-cp.md.j2` for every node.** Stage/Budget facts rows and real
+  deliverable cards need an agreement — `deliverable-cards` renders
+  `_none_` without one (region present, so the splicer finds it); the
+  communication heading reads Client under a client company and Team
+  otherwise (the parser already read both, #273); the CP link is always
+  `← [Project CP]`. A PARENT's file (account node, program) lists each
+  active child's one-liner under `where-it-stands` (`### Workstreams`,
+  `- **<code>** — <summary>`) and its `carry-forward` is the subtree
+  rollup; the rollup bullets carry no bracket prefix on purpose, so
+  `parse_sprint_file` reads the parent's carry-forward as empty and the
+  tenant agenda counts a child's risk once.
+- **Region-set migration on sync (`render.migrate_regions` =
+  `retire_regions` + `ensure_regions`).** A cp.md carrying at least one
+  engine marker is brought to its derived set in place: a missing region
+  is INSERTED at the template's position with its rendered block (after
+  the nearest preceding present region, else before the nearest following
+  one, else where the first retired region stood, else at EOF); retired
+  regions and no-longer-qualifying `children` / `envelope-strip` blocks
+  are removed with their one trailing blank line. Existing regions are
+  never moved; hand-written text outside markers is byte-for-byte intact
+  (verified on copies of the live account, initiative and master files).
+  A marker-less hand-crafted cp.md is left alone by this pass, as before.
+  Then `project-facts`, `envelope-strip` and `children` are spliced from
+  the fresh render every sync.
+- **`master-cp.md.j2`: one `active-tree` region** replaces `active-1p`,
+  `active-fpsf`, `active-fpsf-initiatives`, `active-canonic` and
+  `active-canonic-initiatives` (D9). Grouped by company — client
+  companies first sorted by name, then First Person, then Canonic — each
+  a `### <Company>` block with columns Code | Workstream | Label | Owner |
+  Budget | Last activity | One-line summary | CP; the account node's row
+  first at depth 0 (summary = its Exec Summary one-liner, budget = its
+  envelope), children depth-indented in the Code cell (`└─ `, two
+  `&nbsp;` more per level), siblings in code order. An inactive account
+  node still heads its block when something below it is active; a company
+  with no account node in the roster roots its jobs at depth 0. Label
+  reads `ProjectState.label`; Workstream reads `state.display_name`.
+  `active-pipeline` (Deal-stage jobs, stage-sorted) stays a separate
+  region above it and a Deal row never appears in the tree;
+  `holding-subtable`, `closed-recent`, `agenda`, `slack-rollup`,
+  `exceptions-summary`, `sprint-facts-strip`, `last-week-workload`
+  unchanged. `render_master_cp` returns `active_tree` (`companies`,
+  `count`) and `active_groups` shrinks to `pipeline`. On sync the five
+  old regions are retired (markers + bodies) and `active-tree` inserted
+  where `active-1p` was — BEFORE the splice, so the missing region never
+  reads as a schema boundary and triggers a full rewrite of the
+  hand-written areas (`sync._MASTER_RETIRED_REGIONS`). Not under
+  `--dry-run`.
+- **Rollup.** `aggregators.aggregate_subtree_strips(root_code | None,
+  sprint_files, themes, today, by_code)`: `None` is the tenant; otherwise
+  the files of the root and its descendants (via `parent_code`).
+  `aggregate_tenant_strips` is the `None` spelling. `TenantStrips` keeps
+  its name and gains `root_code` + `workstream_count`. Sync's sprint-file
+  loop now runs CHILDREN FIRST (`tree_depth` descending) so a parent's
+  file is rendered from its children's files written in the same call
+  (`sprints._parent_rollup`). Spine authority does not roll up —
+  `pull_element_from_project` untouched.
+- **Reference style.** `state.display_name(p, by_code)`: account /
+  program / initiative → the name alone; job → `<code> <name>`. Also
+  `state.children_of`, `descendants_of`, `tree_depth`, `effective_label`
+  (the label the reader set, else derived — checking the agreement BEFORE
+  the account rule, so a parentless client job whose account node is not
+  in hand never reads as an account).
+- **Goldens.** Dropped: `project-cp-initiative`, `scaffold-initiative`,
+  `account-cp`, `weekly-cp`, `weekly-strip-bodies`. Added:
+  `project-cp-account`, `project-cp-program`, `master-cp-tree`,
+  `scaffold-program`. Regenerated: `master-cp-full` / `master-cp-empty`
+  (tree region), `project-cp-engagement` (Type row, envelope-strip,
+  workstream wording), `scaffold-engagement` / `-minimal` /
+  `scaffold-from-prior` (Slack-digest placeholder says "workstream"),
+  `sprint-index` (program row replaces the initiative row). Two renders
+  are byte-identical.
+- **Tests.** `tests/test_workstream_templates.py`: region ensure /
+  retire / migrate as pure functions; an old account cp.md and an old
+  initiative cp.md migrated through sync with hand text intact and a
+  no-op second sync; a marker-less cp.md untouched; `children` dropped
+  when the children leave; the five master regions retired and
+  `active-tree` inserted (on a copy of the pre-#303 `master-cp-full`
+  golden), not under dry-run; tree company order, indentation per depth,
+  Deal rows in the pipeline, inactive account heading its block; every
+  envelope-strip state (unknown → "—", none, as parent, as child, both);
+  `aggregate_subtree_strips` scoping and the end-to-end parent rollup
+  with the parser reading it back as empty. `test_sync`'s account tests
+  rewritten for the account-node model; `test_paths_tree`,
+  `test_migrate_accounts` (roster carries the account node; the
+  pre-nested dir uses the old-shape account cp.md), `test_mc2_db`
+  (registry), `test_sprint_deliverable_block` (`_none_`) updated.
+
 ## v0.123.1 — 2026-09-24
 
 **Owner-column selects follow the schema too.** Patch. The first `cxp sync`

@@ -27,7 +27,6 @@ from cp_engine import (
     render_linked_repo_md,
     render_master_cp,
     render_project_cp,
-    render_weekly_cp,
     splice_managed_region,
 )
 from cp_engine.state import (
@@ -120,11 +119,11 @@ def test_master_cp_includes_only_active_projects() -> None:
     assert "ggl-2222" not in out  # Archived not surfaced
     assert "ggl-3333" in out  # is_internal gates nothing since #301
 
-    # Engine-managed regions are present (v0.2: three sections per kind)
-    assert "<!-- cp-engine:start active-1p -->" in out
-    assert "<!-- cp-engine:end active-1p -->" in out
-    assert "<!-- cp-engine:start active-fpsf -->" in out
-    assert "<!-- cp-engine:start active-canonic -->" in out
+    # Engine-managed regions are present (#303: ONE tree region)
+    assert "<!-- cp-engine:start active-pipeline -->" in out
+    assert "<!-- cp-engine:start active-tree -->" in out
+    assert "<!-- cp-engine:end active-tree -->" in out
+    assert "<!-- cp-engine:start active-1p -->" not in out
     assert "<!-- cp-engine:start holding-subtable -->" in out
     assert "<!-- cp-engine:start closed-recent -->" in out
     assert "<!-- cp-engine:start last-sync-timestamp -->" in out
@@ -140,10 +139,9 @@ def test_master_cp_one_line_summary_appears() -> None:
 def test_master_cp_handles_no_projects() -> None:
     tenant = make_tenant(with_project=False)
     out = render_master_cp(tenant, (), last_sync=datetime.now(timezone.utc))
-    # All three section regions render even with zero projects
-    assert "<!-- cp-engine:start active-1p -->" in out
-    assert "<!-- cp-engine:start active-fpsf -->" in out
-    assert "<!-- cp-engine:start active-canonic -->" in out
+    # Both active regions render even with zero projects
+    assert "<!-- cp-engine:start active-pipeline -->" in out
+    assert "<!-- cp-engine:start active-tree -->" in out
 
 
 def test_master_cp_exceptions_summary_line_when_count_positive() -> None:
@@ -171,26 +169,6 @@ def test_master_cp_exceptions_summary_omits_line_when_zero() -> None:
     assert "<!-- cp-engine:start exceptions-summary -->" in out
     assert "<!-- cp-engine:end exceptions-summary -->" in out
     assert "**Exceptions:**" not in out
-
-
-# ──────────────────────────────────────────────────────────────────────
-#  Renderer tests — weekly-cp
-# ──────────────────────────────────────────────────────────────────────
-
-
-def test_weekly_cp_template_has_three_engine_regions() -> None:
-    """v0.8.5: weekly-cp.md gains three engine-managed regions inside an
-    otherwise hand-written file. The handwritten sections (Quick Resume,
-    historical Decisions, Active research) must remain present alongside
-    the new strip regions.
-    """
-    out = render_weekly_cp(make_tenant())
-    assert "cp-engine:start themes-strip" in out
-    assert "cp-engine:start decisions-strip" in out
-    assert "cp-engine:start carry-forward-strip" in out
-    assert "Quick Resume" in out
-    assert "handwritten / historical" in out  # the surviving handwritten Decisions list
-    assert "Active research" in out
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -856,7 +834,7 @@ def test_master_cp_section_summary_uses_count_and_state_phrase() -> None:
     body = render_master_cp(tenant, projects, last_sync=datetime.now(timezone.utc))
 
     assert "Three deals in flight" in body
-    assert "Four engagements in delivery" in body
+    assert "Four workstreams in motion" in body
 
 
 # ──────────────────────────────────────────────────────────────────────

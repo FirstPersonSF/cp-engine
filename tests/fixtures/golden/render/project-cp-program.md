@@ -1,12 +1,12 @@
 ---
-Project: Playbooks (Activation)
+Project: Go Safety
 Provenance: Version 0.0.0-golden | 2026-05-13
 Filename: cp.md
-MC-id: 00000000-0000-0000-0000-0000000g5168
+MC-id: 00000000-0000-0000-0000-00000000prg1
 Author: cp-engine (initial scaffold)
 ---
 
-# Playbooks (Activation) — Project CP
+# Go Safety — Program CP
 
 > _<one-line description of what this workstream is and who it's for>_
 
@@ -15,11 +15,11 @@ Author: cp-engine (initial scaffold)
 
 | | |
 |---|---|
-| **Code** | `ggl-5168` |
-| **Type** | Job |
+| **Code** | `ggl-5300-go-safety` |
+| **Type** | Program |
 | **Status** | Open |
-| **Stage** | — |
-| **Budget** | $80k |
+| **Stage** | Won |
+| **Budget** | $150k |
 | **Owner** | Drew |
 | **Client** | Google (GGL) |
 | **Last touched** | 2026-05-12 |
@@ -30,23 +30,23 @@ Author: cp-engine (initial scaffold)
 
 | | |
 |---|---|
-| **Budget** | $80k |
-| **Children (sum)** | — |
-| **Without budget** | — |
-| **Flags** | — |
+| **Budget** | $150k |
+| **Children (sum)** | $90k across 1 of 2 |
+| **Without budget** | 1 child without budget |
+| **Flags** | ⚠️ over envelope by $15k: `ggl-5136-go-safety-website` |
 <!-- cp-engine:end envelope-strip -->
 
+<!-- cp-engine:start children -->
+## Workstreams
+
+| Code | Workstream | Label | Status | Owner | Last touched | CP |
+|---|---|---|---|---|---|---|
+| `ggl-5136-go-safety-website` | ggl-5136-go-safety-website go/safety website | Job | Open | Drew | 2026-05-12 | [→](ggl-5136-go-safety-website/cp.md) |
+| `ggl-5188-calendar` | ggl-5188-calendar Calendar + Maintenance | Job | Open | Tony | 2026-05-12 | [→](ggl-5188-calendar/cp.md) |
+<!-- cp-engine:end children -->
+
 <!-- cp-engine:start current-sprint -->
-## Current sprint — [W20 (May 11 – May 17)](../../sprints/2026-W20/ggl-5168.md)
-
-**Allocation:** Drew 6h
-**Open client asks** (1):
-- Volume forecast from ops team (asked 2026-05-01)
-
-**Active risks** (1):
-- Legal turnaround may slip past May 22
-
-_See [sprint file](../../sprints/2026-W20/ggl-5168.md) for full plan, horizon, and meeting notes._
+_No active sprint file._
 <!-- cp-engine:end current-sprint -->
 
 <!-- cp-engine:start tracked-issues -->
@@ -54,33 +54,26 @@ _See [sprint file](../../sprints/2026-W20/ggl-5168.md) for full plan, horizon, a
 
 | # | Title | Status | Owner | Updated |
 |---|---|---|---|---|
-| #42 | Auth bug | Open | drew | 2026-05-06 |
-| #43 | Migration order | Closed | — | — |
 <!-- cp-engine:end tracked-issues -->
 
 <!-- cp-engine:start inbound-strip -->
 ## Recent inbound (auto-aggregated from sprint files, last 4 weeks)
-
-- [2026-05-12 · Maria] Tier-2 cap doesn't match our 2H projections.
+- _No inbound captured in the last 4 weeks._
 <!-- cp-engine:end inbound-strip -->
 
 <!-- cp-engine:start recent-decisions-strip -->
 ## Recent decisions (auto-aggregated from sprint files, last 4 weeks)
-
-- [2026-05-12] Hold tier-2 cap firm; widen tier-3 ramp.
-- [2026-05-11 · cross-cutting] All Google invoices route through Brandon.
+- _No structured decisions captured in the last 4 weeks._
 <!-- cp-engine:end recent-decisions-strip -->
 
 <!-- cp-engine:start open-asks-strip -->
 ## Open client asks (auto-aggregated from sprint files)
-
-- [2026-05-01 · Maria · **12d stale**] Volume forecast from ops team
+- _No open asks._
 <!-- cp-engine:end open-asks-strip -->
 
 <!-- cp-engine:start stakeholders-strip -->
 ## Stakeholders (auto-aggregated from sprint files)
-
-- **Maria Mraz** — Director · _primary decision-maker_
+- _No stakeholders captured yet._
 <!-- cp-engine:end stakeholders-strip -->
 
 <!-- cp-engine:start exec-summary -->

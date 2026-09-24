@@ -17,6 +17,7 @@ tests/golden_utils.py for the determinism contract.
 from __future__ import annotations
 
 import os
+from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,14 +35,11 @@ from cp_engine import (
     render_linked_repo_md,
     render_master_cp,
     render_project_cp,
-    render_weekly_cp,
 )
 from cp_engine.render import (
-    render_account_cp,
     render_dropbox_md,
     render_exceptions_readme,
     render_project_strip_bodies,
-    render_weekly_strip_bodies,
 )
 from cp_engine.state import (
     CarryForward,
@@ -141,6 +139,52 @@ def make_initiative(
         one_line_summary=summary,
         mc2_id=mc2_id,
     )
+
+def make_account(
+    code: str,
+    company_name: str,
+    *,
+    company_code: str,
+    budget: float | None = None,
+    owner: str | None = None,
+    mc2_id: str | None = None,
+    status: str = "Open",
+) -> ProjectState:
+    """A client company's account node (#302): no agreement, no parent."""
+    return replace(
+        make_engagement(
+            code, company_name, company_code=company_code,
+            company_name=company_name, budget=budget, owner=owner,
+            mc2_id=mc2_id, status=status,
+        ),
+        has_agreement=False,
+        label="account",
+    )
+
+
+def make_program(
+    code: str,
+    name: str,
+    *,
+    parent_code: str,
+    company_code: str = "GGL",
+    company_name: str = "Google",
+    budget: float | None = None,
+    owner: str | None = "Drew",
+    mc2_id: str | None = None,
+    summary: str | None = None,
+) -> ProjectState:
+    """A program: has an agreement AND children (label derived `program`)."""
+    return replace(
+        make_engagement(
+            code, name, company_code=company_code, company_name=company_name,
+            budget=budget, owner=owner, mc2_id=mc2_id, summary=summary,
+            deal_stage="Won",
+        ),
+        parent_code=parent_code,
+        label="program",
+    )
+
 
 def _mixed_population() -> tuple[ProjectState, ...]:
     """Every shape × every surfaced status: pipeline deals, open client
@@ -324,6 +368,121 @@ def test_golden_master_cp_full(golden_clock, tmp_path: Path) -> None:
     assert_matches_golden("render/master-cp-full.md", out)
 
 
+def _tree_population() -> tuple[ProjectState, ...]:
+    """The tree region's shapes (#303, D9): two client companies with
+    account nodes — Google's tree nests a program with a job below it plus
+    a job directly under the account; Infoblox has one job; a third company
+    (Pebble Foods) has NO account node, so its job roots its own block; an
+    inactive account node (SAP) with an active child still heads its
+    block; First Person carries a program of initiatives; Canonic one
+    initiative. A Deal-stage job under Google lands in the pipeline, not
+    the tree."""
+    google = replace(
+        make_account(
+            "ggl-5216-google", "Google", company_code="GGL", budget=300000.0,
+            owner="Brandon", mc2_id="00000000-0000-0000-0000-00000000acc1",
+        ),
+        one_line_summary="Eleven live jobs; EHS the anchor.",
+    )
+    program = make_program(
+        "ggl-5300-go-safety", "Go Safety", parent_code=google.code,
+        budget=150000.0, mc2_id="00000000-0000-0000-0000-00000000prg1",
+        summary="Site + calendar share one program envelope.",
+    )
+    return (
+        google,
+        program,
+        replace(
+            make_engagement(
+                "ggl-5136-go-safety-website", "go/safety website",
+                budget=90000.0, summary="Launch slipped to W22.",
+            ),
+            parent_code=program.code, label="job",
+        ),
+        replace(
+            make_engagement(
+                "ggl-5168-activation", "Activation", budget=80000.0,
+                summary="Storyboards in flight; client review Wed.",
+            ),
+            parent_code=google.code, label="job",
+        ),
+        replace(
+            make_engagement(
+                "ggl-5210-new-deal", "New Deal", status="Deal",
+                deal_stage="Inquiry", summary="Scoping call booked.",
+            ),
+            parent_code=google.code, label="job",
+        ),
+        make_account(
+            "ibx-5217-infoblox", "Infoblox", company_code="IBX", owner="Tony",
+            mc2_id="00000000-0000-0000-0000-00000000acc2",
+        ),
+        replace(
+            make_engagement(
+                "ibx-5153-ai-campaign", "AI Campaign", company_code="IBX",
+                company_name="Infoblox", owner="Tony", budget=120000.0,
+                summary="Carol framework deck in client review.",
+            ),
+            parent_code="ibx-5217-infoblox", label="job",
+        ),
+        replace(
+            make_engagement(
+                "peb-5200-discovery", "Discovery", company_code="PEB",
+                company_name="Pebble Foods", budget=45000.0,
+                summary="No account node yet; roots its own block.",
+            ),
+            parent_code="peb-5218-pebble-foods", label="job",
+        ),
+        make_account(
+            "sap-5219-sap", "SAP", company_code="SAP", status="Holding",
+            mc2_id="00000000-0000-0000-0000-00000000acc3",
+        ),
+        replace(
+            make_engagement(
+                "sap-5198-ad-videos", "2027 Ad Videos", company_code="SAP",
+                company_name="SAP", budget=425000.0,
+                summary="Creative open; SOW deliberately open.",
+            ),
+            parent_code="sap-5219-sap", label="job",
+        ),
+        replace(
+            make_initiative(
+                "1pi-9010-platform", "Platform",
+                summary="Two internal tools under one roof.",
+            ),
+            label="program",
+        ),
+        replace(
+            make_initiative(
+                "1pi-9005-mission-control", "Mission Control",
+                summary="Workspace IA shipped; integrations registry live.",
+            ),
+            parent_code="1pi-9010-platform", label="initiative",
+        ),
+        make_initiative(
+            "cnc-9004-storyos", "StoryOS", company_kind="self-canonic",
+            company_code="CNC", company_name="Canonic", owner="Drew",
+            summary="Substrate design in review.",
+        ),
+    )
+
+
+def test_golden_master_cp_tree(golden_clock) -> None:
+    """The `active-tree` region alone carries the shapes: company order
+    (clients by name, then First Person, then Canonic), the account node
+    at depth 0, `└─` indentation per level, the derived Label word, the
+    reference-style Workstream name, and the Deal row kept to the
+    pipeline."""
+    out = render_master_cp(
+        make_tenant(),
+        _tree_population(),
+        last_sync=_LAST_SYNC,
+        current_sprint_iso="2026-W20",
+        today=GOLDEN_TODAY,
+    )
+    assert_matches_golden("render/master-cp-tree.md", out)
+
+
 def test_golden_master_cp_empty_tenant(golden_clock) -> None:
     """Zero projects: every section region still renders (so the splicer
     can find them next sync), with no rows and no optional blocks."""
@@ -395,31 +554,71 @@ def test_golden_project_cp_engagement(golden_clock) -> None:
     assert_matches_golden("render/project-cp-engagement.md", out)
 
 
-def test_golden_project_cp_initiative(golden_clock) -> None:
+def test_golden_project_cp_account(golden_clock) -> None:
+    """An account node's cp.md from the ONE template (#303): no
+    `envelope-strip` (no agreement), a `children` region listing every
+    non-Archived child (a program, two jobs, a Deal-stage job showing its
+    stage), and the account rows (active projects / owners / last project
+    activity) folded into Facts."""
+    roster = _tree_population()
+    by_code = {p.code: p for p in roster}
+    account = by_code["ggl-5216-google"]
+    flags = [
+        {"project_id": "00000000-0000-0000-0000-00000000prg1",
+         "parent_id": "00000000-0000-0000-0000-00000000acc1",
+         "kind": "over_envelope", "excess": 5000.0},
+    ]
+    out = render_project_cp(make_tenant(), account, by_code=by_code, envelope_flags=flags)
+    assert_matches_golden("render/project-cp-account.md", out)
+
+
+def test_golden_project_cp_program(golden_clock) -> None:
+    """A program's cp.md: it has an agreement, so `envelope-strip` renders
+    (budget, children sum, the one child without a budget, and an open
+    flag naming the child that breached); its `children` region links the
+    grandchild-depth job through `path_for`."""
+    roster = list(_tree_population())
+    roster.append(
+        replace(
+            make_engagement("ggl-5188-calendar", "Calendar + Maintenance",
+                            owner="Tony", budget=None, summary="No budget yet."),
+            parent_code="ggl-5300-go-safety", label="job",
+        )
+    )
+    by_code = {p.code: p for p in roster}
+    program = by_code["ggl-5300-go-safety"]
+    flags = [
+        {"project_id": by_code["ggl-5136-go-safety-website"].mc2_id or "job-1",
+         "parent_id": "00000000-0000-0000-0000-00000000prg1",
+         "kind": "over_envelope", "excess": 15000.0},
+    ]
+    by_code["ggl-5136-go-safety-website"] = replace(
+        by_code["ggl-5136-go-safety-website"], mc2_id="job-1"
+    )
+    out = render_project_cp(make_tenant(), program, by_code=by_code, envelope_flags=flags)
+    assert_matches_golden("render/project-cp-program.md", out)
+
+
+def test_golden_project_cp_initiative_shape_has_no_envelope(golden_clock) -> None:
+    """An internal workstream (no agreement, no children) renders the base
+    region set only — no `envelope-strip`, no `children`; the flag state
+    is not even asked. Not goldened: a structural assertion is the point."""
     project = make_initiative(
         "1pi-9005-mission-control", "Mission Control",
-        summary="Workspace IA shipped; integrations registry live.",
         mc2_id="00000000-0000-0000-0000-000000000mc2",
     )
     out = render_project_cp(make_tenant(), project)
-    assert_matches_golden("render/project-cp-initiative.md", out)
+    assert "cp-engine:start envelope-strip" not in out
+    assert "cp-engine:start children" not in out
+    assert "cp-engine:start tracked-issues" in out
+    assert "| **Type** | Initiative |" in out
+    assert "## Team" in out
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  account cp.md / repo files / dropbox
+#  repo files / dropbox
 # ──────────────────────────────────────────────────────────────────────
 
-
-def test_golden_account_cp(golden_clock) -> None:
-    projects = (
-        make_engagement("ggl-5168", "Playbooks (Activation)", budget=80000.0),
-        make_engagement(
-            "ggl-5200", "Ads Refresh", status="Deal", deal_stage="Contract",
-            owner="Tony", last_touched=_TOUCHED_LAST_WEEK,
-        ),
-    )
-    out = render_account_cp("google", "Google", projects)
-    assert_matches_golden("render/account-cp.md", out)
 
 def test_golden_linked_repo_md(golden_clock) -> None:
     repo = LinkedRepo(
@@ -449,13 +648,8 @@ def test_golden_dropbox_md(golden_clock) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  weekly-cp.md / CLAUDE.md / exceptions README
+#  CLAUDE.md / exceptions README
 # ──────────────────────────────────────────────────────────────────────
-
-
-def test_golden_weekly_cp(golden_clock) -> None:
-    out = render_weekly_cp(make_tenant())
-    assert_matches_golden("render/weekly-cp.md", out)
 
 
 def test_golden_claude_md_1p(golden_clock) -> None:
@@ -525,35 +719,6 @@ def test_golden_project_strip_bodies(golden_clock) -> None:
     assert_matches_golden("render/project-strip-bodies.md", out)
 
 
-def test_golden_weekly_strip_bodies(golden_clock) -> None:
-    tenant_strips = SimpleNamespace(
-        themes=(
-            SimpleNamespace(date="2026-05-12", text="Maria transition dominates."),
-        ),
-        cross_cutting_decisions=(
-            SimpleNamespace(date="2026-05-12", project_code="ggl-5168",
-                            text="Drop Claude team plan; move to Max plans."),
-        ),
-        carry_forward=SimpleNamespace(
-            escalated_risks=(
-                SimpleNamespace(project_code="peb", text="Legal turnaround risk"),
-            ),
-            stale_asks=(
-                SimpleNamespace(project_code="ggl-5168", aged_days=12,
-                                text="Volume forecast"),
-            ),
-            decisions_due=(
-                SimpleNamespace(project_code="orb", target_date="by W21",
-                                text="Whether to renew"),
-            ),
-        ),
-    )
-    populated = _strips_to_text(render_weekly_strip_bodies(tenant_strips))
-    empty = _strips_to_text(render_weekly_strip_bodies(None))
-    out = f"### populated\n\n{populated}\n### empty\n\n{empty}"
-    assert_matches_golden("render/weekly-strip-bodies.md", out)
-
-
 # ──────────────────────────────────────────────────────────────────────
 #  harness meta-test
 # ──────────────────────────────────────────────────────────────────────
@@ -566,9 +731,9 @@ _UPDATING = os.environ.get("UPDATE_GOLDENS") == "1"
 def test_golden_harness_detects_single_char_drift(golden_clock) -> None:
     """Prove the harness actually bites: a one-character tamper on a
     rendered body must fail with a unified diff naming both sides."""
-    out = render_weekly_cp(make_tenant())
+    out = render_claude_md(make_tenant(name="1p"))
     with pytest.raises(AssertionError) as exc:
-        assert_matches_golden("render/weekly-cp.md", out.replace("Quick", "Qwick", 1))
+        assert_matches_golden("render/claude-md-1p.md", out.replace("Mode", "Moed", 1))
     msg = str(exc.value)
     assert "diverges from golden" in msg
     assert "-" in msg and "+" in msg  # unified diff present

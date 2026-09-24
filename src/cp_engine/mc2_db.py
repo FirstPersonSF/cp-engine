@@ -77,6 +77,10 @@ class Tables:
     # writes go through the team-gated definer fns — never a direct upsert.
     CP_PROMPT = "cp_prompt"
     CP_PROMPT_OVERRIDE = "cp_prompt_override"
+    # Accept-and-flag envelope breaches (mig 193, plan D7). mc-2 owns the
+    # rows (a trigger raises and auto-resolves them); cp-engine only reads
+    # the open ones for the `envelope-strip` region (#303).
+    WORKSTREAM_FLAGS = "workstream_flags"
 
     # public — spine
     SPINE_SUBSTANCE = "spine_substance"
@@ -984,6 +988,31 @@ def fetch_clickup_task_id_map(client: "Client", hashes: list[str]) -> dict[str, 
         for row in (resp.data or [])
         if row.get("clickup_task_id")
     }
+
+
+# workstream_flags — the envelope-strip read (#303). Explicit columns; the
+# table is small (one open row per breached child).
+WORKSTREAM_FLAGS_COLUMNS = "project_id, parent_id, kind, excess, raised_at"
+
+
+def fetch_open_workstream_flags(client: "Client") -> list[dict]:
+    """Every OPEN `workstream_flags` row tenant-wide, as plain dicts.
+
+    One read per sync feeds every node's `envelope-strip`: a node reads the
+    rows where it is the `parent_id` (its children breached its envelope)
+    and where it is the `project_id` (it breached its parent's). Raises on
+    any backend failure — including a missing table on a database that has
+    not taken mig 193 — so the CALLER decides to render "—" rather than
+    "none"; an unknown flag state must not read as a clean one.
+    """
+    rows = (
+        client.table(Tables.WORKSTREAM_FLAGS)
+        .select(WORKSTREAM_FLAGS_COLUMNS)
+        .is_("resolved_at", "null")
+        .execute()
+        .data
+    ) or []
+    return [dict(r) for r in rows]
 
 
 def fetch_element_review_flags(client: "Client", element_id: str) -> list | None:

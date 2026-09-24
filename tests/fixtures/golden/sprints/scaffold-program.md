@@ -1,49 +1,58 @@
 ---
-Project: peb-5100 — Pebble Foods Activation
+Project: ggl-5300-go-safety — Go Safety
 Provenance: Version 0.0.0-golden | 2026-05-13
-Filename: sprints/2026-W20/peb-5100.md
+Filename: sprints/2026-W20/ggl-5300-go-safety.md
 Author: cp-engine (scaffold) + partners (deepening)
 Sprint: 2026-W20
+PriorSprint: 2026-W19
 ---
 
-# peb-5100 — Pebble Foods Activation · Sprint W20 (May 11 – May 17, 2026)
+# ggl-5300-go-safety — Go Safety · Sprint W20 (May 11 – May 17, 2026)
 
-← [Project CP](../../1p/pebble-foods/peb-5100/cp.md) · [Master](../../master-cp.md)
+← [Project CP](../../1p/google/ggl-5300-go-safety/cp.md) · [Master](../../master-cp.md) · [Prior sprint](../2026-W19/ggl-5300-go-safety.md)
 
 <!-- cp-engine:start sprint-facts -->
 | | |
 |---|---|
-| Stage | Negotiation |
+| Stage | Won |
 | Owner | Drew |
-| Budget | $45k |
+| Budget | $150k |
 | Last touched | 2026-05-12 |
-| Last sprint hours | — |
-| Sessions this week | 0 |
-| Open issues | 0 |
+| Last sprint hours | Drew 6.5h · Tony 2h |
+| Sessions this week | 3 |
+| Open issues | 1 |
+| Meetings | [2 this sprint](../../1p/google/ggl-5300-go-safety/meetings/) |
 <!-- cp-engine:end sprint-facts -->
 
 <!-- cp-engine:start where-it-stands -->
 ## Where it stands
 
-**Last stand-up** — —
-_No recent session captured._
+**Last stand-up** — 2026-05-12, Drew
+Reconciled §4.2 redlines with Sam.
+
+### Workstreams
+- **ggl-5136-go-safety-website** — Launch slipped to W22.
+- **ggl-5188-calendar** — _No summary yet._
 
 ### Recent activity
 
 **Commits (last 7 days)**
-- _No commits in the last 7 days._
+- `ab12cd3` pricing model v2 — Drew, 05-12
+- `ef45ab6` tier-3 ramp widened — Tony, 05-11
 
 **Open tracked issues**
-- _None._
+- #42 — Auth bug (Open, updated )
 <!-- cp-engine:end where-it-stands -->
 
 <!-- cp-engine:start carry-forward -->
-## Carried over from prior sprint
-- _Nothing carried over._
+## Carried over — subtree rollup (2 workstreams)
+- **`ggl-5136-go-safety-website`** risk · escalated — Legal turnaround may slip past May 22
+- **`ggl-5188-calendar`** ask · 12d stale — Volume forecast from ops team
+- **`ggl-5136-go-safety-website`** decision due · by W21 — Whether to renew for Q3
+- **`ggl-5136-go-safety-website`** decision · cross-cutting · 2026-05-12 — All Google invoices route through Brandon.
 <!-- cp-engine:end carry-forward -->
 
 ## Client communication
-_Pebble Foods Activation · Maria Mraz & Sam Ito_
 
 ### Outbound
 <!-- <message — `[status · date]` prefix> -->

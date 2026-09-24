@@ -16,9 +16,13 @@ PriorSprint: {{ prior_sprint }}
 <!-- cp-engine:start sprint-facts -->
 | | |
 |---|---|
+{%- if project.has_agreement %}
 | Stage | {{ project.deal_stage or "—" }} |
+{%- endif %}
 | Owner | {{ project.owner or "—" }} |
+{%- if project.has_agreement %}
 | Budget | {{ project.budget_short or "—" }} |
+{%- endif %}
 | Last touched | {{ project.last_touched_short or "—" }} |
 | Last sprint hours | {{ last_sprint_hours_line or "—" }} |
 | Sessions this week | {{ sessions_this_week }} |
@@ -31,6 +35,15 @@ PriorSprint: {{ prior_sprint }}
 
 **Last stand-up** — {{ last_session.date or "—" }}{% if last_session.who %}, {{ last_session.who }}{% endif %}
 {{ last_session.summary or "_No recent session captured._" }}
+{%- if children_summaries is not none %}
+
+### Workstreams
+{%- for c in children_summaries %}
+- **{{ c.code }}** — {{ c.summary or "_No summary yet._" }}
+{%- else %}
+- _No active workstreams below this one._
+{%- endfor %}
+{%- endif %}
 
 ### Recent activity
 
@@ -50,6 +63,24 @@ PriorSprint: {{ prior_sprint }}
 <!-- cp-engine:end where-it-stands -->
 
 <!-- cp-engine:start carry-forward -->
+{%- if subtree_rollup is not none %}
+## Carried over — subtree rollup ({{ subtree_rollup.workstream_count }} workstream{% if subtree_rollup.workstream_count != 1 %}s{% endif %})
+{%- for r in subtree_rollup.carry_forward.escalated_risks %}
+- **`{{ r.project_code }}`** risk · escalated — {{ r.text }}
+{%- endfor %}
+{%- for a in subtree_rollup.carry_forward.stale_asks %}
+- **`{{ a.project_code }}`** ask · {{ a.aged_days }}d stale — {{ a.text }}
+{%- endfor %}
+{%- for d in subtree_rollup.carry_forward.decisions_due %}
+- **`{{ d.project_code }}`** decision due{% if d.target_date %} · {{ d.target_date }}{% endif %} — {{ d.text }}
+{%- endfor %}
+{%- for d in subtree_rollup.cross_cutting_decisions %}
+- **`{{ d.project_code }}`** decision · cross-cutting · {{ d.date }} — {{ d.text }}
+{%- endfor %}
+{%- if not subtree_rollup.carry_forward.escalated_risks and not subtree_rollup.carry_forward.stale_asks and not subtree_rollup.carry_forward.decisions_due and not subtree_rollup.cross_cutting_decisions %}
+- _Nothing to carry forward across the subtree._
+{%- endif %}
+{%- else %}
 ## Carried over from {{ prior_sprint or "prior sprint" }}
 {%- for a in carry_forward.asks %}
 - [ask · {{ a.asked_date }}{% if a.who %} · {{ a.who }}{% endif %}{% if a.by %} · by {{ a.by }}{% endif %}] {{ a.text }}
@@ -63,9 +94,10 @@ PriorSprint: {{ prior_sprint }}
 {%- if not carry_forward.asks and not carry_forward.risks and not carry_forward.horizon %}
 - _Nothing carried over._
 {%- endif %}
+{%- endif %}
 <!-- cp-engine:end carry-forward -->
 
-## Client communication
+## {{ "Client" if project.company_kind == "client" else "Team" }} communication
 {%- if project.contacts %}
 _{{ project.name }} · {{ project.contacts | join(" & ", attribute="name") }}_
 {%- endif %}
@@ -80,7 +112,7 @@ _{{ project.name }} · {{ project.contacts | join(" & ", attribute="name") }}_
 <!-- <what they told us — `[date · who]` prefix> -->
 
 ### Slack digest
-<!-- <weekly summary of the project's Slack channel — `[YYYY-W## · Slack]` prefix; one bullet per week, written by the Sunday cron> -->
+<!-- <weekly summary of the workstream's Slack channel — `[YYYY-W## · Slack]` prefix; one bullet per week, written by the Sunday cron> -->
 
 ### Stakeholders
 <!-- <person and role — `[name · role · context]` prefix; e.g. `[Rena Ramos · Director · primary client decision-maker]`> -->

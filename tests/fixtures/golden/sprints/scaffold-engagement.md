@@ -60,7 +60,7 @@ _Pebble Foods Activation · Maria Mraz & Sam Ito_
 <!-- <what they told us — `[date · who]` prefix> -->
 
 ### Slack digest
-<!-- <weekly summary of the project's Slack channel — `[YYYY-W## · Slack]` prefix; one bullet per week, written by the Sunday cron> -->
+<!-- <weekly summary of the workstream's Slack channel — `[YYYY-W## · Slack]` prefix; one bullet per week, written by the Sunday cron> -->
 
 ### Stakeholders
 <!-- <person and role — `[name · role · context]` prefix; e.g. `[Rena Ramos · Director · primary client decision-maker]`> -->

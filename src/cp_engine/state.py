@@ -484,6 +484,87 @@ class ProjectState:
 WorkstreamLabel = Literal["account", "program", "job", "initiative"]
 
 
+def children_of(
+    code: str, by_code: "Mapping[str, ProjectState]"
+) -> tuple["ProjectState", ...]:
+    """Direct children of `code` in the roster, sorted by code."""
+    return tuple(
+        sorted(
+            (p for p in by_code.values() if p.parent_code == code and p.code != code),
+            key=lambda p: p.code,
+        )
+    )
+
+
+def descendants_of(
+    code: str, by_code: "Mapping[str, ProjectState]"
+) -> tuple["ProjectState", ...]:
+    """Every workstream below `code` (children, grandchildren, …), depth-first
+    by code. Bounded by the roster, so a `parent_code` cycle cannot loop."""
+    out: list[ProjectState] = []
+    seen: set[str] = {code}
+    stack = list(reversed(children_of(code, by_code)))
+    while stack:
+        p = stack.pop()
+        if p.code in seen:
+            continue
+        seen.add(p.code)
+        out.append(p)
+        stack.extend(reversed(children_of(p.code, by_code)))
+    return tuple(out)
+
+
+def tree_depth(project: "ProjectState", by_code: "Mapping[str, ProjectState]") -> int:
+    """How many roster parents sit above `project` (0 for a top-level node)."""
+    depth = 0
+    seen: set[str] = {project.code}
+    current = project
+    while current.parent_code and current.parent_code in by_code:
+        parent = by_code[current.parent_code]
+        if parent.code in seen or depth >= _MAX_TREE_DEPTH:
+            break
+        seen.add(parent.code)
+        depth += 1
+        current = parent
+    return depth
+
+
+def effective_label(
+    project: "ProjectState", by_code: "Mapping[str, ProjectState]"
+) -> WorkstreamLabel:
+    """`project.label` when the reader set it, else derived from the roster
+    (a fake state built without a label still renders a real word).
+
+    The fallback checks the agreement BEFORE the account rule: an account
+    node never carries one (mig 191), so a parentless client row WITH an
+    agreement is a job whose parent is simply not in hand — not an account.
+    `derive_label` keeps its documented order for the reader, which
+    computes `has_children` from the whole table.
+    """
+    if project.label:
+        return project.label
+    if children_of(project.code, by_code):
+        return "program"
+    if project.has_agreement:
+        return "job"
+    if project.parent_code is None and project.company_kind == "client":
+        return "account"
+    return "initiative"
+
+
+def display_name(
+    project: "ProjectState", by_code: "Mapping[str, ProjectState] | None" = None
+) -> str:
+    """The reference-style name for a workstream (CLAUDE.md "Reference
+    style"): an account, a program or an initiative is its name alone — the
+    code IS the slug form of the name; a job is `<code> <name>` so the
+    canonical id travels with it."""
+    label = effective_label(project, by_code or {})
+    if label == "job":
+        return f"{project.code} {project.name}"
+    return project.name
+
+
 def derive_label(
     *, company_kind: str, parent_code: str | None, has_agreement: bool, has_children: bool
 ) -> WorkstreamLabel:

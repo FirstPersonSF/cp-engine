@@ -100,6 +100,7 @@ def _state(
     *,
     name: str | None = None,
     status: str = "Open",
+    parent_code: str | None = None,
 ) -> ProjectState:
     return ProjectState(
         code=code,
@@ -113,7 +114,63 @@ def _state(
         owner="drew",
         last_touched=datetime(2026, 5, 20, tzinfo=timezone.utc),
         deadline=None,
+        parent_code=parent_code,
     )
+
+
+def _account(code: str, company_code: str, company_name: str) -> ProjectState:
+    """The company's account node (#302): sync renders `1p/<slug>/cp.md`
+    from it. Since #303 there is no account CP without one."""
+    return ProjectState(
+        code=code,
+        name=company_name,
+        has_agreement=False,
+        company_kind="client",  # type: ignore[arg-type]
+        company_code=company_code,
+        company_name=company_name,
+        status="Open",
+        is_internal=False,
+        owner="drew",
+        last_touched=datetime(2026, 5, 20, tzinfo=timezone.utc),
+        deadline=None,
+        label="account",
+        mc2_id=f"uuid-{code}",
+    )
+
+
+# An account cp.md as the pre-#303 account template wrote it: two engine
+# regions (`account-facts`, `projects`) and hand-written sections. What a
+# partially-recovered tree on the live tenant actually carries.
+_OLD_ACCOUNT_CP = """\
+---
+Project: Google (account)
+Provenance: Version 0.8.16.6 | 2026-05-22
+Filename: 1p/google/cp.md
+Author: cp-engine (initial scaffold)
+---
+
+# Google — Account CP
+
+> Account-level CP for Google.
+
+<!-- cp-engine:start account-facts -->
+## Facts
+
+| | |
+|---|---|
+| **Account** | Google |
+<!-- cp-engine:end account-facts -->
+
+<!-- cp-engine:start projects -->
+## Projects
+
+_No active projects._
+<!-- cp-engine:end projects -->
+
+## Quick Resume
+
+_<1–2 handwritten paragraphs: where the relationship stands right now>_
+"""
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -193,14 +250,17 @@ def test_migration_preserves_git_history(tmp_path: Path) -> None:
 
 
 def test_migration_runs_sync_at_end(tmp_path: Path) -> None:
-    """After migration, account `cp.md` exists — proves `cp sync` ran
-    so Phase 1's account scaffolding kicked in."""
+    """After migration, the account node's `cp.md` exists — proves `cp
+    sync` ran (#303: the account CP is the account NODE's cp.md, so the
+    roster carries the node)."""
     root = _init_tenant(tmp_path)
     _scaffold_flat_project(root, "ggl-5168-playbooks")
     _commit_all(root, "scaffold")
 
     fake = _FakeBackend((
-        _state("ggl-5168", "GGL", "Google", name="Playbooks"),
+        _account("ggl-5216-google", "GGL", "Google"),
+        _state("ggl-5168", "GGL", "Google", name="Playbooks",
+               parent_code="ggl-5216-google"),
     ))
     migrate_accounts(root, backend_factory=lambda _: fake)
 
@@ -236,14 +296,14 @@ def test_migration_skips_already_nested_account_dirs(tmp_path: Path) -> None:
     """When some dirs are flat and others already nested, only the flat
     ones move. (Mixed-state run, e.g. a partially-recovered migration.)
 
-    The pre-nested account dir uses a real scaffolded account cp.md
-    (with engine markers) so the post-move sync can re-splice cleanly —
-    this is what a real partially-recovered tree looks like in practice."""
-    from cp_engine.render import render_account_cp
+    The pre-nested account dir carries an account cp.md in the pre-#303
+    shape (engine markers for `account-facts` + `projects`) so the
+    post-move sync has to migrate its region set — this is what a real
+    partially-recovered tree looks like in practice."""
     root = _init_tenant(tmp_path)
     google_dir = root / "1p" / "google"
     google_dir.mkdir(parents=True)
-    (google_dir / "cp.md").write_text(render_account_cp("google", "Google", ()))
+    (google_dir / "cp.md").write_text(_OLD_ACCOUNT_CP)
     nested_project = google_dir / "ggl-5168-playbooks"
     nested_project.mkdir()
     (nested_project / "cp.md").write_text("# nested marker line\n")
@@ -252,10 +312,21 @@ def test_migration_skips_already_nested_account_dirs(tmp_path: Path) -> None:
     _commit_all(root, "mixed state")
 
     fake = _FakeBackend((
-        _state("ggl-5168-playbooks", "GGL", "Google", name="Playbooks"),
+        _account("ggl-5216-google", "GGL", "Google"),
+        _state("ggl-5168-playbooks", "GGL", "Google", name="Playbooks",
+               parent_code="ggl-5216-google"),
         _state("ibx-5153-ai-campaign", "IBX", "Infoblox", name="AI Campaign"),
     ))
     result = migrate_accounts(root, backend_factory=lambda _: fake)
+
+    # The old-shape account cp.md was migrated in place: the two retired
+    # regions are gone, the unified set is in, the hand text survived.
+    google_cp = (google_dir / "cp.md").read_text()
+    assert "cp-engine:start account-facts" not in google_cp
+    assert "cp-engine:start projects" not in google_cp
+    assert "cp-engine:start children" in google_cp
+    assert "cp-engine:start exec-summary" in google_cp
+    assert "## Quick Resume" in google_cp
 
     # Only the flat ibx dir moved.
     assert len(result.moved_dirs) == 1
@@ -407,7 +478,9 @@ def test_teleflex_md_absorbed_under_legacy_notes_heading(tmp_path: Path) -> None
     _commit_all(root, "scaffold with _teleflex")
 
     fake = _FakeBackend((
-        _state("tel-2001", "TEL", "Teleflex", name="Bold 2.0"),
+        _account("tel-5220-teleflex", "TEL", "Teleflex"),
+        _state("tel-2001", "TEL", "Teleflex", name="Bold 2.0",
+               parent_code="tel-5220-teleflex"),
     ))
     result = migrate_accounts(
         root, backend_factory=lambda _: fake,
