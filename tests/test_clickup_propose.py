@@ -58,8 +58,7 @@ def test_build_proposal_row_handles_missing_assignee():
 
 
 def test_build_proposal_row_project_owner_sets_project_id():
-    """A project-owned ask writes project_id and leaves initiative_id null —
-    satisfying migration 081's exactly-one-owner CHECK."""
+    """A project-owned ask writes project_id — the one owner column (#301)."""
     item = {"description": "Some ask"}
     project = {"id": "p1", "clickup_list_id": "L1", "code": "ggl-5168", "kind": "project"}
     row = _build_proposal_row(meeting_id="m1", project=project, item=item)
@@ -67,20 +66,20 @@ def test_build_proposal_row_project_owner_sets_project_id():
     assert row.get("initiative_id") is None
 
 
-def test_build_proposal_row_initiative_owner_sets_initiative_id():
-    """An initiative-owned ask writes initiative_id and leaves project_id null —
-    otherwise the FK→projects insert would crash for an initiative."""
+def test_build_proposal_row_internal_workstream_owner_sets_project_id():
+    """An internal workstream (a numbered `projects` row since mc-2 mig 192)
+    writes `project_id` like any other owner; `initiative_id` is gone."""
     item = {"description": "Ship the spine UI"}
     project = {
         "id": "i1",
         "clickup_list_id": "L9",
-        "code": "mission-control",
-        "kind": "initiative",
+        "code": "1pi-9005-mission-control",
+        "kind": "project",
     }
     row = _build_proposal_row(meeting_id="m1", project=project, item=item)
-    assert row["initiative_id"] == "i1"
-    assert row.get("project_id") is None
+    assert row["project_id"] == "i1"
+    assert "initiative_id" not in row
     # The hash recipe still keys off the owner code.
     assert row["cp_ask_hash"] == _content_hash(
-        "mission-control", "record-ask", "Ship the spine UI"
+        "1pi-9005-mission-control", "record-ask", "Ship the spine UI"
     )

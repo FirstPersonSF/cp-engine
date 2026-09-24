@@ -20,7 +20,6 @@ from .state import (
     CompanyKind,
     DecisionEntry,
     Deliverable,
-    EntrySource,
     HorizonItem,
     InboundUpdate,
     Issue,
@@ -744,12 +743,13 @@ def render_sprint_scaffold(
     `test_sprints.py` assert that contract end-to-end.
     """
     env = _render._env()
-    # Initiative-source projects use a slimmer sprint scaffold without
-    # the "Client communication" section (no client side; the
-    # "Team communication" block keeps Open asks + Slack digest).
+    # Internal workstreams use a slimmer sprint scaffold without the
+    # "Client communication" section (no client side; the "Team
+    # communication" block keeps Open asks + Slack digest). Picked on shape
+    # (#301) by the same rule as the project CP template.
     template_name = (
         "initiative-sprint.md.j2"
-        if project.source == "initiative"
+        if _render.uses_initiative_shape(project)
         else "sprint-cp.md.j2"
     )
     template = env.get_template(template_name)
@@ -1208,7 +1208,6 @@ def _project_state_from_mc2(client, project_code: str) -> "ProjectState | None":
             name=identity.get("full_job_name")
             or identity.get("name")
             or project_code,
-            source="engagement",
             company_kind="client",
             company_code=identity.get("company_code"),
             company_name=identity.get("company_name"),
@@ -1241,8 +1240,9 @@ def _project_state_from_sprint_file(
 
     We don't have MC-2 here, so we read the frontmatter (for `name`) and
     the `← [Project CP](../../<scope>/<dir>/cp.md)` navigation link (for
-    `source` and `company_kind`/`company_name`). Fields we can't recover
-    — deal_stage, budget, owner, last_touched — get None / defaults.
+    the shape and `company_kind`/`company_name`: an `Initiative CP` link
+    means no agreement). Fields we can't recover — deal_stage, budget,
+    owner, last_touched — get None / defaults.
     These show up as "—" in the rendered sprint-facts table; the auto-
     ingest path doesn't need them to be accurate.
 
@@ -1268,7 +1268,7 @@ def _project_state_from_sprint_file(
 
     link_text = link_match.group("text")
     scope_path = link_match.group("scope_path")
-    source: EntrySource = "initiative" if link_text == "Initiative CP" else "engagement"
+    has_agreement = link_text != "Initiative CP"
 
     scope_segment = scope_path.split("/", 1)[0]
     if scope_segment == "1p":
@@ -1288,15 +1288,15 @@ def _project_state_from_sprint_file(
     return ProjectState(
         code=code,
         name=name,
-        source=source,
         company_kind=company_kind,
         company_code=None,
         company_name=company_name,
-        status="Open" if source != "initiative" else "Active",
+        status="Open",
         is_internal=False,
         owner=None,
         last_touched=None,
         deadline=None,
+        has_agreement=has_agreement,
     )
 
 
@@ -1417,22 +1417,9 @@ def sprint_file_to_dict(sf: SprintFile) -> dict:
 
 
 def _is_active_for_sprint(project) -> bool:
-    """Mirror the master-CP `is_active` rule from render.py.
-
-    Engagement projects (source="engagement") use the MC-2 status vocabulary
-    (`is_active_status`: Deal or Open) AND must not be internal.
-
-    Repo projects (source="repo") — FPSF internal tooling and Canonic
-    repos — use the literal "Active" status from the repos table.
-
-    Before this v0.8.1 fix the orchestrator only used `is_active_status`,
-    which meant FPSF/Canonic projects (status="Active", not in
-    MC_STATUSES) were silently filtered out and never got sprint files.
-    """
-    source = getattr(project, "source", None)
-    if source == "engagement":
-        return is_active_status(project.status) and not getattr(project, "is_internal", False)
-    return project.status == "Active"
+    """Mirror the master-CP `is_active` rule from render.py: one vocabulary
+    for every workstream (#301), Deal ∪ Open, no `is_internal` gate."""
+    return is_active_status(project.status)
 
 
 def ensure_sprint_files_for_active_projects(

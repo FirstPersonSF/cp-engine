@@ -68,21 +68,23 @@ def test_write_proposal_project_row_shape() -> None:
     assert row["payload"]["date"] == "2026-07-15"
 
 
-def test_write_proposal_initiative_target() -> None:
-    client = _client(owner_rows=[{"id": "i1", "code": "storyos"}])
+def test_write_proposal_internal_workstream_target() -> None:
+    """#301: an internal workstream is a numbered `projects` row and the
+    proposal targets it through `target_project_id` — the only column."""
+    client = _client(owner_rows=[{"id": "i1", "number": 9004}])
     outcome = write_proposal(
         client,
         meeting_id=None,
         source_code="slt-5175",
-        target_code="storyos",
+        target_code="cnc-9004-storyos",
         verb="asks",
         text="Allocation call for StoryOS",
         confidence="medium",
     )
     assert outcome == "inserted"
     row = _last_insert(client)
-    assert row["target_initiative_id"] == "i1"
-    assert "target_project_id" not in row
+    assert row["target_project_id"] == "i1"
+    assert "target_initiative_id" not in row
 
 
 def test_write_proposal_duplicate_and_unresolvable() -> None:

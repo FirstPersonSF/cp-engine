@@ -856,15 +856,23 @@ def test_unconfigured_reason_no_sources_enabled_gates():
     assert "drive: disabled" in reason and "dropbox: disabled" in reason
 
 
-def test_unconfigured_reason_non_client_is_none():
-    # Non-client kinds are list_files' existing skip, not a folder gap.
+def test_unconfigured_reason_out_of_scope_is_none():
+    # A self-company workstream WITH an agreement is list_files' existing
+    # skip, not a folder gap (#301). Without one it is an internal
+    # workstream and the gate applies — see test_asset_ingest_initiative_ingest.
     from cp_engine.asset_ingest import folders_unconfigured_reason
 
     assert (
         folders_unconfigured_reason(
-            _folders(company_kind="internal", enable_google_drive=True)
+            _folders(company_kind="internal", enable_google_drive=True, has_agreement=True)
         )
         is None
+    )
+    assert (
+        folders_unconfigured_reason(
+            _folders(company_kind="internal", enable_google_drive=True, has_agreement=False)
+        )
+        is not None
     )
 
 

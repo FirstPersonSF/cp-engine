@@ -4,6 +4,90 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.124.0 — 2026-09-24
+
+**One entry kind, one code parser.** Minor: `ProjectState` loses `source`;
+the reader is one query; every owner-scoped write names `project_id`. Closes
+#301 (phase 3.1–3.2 of the company > workstream build,
+`cp/docs/plans/2026-09-24-company-workstream-implementation-plan.md`).
+
+mc-2 migrations 190–194 are live: the `initiatives` table is gone, every
+`initiative_id` column with it, and internal workstreams are `projects`
+rows (`deal_stage IS NULL`, `is_internal=true`) under merged codes such as
+`1pi-9005-mission-control`. v0.123.x kept the initiative-shaped renderers
+alive by mapping those rows back into the old shape on the way in. This
+release removes the old shape instead.
+
+- **`EntrySource` and `ProjectState.source` are gone.** The engine branches
+  on the row's SHAPE: `has_agreement` (the commercial envelope exists),
+  `parent_code` and `company_kind`; `label` is the derived display word.
+  `render.uses_initiative_shape(project)` — no agreement and not under a
+  client company — is the one rule that picks `initiative-cp.md.j2` /
+  `initiative-sprint.md.j2` and the `engagement_shape` flag
+  `project-cp.md.j2` branches on. Same files, same regions, until #303.
+- **One active rule.** `is_active_status(status)` (Deal ∪ Open) for every
+  workstream, everywhere: master-cp tables, sprint scaffolding, agenda,
+  `list-active-projects`, account-meeting and sprint-planning rosters,
+  asset-ingest eligibility, close-out. `is_internal` gates NOTHING — the
+  internal workstreams ARE the rows carrying it, and they get working dirs,
+  sprint files and Slack digests like every other workstream. The scaffold
+  loop, the account-dir pass, the Slack channel map and the tag resolver's
+  #221 skip all lose their `is_internal` branch.
+- **`status.py` keeps one vocabulary.** `INITIATIVE_STATUSES`,
+  `INITIATIVE_STATUS_ACTIVE`, `INITIATIVE_STATUS_FROM_MC` and
+  `is_active_initiative_status` are gone; internal workstreams carry their
+  real `mc_status` (`Holding`, not "On hold").
+- **`sync_mc2.read_projects` is one query** of `projects` (columns now
+  include `parent_id`); `_repo_row_to_state`, `_initiative_row_to_state`,
+  their validators, `REPOS_SYNC_COLUMNS`, `INITIATIVES_SYNC_COLUMNS`,
+  `INITIATIVES_SLACK_COLUMNS` and `Tables.INITIATIVES` are deleted.
+  Standalone repos no longer exist: `render_repo_md` and the `_repo.md`
+  file are gone (linked `_repo-<name>.md` files stay and still carry the
+  per-user local-clone lines). Account nodes are still held back until
+  #302.
+- **`project_id` is the only owner column.** `commitments`,
+  `commitments_sweep`, `cross_project`, `prep_planning`, `ingest`,
+  `clickup_routing`, `mcp_server._commitment_scope`, `slack` (Stream B
+  removed; `ChannelMapRow.kind` gone), `dates_loop`, `asset_dedupe`,
+  `asset_ingest` (`ProjectFolders.is_initiative` → `has_agreement`; the
+  self-company scope guard is now "has an agreement";
+  `_adapt_pipeline_for_initiative`, `_is_standalone_repo` and the
+  initiatives resolve path deleted), `mc2_bindings.fetch_binding_rows`
+  (`project_ids` only; `hydrate_initiative_row` gone), the webhook
+  (`_resolve_initiative_code` gone) and the hosted server
+  (`resolve_write_scope` always `kind="project"`; `_owner_columns` is
+  `("project_id",)`; the probe and every `initiatives` read removed).
+  `mc2_db.owner_columns` / `owner_filter` stay as the single spelling and
+  always answer `project_id`; `OWNER_COLUMN` names it. `workstream_schema`
+  stays as a health question with no second code path behind it.
+- **`cp_engine.codes` — the one parser.** `parse_code(text) ->
+  ParsedCode(company, number, slug)` accepts `ggl-5136`, `GGL 5136 Go
+  Safety`, `GGL-5136`, `ggl-5136-go-safety-website`,
+  `1pi-9005-mission-control` and the glued `IBX5167 …` display form; the
+  company is 2–4 alphanumerics that may start with a digit, the number is
+  the first all-digit segment and at least three digits (so `mc-2` is not
+  a code), the slug is the kebab tail. `canonical_code` and `code_number`
+  wrap it. It replaces `plan_from_transcript._ENGAGEMENT_CODE_RE` (which
+  rejected every real slug code), `sync._code_takes_slug`'s regex,
+  `clickup_routing.engagement_number` (kept as a thin wrapper) and the
+  slug branch in `tag_resolve` (a numberless tag is unmatched; `kind` is
+  always `"project"`; the response shape is unchanged).
+- **The transcript prompt is picked on shape**, not a regex:
+  `_engagement_prompt_shape` reads the roster, then the working dir's
+  scope, then defaults to the engagement prompt for anything that parses.
+- **`sprint_planning_scope='storyos-mc'`** now names
+  `cnc-9004-storyos` + `1pi-9005-mission-control`.
+- **Tests.** `tests/test_codes.py` (the five shapes + rejects) and
+  `tests/test_one_entry_kind_invariant.py`, which tokenizes every module
+  under `src/cp_engine`, `webhook`, the hosted `server.py` and the vendor
+  tree and fails on any `Tables.INITIATIVES`, `"initiatives"` or
+  `initiative_id` outside comments and docstrings — allow-list nothing.
+  Goldens: `repo-md` deleted; `master-cp-full`, `project-cp-initiative`,
+  `scaffold-initiative` and `sprint-index` regenerated (merged codes, MC
+  statuses, the internal client row now renders, standalone repo rows
+  gone). Vendor tree re-synced (`codes.py` and `commitments_sweep.py`
+  verbatim; the `mc2_db` and `commitments` shims follow their origins).
+
 ## v0.123.1 — 2026-09-24
 
 **Owner-column selects follow the schema too.** Patch. The first `cxp sync`

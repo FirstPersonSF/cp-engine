@@ -150,10 +150,10 @@ def render_master_cp(
     - First Person (self-fpsf repos)
     - Canonic (self-canonic repos)
 
-    Engagement and repo entries use different table schemas (per spec
-    discussion 2026-05-08). The 1P section is engagement-shaped with
-    Stage / Budget; FPSF and Canonic sections are repo-shaped with
-    Description / GitHub.
+    The 1P section is engagement-shaped with Stage / Budget; the FPSF and
+    Canonic sections split self-company workstreams by SHAPE (#301): the
+    ones with an agreement land in the legacy repo-shaped table, the ones
+    without in the initiative table. Nothing branches on a source kind.
 
     When `current_sprint_iso` is provided (e.g. "2026-W19"), each active
     project view dict gets a `sprint_link` pointing at the per-project
@@ -161,17 +161,12 @@ def render_master_cp(
     render an extra `[W## →]` cell next to the existing CP link. When
     None, no sprint link is rendered.
     """
-    # Active filter: engagement is active per is_active_status + not internal;
-    # repo is active per repos.status == 'Active'.
+    # One vocabulary for every workstream (#301): Deal ∪ Open is active,
+    # `is_internal` gates nothing.
     def is_active(p: ProjectState) -> bool:
-        if p.source == "engagement":
-            return is_active_status(p.status) and not p.is_internal
-        return p.status == "Active"
+        return is_active_status(p.status)
 
     def is_holding(p: ProjectState) -> bool:
-        # Both engagement and repo use literal "Holding"
-        if p.source == "engagement":
-            return p.status == "Holding" and not p.is_internal
         return p.status == "Holding"
 
     ref_date = today or date.today()
@@ -181,11 +176,7 @@ def render_master_cp(
             return False
         if (ref_date - p.last_touched.date()).days > 30:
             return False
-        if p.source == "engagement":
-            return p.status == "Closed" and not p.is_internal
-        # Repos don't have a "Closed" lifecycle; Inactive doesn't get
-        # surfaced in closed-recent (no notion of recency for inactive).
-        return False
+        return p.status == "Closed"
 
     active = [p for p in projects if is_active(p)]
     holding = [p for p in projects if is_holding(p)]
@@ -233,18 +224,19 @@ def render_master_cp(
                 p.code,
             ),
         )
-        # Initiatives split from repos so the FPSF/Canonic sections stay
-        # repo-shaped (Description / GitHub columns). Initiatives render
-        # into a sibling table per scope with initiative-shaped columns.
+        # Self-company workstreams split by shape (#301): with an agreement
+        # they take the legacy repo-shaped table (Description / GitHub
+        # columns); without one — the internal workstreams — the sibling
+        # initiative-shaped table. Same files, same regions, until #303.
         def _self_repos(kind: str) -> list[ProjectState]:
             return [
                 p for p in active_list
-                if p.company_kind == kind and p.source != "initiative"
+                if p.company_kind == kind and p.has_agreement
             ]
         def _self_initiatives(kind: str) -> list[ProjectState]:
             return [
                 p for p in active_list
-                if p.company_kind == kind and p.source == "initiative"
+                if p.company_kind == kind and not p.has_agreement
             ]
         return {
             "pipeline": [to_view(p) for p in pipeline],
@@ -514,6 +506,19 @@ def render_sprint_week(
     )
 
 
+def uses_initiative_shape(project: ProjectState) -> bool:
+    """True when a workstream renders through the initiative-shaped
+    templates: no commercial envelope and not under a client company.
+
+    THE one rule (#301) that replaces `source == "initiative"` for template
+    selection (`initiative-cp.md.j2`, `initiative-sprint.md.j2`) and for
+    the `engagement_shape` view flag the project template branches on. A
+    client job whose `deal_stage` was never filled still renders
+    engagement-shaped — the client side is what the shape is about.
+    """
+    return not project.has_agreement and project.company_kind != "client"
+
+
 def render_project_cp(
     config: TenantConfig,
     project: ProjectState,
@@ -542,12 +547,13 @@ def render_project_cp(
     empty placeholders); pass a ProjectStrips instance on subsequent
     syncs.
     """
-    # Initiatives use a slimmer template than engagements — no client
-    # communication surfaces, no tracked-issues table, just decisions
-    # + open asks + the standard sprint/notes structure. See
-    # docs/plans/2026-05-14-internal-initiatives.md.
+    # Internal workstreams use a slimmer template — no client communication
+    # surfaces, no tracked-issues table, just decisions + open asks + the
+    # standard sprint/notes structure. Picked on SHAPE (#301): no agreement
+    # and not under a client company. See docs/plans/2026-05-14-internal-
+    # initiatives.md; #303 folds the two templates into one.
     template_name = (
-        "initiative-cp.md.j2" if project.source == "initiative" else "project-cp.md.j2"
+        "initiative-cp.md.j2" if uses_initiative_shape(project) else "project-cp.md.j2"
     )
     template = _env().get_template(template_name)
     return template.render(
@@ -741,56 +747,17 @@ def render_dropbox_md(project: ProjectState) -> str | None:
     )
 
 
-def render_repo_md(
-    project: ProjectState,
-    *,
-    local_clones_by_user: dict[str, str] | None = None,
-) -> str | None:
-    """Render `_repo.md` for a repo-source project working directory.
-
-    Mirrors `_dropbox.md`'s role for engagements: a discoverable link
-    from inside the working dir to the canonical artifact store. For
-    engagements that's Dropbox (binary media); for repos that's GitHub
-    (source code).
-
-    When `local_clones_by_user` is non-empty (looked up from
-    `.cp-engine.toml` `[local-repos.<user>]`), the rendered output
-    surfaces one `**Local clone (User):** <path>` line per user who
-    has the repo. Without it, only the GitHub link appears (v0.3.3
-    behavior).
-
-    Returns None for engagement-source projects (they get _dropbox.md
-    instead) and for repos missing the github_org/repo_name fields
-    (defensive — sync_mc2's _repo_row_is_valid blocks these, but we
-    double-check at render time).
-    """
-    if project.source != "repo":
-        return None
-    if not project.github_org or not project.repo_name:
-        return None
-    template = _env().get_template("repo.md.j2")
-    return template.render(
-        project=_project_view(project),
-        engine_version=ENGINE_VERSION,
-        today=_today_iso(),
-        local_clones_by_user=local_clones_by_user or None,
-    )
-
-
 def render_linked_repo_md(
     project_name: str,
     repo: LinkedRepo,
     *,
     local_clones_by_user: dict[str, str] | None = None,
 ) -> str:
-    """Render `_repo-<repo-name>.md` for a repo linked to an engagement.
+    """Render `_repo-<repo-name>.md` for a repo linked to a workstream.
 
-    Engagement-source projects can have multiple linked repos in MC-2
-    (`repos.project_id` pointing at the engagement). Each gets its own
-    file in the engagement's working dir, mirroring the standalone-repo
-    `_repo.md` pattern. The template makes the *linked* relationship
-    explicit so a reader doesn't confuse the file with a primary
-    standalone-repo working-dir record.
+    A workstream can have multiple linked repos in MC-2 (`repos.project_id`
+    pointing at it). Each gets its own file in the working dir. The
+    template makes the *linked* relationship explicit.
     """
     template = _env().get_template("linked-repo.md.j2")
     return template.render(
@@ -1347,7 +1314,8 @@ def _project_view(p: ProjectState) -> dict:
     """Flatten a ProjectState into the keys the templates expect.
 
     Includes both engagement-shape and repo-shape fields. Templates
-    branch on `source` to choose which to render.
+    branch on `engagement_shape` (has an agreement, or under a client
+    company) to choose which to render (#301).
     """
     # Account view fields — populated for client projects so the
     # master-cp 1P tables can render the leading Account column.
@@ -1369,7 +1337,12 @@ def _project_view(p: ProjectState) -> dict:
         # MC-2 row uuid — stamped into cp.md frontmatter so dir-location
         # can anchor on the stable id instead of the (renameable) code.
         "mc2_id": p.mc2_id,
-        "source": p.source,
+        # Workstream shape (#301). `engagement_shape` is the one boolean the
+        # templates branch on — the same rule that picks the template file.
+        "has_agreement": p.has_agreement,
+        "parent_code": p.parent_code,
+        "label": p.label,
+        "engagement_shape": not uses_initiative_shape(p),
         "company_kind": p.company_kind,
         # Path-building scope (includes account layer for clients).
         # Templates render `{{ p.scope }}/{{ p.dir_slug }}/cp.md` links.

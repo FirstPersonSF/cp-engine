@@ -29,7 +29,6 @@ from datetime import date, datetime, timezone
 from typing import Any
 
 from cp_engine.clickup_routing import engagement_number
-from cp_engine import mc2_db
 from cp_engine.mc2_db import Tables
 
 log = logging.getLogger(__name__)
@@ -70,41 +69,27 @@ LIST_COLUMNS = (
 def resolve_commitment_owner(client: Any, code: str) -> dict | None:
     """Resolve a cp code to a commitments owner: ``{"id", "code", "kind"}``.
 
-    Same code grammar as :func:`clickup_routing.resolve_clickup_project` —
-    engagement codes carry a trailing number, initiative codes are a bare
-    slug on ``initiatives.code`` — but with NO ClickUp gates: every code
-    that exists in MC-2 resolves, whether or not ClickUp is enabled.
+    Same code grammar as :func:`clickup_routing.resolve_clickup_project`
+    (`cp_engine.codes.parse_code`: every workstream carries a job number,
+    #301) but with NO ClickUp gates: every code that exists in MC-2
+    resolves, whether or not ClickUp is enabled. ``kind`` is always
+    ``"project"`` — kept in the dict so callers keep one shape.
     """
     number = engagement_number(code)
-    if number is not None:
-        resp = (
-            client.table(Tables.PROJECTS)
-            .select("id, number")
-            .eq("number", number)
-            .execute()
-        )
-        rows = resp.data or []
-        if not rows:
-            log.info("commitments: no project row for code=%s", code)
-            return None
-        return {"id": rows[0]["id"], "code": code, "kind": "project"}
-
-    if not mc2_db.has_initiatives_table(client):
-        # Workstream schema (#300): no bare-slug codes exist; every row has
-        # a number and resolved (or missed) on the projects branch above.
-        log.info("commitments: no project row for slug code=%s", code)
+    if number is None:
+        log.info("commitments: %r is not a workstream code", code)
         return None
     resp = (
-        client.table(Tables.INITIATIVES)
-        .select("id, code")
-        .eq("code", code)
+        client.table(Tables.PROJECTS)
+        .select("id, number")
+        .eq("number", number)
         .execute()
     )
     rows = resp.data or []
     if not rows:
-        log.info("commitments: no initiative row for code=%s", code)
+        log.info("commitments: no project row for code=%s", code)
         return None
-    return {"id": rows[0]["id"], "code": code, "kind": "initiative"}
+    return {"id": rows[0]["id"], "code": code, "kind": "project"}
 
 
 def commitment_already_present(client: Any, cp_hash: str) -> bool:
@@ -278,9 +263,9 @@ def write_commitment(
 ) -> str:
     """Insert one commitment row; returns ``"inserted"`` or ``"duplicate"``.
 
-    ``owner`` is a :func:`resolve_commitment_owner` dict — its ``kind``
-    picks the owner column (``project_id`` vs ``initiative_id`` under the
-    num_nonnulls==1 CHECK). ``due_date`` must already be ISO (or None);
+    ``owner`` is a :func:`resolve_commitment_owner` dict; the row is owned
+    through ``project_id`` (the one owner column, #301). ``due_date`` must
+    already be ISO (or None);
     use :func:`_valid_due_date` at the call site for free-text dates.
     """
     if commitment_already_present(client, cp_hash):
@@ -311,25 +296,21 @@ def write_commitment(
         "source_kind": source_kind,
         "source_meeting_id": source_meeting_id,
         "cp_hash": cp_hash,
+        "project_id": owner["id"],
     }
-    if owner.get("kind") == "initiative":
-        row["initiative_id"] = owner["id"]
-    else:
-        row["project_id"] = owner["id"]
 
     client.table(Tables.COMMITMENTS).insert(row).execute()
     return "inserted"
 
 
 def list_commitments(client: Any, owner: dict, status: str = "open") -> list[dict]:
-    """List one project's/initiative's commitments, due-date ascending
-    (undated last, matching the mc-2 router's ordering).
+    """List one workstream's commitments, due-date ascending (undated
+    last, matching the mc-2 router's ordering).
 
-    ``owner`` is a resolve dict (``{"id", "code", "kind"}``); its ``kind``
-    picks the scope column. ``status='all'`` disables the status filter.
+    ``owner`` is a resolve dict (``{"id", "code", "kind"}``).
+    ``status='all'`` disables the status filter.
     """
-    column = "initiative_id" if owner.get("kind") == "initiative" else "project_id"
-    q = client.table(Tables.COMMITMENTS).select(LIST_COLUMNS).eq(column, owner["id"])
+    q = client.table(Tables.COMMITMENTS).select(LIST_COLUMNS).eq("project_id", owner["id"])
     if status != "all":
         q = q.eq("status", status)
     resp = q.order("due_date", nullsfirst=False).execute()

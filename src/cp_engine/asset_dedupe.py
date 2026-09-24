@@ -44,7 +44,7 @@ _PAGE_SIZE = 1000
 class DedupeGroup:
     """One same-owner same-title duplicate group and its plan."""
 
-    owner_col: str  # 'project_id' | 'initiative_id'
+    owner_col: str  # 'project_id' (the one owner column, #301)
     owner_id: str
     title: str  # the keeper's casing
     keeper: dict
@@ -127,8 +127,6 @@ def _owner_key(row: dict) -> tuple[str, str] | None:
     """(owner_col, owner_id) for a rag_assets row; None if unowned (bad data)."""
     if row.get("project_id"):
         return ("project_id", str(row["project_id"]))
-    if row.get("initiative_id"):
-        return ("initiative_id", str(row["initiative_id"]))
     return None
 
 

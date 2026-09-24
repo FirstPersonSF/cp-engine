@@ -29,7 +29,6 @@ class Tables:
     # public — core entities
     PROJECTS = "projects"
     REPOS = "repos"
-    INITIATIVES = "initiatives"
     COMPANIES = "companies"
     ENTITIES = "entities"  # people (partners/recipients); note author + recipient
     GITHUB_ORGS = "github_orgs"  # embedded-join only today (see *_COLUMNS)
@@ -82,13 +81,10 @@ class Tables:
 PROJECTS_SYNC_COLUMNS = (
     "id, number, full_job_name, name, mc_status, account_manager, "
     "is_internal, deal_stage, budget, dropbox_folder_url, updated_at, "
-    "companies(code, name, kind), "
+    "parent_id, companies(code, name, kind), "
     "repos!project_id(repo_name, status, description, github_orgs!inner(name))"
 )
 
-
-# projects — the sync read on the workstream schema (#300).
-PROJECTS_WORKSTREAM_SYNC_COLUMNS = PROJECTS_SYNC_COLUMNS + ", parent_id"
 
 PROJECTS_SLACK_COLUMNS = (
     "id, number, name, mc_status, is_internal, enable_slack, "
@@ -97,26 +93,6 @@ PROJECTS_SLACK_COLUMNS = (
 
 
 PROJECTS_ESTIMATE_COLUMNS = "id, start_date"
-
-
-REPOS_SYNC_COLUMNS = (
-    "id, repo_name, status, description, owner, updated_at, "
-    "github_orgs!inner(name), "
-    "companies!inner(code, name, kind)"
-)
-
-
-INITIATIVES_SYNC_COLUMNS = (
-    "id, code, name, description, status, owner, updated_at, "
-    "enable_slack, "
-    "companies!inner(code, name, kind), "
-    "repos!initiative_id(repo_name, status, description, github_orgs!inner(name))"
-)
-
-
-INITIATIVES_SLACK_COLUMNS = (
-    "id, code, name, status, enable_slack, companies!inner(code)"
-)
 
 
 FATHOM_LIST_COLUMNS = (
@@ -228,20 +204,21 @@ _DROPBOX_KEYS = (
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Workstream-schema probe (#300) — copied verbatim from cp_engine.mc2_db.
-#  The vendored commitments_sweep calls `has_initiatives_table`.
+#  Workstream-schema probe + owner helpers (#300/#301) — copied verbatim
+#  from cp_engine.mc2_db. The vendored commitments_sweep reads OWNER_COLUMN.
 # ──────────────────────────────────────────────────────────────────────
 
 _WORKSTREAM_PROBE: dict[int, bool] = {}
+
+OWNER_COLUMN = "project_id"
 
 
 def workstream_schema(client) -> bool:
     """True when MC-2 carries `projects.parent_id` (the workstream schema).
 
     One `select id, parent_id ... limit 1` per client; PostgREST answers an
-    unknown column with an APIError (42703), which is the "legacy schema"
-    signal. Any other failure is also read as legacy so a transient error
-    never flips a live tenant onto the single-stream path by accident.
+    unknown column with an APIError (42703). False now means a database the
+    engine no longer supports, not a second code path.
     """
     key = id(client)
     cached = _WORKSTREAM_PROBE.get(key)
@@ -254,46 +231,29 @@ def workstream_schema(client) -> bool:
         )
         # The KEY must come back, not just a row: PostgREST returns
         # `parent_id: null` for a real column, and a fake that ignores the
-        # column list returns rows without it — which is the legacy answer.
+        # column list returns rows without it.
         present = bool(rows) and isinstance(rows[0], dict) and "parent_id" in rows[0]
-    except Exception:  # noqa: BLE001 — legacy schema, or unreachable: read as legacy
+    except Exception:  # noqa: BLE001 — unreachable or unknown column: not the expected shape
         present = False
     _WORKSTREAM_PROBE[key] = present
     return present
 
 
-def has_initiatives_table(client) -> bool:
-    """True when the `initiatives` table is still the home of internal work.
-
-    The inverse of :func:`workstream_schema`; named for the question the
-    call sites ask. On the workstream schema an initiative slug lookup has
-    nothing to find — the rows live in `projects` under their new codes —
-    so callers skip the query instead of erroring on a retired relation.
-    """
-    return not workstream_schema(client)
-
-
 def _reset_workstream_probe() -> None:
-    """Forget cached probe answers (tests, and long-lived processes across a migration)."""
+    """Forget cached probe answers (tests, and long-lived processes)."""
     _WORKSTREAM_PROBE.clear()
 
 
 def owner_columns(client) -> str:
-    """The owner column(s) an owner-scoped table carries, as a select fragment.
+    """The owner column an owner-scoped table carries, as a select fragment.
 
-    Legacy schema: ``"project_id, initiative_id"`` (mig 081's two-column
-    owner under a ``num_nonnulls = 1`` CHECK). Workstream schema (mc-2 mig
-    192): ``"project_id"`` — selecting a column that no longer exists is a
-    42703 that PostgREST turns into an empty read, which is how every sources
-    manifest got skipped on the first post-migration sync (v0.123.1). Use
-    this in a column list instead of naming `initiative_id` directly.
+    Always ``"project_id"`` (#301). Kept as a function so the column lists
+    that embed it (`commitments_sweep`, `dates_loop`, `asset_dedupe`, the
+    bindings read, the webhook) keep one spelling; `client` is unused.
     """
-    return "project_id" if workstream_schema(client) else "project_id, initiative_id"
+    return OWNER_COLUMN
 
 
 def owner_filter(client, owner_id: str) -> str:
-    """PostgREST `or=` fragment matching either owner column on the legacy
-    schema, or a plain `project_id.eq.` on the workstream schema."""
-    if workstream_schema(client):
-        return f"project_id.eq.{owner_id}"
-    return f"project_id.eq.{owner_id},initiative_id.eq.{owner_id}"
+    """PostgREST `or=` fragment scoping a read to one owner."""
+    return f"{OWNER_COLUMN}.eq.{owner_id}"

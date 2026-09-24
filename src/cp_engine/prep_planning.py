@@ -589,7 +589,7 @@ def _fetch_mc2_schedule_milestones(
 
     number = engagement_number(project.code)
     if number is None:
-        return ()  # initiative slug — no estimator schedule
+        return ()  # not a workstream code — no estimator schedule
 
     try:
         rows = (
@@ -690,7 +690,7 @@ def _fetch_drift_warnings(
 
     number = engagement_number(project.code)
     if number is None:
-        return ()  # initiative slug — no estimate, no drift
+        return ()  # not a workstream code — no estimate, no drift
     try:
         from cp_engine.agreement_projection import drift_warnings
         from cp_engine.estimate import fetch_estimate, fetch_schedule
@@ -736,7 +736,7 @@ def _fetch_project_commitments(supabase_client, project) -> tuple[dict, ...]:
         owner = resolve_commitment_owner(supabase_client, project.code)
         if owner is None:
             return ()
-        col = "initiative_id" if owner["kind"] == "initiative" else "project_id"
+        col = "project_id"
         rows = (
             supabase_client.table(Tables.COMMITMENTS)
             .select(

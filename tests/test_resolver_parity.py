@@ -133,12 +133,21 @@ def _tenant(with_spine: bool = False):
                 "company_id": "co-ggl",
                 "number": 5179,
             },
+            # An internal workstream: a `projects` row since mc-2 mig 192, its
+            # uuid kept from the old initiatives table (#301).
+            {
+                "id": _INIT_ID,
+                "code": "CNC-storyos",
+                "full_job_name": "CNC 9004 StoryOS",
+                "company_id": "co-cnc",
+                "number": 9004,
+            },
         ],
         "companies": [
             {"id": "co-sap", "code": "SAP"},
             {"id": "co-ggl", "code": "GGL"},
+            {"id": "co-cnc", "code": "CNC"},
         ],
-        "initiatives": [{"id": _INIT_ID, "code": "storyos"}],
         "spine_substance": (
             [{"project_code": "sap-5198-2027-ad-videos", "project_id": _SAP_ID}]
             if with_spine
@@ -155,8 +164,9 @@ _CASES = [
     ("display name", "SAP 5198 2027 Ad Videos", _SAP_ID),
     ("project uuid", _SAP_ID, _SAP_ID),
     ("second project uuid", _GGL_ID, _GGL_ID),
-    ("initiative code", "storyos", _INIT_ID),
-    ("initiative uuid", _INIT_ID, _INIT_ID),
+    ("internal workstream dir-slug", "cnc-9004-storyos", _INIT_ID),
+    ("internal workstream uuid", _INIT_ID, _INIT_ID),
+    ("bare word (no job number)", "storyos", None),
     ("unknown code", "nope-9999", None),
     ("unknown words", "not a project at all", None),
     ("uuid-ish but malformed", "1111-2222", None),

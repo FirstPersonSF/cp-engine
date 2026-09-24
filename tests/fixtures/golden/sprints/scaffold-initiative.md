@@ -1,15 +1,15 @@
 ---
-Project: mission-control — Mission Control
+Project: 1pi-9005-mission-control — Mission Control
 Provenance: Version 0.0.0-golden | 2026-05-13
-Filename: sprints/2026-W20/mission-control.md
+Filename: sprints/2026-W20/1pi-9005-mission-control.md
 Author: cp-engine (scaffold) + partners (deepening)
 Sprint: 2026-W20
 PriorSprint: 2026-W19
 ---
 
-# mission-control — Mission Control · Sprint W20 (May 11 – May 17, 2026)
+# 1pi-9005-mission-control — Mission Control · Sprint W20 (May 11 – May 17, 2026)
 
-← [Initiative CP](../../firstpersonsf/mission-control/cp.md) · [Master](../../master-cp.md) · [Prior sprint](../2026-W19/mission-control.md)
+← [Initiative CP](../../firstpersonsf/1pi-9005-mission-control/cp.md) · [Master](../../master-cp.md) · [Prior sprint](../2026-W19/1pi-9005-mission-control.md)
 
 <!-- cp-engine:start sprint-facts -->
 | | |
@@ -18,7 +18,7 @@ PriorSprint: 2026-W19
 | Last touched | 2026-05-12 |
 | Sessions this week | 3 |
 | Open issues | 1 |
-| Meetings | [2 this sprint](../../firstpersonsf/mission-control/meetings/) |
+| Meetings | [2 this sprint](../../firstpersonsf/1pi-9005-mission-control/meetings/) |
 <!-- cp-engine:end sprint-facts -->
 
 <!-- cp-engine:start where-it-stands -->

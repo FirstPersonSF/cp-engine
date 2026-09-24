@@ -37,10 +37,19 @@ def test_resolve_owner_project() -> None:
     assert owner == {"id": "p1", "code": "ggl-5168", "kind": "project"}
 
 
-def test_resolve_owner_initiative() -> None:
+def test_resolve_owner_internal_workstream_resolves_by_number() -> None:
+    """#301: internal workstreams are `projects` rows with a job number, so
+    `1pi-9005-mission-control` resolves exactly like a client job."""
+    client = _client(rows=[{"id": "i1", "number": 9005}])
+    owner = resolve_commitment_owner(client, "1pi-9005-mission-control")
+    assert owner == {"id": "i1", "code": "1pi-9005-mission-control", "kind": "project"}
+
+
+def test_resolve_owner_bare_slug_is_not_a_code() -> None:
+    """A numberless slug names nothing since the initiatives table retired."""
     client = _client(rows=[{"id": "i1", "code": "mission-control"}])
-    owner = resolve_commitment_owner(client, "mission-control")
-    assert owner == {"id": "i1", "code": "mission-control", "kind": "initiative"}
+    assert resolve_commitment_owner(client, "mission-control") is None
+    client.table.assert_not_called()
 
 
 def test_resolve_owner_missing_returns_none() -> None:
@@ -71,18 +80,19 @@ def test_write_commitment_project_row_shape() -> None:
     assert row["due_date"] == "2026-07-20"
 
 
-def test_write_commitment_initiative_owner_column() -> None:
+def test_write_commitment_internal_workstream_owner_column() -> None:
+    """One owner column (#301): an internal workstream writes `project_id`."""
     client = _client(rows=[])
     write_commitment(
         client,
-        owner={"id": "i1", "code": "mission-control", "kind": "initiative"},
+        owner={"id": "i1", "code": "1pi-9005-mission-control", "kind": "project"},
         description="Internal task",
         cp_hash="beef0001",
         source_kind="meeting_ingest",
     )
     row = _last_insert(client)
-    assert row["initiative_id"] == "i1"
-    assert "project_id" not in row
+    assert row["project_id"] == "i1"
+    assert "initiative_id" not in row
 
 
 def test_write_commitment_duplicate_skips_insert() -> None:
@@ -135,7 +145,7 @@ from cp_engine.commitments import (  # noqa: E402
 )
 
 _OWNER_P = {"id": "p1", "code": "ggl-5168", "kind": "project"}
-_OWNER_I = {"id": "i1", "code": "mission-control", "kind": "initiative"}
+_OWNER_I = {"id": "i1", "code": "1pi-9005-mission-control", "kind": "project"}
 
 
 def _list_client(rows: list[dict]) -> MagicMock:
@@ -157,11 +167,12 @@ def test_list_commitments_project_scope_column() -> None:
     assert scope_eq.return_value.eq.call_args.args == ("status", "open")
 
 
-def test_list_commitments_initiative_scope_column() -> None:
+def test_list_commitments_internal_workstream_scope_column() -> None:
+    """Internal workstreams scope on `project_id` too (#301)."""
     client = _list_client([])
     list_commitments(client, _OWNER_I, status="done")
     scope_eq = client.table.return_value.select.return_value.eq
-    assert scope_eq.call_args.args == ("initiative_id", "i1")
+    assert scope_eq.call_args.args == ("project_id", "i1")
     assert scope_eq.return_value.eq.call_args.args == ("status", "done")
 
 

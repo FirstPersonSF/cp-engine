@@ -102,7 +102,7 @@ def make_state(
     status: str = "Open",
     is_internal: bool = False,
     summary: str | None = None,
-    source: str = "engagement",
+    has_agreement: bool = True,
     company_kind: str = "client",
     company_code: str = "GGL",
     company_name: str = "Google",
@@ -118,7 +118,7 @@ def make_state(
     return ProjectState(
         code=code,
         name=name if name is not None else code,
-        source=source,  # type: ignore[arg-type]
+        has_agreement=has_agreement,
         company_kind=company_kind,  # type: ignore[arg-type]
         company_code=company_code,
         company_name=company_name,
@@ -538,18 +538,18 @@ def test_sync_with_mixed_statuses_renders_correct_subtables(tmp_path: Path) -> N
     assert "open-1" in master  # active
     assert "hold-1" in master  # holding subtable
     assert "closed-1" in master  # closed-recent subtable
-    assert "internal-1" not in master  # is_internal filtered
+    # `is_internal` gates nothing since #301: internal workstreams are
+    # `projects` rows carrying that flag, and they deserve a row and a dir.
+    assert "internal-1" in master
 
-    # Project CP scaffolding matches master-CP visibility: internal projects
-    # are NOT scaffolded into client/public tenants. They belong in their
-    # own (cp-firstpersonsf) tenant. v0.3: each project is a working dir
+    # Every workstream is scaffolded. v0.3: each project is a working dir
     # under <scope>/<dir_slug>/, where dir_slug is now the slugified code.
     # Under the account-nested layout (v0.8.17+), client projects live one
     # level deeper at `1p/<company-slug>/<dir>/` — these test states all
     # default to company_name="Google", so they nest under `1p/google/`.
     account_dir = tmp_path / "1p" / "google"
     dirs = sorted(p.name for p in account_dir.iterdir() if p.is_dir())
-    assert dirs == ["closed-1", "hold-1", "open-1"]
+    assert dirs == ["closed-1", "hold-1", "internal-1", "open-1"]
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -738,18 +738,20 @@ def test_mixed_scopes_land_under_correct_dirs(tmp_path: Path) -> None:
         (
             make_state(code="ggl-5168-playbooks", name="Playbooks", company_kind="client"),
             make_state(
-                code="mc-2",
-                name="MC-2",
+                code="1pi-9005-mission-control",
+                name="Mission Control",
                 company_kind="self-fpsf",
-                source="repo",
-                status="Active",
+                has_agreement=False,
+                status="Open",
+                is_internal=True,
             ),
             make_state(
-                code="storyos",
+                code="cnc-9004-storyos",
                 name="StoryOS",
                 company_kind="self-canonic",
-                source="repo",
-                status="Active",
+                has_agreement=False,
+                status="Open",
+                is_internal=True,
             ),
         )
     )
@@ -760,18 +762,18 @@ def test_mixed_scopes_land_under_correct_dirs(tmp_path: Path) -> None:
     # full slug, so the dir IS the code). Client projects nest under their
     # account (1p/<company>/) per the account-nested layout; the company
     # defaults to "Google".
-    # FPSF/Canonic projects are unchanged — they already nest by self-
-    # company at the scope level.
+    # FPSF/Canonic workstreams already nest by self-company at the scope
+    # level.
     assert (tmp_path / "1p" / "google" / "ggl-5168-playbooks" / "cp.md").exists()
-    assert (tmp_path / "firstpersonsf" / "mc-2" / "cp.md").exists()
-    assert (tmp_path / "canonic" / "storyos" / "cp.md").exists()
+    assert (tmp_path / "firstpersonsf" / "1pi-9005-mission-control" / "cp.md").exists()
+    assert (tmp_path / "canonic" / "cnc-9004-storyos" / "cp.md").exists()
 
     # Master CP links use the slugged paths (including the per-account
     # layer for client projects).
     master = (tmp_path / "master-cp.md").read_text()
     assert "1p/google/ggl-5168-playbooks/cp.md" in master
-    assert "firstpersonsf/mc-2/cp.md" in master
-    assert "canonic/storyos/cp.md" in master
+    assert "firstpersonsf/1pi-9005-mission-control/cp.md" in master
+    assert "canonic/cnc-9004-storyos/cp.md" in master
 
 
 def test_un_archive_restores_working_dir_with_hand_content(tmp_path: Path) -> None:
@@ -814,7 +816,7 @@ def test_dropbox_md_scaffolded_when_url_present(tmp_path: Path) -> None:
     state = ProjectState(
         code="ggl-5168-playbooks",
         name="Playbooks",
-        source="engagement",  # type: ignore[arg-type]
+        has_agreement=True,  # type: ignore[arg-type]
         company_kind="client",  # type: ignore[arg-type]
         company_code="GGL",
         company_name="Google",
@@ -856,7 +858,7 @@ def test_dropbox_md_re_renders_on_url_change(tmp_path: Path) -> None:
         return ProjectState(
             code="mover",
             name="Mover",
-            source="engagement",  # type: ignore[arg-type]
+            has_agreement=True,  # type: ignore[arg-type]
             company_kind="client",  # type: ignore[arg-type]
             company_code=None,
             company_name=None,
@@ -937,11 +939,11 @@ def test_account_cp_not_scaffolded_for_self_company_scopes(tmp_path: Path) -> No
         backend_factory=lambda _: FakeBackend(
             (
                 make_state(
-                    code="mc-2", name="mc-2", source="repo", status="Active",
+                    code="mc-2", name="mc-2", has_agreement=False, status="Active",
                     company_kind="self-fpsf",
                 ),
                 make_state(
-                    code="storyos", name="storyos", source="repo", status="Active",
+                    code="storyos", name="storyos", has_agreement=False, status="Active",
                     company_kind="self-canonic",
                 ),
             )
@@ -1065,214 +1067,6 @@ def test_account_cp_preserves_hand_written_content_on_resync(tmp_path: Path) -> 
 # ──────────────────────────────────────────────────────────────────────
 #  Working-dir slugs (v0.3.2+)
 # ──────────────────────────────────────────────────────────────────────
-
-
-def test_working_dir_uses_slugged_code(tmp_path: Path) -> None:
-    """An engagement with a descriptive code (the canonical full_job_name
-    slug) lands at <slugified-code>/. The dir IS the slugified code; the
-    name no longer contributes a tail."""
-    config = make_config(tmp_path)
-    state = make_state(
-        code="ggl-5177-event-safety-playbook",
-        name="Event Safety Playbook",
-    )
-
-    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
-
-    # Account-nested layout: client projects live one level deeper under
-    # their account dir. The default fixture state has company "Google".
-    expected_dir = tmp_path / "1p" / "google" / "ggl-5177-event-safety-playbook"
-    assert (expected_dir / "cp.md").exists()
-
-
-def test_working_dir_falls_back_to_bare_code(tmp_path: Path) -> None:
-    """When name == code (typical for repos), the slug is just the code."""
-    config = make_config(tmp_path)
-    state = make_state(code="mc-2", name="mc-2", source="repo", status="Active",
-                        company_kind="self-fpsf")
-
-    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
-
-    assert (tmp_path / "firstpersonsf" / "mc-2" / "cp.md").exists()
-
-
-def test_name_drift_does_not_move_dir(tmp_path: Path) -> None:
-    """The working dir is keyed on the (now-descriptive) code, so a change
-    to MC-2's `name` alone leaves the dir in place — no rename, and
-    hand-written content stays put. (Under the new canonical-id contract
-    the dir IS the slugified code; the name no longer affects the path.)"""
-    config = make_config(tmp_path)
-
-    # First sync: scaffold at ggl-5177-event-safety-playbook/ (the dir is
-    # the slugified code).
-    sync_tenant(
-        config,
-        backend_factory=lambda _: FakeBackend(
-            (make_state(code="ggl-5177-event-safety-playbook", name="Event Safety Playbook"),)
-        ),
-    )
-    work_dir = tmp_path / "1p" / "google" / "ggl-5177-event-safety-playbook"
-    assert work_dir.exists()
-
-    # Hand-add a transcript so we can verify content survives.
-    (work_dir / "transcript.md").write_text("# call notes\n")
-
-    # Sync again with the SAME code but a drifted name.
-    sync_tenant(
-        config,
-        backend_factory=lambda _: FakeBackend(
-            (make_state(code="ggl-5177-event-safety-playbook", name="Activation Playbook"),)
-        ),
-    )
-
-    # Dir is unchanged and content survives — the name change is inert.
-    assert work_dir.exists()
-    assert (work_dir / "transcript.md").read_text() == "# call notes\n"
-
-
-def test_repo_md_scaffolded_for_repo_source_projects(tmp_path: Path) -> None:
-    """A repo-source project gets `_repo.md` with the GitHub URL."""
-    config = make_config(tmp_path)
-    state = ProjectState(
-        code="mc-2",
-        name="mc-2",
-        source="repo",  # type: ignore[arg-type]
-        company_kind="self-fpsf",  # type: ignore[arg-type]
-        company_code="1P",
-        company_name="First Person",
-        status="Active",
-        is_internal=False,
-        owner="drew",
-        last_touched=datetime(2026, 5, 7, tzinfo=timezone.utc),
-        deadline=None,
-        github_org="FirstPersonSF",
-        repo_name="mc-2",
-    )
-
-    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
-
-    repo_path = tmp_path / "firstpersonsf" / "mc-2" / "_repo.md"
-    assert repo_path.exists()
-    body = repo_path.read_text()
-    assert "https://github.com/FirstPersonSF/mc-2" in body
-    assert "FirstPersonSF/mc-2" in body
-
-
-def test_repo_md_includes_local_clone_paths_per_user_when_configured(tmp_path: Path) -> None:
-    """When [local-repos.<user>] has an entry for a project's repo_name,
-    the rendered `_repo.md` surfaces one **Local clone (User):** line per
-    user. Multi-user shape lets the file show everyone's paths so any
-    teammate's Claude session can find the right clone."""
-    config = TenantConfig(
-        name="firstpersonsf",
-        display="First Person Internal",
-        engine_version_constraint="~= 0.1",
-        sync=SyncConfig(
-            backend="mc-2", cron="0 * * * *", mc_2_supabase_project_ref="ref"
-        ),
-        projects=(
-            ProjectConfig(code="mc-2", github="FirstPersonSF/mc-2", local_path=None),
-        ),
-        root=tmp_path,
-        local_repos_by_user={
-            "drew": {"mc-2": "/Users/drew/Documents/Python/mc-2"},
-            "tony": {"mc-2": "/Users/tony/code/mc-2"},
-        },
-    )
-
-    state = ProjectState(
-        code="mc-2",
-        name="mc-2",
-        source="repo",  # type: ignore[arg-type]
-        company_kind="self-fpsf",  # type: ignore[arg-type]
-        company_code="1P",
-        company_name="First Person",
-        status="Active",
-        is_internal=False,
-        owner="drew",
-        last_touched=datetime(2026, 5, 7, tzinfo=timezone.utc),
-        deadline=None,
-        github_org="FirstPersonSF",
-        repo_name="mc-2",
-    )
-
-    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
-
-    body = (tmp_path / "firstpersonsf" / "mc-2" / "_repo.md").read_text()
-    assert "**Local clone (Drew):** `/Users/drew/Documents/Python/mc-2`" in body
-    assert "**Local clone (Tony):** `/Users/tony/code/mc-2`" in body
-
-
-def test_repo_md_omits_a_users_path_when_they_dont_have_the_repo(
-    tmp_path: Path,
-) -> None:
-    """A user with [local-repos.<user>] entries for OTHER repos but not
-    this one shouldn't appear in this _repo.md."""
-    config = TenantConfig(
-        name="firstpersonsf",
-        display="First Person Internal",
-        engine_version_constraint="~= 0.1",
-        sync=SyncConfig(
-            backend="mc-2", cron="0 * * * *", mc_2_supabase_project_ref="ref"
-        ),
-        projects=(
-            ProjectConfig(code="mc-2", github="FirstPersonSF/mc-2", local_path=None),
-        ),
-        root=tmp_path,
-        local_repos_by_user={
-            "drew": {"mc-2": "/Users/drew/code/mc-2"},
-            "tony": {"storyos": "/Users/tony/code/storyos"},  # no mc-2
-        },
-    )
-
-    state = ProjectState(
-        code="mc-2",
-        name="mc-2",
-        source="repo",  # type: ignore[arg-type]
-        company_kind="self-fpsf",  # type: ignore[arg-type]
-        company_code="1P",
-        company_name="First Person",
-        status="Active",
-        is_internal=False,
-        owner="drew",
-        last_touched=datetime(2026, 5, 7, tzinfo=timezone.utc),
-        deadline=None,
-        github_org="FirstPersonSF",
-        repo_name="mc-2",
-    )
-
-    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
-
-    body = (tmp_path / "firstpersonsf" / "mc-2" / "_repo.md").read_text()
-    assert "Drew" in body
-    assert "Tony" not in body
-
-
-def test_repo_md_omits_local_clone_path_when_not_configured(tmp_path: Path) -> None:
-    """Without a [local-repos.<user>] entry, _repo.md keeps the v0.3.3 shape
-    (no local clone surfaced)."""
-    config = make_config(tmp_path)
-    state = ProjectState(
-        code="mc-2",
-        name="mc-2",
-        source="repo",  # type: ignore[arg-type]
-        company_kind="self-fpsf",  # type: ignore[arg-type]
-        company_code="1P",
-        company_name="First Person",
-        status="Active",
-        is_internal=False,
-        owner="drew",
-        last_touched=datetime(2026, 5, 7, tzinfo=timezone.utc),
-        deadline=None,
-        github_org="FirstPersonSF",
-        repo_name="mc-2",
-    )
-
-    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
-
-    body = (tmp_path / "firstpersonsf" / "mc-2" / "_repo.md").read_text()
-    assert "**Local clone:**" not in body
-
 
 def test_repo_md_omitted_for_engagement_source_projects(tmp_path: Path) -> None:
     """Engagements get `_dropbox.md` (when they have a URL), not `_repo.md`."""
@@ -1439,17 +1233,10 @@ def test_sync_splices_current_sprint_into_existing_project_cp(tmp_path: Path) ->
 
 def test_sync_tenant_writes_sprint_files_for_active_projects(tmp_path: Path) -> None:
     """sync_tenant should call into the sprint-file orchestrator for every
-    active project — engagement (Open/Deal, not is_internal) OR repo-source
-    (status="Active"), dropping a `<code>.md` file under
+    active workstream — one vocabulary, Deal | Open, `is_internal` gates
+    nothing (#301) — dropping a `<code>.md` file under
     `<tenant_root>/sprints/<YYYY-W##>/`. The orchestrator (via
     _is_active_for_sprint) mirrors render.py's `is_active` rule.
-
-    v0.8.2 regression: previously sync.py pre-filtered with
-    `not is_internal and is_active_status(status)`, which stripped FPSF/
-    Canonic repos (status="Active", is_internal=True) before the
-    orchestrator could consider them — even after v0.8.1 tried to fix
-    this at the orchestrator level. The fix now hands the full project
-    list down and lets the orchestrator own the rule.
     """
     config = make_config(tmp_path)
     fake = FakeBackend(
@@ -1458,39 +1245,38 @@ def test_sync_tenant_writes_sprint_files_for_active_projects(tmp_path: Path) -> 
             make_state(code="peb", name="Pebble Foods", status="Open"),
             # Holding engagement → no sprint file
             make_state(code="apx", name="Apex Holding", status="Holding"),
-            # Internal engagement (rare, but is_internal=True wins) → no sprint file
+            # Internal flag on a client row → still a workstream → written
             make_state(
                 code="internal-1",
                 name="Internal one",
                 status="Open",
                 is_internal=True,
             ),
-            # FPSF internal tooling: source="repo", status="Active",
-            # is_internal=True → SPRINT FILE WRITTEN per v0.8.2
+            # FPSF internal workstream: no agreement, Open → written
             make_state(
                 code="mc-2-tooling",
                 name="MC-2 tooling",
-                source="repo",
+                has_agreement=False,
                 company_kind="self-fpsf",
-                status="Active",
+                status="Open",
                 is_internal=True,
             ),
-            # Canonic project: same shape, different company_kind → SPRINT FILE WRITTEN
+            # Canonic workstream: same shape, different company_kind → written
             make_state(
                 code="storyos",
                 name="storyos",
-                source="repo",
+                has_agreement=False,
                 company_kind="self-canonic",
-                status="Active",
+                status="Open",
                 is_internal=True,
             ),
-            # Inactive repo → no sprint file
+            # Holding internal workstream → no sprint file
             make_state(
                 code="lns",
                 name="Lensman",
-                source="repo",
+                has_agreement=False,
                 company_kind="self-fpsf",
-                status="Inactive",
+                status="Holding",
                 is_internal=True,
             ),
         )
@@ -1504,14 +1290,62 @@ def test_sync_tenant_writes_sprint_files_for_active_projects(tmp_path: Path) -> 
 
     sprint_dir = tmp_path / "sprints" / "2026-W20"
     assert sprint_dir.is_dir()
-    # Active engagements + repo-source projects with status=Active are included.
+    # Every Deal | Open workstream is included, whatever its flag or shape.
     assert (sprint_dir / "peb.md").exists()
+    assert (sprint_dir / "internal-1.md").exists()
     assert (sprint_dir / "mc-2-tooling.md").exists()
     assert (sprint_dir / "storyos.md").exists()
-    # Holding, internal-engagement, and inactive-repo are excluded.
+    # Holding is excluded, client or internal alike.
     assert not (sprint_dir / "apx.md").exists()
-    assert not (sprint_dir / "internal-1.md").exists()
     assert not (sprint_dir / "lns.md").exists()
+
+
+def test_linked_repo_md_includes_local_clone_paths_per_user(tmp_path: Path) -> None:
+    """A workstream with a repo linked in MC-2 gets `_repo-<name>.md`, and
+    when `[local-repos.<user>]` names that repo the file surfaces one
+    **Local clone (User):** line per user who has it — the one place the
+    per-user clone map renders now that standalone `_repo.md` is gone
+    (#301)."""
+    from cp_engine.state import LinkedRepo
+
+    config = TenantConfig(
+        name="firstpersonsf",
+        display="First Person Internal",
+        engine_version_constraint="~= 0.1",
+        sync=SyncConfig(
+            backend="mc-2", cron="0 * * * *", mc_2_supabase_project_ref="ref"
+        ),
+        projects=(),
+        root=tmp_path,
+        local_repos_by_user={
+            "drew": {"mc-2": "/Users/drew/Documents/Python/mc-2"},
+            "tony": {"storyos": "/Users/tony/code/storyos"},  # no mc-2
+        },
+    )
+    from dataclasses import replace
+
+    state = replace(
+        make_state(
+            code="1pi-9005-mission-control",
+            name="Mission Control",
+            has_agreement=False,
+            company_kind="self-fpsf",
+            status="Open",
+            is_internal=True,
+        ),
+        linked_repos=(
+            LinkedRepo(repo_name="mc-2", github_org="FirstPersonSF", status="Active"),
+        ),
+    )
+
+    sync_tenant(config, backend_factory=lambda _: FakeBackend((state,)))
+
+    body = (
+        tmp_path / "firstpersonsf" / "1pi-9005-mission-control" / "_repo-mc-2.md"
+    ).read_text()
+    assert "https://github.com/FirstPersonSF/mc-2" in body
+    assert "**Local clone (Drew):** `/Users/drew/Documents/Python/mc-2`" in body
+    assert "Tony" not in body
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -2740,12 +2574,13 @@ def test_drift_rename_with_no_sprint_files_is_fine(tmp_path: Path) -> None:
 def test_code_takes_slug_distinguishes_engagements_from_repo_slugs():
     from cp_engine.sync import _code_takes_slug
 
-    # Engagement codes carry a name tail on their dir: ggl-5168-activation
-    for code in ("ggl-5168", "ibx-5153", "sap-5174", "slt-5196"):
+    # Short-form codes carry a name tail on their dir: ggl-5168-activation
+    for code in ("ggl-5168", "ibx-5153", "sap-5174", "slt-5196", "1pi-9005"):
         assert _code_takes_slug(code), code
 
-    # Initiative/repo codes ARE the full slug — the dir is named exactly
-    # the code. `mc-2` is the one that makes a naive isdigit() check wrong.
+    # A code that already carries its slug names its dir exactly, and a
+    # bare word is not a code at all. `mc-2` is the one that makes a naive
+    # isdigit() check wrong: a job number is at least three digits.
     for code in (
         "cp",
         "cp-engine",
@@ -2754,6 +2589,8 @@ def test_code_takes_slug_distinguishes_engagements_from_repo_slugs():
         "mission-control",
         "unf-forge",
         "1p-component-library",
+        "1pi-9005-mission-control",
+        "ggl-5168-activation",
     ):
         assert not _code_takes_slug(code), code
 

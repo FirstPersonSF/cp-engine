@@ -57,7 +57,7 @@ def make_state(
     return ProjectState(
         code=code,
         name=name if name is not None else code,
-        source="engagement",  # type: ignore[arg-type]
+        has_agreement=True,  # type: ignore[arg-type]
         company_kind=company_kind,  # type: ignore[arg-type]
         company_code=company_code,
         company_name=company_name,

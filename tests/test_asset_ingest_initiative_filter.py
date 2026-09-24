@@ -1,8 +1,8 @@
-"""Task 8 Part A — active initiatives become eligible for asset ingestion.
+"""Task 8 Part A — internal workstreams are eligible for asset ingestion.
 
-`active_ingestable_codes` widens the engagement-only ingestable set to also
-include ACTIVE initiatives (`source == "initiative"` + active status), while
-keeping the active-client-engagement path exactly as it was.
+`active_ingestable_codes` covers every active (Deal | Open) client workstream
+plus every active internal workstream (self company, no agreement). One
+status vocabulary since #301; `is_internal` gates nothing.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from cp_engine.state import ProjectState
 def _state(
     code: str,
     *,
-    source: str,
+    has_agreement: bool,
     status: str,
     company_kind: str = "client",
     is_internal: bool = False,
@@ -25,7 +25,7 @@ def _state(
     return ProjectState(
         code=code,
         name=code,
-        source=source,  # type: ignore[arg-type]
+        has_agreement=has_agreement,
         company_kind=company_kind,  # type: ignore[arg-type]
         company_code="GGL",
         company_name="Google",
@@ -60,19 +60,19 @@ def _config():
 def test_active_initiative_is_ingestable(monkeypatch):
     _patch_backend(
         monkeypatch,
-        [_state("mission-control", source="initiative", status="Active")],
+        [_state("1pi-9005-mission-control", has_agreement=False, status="Open", company_kind="self-fpsf")],
     )
     codes = asset_ingest_cli.active_ingestable_codes(_config())
-    assert "mission-control" in codes
+    assert "1pi-9005-mission-control" in codes
 
 
 def test_inactive_initiative_is_not_ingestable(monkeypatch):
     _patch_backend(
         monkeypatch,
         [
-            _state("storyos", source="initiative", status="On hold"),
-            _state("old-thing", source="initiative", status="Archived"),
-            _state("done-thing", source="initiative", status="Done"),
+            _state("cnc-9004-storyos", has_agreement=False, status="Holding", company_kind="self-canonic"),
+            _state("1pi-9007-old-thing", has_agreement=False, status="Archived", company_kind="self-fpsf"),
+            _state("1pi-9008-done-thing", has_agreement=False, status="Closed", company_kind="self-fpsf"),
         ],
     )
     assert asset_ingest_cli.active_ingestable_codes(_config()) == []
@@ -82,28 +82,33 @@ def test_active_engagement_still_ingestable(monkeypatch):
     _patch_backend(
         monkeypatch,
         [
-            _state("ggl-5168", source="engagement", status="Open"),
-            _state("ibx-5153", source="engagement", status="Deal"),
-            # excluded: closed engagement, internal engagement
-            _state("old-9999", source="engagement", status="Closed"),
-            _state("int-1", source="engagement", status="Open", is_internal=True),
+            _state("ggl-5168", has_agreement=True, status="Open"),
+            _state("ibx-5153", has_agreement=True, status="Deal"),
+            # excluded: closed engagement
+            _state("old-9999", has_agreement=True, status="Closed"),
+            # INCLUDED since #301: `is_internal` is MC-2's flag as stored and
+            # gates nothing — the internal workstreams carry it and deserve
+            # ingest like any other active workstream.
+            _state("int-1", has_agreement=True, status="Open", is_internal=True),
         ],
     )
     codes = asset_ingest_cli.active_ingestable_codes(_config())
     assert "ggl-5168" in codes
     assert "ibx-5153" in codes
     assert "old-9999" not in codes
-    assert "int-1" not in codes
+    assert "int-1" in codes
 
 
 def test_mixed_engagements_and_initiatives(monkeypatch):
     _patch_backend(
         monkeypatch,
         [
-            _state("ggl-5168", source="engagement", status="Open"),
-            _state("mission-control", source="initiative", status="Active"),
-            _state("storyos", source="initiative", status="Done"),
+            _state("ggl-5168", has_agreement=True, status="Open"),
+            _state("1pi-9005-mission-control", has_agreement=False, status="Open", company_kind="self-fpsf"),
+            _state("cnc-9004-storyos", has_agreement=False, status="Closed", company_kind="self-canonic"),
+            # a self-company row WITH an agreement is house territory: out
+            _state("1pi-9009-house-job", has_agreement=True, status="Open", company_kind="self-fpsf"),
         ],
     )
     codes = asset_ingest_cli.active_ingestable_codes(_config())
-    assert set(codes) == {"ggl-5168", "mission-control"}
+    assert set(codes) == {"ggl-5168", "1pi-9005-mission-control"}

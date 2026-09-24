@@ -51,7 +51,6 @@ from cp_engine.render import (
     render_project_cp,
     render_linked_repo_md,
     render_project_strip_bodies,
-    render_repo_md,
     render_sprint_week,
     splice_managed_region,
 )
@@ -426,18 +425,17 @@ def _sync_tenant_inner(
     # a drifted working dir by its stamped uuid even when its name no longer
     # matches any live code.
     live_dirs: set[tuple[str, str, str]] = {
-        (account_scope_for(p), p.code, p.mc2_id or "")
-        for p in projects
-        if not p.is_internal
+        (account_scope_for(p), p.code, p.mc2_id or "") for p in projects
     }
 
     # Asset entries from each project's manifest regeneration, consumed by the
     # new-source announcement pass after sprint files exist (#153).
     manifest_assets: dict[str, list[dict]] = {}
 
+    # Every workstream gets a working dir (#301): `is_internal` used to skip
+    # MC-2's pseudo-projects, and the internal workstreams now ARE rows
+    # carrying that flag.
     for project in projects:
-        if project.is_internal:
-            continue
         scope = account_scope_for(project)
         scope_dir = scope_root(config.root, scope)
         target_slug = dir_slug(project.code, project.name)
@@ -583,32 +581,9 @@ def _sync_tenant_inner(
         elif _write_if_changed(dropbox_path, dropbox_body, splice_regions=()):
             files_written.append(dropbox_path)
 
-        # _repo.md — repo-source projects get a link to their GitHub repo,
-        # mirroring _dropbox.md's role for engagements. Engagements get None
-        # back from the renderer and skip this entirely.
-        #
-        # Build a flat user → path map for THIS repo from the committed
-        # multi-user table. Empty dict (no users have it) renders as v0.3.3
-        # shape; populated dict renders one **Local clone (User):** line each.
-        clones_for_this_repo: dict[str, str] = {}
-        if project.repo_name:
-            for user, paths in config.local_repos_by_user.items():
-                if project.repo_name in paths:
-                    clones_for_this_repo[user] = paths[project.repo_name]
-        repo_body = render_repo_md(
-            project, local_clones_by_user=clones_for_this_repo or None
-        )
-        repo_path = project_dir / "_repo.md"
-        if repo_body is None:
-            pass
-        elif _write_if_changed(repo_path, repo_body, splice_regions=()):
-            files_written.append(repo_path)
-
-        # _repo-<repo-name>.md per linked repo — engagements with repos in
-        # MC-2 (repos.project_id pointing at the engagement) get one file
-        # per linked repo, mirroring the standalone-repo _repo.md pattern.
-        # Only meaningful for engagements; standalone-repo ProjectStates
-        # have project.linked_repos == ().
+        # _repo-<repo-name>.md per linked repo — workstreams with repos in
+        # MC-2 (repos.project_id pointing at them) get one file per linked
+        # repo. Standalone repos and their `_repo.md` are gone (#301).
         for linked in project.linked_repos:
             clones_for_linked: dict[str, str] = {}
             for user, paths in config.local_repos_by_user.items():
@@ -732,12 +707,10 @@ def _sync_tenant_inner(
     #
     # Account list is derived from the projects we already have — same
     # source of truth as the rest of master-cp, no separate backend
-    # query. company_kind == "client" is the gate; internal client
-    # projects are excluded (they don't get a project dir under 1p/, so
-    # they shouldn't contribute to an account dir either).
+    # query. company_kind == "client" is the gate.
     accounts_to_active_projects: dict[tuple[str, str], list[ProjectState]] = {}
     for project in projects:
-        if project.is_internal or project.company_kind != "client":
+        if project.company_kind != "client":
             continue
         slug = company_slug(project.company_name)
         # Display name falls back to the slug if company_name is missing;
@@ -2184,29 +2157,20 @@ def _project_parent_dirs(tenant_root: Path, scope: str) -> list[Path]:
     return parents
 
 
-# Engagement codes: `<letters>-<4+ digits>` (`ggl-5168`, `ibx-5153`). The
-# 4-digit floor is what separates them from repo slugs ending in a short
-# number (`mc-2`), which must NOT be treated as prefix-matchable.
-_ENGAGEMENT_CODE_RE = re.compile(r"[a-z0-9]+-\d{4,}")
-
-
 def _code_takes_slug(code: str) -> bool:
     """True if `code` can appear as `<code>-<slug>` on a working dir.
 
-    Engagement codes are `<prefix>-<digits>` (`ggl-5168`) and their dirs
-    carry a name tail (`ggl-5168-activation`). Initiative and repo codes
-    are ALREADY the full slug (`mission-control`, `cp`, `storyos`) — a dir
-    for them is named exactly the code, never `<code>-<something>`.
-
-    The distinction matters because a prefix match on a slug-form code is
-    unsound: it makes `cp` claim `cp-engine/`, `cp-context-protocol/`, and
-    anything else starting `cp-` (#207).
-
-    Engagement job numbers are 4+ digits, which keeps repo slugs that end
-    in a short number — `mc-2` most importantly — on the slug side where
-    they belong.
+    A short-form code (`ggl-5168`) may name a dir carrying a name tail
+    (`ggl-5168-activation`); a code that already carries its slug names its
+    dir exactly. Both parse (`cp_engine.codes.parse_code`); a bare word
+    (`storyos`, `cp`) does not, and a prefix match on such a name is
+    unsound — it made `cp` claim `cp-engine/` and `cp-context-protocol/`
+    (#207). Only codes with a job number take a slug tail.
     """
-    return bool(_ENGAGEMENT_CODE_RE.fullmatch(code))
+    from cp_engine.codes import parse_code
+
+    parsed = parse_code(code)
+    return parsed is not None and parsed.slug is None
 
 
 def _dir_code(name: str) -> str:

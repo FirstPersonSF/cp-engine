@@ -77,17 +77,11 @@ def _row(c: dict, today: date) -> SweepRow:
 
 
 def _owner_codes(client: Any) -> dict[str, str]:
-    """id → code across projects and initiatives (one read each)."""
+    """id → code across every workstream (one read of `projects`)."""
     codes: dict[str, str] = {}
-    tables = [Tables.PROJECTS]
-    if mc2_db.has_initiatives_table(client):
-        tables.append(Tables.INITIATIVES)
-    for table in tables:
-        for r in (
-            client.table(table).select("id, code").execute().data or []
-        ):
-            if r.get("id") and r.get("code"):
-                codes[r["id"]] = r["code"]
+    for r in client.table(Tables.PROJECTS).select("id, code").execute().data or []:
+        if r.get("id") and r.get("code"):
+            codes[r["id"]] = r["code"]
     return codes
 
 
@@ -116,16 +110,11 @@ def sweep(
 
         owner = resolve_commitment_owner(client, code)
         if owner is None:
-            raise ValueError(f"no project or initiative resolves for code {code!r}")
-        # `resolve_commitment_owner` emits ONLY "project" | "initiative"
-        # (commitments.py:89/101). This previously tested for "engagement",
-        # which never matches — so every engagement fell through to
-        # `initiative_id` and silently returned zero. `cp commitments-sweep
-        # ibx-5192` reported "No open commitments match" against 72 real open
-        # rows, and that empty result was carried into a close-out retro as
-        # fact. Test for "initiative" like every other caller does.
-        col = "initiative_id" if owner["kind"] == "initiative" else "project_id"
-        query = query.eq(col, owner["id"])
+            raise ValueError(f"no workstream resolves for code {code!r}")
+        # One owner column since #301. (Its predecessor picked the column
+        # off `owner["kind"]` and once tested for a kind the resolver never
+        # emitted, so every engagement sweep returned zero — v0.98.0.)
+        query = query.eq(mc2_db.OWNER_COLUMN, owner["id"])
     rows = query.execute().data or []
 
     codes = _owner_codes(client)
@@ -138,7 +127,7 @@ def sweep(
             continue
         if stale_only and not r.stale:
             continue
-        owner_id = c.get("project_id") or c.get("initiative_id")
+        owner_id = c.get(mc2_db.OWNER_COLUMN)
         group = code or codes.get(owner_id, "(unmapped)")
         groups.setdefault(group, []).append(r)
 

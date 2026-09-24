@@ -43,7 +43,7 @@ def _make_state(code: str, company_kind: str = "client") -> ProjectState:
     return ProjectState(
         code=code,
         name=f"Project {code}",
-        source="engagement",  # type: ignore[arg-type]
+        has_agreement=True,  # type: ignore[arg-type]
         company_kind=company_kind,  # type: ignore[arg-type]
         company_code=None,
         company_name=None,

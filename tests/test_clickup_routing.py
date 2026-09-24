@@ -6,14 +6,10 @@ semantics, especially the two points the copies had diverged on.
 """
 from unittest.mock import MagicMock
 
-import pytest
-from postgrest.exceptions import APIError
-
-from cp_engine.clickup_routing import resolve_clickup_project
+from cp_engine.clickup_routing import engagement_number, resolve_clickup_project
 
 
-def _client(project_rows=None, initiative_rows=None, initiative_exc=None,
-            binding_rows=None):
+def _client(project_rows=None, binding_rows=None):
     client = MagicMock()
 
     def table(name):
@@ -22,12 +18,6 @@ def _client(project_rows=None, initiative_rows=None, initiative_exc=None,
         if name == "projects":
             resp.data = project_rows or []
             t.select.return_value.eq.return_value.execute.return_value = resp
-        elif name == "initiatives":
-            if initiative_exc is not None:
-                t.select.return_value.eq.return_value.execute.side_effect = initiative_exc
-            else:
-                resp.data = initiative_rows or []
-                t.select.return_value.eq.return_value.execute.return_value = resp
         elif name == "project_integrations":
             # Read-flip: clickup_list_id resolves from bindings.
             resp.data = binding_rows or []
@@ -40,7 +30,7 @@ def _client(project_rows=None, initiative_rows=None, initiative_exc=None,
 
 def _clickup_binding(owner_col, owner_id, list_id):
     return {
-        "project_id": None, "initiative_id": None, "service": "clickup",
+        "project_id": None, "service": "clickup",
         "external_ref": {"id": list_id, "extra": {"list_id": list_id}},
         "label": "",
         owner_col: owner_id,
@@ -61,20 +51,44 @@ def test_engagement_code_resolves_as_project_kind():
     }
 
 
-def test_initiative_slug_resolves_as_initiative_kind():
-    row = {**ROW, "code": "mission-control"}
-    bindings = [_clickup_binding("initiative_id", "uuid-1", "list-77")]
+def test_internal_workstream_code_resolves_as_project_kind():
+    """#301: internal workstreams are numbered `projects` rows; the code
+    resolves by number and stamps `kind="project"` like every other."""
+    bindings = [_clickup_binding("project_id", "uuid-1", "list-77")]
     result = resolve_clickup_project(
-        _client(initiative_rows=[row], binding_rows=bindings), "mission-control",
+        _client(project_rows=[ROW], binding_rows=bindings), "1pi-9005-mission-control",
     )
-    assert result["kind"] == "initiative"
-    assert result["code"] == "mission-control"
+    assert result["kind"] == "project"
+    assert result["code"] == "1pi-9005-mission-control"
     assert result["clickup_list_id"] == "list-77"
+
+
+def test_display_name_spelling_resolves_too():
+    """Any spelling `parse_code` accepts is one lookup by number."""
+    result = resolve_clickup_project(
+        _client(project_rows=[ROW], binding_rows=BINDINGS), "GGL 5136 Go Safety",
+    )
+    assert result is not None and result["kind"] == "project"
 
 
 def test_no_rows_returns_none():
     assert resolve_clickup_project(_client(), "ggl-9999") is None
-    assert resolve_clickup_project(_client(), "no-such-slug") is None
+
+
+def test_bare_slug_is_not_a_code_and_never_queries():
+    """A numberless slug (`mission-control`) names nothing since the
+    initiatives table retired — no query is issued."""
+    client = _client()
+    assert resolve_clickup_project(client, "no-such-slug") is None
+    client.table.assert_not_called()
+
+
+def test_engagement_number_is_a_parse_code_wrapper():
+    assert engagement_number("ggl-5136") == 5136
+    assert engagement_number("ggl-5136-go-safety-website") == 5136
+    assert engagement_number("sap-5171-vision-update-2026") == 5171
+    assert engagement_number("1pi-9005-mission-control") == 9005
+    assert engagement_number("mission-control") is None
 
 
 def test_enable_clickup_false_returns_none():
@@ -99,22 +113,6 @@ def test_missing_enable_clickup_ok_treats_as_enabled():
     )
     assert result is not None and result["kind"] == "project"
     assert result["clickup_list_id"] == "list-9"
-
-
-def test_initiative_apierror_swallowed():
-    """Missing ClickUp columns on initiatives -> None, not a crash."""
-    exc = APIError({"message": "column initiatives.enable_clickup does not exist"})
-    assert resolve_clickup_project(
-        _client(initiative_exc=exc), "mission-control",
-    ) is None
-
-
-def test_initiative_other_exceptions_propagate():
-    """Reconciled divergence: genuine failures are no longer swallowed."""
-    with pytest.raises(ConnectionError):
-        resolve_clickup_project(
-            _client(initiative_exc=ConnectionError("network down")), "mission-control",
-        )
 
 
 def test_wrappers_delegate():

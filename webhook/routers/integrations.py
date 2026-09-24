@@ -33,11 +33,11 @@ async def resolve_tags_endpoint(request: Request) -> dict:
     THE resolution authority (arch-phase-2): fathom-meeting-sync calls this
     at dispatch time instead of maintaining its own ``projectTagToCode``
     parse. Wraps :func:`cp_engine.tag_resolve.resolve_tags` — the parse
-    heuristic plus a DB-backed verification against MC-2
-    ``projects``/``initiatives``.
+    heuristic (`cp_engine.codes.parse_code`) plus a DB-backed verification
+    against MC-2 ``projects``.
 
     Request body (JSON):
-        { "tags": ["GGL 5136 go/safety website", "mission-control", ...] }
+        { "tags": ["GGL 5136 go/safety website", "1pi-9005-mission-control", ...] }
 
     Headers:
         X-Webhook-Signature: hex(hmac_sha256(body, WEBHOOK_HMAC_SECRET))
@@ -237,16 +237,11 @@ async def clickup_task_closed(request: Request):
 def _lookup_proposal_by_clickup_task_id(task_id: str) -> tuple[str, str] | None:
     """Return (cp_ask_hash, code) for a given ClickUp task_id.
 
-    Resolves the owning cp code from whichever owner column is set on the
-    ``clickup_task_proposals`` row (post-migration 081 the table carries
-    BOTH ``project_id`` and ``initiative_id`` with a num_nonnulls == 1
-    CHECK — exactly one owner):
+    Resolves the owning cp code from the row's ``project_id`` (the one
+    owner column, #301) → ``<company>-<number>`` via projects → companies.
 
-      - ``project_id`` set → ``<company>-<number>`` via projects → companies.
-      - ``initiative_id`` set → the initiative's slug ``code`` directly.
-
-    Returns None if no row matches, neither owner resolves, or Supabase is
-    unavailable. Best-effort: any exception is swallowed and treated as
+    Returns None if no row matches, the owner doesn't resolve, or Supabase
+    is unavailable. Best-effort: any exception is swallowed and treated as
     'not found' (the webhook returns `ingested: false`).
     """
     client = mc2_db.get_client(required=False)
@@ -273,17 +268,6 @@ def _lookup_proposal_by_clickup_task_id(task_id: str) -> tuple[str, str] | None:
             log.warning(
                 "clickup-task-closed: proposal for task=%s has no cp_ask_hash",
                 task_id,
-            )
-            return None
-
-        initiative_id = row.get("initiative_id")
-        if initiative_id:
-            code = _resolve_initiative_code(client, initiative_id)
-            if code:
-                return cp_hash, code
-            log.warning(
-                "clickup-task-closed: no initiative code for id=%s (task=%s)",
-                initiative_id, task_id,
             )
             return None
 
@@ -340,25 +324,3 @@ def _resolve_engagement_code(client, project_id: str) -> str | None:
     if not company_code:
         return None
     return f"{company_code}-{number}"
-
-
-def _resolve_initiative_code(client, initiative_id: str) -> str | None:
-    """Resolve an initiatives.id to its slug ``code``.
-
-    On the workstream schema (mc-2 mig 192, cp-engine #300) the proposal
-    row no longer carries `initiative_id`, so this is never reached; the
-    gate is belt-and-braces for a row written before the migration.
-    """
-    if not mc2_db.has_initiatives_table(client):
-        return None
-    resp = (
-        client.table(Tables.INITIATIVES)
-        .select("code")
-        .eq("id", initiative_id)
-        .limit(1)
-        .execute()
-    )
-    rows = resp.data or []
-    if not rows:
-        return None
-    return rows[0].get("code") or None

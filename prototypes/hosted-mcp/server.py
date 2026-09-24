@@ -393,41 +393,12 @@ def _slug_full_job_name(full_job_name: str | None) -> str:
     return _SLUG_NON_ALPHANUM.sub("-", full_job_name.lower()).strip("-")
 
 
-# Workstream-schema probe (#300). mc-2 migration 190 adds `projects.parent_id`
-# and 194 retires `initiatives`; this server must answer on both sides of
-# that cutover. Mirrors `cp_engine.mc2_db.workstream_schema` — kept local
-# because this prototype does not import cp_engine (see resolve_project_id).
-# Keyed by client object; clients are per-user and short-lived here, so the
-# dict stays small, and a stale "legacy" answer only costs one extra miss.
-_WORKSTREAM_PROBE: dict[int, bool] = {}
 
-
-def _has_initiatives_table(client) -> bool:
-    """True while `initiatives` is still the home of internal work.
-
-    An unknown `parent_id` column is the legacy signal (APIError 42703);
-    any other failure also reads as legacy so a transient error never
-    hides the initiatives branch on a live legacy tenant.
-    """
-    key = id(client)
-    cached = _WORKSTREAM_PROBE.get(key)
-    if cached is not None:
-        return not cached
-    try:
-        rows = client.table("projects").select("id, parent_id").limit(1).execute().data or []
-        present = bool(rows) and isinstance(rows[0], dict) and "parent_id" in rows[0]
-    except Exception:  # noqa: BLE001
-        present = False
-    _WORKSTREAM_PROBE[key] = present
-    return not present
-
-
+# One owner column on every owner-scoped table since mc-2 mig 192 /
+# cp-engine #301 (`project_id`). Kept as a function so the six read loops
+# keep one spelling; `client` is unused.
 def _owner_columns(client) -> tuple[str, ...]:
-    """Owner columns an owner-scoped table carries: both on the legacy
-    schema, `project_id` alone once mc-2 mig 192 has folded `initiative_id`.
-    Mirrors `cp_engine.mc2_db.owner_columns`."""
-    if _has_initiatives_table(client):
-        return ("project_id", "initiative_id")
+    """Mirrors `cp_engine.mc2_db.owner_columns` (always `project_id`)."""
     return ("project_id",)
 
 
@@ -451,8 +422,8 @@ def resolve_project_id(client, project_code: str) -> str | None:
     A trimmed stand-in for `cp_engine.mc2_db._resolve_project_id`, in the order
     that actually resolves against live data:
 
-      1. `initiatives.code` — initiative ids land in `spine_substance.project_id`
-         exactly like a project's (`mission-control`, `storyos`).
+      1. (retired with #301 — internal workstreams are `projects` rows and
+         resolve like any other; mig 192 kept their uuids.)
       2. `spine_substance.project_code` — the DIR-SLUG the cp tree uses
          (`ibx-5153-ai-campaign`). This is the branch that matters: the engine's
          resolver reaches the same id via slugified `full_job_name`, but the
@@ -486,29 +457,14 @@ def resolve_project_id(client, project_code: str) -> str | None:
     `cp.md`'s `MC-id:` anchor already carries it, so an agent reading the tenant
     tree has it in hand.
     """
-    # 0. A bare UUID is unambiguous — try it as a project id, then as an
-    #    initiative id (both land in `spine_substance.project_id`). Guarded by
-    #    a parse so a malformed code never reaches the DB as a uuid filter.
+    # 0. A bare UUID is unambiguous — try it as a project id. Guarded by a
+    #    parse so a malformed code never reaches the DB as a uuid filter.
     if _looks_like_uuid(project_code):
-        tables = ["projects"]
-        if _has_initiatives_table(client):
-            tables.append("initiatives")
-        for table in tables:
-            rows = (
-                client.table(table).select("id").eq("id", project_code).limit(1).execute().data
-                or []
-            )
-            if rows:
-                return rows[0]["id"]
-        return None
-
-    rows = (
-        client.table("initiatives").select("id").eq("code", project_code).limit(1).execute().data
-        if _has_initiatives_table(client)
-        else []
-    ) or []
-    if rows:
-        return rows[0]["id"]
+        rows = (
+            client.table("projects").select("id").eq("id", project_code).limit(1).execute().data
+            or []
+        )
+        return rows[0]["id"] if rows else None
 
     # Exact dir-slug, then the `<prefix>-<number>` short form as a prefix match.
     for query in (
@@ -1373,8 +1329,8 @@ def list_commitments(project_code: str, status: str = "open") -> dict[str, Any]:
             "commitments": [],
         }
 
-    # A code resolves to ONE uuid, but that uuid lands in `project_id` for an
-    # engagement and `initiative_id` for an initiative. Query both and dedupe.
+    # One owner column (`project_id`, #301); the loop shape is kept so the
+    # dedupe-on-id read stays one pattern across the server.
     status_n = (status or "open").strip().lower()
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -1648,7 +1604,7 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
                 if row.get("id") not in seen:
                     seen.add(row.get("id"))
                     rows.append(row)
-        except Exception:  # noqa: BLE001 — `initiative_id` may not apply
+        except Exception:  # noqa: BLE001 — a failed read is an empty read, reported below
             continue
 
     superseded = {r["prev_asset_id"] for r in rows if r.get("prev_asset_id")}
@@ -1713,7 +1669,7 @@ def _resolve_source_asset(
                 seen.add(r["id"])
                 if r["id"] == key or (r.get("title") or "").strip().lower() == key.lower():
                     hits.append(r)
-        except Exception:  # noqa: BLE001 — initiative_id may not apply
+        except Exception:  # noqa: BLE001 — a failed read is an empty read
             continue
     if not hits:
         return None
@@ -1904,7 +1860,7 @@ def pull_project_source(asset_id: str, max_chars: int = 40000) -> dict[str, Any]
     schema, whose columns are id/scope/company_id/project_id/archived_at/
     promoted_at/source_type/title/url/file_path/file_hash/meta/prev_asset_id/
     status/created_at/updated_at/source_provider/source_file_id/source_path/
-    initiative_id/author_id. The text lives ONLY in `asset_chunks.text`, so this
+    author_id. The text lives ONLY in `asset_chunks.text`, so this
     tool concatenates the asset's chunks.
 
     Chunk ORDER is a real caveat: `asset_chunks` has no `chunk_index` column.
@@ -2043,7 +1999,7 @@ def list_project_meetings(project_code: str) -> dict[str, Any]:
                 if row.get("id") not in seen:
                     seen.add(row.get("id"))
                     rows.append(row)
-        except Exception:  # noqa: BLE001 — `initiative_id` may not apply
+        except Exception:  # noqa: BLE001 — a failed read is an empty read, reported below
             continue
 
     meetings = [
@@ -2461,11 +2417,10 @@ def valid_due_date(raw: str | None) -> str | None:
 def resolve_write_scope(client, project_code: str) -> dict[str, Any] | None:
     """`<code>` -> {id, kind, project_code} for a write.
 
-    Writes need MORE than `resolve_project_id` returns, for two reasons:
+    Writes need MORE than `resolve_project_id` returns:
 
-      * `commitments` has a `num_nonnulls(project_id, initiative_id) = 1`
-        CHECK — the row must name exactly one owner column, so the caller has
-        to know WHICH KIND of thing the code named, not just its uuid.
+      * `kind` is always `"project"` since #301 (one entry kind, one owner
+        column); it stays in the dict so every writer keeps one shape.
       * `spine_substance` stores BOTH `project_id` and `project_code`, and the
         `project_code` it stores is the cp-tree DIR-SLUG (`ibx-5153-ai-campaign`),
         not the short code the caller typed (`ibx-5153`). Writing the short form
@@ -2476,25 +2431,11 @@ def resolve_write_scope(client, project_code: str) -> dict[str, Any] | None:
         rows yet (a genuinely new project, where the caller's code IS the
         first one written and there is nothing to drift from).
     """
-    rows = (
-        client.table("initiatives")
-        .select("id, code")
-        .eq("code", project_code)
-        .limit(1)
-        .execute()
-        .data
-        if _has_initiatives_table(client)
-        else []
-    ) or []
-    kind = "initiative" if rows else None
-    if not rows:
-        pid = resolve_project_id(client, project_code)
-        if pid is None:
-            return None
-        kind = "project"
-        scope_id = pid
-    else:
-        scope_id = rows[0]["id"]
+    pid = resolve_project_id(client, project_code)
+    if pid is None:
+        return None
+    kind = "project"
+    scope_id = pid
 
     # Canonical dir-slug from existing spine rows for this uuid, if any.
     canonical = project_code
@@ -2701,7 +2642,7 @@ def _resolve_active_asset(
                 if row.get("id") not in seen:
                     seen.add(row["id"])
                     rows.append(row)
-        except Exception:  # noqa: BLE001 — `initiative_id` may not apply
+        except Exception:  # noqa: BLE001 — a failed read is an empty read, reported below
             continue
 
     superseded = {r["prev_asset_id"] for r in rows if r.get("prev_asset_id")}
@@ -4001,14 +3942,9 @@ def propose_spine_step(
 
 
 def _meeting_scope_filter(query, scope: dict[str, Any]):
-    """Constrain a `fathom_meetings` query to one project or initiative.
-
-    `fathom_meetings` names its owner in one of two columns and the right one
-    depends on what the code resolved to — the same split `resolve_write_scope`
-    already encodes for `commitments`' num_nonnulls CHECK.
-    """
-    column = "initiative_id" if scope.get("kind") == "initiative" else "project_id"
-    return query.eq(column, scope["id"])
+    """Constrain a `fathom_meetings` query to one workstream (`project_id`,
+    the one owner column since #301)."""
+    return query.eq("project_id", scope["id"])
 
 
 def resolve_recording_id(
@@ -4313,12 +4249,9 @@ def _promotion_on_important_flip(
 
     Three outcomes, always shaped the same so a caller can branch on `fired`:
 
-      * `{"fired": False, "skipped": <reason>}` — no flip happened, the project
-        is an initiative (the engine's engagement-only guard, mirrored verbatim
-        because mc-2 meetings are never initiative-linked — verified live: zero
-        `fathom_meetings` rows carry an `initiative_id`), or no Fathom recording
-        resolves from the element. For most elements this LAST case is normal,
-        not broken: their substance is document-derived.
+      * `{"fired": False, "skipped": <reason>}` — no flip happened, or no
+        Fathom recording resolves from the element. For most elements this
+        case is normal, not broken: their substance is document-derived.
       * `{"fired": True, "ok": True, ...}` — mc-2 accepted the promotion.
       * `{"fired": True, "ok": False, "reason": ...}` — it did not, and the
         metadata write still stands. That is the whole contract: importance is
@@ -4328,16 +4261,6 @@ def _promotion_on_important_flip(
         return {"fired": False, "skipped": "no false->true important transition"}
 
     try:
-        # ENGAGEMENT-ONLY GUARD — mirrors `spine_promote.promote_transcript`'s
-        # Contract A ("initiative promotion not yet supported"), checked BEFORE
-        # any resolution work, exactly as the engine does.
-        if scope.get("kind") == "initiative":
-            return {
-                "fired": False,
-                "skipped": "initiative promotion not yet supported "
-                "(engagement-only, mirroring the engine guard)",
-            }
-
         recording_id, meeting, problem = _recording_id_for_element(
             client, scope, est_item_id, element
         )
@@ -4738,12 +4661,11 @@ def _match_open_commitment(
 
 
 def _fetch_open_commitments(client, scope: dict[str, Any]) -> list[dict[str, Any]]:
-    """The project's OPEN commitment rows, engagement or initiative scoped."""
-    column = "initiative_id" if scope["kind"] == "initiative" else "project_id"
+    """The workstream's OPEN commitment rows."""
     return (
         client.table("commitments")
         .select(COMMITMENT_COLUMNS)
-        .eq(column, scope["id"])
+        .eq("project_id", scope["id"])
         .eq("status", "open")
         .execute()
         .data
@@ -4887,11 +4809,8 @@ def _routed_copy_row(
         "source_kind": row.get("source_kind") or "session",
         "source_meeting_id": row.get("source_meeting_id"),
         "cp_hash": uuid.uuid4().hex[:8],
+        "project_id": target_scope["id"],
     }
-    if target_scope["kind"] == "initiative":
-        copy["initiative_id"] = target_scope["id"]
-    else:
-        copy["project_id"] = target_scope["id"]
     return copy
 
 
@@ -6325,14 +6244,10 @@ def retire_spine_relation(
 def _company_id_for(client, scope: dict[str, Any]) -> str | None:
     """The company uuid behind a resolved write scope, or None.
 
-    An initiative has none BY DEFINITION (that is what makes it an initiative),
-    so `kind == "initiative"` short-circuits without a query. For a project the
-    column is read explicitly — account scope is a COMPANY-level fact, and both
-    stakeholder verbs need to know before they call the guarded function whether
-    "engagements only" even applies.
+    Read explicitly — account scope is a COMPANY-level fact, and both
+    stakeholder verbs need to know before they call the guarded function
+    whether "engagements only" even applies.
     """
-    if scope.get("kind") == "initiative":
-        return None
     rows = (
         client.table("projects")
         .select("company_id")
@@ -6656,10 +6571,7 @@ def create_commitment(
     (`date_status='proposed'`, `status='open'`, `source_kind='session'`) — the
     same review gate the meeting auto-ingest path uses. Nothing is auto-confirmed.
 
-    The owner column is chosen by KIND, not guessed: the table carries a
-    `num_nonnulls(project_id, initiative_id) = 1` CHECK, so an initiative code
-    writes `initiative_id` and an engagement code writes `project_id`. Getting
-    this wrong is a constraint violation, not a silent mis-file.
+    The row is owned through `project_id`, the one owner column (#301).
 
     `due_date` must be ISO `YYYY-MM-DD` or omitted. An unparseable date is
     REJECTED rather than dropped or guessed — an invented deadline is worse than
@@ -6733,11 +6645,8 @@ def create_commitment(
         # See the docstring: a unique-per-call hash, NOT the engine's content
         # hash — this path does not claim the engine's dedupe semantics.
         "cp_hash": uuid.uuid4().hex[:8],
+        "project_id": scope["id"],
     }
-    if scope["kind"] == "initiative":
-        row["initiative_id"] = scope["id"]
-    else:
-        row["project_id"] = scope["id"]
 
     try:
         result = client.table("commitments").insert(row).execute()
@@ -7215,7 +7124,7 @@ def add_spine_document(
         rows = (
             client.table("rag_assets")
             .select("id, title, status")
-            .or_(f"project_id.eq.{scope['id']},initiative_id.eq.{scope['id']}")
+            .eq("project_id", scope["id"])
             .is_("archived_at", "null")
             .execute()
             .data
@@ -8342,14 +8251,9 @@ def wrap_bundle(project_code: str, tail_days: int = 14) -> dict[str, Any]:
         errors.append(f"project row read failed: {type(exc).__name__}: {exc}")
 
     # ── Meetings ─────────────────────────────────────────────────────
-    # One uuid lands in `project_id` for an engagement and `initiative_id` for
-    # an initiative; query both and dedupe on the meeting id, exactly as
-    # `list_project_meetings` does.
-    #
-    # Each arm's failure is RECORDED rather than swallowed. `initiative_id` not
-    # applying to an engagement is the normal case and would fill `errors` with
-    # noise — but a bundle where BOTH arms failed reports zero meetings, which
-    # is a materially wrong retro finding, so that case is named explicitly.
+    # One owner column (`project_id`, #301). A failed read is RECORDED rather
+    # than swallowed: a retro that reads an unread meeting list as "no
+    # meetings" is a materially wrong finding, so that case is named.
     meeting_rows: list[dict[str, Any]] = []
     seen: set[Any] = set()
     meeting_failures: list[str] = []
@@ -8366,12 +8270,12 @@ def wrap_bundle(project_code: str, tail_days: int = 14) -> dict[str, Any]:
                 if r.get("id") not in seen:
                     seen.add(r.get("id"))
                     meeting_rows.append(r)
-        except Exception as exc:  # noqa: BLE001 — `initiative_id` may not apply
+        except Exception as exc:  # noqa: BLE001 — a failed read is an empty read, reported below
             meeting_failures.append(f"{column}: {type(exc).__name__}: {exc}")
-    if len(meeting_failures) == 2:
+    if meeting_failures:
         errors.append(
-            "meeting read failed on BOTH scope columns — the zero meeting "
-            "count below is unread, not empty: " + "; ".join(meeting_failures)
+            "meeting read failed — the zero meeting count below is unread, "
+            "not empty: " + "; ".join(meeting_failures)
         )
     meetings = wrap_summarize_meetings(meeting_rows, tail_days=tail_days)
 
@@ -8462,8 +8366,8 @@ def wrap_bundle(project_code: str, tail_days: int = 14) -> dict[str, Any]:
                     commit_rows.append(r)
         except Exception as exc:  # noqa: BLE001
             commit_failures.append(f"{column}: {type(exc).__name__}: {exc}")
-    if len(commit_failures) == 2:
-        # Both arms failed: leave `open_commitments` as None so the report
+    if commit_failures:
+        # The read failed: leave `open_commitments` as None so the report
         # cannot read the absence as "nothing outstanding".
         errors.append("commitments read failed: " + "; ".join(commit_failures))
     else:

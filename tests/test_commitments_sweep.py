@@ -139,8 +139,9 @@ def test_sweep_scopes_an_engagement_by_project_id(monkeypatch) -> None:
     assert groups, "the open commitment must survive the filter"
 
 
-def test_sweep_scopes_an_initiative_by_initiative_id(monkeypatch) -> None:
-    """The other side of the branch — guards against over-correcting."""
+def test_sweep_scopes_an_internal_workstream_by_project_id(monkeypatch) -> None:
+    """#301: there is no second owner column — an internal workstream is
+    scoped by `project_id` like every other workstream."""
     from cp_engine import commitments_sweep as cs
 
     monkeypatch.setattr(cs, "_owner_codes", lambda _c: {}, raising=False)
@@ -148,12 +149,12 @@ def test_sweep_scopes_an_initiative_by_initiative_id(monkeypatch) -> None:
     monkeypatch.setattr(
         _cmt, "resolve_commitment_owner",
         lambda _c, _code: {
-            "id": "init-uuid", "code": "mission-control", "kind": "initiative",
+            "id": "init-uuid", "code": "1pi-9005-mission-control", "kind": "project",
         },
     )
 
     client = _FakeClient([])
-    cs.sweep(client, code="mission-control", today=_TODAY)
+    cs.sweep(client, code="1pi-9005-mission-control", today=_TODAY)
 
-    assert ("initiative_id", "init-uuid") in client.calls
-    assert ("project_id", "init-uuid") not in client.calls
+    assert ("project_id", "init-uuid") in client.calls
+    assert not any(col == "initiative_id" for col, _ in client.calls)

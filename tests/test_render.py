@@ -69,7 +69,7 @@ def make_state(
     is_internal: bool = False,
     days_ago: int | None = 1,
     summary: str | None = "Storyboards in flight; client review Wed.",
-    source: str = "engagement",
+    has_agreement: bool = True,
     company_kind: str = "client",
     mc2_id: str | None = None,
 ) -> ProjectState:
@@ -83,7 +83,7 @@ def make_state(
     return ProjectState(
         code=code,
         name=name,
-        source=source,  # type: ignore[arg-type]
+        has_agreement=has_agreement,
         company_kind=company_kind,  # type: ignore[arg-type]
         company_code="GGL",
         company_name="Google",
@@ -118,7 +118,7 @@ def test_master_cp_includes_only_active_projects() -> None:
     assert "ggl-9999" in out  # Holding shows in collapsed subtable
     assert "ggl-1111" in out  # Closed-recent shows in collapsed list
     assert "ggl-2222" not in out  # Archived not surfaced
-    assert "ggl-3333" not in out  # is_internal filtered
+    assert "ggl-3333" in out  # is_internal gates nothing since #301
 
     # Engine-managed regions are present (v0.2: three sections per kind)
     assert "<!-- cp-engine:start active-1p -->" in out
@@ -257,7 +257,7 @@ def test_initiative_cp_stamps_mc_id_when_set() -> None:
     project = make_state(
         code="mission-control",
         name="Mission Control",
-        source="initiative",
+        has_agreement=False,
         company_kind="self-fpsf",
         mc2_id="init-456-uuid",
     )
@@ -273,7 +273,7 @@ def test_initiative_cp_omits_mc_id_when_none() -> None:
     project = make_state(
         code="mission-control",
         name="Mission Control",
-        source="initiative",
+        has_agreement=False,
         company_kind="self-fpsf",
         mc2_id=None,
     )
@@ -288,7 +288,7 @@ def test_initiative_template_scaffolds_exec_summary_region() -> None:
     project = make_state(
         code="mission-control",
         name="Mission Control",
-        source="initiative",
+        has_agreement=False,
         company_kind="self-fpsf",
     )
     body = render_project_cp(tenant, project)
@@ -833,7 +833,7 @@ def test_master_cp_section_summary_uses_count_and_state_phrase() -> None:
         ProjectState(
             code=f"ggl-pipe{i}",
             name=f"Pipeline {i}",
-            source="engagement",
+            has_agreement=True,
             company_kind="client",
             company_code="GGL",
             company_name="Google",
@@ -952,19 +952,19 @@ def test_slack_rollup_extracts_latest_bullet_per_project(tmp_path: Path) -> None
 
     projects = [
         ProjectState(
-            code="ggl-5168", name="GGL 5168 Activation", source="engagement",
+            code="ggl-5168", name="GGL 5168 Activation", has_agreement=True,
             company_kind="client", company_code="GGL", company_name="Google",
             status="Open", is_internal=False, owner="Brandon",
             last_touched=None, deadline=None,
         ),
         ProjectState(
-            code="ibx-5153", name="IBX 5153 AI Campaign", source="engagement",
+            code="ibx-5153", name="IBX 5153 AI Campaign", has_agreement=True,
             company_kind="client", company_code="IBX", company_name="Infoblox",
             status="Open", is_internal=False, owner="Drew",
             last_touched=None, deadline=None,
         ),
         ProjectState(
-            code="sap-5171", name="SAP 5171 Display Ads 26", source="engagement",
+            code="sap-5171", name="SAP 5171 Display Ads 26", has_agreement=True,
             company_kind="client", company_code="SAP", company_name="SAP",
             status="Open", is_internal=False, owner="Drew",
             last_touched=None, deadline=None,
@@ -998,7 +998,7 @@ def test_slack_rollup_returns_none_when_no_projects_have_digests(
 
     projects = [
         ProjectState(
-            code="ggl-5168", name="x", source="engagement",
+            code="ggl-5168", name="x", has_agreement=True,
             company_kind="client", company_code="GGL", company_name="Google",
             status="Open", is_internal=False, owner=None,
             last_touched=None, deadline=None,
@@ -1015,7 +1015,7 @@ def test_slack_rollup_returns_none_when_sprint_dir_missing(
     from cp_engine.state import ProjectState
     projects = [
         ProjectState(
-            code="ggl-5168", name="x", source="engagement",
+            code="ggl-5168", name="x", has_agreement=True,
             company_kind="client", company_code="GGL", company_name="Google",
             status="Open", is_internal=False, owner=None,
             last_touched=None, deadline=None,
@@ -1044,7 +1044,7 @@ def test_slack_rollup_takes_last_bullet_when_multiple_for_same_week(
 
     projects = [
         ProjectState(
-            code="ggl-5168", name="x", source="engagement",
+            code="ggl-5168", name="x", has_agreement=True,
             company_kind="client", company_code="GGL", company_name="Google",
             status="Open", is_internal=False, owner=None,
             last_touched=None, deadline=None,

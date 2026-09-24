@@ -11,16 +11,8 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Literal
 
-# Whether a ProjectState came from MC-2's `projects` table (a client
-# engagement), `repos` (a tracked code repo, possibly standalone), or
-# `initiatives` (an internal workstream — Mission Control, StoryOS, etc.).
-# Renderers branch on this to choose engagement-shape vs initiative-shape
-# vs repo-shape tables.
-EntrySource = Literal["engagement", "repo", "initiative"]
-
-# Which MC-2 company kind the entry belongs to. For engagements, derived
-# from the engagement's company. For repos, derived from the repo's company.
-# Renderers group by this to produce the three master-CP sections.
+# Which MC-2 company kind the workstream belongs to, from its company row.
+# Renderers group by this to produce the master-CP sections.
 CompanyKind = Literal["client", "self-fpsf", "self-canonic"]
 
 # Maps company_kind to the v0.3 working-tree scope directory name. This is
@@ -135,35 +127,35 @@ def slug_full_job_name(full_job_name: str | None) -> str:
 
 @dataclass(frozen=True)
 class ProjectState:
-    """One trackable item in cp-engine's master CP.
+    """One workstream in cp-engine's master CP — ONE entry kind (#301).
 
-    Spans both client engagements (`source="engagement"`, sourced from
-    MC-2 `projects`) and standalone code repos (`source="repo"`, sourced
-    from MC-2 `repos` with `project_id IS NULL`).
+    Every entry is an MC-2 `projects` row: a client job, a client account
+    or program node, or an internal workstream (Mission Control, StoryOS).
+    There is no `source` discriminator any more — the engine branches on
+    the row's SHAPE: `has_agreement` (a commercial envelope exists),
+    `parent_code` (where it sits in its company's tree) and
+    `company_kind`. `label` is the derived display word.
 
-    Engagement-only fields (account_manager, deal_stage, budget) live on
-    the engagement variant; repo-only fields (github_org, repo_name,
-    description) live on the repo variant. The renderer dispatches on
-    `source` to choose which table schema to use.
-
-    Engagement-backed repos (a repo with `project_id` set) do NOT appear
-    as separate ProjectState entries — their information enriches the
-    parent engagement's project CP. See render.py for that handling.
+    Repos linked to a workstream (`repos.project_id`) do NOT appear as
+    separate entries — they render as `_repo-<name>.md` files inside the
+    parent's working dir (`linked_repos`).
     """
 
-    code: str  # canonical id: ggl-5188 (engagement), mc-2 (repo)
-    name: str  # full_job_name for engagement, repo_name for repo
-    source: EntrySource
+    code: str  # canonical id: slug(full_job_name), e.g. ggl-5188-activation
+    name: str  # full_job_name
     company_kind: CompanyKind
     company_code: str | None  # GGL, IBX, 1PI, CNC, ...
     company_name: str | None  # Google, First Person, Canonic, ...
 
-    # Status semantics differ by source:
-    # - engagement: one of MC_STATUSES (Deal | Open | Holding | Closed | Archived)
-    # - repo: one of REPO_STATUSES (Active | Holding | Inactive)
+    # One vocabulary for every workstream: MC_STATUSES
+    # (Deal | Open | Holding | Closed | Archived). Active = Deal ∪ Open.
     status: str
 
-    is_internal: bool  # only meaningful for engagements
+    # MC-2's flag as stored. Internal workstreams carry True; it gates
+    # NOTHING in the engine any more (they deserve working dirs like every
+    # other workstream) and is kept for the allocation rollup's
+    # engagement-vs-internal hours split.
+    is_internal: bool
     owner: str | None
     last_touched: datetime | None
     deadline: datetime | None  # not tracked yet for either source
@@ -205,43 +197,38 @@ class ProjectState:
     # honest answer, and inventing one is the failure mode above.
     last_activity: date | None = None
 
-    # MC-2 row uuid (`id`). Threaded through so the spine mirror
-    # (slice 2) can key `spine_elements.project_id` without re-querying.
-    # All three sources carry an `id`; None only when a fake/legacy state
-    # is built without one.
+    # MC-2 row uuid (`projects.id`). Threaded through so the spine mirror
+    # can key `spine_elements.project_id` without re-querying. None only
+    # when a fake/legacy state is built without one.
     mc2_id: str | None = None
 
-    # Engagement-only fields
+    # The commercial envelope, when `has_agreement`.
     deal_stage: str | None = None
     budget: float | None = None
     dropbox_folder_url: str | None = None
 
-    # Repo-only fields
+    # Kept for the `_repo.md`-era view shape; no reader sets them from MC-2
+    # any more (standalone repos are gone — every repo hangs off a
+    # workstream via `linked_repos`). Templates still read the keys.
     github_org: str | None = None
-    repo_name: str | None = None  # raw GitHub slug, distinct from `code`
-    description: str | None = None  # ≤120 char one-liner from repos.description
+    repo_name: str | None = None
+    description: str | None = None
 
-    # Engagement-only — populated from tenant config's per-project `contacts`
-    # array. Plain dicts (typically `{"name": "...", "role": "..."}`) keep the
-    # shape flexible without forcing a contact schema on every consumer.
+    # Populated from tenant config's per-project `contacts` array. Plain
+    # dicts (typically `{"name": "...", "role": "..."}`) keep the shape
+    # flexible without forcing a contact schema on every consumer.
     contacts: tuple[dict, ...] = ()
 
-    # Engagement-or-initiative — repos in MC-2 linked to this parent via
-    # `repos.project_id` (engagements) or `repos.initiative_id` (initiatives).
-    # Each linked repo gets its own `_repo-<repo-name>.md` written into the
-    # parent's working dir, mirroring the standalone-repo `_repo.md` shape.
-    # Repos can be dual-linked (engagement AND initiative) — they then appear
-    # under both working dirs. This field stays empty on standalone-repo
-    # ProjectStates.
+    # Repos in MC-2 linked to this workstream via `repos.project_id`. Each
+    # gets its own `_repo-<repo-name>.md` written into the working dir.
     linked_repos: tuple[LinkedRepo, ...] = ()
 
-    # Workstream shape (mc-2 mig 190+, cp-engine #300). `parent_code` is the
-    # canonical code of the parent workstream, None at the top of a company.
-    # `has_agreement` is `deal_stage IS NOT NULL` — the commercial envelope
-    # exists — and is what the engine branches on; `label` is the DERIVED
-    # display word (account | program | job | initiative), never authored
-    # (design doc 2026-09-22, decision 3). Both default to the legacy
-    # reading so states built from the old three-stream schema are unchanged.
+    # Workstream shape (mc-2 mig 190+, cp-engine #300/#301). `parent_code`
+    # is the canonical code of the parent workstream, None at the top of a
+    # company. `has_agreement` is `deal_stage IS NOT NULL` — the commercial
+    # envelope exists — and is what the engine branches on; `label` is the
+    # DERIVED display word (account | program | job | initiative), never
+    # authored (design doc 2026-09-22, decision 3).
     parent_code: str | None = None
     has_agreement: bool = False
     label: WorkstreamLabel | None = None
@@ -258,9 +245,8 @@ def derive_label(
 ) -> WorkstreamLabel:
     """The display label for a workstream, from its shape alone.
 
-    Nothing in the engine branches on the result — it is rendering and
-    reference-style only. The engine branches on `has_agreement` and
-    `parent_code` directly.
+    Rendering and reference-style only — the engine branches on
+    `has_agreement`, `parent_code` and `company_kind` directly.
     """
     if parent_code is None and company_kind == "client":
         return "account"
@@ -273,18 +259,15 @@ def derive_label(
 
 @dataclass(frozen=True)
 class LinkedRepo:
-    """A repo in MC-2 linked to an engagement project via `repos.project_id`.
+    """A repo in MC-2 linked to a workstream via `repos.project_id`.
 
     Carries just enough to render `_repo-<repo-name>.md` under the parent
-    engagement's working dir: the GitHub coordinate, status, and a short
-    description. Mirrors the repo-side fields of ProjectState but stays
-    intentionally minimal — engagement-linked repos don't need the full
-    project lifecycle tracking that standalone repos do.
+    working dir: the GitHub coordinate, status, and a short description.
     """
 
     repo_name: str
     github_org: str
-    status: str  # one of REPO_STATUSES (Active | Holding | Inactive); we filter Inactive at the query layer
+    status: str  # repos.status (Active | Holding | Inactive); Inactive is filtered by the reader
     description: str | None = None
 
 

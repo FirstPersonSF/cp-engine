@@ -104,7 +104,7 @@ def _state(
     return ProjectState(
         code=code,
         name=name if name is not None else code,
-        source="engagement",  # type: ignore[arg-type]
+        has_agreement=True,  # type: ignore[arg-type]
         company_kind="client",  # type: ignore[arg-type]
         company_code=company_code,
         company_name=company_name,
@@ -359,10 +359,11 @@ def test_migration_skips_dirs_that_dont_look_like_project_codes(tmp_path: Path) 
 def test_inactive_dirs_route_to_per_account_inactive(tmp_path: Path) -> None:
     """`1p/inactive/<dir>/` → `1p/<company>/inactive/<dir>/`.
 
-    Realistic case: a project that flipped to `is_internal=true` —
-    MC-2 still returns it (with the company info we need for the
-    lookup), but sync's main project loop skips internal projects so
-    the dir sits in the flat inactive bin until the operator migrates."""
+    The dir is routed by the company on its MC-2 row. Since #301 nothing
+    is skipped for `is_internal`, so a row MC-2 still returns is a LIVE
+    workstream: the migration files the stray dir under its account, and
+    the follow-on sync revives it from that bin as the live working dir.
+    (Before #301 the internal flag kept it parked in the bin.)"""
     root = _init_tenant(tmp_path)
     inactive_old = root / "1p" / "inactive" / "hex-5184-internal-thing"
     inactive_old.mkdir(parents=True)
@@ -370,7 +371,7 @@ def test_inactive_dirs_route_to_per_account_inactive(tmp_path: Path) -> None:
     _commit_all(root, "scaffold flat inactive")
 
     internal_state = ProjectState(
-        code="hex-5184", name="Internal Thing", source="engagement",  # type: ignore[arg-type]
+        code="hex-5184", name="Internal Thing", has_agreement=True,  # type: ignore[arg-type]
         company_kind="client",  # type: ignore[arg-type]
         company_code="HEX", company_name="Hexagon",
         status="Open", is_internal=True, owner="drew",
@@ -380,11 +381,14 @@ def test_inactive_dirs_route_to_per_account_inactive(tmp_path: Path) -> None:
     fake = _FakeBackend((internal_state,))
     result = migrate_accounts(root, backend_factory=lambda _: fake)
 
-    assert (
-        root / "1p" / "hexagon" / "inactive" / "hex-5184-internal-thing" / "cp.md"
-    ).exists()
-    assert not inactive_old.exists()
     assert len(result.moved_dirs) == 1
+    assert result.moved_dirs[0][1] == (
+        root / "1p" / "hexagon" / "inactive" / "hex-5184-internal-thing"
+    )
+    assert not inactive_old.exists()
+    # Live in MC-2 → sync revived it out of the per-account bin.
+    assert (root / "1p" / "hexagon" / "hex-5184" / "cp.md").exists()
+    assert not (root / "1p" / "hexagon" / "inactive" / "hex-5184-internal-thing").exists()
 
 
 # ──────────────────────────────────────────────────────────────────────

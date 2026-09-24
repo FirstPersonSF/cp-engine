@@ -626,12 +626,9 @@ def build_agenda(
 
 
 def filter_active(projects: tuple[ProjectState, ...]):
-    """Engagement: status active + not internal. Repo: status == 'Active'."""
+    """Every workstream with an active status (Deal ∪ Open) — one rule (#301)."""
     for p in projects:
-        if p.source == "engagement":
-            if is_active_status(p.status) and not p.is_internal:
-                yield p
-        elif p.status == "Active":
+        if is_active_status(p.status):
             yield p
 
 

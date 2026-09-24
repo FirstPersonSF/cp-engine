@@ -1,8 +1,7 @@
-"""Task 8 Part B — correct owner column on the rag_assets row.
+"""Task 8 Part B — the owner column on the rag_assets row.
 
-`_stamp_scope` writes the single owner column matching the item's kind:
-`initiative_id` for an initiative, `project_id` for an engagement — satisfying
-the `num_nonnulls(project_id, initiative_id) = 1` CHECK (migration 081).
+`_stamp_scope` filters on `project_id` — the one owner column since mc-2
+mig 192 / #301 — for a client job and an internal workstream alike.
 """
 
 from __future__ import annotations
@@ -49,7 +48,7 @@ def _engagement_folders():
     )
 
 
-def _initiative_folders():
+def _internal_folders():
     return ProjectFolders(
         project_id="init-1",
         company_id="co-1",
@@ -58,7 +57,7 @@ def _initiative_folders():
         mc_dropbox_folder_id=None,
         enable_google_drive=False,
         enable_dropbox=True,
-        is_initiative=True,
+        has_agreement=False,
     )
 
 
@@ -74,12 +73,11 @@ def _ref():
     )
 
 
-def test_stamp_writes_initiative_id_for_initiative():
+def test_stamp_writes_project_id_for_internal_workstream():
     client = _FakeClient()
-    _stamp_scope(client, _initiative_folders(), "/tmp/x.pptx", _ref())
-    # Owner column: filter on initiative_id, NEVER project_id (CHECK: one owner).
-    assert client.tbl.filters.get("initiative_id") == "init-1"
-    assert "project_id" not in client.tbl.filters
+    _stamp_scope(client, _internal_folders(), "/tmp/x.pptx", _ref())
+    assert client.tbl.filters.get("project_id") == "init-1"
+    assert "initiative_id" not in client.tbl.filters
 
 
 def test_stamp_writes_project_id_for_engagement():

@@ -1760,18 +1760,11 @@ def _resolve_proposal_project(client, code: str) -> dict | None:
 
 
 def _owner_column(project: dict) -> dict:
-    """Return the single owner column for a clickup_task_proposals row.
+    """Return the owner column for a clickup_task_proposals row.
 
-    ``clickup_task_proposals`` (post-migration 081) carries BOTH
-    ``project_id`` (FK projects) and ``initiative_id`` (FK initiatives)
-    under a ``num_nonnulls(project_id, initiative_id) == 1`` CHECK — exactly
-    one owner. Write whichever matches ``project["kind"]`` (defaulting to
-    ``project`` for back-compat). Writing ``project_id`` for an initiative
-    would FK-crash on insert. Mirrors
-    ``webhook/clickup_propose._build_proposal_row``.
+    One owner column since #301 (mc-2 mig 192 folded the second one):
+    ``project_id``. Mirrors ``webhook/clickup_propose._build_proposal_row``.
     """
-    if project.get("kind") == "initiative":
-        return {"initiative_id": project["id"]}
     return {"project_id": project["id"]}
 
 

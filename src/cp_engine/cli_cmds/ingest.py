@@ -184,6 +184,7 @@ def ingest_from_transcript_cmd(
             project_code=project_code,
             transcript_path=transcript_path,
             team=config.team,
+            tenant_root=config.root,
         )
         click.echo(prompt)
         return

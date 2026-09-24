@@ -111,11 +111,8 @@ def write_proposal(
         "confidence": confidence,
         "status": "pending",
         "cp_hash": cp_hash,
+        "target_project_id": owner["id"],
     }
-    if owner.get("kind") == "initiative":
-        row["target_initiative_id"] = owner["id"]
-    else:
-        row["target_project_id"] = owner["id"]
 
     client.table(TABLE).insert(row).execute()
     return "inserted"

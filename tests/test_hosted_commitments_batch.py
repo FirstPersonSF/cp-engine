@@ -200,19 +200,19 @@ def test_routed_copy_strips_annotation_adds_provenance(srv):
         "date_status": "agreed",
         "source_kind": "meeting_ingest",
     }
-    copy = srv._routed_copy_row(row, "ibx-5192", {"kind": "initiative", "id": "init-1"})
+    copy = srv._routed_copy_row(row, "ibx-5192", {"kind": "project", "id": "init-1"})
     assert copy["description"] == "Fix the budget field [routed from ibx-5192]"
     assert copy["status"] == "open"
     assert copy["owner_email"] == "drew@firstperson.is"
     assert copy["date_status"] == "agreed"          # ratification survives
     assert copy["source_kind"] == "meeting_ingest"  # origin survives
     assert copy["source_meeting_id"] == "m1"        # sweep linkage survives
-    assert copy["initiative_id"] == "init-1" and "project_id" not in copy
+    assert copy["project_id"] == "init-1"  # one owner column (#301)
 
 
 def test_routed_copy_targets_project_column_for_engagements(srv):
     copy = srv._routed_copy_row(_row("aaa", "d"), "src", {"kind": "project", "id": "p1"})
-    assert copy["project_id"] == "p1" and "initiative_id" not in copy
+    assert copy["project_id"] == "p1" and "initiative_id" not in copy  # never the retired column
 
 
 def test_routed_copy_defaults_when_source_fields_null(srv):

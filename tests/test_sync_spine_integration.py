@@ -69,7 +69,7 @@ def _make_engagement(code: str, mc2_id: str | None = "x") -> ProjectState:
     return ProjectState(
         code=code,
         name=code,  # name == code keeps the dir slug == bare code
-        source="engagement",
+        has_agreement=True,
         company_kind="client",
         company_code="GGL",
         company_name="Google",

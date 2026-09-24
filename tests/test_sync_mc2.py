@@ -26,8 +26,6 @@ from cp_engine.sync_mc2 import (
     _parse_iso,
     _parse_linked_repos,
     _parse_numeric,
-    _repo_row_is_valid,
-    _repo_row_to_state,
 )
 
 
@@ -117,7 +115,7 @@ def test_engagement_row_to_state_happy_path() -> None:
     state = _engagement_row_to_state(row)
 
     assert state.code == "ggl-5168-playbooks"
-    assert state.source == "engagement"
+    assert state.has_agreement is True  # deal_stage set on the fixture row
     assert state.company_kind == "client"
     assert state.company_code == "GGL"
     assert state.company_name == "Google"
@@ -147,7 +145,7 @@ def test_engagement_row_to_state_legacy_row_without_company() -> None:
     }
     state = _engagement_row_to_state(row)
     assert state.code == "5026"
-    assert state.source == "engagement"
+    assert state.has_agreement is False  # no deal_stage on the fixture row
     assert state.company_kind == "client"  # fallback
     assert state.company_code is None
 
@@ -192,144 +190,6 @@ def test_engagement_row_to_state_internal_flag_coerces_to_bool() -> None:
         "updated_at": None,
     }
     assert _engagement_row_to_state(row).is_internal is True
-
-
-# ──────────────────────────────────────────────────────────────────────
-#  Engagement validation guard
-# ──────────────────────────────────────────────────────────────────────
-
-
-def test_engagement_row_is_valid_rejects_missing_number() -> None:
-    assert not _engagement_row_is_valid({"number": None, "mc_status": "Open"})
-    assert not _engagement_row_is_valid({"mc_status": "Open"})
-
-
-def test_engagement_row_is_valid_rejects_old_vocab_status() -> None:
-    assert not _engagement_row_is_valid({"number": 1, "mc_status": "Active"})
-    assert not _engagement_row_is_valid({"number": 1, "mc_status": "Complete"})
-
-
-def test_engagement_row_is_valid_rejects_unknown_status() -> None:
-    assert not _engagement_row_is_valid({"number": 1, "mc_status": "Floating"})
-
-
-def test_engagement_row_is_valid_accepts_all_canonical_statuses() -> None:
-    for status in ("Deal", "Open", "Holding", "Closed", "Archived"):
-        assert _engagement_row_is_valid({"number": 1, "mc_status": status}), status
-
-
-# ──────────────────────────────────────────────────────────────────────
-#  Repo row → ProjectState
-# ──────────────────────────────────────────────────────────────────────
-
-
-def test_repo_row_to_state_happy_path_fpsf() -> None:
-    row = {
-        "id": "00000000-0000-0000-0000-000000000001",
-        "repo_name": "mc-2",
-        "status": "Active",
-        "description": "Mission Control codebase",
-        "owner": "Drew",
-        "updated_at": "2026-05-08T16:00:00+00:00",
-        "github_orgs": {"name": "FirstPersonSF"},
-        "companies": {"code": "1PI", "name": "First Person", "kind": "self-fpsf"},
-    }
-    state = _repo_row_to_state(row)
-
-    assert state.code == "mc-2"
-    assert state.name == "mc-2"
-    assert state.source == "repo"
-    assert state.company_kind == "self-fpsf"
-    assert state.company_code == "1PI"
-    assert state.company_name == "First Person"
-    assert state.status == "Active"
-    assert state.is_internal is False  # repos don't carry this flag
-    assert state.owner == "Drew"
-    assert state.github_org == "FirstPersonSF"
-    assert state.repo_name == "mc-2"
-    assert state.description == "Mission Control codebase"
-
-
-def test_repo_row_to_state_canonic_kind() -> None:
-    row = {
-        "id": "x",
-        "repo_name": "storyos",
-        "status": "Active",
-        "description": "The main repo for storyos",
-        "owner": "Drew + Tony",
-        "updated_at": None,
-        "github_orgs": {"name": "Canonic-OS"},
-        "companies": {"code": "CNC", "name": "Canonic", "kind": "self-canonic"},
-    }
-    state = _repo_row_to_state(row)
-    assert state.company_kind == "self-canonic"
-    assert state.github_org == "Canonic-OS"
-
-
-def test_repo_row_to_state_holding_status() -> None:
-    row = {
-        "id": "x",
-        "repo_name": "old-thing",
-        "status": "Holding",
-        "description": None,
-        "owner": None,
-        "updated_at": None,
-        "github_orgs": {"name": "FirstPersonSF"},
-        "companies": {"code": "1PI", "kind": "self-fpsf"},
-    }
-    state = _repo_row_to_state(row)
-    assert state.status == "Holding"
-
-
-# ──────────────────────────────────────────────────────────────────────
-#  Repo validation guard
-# ──────────────────────────────────────────────────────────────────────
-
-
-def test_repo_row_is_valid_rejects_missing_repo_name() -> None:
-    assert not _repo_row_is_valid({"repo_name": "", "status": "Active",
-                                    "github_orgs": {"name": "X"}, "companies": {"code": "Y"}})
-    assert not _repo_row_is_valid({"status": "Active",
-                                    "github_orgs": {"name": "X"}, "companies": {"code": "Y"}})
-
-
-def test_repo_row_is_valid_rejects_unknown_status() -> None:
-    row = {
-        "repo_name": "x",
-        "status": "Floating",
-        "github_orgs": {"name": "X"},
-        "companies": {"code": "Y"},
-    }
-    assert not _repo_row_is_valid(row)
-
-
-def test_repo_row_is_valid_accepts_all_repo_statuses() -> None:
-    for status in ("Active", "Holding", "Inactive"):
-        row = {
-            "repo_name": "x",
-            "status": status,
-            "github_orgs": {"name": "X"},
-            "companies": {"code": "Y"},
-        }
-        assert _repo_row_is_valid(row), status
-
-
-def test_repo_row_is_valid_rejects_missing_org_or_company() -> None:
-    """Defensive: even though SELECT uses inner joins, defend against empty embeds."""
-    assert not _repo_row_is_valid({
-        "repo_name": "x", "status": "Active",
-        "github_orgs": None, "companies": {"code": "Y"},
-    })
-    assert not _repo_row_is_valid({
-        "repo_name": "x", "status": "Active",
-        "github_orgs": {"name": "X"}, "companies": None,
-    })
-
-
-# ──────────────────────────────────────────────────────────────────────
-#  Numeric parsing (budget)
-# ──────────────────────────────────────────────────────────────────────
-
 
 def test_parse_numeric_handles_string_and_float() -> None:
     assert _parse_numeric("150000") == 150000.0

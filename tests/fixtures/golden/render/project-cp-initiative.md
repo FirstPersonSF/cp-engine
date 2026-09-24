@@ -15,9 +15,9 @@ Author: cp-engine (initial scaffold)
 
 | | |
 |---|---|
-| **Code** | `mission-control` |
+| **Code** | `1pi-9005-mission-control` |
 | **Type** | Initiative |
-| **Status** | Active |
+| **Status** | Open |
 | **Owner** | Tony |
 | **Company** | First Person (1PI) |
 | **Last touched** | 2026-05-12 |

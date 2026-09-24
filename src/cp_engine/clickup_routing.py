@@ -8,39 +8,30 @@ wrappers over :func:`resolve_clickup_project`.
 
 Reconciled divergences (documented so the history isn't mysterious):
 
-- **Initiative lookup errors**: unified on ``postgrest.APIError`` (a missing
-  ClickUp column on ``initiatives`` — the case this guard exists for). The
-  webhook previously swallowed bare ``Exception``, which also hid genuine
-  network failures; those now propagate (silent-failure fix).
 - **Absent ``enable_clickup`` key**: only possible with test mocks that omit
   the column (PostgREST always returns selected columns). Callers choose via
   ``missing_enable_clickup_ok``: the ingest path passes True (its historical
   mock-tolerant behavior); the webhook keeps False (absent = disabled).
+
+Since #301 every workstream is a `projects` row with a job number, so the
+code grammar is `cp_engine.codes.parse_code` and there is one lookup.
 """
 from __future__ import annotations
 
+from cp_engine.codes import code_number
 from cp_engine.mc2_db import Tables
 from cp_engine.mc2_bindings import _clickup_list_id, fetch_binding_rows
 import logging
 from typing import Any
 
-from postgrest.exceptions import APIError
-
 log = logging.getLogger(__name__)
 
 
-def _list_id_from_bindings(
-    client: Any, *, project_id: str | None = None, initiative_id: str | None = None
-) -> str | None:
+def _list_id_from_bindings(client: Any, *, project_id: str) -> str | None:
     """The owner's ClickUp list id from its ``''`` binding (read-flip: the
     flat ``clickup_list_id`` columns are being retired)."""
-    owner_id = project_id or initiative_id
-    grouped = fetch_binding_rows(
-        client,
-        project_ids=[project_id] if project_id else (),
-        initiative_ids=[initiative_id] if initiative_id else (),
-    )
-    return _clickup_list_id(grouped.get(owner_id))
+    grouped = fetch_binding_rows(client, project_ids=[project_id])
+    return _clickup_list_id(grouped.get(project_id))
 
 
 def resolve_clickup_project(
@@ -51,90 +42,51 @@ def resolve_clickup_project(
 ) -> dict | None:
     """Resolve a cp code to an MC-2 ClickUp routing dict, or None.
 
-    Engagement codes are ``<company>-<number>`` (e.g. ``ggl-5136``); the
-    number is always the trailing segment. Initiative codes are a bare slug
-    stored directly on ``initiatives.code`` (e.g. ``mission-control``).
+    Any spelling `cp_engine.codes.parse_code` accepts (``ggl-5136``,
+    ``ggl-5136-go-safety-website``, ``1pi-9005-mission-control``); the job
+    number is the lookup key.
 
-    Returns ``{"id", "clickup_list_id", "code", "kind"}`` with ``kind`` in
-    ``{"project", "initiative"}`` — the ``kind`` stamp drives owner-column
-    selection on ``clickup_task_proposals`` (``project_id`` vs
-    ``initiative_id`` under a num_nonnulls==1 CHECK), so both branches MUST
-    keep stamping it.
-
-    None means: no row, or ClickUp routing disabled/unavailable for this
-    code. Skip reasons are logged at INFO.
+    Returns ``{"id", "clickup_list_id", "code", "kind"}``; ``kind`` is
+    always ``"project"`` (kept so every caller keeps one dict shape). None
+    means: not a code, no row, or ClickUp routing disabled for this code.
+    Skip reasons are logged at INFO.
     """
     number = engagement_number(code)
-
-    if number is not None:
-        resp = (
-            client.table(Tables.PROJECTS)
-            .select("id, number, enable_clickup")
-            .eq("number", number)
-            .execute()
-        )
-        rows = resp.data or []
-        if not rows:
-            log.info("clickup-routing: no project row for code=%s", code)
-            return None
-        row = rows[0]
-        if not _clickup_enabled(row, missing_enable_clickup_ok):
-            log.info("clickup-routing: ClickUp disabled for code=%s", code)
-            return None
-        return {
-            "id": row["id"],
-            "clickup_list_id": _list_id_from_bindings(client, project_id=row["id"]),
-            "code": code,
-            "kind": "project",
-        }
-
-    # Initiative — slug code. ClickUp columns rolled out incrementally on
-    # initiatives; a PostgREST APIError here means the column is missing,
-    # not that the network is down. Anything else propagates.
-    try:
-        resp = (
-            client.table(Tables.INITIATIVES)
-            .select("id, code, enable_clickup")
-            .eq("code", code)
-            .execute()
-        )
-    except APIError as exc:
-        log.info("clickup-routing: initiative ClickUp lookup unavailable (%s)", exc)
+    if number is None:
+        log.info("clickup-routing: %r is not a workstream code", code)
         return None
+
+    resp = (
+        client.table(Tables.PROJECTS)
+        .select("id, number, enable_clickup")
+        .eq("number", number)
+        .execute()
+    )
     rows = resp.data or []
     if not rows:
-        log.info("clickup-routing: no initiative row for code=%s", code)
+        log.info("clickup-routing: no project row for code=%s", code)
         return None
     row = rows[0]
     if not _clickup_enabled(row, missing_enable_clickup_ok):
-        log.info("clickup-routing: ClickUp disabled for initiative code=%s", code)
+        log.info("clickup-routing: ClickUp disabled for code=%s", code)
         return None
     return {
         "id": row["id"],
-        "clickup_list_id": _list_id_from_bindings(client, initiative_id=row["id"]),
+        "clickup_list_id": _list_id_from_bindings(client, project_id=row["id"]),
         "code": code,
-        "kind": "initiative",
+        "kind": "project",
     }
 
 
 def engagement_number(code: str) -> int | None:
-    """Extract the MC-2 project number from a cp engagement code.
+    """The MC-2 job number in a cp code, or None when it is not a code.
 
-    Two canonical shapes:
-      - short form ``<co>-<number>`` ("ggl-5168") — the tail is the number;
-      - full slug ``<co>-<number>-<name-slug>`` ("ggl-5136-go-safety-website",
-        the slugified full_job_name that became the canonical id in v0.35) —
-        the number is the SECOND dash-segment.
-
-    The second-segment rule deliberately ignores digits deeper in the slug
-    (a year like "…-update-2026" is not the project number). Initiative
-    slugs ("mission-control") have no numeric segment → None.
+    A thin wrapper over `cp_engine.codes.parse_code` kept for its callers
+    (`commitments`, `prep_planning`, `close_out`, the hosted shim). One
+    grammar for every spelling — short form, canonical slug, display name
+    — and digits deeper in a slug (``…-update-2026``) are never the number.
     """
-    segments = code.split("-")
-    if len(segments) >= 2 and segments[1].isdigit():
-        return int(segments[1])
-    tail = segments[-1]
-    return int(tail) if tail.isdigit() else None
+    return code_number(code)
 
 
 def _clickup_enabled(row: dict, missing_ok: bool) -> bool:

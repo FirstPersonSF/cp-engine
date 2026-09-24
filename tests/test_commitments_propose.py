@@ -46,19 +46,19 @@ def _roster():
     return [
         SimpleNamespace(
             code="ibx-5192", name="Platform Sales Readiness Summit",
-            company_name="Infoblox", source="engagement",
+            company_name="Infoblox", has_agreement=True,
         ),
         SimpleNamespace(
             code="ibx-5153", name="AI Campaign",
-            company_name="Infoblox", source="engagement",
+            company_name="Infoblox", has_agreement=True,
         ),
         SimpleNamespace(
             code="ggl-5168", name="Playbooks (Activation)",
-            company_name="Google", source="engagement",
+            company_name="Google", has_agreement=True,
         ),
         SimpleNamespace(
             code="mission-control", name="Mission Control",
-            company_name=None, source="initiative",
+            company_name=None, has_agreement=False,
         ),
     ]
 

@@ -52,7 +52,6 @@ class Tables:
     # public — core entities
     PROJECTS = "projects"
     REPOS = "repos"
-    INITIATIVES = "initiatives"
     COMPANIES = "companies"
     ENTITIES = "entities"  # people (partners/recipients); note author + recipient
     GITHUB_ORGS = "github_orgs"  # embedded-join only today (see *_COLUMNS)
@@ -112,19 +111,15 @@ class Tables:
 # `projects` and `meta` on `rag_assets` can be megabytes per row — that is
 # WHY these are explicit lists.
 
-# projects — the sync read (engagement rows → ProjectState).
+# projects — the sync read (every workstream row → ProjectState). One
+# stream since mc-2 mig 192 / cp-engine #301: internal workstreams are
+# `projects` rows with `deal_stage IS NULL`, repos hang off `project_id`.
 PROJECTS_SYNC_COLUMNS = (
     "id, number, full_job_name, name, mc_status, account_manager, "
     "is_internal, deal_stage, budget, dropbox_folder_url, updated_at, "
-    "companies(code, name, kind), "
+    "parent_id, companies(code, name, kind), "
     "repos!project_id(repo_name, status, description, github_orgs!inner(name))"
 )
-
-# projects — the sync read on the WORKSTREAM schema (mc-2 migration 190+,
-# cp-engine #300). Same shape plus `parent_id`; the `initiatives` and
-# standalone-`repos` streams do not exist on that schema — internal
-# workstreams are `projects` rows with `deal_stage IS NULL`.
-PROJECTS_WORKSTREAM_SYNC_COLUMNS = PROJECTS_SYNC_COLUMNS + ", parent_id"
 
 # projects — the Slack channel-map read (mapping columns aren't part of sync).
 # Channel ids come from project_integrations bindings (read-flip; the flat
@@ -136,27 +131,6 @@ PROJECTS_SLACK_COLUMNS = (
 
 # projects — the public-side estimate anchor (start_date only).
 PROJECTS_ESTIMATE_COLUMNS = "id, start_date"
-
-# repos — standalone repo rows (project_id IS NULL).
-REPOS_SYNC_COLUMNS = (
-    "id, repo_name, status, description, owner, updated_at, "
-    "github_orgs!inner(name), "
-    "companies!inner(code, name, kind)"
-)
-
-# initiatives — the sync read. (slack_channel_ids dropped in the read-flip;
-# sync never consumed it.)
-INITIATIVES_SYNC_COLUMNS = (
-    "id, code, name, description, status, owner, updated_at, "
-    "enable_slack, "
-    "companies!inner(code, name, kind), "
-    "repos!initiative_id(repo_name, status, description, github_orgs!inner(name))"
-)
-
-# initiatives — the Slack channel-map read (channel ids come from bindings).
-INITIATIVES_SLACK_COLUMNS = (
-    "id, code, name, status, enable_slack, companies!inner(code)"
-)
 
 # fathom_meetings — list vs full-fetch vs webhook artifact/transcript shapes.
 FATHOM_LIST_COLUMNS = (
@@ -1070,7 +1044,7 @@ def upsert_spine_snapshot(client: "Client", row: dict) -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Project / initiative id resolution
+#  Project id resolution
 # ──────────────────────────────────────────────────────────────────────
 #
 # These live here, NOT in ``mcp_server``, because they are pure MC-2
@@ -1108,28 +1082,29 @@ def canonical_spine_code(client, project_id: str, fallback: str) -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Workstream-schema probe (#300)
+#  Workstream-schema probe (#300) and the owner-column helpers
 # ──────────────────────────────────────────────────────────────────────
 #
-# mc-2 migration 190 adds `projects.parent_id`; 192 merges `initiatives`
-# into `projects`; 194 retires the `initiatives` table. Every installed
-# surface (CLI, webhook, hosted) has to keep working on BOTH sides of that
-# cutover, so the reader probes once per client and every `initiatives`
-# lookup is gated on the answer. The probe is the column, not the table:
-# the column is the first migration, and a lookup that finds no
-# `initiatives` table but no `parent_id` either is a broken database, not
-# a new one. Cached per client object; `_reset_workstream_probe()` for tests.
+# mc-2 migration 190 added `projects.parent_id`, 192 merged the old
+# `initiatives` rows into `projects`, 194 retired that table. The reader
+# handled both shapes through v0.123.x; since #301 the workstream schema is
+# the ONLY schema and every owner-scoped table has exactly one owner column,
+# `project_id`. The probe stays as a health question ("is this the database
+# we expect?") and the two helpers stay so call sites keep one spelling of
+# the owner column. Cached per client object; `_reset_workstream_probe()`
+# for tests.
 
 _WORKSTREAM_PROBE: dict[int, bool] = {}
+
+OWNER_COLUMN = "project_id"
 
 
 def workstream_schema(client) -> bool:
     """True when MC-2 carries `projects.parent_id` (the workstream schema).
 
     One `select id, parent_id ... limit 1` per client; PostgREST answers an
-    unknown column with an APIError (42703), which is the "legacy schema"
-    signal. Any other failure is also read as legacy so a transient error
-    never flips a live tenant onto the single-stream path by accident.
+    unknown column with an APIError (42703). False now means a database the
+    engine no longer supports, not a second code path.
     """
     key = id(client)
     cached = _WORKSTREAM_PROBE.get(key)
@@ -1142,49 +1117,32 @@ def workstream_schema(client) -> bool:
         )
         # The KEY must come back, not just a row: PostgREST returns
         # `parent_id: null` for a real column, and a fake that ignores the
-        # column list returns rows without it — which is the legacy answer.
+        # column list returns rows without it.
         present = bool(rows) and isinstance(rows[0], dict) and "parent_id" in rows[0]
-    except Exception:  # noqa: BLE001 — legacy schema, or unreachable: read as legacy
+    except Exception:  # noqa: BLE001 — unreachable or unknown column: not the expected shape
         present = False
     _WORKSTREAM_PROBE[key] = present
     return present
 
 
-def has_initiatives_table(client) -> bool:
-    """True when the `initiatives` table is still the home of internal work.
-
-    The inverse of :func:`workstream_schema`; named for the question the
-    call sites ask. On the workstream schema an initiative slug lookup has
-    nothing to find — the rows live in `projects` under their new codes —
-    so callers skip the query instead of erroring on a retired relation.
-    """
-    return not workstream_schema(client)
-
-
 def _reset_workstream_probe() -> None:
-    """Forget cached probe answers (tests, and long-lived processes across a migration)."""
+    """Forget cached probe answers (tests, and long-lived processes)."""
     _WORKSTREAM_PROBE.clear()
 
 
 def owner_columns(client) -> str:
-    """The owner column(s) an owner-scoped table carries, as a select fragment.
+    """The owner column an owner-scoped table carries, as a select fragment.
 
-    Legacy schema: ``"project_id, initiative_id"`` (mig 081's two-column
-    owner under a ``num_nonnulls = 1`` CHECK). Workstream schema (mc-2 mig
-    192): ``"project_id"`` — selecting a column that no longer exists is a
-    42703 that PostgREST turns into an empty read, which is how every sources
-    manifest got skipped on the first post-migration sync (v0.123.1). Use
-    this in a column list instead of naming `initiative_id` directly.
+    Always ``"project_id"`` (#301). Kept as a function so the column lists
+    that embed it (`commitments_sweep`, `dates_loop`, `asset_dedupe`, the
+    bindings read, the webhook) keep one spelling; `client` is unused.
     """
-    return "project_id" if workstream_schema(client) else "project_id, initiative_id"
+    return OWNER_COLUMN
 
 
 def owner_filter(client, owner_id: str) -> str:
-    """PostgREST `or=` fragment matching either owner column on the legacy
-    schema, or a plain `project_id.eq.` on the workstream schema."""
-    if workstream_schema(client):
-        return f"project_id.eq.{owner_id}"
-    return f"project_id.eq.{owner_id},initiative_id.eq.{owner_id}"
+    """PostgREST `or=` fragment scoping a read to one owner."""
+    return f"{OWNER_COLUMN}.eq.{owner_id}"
 
 
 def _looks_like_uuid(value) -> bool:
@@ -1223,8 +1181,7 @@ def _resolve_project_id(client, project_code: str) -> str | None:
          ``companies.code`` (case-insensitive) + ``projects.number``. This is
          the legacy bridge for the number-last form (``ibx-5192``).
 
-    Ahead of all four, a bare ``projects.id`` (or ``initiatives.id``) UUID is
-    accepted (#243). It is the one identifier that can never be ambiguous
+    Ahead of all four, a bare ``projects.id`` UUID is accepted (#243). It is the one identifier that can never be ambiguous
     across the three naming strings, and ``cp.md``'s ``MC-id:`` anchor already
     carries it — so an agent reading the tenant tree has it in hand. The parse
     guard matters twice over: filtering a uuid column with a malformed string
@@ -1242,22 +1199,16 @@ def _resolve_project_id(client, project_code: str) -> str | None:
     from cp_engine.state import slug_full_job_name
 
     if _looks_like_uuid(project_code):
-        tables = [Tables.PROJECTS]
-        if has_initiatives_table(client):
-            tables.append(Tables.INITIATIVES)
-        for table in tables:
-            rows = (
-                client.table(table)
-                .select("id")
-                .eq("id", project_code)
-                .limit(1)
-                .execute()
-                .data
-                or []
-            )
-            if rows:
-                return rows[0]["id"]
-        return None
+        rows = (
+            client.table(Tables.PROJECTS)
+            .select("id")
+            .eq("id", project_code)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        return rows[0]["id"] if rows else None
 
     rows = (
         client.table(Tables.PROJECTS)
@@ -1306,12 +1257,12 @@ def _resolve_project_id(client, project_code: str) -> str | None:
             if slug_full_job_name(row.get("full_job_name")) == project_code:
                 return row["id"]
 
-    # Fallback: <companyprefix>-<number> (the legacy number-last form).
-    # An initiative slug (`mission-control`) has no trailing number, so this
-    # branch is skipped and we fall through to the initiatives lookup below.
+    # Fallback: <companyprefix>-<number> (the legacy number-last form). A
+    # bare word (`mission-control`) has no trailing number and resolves to
+    # nothing — every workstream carries a number (#301).
     prefix, sep, tail = project_code.rpartition("-")
     if not sep or not tail.isdigit():
-        return _resolve_initiative_id(client, project_code)
+        return None
     number = int(tail)
     # companies.code is stored UPPERCASE (e.g. `IBX`) while the working-dir
     # prefix is lowercase (`ibx`); match case-insensitively. The prefix has no
@@ -1382,30 +1333,3 @@ def project_sprint_identity(client, project_code: str) -> dict | None:
         }
     except Exception:  # noqa: BLE001 — never break an ingest over resolution
         return None
-
-
-def _resolve_initiative_id(client, code: str) -> str | None:
-    """Resolve an INITIATIVE slug code (`mission-control`, `storyos`) to its id.
-
-    Initiatives live in their own `initiatives` table — parallel to projects but
-    with no client/company side and no Drive/Dropbox folders — so the project
-    bridge in `_resolve_project_id` never matches them. Their id lands in
-    `spine_substance.project_id` exactly like a project's, so spine tools work
-    once we hand it back. Returns the id, or None when nothing matches.
-
-    On the workstream schema (#300) there is no `initiatives` table and no
-    bare-slug codes; the merged rows resolve through `_resolve_project_id`
-    under their `<co>-<number>-<slug>` codes, so this returns None.
-    """
-    if not has_initiatives_table(client):
-        return None
-    rows = (
-        client.table(Tables.INITIATIVES)
-        .select("id")
-        .eq("code", code)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    return rows[0]["id"] if rows else None

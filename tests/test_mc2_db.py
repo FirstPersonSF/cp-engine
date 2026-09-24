@@ -275,7 +275,7 @@ def test_no_table_string_literals_outside_registry() -> None:
 def test_registry_covers_known_tables() -> None:
     """The registry names every table the survey found (drift alarm both ways)."""
     expected_public = {
-        "projects", "repos", "initiatives", "companies", "entities",
+        "projects", "repos", "companies", "entities",
         "github_orgs",
         "sprint_allocations", "fathom_meetings", "unrouted_emails",
         "auto_ingest_runs",
@@ -381,7 +381,7 @@ def test_resolver_importable_without_the_mcp_package() -> None:
         "            raise ImportError('simulated: mcp absent')\n"
         "        return None\n"
         "sys.meta_path.insert(0, B())\n"
-        "from cp_engine.mc2_db import _resolve_project_id, _resolve_initiative_id\n"
+        "from cp_engine.mc2_db import _resolve_project_id\n"
         "from cp_engine.meetings import _default_resolver\n"
         "print('ok')\n"
     )

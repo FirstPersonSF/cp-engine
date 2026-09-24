@@ -307,11 +307,9 @@ def test_clickup_task_closed_no_changes_returns_200_not_ingested(
 # ─────────────────────────────────────────────────────────────────────
 #  _lookup_proposal_by_clickup_task_id — owner resolution (Task 7 Part B)
 #
-#  Post-migration-081, clickup_task_proposals carries BOTH project_id and
-#  initiative_id (exactly one set). The lookup must resolve the code from
-#  whichever owner is set: <company>-<number> for projects, the slug code
-#  for initiatives. The old projects!inner join structurally dropped
-#  initiative-owned rows.
+#  Since mc-2 mig 192 / cp-engine #301 clickup_task_proposals carries ONE
+#  owner column, `project_id`; internal workstreams are numbered `projects`
+#  rows and resolve to <company>-<number> like any client job.
 # ─────────────────────────────────────────────────────────────────────
 
 
@@ -373,7 +371,6 @@ def test_lookup_resolves_project_owned_proposal(
                     "clickup_task_id": "T1",
                     "cp_ask_hash": "abc12345",
                     "project_id": "p1",
-                    "initiative_id": None,
                 }
             ],
             "projects": [{"id": "p1", "number": 5168, "company_id": "c1"}],
@@ -387,11 +384,11 @@ def test_lookup_resolves_project_owned_proposal(
     assert out == ("abc12345", "ggl-5168")
 
 
-def test_lookup_resolves_initiative_owned_proposal(
+def test_lookup_resolves_internal_workstream_owned_proposal(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """An initiative-owned row resolves to the initiative's slug code —
-    previously dropped by the projects!inner join (returned None)."""
+    """An internal-workstream-owned row resolves through `project_id` to
+    its numbered code (#301) — there is no second owner column to read."""
     monkeypatch.setenv("SUPABASE_URL", "https://x.supabase.co")
     monkeypatch.setenv("SUPABASE_SERVICE_KEY", "k")
     fake = _FakeSupabase(
@@ -400,15 +397,15 @@ def test_lookup_resolves_initiative_owned_proposal(
                 {
                     "clickup_task_id": "T2",
                     "cp_ask_hash": "feedface",
-                    "project_id": None,
-                    "initiative_id": "i9",
+                    "project_id": "i9",
                 }
             ],
-            "initiatives": [{"id": "i9", "code": "mission-control"}],
+            "projects": [{"id": "i9", "number": 9005, "company_id": "c2"}],
+            "companies": [{"id": "c2", "code": "1PI"}],
         }
     )
     monkeypatch.setattr(
         "supabase.create_client", lambda u, k: fake, raising=False
     )
     out = webhook_main._lookup_proposal_by_clickup_task_id("T2")
-    assert out == ("feedface", "mission-control")
+    assert out == ("feedface", "1pi-9005")

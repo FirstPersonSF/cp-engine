@@ -34,11 +34,10 @@ from cp_engine.plan_from_transcript import (
     _call_claude,
     _extract_yaml,
     _find_project_dir,
-    _is_engagement_code,
     _load_recent_account_decisions,
 )
 from cp_engine.sprints import current_sprint_week_iso
-from cp_engine.state import ProjectState
+from cp_engine.state import ProjectState, derive_label
 
 log = logging.getLogger(__name__)
 
@@ -189,8 +188,14 @@ def _format_active_projects(
     parts: list[str] = []
     for p in projects:
         header = f"### `{p.code}` — {p.name}"
-        if p.source == "initiative":
-            header += " (initiative)"
+        label = p.label or derive_label(
+            company_kind=p.company_kind,
+            parent_code=p.parent_code,
+            has_agreement=p.has_agreement,
+            has_children=False,
+        )
+        if label != "job":
+            header += f" ({label})"
         parts.append(header)
         if p.one_line_summary:
             parts.append(f"_{p.one_line_summary}_")
@@ -403,63 +408,46 @@ def list_active_for_company(
     """Return all active projects (engagements OR initiatives) for a company.
 
     Used by the cp-engine-webhook account-meeting endpoint to decide
-    which projects to load context for. The discriminator is
-    `companies.kind` (resolved by sync_mc2's company joins):
-      - `client`        → active engagements (Deal | Open, not internal)
-      - `self-fpsf`     → active initiatives (status='Active')
-      - `self-canonic`  → active initiatives (status='Active')
+    which projects to load context for: every active workstream (Deal |
+    Open) under the company, whatever its shape (#301).
 
     company_code is the canonical company code (e.g. 'GGL', '1PI', 'CNC').
     Lookup is case-insensitive.
     """
-    from cp_engine.status import is_active_initiative_status, is_active_status
+    from cp_engine.status import is_active_status
     from cp_engine.sync import _default_backend_factory
 
     backend = _default_backend_factory(config.sync.backend)
     all_projects = backend.read_projects(config)
 
     code_lc = (company_code or "").strip().lower()
-    out: list[ProjectState] = []
-    for p in all_projects:
-        if not p.company_code or p.company_code.lower() != code_lc:
-            continue
-        if p.source == "engagement":
-            if is_active_status(p.status) and not p.is_internal:
-                out.append(p)
-        elif p.source == "initiative":
-            if is_active_initiative_status(p.status):
-                out.append(p)
-        # standalone repos are skipped — they're not assignment targets
-        # for account meetings (they're either part of an initiative
-        # or unowned).
+    out: list[ProjectState] = [
+        p
+        for p in all_projects
+        if p.company_code
+        and p.company_code.lower() == code_lc
+        and is_active_status(p.status)
+    ]
     out.sort(key=lambda p: p.code)
     return out
 
 
 def list_active_all(config: TenantConfig) -> list[ProjectState]:
-    """Return every active project across the tenant — engagements
-    (Deal | Open, not internal) plus initiatives (Active), all companies.
+    """Return every active workstream across the tenant (Deal | Open, all
+    companies, every shape — #301).
 
     Used as the cross-project detection roster (#88): the single-project
     ingest classifier scores extracted items against this list to spot
     items that belong to a DIFFERENT active project than the one the
-    meeting was tagged to. Standalone repos are skipped — they're not
-    ingest targets.
+    meeting was tagged to.
     """
-    from cp_engine.status import is_active_initiative_status, is_active_status
+    from cp_engine.status import is_active_status
     from cp_engine.sync import _default_backend_factory
 
     backend = _default_backend_factory(config.sync.backend)
     all_projects = backend.read_projects(config)
 
-    out: list[ProjectState] = []
-    for p in all_projects:
-        if p.source == "engagement":
-            if is_active_status(p.status) and not p.is_internal:
-                out.append(p)
-        elif p.source == "initiative":
-            if is_active_initiative_status(p.status):
-                out.append(p)
+    out: list[ProjectState] = [p for p in all_projects if is_active_status(p.status)]
     out.sort(key=lambda p: p.code)
     return out
 
@@ -480,7 +468,8 @@ _SCOPE_TO_KIND = {
 # falls through to a code-allowlist lookup when the scope isn't in
 # _SCOPE_TO_KIND.
 _SCOPE_TO_EXPLICIT_CODES = {
-    "storyos-mc": ("storyos", "mission-control"),
+    # The merged workstream codes (mc-2 mig 192, cp-engine #301).
+    "storyos-mc": ("cnc-9004-storyos", "1pi-9005-mission-control"),
 }
 
 # Pseudo-company codes for the account_summary's `company` field. These
@@ -519,7 +508,7 @@ def list_active_for_scope(
     is the company kind OR an explicit code list. Used by the cp-engine-
     webhook /api/auto-ingest-sprint-planning endpoint.
     """
-    from cp_engine.status import is_active_initiative_status, is_active_status
+    from cp_engine.status import is_active_status
     from cp_engine.state import scope_for
     from cp_engine.sync import _default_backend_factory
 
@@ -547,32 +536,21 @@ def list_active_for_scope(
                 # Skip silently — a project listed in an explicit scope
                 # that's no longer in MC-2 shouldn't block the rest.
                 continue
-            # Apply the same activity check that the kind-based scopes
-            # use, but be tolerant: explicit lists are curated by humans
-            # who may want to keep On-hold initiatives in scope for a
-            # bit longer.
-            if p.source == "initiative" and is_active_initiative_status(p.status):
-                out.append(p)
-            elif p.source == "engagement" and is_active_status(p.status) and not p.is_internal:
+            # Apply the same activity check that the kind-based scopes use.
+            if is_active_status(p.status):
                 out.append(p)
         return out
 
     target_kind = _SCOPE_TO_KIND[scope]
 
     out: list[ProjectState] = []
+    # One rule for every scope (#301): active workstreams (Deal | Open)
+    # under the scope's company kind.
     for p in all_projects:
         if p.company_kind != target_kind:
             continue
-        if scope == "1p":
-            # Client engagements: Deal | Open, not internal.
-            if p.source == "engagement" and is_active_status(p.status) and not p.is_internal:
-                out.append(p)
-        else:
-            # FPSF / Canonic: active initiatives only (skip standalone repos
-            # — they're either initiative-linked or unowned and don't fit
-            # the "what we're planning this sprint" frame).
-            if p.source == "initiative" and is_active_initiative_status(p.status):
-                out.append(p)
+        if is_active_status(p.status):
+            out.append(p)
     out.sort(key=lambda p: (scope_for(p.company_kind), p.code))
     return out
 

@@ -97,10 +97,10 @@ def test_element_from_row_maps_substance_columns() -> None:
         ("project", "Deal", True),
         ("project", "Holding", False),
         ("project", "Closed", False),
-        ("initiative", "Active", True),
-        ("initiative", "Done", False),
-        ("repo", "Active", True),
-        ("repo", "Inactive", False),
+        # One vocabulary for every workstream (#301): `kind` is ignored.
+        ("project", "Deal", True),
+        ("project", "Active", False),
+        ("project", "Closed", False),
     ],
 )
 def test_is_active_like(kind: str, status: str, active: bool) -> None:
@@ -310,44 +310,42 @@ def test_load_mirror_elements_no_spine_dir(tmp_path: Path) -> None:
     assert load_mirror_elements(tmp_path) == []
 
 
-# ── fetch_item_status: repo slugs with a numeric second segment ───────
-
-
-class _StatusQuery:
-    def __init__(self, data):
-        self._data = data
-
-    def select(self, *a, **k):
-        return self
-
-    def eq(self, *a, **k):
-        return self
-
-    def execute(self):
-        from types import SimpleNamespace
-
-        return SimpleNamespace(data=self._data)
+# ── fetch_item_status: one table, one grammar (#301) ────────────────
 
 
 class _StatusClient:
+    """Minimal fake: `table(name).select(...).eq(col, val).execute().data`."""
+
     def __init__(self, tables: dict[str, list[dict]]):
         self._tables = tables
 
     def table(self, name):
-        return _StatusQuery(self._tables.get(name, []))
+        rows = self._tables.get(name, [])
+
+        class _Q:
+            def __init__(self, rows):
+                self._rows = rows
+
+            def select(self, *_a, **_k):
+                return self
+
+            def eq(self, col, val):
+                self._rows = [r for r in self._rows if r.get(col) == val]
+                return self
+
+            def execute(self):
+                return type("R", (), {"data": list(self._rows)})()
+
+        return _Q(rows)
 
 
-def test_fetch_item_status_numeric_repo_slug_falls_through_to_repos() -> None:
-    """`mc-2` parses as engagement number 2; a projects-miss must fall
-    through to the repos lookup, not short-circuit to None."""
+def test_fetch_item_status_internal_workstream_resolves_by_number() -> None:
+    """Internal workstreams are numbered `projects` rows; their real
+    `mc_status` comes back, no vocabulary mapping."""
     client = _StatusClient(
-        {
-            "projects": [],
-            "initiatives": [],
-            "repos": [{"id": "r1", "repo_name": "mc-2", "status": "Inactive"}],
-        }
+        {"projects": [{"id": "i1", "number": 9005, "mc_status": "Holding"}]}
     )
-    assert fetch_item_status(client, "mc-2") == ("repo", "Inactive")
+    assert fetch_item_status(client, "1pi-9005-mission-control") == ("project", "Holding")
 
 
 def test_fetch_item_status_engagement_number_still_wins() -> None:
@@ -355,6 +353,11 @@ def test_fetch_item_status_engagement_number_still_wins() -> None:
         {"projects": [{"id": "p1", "number": 5144, "mc_status": "Closed"}]}
     )
     assert fetch_item_status(client, "tel-5144") == ("project", "Closed")
+
+
+def test_fetch_item_status_bare_slug_is_none_without_a_query() -> None:
+    """A numberless slug is not a code; nothing is queried."""
+    assert fetch_item_status(_StatusClient({}), "mission-control") is None
 
 
 def test_fetch_item_status_unknown_returns_none() -> None:

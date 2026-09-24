@@ -43,7 +43,7 @@ def _engagement() -> ProjectState:
     return ProjectState(
         code="peb-5100",
         name="Pebble Foods Activation",
-        source="engagement",
+        has_agreement=True,
         company_kind="client",
         company_code="PEB",
         company_name="Pebble Foods",
@@ -63,13 +63,13 @@ def _engagement() -> ProjectState:
 
 def _initiative() -> ProjectState:
     return ProjectState(
-        code="mission-control",
+        code="1pi-9005-mission-control",
         name="Mission Control",
-        source="initiative",
+        has_agreement=False,
         company_kind="self-fpsf",
         company_code="1PI",
         company_name="First Person",
-        status="Active",
+        status="Open",
         is_internal=True,
         owner="Tony",
         last_touched=_TOUCHED,

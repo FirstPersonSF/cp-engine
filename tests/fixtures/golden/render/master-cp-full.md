@@ -71,22 +71,21 @@ Sales-stage progression: Inquiry → Negotiation → Contract.
 <!-- cp-engine:end active-pipeline -->
 
 <!-- cp-engine:start active-1p -->
-## 1P — Active Engagements (2)
-_Two engagements in delivery_
+## 1P — Active Engagements (3)
+_Three engagements in delivery_
 
 | Account | Code | Project | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
 | [Google](1p/google/cp.md) | `ggl-5168` | Playbooks (Activation)<br>_Last week: Drew 6h, Tony 2.5h (8.5h total)._ | Drew | $80k | — | Storyboards in flight; client review Wed. | [CP →](1p/google/ggl-5168/cp.md) · [W20 →](sprints/2026-W20/ggl-5168.md) |
+| [Google](1p/google/cp.md) | `ggl-9998` | Internal Scratch | Drew | — | — |  | [CP →](1p/google/ggl-9998/cp.md) · [W20 →](sprints/2026-W20/ggl-9998.md) |
 | [Infoblox](1p/infoblox/cp.md) | `ibx-5153` | Infoblox AI Campaign<br>_Last week: Tony 8h (8h total)._ | Tony | $120k | — | Carol framework deck in client review. | [CP →](1p/infoblox/ibx-5153/cp.md) · [W20 →](sprints/2026-W20/ibx-5153.md) |
 <!-- cp-engine:end active-1p -->
 
 <!-- cp-engine:start active-fpsf -->
-## First Person — Internal Tooling (1)
-_One tools in active build_
+## First Person — Internal Tooling (0)
 
 | Repo | Status | Owner | Description | Last activity | GitHub | CP |
 |---|---|---|---|---|---|---|
-| `cp-engine` | Active | — | The engine behind the cp tenant. | — | [FirstPersonSF/cp-engine](https://github.com/FirstPersonSF/cp-engine) | [CP →](firstpersonsf/cp-engine/cp.md) · [W20 →](sprints/2026-W20/cp-engine.md) |
 <!-- cp-engine:end active-fpsf -->
 
 <!-- cp-engine:start active-fpsf-initiatives -->
@@ -95,16 +94,14 @@ _One initiatives in motion_
 
 | Code | Initiative | Owner | Status | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|
-| `mission-control` | Mission Control | Tony | Active | — | Workspace IA shipped; integrations registry live. | [CP →](firstpersonsf/mission-control/cp.md) · [W20 →](sprints/2026-W20/mission-control.md) |
+| `1pi-9005-mission-control` | Mission Control | Tony | Open | — | Workspace IA shipped; integrations registry live. | [CP →](firstpersonsf/1pi-9005-mission-control/cp.md) · [W20 →](sprints/2026-W20/1pi-9005-mission-control.md) |
 <!-- cp-engine:end active-fpsf-initiatives -->
 
 <!-- cp-engine:start active-canonic -->
-## Canonic (1)
-_One projects in flight_
+## Canonic (0)
 
 | Repo | Status | Owner | Description | Last activity | GitHub | CP |
 |---|---|---|---|---|---|---|
-| `unf-forge` | Active | — | UNF prototyping forge. | — | [FirstPersonSF/unf-forge](https://github.com/FirstPersonSF/unf-forge) | [CP →](canonic/unf-forge/cp.md) · [W20 →](sprints/2026-W20/unf-forge.md) |
 <!-- cp-engine:end active-canonic -->
 
 <!-- cp-engine:start active-canonic-initiatives -->
@@ -113,7 +110,7 @@ _One initiatives in motion_
 
 | Code | Initiative | Owner | Status | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|
-| `storyos` | StoryOS | Drew | Active | — | Substrate design in review. | [CP →](canonic/storyos/cp.md) · [W20 →](sprints/2026-W20/storyos.md) |
+| `cnc-9004-storyos` | StoryOS | Drew | Open | — | Substrate design in review. | [CP →](canonic/cnc-9004-storyos/cp.md) · [W20 →](sprints/2026-W20/cnc-9004-storyos.md) |
 <!-- cp-engine:end active-canonic-initiatives -->
 
 <!-- cp-engine:start last-week-workload -->
@@ -127,11 +124,12 @@ _One initiatives in motion_
 
 <!-- cp-engine:start holding-subtable -->
 <details>
-<summary><strong>Holding</strong> (1)</summary>
+<summary><strong>Holding</strong> (2)</summary>
 
 | Code | Name | Owner | Last touched | CP |
 |---|---|---|---|---|
 | `ggl-5136` | Go Safety Website | Drew | 2026-05-12 | [→](1p/google/ggl-5136/cp.md) |
+| `1pi-9007-market-scorecard` | Market Scorecard | Tony | 2026-05-12 | [→](firstpersonsf/1pi-9007-market-scorecard/cp.md) |
 
 </details>
 <!-- cp-engine:end holding-subtable -->

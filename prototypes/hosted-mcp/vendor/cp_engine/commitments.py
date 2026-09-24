@@ -2,76 +2,53 @@
 
 `commitments_sweep` imports `resolve_commitment_owner` at call time. The real
 module imports `clickup_routing` (postgrest) at module level; only
-`engagement_number` is needed from it, so it is inlined here.
+`engagement_number` is needed from it, so it is inlined here over the
+vendored `cp_engine.codes` (a verbatim copy).
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 
-from cp_engine import mc2_db
+from cp_engine.codes import code_number
 from cp_engine.mc2_db import Tables
 
 log = logging.getLogger(__name__)
 
 
 def engagement_number(code: str) -> int | None:
-    """Extract the MC-2 project number from a cp engagement code.
+    """The MC-2 job number in a cp code, or None when it is not a code.
 
-    Two canonical shapes:
-      - short form ``<co>-<number>`` ("ggl-5168") — the tail is the number;
-      - full slug ``<co>-<number>-<name-slug>`` ("ggl-5136-go-safety-website",
-        the slugified full_job_name that became the canonical id in v0.35) —
-        the number is the SECOND dash-segment.
-
-    The second-segment rule deliberately ignores digits deeper in the slug
-    (a year like "…-update-2026" is not the project number). Initiative
-    slugs ("mission-control") have no numeric segment → None.
+    A thin wrapper over `cp_engine.codes.parse_code` kept for its callers
+    (`commitments`, `prep_planning`, `close_out`, the hosted shim). One
+    grammar for every spelling — short form, canonical slug, display name
+    — and digits deeper in a slug (``…-update-2026``) are never the number.
     """
-    segments = code.split("-")
-    if len(segments) >= 2 and segments[1].isdigit():
-        return int(segments[1])
-    tail = segments[-1]
-    return int(tail) if tail.isdigit() else None
+    return code_number(code)
 
 
 def resolve_commitment_owner(client: Any, code: str) -> dict | None:
     """Resolve a cp code to a commitments owner: ``{"id", "code", "kind"}``.
 
-    Same code grammar as :func:`clickup_routing.resolve_clickup_project` —
-    engagement codes carry a trailing number, initiative codes are a bare
-    slug on ``initiatives.code`` — but with NO ClickUp gates: every code
-    that exists in MC-2 resolves, whether or not ClickUp is enabled.
+    Same code grammar as :func:`clickup_routing.resolve_clickup_project`
+    (`cp_engine.codes.parse_code`: every workstream carries a job number,
+    #301) but with NO ClickUp gates: every code that exists in MC-2
+    resolves, whether or not ClickUp is enabled. ``kind`` is always
+    ``"project"`` — kept in the dict so callers keep one shape.
     """
     number = engagement_number(code)
-    if number is not None:
-        resp = (
-            client.table(Tables.PROJECTS)
-            .select("id, number")
-            .eq("number", number)
-            .execute()
-        )
-        rows = resp.data or []
-        if not rows:
-            log.info("commitments: no project row for code=%s", code)
-            return None
-        return {"id": rows[0]["id"], "code": code, "kind": "project"}
-
-    if not mc2_db.has_initiatives_table(client):
-        # Workstream schema (#300): no bare-slug codes exist; every row has
-        # a number and resolved (or missed) on the projects branch above.
-        log.info("commitments: no project row for slug code=%s", code)
+    if number is None:
+        log.info("commitments: %r is not a workstream code", code)
         return None
     resp = (
-        client.table(Tables.INITIATIVES)
-        .select("id, code")
-        .eq("code", code)
+        client.table(Tables.PROJECTS)
+        .select("id, number")
+        .eq("number", number)
         .execute()
     )
     rows = resp.data or []
     if not rows:
-        log.info("commitments: no initiative row for code=%s", code)
+        log.info("commitments: no project row for code=%s", code)
         return None
-    return {"id": rows[0]["id"], "code": code, "kind": "initiative"}
+    return {"id": rows[0]["id"], "code": code, "kind": "project"}

@@ -221,9 +221,9 @@ def test_malformed_uuid_never_reaches_the_db_as_a_uuid_filter(srv):
     assert id_filters == []
 
 
-def test_initiative_still_resolves_first(srv):
-    """Initiatives keep their branch — unchanged by the engagement fix."""
-    tables = _tenant()
-    tables["initiatives"] = [{"id": "init-1", "code": "storyos"}]
-    client = _FakeClient(tables)
-    assert srv.resolve_project_id(client, "storyos") == "init-1"
+def test_bare_word_resolves_to_nothing(srv):
+    """No initiatives branch since #301: a code with no job number is not a
+    workstream, and no `initiatives` table is ever queried."""
+    client = _FakeClient(_tenant())
+    assert srv.resolve_project_id(client, "storyos") is None
+    assert all(t != "initiatives" for t, _ in client.log)

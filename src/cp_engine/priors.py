@@ -127,24 +127,19 @@ def project_id_for_code(code: str, *, config=None) -> str | None:
     if not code:
         return None
     try:
-        from cp_engine.mc2_db import Tables, get_client, has_initiatives_table
+        from cp_engine.mc2_db import Tables, get_client
 
         client = get_client(config, required=False)
         if client is None:
             return None
 
-        # 1. Exact code on the row itself — initiatives and standalone repos
-        #    match here (their code IS the slug), and so do any projects whose
-        #    row code happens to agree with the cp code.
-        tables = [Tables.PROJECTS]
-        if has_initiatives_table(client):
-            tables.append(Tables.INITIATIVES)
-        for table in tables:
-            rows = (
-                client.table(table).select("id").eq("code", code).limit(1).execute()
-            ).data or []
-            if rows:
-                return rows[0].get("id")
+        # 1. Exact code on the row itself — any project whose row code
+        #    happens to agree with the cp code.
+        rows = (
+            client.table(Tables.PROJECTS).select("id").eq("code", code).limit(1).execute()
+        ).data or []
+        if rows:
+            return rows[0].get("id")
 
         # 2. Spine bridge: project_code there is the dir slug, which starts
         #    with the cp code. `limit(1)` is safe — the prefix is unique per

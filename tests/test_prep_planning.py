@@ -68,14 +68,14 @@ def make_state(
     company_code: str | None = "GGL",
     company_name: str | None = "Google",
     status: str = "Open",
-    source: str = "engagement",
+    has_agreement: bool = True,
     owner: str = "drew",
     is_internal: bool = False,
 ) -> ProjectState:
     return ProjectState(
         code=code,
         name=name if name is not None else code,
-        source=source,  # type: ignore[arg-type]
+        has_agreement=has_agreement,
         company_kind=company_kind,  # type: ignore[arg-type]
         company_code=company_code,
         company_name=company_name,
@@ -1375,7 +1375,7 @@ def test_project_header_dedupes_when_code_equals_name():
         company_kind="self-fpsf",
         company_code=None,
         company_name=None,
-        source="repo",
+        has_agreement=False,
         owner="Drew and Tony",
     )
     block = ProjectPlanningBlock(

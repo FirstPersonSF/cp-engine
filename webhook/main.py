@@ -244,7 +244,6 @@ from routers.assets import _asset_runs_table, _run_asset_ingest  # noqa: E402,F4
 from routers.integrations import (  # noqa: E402,F401
     _lookup_proposal_by_clickup_task_id,
     _resolve_engagement_code,
-    _resolve_initiative_code,
 )
 from routers.meetings import (  # noqa: E402,F401
     _fetch_meeting_by_recording_id,

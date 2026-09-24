@@ -27,7 +27,6 @@ from __future__ import annotations
 
 from cp_engine.mc2_db import (
     Tables,
-    _resolve_initiative_id,
     _resolve_project_id,
 )
 from mcp.server import MCPServer
@@ -1193,18 +1192,10 @@ def framework_compose(framework: str, field_values: dict,
 def _commitment_scope(client, project_code: str) -> dict | None:
     """Resolve a code to the commitments owner dict ``{"id", "code", "kind"}``.
 
-    The commitments table needs to know WHICH owner column to use
-    (``project_id`` vs ``initiative_id`` under the num_nonnulls==1 CHECK), so
-    unlike ``_resolve`` this keeps the kind. Initiatives are checked FIRST:
-    their bare slugs are unambiguous, and ``_resolve_project_id``'s own
-    fallback can return initiative ids — after an initiatives miss, any
-    project-branch hit is genuinely a project. Standalone repos have no owner
-    column in mig-097 and resolve to None (a commitment must belong to an
-    engagement or an initiative).
+    ``kind`` is always ``"project"`` (#301: one entry kind, one owner
+    column); kept in the dict so the commitment verbs share one shape with
+    `commitments.resolve_commitment_owner`.
     """
-    iid = _resolve_initiative_id(client, project_code)
-    if iid is not None:
-        return {"id": iid, "code": project_code, "kind": "initiative"}
     pid = _resolve_project_id(client, project_code)
     if pid is None:
         return None

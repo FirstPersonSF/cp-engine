@@ -77,7 +77,7 @@ def _project_with(*, company_kind: str, company_name: str | None) -> ProjectStat
     return ProjectState(
         code="dummy",
         name="Dummy",
-        source="engagement",
+        has_agreement=True,
         company_kind=company_kind,
         company_code="DUM",
         company_name=company_name,

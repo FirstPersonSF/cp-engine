@@ -1587,84 +1587,22 @@ def _fake_supabase_for_project(*, project_id: str = "p1",
     return client
 
 
-def _fake_supabase_for_initiative(*, initiative_id: str = "i1",
-                                   clickup_list_id: str | None = "L9",
-                                   code: str = "mission-control",
-                                   enable_clickup: bool = True,
-                                   existing_hashes: list[str] | None = None):
-    """Mirror ``_fake_supabase_for_project`` but for an INITIATIVE (slug code).
+def _fake_supabase_for_internal_workstream(*, project_id: str = "i1",
+                                            clickup_list_id: str | None = "L9",
+                                            code: str = "1pi-9005-mission-control",
+                                            enable_clickup: bool = True,
+                                            existing_hashes: list[str] | None = None):
+    """Mirror ``_fake_supabase_for_project`` for an INTERNAL workstream.
 
-    ``_resolve_proposal_project`` routes a slug code (no trailing number)
-    through the ``initiatives`` table via ``.eq("code", code)``. The mocked
-    chain endpoint is shared with the project path, so we just hand it an
-    initiative-shaped row (``code`` slug, no ``number``).
+    Since mc-2 mig 192 / #301 an internal workstream is a `projects` row
+    with a job number (`1pi-9005-mission-control`); it resolves by number on
+    the same branch as a client job and owns its rows via `project_id`.
     """
-    from unittest.mock import MagicMock
-
-    initiative_row = {
-        "id": initiative_id,
-        "code": code,
-        "enable_clickup": enable_clickup,
-    }
-    existing = set(existing_hashes or [])
-
-    client = MagicMock()
-    select_chain = client.table.return_value.select.return_value.eq.return_value
-    select_chain.execute.return_value.data = [initiative_row]
-
-    # Bindings chain (read-flip): initiative-owned clickup binding.
-    bindings_chain = client.table.return_value.select.return_value.in_.return_value
-    bindings_chain.execute.return_value.data = (
-        [{
-            "project_id": None, "initiative_id": initiative_id, "service": "clickup",
-            "external_ref": {"id": clickup_list_id, "extra": {"list_id": clickup_list_id}},
-            "label": "",
-        }]
-        if clickup_list_id
-        else []
+    return _fake_supabase_for_project(
+        project_id=project_id, clickup_list_id=clickup_list_id,
+        code=code, enable_clickup=enable_clickup,
+        existing_hashes=existing_hashes,
     )
-
-    in_chain = (
-        client.table.return_value.select.return_value
-        .eq.return_value.in_.return_value
-    )
-
-    def _dedupe_execute(*_args, **_kwargs):
-        eq_calls = client.table.return_value.select.return_value.eq.call_args_list
-        last_hash = None
-        for call in reversed(eq_calls):
-            args = call.args
-            if len(args) >= 2 and args[0] == "cp_ask_hash":
-                last_hash = args[1]
-                break
-        result = MagicMock()
-        result.data = [{"id": "x", "status": "pending"}] if last_hash in existing else []
-        return result
-
-    in_chain.execute.side_effect = _dedupe_execute
-
-    # Commitments dedupe chain (.select("id").eq("cp_hash", h).limit(1)
-    # .execute()) — same hash-branching trick as the proposals chain above.
-    limit_chain = (
-        client.table.return_value.select.return_value
-        .eq.return_value.limit.return_value
-    )
-
-    def _hash_execute(*_args, **_kwargs):
-        eq_calls = client.table.return_value.select.return_value.eq.call_args_list
-        last_hash = None
-        for call in reversed(eq_calls):
-            args = call.args
-            if len(args) >= 2 and args[0] == "cp_hash":
-                last_hash = args[1]
-                break
-        result = MagicMock()
-        result.data = [{"id": "x"}] if last_hash in existing else []
-        return result
-
-    limit_chain.execute.side_effect = _hash_execute
-    return client
-
 
 def _last_insert_row(client) -> dict:
     """Pull the dict passed to the most recent ``insert(...)`` call."""
@@ -1683,28 +1621,35 @@ def test_resolve_proposal_project_tags_kind_project() -> None:
     assert resolved["kind"] == "project"
 
 
-def test_resolve_proposal_project_tags_kind_initiative() -> None:
-    """A slug code resolves to an initiatives row tagged kind='initiative'."""
+def test_resolve_proposal_project_internal_workstream_tags_kind_project() -> None:
+    """An internal workstream code resolves on `projects` and is tagged
+    kind='project' — the only kind since #301."""
     from cp_engine.ingest import _resolve_proposal_project
-    sb = _fake_supabase_for_initiative(code="mission-control")
-    resolved = _resolve_proposal_project(sb, "mission-control")
+    sb = _fake_supabase_for_internal_workstream()
+    resolved = _resolve_proposal_project(sb, "1pi-9005-mission-control")
     assert resolved is not None
-    assert resolved["kind"] == "initiative"
+    assert resolved["kind"] == "project"
 
 
-def test_set_milestone_initiative_writes_initiative_id(tmp_path: Path) -> None:
-    """For an initiative-resolved code, the milestone proposal must write
-    initiative_id (not project_id) to satisfy migration 081's
-    num_nonnulls(project_id, initiative_id) == 1 CHECK.
-    """
+def test_resolve_proposal_project_bare_slug_is_none() -> None:
+    """A numberless slug is not a workstream code (no initiatives table)."""
+    from cp_engine.ingest import _resolve_proposal_project
+    sb = _fake_supabase_for_internal_workstream()
+    assert _resolve_proposal_project(sb, "mission-control") is None
+
+
+def test_set_milestone_internal_workstream_writes_project_id(tmp_path: Path) -> None:
+    """For an internal workstream the milestone proposal writes `project_id`
+    — the one owner column since #301 (`initiative_id` is gone)."""
     tenant = _make_tenant(tmp_path)
     _scaffold_minimal_sprint_file(
-        tenant / "sprints" / "2026-W20" / "mission-control.md", "mission-control"
+        tenant / "sprints" / "2026-W20" / "1pi-9005-mission-control.md",
+        "1pi-9005-mission-control",
     )
-    sb = _fake_supabase_for_initiative(code="mission-control")
+    sb = _fake_supabase_for_internal_workstream()
     plan = {
         "projects": {
-            "mission-control": {
+            "1pi-9005-mission-control": {
                 "set-milestone": [
                     {
                         "deliverable": "Ship spine UI",
@@ -1725,22 +1670,22 @@ def test_set_milestone_initiative_writes_initiative_id(tmp_path: Path) -> None:
     )
     assert result.errors == [], result.errors
     row = _last_insert_row(sb)
-    assert row["initiative_id"] == "i1"
-    assert row.get("project_id") is None
+    assert row["project_id"] == "i1"
+    assert "initiative_id" not in row
 
 
-def test_set_client_ask_task_initiative_writes_initiative_id(tmp_path: Path) -> None:
-    """For an initiative-resolved code, the client-ask proposal must write
-    initiative_id (not project_id) to satisfy migration 081's CHECK.
-    """
+def test_set_client_ask_task_internal_workstream_writes_project_id(tmp_path: Path) -> None:
+    """For an internal workstream the client-ask proposal writes
+    `project_id` — the one owner column since #301."""
     tenant = _make_tenant(tmp_path)
     _scaffold_minimal_sprint_file(
-        tenant / "sprints" / "2026-W20" / "mission-control.md", "mission-control"
+        tenant / "sprints" / "2026-W20" / "1pi-9005-mission-control.md",
+        "1pi-9005-mission-control",
     )
-    sb = _fake_supabase_for_initiative(code="mission-control")
+    sb = _fake_supabase_for_internal_workstream()
     plan = {
         "projects": {
-            "mission-control": {
+            "1pi-9005-mission-control": {
                 "set-client-ask-task": [
                     {
                         "what": "Confirm spine UI scope",
@@ -1759,8 +1704,8 @@ def test_set_client_ask_task_initiative_writes_initiative_id(tmp_path: Path) -> 
     )
     assert result.errors == [], result.errors
     row = _last_insert_row(sb)
-    assert row["initiative_id"] == "i1"
-    assert row.get("project_id") is None
+    assert row["project_id"] == "i1"
+    assert "initiative_id" not in row
 
 
 def test_set_milestone_validates() -> None:
@@ -2361,22 +2306,22 @@ def test_ingest_risk_honors_today_for_default_date(tmp_path: Path) -> None:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _render_current_template_sprint_file(source: str = "engagement") -> str:
+def _render_current_template_sprint_file(has_agreement: bool = True) -> str:
     from cp_engine.sprints import render_sprint_scaffold
     from cp_engine.state import CarryForward, ProjectState
 
-    if source == "initiative":
+    if not has_agreement:
         project = ProjectState(
-            code="mission-control", name="Mission Control",
-            source="initiative", company_kind="self-fpsf",
+            code="1pi-9005-mission-control", name="Mission Control",
+            has_agreement=False, company_kind="self-fpsf",
             company_code="1PI", company_name="First Person",
-            status="Active", is_internal=True, owner="Tony",
+            status="Open", is_internal=True, owner="Tony",
             last_touched=None, deadline=None,
         )
     else:
         project = ProjectState(
             code="ggl-5168", name="GGL Activation",
-            source="engagement", company_kind="client",
+            has_agreement=True, company_kind="client",
             company_code="GGL", company_name="Google",
             status="Open", is_internal=False, owner="Drew",
             last_touched=None, deadline=None,
@@ -2450,7 +2395,7 @@ def test_execute_plan_targets_team_communication_in_initiative_scaffold(
     week_dir = tmp_path / "sprints" / "2026-W20"
     week_dir.mkdir(parents=True)
     sprint_path = week_dir / "mission-control.md"
-    body = _render_current_template_sprint_file("initiative")
+    body = _render_current_template_sprint_file(has_agreement=False)
     assert "_<" not in body
     sprint_path.write_text(body)
 

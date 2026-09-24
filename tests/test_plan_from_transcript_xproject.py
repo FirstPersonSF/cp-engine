@@ -20,15 +20,15 @@ def _roster() -> list[SimpleNamespace]:
     return [
         SimpleNamespace(
             code="ibx-5192", name="IBX 5192 SRS", company_name="Infoblox",
-            source="engagement",
+            has_agreement=True,
         ),
         SimpleNamespace(
             code="sap-5174", name="SAP 5174 Concur", company_name="SAP",
-            source="engagement",
+            has_agreement=True,
         ),
         SimpleNamespace(
-            code="storyos", name="StoryOS", company_name="Canonic",
-            source="initiative",
+            code="cnc-9004-storyos", name="StoryOS", company_name="Canonic",
+            has_agreement=False, company_kind="self-canonic",
         ),
     ]
 
@@ -39,7 +39,7 @@ def _roster() -> list[SimpleNamespace]:
 def test_roster_block_lists_other_projects_and_skips_self() -> None:
     block = _build_roster_block(_roster(), "ibx-5192")
     assert "`sap-5174` — SAP 5174 Concur (SAP)" in block
-    assert "`storyos` — StoryOS (Canonic) [initiative]" in block
+    assert "`cnc-9004-storyos` — StoryOS (Canonic) [initiative]" in block
     assert "ibx-5192" not in block
 
 
@@ -52,7 +52,7 @@ def test_roster_block_empty_turns_detection_off() -> None:
 
 
 def test_prompt_includes_roster_in_both_templates() -> None:
-    for code in ("ibx-5192", "storyos"):
+    for code in ("ibx-5192", "cnc-9004-storyos"):
         prompt = _build_prompt(
             transcript="t", project_context="(none)", project_code=code,
             transcript_path=Path("/tmp/t.txt"), team=("drew",),
@@ -150,14 +150,14 @@ def test_non_sprint_verbs_are_ignored() -> None:
 def test_confidence_defaults_to_medium() -> None:
     plan = _plan_with({
         "risks": [{"text": "r", "severity": "watching",
-                   "cross_project": "storyos"}],
+                   "cross_project": "cnc-9004-storyos"}],
     })
     proposals = _apply_cross_project_annotations(
         plan, project_code="ibx-5192", roster=_roster()
     )
     assert proposals[0]["confidence"] == "medium"
     assert proposals[0]["verb"] == "risks"
-    assert proposals[0]["target_code"] == "storyos"
+    assert proposals[0]["target_code"] == "cnc-9004-storyos"
 
 
 # ── generate_plan round trip ──────────────────────────────────────────

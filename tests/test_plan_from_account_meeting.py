@@ -48,7 +48,7 @@ def make_project(
     code: str,
     name: str,
     *,
-    source: str = "engagement",
+    has_agreement: bool = True,
     company_kind: str = "client",
     company_code: str | None = "GGL",
     company_name: str | None = "Google",
@@ -59,7 +59,7 @@ def make_project(
     return ProjectState(
         code=code,
         name=name,
-        source=source,  # type: ignore[arg-type]
+        has_agreement=has_agreement,
         company_kind=company_kind,  # type: ignore[arg-type]
         company_code=company_code,
         company_name=company_name,
@@ -149,7 +149,7 @@ def test_format_active_projects_includes_context_and_truncates(tmp_path: Path) -
     projects = [
         make_project("ggl-5168", "Playbooks (Activation)", summary="Storyboards in flight."),
         make_project(
-            "mission-control", "Mission Control", source="initiative",
+            "1pi-9005-mission-control", "Mission Control", has_agreement=False,
             company_kind="self-fpsf", company_code="1PI", company_name="First Person",
         ),
     ]
@@ -159,8 +159,9 @@ def test_format_active_projects_includes_context_and_truncates(tmp_path: Path) -
     assert "_Storyboards in flight._" in block
     assert "# GGL 5168" in block  # cp.md content pulled in
     assert "[... cp.md truncated ...]" in block  # capped
-    # Initiative gets the marker and, with no dir on disk, no cp.md body.
-    assert "### `mission-control` — Mission Control (initiative)" in block
+    # An internal workstream gets the derived label and, with no dir on
+    # disk, no cp.md body.
+    assert "### `1pi-9005-mission-control` — Mission Control (initiative)" in block
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -227,28 +228,26 @@ def _population() -> list[ProjectState]:
         make_project("ggl-5168", "Playbooks", status="Open"),
         make_project("ggl-5200", "Ads Refresh", status="Deal"),
         make_project("ggl-5136", "Go Safety", status="Holding"),          # inactive
+        # `is_internal` gates nothing since #301: a client-company row that
+        # carries the flag is a workstream like any other.
         make_project("ggl-9998", "Internal", status="Open", is_internal=True),
         make_project("ibx-5153", "AI Campaign", company_code="IBX",
                      company_name="Infoblox", status="Open"),
+        # Internal workstreams: `projects` rows, MC statuses, no agreement.
         make_project(
-            "mission-control", "Mission Control", source="initiative",
+            "1pi-9005-mission-control", "Mission Control", has_agreement=False,
             company_kind="self-fpsf", company_code="1PI",
-            company_name="First Person", status="Active",
+            company_name="First Person", status="Open", is_internal=True,
         ),
         make_project(
-            "market-scorecard", "Market Scorecard", source="initiative",
+            "1pi-9007-market-scorecard", "Market Scorecard", has_agreement=False,
             company_kind="self-fpsf", company_code="1PI",
-            company_name="First Person", status="On hold",               # inactive
+            company_name="First Person", status="Holding", is_internal=True,  # inactive
         ),
         make_project(
-            "storyos", "StoryOS", source="initiative",
+            "cnc-9004-storyos", "StoryOS", has_agreement=False,
             company_kind="self-canonic", company_code="CNC",
-            company_name="Canonic", status="Active",
-        ),
-        make_project(
-            "cp-engine", "cp-engine", source="repo",
-            company_kind="self-fpsf", company_code="1PI",
-            company_name="First Person", status="Active",                # repos skipped
+            company_name="Canonic", status="Open", is_internal=True,
         ),
     ]
 
@@ -256,38 +255,37 @@ def _population() -> list[ProjectState]:
 def test_list_active_for_company_filters_and_sorts(tmp_path: Path, monkeypatch) -> None:
     _stub_backend(monkeypatch, _population())
     out = list_active_for_company(make_tenant(tmp_path), "GGL")
-    assert [p.code for p in out] == ["ggl-5168", "ggl-5200"]
+    assert [p.code for p in out] == ["ggl-5168", "ggl-5200", "ggl-9998"]
 
 
 def test_list_active_for_company_is_case_insensitive(tmp_path: Path, monkeypatch) -> None:
     _stub_backend(monkeypatch, _population())
     out = list_active_for_company(make_tenant(tmp_path), "ggl")
-    assert [p.code for p in out] == ["ggl-5168", "ggl-5200"]
+    assert [p.code for p in out] == ["ggl-5168", "ggl-5200", "ggl-9998"]
 
 
 def test_list_active_for_company_initiatives_for_internal_kind(
     tmp_path: Path, monkeypatch
 ) -> None:
-    """self-fpsf companies route to active initiatives; On hold and
-    standalone repos are excluded."""
+    """A self company's active workstreams (Deal | Open); Holding is out."""
     _stub_backend(monkeypatch, _population())
     out = list_active_for_company(make_tenant(tmp_path), "1PI")
-    assert [p.code for p in out] == ["mission-control"]
+    assert [p.code for p in out] == ["1pi-9005-mission-control"]
 
 
 def test_list_active_for_scope_1p(tmp_path: Path, monkeypatch) -> None:
     _stub_backend(monkeypatch, _population())
     out = list_active_for_scope(make_tenant(tmp_path), "1p")
-    assert [p.code for p in out] == ["ggl-5168", "ggl-5200", "ibx-5153"]
+    assert [p.code for p in out] == ["ggl-5168", "ggl-5200", "ggl-9998", "ibx-5153"]
 
 
 def test_list_active_for_scope_fpsf_and_canonic(tmp_path: Path, monkeypatch) -> None:
     _stub_backend(monkeypatch, _population())
     assert [p.code for p in list_active_for_scope(make_tenant(tmp_path), "fpsf")] == [
-        "mission-control"
+        "1pi-9005-mission-control"
     ]
     assert [p.code for p in list_active_for_scope(make_tenant(tmp_path), "canonic")] == [
-        "storyos"
+        "cnc-9004-storyos"
     ]
 
 
@@ -295,7 +293,7 @@ def test_list_active_for_scope_explicit_codes(tmp_path: Path, monkeypatch) -> No
     """storyos-mc is an explicit-code scope: fixed pair, listed order."""
     _stub_backend(monkeypatch, _population())
     out = list_active_for_scope(make_tenant(tmp_path), "storyos-mc")
-    assert [p.code for p in out] == ["storyos", "mission-control"]
+    assert [p.code for p in out] == ["cnc-9004-storyos", "1pi-9005-mission-control"]
 
 
 def test_list_active_for_scope_unknown_raises(tmp_path: Path, monkeypatch) -> None:
@@ -436,9 +434,9 @@ def test_generate_sprint_planning_plan_stamps_pseudo_company(
         transcript_text="t",
         active_projects=[
             make_project(
-                "mission-control", "Mission Control", source="initiative",
+                "1pi-9005-mission-control", "Mission Control", has_agreement=False,
                 company_kind="self-fpsf", company_code="1PI",
-                company_name="First Person", status="Active",
+                company_name="First Person", status="Open", is_internal=True,
             )
         ],
         week_iso="2026-W20",

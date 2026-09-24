@@ -1,14 +1,15 @@
-"""#300 — the dual-shape reader.
+"""#300/#301 — the workstream reader, one entry kind.
 
-mc-2 migration 190 adds `projects.parent_id`, 192 merges `initiatives` into
-`projects`, 194 retires the `initiatives` table. Every installed cp surface
-has to keep working on BOTH sides of that cutover, so `read_projects` probes
-the schema once per client and picks ONE stream or THREE, and every
-`initiatives` lookup is gated on the same answer.
+mc-2 migration 190 added `projects.parent_id`, 192 merged `initiatives` into
+`projects` (keeping the initiative uuids), 194 retired the `initiatives`
+table. v0.123.x carried a dual-shape reader across that cutover; since #301
+the workstream schema is the ONLY schema: `read_projects` is one query of
+`projects`, every row comes through as the same `ProjectState` shape, and
+every owner-scoped table has exactly one owner column, `project_id`.
 
 These tests drive a fake PostgREST client that records which tables were
-queried. The control (`test_legacy_schema_reads_three_streams`) is what the
-suite looked like before #300; the workstream cases are the new contract.
+queried, so a re-introduced second read (`initiatives`, standalone `repos`)
+fails here, not in production.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from __future__ import annotations
 import pytest
 
 import cp_engine.mc2_db as mc2_db
-from cp_engine import commitments, sync_mc2
+from cp_engine import commitments
 from cp_engine.state import derive_label
 from cp_engine.sync_mc2 import MC2Backend, workstream_rows_to_states
 
@@ -50,6 +51,11 @@ class _Query:
         self._filters.append(("in", k, list(vals)))
         return self
 
+    def ilike(self, k, pattern):
+        prefix = pattern.rstrip("%").lower()
+        self._filters.append(("ilike", k, prefix))
+        return self
+
     def order(self, *a, **kw):
         return self
 
@@ -70,6 +76,8 @@ class _Query:
                 rows = [r for r in rows if r.get(k) is None]
             elif op == "in":
                 rows = [r for r in rows if r.get(k) in v]
+            elif op == "ilike":
+                rows = [r for r in rows if str(r.get(k) or "").lower().startswith(v)]
         return type("R", (), {"data": list(rows)})()
 
 
@@ -114,7 +122,8 @@ _GGL = {"code": "GGL", "name": "Google", "kind": "client"}
 _FP = {"code": "1PI", "name": "First Person", "kind": "self-fpsf"}
 
 
-def _legacy_project(**kw):
+def _ws(**kw):
+    """A workstream-schema `projects` row."""
     base = {
         "id": "p-5136",
         "number": 5136,
@@ -126,6 +135,7 @@ def _legacy_project(**kw):
         "deal_stage": "Won",
         "budget": "146250",
         "updated_at": "2026-09-01T00:00:00+00:00",
+        "parent_id": None,
         "companies": _GGL,
         "repos": [],
     }
@@ -133,87 +143,74 @@ def _legacy_project(**kw):
     return base
 
 
-def _ws(**kw):
-    """A workstream-schema row: a legacy row plus `parent_id`."""
-    row = _legacy_project()
-    row["parent_id"] = None
-    row.update(kw)
-    return row
+def _internal(**kw):
+    """An internal workstream: self company, no agreement, `is_internal` as
+    MC-2 stores it, the initiative's uuid kept by mig 192."""
+    base = dict(
+        id="i-mc",
+        number=9005,
+        full_job_name="1PI 9005 Mission Control",
+        name="Mission Control",
+        deal_stage=None,
+        budget=None,
+        is_internal=True,
+        companies=_FP,
+    )
+    base.update(kw)
+    return _ws(**base)
 
 
 # ------------------------------------------------------------------ probe
 
 
-def test_probe_reads_legacy_when_parent_id_missing():
-    c = _Client({"projects": [_legacy_project()]})
-    assert mc2_db.workstream_schema(c) is False
-    assert mc2_db.has_initiatives_table(c) is True
-
-
 def test_probe_reads_workstream_when_parent_id_present_even_if_null():
     c = _Client({"projects": [_ws()]})
     assert mc2_db.workstream_schema(c) is True
-    assert mc2_db.has_initiatives_table(c) is False
 
 
-def test_probe_reads_legacy_on_error_and_caches_per_client():
-    c = _Client({})  # no projects table at all → raises
-    assert mc2_db.workstream_schema(c) is False
-    n = len(c.calls)
-    assert mc2_db.workstream_schema(c) is False
-    assert len(c.calls) == n, "second probe must come from the cache"
+def test_probe_is_false_when_parent_id_missing_or_unreachable():
+    """False is a health answer now — a database the engine no longer
+    supports — not a second code path (the legacy reader is gone)."""
+    legacy = _Client({"projects": [{k: v for k, v in _ws().items() if k != "parent_id"}]})
+    assert mc2_db.workstream_schema(legacy) is False
+    down = _Client({})
+    assert mc2_db.workstream_schema(down) is False
+    n = len(down.calls)
+    assert mc2_db.workstream_schema(down) is False
+    assert len(down.calls) == n, "second probe must come from the cache"
+
+
+def test_the_reader_does_not_consult_the_probe():
+    """One stream, unconditionally: no probe select, no schema branch."""
+    c = _Client({"projects": [_ws()]})
+    _backend(c).read_projects(_cfg())
+    assert [cols for t, cols in c.calls if t == "projects" and cols == "id, parent_id"] == []
 
 
 # ------------------------------------------------------------------ reader
 
 
-def test_legacy_schema_reads_three_streams():
-    """CONTROL: the pre-#300 behaviour, byte-for-byte."""
-    c = _Client(
-        {
-            "projects": [_legacy_project()],
-            "repos": [],
-            "initiatives": [
-                {
-                    "id": "i-mc",
-                    "code": "mission-control",
-                    "name": "Mission Control",
-                    "status": "Active",
-                    "owner": None,
-                    "updated_at": "2026-09-01T00:00:00+00:00",
-                    "companies": _FP,
-                    "repos": [],
-                }
-            ],
-        }
-    )
-    states = _backend(c).read_projects(_cfg())
-    queried = [t for t, _ in c.calls]
-    assert queried.count("initiatives") == 1
-    assert queried.count("repos") == 1
-    by_code = {s.code: s for s in states}
-    assert by_code["mission-control"].source == "initiative"
-    assert by_code["mission-control"].status == "Active"
-    assert by_code["ggl-5136-go-safety-website"].source == "engagement"
-    assert by_code["ggl-5136-go-safety-website"].has_agreement is True
-
-
-def test_workstream_schema_reads_one_stream_and_never_touches_initiatives():
+def test_read_projects_is_one_query_of_projects_and_nothing_else():
     c = _Client(
         {
             "projects": [_ws()],
-            "initiatives": [{"id": "boom"}],  # present but must not be read
+            "initiatives": [{"id": "boom"}],  # present but must never be read
             "repos": [{"id": "boom"}],
         }
     )
     states = _backend(c).read_projects(_cfg())
     queried = [t for t, _ in c.calls]
-    assert "initiatives" not in queried
-    assert "repos" not in queried
+    assert queried == ["projects"]
     assert [s.code for s in states] == ["ggl-5136-go-safety-website"]
-    # the sync read asked for parent_id explicitly (never `*`)
-    cols = [cols for t, cols in c.calls if t == "projects"][-1]
+    # the sync read asks for parent_id explicitly (never `*`)
+    (cols,) = [cols for t, cols in c.calls]
     assert "parent_id" in cols and "*" not in cols
+
+
+def test_project_state_has_no_source_field():
+    """The one-entry-kind contract in one line: nothing can branch on it."""
+    (s,) = workstream_rows_to_states([_ws()])
+    assert not hasattr(s, "source")
 
 
 def test_workstream_rows_derive_parent_label_and_hold_back_account_node():
@@ -258,7 +255,6 @@ def test_workstream_rows_derive_parent_label_and_hold_back_account_node():
     j = by_code["ggl-5136-go-safety-website"]
     assert j.label == "job"
     assert j.parent_code == "ggl-5202-go-safety"
-    assert j.source == "engagement"
 
     # budget is NOT the agreement signal (5168: Won, no budget)
     assert by_code["ggl-5168-activation"].has_agreement is True
@@ -274,17 +270,13 @@ def test_workstream_client_job_with_missing_deal_stage_is_not_an_account_node():
     assert states[0].has_agreement is False
 
 
-def test_workstream_internal_rows_keep_the_initiative_shape_until_301():
-    mc = _ws(
-        id="i-mc",
-        number=9005,
-        full_job_name="1PI 9005 Mission Control",
-        name="Mission Control",
-        deal_stage=None,
-        budget=None,
-        is_internal=True,
+def test_internal_rows_come_through_as_mc2_stores_them():
+    """#301 retired the initiative shape: no status mapping, no clearing of
+    `is_internal`. The row is a workstream like any other; what makes it
+    internal is its SHAPE (self company, no agreement), which `label`
+    reads and the renderers branch on."""
+    mc = _internal(
         mc_status="Holding",
-        companies=_FP,
         repos=[
             {
                 "repo_name": "mc-2",
@@ -296,30 +288,27 @@ def test_workstream_internal_rows_keep_the_initiative_shape_until_301():
     )
     (s,) = workstream_rows_to_states([mc])
     assert s.code == "1pi-9005-mission-control"
-    assert s.source == "initiative"  # initiative-cp.md.j2 keeps rendering it
-    assert s.status == "On hold"  # mapped into the initiative vocabulary
-    assert s.is_internal is False  # the scaffolding loop must NOT skip it
-    assert s.label == "initiative"
+    assert s.mc2_id == "i-mc"  # the initiative uuid survives the merge
+    assert s.status == "Holding"  # the real mc_status, not "On hold"
+    assert s.is_internal is True  # as stored; gates nothing any more
+    assert s.company_kind == "self-fpsf"
     assert s.has_agreement is False
+    assert s.label == "initiative"
     assert [r.repo_name for r in s.linked_repos] == ["mc-2"]
 
 
+def test_internal_row_is_active_by_the_one_vocabulary():
+    """Deal ∪ Open is active for every workstream — `is_internal=True` does
+    not remove Mission Control from the active set."""
+    from cp_engine.status import is_active_status
+
+    (s,) = workstream_rows_to_states([_internal(mc_status="Open")])
+    assert is_active_status(s.status) is True
+
+
 def test_workstream_self_company_row_with_children_is_a_program():
-    parent = _ws(
-        id="i-mc",
-        number=9005,
-        full_job_name="1PI 9005 Mission Control",
-        deal_stage=None,
-        companies=_FP,
-    )
-    child = _ws(
-        id="i-cp",
-        number=9006,
-        full_job_name="1PI 9006 CP",
-        deal_stage=None,
-        companies=_FP,
-        parent_id="i-mc",
-    )
+    parent = _internal()
+    child = _internal(id="i-cp", number=9006, full_job_name="1PI 9006 CP", parent_id="i-mc")
     by_code = {s.code: s for s in workstream_rows_to_states([parent, child])}
     assert by_code["1pi-9005-mission-control"].label == "program"
     assert by_code["1pi-9006-cp"].label == "initiative"
@@ -355,73 +344,71 @@ def test_derive_label_first_match_wins(kind, parent, agreement, children, expect
     )
 
 
-# ------------------------------------------------------------------ gates
-
-
-def test_commitment_owner_slug_lookup_skips_initiatives_on_workstream_schema():
-    c = _Client({"projects": [_ws()]})  # no initiatives table
-    assert commitments.resolve_commitment_owner(c, "mission-control") is None
-    assert "initiatives" not in [t for t, _ in c.calls]
-
-
-def test_commitment_owner_slug_lookup_still_reads_initiatives_on_legacy():
-    c = _Client(
-        {
-            "projects": [_legacy_project()],
-            "initiatives": [{"id": "i-mc", "code": "mission-control"}],
-        }
-    )
-    owner = commitments.resolve_commitment_owner(c, "mission-control")
-    assert owner == {"id": "i-mc", "code": "mission-control", "kind": "initiative"}
+# ------------------------------------------------------------------ owners
 
 
 def test_commitment_owner_numbered_internal_code_resolves_as_project():
-    """Post-merge codes carry a number, so they resolve on the projects branch."""
-    row = _ws(id="i-mc", number=9005, full_job_name="1PI 9005 Mission Control", companies=_FP)
-    c = _Client({"projects": [row]})
+    """Post-merge codes carry a number, so they resolve on `projects` and
+    are stamped `kind="project"` — the only kind."""
+    c = _Client({"projects": [_internal()]})
     owner = commitments.resolve_commitment_owner(c, "1pi-9005-mission-control")
     assert owner == {"id": "i-mc", "code": "1pi-9005-mission-control", "kind": "project"}
+    assert [t for t, _ in c.calls] == ["projects"]
 
 
-def test_resolve_initiative_id_returns_none_without_the_table():
-    c = _Client({"projects": [_ws()]})
-    assert mc2_db._resolve_initiative_id(c, "mission-control") is None
-    assert "initiatives" not in [t for t, _ in c.calls]
+def test_commitment_owner_bare_slug_resolves_to_nothing_without_a_query():
+    """`mission-control` was an `initiatives.code`; that table is gone and
+    a numberless slug is not a workstream code, so nothing is read."""
+    c = _Client({"projects": [_internal()], "initiatives": [{"id": "boom"}]})
+    assert commitments.resolve_commitment_owner(c, "mission-control") is None
+    assert c.calls == []
 
 
-def test_resolve_project_id_uuid_branch_skips_initiatives_on_workstream_schema():
+def test_resolve_project_id_uuid_branch_reads_projects_only():
     uid = "4e39be45-0000-4000-8000-000000000001"
-    c = _Client({"projects": [_ws(id=uid)]})
+    c = _Client({"projects": [_ws(id=uid)], "initiatives": [{"id": uid}]})
     assert mc2_db._resolve_project_id(c, uid) == uid
+    assert [t for t, _ in c.calls] == ["projects"]
+
+
+def test_resolve_project_id_bare_slug_is_none():
+    """The old fall-through to an initiatives lookup is gone."""
+    c = _Client({"projects": [_internal()], "initiatives": [{"id": "boom"}]})
+    assert mc2_db._resolve_project_id(c, "mission-control") is None
     assert "initiatives" not in [t for t, _ in c.calls]
 
 
-# ------------------------------------------------------------------ owner columns (v0.123.1)
+# ------------------------------------------------------------------ owner column
 
 
-def test_owner_columns_follow_the_schema():
-    legacy = _Client({"projects": [_legacy_project()]})
+def test_owner_columns_is_project_id_whatever_the_client():
     ws = _Client({"projects": [_ws()]})
-    assert mc2_db.owner_columns(legacy) == "project_id, initiative_id"
+    down = _Client({})
+    assert mc2_db.OWNER_COLUMN == "project_id"
     assert mc2_db.owner_columns(ws) == "project_id"
+    assert mc2_db.owner_columns(down) == "project_id"
     assert mc2_db.owner_filter(ws, "x") == "project_id.eq.x"
-    assert "initiative_id.eq.x" in mc2_db.owner_filter(legacy, "x")
+    assert "initiative_id" not in mc2_db.owner_filter(down, "x")
 
 
-def test_binding_rows_never_name_initiative_id_on_workstream_schema():
-    """The first post-migration sync skipped every sources manifest: the
-    bindings read selected `initiative_id` and PostgREST answered 42703."""
+def test_binding_rows_read_one_owner_column():
+    """The first post-migration sync skipped every sources manifest because
+    the bindings read still SELECTed `initiative_id` (v0.123.1). One
+    column, one query, and the kwarg for the second owner kind is gone."""
     from cp_engine.mc2_bindings import fetch_binding_rows
 
     c = _Client(
         {
             "projects": [_ws()],
             "project_integrations": [
-                {"project_id": "p-5136", "service": "slack", "external_ref": {"id": "C1"}, "label": ""}
+                {"project_id": "p-5136", "service": "slack", "external_ref": {"id": "C1"}, "label": ""},
+                {"project_id": "i-mc", "service": "slack", "external_ref": {"id": "C9"}, "label": ""},
             ],
         }
     )
-    rows = fetch_binding_rows(c, project_ids=["p-5136"], initiative_ids=["i-mc"])
+    rows = fetch_binding_rows(c, project_ids=["p-5136", "i-mc"])
     selects = [cols for t, cols in c.calls if t == "project_integrations"]
-    assert selects and all("initiative_id" not in s for s in selects)
-    assert rows == {"p-5136": [{"project_id": "p-5136", "service": "slack", "external_ref": {"id": "C1"}, "label": ""}]}
+    assert len(selects) == 1 and "initiative_id" not in selects[0]
+    assert set(rows) == {"p-5136", "i-mc"}
+    with pytest.raises(TypeError):
+        fetch_binding_rows(c, project_ids=[], initiative_ids=["i-mc"])  # type: ignore[call-arg]

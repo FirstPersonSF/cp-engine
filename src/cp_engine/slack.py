@@ -81,16 +81,15 @@ class ChannelMapRow:
     Used for display only; the digest pipeline does NOT special-case it.
     """
 
-    code: str                              # canonical CP code (engagements: "ggl-5168"; initiatives: "mission-control")
-    name: str                              # project / initiative name
+    code: str                              # canonical CP code ("ggl-5168-activation", "1pi-9005-mission-control")
+    name: str                              # workstream name
     company_code: str                      # e.g. "GGL", "1PI", "CNC"
-    status: str                            # mc_status (Open/Deal/...) or initiative status (Active/On hold/...)
+    status: str                            # mc_status (Open/Deal/...)
     enable_slack: bool                     # per-row toggle
     channel_ids: tuple[str, ...]           # all channels, including primary
-    primary_channel_id: str | None         # legacy scalar; None for initiatives
-    primary_channel_name: str | None       # legacy scalar; None for initiatives
-    kind: str = "engagement"               # "engagement" or "initiative"
-    owner_id: str | None = None            # MC-2 uuid (projects.id / initiatives.id)
+    primary_channel_id: str | None         # legacy scalar
+    primary_channel_name: str | None       # legacy scalar
+    owner_id: str | None = None            # MC-2 uuid (projects.id)
 
 
 @dataclass(frozen=True)
@@ -174,22 +173,17 @@ class ChannelOutcome:
 
 
 def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
-    """Return ChannelMapRows for non-archived engagement projects AND initiatives.
+    """Return ChannelMapRows for every non-archived workstream.
 
-    Two streams: engagements (`projects` table, non-internal) and
-    initiatives (`initiatives` table — internal workstreams parallel to
-    engagements per docs/plans/2026-05-14-internal-initiatives.md).
+    One stream (#301): `projects`, client jobs and internal workstreams
+    alike; channel ids come from each row's bindings.
 
     Uses MC-2 directly (not the cached ProjectState from `read_projects`)
     because the Slack-mapping columns aren't part of the standard project
     sync — they're only relevant to this pipeline.
     """
     from cp_engine import mc2_db
-    from cp_engine.mc2_bindings import (
-        fetch_binding_rows,
-        hydrate_initiative_row,
-        hydrate_project_row,
-    )
+    from cp_engine.mc2_bindings import fetch_binding_rows, hydrate_project_row
     from cp_engine.sync_mc2 import _engagement_canonical_id
 
     client = mc2_db.get_client(config)
@@ -216,9 +210,10 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
         hydrate_project_row(row, project_bindings.get(row.get("id"), []))
 
     out: list[ChannelMapRow] = []
+    # Internal workstreams (Mission Control, StoryOS, …) are `projects` rows
+    # with `is_internal=True` and real Slack channels (#301) — nothing is
+    # skipped on that flag.
     for row in engagement_rows:
-        if row.get("is_internal"):
-            continue
         company = row.get("companies") or {}
         company_code = (company.get("code") or "").strip()
         number = row.get("number")
@@ -244,61 +239,11 @@ def list_channel_map(config: TenantConfig) -> list[ChannelMapRow]:
                 channel_ids=channel_ids,
                 primary_channel_id=primary,
                 primary_channel_name=row.get("slack_channel_name") or None,
-                kind="engagement",
                 owner_id=row.get("id") or None,
             )
         )
 
-    # Stream B: initiatives (internal workstreams). Channel ids come from
-    # initiative-owned bindings ('' singleton + labeled extras). Status uses
-    # the initiative vocabulary ("Active", "On hold", "Done", "Archived").
-    # On the workstream schema (#300) internal workstreams already came
-    # through Stream A as `projects` rows; there is no second table to read.
-    initiative_rows = (
-        client.schema("public")
-        .table(Tables.INITIATIVES)
-        .select(mc2_db.INITIATIVES_SLACK_COLUMNS)
-        .neq("status", "Archived")
-        .order("status")
-        .execute()
-        .data
-        or []
-    ) if mc2_db.has_initiatives_table(client) else []
-    initiative_bindings = fetch_binding_rows(
-        client.schema("public"),
-        initiative_ids=[r["id"] for r in initiative_rows if r.get("id")],
-    )
-    for row in initiative_rows:
-        hydrate_initiative_row(row, initiative_bindings.get(row.get("id"), []))
-
-    for row in initiative_rows:
-        company = row.get("companies") or {}
-        company_code = (company.get("code") or "").strip()
-        init_code = (row.get("code") or "").strip()
-        if not init_code or not company_code:
-            continue
-
-        raw_ids = row.get("slack_channel_ids") or []
-        if not isinstance(raw_ids, list):
-            raw_ids = []
-        channel_ids = tuple(c for c in raw_ids if isinstance(c, str) and c)
-
-        out.append(
-            ChannelMapRow(
-                code=init_code,
-                name=row.get("name") or "",
-                company_code=company_code,
-                status=row.get("status") or "",
-                enable_slack=bool(row.get("enable_slack")),
-                channel_ids=channel_ids,
-                primary_channel_id=None,
-                primary_channel_name=None,
-                kind="initiative",
-                owner_id=row.get("id") or None,
-            )
-        )
-
-    out.sort(key=lambda r: (r.company_code, r.kind, r.code))
+    out.sort(key=lambda r: (r.company_code, r.code))
     return out
 
 

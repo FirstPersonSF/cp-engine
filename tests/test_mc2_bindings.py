@@ -83,36 +83,3 @@ def test_clickup_folder_only_project_has_no_list():
         "id": "F1", "extra": {"folder_id": "F1"},
     })]
     assert b.hydrate_project_row({"id": "p-1"}, rows)["clickup_list_id"] is None
-
-
-def test_hydrate_initiative_row():
-    """Initiative clickup refs carry the list id as the plain ref id."""
-    rows = [
-        _binding("initiative_id", "i-1", "clickup", {"id": "L7", "extra": {"list_id": "L7"}}),
-        _binding("initiative_id", "i-1", "slack", {"id": "C1"}),
-        _binding("initiative_id", "i-1", "slack", {"id": "C2"}, label="C2"),
-    ]
-    row = b.hydrate_initiative_row({"id": "i-1"}, rows)
-    assert row["clickup_list_id"] == "L7"
-    assert row["slack_channel_ids"] == ["C1", "C2"]
-    # No folder bindings → hydrated keys present but None (mc-2 #192).
-    assert row["google_drive_folder_id"] is None
-    assert row["mc_dropbox_folder_id"] is None
-
-
-def test_hydrate_initiative_row_folder_bindings():
-    """Drive/Dropbox folder refs hydrate onto initiative rows (mc-2 #192):
-    drive id from ref `id`, dropbox folder PATH from ref `url` — the same
-    shapes hydrate_project_row consumes."""
-    rows = [
-        _binding("initiative_id", "i-1", "google_drive", {"id": "drv-9"}),
-        _binding("initiative_id", "i-1", "dropbox", {"url": "/Internal/StoryOS"}),
-    ]
-    row = b.hydrate_initiative_row({"id": "i-1"}, rows)
-    assert row["google_drive_folder_id"] == "drv-9"
-    assert row["mc_dropbox_folder_id"] == "/Internal/StoryOS"
-
-
-def test_initiative_clickup_ref_without_extra():
-    rows = [_binding("initiative_id", "i-1", "clickup", {"id": "L7"})]
-    assert b.hydrate_initiative_row({"id": "i-1"}, rows)["clickup_list_id"] == "L7"

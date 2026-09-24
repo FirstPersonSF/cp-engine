@@ -36,6 +36,7 @@ _VERBATIM = (
     "word_count_lint.py",
     "card_class.py",
     "exec_summary_lint.py",
+    "codes.py",
 )
 
 

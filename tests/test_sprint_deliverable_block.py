@@ -6,10 +6,10 @@ from cp_engine.sprints import CarryForward, render_sprint_scaffold
 from cp_engine.state import ProjectState
 
 
-def _project(source="projects"):
+def _project(has_agreement=True, company_kind="client"):
     return ProjectState(
-        code="sap-5174", name="Vision Update 2026", source=source,
-        company_kind="client", company_code="SAP", company_name="SAP Concur",
+        code="sap-5174", name="Vision Update 2026", has_agreement=has_agreement,
+        company_kind=company_kind, company_code="SAP", company_name="SAP Concur",
         status="Open", is_internal=False, owner="drew",
         last_touched=datetime(2026, 7, 11, tzinfo=timezone.utc),
         deadline=None,
@@ -49,5 +49,14 @@ def test_empty_lines_render_placeholder_not_blank_region():
 
 
 def test_initiative_scaffold_has_no_cards_region():
-    body = _render(project=_project(source="initiative"))
+    """An internal workstream — no agreement, self company — takes the
+    initiative-shaped scaffold (#301), which has no cards region."""
+    body = _render(project=_project(has_agreement=False, company_kind="self-fpsf"))
     assert "deliverable-cards" not in body
+
+
+def test_client_job_without_deal_stage_keeps_cards_region():
+    """A client row whose deal_stage was never filled is still client-side
+    work: the engagement-shaped scaffold, cards region and all."""
+    body = _render(project=_project(has_agreement=False))
+    assert "deliverable-cards" in body

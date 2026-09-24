@@ -375,7 +375,7 @@ def run_dates_loop(
     commitments = _fetch_open_commitments(client)
     by_owner: dict[str, list[dict]] = {}
     for c in commitments:
-        owner_id = c.get("project_id") or c.get("initiative_id")
+        owner_id = c.get(mc2_db.OWNER_COLUMN)
         if owner_id:
             by_owner.setdefault(owner_id, []).append(c)
 
@@ -399,7 +399,7 @@ def run_dates_loop(
         bucket = ttl_buckets.get(c["id"])
         if bucket is None:
             continue
-        owner_id = c.get("project_id") or c.get("initiative_id")
+        owner_id = c.get(mc2_db.OWNER_COLUMN)
         code = code_by_owner.get(owner_id, "?")
         if bucket == "warn":
             expire_warn.append((code, c["description"]))
@@ -408,11 +408,9 @@ def run_dates_loop(
 
     for row in rows:
         row_commitments = by_owner.get(row.owner_id, [])
-        milestones = (
-            _fetch_milestones(client, row.code)
-            if row.kind == "engagement"
-            else []
-        )
+        # Every workstream may carry an estimator schedule (#301); one with
+        # none simply yields no milestones.
+        milestones = _fetch_milestones(client, row.code)
         # Tenant rollup accumulates across ALL mapped rows, channel or not.
         for c in row_commitments:
             if not c.get("due_date"):

@@ -28,7 +28,7 @@ def _fixture_project(
     *,
     code: str = "peb",
     status: str = "Open",
-    source: str = "engagement",
+    has_agreement: bool = True,
     is_internal: bool = False,
     company_kind: str = "client",
 ) -> ProjectState:
@@ -41,13 +41,13 @@ def _fixture_project(
 
     Overridable kwargs let tests build distinguishable projects: an
     active "peb" engagement (defaults), a holding engagement (status=
-    "Holding"), or an FPSF/Canonic repo (source="repo", status="Active",
+    "Holding"), or an FPSF/Canonic repo (has_agreement=False, status="Active",
     company_kind="self-fpsf" / "self-canonic").
     """
     return ProjectState(
         code=code,
         name="Pebble Foods",
-        source=source,
+        has_agreement=has_agreement,
         company_kind=company_kind,
         company_code="PEB",
         company_name="Pebble Foods",
@@ -356,7 +356,7 @@ def test_render_sprint_scaffold_round_trips_through_parser(tmp_path: Path) -> No
     project = ProjectState(
         code="peb",
         name="Pebble Foods",
-        source="engagement",
+        has_agreement=True,
         company_kind="client",
         company_code="PEB",
         company_name="Pebble Foods",
@@ -635,25 +635,26 @@ def test_ensure_sprint_files_for_active_projects_writes_one_per_active(tmp_path)
 
 
 def test_ensure_sprint_files_includes_repo_source_active_projects(tmp_path) -> None:
-    """Regression test for v0.8.1: FPSF/Canonic projects (source="repo",
-    status="Active") were silently filtered out in v0.8.0 because the
-    orchestrator only checked `is_active_status` (MC-2 Deal/Open vocab),
-    which doesn't recognize the literal "Active" used for repos. The fix
+    """Internal workstreams (has_agreement=False, self company) speak the one
+    MC vocabulary (#301): Open gets a sprint file, Holding does not, and
+    `is_internal` gates nothing. (Historically v0.8.1: repo-source projects
+    with the literal "Active" were dropped by an `is_active_status`-only
+    check; that second vocabulary is gone.) The fix
     mirrors render.py's `is_active` rule: engagement → is_active_status
     + not internal; repo → status == "Active".
     """
     from cp_engine.sprints import ensure_sprint_files_for_active_projects
     engagement = _fixture_project(code="peb", status="Open")
     fpsf_repo = _fixture_project(
-        code="mc-2", status="Active", source="repo",
+        code="mc-2", status="Open", has_agreement=False,
         is_internal=True, company_kind="self-fpsf",
     )
     canonic_repo = _fixture_project(
-        code="storyos", status="Active", source="repo",
+        code="storyos", status="Open", has_agreement=False,
         is_internal=True, company_kind="self-canonic",
     )
     inactive_repo = _fixture_project(
-        code="lns", status="Inactive", source="repo",
+        code="lns", status="Holding", has_agreement=False,
         is_internal=True, company_kind="self-fpsf",
     )
     paths = ensure_sprint_files_for_active_projects(
@@ -853,7 +854,7 @@ def _scaffold_project() -> ProjectState:
     return ProjectState(
         code="ggl-5136",
         name="Go Safety",
-        source="engagement",
+        has_agreement=True,
         company_kind="client",
         company_code="GGL",
         company_name="Google",
@@ -1158,7 +1159,7 @@ def test_initiative_scaffold_placeholders_are_html_comments() -> None:
     project = ProjectState(
         code="mission-control",
         name="Mission Control",
-        source="initiative",
+        has_agreement=False,
         company_kind="self-fpsf",
         company_code="1PI",
         company_name="First Person",

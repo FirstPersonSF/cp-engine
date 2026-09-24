@@ -41,7 +41,6 @@ from cp_engine.render import (
     render_dropbox_md,
     render_exceptions_readme,
     render_project_strip_bodies,
-    render_repo_md,
     render_weekly_strip_bodies,
 )
 from cp_engine.state import (
@@ -98,7 +97,7 @@ def make_engagement(
     return ProjectState(
         code=code,
         name=name,
-        source="engagement",
+        has_agreement=True,
         company_kind="client",
         company_code=company_code,
         company_name=company_name,
@@ -119,7 +118,7 @@ def make_initiative(
     code: str,
     name: str,
     *,
-    status: str = "Active",
+    status: str = "Open",
     company_kind: str = "self-fpsf",
     company_code: str = "1PI",
     company_name: str = "First Person",
@@ -130,7 +129,7 @@ def make_initiative(
     return ProjectState(
         code=code,
         name=name,
-        source="initiative",
+        has_agreement=False,
         company_kind=company_kind,
         company_code=company_code,
         company_name=company_name,
@@ -143,40 +142,12 @@ def make_initiative(
         mc2_id=mc2_id,
     )
 
-
-def make_repo(
-    code: str,
-    *,
-    status: str = "Active",
-    company_kind: str = "self-fpsf",
-    company_code: str = "1PI",
-    company_name: str = "First Person",
-    description: str | None = None,
-) -> ProjectState:
-    return ProjectState(
-        code=code,
-        name=code,
-        source="repo",
-        company_kind=company_kind,
-        company_code=company_code,
-        company_name=company_name,
-        status=status,
-        is_internal=True,
-        owner=None,
-        last_touched=_TOUCHED_LAST_WEEK,
-        deadline=None,
-        github_org="FirstPersonSF",
-        repo_name=code,
-        description=description,
-    )
-
-
 def _mixed_population() -> tuple[ProjectState, ...]:
-    """Every kind × every surfaced status: pipeline deals, open client
-    engagements across two accounts, holding, closed-recent, initiatives
-    (Active on both scopes; On hold filtered), standalone repos on both
-    scopes, plus an internal engagement + archived row that must NOT
-    render."""
+    """Every shape × every surfaced status: pipeline deals, open client
+    engagements across two accounts, holding, closed-recent, internal
+    workstreams on both self scopes (Open renders; Holding is filtered), a
+    client row carrying `is_internal` (renders — the flag gates nothing
+    since #301), plus an archived row that must NOT render."""
     return (
         # Pipeline (Deal), out of stage order to exercise the stage sort.
         make_engagement(
@@ -211,26 +182,21 @@ def _mixed_population() -> tuple[ProjectState, ...]:
             company_code="IBX", company_name="Infoblox",
             last_touched=_TOUCHED_LAST_WEEK,
         ),
-        # Filtered rows: internal engagement + archived.
+        # A client row carrying `is_internal` renders; archived does not.
         make_engagement("ggl-9998", "Internal Scratch", is_internal=True),
         make_engagement("ggl-9999", "Old Archived Thing", status="Archived"),
-        # Initiatives, both scopes; On hold must not surface.
+        # Internal workstreams (merged codes, mc-2 mig 192), both scopes;
+        # Holding must not surface.
         make_initiative(
-            "mission-control", "Mission Control",
+            "1pi-9005-mission-control", "Mission Control",
             summary="Workspace IA shipped; integrations registry live.",
         ),
         make_initiative(
-            "storyos", "StoryOS", company_kind="self-canonic",
+            "cnc-9004-storyos", "StoryOS", company_kind="self-canonic",
             company_code="CNC", company_name="Canonic", owner="Drew",
             summary="Substrate design in review.",
         ),
-        make_initiative("market-scorecard", "Market Scorecard", status="On hold"),
-        # Standalone repos, both scopes.
-        make_repo("cp-engine", description="The engine behind the cp tenant."),
-        make_repo(
-            "unf-forge", company_kind="self-canonic", company_code="CNC",
-            company_name="Canonic", description="UNF prototyping forge.",
-        ),
+        make_initiative("1pi-9007-market-scorecard", "Market Scorecard", status="Holding"),
     )
 
 
@@ -431,7 +397,7 @@ def test_golden_project_cp_engagement(golden_clock) -> None:
 
 def test_golden_project_cp_initiative(golden_clock) -> None:
     project = make_initiative(
-        "mission-control", "Mission Control",
+        "1pi-9005-mission-control", "Mission Control",
         summary="Workspace IA shipped; integrations registry live.",
         mc2_id="00000000-0000-0000-0000-000000000mc2",
     )
@@ -454,20 +420,6 @@ def test_golden_account_cp(golden_clock) -> None:
     )
     out = render_account_cp("google", "Google", projects)
     assert_matches_golden("render/account-cp.md", out)
-
-
-def test_golden_repo_md(golden_clock) -> None:
-    repo = make_repo("cp-engine", description="The engine behind the cp tenant.")
-    out = render_repo_md(
-        repo,
-        local_clones_by_user={
-            "drew": "/Users/drewf/Documents/Python/cp-engine",
-            "tony": "/Users/tony/code/cp-engine",
-        },
-    )
-    assert out is not None
-    assert_matches_golden("render/repo-md.md", out)
-
 
 def test_golden_linked_repo_md(golden_clock) -> None:
     repo = LinkedRepo(

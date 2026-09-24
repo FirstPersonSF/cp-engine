@@ -11,7 +11,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from cp_engine.config import SyncConfig, TenantConfig
-from cp_engine.plan_from_transcript import _build_prompt, _is_engagement_code
+from cp_engine.plan_from_transcript import _build_prompt, _engagement_prompt_shape
 
 
 def _make_tenant_config(tenant_root: Path) -> TenantConfig:
@@ -34,28 +34,43 @@ def _make_tenant_config(tenant_root: Path) -> TenantConfig:
     )
 
 
-def test_is_engagement_code_recognizes_standard_shape() -> None:
-    assert _is_engagement_code("ggl-5168") is True
-    assert _is_engagement_code("ibx-5153") is True
-    assert _is_engagement_code("hex-5184") is True
-    assert _is_engagement_code("tel-5113") is True
-    # 4-letter prefix (rare but legal in the regex).
-    assert _is_engagement_code("aaaa-1234") is True
+def test_prompt_shape_reads_the_roster_first() -> None:
+    """The engagement prompt is a SHAPE decision (#301): a client row, or
+    any row with an agreement; an internal workstream gets the initiative
+    prompt however its code is spelled."""
+    from types import SimpleNamespace
+
+    roster = [
+        SimpleNamespace(code="ggl-5168", has_agreement=True, company_kind="client"),
+        SimpleNamespace(code="ggl-5151", has_agreement=False, company_kind="client"),
+        SimpleNamespace(
+            code="1pi-9005-mission-control", has_agreement=False, company_kind="self-fpsf"
+        ),
+        SimpleNamespace(code="1pi-9100-house-job", has_agreement=True, company_kind="self-fpsf"),
+    ]
+    assert _engagement_prompt_shape("ggl-5168", roster=roster) is True
+    assert _engagement_prompt_shape("GGL-5151", roster=roster) is True  # client, no deal_stage
+    assert _engagement_prompt_shape("1pi-9005-mission-control", roster=roster) is False
+    assert _engagement_prompt_shape("1pi-9100-house-job", roster=roster) is True
 
 
-def test_is_engagement_code_rejects_initiative_slugs() -> None:
-    assert _is_engagement_code("mission-control") is False
-    assert _is_engagement_code("storyos") is False
-    assert _is_engagement_code("first-person-website") is False
-    assert _is_engagement_code("market-scorecard") is False
+def test_prompt_shape_reads_the_working_dir_scope_without_a_roster(tmp_path: Path) -> None:
+    (tmp_path / "1p" / "google" / "ggl-5168-activation").mkdir(parents=True)
+    (tmp_path / "firstpersonsf" / "1pi-9005-mission-control").mkdir(parents=True)
+    assert _engagement_prompt_shape("ggl-5168", tenant_root=tmp_path) is True
+    assert _engagement_prompt_shape("1pi-9005-mission-control", tenant_root=tmp_path) is False
 
 
-def test_is_engagement_code_rejects_garbage() -> None:
-    assert _is_engagement_code("") is False
-    assert _is_engagement_code("ggl") is False
-    assert _is_engagement_code("GGL-5168") is False  # uppercase rejected
-    assert _is_engagement_code("ggl-XX") is False
-    assert _is_engagement_code(None) is False  # type: ignore[arg-type]
+def test_prompt_shape_defaults_to_engagement_for_any_code() -> None:
+    assert _engagement_prompt_shape("ggl-5168") is True
+    assert _engagement_prompt_shape("ibx-5153") is True
+    assert _engagement_prompt_shape("1pi-9005-mission-control") is True  # nothing else to go on
+    assert _engagement_prompt_shape("aaaa-1234") is True  # 4-letter company code
+
+
+def test_prompt_shape_rejects_bare_words_and_garbage() -> None:
+    for junk in ("mission-control", "storyos", "", "ggl", "ggl-XX", None):
+        assert _engagement_prompt_shape(junk) is False, junk  # type: ignore[arg-type]
 
 
 def test_build_prompt_engagement_keeps_client_verbs() -> None:

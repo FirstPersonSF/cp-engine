@@ -18,7 +18,7 @@ Author: cp-engine (initial scaffold)
 |---|---|
 | **Code** | `{{ project.code }}` |
 | **Status** | {{ project.status }} |
-{%- if project.source == "engagement" %}
+{%- if project.engagement_shape %}
 | **Stage** | {{ project.deal_stage or "—" }} |
 | **Budget** | {{ project.budget_short or "—" }} |
 | **Owner** | {{ project.owner or "—" }} |
@@ -139,7 +139,7 @@ _<per bootstrap v2 — pointers only, never raw research dumps>_
 
 _<durable conventions specific to this project that any AI assistant should know>_
 
-{% if project.source == "engagement" -%}
+{% if project.engagement_shape -%}
 ## Stakeholders
 
 _<key contacts on the client side and internal owners>_

@@ -93,6 +93,7 @@ def generate_plan(
         team=config.team,
         roster=roster,
         today=today,
+        tenant_root=config.root,
     )
 
     # Judgment priors (mig 139), resolved for THIS project so a per-project
@@ -304,17 +305,45 @@ def _find_project_dir(tenant_root: Path, project_code: str) -> Path | None:
     return None
 
 
-# Engagement codes match `<3-letter>-<digits>` (e.g. ggl-5168). Anything
-# else (storyos, mission-control, mc-2) is an initiative or a standalone
-# repo. We don't distinguish initiative vs. repo for prompt-shaping
-# purposes — both are "internal", neither has a client-communication
-# surface — so the boolean `is_engagement` is the only discriminator
-# that matters.
-_ENGAGEMENT_CODE_RE = re.compile(r"^[a-z]{2,4}-\d{3,5}$")
+def _initiative_shaped(p) -> bool:
+    """`render.uses_initiative_shape` for roster entries that may be loose
+    objects (tests pass SimpleNamespaces): no agreement, not a client."""
+    return (
+        not getattr(p, "has_agreement", False)
+        and getattr(p, "company_kind", "client") != "client"
+    )
 
 
-def _is_engagement_code(project_code: str) -> bool:
-    return bool(_ENGAGEMENT_CODE_RE.match(project_code or ""))
+def _engagement_prompt_shape(
+    project_code: str,
+    *,
+    roster: list | None = None,
+    tenant_root: Path | None = None,
+) -> bool:
+    """Which prompt a transcript for `project_code` gets (#301).
+
+    The engagement prompt carries the client-side verbs (`inbound`,
+    `stakeholders`); the initiative prompt drops them. The decision is the
+    project's SHAPE — `has_agreement` or under a client company — never a
+    code regex (the old `_ENGAGEMENT_CODE_RE` rejected every real slug
+    code). Read off the roster when it carries the project; otherwise off
+    the working dir's scope (`1p/` is the client scope); otherwise default
+    to the engagement prompt for anything that parses as a code.
+    """
+    from cp_engine.codes import parse_code
+
+    code_lc = (project_code or "").strip().lower()
+    for p in roster or []:
+        if (getattr(p, "code", "") or "").strip().lower() == code_lc:
+            return not _initiative_shaped(p)
+    if tenant_root is not None:
+        project_dir = _find_project_dir(tenant_root, project_code)
+        if project_dir is not None:
+            try:
+                return project_dir.relative_to(tenant_root).parts[0] == "1p"
+            except ValueError:
+                pass
+    return parse_code(project_code) is not None
 
 
 # Verbs whose items may carry a cross-project annotation (#88): the
@@ -405,7 +434,7 @@ def _build_roster_block(roster: list | None, project_code: str) -> str:
         label = f"- `{code}` — {p.name or code}"
         if getattr(p, "company_name", None):
             label += f" ({p.company_name})"
-        if getattr(p, "source", "") == "initiative":
+        if _initiative_shaped(p):
             label += " [initiative]"
         lines.append(label)
     if not lines:
@@ -425,6 +454,8 @@ def _build_prompt(
     team: tuple[str, ...] = (),
     roster: list | None = None,
     today: str | None = None,
+    tenant_root: Path | None = None,
+    engagement_shape: bool | None = None,
 ) -> str:
     # `today` anchors every date the model emits. It defaults to the wall
     # clock, but a REPLAY of an old meeting must pass that meeting's date —
@@ -440,15 +471,16 @@ def _build_prompt(
     else:
         team_block = "(No team roster declared in tenant config.)"
 
-    # Initiatives (Mission Control, StoryOS, etc.) have no client side
-    # and no external stakeholders, so the engagement-shape verbs
+    # Internal workstreams (Mission Control, StoryOS, etc.) have no client
+    # side and no external stakeholders, so the engagement-shape verbs
     # `inbound` and `stakeholders` don't apply — the prompt drops them
-    # from the schema and emphasizes decisions/risks/asks instead.
-    template = (
-        _PROMPT_TEMPLATE
-        if _is_engagement_code(project_code)
-        else _INITIATIVE_PROMPT_TEMPLATE
-    )
+    # from the schema and emphasizes decisions/risks/asks instead. Picked
+    # on SHAPE (#301), see `_engagement_prompt_shape`.
+    if engagement_shape is None:
+        engagement_shape = _engagement_prompt_shape(
+            project_code, roster=roster, tenant_root=tenant_root
+        )
+    template = _PROMPT_TEMPLATE if engagement_shape else _INITIATIVE_PROMPT_TEMPLATE
     return template.format(
         today=today,
         project_code=project_code,

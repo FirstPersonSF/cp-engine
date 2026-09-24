@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from cp_engine.state import INACTIVE_DIR_NAME
-from cp_engine.status import is_active_initiative_status, is_active_status
+from cp_engine.status import is_active_status
 
 # Body length below which an element counts as a thin stub (close-out retire
 # candidate) when it also serves nothing. Matches the audit heuristic from
@@ -213,66 +213,33 @@ def find_close_workdir(tenant_root: Path, code: str) -> tuple[Path, bool]:
 
 
 def fetch_item_status(client: Any, code: str) -> tuple[str, str | None] | None:
-    """Resolve `code` to ``(kind, status)`` from MC-2, or None if unknown.
+    """Resolve `code` to ``("project", mc_status)`` from MC-2, or None.
 
-    Same code grammar as `commitments.resolve_commitment_owner`: engagement
-    codes carry a trailing number (→ `projects.mc_status`), bare slugs are
-    initiatives (→ `initiatives.status`) with a repo fallback
-    (→ `repos.status`).
-
-    A projects-miss on the number branch FALLS THROUGH to the initiative and
-    repo lookups rather than returning None: repo slugs whose second dash-
-    segment is numeric (`mc-2`) parse as engagement numbers, and a short-
-    circuit there would make such repos permanently unresolvable.
+    Same code grammar as `commitments.resolve_commitment_owner`
+    (`cp_engine.codes.parse_code`); one table since #301.
     """
     from cp_engine.clickup_routing import engagement_number
-    from cp_engine.mc2_db import Tables, has_initiatives_table
+    from cp_engine.mc2_db import Tables
 
     number = engagement_number(code)
-    if number is not None:
-        rows = (
-            client.table(Tables.PROJECTS)
-            .select("id, number, mc_status")
-            .eq("number", number)
-            .execute()
-            .data
-        ) or []
-        if rows:
-            return "project", rows[0].get("mc_status")
-
+    if number is None:
+        return None
     rows = (
-        client.table(Tables.INITIATIVES)
-        .select("id, code, status")
-        .eq("code", code)
-        .execute()
-        .data
-        if has_initiatives_table(client)
-        else []
-    ) or []
-    if rows:
-        return "initiative", rows[0].get("status")
-
-    rows = (
-        client.table(Tables.REPOS)
-        .select("id, repo_name, status")
-        .eq("repo_name", code)
+        client.table(Tables.PROJECTS)
+        .select("id, number, mc_status")
+        .eq("number", number)
         .execute()
         .data
     ) or []
     if rows:
-        return "repo", rows[0].get("status")
+        return "project", rows[0].get("mc_status")
     return None
 
 
 def is_active_like(kind: str, status: str | None) -> bool:
-    """True when this status means "still being worked" for its kind."""
-    if kind == "project":
-        return is_active_status(status)
-    if kind == "initiative":
-        return is_active_initiative_status(status)
-    if kind == "repo":
-        return status == "Active"
-    return False
+    """True when this status means "still being worked" (one vocabulary
+    for every workstream, #301; `kind` is kept for the call signature)."""
+    return is_active_status(status)
 
 
 def fetch_live_spine_rows(client: Any, code: str) -> list[dict]:

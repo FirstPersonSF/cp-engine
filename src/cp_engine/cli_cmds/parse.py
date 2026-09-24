@@ -108,12 +108,8 @@ def list_active_projects_cmd(scope: str, company: str | None) -> None:
 
     out = []
     for p in projects:
-        if p.source == "engagement":
-            if not is_active_status(p.status) or p.is_internal:
-                continue
-        else:
-            if p.status != "Active":
-                continue
+        if not is_active_status(p.status):
+            continue
         proj_scope = scope_for(p.company_kind)
         if scope != "all" and proj_scope != scope:
             continue
@@ -128,7 +124,9 @@ def list_active_projects_cmd(scope: str, company: str | None) -> None:
                 "company_name": p.company_name,
                 "owner": p.owner,
                 "scope": proj_scope,
-                "source": p.source,
+                "label": p.label,
+                "has_agreement": p.has_agreement,
+                "parent_code": p.parent_code,
             }
         )
     out.sort(key=lambda r: (r["scope"], r["code"]))

@@ -84,12 +84,8 @@ def _build_proposal_row(*, meeting_id: str, project: dict, item: dict) -> dict:
     idempotent no-op: _write_ask's dedupe sees the matching hash and
     skips the row.
 
-    Owner column: ``clickup_task_proposals`` (post-migration 081) carries
-    BOTH ``project_id`` (FK projects) and ``initiative_id`` (FK initiatives)
-    with a ``num_nonnulls(...) == 1`` CHECK — exactly one owner. We write
-    whichever matches ``project["kind"]`` (defaulting to ``project`` for
-    callers that predate the kind field). Writing ``project_id`` for an
-    initiative would FK-crash on insert.
+    Owner column: ``project_id`` — the one owner column since mc-2 mig 192
+    / cp-engine #301 (mirrors ``cp_engine.ingest._owner_column``).
     """
     description = (item.get("description") or "").strip()
     assignee = item.get("assignee") or {}
@@ -101,11 +97,8 @@ def _build_proposal_row(*, meeting_id: str, project: dict, item: dict) -> dict:
         "recording_playback_url": item.get("recording_playback_url"),
         "cp_ask_hash": _content_hash(project["code"], "record-ask", description),
         "status": "pending",
+        "project_id": project["id"],
     }
-    if project.get("kind") == "initiative":
-        row["initiative_id"] = project["id"]
-    else:
-        row["project_id"] = project["id"]
     return row
 
 

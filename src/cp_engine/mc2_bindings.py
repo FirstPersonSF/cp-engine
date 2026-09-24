@@ -22,8 +22,7 @@ from typing import Any
 
 BINDINGS_TABLE = "project_integrations"
 
-# Owner columns come from `mc2_db.owner_columns(client)` at call time: the
-# workstream schema (mc-2 mig 192) has no `initiative_id` on this table.
+# One owner column on this table (`project_id`, mc-2 mig 192 / #301).
 _SELECT_TAIL = "service, external_ref, label"
 
 
@@ -31,38 +30,26 @@ def fetch_binding_rows(
     client: Any,
     *,
     project_ids: tuple[str, ...] | list[str] = (),
-    initiative_ids: tuple[str, ...] | list[str] = (),
 ) -> dict[str, list[dict]]:
     """Batch-fetch bindings for many owners → ``{owner_id: [rows]}``.
 
-    One query per owner kind. Non-list responses (e.g. loose test mocks)
-    collapse to "no rows" rather than crashing.
+    One query. Non-list responses (e.g. loose test mocks) collapse to "no
+    rows" rather than crashing.
     """
-    from cp_engine.mc2_db import has_initiatives_table, owner_columns
+    from cp_engine.mc2_db import OWNER_COLUMN, owner_columns
 
-    if not project_ids and not initiative_ids:
-        return {}  # nothing to fetch — and no schema probe for nothing
+    ids = list(project_ids)
+    if not ids:
+        return {}
     select = f"{owner_columns(client)}, {_SELECT_TAIL}"
-    owners: list[tuple[str, list[str]]] = [("project_id", list(project_ids))]
-    if has_initiatives_table(client):
-        owners.append(("initiative_id", list(initiative_ids)))
     out: dict[str, list[dict]] = {}
-    for owner_col, ids in owners:
-        if not ids:
-            continue
-        data = (
-            client.table(BINDINGS_TABLE)
-            .select(select)
-            .in_(owner_col, ids)
-            .execute()
-            .data
-        )
-        if not isinstance(data, list):
-            continue
-        for row in data:
-            owner = row.get(owner_col)
-            if owner:
-                out.setdefault(owner, []).append(row)
+    data = client.table(BINDINGS_TABLE).select(select).in_(OWNER_COLUMN, ids).execute().data
+    if not isinstance(data, list):
+        return out
+    for row in data:
+        owner = row.get(OWNER_COLUMN)
+        if owner:
+            out.setdefault(owner, []).append(row)
     return out
 
 
@@ -123,19 +110,3 @@ def hydrate_project_row(row: dict, binding_rows: list[dict] | None) -> dict:
     return row
 
 
-def hydrate_initiative_row(row: dict, binding_rows: list[dict] | None) -> dict:
-    """Ditto for ``initiatives`` rows (slack multi-channel + clickup list +
-    Drive/Dropbox folder coordinates for asset ingest — mc-2 #192)."""
-    _primary, all_ids = _slack_channel_ids(binding_rows)
-    row["slack_channel_ids"] = all_ids
-    row["clickup_list_id"] = _clickup_list_id(binding_rows)
-    # Same ref shapes the project hydration uses: Drive stores the folder id
-    # in `id`; the dropbox ref's `url` holds the folder PATH (or a legacy
-    # share link).
-    row["google_drive_folder_id"] = (
-        _singleton_ref(binding_rows, "google_drive").get("id") or None
-    )
-    row["mc_dropbox_folder_id"] = (
-        _singleton_ref(binding_rows, "dropbox").get("url") or None
-    )
-    return row

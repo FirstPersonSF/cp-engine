@@ -727,25 +727,13 @@ def test_resolve_project_id_full_job_name_slug_no_match_falls_through():
     assert srv._resolve_project_id(client, "ibx-5153-ai-campaign") is None
 
 
-def test_resolve_project_id_falls_back_to_initiative_code():
-    """A slug initiative code (`mission-control`) resolves via the initiatives
-    table when it matches no project.
-
-    Initiatives live in their OWN table, not `projects`; without this fallback
-    every cp-sources tool returns empty for an initiative code because both the
-    exact-`projects.code` lookup and the `<prefix>-<number>` bridge miss. The
-    initiative's id goes into spine_substance.project_id exactly like a project's.
-    """
-    store = {
-        # not a project, and `mission-control` has no trailing number to bridge
-        ("projects", frozenset([("code", "mission-control")])): [],
-        # resolves via initiatives.code
-        ("initiatives", frozenset([("code", "mission-control")])): [
-            {"id": "init-mc"}
-        ],
-    }
+def test_resolve_project_id_bare_word_is_none():
+    """A code with no job number matches nothing: every workstream carries
+    one (#301), and there is no second table to fall through to."""
+    store = {("projects", frozenset([("code", "mission-control")])): []}
     client = _FakeClient(store)
-    assert srv._resolve_project_id(client, "mission-control") == "init-mc"
+    assert srv._resolve_project_id(client, "mission-control") is None
+    assert not any(t == "initiatives" for t, _ in client.calls) if hasattr(client, "calls") else True
 
 
 def test_resolve_project_id_unknown_returns_none():
@@ -843,27 +831,15 @@ def _scope(kind="project"):
     return {"id": "own-1", "code": "ggl-5168", "kind": kind}
 
 
-def test_commitment_scope_initiative_wins(monkeypatch):
-    """Initiatives are checked FIRST so _resolve_project_id's own initiative
-    fallback can never mislabel one as a project."""
-    monkeypatch.setattr(srv, "_resolve_initiative_id", lambda c, code: "init-1")
-    monkeypatch.setattr(
-        srv, "_resolve_project_id",
-        lambda c, code: (_ for _ in ()).throw(AssertionError("must not be called")),
-    )
-    scope = srv._commitment_scope(object(), "mission-control")
-    assert scope == {"id": "init-1", "code": "mission-control", "kind": "initiative"}
-
-
-def test_commitment_scope_project_after_initiative_miss(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve_initiative_id", lambda c, code: None)
+def test_commitment_scope_is_always_project_kind(monkeypatch):
+    """One entry kind (#301): the scope dict keeps `kind` for shape
+    compatibility and it is always "project"."""
     monkeypatch.setattr(srv, "_resolve_project_id", lambda c, code: "proj-1")
-    scope = srv._commitment_scope(object(), "ggl-5168")
-    assert scope == {"id": "proj-1", "code": "ggl-5168", "kind": "project"}
+    scope = srv._commitment_scope(object(), "1pi-9005-mission-control")
+    assert scope == {"id": "proj-1", "code": "1pi-9005-mission-control", "kind": "project"}
 
 
 def test_commitment_scope_unresolved(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve_initiative_id", lambda c, code: None)
     monkeypatch.setattr(srv, "_resolve_project_id", lambda c, code: None)
     assert srv._commitment_scope(object(), "cp-engine") is None
 

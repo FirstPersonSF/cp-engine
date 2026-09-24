@@ -22,45 +22,12 @@ MC_STATUS_ACTIVE: dict[str, bool] = {
     "Archived": False,
 }
 
-# Active subset = Deal ∪ Open. Combine with is_internal=False (or whatever
-# the sync backend's equivalent boolean is) for the full Context Protocol
-# active-projects filter.
+# Active subset = Deal ∪ Open. This is THE active filter for every
+# workstream (#301): internal workstreams are `projects` rows and speak the
+# same vocabulary, and `is_internal` gates nothing.
 ACTIVE_STATUSES: tuple[str, ...] = tuple(s for s, active in MC_STATUS_ACTIVE.items() if active)
 
 
 def is_active_status(status: str | None) -> bool:
     """Return True if `status` is in the active subset (Deal or Open)."""
     return status is not None and MC_STATUS_ACTIVE.get(status, False)
-
-
-# Initiative status vocabulary (parallel to MC_STATUSES for engagements).
-# Initiatives don't go through a deal pipeline — they're either being
-# worked on, parked, finished, or hidden. Mirrors `initiatives.status`
-# CHECK constraint in the MC-2 schema.
-INITIATIVE_STATUSES = ("Active", "On hold", "Done", "Archived")
-
-INITIATIVE_STATUS_ACTIVE: dict[str, bool] = {
-    "Active": True,
-    "On hold": False,
-    "Done": False,
-    "Archived": False,
-}
-
-
-# One-to-one bridge from `mc_status` to the initiative vocabulary. On the
-# workstream schema (mc-2 mig 192, cp-engine #300) internal workstreams are
-# `projects` rows carrying `mc_status`; until the initiative-shaped renderers
-# retire (#301) their ProjectState still speaks this vocabulary, and the
-# reader maps on the way in so no `status == "Active"` check has to change.
-INITIATIVE_STATUS_FROM_MC: dict[str, str] = {
-    "Deal": "Active",
-    "Open": "Active",
-    "Holding": "On hold",
-    "Closed": "Done",
-    "Archived": "Archived",
-}
-
-
-def is_active_initiative_status(status: str | None) -> bool:
-    """Return True if `status` is in the active subset for initiatives (Active only)."""
-    return status is not None and INITIATIVE_STATUS_ACTIVE.get(status, False)

@@ -15,10 +15,10 @@ Scope mapping for `cp ingest-assets --scope <scope>`:
   - `fpsf`   → internal initiatives/repos; asset ingest is client-only → no-op.
   - `canonic`→ internal initiatives/repos; asset ingest is client-only → no-op.
 
-"Active client engagement" reuses the canonical definition the rest of the
-engine uses: an active-status engagement (`is_active_status`) with
-`is_internal=false` and `company_kind == 'client'`; "active initiative" gates on
-`is_active_initiative_status`. See `active_ingestable_codes`.
+"Active" is the one rule the rest of the engine uses (#301):
+`is_active_status` (Deal | Open). A client workstream is ingestable; a self-
+company workstream is ingestable when it carries no agreement (the internal
+workstreams). See `active_ingestable_codes`.
 """
 
 from __future__ import annotations
@@ -45,35 +45,24 @@ def build_mc2_client():
 
 
 def _is_active_engagement(p) -> bool:
-    """The canonical "active client engagement" predicate.
-
-    `source == "engagement"`, active status via `is_active_status` (the single
-    source of truth for the active vocabulary, so Holding ever joining the
-    active set flows through here for free), `is_internal=False`, and
-    `company_kind == "client"`. Kept as the SAME predicate `sync.py` and
-    `list-active-projects` use.
-    """
+    """An active workstream under a CLIENT company (`is_active_status`, the
+    single source of truth for the active vocabulary, so Holding ever
+    joining the active set flows through here for free)."""
     from cp_engine.status import is_active_status
 
-    return (
-        p.source == "engagement"
-        and is_active_status(p.status)
-        and not p.is_internal
-        and p.company_kind == "client"
-    )
+    return is_active_status(p.status) and p.company_kind == "client"
 
 
 def _is_active_initiative(p) -> bool:
-    """An ACTIVE initiative — eligible for asset ingest (Task 8).
+    """An active INTERNAL workstream — a self-company row with no
+    agreement — eligible for asset ingest (Task 8, #301)."""
+    from cp_engine.status import is_active_status
 
-    Initiatives carry their OWN active-status vocabulary (`Active` only), so we
-    gate on `is_active_initiative_status`, NOT `is_active_status` (which speaks
-    the engagement vocabulary). `is_internal`/`company_kind` don't apply — an
-    initiative is internal by construction.
-    """
-    from cp_engine.status import is_active_initiative_status
-
-    return p.source == "initiative" and is_active_initiative_status(p.status)
+    return (
+        is_active_status(p.status)
+        and p.company_kind != "client"
+        and not p.has_agreement
+    )
 
 
 def active_ingestable_codes(config) -> list[str]:

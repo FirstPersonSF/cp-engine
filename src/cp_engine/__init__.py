@@ -33,7 +33,6 @@ from cp_engine.render import (
     render_linked_repo_md,
     render_master_cp,
     render_project_cp,
-    render_repo_md,
     render_weekly_cp,
     splice_managed_region,
 )
@@ -87,7 +86,6 @@ __all__ = [
     "render_master_cp",
     "render_weekly_cp",
     "render_project_cp",
-    "render_repo_md",
     "render_linked_repo_md",
     "render_claude_md",
     "render_exceptions_readme",

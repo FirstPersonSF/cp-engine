@@ -119,7 +119,7 @@ _FOLDERS = ProjectFolders(
     enable_dropbox=True,
 )
 
-_INITIATIVE_FOLDERS = ProjectFolders(
+_INTERNAL_FOLDERS = ProjectFolders(
     project_id="init-1",
     company_id="co-9",
     company_kind="internal",
@@ -127,7 +127,7 @@ _INITIATIVE_FOLDERS = ProjectFolders(
     mc_dropbox_folder_id="/Internal",
     enable_google_drive=False,
     enable_dropbox=True,
-    is_initiative=True,
+    has_agreement=False,
 )
 
 
@@ -255,18 +255,20 @@ def test_supersede_noop_without_hash_or_priors():
     assert empty.updates == []
 
 
-def test_supersede_uses_initiative_owner_column():
+def test_supersede_uses_project_id_for_an_internal_workstream():
+    """One owner column (#301): an internal workstream supersedes through
+    `project_id` exactly like a client job."""
     client = _FakeClient(prior_rows=[_prior("a-old", "2026-06-01T00:00:00Z")])
     _supersede_same_title(
         client,
-        _INITIATIVE_FOLDERS,
+        _INTERNAL_FOLDERS,
         title="Brief.pdf",
         file_path="/tmp/new/brief.pdf",
         file_hash="newhash",
     )
     chain = client.updates[0]
-    assert chain["filters"]["initiative_id"] == "init-1"
-    assert "project_id" not in chain["filters"]
+    assert chain["filters"]["project_id"] == "init-1"
+    assert "initiative_id" not in chain["filters"]
 
 
 # ──────────────────────────────────────────────────────────────────────

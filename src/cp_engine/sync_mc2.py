@@ -1,17 +1,12 @@
-"""MC-2 sync backend — reads project + repo state from MC-2's Postgres.
+"""MC-2 sync backend — reads workstream state from MC-2's Postgres.
 
-Two source streams unified into a single tuple of ProjectStates:
-
-1. **Engagements** — `public.projects WHERE mc_status != 'Archived'`,
-   joined to `companies` for the kind/code/name. These are client work
-   tracked through MC-2's engagement lifecycle (Deal → Open → Closed).
-
-2. **Standalone repos** — `public.repos WHERE project_id IS NULL`, joined
-   to `companies` and `github_orgs`. These are code repos NOT linked to
-   a specific engagement (mc-2, storyos, unf-forge, etc.). Repos that
-   ARE linked to an engagement are intentionally excluded here — their
-   info enriches the parent engagement's project CP, not the master
-   index.
+ONE stream (#301): `public.projects WHERE mc_status != 'Archived'`, joined
+to `companies` for the kind/code/name and to `repos` on `project_id` for
+the linked-repo files. Client jobs, account and program nodes, and
+internal workstreams (Mission Control, StoryOS, …) are all rows of that
+one table; the engine tells them apart by SHAPE (`has_agreement`,
+`parent_code`, `company_kind`), never by which table they came from.
+Standalone repos no longer exist — every repo hangs off a workstream.
 
 Auth: reads `SUPABASE_URL` + `SUPABASE_SERVICE_KEY` from the environment,
 falling back to `<mc-2 clone>/backend/.env` (clone path from
@@ -21,11 +16,8 @@ rows for the master CP — RLS would otherwise filter the result.
 
 # Project identity
 
-Engagements: `<companies.code lowercased>-<projects.number>`. Legacy rows
-without `company_id` fall back to just the number.
-
-Repos: `<repos.repo_name>` directly. GitHub slugs are already lowercase
-hyphenated; no transformation needed.
+`slug(full_job_name)`: `ggl-5136-go-safety-website`,
+`1pi-9005-mission-control`. See `cp_engine.codes` for the parser.
 """
 
 from __future__ import annotations
@@ -46,117 +38,38 @@ from cp_engine.state import (
     ProjectState,
     WeeklyAllocations,
 )
-from cp_engine.status import INITIATIVE_STATUSES, MC_STATUSES
+from cp_engine.status import MC_STATUSES
 
-# Columns we read for engagement projects. Explicit list (never `*`) per
-# Drew's global rule about Supabase performance. `cached_messages` and
+# Columns we read for workstream rows. Explicit list (never `*`) per Drew's
+# global rule about Supabase performance. `cached_messages` and
 # `cached_analysis` on the projects table can be megabytes per row.
 #
-# `repos!project_id(...)` pulls the set of repos linked to this engagement
-# (those with `repos.project_id` pointing at this project). We surface them
-# via per-repo `_repo-<repo-name>.md` files in the engagement's working dir,
-# mirroring the standalone-repo `_repo.md` layout. Inactive repos are filtered
-# downstream in `_engagement_row_to_state` (PostgREST nested filters are
-# awkward; cleaner to filter in Python given the small row count).
-_ENGAGEMENT_COLUMNS = mc2_db.PROJECTS_SYNC_COLUMNS
-
-# Columns for standalone repo rows.
-_REPO_COLUMNS = mc2_db.REPOS_SYNC_COLUMNS
-
-# Columns we read for initiatives. Same `repos!initiative_id(...)` join
-# pattern as engagements use for engagement-linked repos — initiative
-# membership surfaces as `_repo-<name>.md` files under the initiative's
-# working dir.
-_INITIATIVE_COLUMNS = mc2_db.INITIATIVES_SYNC_COLUMNS
-
-_VALID_REPO_STATUSES = {"Active", "Holding", "Inactive"}
+# `repos!project_id(...)` pulls the set of repos linked to this workstream.
+# We surface them via per-repo `_repo-<repo-name>.md` files in the working
+# dir. Inactive repos are filtered downstream in `_parse_linked_repos`
+# (PostgREST nested filters are awkward; cleaner to filter in Python given
+# the small row count).
+_PROJECT_COLUMNS = mc2_db.PROJECTS_SYNC_COLUMNS
 
 
 class MC2Backend:
-    """Reads project + repo state from MC-2's Postgres."""
+    """Reads workstream state from MC-2's Postgres."""
 
     _client: Client | None = None
 
     def read_projects(self, config: TenantConfig) -> tuple[ProjectState, ...]:
         client = self._get_client(config)
-
-        # Workstream schema (mc-2 mig 190+, #300): ONE stream. Internal
-        # workstreams are `projects` rows; repos hang off `project_id`; no
-        # `initiatives` table, no standalone repos. Probed once per client so
-        # the same installed CLI works on both sides of the migration.
-        if mc2_db.workstream_schema(client):
-            rows = (
-                client.schema("public")
-                .table(Tables.PROJECTS)
-                .select(mc2_db.PROJECTS_WORKSTREAM_SYNC_COLUMNS)
-                .neq("mc_status", "Archived")
-                .order("updated_at", desc=True)
-                .execute()
-                .data
-                or []
-            )
-            return workstream_rows_to_states(rows)
-
-        # Legacy schema: three streams.
-        # Stream A: engagement projects
-        engagement_rows = (
+        rows = (
             client.schema("public")
             .table(Tables.PROJECTS)
-            .select(_ENGAGEMENT_COLUMNS)
+            .select(_PROJECT_COLUMNS)
             .neq("mc_status", "Archived")
             .order("updated_at", desc=True)
             .execute()
             .data
             or []
         )
-        engagements = tuple(
-            _engagement_row_to_state(row)
-            for row in engagement_rows
-            if _engagement_row_is_valid(row)
-        )
-
-        # Stream B: standalone repos (linked to neither an engagement nor
-        # an initiative). PostgREST: `is.null` for "<col> IS NULL". A repo
-        # with `initiative_id` set surfaces as a `_repo-<name>.md` under
-        # its initiative's working dir, NOT as a top-level standalone row.
-        repo_rows = (
-            client.schema("public")
-            .table(Tables.REPOS)
-            .select(_REPO_COLUMNS)
-            .is_("project_id", "null")
-            .is_("initiative_id", "null")
-            .neq("status", "Inactive")
-            .order("updated_at", desc=True)
-            .execute()
-            .data
-            or []
-        )
-        repos = tuple(
-            _repo_row_to_state(row) for row in repo_rows if _repo_row_is_valid(row)
-        )
-
-        # Stream C: initiatives (internal workstreams — Mission Control,
-        # StoryOS, etc.). Parallel to engagements but with `source="initiative"`.
-        # Linked repos via `repos.initiative_id` surface as `_repo-<name>.md`
-        # under the initiative's working dir, mirroring engagement-linked-repo
-        # rendering.
-        initiative_rows = (
-            client.schema("public")
-            .table(Tables.INITIATIVES)
-            .select(_INITIATIVE_COLUMNS)
-            .neq("status", "Archived")
-            .order("updated_at", desc=True)
-            .execute()
-            .data
-            or []
-        )
-        initiatives = tuple(
-            _initiative_row_to_state(row)
-            for row in initiative_rows
-            if _initiative_row_is_valid(row)
-        )
-
-        return engagements + repos + initiatives
+        return workstream_rows_to_states(rows)
 
     def read_allocations(
         self,
@@ -301,7 +214,7 @@ _read_dotenv = mc2_db._read_dotenv
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Engagement row → ProjectState
+#  Workstream row → ProjectState
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -315,7 +228,8 @@ def _engagement_row_is_valid(row: dict) -> bool:
 
 
 def _engagement_row_to_state(row: dict) -> ProjectState:
-    """Transform an engagement-projects row into a ProjectState."""
+    """Transform one `projects` row into a ProjectState (shape fields
+    `parent_code` / `label` are filled by `workstream_rows_to_states`)."""
     company = row.get("companies") or {}
     if not isinstance(company, dict):
         company = {}
@@ -324,7 +238,6 @@ def _engagement_row_to_state(row: dict) -> ProjectState:
     return ProjectState(
         code=_engagement_canonical_id(row),
         name=row.get("full_job_name") or row.get("name") or "",
-        source="engagement",
         mc2_id=row.get("id"),
         company_kind=kind,  # type: ignore[arg-type]
         company_code=company.get("code"),
@@ -366,26 +279,17 @@ def _is_account_node(row: dict, has_children: bool) -> bool:
 
 
 def workstream_rows_to_states(rows: list[dict]) -> tuple[ProjectState, ...]:
-    """Workstream-schema `projects` rows → ProjectStates (#300).
+    """`projects` rows → ProjectStates (#300, #301).
 
-    One pass builds every state through `_engagement_row_to_state`, then:
-
-    * **parent_code / label** are filled from the row set (a parent outside
-      the non-Archived read leaves `parent_code=None`; that is a parent that
-      is itself archived, and the child renders at the top of its company).
-    * **internal workstreams** (no agreement, self company) keep the
-      initiative-shaped renderers alive until #301 retires them: `source`
-      is set to `"initiative"`, `status` is mapped to the initiative
-      vocabulary, and `is_internal` is cleared so the scaffolding loop gives
-      them a working dir — exactly the contract the old
-      `_initiative_row_to_state` documented. Their `code` is already the
-      new `<co>-<number>-<slug>` form, so the dir renames on the next sync
-      through the `MC-id:` stamp.
-    * **account nodes** are excluded (see `_is_account_node`).
+    One pass builds every state through `_engagement_row_to_state`, then
+    **parent_code / label** are filled from the row set (a parent outside
+    the non-Archived read leaves `parent_code=None`; that is a parent that
+    is itself archived, and the child renders at the top of its company).
+    Internal workstreams come through exactly as MC-2 stores them — real
+    `mc_status`, `is_internal=True` — and nothing downstream maps or gates
+    on either. **Account nodes** are excluded (see `_is_account_node`).
     """
     from dataclasses import replace
-
-    from cp_engine.status import INITIATIVE_STATUS_FROM_MC
 
     valid = [r for r in rows if _engagement_row_is_valid(r)]
     by_id: dict[str, dict] = {r["id"]: r for r in valid if r.get("id")}
@@ -409,14 +313,7 @@ def workstream_rows_to_states(rows: list[dict]) -> tuple[ProjectState, ...]:
             has_agreement=state.has_agreement,
             has_children=has_children,
         )
-        changes: dict = {"parent_code": parent_code, "label": label}
-        if not state.has_agreement and state.company_kind != "client":
-            changes.update(
-                source="initiative",
-                status=INITIATIVE_STATUS_FROM_MC.get(state.status, state.status),
-                is_internal=False,
-            )
-        out.append(replace(state, **changes))
+        out.append(replace(state, parent_code=parent_code, label=label))
     return tuple(out)
 
 
@@ -479,105 +376,6 @@ def _canonical_id_from_project_join(project: dict) -> str:
     """Same shape as _engagement_canonical_id but reads from a project sub-object
     in a join result (e.g. sprint_allocations → projects → companies)."""
     return _engagement_canonical_id(project)
-
-
-# ──────────────────────────────────────────────────────────────────────
-#  Repo row → ProjectState
-# ──────────────────────────────────────────────────────────────────────
-
-
-def _repo_row_is_valid(row: dict) -> bool:
-    """Defensive: skip rows where the embedded joins came back empty."""
-    if not row.get("repo_name"):
-        return False
-    if row.get("status") not in _VALID_REPO_STATUSES:
-        return False
-    if not row.get("github_orgs") or not row.get("companies"):
-        # Inner joins in the SELECT should make this impossible, but
-        # PostgREST occasionally returns empty objects; defend.
-        return False
-    return True
-
-
-def _repo_row_to_state(row: dict) -> ProjectState:
-    """Transform a repos row into a ProjectState."""
-    org = row.get("github_orgs") or {}
-    company = row.get("companies") or {}
-    kind = company.get("kind") or "client"
-
-    return ProjectState(
-        code=row["repo_name"],
-        name=row["repo_name"],
-        source="repo",
-        mc2_id=row.get("id"),
-        company_kind=kind,  # type: ignore[arg-type]
-        company_code=company.get("code"),
-        company_name=company.get("name"),
-        status=row["status"],
-        is_internal=False,  # repos don't carry this flag
-        owner=row.get("owner") or None,
-        last_touched=_parse_iso(row.get("updated_at")),
-        deadline=None,
-        github_org=org.get("name"),
-        repo_name=row["repo_name"],
-        description=row.get("description"),
-    )
-
-
-# ──────────────────────────────────────────────────────────────────────
-#  Initiative row → ProjectState
-# ──────────────────────────────────────────────────────────────────────
-
-
-def _initiative_row_is_valid(row: dict) -> bool:
-    """Skip rows MC-2 should never produce but technically could."""
-    if not row.get("code"):
-        return False
-    if row.get("status") not in INITIATIVE_STATUSES:
-        return False
-    return True
-
-
-def _initiative_row_to_state(row: dict) -> ProjectState:
-    """Transform an initiatives row into a ProjectState with source='initiative'.
-
-    The canonical id is just `code` (no company prefix). Linked repos
-    populate `linked_repos` via the same `repos!initiative_id(...)` join
-    payload shape as engagements; the render pipeline doesn't need to
-    distinguish — engagement-vs-initiative-owned repos render the same way.
-    """
-    company = row.get("companies") or {}
-    if not isinstance(company, dict):
-        company = {}
-    kind = company.get("kind") or "self-fpsf"
-
-    return ProjectState(
-        code=(row.get("code") or "").strip(),
-        name=row.get("name") or "",
-        source="initiative",
-        mc2_id=row.get("id"),
-        company_kind=kind,  # type: ignore[arg-type]
-        company_code=company.get("code"),
-        company_name=company.get("name"),
-        status=row["status"],
-        # is_internal stays False even though initiatives are conceptually
-        # internal work. The `is_internal` boolean on ProjectState is the
-        # "skip this — it's an MC-2 pseudo-project that doesn't deserve a
-        # working dir" gate used by the scaffolding loop in sync.py.
-        # Initiatives DO deserve working dirs, so they opt out of that
-        # gate by leaving is_internal=False. Internal-vs-external is
-        # encoded by `source="initiative"` instead.
-        is_internal=False,
-        owner=row.get("owner") or None,
-        last_touched=_parse_iso(row.get("updated_at")),
-        deadline=None,
-        # Engagement-specific fields stay None for initiatives.
-        deal_stage=None,
-        budget=None,
-        dropbox_folder_url=None,
-        # Linked repos use the same payload key/shape as engagements.
-        linked_repos=_parse_linked_repos(row.get("repos")),
-    )
 
 
 # ──────────────────────────────────────────────────────────────────────
