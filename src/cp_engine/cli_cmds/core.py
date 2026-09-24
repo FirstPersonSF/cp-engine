@@ -791,3 +791,106 @@ def doctor_cmd(brief: bool) -> None:
     click.echo(health.report(findings, health.inventory(hosted=hosted)))
     if findings:
         raise SystemExit(1)
+
+
+@click.command("promote-uphill")
+@click.argument("code")
+@click.option(
+    "--commitment",
+    "commitment_id",
+    default=None,
+    help="Commitment id to copy to the parent workstream.",
+)
+@click.option(
+    "--decision",
+    "decision_ref",
+    default=None,
+    help="Decision bullet to copy: its cp:hash, or its exact text.",
+)
+@click.option("--note", default=None, help="Why it belongs one level up (kept on the step).")
+@click.option(
+    "--week",
+    "week_iso",
+    default=None,
+    help="Parent sprint week to write a decision into (default: this calendar week).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Emit the raw result dict.")
+def promote_uphill_cmd(
+    code: str,
+    commitment_id: str | None,
+    decision_ref: str | None,
+    note: str | None,
+    week_iso: str | None,
+    as_json: bool,
+) -> None:
+    """Copy a decision or commitment from CODE to its PARENT workstream (#304).
+
+    A capture lands on the workstream it was named against; the engine never
+    reads its content and decides it "sounds account-level". When an item
+    does belong one level up, this is the explicit move — and it leaves a
+    trail: a step on the parent's `Promoted uphill` spine element naming the
+    child it came from. The original stays where it was.
+
+    \b
+      --commitment <id>   copy the commitment row to the parent
+                          (source_kind='promoted', hash derived from the
+                          original's + the parent code — idempotent)
+      --decision <ref>    copy the sprint-file decision bullet into the
+                          parent's current sprint file (cp:hash or exact text)
+
+    The parent comes from `.cp-engine/paths.json`; a top-level workstream
+    has none and the command says so.
+
+    Exit codes: 0 promoted or already promoted · 1 refused · 2 config error.
+    """
+    import json as _json
+
+    from cp_engine import mc2_db
+    from cp_engine.promote_uphill import promote_uphill
+
+    if bool(commitment_id) == bool(decision_ref):
+        click.echo("Error: pass exactly one of --commitment or --decision.", err=True)
+        sys.exit(2)
+
+    try:
+        config = load(Path.cwd())
+    except ConfigError as exc:
+        click.echo(f"Error: {exc}", err=True)
+        sys.exit(2)
+
+    # A decision can be written without MC-2 (the bullet is a file); the
+    # spine step then goes unwritten and the result SAYS so. A commitment
+    # cannot — the row lives in MC-2.
+    client = mc2_db.get_client(config, required=bool(commitment_id))
+    result = promote_uphill(
+        client,
+        tenant_root=config.root,
+        code=code,
+        item_kind="commitment" if commitment_id else "decision",
+        item_ref=commitment_id or decision_ref or "",
+        note=note,
+        week_iso=week_iso,
+    )
+
+    if as_json:
+        click.echo(_json.dumps(result, indent=2, default=str))
+    elif result.get("error"):
+        click.echo(f"Error: {result['error']}", err=True)
+    else:
+        to = result.get("to") or {}
+        where = f"{to.get('code')} ({to.get('label') or 'parent'})"
+        if result.get("already"):
+            click.echo(
+                f"Already promoted to {where}: {result.get('item_kind')} "
+                f"{result.get('item_ref')}"
+            )
+        else:
+            click.echo(f"Promoted {result.get('item_kind')} {result.get('item_ref')} → {where}")
+            if result.get("sprint_path"):
+                click.echo(f"  bullet: {result['sprint_path']}")
+            step = result.get("step") or {}
+            if step.get("error") or step.get("note"):
+                click.echo(f"  step: {step.get('error') or step.get('note')}")
+            else:
+                click.echo(f"  step: position {step.get('position')} on {step.get('est_item_id')}")
+    sys.exit(1 if result.get("error") else 0)

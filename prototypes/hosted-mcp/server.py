@@ -44,7 +44,9 @@ Run:
 
 from __future__ import annotations
 
+import functools
 import importlib.util
+import inspect
 import json
 import logging
 import os
@@ -640,7 +642,7 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 19 OF THEM WRITE. The writers are the `create_*`, "
+        "MOST TOOLS READ; 20 OF THEM WRITE. The writers are the `create_*`, "
         "`set_*`, `add_*`, `promote_*`, `retire_*`, `route_*` and `capture_*` "
         "verbs — a name that sounds like a mutation is one. Every write is "
         "delegated upstream under YOUR identity; the server holds no write "
@@ -651,6 +653,12 @@ mcp_server = MCPServer(
         "are left as they were, so a status-only refresh advances the "
         "`\u00b7 updated` stamp while the rest goes stale, and the staleness "
         "check reads that stamp.\n\n"
+        "EVERY CAPTURE NAMES ITS LEVEL. A write lands on the workstream you "
+        "name in `project_code` — default to the deepest one in focus — and "
+        "the response echoes `level: {code, label, parent}`. Nothing infers "
+        "from content that an item belongs to the account or program above; "
+        "to move one up, call `promote_uphill`, which copies it to the parent "
+        "and leaves a step.\n\n"
         "TENANT SKILLS LIVE IN THE TREE TOO. A Claude Code session discovers "
         "`.claude/skills/*/SKILL.md` on its own; this client cannot, so the "
         "tree exposes them: `list_skills()` names each skill with the task "
@@ -677,6 +685,116 @@ mcp_server = MCPServer(
         required_scopes=None,  # Supabase user tokens carry no scopes
     ),
 )
+
+# ──────────────────────────────────────────────────────────────────────
+#  Level (#304) — every capture names its level
+# ──────────────────────────────────────────────────────────────────────
+#
+# Plan §3.6: a write lands on the workstream the caller NAMED, and the
+# response says where that is. Nothing here reads a capture's content and
+# decides it "sounds account-level" — moving an item up the tree is
+# `promote_uphill`, an explicit verb that leaves a step. The parent comes
+# from the engine's committed path index (`.cp-engine/paths.json`, #302),
+# read off the tree clone; this server does not import cp_engine, so the
+# reader is mirrored here (`_indexed_project_dir` reads the same file).
+
+# Mirrors `cp_engine.promote_uphill.LEVEL_RULE` — one spelling across the
+# CLI, the stdio server and this one (tests/test_promote_uphill.py pins it).
+_LEVEL_RULE = (
+    "LEVEL: writes land on the named workstream (`project_code`), and the "
+    "response echoes `level: {code, label, parent}` so you can see where it "
+    "landed. Default to the deepest workstream in focus (mode 2's loaded "
+    "project). To record something at the account or program level, name "
+    "THAT code — or call `promote_uphill` afterwards, which copies the item "
+    "to the parent and leaves a step. The level is never inferred from "
+    "content."
+)
+
+
+def _paths_index_rows() -> dict[str, dict[str, Any]]:
+    """The `workstreams` mapping of `.cp-engine/paths.json` on the tree clone,
+    or `{}` when the tree is unavailable, the file is absent, or it is not
+    the version this reader understands. Never raises — a level is an ECHO
+    on a write that already happened, and an echo must not fail the write."""
+    try:
+        usable, _reason = tree_available()
+        if not usable:
+            return {}
+        doc = json.loads((tree_root() / _PATHS_INDEX_REL).read_text(encoding="utf-8"))
+    except Exception:  # noqa: BLE001 — see docstring
+        return {}
+    if not isinstance(doc, dict) or doc.get("version") != _PATHS_INDEX_VERSION:
+        return {}
+    rows = doc.get("workstreams")
+    return rows if isinstance(rows, dict) else {}
+
+
+def _level_for(project_code: str) -> dict[str, Any]:
+    """`{code, label, parent, indexed}` for a code. Exact key first, then the
+    `<code>-` prefix form (`ibx-5153` → `ibx-5153-ai-campaign`) when unique.
+    Mirrors `cp_engine.promote_uphill.level_for`."""
+    rows = _paths_index_rows()
+    wanted = (project_code or "").strip()
+    entry = rows.get(wanted)
+    if entry is None and wanted:
+        lowered = wanted.lower()
+        hits = [(k, v) for k, v in rows.items() if k.lower().startswith(lowered + "-")]
+        if len(hits) == 1:
+            wanted, entry = hits[0]
+    if not isinstance(entry, dict):
+        return {"code": wanted, "label": None, "parent": None, "indexed": False}
+    return {
+        "code": wanted,
+        "label": entry.get("label"),
+        "parent": entry.get("parent"),
+        "indexed": True,
+    }
+
+
+def _names_its_level(fn=None, *, param: str = "project_code"):
+    """Decorate a WRITE verb so its result echoes `level` and its description
+    states the rule.
+
+    Sits UNDER `@mcp_server.tool()` so registration sees the wrapper: the
+    description gains `_LEVEL_RULE`, and every dict result that is not an
+    error gains `level: {code, label, parent, indexed}` for the code in
+    `param` (the workstream the write landed on — `to_code` for a pull,
+    `target_code` for a route). A verb that already set `level` keeps it.
+    The signature is preserved explicitly so schema introspection sees the
+    verb's real parameters, as `cp_engine.mcp_server._tool` does.
+    """
+
+    def decorate(f):
+        sig = inspect.signature(f)
+        if param not in sig.parameters:
+            raise TypeError(f"{f.__name__} has no parameter {param!r} to read a level from")
+
+        @functools.wraps(f)
+        def wrapper(*args, **kwargs):
+            result = f(*args, **kwargs)
+            if not isinstance(result, dict) or "error" in result or "level" in result:
+                return result
+            try:
+                code = sig.bind_partial(*args, **kwargs).arguments.get(param)
+            except TypeError:
+                code = None
+            if isinstance(code, str) and code.strip():
+                try:
+                    result["level"] = _level_for(code)
+                except Exception as exc:  # noqa: BLE001 — never fail the write
+                    result["level"] = {
+                        "code": code, "label": None, "parent": None,
+                        "indexed": False, "note": f"level lookup failed: {exc}",
+                    }
+            return result
+
+        wrapper.__signature__ = sig
+        wrapper.__doc__ = (f.__doc__ or "").rstrip() + "\n\n    " + _LEVEL_RULE + "\n"
+        return wrapper
+
+    return decorate(fn) if fn is not None else decorate
+
+
 
 # `spine_substance` has NO `updated_at` column (verified against the live
 # schema). The freshness signals it does carry are `synced_at` (last mirror
@@ -1679,6 +1797,7 @@ def _resolve_source_asset(
 
 
 @mcp_server.tool()
+@_names_its_level
 def archive_project_source(project_code: str, doc_title_or_id: str) -> dict[str, Any]:
     """Archive one ingested source doc — the RAG-store cleanup verb (#126),
     hosted port under the caller's identity.
@@ -1723,6 +1842,7 @@ def archive_project_source(project_code: str, doc_title_or_id: str) -> dict[str,
 
 
 @mcp_server.tool()
+@_names_its_level
 def set_source_status(
     project_code: str,
     doc_title_or_id: str,
@@ -1805,6 +1925,7 @@ def set_source_status(
 
 
 @mcp_server.tool()
+@_names_its_level
 def rename_project_source(
     project_code: str, doc_title_or_id: str, new_title: str
 ) -> dict[str, Any]:
@@ -2913,6 +3034,7 @@ def upsert_auto_step(
 
 
 @mcp_server.tool()
+@_names_its_level
 def create_spine_relation(
     project_code: str,
     kind: str,
@@ -3357,6 +3479,7 @@ def _canon_member_ids(client, project_id: str) -> list[str]:
 
 
 @mcp_server.tool()
+@_names_its_level
 def promote_to_canon(
     project_code: str,
     key: str,
@@ -3481,6 +3604,7 @@ def promote_to_canon(
 
 
 @mcp_server.tool()
+@_names_its_level
 def seal_to_deliverable(
     project_code: str,
     deliverable_key: str,
@@ -3666,6 +3790,7 @@ def seal_to_deliverable(
 
 
 @mcp_server.tool()
+@_names_its_level
 def add_spine_step(
     project_code: str,
     key: str,
@@ -3759,6 +3884,7 @@ def add_spine_step(
 
 
 @mcp_server.tool()
+@_names_its_level
 def propose_spine_step(
     project_code: str,
     key: str,
@@ -4278,6 +4404,7 @@ def _promotion_on_important_flip(
 
 
 @mcp_server.tool()
+@_names_its_level
 def promote_spine_transcript(project_code: str, key: str) -> dict[str, Any]:
     """Promote a meeting's transcript into the RAG store, so it is retrievable.
 
@@ -4384,6 +4511,7 @@ def promote_spine_transcript(project_code: str, key: str) -> dict[str, Any]:
 
 
 @mcp_server.tool()
+@_names_its_level
 def set_spine_element(
     project_code: str,
     key: str,
@@ -4713,6 +4841,7 @@ def _close_commitment_row(client, row: dict[str, Any], outcome: str) -> dict[str
 
 
 @mcp_server.tool()
+@_names_its_level
 def resolve_commitment(
     project_code: str, key: str, outcome: str = "done"
 ) -> dict[str, Any]:
@@ -4847,6 +4976,7 @@ def _resolve_commitment_batch(
 
 
 @mcp_server.tool()
+@_names_its_level
 def resolve_commitments(
     project_code: str, keys: list[str], outcome: str = "done"
 ) -> dict[str, Any]:
@@ -4908,6 +5038,7 @@ def resolve_commitments(
 
 
 @mcp_server.tool()
+@_names_its_level
 def resolve_commitments_by_meeting(
     project_code: str,
     meeting_ids: list[str],
@@ -5046,6 +5177,7 @@ def resolve_commitments_by_meeting(
 
 
 @mcp_server.tool()
+@_names_its_level
 def set_commitment_date(
     project_code: str, key: str, due_date: str, date_status: str = ""
 ) -> dict[str, Any]:
@@ -5135,6 +5267,7 @@ def set_commitment_date(
 
 
 @mcp_server.tool()
+@_names_its_level(param="target_code")
 def route_commitment(
     project_code: str, key: str, target_code: str
 ) -> dict[str, Any]:
@@ -5226,6 +5359,7 @@ def route_commitment(
 
 
 @mcp_server.tool()
+@_names_its_level
 def set_spine_step(
     project_code: str,
     key: str,
@@ -5327,6 +5461,7 @@ def set_spine_step(
 
 
 @mcp_server.tool()
+@_names_its_level
 def reorder_spine_step(
     project_code: str, key: str, order: list[str]
 ) -> dict[str, Any]:
@@ -5433,6 +5568,7 @@ def reorder_spine_step(
 
 
 @mcp_server.tool()
+@_names_its_level
 def remove_spine_step(
     project_code: str, key: str, step_id: str
 ) -> dict[str, Any]:
@@ -5552,6 +5688,7 @@ def remove_spine_step(
 
 
 @mcp_server.tool()
+@_names_its_level
 def add_element_source(
     project_code: str, key: str, source_title: str
 ) -> dict[str, Any]:
@@ -5618,6 +5755,7 @@ def add_element_source(
 
 
 @mcp_server.tool()
+@_names_its_level
 def remove_element_source(
     project_code: str, key: str, source_title: str
 ) -> dict[str, Any]:
@@ -5672,6 +5810,7 @@ def remove_element_source(
 
 
 @mcp_server.tool()
+@_names_its_level
 def add_element_provenance(
     project_code: str, key: str, source_key: str
 ) -> dict[str, Any]:
@@ -5746,6 +5885,7 @@ def add_element_provenance(
 
 
 @mcp_server.tool()
+@_names_its_level
 def remove_element_provenance(
     project_code: str, key: str, source_key: str
 ) -> dict[str, Any]:
@@ -5912,6 +6052,7 @@ def _retire_one(client, project_id: str, key: str) -> dict[str, Any]:
 
 
 @mcp_server.tool()
+@_names_its_level
 def retire_spine_element(project_code: str, key: str) -> dict[str, Any]:
     """Retire a spine element — remove it from the live spine, keeping history.
 
@@ -6036,6 +6177,7 @@ def _keys_carrying_edges(
 
 
 @mcp_server.tool()
+@_names_its_level
 def retire_spine_elements(
     project_code: str,
     keys: list[str],
@@ -6148,6 +6290,7 @@ def retire_spine_elements(
 
 
 @mcp_server.tool()
+@_names_its_level
 def retire_spine_relation(
     project_code: str, kind: str, from_key: str, to_key: str
 ) -> dict[str, Any]:
@@ -6360,6 +6503,7 @@ def _set_account_scope(
 
 
 @mcp_server.tool()
+@_names_its_level
 def promote_stakeholder(project_code: str, key: str) -> dict[str, Any]:
     """Promote a project's stakeholder element to ACCOUNT scope.
 
@@ -6407,6 +6551,7 @@ def promote_stakeholder(project_code: str, key: str) -> dict[str, Any]:
 
 
 @mcp_server.tool()
+@_names_its_level
 def demote_stakeholder(project_code: str, key: str) -> dict[str, Any]:
     """Remove an element from ACCOUNT scope — the inverse of promote_stakeholder.
 
@@ -6435,6 +6580,7 @@ def demote_stakeholder(project_code: str, key: str) -> dict[str, Any]:
 
 
 @mcp_server.tool()
+@_names_its_level
 def set_element_account_scope(
     project_code: str, key: str, account: bool = True
 ) -> dict[str, Any]:
@@ -6464,6 +6610,7 @@ def set_element_account_scope(
 
 
 @mcp_server.tool()
+@_names_its_level
 def create_note(
     project_code: str,
     body: str,
@@ -6557,6 +6704,7 @@ def create_note(
 
 
 @mcp_server.tool()
+@_names_its_level
 def create_commitment(
     project_code: str,
     description: str,
@@ -6682,6 +6830,7 @@ def create_commitment(
 
 
 @mcp_server.tool()
+@_names_its_level
 def create_spine_element(
     project_code: str,
     framing: str,
@@ -6853,6 +7002,7 @@ def create_spine_element(
 
 
 @mcp_server.tool()
+@_names_its_level
 def add_spine_version(
     project_code: str,
     element_id: str,
@@ -7014,6 +7164,7 @@ def add_spine_version(
 
 
 @mcp_server.tool()
+@_names_its_level(param="to_code")
 def pull_element_from_project(
     from_code: str, to_code: str, key: str, type: str = "synthesis",
     account: bool = False,
@@ -7085,6 +7236,7 @@ def pull_element_from_project(
 
 
 @mcp_server.tool()
+@_names_its_level
 def add_spine_document(
     project_code: str,
     label: str,
@@ -8915,6 +9067,7 @@ def log_improvement(area: str, observation: str) -> dict[str, Any]:
 
 
 @mcp_server.tool()
+@_names_its_level
 def capture_session(
     project_code: str, summary: str, when: str | None = None
 ) -> dict[str, Any]:
@@ -8979,6 +9132,7 @@ def capture_session(
 
 
 @mcp_server.tool()
+@_names_its_level
 def capture_project_state(
     project_code: str,
     status: str | None = None,
@@ -9123,6 +9277,7 @@ def capture_project_state(
 
 
 @mcp_server.tool()
+@_names_its_level
 def record_round(
     project_code: str,
     element_id: str,
@@ -9195,6 +9350,311 @@ def record_round(
             "are in its body under 'Killed this round'. Read them before the "
             "next pass."
         ),
+    }
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  promote_uphill (#304) — the explicit move up the tree
+# ──────────────────────────────────────────────────────────────────────
+
+# Mirrors `cp_engine.promote_uphill` (constants + hash) — copied, not
+# imported; tests/test_promote_uphill.py pins the hash and the est_item_id.
+_PROMOTIONS_LABEL = "Promoted uphill"
+_PROMOTIONS_EST_ITEM_ID = "_authored/promoted-uphill"
+_PROMOTIONS_BODY = (
+    "Items promoted from child workstreams by `promote_uphill` / "
+    "`cxp promote-uphill`. Each promotion is one step on this element's "
+    "trail, naming the child it came from. The level of a capture is never "
+    "inferred from its content — a promotion is always someone's explicit "
+    "call, and this is where those calls are recorded."
+)
+_SOURCE_KIND_PROMOTED = "promoted"
+_TITLE_EXCERPT_CHARS = 80
+_COMMITMENT_COPY_COLUMNS = (
+    "id, project_id, status, cp_hash, description, owner_email, owner_name, "
+    "direction, due_date, work_item_id, work_item_kind, spine_element_id, "
+    "source_meeting_id"
+)
+
+
+def _promoted_hash(original: str, parent_code: str) -> str:
+    """The copy's `cp_hash`: the ORIGINAL's identity plus the parent code, so
+    the same item promoted twice collides and the same text on two children
+    does not. Byte-identical to `cp_engine.promote_uphill.promoted_hash`."""
+    import hashlib
+
+    raw = f"promote-uphill|{original}|{parent_code}".encode()
+    return hashlib.sha256(raw).hexdigest()[:8]
+
+
+def _promotion_step_title(child_code: str, text: str) -> str:
+    excerpt = " ".join((text or "").split())
+    if len(excerpt) > _TITLE_EXCERPT_CHARS:
+        excerpt = excerpt[:_TITLE_EXCERPT_CHARS].rstrip() + "…"
+    return f"Promoted from {child_code}: {excerpt}"
+
+
+def _ensure_promotions_element(
+    client, parent_scope: dict[str, Any], subject: str
+) -> dict[str, Any] | None:
+    """Create the parent's `Promoted uphill` element if it has none (the
+    `create_spine_element` row shape, `author_id` = caller as the INSERT
+    policy requires). Returns an error dict, or None when the element exists."""
+    existing = (
+        client.table("spine_substance")
+        .select("est_item_id")
+        .eq("project_id", parent_scope["id"])
+        .eq("est_item_id", _PROMOTIONS_EST_ITEM_ID)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if existing:
+        return None
+    now = datetime.now(timezone.utc)
+    row = {
+        "id": f"{parent_scope['project_code']}/{_PROMOTIONS_EST_ITEM_ID}/v1",
+        "project_id": parent_scope["id"],
+        "project_code": parent_scope["project_code"],
+        "est_item_id": _PROMOTIONS_EST_ITEM_ID,
+        "est_item_kind": None,
+        "phase": None,
+        "binding": "unbound",
+        "layer": canon_layer("note"),
+        "placement": "context",
+        "serves": [],
+        "version_label": "v1",
+        "version_date": now.date().isoformat(),
+        "status": "live",
+        "framing": _PROMOTIONS_LABEL,
+        "body": _PROMOTIONS_BODY,
+        "sources": [],
+        "origin": "authored",
+        "version_note": None,
+        "rel_path": None,
+        "important": False,
+        "note": "engine-managed trail: one step per promote_uphill",
+        "author_id": subject,
+    }
+    try:
+        client.table("spine_substance").insert(row).execute()
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "error": "could not create the parent's trail element: "
+            f"{type(exc).__name__}: {str(exc)[:300]}"
+        }
+    return None
+
+
+@mcp_server.tool()
+@_names_its_level
+def promote_uphill(
+    project_code: str,
+    item_kind: str,
+    item_ref: str,
+    note: str | None = None,
+) -> dict[str, Any]:
+    """Copy a commitment from `project_code` to its PARENT workstream, leaving a step.
+
+    THE EXPLICIT MOVE UP THE TREE (plan §3.6). A capture lands on the
+    workstream it was named against, and nothing infers from its content
+    that it belongs higher — so when a commitment recorded on a job turns
+    out to be the account's or the program's, THIS is how it gets there.
+    The parent is read from `.cp-engine/paths.json`; a top-level workstream
+    has no parent and the call says "no parent".
+
+    `item_kind='commitment'`, `item_ref=<commitment id>`: a COPY is inserted
+    on the parent (`project_id` = parent, `source_kind='promoted'`, `cp_hash`
+    derived from the original's hash + the parent code); the original stays
+    where it was. A step lands on the parent's `Promoted uphill` spine
+    element — "Promoted from <code>: <first 80 chars>", provenance in the
+    note — so the parent's trail says where it came from. Idempotent: the
+    same commitment again returns `already: true` and writes nothing.
+
+    `item_kind='decision'` is NOT served here: a decision is a sprint-file
+    bullet and this server holds no file write (the mc-2 → webhook route it
+    delegates through carries session and Exec Summary captures only). The
+    call returns `unsupported_here` and the CLI form to run instead:
+    `cxp promote-uphill <code> --decision <cp:hash or exact text>`.
+
+    Args:
+        project_code: the CHILD workstream the item is on today.
+        item_kind: commitment | decision.
+        item_ref: the commitment id (or, for a decision, its cp:hash / text).
+        note: why it belongs one level up — kept on the step.
+    """
+    kind = (item_kind or "").strip().lower()
+    if kind not in ("decision", "commitment"):
+        return {"error": "item_kind must be one of ['decision', 'commitment']"}
+    if kind == "decision":
+        return {
+            "ok": False,
+            "unsupported_here": True,
+            "item_kind": "decision",
+            "reason": (
+                "a decision is a sprint-file bullet and this server cannot write "
+                "files — run `cxp promote-uphill "
+                f"{project_code} --decision {item_ref!r}` from a checkout (it "
+                "copies the bullet into the parent's current sprint file and "
+                "leaves the same step)"
+            ),
+        }
+
+    ref = (item_ref or "").strip()
+    if not ref:
+        return {"error": "item_ref is required: the commitment id"}
+
+    client = user_client()
+    subject = caller_subject()
+    if not subject:
+        return {"error": "no authenticated caller in context"}
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    level = _level_for(project_code)
+    if not level["indexed"]:
+        return {
+            "error": (
+                f"{project_code!r} is not in {_PATHS_INDEX_REL} on the tenant tree — "
+                "the index is written by `cxp sync`; check the code or sync first"
+            ),
+            "level": level,
+        }
+    parent_code = level.get("parent")
+    if not parent_code:
+        return {
+            "error": (
+                f"no parent: {level['code']} is a top-level workstream "
+                f"({level.get('label') or 'unlabelled'}); there is nowhere "
+                "uphill to promote to"
+            ),
+            "level": level,
+        }
+    parent_level = _level_for(parent_code)
+    parent_scope = resolve_write_scope(client, parent_code)
+    if parent_scope is None:
+        return {"error": f"MC-2 resolves no project for parent {parent_code!r}"}
+
+    audit_args = {"project_code": project_code, "item_kind": kind, "item_ref": ref}
+    try:
+        rows = (
+            client.table("commitments")
+            .select(_COMMITMENT_COPY_COLUMNS)
+            .eq("id", ref)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"commitment lookup failed: {type(exc).__name__}: {str(exc)[:300]}"}
+    if not rows:
+        audit(client, "promote_uphill", audit_args, 0)
+        return {"error": f"no commitment with id {ref!r} (or not visible to you)"}
+    row = rows[0]
+    if str(row.get("project_id")) != str(scope["id"]):
+        audit(client, "promote_uphill", audit_args, 0)
+        return {
+            "error": (
+                f"commitment {ref} is not on {level['code']} — promote it from "
+                "the workstream that owns it"
+            )
+        }
+
+    new_hash = _promoted_hash(row.get("cp_hash") or row["id"], parent_code)
+    base: dict[str, Any] = {
+        "ok": True,
+        "item_kind": "commitment",
+        "item_ref": ref,
+        "from": level,
+        "to": parent_level,
+        "level": parent_level,
+        "cp_hash": new_hash,
+        "caller": subject,
+    }
+    dup = (
+        client.table("commitments")
+        .select("id")
+        .eq("cp_hash", new_hash)
+        .limit(1)
+        .execute()
+        .data
+        or []
+    )
+    if dup:
+        audit(client, "promote_uphill", audit_args, 0)
+        return {**base, "promoted": False, "already": True, "commitment_id": dup[0].get("id")}
+
+    copy = {
+        "description": row.get("description") or "",
+        "owner_email": row.get("owner_email"),
+        "owner_name": row.get("owner_name"),
+        "direction": row.get("direction") or "internal",
+        "due_date": row.get("due_date"),
+        "date_status": "proposed",
+        "work_item_id": row.get("work_item_id"),
+        "work_item_kind": row.get("work_item_kind"),
+        "spine_element_id": row.get("spine_element_id"),
+        "status": "open",
+        "source_kind": _SOURCE_KIND_PROMOTED,
+        "source_meeting_id": row.get("source_meeting_id"),
+        "cp_hash": new_hash,
+        "project_id": parent_scope["id"],
+    }
+    try:
+        inserted = client.table("commitments").insert(copy).execute()
+    except Exception as exc:  # noqa: BLE001
+        audit(client, "promote_uphill", audit_args, 0)
+        return {"error": f"insert failed: {type(exc).__name__}: {str(exc)[:400]}"}
+    created = (inserted.data or [{}])[0]
+
+    # The trail: one step on the parent's `Promoted uphill` element.
+    step: dict[str, Any]
+    err = _ensure_promotions_element(client, parent_scope, subject)
+    if err is not None:
+        step = err
+    else:
+        existing = read_steps(client, parent_scope["id"], _PROMOTIONS_EST_ITEM_ID)
+        position = next_step_position(existing)
+        provenance = f"commitment {ref} promoted from {level['code']}"
+        if note and note.strip():
+            provenance += f" — {note.strip()}"
+        try:
+            made = (
+                client.table("spine_steps")
+                .insert(
+                    {
+                        "project_id": parent_scope["id"],
+                        "est_item_id": _PROMOTIONS_EST_ITEM_ID,
+                        "position": position,
+                        "title": _promotion_step_title(level["code"], row.get("description") or ""),
+                        "status": "done",
+                        "step_date": date.today().isoformat(),
+                        "note": provenance,
+                    }
+                )
+                .execute()
+            )
+            step = {
+                "est_item_id": _PROMOTIONS_EST_ITEM_ID,
+                "step_id": ((made.data or [{}])[0]).get("id"),
+                "position": position,
+            }
+        except Exception as exc:  # noqa: BLE001
+            step = {
+                "error": "the copy landed but the step did not: "
+                f"{type(exc).__name__}: {str(exc)[:300]}"
+            }
+
+    audit(client, "promote_uphill", audit_args, 1)
+    return {
+        **base,
+        "promoted": True,
+        "already": False,
+        "commitment_id": created.get("id"),
+        "step": step,
     }
 
 
