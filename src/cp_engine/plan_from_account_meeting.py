@@ -1,19 +1,27 @@
-"""Generate a `cp ingest` plan from an account-meeting transcript.
+"""Generate a `cp ingest` plan from a parent-workstream meeting transcript.
 
-This is the engine half of Phase D.4 (account meetings). The cp-engine-
-webhook's /api/auto-ingest-account endpoint calls into `generate_account_plan()`
-when a Fathom meeting has been tagged as an account meeting for a specific
-company.
+This is the engine half of Phase D.4 (account meetings), re-keyed on the
+workstream tree (#305, plan §3.7). The cp-engine-webhook's
+/api/auto-ingest-account endpoint calls `generate_account_plan()` when a
+Fathom meeting has been tagged to a workstream that HAS CHILDREN — an
+account node (`ggl-5216-google`) or a program. "Account meeting" means
+exactly that: a meeting tagged to a node with children.
 
 Difference from `plan_from_transcript`: instead of one project's context,
-the prompt loads ALL active projects for the company (engagements for
-client companies, initiatives for self-fpsf/self-canonic) and asks Claude
-to route content per-project in a single pass. Output is a multi-project
-plan that the existing `cp_engine.ingest.execute_plan` can consume,
-plus an `account_summary` block (paragraph) and the existing
-`account_decisions` block (one-liners).
+the prompt loads every active workstream BELOW the node (`list_active_
+subtree`) and asks Claude to route content per-child in a single pass.
+Output is a multi-project plan `cp_engine.ingest.execute_plan` consumes,
+plus an `account_summary` paragraph (→ the node's sprint file) and
+`account_decisions` one-liners (→ the node's `cp.md`).
 
-See `cp/docs/plans/2026-05-14-account-meetings.md` for the full design.
+Sprint-planning scopes (`1p`, `fpsf`, `canonic`, `storyos-mc`) keep their
+per-child fan-out; their summary goes to `sprints/<W##>/_week.md` and their
+decisions to master-cp.md's hand-written cross-cutting section (D8). No
+pseudo-company exists any more.
+
+See `cp/docs/plans/2026-05-14-account-meetings.md` for the original design
+and `cp/docs/plans/2026-09-24-company-workstream-implementation-plan.md`
+§3.7 for the tree form.
 """
 
 from __future__ import annotations
@@ -37,7 +45,13 @@ from cp_engine.plan_from_transcript import (
     _load_recent_account_decisions,
 )
 from cp_engine.sprints import current_sprint_week_iso
-from cp_engine.state import ProjectState, derive_label
+from cp_engine.codes import parse_code
+from cp_engine.state import (
+    ProjectState,
+    descendants_of,
+    display_name,
+    effective_label,
+)
 
 log = logging.getLogger(__name__)
 
@@ -77,7 +91,9 @@ class AccountPlanError(Exception):
 class GeneratedAccountPlan:
     plan: dict
     raw_response: str
-    company_code: str
+    # The workstream the meeting was tagged to (the parent node), or the
+    # `sprint-planning:<scope>` key for a scope meeting.
+    code: str
     meeting_id: str
     project_codes: tuple[str, ...]
     model: str
@@ -86,42 +102,45 @@ class GeneratedAccountPlan:
 def generate_account_plan(
     *,
     config: TenantConfig,
-    company_code: str,
+    code: str,
     meeting_id: str,
     transcript_text: str,
     active_projects: list[ProjectState],
+    node: ProjectState | None = None,
     week_iso: str | None = None,
     model: str = "claude-opus-4-8",
     api_key: str | None = None,
 ) -> GeneratedAccountPlan:
-    """Generate the account-meeting plan via one Claude call.
+    """Generate the parent-workstream meeting plan via one Claude call.
 
-    `active_projects` is the list of ProjectStates the webhook fetched
-    via _list_active_for_company — engagements for client companies,
-    initiatives for self-fpsf/self-canonic. Each gets its compact context
-    in the prompt; Claude routes per-project verbs based on transcript
-    relevance, then emits one tenant-wide account_summary paragraph.
+    `code` is the NODE the meeting was tagged to (an account or program —
+    any workstream with children); `active_projects` is its active subtree
+    from `list_active_subtree` (the node itself excluded). Each child gets
+    its compact context in the prompt; Claude routes per-child verbs on
+    transcript relevance, then emits one `account_summary` paragraph for
+    the node and optional `account_decisions` for the node's `cp.md`. Both
+    are stamped with `code` here, so the executor never has to guess.
 
-    `week_iso` defaults to the current sprint week if not passed; account
-    meetings always run live so we don't usually need to override it.
+    `node` (when the caller has it) names the level in the prompt with the
+    reference-style name; `week_iso` defaults to the current sprint week.
     """
     if not active_projects:
         raise AccountPlanError(
-            f"company {company_code!r} has no active projects to route to"
+            f"workstream {code!r} has no active children to route to"
         )
 
     week = week_iso or current_sprint_week_iso(datetime.now())
 
     transcript = _truncate_transcript(
-        transcript_text, context=f"account-plan {company_code}"
+        transcript_text, context=f"account-plan {code}"
     )
 
     project_block = _format_active_projects(config, active_projects)
-    account_decisions_context = _load_recent_account_decisions(config.root)
+    account_decisions_context = _load_recent_account_decisions(config.root, code=code)
 
     prompt = _build_account_prompt(
-        company_code=company_code,
-        company_label=_company_label(active_projects),
+        code=code,
+        node_label=_node_label(node, active_projects),
         week=week,
         active_projects_block=project_block,
         account_decisions_context=account_decisions_context,
@@ -146,24 +165,10 @@ def generate_account_plan(
             f"Claude returned a non-mapping plan: {type(plan).__name__}"
         )
 
-    # Inject company + week into account_summary if Claude omitted them.
-    # The webhook always knows both — no need to depend on prompt
-    # adherence for these two values (mirrors plan_from_slack pattern).
-    summary = plan.get("account_summary")
-    if isinstance(summary, dict):
-        summary.setdefault("company", company_code.lower())
-        summary.setdefault("week", week)
-    elif isinstance(summary, list):
-        for item in summary:
-            if isinstance(item, dict):
-                item.setdefault("company", company_code.lower())
-                item.setdefault("week", week)
-
-    # Same defensive injection for account_decisions: stamp the company
-    # code so Claude doesn't need to know it.
-    for ad in plan.get("account_decisions") or []:
-        if isinstance(ad, dict):
-            ad.setdefault("company", company_code.lower())
+    # Stamp the node code + week onto account_summary; the webhook knows
+    # both, so nothing depends on prompt adherence (mirrors plan_from_slack).
+    # The level is NAMED here, never inferred from content (#304).
+    _stamp_level(plan, code=code, week=week)
 
     try:
         _validate_plan(plan)
@@ -174,26 +179,47 @@ def generate_account_plan(
     return GeneratedAccountPlan(
         plan=plan,
         raw_response=response_text,
-        company_code=company_code,
+        code=code,
         meeting_id=meeting_id,
         project_codes=project_codes,
         model=model,
     )
 
 
+def _stamp_level(
+    plan: dict, *, week: str, code: str | None = None, scope: str | None = None
+) -> None:
+    """Write the level every account-level item lands on: `code` (the node)
+    or `scope` (a sprint-planning meeting), plus the week on summaries. A
+    stale `company` key from an old plan is dropped — it names nothing
+    now."""
+    key, value = ("code", code) if code else ("scope", scope)
+    summary = plan.get("account_summary")
+    items = summary if isinstance(summary, list) else [summary]
+    for item in items:
+        if isinstance(item, dict):
+            item.pop("company", None)
+            item[key] = value
+            item.setdefault("week", week)
+    for ad in plan.get("account_decisions") or []:
+        if isinstance(ad, dict):
+            ad.pop("company", None)
+            ad[key] = value
+
+
 def _format_active_projects(
     config: TenantConfig, projects: list[ProjectState]
 ) -> str:
-    """Render the active project list with each project's compact context."""
+    """Render the active project list with each project's compact context.
+
+    The header carries the derived label word for every non-job (`program`,
+    `initiative`, `account`) — the same word `master-cp.md` shows — so the
+    model reads the level, not a type name."""
+    by_code = {p.code: p for p in projects}
     parts: list[str] = []
     for p in projects:
         header = f"### `{p.code}` — {p.name}"
-        label = p.label or derive_label(
-            company_kind=p.company_kind,
-            parent_code=p.parent_code,
-            has_agreement=p.has_agreement,
-            has_children=False,
-        )
+        label = effective_label(p, by_code)
         if label != "job":
             header += f" ({label})"
         parts.append(header)
@@ -215,20 +241,26 @@ def _format_active_projects(
     return "\n".join(parts)
 
 
-def _company_label(active_projects: list[ProjectState]) -> str:
-    """Friendly label for the company. Pulled from the first project's
-    company_name, or the company_code as fallback. Used in the prompt
-    header for human-readability."""
+def _node_label(
+    node: ProjectState | None, active_projects: list[ProjectState]
+) -> str:
+    """The human name of the level the meeting was tagged to: the node's
+    reference-style name (an account or program is its name alone), else
+    the children's company name, else the company code."""
+    if node is not None:
+        return display_name(node)
     for p in active_projects:
         if p.company_name:
             return p.company_name
-    return active_projects[0].company_code or "(unknown)"
+    if active_projects and active_projects[0].company_code:
+        return active_projects[0].company_code
+    return "(unknown)"
 
 
 def _build_account_prompt(
     *,
-    company_code: str,
-    company_label: str,
+    code: str,
+    node_label: str,
     week: str,
     active_projects_block: str,
     account_decisions_context: str,
@@ -247,7 +279,8 @@ def _build_account_prompt(
 
     if account_decisions_context:
         decisions_block = (
-            "### Recent account-level decisions (already in weekly-cp.md)\n\n"
+            "### Recent account-level decisions (already recorded on this "
+            "workstream or above it)\n\n"
             "Don't re-emit these as either project-level decisions OR new "
             "account_decisions; the system already knows them.\n\n"
             + account_decisions_context
@@ -258,8 +291,8 @@ def _build_account_prompt(
     return _PROMPT_TEMPLATE.format(
         today=today,
         week=week,
-        company_code=company_code.lower(),
-        company_label=company_label,
+        code=code,
+        node_label=node_label,
         active_projects_block=active_projects_block,
         decisions_block=decisions_block,
         team_block=team_block,
@@ -268,15 +301,16 @@ def _build_account_prompt(
 
 
 _PROMPT_TEMPLATE = """\
-You are extracting structured updates from an ACCOUNT-LEVEL meeting
-transcript — a weekly sync that touches multiple projects under a
-single client (or internal team). Your output is a YAML plan that
-`cp ingest` will execute against the tenant.
+You are extracting structured updates from a PARENT-WORKSTREAM meeting
+transcript — a sync tagged to a workstream that has children (a client
+account such as Google, or a program), touching several of the
+workstreams below it. Your output is a YAML plan that `cp ingest` will
+execute against the tenant.
 
 Unlike a single-project meeting, you must ROUTE each piece of content
-to whichever project it's actually about. The active project list for
-this account is below; emit per-project verbs only when content clearly
-relates to a specific project.
+to whichever child workstream it's actually about. The active list is
+below; emit per-project verbs only when content clearly relates to a
+specific one.
 
 # Today
 {today}
@@ -284,13 +318,13 @@ relates to a specific project.
 # Sprint week
 {week}
 
-# Account
-{company_label} (canonical code: `{company_code}`)
+# Parent workstream
+{node_label} (canonical code: `{code}`)
 
 # Internal team
 {team_block}
 
-# Active projects under this account
+# Active workstreams under this parent
 
 {active_projects_block}
 
@@ -358,16 +392,18 @@ account_decisions:            # OPTIONAL — tenant-wide decisions
    substantive content.
 
 3. **The `account_summary` is REQUIRED.** Exactly one entry. Write a
-   60–150 word paragraph capturing the gestalt of this account meeting:
-   what got covered across all projects, dominant themes, status of
-   the relationship. This goes in `weekly-cp.md` for partner-review
-   visibility.
+   60–150 word paragraph capturing the gestalt of this meeting: what
+   got covered across the children, dominant themes, status of the
+   relationship. It lands on the PARENT workstream's sprint file for
+   partner-review visibility.
 
-4. **`account_decisions` are TENANT-WIDE structured one-liners.**
-   Examples: "All Google consultant invoices route through Brandon
-   going forward." "Maria leaves the account 2026-05-31; transition
-   plan to Geoff." Don't put project-specific decisions here — those
-   go in the project's `decisions` verb.
+4. **`account_decisions` are PARENT-LEVEL structured one-liners** —
+   decisions that belong to the account or program as a whole, not to
+   one child. Examples: "All Google consultant invoices route through
+   Brandon going forward." "Maria leaves the account 2026-05-31;
+   transition plan to Geoff." They land on the parent workstream's
+   `cp.md`. Don't put project-specific decisions here — those go in
+   the child's `decisions` verb.
 
 5. **Decisions vs inbound.** Decision = commitment made in the meeting
    (who's doing what, by when). Inbound = information conveyed.
@@ -402,34 +438,80 @@ block. No preamble, no explanation, no postscript.
 """
 
 
-def list_active_for_company(
-    config: TenantConfig, company_code: str
-) -> list[ProjectState]:
-    """Return all active projects (engagements OR initiatives) for a company.
-
-    Used by the cp-engine-webhook account-meeting endpoint to decide
-    which projects to load context for: every active workstream (Deal |
-    Open) under the company, whatever its shape (#301).
-
-    company_code is the canonical company code (e.g. 'GGL', '1PI', 'CNC').
-    Lookup is case-insensitive.
-    """
-    from cp_engine.status import is_active_status
+def load_roster(config: TenantConfig) -> list[ProjectState]:
+    """Every workstream MC-2 knows, whatever its status — the roster the
+    tree helpers (`list_active_subtree`, `resolve_node`) take."""
     from cp_engine.sync import _default_backend_factory
 
     backend = _default_backend_factory(config.sync.backend)
-    all_projects = backend.read_projects(config)
+    return list(backend.read_projects(config))
 
-    code_lc = (company_code or "").strip().lower()
-    out: list[ProjectState] = [
-        p
-        for p in all_projects
-        if p.company_code
-        and p.company_code.lower() == code_lc
-        and is_active_status(p.status)
+
+def list_active_subtree(
+    code: str, projects: "list[ProjectState] | tuple[ProjectState, ...]"
+) -> list[ProjectState]:
+    """Every ACTIVE workstream below `code` — children, grandchildren, … —
+    sorted by code. The node itself is excluded: it is where the summary
+    and the account-level decisions land, not a fan-out target (#305).
+
+    `projects` is the whole roster (`load_roster`), so an inactive program
+    between the node and an active job does not hide the job. A code that
+    is not in the roster has no subtree.
+    """
+    from cp_engine.status import is_active_status
+
+    by_code = {p.code: p for p in projects}
+    node = resolve_node(code, projects)
+    if node is None:
+        return []
+    out = [
+        p for p in descendants_of(node.code, by_code)
+        if p.code != node.code and is_active_status(p.status)
     ]
     out.sort(key=lambda p: p.code)
     return out
+
+
+def resolve_node(
+    code: str | None, projects: "list[ProjectState] | tuple[ProjectState, ...]"
+) -> ProjectState | None:
+    """The roster entry for `code` in any spelling: the canonical slug,
+    the short form (`ggl-5216`), MC-2's display name. None when nothing
+    matches — a caller that guesses a parent lands captures on the wrong
+    level, so an unresolved code is refused upstream."""
+    if not code:
+        return None
+    wanted = code.strip().lower()
+    for p in projects:
+        if p.code.lower() == wanted:
+            return p
+    parsed = parse_code(code)
+    if parsed is None:
+        return None
+    for p in projects:
+        mine = parse_code(p.code)
+        if mine and (mine.company, mine.number) == (parsed.company, parsed.number):
+            return p
+    return None
+
+
+def resolve_account_node(
+    company_code: str | None, projects: "list[ProjectState] | tuple[ProjectState, ...]"
+) -> ProjectState | None:
+    """The account node of a company (the legacy `company_code` payload a
+    fathom-meeting-sync row may still send): the roster entry labelled
+    `account` under that company code, case-insensitive. None when the
+    company has no account node in the roster."""
+    if not company_code:
+        return None
+    wanted = company_code.strip().lower()
+    by_code = {p.code: p for p in projects}
+    for p in projects:
+        if (p.company_code or "").lower() != wanted:
+            continue
+        if effective_label(p, by_code) == "account":
+            return p
+    return None
 
 
 def list_active_all(config: TenantConfig) -> list[ProjectState]:
@@ -462,26 +544,17 @@ _SCOPE_TO_KIND = {
 
 # Phase D.7: explicit-list scopes that don't map to a single company.kind.
 # `storyos-mc` is Drew + Tony's standing weekly Canonic + Mission Control
-# product/engineering sync — pairs StoryOS (Canonic initiative) with
-# Mission Control (FPSF initiative). If you add a new explicit-list scope
-# later, list its target initiative codes here; list_active_for_scope
-# falls through to a code-allowlist lookup when the scope isn't in
-# _SCOPE_TO_KIND.
+# product/engineering sync — pairs StoryOS with Mission Control. If you add
+# a new explicit-list scope later, list its target workstream codes here;
+# list_active_for_scope falls through to a code-allowlist lookup when the
+# scope isn't in _SCOPE_TO_KIND.
 _SCOPE_TO_EXPLICIT_CODES = {
     # The merged workstream codes (mc-2 mig 192, cp-engine #301).
     "storyos-mc": ("cnc-9004-storyos", "1pi-9005-mission-control"),
 }
 
-# Pseudo-company codes for the account_summary's `company` field. These
-# don't match any real `companies.code` — they're scoped distinctly
-# from per-account summaries to avoid hash collisions and to make the
-# weekly-cp.md `## Account summaries` section readable.
-_SCOPE_TO_PSEUDO_COMPANY = {
-    "1p": "1p-clients",
-    "fpsf": "fpsf-internal",
-    "canonic": "canonic-internal",
-    "storyos-mc": "storyos-mc",
-}
+# Valid scope names: the kind-based ones plus the explicit-code ones.
+VALID_SCOPES = frozenset(_SCOPE_TO_KIND) | frozenset(_SCOPE_TO_EXPLICIT_CODES)
 
 _SCOPE_LABEL = {
     "1p": "1P (all active client engagements)",
@@ -504,19 +577,18 @@ def list_active_for_scope(
       2. Explicit-code (mapped via _SCOPE_TO_EXPLICIT_CODES):
          - 'storyos-mc' → fixed pair: StoryOS + Mission Control
 
-    Sister function to `list_active_for_company` but the discriminator
-    is the company kind OR an explicit code list. Used by the cp-engine-
-    webhook /api/auto-ingest-sprint-planning endpoint.
+    Sister function to `list_active_subtree` but the discriminator is the
+    company kind OR an explicit code list, not a parent node. Used by the
+    cp-engine-webhook /api/auto-ingest-sprint-planning endpoint.
     """
     from cp_engine.status import is_active_status
     from cp_engine.state import scope_for
     from cp_engine.sync import _default_backend_factory
 
-    valid_scopes = set(_SCOPE_TO_KIND) | set(_SCOPE_TO_EXPLICIT_CODES)
-    if scope not in valid_scopes:
+    if scope not in VALID_SCOPES:
         raise AccountPlanError(
             f"unknown sprint-planning scope {scope!r}; "
-            f"expected one of {sorted(valid_scopes)}"
+            f"expected one of {sorted(VALID_SCOPES)}"
         )
 
     backend = _default_backend_factory(config.sync.backend)
@@ -575,15 +647,16 @@ def generate_sprint_planning_plan(
 
     Same shape as `generate_account_plan` but the prompt frames this
     as tenant-scope sprint planning — the meeting touches every active
-    project under the named scope (1P, FPSF, or Canonic). The
-    `account_summary` lands in weekly-cp.md tagged with a pseudo-
-    company code (`1p-clients`, `fpsf-internal`, `canonic-internal`)
-    so it's distinguishable from per-account summaries.
+    workstream under the named scope (1P, FPSF, Canonic, StoryOS + MC).
+    The `account_summary` is stamped with the `scope` and lands in
+    `sprints/<W##>/_week.md` under `## Sprint planning summaries` (plan
+    D8); `account_decisions` land in master-cp.md's hand-written
+    cross-cutting section. No pseudo-company node exists (#305).
     """
-    if scope not in _SCOPE_TO_PSEUDO_COMPANY:
+    if scope not in VALID_SCOPES:
         raise AccountPlanError(
             f"unknown sprint-planning scope {scope!r}; "
-            f"expected one of {sorted(_SCOPE_TO_PSEUDO_COMPANY)}"
+            f"expected one of {sorted(VALID_SCOPES)}"
         )
     if not active_projects:
         raise AccountPlanError(
@@ -591,7 +664,6 @@ def generate_sprint_planning_plan(
         )
 
     week = week_iso or current_sprint_week_iso(datetime.now())
-    pseudo_company = _SCOPE_TO_PSEUDO_COMPANY[scope]
     scope_label = _SCOPE_LABEL[scope]
 
     transcript = _truncate_transcript(
@@ -628,21 +700,8 @@ def generate_sprint_planning_plan(
             f"Claude returned a non-mapping plan: {type(plan).__name__}"
         )
 
-    # Inject pseudo-company + week into account_summary defensively.
-    summary = plan.get("account_summary")
-    if isinstance(summary, dict):
-        summary.setdefault("company", pseudo_company)
-        summary.setdefault("week", week)
-    elif isinstance(summary, list):
-        for item in summary:
-            if isinstance(item, dict):
-                item.setdefault("company", pseudo_company)
-                item.setdefault("week", week)
-
-    # Same defensive injection for account_decisions.
-    for ad in plan.get("account_decisions") or []:
-        if isinstance(ad, dict):
-            ad.setdefault("company", pseudo_company)
+    # Stamp the scope + week onto account_summary / account_decisions.
+    _stamp_level(plan, scope=scope, week=week)
 
     try:
         _validate_plan(plan)
@@ -653,7 +712,7 @@ def generate_sprint_planning_plan(
     return GeneratedAccountPlan(
         plan=plan,
         raw_response=response_text,
-        company_code=pseudo_company,
+        code=f"sprint-planning:{scope}",
         meeting_id=meeting_id,
         project_codes=project_codes,
         model=model,
@@ -682,7 +741,8 @@ def _build_sprint_planning_prompt(
 
     if account_decisions_context:
         decisions_block = (
-            "### Recent account-level decisions (already in weekly-cp.md)\n\n"
+            "### Recent cross-cutting decisions (already recorded in the "
+            "tenant)\n\n"
             "Don't re-emit these as either project-level decisions OR new "
             "account_decisions; the system already knows them.\n\n"
             + account_decisions_context
@@ -794,11 +854,12 @@ account_decisions:            # OPTIONAL — tenant-wide decisions
    80–200 words covering: which projects got attention this sprint,
    key allocation/capacity decisions, dominant risks, anything
    that crosses project boundaries. This is the partner-review
-   surface in weekly-cp.md.
+   surface in the week file (`sprints/<W##>/_week.md`).
 
 4. **`account_decisions` are TENANT-WIDE structured one-liners.**
    Examples: "Sprint cadence shifts to 2-week cycles starting
    2026-W22." "Holding reviews moved from Friday to Tuesday."
+   They land in master-cp.md's hand-written cross-cutting decisions.
    Don't put project-specific decisions here.
 
 5. **Decisions vs inbound.** Decision = commitment made in the

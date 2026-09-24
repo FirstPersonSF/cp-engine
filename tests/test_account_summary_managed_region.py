@@ -1,7 +1,7 @@
 """An account summary must never be appended inside a cp-engine managed region.
 
 THE REPORT (2026-09-15). `_write_account_summary` appends its bullet before the
-next `^## ` heading after `## Account summaries`. That is only the end of the
+next `^## ` heading after `## Account summary`. That is only the end of the
 handwritten zone when no managed region intervenes — and in the cp tenant it
 does not hold: the next heading is
 
@@ -27,6 +27,11 @@ bullet, nobody opens `weekly-cp.md` hunting for the W31 TEL entry, so absence
 never surfaced as a complaint.
 
 These tests pin the clamp. The first one FAILS against the pre-fix code.
+
+#305 moved the target: the bullet now lands on the PARENT NODE's sprint file
+under `## Account summary` (an item carries `code`, not `company`). The hazard
+is unchanged — a hand-written section followed by a managed region — so the
+shape below is kept and the clamp is asserted against the new writer.
 """
 
 from __future__ import annotations
@@ -36,11 +41,11 @@ from cp_engine.ingest import _write_account_summary
 # The real shape from the cp tenant: the next `## ` after the section heading
 # lives inside a managed region.
 TENANT_SHAPE = """\
-# Weekly CP
+# Google · Sprint W38
 
-## Account summaries
+## Account summary
 
-- [2026-W20 · GGL] An older summary that predates this bug.
+- [2026-W20 · ggl-5216-google] An older summary that predates this bug.
 
 <!-- cp-engine:start themes-strip -->
 ## Themes (auto-aggregated from sprints/<W##>/_week.md, last 2 weeks)
@@ -50,8 +55,8 @@ TENANT_SHAPE = """\
 """
 
 
-def _item(text="A two-person working session.", company="canonic-internal"):
-    return {"text": text, "company": company, "week": "2026-W38"}
+def _item(text="A two-person working session.", code="ggl-5216-google"):
+    return {"text": text, "code": code, "week": "2026-W38"}
 
 
 def _marker_zone(body: str) -> str:
@@ -70,8 +75,8 @@ class TestTheReportedLoss:
         assert _write_account_summary(_item(), p) is True
 
         body = p.read_text(encoding="utf-8")
-        assert "CANONIC-INTERNAL" in body, "the bullet was not written at all"
-        assert "CANONIC-INTERNAL" not in _marker_zone(body), (
+        assert "2026-W38 · ggl-5216-google] A two-person" in body, "the bullet was not written at all"
+        assert "2026-W38 · ggl-5216-google] A two-person" not in _marker_zone(body), (
             "bullet landed inside the themes-strip managed region — the next "
             "`cp sync` would regenerate the strip and silently delete it"
         )
@@ -98,7 +103,7 @@ class TestTheReportedLoss:
             + body[end:]
         )
 
-        assert "CANONIC-INTERNAL" in regenerated, (
+        assert "2026-W38 · ggl-5216-google] A two-person" in regenerated, (
             "the summary did not survive a regeneration of the managed region"
         )
 
@@ -109,7 +114,7 @@ class TestTheReportedLoss:
         _write_account_summary(_item(), p)
 
         body = p.read_text(encoding="utf-8")
-        assert body.index("## Account summaries") < body.index("CANONIC-INTERNAL")
+        assert body.index("## Account summary") < body.index("2026-W38 · ggl-5216-google] A two-person")
 
     def test_existing_bullets_are_preserved(self, tmp_path):
         p = tmp_path / "weekly-cp.md"
@@ -117,7 +122,7 @@ class TestTheReportedLoss:
         _write_account_summary(_item(), p)
 
         body = p.read_text(encoding="utf-8")
-        assert "[2026-W20 · GGL]" in body
+        assert "[2026-W20 · ggl-5216-google]" in body
         assert "_No themes captured in the last 2 weeks._" in body
 
 
@@ -126,8 +131,8 @@ class TestShapesWithoutTheHazard:
 
     def test_plain_section_followed_by_a_normal_heading(self, tmp_path):
         body = (
-            "# Weekly CP\n\n## Account summaries\n\n"
-            "- [2026-W20 · GGL] Older.\n\n"
+            "# Google · Sprint W38\n\n## Account summary\n\n"
+            "- [2026-W20 · ggl-5216-google] Older.\n\n"
             "## Active research\n\n- something\n"
         )
         p = tmp_path / "weekly-cp.md"
@@ -135,32 +140,32 @@ class TestShapesWithoutTheHazard:
 
         assert _write_account_summary(_item(), p) is True
         out = p.read_text(encoding="utf-8")
-        assert out.index("CANONIC-INTERNAL") < out.index("## Active research")
-        assert out.index("[2026-W20 · GGL]") < out.index("CANONIC-INTERNAL")
+        assert out.index("2026-W38 · ggl-5216-google] A two-person") < out.index("## Active research")
+        assert out.index("[2026-W20 · ggl-5216-google]") < out.index("2026-W38 · ggl-5216-google] A two-person")
 
     def test_section_at_end_of_file(self, tmp_path):
-        body = "# Weekly CP\n\n## Account summaries\n\n- [2026-W20 · GGL] Older.\n"
+        body = "# Google · Sprint W38\n\n## Account summary\n\n- [2026-W20 · ggl-5216-google] Older.\n"
         p = tmp_path / "weekly-cp.md"
         p.write_text(body, encoding="utf-8")
 
         assert _write_account_summary(_item(), p) is True
-        assert "CANONIC-INTERNAL" in p.read_text(encoding="utf-8")
+        assert "2026-W38 · ggl-5216-google] A two-person" in p.read_text(encoding="utf-8")
 
     def test_marker_before_the_section_is_not_a_clamp(self, tmp_path):
         """Only a marker AFTER the section start bounds the insert."""
         body = (
-            "# Weekly CP\n\n"
+            "# Google · Sprint W38\n\n"
             "<!-- cp-engine:start decisions-strip -->\n"
             "## Decisions\n\n- a decision\n"
             "<!-- cp-engine:end decisions-strip -->\n\n"
-            "## Account summaries\n\n- [2026-W20 · GGL] Older.\n"
+            "## Account summary\n\n- [2026-W20 · ggl-5216-google] Older.\n"
         )
         p = tmp_path / "weekly-cp.md"
         p.write_text(body, encoding="utf-8")
 
         assert _write_account_summary(_item(), p) is True
         out = p.read_text(encoding="utf-8")
-        assert out.index("## Account summaries") < out.index("CANONIC-INTERNAL")
+        assert out.index("## Account summary") < out.index("2026-W38 · ggl-5216-google] A two-person")
         assert "- a decision" in out
 
 

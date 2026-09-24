@@ -3,12 +3,15 @@
 Covers:
   - _detect_capacity_binding (>=5-projects floor, sort, empty)
   - _load_cross_cutting_decisions (lookback, [decided|resolved: ...] filter,
-    empty file, 28-day boundary inclusive)
+    empty file, 28-day boundary inclusive) — read from master-cp.md's
+    hand-written section and the account / program cp.md files (#305);
+    weekly-cp.md is ignored whether absent or present
   - _render_cross_cutting (omits sub-blocks when empty, full golden, no-op case)
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
@@ -70,13 +73,26 @@ def make_state(
     )
 
 
-# Standard weekly-cp.md section header used by the parser.
-_DECISIONS_HEADER = "## Decisions (cross-cutting, last 4 weeks)\n\n"
+# master-cp.md's hand-written cross-cutting section (#305, plan D8).
+_DECISIONS_HEADER = "## Decisions (cross-cutting, hand-written)\n\n"
+
+# The old weekly-cp.md header — written by a few tests to prove the file
+# is IGNORED now (present = ignored, absent = no-op).
+_LEGACY_WEEKLY_HEADER = "## Decisions (cross-cutting, last 4 weeks)\n\n"
 
 
-def _write_weekly_cp(tenant_root: Path, body: str) -> None:
-    """Lay down a weekly-cp.md at the tenant root."""
-    (tenant_root / "weekly-cp.md").write_text(body, encoding="utf-8")
+def _write_master_cp(tenant_root: Path, body: str) -> None:
+    """Lay down a master-cp.md whose hand-written tail is `body`, after a
+    managed region — the shape sync leaves behind."""
+    (tenant_root / "master-cp.md").write_text(
+        "# Master CP\n\n<!-- cp-engine:start closed-recent -->\n"
+        "<!-- cp-engine:end closed-recent -->\n\n" + body,
+        encoding="utf-8",
+    )
+
+
+# Kept under the old name so sibling test modules keep importing it.
+_write_weekly_cp = _write_master_cp
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -130,11 +146,11 @@ def test_capacity_binding_ignores_unassigned_owners():
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  weekly-cp.md decision loading
+#  cross-cutting decision loading (master-cp.md + account / program cp.md)
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_cross_cutting_decisions_renders_from_weekly_cp(tmp_path):
+def test_cross_cutting_decisions_renders_from_master_cp(tmp_path):
     """Decisions in the last 4 weeks surface in numbered order from the file."""
     _write_weekly_cp(
         tmp_path,
@@ -158,8 +174,8 @@ def test_cross_cutting_decisions_renders_from_weekly_cp(tmp_path):
 
 
 def test_cross_cutting_decisions_empty_section_omitted(tmp_path):
-    """weekly-cp.md with the header but no entries → empty tuple."""
-    _write_weekly_cp(tmp_path, _DECISIONS_HEADER + "\n## Account summaries\n")
+    """master-cp.md with the header but no entries → empty tuple."""
+    _write_weekly_cp(tmp_path, _DECISIONS_HEADER + "\n## Something else\n")
     decisions, errors, _stale, _undated = _load_cross_cutting_decisions(
         tmp_path, today=date(2026, 6, 2)
     )
@@ -168,11 +184,74 @@ def test_cross_cutting_decisions_empty_section_omitted(tmp_path):
 
 
 def test_cross_cutting_decisions_missing_file_returns_empty(tmp_path):
-    """No weekly-cp.md at all → empty tuple, not a crash."""
+    """No master-cp.md, no index, no weekly-cp.md → empty tuple, not a crash."""
     decisions, errors, _stale, _undated = _load_cross_cutting_decisions(
         tmp_path, today=date(2026, 6, 2)
     )
     assert decisions == ()
+    assert errors == []
+
+
+def test_cross_cutting_decisions_ignore_weekly_cp_when_present(tmp_path):
+    """A weekly-cp.md still on disk (the tenant before its one-time split)
+    is NOT a source: its entries never surface, and its presence changes
+    nothing about what master-cp.md contributes."""
+    (tmp_path / "weekly-cp.md").write_text(
+        _LEGACY_WEEKLY_HEADER
+        + "9. **Ghost from the retired file** (2026-06-01, source: sprint planning)\n",
+        encoding="utf-8",
+    )
+    _write_master_cp(
+        tmp_path,
+        _DECISIONS_HEADER
+        + "1. **Live in master-cp** (2026-06-01, source: sprint-planning: 1p)\n",
+    )
+    decisions, errors, _stale, _undated = _load_cross_cutting_decisions(
+        tmp_path, today=date(2026, 6, 2)
+    )
+    assert [d.text for d in decisions] == ["**Live in master-cp**"]
+    assert errors == []
+
+
+def test_cross_cutting_decisions_read_account_and_program_cp_md(tmp_path):
+    """The account node's and the program's `## Decisions` are homes; a
+    job's cp.md is not, even when it carries a numbered list. Nodes come
+    from the roster when there is no paths index."""
+    (tmp_path / "1p" / "google").mkdir(parents=True)
+    (tmp_path / "1p" / "google" / "cp.md").write_text(
+        "# Google — Account CP\n\n## Decisions\n\n"
+        "1. **Account-level** (2026-06-01, source: account: ggl-5216-google)\n",
+        encoding="utf-8",
+    )
+    prog = tmp_path / "1p" / "google" / "ggl-5300-go-safety"
+    prog.mkdir()
+    (prog / "cp.md").write_text(
+        "# Go Safety — Program CP\n\n## Decisions\n\n"
+        "1. **Program-level** (2026-06-01, source: account: ggl-5300-go-safety)\n",
+        encoding="utf-8",
+    )
+    job = prog / "ggl-5136-go-safety-website"
+    job.mkdir()
+    (job / "cp.md").write_text(
+        "# Website — Project CP\n\n## Decisions\n\n"
+        "1. **Job-level, stays put** (2026-06-01)\n",
+        encoding="utf-8",
+    )
+    account = make_state("ggl-5216-google", name="Google")
+    account = replace(account, has_agreement=False, label="account")
+    program = replace(
+        make_state("ggl-5300-go-safety", name="Go Safety"),
+        label="program", parent_code="ggl-5216-google",
+    )
+    website = replace(
+        make_state("ggl-5136-go-safety-website", name="Website"),
+        label="job", parent_code="ggl-5300-go-safety",
+    )
+    decisions, errors, _stale, _undated = _load_cross_cutting_decisions(
+        tmp_path, today=date(2026, 6, 2), projects=(account, program, website)
+    )
+    assert sorted(d.text for d in decisions) == ["**Account-level**", "**Program-level**"]
+    assert {d.node for d in decisions} == {"ggl-5216-google", "ggl-5300-go-safety"}
     assert errors == []
 
 
@@ -471,7 +550,7 @@ def test_render_cross_cutting_singular_project_when_count_is_one():
 
 
 def test_build_planning_result_populates_capacity_and_decisions(tmp_path):
-    """build_planning_result threads weekly-cp.md + owner counts into the result."""
+    """build_planning_result threads master-cp.md decisions + owner counts into the result."""
     _write_weekly_cp(
         tmp_path,
         _DECISIONS_HEADER
@@ -494,7 +573,7 @@ def test_build_planning_result_populates_capacity_and_decisions(tmp_path):
     # basis — no planning-week allocations were provided).
     assert result.capacity_binding["basis"] == "owner_of_record"
     assert {"owner": "tony", "count": 5} in result.capacity_binding["owners"]
-    # Decision parsed from weekly-cp.md.
+    # Decision parsed from master-cp.md's hand-written section.
     assert len(result.cross_cutting_decisions) == 1
     assert "Open partners decision" in result.cross_cutting_decisions[0].text
 

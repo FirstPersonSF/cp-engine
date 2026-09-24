@@ -175,7 +175,8 @@ def _load_project_context(config: TenantConfig, project_code: str) -> str:
     Returns:
     - the project's `cp.md` (truncated)
     - the current sprint file (truncated)
-    - recent account-level decisions from weekly-cp.md (filtered by company prefix)
+    - recent cross-cutting decisions recorded on the project's ancestors
+      (account / program `cp.md`) and master-cp.md
 
     All three are markdown; the model reads them as-is.
     """
@@ -207,10 +208,11 @@ def _load_project_context(config: TenantConfig, project_code: str) -> str:
             "this would be the first ingest of the sprint.)"
         )
 
-    account_decisions = _load_recent_account_decisions(config.root)
+    account_decisions = _load_recent_account_decisions(config.root, code=project_code)
     if account_decisions:
         parts.append(
-            "### Recent account-level decisions (already in weekly-cp.md)\n\n"
+            "### Recent account-level decisions (already recorded on the "
+            "account / program)\n\n"
             "These are decisions that already exist in the tenant. If the\n"
             "transcript restates one of these, do NOT emit it again — even\n"
             "if the wording is slightly different.\n\n"
@@ -220,66 +222,38 @@ def _load_project_context(config: TenantConfig, project_code: str) -> str:
     return "\n\n".join(parts)
 
 
-# A decision line in weekly-cp.md follows the shape:
-#   <N>. **<title>** ...optional body with arbitrary parens... (YYYY-MM-DD, source: <kind>)
-# The numbered prefix + bold title is the load-bearing signal; the source
-# clause tells us *what kind* of decision it is. We pull the title (first
-# **...** on the line) and date for the prompt.
-_DECISION_NUM_RE = re.compile(r"^\s*(?P<num>\d+)\.\s+\*\*(?P<title>[^*]+)\*\*", re.MULTILINE)
-_DECISION_DATE_RE = re.compile(
-    r"\((?P<date>\d{4}-\d{2}-\d{2}),\s*source:\s*(?P<source>[^)]+)\)"
-)
+def _load_recent_account_decisions(
+    tenant_root: Path, *, max_lines: int = 25, code: str | None = None
+) -> str:
+    """Recent cross-cutting decisions already recorded above `code` (#305).
 
+    Read from the target's ancestors' `## Decisions` (account, program —
+    nearest first) plus master-cp.md's hand-written cross-cutting section;
+    with no `code`, every account / program node's list. Conservative:
+    the bold title (or the first 160 characters) and the date, so Claude
+    does not re-emit an account-wide commitment as a project-level one
+    (the "Go Safety launches 6/1" duplication pattern from C.1 testing).
 
-def _load_recent_account_decisions(tenant_root: Path, *, max_lines: int = 25) -> str:
-    """Pull recent account-level decision titles from weekly-cp.md.
-
-    Conservative: just the bold-title sentence + date, not the full body.
-    Prevents Claude from re-emitting account-wide commitments as project-level
-    ones (the "Go Safety launches 6/1" duplication pattern from C.1 testing).
-
-    Two-pass parse because decision bodies contain arbitrary parentheses
-    (e.g. "(2-4 weeks)", "(payroll)") so a single regex anchoring on
-    `(YYYY-MM-DD, source: ...)` from the title block is fragile. Instead:
-    walk numbered decisions, then find their date+source clause in the
-    same line as the title.
-
-    Returns "" if no weekly-cp.md or no decisions match.
+    Returns "" when nothing is recorded. `weekly-cp.md` is never read.
     """
-    weekly_cp = tenant_root / "weekly-cp.md"
-    if not weekly_cp.is_file():
-        return ""
+    from cp_engine.agenda import load_cross_cutting_decisions
 
-    body = weekly_cp.read_text(encoding="utf-8")
-    decisions: list[dict] = []
-    for line in body.splitlines():
-        title_m = _DECISION_NUM_RE.match(line)
-        if not title_m:
-            continue
-        date_m = _DECISION_DATE_RE.search(line)
-        if not date_m:
-            continue
-        source = date_m.group("source").strip().lower()
-        # Account-level signals: explicit "account:" tag (Phase B format),
-        # the older "weekly account meeting" tag, or any per-project source
-        # like "ggl-5136" (these are project-level decisions but they affect
-        # related projects in the same client family — including them keeps
-        # Claude from re-emitting cross-project context).
-        if not (source.startswith("account:") or "account meeting" in source or "-" in source):
-            continue
-        decisions.append({
-            "title": title_m.group("title").strip(),
-            "date": date_m.group("date"),
-            "source": source,
-        })
-
+    found = load_cross_cutting_decisions(tenant_root)
+    decisions = found.for_project(code) if code else found.all
     if not decisions:
         return ""
 
-    decisions.sort(key=lambda d: d["date"], reverse=True)
-    decisions = decisions[:max_lines]
+    rows: list[dict] = []
+    for d in decisions:
+        title_m = re.match(r"\*\*(?P<title>[^*]+)\*\*", d.text)
+        title = title_m.group("title").strip() if title_m else d.text[:160].strip()
+        source = ", ".join(d.sources) if d.sources else (d.node or "master-cp")
+        rows.append({"title": title, "date": d.date or "undated", "source": source})
+
+    rows.sort(key=lambda r: r["date"], reverse=True)
+    rows = rows[:max_lines]
     return "\n".join(
-        f"- ({d['date']}, source: {d['source']}) {d['title']}" for d in decisions
+        f"- ({r['date']}, source: {r['source']}) {r['title']}" for r in rows
     )
 
 
@@ -534,7 +508,7 @@ projects:
     decisions:
       - text: "..."
         date: "YYYY-MM-DD"
-        cross_cutting: false      # true → also surfaces in weekly-cp.md
+        cross_cutting: false      # true → also surfaces in master-cp's decisions strip
     risks:
       - text: "..."
         severity: "watching"      # or "escalated", "dependency"
@@ -570,9 +544,9 @@ projects:
    or ask already appears in the sprint file, cp.md, OR the "Recent
    account-level decisions" list, skip it. The system has its own dedup,
    but you should still try. Account-wide decisions (Maria's departure,
-   consultant invoice routing, Go Safety launch dates) belong in
-   weekly-cp.md and are emitted via a separate `account_decisions` flow,
-   not by you here.
+   consultant invoice routing, Go Safety launch dates) belong on the
+   account node's `cp.md` and are emitted via a separate
+   `account_decisions` flow, not by you here.
 3. **Decisions vs inbound:** a decision is a *commitment made in the meeting*
    (who's doing what, by when, what we agreed to). Inbound is *information*
    the client conveyed (status, opinions, constraints, concerns).
@@ -677,7 +651,7 @@ projects:
     decisions:
       - text: "..."
         date: "YYYY-MM-DD"
-        cross_cutting: false      # true → also surfaces in weekly-cp.md
+        cross_cutting: false      # true → also surfaces in master-cp's decisions strip
     risks:
       - text: "..."
         severity: "watching"      # or "escalated", "dependency"
@@ -716,9 +690,11 @@ projects:
 5. **Risks are explicit concerns about schedule, scope, dependencies,
    or technical issues.** Not vibes — "worried the migration won't be
    done in time" qualifies; "we should probably watch this" does not.
-6. **Cross-cutting decisions go in weekly-cp.md.** Set `cross_cutting:
-   true` for decisions that affect multiple initiatives or the whole
-   company (e.g. team process changes, vendor selections).
+6. **Cross-cutting decisions are flagged, not relocated.** Set
+   `cross_cutting: true` for decisions that affect multiple workstreams
+   or the whole company (e.g. team process changes, vendor selections);
+   they surface in master-cp's decisions strip, and a partner promotes
+   them uphill to the program or account when they belong there.
 7. **Don't duplicate what's already in the project context.** If a
    decision or ask already appears in the sprint file, cp.md, OR the
    "Recent account-level decisions" list, skip it.

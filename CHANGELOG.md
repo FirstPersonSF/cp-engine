@@ -6,10 +6,36 @@ Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automat
 
 ## v0.124.0 — 2026-09-24
 
-**One entry kind, one code parser.** Minor: `ProjectState` loses `source`;
-the reader is one query; every owner-scoped write names `project_id`. Closes
-#301 (phase 3.1–3.2 of the company > workstream build,
+**Company > workstream: one entry kind, one tree, one code parser.** Minor.
+Every trackable thing is a workstream — one MC-2 `projects` row under a
+company, nesting to any depth via `parent_id`, with or without a
+commercial agreement — and the engine branches on that SHAPE (`has_agreement`,
+`parent_code`, `company_kind`) instead of a `source` discriminator; the
+display word (account / program / job / initiative) is derived. #301–#305
+(phases 3.1–3.9 of
 `cp/docs/plans/2026-09-24-company-workstream-implementation-plan.md`).
+**What a tenant sees on its first sync after upgrading:** (1) working dirs
+move as `git mv` to the recursive layout — nothing moves for a job whose
+parent is its account node, a program insertion nests its jobs one level
+down, internal workstreams take their merged `1pi-9005-…` codes;
+(2) `master-cp.md`'s five per-scope active tables are retired in place and
+one company-grouped `active-tree` region lands where `active-1p` stood,
+hand-written text untouched; (3) every account and initiative `cp.md` is
+migrated to the one `project-cp.md.j2` region set (`children`,
+`envelope-strip` inserted where the shape calls for them, `account-facts`
+/ `projects` retired), and `master-cp.md` gains a hand-written
+`## Decisions (cross-cutting, hand-written)` section on fresh scaffolds;
+(4) `.cp-engine/paths.json` is written and committed — the machine-readable
+"get the path from the index, never construct it"; (5) `weekly-cp.md` is
+retired: sync, ingest, agenda, sprint prep and the transcript prompts no
+longer write or read it (a copy still on disk is ignored; the tenant's
+one-time content split is a separate script), account summaries and
+decisions land on the parent node, sprint-planning summaries in
+`_week.md`; (6) `CLAUDE.md` is regenerated for the workstream model.
+
+**One entry kind, one code parser.** `ProjectState` loses `source`;
+the reader is one query; every owner-scoped write names `project_id`. Closes
+#301 (phase 3.1–3.2).
 
 mc-2 migrations 190–194 are live: the `initiatives` table is gone, every
 `initiative_id` column with it, and internal workstreams are `projects`
@@ -347,6 +373,137 @@ an explicit verb, and the verb leaves a trail.
   `prototypes/hosted-mcp/test_promote_uphill.py` (the echo on every write
   verb derived from the AST — not hand-listed — the rule in every
   registered description, and the hosted commitment path end to end).
+
+### #305 — ingest to the parent node, `weekly-cp.md` retired, `CLAUDE.md.j2` rewritten (phase 3.7–3.9)
+
+Plan §3.7–3.9, decision D8. "Account meeting" now means exactly "a meeting
+tagged to a workstream that has children"; every account-level write lands
+on the NODE the caller named, and the tenant-wide meeting file has no
+writer, no reader and no template reference left.
+
+- **Ingest routes to the parent node.** `plan_from_account_meeting.
+  list_active_subtree(code, roster)` replaces `list_active_for_company`:
+  every ACTIVE descendant of the named node (children, grandchildren, …;
+  the node itself excluded; an inactive program does not hide the active
+  job below it). `load_roster`, `resolve_node` (canonical slug, short form,
+  display name) and `resolve_account_node` (legacy `company_code` → that
+  company's account node) sit beside it. `generate_account_plan(code=…,
+  node=…)` stamps the NODE code + week onto `account_summary` and the node
+  code onto every `account_decisions` item (`_stamp_level`; a stale
+  `company` key from an old plan is dropped, never kept beside `code`);
+  `GeneratedAccountPlan.company_code` → `.code`. The prompt names the level
+  ("# Parent workstream — Google (canonical code: `ggl-5216-google`)",
+  "Active workstreams under this parent") and says where each block lands;
+  `_format_active_projects` tags non-jobs with the derived label word from
+  `effective_label` (a program in the list reads `(program)`); the
+  known-decisions block reads the node's ancestors.
+- **Where the writes go (`ingest.py`).** `account_decisions` → the node's
+  `cp.md` hand-written `## Decisions` (`_write_account_decision`; numbered
+  `N. **text** (date, source: account: <code>) <hash>`, the template
+  placeholder replaced, the section created at EOF when missing, and the
+  zone bounded by the next `## ` heading OR the next engine marker — the
+  #263 lesson, both directions). `account_summary` → the node's sprint file
+  `sprints/<W##>/<code>.md` under a hand-written `## Account summary`
+  (`- [<W##> · <code>] <paragraph> <hash>`; the item's own `week` wins; a
+  week sync has not reached is scaffolded from the node's prior file, the
+  #156 race). A sprint-planning item carries `scope` instead: its summary
+  goes to `sprints/<W##>/_week.md` under `## Sprint planning summaries`
+  (`- [<W##> · <SCOPE>] …`, the week file scaffolded when absent — the
+  themes scaffold is now `_ensure_week_file`), its decisions to
+  `master-cp.md`'s `## Decisions (cross-cutting, hand-written)` (`source:
+  sprint-planning: <scope>`), the home of company-less decisions.
+  `_SCOPE_TO_PSEUDO_COMPANY` is deleted (`VALID_SCOPES` names the four). An
+  item with neither `code` nor `scope`, or a `code` with no `cp.md`, is a
+  reported error — never a silent drop, never a fallback to a tenant file.
+  A short-form `code` (`ggl-5216`) resolves through the paths index by
+  company+number, because an account node's dir is the company slug.
+- **Webhook `/api/auto-ingest-account`** takes `code` (the parent
+  workstream, preferred; any spelling `resolve_node` reads) or the legacy
+  `company_code` (→ the account node); 400 when neither resolves, with
+  the reason. The summary entry is keyed `account:<node code>`; a leaf
+  with no active children is a `skipped_no_op`, not an error. The
+  sprint-planning endpoint is unchanged in shape; its commit now touches
+  `_week.md` and `master-cp.md`. `cxp list-active-projects --under <code>`
+  lists a node's active subtree for the `/cp-ingest --account <code>` flow.
+- **`weekly-cp.md` retired (D8).** Writers gone: ingest Phase B / D.4 no
+  longer know the file; sync's strip splice and the template went with
+  #303. Readers repointed to the new homes: `agenda.parse_decisions_section`
+  (was `parse_weekly_decisions`) reads ONE file's hand-written `## Decisions`
+  / `## Decisions (cross-cutting, hand-written)` — the section ends at the
+  next `## ` heading or engine marker, so a cp.md's list AFTER every managed
+  region is read whole and the engine's `recent-decisions-strip` never is;
+  a heading inside a managed region is skipped; the template placeholder is
+  skipped; `WeeklyDecision.node` says which workstream carried it.
+  `agenda.load_cross_cutting_decisions(tenant_root, projects=None)` →
+  `CrossCuttingDecisions` (master-cp entries + every account / program
+  node's list, nodes from `.cp-engine/paths.json` or the roster passed in);
+  `.for_project(code)` is the ancestors chain (parent, grandparent, …) plus
+  the master-cp entries whose `source:` names the code — what `build_agenda`
+  / `build_agenda_summary` now hand each project block.
+  `prep_planning._load_cross_cutting_decisions(…, projects=)` reads
+  `.all`; `plan_from_transcript._load_recent_account_decisions(…, code=)`
+  reads the target's ancestors (all nodes when no code) and its prompt
+  text no longer names the file; `modes.MODE_4_WEEKLY_REVIEW` loads
+  `master-cp.md` + every account and program `cp.md`; `attention_digest`
+  points at `master-cp.md`; `cli_cmds/planning.py`, `state.py`, `render.py`
+  comments follow. `sprint-week.md.j2` drops the Weekly CP link and gains
+  `## Sprint planning summaries`; `master-cp.md.j2` gains the hand-written
+  decisions section after `closed-recent`. A `weekly-cp.md` still on disk
+  is ignored everywhere (tested present and absent). Plugin docs
+  (`cp-ingest.md`, `cp-tools.md`, `cp-prep.md`, `cp-wrapup/SKILL.md`,
+  `build-stakeholder/SKILL.md`) and the spec's directory sketch name the
+  new homes. `migrate_accounts`' residue scanner still greps a
+  `weekly-cp.md` when one exists — a one-time migration aid, no-op without
+  the file.
+- **`CLAUDE.md.j2` rewritten** for the model: "One kind of work: the
+  workstream" (company > workstream, optional agreement, the derived-label
+  table — account / program / job / initiative, first match wins — codes
+  `<co>-<number>-<slug>` for everything, the five surfaces); the meetings
+  table's "Account meeting" row is "Parent workstream" (any node with
+  children → per-child bullets + `## Account summary` on the node's sprint
+  file + decisions on its `cp.md`), sprint planning → `_week.md`;
+  "Tenant-wide surfaces (`weekly-cp.md`)" replaced by "Where cross-cutting
+  content lives"; mode 3 / weekly review = `master-cp.md` + every account
+  and program `cp.md`; "Every capture names its level" + `promote uphill
+  <code>` in the trigger table; local-link traversal and the MC-2 storage
+  sentence speak of workstreams; **reference style is label-driven** —
+  account / program / initiative by name alone ("Updates on **Google**?"),
+  job by short code + short name (`ggl-5168 Activation`). Gatekeeper,
+  worksets, `rotate the CP`, `sweep improvements`, hand-written vs
+  engine-managed: unchanged in substance.
+- **`state.display_name` fixed accordingly.** A job is `<co>-<number>
+  <short name>` — `name` is MC-2's `full_job_name`, so the `<CO> <number>`
+  head is stripped (`short_name`) and the short code prepended
+  (`short_code`); the #303 form `<code> <full_job_name>` read
+  `ggl-5168-activation GGL 5168 Activation`. The master-cp Workstream
+  column and the `children` table pick it up. `render._example_for`
+  produces the same form for the CLAUDE.md example.
+- **Goldens.** `claude-md-1p` / `claude-md-canonic` regenerated (diff
+  themes: the "One kind of work" section + label table; "Parent
+  workstream" and `_week.md` rows; "Where cross-cutting content lives";
+  the weekly-review mode's file set; the level paragraph and the
+  `promote uphill` row; label-driven reference style; no `weekly-cp`
+  anywhere). `master-cp-empty` / `-full` / `-tree` (the hand-written
+  decisions section; short-code Workstream cells), `project-cp-account` /
+  `-program` (short-code children rows).
+- **Tests.** `test_plan_from_account_meeting` (subtree fan-out with a
+  grandchild in and the node out; program subtree; short code; leaf /
+  unknown → empty; `resolve_node` spellings; legacy `company_code` →
+  account node and None for a self-company; node stamping and the stale
+  `company` key; scope stamping; the pseudo-company is gone),
+  `test_webhook_account_node` (the endpoint's routing with the pipeline
+  stubbed: `code`, a program's short code, legacy `company_code`, the
+  400s, a leaf no-op), `test_ingest` (node decision + summary writes into
+  a tmp tenant with account dirs and a paths index: numbering, placeholder
+  replacement, marker clamp, idempotency, section creation, short code,
+  scaffold-from-prior, `_week.md` and master-cp for a scope, the error
+  cases), `test_account_summary_managed_region` (the clamp against the new
+  writer), `test_agenda` (a cp.md section after the managed regions, the
+  placeholder, the master heading, a heading inside a marker skipped),
+  `test_prep_planning_cross_cutting` (master-cp source; `weekly-cp.md`
+  present = ignored, absent = no-op; account + program cp.md read and a
+  job's list not), `test_modes`, `test_state` (`display_name` per label,
+  `short_name` / `short_code`), `test_render` (the CLAUDE.md sections).
 
 ## v0.123.1 — 2026-09-24
 

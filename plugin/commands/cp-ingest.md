@@ -16,12 +16,15 @@ plan-log artifact regardless of outcome.
 - `--fathom <meeting-id>` — fetch a single meeting from `fathom_meetings`
   Supabase via `cp fathom-fetch`, then proceed with the rest of the
   flow against the staged file.
-- `--account <company-code>` (Phase B) — list candidate `account-status`
-  meetings for that company; user picks ONE; standard flow runs against
-  it. Uses `cp fathom-list --type account-status` + `cp list-active-projects
-  --company <code>` to scope. Per-project plan template emphasizes per-project
-  inbound/asks/decisions PLUS account-level decisions (with
-  `(YYYY-MM-DD, source: account: <company-lower>)` suffix in weekly-cp.md).
+- `--account <code>` (Phase B) — a meeting tagged to a PARENT workstream
+  (an account node such as `ggl-5216-google`, or a program): list candidate
+  `account-status` meetings; user picks ONE; standard flow runs against the
+  node's active subtree (`cp list-active-projects --under <code>`). Per-project
+  plan template emphasizes per-child
+  inbound/asks/decisions PLUS account-level decisions, which land on the
+  node's `cp.md` `## Decisions` with a `(YYYY-MM-DD, source: account:
+  <code>)` suffix, and one `account_summary` paragraph on the node's
+  sprint file `## Account summary`.
 
 ## What you do
 
@@ -165,7 +168,7 @@ projects:
     decisions:
       - text: "..."
         date: "YYYY-MM-DD"
-        cross_cutting: false         # true → also surfaces in weekly-cp.md decisions-strip
+        cross_cutting: false         # true → also surfaces in master-cp.md's decisions rollup
     risks:
       - text: "..."
         severity: "watching"         # or "escalated" or "dependency"
@@ -180,17 +183,28 @@ themes:
   - text: "<theme spanning multiple projects>"
     date: "YYYY-MM-DD"
 
-# Phase B: account-level decisions land in weekly-cp.md's handwritten
-# Decisions list (numbered, with `(YYYY-MM-DD, source: account: <company>)`
-# suffix). Use these for decisions that touch the whole client account
-# but don't belong to any single project — e.g. "All Google consultant
-# invoices route through Brandon" or "Maria off the Google account."
-# /cp-ingest --account <company> mode emphasizes this block; other modes
-# can omit it.
+# Phase B: account-level decisions land on the PARENT workstream's cp.md
+# hand-written `## Decisions` list (numbered, with `(YYYY-MM-DD, source:
+# account: <code>)` suffix). Use these for decisions that touch the whole
+# account or program but don't belong to any single child — e.g. "All
+# Google consultant invoices route through Brandon" or "Maria off the
+# Google account." /cp-ingest --account <code> mode emphasizes this block;
+# other modes can omit it. `code` is the node the meeting was tagged to —
+# the level is NAMED, never inferred from the text. A sprint-planning
+# meeting carries `scope` instead and lands in master-cp.md's hand-written
+# `## Decisions (cross-cutting, hand-written)`.
 account_decisions:
   - text: "<decision text — first sentence becomes the bold title>"
-    company: "<company-code-lowercase, e.g. 'google'>"
+    code: "<parent workstream code, e.g. 'ggl-5216-google'>"
     date: "YYYY-MM-DD"
+
+# Phase D.4: one paragraph per parent-workstream meeting → the node's
+# sprint file `## Account summary` (`code`), or `sprints/<W##>/_week.md`
+# `## Sprint planning summaries` (`scope`).
+account_summary:
+  text: "<60–150 word narrative paragraph>"
+  code: "<parent workstream code>"      # or scope: "1p" | "fpsf" | "canonic" | "storyos-mc"
+  week: "YYYY-W##"
 ```
 
 **Skip empty sections** — don't include `decisions: []`. Only include
@@ -292,7 +306,8 @@ prefix.
 - Each plan entry has a clear bracket-formatted bullet trail back to the
   transcript. The "text" field is concrete, not generic.
 - Cross-cutting decisions are flagged explicitly — they're what light up
-  weekly-cp.md's decisions-strip.
+  master-cp.md's decisions rollup, and what `promote uphill` copies to the
+  account or program.
 - Stakeholders are captured opportunistically — every new client-side
   person mentioned with a role gets one entry, even if no other content
   about them is in the transcript.
@@ -322,6 +337,8 @@ prefix.
 - Doesn't write to project `cp.md` durable sections directly. Those get
   populated automatically on next `cxp sync` from the strip regions
   (which read from the sprint files this command wrote to).
-- Doesn't update `weekly-cp.md` directly. Same flow as above — write
-  bracket-formatted decisions into sprint files with `cross_cutting: true`,
-  let sync project them into the weekly-cp.md decisions-strip.
+- Doesn't write to an account or program `cp.md` from a single-project
+  plan. Write bracket-formatted decisions into the sprint file with
+  `cross_cutting: true`, let sync roll them up, and `promote uphill` the
+  ones that belong to the parent. Only an `--account <code>` plan's
+  `account_decisions` / `account_summary` write to the node.

@@ -78,13 +78,19 @@ Field budgets are warn-only and enforced by `cp exec-lint <code>`
 (Status ≤ 100 words; Where it stands ≤ 5 bullets and ≤ 40 words/bullet;
 Next up ≤ 6 bullets; Blockers ≤ 5 bullets).
 
-## 2 — Sweep `weekly-cp.md`'s cross-cutting decisions
+## 2 — Sweep the cross-cutting decisions
 
-`## Decisions (cross-cutting, last 4 weeks)` accretes auto-ingested entries
-that nothing expires, and it feeds sprint planning. Once per wrap up:
-append `[resolved: <today> — <outcome>]` to entries that are done or
-expired (decision made, event passed, date behind us) so the planner drops
-them. Ask when the outcome isn't obvious.
+Cross-cutting decisions live on the parent that owns them: the hand-written
+`## Decisions` of each touched project's **account or program `cp.md`**, and
+`master-cp.md`'s `## Decisions (cross-cutting, hand-written)` for the ones
+that belong to no company. Auto-ingest appends there and nothing expires
+the entries, and they feed sprint planning. Once per wrap up, for each
+touched project's ancestors plus `master-cp.md`: append
+`[resolved: <today> — <outcome>]` to entries that are done or expired
+(decision made, event passed, date behind us) so the planner drops them.
+Ask when the outcome isn't obvious. A decision recorded on a job that
+belongs to its account or program: `cxp promote-uphill <code> --decision
+<hash or text>`.
 
 **Never delete — the resolved marker IS the archive.**
 
@@ -273,8 +279,9 @@ This is also where the session's delta goes, given h1's `Updates` gap.
   commit their own writes upstream; nothing else on this path touches the repo,
   so there is no tree to push.
 - **Word-count rotation** (h5).
-- **`weekly-cp.md`'s cross-cutting decisions sweep** (step 2 of the CLI path) —
-  it is a hand-edit of a tenant file with no verb behind it.
+- **The account / program `cp.md` cross-cutting decisions sweep** (step 2 of
+  the CLI path) — it is a hand-edit of tenant files with no verb behind it.
+  (`promote_uphill` for a COMMITMENT is served here; a decision is not.)
 - **The improvements sweep** (step 8) — `improvements.md` is a tenant file.
 
 For the last two: surface what you would have written and hand it to the user,

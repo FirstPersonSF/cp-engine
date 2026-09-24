@@ -201,5 +201,5 @@ def test_it_states_what_the_hosted_path_cannot_do(hosted_half: str) -> None:
     # above (h5 explains rotation; h1 explains commits), so searching the whole
     # hosted half passes even with the section emptied out.
     section = hosted_half[hosted_half.index(marker):]
-    for owed in ("rotation", "weekly-cp.md", "improvements.md", "Commit and push"):
+    for owed in ("rotation", "cross-cutting decisions sweep", "improvements.md", "Commit and push"):
         assert owed in section, f"cannot-do list omits {owed}"

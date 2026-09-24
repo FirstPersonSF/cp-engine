@@ -556,13 +556,49 @@ def display_name(
     project: "ProjectState", by_code: "Mapping[str, ProjectState] | None" = None
 ) -> str:
     """The reference-style name for a workstream (CLAUDE.md "Reference
-    style"): an account, a program or an initiative is its name alone — the
-    code IS the slug form of the name; a job is `<code> <name>` so the
-    canonical id travels with it."""
+    style", label-driven — #305).
+
+    An account, a program or an initiative is its name alone. A job is the
+    SHORT code plus the short name: ``ggl-5168 Activation``. `name` is MC-2's
+    `full_job_name` (``GGL 5168 Activation``), so the ``<CO> <number>``
+    prefix is stripped before the short code is prepended — the #303 form
+    ``<code> <full_job_name>`` read ``ggl-5168-activation GGL 5168
+    Activation`` and doubled the identity. A name that does not carry the
+    prefix is kept whole.
+    """
     label = effective_label(project, by_code or {})
-    if label == "job":
-        return f"{project.code} {project.name}"
-    return project.name
+    if label != "job":
+        return project.name
+    return f"{short_code(project.code)} {short_name(project.name, project.code)}"
+
+
+def short_code(code: str) -> str:
+    """``<company>-<number>`` for any spelling of a workstream code; a code
+    the parser rejects is returned unchanged."""
+    from cp_engine.codes import parse_code
+
+    parsed = parse_code(code)
+    return parsed.short if parsed else code
+
+
+def short_name(name: str | None, code: str | None = None) -> str:
+    """`full_job_name` minus its ``<CO> <number>`` head (``GGL 5168
+    Activation`` → ``Activation``); the whole name when the head is absent
+    or the strip would leave nothing."""
+    from cp_engine.codes import parse_code
+
+    text = (name or "").strip()
+    parsed = parse_code(code) if code else None
+    if parsed is None:
+        parsed = parse_code(text)
+    if parsed is None:
+        return text
+    head = re.compile(
+        rf"^\s*{re.escape(parsed.company)}[\s\-_]*{parsed.number}(?:[\s\-_:·—]+|$)",
+        re.IGNORECASE,
+    )
+    stripped = head.sub("", text, count=1).strip()
+    return stripped or text
 
 
 def derive_label(
@@ -798,8 +834,8 @@ class DecisionEntry:
     Distinct from `MeetingNotes.decisions` (which is a plain tuple of
     strings for backward compatibility with the freeform partners-review
     surface). DecisionEntry carries the metadata needed for projection
-    into project cp.md `recent-decisions-strip` and weekly-cp.md
-    `decisions-strip` (the latter only when `cross_cutting=True`).
+    into project cp.md `recent-decisions-strip` and master-cp.md's
+    tenant rollup (the latter only when `cross_cutting=True`).
 
     Bracket convention in the sprint file's `### Decisions` block:
     `[decision · YYYY-MM-DD][cross-cutting] text` (the `[cross-cutting]`
@@ -833,7 +869,7 @@ class SprintFile:
     horizon: tuple[HorizonItem, ...]
     meeting_notes: MeetingNotes | None
     # Phase 1.2 (v0.8.5) additions — projected up into project cp.md
-    # and weekly-cp.md engine-managed regions during sync. Empty when
+    # and master-cp.md engine-managed regions during sync. Empty when
     # the sprint file pre-dates v0.8.5 (no `### Stakeholders` subsection
     # or no bracket-formatted decisions).
     stakeholders: tuple[Stakeholder, ...] = ()

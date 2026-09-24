@@ -1,11 +1,11 @@
-"""First tests for `cp_engine.plan_from_account_meeting` (arch-phase-3,
-issue #26). The module is imported by the webhook's account-meeting and
-sprint-planning endpoints and was previously untested.
+"""Tests for `cp_engine.plan_from_account_meeting` — the parent-workstream
+("account") and sprint-planning plan generators (arch-phase-3 #26; re-keyed
+on the tree by #305, plan §3.7).
 
 The Claude call is stubbed (`_call_claude` is patched in this module's
 namespace, mirroring test_plan_from_transcript.py); the backend is
-stubbed at `cp_engine.sync._default_backend_factory`, which the listing
-helpers import inside their function bodies.
+stubbed at `cp_engine.sync._default_backend_factory`, which `load_roster`
+and `list_active_for_scope` import inside their function bodies.
 """
 
 from __future__ import annotations
@@ -19,12 +19,15 @@ from cp_engine.plan_from_account_meeting import (
     AccountPlanError,
     _build_account_prompt,
     _build_sprint_planning_prompt,
-    _company_label,
     _format_active_projects,
+    _node_label,
     generate_account_plan,
     generate_sprint_planning_plan,
-    list_active_for_company,
     list_active_for_scope,
+    list_active_subtree,
+    load_roster,
+    resolve_account_node,
+    resolve_node,
 )
 from cp_engine.state import ProjectState
 from cp_engine.config import ProjectConfig, SyncConfig, TenantConfig
@@ -55,11 +58,15 @@ def make_project(
     status: str = "Open",
     is_internal: bool = False,
     summary: str | None = None,
+    parent_code: str | None = None,
+    label: str | None = None,
 ) -> ProjectState:
     return ProjectState(
         code=code,
         name=name,
         has_agreement=has_agreement,
+        parent_code=parent_code,
+        label=label,  # type: ignore[arg-type]
         company_kind=company_kind,  # type: ignore[arg-type]
         company_code=company_code,
         company_name=company_name,
@@ -123,20 +130,23 @@ account_decisions:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  _company_label / _format_active_projects
+#  _node_label / _format_active_projects
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_company_label_prefers_company_name() -> None:
+def test_node_label_is_the_node_reference_name() -> None:
+    """An account or program names itself (label-driven reference style)."""
+    node = make_project("ggl-5216-google", "Google", has_agreement=False, label="account")
+    assert _node_label(node, [make_project("ggl-5168", "GGL 5168 Playbooks")]) == "Google"
+
+
+def test_node_label_falls_back_to_company_then_code_then_unknown() -> None:
     projects = [make_project("ggl-5168", "Playbooks")]
-    assert _company_label(projects) == "Google"
-
-
-def test_company_label_falls_back_to_code_then_unknown() -> None:
+    assert _node_label(None, projects) == "Google"
     no_name = [make_project("x-1", "X", company_name=None, company_code="GGL")]
-    assert _company_label(no_name) == "GGL"
+    assert _node_label(None, no_name) == "GGL"
     neither = [make_project("x-1", "X", company_name=None, company_code=None)]
-    assert _company_label(neither) == "(unknown)"
+    assert _node_label(None, neither) == "(unknown)"
 
 
 def test_format_active_projects_includes_context_and_truncates(tmp_path: Path) -> None:
@@ -159,9 +169,21 @@ def test_format_active_projects_includes_context_and_truncates(tmp_path: Path) -
     assert "_Storyboards in flight._" in block
     assert "# GGL 5168" in block  # cp.md content pulled in
     assert "[... cp.md truncated ...]" in block  # capped
-    # An internal workstream gets the derived label and, with no dir on
-    # disk, no cp.md body.
+    # An internal workstream gets the derived label word — the same word
+    # master-cp.md shows — and, with no dir on disk, no cp.md body.
     assert "### `1pi-9005-mission-control` — Mission Control (initiative)" in block
+
+
+def test_format_active_projects_labels_a_program_by_shape(tmp_path: Path) -> None:
+    """A node with children in the list reads `(program)`; a job carries
+    no tag at all (the label is derived, never a type name)."""
+    config = make_tenant(tmp_path)
+    program = make_project("ggl-5300-go-safety", "Go Safety", label="program")
+    job = make_project("ggl-5136-go-safety-website", "Go Safety Website",
+                       parent_code=program.code, label="job")
+    block = _format_active_projects(config, [program, job])
+    assert "### `ggl-5300-go-safety` — Go Safety (program)" in block
+    assert "### `ggl-5136-go-safety-website` — Go Safety Website\n" in block
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -171,15 +193,17 @@ def test_format_active_projects_includes_context_and_truncates(tmp_path: Path) -
 
 def test_build_account_prompt_carries_key_fields() -> None:
     prompt = _build_account_prompt(
-        company_code="GGL",
-        company_label="Google",
+        code="ggl-5216-google",
+        node_label="Google",
         week="2026-W20",
         active_projects_block="### `ggl-5168` — Playbooks",
         account_decisions_context="1. **Old decision** (2026-05-01)",
         transcript="TRANSCRIPT BODY",
         team=("Drew", "Tony"),
     )
-    assert "Google (canonical code: `ggl`)" in prompt  # code lowercased
+    assert "# Parent workstream\nGoogle (canonical code: `ggl-5216-google`)" in prompt
+    assert "PARENT-WORKSTREAM meeting" in prompt
+    assert "weekly-cp" not in prompt
     assert "2026-W20" in prompt
     assert "### `ggl-5168` — Playbooks" in prompt
     assert "TRANSCRIPT BODY" in prompt
@@ -191,8 +215,8 @@ def test_build_account_prompt_carries_key_fields() -> None:
 
 def test_build_account_prompt_without_team_or_decisions() -> None:
     prompt = _build_account_prompt(
-        company_code="GGL",
-        company_label="Google",
+        code="ggl-5216-google",
+        node_label="Google",
         week="2026-W20",
         active_projects_block="",
         account_decisions_context="",
@@ -216,23 +240,37 @@ def test_build_sprint_planning_prompt_carries_scope() -> None:
     assert "SPRINT" in prompt and "PLANNING" in prompt
     assert "1P (all active client engagements)" in prompt
     assert "2026-W20" in prompt
+    assert "_week.md" in prompt
+    assert "weekly-cp" not in prompt
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  list_active_for_company / list_active_for_scope
+#  list_active_subtree / resolve_node / resolve_account_node / scopes
 # ──────────────────────────────────────────────────────────────────────
 
 
 def _population() -> list[ProjectState]:
+    """Google's tree: account → program → jobs, plus a job straight under
+    the account; Infoblox's account; the internal workstreams."""
     return [
-        make_project("ggl-5168", "Playbooks", status="Open"),
-        make_project("ggl-5200", "Ads Refresh", status="Deal"),
-        make_project("ggl-5136", "Go Safety", status="Holding"),          # inactive
+        make_project("ggl-5216-google", "Google", has_agreement=False, label="account"),
+        make_project("ggl-5300-go-safety", "Go Safety", label="program",
+                     parent_code="ggl-5216-google"),
+        make_project("ggl-5136-go-safety-website", "Go Safety Website",
+                     parent_code="ggl-5300-go-safety", status="Open"),   # grandchild
+        make_project("ggl-5188-calendar", "Calendar",
+                     parent_code="ggl-5300-go-safety", status="Holding"),  # inactive grandchild
+        make_project("ggl-5168", "Playbooks", parent_code="ggl-5216-google", status="Open"),
+        make_project("ggl-5200", "Ads Refresh", parent_code="ggl-5216-google", status="Deal"),
         # `is_internal` gates nothing since #301: a client-company row that
         # carries the flag is a workstream like any other.
-        make_project("ggl-9998", "Internal", status="Open", is_internal=True),
+        make_project("ggl-9998", "Internal", parent_code="ggl-5216-google",
+                     status="Open", is_internal=True),
+        make_project("ibx-5217-infoblox", "Infoblox", has_agreement=False, label="account",
+                     company_code="IBX", company_name="Infoblox"),
         make_project("ibx-5153", "AI Campaign", company_code="IBX",
-                     company_name="Infoblox", status="Open"),
+                     company_name="Infoblox", status="Open",
+                     parent_code="ibx-5217-infoblox"),
         # Internal workstreams: `projects` rows, MC statuses, no agreement.
         make_project(
             "1pi-9005-mission-control", "Mission Control", has_agreement=False,
@@ -252,31 +290,69 @@ def _population() -> list[ProjectState]:
     ]
 
 
-def test_list_active_for_company_filters_and_sorts(tmp_path: Path, monkeypatch) -> None:
+def test_list_active_subtree_fans_out_to_every_active_descendant() -> None:
+    """Grandchildren are in, the node itself is out, inactive rows are out."""
+    out = list_active_subtree("ggl-5216-google", _population())
+    assert [p.code for p in out] == [
+        "ggl-5136-go-safety-website",  # grandchild via the program
+        "ggl-5168",
+        "ggl-5200",
+        "ggl-5300-go-safety",          # the program is an active child too
+        "ggl-9998",
+    ]
+    assert "ggl-5216-google" not in {p.code for p in out}
+    assert "ggl-5188-calendar" not in {p.code for p in out}  # Holding
+
+
+def test_list_active_subtree_of_a_program_is_its_own_children() -> None:
+    out = list_active_subtree("ggl-5300-go-safety", _population())
+    assert [p.code for p in out] == ["ggl-5136-go-safety-website"]
+
+
+def test_list_active_subtree_accepts_the_short_code() -> None:
+    out = list_active_subtree("ggl-5300", _population())
+    assert [p.code for p in out] == ["ggl-5136-go-safety-website"]
+
+
+def test_list_active_subtree_of_a_leaf_or_unknown_code_is_empty() -> None:
+    assert list_active_subtree("ggl-5168", _population()) == []
+    assert list_active_subtree("zzz-9999", _population()) == []
+
+
+def test_resolve_node_by_slug_short_form_and_display_name() -> None:
+    roster = _population()
+    assert resolve_node("ggl-5216-google", roster).code == "ggl-5216-google"
+    assert resolve_node("GGL-5216", roster).code == "ggl-5216-google"
+    assert resolve_node("GGL 5300 Go Safety", roster).code == "ggl-5300-go-safety"
+    assert resolve_node("google", roster) is None
+    assert resolve_node(None, roster) is None
+
+
+def test_resolve_account_node_legacy_company_code() -> None:
+    """A legacy fathom row sends only `company_code`; it means the
+    company's account node, case-insensitively — and None when the
+    company has no account node in the roster."""
+    roster = _population()
+    assert resolve_account_node("GGL", roster).code == "ggl-5216-google"
+    assert resolve_account_node("ibx", roster).code == "ibx-5217-infoblox"
+    assert resolve_account_node("1PI", roster) is None  # self-company: no root node
+    assert resolve_account_node("", roster) is None
+
+
+def test_load_roster_reads_every_row(tmp_path: Path, monkeypatch) -> None:
     _stub_backend(monkeypatch, _population())
-    out = list_active_for_company(make_tenant(tmp_path), "GGL")
-    assert [p.code for p in out] == ["ggl-5168", "ggl-5200", "ggl-9998"]
-
-
-def test_list_active_for_company_is_case_insensitive(tmp_path: Path, monkeypatch) -> None:
-    _stub_backend(monkeypatch, _population())
-    out = list_active_for_company(make_tenant(tmp_path), "ggl")
-    assert [p.code for p in out] == ["ggl-5168", "ggl-5200", "ggl-9998"]
-
-
-def test_list_active_for_company_initiatives_for_internal_kind(
-    tmp_path: Path, monkeypatch
-) -> None:
-    """A self company's active workstreams (Deal | Open); Holding is out."""
-    _stub_backend(monkeypatch, _population())
-    out = list_active_for_company(make_tenant(tmp_path), "1PI")
-    assert [p.code for p in out] == ["1pi-9005-mission-control"]
+    roster = load_roster(make_tenant(tmp_path))
+    assert len(roster) == len(_population())
+    assert any(p.status == "Holding" for p in roster)  # not filtered
 
 
 def test_list_active_for_scope_1p(tmp_path: Path, monkeypatch) -> None:
     _stub_backend(monkeypatch, _population())
     out = list_active_for_scope(make_tenant(tmp_path), "1p")
-    assert [p.code for p in out] == ["ggl-5168", "ggl-5200", "ggl-9998", "ibx-5153"]
+    assert [p.code for p in out] == [
+        "ggl-5136-go-safety-website", "ggl-5168", "ggl-5200", "ggl-5216-google",
+        "ggl-5300-go-safety", "ggl-9998", "ibx-5153", "ibx-5217-infoblox",
+    ]
 
 
 def test_list_active_for_scope_fpsf_and_canonic(tmp_path: Path, monkeypatch) -> None:
@@ -302,6 +378,13 @@ def test_list_active_for_scope_unknown_raises(tmp_path: Path, monkeypatch) -> No
         list_active_for_scope(make_tenant(tmp_path), "nope")
 
 
+def test_no_pseudo_company_survives() -> None:
+    """D8: sprint-planning summaries carry a scope, never a made-up company."""
+    import cp_engine.plan_from_account_meeting as mod
+
+    assert not hasattr(mod, "_SCOPE_TO_PSEUDO_COMPANY")
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  generate_account_plan
 # ──────────────────────────────────────────────────────────────────────
@@ -311,28 +394,53 @@ def test_generate_account_plan_happy_path(tmp_path: Path, monkeypatch) -> None:
     _stub_claude(monkeypatch, _VALID_PLAN_YAML)
     result = generate_account_plan(
         config=make_tenant(tmp_path),
-        company_code="GGL",
+        code="ggl-5216-google",
         meeting_id="mtg-1",
         transcript_text="the transcript",
         active_projects=[make_project("ggl-5168", "Playbooks")],
         week_iso="2026-W20",
     )
-    assert result.company_code == "GGL"
+    assert result.code == "ggl-5216-google"
     assert result.meeting_id == "mtg-1"
     assert result.project_codes == ("ggl-5168",)
     assert "ggl-5168" in result.plan["projects"]
-    # company + week injected server-side into account_summary…
-    assert result.plan["account_summary"]["company"] == "ggl"
+    # The NODE code + week are stamped server-side onto account_summary…
+    assert result.plan["account_summary"]["code"] == "ggl-5216-google"
     assert result.plan["account_summary"]["week"] == "2026-W20"
-    # …and company into each account_decision.
-    assert result.plan["account_decisions"][0]["company"] == "ggl"
+    assert "company" not in result.plan["account_summary"]
+    # …and the node code onto each account_decision (the level is named).
+    assert result.plan["account_decisions"][0]["code"] == "ggl-5216-google"
+
+
+def test_generate_account_plan_stamps_the_node_over_a_stale_company_key(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An old-prompt plan carrying `company:` gets it replaced, not kept
+    beside `code` — the executor must never see two levels."""
+    stale = _VALID_PLAN_YAML.replace(
+        "account_summary:\n", "account_summary:\n  company: google\n"
+    )
+    _stub_claude(monkeypatch, stale)
+    result = generate_account_plan(
+        config=make_tenant(tmp_path),
+        code="ggl-5216-google",
+        meeting_id="mtg-1",
+        transcript_text="t",
+        active_projects=[make_project("ggl-5168", "Playbooks")],
+        week_iso="2026-W20",
+    )
+    assert result.plan["account_summary"] == {
+        "text": "Weekly Google sync covered activation storyboards and pricing.",
+        "code": "ggl-5216-google",
+        "week": "2026-W20",
+    }
 
 
 def test_generate_account_plan_no_active_projects_raises(tmp_path: Path) -> None:
-    with pytest.raises(AccountPlanError, match="no active projects"):
+    with pytest.raises(AccountPlanError, match="no active children"):
         generate_account_plan(
             config=make_tenant(tmp_path),
-            company_code="GGL",
+            code="ggl-5216-google",
             meeting_id="mtg-1",
             transcript_text="t",
             active_projects=[],
@@ -346,7 +454,7 @@ def test_generate_account_plan_non_yaml_response_raises(
     with pytest.raises(AccountPlanError, match="non-YAML"):
         generate_account_plan(
             config=make_tenant(tmp_path),
-            company_code="GGL",
+            code="ggl-5216-google",
             meeting_id="mtg-1",
             transcript_text="t",
             active_projects=[make_project("ggl-5168", "Playbooks")],
@@ -361,7 +469,7 @@ def test_generate_account_plan_non_mapping_plan_raises(
     with pytest.raises(AccountPlanError, match="non-mapping"):
         generate_account_plan(
             config=make_tenant(tmp_path),
-            company_code="GGL",
+            code="ggl-5216-google",
             meeting_id="mtg-1",
             transcript_text="t",
             active_projects=[make_project("ggl-5168", "Playbooks")],
@@ -384,7 +492,7 @@ def test_generate_account_plan_invalid_verb_fails_validation(
     with pytest.raises(AccountPlanError, match="plan failed validation"):
         generate_account_plan(
             config=make_tenant(tmp_path),
-            company_code="GGL",
+            code="ggl-5216-google",
             meeting_id="mtg-1",
             transcript_text="t",
             active_projects=[make_project("ggl-5168", "Playbooks")],
@@ -407,7 +515,7 @@ def test_generate_account_plan_truncates_long_transcript(
     )
     generate_account_plan(
         config=make_tenant(tmp_path),
-        company_code="GGL",
+        code="ggl-5216-google",
         meeting_id="mtg-1",
         # Cap is 400k chars now (a one-hour meeting is ~60k — the old 60k
         # cap silently cut real sprint-planning meetings).
@@ -423,7 +531,7 @@ def test_generate_account_plan_truncates_long_transcript(
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_generate_sprint_planning_plan_stamps_pseudo_company(
+def test_generate_sprint_planning_plan_stamps_the_scope(
     tmp_path: Path, monkeypatch
 ) -> None:
     _stub_claude(monkeypatch, _VALID_PLAN_YAML)
@@ -441,10 +549,11 @@ def test_generate_sprint_planning_plan_stamps_pseudo_company(
         ],
         week_iso="2026-W20",
     )
-    assert result.company_code == "fpsf-internal"
-    assert result.plan["account_summary"]["company"] == "fpsf-internal"
+    assert result.code == "sprint-planning:fpsf"
+    assert result.plan["account_summary"]["scope"] == "fpsf"
     assert result.plan["account_summary"]["week"] == "2026-W20"
-    assert result.plan["account_decisions"][0]["company"] == "fpsf-internal"
+    assert "company" not in result.plan["account_summary"]
+    assert result.plan["account_decisions"][0]["scope"] == "fpsf"
 
 
 def test_generate_sprint_planning_plan_unknown_scope_raises(tmp_path: Path) -> None:

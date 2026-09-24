@@ -15,33 +15,42 @@ Author: cp-engine (generated)
 
 # Part 1 — What's in the tree
 
-## Three kinds of work
+## One kind of work: the workstream
 
-The tenant tracks three kinds of trackable items:
+Everything the tenant tracks is a **workstream** — one MC-2 `projects` row
+under a **company**. Companies are the top level (Google, Infoblox, SAP,
+Salesloft, Teleflex; First Person and Canonic are the self-companies).
+Workstreams nest: `parent_code` puts one under another, to any depth.
+A workstream may carry an **agreement** — the commercial envelope (budget,
+deal stage) — or not. Status vocabulary is one set for all of them:
+`Deal | Open | Holding | Closed | Archived`; active = `Deal ∪ Open`.
 
-- **Engagements** — client projects, sourced from MC-2's `projects` table.
-  Status vocabulary: `Deal | Open | Holding | Closed | Archived`.
-  Active subset: `Deal ∪ Open` with `is_internal=false`.
-  Canonical codes: `<company-lowercase>-<number>` (e.g. `ggl-5168`, `ibx-5153`).
+The word you see beside a workstream is a **derived label**, first match wins:
 
-- **Initiatives** — internal workstreams (Mission Control, StoryOS, First Person
-  Website, Sales, Operations, Market Scorecard), sourced from MC-2's `initiatives`
-  table. Parallel to engagements but with no client side.
-  Status vocabulary: `Active | On hold | Done | Archived`.
-  Active subset: `Active`.
-  Canonical codes: slug form (e.g. `mission-control`, `storyos`) — no number.
+| Label | Rule | Example |
+|---|---|---|
+| **account** | no parent, under a client company | `ggl-5216-google` — Google's root node, owns `1p/google/` |
+| **program** | has children | `ggl-5300-go-safety` — a grouping with jobs beneath it |
+| **job** | has an agreement | `ggl-5168-activation` — a client engagement |
+| **initiative** | none of the above | `1pi-9005-mission-control` — internal work, no envelope |
 
-- **Standalone repos** — code repos in MC-2 not linked to an engagement or
-  initiative.
-  Status vocabulary: `Active | Holding | Inactive`.
-  Canonical codes: the raw repo slug (e.g. `cp-engine`, `mc-2`).
+Codes are `<co>-<number>-<slug>` for every workstream (`ggl-5168-activation`,
+`1pi-9005-mission-control`); the short form `ggl-5168` resolves too. Every
+client company has exactly one account node; self-companies have none —
+their top-level workstreams are programs or initiatives.
 
-Each kind appears in its own table on `master-cp.md`'s active section. Holding
-and Closed-recent collapse to `<details>` blocks; Archived items drop off.
+Each workstream has the same five surfaces: **context** (`cp.md` — Exec
+Summary, decisions, notes, stakeholders), **meetings** (`meetings/`,
+sprint-file bullets), **players** (stakeholders + the spine's Stakeholders
+layer), **work** (the sprint file `sprints/<W##>/<code>.md`), and **scope**
+(agreement, envelope, deliverables). A parent's `cp.md` also lists its
+children and, with an agreement, its envelope; a parent's sprint file rolls
+its subtree up. `master-cp.md` renders the whole tree company-grouped, the
+account node first and children indented; Holding and Closed-recent
+collapse to `<details>` blocks; Archived items drop off.
 
-`is_internal` on the engagement table is a defensive filter, not a status —
-initiatives are the proper home for internal work and surface as first-class
-top-level items.
+Code repos attach to the workstream they serve as `_repo-<name>.md` files
+inside that workstream's directory — a repo is never a workstream.
 
 ## How meetings get into the tree
 
@@ -51,43 +60,45 @@ the meeting card's "+ Assign" dropdown:
 
 | Shape | What it does | Lands in |
 |---|---|---|
-| **Single project** | Tag a meeting with one engagement or initiative code | That item's `sprints/<W##>/<code>.md` |
-| **Account meeting** | Tag a meeting with one company (Google, Infoblox, …) | Per-project bullets across all active items under that company + one `## Account summaries` paragraph in `weekly-cp.md` |
-| **Sprint planning** | Tag a meeting with a scope (`1p`, `fpsf`, `canonic`) | Per-project bullets across every active item in scope + one `## Account summaries` paragraph (pseudo-company `1p-clients` / `fpsf-internal` / `canonic-internal`) |
+| **Single workstream** | Tag a meeting with one workstream code | That workstream's `sprints/<W##>/<code>.md` |
+| **Parent workstream** | Tag a meeting with any node that has children (an account, a program) | Per-child bullets across every active workstream below it + one `## Account summary` paragraph on the node's own sprint file; account-level decisions on the node's `cp.md` `## Decisions` |
+| **Sprint planning** | Tag a meeting with a scope (`1p`, `fpsf`, `canonic`, `storyos-mc`) | Per-child bullets across every active workstream in scope + one `## Sprint planning summaries` paragraph in `sprints/<W##>/_week.md`; tenant-wide decisions in `master-cp.md`'s hand-written Decisions |
 | **Untagged** | Default. No ingest. | (nothing) |
 
-All four flow through the cp-engine-webhook auto-ingest pipeline. Each project
+All four flow through the cp-engine-webhook auto-ingest pipeline. Each workstream
 that receives bullets gets its own `[auto-ingest] <code>: meeting <id>` commit;
-account/sprint-planning summaries get an additional
-`[auto-ingest] account:<co>:` or `[auto-ingest] sprint-planning:<scope>:` commit.
+parent/sprint-planning summaries get an additional
+`[auto-ingest] account:<code>:` or `[auto-ingest] sprint-planning:<scope>:` commit.
 
 The dashboard also fires a weekly Slack digest cron (Sunday) that fetches each
-active project's mapped Slack channel(s) and writes a `### Slack digest` bullet
-into the project's current sprint file.
+active workstream's mapped Slack channel(s) and writes a `### Slack digest` bullet
+into the workstream's current sprint file.
 
-## Tenant-wide surfaces (`weekly-cp.md`)
+## Where cross-cutting content lives
 
-Cross-cutting content lives in `weekly-cp.md`:
+There is no tenant-wide meeting file. Content that crosses one workstream
+lives on the parent that owns it:
 
-- **Quick Resume** — handwritten "where are we" entries by week.
-- **Account summaries** — one paragraph bullet per `(company, week)` for every
-  account meeting and sprint planning meeting that ran. Written by the
-  auto-ingest webhook; format `[<W##> · <COMPANY>] <paragraph>`.
-- **Decisions (cross-cutting, last 4 weeks)** — numbered handwritten list of
-  decisions that cross project boundaries. Account-level decisions from
-  auto-ingest land here with `source: account: <company>` annotations; the
-  `cp_engine.agenda` parser surfaces these to relevant project agendas.
-- **Active research** — handwritten pointers to in-flight research workstreams.
+- **Decisions** — the hand-written `## Decisions` of the account or program
+  `cp.md` they belong to (auto-ingest writes them with a
+  `source: account: <code>` annotation; `promote uphill` copies one up a
+  level). Decisions that belong to no company live in `master-cp.md`'s
+  hand-written `## Decisions (cross-cutting, hand-written)`. Agendas and
+  sprint prep read a workstream's ancestors plus `master-cp.md`.
+- **Account summaries** — `## Account summary` on the parent node's sprint
+  file, one paragraph per meeting.
+- **Sprint-planning summaries** — `sprints/<W##>/_week.md`, `## Sprint
+  planning summaries`, `[<W##> · <SCOPE>]` prefix.
+- **Active research / Future capability ideas** — Mission Control's `cp.md`
+  Project Notes.
 
-Sync never overwrites `weekly-cp.md` (almost entirely human territory plus
-auto-appended bullets). Word-count discipline applies.
+Sync never touches hand-written sections. Word-count discipline applies.
 
 ## Local-link traversal (v0.5+)
 
-Each repo-source working directory (standalone repo dir OR initiative-linked
-repo file `_repo-<name>.md`) lists local clone paths via
-`**Local clone (<User>):**` lines. The source comes from `.cp-engine.toml`'s
-`[local-repos.<user>]` sections.
+Each linked-repo file (`_repo-<name>.md`, under the workstream the repo
+attaches to) lists local clone paths via `**Local clone (<User>):**` lines.
+The source comes from `.cp-engine.toml`'s `[local-repos.<user>]` sections.
 
 To answer "what shipped in this repo recently?" or "what's the current state of
 `<feature>`?" without network calls, navigate to whichever clone matches the
@@ -108,8 +119,7 @@ session summary back to the cp working dir at the end of a development session.
 **MC-2 (Supabase) is the source of truth; reach it LIVE through the
 `cp-sources` MCP server** (`cxp mcp` per `.mcp.json`). The on-disk mirrors
 (`_sources.md`, `spine/`) lag — prefer the MCP tools; never screenshots.
-Every tool takes a `<code>` first (engagement, initiative, or standalone
-repo). Five stores: **1 — RAG source store** (ingested Drive/Dropbox
+Every tool takes a `<code>` first (any workstream code). Five stores: **1 — RAG source store** (ingested Drive/Dropbox
 docs); **2 — Spine** (the distilled-memory index: elements, versions,
 relations, provenance); **3 — Inbound frameworks** (INTERNAL-only);
 **4 — Commitments** (dated obligations); **5 — Notes** (partner pings).
@@ -140,29 +150,30 @@ This session is in exactly one mode at any moment. Modes can change mid-session
 
 ### Mode 1 — Index-only (default)
 Loaded: `master-cp.md`
-NOT loaded: `<scope>/<code>/cp.md` files, `weekly-cp.md`{% if has_sprint %}, `canonic/`{% endif %}
+NOT loaded: any workstream's `cp.md`{% if has_sprint %}, `canonic/`{% endif %}
 Triggered by: any session opened in this tenant without a scoping phrase.
 
 ### Mode 2 — Single-project
-Loaded: `master-cp.md` + the `cp.md` for one project
-NOT loaded: other projects' `cp.md` files, `weekly-cp.md`
+Loaded: `master-cp.md` + the `cp.md` for one workstream
+NOT loaded: other workstreams' `cp.md` files
 Triggered by: `update <code>`, `check status <code>`, `switch to <code>`, or
 opening a session in a tracked project repo (auto-loads its CP).
 
-**Get the path from `master-cp.md`; never construct it** — engagement dirs
-are company-nested and the slug is longer than the code.
+**Get the path from `master-cp.md` (or `.cp-engine/paths.json`); never
+construct it** — dirs nest under the company and the parent, to any depth.
 
-`<code>` works the same way for engagements (`ggl-5168`), initiatives
-(`mission-control`), and standalone repos (`cp-engine`).
+`<code>` is any workstream code: a job (`ggl-5168`), an account
+(`ggl-5216-google`), a program, an initiative (`1pi-9005-mission-control`).
 {% if has_sprint %}
 ### Mode 3 — Sprint
 Loaded: `master-cp.md` + `canonic/sprint-cp.md`
-NOT loaded: `<scope>/<code>/cp.md` files, `weekly-cp.md`
+NOT loaded: any workstream's `cp.md`
 Triggered by: `update sprint`, `check status sprint`.
 {% endif %}
 ### Mode {{ 4 if has_sprint else 3 }} — Weekly review
-Loaded: `master-cp.md` + `weekly-cp.md` + every active project's `cp.md`{% if has_sprint %} + `canonic/sprint-cp.md`{% endif %}
-NOT loaded: (none — this is the heavyweight mode)
+Loaded: `master-cp.md` + every **account** and **program** `cp.md` (the
+files that carry the cross-cutting decisions){% if has_sprint %} + `canonic/sprint-cp.md`{% endif %}
+NOT loaded: job and initiative `cp.md` files — `also load <code>` opens one
 Triggered by: `run weekly review`.
 
 ### Mode {{ 5 if has_sprint else 4 }} — Workset ("tunnel")
@@ -245,16 +256,28 @@ about.
 | `wrap up` | any | Close out the session — **run `/cp-wrapup`**, which carries the full ritual (Exec Summaries, decision + commitment sweeps, spine and word-count checks, commit, push). Also closes a `run weekly review` block. **Without the plugin** (a hosted-only session), see "Wrapping up from a hosted session" below. |
 | `rotate the CP` | any | Manually trigger archive rotation on the focused CP. |
 | `sweep improvements` | any | Harvest `improvements.md`: cluster entries, propose issues. |
+| `promote uphill <code>` | any | Copy a decision or commitment from `<code>` to its PARENT — the `promote_uphill` verb (`cxp promote-uphill`). One level per call. |
+
+## Every capture names its level
+
+A write lands on the workstream you NAME — `capture_project_state`,
+`capture_session`, `create_commitment`, `propose_spine_step`, the ingest
+plan. Default to the deepest workstream in focus (mode 2's loaded
+project). To record something at the account or program level, name THAT
+code, or record it where it happened and `promote uphill`. Nothing in the
+engine reads a decision's text and decides it "sounds account-level".
 
 ## Reference style
 
-When announcing an item to a human, use the most readable form for the kind:
+When announcing an item to a human, the form follows the label:
 
-- **Engagements** — code + name: "Updates on **{{ example_code }} {{ example_name }}**?"
-- **Initiatives** — name alone (the code IS the slug form of the name):
-  "Updates on **Mission Control**?" or "Updates on **Mission Control
-  (initiative)**?" if ambiguity matters.
-- **Standalone repos** — backticked slug: "what shipped in `mc-2` this week?"
+- **account, program, initiative** — name alone (the code is the slug form
+  of the name): "Updates on **Google**?", "Updates on **Mission Control**?"
+  Add the label in parentheses only when it disambiguates:
+  "**Go Safety (program)**".
+- **job** — short code + short name: "Updates on **{{ example_code }} {{ example_name }}**?"
+  (the code carries the company and number, so the name drops them).
+- **repos** — backticked slug: "what shipped in `mc-2` this week?"
 
 Anchor blocks at the top of every `.md` file follow this format:
 
@@ -271,8 +294,9 @@ Author: <person | "Claude" | "cp-engine">
 
 Sections marked with HTML comments like `<!-- cp-engine:start <name> -->` /
 `<!-- cp-engine:end <name> -->` are written by cp-engine sync. Outside those
-markers is human territory. Sync never touches `weekly-cp.md` outside of
-auto-appended bullets in known sections.
+markers is human territory — auto-ingest appends bullets to known
+hand-written sections (`## Decisions`, `## Account summary`, `## Sprint
+planning summaries`) and never inside a marker.
 
 ## Sprint planning prep
 
@@ -290,8 +314,8 @@ meeting): `/cp-prep <code> [<code> ...]`.
 After the meeting, tag the Fathom recording in the dashboard as
 `sprint_planning_scope='1p' | 'fpsf' | 'canonic' | 'storyos-mc'` — the
 auto-ingest webhook handles per-project routing + the tenant-wide
-summary in `weekly-cp.md`'s `## Account summaries`. Don't hand-write
-per-project bullets when auto-ingest is available.
+summary in `sprints/<W##>/_week.md`'s `## Sprint planning summaries`.
+Don't hand-write per-project bullets when auto-ingest is available.
 
 ## Deepening from transcript
 

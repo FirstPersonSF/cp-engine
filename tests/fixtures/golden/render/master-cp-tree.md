@@ -47,29 +47,29 @@ _12 workstreams in motion_
 | Code | Workstream | Label | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
 | `ggl-5216-google` | Google | Account | Brandon | $300k | — | Eleven live jobs; EHS the anchor. | [CP →](1p/google/cp.md) · [W20 →](sprints/2026-W20/ggl-5216-google.md) |
-| └─ `ggl-5168-activation` | ggl-5168-activation Activation | Job | Drew | $80k | — | Storyboards in flight; client review Wed. | [CP →](1p/google/ggl-5168-activation/cp.md) · [W20 →](sprints/2026-W20/ggl-5168-activation.md) |
+| └─ `ggl-5168-activation` | ggl-5168 Activation | Job | Drew | $80k | — | Storyboards in flight; client review Wed. | [CP →](1p/google/ggl-5168-activation/cp.md) · [W20 →](sprints/2026-W20/ggl-5168-activation.md) |
 | └─ `ggl-5300-go-safety` | Go Safety | Program | Drew | $150k | — | Site + calendar share one program envelope. | [CP →](1p/google/ggl-5300-go-safety/cp.md) · [W20 →](sprints/2026-W20/ggl-5300-go-safety.md) |
-| &nbsp;&nbsp;└─ `ggl-5136-go-safety-website` | ggl-5136-go-safety-website go/safety website | Job | Drew | $90k | — | Launch slipped to W22. | [CP →](1p/google/ggl-5300-go-safety/ggl-5136-go-safety-website/cp.md) · [W20 →](sprints/2026-W20/ggl-5136-go-safety-website.md) |
+| &nbsp;&nbsp;└─ `ggl-5136-go-safety-website` | ggl-5136 go/safety website | Job | Drew | $90k | — | Launch slipped to W22. | [CP →](1p/google/ggl-5300-go-safety/ggl-5136-go-safety-website/cp.md) · [W20 →](sprints/2026-W20/ggl-5136-go-safety-website.md) |
 
 ### Infoblox
 
 | Code | Workstream | Label | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
 | `ibx-5217-infoblox` | Infoblox | Account | Tony | — | — |  | [CP →](1p/infoblox/cp.md) · [W20 →](sprints/2026-W20/ibx-5217-infoblox.md) |
-| └─ `ibx-5153-ai-campaign` | ibx-5153-ai-campaign AI Campaign | Job | Tony | $120k | — | Carol framework deck in client review. | [CP →](1p/infoblox/ibx-5153-ai-campaign/cp.md) · [W20 →](sprints/2026-W20/ibx-5153-ai-campaign.md) |
+| └─ `ibx-5153-ai-campaign` | ibx-5153 AI Campaign | Job | Tony | $120k | — | Carol framework deck in client review. | [CP →](1p/infoblox/ibx-5153-ai-campaign/cp.md) · [W20 →](sprints/2026-W20/ibx-5153-ai-campaign.md) |
 
 ### Pebble Foods
 
 | Code | Workstream | Label | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
-| `peb-5200-discovery` | peb-5200-discovery Discovery | Job | Drew | $45k | — | No account node yet; roots its own block. | [CP →](1p/pebble-foods/peb-5200-discovery/cp.md) · [W20 →](sprints/2026-W20/peb-5200-discovery.md) |
+| `peb-5200-discovery` | peb-5200 Discovery | Job | Drew | $45k | — | No account node yet; roots its own block. | [CP →](1p/pebble-foods/peb-5200-discovery/cp.md) · [W20 →](sprints/2026-W20/peb-5200-discovery.md) |
 
 ### SAP
 
 | Code | Workstream | Label | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
 | `sap-5219-sap` | SAP | Account | — | — | — |  | [CP →](1p/sap/cp.md) · [W20 →](sprints/2026-W20/sap-5219-sap.md) |
-| └─ `sap-5198-ad-videos` | sap-5198-ad-videos 2027 Ad Videos | Job | Drew | $425k | — | Creative open; SOW deliberately open. | [CP →](1p/sap/sap-5198-ad-videos/cp.md) · [W20 →](sprints/2026-W20/sap-5198-ad-videos.md) |
+| └─ `sap-5198-ad-videos` | sap-5198 2027 Ad Videos | Job | Drew | $425k | — | Creative open; SOW deliberately open. | [CP →](1p/sap/sap-5198-ad-videos/cp.md) · [W20 →](sprints/2026-W20/sap-5198-ad-videos.md) |
 
 ### First Person
 
@@ -106,3 +106,7 @@ _12 workstreams in motion_
 
 </details>
 <!-- cp-engine:end closed-recent -->
+
+## Decisions (cross-cutting, hand-written)
+
+1. _<decision that belongs to no one company — sprint-planning `account_decisions` land here; an account's or program's own decisions live on that node's `cp.md`>_ (_<date>_)

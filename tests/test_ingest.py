@@ -193,40 +193,81 @@ Sprint: 2026-W20
 """)
 
 
-def _make_tenant(tmp_path: Path, *, with_weekly_cp: bool = False) -> Path:
-    """Build a minimal tenant scaffold with a W19 sprint file for ggl-5168.
+NODE = "ggl-5216-google"
+PROGRAM = "ggl-5300-go-safety"
 
-    Pass ``with_weekly_cp=True`` to also scaffold a weekly-cp.md
-    (Phase B's account_decisions block needs one to write to).
+
+def _make_tenant(tmp_path: Path, *, with_nodes: bool = False) -> Path:
+    """Build a minimal tenant scaffold with a W20 sprint file for ggl-5168.
+
+    Pass ``with_nodes=True`` to also lay down Google's account node
+    (`1p/google/`, code `ggl-5216-google`) with a `cp.md`, a program below
+    it, a `.cp-engine/paths.json` naming both, the node's W20 sprint file
+    and a master-cp.md — the homes Phase B / D.4 write to (#305).
     """
     week_dir = tmp_path / "sprints" / "2026-W20"
     week_dir.mkdir(parents=True)
     _scaffold_minimal_sprint_file(week_dir / "ggl-5168.md", "ggl-5168")
     (week_dir / "_week.md").write_text("## Themes\n\n- _<theme>_\n")
-    if with_weekly_cp:
-        # Minimal weekly-cp shape — handwritten Decisions list + a marker
-        # so account-decision insert has somewhere to anchor.
-        (tmp_path / "weekly-cp.md").write_text("""# Weekly CP
+    if with_nodes:
+        import json
 
-## Quick Resume
+        node_dir = tmp_path / "1p" / "google"
+        node_dir.mkdir(parents=True)
+        (node_dir / "cp.md").write_text("""# Google — Account CP
 
-placeholder
+<!-- cp-engine:start exec-summary -->
+## Exec Summary  ·  updated 2026-05-12
+<!-- cp-engine:end exec-summary -->
 
-## Decisions (cross-cutting, last 4 weeks)
+## Current Work
 
-3. **An older decision.** (2026-05-08, source: weekly account meeting)
+_<notes>_
+
+## Decisions
+
+3. **An older decision.** (2026-05-08, source: account: ggl-5216-google)
 
 2. **An even older one.** (2026-05-08, source: ggl-5136)
 
-1. **The oldest.** (2026-05-08, source: weekly account meeting)
+1. **The oldest.** (2026-05-08, source: account: ggl-5216-google)
 
-<!-- cp-engine:start themes-strip -->
-<!-- cp-engine:end themes-strip -->
+## Done
 
-## Active research
-
-placeholder
+_<recent completions>_
 """)
+        prog_dir = node_dir / PROGRAM
+        prog_dir.mkdir()
+        (prog_dir / "cp.md").write_text(
+            "# Go Safety — Program CP\n\n## Decisions\n\n1. _<decision>_ (_<date>_)\n\n## Done\n"
+        )
+        # The node's sprint file is a REAL scaffold (it must carry the
+        # anchor block `scaffold_from_prior` reads when a later week is
+        # scaffolded from it).
+        import shutil
+
+        shutil.copy(
+            Path(__file__).resolve().parent / "fixtures" / "golden" / "sprints"
+            / "scaffold-engagement-minimal.md",
+            week_dir / f"{NODE}.md",
+        )
+        (tmp_path / ".cp-engine").mkdir()
+        (tmp_path / ".cp-engine" / "paths.json").write_text(json.dumps({
+            "version": 1, "generated_at": "2026-05-12T00:00:00+00:00",
+            "workstreams": {
+                NODE: {"path": "1p/google", "parent": None, "has_agreement": False,
+                       "label": "account", "mc2_id": None, "company": "GGL", "status": "Open"},
+                PROGRAM: {"path": f"1p/google/{PROGRAM}", "parent": NODE,
+                          "has_agreement": True, "label": "program", "mc2_id": None,
+                          "company": "GGL", "status": "Open"},
+            },
+        }))
+        (tmp_path / "master-cp.md").write_text(
+            "# Master CP\n\n<!-- cp-engine:start closed-recent -->\n"
+            "<!-- cp-engine:end closed-recent -->\n\n"
+            "## Decisions (cross-cutting, hand-written)\n\n"
+            "1. _<decision that belongs to no one company>_ (_<date>_)\n"
+        )
     return tmp_path
 
 
@@ -518,105 +559,129 @@ def test_close_ask_omits_marker_when_closed_by_absent(tmp_path):
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Phase B — account_decisions
+#  Phase B — account_decisions → the NODE's cp.md (#305)
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_execute_plan_writes_account_decision_to_weekly_cp(tmp_path: Path) -> None:
-    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
+def test_execute_plan_writes_account_decision_to_the_node_cp_md(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path, with_nodes=True)
     plan = {
         "account_decisions": [
             {
                 "text": "All Google consultant invoices route through Brandon",
-                "company": "google",
+                "code": NODE,
                 "date": "2026-05-13",
             }
         ]
     }
     result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert result.errors == []
-    assert (tenant / "weekly-cp.md") in result.files_written
-    body = (tenant / "weekly-cp.md").read_text()
+    node_cp = tenant / "1p" / "google" / "cp.md"
+    assert node_cp in result.files_written
+    assert (tenant / "weekly-cp.md").exists() is False  # never created
+    body = node_cp.read_text()
     # Highest existing was #3, so new one should be #4.
     assert "4. **All Google consultant invoices route through Brandon**" in body
-    assert "(2026-05-13, source: account: google)" in body
-    # Hash marker present for idempotency.
+    assert "(2026-05-13, source: account: ggl-5216-google)" in body
     assert "cp:hash=" in body
+    # …inside the hand-written section, before `## Done`.
+    assert body.index("4. **All Google") < body.index("## Done")
 
 
-def test_account_decision_inserts_before_engine_marker(tmp_path: Path) -> None:
-    """Account decisions should land in the handwritten section, not
-    inside any engine-managed strip region."""
-    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
-    plan = {
-        "account_decisions": [
-            {"text": "Test", "company": "google", "date": "2026-05-13"}
-        ]
-    }
-    execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
-    body = (tenant / "weekly-cp.md").read_text()
-    # Find the position of the new decision line and the first engine marker.
-    decision_pos = body.find("4. **Test**")
-    marker_pos = body.find("<!-- cp-engine:start themes-strip -->")
-    assert decision_pos > 0
-    assert marker_pos > 0
-    assert decision_pos < marker_pos, (
-        "account-decision should land before engine markers, "
-        "not inside the engine-managed regions"
+def test_account_decision_lands_on_a_program_and_replaces_the_placeholder(
+    tmp_path: Path,
+) -> None:
+    tenant = _make_tenant(tmp_path, with_nodes=True)
+    plan = {"account_decisions": [{"text": "Program call", "code": PROGRAM, "date": "2026-05-13"}]}
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    assert result.errors == []
+    body = (tenant / "1p" / "google" / PROGRAM / "cp.md").read_text()
+    assert "1. **Program call** (2026-05-13, source: account: ggl-5300-go-safety)" in body
+    assert "_<decision>_" not in body
+    assert body.index("1. **Program call**") < body.index("## Done")
+
+
+def test_account_decision_accepts_the_short_code(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path, with_nodes=True)
+    plan = {"account_decisions": [{"text": "Short-coded", "code": "ggl-5216", "date": "2026-05-13"}]}
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    assert result.errors == []
+    assert "**Short-coded**" in (tenant / "1p" / "google" / "cp.md").read_text()
+
+
+def test_account_decision_never_lands_inside_an_engine_marker(tmp_path: Path) -> None:
+    """The section is bounded by the next heading OR the next marker."""
+    tenant = _make_tenant(tmp_path, with_nodes=True)
+    node_cp = tenant / "1p" / "google" / "cp.md"
+    node_cp.write_text(
+        "# Google\n\n## Decisions\n\n1. **Old** (2026-05-01)\n\n"
+        "<!-- cp-engine:start children -->\n## Workstreams\n| x |\n<!-- cp-engine:end children -->\n"
     )
+    plan = {"account_decisions": [{"text": "New", "code": NODE, "date": "2026-05-13"}]}
+    execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    body = node_cp.read_text()
+    assert body.index("2. **New**") < body.index("<!-- cp-engine:start children -->")
 
 
 def test_account_decision_is_idempotent(tmp_path: Path) -> None:
-    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
-    plan = {
-        "account_decisions": [
-            {"text": "Same decision twice", "company": "google", "date": "2026-05-13"}
-        ]
-    }
+    tenant = _make_tenant(tmp_path, with_nodes=True)
+    plan = {"account_decisions": [{"text": "Same decision twice", "code": NODE, "date": "2026-05-13"}]}
     r1 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert r1.skipped_duplicate == 0
-    body_after_first = (tenant / "weekly-cp.md").read_text()
+    body_after_first = (tenant / "1p" / "google" / "cp.md").read_text()
 
     r2 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert r2.skipped_duplicate == 1
     assert r2.files_written == []
-    body_after_second = (tenant / "weekly-cp.md").read_text()
-    assert body_after_first == body_after_second
+    assert (tenant / "1p" / "google" / "cp.md").read_text() == body_after_first
 
 
-def test_account_decision_renumbers_correctly_when_no_existing_decisions(tmp_path: Path) -> None:
-    """If weekly-cp.md has no existing numbered decisions, start at #1."""
-    week_dir = tmp_path / "sprints" / "2026-W20"
-    week_dir.mkdir(parents=True)
-    _scaffold_minimal_sprint_file(week_dir / "ggl-5168.md", "ggl-5168")
-    (week_dir / "_week.md").write_text("## Themes\n\n- _<theme>_\n")
-    # Empty weekly-cp.md (no existing decisions).
-    (tmp_path / "weekly-cp.md").write_text("# Weekly CP\n\n## Active research\n\nplaceholder\n")
-    plan = {
-        "account_decisions": [
-            {"text": "First decision", "company": "google", "date": "2026-05-13"}
-        ]
-    }
-    result = execute_plan(plan, tenant_root=tmp_path, today=date(2026, 5, 12))
+def test_account_decision_creates_the_section_when_missing(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path, with_nodes=True)
+    node_cp = tenant / "1p" / "google" / "cp.md"
+    node_cp.write_text("# Google — Account CP\n\n## Current Work\n\nnotes\n")
+    plan = {"account_decisions": [{"text": "First decision", "code": NODE, "date": "2026-05-13"}]}
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert result.errors == []
-    body = (tmp_path / "weekly-cp.md").read_text()
-    assert "1. **First decision**" in body
+    body = node_cp.read_text()
+    assert "## Decisions\n\n1. **First decision**" in body
+
+
+def test_sprint_planning_decision_lands_in_master_cp(tmp_path: Path) -> None:
+    """A scope meeting has no node: its decisions are company-less and
+    live in master-cp.md's hand-written section (plan D8)."""
+    tenant = _make_tenant(tmp_path, with_nodes=True)
+    plan = {"account_decisions": [{"text": "Cadence to 2 weeks", "scope": "1p", "date": "2026-05-13"}]}
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    assert result.errors == []
+    master = tenant / "master-cp.md"
+    assert master in result.files_written
+    body = master.read_text()
+    assert "1. **Cadence to 2 weeks** (2026-05-13, source: sprint-planning: 1p)" in body
+    assert "_<decision that belongs" not in body  # placeholder replaced
+    assert body.index("1. **Cadence") > body.index("<!-- cp-engine:end closed-recent -->")
 
 
 def test_account_decision_validates_required_fields(tmp_path: Path) -> None:
-    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
+    tenant = _make_tenant(tmp_path, with_nodes=True)
     # Missing 'text'
     r1 = execute_plan(
-        {"account_decisions": [{"company": "google", "date": "2026-05-13"}]},
+        {"account_decisions": [{"code": NODE, "date": "2026-05-13"}]},
         tenant_root=tenant, today=date(2026, 5, 12),
     )
     assert any("missing 'text'" in e for e in r1.errors)
-    # Missing 'company'
+    # Missing 'code' / 'scope'
     r2 = execute_plan(
         {"account_decisions": [{"text": "x", "date": "2026-05-13"}]},
         tenant_root=tenant, today=date(2026, 5, 12),
     )
-    assert any("missing 'company'" in e for e in r2.errors)
+    assert any("missing 'code'" in e for e in r2.errors)
+    # A legacy `company` key names nothing.
+    r3 = execute_plan(
+        {"account_decisions": [{"text": "x", "company": "google", "date": "2026-05-13"}]},
+        tenant_root=tenant, today=date(2026, 5, 12),
+    )
+    assert any("missing 'code'" in e for e in r3.errors)
 
 
 def test_validate_plan_rejects_account_decisions_not_a_list() -> None:
@@ -632,99 +697,81 @@ def test_validate_plan_accepts_account_decisions_alongside_other_blocks() -> Non
         "projects": {"ggl-5168": {"asks": [{"text": "x"}]}},
         "themes": [{"text": "t", "date": "2026-05-13"}],
         "account_decisions": [
-            {"text": "d", "company": "google", "date": "2026-05-13"}
+            {"text": "d", "code": NODE, "date": "2026-05-13"}
         ],
     }
     _validate_plan(plan)  # no raise
 
 
-def test_account_decision_errors_when_weekly_cp_missing(tmp_path: Path) -> None:
-    """If weekly-cp.md doesn't exist, account_decisions errors cleanly
-    (doesn't raise; logs to result.errors)."""
-    week_dir = tmp_path / "sprints" / "2026-W20"
-    week_dir.mkdir(parents=True)
-    _scaffold_minimal_sprint_file(week_dir / "ggl-5168.md", "ggl-5168")
-    (week_dir / "_week.md").write_text("## Themes\n\n")
-    # No weekly-cp.md.
-    plan = {
-        "account_decisions": [
-            {"text": "x", "company": "google", "date": "2026-05-13"}
-        ]
-    }
-    result = execute_plan(plan, tenant_root=tmp_path, today=date(2026, 5, 12))
-    assert any("weekly-cp.md missing" in e for e in result.errors)
+def test_account_decision_errors_when_the_node_has_no_cp_md(tmp_path: Path) -> None:
+    """An unknown node is an error the run reports — never a silent drop,
+    and never a fallback to a tenant-wide file."""
+    tenant = _make_tenant(tmp_path)  # no nodes at all
+    plan = {"account_decisions": [{"text": "x", "code": "ggl-5216-google", "date": "2026-05-13"}]}
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    assert any("no working dir with a cp.md for workstream 'ggl-5216-google'" in e for e in result.errors)
     assert result.files_written == []
+    assert not (tenant / "weekly-cp.md").exists()
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Phase D.4 — account_summary
+#  Phase D.4 — account_summary → the NODE's sprint file (#305)
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_account_summary_creates_section_and_writes_bullet(tmp_path: Path) -> None:
-    """First account_summary auto-creates the ## Account summaries section."""
-    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
+def test_account_summary_creates_section_on_the_node_sprint_file(tmp_path: Path) -> None:
+    """First account_summary auto-creates `## Account summary` on the
+    node's sprint file for the item's week."""
+    tenant = _make_tenant(tmp_path, with_nodes=True)
     plan = {
         "account_summary": {
             "text": "Maria gave a status across all five GGL projects this week. "
             "5168 launch slipped to 6/8; 5151 interviews wrap; 5176 in client review.",
-            "company": "google",
-            "week": "2026-W21",
+            "code": NODE,
+            "week": "2026-W20",
         }
     }
     result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert result.errors == []
-    body = (tenant / "weekly-cp.md").read_text()
-    assert "## Account summaries" in body
-    assert "[2026-W21 · GOOGLE] Maria gave a status" in body
+    node_sprint = tenant / "sprints" / "2026-W20" / f"{NODE}.md"
+    assert node_sprint in result.files_written
+    body = node_sprint.read_text()
+    assert "## Account summary" in body
+    assert "- [2026-W20 · ggl-5216-google] Maria gave a status" in body
     assert "cp:hash=" in body
+    assert not (tenant / "weekly-cp.md").exists()
+
+
+def test_account_summary_scaffolds_the_node_sprint_file_from_prior(tmp_path: Path) -> None:
+    """The item's week wins; a week sync has not reached yet is scaffolded
+    from the node's prior sprint file (the #156 race, same as projects)."""
+    tenant = _make_tenant(tmp_path, with_nodes=True)
+    plan = {"account_summary": {"text": "W21 sync.", "code": NODE, "week": "2026-W21"}}
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 19))
+    assert result.errors == []
+    target = tenant / "sprints" / "2026-W21" / f"{NODE}.md"
+    assert target.is_file()
+    assert "- [2026-W21 · ggl-5216-google] W21 sync." in target.read_text()
 
 
 def test_account_summary_appends_to_existing_section(tmp_path: Path) -> None:
-    """A second account_summary for a different company lands as a sibling
-    bullet under the existing section, not a duplicate section header."""
-    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
-    # First summary creates the section.
-    execute_plan(
-        {
-            "account_summary": {
-                "text": "Google week summary.",
-                "company": "google",
-                "week": "2026-W21",
-            }
-        },
-        tenant_root=tenant,
-        today=date(2026, 5, 12),
-    )
-    # Second summary appends.
-    execute_plan(
-        {
-            "account_summary": {
-                "text": "Infoblox week summary.",
-                "company": "ibx",
-                "week": "2026-W21",
-            }
-        },
-        tenant_root=tenant,
-        today=date(2026, 5, 12),
-    )
-    body = (tenant / "weekly-cp.md").read_text()
-    # Exactly one section header, both bullets present.
-    assert body.count("## Account summaries") == 1
-    assert "[2026-W21 · GOOGLE] Google week summary." in body
-    assert "[2026-W21 · IBX] Infoblox week summary." in body
+    """A second summary on the same node lands as a sibling bullet, not a
+    duplicate section header."""
+    tenant = _make_tenant(tmp_path, with_nodes=True)
+    for text in ("Google week summary.", "A second Google meeting."):
+        execute_plan(
+            {"account_summary": {"text": text, "code": NODE, "week": "2026-W20"}},
+            tenant_root=tenant, today=date(2026, 5, 12),
+        )
+    body = (tenant / "sprints" / "2026-W20" / f"{NODE}.md").read_text()
+    assert body.count("## Account summary") == 1
+    assert "[2026-W20 · ggl-5216-google] Google week summary." in body
+    assert "[2026-W20 · ggl-5216-google] A second Google meeting." in body
 
 
-def test_account_summary_idempotent_same_company_same_week(tmp_path: Path) -> None:
-    """Re-running for (company, week) is a no-op via hash dedup."""
-    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
-    plan = {
-        "account_summary": {
-            "text": "Week summary.",
-            "company": "google",
-            "week": "2026-W21",
-        }
-    }
+def test_account_summary_idempotent_same_node_same_week(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path, with_nodes=True)
+    plan = {"account_summary": {"text": "Week summary.", "code": NODE, "week": "2026-W20"}}
     r1 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     r2 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     assert r1.errors == [] and r2.errors == []
@@ -733,59 +780,47 @@ def test_account_summary_idempotent_same_company_same_week(tmp_path: Path) -> No
     assert r2.skipped_duplicate == 1
 
 
-def test_account_summary_same_company_different_week_writes_both(
-    tmp_path: Path,
-) -> None:
-    """The hash key embeds week, so a different week's summary doesn't dedup."""
-    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
-    execute_plan(
-        {
-            "account_summary": {
-                "text": "Week 19 summary.",
-                "company": "google",
-                "week": "2026-W20",
-            }
-        },
-        tenant_root=tenant,
-        today=date(2026, 5, 6),
-    )
-    execute_plan(
-        {
-            "account_summary": {
-                "text": "Week 20 summary.",
-                "company": "google",
-                "week": "2026-W21",
-            }
-        },
-        tenant_root=tenant,
-        today=date(2026, 5, 12),
-    )
-    body = (tenant / "weekly-cp.md").read_text()
-    assert "[2026-W20 · GOOGLE]" in body
-    assert "[2026-W21 · GOOGLE]" in body
+def test_sprint_planning_summary_lands_in_week_md(tmp_path: Path) -> None:
+    """A scope meeting's summary goes to `_week.md` under
+    `## Sprint planning summaries`, `[<W##> · <SCOPE>]` prefix (D8)."""
+    tenant = _make_tenant(tmp_path, with_nodes=True)
+    plan = {"account_summary": {"text": "W20 planning.", "scope": "storyos-mc", "week": "2026-W20"}}
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    assert result.errors == []
+    week = tenant / "sprints" / "2026-W20" / "_week.md"
+    assert week in result.files_written
+    body = week.read_text()
+    assert "## Sprint planning summaries\n\n- [2026-W20 · STORYOS-MC] W20 planning. <!-- cp:hash=" in body
+    # Idempotent.
+    r2 = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    assert r2.skipped_duplicate == 1 and r2.files_written == []
+
+
+def test_sprint_planning_summary_scaffolds_a_missing_week_file(tmp_path: Path) -> None:
+    tenant = _make_tenant(tmp_path, with_nodes=True)
+    plan = {"account_summary": {"text": "W21 planning.", "scope": "1p", "week": "2026-W21"}}
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 19))
+    assert result.errors == []
+    body = (tenant / "sprints" / "2026-W21" / "_week.md").read_text()
+    assert "# Sprint W21" in body  # the scaffold
+    assert "- [2026-W21 · 1P] W21 planning." in body
 
 
 def test_account_summary_validates_required_fields(tmp_path: Path) -> None:
-    tenant = _make_tenant(tmp_path, with_weekly_cp=True)
-    # Missing 'text'
+    tenant = _make_tenant(tmp_path, with_nodes=True)
     r = execute_plan(
-        {"account_summary": {"company": "google", "week": "2026-W21"}},
-        tenant_root=tenant,
-        today=date(2026, 5, 12),
+        {"account_summary": {"code": NODE, "week": "2026-W20"}},
+        tenant_root=tenant, today=date(2026, 5, 12),
     )
     assert any("missing 'text'" in e for e in r.errors)
-    # Missing 'company'
     r = execute_plan(
-        {"account_summary": {"text": "x", "week": "2026-W21"}},
-        tenant_root=tenant,
-        today=date(2026, 5, 12),
+        {"account_summary": {"text": "x", "week": "2026-W20"}},
+        tenant_root=tenant, today=date(2026, 5, 12),
     )
-    assert any("missing 'company'" in e for e in r.errors)
-    # Missing 'week'
+    assert any("missing 'code'" in e for e in r.errors)
     r = execute_plan(
-        {"account_summary": {"text": "x", "company": "google"}},
-        tenant_root=tenant,
-        today=date(2026, 5, 12),
+        {"account_summary": {"text": "x", "code": NODE}},
+        tenant_root=tenant, today=date(2026, 5, 12),
     )
     assert any("missing 'week'" in e for e in r.errors)
 

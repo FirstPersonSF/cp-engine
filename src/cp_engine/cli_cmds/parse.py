@@ -84,10 +84,16 @@ def parse_transcript_cmd(path: Path, gap_threshold: int, codes: str) -> None:
     "--company",
     default=None,
     help="Filter by company code (case-insensitive, e.g. 'GGL' or 'IBX'). "
-    "Used by /cp-ingest --account <company> to find the projects a "
-    "multi-project account meeting touches. Default: all companies.",
+    "Default: all companies.",
 )
-def list_active_projects_cmd(scope: str, company: str | None) -> None:
+@click.option(
+    "--under",
+    default=None,
+    help="Only the active workstreams BELOW this code (children, "
+    "grandchildren, …; the node itself excluded). Used by /cp-ingest "
+    "--account <code> to find what a parent-workstream meeting touches.",
+)
+def list_active_projects_cmd(scope: str, company: str | None, under: str | None) -> None:
     """List active projects from MC-2 as JSON for transcript classification.
 
     Output: list of {code, name, company_code, company_name, owner, scope}.
@@ -105,6 +111,11 @@ def list_active_projects_cmd(scope: str, company: str | None) -> None:
     projects = backend.read_projects(config)
 
     company_lc = company.lower() if company else None
+    subtree: set[str] | None = None
+    if under:
+        from cp_engine.plan_from_account_meeting import list_active_subtree
+
+        subtree = {p.code for p in list_active_subtree(under, projects)}
 
     out = []
     for p in projects:
@@ -113,8 +124,10 @@ def list_active_projects_cmd(scope: str, company: str | None) -> None:
         proj_scope = scope_for(p.company_kind)
         if scope != "all" and proj_scope != scope:
             continue
-        # Phase B.2: --company filter for /cp-ingest --account flow.
         if company_lc and (p.company_code or "").lower() != company_lc:
+            continue
+        # #305: --under <code> for the /cp-ingest --account <code> flow.
+        if subtree is not None and p.code not in subtree:
             continue
         out.append(
             {

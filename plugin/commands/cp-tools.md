@@ -271,7 +271,8 @@ ratifies, and the Monday partners digest reads):
 - `resolve_commitment(code, key, outcome?)` — **hosted-server verb**
   (`cp-hosted` connector; cp-engine #143 ported it off stdio) — close an open row
   as `done` or `dropped` (`key` = id or distinct description substring). The
-  wrap-up-sweep verb, mirroring `weekly-cp.md`'s `[resolved: ...]` markers.
+  wrap-up-sweep verb, mirroring the `[resolved: ...]` markers on the
+  account / program `cp.md` decisions lists.
 - `resolve_commitments(code, keys, outcome?)` — **hosted-server verb** (#159) —
   batch close: each key resolves exactly as `resolve_commitment`, per-key
   results, a miss never aborts the batch (the `retire_spine_elements`

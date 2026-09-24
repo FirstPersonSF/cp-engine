@@ -10441,7 +10441,7 @@ def _round_dict(rnd: Any) -> dict[str, Any]:
 
 
 # The wrap-up steps a hosted session can actually run, in ritual order. The
-# two the CLI path owns — rotation and the `weekly-cp.md` decisions sweep —
+# two the CLI path owns — rotation and the account / program `cp.md` decisions sweep —
 # are deliberately absent: they need a checkout, and listing a step nobody
 # here can perform would make every wrap-up read as incomplete forever.
 _WRAP_STEPS: tuple[tuple[str, str], ...] = (

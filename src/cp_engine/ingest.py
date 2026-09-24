@@ -30,7 +30,7 @@ import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 logger = logging.getLogger(__name__)
@@ -407,32 +407,8 @@ def execute_plan(
     # Themes are tenant-wide; they go in _week.md.
     themes = plan.get("themes") or []
     if themes:
-        week_path = tenant_root / "sprints" / week_iso / "_week.md"
-        if not week_path.exists():
-            # Race ahead of sync, same as the project-file scaffold above:
-            # a week dir sync hasn't visited yet has no _week.md, and
-            # dropping the themes (#156) loses tenant-wide content that
-            # nothing re-derives. Scaffold it exactly as sync would.
-            try:
-                from cp_engine.render import render_sprint_week
-                from cp_engine.sprints import _iso_week_dates, _short_md_date
-
-                start, end = _iso_week_dates(week_iso)
-                week_num = week_iso.split("-W", 1)[-1]
-                week_dates = (
-                    f"{_short_md_date(start.isoformat())} – "
-                    f"{_short_md_date(end.isoformat())}"
-                )
-                week_path.parent.mkdir(parents=True, exist_ok=True)
-                week_path.write_text(render_sprint_week(
-                    week_iso=week_iso,
-                    week_label=f"W{week_num}",
-                    week_dates=week_dates,
-                ))
-                logger.info("auto-scaffolded %s (week %s)", week_path, week_iso)
-            except Exception as exc:
-                result.errors.append(f"_week.md missing: {week_path} ({exc})")
-        if week_path.exists():
+        week_path = _ensure_week_file(tenant_root, week_iso, result)
+        if week_path is not None:
             for item in themes:
                 try:
                     written = _write_theme(item, week_path)
@@ -444,56 +420,56 @@ def execute_plan(
                 except Exception as exc:
                     result.errors.append(f"theme: {exc}")
 
-    # Phase B: account-level decisions are tenant-wide; they go in
-    # weekly-cp.md's handwritten Decisions list. Cross-references to
-    # specific projects come via `source: account: <company>` parsed by
-    # cp_engine.agenda.decisions_for_project — but the company itself
-    # isn't a project code, so these don't bucket under any one project.
-    # They surface in weekly-cp.md and in /cp-prep agenda's tenant-wide
-    # context block as "cross-cutting decisions, last 4 weeks."
+    # Phase B (#305): account-level decisions land on the workstream the
+    # meeting was tagged to — the NODE's `cp.md`, hand-written `## Decisions`
+    # section (`code`). A sprint-planning meeting has no node: its
+    # `account_decisions` carry `scope` and land in master-cp.md's
+    # hand-written cross-cutting section, the home of company-less
+    # decisions (plan D8). `cp_engine.agenda` reads both back.
     account_decisions = plan.get("account_decisions") or []
-    if account_decisions:
-        weekly_cp_path = tenant_root / "weekly-cp.md"
-        if not weekly_cp_path.exists():
-            result.errors.append(f"weekly-cp.md missing: {weekly_cp_path}")
-        else:
-            for item in account_decisions:
-                try:
-                    written = _write_account_decision(item, weekly_cp_path)
-                    if written:
-                        if weekly_cp_path not in result.files_written:
-                            result.files_written.append(weekly_cp_path)
-                    else:
-                        result.skipped_duplicate += 1
-                except Exception as exc:
-                    result.errors.append(f"account-decision: {exc}")
+    for item in account_decisions:
+        try:
+            target = _account_decision_target(tenant_root, item)
+            if target is None:
+                continue
+            written = _write_account_decision(item, target)
+            if written:
+                if target not in result.files_written:
+                    result.files_written.append(target)
+            else:
+                result.skipped_duplicate += 1
+        except Exception as exc:
+            result.errors.append(f"account-decision: {exc}")
 
-    # Phase D.4: account_summary is the narrative companion to
-    # account_decisions. One paragraph per (company, week) under the
-    # new ## Account summaries section in weekly-cp.md.
+    # Phase D.4 (#305): the account summary is the narrative companion to
+    # account_decisions. One paragraph per (node, week) under the NODE's
+    # sprint file `## Account summary` section (`code`); a sprint-planning
+    # summary (`scope`) goes to `sprints/<W##>/_week.md` under
+    # `## Sprint planning summaries`.
     account_summary = plan.get("account_summary")
     if account_summary:
-        weekly_cp_path = tenant_root / "weekly-cp.md"
-        if not weekly_cp_path.exists():
-            result.errors.append(f"weekly-cp.md missing: {weekly_cp_path}")
-        else:
-            # Accept both a single dict and a list of dicts; the prompt
-            # produces one but the validator already accepts list shape.
-            items = (
-                account_summary
-                if isinstance(account_summary, list)
-                else [account_summary]
-            )
-            for item in items:
-                try:
-                    written = _write_account_summary(item, weekly_cp_path)
-                    if written:
-                        if weekly_cp_path not in result.files_written:
-                            result.files_written.append(weekly_cp_path)
-                    else:
-                        result.skipped_duplicate += 1
-                except Exception as exc:
-                    result.errors.append(f"account-summary: {exc}")
+        # Accept both a single dict and a list of dicts; the prompt
+        # produces one but the validator already accepts list shape.
+        items = (
+            account_summary
+            if isinstance(account_summary, list)
+            else [account_summary]
+        )
+        for item in items:
+            try:
+                target = _account_summary_target(
+                    tenant_root, item, week_iso, result, supabase=supabase
+                )
+                if target is None:
+                    continue
+                written = _write_account_summary(item, target)
+                if written:
+                    if target not in result.files_written:
+                        result.files_written.append(target)
+                else:
+                    result.skipped_duplicate += 1
+            except Exception as exc:
+                result.errors.append(f"account-summary: {exc}")
 
     return result
 
@@ -550,7 +526,7 @@ def _validate_plan(plan: dict) -> None:
     if account_decisions is not None:
         if not isinstance(account_decisions, list):
             raise IngestPlanError(
-                "plan.account_decisions must be a list of {text, company, date}"
+                "plan.account_decisions must be a list of {text, code | scope, date}"
             )
         for i, item in enumerate(account_decisions):
             if not isinstance(item, dict):
@@ -1549,169 +1525,260 @@ def _write_theme(item: dict, week_path: Path) -> bool:
     return True
 
 
-def _write_account_decision(item: dict, weekly_cp_path: Path) -> bool:
-    """Phase B: append an account-level decision to weekly-cp.md.
+def _ensure_week_file(
+    tenant_root: Path, week_iso: str, result: IngestPlanResult
+) -> Path | None:
+    """`sprints/<week>/_week.md`, scaffolded exactly as sync would when the
+    week dir has not been visited yet (#156: dropping tenant-wide content
+    loses what nothing re-derives). None, with the error recorded, when
+    the scaffold itself fails."""
+    week_path = tenant_root / "sprints" / week_iso / "_week.md"
+    if week_path.exists():
+        return week_path
+    try:
+        from cp_engine.render import render_sprint_week
+        from cp_engine.sprints import _iso_week_dates, _short_md_date
 
-    Format matches the existing handwritten numbered-list style:
-      <N+1>. **<text>** (YYYY-MM-DD, source: account: <company-lower>) <hash-marker>
+        start, end = _iso_week_dates(week_iso)
+        week_num = week_iso.split("-W", 1)[-1]
+        week_dates = (
+            f"{_short_md_date(start.isoformat())} – "
+            f"{_short_md_date(end.isoformat())}"
+        )
+        week_path.parent.mkdir(parents=True, exist_ok=True)
+        week_path.write_text(render_sprint_week(
+            week_iso=week_iso,
+            week_label=f"W{week_num}",
+            week_dates=week_dates,
+        ))
+        logger.info("auto-scaffolded %s (week %s)", week_path, week_iso)
+    except Exception as exc:
+        result.errors.append(f"_week.md missing: {week_path} ({exc})")
+        return None
+    return week_path
 
-    Where <N+1> is one greater than the highest numbered decision already
-    present, found via regex on lines like "19. **...** ...".
 
-    Inserted before the first cp-engine marker (so it lands inside the
-    handwritten section, not inside the engine-managed strip regions).
-    The cross-reference parser in cp_engine.agenda picks up
-    `source: account: <company-lower>` automatically (see Phase B Q5
-    in the cascade design doc).
+def _account_decision_target(tenant_root: Path, item: dict) -> Path:
+    """Where an `account_decisions` item lands (#305): the NODE's `cp.md`
+    when the item names a workstream `code`; master-cp.md when it names a
+    sprint-planning `scope`. Raises when neither resolves — a decision with
+    no home is an error the run must report, not a silent drop."""
+    code = _as_text(item.get("code"))
+    scope = _as_text(item.get("scope"))
+    if code:
+        cp_path = _resolve_node_cp_path(tenant_root, code)
+        if cp_path is None:
+            raise IngestPlanError(
+                f"no working dir with a cp.md for workstream {code!r}"
+            )
+        return cp_path
+    if scope:
+        master = tenant_root / "master-cp.md"
+        if not master.is_file():
+            raise IngestPlanError(f"master-cp.md missing: {master}")
+        return master
+    raise IngestPlanError("account-decision item missing 'code' (or 'scope')")
 
-    Idempotency via content hash on (company, "record-account-decision",
-    text). Re-running the same plan is a no-op.
+
+def _resolve_node_cp_path(tenant_root: Path, code: str) -> Path | None:
+    """`_resolve_project_cp_path`, then the paths index by company+number:
+    an account node's dir is the company slug (`1p/google`), so the short
+    form `ggl-5216` matches no dir NAME and only the index can answer."""
+    hit = _resolve_project_cp_path(tenant_root, code)
+    if hit is not None:
+        return hit
+    from cp_engine.codes import parse_code
+    from cp_engine.state import load_paths_index
+
+    wanted = parse_code(code)
+    if wanted is None:
+        return None
+    for indexed, entry in load_paths_index(tenant_root).items():
+        mine = parse_code(indexed)
+        if mine and (mine.company, mine.number) == (wanted.company, wanted.number):
+            candidate = tenant_root / entry.path / "cp.md"
+            if candidate.is_file():
+                return candidate
+    return None
+
+
+def _account_summary_target(
+    tenant_root: Path,
+    item: dict,
+    week_iso: str,
+    result: IngestPlanResult,
+    *,
+    supabase: Any = None,
+) -> Path | None:
+    """Where an `account_summary` item lands (#305, plan D8): the NODE's
+    sprint file `sprints/<week>/<code>.md` (scaffolded from its prior week
+    when sync has not created it yet), or `_week.md` for a sprint-planning
+    `scope`. The item's own `week` wins over the plan's week."""
+    code = _as_text(item.get("code"))
+    scope = _as_text(item.get("scope"))
+    week = _as_text(item.get("week")) or week_iso
+    if code:
+        from cp_engine.sprints import resolve_sprint_code, scaffold_from_prior
+
+        stem = resolve_sprint_code(tenant_root / "sprints", code, supabase=supabase)
+        sprint_path = tenant_root / "sprints" / week / f"{stem}.md"
+        if not sprint_path.exists():
+            scaffolded = scaffold_from_prior(
+                tenant_root=tenant_root,
+                project_code=stem,
+                target_week_iso=week,
+                supabase=supabase,
+            )
+            if scaffolded is None:
+                raise IngestPlanError(
+                    f"sprint file missing for {code} (week {week}) and no prior "
+                    f"sprint file to scaffold from: {sprint_path}"
+                )
+            logger.info(
+                "auto-scaffolded sprint file %s from prior week (week %s)",
+                scaffolded, week,
+            )
+        return sprint_path
+    if scope:
+        return _ensure_week_file(tenant_root, week, result)
+    raise IngestPlanError("account-summary item missing 'code' (or 'scope')")
+
+
+# Hand-written `## Decisions` headings, by file: the project template's
+# plain heading on every workstream cp.md, master-cp.md's cross-cutting
+# section. Read back by `cp_engine.agenda.parse_decisions_section`.
+_CP_DECISIONS_HEADING = "## Decisions"
+_MASTER_DECISIONS_HEADING = "## Decisions (cross-cutting, hand-written)"
+_DECISIONS_HEADING_RE = re.compile(
+    r"^## Decisions(?: \((?:cross-cutting|hand-written)[^)]*\))?\s*$", re.MULTILINE
+)
+_HAND_SECTION_END_RE = re.compile(r"^(?:## |<!-- cp-engine:start )", re.MULTILINE)
+_DECISION_PLACEHOLDER_RE = re.compile(r"^\s*\d+\.\s+_<[^>]*>_.*$", re.MULTILINE)
+
+
+def _append_numbered_to_section(
+    body: str, heading: str, line_for: Callable[[int], str]
+) -> str:
+    """Append a numbered entry to a hand-written `## …` section.
+
+    The section runs from `heading` to the next `## ` heading or the next
+    engine marker — never INTO a managed region (the #263 lesson: a marker
+    is a boundary in both directions). The entry's number is one past the
+    highest already in the section; the template placeholder
+    `1. _<decision>_ (_<date>_)` is replaced when it is the only entry. A
+    missing section is created at the end of the file.
     """
-    text = _as_text(item.get("text")) or _as_text("")
-    company = _as_text(item.get("company")) or _as_text("").lower()
+    sec = re.compile(rf"^{re.escape(heading)}\s*$", re.MULTILINE).search(body)
+    if sec is None:
+        if not body.endswith("\n"):
+            body += "\n"
+        return f"{body}\n{heading}\n\n{line_for(1)}\n"
+    zone_start = sec.end()
+    end_m = _HAND_SECTION_END_RE.search(body, pos=zone_start + 1)
+    zone_end = end_m.start() if end_m else len(body)
+    zone = body[zone_start:zone_end]
+    zone = _DECISION_PLACEHOLDER_RE.sub("", zone)
+    nums = [int(m.group(1)) for m in re.finditer(r"^\s*(\d+)\.\s+", zone, re.MULTILINE)]
+    next_num = (max(nums) + 1) if nums else 1
+    zone = zone.rstrip("\n")
+    new_zone = (zone + "\n\n" if zone.strip() else "\n") + line_for(next_num) + "\n"
+    if end_m:
+        new_zone += "\n"
+    return body[:zone_start] + new_zone + body[zone_end:]
+
+
+def _write_account_decision(item: dict, target_path: Path) -> bool:
+    """Phase B (#305): append an account-level decision where it belongs.
+
+    `target_path` is the NODE's `cp.md` (item carries `code`) or
+    master-cp.md (item carries a sprint-planning `scope`). Format matches
+    the hand-written numbered-list style the agenda parser reads:
+
+      <N>. **<text>** (YYYY-MM-DD, source: account: <code>) <hash-marker>
+      <N>. **<text>** (YYYY-MM-DD, source: sprint-planning: <scope>) <hash-marker>
+
+    Idempotent via a content hash on (code-or-scope, verb, text).
+    """
+    text = _sanitize_inline_text(_as_text(item.get("text")))
+    code = _as_text(item.get("code"))
+    scope = _as_text(item.get("scope"))
     date_s = _as_text(item.get("date")) or _today_iso()
     if not text:
         raise IngestPlanError("account-decision item missing 'text'")
-    if not company:
-        raise IngestPlanError("account-decision item missing 'company'")
-    h = _content_hash(company, "record-account-decision", text)
-    body = weekly_cp_path.read_text(encoding="utf-8")
+    if not code and not scope:
+        raise IngestPlanError("account-decision item missing 'code' (or 'scope')")
+    key = code or f"sprint-planning:{scope}"
+    source = f"account: {code}" if code else f"sprint-planning: {scope}"
+    heading = _CP_DECISIONS_HEADING if code else _MASTER_DECISIONS_HEADING
+    h = _content_hash(key, "record-account-decision", text)
+    body = target_path.read_text(encoding="utf-8")
     if _already_present(body, h):
         return False
-
-    # Find highest existing decision number. Pattern matches lines like:
-    #   "19. **..." OR "1. **..." (any digit count, leading whitespace optional).
-    decision_nums = [
-        int(m.group(1))
-        for m in re.finditer(r"^\s*(\d+)\.\s+\*\*", body, re.MULTILINE)
-    ]
-    next_num = (max(decision_nums) + 1) if decision_nums else 1
-
-    # New decision line. Two newlines before so it gets its own paragraph
-    # (matches the spacing of existing entries in weekly-cp.md).
-    new_line = (
-        f"{next_num}. **{text}** "
-        f"({date_s}, source: account: {company}) {_hash_marker(h)}"
+    new = _append_numbered_to_section(
+        body,
+        heading,
+        lambda n: f"{n}. **{text}** ({date_s}, source: {source}) {_hash_marker(h)}",
     )
-
-    # Insert location: before the first cp-engine marker (so it lands in
-    # the handwritten section), or before "## Active research" as a
-    # fallback, or at end of file as last resort.
-    insertion_anchors = [
-        "<!-- cp-engine:start themes-strip -->",
-        "<!-- cp-engine:start decisions-strip -->",
-        "## Active research",
-    ]
-    anchor_pos = -1
-    for anchor in insertion_anchors:
-        pos = body.find(anchor)
-        if pos != -1:
-            anchor_pos = pos
-            break
-
-    if anchor_pos == -1:
-        # Append at end of file.
-        if not body.endswith("\n"):
-            body += "\n"
-        new = body + "\n" + new_line + "\n"
-    else:
-        # Insert just before the anchor, with blank-line padding.
-        new = body[:anchor_pos] + new_line + "\n\n" + body[anchor_pos:]
-
-    weekly_cp_path.write_text(new)
+    target_path.write_text(new)
     return True
 
 
-def _write_account_summary(item: dict, weekly_cp_path: Path) -> bool:
-    """Phase D.4: append an account-meeting summary to weekly-cp.md.
+_NODE_SUMMARY_HEADING = "## Account summary"
+_WEEK_SUMMARY_HEADING = "## Sprint planning summaries"
 
-    One paragraph bullet per (company, week) under the new
-    `## Account summaries` section. Captures the gestalt of an
-    account meeting (e.g. "Maria gave a status across all five
-    GGL projects this week...") alongside the existing
-    account_decisions flow which captures one-line tenant-wide
-    decisions.
 
-    Section auto-creates if missing — landed before the first
-    cp-engine marker block, or at end of file as fallback.
+def _append_bullet_to_hand_section(body: str, heading: str, bullet: str) -> str:
+    """Append a bullet under a hand-written `## …` section, creating the
+    section at the end of the file when it is missing. The zone ends at
+    the next `## ` heading or engine marker (#263: never inside a managed
+    region). An HTML-comment placeholder line is left in place."""
+    sec = re.compile(rf"^{re.escape(heading)}\s*$", re.MULTILINE).search(body)
+    if sec is None:
+        if not body.endswith("\n"):
+            body += "\n"
+        return f"{body}\n{heading}\n\n{bullet}\n"
+    zone_start = sec.end()
+    end_m = _HAND_SECTION_END_RE.search(body, pos=zone_start + 1)
+    zone_end = end_m.start() if end_m else len(body)
+    zone = body[zone_start:zone_end].rstrip("\n")
+    new_zone = (zone + "\n" if zone.strip() else "\n") + bullet + "\n"
+    if end_m:
+        new_zone += "\n"
+    return body[:zone_start] + new_zone + body[zone_end:]
 
-    Hash key embeds the ISO week so the same summary text in two
-    different weeks doesn't false-collide; re-running for the same
-    `(company, week)` is idempotent.
+
+def _write_account_summary(item: dict, target_path: Path) -> bool:
+    """Phase D.4 (#305): append a meeting summary paragraph.
+
+    One bullet per (node, week) under `## Account summary` of the NODE's
+    sprint file (item carries `code`), or per (scope, week) under
+    `## Sprint planning summaries` of `_week.md` (item carries `scope`):
+
+      - [<W##> · <code>] <paragraph> <!-- cp:hash=… -->
+      - [<W##> · <SCOPE>] <paragraph> <!-- cp:hash=… -->
+
+    The hash embeds the week so the same text in two weeks does not
+    collide; re-running the same (key, week, text) is a no-op.
     """
-    text = _as_text(item.get("text")) or _as_text("")
-    company = _as_text(item.get("company")) or _as_text("").lower()
-    week = _as_text(item.get("week")) or _as_text("")
+    text = _sanitize_inline_text(_as_text(item.get("text")))
+    code = _as_text(item.get("code"))
+    scope = _as_text(item.get("scope"))
+    week = _as_text(item.get("week"))
     if not text:
         raise IngestPlanError("account-summary item missing 'text'")
-    if not company:
-        raise IngestPlanError("account-summary item missing 'company'")
+    if not code and not scope:
+        raise IngestPlanError("account-summary item missing 'code' (or 'scope')")
     if not week:
         raise IngestPlanError("account-summary item missing 'week' (e.g. '2026-W20')")
-
-    h = _content_hash(company, "record-account-summary", f"{week}|{text}")
-    body = weekly_cp_path.read_text(encoding="utf-8")
+    key = code or f"sprint-planning:{scope}"
+    tag = code if code else scope.upper()
+    heading = _NODE_SUMMARY_HEADING if code else _WEEK_SUMMARY_HEADING
+    h = _content_hash(key, "record-account-summary", f"{week}|{text}")
+    body = target_path.read_text(encoding="utf-8")
     if _already_present(body, h):
         return False
-
-    bullet = f"- [{week} · {company.upper()}] {text} {_hash_marker(h)}"
-
-    # If the section already exists, append the bullet under it. Otherwise
-    # create the section just before the first cp-engine marker (so it
-    # lands inside the handwritten region) or at end of file.
-    section_re = re.compile(r"^## Account summaries\s*$", re.MULTILINE)
-    sec_match = section_re.search(body)
-    if sec_match:
-        # Insert at the end of the section (right before the next ## or EOF).
-        next_h2 = re.compile(r"^## ", re.MULTILINE)
-        next_m = next_h2.search(body, pos=sec_match.end() + 1)
-        insert_pos = next_m.start() if next_m else len(body)
-        # ...but never past a cp-engine marker. WHY THIS EXISTS: "the next
-        # `## `" is only the end of the handwritten zone when no managed
-        # region intervenes. In the cp tenant the next heading is
-        # `## Themes`, which lives INSIDE `cp-engine:start themes-strip` —
-        # so this function appended into cp-engine's own derived territory
-        # and the following `cp sync` regenerated the strip and deleted the
-        # bullet. Measured 2026-09-15: of 52 account summaries ever written
-        # to that file, 3 survived; 39 were removed across 18 sync runs, and
-        # in every one the count removed equalled the count sitting after
-        # the marker. The write reported success every time, so nothing
-        # surfaced the loss. The marker is a boundary in BOTH directions:
-        # the human must not write inside it, and neither may we.
-        marker_m = re.compile(r"^<!-- cp-engine:start ", re.MULTILINE).search(
-            body, pos=sec_match.end() + 1
-        )
-        if marker_m and marker_m.start() < insert_pos:
-            insert_pos = marker_m.start()
-        # Preserve trailing newline structure inside the section.
-        zone = body[sec_match.end():insert_pos]
-        if not zone.endswith("\n"):
-            zone += "\n"
-        new_zone = zone + bullet + "\n"
-        new = body[:sec_match.end()] + new_zone + body[insert_pos:]
-    else:
-        # Create the section. Insert before the first cp-engine marker
-        # so it joins the handwritten region rather than a managed strip.
-        insertion_anchors = [
-            "<!-- cp-engine:start themes-strip -->",
-            "<!-- cp-engine:start decisions-strip -->",
-            "## Active research",
-        ]
-        anchor_pos = -1
-        for anchor in insertion_anchors:
-            pos = body.find(anchor)
-            if pos != -1:
-                anchor_pos = pos
-                break
-        section_block = f"## Account summaries\n\n{bullet}\n\n"
-        if anchor_pos == -1:
-            if not body.endswith("\n"):
-                body += "\n"
-            new = body + "\n" + section_block
-        else:
-            new = body[:anchor_pos] + section_block + body[anchor_pos:]
-
-    weekly_cp_path.write_text(new)
+    bullet = f"- [{week} · {tag}] {text} {_hash_marker(h)}"
+    target_path.write_text(_append_bullet_to_hand_section(body, heading, bullet))
     return True
 
 

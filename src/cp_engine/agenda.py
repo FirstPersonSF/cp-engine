@@ -11,14 +11,15 @@ Tony's projects" by giving partners a single doc to read before the meeting.
 Design (locked 2026-05-12 with Drew):
 - Project-grouped, alphabetical (matches master-cp.md's display order).
 - Per-project: Quick Resume excerpt + recent inbound + open asks aged + decisions due
-  + cross-referenced weekly-cp decisions (parsed from `source: <code>` suffix).
-- Tenant-wide header: themes/decisions/carry-forward strips from weekly-cp.md.
+  + the cross-cutting decisions recorded on its ancestors (account / program
+    `cp.md` `## Decisions`) and master-cp.md entries whose `source:` names it.
+- Tenant-wide header: themes/decisions/carry-forward strips from sprint files.
 - Discussion prompt only when a real urgency signal exists (stale ask,
   decision due, escalated risk). Quiet otherwise.
 - Two scopes: full sprint planning (all active) or scoped (named projects).
 
 Single source of truth: parses existing artifacts (master-cp.md row data,
-weekly-cp.md decisions, project cp.md handwritten Quick Resume, sprint-file
+account / program `cp.md` decisions, project cp.md Exec Summary, sprint-file
 strip regions). No new state, no new files written by this module — the
 caller (cp prep-agenda CLI) decides where to emit.
 """
@@ -58,7 +59,7 @@ from cp_engine.state import (
 )
 from cp_engine.status import is_active_status
 
-# How many cross-referenced weekly-cp decisions to surface per project.
+# How many cross-cutting decisions to surface per project.
 # Caps to keep the agenda block readable; ordered newest-first.
 _MAX_DECISIONS_PER_PROJECT = 6
 
@@ -88,12 +89,14 @@ def _strip_hash_marker(text: str) -> str:
 
 @dataclass
 class WeeklyDecision:
-    """One decision parsed from weekly-cp.md's handwritten decisions list."""
+    """One decision parsed from a hand-written `## Decisions` list — an
+    account / program `cp.md` or master-cp.md's cross-cutting section."""
 
     number: int  # the leading "19." numbering
     text: str  # the bold-marked title + body up to the trailing meta
     date: str  # ISO date from the (YYYY-MM-DD, source: ...) suffix
     sources: tuple[str, ...]  # parsed source codes/labels (could be empty)
+    node: str | None = None  # the workstream whose cp.md carried it; None = master-cp
 
 
 @dataclass
@@ -132,7 +135,7 @@ class TenantAgendaHeader:
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  Weekly-cp decision parser
+#  Cross-cutting decision parser
 # ──────────────────────────────────────────────────────────────────────
 
 # Decisions look like:
@@ -157,42 +160,67 @@ _DECISION_META_RE = re.compile(
     r"(?:\s*\*\*)?\s*(?:<!--[^>]*-->\s*)*$",
 )
 _TRAILING_HASH_RE = re.compile(r"\s*(?:<!--[^>]*-->\s*)+$")
-# The handwritten decisions heading — tolerate the exact "(cross-cutting,
-# last 4 weeks)" suffix drifting, but require the "Decisions (cross-" stem
-# so the engine-managed decisions-strip (inside markers, already truncated
-# above) can't match.
+# The hand-written decisions heading. Two spellings are read (#305): the
+# project template's plain `## Decisions` (every account / program `cp.md`)
+# and master-cp.md's `## Decisions (cross-cutting, hand-written)` — the
+# old weekly-cp.md `## Decisions (cross-cutting, last 4 weeks)` parses the
+# same way. The engine-managed `recent-decisions-strip` heading carries
+# "(auto-aggregated …)" and is inside markers, so it never matches.
 _DECISIONS_HEADING_RE = re.compile(
-    r"^## Decisions \(cross-cutting[^)]*\)\s*$", re.MULTILINE
+    r"^## Decisions(?: \(cross-cutting, (?:hand-written|last \d+ weeks)\))?\s*$",
+    re.MULTILINE,
 )
+_MARKER_RE = re.compile(r"^<!-- cp-engine:(start|end) ", re.MULTILINE)
+
+
+def _hand_written_heading(body: str) -> "re.Match[str] | None":
+    """The first decisions heading that is OUTSIDE every managed region."""
+    for m in _DECISIONS_HEADING_RE.finditer(body):
+        depth = 0
+        for mk in _MARKER_RE.finditer(body, 0, m.start()):
+            depth += 1 if mk.group(1) == "start" else -1
+        if depth <= 0:
+            return m
+    return None
+# The section ends at the next `## ` heading or the next engine marker —
+# a cp.md's hand-written Decisions sits AFTER every managed region, so the
+# old "truncate at the first marker" rule would have read nothing there.
+_SECTION_END_RE = re.compile(r"^(?:## |<!-- cp-engine:start )", re.MULTILINE)
+# The project template's placeholder entry: `1. _<decision>_ (_<date>_)`.
+_PLACEHOLDER_RE = re.compile(r"^_<[^>]*>_")
 
 # Project-code shape: 2-4 alphanumeric chars + optional hyphen + 1-5 digits.
 # Matches ggl-5136, ibx-5167, 1pi-9001, snt-5186 etc.
 _CODE_RE = re.compile(r"\b([a-z0-9]{2,4})-(\d{1,5})\b", re.IGNORECASE)
 
 
-def parse_weekly_decisions(weekly_cp_body: str) -> tuple[WeeklyDecision, ...]:
-    """Extract all numbered decisions from weekly-cp.md.
+def parse_decisions_section(
+    body: str, *, node: str | None = None
+) -> tuple[WeeklyDecision, ...]:
+    """Extract the numbered decisions of ONE file's hand-written
+    `## Decisions` section (#305).
 
-    Stops at the first cp-engine marker (so it doesn't bleed into the
-    auto-aggregated decisions-strip region — those are already surfaced
-    via aggregators.aggregate_tenant_strips).
+    The section is the text between the decisions heading and the next
+    `## ` heading or engine marker, whichever comes first — so a cp.md's
+    hand-written list (which follows every managed region) is read whole,
+    and the engine's own `recent-decisions-strip` is never read. A file
+    with no decisions heading falls back to everything before its first
+    marker (older fixtures), as the weekly-cp.md parser did. The template
+    placeholder `1. _<decision>_ (_<date>_)` is skipped. `node` stamps the
+    workstream code the decisions were read from.
     """
-    # Truncate to before the first engine marker so we only parse handwritten.
-    marker = weekly_cp_body.find("<!-- cp-engine:start")
-    body = weekly_cp_body if marker == -1 else weekly_cp_body[:marker]
-    # Scope to the handwritten decisions section. The item-boundary split
-    # below matches ANY numbered list, so without this the Quick Resume's
-    # numbered bullets would parse as decisions. Falls back to the whole
-    # pre-marker body when no decisions heading exists (older fixtures).
-    section = _DECISIONS_HEADING_RE.search(body)
+    section = _hand_written_heading(body)
     if section:
         rest = body[section.end():]
-        next_heading = re.search(r"^## ", rest, re.MULTILINE)
-        body = rest[: next_heading.start()] if next_heading else rest
+        end = _SECTION_END_RE.search(rest)
+        body = rest[: end.start()] if end else rest
+    else:
+        marker = body.find("<!-- cp-engine:start")
+        body = body if marker == -1 else body[:marker]
     out: list[WeeklyDecision] = []
     for m in _DECISION_ITEM_RE.finditer(body):
         item_body = m.group("body").strip()
-        if not item_body:
+        if not item_body or _PLACEHOLDER_RE.match(item_body):
             continue
         meta = _DECISION_META_RE.search(item_body)
         if meta:
@@ -213,9 +241,113 @@ def parse_weekly_decisions(weekly_cp_body: str) -> tuple[WeeklyDecision, ...]:
                 text=text,
                 date=date,
                 sources=sources,
+                node=node,
             )
         )
     return tuple(out)
+
+
+# master-cp.md's hand-written section: the home of company-less
+# cross-cutting decisions (the one-time weekly-cp.md split parks them
+# there; sprint-planning `account_decisions` are appended there).
+MASTER_DECISIONS_HEADING = "## Decisions (cross-cutting, hand-written)"
+
+# Which labels carry a tenant-visible `## Decisions` list: the parent
+# levels. A job's decisions stay in its sprint files.
+_PARENT_LABELS = frozenset({"account", "program"})
+
+
+@dataclass(frozen=True)
+class CrossCuttingDecisions:
+    """Every hand-written cross-cutting decision in the tenant, by home.
+
+    `master` — master-cp.md's hand-written section (company-less).
+    `by_node` — each account / program node's `cp.md` `## Decisions`.
+    `parent_of` — the parent code of every indexed workstream, so a
+    project's ancestors chain can be walked without a roster.
+    """
+
+    master: tuple[WeeklyDecision, ...] = ()
+    by_node: dict[str, tuple[WeeklyDecision, ...]] = field(default_factory=dict)
+    parent_of: dict[str, str | None] = field(default_factory=dict)
+
+    @property
+    def all(self) -> tuple[WeeklyDecision, ...]:
+        """Master first, then every node in code order."""
+        out: list[WeeklyDecision] = list(self.master)
+        for code in sorted(self.by_node):
+            out.extend(self.by_node[code])
+        return tuple(out)
+
+    def ancestors(self, code: str) -> tuple[str, ...]:
+        """`code`'s parent, grandparent, … (nearest first); bounded."""
+        out: list[str] = []
+        seen = {code}
+        current = self.parent_of.get(code)
+        while current and current not in seen and len(out) < 32:
+            out.append(current)
+            seen.add(current)
+            current = self.parent_of.get(current)
+        return tuple(out)
+
+    def for_project(self, code: str) -> tuple[WeeklyDecision, ...]:
+        """What a project's agenda should carry: every decision recorded on
+        its ancestors (nearest first) plus the master-cp decisions whose
+        `source:` names the project."""
+        out: list[WeeklyDecision] = []
+        for ancestor in self.ancestors(code):
+            out.extend(self.by_node.get(ancestor, ()))
+        # A node's own list, when the agenda is for the node itself.
+        out.extend(self.by_node.get(code, ()))
+        out.extend(decisions_for_project(code, self.master))
+        return tuple(out)
+
+
+def load_cross_cutting_decisions(
+    tenant_root: Path,
+    projects: "tuple[ProjectState, ...] | list[ProjectState] | None" = None,
+) -> CrossCuttingDecisions:
+    """Read the tenant's cross-cutting decisions from their homes (#305,
+    plan D8): master-cp.md's hand-written section plus the `## Decisions`
+    of every account and program `cp.md`.
+
+    Nodes come from `.cp-engine/paths.json` when it exists; a roster passed
+    in fills the gaps (a tenant that has never synced with #302 has no
+    index). `weekly-cp.md` is not read — a copy still on disk is ignored.
+    """
+    from cp_engine.state import effective_label, load_paths_index
+
+    master: tuple[WeeklyDecision, ...] = ()
+    master_path = tenant_root / "master-cp.md"
+    if master_path.is_file():
+        master = parse_decisions_section(
+            master_path.read_text(encoding="utf-8"), node=None
+        )
+
+    nodes: dict[str, Path] = {}
+    parent_of: dict[str, str | None] = {}
+    for code, entry in load_paths_index(tenant_root).items():
+        parent_of[code] = entry.parent
+        if entry.label in _PARENT_LABELS:
+            nodes[code] = tenant_root / entry.path
+    if projects:
+        by_code = {p.code: p for p in projects}
+        for p in projects:
+            parent_of.setdefault(p.code, p.parent_code)
+            if p.code in nodes:
+                continue
+            if effective_label(p, by_code) in _PARENT_LABELS:
+                nodes[p.code] = resolve_project_dir(tenant_root, p, by_code)
+
+    by_node: dict[str, tuple[WeeklyDecision, ...]] = {}
+    for code, node_dir in nodes.items():
+        cp_md = node_dir / "cp.md"
+        if not cp_md.is_file():
+            continue
+        found = parse_decisions_section(cp_md.read_text(encoding="utf-8"), node=code)
+        if found:
+            by_node[code] = found
+    return CrossCuttingDecisions(master=master, by_node=by_node, parent_of=parent_of)
 
 
 def _parse_sources(raw: str) -> tuple[str, ...]:
@@ -278,11 +410,15 @@ def build_project_block(
     *,
     tenant_root: Path,
     sprint_files: tuple,  # tuple[SprintFile, ...] — avoid circular import
-    weekly_decisions: tuple[WeeklyDecision, ...],
+    weekly_decisions: "tuple[WeeklyDecision, ...] | CrossCuttingDecisions",
     today: date,
     last_sprint_hours: str | None = None,
 ) -> ProjectAgendaBlock:
-    """Assemble all per-project agenda data."""
+    """Assemble all per-project agenda data.
+
+    `weekly_decisions` is the tenant's `CrossCuttingDecisions` (ancestors +
+    master-cp); a flat tuple is still accepted and filtered by `source:`.
+    """
     # Project working dir → cp.md path: the paths index first, then the
     # path authority (#302).
     cp_md_path = resolve_project_dir(tenant_root, project) / "cp.md"
@@ -304,8 +440,11 @@ def build_project_block(
     # Decisions due from this week's sprint file Horizon section.
     decisions_due = _extract_decisions_due_for_project(project.code, sprint_files, today)
 
-    # Cross-referenced weekly-cp decisions (newest first, capped).
-    relevant = decisions_for_project(project.code, weekly_decisions)
+    # Cross-cutting decisions (ancestors first, then newest first, capped).
+    if isinstance(weekly_decisions, CrossCuttingDecisions):
+        relevant = weekly_decisions.for_project(project.code)
+    else:
+        relevant = decisions_for_project(project.code, weekly_decisions)
     relevant_sorted = sorted(relevant, key=lambda d: d.date, reverse=True)
     relevant_capped = tuple(relevant_sorted[:_MAX_DECISIONS_PER_PROJECT])
 
@@ -531,7 +670,7 @@ def _render_project_block(block: ProjectAgendaBlock) -> list[str]:
 
     # Cross-referenced weekly decisions.
     if block.relevant_weekly_decisions:
-        out.append("**Relevant decisions (from `weekly-cp.md`):**")
+        out.append("**Relevant decisions (account / program `cp.md`, master-cp.md):**")
         for wd in block.relevant_weekly_decisions:
             # Trim very long decision text to keep the agenda readable.
             text = wd.text if len(wd.text) <= 200 else wd.text[:200].rstrip() + "…"
@@ -586,11 +725,8 @@ def build_agenda(
     sprint_dir = config.root / "sprints" / week_iso
     sprint_files = _load_sprint_files(sprint_dir)
 
-    # Parse weekly-cp.md decisions once.
-    weekly_path = config.root / "weekly-cp.md"
-    weekly_decisions: tuple[WeeklyDecision, ...] = ()
-    if weekly_path.is_file():
-        weekly_decisions = parse_weekly_decisions(weekly_path.read_text(encoding="utf-8"))
+    # Read the cross-cutting decisions once (ancestors + master-cp, #305).
+    weekly_decisions = load_cross_cutting_decisions(config.root, projects)
 
     # Build the header.
     header = build_tenant_header(
@@ -712,7 +848,7 @@ class AgendaSummary:
 
     quick_resume_coverage: int  # how many projects have non-template Quick Resume
     recent_inbound_coverage: int  # how many have any recent inbound bullets
-    cross_referenced_decisions_coverage: int  # how many have weekly-cp decisions
+    cross_referenced_decisions_coverage: int  # how many have cross-cutting decisions
     urgency_flagged_count: int  # has_urgency=True
     discussion_prompt_count: int  # discussion_prompt is not None
 
@@ -763,10 +899,7 @@ def build_agenda_summary(
     sprint_dir = config.root / "sprints" / week_iso
     sprint_files = _load_sprint_files(sprint_dir)
 
-    weekly_path = config.root / "weekly-cp.md"
-    weekly_decisions: tuple[WeeklyDecision, ...] = ()
-    if weekly_path.is_file():
-        weekly_decisions = parse_weekly_decisions(weekly_path.read_text(encoding="utf-8"))
+    weekly_decisions = load_cross_cutting_decisions(config.root, projects)
 
     header = build_tenant_header(
         config,

@@ -333,7 +333,7 @@ def _md_format_date(d: date) -> str:
 #    breach the budget. Leaves ~5 blocks of headroom for the header +
 #    final dividers.
 #
-# Truncated sections append a "+N more not shown (see weekly-cp.md or
+# Truncated sections append a "+N more not shown (see master-cp.md or
 # run /cp-prep for full list)" context block so the recipient knows
 # something was dropped and where to look for the full list.
 MAX_ITEMS_PER_SECTION = 10
@@ -449,7 +449,7 @@ def _render_digest_blocks(
                     "type": "mrkdwn",
                     "text": (
                         f"_+ {dropped} more past-due ask{'s' if dropped != 1 else ''} "
-                        "not shown (see weekly-cp.md or run /cp-prep for full list)_"
+                        "not shown (see master-cp.md or run /cp-prep for full list)_"
                     ),
                 }],
             })
@@ -497,7 +497,7 @@ def _render_digest_blocks(
                     "text": (
                         f"_+ {dropped_risks} more escalated risk"
                         f"{'s' if dropped_risks != 1 else ''} not shown "
-                        "(see weekly-cp.md or run /cp-prep for full list)_"
+                        "(see master-cp.md or run /cp-prep for full list)_"
                     ),
                 }],
             })

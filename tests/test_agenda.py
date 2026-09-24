@@ -14,16 +14,16 @@ from cp_engine.agenda import (
     is_sync_stale,
     master_cp_last_sync,
     normalize_owner,
-    parse_weekly_decisions,
+    parse_decisions_section,
 )
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  parse_weekly_decisions
+#  parse_decisions_section
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_parse_weekly_decisions_extracts_numbered_entries() -> None:
+def test_parse_decisions_extracts_numbered_entries() -> None:
     body = """
 ## Decisions (cross-cutting, last 4 weeks)
 
@@ -33,7 +33,7 @@ def test_parse_weekly_decisions_extracts_numbered_entries() -> None:
 
 3. **Drew handles Firebase ownership transfer** for Go Safety. (2026-05-08, source: ggl-5136)
 """
-    decisions = parse_weekly_decisions(body)
+    decisions = parse_decisions_section(body)
     assert len(decisions) == 3
     assert decisions[0].number == 19
     assert decisions[0].date == "2026-05-11"
@@ -42,20 +42,20 @@ def test_parse_weekly_decisions_extracts_numbered_entries() -> None:
     assert decisions[2].sources == ("ggl-5136",)
 
 
-def test_parse_weekly_decisions_handles_multi_source() -> None:
+def test_parse_decisions_handles_multi_source() -> None:
     body = """
 8. **Infoblox AI-campaign workshop downsized** to 2026-06-08 sessions. (2026-05-07, source: ibx-5167 / ibx-5153)
 """
-    decisions = parse_weekly_decisions(body)
+    decisions = parse_decisions_section(body)
     assert len(decisions) == 1
     assert decisions[0].sources == ("ibx-5167", "ibx-5153")
 
 
-def test_parse_weekly_decisions_stops_at_engine_marker() -> None:
-    """Decisions auto-aggregated by the v0.8.5 decisions-strip region
-    should NOT be picked up here (they're already surfaced via
-    aggregators.aggregate_tenant_strips). Parser truncates at the
-    first cp-engine marker so we only consume handwritten content."""
+def test_parse_decisions_stops_at_engine_marker() -> None:
+    """Decisions auto-aggregated inside an engine region should NOT be
+    picked up here (they're already surfaced via
+    aggregators.aggregate_tenant_strips). With no decisions heading the
+    parser truncates at the first cp-engine marker."""
     body = """
 3. **Drew handles Firebase** for Go Safety. (2026-05-08, source: ggl-5136)
 
@@ -64,15 +64,70 @@ def test_parse_weekly_decisions_stops_at_engine_marker() -> None:
 99. **Auto-decision** body. (2026-05-12, source: ggl-5168)
 <!-- cp-engine:end decisions-strip -->
 """
-    decisions = parse_weekly_decisions(body)
+    decisions = parse_decisions_section(body)
     # Only #3 (above the marker) — #99 is inside the engine region.
     assert len(decisions) == 1
     assert decisions[0].number == 3
 
 
-def test_parse_weekly_decisions_returns_empty_for_no_matches() -> None:
-    assert parse_weekly_decisions("") == ()
-    assert parse_weekly_decisions("just some text\nwith no decisions") == ()
+def test_parse_decisions_returns_empty_for_no_matches() -> None:
+    assert parse_decisions_section("") == ()
+    assert parse_decisions_section("just some text\nwith no decisions") == ()
+
+
+def test_parse_decisions_reads_a_cp_md_section_after_the_managed_regions() -> None:
+    """An account / program cp.md's hand-written `## Decisions` sits AFTER
+    every engine marker (#305). It must be read whole — the old
+    "truncate at the first marker" rule read nothing there — and the
+    engine's own `recent-decisions-strip` must not be read."""
+    body = """
+<!-- cp-engine:start recent-decisions-strip -->
+## Recent decisions (auto-aggregated from sprint files, last 4 weeks)
+
+- [2026-09-01 · cross-cutting] Auto-rolled decision.
+<!-- cp-engine:end recent-decisions-strip -->
+
+<!-- cp-engine:start exec-summary -->
+## Exec Summary  ·  updated 2026-09-24
+<!-- cp-engine:end exec-summary -->
+
+## Current Work
+
+1. A numbered line that is not a decision.
+
+## Decisions
+
+1. **Invoices route through Brandon** (2026-09-22, source: account: ggl-5216-google) <!-- cp:hash=eb256add -->
+
+2. **Maria leaves 2026-05-31** (2026-09-23, source: account: ggl-5216-google)
+
+## Done
+
+3. **Not a decision either.**
+"""
+    decisions = parse_decisions_section(body, node="ggl-5216-google")
+    assert [d.number for d in decisions] == [1, 2]
+    assert decisions[0].text == "**Invoices route through Brandon**"
+    assert decisions[0].sources == ("account: ggl-5216-google",)
+    assert decisions[0].node == "ggl-5216-google"
+    assert decisions[1].date == "2026-09-23"
+
+
+def test_parse_decisions_skips_the_template_placeholder() -> None:
+    body = "## Decisions\n\n1. _<decision>_ (_<date>_)\n\n## Done\n"
+    assert parse_decisions_section(body) == ()
+
+
+def test_parse_decisions_reads_master_cp_hand_written_heading() -> None:
+    body = (
+        "<!-- cp-engine:start closed-recent -->\n<!-- cp-engine:end closed-recent -->\n\n"
+        "## Decisions (cross-cutting, hand-written)\n\n"
+        "1. **Cadence** (2026-09-22, source: sprint-planning: 1p) <!-- cp:hash=1676e9d5 -->\n"
+    )
+    (d,) = parse_decisions_section(body)
+    assert d.text == "**Cadence**"
+    assert d.sources == ("sprint-planning: 1p",)
+    assert d.node is None
 
 
 # ──────────────────────────────────────────────────────────────────────

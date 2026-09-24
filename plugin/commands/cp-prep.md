@@ -221,10 +221,11 @@ entries carry `planned_hours` + `project_count`) or `owner_of_record`
 (fallback when no planning-week allocations exist — entries carry
 `count`, a projects-of-record tally, an account-management fact rather
 than a capacity fact; say so when rendering it).
-`cross_cutting_decisions_stale_count` > 0 means weekly-cp.md's decisions
-section holds entries older than the 4-week window (they're filtered
-out of the doc, but the section needs a roll-off pass at the next wrap
-up — mention it). `..._undated_count` counts entries with no date stamp
+`cross_cutting_decisions_stale_count` > 0 means the cross-cutting
+decisions (account / program `cp.md` `## Decisions` + master-cp.md's
+hand-written section) hold entries older than the 4-week window (they're
+filtered out of the doc, but the lists need a roll-off pass at the next
+wrap up — mention it). `..._undated_count` counts entries with no date stamp
 (kept, but worth dating at the next pass).
 
 Render to the user:
@@ -236,7 +237,7 @@ Synthesized planning doc → sprints/$WEEK_ISO/_planning.md
   Milestones: 84 fetched (3 ClickUp errors)
   Urgent attention items: 4 slip risks · 2 decisions due · 7 past-due asks · 1 escalated risk
   Capacity binding: Tony (6 projects), Marcello (5 projects)
-  Cross-cutting decisions partners owe each other: 3 — see weekly-cp.md
+  Cross-cutting decisions partners owe each other: 3 — see the account / program cp.md files
 ```
 
 Conditional rendering rules:
@@ -388,6 +389,6 @@ in the MC-2 schedule or commitments in MC-2).
 - Doesn't write to MC-2 commitments — pure read. (Nothing in the prep
   path touches ClickUp at all anymore.)
 - Doesn't ingest transcripts (that's `/cp-ingest`).
-- Doesn't update master-cp.md or weekly-cp.md (those have their own
-  paths via `cxp sync` and `/cp-ingest` respectively).
+- Doesn't update master-cp.md or any workstream's `cp.md` (those have
+  their own paths via `cxp sync` and `/cp-ingest` respectively).
 - Doesn't auto-commit.

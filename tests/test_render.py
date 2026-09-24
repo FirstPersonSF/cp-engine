@@ -341,15 +341,19 @@ def test_claude_md_includes_gatekeeper_rule() -> None:
 
 def test_claude_md_includes_status_vocabulary() -> None:
     out = render_claude_md(make_tenant())
-    # Engagement statuses
+    # ONE status vocabulary for every workstream (#301); the old initiative
+    # ("On hold") and standalone-repo ("Inactive") vocabularies are gone.
     for status in ("Deal", "Open", "Holding", "Closed", "Archived"):
         assert status in out
-    # Initiative statuses (Phase D.4) — distinct from engagements; both
-    # vocabularies need to appear in the doc.
-    assert "On hold" in out
-    assert "Done" in out
-    # Standalone repo statuses
-    assert "Inactive" in out
+    assert "On hold" not in out
+    assert "Inactive" not in out
+    # The derived-label table names the four words, first match wins.
+    for label in ("**account**", "**program**", "**job**", "**initiative**"):
+        assert label in out
+    # weekly-cp.md is not a surface any more (#305).
+    assert "weekly-cp" not in out
+    assert "## Where cross-cutting content lives" in out
+    assert "`promote uphill <code>`" in out
     # Old engagement-only vocab that conflicted with the new one must NOT
     # appear.
     assert "`Complete`" not in out

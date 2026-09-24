@@ -48,9 +48,10 @@ def prep_agenda_cmd(
 ) -> None:
     """Render a sprint-planning agenda from current cp tenant state.
 
-    Reads master-cp's project list, weekly-cp.md decisions, current-week
-    sprint files, and per-project cp.md Quick Resume sections; cross-
-    references everything into project-grouped blocks.
+    Reads master-cp's project list, the cross-cutting decisions on account
+    / program cp.md files and master-cp.md, current-week sprint files, and
+    per-project cp.md Exec Summaries; cross-references everything into
+    project-grouped blocks.
 
     Default: agenda for all active projects (full sprint planning).
     With `--projects <code>,<code>...`: scoped agenda for those projects only.

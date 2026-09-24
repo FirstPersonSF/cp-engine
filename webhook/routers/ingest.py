@@ -24,8 +24,11 @@ from cp_engine.plan_from_account_meeting import (
     AccountPlanError,
     generate_account_plan,
     generate_sprint_planning_plan,
-    list_active_for_company,
     list_active_for_scope,
+    list_active_subtree,
+    load_roster,
+    resolve_account_node,
+    resolve_node,
 )
 
 log = logging.getLogger("cp-engine-webhook")
@@ -229,27 +232,33 @@ async def rerun_auto_ingest(run_id: str, request: Request) -> dict:
 
 @router.post("/api/auto-ingest-account")
 async def auto_ingest_account(request: Request) -> dict:
-    """Generate + apply an account-meeting plan.
+    """Generate + apply a parent-workstream ("account") meeting plan.
 
-    Called by fathom-meeting-sync when the user assigns a meeting as an
-    account meeting via the dashboard. Different from /api/auto-ingest:
-    the project list is NOT in the request — we fetch all currently-
-    active projects for the company at ingest time.
+    Called by fathom-meeting-sync when the user tags a meeting to a
+    workstream that has children — an account node or a program (#305).
+    Different from /api/auto-ingest: the child list is NOT in the request;
+    the node's ACTIVE SUBTREE is read from MC-2 at ingest time, so a job
+    added today is in scope and one closed today drops out.
 
     Request body (JSON):
         {
           "meeting_id": "<uuid from fathom_meetings.id>",
-          "company_code": "GGL",                # canonical company code
+          "code": "ggl-5216-google",            # the PARENT workstream's
+                                                # canonical code (preferred)
+          "company_code": "GGL",                # legacy: resolved to that
+                                                # company's account node
           "transcript_text": "<full transcript>"  # optional; fetched
                                                     # from Supabase if absent
         }
 
+    400 when neither `code` nor `company_code` resolves to a workstream.
+
     Headers:
         X-Webhook-Signature: hex(hmac_sha256(body, WEBHOOK_HMAC_SECRET))
 
-    Response shape mirrors /api/auto-ingest plus an `account_summary`
-    field with the weekly-cp.md commit, and `commit_shas` listing all
-    per-project commits.
+    Response shape mirrors /api/auto-ingest plus a summary entry (code
+    `account:<node code>`) for the node's sprint-file / cp.md commit, and
+    `commit_shas` listing every per-project commit.
     """
     raw_body = await request.body()
     signatures._verify_signature(
@@ -264,39 +273,53 @@ async def auto_ingest_account(request: Request) -> dict:
         raise HTTPException(status_code=400, detail=f"invalid JSON: {exc}") from exc
 
     meeting_id = payload.get("meeting_id")
+    requested_code = payload.get("code")
     company_code = payload.get("company_code")
     transcript_text = payload.get("transcript_text")
-    if not meeting_id or not company_code:
+    if not meeting_id or not (requested_code or company_code):
         raise HTTPException(
             status_code=400,
-            detail="meeting_id and company_code are required",
+            detail="meeting_id and code (or legacy company_code) are required",
         )
 
     if transcript_text is None:
         transcript_text = pipeline._fetch_transcript(meeting_id)
 
     log.info(
-        "auto-ingest-account start: meeting=%s company=%s",
-        meeting_id, company_code,
+        "auto-ingest-account start: meeting=%s code=%s company=%s",
+        meeting_id, requested_code, company_code,
     )
 
     with git_ops._cloned_tenant() as tenant_root:
         config = pipeline._load_tenant_config(tenant_root)
 
-        # Fetch the active project list at ingest time — not at
-        # assignment time. A project added today is in scope; a project
-        # closed today drops out.
-        active = list_active_for_company(config, company_code)
+        # Resolve the PARENT node, then read its active subtree at ingest
+        # time — not at assignment time. `code` names the node directly;
+        # a legacy row carrying only `company_code` means that company's
+        # account node. Neither resolving is a 400, never a guess.
+        roster = load_roster(config)
+        node = resolve_node(requested_code, roster) if requested_code else None
+        if node is None and not requested_code:
+            node = resolve_account_node(company_code, roster)
+        if node is None:
+            detail = (
+                f"unknown workstream code '{requested_code}'" if requested_code
+                else f"company '{company_code}' has no account node"
+            )
+            raise HTTPException(status_code=400, detail=detail)
+        node_code = node.code
+
+        active = list_active_subtree(node_code, roster)
         if not active:
             log.warning(
-                "auto-ingest-account: no active projects for company=%s",
-                company_code,
+                "auto-ingest-account: no active children under %s",
+                node_code,
             )
             response = {
                 "ingested": [],
                 "commit_sha": None,
                 "skipped_no_op": True,
-                "reason": f"no active projects for company '{company_code}'",
+                "reason": f"no active workstreams under '{node_code}'",
             }
             pipeline._log_run_to_supabase(
                 meeting_id=meeting_id,
@@ -308,8 +331,8 @@ async def auto_ingest_account(request: Request) -> dict:
             return response
 
         log.info(
-            "auto-ingest-account: %d active project(s) for company=%s: %s",
-            len(active), company_code, [p.code for p in active],
+            "auto-ingest-account: %d active workstream(s) under %s: %s",
+            len(active), node_code, [p.code for p in active],
         )
 
         # Stage transcript for the prompt + audit log.
@@ -319,10 +342,11 @@ async def auto_ingest_account(request: Request) -> dict:
         try:
             generated = generate_account_plan(
                 config=config,
-                company_code=company_code,
+                code=node_code,
                 meeting_id=meeting_id,
                 transcript_text=transcript_text,
                 active_projects=list(active),
+                node=node,
             )
         except AccountPlanError as exc:
             log.error("account plan generation failed: %s", exc)
@@ -344,7 +368,8 @@ async def auto_ingest_account(request: Request) -> dict:
 
         # Execute the plan. Per-project entries fan out into per-project
         # commits via the same pattern as /api/auto-ingest. The
-        # account_summary lands as a separate weekly-cp.md commit.
+        # account_summary + account_decisions land as one more commit on
+        # the NODE's sprint file and cp.md.
         plan = generated.plan
         projects_block = plan.get("projects") or {}
 
@@ -416,7 +441,7 @@ async def auto_ingest_account(request: Request) -> dict:
                 )
 
         # Step 2: account_summary (+ account_decisions if any) → one
-        # additional commit against weekly-cp.md.
+        # additional commit against the node's sprint file / cp.md.
         summary_plan = {
             "transcript": plan.get("transcript", {"source": "fathom"}),
         }
@@ -427,7 +452,7 @@ async def auto_ingest_account(request: Request) -> dict:
 
         if "account_summary" in summary_plan or "account_decisions" in summary_plan:
             summary_entry = {
-                "code": f"account:{company_code.lower()}",
+                "code": f"account:{node_code}",
                 "plan_summary": {
                     "account_summary": 1 if "account_summary" in summary_plan else 0,
                     "account_decisions": (
@@ -519,15 +544,16 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
     """Generate + apply a tenant-scope sprint-planning plan.
 
     Called by fathom-meeting-sync when the user assigns a meeting as
-    sprint planning for a specific scope ('1p', 'fpsf', 'canonic').
-    Like /api/auto-ingest-account but the project list spans multiple
-    companies (1p = all client engagements; fpsf/canonic = all
-    initiatives under that self-company).
+    sprint planning for a specific scope ('1p', 'fpsf', 'canonic',
+    'storyos-mc'). Like /api/auto-ingest-account but the project list
+    spans multiple companies (1p = all client workstreams; fpsf/canonic =
+    every workstream under that self-company). The summary lands in
+    `sprints/<W##>/_week.md`, the decisions in master-cp.md (#305).
 
     Request body (JSON):
         {
           "meeting_id": "<uuid from fathom_meetings.id>",
-          "scope": "1p" | "fpsf" | "canonic",
+          "scope": "1p" | "fpsf" | "canonic" | "storyos-mc",
           "transcript_text": "<full transcript>"  # optional
         }
 
@@ -691,7 +717,8 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
                     meeting_id, code, commit_sha,
                 )
 
-        # account_summary + account_decisions → one weekly-cp.md commit.
+        # account_summary + account_decisions → one commit against
+        # `_week.md` and master-cp.md.
         summary_plan = {
             "transcript": plan.get("transcript", {"source": "fathom"}),
         }

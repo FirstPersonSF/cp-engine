@@ -1349,8 +1349,8 @@ def migrate_regions(
 # `by`). Used to detect horizon target_dates that we can compare against
 # the current sprint week numerically.
 # NB: The agenda week-target regex moved to cp_engine.aggregators in v0.8.5
-# (shared between master-cp.md's `agenda` region and weekly-cp.md's
-# `carry-forward-strip`). This file no longer needs it directly.
+# (shared between master-cp.md's `agenda` region and the parent-node
+# sprint rollups). This file no longer needs it directly.
 
 
 _SLACK_DIGEST_RE = re.compile(
@@ -1439,8 +1439,8 @@ def _compute_agenda_rollup(
     Returns a dict with the three lists, OR `None` when all three are
     empty (so the template's `{%- if agenda %}` guard hides the section).
     """
-    # Delegate the core rollup to cp_engine.aggregators so weekly-cp.md's
-    # `carry-forward-strip` (Phase 1.2 / v0.8.5) can reuse the same parser.
+    # Delegate the core rollup to cp_engine.aggregators so the subtree
+    # rollups (#303) can reuse the same parser.
     # This function keeps the master-cp-specific behavior of returning None
     # when all three lists are empty (so the template's `{%- if agenda %}`
     # guard hides the section).
@@ -1677,7 +1677,12 @@ def _example_for(config: TenantConfig) -> tuple[str, str]:
     """Pick a representative project for the CLAUDE.md "always use code+name"
     section. Falls back to a generic example if the tenant has no projects yet.
     """
+    from cp_engine.codes import parse_code
+    from cp_engine.state import short_code
+
     if config.projects:
         first = config.projects[0]
-        return (first.code, first.code.replace("-", " ").title())
-    return ("ggl-5168", "Playbooks (Activation)")
+        parsed = parse_code(first.code)
+        name = parsed.slug.replace("-", " ").title() if parsed and parsed.slug else "Activation"
+        return (short_code(first.code), name)
+    return ("ggl-5168", "Activation")

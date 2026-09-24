@@ -135,9 +135,9 @@ def test_display_name_is_name_alone_except_for_jobs() -> None:
     assert display_name(ACCOUNT, BY_CODE) == "Google"
     assert display_name(PROGRAM, BY_CODE) == "Go Safety"
     assert display_name(INITIATIVE, BY_CODE) == "Mission Control"
-    assert display_name(JOB_UNDER_ACCOUNT, BY_CODE) == "ggl-5168-activation Activation"
+    assert display_name(JOB_UNDER_ACCOUNT, BY_CODE) == "ggl-5168 Activation"
     # Without a roster the label falls back on shape; a job still reads as one.
-    assert display_name(JOB_UNDER_ACCOUNT) == "ggl-5168-activation Activation"
+    assert display_name(JOB_UNDER_ACCOUNT) == "ggl-5168 Activation"
 
 
 def test_effective_label_fallback_reads_the_agreement_before_the_account_rule() -> None:
@@ -587,7 +587,7 @@ def test_tree_rows_nest_under_the_account_with_indentation() -> None:
     ]
     assert "| Google | Account | drew | $300k |" in region
     assert "| Go Safety | Program |" in region
-    assert "| ggl-5168-activation Activation | Job |" in region
+    assert "| ggl-5168 Activation | Job |" in region
 
 
 def test_tree_keeps_deal_rows_in_the_pipeline_and_shows_the_label_word() -> None:

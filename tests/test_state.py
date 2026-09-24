@@ -303,3 +303,69 @@ def test_sprint_file_aggregates_all_sections_and_computes_total() -> None:
     )
     assert sf.total_allocation_hours == 8.0
     assert sf.escalated_risk_count == 1
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  display_name — label-driven reference style (#305)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _ws(code, name, *, label=None, parent_code=None, has_agreement=False,
+        company_kind="client"):
+    from datetime import datetime, timezone
+
+    from cp_engine.state import ProjectState
+
+    return ProjectState(
+        code=code, name=name, company_kind=company_kind, company_code="GGL",
+        company_name="Google", status="Open", is_internal=False, owner=None,
+        last_touched=datetime(2026, 9, 24, tzinfo=timezone.utc), deadline=None,
+        parent_code=parent_code, has_agreement=has_agreement, label=label,
+    )
+
+
+def test_display_name_job_is_short_code_plus_short_name() -> None:
+    """`name` is MC-2's full_job_name; the `<CO> <number>` head is dropped
+    and the SHORT code prepended — never `<code> <full_job_name>` (the
+    #303 form doubled the identity)."""
+    from cp_engine.state import display_name
+
+    job = _ws("ggl-5168-activation", "GGL 5168 Activation", label="job", has_agreement=True)
+    assert display_name(job) == "ggl-5168 Activation"
+    glued = _ws("ibx-5167-ddi-video", "IBX5167 DDI Video", label="job", has_agreement=True)
+    assert display_name(glued) == "ibx-5167 DDI Video"
+    # A name without the head is kept whole.
+    plain = _ws("ggl-5136-go-safety-website", "go/safety website", label="job", has_agreement=True)
+    assert display_name(plain) == "ggl-5136 go/safety website"
+
+
+def test_display_name_account_program_initiative_are_the_name_alone() -> None:
+    from cp_engine.state import display_name
+
+    assert display_name(_ws("ggl-5216-google", "Google", label="account")) == "Google"
+    assert display_name(_ws("ggl-5300-go-safety", "Go Safety", label="program")) == "Go Safety"
+    mc = _ws("1pi-9005-mission-control", "Mission Control", label="initiative",
+             company_kind="self-fpsf")
+    assert display_name(mc) == "Mission Control"
+
+
+def test_display_name_derives_the_label_from_the_roster_when_unset() -> None:
+    from cp_engine.state import display_name
+
+    account = _ws("ggl-5216-google", "Google")
+    job = _ws("ggl-5168-activation", "GGL 5168 Activation", parent_code=account.code,
+              has_agreement=True)
+    by_code = {account.code: account, job.code: job}
+    assert display_name(account, by_code) == "Google"  # has children → program? no: label rule
+    assert display_name(job, by_code) == "ggl-5168 Activation"
+
+
+def test_short_name_and_short_code_helpers() -> None:
+    from cp_engine.state import short_code, short_name
+
+    assert short_code("ggl-5168-activation") == "ggl-5168"
+    assert short_code("GGL 5168 Activation") == "ggl-5168"
+    assert short_code("not-a-code") == "not-a-code"
+    assert short_name("GGL 5168 Activation", "ggl-5168-activation") == "Activation"
+    assert short_name("GGL 5168", "ggl-5168") == "GGL 5168"  # strip would leave nothing
+    assert short_name("Activation") == "Activation"

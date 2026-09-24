@@ -19,7 +19,7 @@ from datetime import date
 
 from click.testing import CliRunner
 
-from cp_engine.agenda import parse_weekly_decisions
+from cp_engine.agenda import parse_decisions_section
 from cp_engine.cli import main
 from cp_engine.prep_planning import (
     PlanningResult,
@@ -95,7 +95,7 @@ def test_parser_tolerates_hash_marker_and_date_only_and_undated():
         "1. **Undated** — someone forgot the meta. "
         "<!-- cp:hash=9fc5ef1a -->\n"
     )
-    ds = parse_weekly_decisions(body)
+    ds = parse_decisions_section(body)
     assert len(ds) == 3
     by_num = {d.number: d for d in ds}
     assert by_num[3].date == "2026-06-20"
@@ -114,10 +114,10 @@ def test_parser_scopes_to_decisions_section():
         "1. **Not a decision** — just a resume bullet.\n\n"
         + _DECISIONS_HEADER
         + "1. **Real decision** — in section. (2026-06-20, source: x)\n\n"
-        "## Account summaries\n\n"
-        "2. **Also not a decision** — summary bullet.\n"
+        "## Active research\n\n"
+        "2. **Also not a decision** — a research bullet.\n"
     )
-    ds = parse_weekly_decisions(body)
+    ds = parse_decisions_section(body)
     assert len(ds) == 1
     assert "Real decision" in ds[0].text
 

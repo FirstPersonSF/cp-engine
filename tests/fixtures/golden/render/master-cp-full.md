@@ -130,3 +130,7 @@ _Five workstreams in motion_
 
 </details>
 <!-- cp-engine:end closed-recent -->
+
+## Decisions (cross-cutting, hand-written)
+
+1. _<decision that belongs to no one company — sprint-planning `account_decisions` land here; an account's or program's own decisions live on that node's `cp.md`>_ (_<date>_)

@@ -113,7 +113,8 @@ grep -rn -i "<first name>" sprints/*/<code>.md
 ```
 
 Not every project has a `meeting-transcripts/` directory — recursing the
-project dir covers it either way. Also check the tenant-wide `weekly-cp.md`
+project dir covers it either way. Also check the account node's `cp.md`
+and sprint files (`1p/<company>/` and `sprints/<W##>/<account code>.md`)
 when the person spans projects.
 
 **Filter the false positives before reading.** A common first name will collide

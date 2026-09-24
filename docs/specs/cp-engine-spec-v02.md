@@ -208,13 +208,13 @@ cp-engine/
 │   ├── config.py                         ← merges .cp-engine.toml + .cp-engine.local.toml
 │   ├── modes.py                          ← mode 1-4 loader contracts
 │   ├── sync.py                           ← reads GH Issues, writes engine-managed regions
-│   ├── render.py                         ← master-cp / weekly-cp / project-cp / CLAUDE.md
+│   ├── render.py                         ← master-cp / project-cp / sprint-cp / CLAUDE.md
 │   └── summary.py                        ← one-line summary regen (≤120 chars)
 ├── cli/cp                                ← cp init / sync / render / status
 ├── templates/                            ← Jinja2
 │   ├── master-cp.md.j2
-│   ├── weekly-cp.md.j2
 │   ├── project-cp.md.j2
+│   ├── sprint-cp.md.j2
 │   └── CLAUDE.md.j2
 ├── actions/sync/                         ← reusable GitHub Action: cp-engine/sync@v0
 └── tests/

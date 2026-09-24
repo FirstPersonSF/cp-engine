@@ -18,8 +18,9 @@ rules (slip_risk, decision_due, past_due_ask, escalated_risk). See its
 docstring for rule semantics.
 
 ``_render_cross_cutting`` returns the tenant strip plus capacity-binding
-owners (>=5 projects of record) and ``weekly-cp.md`` cross-cutting
-decisions (last 4 weeks, unresolved). Implicit-owner detection from
+owners (>=5 projects of record) and the cross-cutting decisions
+recorded on account / program ``cp.md`` files and master-cp.md (last 4
+weeks, unresolved). Implicit-owner detection from
 sprint-file asks/commitments is deferred to v2.
 
 The CLI entry point (``cp prep-planning``) lives in cli.py.
@@ -43,7 +44,7 @@ import httpx
 from cp_engine.agenda import (
     WeeklyDecision,
     filter_active,
-    parse_weekly_decisions,
+    load_cross_cutting_decisions,
     short_iso_date,
     to_datetime,
 )
@@ -1615,9 +1616,9 @@ _CAPACITY_BINDING_FLOOR = 5
 _CAPACITY_BINDING_PLANNED_HOURS = 40
 
 # Cross-cutting decisions are surfaced when their parser date is within
-# this many days of `today` — the weekly-cp.md section header itself
-# scopes to "last 4 weeks", and we mirror that bound here so old hand-
-# written entries don't bleed forward indefinitely.
+# this many days of `today` — the old weekly-cp.md section header scoped
+# to "last 4 weeks", and the bound is kept so old hand-written entries on
+# an account or program cp.md don't bleed forward indefinitely.
 _CROSS_CUTTING_LOOKBACK_DAYS = 28
 
 # In-window decisions at least this old get an "aging: resolve or re-affirm"
@@ -1711,8 +1712,16 @@ def _load_cross_cutting_decisions(
     *,
     today: date,
     lookback_days: int = _CROSS_CUTTING_LOOKBACK_DAYS,
+    projects: tuple[ProjectState, ...] | None = None,
 ) -> tuple[tuple[WeeklyDecision, ...], list[str], int, int]:
-    """Read ``weekly-cp.md`` and return decisions still owed across partners.
+    """Read the tenant's cross-cutting decisions and return those still
+    owed across partners.
+
+    Homes (#305, plan D8): master-cp.md's hand-written
+    ``## Decisions (cross-cutting, hand-written)`` section plus the
+    ``## Decisions`` list of every account and program ``cp.md`` (nodes
+    from ``.cp-engine/paths.json``, or from ``projects`` when the index is
+    absent). ``weekly-cp.md`` is never read.
 
     Returns ``(decisions, errors, stale_count, undated_count)`` — caller
     appends ``errors`` to the PlanningResult and surfaces the two counts
@@ -1733,15 +1742,11 @@ def _load_cross_cutting_decisions(
         wrong implicit date — worse than dropping them, because partners
         couldn't tell anything was wrong.
 
-    Reuses ``agenda.parse_weekly_decisions`` so the parsing contract is
-    shared with ``cp prep-agenda``. The order returned mirrors the
-    handwritten numbering in ``weekly-cp.md`` (newest entries at top).
+    Reuses ``agenda.load_cross_cutting_decisions`` so the parsing contract
+    is shared with ``cp prep-agenda``. Order: master-cp entries first, then
+    each node in code order, each list in its file order.
     """
-    weekly_path = tenant_root / "weekly-cp.md"
-    if not weekly_path.is_file():
-        return (), [], 0, 0
-    body = weekly_path.read_text(encoding="utf-8")
-    decisions = parse_weekly_decisions(body)
+    decisions = load_cross_cutting_decisions(tenant_root, projects).all
     if not decisions:
         return (), [], 0, 0
     cutoff = today - timedelta(days=lookback_days)
@@ -1760,7 +1765,7 @@ def _load_cross_cutting_decisions(
             d_date = date.fromisoformat(d.date)
         except (ValueError, TypeError):
             log.warning(
-                "malformed date in weekly-cp.md decision: %r (entry: %s)",
+                "malformed date in cross-cutting decision: %r (entry: %s)",
                 d.date,
                 d.text[:60],
             )
@@ -2390,7 +2395,7 @@ def build_planning_result(
         cross_cutting_errors,
         stale_count,
         undated_count,
-    ) = _load_cross_cutting_decisions(config.root, today=today)
+    ) = _load_cross_cutting_decisions(config.root, today=today, projects=projects)
     errors.extend(cross_cutting_errors)
 
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
