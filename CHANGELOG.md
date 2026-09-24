@@ -4,6 +4,18 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.124.3 — 2026-09-24
+
+**An account never carries an agreement.** Patch. SentinelOne's five
+archived jobs rendered "Account" in mc-2's tree: their company had no
+account node (mig 191 skipped archived-only companies) so they were
+parentless, and the account rule fired before the job rule. `derive_label`
+now requires `not has_agreement` for an account — a parentless client job
+with a deal stage is a job. mc-2 mig 195 gives every client company a
+root node and fills the missing deal stages, so the rule is belt and
+braces. The master-cp tree and `children` tables no longer print "Job":
+the label column marks what is not a job.
+
 ## v0.124.2 — 2026-09-24
 
 **Hosted `promote_uphill` takes `week`.** Patch. A decision promoted from a

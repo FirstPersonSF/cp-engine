@@ -326,7 +326,8 @@ def test_workstream_self_company_row_with_children_is_a_program():
     "kind,parent,agreement,children,expected",
     [
         ("client", None, False, True, "account"),
-        ("client", None, True, True, "account"),  # account rule wins first
+        ("client", None, True, True, "program"),  # an agreement is never an account
+        ("client", None, True, False, "job"),  # archived-only company: parent not in hand
         ("client", "ggl-x", False, True, "program"),
         ("client", "ggl-x", True, True, "program"),  # children beat agreement
         ("client", "ggl-x", True, False, "job"),

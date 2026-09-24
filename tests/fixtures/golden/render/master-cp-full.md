@@ -78,14 +78,14 @@ _Five workstreams in motion_
 
 | Code | Workstream | Label | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
-| `ggl-5168`<br>_Last week: Drew 6h, Tony 2.5h (8.5h total)._ | ggl-5168 Playbooks (Activation) | Job | Drew | $80k | — | Storyboards in flight; client review Wed. | [CP →](1p/google/ggl-5168/cp.md) · [W20 →](sprints/2026-W20/ggl-5168.md) |
-| `ggl-9998` | ggl-9998 Internal Scratch | Job | Drew | — | — |  | [CP →](1p/google/ggl-9998/cp.md) · [W20 →](sprints/2026-W20/ggl-9998.md) |
+| `ggl-5168`<br>_Last week: Drew 6h, Tony 2.5h (8.5h total)._ | ggl-5168 Playbooks (Activation) |  | Drew | $80k | — | Storyboards in flight; client review Wed. | [CP →](1p/google/ggl-5168/cp.md) · [W20 →](sprints/2026-W20/ggl-5168.md) |
+| `ggl-9998` | ggl-9998 Internal Scratch |  | Drew | — | — |  | [CP →](1p/google/ggl-9998/cp.md) · [W20 →](sprints/2026-W20/ggl-9998.md) |
 
 ### Infoblox
 
 | Code | Workstream | Label | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
-| `ibx-5153`<br>_Last week: Tony 8h (8h total)._ | ibx-5153 Infoblox AI Campaign | Job | Tony | $120k | — | Carol framework deck in client review. | [CP →](1p/infoblox/ibx-5153/cp.md) · [W20 →](sprints/2026-W20/ibx-5153.md) |
+| `ibx-5153`<br>_Last week: Tony 8h (8h total)._ | ibx-5153 Infoblox AI Campaign |  | Tony | $120k | — | Carol framework deck in client review. | [CP →](1p/infoblox/ibx-5153/cp.md) · [W20 →](sprints/2026-W20/ibx-5153.md) |
 
 ### First Person
 

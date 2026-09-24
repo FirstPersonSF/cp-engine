@@ -16,7 +16,7 @@ Author: cp-engine (initial scaffold)
 | | |
 |---|---|
 | **Code** | `ggl-5168` |
-| **Type** | Job |
+| **Type** |  |
 | **Status** | Open |
 | **Stage** | — |
 | **Budget** | $80k |

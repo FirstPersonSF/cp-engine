@@ -31,8 +31,8 @@ Author: cp-engine (initial scaffold)
 
 | Code | Workstream | Label | Status | Owner | Last touched | CP |
 |---|---|---|---|---|---|---|
-| `ggl-5168-activation` | ggl-5168 Activation | Job | Open | Drew | 2026-05-12 | [→](ggl-5168-activation/cp.md) |
-| `ggl-5210-new-deal` | ggl-5210 New Deal | Job | Inquiry | Drew | 2026-05-12 | [→](ggl-5210-new-deal/cp.md) |
+| `ggl-5168-activation` | ggl-5168 Activation |  | Open | Drew | 2026-05-12 | [→](ggl-5168-activation/cp.md) |
+| `ggl-5210-new-deal` | ggl-5210 New Deal |  | Inquiry | Drew | 2026-05-12 | [→](ggl-5210-new-deal/cp.md) |
 | `ggl-5300-go-safety` | Go Safety | Program | Open | Drew | 2026-05-12 | [→](ggl-5300-go-safety/cp.md) |
 <!-- cp-engine:end children -->
 

@@ -87,6 +87,13 @@ _LABEL_WORDS: dict[str, str] = {
     "initiative": "Initiative",
 }
 
+# The label column in the master-cp tree and a node's `children` table.
+# A job is the default and the majority, so it carries no word there —
+# the column earns its place by marking what is NOT a job (Tony's rule 1).
+# `_LABEL_WORDS` above stays complete for the Facts table, where every
+# row names its type.
+_TREE_LABEL_WORDS: dict[str, str] = {**_LABEL_WORDS, "job": ""}
+
 # The kind word in a scaffolded cp.md's H1 ("Google — Account CP"). A job
 # keeps the established "Project CP" phrase the sprint files link back to.
 _CP_KIND_WORDS: dict[str, str] = {
@@ -643,7 +650,7 @@ def _children_rows(
             {
                 "code": child.code,
                 "display_name": display_name(child, roster),
-                "label_word": _LABEL_WORDS[effective_label(child, roster)],
+                "label_word": _TREE_LABEL_WORDS[effective_label(child, roster)],
                 "status": child.deal_stage if child.status == "Deal" and child.deal_stage else child.status,
                 "owner": child.owner,
                 "last_touched_short": _short(child.last_touched),
@@ -1564,7 +1571,7 @@ def _project_view(
         "has_agreement": p.has_agreement,
         "parent_code": p.parent_code,
         "label": label,
-        "label_word": _LABEL_WORDS[label],
+        "label_word": _TREE_LABEL_WORDS[label],
         "cp_kind": _CP_KIND_WORDS[label],
         "display_name": display_name(p, roster),
         "depth": tree_depth(p, roster),

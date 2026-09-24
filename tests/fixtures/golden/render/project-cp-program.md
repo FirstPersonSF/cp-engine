@@ -41,8 +41,8 @@ Author: cp-engine (initial scaffold)
 
 | Code | Workstream | Label | Status | Owner | Last touched | CP |
 |---|---|---|---|---|---|---|
-| `ggl-5136-go-safety-website` | ggl-5136 go/safety website | Job | Open | Drew | 2026-05-12 | [→](ggl-5136-go-safety-website/cp.md) |
-| `ggl-5188-calendar` | ggl-5188 Calendar + Maintenance | Job | Open | Tony | 2026-05-12 | [→](ggl-5188-calendar/cp.md) |
+| `ggl-5136-go-safety-website` | ggl-5136 go/safety website |  | Open | Drew | 2026-05-12 | [→](ggl-5136-go-safety-website/cp.md) |
+| `ggl-5188-calendar` | ggl-5188 Calendar + Maintenance |  | Open | Tony | 2026-05-12 | [→](ggl-5188-calendar/cp.md) |
 <!-- cp-engine:end children -->
 
 <!-- cp-engine:start current-sprint -->

@@ -587,7 +587,7 @@ def test_tree_rows_nest_under_the_account_with_indentation() -> None:
     ]
     assert "| Google | Account | drew | $300k |" in region
     assert "| Go Safety | Program |" in region
-    assert "| ggl-5168 Activation | Job |" in region
+    assert "| ggl-5168 Activation |  |" in region  # a job carries no label word in the tree (v0.124.3)
 
 
 def test_tree_keeps_deal_rows_in_the_pipeline_and_shows_the_label_word() -> None:
@@ -599,7 +599,7 @@ def test_tree_keeps_deal_rows_in_the_pipeline_and_shows_the_label_word() -> None
     tree = out[out.index("start active-tree"):out.index("end active-tree")]
     assert "ggl-5210-new" in pipeline
     assert "ggl-5210-new" not in tree
-    assert "| Initiative |" in tree and "| Program |" in tree and "| Job |" in tree
+    assert "| Initiative |" in tree and "| Program |" in tree and "| Job |" not in tree  # jobs are the default, unmarked
 
 
 def test_tree_inactive_account_still_heads_its_block_when_a_child_is_active() -> None:

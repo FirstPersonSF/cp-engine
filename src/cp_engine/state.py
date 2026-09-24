@@ -608,8 +608,14 @@ def derive_label(
 
     Rendering and reference-style only — the engine branches on
     `has_agreement`, `parent_code` and `company_kind` directly.
+
+    An account never carries an agreement (mig 191 creates it with
+    `deal_stage NULL`), so the account rule requires `not has_agreement`:
+    a parentless client row WITH an agreement is a job whose parent is not
+    in hand (an archived-only company had no account node until mig 195),
+    never an account. Five SentinelOne jobs rendered "Account" before this.
     """
-    if parent_code is None and company_kind == "client":
+    if parent_code is None and company_kind == "client" and not has_agreement:
         return "account"
     if has_children:
         return "program"
