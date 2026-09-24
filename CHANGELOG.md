@@ -172,6 +172,61 @@ its account node: the account's dir is the existing `1p/<company>/`.
   depth-3 dir. `test_workstream_schema`'s hold-back test inverts (the
   account node now flows through, labelled `account`). No golden changed.
 
+### #304 — every capture names its level + `promote_uphill` (phase 3.6)
+
+Plan §3.6. A capture lands on the workstream the caller NAMED; nothing in
+the engine reads a decision's text and decides it "sounds account-level"
+(Tony's 14:57 question in the design doc). Moving an item up the tree is
+an explicit verb, and the verb leaves a trail.
+
+- **Every write verb echoes `level: {code, label, parent, indexed}`** read
+  off `.cp-engine/paths.json` (#302). Hosted: `_names_its_level`, a
+  decorator under `@mcp_server.tool()` on all 37 write verbs that take a
+  workstream code (`to_code` for `pull_element_from_project`,
+  `target_code` for `route_commitment`); it also appends the one-sentence
+  rule to each verb's description — "writes land on the named workstream;
+  default to the deepest in focus; to record at the account or program
+  level name THAT code or call `promote_uphill`; the level is never
+  inferred from content" (`cp_engine.promote_uphill.LEVEL_RULE`, pinned
+  equal to the hosted copy). The server instructions state it too, and
+  the writer count they assert moves to 20. A level lookup that fails
+  (tree unavailable, code unindexed) is reported as `indexed: false`,
+  never guessed, and never fails the write. The default-to-deepest rule
+  is a CLIENT rule (mode 2's loaded project) and lives in the descriptions
+  only.
+- **`promote_uphill(project_code, item_kind, item_ref, note=None)`** —
+  hosted, `cxp mcp`, and `cxp promote-uphill <code> --commitment <id> |
+  --decision <cp:hash or exact text>` (`cli_cmds/core.py`). The parent is
+  the index's `parent`; a top-level workstream refuses with "no parent".
+  A **commitment** is COPIED to the parent (`project_id` = parent,
+  `source_kind='promoted'`, `cp_hash` = sha256 of the original's hash +
+  the parent code, first 8) and the original stays. A **decision** bullet
+  (found by hash or exact text across the child's sprint files) is copied
+  into the parent's current calendar-week sprint file under
+  `## Meeting notes & decisions / ### Decisions` through the ingest
+  writer (`_write_decision`, so the copy carries the standard `cp:hash`
+  trailer), as `<text> (promoted from <code>)`; the parent file is
+  scaffolded from prior if missing (`--week` overrides). Every promotion
+  appends a LIVE step to the parent's `Promoted uphill` element
+  (`_authored/promoted-uphill`, created on first use) — "Promoted from
+  <code>: <first 80 chars>", provenance in the note. Idempotent: the same
+  item again returns `already: true` and writes no row, no bullet, no
+  step; the decision check reads every parent sprint file, not just this
+  week's. One level per call — job → program → account is two calls.
+- **The hosted decision path is refused, not faked.** The hosted server
+  has no file write, and the mc-2 → cp-engine-webhook route it delegates
+  through (`/api/sessions/capture`, `/api/project-state/capture`) carries
+  session and Exec Summary captures only — no sprint-file bullet. So
+  `promote_uphill(..., item_kind="decision")` on `cp-hosted` returns
+  `unsupported_here` with the exact `cxp promote-uphill` command to run;
+  commitments are fully served there.
+- Tests: `tests/test_promote_uphill.py` (level lookup, commitment and
+  decision paths against a fake client and a tmp tenant, CLI smoke, stdio
+  verb, hosted parity for the hash / est_item_id / rule text) and
+  `prototypes/hosted-mcp/test_promote_uphill.py` (the echo on every write
+  verb derived from the AST — not hand-listed — the rule in every
+  registered description, and the hosted commitment path end to end).
+
 ## v0.123.1 — 2026-09-24
 
 **Owner-column selects follow the schema too.** Patch. The first `cxp sync`
