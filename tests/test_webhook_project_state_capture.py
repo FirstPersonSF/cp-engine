@@ -23,6 +23,7 @@ import hmac
 import json
 import subprocess
 import sys
+from datetime import date, timedelta
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -262,7 +263,7 @@ class TestTheRollOffIsReported:
         assert "Updates" in body["changed"]
         assert body["roll_off"]["count"] == 2
         assert body["roll_off"]["dates"] == ["2026-01-05", "2026-01-02"]
-        assert body["roll_off"]["older_than"] < "2026-09"
+        assert body["roll_off"]["older_than"] == (date.today() - timedelta(days=28)).isoformat()
         text = _cp_text(tenant)
         assert "2026-01-02 — Another one" in text, "roll-off must be reported, never performed"
 

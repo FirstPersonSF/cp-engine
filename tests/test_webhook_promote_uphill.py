@@ -23,6 +23,8 @@ import sys
 from contextlib import contextmanager
 from pathlib import Path
 
+from datetime import date
+
 import pytest
 
 _WEBHOOK = Path(__file__).resolve().parent.parent / "webhook"
@@ -44,6 +46,7 @@ from tests.test_promote_uphill import (
     IDS,
     PROGRAM,
     PROGRAM_ID,
+    TODAY,
     WEEK,
     FakeClient,
     _paths_index,
@@ -113,6 +116,12 @@ def mc2(monkeypatch) -> FakeClient:
     return fake
 
 
+class _Today(date):
+    @classmethod
+    def today(cls) -> date:
+        return TODAY
+
+
 @pytest.fixture
 def client(tenant: Path, mc2, monkeypatch) -> TestClient:
     monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
@@ -124,6 +133,9 @@ def client(tenant: Path, mc2, monkeypatch) -> TestClient:
 
     monkeypatch.setattr(git_ops, "_cloned_tenant", _fake_clone)
     monkeypatch.setattr(git_ops, "_ssh_env", dict)
+    # The route defaults the parent's week to date.today(); pin it to the
+    # week the fixtures seed, or these tests break every Monday.
+    monkeypatch.setattr(promote_router, "date", _Today)
     tc = TestClient(webhook_main.app)
     tc.fake_clone = _fake_clone
     return tc
