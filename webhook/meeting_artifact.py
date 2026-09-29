@@ -76,6 +76,27 @@ def _slugify(title: str) -> str:
     return (slug or "meeting")[:60]
 
 
+_MEETING_ID_LINE = re.compile(r"^Meeting-ID: *(.*?) *$", re.MULTILINE)
+
+
+def _resolve_base(meetings_dir: Path, base: str, meeting_id: str) -> str:
+    """The filename stem for this meeting's pair in `meetings_dir` (#307).
+
+    `<date>-<slug>` is shared by every same-day meeting with the same title
+    (Zoom's default "Impromptu Zoom Meeting"), but a meeting's identity is
+    its id. The plain stem is kept when it is free or already holds this
+    meeting (a re-tag overwrites in place); otherwise the stem takes an
+    id suffix, which stays stable across re-runs without a directory scan.
+    """
+    existing = meetings_dir / f"{base}.md"
+    if not existing.exists():
+        return base
+    m = _MEETING_ID_LINE.search(existing.read_text(encoding="utf-8"))
+    if m and m.group(1) == meeting_id:
+        return base
+    return f"{base}-{meeting_id[:8]}"
+
+
 def _call_claude_synthesis(transcript: str) -> str | None:
     """Run the Deeper-notes synthesis call. Returns markdown, or None on failure."""
     try:
@@ -205,10 +226,7 @@ def write_meeting_artifacts(
         raw_date = str(meeting.get("meeting_date") or "")
         meeting_date = raw_date[:10] if raw_date else "unknown-date"
 
-        slug = _slugify(title)
-        base = f"{meeting_date}-{slug}"
-        md_filename = f"{base}.md"
-        txt_filename = f"{base}.txt"
+        base = f"{meeting_date}-{_slugify(title)}"
 
         # One Claude synthesis call, shared across all project copies.
         synthesis = _call_claude_synthesis(transcript_text)
@@ -220,6 +238,10 @@ def write_meeting_artifacts(
                 continue
             meetings_dir = project_dir / "meetings"
             meetings_dir.mkdir(parents=True, exist_ok=True)
+            # Resolved per project: each dir holds its own set of meetings.
+            stem = _resolve_base(meetings_dir, base, meeting_id)
+            md_filename = f"{stem}.md"
+            txt_filename = f"{stem}.txt"
 
             md_text = _build_markdown(
                 project_label=code,
@@ -239,8 +261,8 @@ def write_meeting_artifacts(
 
             md_path = meetings_dir / md_filename
             txt_path = meetings_dir / txt_filename
-            # Deterministic paths — a re-tag overwrites in place rather
-            # than duplicating.
+            # Deterministic per meeting id — a re-tag overwrites in place
+            # rather than duplicating; a same-titled meeting gets its own pair.
             md_path.write_text(md_text, encoding="utf-8")
             txt_path.write_text(transcript_text, encoding="utf-8")
             written.extend([md_path, txt_path])

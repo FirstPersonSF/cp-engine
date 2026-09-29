@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.124.4 — 2026-09-29
+
+**Same-titled meetings on one day keep their own transcripts.** Patch
+(#307). The webhook's per-meeting artifacts were keyed on
+`<date>-<slug>`, so two meetings on one day with one title (Zoom's default
+"Impromptu Zoom Meeting") wrote the same `meetings/` pair and the later
+meeting overwrote the earlier one's synthesis and transcript; five slt-5196
+pre-interviews were lost from the tree across 2026-09-28/29. The stem is
+now decided on the meeting id already in the `.md` header: free, or held by
+this meeting, keeps `<date>-<slug>` (a re-tag still overwrites in place);
+held by another meeting takes `-<id[:8]>`, stable across re-runs. The `.md`
+names and links its resolved `.txt`. The sprint file's "Meetings | N this
+sprint" count, which undercounted on collision days, needs no change.
+
 ## v0.124.3 — 2026-09-24
 
 **An account never carries an agreement.** Patch. SentinelOne's five
