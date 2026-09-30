@@ -1267,7 +1267,24 @@ def _spine_element(row: dict) -> dict:
         "important": bool(row.get("important")),
         "note": row.get("note"),
         "scope": _row_scope(row),
+        **_provenance_fields(row),
     }
+
+
+def _provenance_fields(row: dict) -> dict:
+    """#314 — the machine-derived marker and any distill-fidelity flags, as
+    read-side keys. Absent (not ``None``) when the body is a person's, so a
+    clean pull looks exactly as it did before."""
+    from cp_engine.distill_fidelity import fidelity_flags_of, provenance_of
+
+    out: dict = {}
+    prov = provenance_of(row)
+    if prov:
+        out["provenance"] = prov
+    flags = fidelity_flags_of(row)
+    if flags:
+        out["fidelity_flags"] = flags
+    return out
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -298,6 +298,7 @@ def _frame_promote_in_tree(
     # AUTHORED element, whose rows are MC-2-owned and written directly —
     # for that path the DB row, not the push, is the durable copy (the
     # authored reverse-mirror regenerates the file on any later sync).
+    fidelity: dict = {}
     path = promote_card(
         card,
         framing=framing,
@@ -311,6 +312,7 @@ def _frame_promote_in_tree(
         flip_card=False,
         name=name,
         phase=phase,
+        on_fidelity=fidelity.update,
     )
 
     # Did the issue-#44 create path fire? promote_card's create-don't-version
@@ -360,6 +362,49 @@ def _frame_promote_in_tree(
             ValueError(f"{skip['rel_path']}: {skip['error']}"),
             area="spine_substance_skip",
         )
+
+    # #314 — a versioned (disk) promote syncs up with review_flags=[]; record
+    # a LOW fidelity score on the mirrored row so the review surface lists it.
+    # (The create path already stamped its own row.) Sync keeps it: flags are
+    # merged per (field, source) and no other producer owns this source.
+    # Best-effort — the durable write must never fail on its own warning.
+    fidelity_flagged = False
+    if fidelity.get("low") and mirrored and not created_new_element:
+        try:
+            from datetime import UTC, datetime
+
+            from cp_engine.distill_fidelity import FLAG_SOURCE, fidelity_flag
+            from cp_engine.mc2_db import Tables, update_element_review_flags
+            from cp_engine.spine_sync import _merge_flag
+
+            # Find the mirrored row by what it IS (project uuid + element +
+            # label), never by a reconstructed id: the mirror keys ids on the
+            # code it was handed, which is not always the canonical spelling.
+            hit = (
+                client.table(Tables.SPINE_SUBSTANCE)
+                .select("id, review_flags")
+                .eq("project_id", card.project_id)
+                .eq("est_item_id", est_item_id)
+                .eq("version_label", version_label)
+                .limit(1)
+                .execute()
+                .data
+            ) or []
+            if hit:
+                row_id = hit[0]["id"]
+                flags = list(hit[0].get("review_flags") or [])
+                flag = fidelity_flag(fidelity, source_label=card.source_ref,
+                                     now_iso=datetime.now(UTC).isoformat())
+                update_element_review_flags(
+                    client, row_id, _merge_flag(flags, "body", flag,
+                                                source=FLAG_SOURCE))
+                fidelity_flagged = True
+        except Exception as exc:  # noqa: BLE001 — a warning never fails the write
+            log.warning("spine-promote: fidelity flag write failed for %s: %s",
+                        card.id, exc)
+    if fidelity.get("low"):
+        log.warning("spine-promote: LOW distill fidelity for card=%s: %s",
+                    card.id, fidelity.get("reason"))
 
     # The push IS the commit point — succeeding here means the version is
     # durably in the repo. Any failure raises before the card flips (the run
@@ -426,6 +471,15 @@ def _frame_promote_in_tree(
         "created_new_element": created_new_element,
         "card_flipped": card_flipped,
         "edge_proposal": edge_proposal,
+        # #314 — the promoted body is machine-written; this is how far its
+        # phrases are the card's (see cp_engine.distill_fidelity).
+        "fidelity": {
+            "score": fidelity.get("score"),
+            "low": bool(fidelity.get("low")),
+            "reason": fidelity.get("reason"),
+            "flagged": fidelity_flagged or (bool(fidelity.get("low"))
+                                            and created_new_element),
+        },
     }
 
 

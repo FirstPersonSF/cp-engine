@@ -113,6 +113,15 @@ class _RecordingTable:
         self._insert = None
         self._update = None
         self._eq = None
+        self._select = None
+
+    def select(self, cols):
+        assert "*" not in cols, "never select('*')"
+        self._select = cols
+        return self
+
+    def limit(self, n):
+        return self
 
     def insert(self, data):
         self._insert = data
@@ -149,6 +158,9 @@ class _RecordingTable:
             self._rec["db_updates"].append(
                 {"table": self._name, "update": self._update, "eq": self._eq}
             )
+        if self._select is not None and self._insert is None and self._update is None:
+            rows = self._rec.get("select_rows", {}).get(self._name, [])
+            return type("Resp", (), {"data": [dict(r) for r in rows]})()
         return type("Resp", (), {"data": []})()
 
 
@@ -203,6 +215,8 @@ def _wire_happy(monkeypatch, tmp_path: Path, *, card=None, estimate=None,
     def fake_promote(card, **kw):
         rec["promote_kw"] = kw
         rec["promote_card"] = card
+        if rec.get("fidelity") is not None and kw.get("on_fidelity"):
+            kw["on_fidelity"](rec["fidelity"])
         promote_path.parent.mkdir(parents=True, exist_ok=True)
         promote_path.write_text("# stub substance\n")
         return promote_path
@@ -343,11 +357,43 @@ def test_promote_background_completes_run_row_done(monkeypatch, client, tmp_path
         # created_new_element=False (version path), so no edge is proposed —
         # only the create path yields a distinct from-endpoint (mig 117).
         "edge_proposal": None,
+        # #314 — the fake promote reported no fidelity; the key is still there.
+        "fidelity": {"score": None, "low": False, "reason": None,
+                     "flagged": False},
     }
 
     # Clone lifecycle: entered once, exited once (no per-promote disk leak).
     assert rec["clone_enters"] == 1
     assert rec["clone_exits"] == 1
+
+
+def test_promote_low_fidelity_flags_the_mirrored_row(monkeypatch, client, tmp_path):
+    """#314 — a versioned promote whose body is not drawn from its card: the
+    run result says so AND the mirrored row gets the review flag (sync would
+    otherwise mirror it up with review_flags=[] and nothing would show).
+
+    CONTROL: against the unfixed runner there is no `fidelity` key and no
+    spine_substance update."""
+    rec = {
+        "fidelity": {"score": 0.01, "low": True, "unmatched": ["pink"],
+                     "reason": "only 1% of the body's phrases occur in the source"},
+        "select_rows": {"spine_substance": [
+            {"id": "ibx-5153-ai-campaign/d1/v3", "review_flags": []}]},
+    }
+    _wire_happy(monkeypatch, tmp_path, recorder=rec)
+    run_id, _, coro = _kickoff(client, rec)
+    asyncio.run(coro)
+
+    patch = _run_row_patch(rec, run_id)
+    assert patch["result"]["fidelity"]["low"] is True
+    assert patch["result"]["fidelity"]["flagged"] is True
+    (upd,) = [u for u in rec["db_updates"] if u["table"] == "spine_substance"]
+    # Written to the row the mirror made, found by what it is — not by an id
+    # rebuilt from the card's short code.
+    assert upd["eq"] == ("id", "ibx-5153-ai-campaign/d1/v3")
+    (flag,) = upd["update"]["review_flags"]
+    assert flag["source"] == "distill-fidelity" and flag["field"] == "body"
+    assert flag["was"] == "mtg-1"
 
 
 def test_promote_background_clone_is_sparse_scope_dirs(monkeypatch, client, tmp_path):

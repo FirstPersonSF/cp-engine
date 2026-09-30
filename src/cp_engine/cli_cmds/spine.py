@@ -286,6 +286,7 @@ def spine_frame_cmd(card_id, framing, est_item_id, kind, sources, model) -> None
     project_dir = find_spine_dir(config.root, card.project_code)
     src = list(sources) or [card.source_ref]
 
+    fidelity: dict = {}
     path = promote_card(
         card,
         framing=framing,
@@ -298,8 +299,21 @@ def spine_frame_cmd(card_id, framing, est_item_id, kind, sources, model) -> None
         client=client,
         name=name,
         phase=phase,
+        on_fidelity=fidelity.update,
     )
     click.echo(f"Wrote {path}")
+    # #314 — the promoted body is machine-written; say so, and say loudly
+    # when its phrases are not the card's.
+    if fidelity.get("low"):
+        click.echo(
+            f"WARNING distill-fidelity: {fidelity.get('reason')}. Unmatched "
+            f"terms: {', '.join(fidelity.get('unmatched') or []) or '-'}. "
+            "Read the body against the card before relying on it.",
+            err=True,
+        )
+    else:
+        click.echo(f"Machine-derived body (phrase overlap "
+                   f"{fidelity.get('score')}) — unverified until confirmed.")
 
 
 @click.command("sweep")
@@ -518,6 +532,17 @@ def spine_recover_cmd(code: str, apply_: bool, model: str) -> None:
             f"\n{rebind_count} element(s) flagged needs-rebind "
             "(re-homed as context; re-bind in the estimate if needed)."
         )
+
+    # #314 — a distill whose phrases are not its source's is shown BEFORE the
+    # write line, so a dry run is where it is caught, not seven weeks later.
+    low = [r for r in report if r.get("fidelity_low")]
+    if low:
+        click.echo(f"\n{len(low)} element(s) FAILED the distill-fidelity check:")
+        for r in low:
+            click.echo(f"  ! {r['label']} · {r.get('asset') or '?'} — "
+                       f"{r.get('fidelity_reason')}")
+        click.echo("  Re-distilled bodies land marked machine-derived; "
+                   "read these against their source before relying on them.")
 
     if apply_:
         click.echo(f"\nWrote {len(rows)} rows under {canonical_code}.")
