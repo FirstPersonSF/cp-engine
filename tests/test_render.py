@@ -1131,6 +1131,26 @@ def test_exec_summary_is_authored_real_bullet_is_true():
     assert exec_summary_is_authored(region) is True
 
 
+@pytest.mark.parametrize("line", [
+    "**Next up**: ship the R3 deck Friday",
+    "**Status** : Pop-up R3 in review.",
+    "**Next up (W40):** ship the R3 deck Friday",
+])
+def test_exec_summary_is_authored_reads_decorated_labels(line):
+    """#333: the private label pattern required the colon INSIDE the bold, so
+    `**Next up**: value` was neither a field nor a bullet and a region whose
+    only real content sat there read as unauthored. Field identity now comes
+    from exec_summary_lint.field_label, which lint, merge and render share."""
+    region = "**Objective:** _<one line>_\n" + line + "\n"
+    assert exec_summary_is_authored(region) is True
+
+
+def test_exec_summary_is_authored_decorated_placeholder_is_false():
+    """The colon-outside spelling still honours the placeholder rule."""
+    region = "**Next up**: _<concrete near-term moves>_\n"
+    assert exec_summary_is_authored(region) is False
+
+
 def test_slice_exec_summary_region():
     """Markers are excluded; blank lines trimmed; None when a marker absent."""
     body = (
