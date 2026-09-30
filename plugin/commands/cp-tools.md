@@ -21,30 +21,38 @@ The markdown files on disk (`_sources.md`, `spine/`) are *mirrors* regenerated b
 `cxp sync` — when you need current content, prefer the MCP tools over reading the
 mirrors, and never reconstruct spine/source content from screenshots.
 
-The first argument to every tool is a `<code>` — works for **engagements**
-(`ibx-5153`, or the slug `IBX-…`), **initiatives** (`mission-control`, `storyos`),
-and **standalone repos**. The server resolves all three (initiatives resolve via
-the `initiatives` table). Initiatives have no ingested Drive/Dropbox sources, so
+The first argument to almost every tool is `project_code` — a workstream code:
+**engagements** (`ibx-5153`, or the slug `IBX-…`), **initiatives**
+(`mission-control`, `storyos`), and **standalone repos**. The server resolves
+all three (initiatives resolve via the `initiatives` table). Initiatives have no ingested Drive/Dropbox sources, so
 the *source* tools return empty for them — but the *spine* tools work fully.
 
+**Signatures below are the servers' real parameter names** (a test binds them
+to both registries). The hosted server REJECTS an argument it does not declare
+— a misspelled name fails the call rather than being dropped and letting a
+default apply (#318). Where the two servers differ, both forms are given.
+
 **1 — RAG source store** (ingested Drive/Dropbox docs: briefs, decks, research):
-- `list_project_sources(code)` — live list of a project's ingested docs.
-- `pull_project_source(code, doc_title, query?)` — a doc's full text + citation
+- `list_project_sources(project_code)` — live list of a project's ingested docs.
+- `pull_project_source(project_code, doc_title, query?)` — a doc's full text + citation
   by title; pass `query` to rank chunks by relevance instead of full-doc order.
-- `fetch_project_source(code, doc_title)` — download the ORIGINAL binary (e.g. a
+  On `cp-hosted` the verb is id-addressed instead:
+  `pull_project_source(asset_id, max_chars?)` — `asset_id` from
+  `list_project_sources`; no title lookup, no `query` ranking.
+- `fetch_project_source(project_code, doc_title)` — download the ORIGINAL binary (e.g. a
   `.pptx` to inspect hidden slides) to a local path you can then Read.
-- `pull_document_comments(code, doc_title)` — read the reviewer COMMENTS on a doc
+- `pull_document_comments(project_code, doc_title)` — read the reviewer COMMENTS on a doc
   (ingest drops them). Live read: Google-Drive docs via the Drive API (the only
   path to Google-Docs comments), else the original Office binary's comment XML
   (.docx/.pptx/.xlsx). Returns `{author, date, anchored_text, comment, replies}`
   per comment — grouped by author it's stakeholder intelligence ("what did each
   reviewer push on?"). Use when a doc was reviewed and you need the margin notes.
-- `archive_project_source(code, doc_title_or_id)` / `rename_project_source(code,
+- `archive_project_source(project_code, doc_title_or_id)` / `rename_project_source(project_code,
   doc_title_or_id, new_title)` — **hosted-server verbs** (`cp-hosted` connector;
   #126 store curation, ported per #138) — soft-archive a duplicate/dead doc
   (row+chunks survive; re-ingest stays blocked) or retitle a same-title
   DISTINCT doc. Uuid or EXACT title; ambiguous titles return candidates.
-- `set_source_status(code, doc_title_or_id, status_note=…, description=…)` —
+- `set_source_status(project_code, doc_title_or_id, status_note=…, description=…)` —
   **hosted-server verb** (mig 165). Records whether a source can be RELIED ON
   and QUOTED. Write a `status_note` the moment you learn something the title
   does not reveal: **draft/WIP** (may contradict the final), **embargoed**
@@ -59,13 +67,13 @@ the *source* tools return empty for them — but the *spine* tools work fully.
   confirming must say so in the text** ("title says DRAFT — unconfirmed"): a
   confidently wrong note is trusted, and it is the thing standing between a
   reader and quoting an embargoed doc in client work.
-- `compare_project_sources(code, doc_a, doc_b)` — structural text diff between
+- `compare_project_sources(project_code, doc_a, doc_b)` — structural text diff between
   two versions of a deck/doc (#160): per-slide/section units aligned by
   best-match similarity (never index), reporting matched (similarity,
   unchanged/edited/moved), cut, new, and placeholder units +
   `overall_similarity` (the duplicate check). Each side is an ingested title
   or a local file path. The read for feedback that arrives as a REVISED COPY.
-- `push_to_dropbox(code, local_path, dest_name?, overwrite?)` — the WRITE-BACK
+- `push_to_dropbox(project_code, local_path, dest_name?, overwrite?)` — the WRITE-BACK
   inverse of `fetch_project_source`: upload a rich document you generated on this
   machine (a `.pptx` deck, `.docx`, PDF) INTO the project's Dropbox folder, so
   the humans find it where they expect. Refuses to clobber an existing name
@@ -79,24 +87,38 @@ Use during strategy/deliverable work — e.g.
 
 **2 — Spine** (the distilled-memory index: emails, notes, decisions, syntheses —
 MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it live:
-- `list_spine_elements(code)` — one row per live element (est_item_id, framing,
+- `list_spine_elements(project_code)` — one row per live element (est_item_id, framing,
   layer, binding, status, serves_count, body_len). Start here to see what's there.
-- `pull_spine_element(code, key)` — ONE element's full body. `key` is an
+- `pull_spine_element(project_code, key)` — ONE element's full body. `key` is an
   est_item_id (`_authored/email-from-janet-6-18`) or a substring of its title.
-- `create_spine_element(code, label, type, body?, serves?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) — author a new live
-  v1 element (`type` ∈ email|note|source|brief|decision|stakeholder|agreement|
-  synthesis|output|activity). Live immediately; mirrors to the repo on next sync.
-- `add_spine_document(code, label, content?, source_title?, type?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) —
-  author a whole DOCUMENT into the spine as a new element, without hand-pasting
-  the body. Pass EITHER a local `file_path` (a synthesis `.md` you wrote to disk
-  → element body — UTF-8 text only) OR an already-ingested `source_title` (pull
+  On `cp-hosted`, `project_code` is optional (a disambiguator) and `key` must be
+  an EXACT est_item_id or row id — no title substring. `element_id` is accepted
+  there as an alias for `key`.
+- `create_spine_element(project_code, framing, body, layer?, slug?, important?, note?, sources?)`
+  — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it
+  off stdio) — author a new live v1 element. `framing` is the title; `layer`
+  (default `note`) ∈ email|note|decision|source|brief|stakeholder|agreement|
+  synthesis|output|activity|retrospective|research|deliverable|timeline|
+  clientfeedback. **The kind is `layer`, not `type`** (sibling verbs
+  `add_spine_document` and `pull_element_from_project` say `type`); `type` here
+  is rejected. `serves` is not settable at create — bind afterwards with
+  `set_spine_element(..., serves=[...])`. Live immediately; stored under the
+  project's canonical dir-slug whatever code form you pass (#309); mirrors to
+  the repo on next sync.
+- `add_spine_document(project_code, label, content?, source_title?, type?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) —
+  author a whole DOCUMENT into the spine as a new element. Pass EITHER
+  `content` (the document text — read a local `.md` and pass its text; the
+  hosted server has no file access) OR an already-ingested `source_title` (pull
   the ingested doc's text as the body AND auto-attach the rag_asset for
-  provenance). `type` defaults to `synthesis`; provide exactly one of
-  file/source. To UPDATE an element from a document, read the file and pass its
-  text to `add_spine_version` instead.
-- `add_spine_version(code, element_id, body, version_note?, step_title?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) — supersede the prior
-  live version with a new one (a targeted "what changed" update).
-- `set_spine_element(code, key, important?, note?, layer?, framing?, serves?, actor?)` —
+  provenance). `type` (the layer) defaults to `synthesis`; provide exactly one
+  of content/source. To UPDATE an element from a document, pass its text to
+  `add_spine_version` instead.
+- `add_spine_version(project_code, element_id, body, version_note?, step_title?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) — supersede the prior
+  live version with a new one (a targeted "what changed" update). Here the
+  element is `element_id` (est_item_id, bare slug, or distinct title substring
+  — the same forms `key` takes elsewhere).
+- `set_spine_element(project_code, key, important?, note?, layer?, framing?, serves?, actor?)` —
+  (`element_id` accepted as an alias for `key`)
   **hosted-server verb** (`cp-hosted` connector; cp-engine #143 ported it off
   stdio) — partial update of an element's flags and element-level facts: retitle
   with `framing` (the est_item_id never changes), rebind with `serves` (work-item
@@ -106,35 +128,35 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   `client`-actor element is a stakeholder signal: it advises, never vetoes).
   NOTE: the stdio copy also promoted the element's source transcript to RAG on an
   `important` false→true flip; the hosted copy does NOT do that yet (#143). Run
-  `promote_spine_transcript(code, key)` — now also a hosted verb (#143 batch 5) —
+  `promote_spine_transcript(project_code, key)` — now also a hosted verb (#143 batch 5) —
   to promote or retry explicitly.
-- `retire_spine_element(code, key)` — **hosted-server verb** (`cp-hosted`
+- `retire_spine_element(project_code, key)` — **hosted-server verb** (`cp-hosted`
   connector; cp-engine #143 ported it off stdio) — remove an element from the
   live spine (duplicates, no-longer-relevant items). The element's history is
   archived (not deleted, un-archivable), and its typed edges are removed so
   nothing dangles. On hosted this is ONE atomic guarded function, so a
   mid-failure can no longer leave the element half-retired.
-- `retire_spine_elements(code, keys)` — **hosted-server verb** (`cp-hosted`
+- `retire_spine_elements(project_code, keys)` — **hosted-server verb** (`cp-hosted`
   connector; cp-engine #143 ported it off stdio) — batch retire (slot cleanup):
   retire a list of elements in one call, each exactly as `retire_spine_element`.
   Returns per-key results so a resolution miss doesn't fail the batch.
   **Do not batch-retire without verifying per card**: pull each card first
   (`pull_spine_element`) — the #112 lesson: 2 of 3 "redundant" cards were
   load-bearing.
-- `add_element_provenance(code, key, source_key)` — **hosted-server verb**
+- `add_element_provenance(project_code, key, source_key)` — **hosted-server verb**
   (`cp-hosted` connector; cp-engine #143 ported it off stdio) — attach ANOTHER
   spine element as provenance to `key` (the tiering-rule move for "this synthesis
   card absorbs these raw cards"). `source_key` MAY be already-retired; the link is
   a property of the surviving card, so it survives the source's retirement.
-  Inverse: `remove_element_provenance(code, key, source_key)` — also hosted.
-- `add_element_source(code, key, source_title)` — **hosted-server verb**
+  Inverse: `remove_element_provenance(project_code, key, source_key)` — also hosted.
+- `add_element_source(project_code, key, source_title)` — **hosted-server verb**
   (`cp-hosted` connector; cp-engine #143 ported it off stdio) — attach an
   INGESTED source (a rag_asset, resolved like `list_project_sources`) to `key`,
   writing the typed link onto every version. The verb that closes an Agreement's
   "attach as source" loop, and what `cxp spine-lint` points you at. Re-attaching
-  is a no-op. Inverse: `remove_element_source(code, key, source_title)` — also
+  is a no-op. Inverse: `remove_element_source(project_code, key, source_title)` — also
   hosted. Distinct from `add_element_provenance`, which attaches a spine ELEMENT.
-- `create_spine_relation(code, kind, from_key, to_key, note?)` — **hosted-server
+- `create_spine_relation(project_code, kind, from_key, to_key, note?)` — **hosted-server
   verb** (`cp-hosted` connector; cp-engine #143 ported it off stdio) — author a
   typed directed edge between two live elements. `kind` ∈ responds_to | supersedes |
   derives_from | informs | contradicts. Keys resolve like `pull_spine_element`
@@ -142,15 +164,15 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   = their voice reacting to ours; derives_from = built from named inputs;
   supersedes = a genuine fork (rare); informs = shaped but didn't generate;
   contradicts = conflicting claim.
-- `retire_spine_relation(code, kind, from_key, to_key)` — **hosted-server verb**
+- `retire_spine_relation(project_code, kind, from_key, to_key)` — **hosted-server verb**
   (`cp-hosted` connector; cp-engine #143 ported it off stdio) — delete one edge
   (fix a mis-recorded relation). Tolerates a dead endpoint: pass raw est_item_ids
   to clean an orphaned edge left by an older retire.
-- `list_spine_relations(code, element_key?)` — **hosted-server verb** (#125) —
+- `list_spine_relations(project_code, element_key?)` — **hosted-server verb** (#125) —
   READ the edge graph: one element's edges in both directions (retired-tolerant
   key) or the whole project's, endpoints annotated with live framings. The
   verify-after-write and audit counterpart to the edge writes.
-- `promote_to_canon(code, key, replaces_key?, note?)` — **hosted-server verb**
+- `promote_to_canon(project_code, key, replaces_key?, note?)` — **hosted-server verb**
   (spec v04 §2, #147) — promote an element into the project's CANON: the small
   curated "current truth" set anchored on the standing Inputs & Briefing element
   (membership = active `canon_of` edge member → brief). Deliberate and
@@ -159,7 +181,7 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   accrete. Journals one review-gated step on the brief. Authority ordering:
   canon outranks delivered artifacts and stakeholder signals; only a live
   partner directive outranks canon.
-- `seal_to_deliverable(code, deliverable_key, absorbed_keys[], note?)` —
+- `seal_to_deliverable(project_code, deliverable_key, absorbed_keys[], note?)` —
   **hosted-server verb** (spec v04 §3, #148) — a shipped deliverable is a
   COMPRESSION EVENT: batch-write `absorbed_by` edges from the elements it was
   synthesized from. Absorbed elements disappear from `list_spine_elements`
@@ -196,16 +218,16 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   slot (nothing to attach to) and stubs whose target has `layer: null` (moving
   provenance onto a card spine-lint calls unfilable buries it — fix the
   destination first). Not a wrap-up ritual; run it when curating a project.
-- `promote_stakeholder(code, key)` — **hosted-server verb** (`cp-hosted`
+- `promote_stakeholder(project_code, key)` — **hosted-server verb** (`cp-hosted`
   connector; cp-engine #143 ported it off stdio) — promote a stakeholder element
   to ACCOUNT scope: it becomes readable from every project of the same company
   (rows carry `scope: "account"` in list/pull). Engagements only; opt-in — keep
   engagement-specific reads in a separate project-scoped element.
-- `demote_stakeholder(code, key)` — **hosted-server verb** (`cp-hosted`
+- `demote_stakeholder(project_code, key)` — **hosted-server verb** (`cp-hosted`
   connector; cp-engine #143 ported it off stdio) — the inverse: the element
   returns to its provenance project and leaves the account roster. Nothing is
   deleted.
-- `set_element_account_scope(code, key, account?)` — **hosted-server verb**
+- `set_element_account_scope(project_code, key, account?)` — **hosted-server verb**
   (`cp-hosted` connector; cp-engine #143 ported it off stdio) — the type-AGNOSTIC
   promote: tag ANY element (a synthesis, a source, a decision — not just a
   stakeholder) account-level (`account=true`, readable from every sibling
@@ -244,7 +266,7 @@ with fixed shapes:
 framework names/ids are INTERNAL — never in client-facing material):
 - `framework_readiness(layer?)` — the curated menu + snapshot identity. Start
   here; only listed frameworks are usable (others discard by design).
-- `framework_decompose(code, framework, source_keys, baseline?)` — extract
+- `framework_decompose(project_code, framework, source_keys, baseline?)` — extract
   framework field values from scoped project material (file paths under the
   tenant root, spine element keys, or source-doc titles). `uncertain` fields
   are usually open decisions — surface them for human review, don't trust
@@ -259,26 +281,26 @@ framework names/ids are INTERNAL — never in client-facing material):
 **4 — Commitments** (MC-2's dated-obligations store — who owes what by when;
 the same store meeting auto-ingest proposes into, the weekly dates loop
 ratifies, and the Monday partners digest reads):
-- `create_commitment(code, description, owner?, due_date?, direction?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) —
+- `create_commitment(project_code, description, owner_email?, due_date?, direction?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) —
   register a session-agreed commitment as a PROPOSAL (`source_kind='session'`,
   review-gate parity with auto-ingest — nothing is auto-confirmed).
-  `direction` ∈ `us_to_them | them_to_us | internal`; `owner` is an email or
-  display name; `due_date` ISO or omitted (never guess a date the humans
+  `direction` ∈ `us_to_them | them_to_us | internal`; `owner_email` is who
+  owes it (an email); `due_date` ISO or omitted (never guess a date the humans
   didn't agree). Idempotent on identical text — dropped rows stay dead.
-- `list_commitments(code, status?)` — the read side (`status` ∈
+- `list_commitments(project_code, status?)` — the read side (`status` ∈
   `open | done | dropped | all`). Use at wrap up to reconcile promised vs.
   delivered; `date_status` shows ratification, `source_kind` shows origin.
-- `resolve_commitment(code, key, outcome?)` — **hosted-server verb**
+- `resolve_commitment(project_code, key, outcome?)` — **hosted-server verb**
   (`cp-hosted` connector; cp-engine #143 ported it off stdio) — close an open row
   as `done` or `dropped` (`key` = id or distinct description substring). The
   wrap-up-sweep verb, mirroring the `[resolved: ...]` markers on the
   account / program `cp.md` decisions lists.
-- `resolve_commitments(code, keys, outcome?)` — **hosted-server verb** (#159) —
+- `resolve_commitments(project_code, keys, outcome?)` — **hosted-server verb** (#159) —
   batch close: each key resolves exactly as `resolve_commitment`, per-key
   results, a miss never aborts the batch (the `retire_spine_elements`
   contract), and a closed row leaves the matching snapshot so two keys can
   never take the same row. Use for any wrap-up sweep bigger than a few rows.
-- `resolve_commitments_by_meeting(code, meeting_ids, outcome?, except_keys?,
+- `resolve_commitments_by_meeting(project_code, meeting_ids, outcome?, except_keys?,
   dry_run?)` — **hosted-server verb** (#159) — the delivery-event sweep: close
   every open row proposed by the named meetings (`source_meeting_id` values,
   from `list_commitments`) in one call. `except_keys` protects still-live rows
@@ -288,7 +310,7 @@ ratifies, and the Monday partners digest reads):
   never swept, and `[off-project? → …]`-flagged rows are skipped by default
   (reported as `off_project_skipped`) — route them first, or pass
   `include_off_project=true`.
-- `route_commitment(code, key, target_code)` — **hosted-server verb** (#159
+- `route_commitment(project_code, key, target_code)` — **hosted-server verb** (#159
   part 3) — move a mis-scoped open row to the project it belongs to: a copy
   lands OPEN on the target (off-project annotation stripped, `[routed from
   <code>]` appended, owner/dates/ratification/meeting linkage preserved),
@@ -299,16 +321,16 @@ ratifies, and the Monday partners digest reads):
 Engagements and initiatives can own commitments; standalone repos cannot.
 
 **5 — Notes** (MC-2's partner-ping surface — an in-app unread note + a Slack DM):
-- `create_note(code, recipient, body, author?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) — leave a partner a note against
-  a project (progress update, session handoff). `recipient` resolves to ONE
-  person by display name (distinct substring, e.g. "Marcello") or email;
-  `author` defaults to the acting partner. `body` is markdown, document-sized.
-  Delivered as a Slack DM (best-effort — `slack_delivery` ∈ sent|failed|skipped;
-  the note is in-app regardless). Author it only when the human asks to notify a
-  partner — never unprompted.
+- `create_note(project_code, body, title?, recipient_email?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) — leave a partner a note against
+  a project (progress update, session handoff). `recipient_email` addresses it
+  to another partner (by email); omitted, it is a self-note. The author is
+  always you (the caller). `title`, when given, becomes an H3 atop the markdown
+  `body`. The hosted server records the note in-app only — it does NOT send the
+  Slack DM (`slack_delivery: skipped`); mc-2 owns that side effect. Author it
+  only when the human asks to notify a partner — never unprompted.
 
 To find an email or note you authored into a project's (or initiative's) spine,
-`list_spine_elements(code)` then `pull_spine_element(code, <key>)` — don't grep
+`list_spine_elements(project_code)` then `pull_spine_element(project_code, <key>)` — don't grep
 the `spine/` mirror, which may lag the live MC-2 row.
 
 ## Proposing journey steps at wrap up
@@ -322,7 +344,7 @@ automatically — you don't hand-propose a step for every version bump. Pass
 move's words ("Built Mehul's cube framing into deck v09") rather than the
 derived "Updated <framing> (v<N>)".
 
-Hand-author a step with `propose_spine_step(code, key, title, status="done",
+Hand-author a step with `propose_spine_step(project_code, key, title, status="done",
 step_date=<today>)` — a **hosted-server verb** (`cp-hosted` connector; cp-engine
 #143 ported `propose_spine_step`, `add_spine_step` and `create_spine_relation`
 off the stdio server so the write surface exists once and carries your identity)

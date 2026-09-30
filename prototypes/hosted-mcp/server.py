@@ -70,7 +70,7 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from starlette.responses import JSONResponse
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, ConfigDict
 from supabase import create_client
 from supabase.lib.client_options import SyncClientOptions
 
@@ -1384,15 +1384,25 @@ def list_spine_relations(
 
 
 @mcp_server.tool()
-def pull_spine_element(element_id: str, project_code: str | None = None) -> dict[str, Any]:
+def pull_spine_element(
+    element_id: str | None = None,
+    project_code: str | None = None,
+    key: str | None = None,
+) -> dict[str, Any]:
     """Pull one spine element's body + metadata, under the caller's identity.
 
     Args:
         element_id: `spine_substance.est_item_id` (e.g. "_authored/janet-dossier")
-                    or the row's own `id`.
+                    or the row's own `id`. Exact match only on this server —
+                    no bare slug or title substring.
         project_code: optional scope, disambiguating an est_item_id that several
                       projects share (authored slugs are unique only per project).
+        key: alias for `element_id` — the name every other element verb uses
+             (#318). Pass one; both is fine only when they agree.
     """
+    element_id, err = _element_key(key, element_id)
+    if err is not None:
+        return err
     client = user_client()
     q = client.table("spine_substance").select(SPINE_PULL_COLUMNS).eq("est_item_id", element_id)
     if project_code:
@@ -2681,6 +2691,29 @@ _ELEMENT_RESOLVE_COLUMNS = (
 # too. That strands the live version and leaves the stale superseded row as
 # the only thing the account side can see. Select them together, carry them
 # together.
+
+
+def _element_key(key: str | None, element_id: str | None) -> tuple[str | None, dict[str, Any] | None]:
+    """`(identifier, None)` or `(None, error)` for a verb that accepts the
+    element under either name (#318).
+
+    Two spellings grew for one identifier: `pull_spine_element` and
+    `add_spine_version` said `element_id`, every other element verb said
+    `key`, and a caller who guessed wrong got a validation error as the only
+    documentation. The verbs that took the heat accept both. Two DIFFERENT
+    values is an error, never a silent pick — the whole discipline of these
+    verbs is "bind to one element or skip".
+    """
+    k = (key or "").strip()
+    e = (element_id or "").strip()
+    if k and e and k != e:
+        return None, {
+            "error": f"`key` ({k!r}) and `element_id` ({e!r}) name different "
+            "elements — they are aliases; pass one"
+        }
+    if not (k or e):
+        return None, {"error": "an element is required: pass `key` (alias `element_id`)"}
+    return k or e, None
 
 
 def resolve_element_versions(
@@ -4600,13 +4633,14 @@ def promote_spine_transcript(project_code: str, key: str) -> dict[str, Any]:
 @_names_its_level
 def set_spine_element(
     project_code: str,
-    key: str,
+    key: str | None = None,
     important: bool | None = None,
     note: str | None = None,
     layer: str | None = None,
     framing: str | None = None,
     serves: list[str] | None = None,
     actor: str | None = None,
+    element_id: str | None = None,
 ) -> dict[str, Any]:
     """Set `important`, `note`, `layer`, `framing` (title), `serves`, and/or
     `actor` on a spine element — the hosted port of the stdio verb (#143
@@ -4664,7 +4698,12 @@ def set_spine_element(
             READABLE everywhere; serves is what says where it MATTERS.
         actor: who is speaking — partner | client | vendor | inferred
             (spec v04 authority ordering; tag deliberately).
+        element_id: alias for `key` — the name `pull_spine_element` and
+            `add_spine_version` use (#318). Pass one; both only when they agree.
     """
+    key, err = _element_key(key, element_id)
+    if err is not None:
+        return err
     if all(v is None for v in (important, note, layer, framing, serves, actor)):
         return {
             "note": "nothing to update (pass important/note/layer/framing/serves/actor)"
@@ -11035,6 +11074,54 @@ def word_count_check(project_code: str) -> dict[str, Any]:
         # breakdown is noise.
         "contributors": contributors(text) if findings else [],
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Unknown arguments are an error, not a no-op (#318)
+# ──────────────────────────────────────────────────────────────────────
+#
+# The MCP SDK validates a call's arguments through a pydantic model built
+# from the tool's signature (`FuncMetadata.arg_model`), and that model takes
+# pydantic's default `extra="ignore"`: an argument the tool does not declare
+# is DROPPED without a word. That — not a `**kwargs` anywhere in this file —
+# is how `create_spine_element(..., type="decision")` filed decisions into
+# layer Note three times (the parameter is `layer`; `type` vanished and the
+# default applied). The schema said nothing either: no
+# `additionalProperties: false`, so a client had no way to know.
+#
+# So once every tool is registered, each argument model is swapped for a
+# subclass with `extra="forbid"`, and the advertised schema is regenerated
+# from it. A misnamed argument now fails the call with pydantic's "Extra
+# inputs are not permitted" naming the argument, and the schema tells a
+# client before it tries. Runs at import, after the last `@tool`, so the
+# test suite exercises exactly what the server serves.
+
+
+def _forbid_unknown_arguments(server) -> int:
+    """Make every registered tool reject undeclared arguments; returns the
+    count. Reaches the SDK's `_tool_manager` — private, but pinned
+    (`mcp>=2.0,<3`) and exercised end-to-end by `test_tool_signatures.py`,
+    which calls a tool through `call_tool` with a stray argument."""
+    count = 0
+    for tool in server._tool_manager.list_tools():
+        base = tool.fn_metadata.arg_model
+        if base.model_config.get("extra") == "forbid":
+            continue
+        strict = type(
+            base.__name__,
+            (base,),
+            {
+                "__module__": base.__module__,
+                "model_config": ConfigDict(**{**base.model_config, "extra": "forbid"}),
+            },
+        )
+        tool.fn_metadata.arg_model = strict
+        tool.parameters = strict.model_json_schema(by_alias=True)
+        count += 1
+    return count
+
+
+_forbid_unknown_arguments(mcp_server)
 
 if __name__ == "__main__":
     main()
