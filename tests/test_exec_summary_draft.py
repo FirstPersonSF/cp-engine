@@ -286,13 +286,27 @@ def test_human_refresh_clears_the_drafted_marker():
     assert not esd.is_drafted(merged)
 
 
-def test_human_updates_append_also_clears_the_marker():
+def test_human_updates_append_keeps_the_marker():
+    """An Updates entry doesn't touch the four drafted fields, so they are
+    still machine-written — the marker stays, the date advances (Drew,
+    2026-09-30)."""
     from cp_engine.exec_summary_merge import append_update_entry
 
     drafted = cp_md("2026-10-05", marker="  ·  drafted by cp (from W40 sprint file)")
     text, changed = append_update_entry(drafted, "Checked with Rina.", today=date(2026, 10, 7))
     assert changed
-    assert not esd.is_drafted(text)
+    assert esd.is_drafted(text)
+    assert "updated 2026-10-07" in text
+
+
+def test_objective_only_human_merge_keeps_the_marker():
+    """Objective is never drafted; changing only it leaves the four drafted
+    fields machine-written."""
+    drafted = cp_md("2026-10-05", marker="  ·  drafted by cp (from W40 sprint file)")
+    merged, changed = merge_exec_summary_fields(
+        drafted, {"Objective": "A sharper objective."}, today=date(2026, 10, 7))
+    assert changed == ("Objective",)
+    assert esd.is_drafted(merged)
 
 
 def test_a_noop_human_merge_leaves_the_draft_marked():

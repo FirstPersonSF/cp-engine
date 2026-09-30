@@ -69,10 +69,18 @@ _STAMP_RE = re.compile(
 )
 
 
-def _stamp_line(m: re.Match, today: date) -> str:
-    """The stamp heading for a write made today: the date advanced, and
-    anything after it (a `· drafted by cp` marker) dropped."""
-    return f"{m.group('prefix')}{today.isoformat()}"
+# The fields a machine draft writes (`exec_summary_draft`). A person changing
+# any of them is the refresh that replaces the draft; changing only Objective
+# or appending an Updates entry leaves those four machine-written, so the
+# marker stays (Drew, 2026-09-30).
+DRAFTED_FIELDS = frozenset({"Status", "Where it stands", "Next up", "Blockers"})
+
+
+def _stamp_line(m: re.Match, today: date, *, keep_marker: bool = False) -> str:
+    """The stamp heading for a write made today: the date advanced; anything
+    after it (a `· drafted by cp` marker) kept only when `keep_marker`."""
+    rest = m.group("rest") if keep_marker else ""
+    return f"{m.group('prefix')}{today.isoformat()}{rest}"
 
 
 class ExecSummaryMergeError(Exception):
@@ -121,7 +129,10 @@ def merge_exec_summary_fields(
         return cp_md_text, ()
 
     updated = splice_managed_region(cp_md_text, EXEC_SUMMARY_REGION, new_region)
-    updated = _STAMP_RE.sub(lambda m: _stamp_line(m, today), updated, count=1)
+    keep = not (set(changed) & DRAFTED_FIELDS)
+    updated = _STAMP_RE.sub(
+        lambda m: _stamp_line(m, today, keep_marker=keep), updated, count=1
+    )
     return updated, changed
 
 
@@ -561,5 +572,8 @@ def append_update_entry(
         out.append(raw)
 
     updated = f"{before}{''.join(out)}{after}"
-    updated = _STAMP_RE.sub(lambda m: _stamp_line(m, today), updated, count=1)
+    # An Updates entry doesn't touch the four drafted fields — keep the marker.
+    updated = _STAMP_RE.sub(
+        lambda m: _stamp_line(m, today, keep_marker=True), updated, count=1
+    )
     return UpdateAppendResult(updated, True, roll_off)
