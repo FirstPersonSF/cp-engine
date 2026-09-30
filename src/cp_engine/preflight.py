@@ -710,16 +710,29 @@ def run_preflight(
             corpus_lines.append(s[2:])
             labelled.append((label, s))
 
+    # Spine titles are topic evidence for the gates, never found facts. A
+    # title names a card; it does not state what the project delivers. When
+    # the verb first actually passed them (#332 — it had read a `title` key
+    # the rows don't carry, so this list was always empty), a live run over
+    # 148 project/kind pairs flipped nine to ready on titles alone:
+    # "CARDINAL RULE — the Tony/Rina 1:1 Google Doc" answered `deliverables`,
+    # "ARCHIVE — pre-MC workstream CP v02 (through 2026-07-07)" answered
+    # `schedule`, a stakeholder card's "budget owner" answered
+    # `engagement_fee`. So they reach the shape and funding gates — "is this
+    # production work, is it funded" is a question a title can inform — and
+    # stay out of `assign_fields`.
+    gate_lines = list(corpus_lines)
     if spine_titles:
         rep.sources_read.append(f"spine ({len(spine_titles)} elements)")
-        corpus_lines.extend(spine_titles)
+        gate_lines.extend(spine_titles)
     if source_titles:
         rep.sources_read.append(f"sources ({len(source_titles)} docs)")
         corpus_lines.extend(source_titles)
+        gate_lines.extend(source_titles)
 
     # ---- Gate 2: shape ------------------------------------------------
-    rep.shape_warning = _shape_check(rule, corpus_lines)
-    rep.funding_warning = _funding_check(kind, corpus_lines)
+    rep.shape_warning = _shape_check(rule, gate_lines)
+    rep.funding_warning = _funding_check(kind, gate_lines)
 
     # ---- Gather found facts -------------------------------------------
     # One line goes to ONE field, best match wins. `engagement_fee` is

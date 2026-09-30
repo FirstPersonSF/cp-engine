@@ -441,8 +441,14 @@ def preflight(project_code: str, artifact_kind: str = "rfp") -> dict:
                 from cp_engine.project_sources import list_sources, list_spine
 
                 client, pid, cid = resolved
+                # A spine row's title is its `framing` — spine_substance has
+                # no `title` column. Reading `title` here returned nothing for
+                # every row, so preflight never saw the spine at all (#332).
+                # Rows without an `est_item_id` are note rows, not elements.
                 for row in list_spine(client, pid, cid, compact=True) or []:
-                    title = row.get("title") if isinstance(row, dict) else None
+                    if not isinstance(row, dict) or not row.get("est_item_id"):
+                        continue
+                    title = row.get("framing")
                     if title:
                         spine_titles.append(str(title))
                 for row in list_sources(client, pid, cid) or []:
@@ -807,9 +813,12 @@ def list_spine_elements(project_code: str, layer: str = "",
 
     Lifecycle-aware, like the hosted verb: an element sealed into a shipped
     deliverable (an active `absorbed_by` edge) is HISTORICAL and hidden by
-    default, with a trailing note row carrying `absorbed_hidden`. Pass
+    default, with a trailing note row carrying `absorbed_hidden` — how many
+    of the rows your filters asked for were hidden. Pass
     `include_absorbed=true` (retrospective mode) to list them, each annotated
-    `absorbed_by` with the deliverable that absorbed it.
+    `absorbed_by` with the deliverable that absorbed it. Canon members (an
+    active `canon_of` edge to the standing brief) carry `canon: true`, and
+    the note row carries `canon_size`.
     """
     from cp_engine.project_sources import list_spine
 

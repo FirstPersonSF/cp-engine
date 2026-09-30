@@ -1031,9 +1031,11 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
     retrospective mode — they are listed, each annotated `absorbed_by: <the
     deliverable>`. A failed edge read lists everything and says so in a note
     row (`annotations_available: false`) rather than passing for "nothing was
-    ever sealed". `None` (the default for in-process callers) reads no edges
-    at all — the listing as it was before the flag existed; the MCP verb
-    always passes a bool.
+    ever sealed". The same edge read marks canon members (an active
+    `canon_of` edge to the standing brief) `canon: true`, and the note row
+    then also carries `canon_size`, as hosted reports it (#335). `None` (the
+    default for in-process callers) reads no edges at all — the listing as it
+    was before the flag existed; the MCP verb always passes a bool.
     """
     all_rows = _one_live_per_element(_unarchived(
         _fetch_scoped(client, project_id, company_id, _SPINE_LIST_COLUMNS)
@@ -1057,7 +1059,7 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
             return [{"note": f"layer filter {layer!r} matched no elements",
                      "hint": layers}]
         return []
-    rows, absorbed_into, lifecycle_notes = _absorbed_facet(
+    rows, absorbed_into, canon_ids, lifecycle_notes = _lifecycle_facet(
         client, project_id, all_rows, rows, include_absorbed
     )
     if compact:
@@ -1072,7 +1074,7 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
                 "has_note": bool(row.get("note")),
                 "scope": _row_scope(row),
                 "version_label": row.get("version_label"),
-                **_absorbed_mark(row, absorbed_into),
+                **_lifecycle_marks(row, absorbed_into, canon_ids),
             }
             for row in rows
         ]
@@ -1111,7 +1113,7 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
                 "scope": _row_scope(row),
                 "version_label": row.get("version_label"),
                 "version_date": row.get("version_date"),
-                **_absorbed_mark(row, absorbed_into),
+                **_lifecycle_marks(row, absorbed_into, canon_ids),
             }
         )
     # Important elements sort first; list.sort is stable so within-group order
@@ -1120,53 +1122,72 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
     return out + lifecycle_notes
 
 
-def _absorbed_mark(row: dict, absorbed_into: dict[str, str]) -> dict:
-    """`{"absorbed_by": <deliverable>}` for a sealed row, else `{}` — the
-    hosted listing's marker, omitted when absent."""
+def _lifecycle_marks(row: dict, absorbed_into: dict[str, str],
+                     canon_ids: set[str]) -> dict:
+    """The hosted listing's lifecycle markers, each omitted when absent:
+    `canon: true` for a member of the standing brief (an active `canon_of`
+    edge, #335) and `absorbed_by: <deliverable>` for a sealed row."""
     eid = row.get("est_item_id")
-    return {"absorbed_by": absorbed_into[eid]} if eid in absorbed_into else {}
+    return {
+        **({"canon": True} if eid in canon_ids else {}),
+        **({"absorbed_by": absorbed_into[eid]} if eid in absorbed_into else {}),
+    }
 
 
-def _absorbed_facet(client, project_id: str, all_rows: list[dict],
-                    rows: list[dict], include_absorbed: bool | None):
-    """Apply `list_spine`'s `include_absorbed` facet to the filtered `rows`.
+def _lifecycle_facet(client, project_id: str, all_rows: list[dict],
+                     rows: list[dict], include_absorbed: bool | None):
+    """Apply `list_spine`'s lifecycle facet to the filtered `rows`.
 
-    Returns `(rows, absorbed_into, note_rows)`. Stdio `list_spine_elements`
-    had no lifecycle awareness at all: it listed sealed, historical elements
-    in the working set with nothing to mark them, where the hosted verb hid
-    them by default (#330). The edge read is the hosted one
+    Returns `(rows, absorbed_into, canon_ids, note_rows)`. Stdio
+    `list_spine_elements` had no lifecycle awareness at all: it listed sealed,
+    historical elements in the working set with nothing to mark them, where
+    the hosted verb hid them by default (#330), and it never marked canon
+    members, which hosted badges `canon: true` and totals as `canon_size`
+    (#335). The edge read is the hosted one
     (`seal_sweep.read_lifecycle_edges`), over every project the rows come
     from — an account-scoped row's edges live under its home project.
+
+    The trailing note row carries what hosted puts at the top level of its
+    response: `absorbed_hidden` (sealed rows among those the caller's filters
+    would have listed — the same count on both servers, #334) and
+    `canon_size` (every active canon edge read, as hosted counts it).
     """
     if include_absorbed is None:
-        return rows, {}, []
+        return rows, {}, set(), []
     from cp_engine.seal_sweep import read_lifecycle_edges
 
     try:
-        absorbed_into, _canon = read_lifecycle_edges(
+        absorbed_into, canon_ids = read_lifecycle_edges(
             client,
             {project_id} | {r.get("project_id") for r in all_rows},
         )
     except Exception as exc:  # noqa: BLE001 — degrade the facet, never the list
         logger.warning("list_spine: absorbed_by edges unreadable for "
                        "project_id=%s: %s", project_id, exc)
-        return rows, {}, [{
-            "note": "absorbed-by edges could not be read — sealed elements "
-                    "are NOT filtered out of this list; treat lifecycle "
-                    "state as unknown",
+        return rows, {}, set(), [{
+            "note": "canon and absorbed-by edges could not be read — sealed "
+                    "elements are NOT filtered out of this list and canon "
+                    "membership is unmarked; treat lifecycle state as unknown",
             "annotations_available": False,
             "annotations_error": f"{type(exc).__name__}: {exc}",
         }]
-    if include_absorbed:
-        return rows, absorbed_into, []
-    kept = [r for r in rows if r.get("est_item_id") not in absorbed_into]
+    kept = rows if include_absorbed else [
+        r for r in rows if r.get("est_item_id") not in absorbed_into
+    ]
     hidden = len(rows) - len(kept)
-    if not hidden:
-        return kept, absorbed_into, []
-    return kept, absorbed_into, [{
-        "note": f"{hidden} element(s) sealed into a deliverable are hidden; "
-                "pass include_absorbed=true for retrospective mode",
-        "absorbed_hidden": hidden,
+    if not hidden and not canon_ids:
+        return kept, absorbed_into, canon_ids, []
+    notes = []
+    if hidden:
+        notes.append(f"{hidden} element(s) sealed into a deliverable are "
+                     "hidden; pass include_absorbed=true for retrospective mode")
+    if canon_ids:
+        notes.append(f"{len(canon_ids)} element(s) are canon (the standing "
+                     "brief); listed rows among them carry canon: true")
+    return kept, absorbed_into, canon_ids, [{
+        "note": "; ".join(notes),
+        **({"absorbed_hidden": hidden} if hidden else {}),
+        **({"canon_size": len(canon_ids)} if canon_ids else {}),
     }]
 
 

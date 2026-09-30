@@ -1085,15 +1085,28 @@ def exec_summary_is_authored(region: str) -> bool:
 
     This is the single authoritative copy; agenda + prep_planning both call
     it so their authored-checks can't silently diverge.
+
+    Field identity comes from ``exec_summary_lint.field_label``, the reader
+    the lint, merge and placeholder check share (#319, #327). The private
+    pattern here required the colon inside the bold, so `**Next up**: ship
+    Friday` was neither a field nor a bullet and its value went uncounted
+    (#333). Any other bold `**X:**` line still counts by its value, as before.
     """
+    # Lazy: exec_summary_lint imports from this module.
+    from cp_engine.exec_summary_lint import field_label
+
     for raw in region.splitlines():
         line = raw.strip()
         if not line:
             continue
         # Field line: `**Label:** value` — real iff value is a non-placeholder.
-        field = re.match(r"^\*\*[^*]+:\*\*\s*(?P<value>.*)$", line)
-        if field is not None:
-            value = field.group("value").strip()
+        parsed = field_label(line)
+        if parsed is not None:
+            value = parsed[1].strip()
+        else:
+            field = re.match(r"^\*\*[^*]+:\*\*\s*(?P<value>.*)$", line)
+            value = field.group("value").strip() if field is not None else None
+        if value is not None:
             if value and "_<" not in value:
                 return True
             continue

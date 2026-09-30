@@ -587,3 +587,44 @@ def test_creative_directions_are_not_usage_rights() -> None:
         'role" framing (AI is the rocket, our platform is the launchpad).',
     ])
     assert got.get("usage", []) == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Spine titles — gate evidence, not found facts (#332)
+# ──────────────────────────────────────────────────────────────────────
+
+# Real framings from the 2026-09-29 live run: each one satisfied a required
+# field on keywords alone and, together, flipped nine project/kind pairs to
+# ready the day the verb first actually passed spine titles.
+_LIVE_TITLES = [
+    "CARDINAL RULE — the Tony/Rina 1:1 Google Doc: read freely, write-gated",
+    "ARCHIVE — pre-MC workstream CP v02 (through 2026-07-07)",
+    "The SOW facts — $83k, both sites, renewal economics, the ROI story",
+    "Janet Noe - client engagement lead, comms filter & budget owner",
+]
+
+
+@pytest.mark.parametrize("kind", ARTIFACT_KINDS)
+def test_spine_titles_never_answer_a_required_field(kind) -> None:
+    """A title names a card; it does not say what the project delivers.
+
+    Against the strategy-authored summary (no deliverables, no schedule, no
+    fee), titles alone must not move anything out of `missing`."""
+    without = run_preflight("x", kind, cp_md_text=_STRATEGY_AUTHORED)
+    with_titles = run_preflight("x", kind, cp_md_text=_STRATEGY_AUTHORED,
+                                spine_titles=_LIVE_TITLES)
+    assert with_titles.found == without.found
+    assert with_titles.missing == without.missing
+    assert with_titles.ready == without.ready
+    assert f"spine ({len(_LIVE_TITLES)} elements)" in with_titles.sources_read
+
+
+def test_spine_titles_still_reach_the_funding_gate() -> None:
+    """Titles are topic evidence: a card titled with the project's own
+    unfunded-scope sentence blocks an RFP like the sentence would."""
+    rep = run_preflight(
+        "sap-5198-2027-ad-videos", "rfp", cp_md_text=_PRODUCTION_AUTHORED,
+        spine_titles=["Production remains out of scope at the current budget"],
+    )
+    assert rep.funding_warning is not None
+    assert rep.ready is False

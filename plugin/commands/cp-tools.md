@@ -102,8 +102,10 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   layer, binding, status, serves_count, body_len). Start here to see what's there;
   `tier="working", compact=true` is the cheap first look on both servers.
   Elements sealed into a shipped deliverable are hidden by default on both
-  (`absorbed_hidden` reported — a trailing note row on `cp-sources`);
-  `include_absorbed=true` lists them annotated `absorbed_by`.
+  (`absorbed_hidden` = how many of the rows your filters asked for were
+  hidden — a trailing note row on `cp-sources`);
+  `include_absorbed=true` lists them annotated `absorbed_by`. Canon members
+  carry `canon: true` on both, with `canon_size` beside `absorbed_hidden`.
 - `pull_spine_element(project_code, key)` — ONE element's full body. `key` is an
   est_item_id (`_authored/email-from-janet-6-18`) or a substring of its title.
   On `cp-hosted`, `project_code` is optional (a disambiguator) and `key` must be

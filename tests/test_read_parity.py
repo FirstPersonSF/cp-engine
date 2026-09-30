@@ -55,6 +55,10 @@ DUAL_READ_CONTRACT: dict[str, tuple[list[str], list[str]]] = {
         # a caller using it on stdio failed. Appended LAST on stdio so a
         # positional call from before it existed binds as it always did.
         # stdio's layer/scope/binding filters remain stdio-only.
+        # What the lifecycle facet RETURNS — `absorbed_hidden`, `canon: true`,
+        # `canon_size` — is pinned across both servers by
+        # test_list_spine_lifecycle_parity.py (#334, #335); this fence only
+        # sees signatures.
         ["project_code", "layer", "scope", "binding", "compact", "tier",
          "include_absorbed"],
         ["project_code", "include_absorbed", "tier", "compact"],
