@@ -70,7 +70,7 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from starlette.responses import JSONResponse
-from pydantic import AnyHttpUrl, ConfigDict
+from pydantic import AnyHttpUrl
 from supabase import create_client
 from supabase.lib.client_options import SyncClientOptions
 
@@ -7213,10 +7213,11 @@ def create_spine_element(
 @_names_its_level
 def add_spine_version(
     project_code: str,
-    element_id: str,
-    body: str,
+    element_id: str | None = None,
+    body: str = "",
     version_note: str | None = None,
     step_title: str | None = None,
+    key: str | None = None,
 ) -> dict[str, Any]:
     """Add a new version to an existing authored spine element (cp-engine #142).
 
@@ -7253,13 +7254,20 @@ def add_spine_version(
         project_code: engagement, initiative, or standalone-repo code.
         element_id: the element's est_item_id (`_authored/<slug>`), bare slug,
             or a distinct framing substring — same keys the read path takes.
-        body: the new version's full body (markdown).
+        body: the new version's full body (markdown). Required.
         version_note: optional "what changed" line, stored on the new version.
         step_title: optional title for the auto-journal step — give it the
             real move's words ("Built Mehul's cube framing into the arc")
             instead of the derived "Updated <framing> (vN)" (#145 parity
             with the engine verb).
+        key: alias for `element_id` — the name every other element verb uses
+             (#318). Pass one; both is fine only when they agree.
     """
+    # Resolved before anything else: two different identifiers is a refusal,
+    # never a silent pick, whatever else is wrong with the call.
+    element_ref, err = _element_key(key, element_id)
+    if err is not None:
+        return err
     if not (body or "").strip():
         return {"error": "body is required"}
 
@@ -7274,9 +7282,7 @@ def add_spine_version(
 
     # Resolve the element within the project by UUID scope; accept the same
     # key forms the read path does (est_item_id, bare slug, framing substring).
-    key = (element_id or "").strip()
-    if not key:
-        return {"error": "element_id is required"}
+    key = element_ref
 
     est_item_id, versions, err = resolve_element_versions(client, scope["id"], key)
     if err is not None:
@@ -11197,31 +11203,12 @@ def word_count_check(project_code: str) -> dict[str, Any]:
 # test suite exercises exactly what the server serves.
 
 
-def _forbid_unknown_arguments(server) -> int:
-    """Make every registered tool reject undeclared arguments; returns the
-    count. Reaches the SDK's `_tool_manager` — private, but pinned
-    (`mcp>=2.0,<3`) and exercised end-to-end by `test_tool_signatures.py`,
-    which calls a tool through `call_tool` with a stray argument."""
-    count = 0
-    for tool in server._tool_manager.list_tools():
-        base = tool.fn_metadata.arg_model
-        if base.model_config.get("extra") == "forbid":
-            continue
-        strict = type(
-            base.__name__,
-            (base,),
-            {
-                "__module__": base.__module__,
-                "model_config": ConfigDict(**{**base.model_config, "extra": "forbid"}),
-            },
-        )
-        tool.fn_metadata.arg_model = strict
-        tool.parameters = strict.model_json_schema(by_alias=True)
-        count += 1
-    return count
+# The mechanism lives in `cp_engine.mcp_strict` (vendored verbatim) so the
+# stdio `cxp mcp` server refuses the same way — one implementation, not two
+# that drift. Imported here, at the end, because the swap must see every tool.
+from cp_engine.mcp_strict import forbid_unknown_arguments  # noqa: E402
 
-
-_forbid_unknown_arguments(mcp_server)
+forbid_unknown_arguments(mcp_server)
 
 if __name__ == "__main__":
     main()

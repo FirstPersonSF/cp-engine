@@ -28,9 +28,20 @@ all three (initiatives resolve via the `initiatives` table). Initiatives have no
 the *source* tools return empty for them — but the *spine* tools work fully.
 
 **Signatures below are the servers' real parameter names** (a test binds them
-to both registries). The hosted server REJECTS an argument it does not declare
-— a misspelled name fails the call rather than being dropped and letting a
-default apply (#318). Where the two servers differ, both forms are given.
+to both registries). BOTH servers REJECT an argument they do not declare — a
+misspelled name, or one only the other server takes, fails the call rather
+than being dropped and letting a default apply (#318). Where the two servers
+differ, both forms are given.
+
+**Finished work is marked, never hidden (#279).** Project-scoped reads
+(`list_spine_elements`, `pull_spine_element`, `list_project_sources`,
+`list_commitments`, and on `cp-hosted` also `get_project_state` and
+`semantic_search`) carry the project's MC-2 `project_status`. For a **Closed**
+or **Archived** project a dict result adds `project_note` (and `archived:
+true`); a list result on `cp-sources` gains one leading note row;
+`semantic_search` marks each hit from finished work and counts them in
+`finished_project_hits`. Read such material as history — the record of how we
+worked — not as current direction. `Holding` carries its status and no note.
 
 **1 — RAG source store** (ingested Drive/Dropbox docs: briefs, decks, research):
 - `list_project_sources(project_code)` — live list of a project's ingested docs.
@@ -116,7 +127,8 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
 - `add_spine_version(project_code, element_id, body, version_note?, step_title?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) — supersede the prior
   live version with a new one (a targeted "what changed" update). Here the
   element is `element_id` (est_item_id, bare slug, or distinct title substring
-  — the same forms `key` takes elsewhere).
+  — the same forms `key` takes elsewhere); `key` is accepted as an alias, and
+  two different values are refused rather than one picked.
 - `set_spine_element(project_code, key, important?, note?, layer?, framing?, serves?, actor?)` —
   (`element_id` accepted as an alias for `key`)
   **hosted-server verb** (`cp-hosted` connector; cp-engine #143 ported it off

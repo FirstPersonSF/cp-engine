@@ -37,6 +37,9 @@ _VERBATIM = (
     "card_class.py",
     "exec_summary_lint.py",
     "codes.py",
+    # Imported at hosted MODULE scope, not call time: a missing copy here is a
+    # container that fails to start, not a verb that fails to run.
+    "mcp_strict.py",
     "project_status.py",
 )
 
@@ -135,8 +138,10 @@ def test_the_vendor_closure_EXECUTES_with_no_cp_engine_installed(tmp_path) -> No
         # `cp_engine.state` inside a best-effort try — a missing module there
         # would silently re-enable the Brief check on initiatives (#319).
         "from cp_engine.state import derive_label\n"
-        # The module the #279 status signal needs (shared with the stdio server).
+        # The two modules server.py needs at IMPORT (#279, #318) — pydantic is
+        # a server dependency, so it is the one thing allowed on the path.
         "from cp_engine.project_status import annotate, fetch_statuses\n"
+        "from cp_engine.mcp_strict import forbid_unknown_arguments\n"
         "assert annotate({}, 'Archived')['archived'] is True\n"
         "rows = [{'est_item_id': '_authored/x', 'framing': 'X', 'status': 'live',\n"
         "  'layer': 'Brief', 'binding': 'unbound', 'important': True,\n"

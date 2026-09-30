@@ -1330,6 +1330,19 @@ promote_uphill.__doc__ = (promote_uphill.__doc__ or "").replace("<LEVEL_RULE>", 
 promote_uphill = _tool(promote_uphill)
 
 
+# ── Unknown arguments are an error, not a no-op (#318 parity) ─────────────
+#
+# The SDK's argument model drops an undeclared argument by default, so a
+# caller who passed a hosted-only name here (`include_absorbed=` on
+# `list_spine_elements`, a catalog's stale spelling) got the default applied
+# and a plausible, wrong answer. The hosted server refuses since #318; this is
+# the same mechanism, shared rather than copied. Must run AFTER the last tool
+# registers — a tool added below this line would stay lenient.
+from cp_engine.mcp_strict import forbid_unknown_arguments  # noqa: E402
+
+forbid_unknown_arguments(mcp)
+
+
 
 
 def run_stdio() -> None:
