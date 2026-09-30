@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Mapping
@@ -450,17 +451,117 @@ def _parse_this_sprint(
 def compute_carry_forward(prior_path: Path) -> CarryForward:
     """Derive the carry-forward block for a new sprint from the prior file.
 
-    Asks roll forward only when still `open`; risks only when `escalated` or
-    `watching`; all horizon items roll forward (they remain unresolved by
-    nature). Missing prior file → empty carry-forward.
+    Asks roll forward while still `open` — however many weeks ago they were
+    raised; risks only when `escalated` or `watching`; all horizon items roll
+    forward (they remain unresolved by nature). Missing prior file → empty
+    carry-forward.
+
+    ASKS CARRY UNTIL RESOLVED, NOT FOR ONE WEEK (#326). This read only the
+    prior week's own ``### Open asks``, so an ask raised in W37 was carried
+    into W38 and then vanished from W39: W38 had carried it, not owned it,
+    and what a week carried was never read. Nothing resolved it and nothing
+    warned — the week an ask becomes most worth chasing is the week it
+    disappeared. See :func:`_open_asks_through` for how the full set is read.
     """
     if not prior_path.exists():
         return CarryForward(asks=(), risks=(), horizon=())
     prior = parse_sprint_file(prior_path)
-    asks = tuple(a for a in prior.client_open_asks if a.status == "open")
+    asks = _open_asks_through(prior_path)
     risks = tuple(r for r in prior.risks if r.severity in ("escalated", "watching"))
     horizon = tuple(prior.horizon)
     return CarryForward(asks=asks, risks=risks, horizon=horizon)
+
+
+def _ask_owning_files(prior_path: Path) -> list[Path]:
+    """The project's sprint files from ``prior_path``'s week back to the
+    first, newest first — every file an ask carried into the next week can
+    have been raised in.
+
+    Only week directories (``YYYY-W##``) are walked, and only when
+    ``prior_path`` itself sits in one: a file anywhere else has no week
+    siblings, and globbing its parent's neighbours would read strangers."""
+    week_dir = prior_path.parent
+    sprints_root = week_dir.parent
+    if not _WEEK_ISO_RE.match(week_dir.name) or not sprints_root.is_dir():
+        return [prior_path]
+    weeks = sorted(
+        (d for d in sprints_root.iterdir()
+         if d.is_dir() and _WEEK_ISO_RE.match(d.name)
+         and d.name <= week_dir.name),
+        key=lambda d: d.name,
+        reverse=True,
+    )
+    return [d / prior_path.name for d in weeks if (d / prior_path.name).exists()]
+
+
+def _open_asks_through(prior_path: Path) -> tuple[ClientAsk, ...]:
+    """Every ask still open as of ``prior_path``'s week: the prior week's own
+    open asks plus everything that week itself carries, recursively.
+
+    WHY THE OWNING FILES AND NOT THE PRIOR WEEK'S ``carry-forward`` REGION.
+    "What the prior week carried" is written down in that week's region — but
+    as a projection frozen at its last render. Only the current week is
+    re-rendered, so once a week is past its region never changes again: an ask
+    closed at its origin (``_origin_sprint_path`` sends every close there)
+    would stay open in the stale projection and be carried forever. So the
+    recursion is evaluated from the files that OWN asks: walk the project's
+    sprint files newest to oldest, reading each week's hand-written
+    ``### Open asks``. That is exactly the set the regions would hold if every
+    past week were re-rendered today.
+
+    Identity is ``cp:hash`` (visible text when an ask has none), the same key
+    ``aggregators.open_client_asks`` de-duplicates on. The NEWEST statement of
+    an ask decides its status — a later week restating it as ``closed`` (or
+    ``answered``, ``dropped``, anything but ``open``) resolves it, and the
+    older open copies are not resurrected. A snoozed ask is still ``open``
+    (see ``snooze``) and carries, marker and all.
+
+    AGE STAYS LEGIBLE. The carried ask keeps the newest statement's wording
+    but the EARLIEST ``asked_date`` among its open statements — the date it
+    was first raised — so a three-week-old ask reads as three weeks old in
+    the `[ask · <date>]` bracket and in every stale-ask surface that ages
+    from it, rather than looking freshly asked.
+    """
+    from .aggregators import _ask_key  # aggregators imports sprints' siblings
+
+    order: list[str] = []
+    newest: dict[str, ClientAsk] = {}
+    first_raised: dict[str, str] = {}
+    settled: set[str] = set()
+    for path in _ask_owning_files(prior_path):
+        try:
+            body = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        _, asks, _ = _parse_client_section(body)
+        for ask in asks:
+            key = _ask_key(ask)
+            if key in settled:
+                continue
+            if key not in newest:
+                if ask.status != "open":
+                    # The newest word on this ask resolves it.
+                    settled.add(key)
+                    continue
+                order.append(key)
+                newest[key] = ask
+            elif ask.status != "open":
+                # An older resolution of an ask reopened later: the open
+                # chain stops here, and earlier dates are a prior life.
+                settled.add(key)
+                continue
+            if ask.asked_date and (
+                key not in first_raised or ask.asked_date < first_raised[key]
+            ):
+                first_raised[key] = ask.asked_date
+    out: list[ClientAsk] = []
+    for key in order:
+        ask = newest[key]
+        raised = first_raised.get(key) or ask.asked_date
+        if raised != ask.asked_date:
+            ask = replace(ask, asked_date=raised)
+        out.append(ask)
+    return tuple(out)
 
 
 def _active_risks(sf) -> list["Risk"]:
@@ -1144,8 +1245,8 @@ def ensure_sprint_file(
 # asks the question that actually matters: **is there a line in the region
 # whose content exists nowhere the engine could have derived it from?** Every
 # legitimate carry-forward row is copied from a sprint file — the prior week's
-# (the normal path) or a child's in the current week (a parent's subtree
-# rollup) — so its item text is still findable there even after its status
+# or, for an ask still open, any earlier week of the project (the normal path,
+# #326), or a child's in the current week (a parent's subtree rollup) — so its item text is still findable there even after its status
 # flips. A hand-typed row, or a hand annotation on a row, is not. Content that
 # also exists elsewhere is not being lost, so staying quiet about it is right.
 #
@@ -1248,8 +1349,18 @@ def _warn_on_discarded_carry_forward(
                     yield f.read_text(encoding="utf-8")
                 except OSError:
                     continue
+        # Every earlier week of this project (#326): an ask carries from the
+        # week it was raised in, not only from last week, so a row whose
+        # owning file is three weeks back is derived, not hand-typed.
+        if prior_sprint:
+            prior_file = sprint_root / prior_sprint / out.name
+            for f in _ask_owning_files(prior_file)[1:]:
+                try:
+                    yield f.read_text(encoding="utf-8")
+                except OSError:
+                    continue
 
-    lost = _discarded_hand_lines(old_inner, new_inner, corpus())
+    lost =_discarded_hand_lines(old_inner, new_inner, corpus())
     if not lost:
         return
     owner = f"sprints/{prior_sprint}/{out.name}" if prior_sprint else "the owning week's sprint file"

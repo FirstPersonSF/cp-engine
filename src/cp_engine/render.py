@@ -1132,7 +1132,18 @@ def exec_summary_placeholder_fields(region: str) -> tuple[str, ...]:
     A field counts as a placeholder when its inline value is `_<...>_` AND
     the bullets beneath it (up to the next field or blank-line break) are all
     placeholder seeds or the auto-stamped migration bullet.
+
+    Field identity comes from ``exec_summary_lint.field_label``, the one
+    reader the lint and the merge already share (#319). This used its own
+    exact-literal pattern, so a decorated label — `**Next up (W40):**`,
+    `**🔜 Blockers:**` — was not a field here: a decorated field still holding
+    its placeholder went unreported and the region read as fully authored,
+    its stamp trusted (#327). A line that LOOKS like a field but is not one
+    of the seven labels still ends the current field, as before.
     """
+    # Lazy: exec_summary_lint imports from this module.
+    from cp_engine.exec_summary_lint import field_label
+
     if not region:
         return ()
     filled: set[str] = set()
@@ -1142,10 +1153,12 @@ def exec_summary_placeholder_fields(region: str) -> tuple[str, ...]:
         line = raw.strip()
         if not line:
             continue
-        field = re.match(r"^\*\*(?P<label>[^*]+?):\*\*\s*(?P<value>.*)$", line)
-        if field is not None:
-            label = field.group("label").strip()
-            value = field.group("value").strip()
+        parsed = field_label(line)
+        if parsed is None and re.match(r"^\*\*[^*]+?:\*\*", line):
+            current = None  # some other bold label: not an authored field
+            continue
+        if parsed is not None:
+            label, value = parsed[0], parsed[1].strip()
             if label in EXEC_SUMMARY_AUTHORED_FIELDS:
                 seen.add(label)
                 current = label

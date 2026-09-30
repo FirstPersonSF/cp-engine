@@ -961,7 +961,8 @@ def modify_element_provenance(client, project_id: str, key: str,
 def list_spine(client, project_id: str, company_id: str | None = None, *,
                layer: str | None = None, scope: str | None = None,
                binding: str | None = None, compact: bool = False,
-               tier: str | None = None) -> list[dict]:
+               tier: str | None = None,
+               include_absorbed: bool | None = None) -> list[dict]:
     """List a project's LIVE spine elements (index, not bodies).
 
     Returns `[{est_item_id, framing, layer, binding, status, serves_count,
@@ -997,6 +998,18 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
     `compact=True`: callers iterating rows should treat a row without
     `est_item_id` as a note, per the MCP idiom. Never raises: the MCP tool
     boundary converts failures to a structured note.
+
+    `include_absorbed` is the lifecycle facet, with the hosted verb's
+    semantics (#330): an element with an active `absorbed_by` edge was sealed
+    into a shipped deliverable and is HISTORICAL. `False` hides such elements
+    and appends a trailing note row carrying `absorbed_hidden` (how many of
+    the rows this call would otherwise have listed were hidden); `True` is
+    retrospective mode — they are listed, each annotated `absorbed_by: <the
+    deliverable>`. A failed edge read lists everything and says so in a note
+    row (`annotations_available: false`) rather than passing for "nothing was
+    ever sealed". `None` (the default for in-process callers) reads no edges
+    at all — the listing as it was before the flag existed; the MCP verb
+    always passes a bool.
     """
     all_rows = _one_live_per_element(_unarchived(
         _fetch_scoped(client, project_id, company_id, _SPINE_LIST_COLUMNS)
@@ -1020,6 +1033,9 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
             return [{"note": f"layer filter {layer!r} matched no elements",
                      "hint": layers}]
         return []
+    rows, absorbed_into, lifecycle_notes = _absorbed_facet(
+        client, project_id, all_rows, rows, include_absorbed
+    )
     if compact:
         out = [
             {
@@ -1032,11 +1048,12 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
                 "has_note": bool(row.get("note")),
                 "scope": _row_scope(row),
                 "version_label": row.get("version_label"),
+                **_absorbed_mark(row, absorbed_into),
             }
             for row in rows
         ]
         out.sort(key=lambda r: not r["important"])
-        return out
+        return out + lifecycle_notes
     # Fetch the project's done-map ONCE (not per row — no N+1). `done` is
     # best-effort: if the estimator schema is unreachable the fetch may raise,
     # so we fail-soft to an empty map, which makes `derive_done` return None for
@@ -1070,12 +1087,63 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
                 "scope": _row_scope(row),
                 "version_label": row.get("version_label"),
                 "version_date": row.get("version_date"),
+                **_absorbed_mark(row, absorbed_into),
             }
         )
     # Important elements sort first; list.sort is stable so within-group order
     # (the query's existing layer ordering) is preserved.
     out.sort(key=lambda r: not r["important"])
-    return out
+    return out + lifecycle_notes
+
+
+def _absorbed_mark(row: dict, absorbed_into: dict[str, str]) -> dict:
+    """`{"absorbed_by": <deliverable>}` for a sealed row, else `{}` — the
+    hosted listing's marker, omitted when absent."""
+    eid = row.get("est_item_id")
+    return {"absorbed_by": absorbed_into[eid]} if eid in absorbed_into else {}
+
+
+def _absorbed_facet(client, project_id: str, all_rows: list[dict],
+                    rows: list[dict], include_absorbed: bool | None):
+    """Apply `list_spine`'s `include_absorbed` facet to the filtered `rows`.
+
+    Returns `(rows, absorbed_into, note_rows)`. Stdio `list_spine_elements`
+    had no lifecycle awareness at all: it listed sealed, historical elements
+    in the working set with nothing to mark them, where the hosted verb hid
+    them by default (#330). The edge read is the hosted one
+    (`seal_sweep.read_lifecycle_edges`), over every project the rows come
+    from — an account-scoped row's edges live under its home project.
+    """
+    if include_absorbed is None:
+        return rows, {}, []
+    from cp_engine.seal_sweep import read_lifecycle_edges
+
+    try:
+        absorbed_into, _canon = read_lifecycle_edges(
+            client,
+            {project_id} | {r.get("project_id") for r in all_rows},
+        )
+    except Exception as exc:  # noqa: BLE001 — degrade the facet, never the list
+        logger.warning("list_spine: absorbed_by edges unreadable for "
+                       "project_id=%s: %s", project_id, exc)
+        return rows, {}, [{
+            "note": "absorbed-by edges could not be read — sealed elements "
+                    "are NOT filtered out of this list; treat lifecycle "
+                    "state as unknown",
+            "annotations_available": False,
+            "annotations_error": f"{type(exc).__name__}: {exc}",
+        }]
+    if include_absorbed:
+        return rows, absorbed_into, []
+    kept = [r for r in rows if r.get("est_item_id") not in absorbed_into]
+    hidden = len(rows) - len(kept)
+    if not hidden:
+        return kept, absorbed_into, []
+    return kept, absorbed_into, [{
+        "note": f"{hidden} element(s) sealed into a deliverable are hidden; "
+                "pass include_absorbed=true for retrospective mode",
+        "absorbed_hidden": hidden,
+    }]
 
 
 def pull_spine(client, project_id: str, key: str,

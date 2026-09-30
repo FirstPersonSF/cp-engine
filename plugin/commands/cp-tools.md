@@ -98,9 +98,12 @@ Use during strategy/deliverable work — e.g.
 
 **2 — Spine** (the distilled-memory index: emails, notes, decisions, syntheses —
 MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it live:
-- `list_spine_elements(project_code, tier?, compact?)` — one row per live element (est_item_id, framing,
+- `list_spine_elements(project_code, tier?, compact?, include_absorbed?)` — one row per live element (est_item_id, framing,
   layer, binding, status, serves_count, body_len). Start here to see what's there;
   `tier="working", compact=true` is the cheap first look on both servers.
+  Elements sealed into a shipped deliverable are hidden by default on both
+  (`absorbed_hidden` reported — a trailing note row on `cp-sources`);
+  `include_absorbed=true` lists them annotated `absorbed_by`.
 - `pull_spine_element(project_code, key)` — ONE element's full body. `key` is an
   est_item_id (`_authored/email-from-janet-6-18`) or a substring of its title.
   On `cp-hosted`, `project_code` is optional (a disambiguator) and `key` must be

@@ -251,18 +251,20 @@ def test_every_stdio_tool_advertises_that_it_takes_no_extra_arguments():
 
 
 def test_a_stray_argument_to_a_stdio_tool_fails_naming_it(monkeypatch):
-    """`include_absorbed` is a HOSTED `list_spine_elements` argument. Passed
-    to the stdio verb it used to vanish and the unfiltered default applied;
-    now it fails the call, naming the argument, and the body never runs."""
+    """`max_chars` is a HOSTED `pull_project_source` argument. Passed to the
+    stdio verb it used to vanish and the default applied; now it fails the
+    call, naming the argument, and the body never runs. (This case used
+    `include_absorbed` on `list_spine_elements` until #330 gave stdio that
+    flag too.)"""
     from cp_engine import mcp_server as stdio
 
     ran = []
     monkeypatch.setattr(stdio, "_resolve", lambda code: ran.append(code))
     with pytest.raises(Exception) as exc:
-        asyncio.run(stdio.mcp.call_tool("list_spine_elements", {
-            "project_code": "ibx-5153", "include_absorbed": True,
+        asyncio.run(stdio.mcp.call_tool("pull_project_source", {
+            "project_code": "ibx-5153", "doc_title": "brief", "max_chars": 500,
         }))
-    assert "include_absorbed" in str(exc.value)
+    assert "max_chars" in str(exc.value)
     assert "Extra inputs are not permitted" in str(exc.value)
     assert not ran
 
@@ -274,6 +276,7 @@ def test_a_declared_stdio_argument_still_passes(monkeypatch):
     monkeypatch.setattr(stdio, "_resolve", lambda code: None)
     asyncio.run(stdio.mcp.call_tool("list_spine_elements", {
         "project_code": "ibx-5153", "tier": "working", "compact": True,
+        "include_absorbed": True,
     }))
 
 

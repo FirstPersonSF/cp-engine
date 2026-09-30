@@ -275,11 +275,12 @@ def test_list_spine_elements_delegates(monkeypatch):
 
     def fake_list_spine(client, project_id, company_id=None, *,
                         layer=None, scope=None, binding=None, compact=False,
-                        tier=None):
+                        tier=None, include_absorbed=None):
         captured["args"] = (client, project_id)
         captured["filters"] = (layer, scope, binding)
         captured["compact"] = compact
         captured["tier"] = tier
+        captured["include_absorbed"] = include_absorbed
         return [{"est_item_id": "_authored/brief", "framing": "Brief"}]
 
     monkeypatch.setattr("cp_engine.project_sources.list_spine", fake_list_spine)
@@ -290,6 +291,8 @@ def test_list_spine_elements_delegates(monkeypatch):
     # empty-string filter args normalize to None (no filtering)
     assert captured["filters"] == (None, None, None)
     assert captured["compact"] is False
+    # The verb always states the lifecycle facet (#330): hidden by default.
+    assert captured["include_absorbed"] is False
     assert out == [{"est_item_id": "_authored/brief", "framing": "Brief"}]
 
     srv.list_spine_elements("sap-5171", compact=True)
@@ -314,13 +317,16 @@ def test_list_spine_elements_singular_query_matches_plural_layer_e2e(monkeypatch
     import cp_engine.project_sources as ps
 
     class _T:
+        def __init__(self, data): self._data = data
         def select(self, c): self._c = c; return self
         def eq(self, c, v): return self
+        def in_(self, c, v): return self
         def order(self, *a, **k): return self
-        def execute(self): return type("R", (), {"data": rows})()
+        def execute(self): return type("R", (), {"data": self._data})()
 
     class _C:
-        def table(self, n): return _T()
+        # No lifecycle edges: nothing sealed (#330's edge read, a real call).
+        def table(self, n): return _T([] if n == "spine_relations" else rows)
 
     rows = [
         {"est_item_id": "_authored/pillar-ruling",
