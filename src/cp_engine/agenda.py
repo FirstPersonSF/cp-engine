@@ -57,6 +57,7 @@ from cp_engine.state import (
     resolve_project_dir,
     dir_slug,
     scope_for,
+    select_codes,
 )
 from cp_engine.status import is_active_status
 
@@ -718,8 +719,7 @@ def build_agenda(
     # Filter to active.
     active = tuple(filter_active(projects))
     if project_filter:
-        wanted = {c.lower() for c in project_filter}
-        active = tuple(p for p in active if p.code.lower() in wanted)
+        active = select_codes(active, project_filter)
 
     # Sort alphabetical (matches master-cp's display order within scope).
     active_sorted = tuple(sorted(active, key=lambda p: (scope_for(p.company_kind), p.code)))
@@ -792,9 +792,15 @@ def _load_sprint_files(sprint_dir: Path) -> tuple:
 
 
 def to_datetime(d: date):
-    """current_sprint_week_iso wants a datetime; build one at midnight UTC."""
-    from datetime import datetime, timezone
-    return datetime(d.year, d.month, d.day, tzinfo=timezone.utc)
+    """current_sprint_week_iso wants a datetime; build one at midnight.
+
+    NAIVE on purpose: `d` is already a tenant calendar date, and the tenant
+    clock (#339) reads a naive value as tenant wall time. The old aware
+    midnight-UTC was converted to Pacific — the PREVIOUS day — so every
+    Wednesday the agenda and planning bundle labelled last week (v0.126.0).
+    """
+    from datetime import datetime
+    return datetime(d.year, d.month, d.day)
 
 
 def short_iso_date(iso: str | None) -> str | None:
@@ -894,8 +900,7 @@ def build_agenda_summary(
     """
     active = tuple(filter_active(projects))
     if project_filter:
-        wanted = {c.lower() for c in project_filter}
-        active = tuple(p for p in active if p.code.lower() in wanted)
+        active = select_codes(active, project_filter)
     active_sorted = tuple(sorted(active, key=lambda p: (scope_for(p.company_kind), p.code)))
 
     week_iso = current_sprint_week_iso(to_datetime(today))

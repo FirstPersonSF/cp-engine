@@ -69,6 +69,7 @@ from cp_engine.state import (
     resolve_project_dir,
     dir_slug,
     scope_for,
+    select_codes,
 )
 
 log = logging.getLogger(__name__)
@@ -2348,8 +2349,7 @@ def build_planning_result(
 
     active = tuple(filter_active(projects))
     if project_filter:
-        wanted = {c.lower() for c in project_filter}
-        active = tuple(p for p in active if p.code.lower() in wanted)
+        active = select_codes(active, project_filter)
     # Sort like agenda.py does: scope then code, alphabetical.
     active_sorted = tuple(
         sorted(active, key=lambda p: (scope_for(p.company_kind), p.code))

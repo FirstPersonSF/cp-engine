@@ -90,3 +90,13 @@ def test_config_sets_the_process_clock(tmp_path):
 def test_config_rejects_a_bad_zone(tmp_path):
     with pytest.raises(config.CommittedConfigInvalid, match="timezone"):
         config.load(_tenant(tmp_path, 'timezone = "Pacific/Nowhere"'))
+
+
+def test_a_calendar_date_keeps_its_day_through_to_datetime():
+    """v0.126.0 regression: `agenda.to_datetime` built an aware midnight UTC,
+    which the tenant clock shifted to the previous Pacific day — Wednesday's
+    planning bundle said W40 while the sprint files said W41."""
+    from cp_engine.agenda import to_datetime
+
+    assert current_sprint_week_iso(to_datetime(date(2026, 9, 30))) == "2026-W41"
+    assert _monday_of(to_datetime(date(2026, 9, 28))) == date(2026, 9, 28)

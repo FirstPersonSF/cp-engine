@@ -581,6 +581,14 @@ def short_code(code: str) -> str:
     return parsed.short if parsed else code
 
 
+def select_codes(projects, codes):
+    """The projects whose code matches any of ``codes`` — full or short
+    spelling (`ggl-5188` finds `ggl-5188-calendar-maintenance`), as the
+    tenant protocol promises. Order is preserved."""
+    wanted = {short_code(c).lower() for c in codes}
+    return tuple(p for p in projects if short_code(p.code).lower() in wanted)
+
+
 def short_name(name: str | None, code: str | None = None) -> str:
     """`full_job_name` minus its ``<CO> <number>`` head (``GGL 5168
     Activation`` → ``Activation``); the whole name when the head is absent

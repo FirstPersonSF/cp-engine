@@ -718,8 +718,6 @@ def snapshots_cmd(ref: str) -> None:
         click.echo(f"  {created}  {meta.get('label','')}  [{commit}]  {reason}")
 
 
-
-
 @click.command("spine-lint")
 @click.argument("code")
 def spine_lint_cmd(code: str) -> None:
@@ -991,12 +989,13 @@ def stub_sweep_cmd(code: str, verify_target: str | None = None) -> None:
     # sets to the backfill date (#274). Best-effort: without it the check
     # stays silent rather than reporting a date it did not measure.
     source_dates: dict[str, str] = {}
-    asset_ids = sorted({
-        src["id"]
-        for r in rows
-        for src in (r.get("sources") or [])
-        if isinstance(src, dict) and src.get("id")
-    })
+    # Only uuid ids name a `rag_assets` row. A hand-authored source's id is
+    # an `_authored/<slug>` key; one of those in the `in_` made PostgREST
+    # answer 22P02 for the WHOLE lookup, which the except below swallowed —
+    # so on ibx-5153 the arrived-after check was silent for every stub.
+    from cp_engine.stub_sweep import rag_asset_ids
+
+    asset_ids = rag_asset_ids(rows)
     if asset_ids:
         try:
             for a in (
