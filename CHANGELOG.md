@@ -4,6 +4,20 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.126.3 — 2026-09-30
+
+**Hosted sessions can rotate a CP (#280 tier 3).** New hosted verb
+`rotate_word_count(project_code)`: the caller's JWT goes to mc-2
+(`POST /api/word-count/rotate`), which signs a request to the webhook. The
+webhook moves Exec Summary Updates entries older than 28 days, verbatim, into
+`cp-archive-YYYY-MM.md` beside `cp.md`, verifies on disk that no line was lost
+or invented and no other file changed (409 and no push otherwise), and makes
+ONE commit naming the requester. Nothing old enough → `changed: false`, no
+commit. Undated entries, archive pointers and hand-written sections stay put;
+the `· updated` stamp is untouched. New engine module `cp_rotation`. The
+cp-wrapup skill and the tenant CLAUDE.md name the verb. Needs mc-2's
+`/api/word-count/rotate` route deployed.
+
 ## v0.126.2 — 2026-09-30
 
 **Open questions carry until answered (#340).** `### Open questions` bullets
