@@ -247,7 +247,11 @@ def word_count_warnings(root: Path) -> list[str]:
     file, so this ordering stays per-file.
     """
     found: list[tuple[int, str]] = []
-    for cp_md in sorted(root.rglob("cp.md")):
+    from cp_engine.tenant_walk import walk_tenant
+
+    # Never `root.rglob`: a worktree under the tenant is a second copy of
+    # every cp.md and doubled each warning (#325).
+    for cp_md in walk_tenant(root, "cp.md"):
         rel = cp_md.relative_to(root)
         if len(rel.parts) < 2 or is_exempt(rel):
             continue
