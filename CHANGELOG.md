@@ -4,6 +4,35 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.126.1 — 2026-09-30
+
+**Fix: Wednesday's planning bundle labelled last week.** `agenda.to_datetime`
+turned a calendar date into midnight UTC, which v0.125.1's tenant clock read as
+the previous Pacific day — so on Wednesdays `cxp prep-planning` and
+`prep-agenda` said W40 while the sprint files said W41. Dates now stay dates.
+
+*Routing proposes the feeds edge (#174, engine + hosted).* When a source is
+routed to a deliverable's slot, or to an activity with an edge to a
+deliverable, a review-gated `informs` proposal lands in the Suggestions inbox
+(never auto-confirmed; below "Confirm all"). It is held back when the
+document postdates the work (#270's bulk-route guard), the pair already has an
+edge, the source is absorbed, or the target is a misfiled deliverable. New
+read-only `cxp feeds-sweep <code>` reports the backlog. mc-2's routing path is
+not wired yet.
+
+*Hosted wrap-up (#280).* `capture_project_state` refuses a partial refresh of
+an Exec Summary stamped 14+ days ago unless every omitted field is named in
+`still_current`; the `/cp-wrapup` hosted branch no longer says Updates and the
+improvements sweep are unavailable.
+
+*Exec Summary freshness (#251).* The planning bundle and `exec-lint` /
+`spine-lint` flag a `⚠ PARTIAL REFRESH` when a summary's stamp is newer than
+the fields under it (dated per field with `git blame`).
+
+*Small fixes.* `--projects ggl-5188` resolves short codes; `cxp stub-sweep`'s
+arrived-after check no longer goes silent on projects with hand-authored
+sources.
+
 ## v0.126.0 — 2026-09-30
 
 **Every open issue, one morning: 13 issues across ingest, spine, sources and
