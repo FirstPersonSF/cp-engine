@@ -711,29 +711,61 @@ _LEVEL_RULE = (
 )
 
 
-def _paths_index_rows() -> dict[str, dict[str, Any]]:
-    """The `workstreams` mapping of `.cp-engine/paths.json` on the tree clone,
-    or `{}` when the tree is unavailable, the file is absent, or it is not
-    the version this reader understands. Never raises — a level is an ECHO
-    on a write that already happened, and an echo must not fail the write."""
+def _paths_index() -> tuple[dict[str, dict[str, Any]], str | None]:
+    """`(workstreams, None)` from `.cp-engine/paths.json` on the tree clone, or
+    `({}, reason)` when the tree is unavailable, the file is absent, or it is
+    not the version this reader understands. Never raises — a level is an ECHO
+    on a write that already happened, and an echo must not fail the write.
+
+    The reason is kept (not collapsed into `{}`) because the two empties mean
+    different things to a caller: "this server cannot read the tree" versus
+    "the tree is readable and this code is not in it" (#313)."""
     try:
-        usable, _reason = tree_available()
+        usable, reason = tree_available()
         if not usable:
-            return {}
+            return {}, f"the tenant tree is unavailable on this server ({reason})"
         doc = json.loads((tree_root() / _PATHS_INDEX_REL).read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 — see docstring
-        return {}
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        return {}, f"{_PATHS_INDEX_REL} could not be read ({type(exc).__name__})"
     if not isinstance(doc, dict) or doc.get("version") != _PATHS_INDEX_VERSION:
-        return {}
+        return {}, f"{_PATHS_INDEX_REL} is not version {_PATHS_INDEX_VERSION}"
     rows = doc.get("workstreams")
-    return rows if isinstance(rows, dict) else {}
+    if not isinstance(rows, dict):
+        return {}, f"{_PATHS_INDEX_REL} carries no workstreams mapping"
+    return rows, None
+
+
+def _paths_index_rows() -> dict[str, dict[str, Any]]:
+    """The `workstreams` mapping alone — `{}` whenever `_paths_index` has a
+    reason instead."""
+    return _paths_index()[0]
+
+
+def _not_in_tree_warning(code: str) -> str:
+    """The #313 message: MC-2 and the committed tree are separate moments.
+
+    A workstream created in MC-2 is writable at once (the write that carries
+    this echo just succeeded against it), but it reaches `paths.json` only
+    when someone runs `cxp sync` and pushes. Until then every tree-reading
+    verb misses it. Said once, here, so every level-echoing writer carries
+    the same words.
+    """
+    return (
+        f"{code} is in MC-2 but not yet in the tenant tree "
+        f"({_PATHS_INDEX_REL}) — run `cxp sync` and push; until then its "
+        "level, parent and tree-reading verbs (word_count_check, "
+        "read_project_file, promote_uphill) cannot see it"
+    )
 
 
 def _level_for(project_code: str) -> dict[str, Any]:
     """`{code, label, parent, indexed}` for a code. Exact key first, then the
     `<code>-` prefix form (`ibx-5153` → `ibx-5153-ai-campaign`) when unique.
-    Mirrors `cp_engine.promote_uphill.level_for`."""
-    rows = _paths_index_rows()
+    Mirrors `cp_engine.promote_uphill.level_for`, plus one hosted-only field:
+    an unindexed level carries `warning` saying WHY (#313). The CLI reads its
+    own checkout, where "not in the tree" is a local `cxp sync` away; here the
+    clone trails a push, and a bare `label: null` was the only signal."""
+    rows, reason = _paths_index()
     wanted = (project_code or "").strip()
     entry = rows.get(wanted)
     if entry is None and wanted:
@@ -742,7 +774,12 @@ def _level_for(project_code: str) -> dict[str, Any]:
         if len(hits) == 1:
             wanted, entry = hits[0]
     if not isinstance(entry, dict):
-        return {"code": wanted, "label": None, "parent": None, "indexed": False}
+        return {
+            "code": wanted, "label": None, "parent": None, "indexed": False,
+            "warning": (
+                f"level unknown: {reason}" if reason else _not_in_tree_warning(wanted)
+            ),
+        }
     return {
         "code": wanted,
         "label": entry.get("label"),
@@ -781,6 +818,11 @@ def _names_its_level(fn=None, *, param: str = "project_code"):
             if isinstance(code, str) and code.strip():
                 try:
                     result["level"] = _level_for(code)
+                    # Surface an unindexed level's reason at the top too: a
+                    # warning nested in an echo is one a reader skims past
+                    # (#313). A verb's own `warning` wins the top slot.
+                    if result["level"].get("warning") and "warning" not in result:
+                        result["warning"] = result["level"]["warning"]
                 except Exception as exc:  # noqa: BLE001 — never fail the write
                     result["level"] = {
                         "code": code, "label": None, "parent": None,
