@@ -14,6 +14,7 @@
       {
         "bucket": "decision",
         "note": null,
+        "status": "open",
         "target_date": "by W21",
         "text": "Whether to staff a third on Pebble for Q3"
       }
@@ -26,7 +27,8 @@
         "text": "Legal turnaround may slip past May 22",
         "why_it_matters": null
       }
-    ]
+    ],
+    "stale": []
   },
   "client_inbound": [],
   "client_open_asks": [],

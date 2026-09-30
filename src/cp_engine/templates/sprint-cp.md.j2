@@ -91,7 +91,10 @@ PriorSprint: {{ prior_sprint }}
 {%- for h in carry_forward.horizon %}
 - [{{ h.bucket }}{% if h.target_date %} · {{ h.target_date }}{% endif %}] {{ h.text }}
 {%- endfor %}
-{%- if not carry_forward.asks and not carry_forward.risks and not carry_forward.horizon %}
+{%- for line in stale_lines %}
+{{ line }}
+{%- endfor %}
+{%- if not carry_forward.asks and not carry_forward.risks and not carry_forward.horizon and not stale_lines %}
 - _Nothing carried over._
 {%- endif %}
 {%- endif %}

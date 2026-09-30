@@ -1741,3 +1741,227 @@ def test_render_quiet_when_multi_week_ask_drops_out(tmp_path, caplog) -> None:
         w39 = _week(tmp_path, "2026-W39", "2026-W38")
     assert "Round 3 pop-up copy" not in w39.read_text()
     assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #326 age cap — old still-open items roll up into one line per kind
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _ask(date_s, text, h):
+    return f"- [open · {date_s} · Rena] {text} <!-- cp:hash={h} -->\n"
+
+
+def _cutoff_for(week_iso):
+    """The oldest first-raised date that still carries in full into
+    ``week_iso`` — derived from the engine's constant, not restated."""
+    from datetime import date, timedelta
+
+    from cp_engine.sprints import CARRY_FORWARD_MAX_AGE_WEEKS
+
+    year, week = week_iso.split("-W")
+    monday = date.fromisocalendar(int(year), int(week), 1)
+    return monday - timedelta(weeks=CARRY_FORWARD_MAX_AGE_WEEKS)
+
+
+def _region(path) -> str:
+    body = path.read_text()
+    return body[body.index("<!-- cp-engine:start carry-forward -->"):
+                body.index("<!-- cp-engine:end carry-forward -->")]
+
+
+def test_ask_past_the_age_cap_rolls_up_instead_of_carrying(tmp_path) -> None:
+    """#326 brought back 724 asks nobody had closed since May. An ask first
+    raised more than CARRY_FORWARD_MAX_AGE_WEEKS before the sprint does NOT
+    carry as a bullet; the region gets one rollup line with the count, the
+    oldest date and a link that opens the week file it lives in. An ask
+    raised ON the cutoff day still carries in full; one day older does not."""
+    import re
+    from datetime import timedelta
+
+    from cp_engine.sprints import parse_sprint_file
+
+    cutoff = _cutoff_for("2026-W39")
+    on_cap = cutoff.isoformat()
+    past_cap = (cutoff - timedelta(days=1)).isoformat()
+    _week(tmp_path, "2026-W30", None, own_asks=_ask(past_cap, "Old logo question", "a0000001"))
+    _week(tmp_path, "2026-W32", None, own_asks=_ask(on_cap, "Edge-of-cap question", "a0000002"))
+    w38 = _week(tmp_path, "2026-W38", None, own_asks=_ask("2026-09-15", "Fresh question", "a0000003"))
+    w39 = _week(tmp_path, "2026-W39", "2026-W38")
+
+    region = _region(w39)
+    carried = _carried_texts(w39)
+    assert any("Fresh question" in t for t in carried)
+    assert any("Edge-of-cap question" in t for t in carried)
+    assert not any("Old logo question" in t for t in carried)
+    assert "Old logo question" not in region
+    line = next(ln for ln in region.splitlines() if "stale" in ln)
+    assert line == (f"- 1 stale ask (oldest {past_cap}) — triage in "
+                    f"[2026-W30](../2026-W30/{w38.name})")
+    # The link resolves, relative to the file it is rendered into.
+    target = re.search(r"\]\(([^)]+)\)", line).group(1)
+    assert (w39.parent / target).resolve().is_file()
+    # And it parses back as a rollup, not as an ask.
+    cf = parse_sprint_file(w39).carry_forward
+    assert cf.stale_count("asks") == 1 and cf.stale_count("risks") == 0
+
+
+def test_stale_rollup_counts_weeks_and_drops_when_closed_where_it_lives(
+    tmp_path, caplog
+) -> None:
+    """Stale asks stay resolvable in their own week: closing one there drops
+    it from the count on the next render. The rollup line changes every time
+    that happens and no sprint file holds it, so #320's hand-edit check must
+    not read the change as a hand edit being discarded."""
+    import logging
+
+    w30 = _week(tmp_path, "2026-W30", None, own_asks=_ask("2026-07-20", "Old A", "b0000001"))
+    _week(tmp_path, "2026-W31", None, own_asks=_ask("2026-07-28", "Old B", "b0000002"))
+    w38 = _week(tmp_path, "2026-W38", None)
+    w39 = _week(tmp_path, "2026-W39", "2026-W38")
+    assert (f"- 2 stale asks (oldest 2026-07-20) — triage in "
+            f"[2026-W30](../2026-W30/{w38.name}) and 1 other week") in _region(w39)
+
+    w30.write_text(w30.read_text().replace("[open · 2026-07-20", "[closed · 2026-07-20", 1))
+    with caplog.at_level(logging.WARNING, logger="cp_engine"):
+        w39 = _week(tmp_path, "2026-W39", "2026-W38")
+    assert (f"- 1 stale ask (oldest 2026-07-28) — triage in "
+            f"[2026-W31](../2026-W31/{w38.name})") in _region(w39)
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+def test_current_sprint_header_names_stale_asks_separately(tmp_path) -> None:
+    """The list shows live asks; the header counts them and names the stale
+    backlog beside them, as it names snoozed ones: `(1 · 1 stale)`."""
+    from cp_engine.aggregators import open_client_asks
+    from cp_engine.sprints import parse_sprint_file, render_current_sprint_block
+
+    _week(tmp_path, "2026-W30", None, own_asks=_ask("2026-07-20", "Old logo question", "c0000001"))
+    _week(tmp_path, "2026-W38", None, own_asks=_ask("2026-09-15", "Fresh question", "c0000002"))
+    w39 = _week(tmp_path, "2026-W39", "2026-W38")
+    sf = parse_sprint_file(w39)
+    assert [a.text.split(" <!--")[0] for a in open_client_asks(sf)] == ["Fresh question"]
+    block = render_current_sprint_block(sf, "x.md")
+    assert "**Open client asks** (1 · 1 stale):" in block
+    assert "Old logo question" not in block
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #331 — risks and horizon items carry until resolved, too
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _record_risk(path, text, *, date_s, severity="escalated"):
+    """Record a risk with the real `record-risk` writer; returns its hash."""
+    from cp_engine.ingest import _content_hash, _write_risk
+
+    assert _write_risk("peb", {"text": text, "severity": severity,
+                               "category": "budget", "date": date_s}, path)
+    return _content_hash("peb", "record-risk", text)
+
+
+def _horizon(path, bullet, sub="Milestones"):
+    path.write_text(path.read_text().replace(f"### {sub}\n", f"### {sub}\n{bullet}\n", 1))
+
+
+def test_unresolved_risk_still_carried_two_weeks_later(tmp_path) -> None:
+    """A risk raised in W37 was carried into W38 and gone from W39 — the same
+    one-week defect as #326. It must carry until resolved, dated when first
+    raised, and count as active in W39."""
+    from cp_engine.sprints import _active_risks, parse_sprint_file
+
+    w37 = _week(tmp_path, "2026-W37", None)
+    _record_risk(w37, "Fee increase not yet signed off", date_s="2026-09-09")
+    _week(tmp_path, "2026-W38", "2026-W37")
+    w39 = _week(tmp_path, "2026-W39", "2026-W38")
+    sf = parse_sprint_file(w39)
+    carried = [r for r in sf.carry_forward.risks if "Fee increase" in r.text]
+    assert len(carried) == 1 and carried[0].raised_date == "2026-09-09"
+    assert "[risk · escalated · budget · 2026-09-09] Fee increase" in w39.read_text()
+    assert any("Fee increase" in r.text for r in _active_risks(sf))
+
+
+def test_risk_resolved_from_a_carried_copy_stops_carrying(tmp_path) -> None:
+    """The Slack Resolve button targets the week the digest scanned — for a
+    carried risk, the projection. `_origin_sprint_path` sends the flip to the
+    week that owns it (W37); the next render must then let it go, even though
+    W38's frozen region still says escalated."""
+    from cp_engine.ingest import _write_resolve_risk
+
+    w37 = _week(tmp_path, "2026-W37", None)
+    h = _record_risk(w37, "Fee increase not yet signed off", date_s="2026-09-09")
+    w38 = _week(tmp_path, "2026-W38", "2026-W37")
+    w39 = _week(tmp_path, "2026-W39", "2026-W38")
+    assert "Fee increase" in _region(w39)  # premise
+    assert _write_resolve_risk("peb", {"hash": h}, w39)
+    assert "[resolved · budget" in w37.read_text()  # landed at the origin
+    assert "Fee increase" in _region(w38)  # premise: stale projection
+    w40 = _week(tmp_path, "2026-W40", "2026-W39")
+    assert "Fee increase" not in _region(w40)
+
+
+def test_risk_resolved_in_this_weeks_own_section_is_not_active(tmp_path) -> None:
+    """A carried risk restated `resolved` by hand this week is no longer
+    active — the rule open_client_asks applies to a closed ask."""
+    from cp_engine.sprints import _active_risks, parse_sprint_file
+
+    w37 = _week(tmp_path, "2026-W37", None)
+    _record_risk(w37, "Fee increase not yet signed off", date_s="2026-09-09")
+    w38 = _week(tmp_path, "2026-W38", "2026-W37")
+    line = next(ln for ln in w37.read_text().splitlines() if "Fee increase" in ln)
+    w38.write_text(w38.read_text().replace(
+        "## Dependencies & risks\n",
+        "## Dependencies & risks\n" + line.replace("[escalated ·", "[resolved ·") + "\n", 1))
+    sf = parse_sprint_file(w38)
+    assert sf.carry_forward.risks  # premise: carried in from W37
+    assert _active_risks(sf) == []
+
+
+def test_horizon_item_carries_until_marked_done(tmp_path) -> None:
+    """Horizon items carried one week "because they are unresolved by
+    nature" — and so vanished after one. They now carry until marked settled:
+    a status token in the bracket or the item struck through. A section
+    placeholder (`_None tracked._`) is not an item and never carries."""
+    w37 = _week(tmp_path, "2026-W37", None)
+    _horizon(w37, "- `[2026-10-20]` Round 4 review with the client.")
+    _horizon(w37, "- `[by W41]` Open the production budget conversation.", "Decisions due")
+    _horizon(w37, "- _None tracked._", "Opportunities")
+    _week(tmp_path, "2026-W38", "2026-W37")
+    w39 = _week(tmp_path, "2026-W39", "2026-W38")
+    region = _region(w39)
+    assert "[milestone · 2026-10-20] Round 4 review" in region
+    assert "[decision · by W41] Open the production budget" in region
+    assert "None tracked" not in region
+
+    body = w37.read_text()
+    body = body.replace("`[2026-10-20]` Round 4", "`[done · 2026-10-20]` Round 4", 1)
+    body = body.replace("`[by W41]` Open the production budget conversation.",
+                        "~~Open the production budget conversation.~~", 1)
+    w37.write_text(body)
+    w39 = _week(tmp_path, "2026-W39", "2026-W38")
+    region = _region(w39)
+    assert "Round 4 review" not in region
+    assert "production budget" not in region
+
+
+def test_old_risks_and_horizon_items_roll_up_like_asks(tmp_path) -> None:
+    """The age cap applies to every carried kind, one rollup line per kind. A
+    horizon item states no raised date (its bracket is a target), so it ages
+    from the earliest week that holds it. The header names stale risks."""
+    from cp_engine.sprints import parse_sprint_file, render_current_sprint_block
+
+    w30 = _week(tmp_path, "2026-W30", None)
+    _record_risk(w30, "Vendor capacity for the shoot", date_s="2026-07-21")
+    _horizon(w30, "- `[2026-12-01]` Year-end campaign launch.")
+    w38 = _week(tmp_path, "2026-W38", None)
+    _record_risk(w38, "Legal review timing", date_s="2026-09-15", severity="watching")
+    w39 = _week(tmp_path, "2026-W39", "2026-W38")
+    region = _region(w39)
+    assert "Vendor capacity" not in region and "Year-end campaign" not in region
+    assert "Legal review timing" in region
+    assert (f"- 1 stale risk (oldest 2026-07-21) — triage in "
+            f"[2026-W30](../2026-W30/{w38.name})") in region
+    assert (f"- 1 stale horizon item (oldest 2026-07-20) — triage in "
+            f"[2026-W30](../2026-W30/{w38.name})") in region  # W30's Monday
+    block = render_current_sprint_block(parse_sprint_file(w39), "x.md")
+    assert "**Active risks** (1 · 1 stale):" in block
