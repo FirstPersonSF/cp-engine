@@ -43,6 +43,7 @@ from cp_engine.plan_from_transcript import (
     _extract_yaml,
     _find_project_dir,
     _load_recent_account_decisions,
+    apply_attribution_checks,
 )
 from cp_engine.sprints import current_sprint_week_iso
 from cp_engine.codes import parse_code
@@ -174,6 +175,12 @@ def generate_account_plan(
         _validate_plan(plan)
     except IngestPlanError as exc:
         raise AccountPlanError(f"plan failed validation: {exc}") from exc
+
+    # Decision fidelity (#321), then person-name checks per child (#312).
+    from cp_engine.ingest_fidelity import apply_decision_fidelity
+
+    apply_decision_fidelity(plan)
+    apply_attribution_checks(plan, config=config, transcript=transcript)
 
     project_codes = tuple(p.code for p in active_projects)
     return GeneratedAccountPlan(
@@ -348,10 +355,14 @@ projects:                     # one entry per project that has content
         who: "<who we're asking>"
         by: "YYYY-MM-DD"
         date: "YYYY-MM-DD"
-    decisions:
+    decisions:                # SETTLED only — the meeting's final position
       - text: "..."
         date: "YYYY-MM-DD"
         cross_cutting: false
+        earlier_position: "..." # optional — only when the meeting reversed itself
+    open_questions:           # raised, weighed, NOT settled
+      - text: "..."
+        date: "YYYY-MM-DD"
     risks:
       - text: "..."
         severity: "watching"   # or "escalated", "dependency"
@@ -385,6 +396,8 @@ account_decisions:            # OPTIONAL — tenant-wide decisions
    projects, split it. If it's truly cross-cutting (affects all
    projects), put it in `account_summary` or `account_decisions`,
    not duplicated across N project entries.
+   The same item under two projects is written ONCE (the first); if it
+   genuinely belongs to both, add `shared: true` to each copy.
 
 2. **Don't over-extract.** A project mentioned in passing ("oh, and
    we should check in on 5151 next week") doesn't need a verb entry —
@@ -426,6 +439,21 @@ account_decisions:            # OPTIONAL — tenant-wide decisions
 10. **No empty lists.** Omit any project entry / verb that has no
     items. The `account_summary` is the only field that's always
     present.
+11. **Speaker labels are not proof of who spoke.** Fathom labels a
+    shared room with one person's name, and mishears names. Name a person
+    in a risk or decision only when the transcript itself makes clear who
+    said or did it (they are addressed by name, they name themselves, the
+    content fits); otherwise say "the client side" / "someone on the call".
+    A line that addresses the labelled speaker by their own name ("Morgan,
+    can you show it to me?" under the label Morgan) was said by someone
+    else. Spell people as the project context spells them.
+12. **Decisions are the meeting's FINAL position; prefer under-claiming.**
+    Read the whole transcript before writing a decision: if a topic is
+    revisited and the position changes, record only where it ENDED and put
+    the first position in `earlier_position`. Never emit two decisions on
+    one topic. Options weighed, floated or "leaning toward" — anything
+    nobody actually chose — go in `open_questions`, not `decisions`. When
+    unsure whether something was decided, it was not.
 
 # Output format
 
@@ -708,6 +736,12 @@ def generate_sprint_planning_plan(
     except IngestPlanError as exc:
         raise AccountPlanError(f"plan failed validation: {exc}") from exc
 
+    # Decision fidelity (#321), then person-name checks per child (#312).
+    from cp_engine.ingest_fidelity import apply_decision_fidelity
+
+    apply_decision_fidelity(plan)
+    apply_attribution_checks(plan, config=config, transcript=transcript)
+
     project_codes = tuple(p.code for p in active_projects)
     return GeneratedAccountPlan(
         plan=plan,
@@ -808,10 +842,14 @@ projects:                     # one entry per project that has content
         who: "<who we're asking>"
         by: "YYYY-MM-DD"
         date: "YYYY-MM-DD"
-    decisions:
+    decisions:                # SETTLED only — the meeting's final position
       - text: "..."
         date: "YYYY-MM-DD"
         cross_cutting: false
+        earlier_position: "..." # optional — only when the meeting reversed itself
+    open_questions:           # raised, weighed, NOT settled
+      - text: "..."
+        date: "YYYY-MM-DD"
     risks:
       - text: "..."
         severity: "watching"
@@ -844,6 +882,8 @@ account_decisions:            # OPTIONAL — tenant-wide decisions
    only goes in `projects.ggl-5168`. Cross-project items belong in
    `account_summary` or `account_decisions`, not duplicated across
    N projects.
+   The same item under two projects is written ONCE (the first); if it
+   genuinely belongs to both, add `shared: true` to each copy.
 
 2. **Don't over-extract.** Sprint planning often touches projects
    only briefly ("we'll pick up 5151 next week"). That's not a
@@ -882,6 +922,21 @@ account_decisions:            # OPTIONAL — tenant-wide decisions
 10. **No empty lists.** Omit any project entry / verb that has no
     items. The `account_summary` is the only field that's always
     present.
+11. **Speaker labels are not proof of who spoke.** Fathom labels a
+    shared room with one person's name, and mishears names. Name a person
+    in a risk or decision only when the transcript itself makes clear who
+    said or did it (they are addressed by name, they name themselves, the
+    content fits); otherwise say "the client side" / "someone on the call".
+    A line that addresses the labelled speaker by their own name ("Morgan,
+    can you show it to me?" under the label Morgan) was said by someone
+    else. Spell people as the project context spells them.
+12. **Decisions are the meeting's FINAL position; prefer under-claiming.**
+    Read the whole transcript before writing a decision: if a topic is
+    revisited and the position changes, record only where it ENDED and put
+    the first position in `earlier_position`. Never emit two decisions on
+    one topic. Options weighed, floated or "leaning toward" — anything
+    nobody actually chose — go in `open_questions`, not `decisions`. When
+    unsure whether something was decided, it was not.
 
 # Output format
 

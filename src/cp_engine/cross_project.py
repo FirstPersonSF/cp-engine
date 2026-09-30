@@ -180,4 +180,7 @@ def build_routed_plan(proposal: dict) -> dict:
     ``ingest.execute_plan``; hash-dedup applies as usual)."""
     item = dict(proposal.get("payload") or {})
     item["text"] = routed_item_text(proposal)
+    # #322: a cross-routed item that restates a bullet already on the
+    # target is written as an update under it, not as a sibling.
+    item["cross_routed"] = True
     return {"projects": {proposal["target_code"]: {proposal["verb"]: [item]}}}

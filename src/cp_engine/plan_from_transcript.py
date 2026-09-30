@@ -56,6 +56,122 @@ class GeneratedPlan:
     # ALSO stays in this project's plan with a `[cross-project? → code]`
     # suffix — detection proposes, never writes to the target.
     cross_project: tuple[dict, ...] = ()
+    # Name checks (#312): counts from `attribution.check_plan_attribution`
+    # — {aliased, resolved, hedged, stakeholders_dropped}.
+    attribution: dict | None = None
+    # Decision fidelity (#321): {demoted, collapsed, revised}.
+    fidelity: dict | None = None
+    # Action-item routing (#322): {kept, moved, left_to_cotagged}.
+    routing: dict | None = None
+
+
+def _route_action_items(
+    ask_items: list[dict],
+    *,
+    plan: dict,
+    project_code: str,
+    co_tagged,
+    roster: list | None,
+    config,
+) -> dict:
+    """Wire `ingest_routing.route_action_items` to the roster and the
+    project's stakeholder cards. Fail-soft: on any error every item stays
+    with the tagged project, as before #322."""
+    import logging
+
+    from cp_engine.attribution import load_known_people
+    from cp_engine.ingest_routing import identity_tokens, route_action_items, same_project
+
+    tenant_root = getattr(config, "root", None)
+
+    def identity_for(code: str):
+        entry = next(
+            (p for p in roster or [] if same_project(getattr(p, "code", "") or "", code)),
+            None,
+        )
+        people: list[str] = []
+        if tenant_root is not None:
+            project_dir = _find_project_dir(tenant_root, code)
+            if project_dir is not None:
+                people = [
+                    p.full for p in load_known_people(
+                        tenant_root=None, project_dir=project_dir
+                    ).people
+                ]
+        return identity_tokens(
+            getattr(entry, "code", None) or code,
+            name=getattr(entry, "name", "") or "",
+            company=getattr(entry, "company_name", "") or "",
+            people=people,
+        )
+
+    def rehash(code: str, item: dict) -> None:
+        item["hash"] = _content_hash(code, "record-ask", item.get("text") or "")
+
+    try:
+        return route_action_items(
+            ask_items,
+            plan=plan,
+            project_code=project_code,
+            co_tagged=co_tagged,
+            identity_for=identity_for,
+            rehash=rehash,
+        )
+    except Exception:  # noqa: BLE001 — routing must never cost the ingest
+        logging.getLogger(__name__).warning(
+            "action-item routing failed; all items stay on %s", project_code,
+            exc_info=True,
+        )
+        proj = plan.setdefault("projects", {}).setdefault(project_code, {})
+        proj.setdefault("record-ask", []).extend(ask_items)
+        return {"kept": len(ask_items), "moved": 0, "left_to_cotagged": 0}
+
+
+def apply_attribution_checks(plan: dict, *, config, transcript: str) -> dict:
+    """Run the deterministic person-name pass (#312) over every project
+    block in `plan`: tenant aliases, surname resolution against the
+    project's stakeholder cards, and the `[attribution unverified]` hedge
+    on risks/decisions naming someone the transcript never heard. Never
+    raises — a name check must not cost the ingest."""
+    import logging
+
+    from cp_engine.attribution import check_plan_attribution, load_known_people
+
+    tenant_root = getattr(config, "root", None)
+    week_iso = current_sprint_week_iso(tenant_now())
+    cache: dict = {}
+
+    def known_for(code: str):
+        if code not in cache:
+            project_dir = (
+                _find_project_dir(tenant_root, code) if tenant_root else None
+            )
+            sprint_text = ""
+            if tenant_root is not None:
+                sprint = Path(tenant_root) / "sprints" / week_iso / f"{code}.md"
+                if sprint.is_file():
+                    sprint_text = sprint.read_text(encoding="utf-8")
+            cache[code] = load_known_people(
+                tenant_root=tenant_root,
+                project_dir=project_dir,
+                team=getattr(config, "team", ()) or (),
+                transcript=transcript,
+                sprint_text=sprint_text,
+            )
+        return cache[code]
+
+    try:
+        return check_plan_attribution(
+            plan,
+            transcript=transcript,
+            known_for=known_for,
+            aliases=getattr(config, "name_aliases", None) or {},
+        )
+    except Exception:  # noqa: BLE001 — fidelity pass must never break ingest
+        logging.getLogger(__name__).warning(
+            "attribution pass failed; plan written unchecked", exc_info=True
+        )
+        return {}
 
 
 def generate_plan(
@@ -68,6 +184,7 @@ def generate_plan(
     api_key: str | None = None,
     roster: list | None = None,
     today: str | None = None,
+    co_tagged: list[str] | tuple[str, ...] | None = None,
 ) -> GeneratedPlan:
     """Read transcript + project context, ask Claude for a plan, validate it.
 
@@ -78,6 +195,10 @@ def generate_plan(
     treat re-ingests of the same meeting as no-ops AND the ClickUp ↔ cp
     round-trip (Task 1.7) can match a closed ClickUp task back to its
     source ask.
+
+    `co_tagged` names every project the meeting is tagged to (this one
+    included). Each tagged project gets its own pass; an action item that
+    names a co-tagged project is left to that project's pass (#322).
 
     Raises PlanGenerationError if the response can't be parsed or doesn't
     pass `_validate_plan`. The caller should catch and decide what to do
@@ -94,6 +215,7 @@ def generate_plan(
         roster=roster,
         today=today,
         tenant_root=config.root,
+        co_tagged=co_tagged,
     )
 
     # Judgment priors (mig 139), resolved for THIS project so a per-project
@@ -136,14 +258,37 @@ def generate_plan(
     # reads only `text`, `who`, `by`, `date`, `status`). Re-running
     # _validate_plan here would therefore still pass — we skip it only
     # to avoid the redundant pass on a now-trusted plan.
+    routing: dict = {}
     if action_items:
         today_iso = today or tenant_now().strftime("%Y-%m-%d")
         ask_items = _action_items_to_ask_items(
             code=project_code, action_items=action_items, today_iso=today_iso
         )
         if ask_items:
-            proj = plan.setdefault("projects", {}).setdefault(project_code, {})
-            proj.setdefault("record-ask", []).extend(ask_items)
+            # #322: each action item goes to the project it names — not,
+            # by default, to whichever project the meeting was tagged to.
+            routing = _route_action_items(
+                ask_items,
+                plan=plan,
+                project_code=project_code,
+                co_tagged=co_tagged or (),
+                roster=roster,
+                config=config,
+            )
+
+    # Decision fidelity (#321): a deliberation is an open question, not a
+    # decision; a restated decision keeps its LAST value, marked revised.
+    from cp_engine.ingest_fidelity import apply_decision_fidelity
+
+    fidelity = apply_decision_fidelity(plan)
+
+    # Person-name checks (#312): aliases, surname resolution against the
+    # stakeholder cards, and a hedge on risk/decision bullets that name
+    # someone the transcript never heard. Before the cross-project pass so
+    # the routing marker stays the last thing on the line.
+    attribution = apply_attribution_checks(
+        plan, config=config, transcript=transcript
+    )
 
     # Cross-project annotations (#88): validate against the roster (drop
     # anything the LLM invented), suffix flagged items with the
@@ -159,6 +304,9 @@ def generate_plan(
         transcript_path=transcript_path,
         model=model,
         cross_project=tuple(cross_project),
+        attribution=attribution,
+        fidelity=fidelity,
+        routing=routing,
     )
 
 
@@ -329,6 +477,7 @@ _XPROJECT_VERBS = {
     "asks", "ask", "record-ask",
     "decisions", "decision", "add-decision",
     "risks", "risk", "record-risk",
+    "open-questions",
 }
 
 # Canonical shorthand family stored on proposals (and used to build the
@@ -339,6 +488,7 @@ _XPROJECT_VERB_FAMILY = {
     "decisions": "decisions", "decision": "decisions",
     "add-decision": "decisions",
     "risks": "risks", "risk": "risks", "record-risk": "risks",
+    "open-questions": "open-questions",
 }
 
 
@@ -431,6 +581,7 @@ def _build_prompt(
     today: str | None = None,
     tenant_root: Path | None = None,
     engagement_shape: bool | None = None,
+    co_tagged: list[str] | tuple[str, ...] | None = None,
 ) -> str:
     # `today` anchors every date the model emits. It defaults to the wall
     # clock, but a REPLAY of an old meeting must pass that meeting's date —
@@ -456,7 +607,22 @@ def _build_prompt(
             project_code, roster=roster, tenant_root=tenant_root
         )
     template = _PROMPT_TEMPLATE if engagement_shape else _INITIATIVE_PROMPT_TEMPLATE
+    others = [
+        c for c in (co_tagged or ())
+        if (c or "").strip().lower() != project_code.strip().lower()
+    ]
+    if others:
+        cotag_block = (
+            "This meeting is ALSO tagged to: "
+            + ", ".join(f"`{c}`" for c in others)
+            + ". Each of those gets its own pass over this transcript. Record\n"
+            f"here ONLY what belongs to {project_code}; route every other item to\n"
+            "the project it is about, never to both (#322)."
+        )
+    else:
+        cotag_block = "(Tagged to this project only.)"
     return template.format(
+        cotag_block=cotag_block,
         today=today,
         project_code=project_code,
         transcript_relpath=str(transcript_path),
@@ -477,6 +643,9 @@ against the project's sprint file.
 
 # Target project
 {project_code}
+
+# Also tagged
+{cotag_block}
 
 # Internal team
 {team_block}
@@ -505,10 +674,14 @@ projects:
         who: "<who we're asking>"
         by: "YYYY-MM-DD"          # optional deadline
         date: "YYYY-MM-DD"        # when we asked; defaults to today
-    decisions:
+    decisions:                    # SETTLED only — the meeting's final position
       - text: "..."
         date: "YYYY-MM-DD"
         cross_cutting: false      # true → also surfaces in master-cp's decisions strip
+        earlier_position: "..."   # optional — only when the meeting reversed itself
+    open_questions:               # raised, weighed, NOT settled
+      - text: "..."
+        date: "YYYY-MM-DD"
     risks:
       - text: "..."
         severity: "watching"      # or "escalated", "dependency"
@@ -588,6 +761,21 @@ projects:
    end of month") is NOT a milestone. If the date is genuinely
    unclear, prefer the existing `asks`/`decisions` verbs which write
    to the sprint file's narrative sections.
+10. **Speaker labels are not proof of who spoke.** Fathom labels a
+   shared room with one person's name, and mishears names. Name a person
+   in a risk or decision only when the transcript itself makes clear who
+   said or did it (they are addressed by name, they name themselves, the
+   content fits); otherwise say "the client side" / "someone on the call".
+   A line that addresses the labelled speaker by their own name ("Morgan,
+   can you show it to me?" under the label Morgan) was said by someone
+   else. Spell people as the project context spells them.
+11. **Decisions are the meeting's FINAL position; prefer under-claiming.**
+   Read the whole transcript before writing a decision: if a topic is
+   revisited and the position changes, record only where it ENDED and put
+   the first position in `earlier_position`. Never emit two decisions on
+   one topic. Options weighed, floated or "leaning toward" — anything
+   nobody actually chose — go in `open_questions`, not `decisions`. When
+   unsure whether something was decided, it was not.
 
 # Output format
 
@@ -625,6 +813,9 @@ or between teams).
 # Target initiative
 {project_code}
 
+# Also tagged
+{cotag_block}
+
 # Internal team
 {team_block}
 
@@ -648,10 +839,14 @@ projects:
         who: "<who we're asking>"
         by: "YYYY-MM-DD"          # optional deadline
         date: "YYYY-MM-DD"        # when we asked; defaults to today
-    decisions:
+    decisions:                    # SETTLED only — the meeting's final position
       - text: "..."
         date: "YYYY-MM-DD"
         cross_cutting: false      # true → also surfaces in master-cp's decisions strip
+        earlier_position: "..."   # optional — only when the meeting reversed itself
+    open_questions:               # raised, weighed, NOT settled
+      - text: "..."
+        date: "YYYY-MM-DD"
     risks:
       - text: "..."
         severity: "watching"      # or "escalated", "dependency"
@@ -719,6 +914,21 @@ projects:
     not at least medium-confident, or the roster block says detection
     is OFF, leave the fields off. These become human-reviewed routing
     proposals; nothing auto-writes to the other project.
+12. **Speaker labels are not proof of who spoke.** Fathom labels a
+    shared room with one person's name, and mishears names. Name a person
+    in a risk or decision only when the transcript itself makes clear who
+    said or did it (they are addressed by name, they name themselves, the
+    content fits); otherwise say "the client side" / "someone on the call".
+    A line that addresses the labelled speaker by their own name ("Morgan,
+    can you show it to me?" under the label Morgan) was said by someone
+    else. Spell people as the project context spells them.
+13. **Decisions are the meeting's FINAL position; prefer under-claiming.**
+    Read the whole transcript before writing a decision: if a topic is
+    revisited and the position changes, record only where it ENDED and put
+    the first position in `earlier_position`. Never emit two decisions on
+    one topic. Options weighed, floated or "leaning toward" — anything
+    nobody actually chose — go in `open_questions`, not `decisions`. When
+    unsure whether something was decided, it was not.
 
 # Output format
 

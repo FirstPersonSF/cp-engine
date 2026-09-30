@@ -218,6 +218,12 @@ class TenantConfig:
     # `.cp-engine.toml`. Free-form first-name strings; matching is
     # case-insensitive substring on stakeholder name.
     team: tuple[str, ...] = ()
+    # Known mis-hearings of people's names (#312): `[names] aliases =
+    # {"Jeff Allman" = "Geoff Ahmann"}`. Auto-ingest rewrites each key to
+    # its value, on word boundaries, before anything is written.
+    name_aliases: Mapping[str, str] = field(
+        default_factory=lambda: MappingProxyType({})
+    )
     # Lever 2 — daily attention digest configuration. Tenants opt in via
     # `[attention_digest]` in `.cp-engine.toml`; absent block yields the
     # default-constructed dataclass (no recipients = no Slack post).
@@ -276,6 +282,8 @@ def load(tenant_root: Path) -> TenantConfig:
         kwargs["risk_categories"] = committed["risk_categories"]
     if committed["team"]:
         kwargs["team"] = committed["team"]
+    if committed["name_aliases"]:
+        kwargs["name_aliases"] = MappingProxyType(dict(committed["name_aliases"]))
     kwargs["attention_digest"] = committed["attention_digest"]
     kwargs["dates_loop"] = committed["dates_loop"]
     kwargs["timezone"] = committed["timezone"]
@@ -466,6 +474,21 @@ def _normalize_committed(data: dict, source: Path) -> dict:
             )
         team = tuple(members)
 
+    # Optional [names] table (#312): aliases = {"Jeff Allman" = "Geoff Ahmann"}.
+    name_aliases: dict[str, str] = {}
+    names_raw = data.get("names")
+    if names_raw is not None:
+        aliases_raw = names_raw.get("aliases") if isinstance(names_raw, dict) else None
+        if not isinstance(aliases_raw, dict) or not all(
+            isinstance(k, str) and k and isinstance(v, str) and v
+            for k, v in aliases_raw.items()
+        ):
+            raise CommittedConfigInvalid(
+                f"{source}: [names].aliases must be a table of non-empty "
+                'strings, e.g. aliases = {"Jeff Allman" = "Geoff Ahmann"}'
+            )
+        name_aliases = dict(aliases_raw)
+
     # Optional [attention_digest] table (Lever 2). Absent block → defaults.
     attention_digest = _parse_attention_digest(
         data.get("attention_digest") or {}, source
@@ -484,6 +507,7 @@ def _normalize_committed(data: dict, source: Path) -> dict:
         "local_repos_by_user": local_repos_by_user,
         "risk_categories": risk_categories,
         "team": team,
+        "name_aliases": name_aliases,
         "attention_digest": attention_digest,
         "dates_loop": dates_loop,
     }

@@ -89,7 +89,7 @@ def _wire_pipeline(
     monkeypatch.setattr(
         pipeline,
         "_ingest_one_project",
-        lambda *, config, code, transcript_path, action_items, meeting_id, meeting, roster=None: {
+        lambda *, config, code, transcript_path, action_items, meeting_id, meeting, roster=None, co_tagged=None: {
             "code": code,
             "files_written": [f"sprints/2026-W33/{code}.md"],
             "plan_summary": {"outbound": 1},

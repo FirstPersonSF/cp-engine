@@ -102,4 +102,6 @@ _(no deliverables in the estimate yet)_
 
 ### Decisions
 
+### Open questions
+
 ### Discussion notes

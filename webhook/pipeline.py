@@ -292,6 +292,7 @@ def _ingest_one_project(
     meeting_id: str | None = None,
     meeting: dict | None = None,
     roster: list | None = None,
+    co_tagged: list[str] | None = None,
 ) -> dict:
     """Generate plan + execute for a single project. Returns a summary dict.
 
@@ -320,6 +321,7 @@ def _ingest_one_project(
             transcript_path=transcript_path,
             action_items=action_items,
             roster=roster,
+            co_tagged=co_tagged,
         )
     except PlanGenerationError as exc:
         entry["errors"].append(f"plan generation failed: {exc}")
@@ -333,6 +335,9 @@ def _ingest_one_project(
     # Cross-project proposals (#88): validated annotations collected by
     # generate_plan. The caller writes them to MC-2 after this returns.
     entry["cross_project"] = list(gen.cross_project)
+    # Name checks (#312) — counts only, for the run log.
+    entry["attribution"] = getattr(gen, "attribution", None) or {}
+    entry["routing"] = getattr(gen, "routing", None) or {}
 
     try:
         exec_result = execute_plan(
@@ -756,6 +761,9 @@ def _perform_auto_ingest(
                     meeting_id=meeting_id,
                     meeting=meeting,
                     roster=roster,
+                    # #322: every tagged project, so each pass leaves the
+                    # others' action items to them.
+                    co_tagged=list(project_codes),
                 )
                 ingested.append(entry)
 
