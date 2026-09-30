@@ -1218,15 +1218,19 @@ def list_spine_elements(
         if r.get("archived"):
             continue
         eid = r.get("est_item_id")
-        if eid in absorbed_into and not include_absorbed:
-            absorbed_hidden += 1
-            continue
         # Signal/noise facet (#158 gap 5): source stubs are pointers, not cards.
         is_stub = re.sub(r"[^a-z]", "", str(r.get("layer") or "").lower()) == "sourcematerial"
         if tier_n in ("working", "authored") and is_stub:
             stubs_hidden += 1
             continue
         if tier_n == "stubs" and not is_stub:
+            continue
+        # After the tier facet, not before: `absorbed_hidden` answers "how many
+        # of the rows you asked for did I hide", the stdio verb's meaning. It
+        # ran first, so a sealed stub under tier="working" counted as hidden
+        # by the seal when the tier had already excluded it (#334).
+        if eid in absorbed_into and not include_absorbed:
+            absorbed_hidden += 1
             continue
         elements.append(
             {
