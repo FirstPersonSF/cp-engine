@@ -203,3 +203,24 @@ def test_it_states_what_the_hosted_path_cannot_do(hosted_half: str) -> None:
     section = hosted_half[hosted_half.index(marker):]
     for owed in ("rotation", "cross-cutting decisions sweep", "improvements.md", "Commit and push"):
         assert owed in section, f"cannot-do list omits {owed}"
+
+
+def test_commit_step_resolves_by_region_and_runs_merge_check(skill: str) -> None:
+    """Blanket `--ours` over conflicted sprint files deleted a meeting's 20
+    auto-ingest bullets on 2026-08-25 (#310): the remembered rule named FILES
+    when the real predicate is REGIONS. `cxp merge-check` (#193) proves a
+    merge dropped nothing, but the skill never called it. The step must state
+    the region rule and require the check — and the flags it cites must be the
+    real command's, read from the click registry rather than retyped."""
+    from cp_engine.cli_cmds.core import merge_check_cmd
+
+    start = skill.index("## 9 — Commit and push")
+    step = " ".join(skill[start:skill.index("\n---", start)].split())
+    assert "cxp merge-check" in step
+    assert "inside" in step.lower() and "cp-engine:start" in step
+    assert "inspect everything else" in step.lower()
+
+    ref = next(p for p in merge_check_cmd.params if p.name == "ref")
+    assert f"`--ref {ref.default}`" in step, "the default the skill cites must be real"
+    for opt in (o for o in ref.opts if o.startswith("--")):
+        assert opt in step

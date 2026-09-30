@@ -133,3 +133,33 @@ def check_merge(
                 )
 
     return lost, checked
+
+
+def commits_behind_upstream(repo_root: Path) -> tuple[str, int] | None:
+    """(upstream name, commits HEAD is behind it), or None when unknowable.
+
+    WHY SYNC ASKS THIS (#310). The auto-ingest webhook pushes bullets straight
+    to the tenant's remote. A `cxp sync` on a clone that has not pulled them
+    renders sprint files and roll-ups from a tree missing the webhook's newest
+    content — and the merge that follows is exactly where a blanket `--ours`
+    (or a rebase `--theirs`) then drops them. 2026-09-22: a sync one fetch
+    behind, then a rebase, lost 18 bullets.
+
+    Reads the remote-tracking ref only — NO fetch, since sync has never
+    touched the network for git and a warning should not add a network
+    dependency. So the count is "as of your last fetch": a zero here does not
+    prove the clone is current, a non-zero proves it is not.
+
+    None when there is no upstream (detached HEAD, a local-only branch, not a
+    git repo) — there is nothing to compare against, which is not a warning.
+    """
+    upstream = _git(
+        ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], repo_root
+    ).strip()
+    if not upstream:
+        return None
+    count = _git(["rev-list", "--count", "HEAD..@{u}"], repo_root).strip()
+    try:
+        return upstream, int(count)
+    except ValueError:
+        return None
