@@ -299,12 +299,16 @@ framework names/ids are INTERNAL — never in client-facing material):
 **4 — Commitments** (MC-2's dated-obligations store — who owes what by when;
 the same store meeting auto-ingest proposes into, the weekly dates loop
 ratifies, and the Monday partners digest reads):
-- `create_commitment(project_code, description, owner_email?, due_date?, direction?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) —
+- `create_commitment(project_code, description, owner_email?, due_date?, direction?, source_meeting_id?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) —
   register a session-agreed commitment as a PROPOSAL (`source_kind='session'`,
   review-gate parity with auto-ingest — nothing is auto-confirmed).
   `direction` ∈ `us_to_them | them_to_us | internal`; `owner_email` is who
   owes it (an email); `due_date` ISO or omitted (never guess a date the humans
   didn't agree). Idempotent on identical text — dropped rows stay dead.
+  `source_meeting_id` (a `meeting_id` from `list_project_meetings`) links a
+  row logged mid-session to its meeting, so it groups with the rows the
+  webhook later writes for that meeting (#311); `commitments_sweep` flags
+  likely-duplicate pairs either way.
 - `list_commitments(project_code, status?)` — the read side (`status` ∈
   `open | done | dropped | all`). Use at wrap up to reconcile promised vs.
   delivered; `date_status` shows ratification, `source_kind` shows origin.

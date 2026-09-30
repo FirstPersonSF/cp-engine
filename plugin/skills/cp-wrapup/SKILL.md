@@ -101,6 +101,9 @@ belongs to its account or program: `cxp promote-uphill <code> --decision
 - resolve what the session completed
 - drop what it made moot
 - question undated rows ≥2 weeks old — the TTL expires them otherwise
+- read the `≈ likely duplicate` pairs: when both rows are one obligation
+  (typically your hand-logged row and the one auto-ingest wrote for the same
+  meeting), resolve the redundant one
 
 ## 4 — Spine checks
 
@@ -257,7 +260,8 @@ if the user is relying on the Updates log.
 **`commitments_sweep <code>`** per touched project — resolve what the session
 completed (`resolve_commitment`), drop what it made moot, and question undated
 rows ≥2 weeks old. An undated commitment expires at 14 days; the `ttl` field is
-where that gets noticed in time rather than after.
+where that gets noticed in time rather than after. The likely-duplicate pairs name
+rows that read as one obligation — resolve the redundant row when they match.
 
 ### h4 — Canon agreement check
 
