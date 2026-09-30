@@ -126,6 +126,18 @@ class SpineElement:
     # it carries it to the sweep so the authority-precedence rule has its datum
     # (#315 — the column had a writer and no reader).
     actor: str | None = None
+    # The key a `serves` link targets on the MC-2 path (#342). A substance row
+    # is addressed by its row `id` (``<code>/<item>/vN``) but routing writes
+    # the target's `est_item_id` into `serves` — so the Lens must be able to
+    # look an element up by THIS, not only by `id`. None on the markdown path,
+    # where `serves` holds element ids and `id` is the key.
+    slot: str | None = None
+    # True when the MC-2 loader found that at least one `serves` target is an
+    # OPEN work item (#342; see `open_work_item_slots`). A work item is mostly
+    # an estimate slot with no spine row at all, so this cannot be answered
+    # from the element graph `rank_elements` sees — the loader answers it from
+    # the estimate and records the answer here. Always False on disk.
+    serves_open_work: bool = False
 
 
 def _as_tuple(value: object) -> tuple:
@@ -237,14 +249,38 @@ def active_deliverable_ids(elements: tuple[SpineElement, ...]) -> set[str]:
 
     Active = a Deliverables-layer element whose stage is not `final` and whose
     status is `active` (not dormant/final/reference). Design §2 coordinate #1.
+
+    Each active deliverable contributes its `id` AND, on the MC-2 path, its
+    `slot` (`est_item_id`) — `serves` links there carry the slot, so a set of
+    row ids alone matched 0 of 163 live links (#342).
     """
-    return {
-        e.id
-        for e in elements
-        if _layer_key(e.layer) == _DELIVERABLES_KEY
-        and e.stage != "final"
-        and e.status == "active"
-    }
+    out: set[str] = set()
+    for e in elements:
+        if (
+            _layer_key(e.layer) == _DELIVERABLES_KEY
+            and e.stage != "final"
+            and e.status == "active"
+        ):
+            out.add(e.id)
+            if e.slot:
+                out.add(e.slot)
+    return out
+
+
+def _index_elements(
+    elements: tuple[SpineElement, ...],
+) -> dict[str, SpineElement]:
+    """`id` → element, plus `slot` → element for MC-2 rows (#342).
+
+    `serves` on the live path names `est_item_id`s, so `derive_status` must be
+    able to resolve a link by slot. Ids win a collision (setdefault) — on the
+    markdown path there are no slots and this is exactly the old `by_id`.
+    """
+    by_id = {e.id: e for e in elements}
+    for e in elements:
+        if e.slot:
+            by_id.setdefault(e.slot, e)
+    return by_id
 
 
 def _parse_date(value: str) -> date | None:
@@ -346,7 +382,10 @@ _DEFAULT_SUBSTANCE_LAYER = "Deliverables"
 
 
 def substance_row_to_element(
-    row: dict[str, object], *, sealed: bool = False
+    row: dict[str, object],
+    *,
+    sealed: bool = False,
+    open_slots: frozenset[str] | set[str] = frozenset(),
 ) -> SpineElement:
     """Reconstruct a SpineElement from a `spine_substance` MC-2 row.
 
@@ -362,9 +401,15 @@ def substance_row_to_element(
       * status       ← `status` mapped live→active (see `_SUBSTANCE_STATUS_MAP`);
                        `derive_status` demotes from there during the sweep
       * last_touched ← `version_date` (substance has no separate last_touched)
-      * serves       ← `serves`
+      * serves       ← `serves` (a list of TARGET `est_item_id`s — #342)
+      * slot         ← `est_item_id` (the key other rows' `serves` use)
 
       * actor        ← `actor` (who is speaking; carried, never weighted)
+
+    OPEN WORK (#342). `open_slots` is the project's set of open work-item
+    slots (`open_work_item_slots`); `serves_open_work` records whether this
+    row serves one of them, which is what the serves-active term reads on
+    this path.
 
     SEALED → `reference` (#315). An element with an active `absorbed_by` edge
     was sealed into a deliverable that shipped (spec v04 §3): it is "only
@@ -381,6 +426,7 @@ def substance_row_to_element(
     """
     raw_status = str(row.get("status") or "live")
     status = _SUBSTANCE_STATUS_MAP.get(raw_status, raw_status)
+    serves = tuple(str(x) for x in (row.get("serves") or []))
     if sealed and status == "active":
         status = "reference"
     return SpineElement(
@@ -392,9 +438,11 @@ def substance_row_to_element(
         last_touched=str(row.get("version_date") or ""),
         path=Path(str(row.get("rel_path") or row["id"])),
         body=str(row.get("body") or ""),
-        serves=tuple(str(x) for x in (row.get("serves") or [])),
+        serves=serves,
         source=_as_source(row.get("sources")),
         actor=str(row.get("actor") or "").strip().lower() or None,
+        slot=str(row.get("est_item_id") or "") or None,
+        serves_open_work=any(s in open_slots for s in serves),
     )
 
 
@@ -417,8 +465,8 @@ def load_spine_from_mc2(client, project_code: str) -> tuple[SpineElement, ...]:
         client.table(Tables.SPINE_SUBSTANCE)
         .select(
             "id, project_id, project_code, est_item_id, layer, placement, "
-            "status, version_label, version_date, framing, body, serves, "
-            "sources, rel_path, actor"
+            "card_kind, status, version_label, version_date, framing, body, "
+            "serves, sources, rel_path, actor"
         )
         .eq("project_code", project_code)
         .eq("status", "live")
@@ -441,10 +489,101 @@ def load_spine_from_mc2(client, project_code: str) -> tuple[SpineElement, ...]:
                 f"sealed elements rank as live: {exc})",
                 file=sys.stderr,
             )
+    open_slots: set[str] = set()
+    # Only a spine that routes anything needs the estimate (#342): most
+    # projects carry no `serves` at all, and the sweep runs once per project
+    # in prep, so the estimator reads are skipped rather than wasted.
+    if project_ids and any(r.get("serves") for r in data):
+        try:
+            item_ids, done_map = _read_work_items(client, project_ids)
+        except Exception as exc:  # noqa: BLE001 — degrade, but say so
+            import sys
+
+            item_ids, done_map = set(), {}
+            print(
+                f"(WARNING: estimate unreadable for {project_code} — only spine "
+                f"cards count as open work for serves-active: {exc})",
+                file=sys.stderr,
+            )
+        open_slots = open_work_item_slots(
+            data, sealed=sealed, estimate_item_ids=item_ids, done_map=done_map
+        )
     return tuple(
-        substance_row_to_element(r, sealed=(r.get("est_item_id") or "") in sealed)
+        substance_row_to_element(
+            r,
+            sealed=(r.get("est_item_id") or "") in sealed,
+            open_slots=open_slots,
+        )
         for r in data
     )
+
+
+def open_work_item_slots(
+    rows,
+    *,
+    sealed: set[str],
+    estimate_item_ids: set[str],
+    done_map: dict[str, bool],
+) -> set[str]:
+    """The slots a `serves` link can point at that are OPEN work (#342). Pure.
+
+    WHAT "serves an ACTIVE item" MEANS ON THE LIVE PATH. On disk, `serves`
+    names Deliverables-layer element ids and "active" is that element's
+    stage/status. On MC-2, routing writes the target's `est_item_id` — "this
+    belongs to that work item" (`feeds_propose`) — and spec v04's lint names
+    the same link "serves an open work item". Measured 2026-09-30: of 30
+    distinct live targets, 17 are estimate work items with no spine row at
+    all, 13 are spine cards, and not one is a Deliverables-layer row. So the
+    faithful live reading is: the target is a work item, and it is not done.
+
+      * An estimate work item (phase activity or deliverable of an admitted
+        estimate) is open unless a schedule bar bound to it is done — the
+        same any-bar-done rule `spine_done` mirrors from the Gantt. An item
+        with no bar is scheduled nowhere yet; it is still open work.
+      * A live spine CARD (`card_class.classify(...).is_card`: engagement,
+        activity, deliverable) is open unless it was sealed (an active
+        `absorbed_by` edge) or its bound estimate item is done.
+
+    A target that is neither — a legacy markdown id such as
+    ``ibx-5153/deliverable/five-concepts``, or a deleted slot — is not open
+    work, so the link stays cold. That is not guessed warm.
+    """
+    from cp_engine.card_class import classify
+
+    def _done(slot: str) -> bool:
+        return done_map.get(slot) is True
+
+    out = {str(i) for i in estimate_item_ids if i and not _done(str(i))}
+    for r in rows:
+        slot = str(r.get("est_item_id") or "")
+        if not slot or slot in sealed or _done(slot):
+            continue
+        if classify(r).is_card:
+            out.add(slot)
+    return out
+
+
+def _read_work_items(client, project_ids) -> tuple[set[str], dict[str, bool]]:
+    """(estimate work-item ids, work_item_id → done) across `project_ids`.
+
+    `project_ids` are MC project ids (`spine_substance.project_id`). Uses the
+    same readers as the portal/`spine_done` — `fetch_estimate` (which owns the
+    which-estimate-counts rule, #284/#291) and `fetch_schedule` — so "done"
+    here is the Gantt's done. Raises on a failed read; the caller degrades.
+    """
+    from cp_engine.estimate import fetch_estimate, fetch_schedule
+    from cp_engine.spine_done import build_done_map
+
+    item_ids: set[str] = set()
+    done_map: dict[str, bool] = {}
+    for pid in sorted(project_ids):
+        est = fetch_estimate(client, pid)
+        if est is None:
+            continue
+        item_ids.update(str(i.id) for i in est.all_items())
+        for k, v in build_done_map(fetch_schedule(client, est.estimate_ids)).items():
+            done_map[k] = bool(done_map.get(k) or v)
+    return item_ids, done_map
 
 
 def _recency_term(last_touched: str, today: date) -> float:
@@ -460,10 +599,17 @@ def _recency_term(last_touched: str, today: date) -> float:
 
 def _serves_active_term(el: SpineElement, active: set[str]) -> float:
     """1.0 if the element serves an active deliverable OR is a framing layer
-    (always ambient); 0.35 otherwise (cold but not gone)."""
+    (always ambient); 0.35 otherwise (cold but not gone).
+
+    `active` holds both ids and MC-2 slots (`active_deliverable_ids`), so a
+    `serves` link resolves on either path. On the MC-2 path the loader also
+    records `serves_open_work` — the target is an open work item, most of
+    which have no spine row to put in `active` (#342)."""
     if _layer_key(el.layer) in _FRAMING_KEYS:
         return 1.0
     if _layer_key(el.layer) == _DELIVERABLES_KEY and el.id in active:
+        return 1.0
+    if el.serves_open_work:
         return 1.0
     if any(s in active for s in el.serves):
         return 1.0
@@ -573,7 +719,7 @@ def rank_elements(
     → derived (auto-demoted) status.
     """
     active = active_deliverable_ids(elements)
-    by_id = {e.id: e for e in elements}
+    by_id = _index_elements(elements)
     effective = {e.id: derive_status(e, by_id) for e in elements}
     scored = sorted(
         ((score_element(e, active, today, by_id), e) for e in elements),
