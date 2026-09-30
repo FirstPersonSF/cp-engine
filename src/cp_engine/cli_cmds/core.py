@@ -154,7 +154,10 @@ def _exec_summary_warnings(root: Path) -> list[str]:
     from cp_engine.exec_summary_lint import lint_exec_summary
     from cp_engine.word_count_lint import is_exempt
 
-    for cp_md in sorted(root.rglob("cp.md")):
+    from cp_engine.tenant_walk import walk_tenant
+
+    # Same walk as the word-count pass, worktrees excluded (#325).
+    for cp_md in walk_tenant(root, "cp.md"):
         rel = cp_md.relative_to(root)
         if len(rel.parts) < 2 or is_exempt(rel):
             continue

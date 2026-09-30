@@ -1069,9 +1069,11 @@ def _refresh_all_last_session_lines(root: Path) -> list[Path]:
     changed: list[Path] = []
     from cp_engine.capture_session import refresh_last_session_line
 
-    for sessions_dir in sorted(root.glob("**/sessions")):
-        if not sessions_dir.is_dir() or ".git" in sessions_dir.parts:
-            continue
+    from cp_engine.tenant_walk import walk_tenant
+
+    # A worktree under the tenant carries its own sessions/ dirs; refreshing
+    # those would edit another checkout's cp.md (#325).
+    for sessions_dir in walk_tenant(root, "sessions", dirs=True):
         working_dir = sessions_dir.parent
         try:
             if refresh_last_session_line(working_dir):
