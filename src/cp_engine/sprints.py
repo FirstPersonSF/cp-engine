@@ -8,6 +8,7 @@ and re-render every sync. Hand-written regions are preserved verbatim.
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -47,6 +48,8 @@ from .state import (
 )
 from .status import is_active_status
 from .sync import _extract_region
+
+logger = logging.getLogger(__name__)
 
 _FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---\n", re.DOTALL)
 _HEADING_RE = re.compile(
@@ -1065,6 +1068,11 @@ def ensure_sprint_file(
             new_inner = _extract_region(new_body, region).strip()
         except ValueError:
             continue
+        if region == "carry-forward":
+            _warn_on_discarded_carry_forward(
+                out, existing, new_inner, sprint_root=sprint_root,
+                week_iso=week_iso, prior_sprint=prior_sprint,
+            )
         try:
             spliced = splice_managed_region(spliced, region, new_inner)
         except MarkerMissing:
@@ -1074,6 +1082,152 @@ def ensure_sprint_file(
     if spliced != existing:
         out.write_text(spliced)
     return out
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Hand edits inside `carry-forward` — warn before the splice discards them
+# ──────────────────────────────────────────────────────────────────────
+#
+# THE FAILURE (#320, improvements 2026-09-01). A fact written by hand between
+# the `carry-forward` markers — a milestone appended to the list, a note on a
+# standing ask — is overwritten by the next `cxp render`, which rebuilds the
+# region from the PRIOR week. Nothing errored and nothing warned; the file
+# simply came back without the edit. The writers already defend against this
+# (`_origin_sprint_path` sends resolve/snooze writes to the owning week), but a
+# person or agent editing markdown gets none of that protection.
+#
+# THE DISTINCTION THIS HAS TO MAKE. The region legitimately changes on almost
+# every render — an ask closed in the prior week drops out, a risk resolves, a
+# healed truncation grows — so "the on-disk region differs from the new
+# render" is data drift, not evidence of a hand edit. Warning on that would
+# fire constantly and train the reader to ignore it.
+#
+# No record of what the engine last wrote exists (and adding one would mean
+# changing what render writes, or a per-machine sidecar that the webhook's
+# renders never update). So instead of "differs from the last render" this
+# asks the question that actually matters: **is there a line in the region
+# whose content exists nowhere the engine could have derived it from?** Every
+# legitimate carry-forward row is copied from a sprint file — the prior week's
+# (the normal path) or a child's in the current week (a parent's subtree
+# rollup) — so its item text is still findable there even after its status
+# flips. A hand-typed row, or a hand annotation on a row, is not. Content that
+# also exists elsewhere is not being lost, so staying quiet about it is right.
+#
+# KNOWN LIMIT, stated rather than hidden: if an item's text is itself edited in
+# the prior week (in its owning, hand-written home) between renders, the stale
+# carry-forward copy matches nothing and warns ONCE; the render then writes the
+# new text and the warning does not recur. That is the only data-drift shape
+# that can trip it. Other managed regions (`sprint-facts`, `where-it-stands`,
+# `deliverable-cards`) are rendered from git/MC-2 data with no on-disk source
+# to check against, so they are not covered.
+
+# A carry-forward row's item text: after the `[...]` bracket on the normal
+# path, after the ` — ` separator on the subtree-rollup path.
+_CF_BRACKET_TEXT_RE = re.compile(r"^-\s*\[[^\]]*\]\s*(?P<text>.*)$")
+_CF_ROLLUP_TEXT_RE = re.compile(r"^-\s*\*\*.*?\s—\s(?P<text>.*)$")
+_WS_RE = re.compile(r"\s+")
+
+
+def _norm_text(s: str) -> str:
+    return _WS_RE.sub(" ", _HTML_COMMENT_RE.sub("", s)).strip()
+
+
+def _cf_item_text(line: str) -> str:
+    stripped = line.strip()
+    m = _CF_ROLLUP_TEXT_RE.match(stripped) or _CF_BRACKET_TEXT_RE.match(stripped)
+    if m:
+        return _norm_text(m.group("text"))
+    return _norm_text(stripped.lstrip("-").strip())
+
+
+def _discarded_hand_lines(
+    old_inner: str, new_inner: str, corpus_texts
+) -> list[str]:
+    """Lines of `old_inner` a splice of `new_inner` would lose outright.
+
+    A line survives the check if the new render carries it verbatim, if it is
+    template structure (a heading, an `_italic_` placeholder, a blank), or if
+    its item text is found in any of `corpus_texts` — the sprint files the
+    region is derived from. `corpus_texts` is an iterable consumed lazily, so a
+    region that matches its new render reads no other file at all.
+    """
+    new_lines = {ln.strip() for ln in new_inner.splitlines()}
+    candidates: list[tuple[str, str]] = []
+    for ln in old_inner.splitlines():
+        s = ln.strip()
+        if not s or s in new_lines or s.startswith("#"):
+            continue
+        text = _cf_item_text(s)
+        if not text or (text.startswith("_") and text.endswith("_")):
+            continue
+        candidates.append((s, text))
+    if not candidates:
+        return []
+    corpus = None
+    for chunk in corpus_texts:
+        corpus = (corpus or "") + "\n" + _norm_text(chunk)
+    corpus = corpus or ""
+    return [s for s, text in candidates if text not in corpus]
+
+
+def _warn_on_discarded_carry_forward(
+    out: Path,
+    existing: str,
+    new_inner: str,
+    *,
+    sprint_root: Path,
+    week_iso: str,
+    prior_sprint: str | None,
+) -> None:
+    """Log a warning naming the file, the region and each hand-written line
+    the carry-forward splice is about to discard. Warn-only: what render
+    writes is unchanged. `logger.warning` is the channel on purpose — sync's
+    `_WarningCounter` carries it onto the outcome line (#197/#212), which is
+    the only place `cxp sync`/`cxp render` output reaches the user."""
+    try:
+        old_inner = _extract_region(existing, "carry-forward").strip()
+    except ValueError:
+        return
+    if old_inner == new_inner:
+        return
+
+    def corpus():
+        # The file's own hand-written territory: a line also kept there is
+        # not being lost.
+        start = existing.find("<!-- cp-engine:start carry-forward -->")
+        end = existing.find("<!-- cp-engine:end carry-forward -->")
+        yield existing[:start] + existing[end:]
+        # The prior week (the normal path's source) and the current week
+        # (the subtree rollup's source: children's files written this call).
+        for week in (prior_sprint, week_iso):
+            if not week:
+                continue
+            week_dir = sprint_root / week
+            if not week_dir.is_dir():
+                continue
+            for f in sorted(week_dir.glob("*.md")):
+                if f == out:
+                    continue
+                try:
+                    yield f.read_text(encoding="utf-8")
+                except OSError:
+                    continue
+
+    lost = _discarded_hand_lines(old_inner, new_inner, corpus())
+    if not lost:
+        return
+    owner = f"sprints/{prior_sprint}/{out.name}" if prior_sprint else "the owning week's sprint file"
+    try:
+        rel = out.relative_to(sprint_root.parent)
+    except ValueError:
+        rel = out
+    logger.warning(
+        "%s: %d hand-written line(s) inside the engine-managed `carry-forward` "
+        "region were discarded by this render (the region is rebuilt from the "
+        "prior week). Re-add them in hand-written territory — the owning "
+        "week's file (%s), or this file outside the markers. First: %s",
+        rel, len(lost), owner, lost[0][:160],
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
