@@ -60,9 +60,12 @@ DUAL_READ_CONTRACT: dict[str, tuple[list[str], list[str]]] = {
     ),
     "pull_spine_element": (
         # stdio: key = est_item_id or framing substring; hosted: direct id
-        # with optional code scope.
+        # with optional code scope. Hosted gained `key` as an alias for
+        # `element_id` (#318) so the catalog's `pull_spine_element(project_code,
+        # key)` is valid on both; `element_id` stays first for positional
+        # callers.
         ["project_code", "key"],
-        ["element_id", "project_code"],
+        ["element_id", "project_code", "key"],
     ),
 }
 

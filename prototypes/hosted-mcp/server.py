@@ -70,7 +70,7 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from starlette.responses import JSONResponse
-from pydantic import AnyHttpUrl
+from pydantic import AnyHttpUrl, ConfigDict
 from supabase import create_client
 from supabase.lib.client_options import SyncClientOptions
 
@@ -711,29 +711,61 @@ _LEVEL_RULE = (
 )
 
 
-def _paths_index_rows() -> dict[str, dict[str, Any]]:
-    """The `workstreams` mapping of `.cp-engine/paths.json` on the tree clone,
-    or `{}` when the tree is unavailable, the file is absent, or it is not
-    the version this reader understands. Never raises — a level is an ECHO
-    on a write that already happened, and an echo must not fail the write."""
+def _paths_index() -> tuple[dict[str, dict[str, Any]], str | None]:
+    """`(workstreams, None)` from `.cp-engine/paths.json` on the tree clone, or
+    `({}, reason)` when the tree is unavailable, the file is absent, or it is
+    not the version this reader understands. Never raises — a level is an ECHO
+    on a write that already happened, and an echo must not fail the write.
+
+    The reason is kept (not collapsed into `{}`) because the two empties mean
+    different things to a caller: "this server cannot read the tree" versus
+    "the tree is readable and this code is not in it" (#313)."""
     try:
-        usable, _reason = tree_available()
+        usable, reason = tree_available()
         if not usable:
-            return {}
+            return {}, f"the tenant tree is unavailable on this server ({reason})"
         doc = json.loads((tree_root() / _PATHS_INDEX_REL).read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 — see docstring
-        return {}
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        return {}, f"{_PATHS_INDEX_REL} could not be read ({type(exc).__name__})"
     if not isinstance(doc, dict) or doc.get("version") != _PATHS_INDEX_VERSION:
-        return {}
+        return {}, f"{_PATHS_INDEX_REL} is not version {_PATHS_INDEX_VERSION}"
     rows = doc.get("workstreams")
-    return rows if isinstance(rows, dict) else {}
+    if not isinstance(rows, dict):
+        return {}, f"{_PATHS_INDEX_REL} carries no workstreams mapping"
+    return rows, None
+
+
+def _paths_index_rows() -> dict[str, dict[str, Any]]:
+    """The `workstreams` mapping alone — `{}` whenever `_paths_index` has a
+    reason instead."""
+    return _paths_index()[0]
+
+
+def _not_in_tree_warning(code: str) -> str:
+    """The #313 message: MC-2 and the committed tree are separate moments.
+
+    A workstream created in MC-2 is writable at once (the write that carries
+    this echo just succeeded against it), but it reaches `paths.json` only
+    when someone runs `cxp sync` and pushes. Until then every tree-reading
+    verb misses it. Said once, here, so every level-echoing writer carries
+    the same words.
+    """
+    return (
+        f"{code} is in MC-2 but not yet in the tenant tree "
+        f"({_PATHS_INDEX_REL}) — run `cxp sync` and push; until then its "
+        "level, parent and tree-reading verbs (word_count_check, "
+        "read_project_file, promote_uphill) cannot see it"
+    )
 
 
 def _level_for(project_code: str) -> dict[str, Any]:
     """`{code, label, parent, indexed}` for a code. Exact key first, then the
     `<code>-` prefix form (`ibx-5153` → `ibx-5153-ai-campaign`) when unique.
-    Mirrors `cp_engine.promote_uphill.level_for`."""
-    rows = _paths_index_rows()
+    Mirrors `cp_engine.promote_uphill.level_for`, plus one hosted-only field:
+    an unindexed level carries `warning` saying WHY (#313). The CLI reads its
+    own checkout, where "not in the tree" is a local `cxp sync` away; here the
+    clone trails a push, and a bare `label: null` was the only signal."""
+    rows, reason = _paths_index()
     wanted = (project_code or "").strip()
     entry = rows.get(wanted)
     if entry is None and wanted:
@@ -742,7 +774,12 @@ def _level_for(project_code: str) -> dict[str, Any]:
         if len(hits) == 1:
             wanted, entry = hits[0]
     if not isinstance(entry, dict):
-        return {"code": wanted, "label": None, "parent": None, "indexed": False}
+        return {
+            "code": wanted, "label": None, "parent": None, "indexed": False,
+            "warning": (
+                f"level unknown: {reason}" if reason else _not_in_tree_warning(wanted)
+            ),
+        }
     return {
         "code": wanted,
         "label": entry.get("label"),
@@ -781,6 +818,11 @@ def _names_its_level(fn=None, *, param: str = "project_code"):
             if isinstance(code, str) and code.strip():
                 try:
                     result["level"] = _level_for(code)
+                    # Surface an unindexed level's reason at the top too: a
+                    # warning nested in an echo is one a reader skims past
+                    # (#313). A verb's own `warning` wins the top slot.
+                    if result["level"].get("warning") and "warning" not in result:
+                        result["warning"] = result["level"]["warning"]
                 except Exception as exc:  # noqa: BLE001 — never fail the write
                     result["level"] = {
                         "code": code, "label": None, "parent": None,
@@ -1342,15 +1384,25 @@ def list_spine_relations(
 
 
 @mcp_server.tool()
-def pull_spine_element(element_id: str, project_code: str | None = None) -> dict[str, Any]:
+def pull_spine_element(
+    element_id: str | None = None,
+    project_code: str | None = None,
+    key: str | None = None,
+) -> dict[str, Any]:
     """Pull one spine element's body + metadata, under the caller's identity.
 
     Args:
         element_id: `spine_substance.est_item_id` (e.g. "_authored/janet-dossier")
-                    or the row's own `id`.
+                    or the row's own `id`. Exact match only on this server —
+                    no bare slug or title substring.
         project_code: optional scope, disambiguating an est_item_id that several
                       projects share (authored slugs are unique only per project).
+        key: alias for `element_id` — the name every other element verb uses
+             (#318). Pass one; both is fine only when they agree.
     """
+    element_id, err = _element_key(key, element_id)
+    if err is not None:
+        return err
     client = user_client()
     q = client.table("spine_substance").select(SPINE_PULL_COLUMNS).eq("est_item_id", element_id)
     if project_code:
@@ -2547,39 +2599,83 @@ def resolve_write_scope(client, project_code: str) -> dict[str, Any] | None:
         not the short code the caller typed (`ibx-5153`). Writing the short form
         would create a SECOND project_code for the same project — exactly the
         slug drift already recorded against this corpus. So the canonical
-        `project_code` is read back off the project's existing spine rows, and
-        only falls back to the caller's string when the project has no spine
-        rows yet (a genuinely new project, where the caller's code IS the
-        first one written and there is nothing to drift from).
+        `project_code` is read back off the project's existing spine rows —
+        see `canonical_project_code` for the full order, including the
+        project with no spine rows yet.
     """
     pid = resolve_project_id(client, project_code)
     if pid is None:
         return None
-    kind = "project"
-    scope_id = pid
+    return {
+        "id": pid,
+        "kind": "project",
+        "project_code": canonical_project_code(client, pid, project_code),
+    }
 
-    # Canonical dir-slug from existing spine rows for this uuid, if any.
-    canonical = project_code
+
+def canonical_project_code(client, project_id: str, fallback: str) -> str:
+    """The cp-tree dir-slug for a resolved project uuid — never the caller's
+    short form when anything better is knowable.
+
+    Order:
+
+      1. The project's own `spine_substance.project_code` — the spelling every
+         existing row already carries, so a new row cannot disagree with them.
+      2. `projects.full_job_name` slugified (`SLT 5196 Brand Campaign 26` ->
+         `slt-5196-brand-campaign-26`) — the same rule the engine uses to name
+         the project's directory, so a project with NO spine rows yet still
+         gets its first row under the canonical code instead of defining the
+         spelling from whatever the caller typed.
+      3. The caller's string, only when neither exists.
+
+    #309 is why this reads the way it does. Through 0.124.4 step 1 ordered by
+    `spine_substance.created_at` — a column that table does not have. PostgREST
+    rejected the query, a bare `except: pass` swallowed the rejection, and
+    EVERY hosted write fell through to the caller's short code: the
+    canonicalisation the docstrings promised had never run once since it
+    shipped (2026-08-03). `slt-5196` forked a second project_code that way.
+    So the order key is a column the table has (`version_date`, the date the
+    version was authored), and a failed lookup is reported to alerting rather
+    than swallowed — a resolver that quietly stops resolving is exactly the
+    defect to never ship twice.
+    """
     try:
-        existing = (
+        rows = (
             client.table("spine_substance")
             .select("project_code")
-            .eq("project_id", scope_id)
-            # Deterministic pick: newest row's spelling. Unordered limit(1)
-            # was a coin-flip on a drifted project (pre-mig-129); the store
-            # is uniform now, but never leave the pick to physical order.
-            .order("created_at", desc=True)
+            .eq("project_id", project_id)
+            # Deterministic pick: the newest version's spelling. Unordered
+            # limit(1) was a coin-flip on a drifted project (pre-mig-129).
+            .order("version_date", desc=True)
             .limit(1)
             .execute()
             .data
             or []
         )
-        if existing and existing[0].get("project_code"):
-            canonical = existing[0]["project_code"]
-    except Exception:  # noqa: BLE001 — a resolver nicety, never a hard failure
-        pass
+        if rows and rows[0].get("project_code"):
+            return rows[0]["project_code"]
+    except Exception as exc:  # noqa: BLE001 — fall through to step 2, loudly
+        log.warning("canonical_project_code: spine lookup failed: %s", exc)
+        observability.capture(exc, area="canonical_project_code")
 
-    return {"id": scope_id, "kind": kind, "project_code": canonical}
+    try:
+        rows = (
+            client.table("projects")
+            .select("full_job_name")
+            .eq("id", project_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        slug = _slug_full_job_name(rows[0].get("full_job_name")) if rows else ""
+        if slug:
+            return slug
+    except Exception as exc:  # noqa: BLE001 — the caller's code is the last resort
+        log.warning("canonical_project_code: projects lookup failed: %s", exc)
+        observability.capture(exc, area="canonical_project_code")
+
+    return fallback
 
 
 _ELEMENT_RESOLVE_COLUMNS = (
@@ -2595,6 +2691,29 @@ _ELEMENT_RESOLVE_COLUMNS = (
 # too. That strands the live version and leaves the stale superseded row as
 # the only thing the account side can see. Select them together, carry them
 # together.
+
+
+def _element_key(key: str | None, element_id: str | None) -> tuple[str | None, dict[str, Any] | None]:
+    """`(identifier, None)` or `(None, error)` for a verb that accepts the
+    element under either name (#318).
+
+    Two spellings grew for one identifier: `pull_spine_element` and
+    `add_spine_version` said `element_id`, every other element verb said
+    `key`, and a caller who guessed wrong got a validation error as the only
+    documentation. The verbs that took the heat accept both. Two DIFFERENT
+    values is an error, never a silent pick — the whole discipline of these
+    verbs is "bind to one element or skip".
+    """
+    k = (key or "").strip()
+    e = (element_id or "").strip()
+    if k and e and k != e:
+        return None, {
+            "error": f"`key` ({k!r}) and `element_id` ({e!r}) name different "
+            "elements — they are aliases; pass one"
+        }
+    if not (k or e):
+        return None, {"error": "an element is required: pass `key` (alias `element_id`)"}
+    return k or e, None
 
 
 def resolve_element_versions(
@@ -4514,13 +4633,14 @@ def promote_spine_transcript(project_code: str, key: str) -> dict[str, Any]:
 @_names_its_level
 def set_spine_element(
     project_code: str,
-    key: str,
+    key: str | None = None,
     important: bool | None = None,
     note: str | None = None,
     layer: str | None = None,
     framing: str | None = None,
     serves: list[str] | None = None,
     actor: str | None = None,
+    element_id: str | None = None,
 ) -> dict[str, Any]:
     """Set `important`, `note`, `layer`, `framing` (title), `serves`, and/or
     `actor` on a spine element — the hosted port of the stdio verb (#143
@@ -4578,7 +4698,12 @@ def set_spine_element(
             READABLE everywhere; serves is what says where it MATTERS.
         actor: who is speaking — partner | client | vendor | inferred
             (spec v04 authority ordering; tag deliberately).
+        element_id: alias for `key` — the name `pull_spine_element` and
+            `add_spine_version` use (#318). Pass one; both only when they agree.
     """
+    key, err = _element_key(key, element_id)
+    if err is not None:
+        return err
     if all(v is None for v in (important, note, layer, framing, serves, actor)):
         return {
             "note": "nothing to update (pass important/note/layer/framing/serves/actor)"
@@ -10959,6 +11084,54 @@ def word_count_check(project_code: str) -> dict[str, Any]:
         # breakdown is noise.
         "contributors": contributors(text) if findings else [],
     }
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Unknown arguments are an error, not a no-op (#318)
+# ──────────────────────────────────────────────────────────────────────
+#
+# The MCP SDK validates a call's arguments through a pydantic model built
+# from the tool's signature (`FuncMetadata.arg_model`), and that model takes
+# pydantic's default `extra="ignore"`: an argument the tool does not declare
+# is DROPPED without a word. That — not a `**kwargs` anywhere in this file —
+# is how `create_spine_element(..., type="decision")` filed decisions into
+# layer Note three times (the parameter is `layer`; `type` vanished and the
+# default applied). The schema said nothing either: no
+# `additionalProperties: false`, so a client had no way to know.
+#
+# So once every tool is registered, each argument model is swapped for a
+# subclass with `extra="forbid"`, and the advertised schema is regenerated
+# from it. A misnamed argument now fails the call with pydantic's "Extra
+# inputs are not permitted" naming the argument, and the schema tells a
+# client before it tries. Runs at import, after the last `@tool`, so the
+# test suite exercises exactly what the server serves.
+
+
+def _forbid_unknown_arguments(server) -> int:
+    """Make every registered tool reject undeclared arguments; returns the
+    count. Reaches the SDK's `_tool_manager` — private, but pinned
+    (`mcp>=2.0,<3`) and exercised end-to-end by `test_tool_signatures.py`,
+    which calls a tool through `call_tool` with a stray argument."""
+    count = 0
+    for tool in server._tool_manager.list_tools():
+        base = tool.fn_metadata.arg_model
+        if base.model_config.get("extra") == "forbid":
+            continue
+        strict = type(
+            base.__name__,
+            (base,),
+            {
+                "__module__": base.__module__,
+                "model_config": ConfigDict(**{**base.model_config, "extra": "forbid"}),
+            },
+        )
+        tool.fn_metadata.arg_model = strict
+        tool.parameters = strict.model_json_schema(by_alias=True)
+        count += 1
+    return count
+
+
+_forbid_unknown_arguments(mcp_server)
 
 if __name__ == "__main__":
     main()

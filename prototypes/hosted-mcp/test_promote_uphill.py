@@ -281,13 +281,54 @@ def test_an_unindexed_code_is_echoed_as_unindexed_not_guessed(server, wired, mon
                         lambda c, code: {"id": "z", "kind": "project", "project_code": code})
     out = server.create_commitment("zzz-9999", "Something on an unsynced workstream")
     assert out["commitment_id"]
-    assert out["level"] == {"code": "zzz-9999", "label": None, "parent": None, "indexed": False}
+    level = dict(out["level"])
+    level.pop("warning")
+    assert level == {"code": "zzz-9999", "label": None, "parent": None, "indexed": False}
+
+
+def test_a_code_missing_from_a_readable_tree_says_run_sync(server, wired, monkeypatch):
+    """#313: `cnc-5237` was created in MC-2 and not yet synced. The write
+    landed, and the echo said only `label: null, indexed: false` — nothing
+    told the caller that "created in MC-2" and "usable from hosted" are two
+    moments with a `cxp sync` + push between them. The warning must name the
+    code and the remedy, inside the echo AND at the top of the result.
+    """
+    monkeypatch.setattr(server, "resolve_write_scope",
+                        lambda c, code: {"id": "z", "kind": "project", "project_code": code})
+    out = server.create_commitment("cnc-5237", "Draft the SOC 2 control list")
+    assert out["commitment_id"]
+    warning = out["level"]["warning"]
+    assert warning.startswith("cnc-5237 is in MC-2 but not yet in the tenant tree")
+    assert "`cxp sync` and push" in warning
+    assert out["warning"] == warning
+
+
+def test_the_warning_rides_the_shared_echo_so_every_writer_gets_it(server, wired):
+    """Not a per-verb patch: any verb under `_names_its_level`, whatever
+    parameter names its level (`target_code` for a route), carries it."""
+    @server._names_its_level(param="target_code")
+    def fake_route(project_code: str, key: str, target_code: str) -> dict:
+        return {"routed": True}
+
+    out = fake_route(CHILD, "c-orig", target_code="cnc-5237")
+    assert out["level"]["code"] == "cnc-5237"
+    assert "not yet in the tenant tree" in out["warning"]
+    assert "warning" not in fake_route(CHILD, "c-orig", target_code=PROGRAM)
+
+
+def test_an_indexed_code_carries_no_warning(server, wired):
+    out = server.create_commitment(CHILD, "Book the launch review")
+    assert "warning" not in out["level"] and "warning" not in out
 
 
 def test_an_unavailable_tree_never_fails_the_write(server, wired, monkeypatch):
     monkeypatch.setattr(server, "tree_available", lambda: (False, "no TENANT_REPO"))
     out = server.create_commitment(CHILD, "Book the launch review")
     assert out["commitment_id"] and out["level"]["indexed"] is False
+    # An unreadable tree is NOT evidence the code is missing from it — the
+    # warning must say which of the two empties this is.
+    assert out["level"]["warning"].startswith("level unknown: the tenant tree is unavailable")
+    assert "not yet in the tenant tree" not in out["level"]["warning"]
 
 
 def test_an_error_result_carries_no_level(server, wired):
