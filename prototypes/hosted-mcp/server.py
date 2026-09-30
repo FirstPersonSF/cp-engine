@@ -2047,7 +2047,9 @@ def set_source_status(
     `description` says what the document IS in one line. The sync summariser
     fills it automatically; pass one here only to correct or sharpen it — a
     hand-written description outranks a generated one and sync will not
-    overwrite it.
+    overwrite it. Both survive a re-ingest: the new copy inherits a human
+    `status_note` and a hand-written `description` from the one it replaces
+    (#341), and the #324 marker detector never writes over a human note.
 
     Pass either, or both. Omitting one leaves that column untouched; passing an
     empty string CLEARS it (the way to retract a note that no longer holds).

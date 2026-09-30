@@ -1432,21 +1432,6 @@ def ingest_project_assets(
                         result.failures.append(
                             (file_ref.name, f"scope-stamp failed: {exc}")
                         )
-                    # Confidentiality markings in the body (#324): same
-                    # policy as the stamp — the ingest succeeded, so a scan
-                    # failure is surfaced, never counted as a failed file.
-                    try:
-                        note = _flag_confidentiality(client, folders, file_path)
-                    except Exception as exc:  # noqa: BLE001 — surfaced below
-                        result.failures.append(
-                            (file_ref.name, f"confidentiality scan failed: {exc}")
-                        )
-                    else:
-                        if note:
-                            result.flagged_confidential += 1
-                            result.source_notes.append(
-                                {"source": file_ref.name, "note": note}
-                            )
                     # Same-title supersede (#57): a re-ingest of a doc whose
                     # CONTENT changed lands at a fresh temp path, so the
                     # path-keyed pipeline dedup sees a brand-new file and
@@ -1470,6 +1455,35 @@ def ingest_project_assets(
                         except Exception as exc:
                             result.failures.append(
                                 (file_ref.name, f"supersede failed: {exc}")
+                            )
+                    # Carry the predecessor's HUMAN curation forward (#341):
+                    # a re-ingest is a new row, so a hand-written status_note
+                    # (or description) on the old copy was silently lost. Runs
+                    # AFTER the supersede (which is what chains a 'created'
+                    # row to its predecessor) and BEFORE the marker scan, so a
+                    # carried human note is already on the row when the
+                    # detector looks — and the detector never writes over a
+                    # note. Same failure policy as the stamp.
+                    try:
+                        _carry_forward_curation(client, folders, file_path)
+                    except Exception as exc:  # noqa: BLE001 — surfaced below
+                        result.failures.append(
+                            (file_ref.name, f"curation carry-forward failed: {exc}")
+                        )
+                    # Confidentiality markings in the body (#324): same
+                    # policy as the stamp — the ingest succeeded, so a scan
+                    # failure is surfaced, never counted as a failed file.
+                    try:
+                        note = _flag_confidentiality(client, folders, file_path)
+                    except Exception as exc:  # noqa: BLE001 — surfaced below
+                        result.failures.append(
+                            (file_ref.name, f"confidentiality scan failed: {exc}")
+                        )
+                    else:
+                        if note:
+                            result.flagged_confidential += 1
+                            result.source_notes.append(
+                                {"source": file_ref.name, "note": note}
                             )
                 elif action == "skipped":
                     # Already stamped on the run that first created it — no-op.
@@ -1834,6 +1848,52 @@ def _flag_confidentiality(
         "id", asset_id
     ).is_("status_note", "null").execute()
     return note
+
+
+def _carry_forward_curation(
+    client, folders: ProjectFolders, file_path: str
+) -> dict:
+    """Copy the predecessor's human curation onto the just-ingested row (#341).
+
+    Located by the same dedup key `_stamp_scope` uses. The predecessor is the
+    row the new one's `prev_asset_id` names — set by the pipeline on a
+    same-path 'versioned' ingest, or by `_supersede_same_title` on a
+    same-title 'created' one (which is why this runs after it). Carries a
+    HUMAN `status_note` and a HAND-WRITTEN `description` when the new row has
+    none (`source_curation.carry_forward_payload` is the rule), and stamps
+    `meta.curation_tracked` so this row's own description authorship is
+    provable at the next re-ingest.
+
+    Returns the payload written (empty dict when there is no row). Raises on a
+    read/write error; the caller surfaces it.
+    """
+    from cp_engine.source_curation import carry_forward_payload
+
+    owner_col, owner_val = _owner_filter(folders)
+    rows = (
+        client.table(Tables.RAG_ASSETS)
+        .select("id, prev_asset_id, status_note, description, meta")
+        .eq(owner_col, owner_val)
+        .eq("file_path", file_path)
+        .eq("status", "active")
+        .execute()
+    ).data or []
+    if not rows:
+        return {}
+    new_row = rows[0]
+    prior = None
+    if new_row.get("prev_asset_id"):
+        prior_rows = (
+            client.table(Tables.RAG_ASSETS)
+            .select("id, status_note, description, meta")
+            .eq("id", new_row["prev_asset_id"])
+            .limit(1)
+            .execute()
+        ).data or []
+        prior = prior_rows[0] if prior_rows else None
+    payload = carry_forward_payload(new_row, prior)
+    client.table(Tables.RAG_ASSETS).update(payload).eq("id", new_row["id"]).execute()
+    return payload
 
 
 # PostgREST's default max-rows; page chunk reads at it so a long document is
