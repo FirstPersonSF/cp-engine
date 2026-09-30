@@ -82,8 +82,8 @@ def _ask_key(ask: ClientAsk) -> str:
 
 def open_client_asks(sf: SprintFile) -> list[ClientAsk]:
     """Every ask still open in ``sf``: this week's own `### Open asks`
-    bullets with status ``open``, then the ones carried forward from the
-    prior week, de-duplicated (cp-engine #323).
+    bullets with status ``open``, then the ones carried forward from earlier
+    weeks, de-duplicated (cp-engine #323).
 
     Surfaces used to disagree about what "open asks" meant. The cp.md
     ``current-sprint`` header counted ``len(sf.client_open_asks)`` — every
@@ -100,16 +100,22 @@ def open_client_asks(sf: SprintFile) -> list[ClientAsk]:
     week on every render — a resolution in the owning week drops the ask
     here on the next sync. The live section wins a duplicate (a hand-
     restated ask may carry updated wording), mirroring ``_active_risks``.
+
+    That includes a restatement that CLOSES it (#326): an ask marked
+    ``closed``/``answered`` in this week's own section suppresses its carried
+    copy, the same newest-statement-wins rule ``compute_carry_forward``
+    applies across earlier weeks — otherwise the count would say open while
+    next week's carry-forward had already let it go.
     """
     out: list[ClientAsk] = []
     seen: set[str] = set()
     for ask in sf.client_open_asks:
-        if ask.status != "open":
-            continue
         key = _ask_key(ask)
         if key in seen:
             continue
         seen.add(key)
+        if ask.status != "open":
+            continue
         out.append(ask)
     for ask in sf.carry_forward.asks:
         key = _ask_key(ask)
