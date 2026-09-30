@@ -721,13 +721,17 @@ def run_preflight(
     # `engagement_fee`. So they reach the shape and funding gates — "is this
     # production work, is it funded" is a question a title can inform — and
     # stay out of `assign_fields`.
+    #
+    # Source titles follow the same rule (#336). A source title is a filename
+    # someone typed once — "SOW v01" under a 5198 name was the 5171 display-ads
+    # SOW — so it can say what a document is about, never what it contains.
+    # Facts come from bodies; titles inform the gates only.
     gate_lines = list(corpus_lines)
     if spine_titles:
         rep.sources_read.append(f"spine ({len(spine_titles)} elements)")
         gate_lines.extend(spine_titles)
     if source_titles:
         rep.sources_read.append(f"sources ({len(source_titles)} docs)")
-        corpus_lines.extend(source_titles)
         gate_lines.extend(source_titles)
 
     # ---- Gate 2: shape ------------------------------------------------
