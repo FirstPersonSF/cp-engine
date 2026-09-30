@@ -47,6 +47,18 @@ def _required(row, key: str, what: str):
         ) from None
 
 
+def _position_key(position):
+    """Sort key for a nullable estimator `position`: real positions ascending,
+    NULLs LAST (#284). Mirrors mc-2's `sortPhaseItems`
+    (`a.position ?? MAX_SAFE_INTEGER`): a non-NULL position is a deliberate
+    arrangement and wins; a NULL means "nobody arranged this" (mc-2 migration
+    180), so it must never jump ahead of a row someone placed. Coercing NULL
+    to 0 — the pre-fix `p.get("position") or 0` — stopped the `None < None`
+    crash but sorted every unarranged row FIRST, the inverse of mc-2. The sort
+    is stable, so an all-NULL set keeps the order the rows arrived in."""
+    return (position is None, position or 0)
+
+
 @dataclass(frozen=True)
 class EstimateItem:
     id: str
@@ -103,6 +115,9 @@ class Estimate:
         by_phase: dict[str, list[EstimateItem]] = {
             _required(p, "id", "phase"): [] for p in phases
         }
+        # Raw rows are kept beside each item so the within-phase sort can see
+        # a NULL position before it is coerced to 0 for the dataclass.
+        raw_pos: dict[tuple[str, str], object] = {}
         for kind, rows in (("activity", activities), ("deliverable", deliverables)):
             for r in rows:
                 phase_id = _required(r, "phase_id", "item")
@@ -124,6 +139,7 @@ class Estimate:
                         library_item_id=r.get("library_item_id"),
                     )
                 )
+                raw_pos[(kind, r["id"])] = r.get("position")
         # Phases are ordered by ESTIMATE first (oldest admitted first), then
         # by position within it — never merged by name across estimates. A
         # phase row without `project_id` (older callers, single-estimate
@@ -132,14 +148,15 @@ class Estimate:
 
         def _phase_key(p):
             return (rank.get(p.get("project_id") or estimate_ids[0], len(rank)),
-                    p.get("position") or 0)
+                    *_position_key(p.get("position")))
 
         ordered_phases = tuple(
             EstimatePhase(
                 id=_required(p, "id", "phase"), name=_required(p, "name", "phase"),
                 overview=p.get("overview"),
                 position=p.get("position") or 0,
-                items=tuple(sorted(by_phase.get(p["id"], []), key=lambda i: i.position)),
+                items=tuple(sorted(by_phase.get(p["id"], []),
+                                  key=lambda i: _position_key(raw_pos.get((i.kind, i.id))))),
                 estimate_id=p.get("project_id") or estimate_ids[0],
             )
             # Same nullable-`position` guard as the items above: a phase row
@@ -308,7 +325,7 @@ def fetch_schedule(client, estimate_id) -> list[ScheduleItem]:
     # Order by (start_week, position) on the raw rows — position is a DB ordering
     # hint we don't carry onto the dataclass.
     ordered = sorted(
-        rows, key=lambda r: (float(r.get("start_week") or 0), r.get("position") or 0)
+        rows, key=lambda r: (float(r.get("start_week") or 0), *_position_key(r.get("position")))
     )
     return [
         ScheduleItem(
