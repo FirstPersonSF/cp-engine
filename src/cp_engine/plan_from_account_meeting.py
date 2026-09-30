@@ -396,6 +396,8 @@ account_decisions:            # OPTIONAL — tenant-wide decisions
    projects, split it. If it's truly cross-cutting (affects all
    projects), put it in `account_summary` or `account_decisions`,
    not duplicated across N project entries.
+   The same item under two projects is written ONCE (the first); if it
+   genuinely belongs to both, add `shared: true` to each copy.
 
 2. **Don't over-extract.** A project mentioned in passing ("oh, and
    we should check in on 5151 next week") doesn't need a verb entry —
@@ -880,6 +882,8 @@ account_decisions:            # OPTIONAL — tenant-wide decisions
    only goes in `projects.ggl-5168`. Cross-project items belong in
    `account_summary` or `account_decisions`, not duplicated across
    N projects.
+   The same item under two projects is written ONCE (the first); if it
+   genuinely belongs to both, add `shared: true` to each copy.
 
 2. **Don't over-extract.** Sprint planning often touches projects
    only briefly ("we'll pick up 5151 next week"). That's not a

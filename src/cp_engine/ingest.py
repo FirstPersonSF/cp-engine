@@ -25,6 +25,7 @@ from __future__ import annotations
 from cp_engine.clock import tenant_now, tenant_today
 from cp_engine.aggregators import ASSET_MARKER_FMT
 from cp_engine.mc2_db import Tables
+import copy
 import hashlib
 import json
 import logging
@@ -249,12 +250,16 @@ class IngestPlanResult:
     files_written: list[Path] = field(default_factory=list)
     skipped_duplicate: int = 0
     errors: list[str] = field(default_factory=list)
+    # #322: copies dropped because the same item was already routed to
+    # another project in this plan (`<code>/<family>: <text>`).
+    cross_target_duplicates: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "files_written": [str(p) for p in self.files_written],
             "skipped_duplicate": self.skipped_duplicate,
             "errors": self.errors,
+            "cross_target_duplicates": self.cross_target_duplicates,
         }
 
 
@@ -315,6 +320,15 @@ def execute_plan(
     _validate_plan(plan)
     result = IngestPlanResult()
     week_iso = week_iso or plan_week_iso(plan) or _calendar_week_iso(today)
+
+    # #322: one item under two projects of one plan is written once (unless
+    # the plan marks it `shared: true`). Works on a copy — the caller's plan
+    # is its record of what the model said.
+    from cp_engine.ingest_routing import dedupe_across_targets
+
+    plan = copy.deepcopy(plan)
+    result.cross_target_duplicates = dedupe_across_targets(plan)
+    result.skipped_duplicate += len(result.cross_target_duplicates)
 
     projects_block = plan.get("projects") or {}
     for plan_code, entries in projects_block.items():
@@ -410,9 +424,15 @@ def execute_plan(
                 continue
             for item in items:
                 try:
-                    written = _execute_step(
-                        verb, code, item, sprint_path, today=today
-                    )
+                    written = None
+                    if isinstance(item, dict) and item.get("cross_routed"):
+                        written = _write_cross_routed_update(
+                            verb, code, item, sprint_path, today=today
+                        )
+                    if written is None:
+                        written = _execute_step(
+                            verb, code, item, sprint_path, today=today
+                        )
                     if written:
                         if sprint_path not in result.files_written:
                             result.files_written.append(sprint_path)
@@ -1337,6 +1357,44 @@ def _write_decision(
         body, "Meeting notes & decisions", "Decisions", bullet
     )
     sprint_path.write_text(new)
+    return True
+
+
+def _write_cross_routed_update(
+    verb: str, code: str, item: dict, sprint_path: Path, *, today: date | None = None
+) -> bool | None:
+    """An accepted cross-routed item that restates a bullet already on the
+    target (#322) — the 09-22 stage-hold risk arriving twice on slt-5196 —
+    goes UNDER that bullet as an update line, not beside it as a sibling.
+
+    Returns None when nothing on the target matches (the caller writes the
+    item normally), True on write, False when the update is already there.
+    The update line is indented, so parsers read it as the existing
+    bullet's note, never as a second risk.
+    """
+    from cp_engine.ingest_routing import find_near_duplicate, verb_family
+
+    family = verb_family(verb) or verb_family(_normalize_verb(verb))
+    text = _sanitize_inline_text(item.get("text") or "")
+    if not family or not text:
+        return None
+    body = sprint_path.read_text(encoding="utf-8")
+    h = _content_hash(code, _normalize_verb(verb), text)
+    if _already_present(body, h):
+        return False
+    match = find_near_duplicate(body, text)
+    if match is None:
+        return None
+    date_s = _as_text(item.get("date")) or _resolve_today_iso(today)
+    label = {"asks": "ask", "risks": "risk", "decisions": "decision",
+             "open-questions": "open question"}.get(family, family)
+    update = f"  - [update · {date_s} · {label}] {text} {_hash_marker(h)}"
+    lines = body.split("\n")
+    at = lines.index(match) + 1
+    while at < len(lines) and lines[at].startswith("  "):
+        at += 1
+    lines.insert(at, update)
+    sprint_path.write_text("\n".join(lines))
     return True
 
 
