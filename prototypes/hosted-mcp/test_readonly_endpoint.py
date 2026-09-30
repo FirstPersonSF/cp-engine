@@ -471,7 +471,7 @@ def http(server, monkeypatch):
             token=token, client_id="u-141", scopes=[], expires_at=None,
             subject="00000000-0000-4000-8000-000000000141",
             claims={"sub": "00000000-0000-4000-8000-000000000141",
-                    "client_id": "chatgpt-dcr-0141"},
+                    "client_id": "test-oauth-client"},
         )
 
     monkeypatch.setattr(server.mcp_server._token_verifier, "verify_token", verify)
@@ -548,11 +548,11 @@ def test_http_call_records_endpoint_app_and_oauth_client(server, http):
         assert len(rows) == 1, rows
         label = rows[0]["client"]
         assert f";endpoint={path}" in label, label
-        assert ";oauth_client=chatgpt-dcr-0141" in label
+        assert ";oauth_client=test-oauth-client" in label
         assert ";app=openai-mcp/1.0.0" in label
         # whoami shows the caller what the auditor sees.
         text = json.dumps(payload)
-        assert path in text and "chatgpt-dcr-0141" in text
+        assert path in text and "test-oauth-client" in text
 
 
 def test_health_counts_the_read_endpoint(server, http):
@@ -566,7 +566,7 @@ def test_listed_read_only_client_is_refused_on_the_full_endpoint(server, http, m
     """Optional hardening: a token minted for a READ_ONLY_OAUTH_CLIENT_IDS
     client works on /mcp/read and is refused (and audited) on /mcp."""
     client, log = http
-    monkeypatch.setattr(server, "READ_ONLY_OAUTH_CLIENT_IDS", frozenset({"chatgpt-dcr-0141"}))
+    monkeypatch.setattr(server, "READ_ONLY_OAUTH_CLIENT_IDS", frozenset({"test-oauth-client"}))
     log.clear()
     resp = _rpc(client, "/mcp", "tools/call", {"name": "whoami", "arguments": {}})
     body = resp.json()
