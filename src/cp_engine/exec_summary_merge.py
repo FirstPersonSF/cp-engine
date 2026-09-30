@@ -461,14 +461,15 @@ def append_update_entry(
     Entries are `- <YYYY-MM-DD> — <prose>`; the date is stamped here rather
     than accepted, so a caller cannot backdate the record.
 
-    ROLL-OFF IS REPORTED, NOT PERFORMED. The CLI ritual rolls entries older
-    than ~4 weeks into the sprint file — a move BETWEEN two files, which needs
-    a checkout this server does not have. Doing half of it (deleting here,
-    writing nowhere) would destroy the narrative it exists to keep, so old
-    entries stay and `roll_off_after_days` only shapes the advisory a caller
-    can surface: `result.roll_off` counts the entries older than the
-    threshold and lists their dates. The count is the caller's cue to run a
-    local wrap-up, never this function's licence to delete.
+    ROLL-OFF IS REPORTED, NOT PERFORMED HERE. Rolling entries older than ~4
+    weeks off is a move BETWEEN two files (`cp.md` → `cp-archive-<YYYY-MM>.md`),
+    and it is `cp_rotation`'s job, loss-checked across both (#280). Doing half
+    of it here (deleting, writing nowhere) would destroy the narrative it
+    exists to keep, so old entries stay and `roll_off_after_days` only shapes
+    the advisory a caller can surface: `result.roll_off` counts the entries
+    older than the threshold and lists their dates. The count is the cue to
+    run a rotation (`rotate_word_count`), never this function's licence to
+    delete.
 
     A duplicate entry (same text, whitespace-insensitive, anywhere in the
     Updates block) is a NO-OP: it neither rewrites the file nor advances the

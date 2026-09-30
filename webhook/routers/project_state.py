@@ -177,7 +177,8 @@ async def project_state_capture(request: Request):
                 text, changed_updates = appended
                 # #294: the roll-off is REPORTED, never performed. Nothing
                 # here deletes; the caller (a wrap-up) is told what is over
-                # age so rotation can happen where a checkout exists.
+                # age so it can run the rotation (`/api/word-count/rotate`,
+                # #280), which moves and loss-checks both files.
                 roll_off = {
                     "older_than": appended.roll_off.threshold.isoformat(),
                     "count": appended.roll_off.count,

@@ -93,6 +93,7 @@ def test_every_hosted_verb_it_names_is_registered(hosted_half: str, hosted_tools
         "resolve_commitment",
         "word_count_check",
         "capture_session",
+        "rotate_word_count",
         "add_element_source",
         "list_spine_elements",
         "pull_spine_element",
@@ -126,6 +127,7 @@ def test_every_hosted_verb_it_names_is_registered(hosted_half: str, hosted_tools
         "where_it_stands", "next_up", "project_code", "cp_engine",
         "weekly_cp", "all_deliverables", "undated_only",
         "updates_append", "still_current", "stale_fields", "roll_off",
+        "over_audit_threshold", "over_rotation_threshold",
     }
     unknown = {c for c in cited - not_verbs if c not in hosted_tools}
     assert not unknown, (
@@ -209,8 +211,8 @@ def test_the_hosted_path_never_tells_the_model_to_shell_out(hosted_half: str) ->
 def test_it_states_what_the_hosted_path_cannot_do(hosted_half: str) -> None:
     """A step silently skipped is the same failure as a stamp silently stale.
 
-    Rotation and the tenant-file sweeps have no verb behind them; the skill
-    must hand them to the user rather than drop them.
+    Hand-written rotation and the decisions sweep have no verb behind them;
+    the skill must hand them to the user rather than drop them.
     """
     marker = "### What the hosted path cannot do"
     assert marker in hosted_half
@@ -220,6 +222,11 @@ def test_it_states_what_the_hosted_path_cannot_do(hosted_half: str) -> None:
     section = hosted_half[hosted_half.index(marker):]
     for owed in ("rotation", "cross-cutting decisions sweep", "Commit and push"):
         assert owed in section, f"cannot-do list omits {owed}"
+    # Rotation of Updates USED to be impossible here; `rotate_word_count`
+    # (#280 tier 3) performs it. What stays owed is HAND-WRITTEN rotation —
+    # the list must say which half, and the verb must be named where it acts.
+    assert "Hand-written word-count rotation" in section
+    assert "`rotate_word_count" in hosted_half[:hosted_half.index(marker)]
     # The improvements sweep USED to be on this list; `log_improvement` (#282)
     # made it runnable. Listing it as impossible would hand the user a step the
     # session could have done — so it must be named, with its verb, as doable.

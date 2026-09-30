@@ -669,9 +669,9 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 20 OF THEM WRITE. The writers are the `create_*`, "
-        "`set_*`, `add_*`, `promote_*`, `retire_*`, `route_*` and `capture_*` "
-        "verbs — a name that sounds like a mutation is one. Every write is "
+        "MOST TOOLS READ; 21 OF THEM WRITE. The writers are the `create_*`, "
+        "`set_*`, `add_*`, `promote_*`, `retire_*`, `route_*`, `rotate_*` and "
+        "`capture_*` verbs — a name that sounds like a mutation is one. Every write is "
         "delegated upstream under YOUR identity; the server holds no write "
         "key, which is why authorship is real and why nothing here can be "
         "undone by the server on your behalf. When refreshing an Exec "
@@ -9653,6 +9653,86 @@ def call_mc2_capture_project_state(
     return {"ok": False, "status": resp.status_code, "reason": detail}
 
 
+def call_mc2_rotate_word_count(project_code: str) -> dict[str, Any]:
+    """POST a word-count rotation to mc-2 under the CALLER'S OWN JWT. Never raises.
+
+    Same hop and the same reasoning as `call_mc2_capture_project_state`: this
+    server holds no service key and no write access to the tenant, so the move
+    is performed upstream under the caller's identity rather than minted here.
+
+    **The user is NOT sent.** mc-2 derives it from the verified token and it
+    names the commit — a commit that moves text out of a project's most-read
+    file must say who asked for it.
+    """
+    if not MC2_API_BASE:
+        return {
+            "ok": False,
+            "reason": "word-count rotation unavailable: MC2_API_BASE not configured",
+            "degraded": True,
+        }
+
+    try:
+        token = caller_jwt()
+    except RuntimeError as exc:
+        return {"ok": False, "reason": f"no authenticated caller: {exc}"}
+
+    try:
+        resp = httpx.post(
+            f"{MC2_API_BASE}/api/word-count/rotate",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"project_code": project_code},
+            timeout=MC2_TIMEOUT_SECONDS,
+        )
+    except httpx.TimeoutException:
+        return {
+            "ok": False,
+            "reason": (
+                f"mc-2 word-count rotation timed out after {MC2_TIMEOUT_SECONDS:.0f}s. "
+                "It may still have landed — retrying is safe: entries already "
+                "moved are not moved twice, and a rotation with nothing left to "
+                "move is a no-op."
+            ),
+            "timeout": True,
+        }
+    except httpx.HTTPError as exc:
+        return {"ok": False, "reason": f"could not reach mc-2: {type(exc).__name__}: {exc}"}
+
+    try:
+        body: Any = resp.json()
+    except ValueError:
+        body = resp.text[:400]
+
+    if 200 <= resp.status_code < 300:
+        return {"ok": True, "status": resp.status_code, "backend": body}
+
+    detail = body.get("detail") if isinstance(body, dict) else str(body)
+    detail = str(detail)[:400]
+    if resp.status_code in (401, 403):
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "reason": f"mc-2 refused the caller's token: {detail}",
+            "unauthorized": True,
+        }
+    if resp.status_code == 404:
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "reason": f"no working dir for {project_code!r}: {detail}",
+            "not_found": True,
+        }
+    if resp.status_code == 409:
+        # The no-loss check refused. Nothing was pushed; say so plainly so the
+        # caller reports a refusal rather than retrying into it.
+        return {
+            "ok": False,
+            "status": resp.status_code,
+            "reason": f"rotation refused — nothing was written: {detail}",
+            "refused": True,
+        }
+    return {"ok": False, "status": resp.status_code, "reason": detail}
+
+
 @mcp_server.tool()
 def log_improvement(area: str, observation: str) -> dict[str, Any]:
     """Log one friction observation to the tenant's `improvements.md` (#282).
@@ -11748,10 +11828,11 @@ def word_count_check(project_code: str) -> dict[str, Any]:
     no rotation can clear a strip. `words` is the measured authored count;
     `total_words` is the whole file.
 
-    REPORTING ONLY. Rotation moves text between files — the cp.md and the
-    sprint file that receives the rolled-off entries — and this server holds no
-    write access to the tenant by construction. Take a finding to a session
-    with a checkout.
+    REPORTING ONLY — this verb never writes. To act on a finding, call
+    `rotate_word_count`, which rolls Updates entries older than 28 days into
+    the project's archive file under your name. Rotation never touches
+    hand-written sections; if the file is still over after it, the trim is a
+    reader's judgement — hand it to the user.
 
     The finding carries a contributor breakdown beneath the threshold line:
     three buckets (Exec Summary / engine strips / hand-written), then the
@@ -11809,6 +11890,66 @@ def word_count_check(project_code: str) -> dict[str, Any]:
         # breakdown is noise.
         "contributors": contributors(text) if findings else [],
     }
+
+
+@mcp_server.tool()
+@_names_its_level
+def rotate_word_count(project_code: str) -> dict[str, Any]:
+    """Roll this project's aged Exec Summary Updates into its archive file (#280).
+
+    WHY IT EXISTS. `word_count_check` could tell a hosted session a `cp.md` was
+    over budget and nothing could act on it: rotation moves text between two
+    files in one commit, and this server holds no write key by construction.
+    The CLI ritual's "roll off Updates older than ~4 weeks" was reported
+    (`roll_off`, under `capture_project_state`'s `backend`) and never
+    performed. This is the performing half.
+
+    WHAT MOVES — ONE RULE, NO JUDGEMENT. Updates entries dated more than 28
+    days ago leave the `exec-summary` region VERBATIM (nested bullets and all)
+    for `cp-archive-<YYYY-MM>.md` beside the `cp.md`, under a dated
+    `## Rolled off` section — the shape the tenant's hand rotations already
+    used. Nothing else moves: not undated entries, not pointer bullets
+    ("older entries rotated to …"), and never a hand-written section. Which
+    Project Note is resolved, which decision still binds, is a reader's call;
+    when the file is still over threshold afterwards, `over_audit_threshold`
+    / `over_rotation_threshold` say so and the rest is the user's.
+
+    NOTHING IS LOST, CHECKED TWICE. Every line before the move must exist
+    after it, across both files; the engine checks its plan in memory, then
+    the webhook checks what actually reached disk against the clone's HEAD
+    before pushing. Either refuses on a single lost line, and a refusal
+    (`refused: true`) means nothing was written anywhere.
+
+    The write is DELEGATED like `capture_project_state`: your token goes to
+    mc-2, which derives your name from it; cp-engine-webhook makes ONE commit
+    covering both files, naming you. **You cannot set the author.** The
+    `· updated` stamp does not move — rotation changes no field's truth.
+
+    Nothing past age is an honest no-op: `changed: false`, no commit. So a
+    retry after a timeout is safe, and so is calling this on every wrap-up.
+
+    Args:
+        project_code: engagement, initiative, or standalone-repo code.
+
+    Returns `{ok, backend: {changed, commit, moved: [{date, headline}],
+    archive_path, cp_md_path, words_before, words_after,
+    over_audit_threshold, over_rotation_threshold}}`, or
+    `{ok: false, reason, ...}` — never raises.
+    """
+    client = user_client()
+    scope = resolve_write_scope(client, project_code)
+    if scope is None:
+        return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    result = call_mc2_rotate_word_count(project_code)
+    backend = result.get("backend") if isinstance(result.get("backend"), dict) else {}
+    audit(
+        client,
+        "rotate_word_count",
+        {"project_code": project_code, "commit": backend.get("commit")},
+        len(backend.get("moved") or []) if result.get("ok") else 0,
+    )
+    return result
 
 
 # ──────────────────────────────────────────────────────────────────────
