@@ -221,3 +221,48 @@ def test_release_stages_every_version_bearing_file() -> None:
     for const in ("PYPROJECT", "INIT_PY", "PLUGIN_JSON",
                   "MARKETPLACE_JSON", "WEBHOOK_PYPROJECT", "UV_LOCK"):
         assert const in add_block, f"{const} is not staged by the release commit"
+
+
+# ── #316: the release gate states the pass count it saw ─────────────────
+
+
+@pytest.mark.parametrize("line,expected", [
+    ("812 passed in 41.20s", "812 passed"),
+    ("==== 812 passed, 3 skipped, 2 warnings in 41.20s ====",
+     "812 passed, 3 skipped, 2 warnings"),
+    ("1 failed, 811 passed in 40.00s (0:00:40)", "1 failed, 811 passed"),
+])
+def test_parse_pytest_summary_reads_the_closing_line(line, expected):
+    assert release.parse_pytest_summary(f"....\nwarnings block\n{line}\n") == expected
+
+
+def test_a_truncated_run_has_no_summary():
+    """The #316 failure: output that ends on dots or the warnings block —
+    what a `-qq` run or a killed one looks like — must not yield a count."""
+    assert release.parse_pytest_summary(
+        "tests/test_x.py::test_3_passed PASSED\n......  [ 50%]\n"
+    ) is None
+
+
+def test_run_pytest_counted_returns_pytests_own_exit_and_counts(tmp_path, capsys):
+    """Against a real pytest subprocess, not a stub: a failing file must come
+    back non-zero with its counts, and the output must still stream."""
+    t = tmp_path / "test_tiny.py"
+    t.write_text("def test_ok():\n    pass\n\ndef test_bad():\n    assert False\n")
+    code, summary = release.run_pytest_counted(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
+         "-o", "addopts=", str(t)],
+    )
+    assert code == 1
+    assert summary == "1 failed, 1 passed"
+    assert "1 failed, 1 passed" in capsys.readouterr().out
+
+
+def test_pyproject_addopts_does_not_carry_q():
+    """`-q` in addopts turns every `pytest -q` into `-qq`, which hides the
+    summary line the release gate and the standing rule both depend on."""
+    import tomllib
+
+    opts = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())[
+        "tool"]["pytest"]["ini_options"].get("addopts", "")
+    assert "-q" not in opts.split()

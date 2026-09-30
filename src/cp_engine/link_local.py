@@ -110,7 +110,11 @@ def discover_cp_working_dirs(tenant_root: Path) -> tuple[CpWorkingDir, ...]:
     # the source-file kind locally (not on CpWorkingDir) keeps the public
     # type narrow — consumers only care about (repo_name, github_org, path).
     candidates: list[tuple[CpWorkingDir, bool]] = []  # (dir, is_singular)
-    for repo_md in tenant_root.rglob("_repo*.md"):
+    from cp_engine.tenant_walk import walk_tenant
+
+    # Worktrees under the tenant are skipped: their _repo files would
+    # compete with the tenant's own for the same repo_name (#325).
+    for repo_md in walk_tenant(tenant_root, "_repo*.md"):
         # `rglob("_repo*.md")` also matches names like `_repository.md`;
         # narrow to the two canonical shapes.
         if repo_md.name != "_repo.md" and not repo_md.name.startswith("_repo-"):

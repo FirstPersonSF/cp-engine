@@ -111,4 +111,7 @@ select = ["E", "F", "I", "B", "UP", "SIM"]
 # run by the release gate, which is how #283 shipped — three verbs that
 # registered and then raised ModuleNotFoundError on every call.
 testpaths = ["tests", "prototypes/hosted-mcp"]
-addopts = "-q"
+# No `-q` in addopts (#316): it stacked with the `pytest -q` everyone types,
+# and at `-qq` pytest drops the `N passed` summary line — a run killed at 50%
+# by a shell timeout then ended on the warnings block and read as complete.
+# Pass `-q` on the command line; the summary is how you know the run finished.
