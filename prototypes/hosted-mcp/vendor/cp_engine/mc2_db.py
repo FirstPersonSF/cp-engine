@@ -271,3 +271,9 @@ def owner_columns(client) -> str:
 def owner_filter(client, owner_id: str) -> str:
     """PostgREST `or=` fragment scoping a read to one owner."""
     return f"{OWNER_COLUMN}.eq.{owner_id}"
+
+DRIVE_CRED_KEYS = (
+    "GOOGLE_SERVICE_ACCOUNT_JSON",
+    "GOOGLE_SERVICE_ACCOUNT_FILE",
+    "GOOGLE_CREDENTIALS_PATH",
+)

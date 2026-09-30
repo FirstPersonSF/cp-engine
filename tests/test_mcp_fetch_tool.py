@@ -35,8 +35,10 @@ def test_fetch_tool_calls_fetch_source_with_resolved_ids(monkeypatch):
 
     captured = {}
 
-    def fake_fetch_source(client, project_id, doc_title, dest_dir):
+    def fake_fetch_source(client, project_id, doc_title, dest_dir, company_id=None):
         captured["args"] = (client, project_id, doc_title)
+        # The company id rides along so account-scoped docs fetch too (#324).
+        captured["company_id"] = company_id
         captured["dest_dir"] = dest_dir
         return {"local_path": "/tmp/x/Deck.pptx", "title": doc_title,
                 "provider": "dropbox", "url": "https://..."}
@@ -46,6 +48,7 @@ def test_fetch_tool_calls_fetch_source_with_resolved_ids(monkeypatch):
     out = srv.fetch_project_source("IBX-5153", "Deck.pptx")
 
     assert captured["args"] == (fake_client, "pid", "Deck.pptx")
+    assert captured["company_id"] == "cid"
     # a real temp dir was created and handed to the pure fn
     assert isinstance(captured["dest_dir"], str) and captured["dest_dir"]
     assert out == {"local_path": "/tmp/x/Deck.pptx", "title": "Deck.pptx",
@@ -56,7 +59,7 @@ def test_fetch_tool_pure_fn_raises_returns_error(monkeypatch):
     """A raising pure fn (download error) is caught and returned structured."""
     monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
 
-    def boom(client, project_id, doc_title, dest_dir):
+    def boom(client, project_id, doc_title, dest_dir, company_id=None):
         raise RuntimeError("download failed")
 
     monkeypatch.setattr("cp_engine.project_sources.fetch_source", boom)

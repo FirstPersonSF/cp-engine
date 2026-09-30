@@ -93,18 +93,24 @@ def list_sources(
     project_id: str,
     company_id: str,
     summaries: dict[str, str] | None = None,
+    *,
+    include_account: bool = False,
 ) -> list[dict]:
-    """List a project's OWN active source documents, newest first.
+    """List a project's active source documents, newest first.
 
-    This is the manifest list: the project's own `rag_assets` rows (project-
-    scoped). Account-scoped shared docs are NOT listed here — they surface
-    through `pull_source`'s RPC, which already unions project + account scope.
-    Keeping the list to the project's own rows is the simplest correct thing for
-    a per-project manifest.
+    By default the project's OWN `rag_assets` rows. `include_account=True`
+    also lists the company's ACCOUNT-scoped docs (#324) — the ones filed
+    under the account node, which `pull_source`'s RPC already reads from
+    every sibling workstream. Before this they were readable but unlisted,
+    so a reader never learned they existed. Each such entry carries
+    `scope: "account"`; the project's own rows are never duplicated.
 
-    `company_id` is accepted for signature symmetry with `pull_source` (and so
-    callers can pass the same ids to both) but isn't needed for the project-
-    scoped list.
+    ZERO-CHUNK ASSETS (#324): a row with no `asset_chunks` is a document that
+    EXISTS with nothing readable behind it (the parser extracted no text, or
+    the chunk write failed). It is listed with `chunk_count: 0` and
+    `empty: True` so it is not mistaken for a readable source — or, worse,
+    for a missing one. When the chunk check itself cannot run, no entry is
+    flagged (never call a document empty on a failed read).
 
     If `summaries` (a `{asset_id: summary_str}` dict) is passed, each row's
     cached summary is merged in under `summary`; otherwise `summary` is omitted.
@@ -131,6 +137,28 @@ def list_sources(
         .execute()
     )
     rows = drop_superseded_assets(getattr(resp, "data", None) or [])
+    account_ids: set[str] = set()
+    if include_account and company_id:
+        own = {r.get("id") for r in rows}
+        acct_resp = (
+            client.table(Tables.RAG_ASSETS)
+            .select(_SOURCE_COLUMNS)
+            .eq("company_id", company_id)
+            .eq("scope", "account")
+            .eq("status", "active")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        extra = [
+            r for r in drop_superseded_assets(getattr(acct_resp, "data", None) or [])
+            if r.get("id") not in own
+        ]
+        if extra:
+            account_ids = {r.get("id") for r in extra}
+            rows = sorted(rows + extra,
+                          key=lambda r: str(r.get("created_at") or ""),
+                          reverse=True)
+    empty_ids = _zero_chunk_ids(client, [r.get("id") for r in rows])
     out: list[dict] = []
     for raw in rows:
         row = RagAssetRow.from_row(raw)
@@ -141,6 +169,11 @@ def list_sources(
             "created_at": row.created_at,
             "file_hash": row.file_hash,
         }
+        if row.id in account_ids:
+            entry["scope"] = "account"
+        if row.id in empty_ids:
+            entry["chunk_count"] = 0
+            entry["empty"] = True
         # mig 164 — omitted when unset so existing callers see no new noise,
         # present when they answer "what is this / can I trust it" (#210).
         if row.description:
@@ -158,6 +191,82 @@ def list_sources(
                 entry["summary"] = summary
         out.append(entry)
     return out
+
+
+def _zero_chunk_ids(client, asset_ids: list) -> set:
+    """Ids among `asset_ids` with NO chunks; empty set when the check fails.
+
+    Fail-open on purpose: the listing must still list, and "we could not
+    tell" must never render as "this document is empty".
+    """
+    ids = [a for a in asset_ids if a]
+    if not ids:
+        return set()
+    try:
+        have = mc2_db.asset_ids_with_chunks(client, ids)
+    except Exception:  # noqa: BLE001 — see docstring
+        return set()
+    return {a for a in ids if str(a) not in have}
+
+
+def _empty_asset_matches(client, project_id: str, company_id: str | None,
+                         doc_title: str) -> list[dict]:
+    """Active assets readable from this project whose title matches
+    `doc_title` but which hold no chunks — "exists but empty" (#324).
+
+    The chunk RPC cannot see these (no chunk row to return), so a title
+    read that misses asks the asset table directly before saying "no
+    source". Same readable set as the RPC: the project's own rows plus the
+    company's account-scoped rows.
+    """
+    cols = "id, title, source_type, status_note"
+    rows = (
+        client.table(Tables.RAG_ASSETS).select(cols)
+        .eq("project_id", project_id).eq("status", "active").execute()
+    ).data or []
+    if company_id:
+        rows += (
+            client.table(Tables.RAG_ASSETS).select(cols)
+            .eq("company_id", company_id).eq("scope", "account")
+            .eq("status", "active").execute()
+        ).data or []
+    seen: set = set()
+    matched = []
+    for r in rows:
+        if r.get("id") in seen or not _title_matches(doc_title, r.get("title")):
+            continue
+        seen.add(r.get("id"))
+        matched.append(r)
+    if not matched:
+        return []
+    have = mc2_db.asset_ids_with_chunks(client, [r["id"] for r in matched])
+    return [r for r in matched if str(r["id"]) not in have]
+
+
+def ingested_source_titles(client, project_id: str,
+                           company_id: str | None = None) -> set[str]:
+    """Every title this project's source store has EVER held, any status,
+    plus the company's account-scoped titles — the "was it ingested at all"
+    set the dangling `Source reviewed:` lint checks against (#324 part c).
+
+    Any status on purpose: an archived or superseded copy WAS ingested, and
+    the lint's question is whether the reviewed file ever reached the store,
+    not whether it is the live version.
+    """
+    titles = {
+        r.get("title") for r in (
+            client.table(Tables.RAG_ASSETS).select("title")
+            .eq("project_id", project_id).execute()
+        ).data or []
+    }
+    if company_id:
+        titles |= {
+            r.get("title") for r in (
+                client.table(Tables.RAG_ASSETS).select("title")
+                .eq("company_id", company_id).eq("scope", "account").execute()
+            ).data or []
+        }
+    return {t for t in titles if t}
 
 
 def _title_matches(doc_title: str, row_title: str | None) -> bool:
@@ -296,10 +405,42 @@ def pull_source(
         # We cannot prove the document is whole — say so rather than cap it.
         truncated = complete and query is None and len(rows) >= _MISS_RETRY_LIMIT
     if not matched:
+        # "Exists but empty" is not "not found" (#324): a zero-chunk asset
+        # never appears in the chunk RPC, so ask the asset table before
+        # telling the caller the document was never ingested.
+        try:
+            empty = _empty_asset_matches(client, project_id, company_id, doc_title)
+        except Exception:  # noqa: BLE001 — cannot tell: say so, don't guess
+            empty = None
+        if empty:
+            first = next(
+                (r for r in empty
+                 if (r.get("title") or "").lower() == doc_title.lower()),
+                empty[0],
+            )
+            out = {
+                "title": first.get("title"),
+                "asset_id": first.get("id"),
+                "chunks": [],
+                "chunk_count": 0,
+                "empty": True,
+                "note": (
+                    f"'{first.get('title')}' EXISTS in the source store but has "
+                    "zero chunks — ingest extracted no text (image-only PDF, "
+                    "empty export, or a failed chunk write). It is not missing; "
+                    "read the original via `fetch_project_source`, or re-ingest."
+                ),
+            }
+            if len(empty) > 1:
+                out["candidates"] = [r.get("title") for r in empty]
+            return out
+        note = f"no source named '{doc_title}' found in this project's assets"
+        if empty is None:
+            note += " (the zero-chunk check could not run — it may exist but be empty)"
         return {
             "title": doc_title,
             "chunks": [],
-            "note": f"no source named '{doc_title}' found in this project's assets",
+            "note": note,
         }
 
     # Resolve to a SINGLE document. Group matched rows by their (case-
@@ -1329,7 +1470,8 @@ def list_project_meetings(client, project_id: str) -> list[dict]:
 _REFETCH_COLUMNS = mc2_db.RAG_ASSET_REFETCH_COLUMNS
 
 
-def fetch_source(client, project_id: str, doc_title: str, dest_dir) -> dict:
+def fetch_source(client, project_id: str, doc_title: str, dest_dir,
+                 company_id: str | None = None) -> dict:
     """Download an ingested source's ORIGINAL binary to `dest_dir`.
 
     Looks up the asset's persisted re-fetch coords (`source_provider`,
@@ -1347,6 +1489,10 @@ def fetch_source(client, project_id: str, doc_title: str, dest_dir) -> dict:
     `None`, ask rather than guess — the connector cannot delete or move (no match, missing coords on a pre-live-link row,
     lookup error, or download error). NEVER raises — this is called by an MCP
     tool, which must surface a message rather than crash.
+
+    `company_id` (#324) widens the lookup to the company's account-scoped
+    docs, the same readable set `pull_source` has — a document filed under
+    the account node is fetchable from every sibling, not only pullable.
     """
     try:
         rows = (
@@ -1355,6 +1501,19 @@ def fetch_source(client, project_id: str, doc_title: str, dest_dir) -> dict:
             .eq("project_id", project_id)
             .execute()
         ).data or []
+        if company_id:
+            own = {r.get("id") for r in rows}
+            rows += [
+                r for r in (
+                    client.table(Tables.RAG_ASSETS)
+                    .select(_REFETCH_COLUMNS)
+                    .eq("company_id", company_id)
+                    .eq("scope", "account")
+                    .eq("status", "active")
+                    .execute()
+                ).data or []
+                if r.get("id") not in own
+            ]
     except Exception as exc:  # noqa: BLE001 — MCP tool boundary, never raise
         return {"error": f"lookup failed: {exc}"}
 
@@ -1384,7 +1543,20 @@ def fetch_source(client, project_id: str, doc_title: str, dest_dir) -> dict:
     try:
         local = download_file(file_ref, Path(dest_dir))
     except Exception as exc:  # noqa: BLE001 — MCP tool boundary, never raise
-        return {"error": f"download failed: {exc}"}
+        err = f"download failed: {exc}"
+        if row["source_provider"] == "drive" and not any(
+            os.environ.get(k) for k in mc2_db.DRIVE_CRED_KEYS
+        ):
+            # The #324 fallback gap: the original is the only way to read a
+            # zero-chunk source, and without Drive creds in this process the
+            # connector fails with a message that does not say why.
+            err += (
+                " — no Google Drive credentials in this process ("
+                + " / ".join(mc2_db.DRIVE_CRED_KEYS)
+                + "); set one, or configure the mc-2 clone so they load "
+                "from its backend/.env"
+            )
+        return {"error": err}
 
     return {
         "local_path": str(local),
@@ -1697,6 +1869,9 @@ def _render_manifest(assets: list[dict]) -> str:
     """
     lines = [
         f"- **{a.get('title')}** · {a.get('source_type')}"
+        + (" · account-wide" if a.get("scope") == "account" else "")
+        + (" · ⚠ EMPTY (0 chunks — exists, no readable text)" if a.get("empty") else "")
+        + (f" · ⚠ {a['status_note']}" if a.get("status_note") else "")
         + (f" · {a['comment_count']} reviewer comments" if a.get("comment_count") else "")
         + f" — {a.get('summary')}"
         for a in assets
@@ -1757,7 +1932,9 @@ def write_sources_manifest(
         llm = _default_llm
 
     project_dir = Path(project_dir)
-    assets = list_sources(client, project_id, company_id)
+    # Account-scoped docs are listed too (#324) so a sibling's manifest shows
+    # the company-level documents its reads already reach.
+    assets = list_sources(client, project_id, company_id, include_account=True)
 
     # The cache is pure local memoization (gitignored, NOT committed — see the
     # cp tenant's .gitignore). Tolerate a corrupt/unreadable cache by ignoring it.
@@ -1777,7 +1954,11 @@ def write_sources_manifest(
         asset_id = asset.get("id")
         current_hash = _doc_hash(asset)
         cached = cache.get(asset_id)
-        if cached and cached.get("hash") == current_hash:
+        if asset.get("scope") == "account":
+            # Summarised once, on the account node that owns it (its sync
+            # persists `description`); N siblings must not each pay for it.
+            summary = asset.get("description") or _SUMMARY_UNAVAILABLE
+        elif cached and cached.get("hash") == current_hash:
             # Cache HIT — always free, never counts against the cap.
             summary = cached.get("summary") or _SUMMARY_UNAVAILABLE
             new_cache[asset_id] = {"hash": current_hash, "summary": summary}

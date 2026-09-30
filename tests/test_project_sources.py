@@ -55,6 +55,11 @@ class _FakeTableClient:
         self.recorder: dict = {}
 
     def table(self, name):
+        # Record the FIRST query only — the listing's own read. list_sources
+        # follows it with the zero-chunk check (#324), which this fake does
+        # not model (no .in_), so that check fails open and flags nothing.
+        if "table" in self.recorder:
+            return _FakeTableQuery(self._rows, {})
         self.recorder["table"] = name
         return _FakeTableQuery(self._rows, self.recorder)
 

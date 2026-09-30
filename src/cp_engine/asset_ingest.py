@@ -54,7 +54,7 @@ from cp_engine.mc2_db import Tables
 # project_integrations bindings (read-flip) — hydrated onto the row by the
 # resolve functions before `_row_to_folders` maps it.
 _PROJECT_COLUMNS = (
-    "id, company_id, deal_stage, "
+    "id, company_id, deal_stage, parent_id, "
     "enable_google_drive, enable_dropbox, asset_ingest_folders, companies(kind)"
 )
 
@@ -81,6 +81,22 @@ class ProjectFolders:
     # workstream and is ingestable; WITH one it is house/framework territory
     # and `list_files` skips it. Client workstreams ingest either way.
     has_agreement: bool = False
+
+    # The company's ACCOUNT NODE (#324): no parent, a client company, no
+    # agreement — the same shape rule as `state.derive_label`'s "account".
+    # A file ingested from the account node's own folders is a company-level
+    # document by where it was FILED, so it is stamped `scope='account'` and
+    # every sibling workstream's scoped read sees it. Deliberately decided by
+    # the tree position, never by the file's title or contents (a filename is
+    # not evidence of what a document is). Defaults False, and
+    # `_row_to_folders` sets it only when the row actually CARRIES
+    # `parent_id` — a row read without the column never promotes.
+    is_account_node: bool = False
+
+    @property
+    def ingest_scope(self) -> str:
+        """The `rag_assets.scope` this workstream's ingests are stamped with."""
+        return "account" if self.is_account_node else "project"
 
 
 @dataclass
@@ -156,12 +172,21 @@ def _row_to_folders(row: dict) -> ProjectFolders:
 
     The one construction site for MC-2 rows (#301)."""
     company_kind = _company_kind(row)
+    has_agreement = row.get("deal_stage") is not None
+    # Only a row that SELECTED parent_id can say it has none (#324).
+    is_account_node = (
+        "parent_id" in row
+        and row.get("parent_id") is None
+        and company_kind == "client"
+        and not has_agreement
+    )
 
     return ProjectFolders(
         project_id=row.get("id"),
         company_id=row.get("company_id"),
         company_kind=company_kind,
-        has_agreement=row.get("deal_stage") is not None,
+        has_agreement=has_agreement,
+        is_account_node=is_account_node,
         google_drive_folder_id=row.get("google_drive_folder_id") or None,
         mc_dropbox_folder_id=row.get("mc_dropbox_folder_id") or None,
         enable_google_drive=bool(row.get("enable_google_drive")),
@@ -976,6 +1001,10 @@ class IngestRunResult:
     # `prev_asset_id` and retires the old copies so retrieval only ever serves
     # the newest. Counts OLD assets retired, not new files ingested.
     superseded: int = 0
+    # Files whose BODY carries a confidentiality marking (#324) and whose
+    # `status_note` was empty, so the detected caveat was written to it. Each
+    # also leaves a source_note naming the file and the note.
+    flagged_confidential: int = 0
     failures: list[tuple[str, str]] = field(default_factory=list)
     project_found: bool = True
     # Per-source listing notes from list_files: a dead/skipped source records a
@@ -1403,6 +1432,21 @@ def ingest_project_assets(
                         result.failures.append(
                             (file_ref.name, f"scope-stamp failed: {exc}")
                         )
+                    # Confidentiality markings in the body (#324): same
+                    # policy as the stamp — the ingest succeeded, so a scan
+                    # failure is surfaced, never counted as a failed file.
+                    try:
+                        note = _flag_confidentiality(client, folders, file_path)
+                    except Exception as exc:  # noqa: BLE001 — surfaced below
+                        result.failures.append(
+                            (file_ref.name, f"confidentiality scan failed: {exc}")
+                        )
+                    else:
+                        if note:
+                            result.flagged_confidential += 1
+                            result.source_notes.append(
+                                {"source": file_ref.name, "note": note}
+                            )
                     # Same-title supersede (#57): a re-ingest of a doc whose
                     # CONTENT changed lands at a fresh temp path, so the
                     # path-keyed pipeline dedup sees a brand-new file and
@@ -1689,8 +1733,10 @@ def _stamp_scope(
     `(project_id, file_path) WHERE status='active'` a UNIQUE index, so this WHERE
     clause matches exactly one row — the asset we just wrote. `file_path` MUST be
     the same value passed to `ingest_file` (it is: both come from `local`). The
-    pipeline already set project_id; what the stamp adds is company_id (and it
-    re-affirms scope='project', which is also the column default).
+    pipeline already set project_id; what the stamp adds is company_id and the
+    scope — 'project' (the column default) for every workstream except the
+    company's account node, whose files are stamped 'account' (#324) so every
+    sibling's scoped read reaches them.
 
     The same UPDATE also persists the durable re-fetch coords from the `FileRef`
     (`source_provider`/`source_file_id`/`source_path`): these can't flow through
@@ -1703,7 +1749,9 @@ def _stamp_scope(
     """
     owner_col, owner_val = _owner_filter(folders)
     payload = {
-        "scope": "project",
+        # 'account' for a file filed under the company's account node (#324),
+        # which is what makes it readable from every sibling workstream.
+        "scope": folders.ingest_scope,
         "company_id": folders.company_id,
         "source_provider": file_ref.source,
         "source_file_id": file_ref.id,
@@ -1733,6 +1781,64 @@ def _stamp_scope(
     client.table(Tables.RAG_ASSETS).update(payload).eq(owner_col, owner_val).eq(
         "file_path", file_path
     ).eq("status", "active").execute()
+
+
+def _flag_confidentiality(
+    client, folders: ProjectFolders, file_path: str
+) -> str | None:
+    """Scan the just-ingested asset's chunks for confidentiality markings and
+    record them in `status_note` when it is empty (#324 part b).
+
+    Located by the same dedup key `_stamp_scope` uses. A note already on the
+    row — a human's `set_source_status`, or a prior detection — is NEVER
+    overwritten: a hand-written caveat outranks a detected one, and a
+    retracted note (set to '') stays retracted only if the human re-clears it
+    after a re-ingest, which is the price of never guessing over a person.
+
+    Returns the note written, or None (no row, no markings, or a note already
+    present). Raises on a read/write error; the caller surfaces it.
+    """
+    from cp_engine.source_markers import detect_markings, status_note_for
+
+    owner_col, owner_val = _owner_filter(folders)
+    rows = (
+        client.table(Tables.RAG_ASSETS)
+        .select("id, status_note")
+        .eq(owner_col, owner_val)
+        .eq("file_path", file_path)
+        .eq("status", "active")
+        .execute()
+    ).data or []
+    if not rows or rows[0].get("status_note"):
+        return None
+    asset_id = rows[0].get("id")
+    texts: list[str] = []
+    start = 0
+    while True:
+        page = (
+            client.table(Tables.ASSET_CHUNKS)
+            .select("id, text")
+            .eq("asset_id", asset_id)
+            .order("id")
+            .range(start, start + _CHUNK_PAGE - 1)
+            .execute()
+        ).data or []
+        texts.extend(r.get("text") or "" for r in page)
+        if len(page) < _CHUNK_PAGE:
+            break
+        start += _CHUNK_PAGE
+    note = status_note_for(detect_markings("\n\n".join(texts)))
+    if note is None:
+        return None
+    client.table(Tables.RAG_ASSETS).update({"status_note": note}).eq(
+        "id", asset_id
+    ).is_("status_note", "null").execute()
+    return note
+
+
+# PostgREST's default max-rows; page chunk reads at it so a long document is
+# scanned whole rather than silently cut at the first 1000 chunks (#298).
+_CHUNK_PAGE = 1000
 
 
 def _owner_filter(folders: ProjectFolders) -> tuple[str, str]:

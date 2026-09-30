@@ -890,9 +890,13 @@ RAG_ASSET_LIST_COLUMNS = (
     # column named `comment_count`), not the blob — reviewer comments are
     # ingested into a document's TAIL, and a reader has to be told they exist
     # before deciding how much of the document to pull (cp-engine #298).
-    "meta->>comment_count"
+    "meta->>comment_count, "
+    # What a doc IS and whether it can be trusted (mig 164) — the stdio list
+    # always carried these; the hosted one dropped them, so an embargoed or
+    # auto-flagged confidential source read as ordinary here (#324).
+    "description, status_note, scope"
 )
-RAG_ASSET_PULL_COLUMNS = RAG_ASSET_LIST_COLUMNS + ", url, source_path, scope"
+RAG_ASSET_PULL_COLUMNS = RAG_ASSET_LIST_COLUMNS + ", url, source_path"
 
 # `fathom_meetings` — mirrors `mc2_db.FATHOM_LIST_COLUMNS`. `transcript` and
 # `summary` are the big text columns and are deliberately excluded from the
@@ -1816,7 +1820,38 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
         except Exception:  # noqa: BLE001 — a failed read is an empty read, reported below
             continue
 
+    # The company's ACCOUNT-scoped docs (#324): filed under the account node,
+    # readable from every workstream of the company, and until now listed
+    # only on the account node itself.
+    account_ids: set[str] = set()
+    try:
+        proj = (client.table("projects").select("company_id")
+                .eq("id", project_id).limit(1).execute().data or [])
+        company_id = proj[0].get("company_id") if proj else None
+        if company_id:
+            for row in (
+                client.table("rag_assets").select(RAG_ASSET_LIST_COLUMNS)
+                .eq("company_id", company_id).eq("scope", "account")
+                .eq("status", "active").execute().data or []
+            ):
+                if row.get("id") not in seen:
+                    seen.add(row.get("id"))
+                    account_ids.add(row.get("id"))
+                    rows.append(row)
+    except Exception:  # noqa: BLE001 — the project's own rows still list
+        pass
+
     superseded = {r["prev_asset_id"] for r in rows if r.get("prev_asset_id")}
+    # "Exists but empty" (#324): a zero-chunk asset is flagged, never
+    # mistaken for a readable source. The check fails OPEN — when it cannot
+    # run, nothing is flagged (we never call a document empty on a failed read).
+    listed = [r.get("id") for r in rows
+              if r.get("id") not in superseded and r.get("status") != "archived"]
+    try:
+        have_chunks = _asset_ids_with_chunks(client, listed)
+        empty_ids = {a for a in listed if a and str(a) not in have_chunks}
+    except Exception:  # noqa: BLE001 — see above
+        empty_ids = set()
     sources = [
         {
             "asset_id": r.get("id"),
@@ -1824,6 +1859,12 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
             "source_type": r.get("source_type"),
             "status": r.get("status"),
             "created_at": r.get("created_at"),
+            **({"description": r["description"]} if r.get("description") else {}),
+            # The trust caveat — draft / embargoed / auto-detected confidential
+            # marking. Honour it before quoting a source in client work.
+            **({"status_note": r["status_note"]} if r.get("status_note") else {}),
+            **({"scope": "account"} if r.get("id") in account_ids else {}),
+            **({"chunk_count": 0, "empty": True} if r.get("id") in empty_ids else {}),
             # Present only when the ingest found reviewer comments (#298):
             # the file is FEEDBACK, and its comments sit past the 40k-char
             # default of `pull_project_source` — pull with a larger
@@ -1845,6 +1886,28 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
         "sources": sources,
         **({"note": TEAM_EMPTY_HINT} if not sources else {}),
     }, client, project_id, project_code)
+
+
+def _asset_ids_with_chunks(client, asset_ids, *, batch: int = 50,
+                           page: int = 1000) -> set[str]:
+    """Which of `asset_ids` have at least one chunk — the hosted twin of
+    `cp_engine.mc2_db.asset_ids_with_chunks` (#324; the vendored mc2_db is
+    constants-only). Reads `asset_id` only, paged at max-rows so a long
+    document never reads as empty. Raises on a read error."""
+    ids = [a for a in dict.fromkeys(asset_ids) if a]
+    have: set[str] = set()
+    for i in range(0, len(ids), batch):
+        part = ids[i:i + batch]
+        start = 0
+        while True:
+            rows = (client.table("asset_chunks").select("asset_id")
+                    .in_("asset_id", part).order("id")
+                    .range(start, start + page - 1).execute().data or [])
+            have.update(str(r["asset_id"]) for r in rows if r.get("asset_id"))
+            if len(rows) < page or have.issuperset(part):
+                break
+            start += page
+    return have
 
 
 def _resolve_source_asset(
@@ -2131,6 +2194,14 @@ def pull_project_source(asset_id: str, max_chars: int = 40000) -> dict[str, Any]
         "source_path": asset.get("source_path"),
         "created_at": asset.get("created_at"),
         "chunk_count": len(chunks),
+        # The asset EXISTS; there is just no text behind it (#324). Said
+        # outright so an empty `text` is never read as "not found".
+        **({"empty": True,
+            "empty_note": "this source exists but has zero chunks — ingest "
+                          "extracted no text; read the original instead"}
+           if not chunks else {}),
+        **({"status_note": asset["status_note"]} if asset.get("status_note") else {}),
+        **({"scope": asset["scope"]} if asset.get("scope") else {}),
         "truncated": truncated,
         **({"comment_count": _comment_count(asset)} if _comment_count(asset) else {}),
         **({"note": "body truncated; the trailing `## Comments` block was kept in full"}
@@ -10797,6 +10868,81 @@ def _find_cp_md_text(project_code: str) -> str | None:
     return None
 
 
+def _find_workstream_dir(project_code: str):
+    """This workstream's directory in the tenant clone, or None — the
+    directory `_find_cp_md_text` reads cp.md from, for the dangling
+    `Source reviewed:` check (#324). Best-effort, read-only."""
+    try:
+        root = tree_root().resolve()
+    except Exception:  # noqa: BLE001 — no clone in this environment
+        return None
+    for scope in ("1p", "firstpersonsf", "canonic"):
+        base = root / scope
+        if not base.is_dir():
+            continue
+        for candidate in base.glob(f"**/{project_code}/cp.md"):
+            return candidate.parent
+    return None
+
+
+def _workstream_docs(ws_dir) -> tuple[dict[str, str], set[str]]:
+    """`({relpath: text}, {file names})` for ONE workstream directory —
+    the hosted twin of `cp_engine.spine.workstream_docs` (not vendored: the
+    lint modules stay filesystem-free). Stops at any subdirectory with its
+    own `cp.md`, so a child workstream's docs never lint against the
+    parent's store."""
+    docs: dict[str, str] = {}
+    names: set[str] = set()
+    stack = [ws_dir]
+    while stack:
+        d = stack.pop()
+        try:
+            entries = sorted(d.iterdir())
+        except OSError:
+            continue
+        for e in entries:
+            if e.name.startswith("."):
+                continue
+            if e.is_dir():
+                if not (e / "cp.md").is_file():
+                    stack.append(e)
+                continue
+            names.add(e.name)
+            if e.suffix.lower() == ".md":
+                try:
+                    docs[str(e.relative_to(ws_dir))] = e.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+    return docs, names
+
+
+def _ingested_source_titles(client, project_id: str) -> set[str] | None:
+    """Every title this workstream's source store has held (any status) plus
+    its company's account-scoped titles, under the caller's identity — the
+    hosted twin of `project_sources.ingested_source_titles` (#324). None
+    when the read fails, so the check is skipped rather than every reference
+    reported as dangling."""
+    try:
+        titles: set[str] = set()
+        for column in _owner_columns(client):
+            for r in (client.table("rag_assets").select("title")
+                      .eq(column, project_id).execute().data or []):
+                if r.get("title"):
+                    titles.add(r["title"])
+        proj = (client.table("projects").select("company_id")
+                .eq("id", project_id).limit(1).execute().data or [])
+        company_id = proj[0].get("company_id") if proj else None
+        if company_id:
+            for r in (client.table("rag_assets").select("title")
+                      .eq("company_id", company_id).eq("scope", "account")
+                      .execute().data or []):
+                if r.get("title"):
+                    titles.add(r["title"])
+        return titles
+    except Exception:  # noqa: BLE001 — see docstring
+        return None
+
+
 def _sweep_row_dict(row: Any) -> dict[str, Any]:
     """One commitments-sweep row as JSON — dates as ISO strings."""
     due = getattr(row, "due_date", None)
@@ -11058,7 +11204,21 @@ def spine_lint(project_code: str) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 — the spine checks still run without it
         pass
 
-    warnings = run_all_lints(client, codes, cp_md_text=cp_md_text)
+    # Dangling `Source reviewed:` references (#324) — needs the clone and a
+    # readable source store; skipped (and reported so) when either is missing.
+    ws_dir = _find_workstream_dir(project_code)
+    source_titles = None
+    if ws_dir is not None:
+        pid = resolve_project_id(client, project_code)
+        if pid is not None:
+            source_titles = _ingested_source_titles(client, pid)
+
+    ws_docs, ws_files = (
+        _workstream_docs(ws_dir) if ws_dir is not None else (None, set())
+    )
+    warnings = run_all_lints(client, codes, cp_md_text=cp_md_text,
+                             workstream_docs=ws_docs, local_files=ws_files,
+                             source_titles=source_titles)
     # Audited like every other read here (11 read-only verbs already do).
     # `wrap_status` reads this log to know the step ran — an unaudited step is
     # one it can only ever report as missing.
@@ -11069,6 +11229,7 @@ def spine_lint(project_code: str) -> dict[str, Any]:
         "warnings": warnings,
         "count": len(warnings),
         "cp_md_read": cp_md_text is not None,
+        "source_reviewed_checked": ws_dir is not None and source_titles is not None,
         "clean": not warnings,
     }
 

@@ -302,6 +302,43 @@ class SpineSubstanceRow:
         )
 
 
+def asset_ids_with_chunks(client, asset_ids, *, batch: int = 50,
+                          page: int = 1000) -> set[str]:
+    """The subset of `asset_ids` that has at least one `asset_chunks` row.
+
+    "Exists but empty" (#324 part d): a zero-chunk asset is a real row with
+    nothing readable behind it — every title read through the chunk RPC
+    misses it and used to report "no source named …", as if it had never
+    been ingested. Callers diff `asset_ids` against this set to flag them.
+
+    `rag_assets` and `asset_chunks` carry no FK PostgREST can embed, so this
+    reads `asset_id` only (a uuid per chunk, never `text`) for a batch of
+    ids, paged at PostgREST's max-rows so a long document never truncates
+    the answer into a false "empty". Raises on a read error — a caller that
+    cannot tell must say nothing rather than call a document empty.
+    """
+    ids = [a for a in dict.fromkeys(asset_ids) if a]
+    have: set[str] = set()
+    for i in range(0, len(ids), batch):
+        chunk_ids = ids[i:i + batch]
+        start = 0
+        while True:
+            rows = (
+                client.table(Tables.ASSET_CHUNKS)
+                .select("asset_id")
+                .in_("asset_id", chunk_ids)
+                .order("id")
+                .range(start, start + page - 1)
+                .execute()
+                .data
+            ) or []
+            have.update(str(r.get("asset_id")) for r in rows if r.get("asset_id"))
+            if len(rows) < page or have.issuperset(chunk_ids):
+                break
+            start += page
+    return have
+
+
 @dataclass(frozen=True)
 class RagAssetRow:
     """A `rag_assets` row (manifest list shape)."""
@@ -417,6 +454,39 @@ def load_dropbox_creds(config: "TenantConfig") -> None:
     for key in _DROPBOX_KEYS:
         if not os.environ.get(key) and file_creds.get(key):
             os.environ[key] = file_creds[key]
+
+
+# Google Drive creds the `GoogleDriveConnector` reads via `os.getenv` (#324):
+# `fetch_project_source` falls back to the ORIGINAL file when the ingested text
+# is empty, and a local MCP session had Dropbox creds loaded for it but never
+# Drive's — so a Drive-hosted original was unreachable exactly when it was the
+# only readable copy.
+DRIVE_CRED_KEYS = (
+    "GOOGLE_SERVICE_ACCOUNT_JSON",
+    "GOOGLE_SERVICE_ACCOUNT_FILE",
+    "GOOGLE_CREDENTIALS_PATH",
+)
+
+
+def load_drive_creds(config: "TenantConfig") -> None:
+    """Export Google Drive creds into `os.environ` for the Drive connector.
+
+    Mirrors `load_dropbox_creds`: an already-set env var WINS, otherwise fill
+    from `<mc-2 clone>/backend/.env`; no clone configured → no-op. A relative
+    file path in that .env is relative to the backend dir, so it is resolved
+    there — the MCP process's cwd is the tenant, not mc-2.
+    """
+    env_file = _mc2_env_file(config)
+    if env_file is None:
+        return
+    file_creds = _read_dotenv(env_file, DRIVE_CRED_KEYS)
+    for key in DRIVE_CRED_KEYS:
+        value = file_creds.get(key)
+        if os.environ.get(key) or not value:
+            continue
+        if key != "GOOGLE_SERVICE_ACCOUNT_JSON" and not Path(value).is_absolute():
+            value = str(env_file.parent / value)
+        os.environ[key] = value
 
 
 def _export_supabase_creds(url: str, key: str) -> None:
