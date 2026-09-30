@@ -266,3 +266,53 @@ def test_pyproject_addopts_does_not_carry_q():
     opts = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())[
         "tool"]["pytest"]["ini_options"].get("addopts", "")
     assert "-q" not in opts.split()
+
+
+# ── CI gate (architecture plan step 0) ─────────────────────────────────
+
+
+class _FakeRun:
+    """Stand-in for release.run: answers gh / git by the command's head."""
+
+    def __init__(self, *, green="a" * 40, ancestor=True, changed=("CHANGELOG.md",)):
+        self.green, self.ancestor, self.changed = green, ancestor, changed
+
+    def __call__(self, cmd, *, capture=False, check=True, env=None):
+        if cmd[:3] == ["gh", "run", "list"]:
+            return _make_completed(self.green)
+        if cmd[:2] == ["git", "fetch"]:
+            return _make_completed("")
+        if cmd[:3] == ["git", "merge-base", "--is-ancestor"]:
+            return subprocess.CompletedProcess(cmd, 0 if self.ancestor else 1, "", "")
+        if cmd[:3] == ["git", "diff", "--name-only"]:
+            return _make_completed("\n".join(self.changed))
+        raise AssertionError(f"unexpected command {cmd}")
+
+
+def test_ci_gate_passes_when_only_the_changelog_changed_since_green():
+    release = _load_release()
+    with patch.object(release, "run", _FakeRun()):
+        assert release.ci_gate() == "a" * 40
+
+
+def test_ci_gate_refuses_when_code_changed_since_the_last_green_run():
+    release = _load_release()
+    fake = _FakeRun(changed=("CHANGELOG.md", "src/cp_engine/sync.py"))
+    with patch.object(release, "run", fake), pytest.raises(release.ReleaseError, match="sync.py"):
+        release.ci_gate()
+
+
+def test_ci_gate_refuses_when_green_is_not_an_ancestor():
+    release = _load_release()
+    with patch.object(release, "run", _FakeRun(ancestor=False)), pytest.raises(
+        release.ReleaseError, match="not an ancestor"
+    ):
+        release.ci_gate()
+
+
+def test_ci_gate_refuses_with_no_green_run():
+    release = _load_release()
+    with patch.object(release, "run", _FakeRun(green="")), pytest.raises(
+        release.ReleaseError, match="no successful"
+    ):
+        release.ci_gate()

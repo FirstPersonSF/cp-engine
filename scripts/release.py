@@ -36,6 +36,8 @@ Pre-flight checks (all must pass before any file is touched):
 - New version is strictly greater than current.
 - `CHANGELOG.md` has a `## v<new-version>` section already drafted.
 - The git tag `v<new-version>` does not already exist.
+- CI gate: the newest green `tests` run on main is an ancestor of HEAD, and
+  nothing but CHANGELOG.md changed since (`--skip-ci-gate REASON` to override).
 
 On any failure the script exits non-zero and leaves the tree untouched.
 """
@@ -148,11 +150,62 @@ def parse_args() -> argparse.Namespace:
         help="Skip pytest. Use only when tests have just passed in another way.",
     )
     p.add_argument(
+        "--skip-ci-gate",
+        metavar="REASON",
+        help="Release without a green CI run on the released code. Give the reason; it is "
+        "printed in the release output. Use only when CI itself is broken.",
+    )
+    p.add_argument(
         "--skip-build",
         action="store_true",
         help="Skip `python -m build`. Use only if `build` is unavailable.",
     )
     return p.parse_args()
+
+
+# CI gate (architecture plan step 0). CI was red from 2026-09-24 to 09-30 across
+# ~15 releases because nothing refused a release on red. The released code must
+# be what a GREEN `tests` run on main tested: the newest successful run's commit
+# must be an ancestor of HEAD, and nothing may differ since except the changelog
+# (the release-notes commit is usually made locally, after CI ran on the code).
+CI_WORKFLOW = "tests.yml"
+CI_ONLY_CHANGED_SINCE_GREEN = {"CHANGELOG.md"}
+
+
+def ci_gate() -> str:
+    """Return the green commit the release rests on, or raise ReleaseError."""
+    try:
+        out = run(
+            ["gh", "run", "list", "--workflow", CI_WORKFLOW, "--branch", "main",
+             "--status", "success", "--limit", "1", "--json", "headSha",
+             "-q", ".[0].headSha"],
+            capture=True,
+        ).stdout.strip()
+    except Exception as e:  # noqa: BLE001 — gh missing or unauthenticated
+        raise ReleaseError(
+            f"CI gate: could not read CI status with `gh` ({e}). Fix `gh auth`, or pass "
+            "--skip-ci-gate '<reason>'."
+        ) from e
+    if not out:
+        raise ReleaseError("CI gate: no successful `tests` run on main. Fix CI first.")
+    run(["git", "fetch", "-q", "origin", "main"], capture=True)
+    if run(["git", "merge-base", "--is-ancestor", out, "HEAD"], check=False).returncode != 0:
+        raise ReleaseError(
+            f"CI gate: the last green commit {out[:7]} is not an ancestor of HEAD. "
+            "Push, wait for CI, then release."
+        )
+    changed = {
+        f for f in run(["git", "diff", "--name-only", out, "HEAD"], capture=True).stdout.split()
+    }
+    extra = sorted(changed - CI_ONLY_CHANGED_SINCE_GREEN)
+    if extra:
+        raise ReleaseError(
+            f"CI gate: {len(extra)} file(s) changed since the last green CI run "
+            f"({out[:7]}), so the released code is untested by CI: "
+            + ", ".join(extra[:8]) + (" …" if len(extra) > 8 else "")
+            + ". Push them, wait for CI to go green, then release."
+        )
+    return out
 
 
 def preflight(new: str) -> tuple[Version, Version]:
@@ -398,6 +451,11 @@ def main() -> int:
 
     try:
         cur_v, new_v = preflight(args.version)
+        if args.skip_ci_gate:
+            print(f"[release] ⚠ CI gate SKIPPED: {args.skip_ci_gate}")
+        else:
+            green = ci_gate()
+            print(f"[release] CI gate: green at {green[:7]}")
     except ReleaseError as e:
         print(f"[release] preflight failed: {e}", file=sys.stderr)
         return 1

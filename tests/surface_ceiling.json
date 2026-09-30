@@ -1,0 +1,6 @@
+{
+  "_why": "Architecture plan step 0 (2026-09-30): the surface may shrink but not grow without a deliberate edit here. 64 hosted tools, 68 cxp commands and 36 tables carried the usage in which ~a quarter to a third did 90% of the work. Raising a number is a decision: say why in the commit.",
+  "hosted_tools": 64,
+  "cxp_commands": 68,
+  "mc2_tables": 36
+}
