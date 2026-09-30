@@ -4,6 +4,23 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.127.0 — 2026-09-30
+
+**Machine-drafted Exec Summaries (#251).** New `cxp draft-summaries
+[<code>...] [--dry-run]`, run weekly by a tenant GitHub Action on Monday
+morning before sprint planning. For every active workstream whose Exec Summary
+is 14+ days old or a partial refresh, it drafts Status / Where it stands /
+Next up / Blockers — never Objective — from that workstream's own last four
+sprint weeks, dated decisions, open commitments and open questions. Every
+field is fidelity-scored (#314) against exactly what the model saw and checked
+for dates and names absent from it; one failing field or a budget overrun
+writes nothing for that workstream. Drafts are written directly through the
+`capture_project_state` merge path and stamped
+`· drafted by cp (from W38–W41 sprint files, …)`; master-cp.md shows
+`🤖 _drafted_`. A person changing any of the four fields clears the marker;
+an Updates-only or Objective-only write keeps it. Model `claude-opus-5-5`
+(`--model` / `CP_DRAFT_MODEL`); uses the existing `ANTHROPIC_API_KEY`.
+
 ## v0.126.4 — 2026-09-30
 
 **Read-only endpoint for ChatGPT (#141).** The hosted server now also serves
