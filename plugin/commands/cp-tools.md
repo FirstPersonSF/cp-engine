@@ -304,7 +304,8 @@ ratifies, and the Monday partners digest reads):
   review-gate parity with auto-ingest — nothing is auto-confirmed).
   `direction` ∈ `us_to_them | them_to_us | internal`; `owner_email` is who
   owes it (an email); `due_date` ISO or omitted (never guess a date the humans
-  didn't agree). Idempotent on identical text — dropped rows stay dead.
+  didn't agree). NOT idempotent — the same text twice makes two rows, so check
+  `list_commitments` before re-logging one.
   `source_meeting_id` (a `meeting_id` from `list_project_meetings`) links a
   row logged mid-session to its meeting, so it groups with the rows the
   webhook later writes for that meeting (#311); `commitments_sweep` flags
