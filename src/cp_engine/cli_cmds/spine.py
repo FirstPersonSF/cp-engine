@@ -1051,6 +1051,45 @@ def stub_sweep_cmd(code: str, verify_target: str | None = None) -> None:
     click.echo(render_sweep(stubs, code=code))
 
 
+@click.command("feeds-sweep")
+@click.argument("code")
+def feeds_sweep_cmd(code: str) -> None:
+    """The feeds edges this project's routing implies (#174).
+
+    A source routed to a deliverable's slot, or to an activity that already
+    feeds a deliverable, is proposed as `informs` -> that deliverable — unless
+    it arrived AFTER the work it was routed to (#270), or the pair already has
+    an edge in any status (a dismissed proposal stays dismissed).
+
+    READ-ONLY. Routing proposes these at the moment it happens, as `proposed`
+    edges a human confirms in the Suggestions inbox; this reports what the
+    rule sees across the whole project, for a backlog the routing-time hook
+    never saw.
+    """
+    from cp_engine.feeds_propose import fetch_inputs, propose_feeds, render_report
+    from cp_engine.sync import BackendUnavailable
+
+    config = _cli._load_config_or_die()
+    try:
+        client = mc2_db.get_client(config)
+    except BackendUnavailable as exc:
+        click.echo(f"cxp feeds-sweep needs MC-2: {exc}", err=True)
+        sys.exit(1)
+    try:
+        project_id = mc2_db._resolve_project_id(client, code)
+    except Exception:  # noqa: BLE001 — resolution is best-effort
+        project_id = None
+    if not project_id:
+        click.echo(f"No project resolves for '{code}'.", err=True)
+        sys.exit(1)
+    rows, relations, source_dates = fetch_inputs(client, project_id)
+    if not rows:
+        click.echo(f"No live spine for '{code}'.", err=True)
+        sys.exit(1)
+    proposals, skipped = propose_feeds(rows, relations, source_dates=source_dates)
+    click.echo(render_report(proposals, skipped, code=code))
+
+
 @click.command("exec-lint")
 @click.argument("code")
 def exec_lint_cmd(code: str) -> None:

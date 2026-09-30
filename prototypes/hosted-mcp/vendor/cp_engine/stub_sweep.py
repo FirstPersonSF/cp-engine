@@ -61,21 +61,6 @@ _BOILERPLATE_RE = re.compile(
 SOURCE_LAYERS = ("source material", "sourcematerial", "source")
 
 
-_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I)
-
-
-def rag_asset_ids(rows) -> list[str]:
-    """The source ids on ``rows`` that can name a `rag_assets` row (uuids),
-    sorted and de-duplicated. `_authored/<slug>` keys are skipped: one of them
-    in a PostgREST `in_` filter fails the whole query with 22P02."""
-    return sorted({
-        str(src["id"])
-        for r in rows
-        for src in (r.get("sources") or [])
-        if isinstance(src, dict) and _UUID_RE.match(str(src.get("id") or ""))
-    })
-
-
 def _norm(v: Any) -> str:
     return str(v or "").strip().lower()
 

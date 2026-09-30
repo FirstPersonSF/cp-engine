@@ -144,6 +144,13 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   and tag WHO IS SPEAKING with `actor` (partner | client | vendor | inferred —
   the schema half of the v04 authority ordering; list/pull surface it, and a
   `client`-actor element is a stakeholder signal: it advises, never vetoes).
+  ROUTING PROPOSES THE FEEDS EDGE (#174): a `serves` that lands on a
+  deliverable's slot, or on an activity with an active edge to a deliverable,
+  also writes a `proposed` `informs` edge to that deliverable (returned under
+  `feeds_proposed`) for a human to confirm in the Suggestions inbox — never an
+  active edge. Held back when the document arrived after the work (#270), when
+  the pair was already asked (a dismissal stays dismissed), or when the target
+  card's layer disagrees with its deliverable kind (#177).
   NOTE: the stdio copy also promoted the element's source transcript to RAG on an
   `important` false→true flip; the hosted copy does NOT do that yet (#143). Run
   `promote_spine_transcript(project_code, key)` — now also a hosted verb (#143 batch 5) —
@@ -236,6 +243,11 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   slot (nothing to attach to) and stubs whose target has `layer: null` (moving
   provenance onto a card spine-lint calls unfilable buries it — fix the
   destination first). Not a wrap-up ritual; run it when curating a project.
+- `cxp feeds-sweep <code>` — **CLI, read-only** (#174) — the feeds edges the
+  project's CURRENT routing implies, by the same rule routing now applies as it
+  happens (see `set_spine_element` above), plus what was held back and why
+  (`postdates` / `edge_exists` / `absorbed` / `target_misfiled` / `undated`).
+  For the backlog the routing-time hook never saw; writes nothing.
 - `promote_stakeholder(project_code, key)` — **hosted-server verb** (`cp-hosted`
   connector; cp-engine #143 ported it off stdio) — promote a stakeholder element
   to ACCOUNT scope: it becomes readable from every project of the same company
