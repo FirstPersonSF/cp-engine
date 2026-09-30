@@ -35,6 +35,10 @@ logger = logging.getLogger(__name__)
 
 from cp_engine.claude_settings import install_into_tenant
 from cp_engine.config import TenantConfig
+# One predicate for every estimator reader (#284): prep announces what sync
+# fails on, and two copies would drift the first time PostgREST's error
+# shape does.
+from cp_engine.estimate_scope import is_schema_drift as _is_schema_drift
 from cp_engine.render import (
     EXEC_SUMMARY_END,
     EXEC_SUMMARY_MIGRATION_SUFFIX,
@@ -228,15 +232,6 @@ class EstimateSchemaDrift(SyncError):
     had mc-2 migration 183 run first (`is_default` gone, every spine unbound,
     `cxp sync` reporting success).
     """
-
-
-def _is_schema_drift(exc: BaseException) -> bool:
-    """PostgREST names a missing column with SQLSTATE 42703; older client
-    versions only carry the message. Either is drift, not data."""
-    if getattr(exc, "code", None) == "42703":
-        return True
-    msg = str(exc)
-    return "column" in msg and "does not exist" in msg
 
 
 def _fetch_estimate_or_none(client, project):

@@ -625,6 +625,9 @@ def _fetch_mc2_schedule_milestones(
             or []
         )
     except Exception as exc:  # noqa: BLE001 — degrade to ClickUp-only
+        from cp_engine.estimate_scope import announce_schema_drift, is_schema_drift
+        if is_schema_drift(exc):
+            announce_schema_drift("MC-2 schedule milestone fetch", project.code, exc)
         log.warning(
             "MC-2 schedule milestone fetch failed for %s: %s",
             project.code, exc,
@@ -865,6 +868,9 @@ def _fetch_deliverable_lines(supabase_client, project: ProjectState) -> tuple[st
             .execute().data or []
         )
     except Exception as exc:  # noqa: BLE001 — best-effort
+        from cp_engine.estimate_scope import announce_schema_drift, is_schema_drift
+        if is_schema_drift(exc):
+            announce_schema_drift("deliverable-card fetch", project.code, exc)
         log.warning("deliverable-card fetch failed for %s: %s", project.code, exc)
         return ()
 

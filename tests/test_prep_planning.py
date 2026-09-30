@@ -2200,3 +2200,59 @@ def test_bundle_block_renders_slack_digest():
         client_asks=(), sprint_open_asks=(), urgent=(), fetch_error=None,
     )
     assert "Slack digest" not in "\n".join(_render_bundle_project_block(quiet))
+
+
+class _DriftedEstimatorClient(_Mc2ScheduleClient):
+    """The #284 shape: the estimator answers a dropped column with 42703."""
+
+    def table(self, name):
+        if self._schema == "estimator" and name == "projects":
+            class _Boom(_Mc2Query):
+                def execute(self):
+                    err = Exception(
+                        "column projects.is_default does not exist")
+                    err.code = "42703"
+                    raise err
+            self._schema = "public"
+            return _Boom([])
+        return super().table(name)
+
+
+def test_estimator_schema_drift_is_announced_not_just_logged(capsys):
+    """A missing estimator column must reach the user on stderr (#284).
+
+    Both prep estimate readers degrade per project and log through
+    `logging`, which the CLI gives no handler outside `cxp sync` — so the
+    day mc-2 dropped a column cp-engine still read, every job's estimate
+    figures would have left the planning doc and nobody would have been
+    told. The degrade stays (one job must not blank the doc); the notice is
+    what this guards."""
+    client = _DriftedEstimatorClient(items=[_sched_item()])
+    assert prep_planning._fetch_mc2_schedule_milestones(
+        client, make_state("ggl-5168"),
+    ) == ()
+    assert prep_planning._fetch_deliverable_lines(
+        _DriftedEstimatorClient(), make_state("ggl-5168"),
+    ) == ()
+    err = capsys.readouterr().err
+    assert err.count("SCHEMA error") == 2
+    assert "ggl-5168" in err and "is_default" in err
+
+
+def test_an_ordinary_estimator_failure_stays_quiet(capsys):
+    """Only drift is announced — a per-project outage keeps the old
+    best-effort behaviour, or 45 unreachable jobs would print 45 banners."""
+    class _Down(_Mc2ScheduleClient):
+        def table(self, name):
+            if self._schema == "estimator" and name == "projects":
+                class _Boom(_Mc2Query):
+                    def execute(self):
+                        raise RuntimeError("connection reset")
+                self._schema = "public"
+                return _Boom([])
+            return super().table(name)
+
+    assert prep_planning._fetch_mc2_schedule_milestones(
+        _Down(items=[_sched_item()]), make_state("ggl-5168"),
+    ) == ()
+    assert "SCHEMA error" not in capsys.readouterr().err

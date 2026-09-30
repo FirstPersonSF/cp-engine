@@ -30,6 +30,7 @@ and these surfaces follow status alone.
 
 from __future__ import annotations
 
+import sys
 from typing import Any
 
 from cp_engine.mc2_db import Tables
@@ -84,3 +85,35 @@ def rendered_estimates(client, mc_project_id: str) -> list[dict[str, Any]]:
 # the addition fell to `unbound`, silently (the 5195 shape). cp-engine's
 # consumers read ITEMS, PHASES and SCHEDULE BARS, never money, so the union
 # changes no figure; it only makes additions bind.
+
+
+def is_schema_drift(exc: BaseException) -> bool:
+    """PostgREST names a missing column with SQLSTATE 42703; older client
+    versions only carry the message. Either is drift, not data.
+
+    Lives beside the resolver because every reader of the estimator schema
+    needs the same answer — `sync` fails the run on it, prep announces it."""
+    if getattr(exc, "code", None) == "42703":
+        return True
+    msg = str(exc)
+    return "column" in msg and "does not exist" in msg
+
+
+def announce_schema_drift(surface: str, code: str, exc: BaseException) -> None:
+    """Say, on stderr, that an estimator read hit a schema error.
+
+    The prep surfaces degrade per project on purpose — one unreachable job
+    must not blank the planning doc — and they log through `logging`, which
+    the CLI gives no handler outside `cxp sync`. So a missing column (the
+    #284 shape: `is_default` dropped, every job's estimate figures gone) would
+    have reached nobody. `print` is the only channel that does; stderr keeps
+    it out of the bundle on stdout.
+    """
+    print(
+        f"cp-engine: {surface} for {code} hit an estimator SCHEMA error — "
+        f"{type(exc).__name__}: {exc}. This is tenant-wide, not this "
+        "project's: every job's estimate figures are missing from this run. "
+        "Check `cp_engine.estimate_scope._SCOPE_COLUMNS` against mc-2's "
+        "migrations.",
+        file=sys.stderr,
+    )
