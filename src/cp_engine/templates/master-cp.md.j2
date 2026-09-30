@@ -80,7 +80,7 @@ Sales-stage progression: Inquiry → Negotiation → Contract.
 | Account | Code | Project | Stage | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|---|
 {%- for p in active_groups.pipeline %}
-| [{{ p.account_display }}]({{ p.account_link }}) | `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.deal_stage or "—" }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_activity_short }} | {{ p.one_line_summary or "" }}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% if p.latest_signal %}<br>**Since then:** {{ p.latest_signal[0] }} _({{ p.latest_signal[1] }})_{% endif %}{% endif %}{% if p.summary_partial_refresh_days %} ⚠️ _partial refresh_{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
+| [{{ p.account_display }}]({{ p.account_link }}) | `{{ p.code }}` | {{ p.name }}{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.deal_stage or "—" }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_activity_short }} | {{ p.one_line_summary or "" }}{% if p.summary_drafted %} 🤖 _drafted_{% endif %}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% if p.latest_signal %}<br>**Since then:** {{ p.latest_signal[0] }} _({{ p.latest_signal[1] }})_{% endif %}{% endif %}{% if p.summary_partial_refresh_days %} ⚠️ _partial refresh_{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 <!-- cp-engine:end active-pipeline -->
 
@@ -96,7 +96,7 @@ _{{ section_summaries.tree }}_
 | Code | Workstream | Label | Owner | Budget | Last activity | One-line summary | CP |
 |---|---|---|---|---|---|---|---|
 {%- for p in company.rows %}
-| {{ p.tree_prefix }}`{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.display_name }} | {{ p.label_word }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_activity_short }} | {{ p.one_line_summary or "" }}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% if p.latest_signal %}<br>**Since then:** {{ p.latest_signal[0] }} _({{ p.latest_signal[1] }})_{% endif %}{% endif %}{% if p.summary_partial_refresh_days %} ⚠️ _partial refresh_{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
+| {{ p.tree_prefix }}`{{ p.code }}`{% if p.allocation_line %}<br>_{{ p.allocation_line }}_{% endif %} | {{ p.display_name }} | {{ p.label_word }} | {{ p.owner or "—" }} | {{ p.budget_short or "—" }} | {{ p.last_activity_short }} | {{ p.one_line_summary or "" }}{% if p.summary_drafted %} 🤖 _drafted_{% endif %}{% if p.summary_stale_days %} ⚠️ _summary {{ p.summary_stale_days }}d stale_{% if p.latest_signal %}<br>**Since then:** {{ p.latest_signal[0] }} _({{ p.latest_signal[1] }})_{% endif %}{% endif %}{% if p.summary_partial_refresh_days %} ⚠️ _partial refresh_{% endif %} | [CP →]({{ p.scope }}/{{ p.dir_slug }}/cp.md){% if p.sprint_link %} · [{{ current_week_label }} →]({{ p.sprint_link }}){% endif %} |
 {%- endfor %}
 {%- endfor %}
 <!-- cp-engine:end active-tree -->

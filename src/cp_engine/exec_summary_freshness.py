@@ -232,6 +232,16 @@ def partial_refresh(cp_md_path: Path) -> PartialRefresh | None:
     m = _STAMP_RE.search(text)
     if m is None:
         return None
+    # A machine draft (#251, `exec_summary_draft`) writes all four state
+    # fields together and stamps `· drafted by cp`. It is current by
+    # construction, so it is never a partial refresh — even when one drafted
+    # field came out identical to the old text and so kept its old blame
+    # date. The first human write clears the marker (`exec_summary_merge`
+    # rewrites the whole stamp line), and detection resumes from there.
+    from cp_engine.exec_summary_draft import is_drafted
+
+    if is_drafted(text):
+        return None
     try:
         stamp = date.fromisoformat(m.group("date"))
     except ValueError:

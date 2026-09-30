@@ -633,3 +633,109 @@ def dates_loop_cmd(post: bool, window_days: int | None, today) -> None:
         )
     if not result.posts and not result.partners_text:
         click.echo("Nothing due in the window — no posts to send.")
+
+
+@click.command("draft-summaries")
+@click.argument("codes", nargs=-1)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Draft and check, print the drafts, write nothing.",
+)
+@click.option(
+    "--model",
+    default=None,
+    help="LLM model (default: $CP_DRAFT_MODEL, else the engine's current "
+    "Claude default).",
+)
+@click.option(
+    "--report",
+    "report_path",
+    type=click.Path(dir_okay=False, path_type=Path),
+    default=None,
+    help="Also write the per-workstream results as JSON to this path.",
+)
+@click.option(
+    "--planning-morning-only",
+    is_flag=True,
+    help="Do nothing unless it is Monday before 10:00 tenant time (the "
+    "scheduled run's window).",
+)
+def draft_summaries_cmd(
+    codes: tuple[str, ...],
+    dry_run: bool,
+    model: str | None,
+    report_path: Path | None,
+    planning_morning_only: bool,
+) -> None:
+    """Machine-draft stale Exec Summaries from each workstream's own recent
+    material (#251).
+
+    In scope: every active workstream whose summary is 14+ days old or a
+    partial refresh (or, with CODES, only those — still scope-checked).
+    Writes Status, Where it stands, Next up and Blockers — never Objective —
+    and marks the stamp `· drafted by cp`. A workstream any of whose fields
+    fails the fidelity check gets NOTHING written, and is reported.
+    """
+    import json
+
+    from cp_engine.exec_summary_draft import anthropic_llm, draft_summaries
+    from cp_engine.prep_planning import _make_supabase_client
+    from cp_engine.sprints import current_sprint_week_iso
+    from cp_engine.sync import _default_backend_factory
+
+    now = tenant_now()
+    if planning_morning_only and not (now.weekday() == 0 and now.hour < 10):
+        click.echo(f"Not Monday morning tenant time ({now:%a %H:%M}) — nothing to do.")
+        return
+
+    config = _cli._load_config_or_die()
+    backend = _default_backend_factory(config.sync.backend)
+    projects = backend.read_projects(config)
+    supabase_client = _make_supabase_client(config)
+
+    results = draft_summaries(
+        config,
+        tuple(projects),
+        today=now.date(),
+        current_week=current_sprint_week_iso(now),
+        llm=anthropic_llm(model),
+        codes=codes,
+        supabase_client=supabase_client,
+        apply=not dry_run,
+    )
+
+    for r in results:
+        click.echo(f"--- {r.code} [{r.reason}] {r.outcome}"
+                   + (f" — {r.detail}" if r.detail else ""))
+        if r.source_note:
+            click.echo(f"    from {r.source_note}")
+        if r.fields and (dry_run or r.outcome == "rejected"):
+            for label, value in r.fields.items():
+                if isinstance(value, str):
+                    click.echo(f"    **{label}:** {value}")
+                else:
+                    click.echo(f"    **{label}:**")
+                    for v in value:
+                        click.echo(f"      - {v}")
+        for c in r.checks:
+            score = "—" if c.score is None else f"{c.score:.2f}"
+            click.echo(f"    check {c.field}: {score} {'ok' if c.ok else 'FAIL'} ({c.reason})")
+
+    tally: dict[str, int] = {}
+    for r in results:
+        tally[r.outcome] = tally.get(r.outcome, 0) + 1
+    click.echo("summary: " + (", ".join(f"{v} {k}" for k, v in sorted(tally.items())) or "nothing in scope"))
+
+    if report_path is not None:
+        report_path.write_text(
+            json.dumps({"results": [r.as_dict() for r in results], "tally": tally},
+                       indent=2, default=str),
+            encoding="utf-8",
+        )
+    # Exit non-zero only when drafting was attempted and every attempt
+    # errored (a transport or credential failure) — a rejection is the
+    # check doing its job, not a failure of the run.
+    attempted = [r for r in results if r.outcome != "skipped"]
+    if attempted and all(r.outcome == "error" for r in attempted):
+        sys.exit(1)

@@ -57,10 +57,22 @@ logger = logging.getLogger(__name__)
 # The heading immediately above the region, carrying the freshness stamp that
 # `summary.exec_summary_updated_on` reads. A merge that changed a field but
 # left this stale would report the summary as older than it is.
+#
+# THE WHOLE LINE IS REWRITTEN, not just the date (#251). A machine draft
+# (`exec_summary_draft`) marks its stamp `· drafted by cp (from …)`; a human
+# write through this module is the refresh that replaces the draft, so it must
+# take the marker with it. Matching only the date left the suffix in place and
+# a human-authored summary kept reading as machine-drafted.
 _STAMP_RE = re.compile(
-    r"^(?P<prefix>##\s+Exec Summary\s*·\s*updated\s+)(?P<date>\d{4}-\d{2}-\d{2})",
+    r"^(?P<prefix>##\s+Exec Summary\s*·\s*updated\s+)(?P<date>\d{4}-\d{2}-\d{2})(?P<rest>[^\n]*)",
     re.MULTILINE,
 )
+
+
+def _stamp_line(m: re.Match, today: date) -> str:
+    """The stamp heading for a write made today: the date advanced, and
+    anything after it (a `· drafted by cp` marker) dropped."""
+    return f"{m.group('prefix')}{today.isoformat()}"
 
 
 class ExecSummaryMergeError(Exception):
@@ -109,9 +121,7 @@ def merge_exec_summary_fields(
         return cp_md_text, ()
 
     updated = splice_managed_region(cp_md_text, EXEC_SUMMARY_REGION, new_region)
-    updated = _STAMP_RE.sub(
-        lambda m: f"{m.group('prefix')}{today.isoformat()}", updated, count=1
-    )
+    updated = _STAMP_RE.sub(lambda m: _stamp_line(m, today), updated, count=1)
     return updated, changed
 
 
@@ -551,7 +561,5 @@ def append_update_entry(
         out.append(raw)
 
     updated = f"{before}{''.join(out)}{after}"
-    updated = _STAMP_RE.sub(
-        lambda m: f"{m.group('prefix')}{today.isoformat()}", updated, count=1
-    )
+    updated = _STAMP_RE.sub(lambda m: _stamp_line(m, today), updated, count=1)
     return UpdateAppendResult(updated, True, roll_off)

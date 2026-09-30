@@ -69,7 +69,9 @@ wipe the rest:
 5. **Roll off Updates older than ~4 weeks** so the history stays tight.
 6. **Stamp `· updated <today>`** on the `## Exec Summary` heading line —
    `/cp-prep` flags an unstamped or old summary as STALE in the planning
-   bundle.
+   bundle. Rewrite the whole line: if it carries `· drafted by cp (from …)`
+   (the weekly machine draft, #251), drop that suffix — your refresh
+   replaces the draft, and the marker must not outlive it.
 
 This is the durable project-state surface; transient weekly material
 belongs in the sprint file, not the Exec Summary.

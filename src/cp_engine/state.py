@@ -419,6 +419,12 @@ class ProjectState:
     # exactly as before; see sync._derive_partial_refresh_days.
     summary_partial_refresh_days: int | None = None
 
+    # True when the Exec Summary was written by the engine's weekly draft
+    # (#251, `exec_summary_draft`) and no person has refreshed it since —
+    # its stamp carries `· drafted by cp`. Rendered beside the one-liner so a
+    # reader can tell machine prose from a partner's.
+    summary_drafted: bool = False
+
     # The newest dated decision recorded for this project since the Exec
     # Summary was written, as (text, ISO date) — None when the summary is
     # current or nothing newer exists. Rendered BESIDE the summary, never

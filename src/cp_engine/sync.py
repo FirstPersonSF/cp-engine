@@ -324,6 +324,7 @@ def _sync_tenant_inner(
             one_line_summary=_derive_summary(config, p),
             summary_stale_days=_derive_summary_stale_days(config, p),
             summary_partial_refresh_days=_derive_partial_refresh_days(config, p),
+            summary_drafted=_derive_summary_drafted(config, p),
             last_activity=_derive_last_activity(config, p),
         )
         for p in projects
@@ -2124,6 +2125,20 @@ def _derive_partial_refresh_days(
         return None
     found = partial_refresh(existing / "cp.md")
     return found.lag_days if found is not None else None
+
+
+def _derive_summary_drafted(config: TenantConfig, project: ProjectState) -> bool:
+    """True when the Exec Summary still carries the engine's `· drafted by
+    cp` marker (#251) — no person has refreshed it since the draft."""
+    from cp_engine.exec_summary_draft import is_drafted
+
+    existing = find_working_dir(config.root, project.code, project.mc2_id)
+    if existing is None:
+        return False
+    try:
+        return is_drafted((existing / "cp.md").read_text(encoding="utf-8"))
+    except OSError:
+        return False
 
 
 def _derive_last_activity(

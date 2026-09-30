@@ -1650,6 +1650,8 @@ def _project_view(
         # Lag in days when the stamp overstates the state fields (#251);
         # None when fully refreshed or undatable (renders as before).
         "summary_partial_refresh_days": p.summary_partial_refresh_days,
+        # The summary is an unreviewed machine draft (#251).
+        "summary_drafted": p.summary_drafted,
         # (text, ISO date) of the newest decision since the summary was
         # written — shown beside a stale summary, never in place of it.
         "latest_signal": p.latest_signal,
