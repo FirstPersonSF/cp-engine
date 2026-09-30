@@ -374,22 +374,12 @@ def test_the_instructions_state_the_real_size_of_the_write_surface(server):
         "instructions claim read-only; 17 tools write"
     )
 
-    src = (Path(__file__).resolve().parent / "server.py").read_text(encoding="utf-8")
-    tree = ast.parse(src)
-    writers = set()
-    for node in tree.body:
-        if not isinstance(node, ast.FunctionDef):
-            continue
-        is_tool = any(
-            isinstance((d.func if isinstance(d, ast.Call) else d), ast.Attribute)
-            and (d.func if isinstance(d, ast.Call) else d).attr == "tool"
-            for d in node.decorator_list
-        )
-        if not is_tool:
-            continue
-        body = ast.dump(node)
-        if any(k in body for k in ("'insert'", "'update'", "'upsert'", "'delete'", "call_mc2_")):
-            writers.add(node.name)
+    # The writer set is the one the read-only endpoint is built on (#141):
+    # `test_readonly_endpoint.test_derived_writers_are_exactly_the_main_only_tools`
+    # derives every tool that can reach a write — through helpers, not just in
+    # its own body — and asserts it equals MAIN_ONLY_TOOLS. The shallow
+    # decorator-body scan this test used before counted 21 of those 40.
+    writers = set(server.MAIN_ONLY_TOOLS)
 
     stated = re.search(r"(\d+)\s+OF THEM WRITE", text)
     assert stated, "the instructions no longer state how many tools write"
