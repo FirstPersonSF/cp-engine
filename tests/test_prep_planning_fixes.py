@@ -377,6 +377,45 @@ def test_migration_bullet_does_not_count_as_authored():
     assert "Updates" in exec_summary_placeholder_fields(region)
 
 
+
+def test_placeholder_fields_reads_decorated_labels():
+    """#327: render kept its own exact-literal label pattern after #319 taught
+    the lint and the merge to read decorated labels, so a decorated field still
+    holding the scaffold placeholder was not a field at all here — unreported,
+    and the region's `· updated` stamp trusted. Labels come from the real
+    scaffold (sync's `_build_exec_summary_region`), decorated the ways the
+    shared `field_label` accepts; every authored field must still be named."""
+    from cp_engine.exec_summary_lint import field_label
+    from cp_engine.render import (
+        EXEC_SUMMARY_AUTHORED_FIELDS,
+        exec_summary_placeholder_fields,
+    )
+    from cp_engine.sync import _build_exec_summary_region
+
+    scaffold = _build_exec_summary_region("", today="2026-09-29")
+    decorated = (
+        scaffold
+        .replace("**Objective:**", "**🎯 Objective:**")
+        .replace("**Status:**", "**Status (W40):**")
+        .replace("**Where it stands:**", "**Where it stands — dated:**\n- _<bullets>_")
+        .replace("**Next up:**", "**Next up**:\n- _<moves>_")
+        .replace("**Blockers:**", "**Blockers 🚧:**\n- _<stuck>_")
+        .replace("**Updates:**", "**Updates (log):**")
+    )
+    # Premise: the shared reader recognises each decorated line as its field.
+    labels = {field_label(ln.strip())[0] for ln in decorated.splitlines()
+              if field_label(ln.strip())}
+    assert set(EXEC_SUMMARY_AUTHORED_FIELDS) <= labels
+    assert exec_summary_placeholder_fields(decorated) == EXEC_SUMMARY_AUTHORED_FIELDS
+
+    # And a decorated field with a real value is filled, not a placeholder.
+    authored = decorated.replace(
+        "**Status (W40):** _<current state in a phrase>_",
+        "**Status (W40):** Round 3 copy approved.",
+    )
+    assert "Status" not in exec_summary_placeholder_fields(authored)
+
+
 # --- #191: urgent counters read commitments + drift -------------------------
 
 
