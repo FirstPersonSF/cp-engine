@@ -56,6 +56,56 @@ class GeneratedPlan:
     # ALSO stays in this project's plan with a `[cross-project? → code]`
     # suffix — detection proposes, never writes to the target.
     cross_project: tuple[dict, ...] = ()
+    # Name checks (#312): counts from `attribution.check_plan_attribution`
+    # — {aliased, resolved, hedged, stakeholders_dropped}.
+    attribution: dict | None = None
+
+
+def apply_attribution_checks(plan: dict, *, config, transcript: str) -> dict:
+    """Run the deterministic person-name pass (#312) over every project
+    block in `plan`: tenant aliases, surname resolution against the
+    project's stakeholder cards, and the `[attribution unverified]` hedge
+    on risks/decisions naming someone the transcript never heard. Never
+    raises — a name check must not cost the ingest."""
+    import logging
+
+    from cp_engine.attribution import check_plan_attribution, load_known_people
+
+    tenant_root = getattr(config, "root", None)
+    week_iso = current_sprint_week_iso(tenant_now())
+    cache: dict = {}
+
+    def known_for(code: str):
+        if code not in cache:
+            project_dir = (
+                _find_project_dir(tenant_root, code) if tenant_root else None
+            )
+            sprint_text = ""
+            if tenant_root is not None:
+                sprint = Path(tenant_root) / "sprints" / week_iso / f"{code}.md"
+                if sprint.is_file():
+                    sprint_text = sprint.read_text(encoding="utf-8")
+            cache[code] = load_known_people(
+                tenant_root=tenant_root,
+                project_dir=project_dir,
+                team=getattr(config, "team", ()) or (),
+                transcript=transcript,
+                sprint_text=sprint_text,
+            )
+        return cache[code]
+
+    try:
+        return check_plan_attribution(
+            plan,
+            transcript=transcript,
+            known_for=known_for,
+            aliases=getattr(config, "name_aliases", None) or {},
+        )
+    except Exception:  # noqa: BLE001 — fidelity pass must never break ingest
+        logging.getLogger(__name__).warning(
+            "attribution pass failed; plan written unchecked", exc_info=True
+        )
+        return {}
 
 
 def generate_plan(
@@ -145,6 +195,14 @@ def generate_plan(
             proj = plan.setdefault("projects", {}).setdefault(project_code, {})
             proj.setdefault("record-ask", []).extend(ask_items)
 
+    # Person-name checks (#312): aliases, surname resolution against the
+    # stakeholder cards, and a hedge on risk/decision bullets that name
+    # someone the transcript never heard. Before the cross-project pass so
+    # the routing marker stays the last thing on the line.
+    attribution = apply_attribution_checks(
+        plan, config=config, transcript=transcript
+    )
+
     # Cross-project annotations (#88): validate against the roster (drop
     # anything the LLM invented), suffix flagged items with the
     # `[cross-project? → code]` marker, and collect clean proposals.
@@ -159,6 +217,7 @@ def generate_plan(
         transcript_path=transcript_path,
         model=model,
         cross_project=tuple(cross_project),
+        attribution=attribution,
     )
 
 
@@ -588,6 +647,14 @@ projects:
    end of month") is NOT a milestone. If the date is genuinely
    unclear, prefer the existing `asks`/`decisions` verbs which write
    to the sprint file's narrative sections.
+10. **Speaker labels are not proof of who spoke.** Fathom labels a
+   shared room with one person's name, and mishears names. Name a person
+   in a risk or decision only when the transcript itself makes clear who
+   said or did it (they are addressed by name, they name themselves, the
+   content fits); otherwise say "the client side" / "someone on the call".
+   A line that addresses the labelled speaker by their own name ("Morgan,
+   can you show it to me?" under the label Morgan) was said by someone
+   else. Spell people as the project context spells them.
 
 # Output format
 
@@ -719,6 +786,14 @@ projects:
     not at least medium-confident, or the roster block says detection
     is OFF, leave the fields off. These become human-reviewed routing
     proposals; nothing auto-writes to the other project.
+12. **Speaker labels are not proof of who spoke.** Fathom labels a
+    shared room with one person's name, and mishears names. Name a person
+    in a risk or decision only when the transcript itself makes clear who
+    said or did it (they are addressed by name, they name themselves, the
+    content fits); otherwise say "the client side" / "someone on the call".
+    A line that addresses the labelled speaker by their own name ("Morgan,
+    can you show it to me?" under the label Morgan) was said by someone
+    else. Spell people as the project context spells them.
 
 # Output format
 

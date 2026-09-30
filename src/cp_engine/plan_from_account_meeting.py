@@ -43,6 +43,7 @@ from cp_engine.plan_from_transcript import (
     _extract_yaml,
     _find_project_dir,
     _load_recent_account_decisions,
+    apply_attribution_checks,
 )
 from cp_engine.sprints import current_sprint_week_iso
 from cp_engine.codes import parse_code
@@ -174,6 +175,9 @@ def generate_account_plan(
         _validate_plan(plan)
     except IngestPlanError as exc:
         raise AccountPlanError(f"plan failed validation: {exc}") from exc
+
+    # Person-name checks per child block (#312).
+    apply_attribution_checks(plan, config=config, transcript=transcript)
 
     project_codes = tuple(p.code for p in active_projects)
     return GeneratedAccountPlan(
@@ -426,6 +430,14 @@ account_decisions:            # OPTIONAL — tenant-wide decisions
 10. **No empty lists.** Omit any project entry / verb that has no
     items. The `account_summary` is the only field that's always
     present.
+11. **Speaker labels are not proof of who spoke.** Fathom labels a
+    shared room with one person's name, and mishears names. Name a person
+    in a risk or decision only when the transcript itself makes clear who
+    said or did it (they are addressed by name, they name themselves, the
+    content fits); otherwise say "the client side" / "someone on the call".
+    A line that addresses the labelled speaker by their own name ("Morgan,
+    can you show it to me?" under the label Morgan) was said by someone
+    else. Spell people as the project context spells them.
 
 # Output format
 
@@ -708,6 +720,9 @@ def generate_sprint_planning_plan(
     except IngestPlanError as exc:
         raise AccountPlanError(f"plan failed validation: {exc}") from exc
 
+    # Person-name checks per child block (#312).
+    apply_attribution_checks(plan, config=config, transcript=transcript)
+
     project_codes = tuple(p.code for p in active_projects)
     return GeneratedAccountPlan(
         plan=plan,
@@ -882,6 +897,14 @@ account_decisions:            # OPTIONAL — tenant-wide decisions
 10. **No empty lists.** Omit any project entry / verb that has no
     items. The `account_summary` is the only field that's always
     present.
+11. **Speaker labels are not proof of who spoke.** Fathom labels a
+    shared room with one person's name, and mishears names. Name a person
+    in a risk or decision only when the transcript itself makes clear who
+    said or did it (they are addressed by name, they name themselves, the
+    content fits); otherwise say "the client side" / "someone on the call".
+    A line that addresses the labelled speaker by their own name ("Morgan,
+    can you show it to me?" under the label Morgan) was said by someone
+    else. Spell people as the project context spells them.
 
 # Output format
 

@@ -70,6 +70,13 @@ that receives bullets gets its own `[auto-ingest] <code>: meeting <id>` commit;
 parent/sprint-planning summaries get an additional
 `[auto-ingest] account:<code>:` or `[auto-ingest] sprint-planning:<scope>:` commit.
 
+**Names in ingested bullets.** Fathom speaker labels are not proof of who
+spoke (a shared room carries one person's label). Auto-ingest resolves names
+against the workstream's stakeholder cards, applies the tenant's
+`[names] aliases` from `.cp-engine.toml`, and tags a risk or decision that
+names someone the transcript never heard `[attribution unverified]` — check
+the transcript before repeating it as fact.
+
 The dashboard also fires a weekly Slack digest cron (Sunday) that fetches each
 active workstream's mapped Slack channel(s) and writes a `### Slack digest` bullet
 into the workstream's current sprint file.

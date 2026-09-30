@@ -333,6 +333,8 @@ def _ingest_one_project(
     # Cross-project proposals (#88): validated annotations collected by
     # generate_plan. The caller writes them to MC-2 after this returns.
     entry["cross_project"] = list(gen.cross_project)
+    # Name checks (#312) — counts only, for the run log.
+    entry["attribution"] = getattr(gen, "attribution", None) or {}
 
     try:
         exec_result = execute_plan(
