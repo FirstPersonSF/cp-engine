@@ -120,6 +120,12 @@ class SpineElement:
     review_flags: tuple[dict, ...] = ()  # re-derivation conflicts
     confirmed_by: str | None = None
     confirmed_at: str | None = None
+    # Who is speaking — `spine_substance.actor` (mc-2 mig 126):
+    # partner | client | vendor | inferred. MC-2 only; the markdown model has no
+    # such key. The Lens does NOT weight on it (no invented authority weights);
+    # it carries it to the sweep so the authority-precedence rule has its datum
+    # (#315 — the column had a writer and no reader).
+    actor: str | None = None
 
 
 def _as_tuple(value: object) -> tuple:
@@ -339,7 +345,9 @@ _SUBSTANCE_STATUS_MAP: dict[str, str] = {"live": "active"}
 _DEFAULT_SUBSTANCE_LAYER = "Deliverables"
 
 
-def substance_row_to_element(row: dict[str, object]) -> SpineElement:
+def substance_row_to_element(
+    row: dict[str, object], *, sealed: bool = False
+) -> SpineElement:
     """Reconstruct a SpineElement from a `spine_substance` MC-2 row.
 
     `spine_substance` hangs distilled, versioned memory off estimate work items
@@ -356,23 +364,37 @@ def substance_row_to_element(row: dict[str, object]) -> SpineElement:
       * last_touched ← `version_date` (substance has no separate last_touched)
       * serves       ← `serves`
 
-    Columns the legacy element model had but substance does not (type/stage/
-    fidelity/target_date/depends_on/source/verification metadata) default to
-    None/empty — the Lens tolerates their absence (stage gates only the
-    `active_deliverable_ids` set, which still works off layer+status).
+      * actor        ← `actor` (who is speaking; carried, never weighted)
+
+    SEALED → `reference` (#315). An element with an active `absorbed_by` edge
+    was sealed into a deliverable that shipped (spec v04 §3): it is "only
+    relevant in retrospect", which is exactly the Lens's `reference` — citable,
+    ranked below live work. This is the ONE lifecycle fact substance records,
+    so it is the one that reaches the status term. Pass `sealed=True` for it.
+
+    WHAT THE SUBSTANCE PATH CANNOT YIELD (#315, by design, not a gap to fill
+    here): `stage` and `depends_on` have no substance column, so `final` and
+    `dormant` — and with them `derive_status`'s blocked-dependency demotion —
+    are reachable only from the markdown (disk-fallback) path. Columns the
+    legacy element model had but substance does not (type/stage/fidelity/
+    target_date/depends_on/source/verification metadata) default to None/empty.
     """
     raw_status = str(row.get("status") or "live")
+    status = _SUBSTANCE_STATUS_MAP.get(raw_status, raw_status)
+    if sealed and status == "active":
+        status = "reference"
     return SpineElement(
         id=str(row["id"]),
         project=str(row.get("project_code") or ""),
         layer=str(row.get("layer") or _DEFAULT_SUBSTANCE_LAYER),
         title=str(row.get("framing") or row["id"]),
-        status=_SUBSTANCE_STATUS_MAP.get(raw_status, raw_status),
+        status=status,
         last_touched=str(row.get("version_date") or ""),
         path=Path(str(row.get("rel_path") or row["id"])),
         body=str(row.get("body") or ""),
         serves=tuple(str(x) for x in (row.get("serves") or [])),
         source=_as_source(row.get("sources")),
+        actor=str(row.get("actor") or "").strip().lower() or None,
     )
 
 
@@ -383,20 +405,46 @@ def load_spine_from_mc2(client, project_code: str) -> tuple[SpineElement, ...]:
     v1/v2/v3), so we filter to the single ``live`` version per item — context
     rows are single-version and also ``live``. Superseded versions are excluded
     so the sweep shows the current state of each work item, not its history.
+
+    Sealed elements (an active `absorbed_by` edge) come back as `reference` —
+    see `substance_row_to_element`. The edges are read with the same
+    `seal_sweep.read_lifecycle_edges` both listings use, so "what counts as
+    sealed" cannot drift between them. A failed edge read DEGRADES LOUDLY: the
+    sweep still runs, every element ranks as live, and stderr says so — an
+    empty map would otherwise look exactly like "nothing was ever sealed".
     """
     data = (
         client.table(Tables.SPINE_SUBSTANCE)
         .select(
-            "id, project_code, est_item_id, layer, placement, status, "
-            "version_label, version_date, framing, body, serves, sources, "
-            "rel_path"
+            "id, project_id, project_code, est_item_id, layer, placement, "
+            "status, version_label, version_date, framing, body, serves, "
+            "sources, rel_path, actor"
         )
         .eq("project_code", project_code)
         .eq("status", "live")
         .execute()
         .data
     ) or []
-    return tuple(substance_row_to_element(r) for r in data)
+    sealed: set[str] = set()
+    project_ids = {str(r["project_id"]) for r in data if r.get("project_id")}
+    if project_ids:
+        from cp_engine.seal_sweep import read_lifecycle_edges
+
+        try:
+            absorbed_into, _canon = read_lifecycle_edges(client, project_ids)
+            sealed = set(absorbed_into)
+        except Exception as exc:  # noqa: BLE001 — degrade, but say so
+            import sys
+
+            print(
+                f"(WARNING: lifecycle edges unreadable for {project_code} — "
+                f"sealed elements rank as live: {exc})",
+                file=sys.stderr,
+            )
+    return tuple(
+        substance_row_to_element(r, sealed=(r.get("est_item_id") or "") in sealed)
+        for r in data
+    )
 
 
 def _recency_term(last_touched: str, today: date) -> float:
@@ -611,6 +659,8 @@ def render_sweep(
         eff_status = effective[e.id]
         if eff_status in ("reference", "dormant"):
             suffix_parts.append(f"({eff_status})")
+        if e.actor and e.actor != "inferred":
+            suffix_parts.append(f"<{e.actor}>")
         suffix = ("  " + " ".join(suffix_parts)) if suffix_parts else ""
         lines.append(
             f"  {score:0.2f} {_glyph(score)} {e.title}  ·{e.layer}{suffix}"

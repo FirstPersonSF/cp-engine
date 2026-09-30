@@ -115,6 +115,9 @@ if _vendor.is_dir() and str(_vendor) not in sys.path:
 
 # Dates in the tenant's timezone, not the container's UTC clock (#339).
 from cp_engine.clock import tenant_today  # noqa: E402
+# The card-kind READER, vendored (card_class.py). The write-time stamp below is
+# derived from it, so a hosted stamp cannot contradict what classify() reads.
+from cp_engine.card_class import classify as _classify_card  # noqa: E402
 
 # [cid:...] is the per-message correlation id (observability.py). "-" outside
 # a message context (startup, the debounced tree refresh).
@@ -2779,7 +2782,8 @@ def canonical_project_code(client, project_id: str, fallback: str) -> str:
 _ELEMENT_RESOLVE_COLUMNS = (
     "id, est_item_id, project_code, project_id, phase, binding, layer, "
     "placement, serves, version_label, version_date, status, framing, "
-    "sources, origin, important, note, scope, company_id"
+    "sources, origin, important, note, scope, company_id, "
+    "card_kind, actor, lifetime"
 )
 # `company_id` travels WITH `scope` (#198). An account-scoped element is
 # addressed by the pair — the account mirror and every sibling-project read
@@ -3525,6 +3529,38 @@ def _element_meta(
     ]
 
 
+def _stamp_card_kind(row: dict[str, Any]) -> str | None:
+    """The `card_kind` a new `spine_substance` row carries, or None (#315).
+
+    Every hosted INSERT into `spine_substance` goes through this. Before it,
+    none of them wrote the column: measured 2026-09-30, 29 of the 38 live rows
+    with a NULL `card_kind` carried an `author_id` — the hosted create path's
+    signature — all written after the cxp side began stamping (#246). NULL
+    reads as "not work" to `route_queue` and `weekly_sort`.
+
+    Same rule as `spine_authoring.authored_element.card_kind_for` on the cxp
+    side: stamp only what STRUCTURE decides. Placement is structural (item =
+    occupies an estimate slot; context = does not), and for a row that carries
+    one `classify()` never reaches its layer guess — so its answer here is a
+    fact about the row, not an inference laundered into a stored decision.
+    A row with no placement is the genuinely ambiguous case and is left NULL
+    for a human. Deriving from the reader rather than re-implementing the rule
+    is what keeps the two from drifting (tests/test_card_kind_parity.py holds
+    the cxp stamp to the same reader).
+
+    Grant: INSERT on `spine_substance` is table-level for `authenticated`
+    (verified live 2026-09-30), so a new key in an INSERT row needs no grant
+    migration. The column-level grant that bit migs 127/160 is UPDATE's, and
+    nothing here UPDATEs `card_kind`.
+    """
+    placement = str(row.get("placement") or "").strip().lower()
+    if placement not in ("item", "context"):
+        return None
+    return _classify_card(
+        {k: row.get(k) for k in ("est_item_id", "layer", "placement", "body", "sources")}
+    ).value
+
+
 def _insert_authored_element(
     client,
     scope: dict[str, Any],
@@ -3565,6 +3601,7 @@ def _insert_authored_element(
         "note": note,
         "author_id": subject,
     }
+    row["card_kind"] = _stamp_card_kind(row)
     try:
         result = client.table("spine_substance").insert(row).execute()
     except Exception as exc:  # noqa: BLE001
@@ -7221,6 +7258,7 @@ def create_spine_element(
         # The policy's requirement — and, unlike notes, unconflicted.
         "author_id": subject,
     }
+    row["card_kind"] = _stamp_card_kind(row)
 
     try:
         result = client.table("spine_substance").insert(row).execute()
@@ -7379,8 +7417,17 @@ def add_spine_version(
         # Scope and company_id are a PAIR — see _ELEMENT_RESOLVE_COLUMNS (#198).
         "scope": base.get("scope"),
         "company_id": base.get("company_id"),
+        # Element-level classification rides forward like important/note
+        # (#315). Rebuilding the row without them reset every new version to
+        # card_kind NULL, actor 'inferred' (the column default) and lifetime
+        # NULL — silently undoing a deliberate tag on each version bump.
+        "actor": base.get("actor") or "inferred",
+        "lifetime": base.get("lifetime"),
         "author_id": subject,
     }
+    # A kind already stored may be a human decision (e.g. `link`): carry it.
+    # Only a base that never had one gets the structural stamp.
+    row["card_kind"] = base.get("card_kind") or _stamp_card_kind(row)
     try:
         client.table("spine_substance").insert(row).execute()
     except Exception as exc:  # noqa: BLE001
@@ -9856,6 +9903,7 @@ def _ensure_promotions_element(
         "note": "engine-managed trail: one step per promote_uphill",
         "author_id": subject,
     }
+    row["card_kind"] = _stamp_card_kind(row)
     try:
         client.table("spine_substance").insert(row).execute()
     except Exception as exc:  # noqa: BLE001

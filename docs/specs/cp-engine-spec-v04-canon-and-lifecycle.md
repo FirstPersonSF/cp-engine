@@ -52,6 +52,22 @@ authority and phase, not just similarity + recency. `origin`
 (`distilled|authored`, mig 074) tracks write-path, not speaker — it cannot
 carry this.
 
+**As built (#315, 2026-09-30).** The field shipped as `spine_substance.actor`
+(mig 126; written by hosted `set_spine_element`, carried forward by
+`add_spine_version`). Its reader is the **spine Lens sweep**, not
+`semantic_search`: `semantic_search` ranks RAG source chunks, which carry no
+`actor`. The Lens does **not** weight on actor — inventing authority weights
+would turn "advises, never vetoes" into a silent veto. Instead a deliberate tag
+(`partner|client|vendor`; `inferred` is the default and means nobody said) is
+shown in `cxp spine` and handed to the sweep prompt with the precedence rule,
+so conflicts are surfaced in one line. `tests/test_specced_columns_wired.py`
+fails if the column loses its writer or its reader.
+
+**Seal reaches the Lens (#315).** An active `absorbed_by` edge (§3) loads the
+element as Lens status `reference`, so a sealed input ranks below live work.
+That is the only lifecycle fact substance records; `final`/`dormant` (which
+need `stage`/`depends_on`) stay reachable only on the markdown fallback path.
+
 ### 2. Per-project canon, anchored on the standing brief
 
 The canon is NOT a new container. Anchor = the standing **Inputs & Briefing**
