@@ -771,6 +771,7 @@ def spine_lint_cmd(code: str) -> None:
     from cp_engine.spine_lint import run_all_lints
 
     cp_md_text = None
+    cp_md = None
     try:
         cp_md = (spine_dir or find_spine_dir(config.root, code)) / "cp.md"
         if cp_md.is_file():
@@ -802,6 +803,15 @@ def spine_lint_cmd(code: str) -> None:
     warnings = run_all_lints(client, codes, cp_md_text=cp_md_text,
                              workstream_docs=ws_docs, local_files=ws_files,
                              source_titles=source_titles)
+    # Stamp vs. state (#251). Local only — it reads git history, which the
+    # hosted server's shallow tree does not have, so it stays out of the
+    # shared `run_all_lints`.
+    if cp_md_text is not None and cp_md is not None:
+        from cp_engine.exec_summary_freshness import partial_refresh_warning
+
+        stale_state = partial_refresh_warning(cp_md)
+        if stale_state:
+            warnings.append(stale_state)
 
 
     if warnings:
@@ -1052,6 +1062,10 @@ def exec_lint_cmd(code: str) -> None:
     findings and exits 0 either way (non-zero only when the project's cp.md
     can't be read at all). Also folded into `cp spine-lint` and echoed after
     `cp render`, alongside word-count discipline.
+
+    Also reports a stamp that overstates the summary (#251): Where it stands,
+    Next up and Blockers all last changed 14+ days before `· updated`, read
+    from the file's git history. Silent when there is no full history.
     """
     from cp_engine.exec_summary_lint import lint_exec_summary
     from cp_engine.spine import SpineDirNotFound, find_spine_dir
@@ -1065,8 +1079,15 @@ def exec_lint_cmd(code: str) -> None:
         sys.exit(1)
 
     warnings = lint_exec_summary(cp_md_text)
+    # Stamp vs. state (#251): a one-field refresh advances the stamp for the
+    # whole summary. Read from git history; silent when it cannot tell.
+    from cp_engine.exec_summary_freshness import partial_refresh_warning
+
+    stale_state = partial_refresh_warning(cp_md)
+    if stale_state:
+        warnings.append(stale_state)
     if warnings:
-        click.echo(f"{code} — {len(warnings)} exec-summary budget warning(s):")
+        click.echo(f"{code} — {len(warnings)} exec-summary warning(s):")
         for w in warnings:
             click.echo(f"  {w}")
     else:

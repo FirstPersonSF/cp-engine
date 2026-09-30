@@ -87,7 +87,9 @@ BUNDLE=$(cxp prep-planning --bundle --projects "$CODES")
 The bundle contains, per project: code + name, the **full Exec Summary**
 (Objective / Status / Where it stands / Next up / Blockers / Updates)
 with a **freshness verdict** on its heading line (parsed from the
-`· updated <date>` stamp; >14 days old renders a ⚠ STALE warning),
+`· updated <date>` stamp; >14 days old renders a ⚠ STALE warning; a
+stamp newer than the Where it stands / Next up / Blockers beneath it —
+a one-field refresh — renders ⚠ PARTIAL REFRESH with the state's real age),
 urgent flags, the forward calendar, open commitments, and **last
 week's Slack digest** (the Sunday cron's per-project channel summary,
 carried from the prior week's sprint file — cp-engine #78; it is FRESHER
@@ -125,7 +127,8 @@ and W(N+1) come out the same shape.
    ranked, each with a one-line reason: a decision is due, there's a
    blocker, a deadline is close, or it's slipping. Lead with this —
    it's the agenda. **Respect the freshness verdicts**: a project whose
-   Exec Summary is flagged ⚠ STALE must not be planned from its written
+   Exec Summary is flagged ⚠ STALE or ⚠ PARTIAL REFRESH must not be
+   planned from its written
    Status/Next-up — either put it on the Focus list with the reason
    "state unverified — confirm verbally" or mark its roster row
    "(state as of <date>, unconfirmed)".
