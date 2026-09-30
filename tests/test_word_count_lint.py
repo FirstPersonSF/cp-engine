@@ -231,6 +231,8 @@ def _strip(name: str, words: int) -> str:
 
 
 def test_huge_strips_with_little_hand_text_do_not_warn():
+    """The slt-5196 shape: strips dominate, and the authored share — ~350
+    hand-written words plus a 1,013-word Exec Summary — is under budget."""
     text = (_strip("inbound-strip", 1_527) + _strip("recent-decisions-strip", 1_030)
             + _strip("open-asks-strip", 949) + _strip("current-sprint", 295)
             + _strip("exec-summary", 1_013) + "## Current Work\n" + "h " * 350)
@@ -242,17 +244,32 @@ def test_big_hand_written_text_still_warns_and_says_what_it_counted():
     (warning,) = lint_word_count(text, "p")
     head = warning.splitlines()[0]
     assert "archive rotation" in head
-    # The measured number is the hand-written one; the whole file is context.
-    assert "3,603 words hand-written" in head
+    # The measured number is the authored one; the whole file is context.
+    assert "3,603 words authored" in head
     # 2,000 strip words + 8 marker tokens + 3,603 hand words.
-    assert "5,611 with engine regions" in head
+    assert "5,611 whole file" in head
 
 
-def test_the_exec_summary_region_is_not_counted():
-    """It sits inside a cp-engine marker, and the marker is the rule. Its
-    fields carry their own budgets in `exec_summary_lint`."""
-    text = _strip("exec-summary", AUDIT_THRESHOLD_WORDS + 500) + "h " * 10
-    assert lint_word_count(text, "p") == []
+def test_a_bloated_exec_summary_alone_crosses_the_threshold():
+    """Drew's call on #308: the Exec Summary is COUNTED. It sits inside a
+    cp-engine marker, but it is authored at wrap up, not by sync, and an
+    author can trim it. Excluded, a 3,000-word Exec Summary on a file with
+    almost no other prose passed the whole-file check in silence — the
+    per-field budgets in `exec_summary_lint` bound fields, not the region."""
+    from cp_engine.word_count_lint import contributors, counted_words
+
+    text = (_strip("inbound-strip", 1_000)
+            + _strip("exec-summary", AUDIT_THRESHOLD_WORDS + 500)
+            + "## Current Work\n" + "h " * 10)
+    # 3,000 Exec Summary words + "## Current Work" (3) + 10; strip excluded.
+    assert counted_words(text) == AUDIT_THRESHOLD_WORDS + 513
+    (warning,) = lint_word_count(text, "p")
+    assert "3,013 words authored" in warning.splitlines()[0]
+    assert "duplication audit" in warning
+    exec_line = next(ln for ln in contributors(text) if "exec-summary " in ln)
+    assert exec_line.endswith("— counted")
+    strip_line = next(ln for ln in contributors(text) if "engine strips" in ln)
+    assert strip_line.endswith("— not counted")
 
 
 def test_every_named_region_is_excluded_not_just_known_ones():
