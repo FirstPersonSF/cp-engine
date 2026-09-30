@@ -1181,6 +1181,9 @@ def list_spine_elements(
     rows = read_spine_rows(client, project_id, SPINE_LIST_COLUMNS)
 
     # One edge read serves both annotations: canon membership and absorption.
+    # Shared with the stdio verb (#330) — `seal_sweep.read_lifecycle_edges`.
+    from cp_engine.seal_sweep import read_lifecycle_edges
+
     absorbed_into: dict[str, str] = {}
     canon_ids: set[str] = set()
     try:
@@ -1189,23 +1192,10 @@ def list_spine_elements(
         # `rows` or a sealed/canon account element silently loses its badge
         # (no such edge exists today — this keeps it from becoming a bug when
         # one does).
-        edge_project_ids = sorted(
-            {project_id} | {r["project_id"] for r in rows if r.get("project_id")}
+        absorbed_into, canon_ids = read_lifecycle_edges(
+            client,
+            {project_id} | {r["project_id"] for r in rows if r.get("project_id")},
         )
-        for e in (
-            client.table("spine_relations")
-            .select("kind, from_item_id, to_item_id")
-            .in_("project_id", edge_project_ids)
-            .eq("status", "active")
-            .in_("kind", ["canon_of", "absorbed_by"])
-            .execute()
-            .data
-            or []
-        ):
-            if e["kind"] == "canon_of":
-                canon_ids.add(e["from_item_id"])
-            else:
-                absorbed_into[e["from_item_id"]] = e["to_item_id"]
     except Exception as exc:  # noqa: BLE001 — annotations degrade, the list survives
         # Degrading is right; degrading SILENTLY is not. `absorbed_into` gates
         # a `continue` below, so when this read fails every sealed, historical

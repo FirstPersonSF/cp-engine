@@ -51,7 +51,12 @@ DUAL_READ_CONTRACT: dict[str, tuple[list[str], list[str]]] = {
         # `compact` are mirrored on both (#158 gap 5; `compact` because the
         # legend-copywriting skill calls `tier="working", compact=true` and
         # hosted strictness (#318) would otherwise reject it).
-        ["project_code", "layer", "scope", "binding", "compact", "tier"],
+        # `include_absorbed` is mirrored too (#330): with both servers strict,
+        # a caller using it on stdio failed. Appended LAST on stdio so a
+        # positional call from before it existed binds as it always did.
+        # stdio's layer/scope/binding filters remain stdio-only.
+        ["project_code", "layer", "scope", "binding", "compact", "tier",
+         "include_absorbed"],
         ["project_code", "include_absorbed", "tier", "compact"],
     ),
     "pull_project_source": (

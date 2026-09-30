@@ -81,6 +81,51 @@ DEFAULT_SHIPPED_WITHIN_DAYS = 14
 DELIVERABLE_LAYERS = ("deliverables", "output")
 
 
+
+def read_lifecycle_edges(
+    client, project_ids: Iterable[str]
+) -> tuple[dict[str, str], set[str]]:
+    """``(absorbed_into, canon_ids)`` from the ACTIVE lifecycle edges of
+    ``project_ids`` — the one read both servers' ``list_spine_elements`` use.
+
+    ``absorbed_into`` maps an element sealed into a deliverable (an
+    ``absorbed_by`` edge) to that deliverable; such an element is HISTORICAL
+    and the listings hide it unless asked for retrospective mode.
+    ``canon_ids`` are the members of the standing brief (``canon_of``).
+
+    Pass every project the listed rows come from, not just the one asked
+    about: an account-scoped row keeps its HOME project's id, and its edges
+    live there. Raises on a failed read — each caller decides how to degrade,
+    and both must SAY they degraded, because an empty map un-hides every
+    sealed element while looking exactly like "nothing was ever sealed".
+
+    It lived inline in the hosted server alone until #330 gave the stdio
+    listing the same ``include_absorbed`` flag; one reader keeps "what counts
+    as absorbed" from drifting between the two.
+    """
+    from cp_engine.mc2_db import Tables  # lazy: this module is otherwise pure
+
+    absorbed_into: dict[str, str] = {}
+    canon_ids: set[str] = set()
+    ids = sorted({p for p in project_ids if p})
+    if not ids:
+        return absorbed_into, canon_ids
+    for e in (
+        client.table(Tables.SPINE_RELATIONS)
+        .select("kind, from_item_id, to_item_id")
+        .in_("project_id", ids)
+        .eq("status", "active")
+        .in_("kind", ["canon_of", "absorbed_by"])
+        .execute()
+        .data
+        or []
+    ):
+        if e["kind"] == "canon_of":
+            canon_ids.add(e["from_item_id"])
+        else:
+            absorbed_into[e["from_item_id"]] = e["to_item_id"]
+    return absorbed_into, canon_ids
+
 def _norm(value: str | None) -> str:
     return (value or "").strip().lower()
 

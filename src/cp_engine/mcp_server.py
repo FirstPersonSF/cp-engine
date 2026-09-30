@@ -774,7 +774,8 @@ def pull_document_comments(project_code: str, doc_title: str) -> dict:
 @_tool
 def list_spine_elements(project_code: str, layer: str = "",
                         scope: str = "", binding: str = "",
-                        compact: bool = False, tier: str = "") -> list[dict]:
+                        compact: bool = False, tier: str = "",
+                        include_absorbed: bool = False) -> list[dict]:
     """List a project's LIVE spine elements (the distilled-memory index).
 
     Returns one row per element: est_item_id, framing (title), layer, binding,
@@ -803,6 +804,12 @@ def list_spine_elements(project_code: str, layer: str = "",
     drops the per-doc source stubs so orientation reads the authored
     working set; "stubs" shows only them; ""/"all" shows everything.
     Prefer `tier="working", compact=true` as the first call on a big spine.
+
+    Lifecycle-aware, like the hosted verb: an element sealed into a shipped
+    deliverable (an active `absorbed_by` edge) is HISTORICAL and hidden by
+    default, with a trailing note row carrying `absorbed_hidden`. Pass
+    `include_absorbed=true` (retrospective mode) to list them, each annotated
+    `absorbed_by` with the deliverable that absorbed it.
     """
     from cp_engine.project_sources import list_spine
 
@@ -815,7 +822,8 @@ def list_spine_elements(project_code: str, layer: str = "",
         client, pid, cid = resolved
         rows = list_spine(client, pid, cid, layer=layer or None,
                           scope=scope or None, binding=binding or None,
-                          compact=compact, tier=tier or None)
+                          compact=compact, tier=tier or None,
+                          include_absorbed=bool(include_absorbed))
         return _with_project_status(rows, client, pid, project_code)
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,
