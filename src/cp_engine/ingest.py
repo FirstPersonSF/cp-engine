@@ -22,6 +22,7 @@ See cp/docs/plans/2026-05-12-tier-1-design.md for full design.
 
 from __future__ import annotations
 
+from cp_engine.aggregators import ASSET_MARKER_FMT
 from cp_engine.mc2_db import Tables
 import hashlib
 import json
@@ -911,7 +912,13 @@ def _resolve_today_iso(today: date | None) -> str:
 
 
 def _write_inbound(
-    code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
+    code: str,
+    item: dict,
+    sprint_path: Path,
+    *,
+    today: date | None = None,
+    asset_id: str | None = None,
+    **_,
 ) -> bool:
     text = _sanitize_inline_text(item.get("text") or "")
     date_s = _as_text(item.get("date")) or _as_text("")
@@ -925,11 +932,21 @@ def _write_inbound(
     if _already_present(body, h):
         return False
     bullet = f"- [{date_s} · {who}] {text} {_hash_marker(h)}"
+    # A source announcement names its asset by id too (#329), AFTER the hash
+    # marker: the hash covers `text` only, so pre-#329 bullets keep their
+    # hashes and stay idempotent, and the strip can follow a rename.
+    if asset_id and _ASSET_ID_RE.fullmatch(asset_id):
+        bullet += " " + ASSET_MARKER_FMT.format(asset_id)
     new = _append_bullet_to_subsection(
         body, _communication_section(body), "Inbound", bullet
     )
     sprint_path.write_text(new)
     return True
+
+
+# What may go inside a `cp:asset=` marker: a uuid, or any id free of spaces
+# and comment-closing characters.
+_ASSET_ID_RE = re.compile(r"[\w-]+")
 
 
 # Only sources ingested within this window get an arrival bullet — the guard
@@ -1005,7 +1022,10 @@ def announce_new_sources(
         ):
             continue
         item = {"text": text, "date": created.isoformat(), "who": "source ingest"}
-        if _write_inbound(code, item, sprint_path, today=today):
+        if _write_inbound(
+            code, item, sprint_path, today=today,
+            asset_id=str(asset.get("id") or "") or None,
+        ):
             count += 1
     return count
 

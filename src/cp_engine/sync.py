@@ -446,6 +446,10 @@ def _sync_tenant_inner(
     # Asset entries from each project's manifest regeneration, consumed by the
     # new-source announcement pass after sprint files exist (#153).
     manifest_assets: dict[str, list[dict]] = {}
+    # The MC-2 project uuid behind each manifest, and a client to reach it —
+    # for the inbound strip's one batched lineage query (#329).
+    manifest_project_ids: dict[str, str] = {}
+    lineage_client = None
 
     # Every workstream gets a working dir (#301): `is_internal` used to skip
     # MC-2's pseudo-projects, and the internal workstreams now ARE rows
@@ -750,6 +754,8 @@ def _sync_tenant_inner(
                         folders.project_id,
                         folders.company_id,
                     )
+                    manifest_project_ids[project.code] = folders.project_id
+                    lineage_client = client
             except Exception as exc:  # noqa: BLE001 — best-effort sources manifest
                 logger.warning(
                     "sources manifest skipped for %s: %s",
@@ -936,35 +942,75 @@ def _sync_tenant_inner(
         # represented in the current sync.
         if parsed_files:
             from cp_engine.aggregators import (
+                LiveSources,
                 aggregate_project_strips,
-                normalize_source_title,
+                needs_lineage,
             )
             from cp_engine.sprints import _is_active_for_sprint
             today_for_strips = sync_clock.date()
             parsed_tuple = tuple(parsed_files)
-            # Live source titles per project, for reconciling the inbound
-            # strip's new-source announcements (#323). Reuses the manifest
+            # Live sources per project, for reconciling the inbound strip's
+            # new-source announcements (#323, #329). Reuses the manifest
             # pass's `list_sources` result — status='active', successors
-            # only — so this costs no query at all. A project with no entry
-            # (no MC-2 client, no folders, or the manifest pass failed) gets
+            # only — so this costs no query. A project with no entry (no
+            # MC-2 client, no folders, or the manifest pass failed) gets
             # None: reconciliation is skipped and the strip renders as before.
-            live_titles: dict[str, frozenset[str]] = {
-                code: frozenset(
-                    normalize_source_title(a.get("title"))
-                    for a in assets if isinstance(a, dict)
-                )
+            live_sources: dict[str, LiveSources] = {
+                code: LiveSources.from_assets(assets)
                 for code, assets in manifest_assets.items()
                 if isinstance(assets, list)
             }
+            # The windowed strips read the earlier sprint weeks inside their
+            # 28-day window too (#328) — the heading says "last 4 weeks".
+            window_weeks = _strip_window_weeks(sync_clock)
+            window_files: dict[str, tuple] = {}
+            strip_projects = []
             for project in projects:
                 if not _is_active_for_sprint(project):
                     continue
                 cp_path = config.root / path_for(project, by_code) / "cp.md"
                 if not cp_path.exists():
                     continue
+                strip_projects.append((project, cp_path))
+                window_files[project.code] = _parse_window_files(
+                    config.root / "sprints", window_weeks, project.code
+                )
+            # One batched lineage query for every project whose strip holds
+            # an announcement matching neither a live id nor a live title
+            # (#329) — renamed-vs-gone is decided on the supersede chain.
+            # Usually no project qualifies and no query runs. A failure
+            # leaves those projects on the title rule (#323).
+            lineage_needed = {
+                manifest_project_ids[code]: code
+                for code, live in live_sources.items()
+                if code in manifest_project_ids and code in window_files
+                and needs_lineage(
+                    tuple(sf for sf in parsed_tuple if sf.project_code == code)
+                    + window_files[code],
+                    live,
+                )
+            }
+            if lineage_needed and lineage_client is not None:
+                try:
+                    from cp_engine.project_sources import fetch_asset_lineage
+
+                    lineage = fetch_asset_lineage(
+                        lineage_client, list(lineage_needed)
+                    )
+                    for pid, code in lineage_needed.items():
+                        live_sources[code] = live_sources[code].with_lineage(
+                            lineage.get(pid, [])
+                        )
+                except Exception as exc:  # noqa: BLE001 — strips are best-effort
+                    logger.warning(
+                        "inbound-strip lineage lookup skipped: %s", exc,
+                        exc_info=True,
+                    )
+            for project, cp_path in strip_projects:
                 strips = aggregate_project_strips(
                     project.code, parsed_tuple, today_for_strips,
-                    live_source_titles=live_titles.get(project.code),
+                    window_files=window_files.get(project.code, ()),
+                    live_sources=live_sources.get(project.code),
                 )
                 bodies = render_project_strip_bodies(strips)
                 existing = cp_path.read_text()
@@ -1135,6 +1181,48 @@ _MASTER_RETIRED_REGIONS = (
     "active-canonic",
     "active-canonic-initiatives",
 )
+
+
+def _strip_window_weeks(now: datetime) -> tuple[str, ...]:
+    """Sprint weeks BEFORE the current one that can hold a bullet inside the
+    project strips' 28-day window (#328), newest first.
+
+    Anchored on the engine's own planning Monday (``sprints._planning_monday``
+    — Wed-Sun already label the NEXT week), stepping back a week at a time
+    while that week's Sunday is still on or after the window's first day.
+    That is four prior weeks on Mon/Tue and five on Wed-Sun, when the
+    current label runs ahead of the calendar; the per-bullet date filter in
+    ``aggregate_project_strips`` does the exact cut.
+    """
+    from cp_engine.aggregators import _PROJECT_RECENCY_DAYS
+    from cp_engine.sprints import _planning_monday
+
+    today = now.date() if isinstance(now, datetime) else now
+    cutoff = today - timedelta(days=_PROJECT_RECENCY_DAYS)
+    weeks: list[str] = []
+    monday = _planning_monday(now) - timedelta(days=7)
+    while monday + timedelta(days=6) >= cutoff:
+        iso = monday.isocalendar()
+        weeks.append(f"{iso.year}-W{iso.week:02d}")
+        monday -= timedelta(days=7)
+    return tuple(weeks)
+
+
+def _parse_window_files(sprint_root: Path, weeks: tuple[str, ...], code: str) -> tuple:
+    """Parse ``code``'s sprint file in each of ``weeks`` that exists. A
+    missing or unparseable week is skipped — the strips are best-effort."""
+    from cp_engine.sprints import parse_sprint_file
+
+    out = []
+    for week in weeks:
+        path = sprint_root / week / f"{code}.md"
+        if not path.is_file():
+            continue
+        try:
+            out.append(parse_sprint_file(path))
+        except (ValueError, OSError, KeyError) as exc:
+            logger.warning("Skipping %s for the strip window: %s", path, exc)
+    return tuple(out)
 
 
 def _prior_completed_week_monday(now: datetime) -> date:
