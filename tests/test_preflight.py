@@ -628,3 +628,51 @@ def test_spine_titles_still_reach_the_funding_gate() -> None:
     )
     assert rep.funding_warning is not None
     assert rep.ready is False
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  Source titles — gate evidence, not found facts (#336)
+# ──────────────────────────────────────────────────────────────────────
+
+# Real source titles from the 2026-09-30 live run. Each one satisfied a
+# required field on its title alone; together they flipped six project/kind
+# pairs to ready: a meeting title answered `deliverables` for ggl-5197, a
+# filename's "Cross-Persona" answered `audience` for sap-5171, content-asset
+# titles naming CROs answered `audience` for slt-5196.
+_LIVE_SOURCE_TITLES = [
+    "Tony / Bria 1:1 Weekly Sync",
+    "95929 SAP Concur Cross-Persona 1 20241220 D.jpg",
+    "05 12 2026 Autonomous Enterprise L0.pptx",
+    "CRO + CIO Playbook for AI Agents.md",
+    "Turn Buyer Signals Into Action.md",
+    "Our AI Story - Jun 2026.docx",
+    "sap 5174 vision update 2026 (2026-07-08)",
+    "2027 SAP Concur Video Ads - Planning.pptx",
+]
+
+
+@pytest.mark.parametrize("kind", ARTIFACT_KINDS)
+def test_source_titles_never_answer_a_required_field(kind) -> None:
+    """A source title is a filename someone typed once; it does not say what
+    the document holds. Titles alone must not move anything out of
+    `missing` — and no title may appear among the found facts."""
+    without = run_preflight("x", kind, cp_md_text=_STRATEGY_AUTHORED)
+    with_titles = run_preflight("x", kind, cp_md_text=_STRATEGY_AUTHORED,
+                                source_titles=_LIVE_SOURCE_TITLES)
+    assert with_titles.found == without.found
+    assert with_titles.missing == without.missing
+    assert with_titles.ready == without.ready
+    found_rows = [r for rows in with_titles.found.values() for r in rows]
+    assert not any(t in str(r) for t in _LIVE_SOURCE_TITLES for r in found_rows)
+    assert f"sources ({len(_LIVE_SOURCE_TITLES)} docs)" in with_titles.sources_read
+
+
+def test_source_titles_still_reach_the_funding_gate() -> None:
+    """Titles stay topic evidence: a source titled with the unfunded-scope
+    sentence blocks an RFP exactly as a spine title does."""
+    rep = run_preflight(
+        "sap-5198-2027-ad-videos", "rfp", cp_md_text=_PRODUCTION_AUTHORED,
+        source_titles=["Production remains out of scope at the current budget"],
+    )
+    assert rep.funding_warning is not None
+    assert rep.ready is False
