@@ -46,6 +46,7 @@ from .state import (
     scope_for,
     tree_depth,
 )
+from .snooze import active_snooze, snooze_label, strip_snooze_marker
 from .status import is_active_status
 from .sync import _extract_region
 
@@ -878,25 +879,56 @@ def _short_md_date_no_year(iso: str) -> str:
     return _short_md_date(iso)
 
 
-def render_current_sprint_block(sf: SprintFile, link_path: str) -> str:
+def render_current_sprint_block(
+    sf: SprintFile, link_path: str, *, today: date | None = None
+) -> str:
     """Render the dashboard's "Current sprint" block for one project.
 
     Top-3 truncation is intentional: this block is meant to be a glanceable
-    pointer back into the full sprint file, not a re-statement of it. Open
-    asks fall back to carry-forward asks when there are fewer than 3 active
-    asks this week. Risks are filtered to escalated + watching (dependency
-    risks are excluded — they're informational, not dashboard-worthy).
+    pointer back into the full sprint file, not a re-statement of it. Risks
+    are filtered to escalated + watching (dependency risks are excluded —
+    they're informational, not dashboard-worthy).
+
+    The asks header counts the SAME list it previews — ``open_client_asks``,
+    this week's open asks plus the carried ones (cp-engine #323). It used to
+    count every bullet in the own section (answered ones included, carried
+    ones not) while the preview fell back to carry-forward, so it could read
+    "(0)" above a non-empty list and never dropped when an ask was closed.
+
+    Snooze (the contract in ``cp_engine.snooze``): this is a summary strip,
+    so a snoozed ask or risk stays in the count, is marked
+    ``(snoozed until <date>)``, and is previewed only after every live item.
+    The header names how many are snoozed.
 
     `link_path` is passed in by the caller (rather than derived from
     `sf.project_code` + `sf.week_iso`) so the dashboard can compute it
     relative to its own location once and pass it through here.
     """
-    asks = list(sf.client_open_asks[:3])
-    if len(asks) < 3:
-        asks.extend(sf.carry_forward.asks[: 3 - len(asks)])
-    asks = asks[:3]
+    from .aggregators import open_client_asks
+
+    if today is None:
+        today = date.today()
+
+    def _snooze_split(items):
+        """Pair each item with its in-force snooze date; live items first."""
+        live, snoozed = [], []
+        for it in items:
+            until = active_snooze(it.text, today)
+            (snoozed if until else live).append((it, until))
+        return live + snoozed, len(snoozed)
+
+    def _count(total: int, snoozed: int) -> str:
+        return f"{total} · {snoozed} snoozed" if snoozed else f"{total}"
+
+    def _shown(text: str, until, suffix: str = "") -> str:
+        if until is None:
+            return f"{text}{suffix}"
+        return f"{strip_snooze_marker(text)}{suffix} {snooze_label(until)}"
+
+    all_asks = open_client_asks(sf)
+    asks, asks_snoozed = _snooze_split(all_asks)
     active = _active_risks(sf)
-    risks = active[:3]
+    risks, risks_snoozed = _snooze_split(active)
 
     def _hours(h: float) -> str:
         return f"{int(h)}" if h.is_integer() else f"{h}"
@@ -911,14 +943,14 @@ def render_current_sprint_block(sf: SprintFile, link_path: str) -> str:
         f"## Current sprint — [W{week_label} ({dates})]({link_path})",
         "",
         f"**Allocation:** {alloc or '—'}",
-        f"**Open client asks** ({len(sf.client_open_asks)}):",
+        f"**Open client asks** ({_count(len(all_asks), asks_snoozed)}):",
     ]
-    for a in asks:
-        lines.append(f"- {a.text} (asked {a.asked_date})")
+    for a, until in asks[:3]:
+        lines.append(f"- {_shown(a.text, until, f' (asked {a.asked_date})')}")
     lines.append("")
-    lines.append(f"**Active risks** ({len(active)}):")
-    for r in risks:
-        lines.append(f"- {r.text}")
+    lines.append(f"**Active risks** ({_count(len(active), risks_snoozed)}):")
+    for r, until in risks[:3]:
+        lines.append(f"- {_shown(r.text, until)}")
     lines.append("")
     lines.append(
         f"_See [sprint file]({link_path}) for full plan, horizon, and meeting notes._"
@@ -940,6 +972,10 @@ def render_sprint_index(
     risk rollup, so the surfaces stay consistent. Decisions due counts
     horizon items with bucket ``decision``.
     """
+    # Asks: the same open set the cp.md strip counts (own + carried, #323).
+    # A record surface — snoozed asks are still open, so they count here.
+    from .aggregators import open_client_asks
+
     week_label = week_iso.split("-")[1] if "-" in week_iso else week_iso
     lines = [
         f"# Sprint {week_label} ({week_dates})",
@@ -958,7 +994,7 @@ def render_sprint_index(
         active_risks = len(_active_risks(sf))
         lines.append(
             f"| `{sf.project_code}` | {alloc} | "
-            f"{len(sf.client_open_asks)} | {active_risks} | "
+            f"{len(open_client_asks(sf))} | {active_risks} | "
             f"{decisions} | [→]({sf.project_code}.md) |"
         )
     return "\n".join(lines)

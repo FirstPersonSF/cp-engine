@@ -879,7 +879,9 @@ def _sync_tenant_inner(
                 continue
             parsed_files.append(sf)
             link_path = f"../../sprints/{week_iso}/{project.code}.md"
-            block = render_current_sprint_block(sf, link_path=link_path)
+            block = render_current_sprint_block(
+                sf, link_path=link_path, today=sync_clock.date()
+            )
             existing = cp_path.read_text()
             seeded = _ensure_current_sprint_markers(existing)
             new_body = splice_managed_region(seeded, "current-sprint", block)
@@ -933,10 +935,27 @@ def _sync_tenant_inner(
         # so a project's strips can pull from all of its sprint history
         # represented in the current sync.
         if parsed_files:
-            from cp_engine.aggregators import aggregate_project_strips
+            from cp_engine.aggregators import (
+                aggregate_project_strips,
+                normalize_source_title,
+            )
             from cp_engine.sprints import _is_active_for_sprint
             today_for_strips = sync_clock.date()
             parsed_tuple = tuple(parsed_files)
+            # Live source titles per project, for reconciling the inbound
+            # strip's new-source announcements (#323). Reuses the manifest
+            # pass's `list_sources` result — status='active', successors
+            # only — so this costs no query at all. A project with no entry
+            # (no MC-2 client, no folders, or the manifest pass failed) gets
+            # None: reconciliation is skipped and the strip renders as before.
+            live_titles: dict[str, frozenset[str]] = {
+                code: frozenset(
+                    normalize_source_title(a.get("title"))
+                    for a in assets if isinstance(a, dict)
+                )
+                for code, assets in manifest_assets.items()
+                if isinstance(assets, list)
+            }
             for project in projects:
                 if not _is_active_for_sprint(project):
                     continue
@@ -944,7 +963,8 @@ def _sync_tenant_inner(
                 if not cp_path.exists():
                     continue
                 strips = aggregate_project_strips(
-                    project.code, parsed_tuple, today_for_strips
+                    project.code, parsed_tuple, today_for_strips,
+                    live_source_titles=live_titles.get(project.code),
                 )
                 bodies = render_project_strip_bodies(strips)
                 existing = cp_path.read_text()

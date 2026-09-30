@@ -105,8 +105,11 @@ Author: cp-engine (initial scaffold)
 ## Open client asks (auto-aggregated from sprint files)
 
 {%- if project_strips and project_strips.open_asks %}
-{% for ask in project_strips.open_asks %}
+{% for ask in project_strips.open_asks if not ask.snoozed_until %}
 - [{{ ask.asked_date }}{% if ask.who %} · {{ ask.who }}{% endif %}{% if ask.aged_days is not none and ask.aged_days > 7 %} · **{{ ask.aged_days }}d stale**{% endif %}] {{ ask.text }}
+{%- endfor %}
+{%- for ask in project_strips.open_asks if ask.snoozed_until %}
+- [{{ ask.asked_date }}{% if ask.who %} · {{ ask.who }}{% endif %}] {{ ask.text | unsnooze }} (snoozed until {{ ask.snoozed_until.isoformat() }})
 {%- endfor %}
 {%- else %}
 - _No open asks._

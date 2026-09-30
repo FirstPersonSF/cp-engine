@@ -432,9 +432,12 @@ def build_project_block(
     strips = aggregate_project_strips(project.code, sprint_files, today)
     # Cap recent inbound + filter to aged open asks.
     recent_inbound = strips.inbound[:_MAX_INBOUND_PER_PROJECT]
+    # "Aged" is an escalation, so a snoozed ask is omitted until its date
+    # (the contract in cp_engine.snooze).
     aged_asks = tuple(
         a for a in strips.open_asks
         if a.get("aged_days") is not None and a["aged_days"] > _STALE_ASK_DAYS
+        and not a.get("snoozed_until")
     )
 
     # Decisions due from this week's sprint file Horizon section.

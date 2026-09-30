@@ -1475,6 +1475,7 @@ def test_bare_date_decision_reaches_recent_decisions_strip() -> None:
         client_inbound = ()
         decisions = decs
         client_open_asks = ()
+        carry_forward = CarryForward(asks=(), risks=(), horizon=())
         stakeholders = ()
 
     strips = aggregate_project_strips("slt-5196", (_SF(),), _date(2026, 8, 25))
