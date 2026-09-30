@@ -46,10 +46,17 @@ def lint_spine_rows(rows: list[dict]) -> list[str]:
         if (bool(row.get("important"))
                 and (row.get("binding") or "") == "unbound"
                 and len(serves) == 0):
+            # #319: the remedy names only moves that clear the predicate. The
+            # old text also offered "version it with its answer", which the
+            # check never reads — two elements were versioned with their
+            # answers and kept warning (08-25). A typed edge to another element
+            # does not clear it either (08-27): an edge is not a binding.
             out.append(
                 f"⚠ important-but-floating: '{title}' ({eid}) is flagged "
-                "important yet unbound and serves nothing — file it "
-                "(bind/serves), version it with its answer, or retire it")
+                "important yet unbound and serves nothing — bind it to the "
+                "work it serves (set_spine_element serves=[…]), clear the "
+                "important flag if it has been answered, or retire it; a new "
+                "version or a typed edge does not clear this")
         if ((row.get("layer") or "").lower() == "agreement"
                 and _ATTACH_INSTRUCTION_RE.search(row.get("body") or "")
                 and not (row.get("sources") or [])):
@@ -136,6 +143,7 @@ def lint_lifecycle(rows: list[dict], relations: list[dict]) -> list[str]:
         r.get("est_item_id") for r in rows
         if _norm_layer(r.get("layer")) in ("deliverables", "output")
     }
+    dead_ends: list[tuple[str, str]] = []
     for row in rows:
         if _norm_layer(row.get("layer")) != "activity":
             continue
@@ -144,12 +152,36 @@ def lint_lifecycle(rows: list[dict], relations: list[dict]) -> list[str]:
             continue
         if any(t in deliverable_ids for t in feeds_out.get(eid, [])):
             continue
-        title = row.get("framing") or eid
+        dead_ends.append((row.get("framing") or eid, eid))
+
+    # #319: a project with NO deliverable element reported this as N dead-end
+    # activities that all shared one cause — four projects on 08-25, where the
+    # obvious move (wire each activity to *some* deliverable) was impossible
+    # because there was nothing to wire to. One direct finding names the cause;
+    # the per-activity lines are folded into it rather than repeated.
+    if dead_ends and not deliverable_ids:
+        names = ", ".join(f"'{t}'" for t, _ in dead_ends[:3])
+        more = f" (+{len(dead_ends) - 3} more)" if len(dead_ends) > 3 else ""
+        out.append(
+            f"⚠ no deliverable element: the spine has nothing on the "
+            f"Deliverables layer, so {len(dead_ends)} active "
+            f"{'activity reads as a dead end' if len(dead_ends) == 1 else 'activities read as dead ends'}"
+            f" ({names}{more}) — add a card for the thing being "
+            "made, then wire each activity to it with informs/derives_from")
+        dead_ends = []
+
+    for title, eid in dead_ends:
+        # #319: the predicate is right and the old wording was not. #163's
+        # intent is that an activity's stream be reachable from the DELIVERABLE
+        # it fed, so an edge to a decision or a note does not close it — the
+        # 08-21 slt-5196 case wired `informs` to a Decisions element and the
+        # warning (correctly) kept firing. Say what the edge must point AT.
         out.append(
             f"⚠ dead-end activity: '{title}' ({eid}) feeds no deliverable — "
             "its sources and decisions are unreachable from the work they "
-            "informed; add an informs/derives_from edge to the deliverable "
-            "it fed, or seal it if it is finished")
+            "informed. Add an informs/derives_from edge FROM it TO an element "
+            "on the Deliverables layer (an edge to a decision or note does not "
+            "count), or, if it is finished, seal it into that deliverable")
 
     superseded = {e.get("to_item_id") for e in relations
                   if e.get("kind") == "supersedes"}
@@ -238,6 +270,12 @@ def _is_deliverable_row(row: dict) -> bool:
     return _norm_layer(row.get("layer")) in ("deliverables", "output")
 
 
+def _version_depth(label) -> int:
+    """The number in a version label (v7 / V1 / 1 / v01); 0 when unparseable."""
+    m = re.search(r"\d+", str(label or ""))
+    return int(m.group(0)) if m else 0
+
+
 def _first_version(label) -> bool:
     """True for v1 / V1 / 1 / v01 — a deliverable that never moved."""
     return bool(_FIRST_VERSION_RE.match(str(label or "")))
@@ -252,10 +290,17 @@ def _first_version(label) -> bool:
 REFERENCE_TITLE_MIN_CHARS = 18
 
 
-def lint_curation(rows: list[dict], *, today=None) -> list[str]:
+def lint_curation(rows: list[dict], *, today=None,
+                  label: str | None = None) -> list[str]:
     """Curation drift over live rows (#112 P3, #158 gaps 2–4). Pure, warn-only.
 
     Needs the SPINE_LINT_COLUMNS shape plus `version_date`.
+
+    `label` is the workstream's derived label (`state.derive_label`:
+    account / program / job / initiative). An `initiative` skips the standing
+    Brief/SOW check — it has no agreement, so there is no signed SOW to author
+    and the warning could never be satisfied (#319). `None` (label unknown)
+    keeps the check, so an unresolved project is linted as before.
     """
     from datetime import date as _date
 
@@ -267,8 +312,12 @@ def lint_curation(rows: list[dict], *, today=None) -> list[str]:
         body = row.get("body") or ""
         layer = row.get("layer")
 
-        # #112 P3 — standing Brief still the scaffold.
-        if ((_norm_layer(layer) == "brief"
+        # #112 P3 — standing Brief still the scaffold. Not on an initiative
+        # (#319): mission-control carried a permanent, unsatisfiable warning
+        # for a scaffolded SOW on internal work with no client and no
+        # agreement, and each reader re-investigated it.
+        if (label != "initiative"
+                and (_norm_layer(layer) == "brief"
                 or _STANDING_BRIEF_RE.search(row.get("framing") or ""))
                 and (len(body) < BRIEF_MIN_CHARS or _PLACEHOLDER_RE.search(body))):
             out.append(
@@ -288,11 +337,32 @@ def lint_curation(rows: list[dict], *, today=None) -> list[str]:
                     "outcome or retire it")
 
         # #158 gap 3 — raw paste on a distillation layer.
-        if _norm_layer(layer) in DISTILL_LAYERS and len(body) > DISTILL_BODY_MAX:
+        #
+        # #319: length alone cannot tell a paste from a card that is long
+        # because it SAYS a lot. slt-5196's `what-winning-means-by-role` was
+        # 10.8k chars at v7 with four sources attached — authored analysis,
+        # restructured on direction — and "distill it" would have destroyed
+        # work. A card that has been re-versioned AND carries attached sources
+        # is authored, not captured, so it is left alone. The remedy also
+        # splits: with nothing attached, "attach the raw text as a source" was
+        # impossible (ibx-5192, sap-5174 — the card was the ONLY copy), so the
+        # message says to land the raw text as a source first.
+        n_sources = len(row.get("sources") or [])
+        authored = n_sources > 0 and _version_depth(row.get("version_label")) > 1
+        if (_norm_layer(layer) in DISTILL_LAYERS and len(body) > DISTILL_BODY_MAX
+                and not authored):
+            if n_sources:
+                remedy = (f"distill into the card; its {n_sources} attached "
+                          f"source{'' if n_sources == 1 else 's'} already "
+                          "hold the raw material")
+            else:
+                remedy = ("this card may be the only copy of the raw text — "
+                          "land it as a source first (push_to_dropbox, "
+                          "ingest, then add_element_source), then distill "
+                          "the card")
             out.append(
                 f"⚠ undistilled capture: '{title}' ({eid}) is "
-                f"{len(body):,} chars on the {layer} layer — distill into "
-                "the card and attach the raw text as a source instead")
+                f"{len(body):,} chars on the {layer} layer — {remedy}")
 
         # #177 — CLASSIFICATION, not content. The Deliverables layer is what a
         # cold reader trusts to answer "what are we making?", and on ibx-5192
@@ -513,6 +583,55 @@ def lint_partial_archive(all_rows: list[dict]) -> list[str]:
 # ──────────────────────────────────────────────────────────────────────
 
 
+def _workstream_label(client, rows: list[dict]) -> str | None:
+    """The project's derived label, from the `project_id` its rows carry.
+
+    Uses the engine's one rule (`state.derive_label`) over the same shape
+    `sync_mc2.workstream_rows_to_states` feeds it — parent, agreement
+    (`deal_stage IS NOT NULL`), company kind, has-children — rather than a
+    second spelling of "initiative". Best-effort: any failure returns None,
+    and None keeps every check on (#319).
+    """
+    from cp_engine import mc2_db
+    from cp_engine.state import derive_label
+
+    try:
+        project_ids = {r.get("project_id") for r in rows if r.get("project_id")}
+        if len(project_ids) != 1:
+            return None  # none, or rows under two projects: don't guess
+        (pid,) = project_ids
+        found = (
+            client.table(mc2_db.Tables.PROJECTS)
+            .select("id, parent_id, deal_stage, companies(kind)")
+            .eq("id", pid)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+        if not found or found[0].get("id") != pid:
+            return None
+        project = found[0]
+        children = (
+            client.table(mc2_db.Tables.PROJECTS)
+            .select("id")
+            .eq("parent_id", pid)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+        company = project.get("companies") or {}
+        if not isinstance(company, dict):
+            company = {}
+        return derive_label(
+            company_kind=company.get("kind") or "client",
+            parent_code=project.get("parent_id"),
+            has_agreement=project.get("deal_stage") is not None,
+            has_children=bool(children),
+        )
+    except Exception:  # noqa: BLE001 — advisory pass, never fail the lint
+        return None
+
+
 def run_all_lints(
     client,
     codes: list[str],
@@ -577,7 +696,9 @@ def run_all_lints(
     except Exception:  # noqa: BLE001 — advisory pass, never fail the lint
         pass
 
-    warnings.extend(lint_curation(rows, today=today))
+    warnings.extend(
+        lint_curation(rows, today=today, label=_workstream_label(client, rows))
+    )
 
     try:
         every_row = (

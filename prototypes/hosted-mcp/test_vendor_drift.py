@@ -130,6 +130,10 @@ def test_the_vendor_closure_EXECUTES_with_no_cp_engine_installed(tmp_path) -> No
         "from cp_engine.exec_summary_lint import lint_exec_summary\n"
         "import cp_engine.project_sources as PS\n"
         "import cp_engine.commitments as C\n"
+        # `run_all_lints` resolves the workstream label through
+        # `cp_engine.state` inside a best-effort try — a missing module there
+        # would silently re-enable the Brief check on initiatives (#319).
+        "from cp_engine.state import derive_label\n"
         "rows = [{'est_item_id': '_authored/x', 'framing': 'X', 'status': 'live',\n"
         "  'layer': 'Brief', 'binding': 'unbound', 'important': True,\n"
         "  'version_label': 'v1', 'project_id': 'p1', 'version_date': '2026-09-01',\n"

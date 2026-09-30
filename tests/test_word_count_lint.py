@@ -158,15 +158,20 @@ def test_the_exec_summary_strip_is_not_counted_as_an_engine_strip():
     assert "0 (0%)" in strip_line
 
 
-def test_the_worst_field_is_broken_down_by_entry():
+def test_the_worst_hand_written_section_is_broken_down_by_entry():
+    """Since #308 the threshold measures hand-written text, so the breakdown
+    points into hand-written sections — that is where a trim can happen."""
     from cp_engine.word_count_lint import contributors
 
-    updates = (
+    done = (
+        "## Done\n"
         "- 2026-08-20 — " + "big " * 300 + "\n"
         "- 2026-08-13 — " + "small " * 20 + "\n"
+        "## Project Notes\n" + "note " * 40 + "\n"
     )
-    out = "\n".join(contributors(_cp(exec_body=f"**Updates:**\n{updates}")))
-    assert "Updates by entry" in out
+    out = "\n".join(contributors(_cp(hand=done)))
+    assert "hand-written sections: Done" in out
+    assert "Done by entry" in out
     assert "2026-08-20" in out
 
 
@@ -208,3 +213,66 @@ def test_under_budget_files_stay_silent():
     from cp_engine.word_count_lint import lint_word_count
 
     assert lint_word_count("w " * 100, "proj") == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #308 — only hand-authored text is measured
+#
+#  slt-5196 (09-29): 5,398 words, of which inbound 1,527 · decisions 1,030 ·
+#  open-asks 949 · current-sprint 295 · exec-summary 1,013 · hand ≈350. The
+#  "roll resolved threads into the archive file" warning fired on a file where
+#  deleting every hand-written word would not have cleared it.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _strip(name: str, words: int) -> str:
+    return (f"<!-- cp-engine:start {name} -->\n" + "s " * words
+            + f"\n<!-- cp-engine:end {name} -->\n")
+
+
+def test_huge_strips_with_little_hand_text_do_not_warn():
+    text = (_strip("inbound-strip", 1_527) + _strip("recent-decisions-strip", 1_030)
+            + _strip("open-asks-strip", 949) + _strip("current-sprint", 295)
+            + _strip("exec-summary", 1_013) + "## Current Work\n" + "h " * 350)
+    assert lint_word_count(text, "slt-5196") == []
+
+
+def test_big_hand_written_text_still_warns_and_says_what_it_counted():
+    text = _strip("inbound-strip", 2_000) + "## Current Work\n" + "h " * 3_600
+    (warning,) = lint_word_count(text, "p")
+    head = warning.splitlines()[0]
+    assert "archive rotation" in head
+    # The measured number is the hand-written one; the whole file is context.
+    assert "3,603 words hand-written" in head
+    # 2,000 strip words + 8 marker tokens + 3,603 hand words.
+    assert "5,611 with engine regions" in head
+
+
+def test_the_exec_summary_region_is_not_counted():
+    """It sits inside a cp-engine marker, and the marker is the rule. Its
+    fields carry their own budgets in `exec_summary_lint`."""
+    text = _strip("exec-summary", AUDIT_THRESHOLD_WORDS + 500) + "h " * 10
+    assert lint_word_count(text, "p") == []
+
+
+def test_every_named_region_is_excluded_not_just_known_ones():
+    """Region names are derived per node (#303); the exclusion follows the
+    marker grammar, not a list someone has to keep current."""
+    from cp_engine.word_count_lint import hand_authored_words
+
+    text = _strip("some-future-strip", 5_000) + "h " * 7
+    assert hand_authored_words(text) == 7
+
+
+def test_scan_orders_by_hand_written_words(tmp_path: Path):
+    """Worst-first must mean worst by the measured number, or a strip-heavy
+    file under budget would be sorted above one that is actually over."""
+    for name, strips, hand in (("stripheavy", 9_000, 2_600), ("handheavy", 0, 3_000)):
+        d = tmp_path / "1p" / "co" / name
+        d.mkdir(parents=True)
+        (d / "cp.md").write_text(_strip("inbound-strip", strips) + "h " * hand)
+    warnings = word_count_warnings(tmp_path)
+    assert [w.split(":")[0].split("/")[-1] for w in warnings] == [
+        "handheavy",
+        "stripheavy",
+    ]

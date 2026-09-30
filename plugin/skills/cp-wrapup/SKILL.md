@@ -153,8 +153,12 @@ move the auto-step doesn't capture, **≤2 per session**. Authoring runs on
 
 Per bootstrap v2:
 
-- **>2,500 words** on a CP file → duplication audit on next wrap-up
+- **>2,500 words** on a project `cp.md` → duplication audit on next wrap-up
 - **>3,500 words** → archive rotation
+
+Only hand-written text counts: every `cp-engine:start/end` region (the strips
+and the Exec Summary, which has its own field budgets via exec-lint) is
+excluded. Sprint files are not measured.
 
 `cxp render` warns on both thresholds (warn-only — it never blocks a commit
 and never edits). Acting on the warning is yours: the audit and the
@@ -274,8 +278,9 @@ silently.**
 
 ### h5 — Word count
 
-**`word_count_check <code>`** — REPORTING ONLY. It tells you a file crossed
-2,500 words (duplication audit) or 3,500 (archive rotation). It cannot act on
+**`word_count_check <code>`** — REPORTING ONLY. It tells you a file's
+hand-written text crossed 2,500 words (duplication audit) or 3,500 (archive
+rotation). It cannot act on
 either: rotation moves text between two files in one commit, which needs a
 checkout. Report the finding and say it needs a local session.
 

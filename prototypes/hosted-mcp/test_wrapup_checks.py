@@ -214,6 +214,27 @@ def test_word_count_is_silent_under_the_threshold():
     assert lint_word_count("word " * 100, "x/cp.md") == []
 
 
+def test_the_hosted_verb_measures_what_the_finding_measures(server, monkeypatch):
+    """#308: the threshold counts hand-written text only. The verb's own
+    `over_*_threshold` flags must agree with its `findings` — a raw
+    `len(text.split())` here said "over threshold" beside an empty finding list
+    on a file whose bulk is engine strips."""
+    strip = ("<!-- cp-engine:start inbound-strip -->\n" + "s " * 4_000
+             + "\n<!-- cp-engine:end inbound-strip -->\n")
+    text = strip + "## Current Work\n" + "h " * 300
+    monkeypatch.setattr(server, "caller_is_team_member", lambda: (True, None))
+    monkeypatch.setattr(server, "_find_cp_md_text", lambda code: text)
+    monkeypatch.setattr(server, "audit", lambda *a, **k: None)
+    monkeypatch.setattr(server, "user_client", lambda: None)
+    monkeypatch.setattr(server, "caller_subject", lambda: "t")
+    fn = getattr(server.word_count_check, "fn", server.word_count_check)
+    out = fn("x")
+    assert out["findings"] == []
+    assert out["over_audit_threshold"] is False
+    assert out["over_rotation_threshold"] is False
+    assert out["words"] == 303 and out["total_words"] > 4_000
+
+
 def test_the_hosted_verb_reports_and_does_not_rotate(server):
     """THE BOUNDARY. Rotation is a WRITE — two files in one commit — and this
     server holds no write access by construction.

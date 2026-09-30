@@ -58,11 +58,29 @@ _FIELD_LABELS = (
     "Updates",
 )
 
-_FIELD_RE = re.compile(
-    r"^\*\*(?P<label>" + "|".join(re.escape(l) for l in _FIELD_LABELS)
-    + r"):\*\*[ \t]*(?P<inline>.*)$",
-    re.MULTILINE,
+# The engine writes exactly `**Next up:**` (`exec_summary_merge`, the
+# scaffold). Humans decorate it — `**Next up (W40):**`, `**Next up — dated:**`,
+# `**🔜 Next up:**`, `**Next up**:` — and the exact-literal pattern missed every
+# one, so a decorated field's bullets were counted into the field ABOVE it
+# (08-05: Next up's bullets landed in Where it stands, 9 vs 4, and a false
+# over-budget warning fired, #319). Accepted around the label: a leading
+# emoji/symbol, then ONE of a parenthetical, a dash clause, or trailing symbols,
+# with the colon inside or just outside the bold. Deliberately NOT accepted:
+# free words after the label (`**Status quo:**`, `**Updates to the SOW:**`) —
+# that is prose that happens to start with a label word, not the field.
+_DECORATION = (
+    r"(?:[ \t]*\([^)\n]*\)"             # (W40) / (dated)
+    r"|[ \t]+[—–-][ \t]+[^*\n:]*"         # — dated
+    r"|[ \t]*[^\w\s*:()]+)?"              # trailing emoji / symbols
 )
+_FIELD_RE = re.compile(
+    r"^\*\*(?:[^\w\s*]+[ \t]*)?"          # leading emoji / symbol
+    r"(?P<label>" + "|".join(re.escape(l) for l in _FIELD_LABELS) + r")"
+    + _DECORATION
+    + r"(?::\*\*|\*\*[ \t]*:)[ \t]*(?P<inline>.*)$",
+    re.MULTILINE | re.IGNORECASE,
+)
+_CANONICAL_LABEL = {l.lower(): l for l in _FIELD_LABELS}
 
 # Scaffold placeholder value (`_<...>_`) — an unauthored field, not a finding.
 _PLACEHOLDER_RE = re.compile(r"_<[^>]+>_")
@@ -76,7 +94,7 @@ def _split_fields(region: str) -> dict[str, str]:
     for i, m in enumerate(matches):
         end = matches[i + 1].start() if i + 1 < len(matches) else len(region)
         body = (m.group("inline") + "\n" + region[m.end():end]).strip()
-        fields[m.group("label")] = body
+        fields[_CANONICAL_LABEL[m.group("label").lower()]] = body
     return fields
 
 
@@ -155,13 +173,22 @@ def lint_exec_summary(cp_md_text: str) -> list[str]:
             entries.append("\n".join(current))
         fat = [e for e in entries if _word_count(e) > UPDATES_MAX_WORDS_PER_ENTRY]
         if fat:
-            worst = max(_word_count(e) for e in fat)
+            # #319: name the entries that are over, worst first. The old text
+            # said "roll the oldest", but the offender is usually the NEWEST
+            # (the one just authored at wrap up); rolling the oldest, as told,
+            # left the warning firing unchanged (09-04).
+            from cp_engine.word_count_lint import _entry_label
+
+            fat.sort(key=lambda e: -_word_count(e))
+            named = ", ".join(
+                f"{_entry_label(e)} ({_word_count(e)})" for e in fat[:3])
+            more = f" (+{len(fat) - 3} more)" if len(fat) > 3 else ""
+            it = "it" if len(fat) == 1 else "each"
             out.append(
                 f"⚠ exec-summary Updates: {len(fat)} "
                 f"{'entry' if len(fat) == 1 else 'entries'} over "
-                f"{UPDATES_MAX_WORDS_PER_ENTRY} words (worst {worst}) — roll "
-                "the oldest to the sprint file; its outcome is already in "
-                "Status")
+                f"{UPDATES_MAX_WORDS_PER_ENTRY} words — {named}{more}. Trim "
+                f"{it} to its outcome and move the detail to the sprint file")
 
     # Next up / Blockers — bullet counts.
     for label, budget, nudge in (

@@ -10893,16 +10893,19 @@ def word_count_check(project_code: str) -> dict[str, Any]:
 
     Two thresholds, per the tenant's own rule: **>2,500 words** means a
     duplication audit is due at the next wrap-up; **>3,500** forces archive
-    rotation before the file grows further.
+    rotation before the file grows further. Only HAND-WRITTEN text counts
+    (#308): every `cp-engine:start/end` region — the strips and the Exec
+    Summary — is excluded, since no rotation can clear a strip. `words` is the
+    measured hand-written count; `total_words` is the whole file.
 
     REPORTING ONLY. Rotation moves text between files — the cp.md and the
     sprint file that receives the rolled-off entries — and this server holds no
-    write access to the tenant by construction. Act on a finding here through
-    `capture_project_state`, or take it to a session with a checkout.
+    write access to the tenant by construction. Take a finding to a session
+    with a checkout.
 
     The finding carries a contributor breakdown beneath the threshold line:
     three buckets (Exec Summary / engine strips / hand-written), then the
-    biggest Exec Summary fields, then the biggest entries in the worst field.
+    biggest hand-written sections, then the biggest entries in the worst one.
     That exists because a bare number sent people guessing — three files
     crossed the threshold in three days, three different guesses were made
     before anyone measured, and one guess was written into a CP file as fact
@@ -10927,10 +10930,16 @@ def word_count_check(project_code: str) -> dict[str, Any]:
             ),
         }
 
-    from cp_engine.word_count_lint import contributors, lint_word_count
+    from cp_engine.word_count_lint import (
+        contributors,
+        hand_authored_words,
+        lint_word_count,
+    )
 
     findings = lint_word_count(text, f"{project_code}/cp.md")
-    words = len(text.split())
+    # The SAME measured number the finding compares (#308) — a raw split here
+    # would report "over threshold" on a file whose finding list is empty.
+    words = hand_authored_words(text)
     # Audited so `wrap_status` can see the step ran. This verb needs no client
     # of its own — it reads the tree, gated on team membership — so one is
     # built here purely for the audit row. NO try/except: `audit` is already
@@ -10942,6 +10951,7 @@ def word_count_check(project_code: str) -> dict[str, Any]:
         "caller": caller_subject(),
         "available": True,
         "words": words,
+        "total_words": len(text.split()),
         "over_audit_threshold": words > 2500,
         "over_rotation_threshold": words > 3500,
         "findings": findings,

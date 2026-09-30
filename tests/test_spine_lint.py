@@ -138,7 +138,8 @@ def test_activity_feeding_a_deliverable_is_clean():
 def test_activity_feeding_only_a_non_deliverable_is_still_a_dead_end():
     """An edge into another source note is not reaching the work."""
     from cp_engine.spine_lint import lint_lifecycle
-    rows = [_lrow("discovery", layer="Activity"), _lrow("note")]
+    rows = [_lrow("discovery", layer="Activity"), _lrow("note"),
+            _lrow("deck", layer="Deliverables")]
     out = lint_lifecycle(rows, [_edge("informs", "discovery", "note")])
     assert len(out) == 1 and "dead-end activity" in out[0]
 
@@ -493,3 +494,180 @@ def test_a_sourceless_archived_element_is_unaffected_by_the_narrowing() -> None:
     archived = [_arow("_authored/gone", "A gone card", archived=True, sources=[])]
     live = [_arow("_authored/ref", "Referrer", body="see _authored/gone")]
     assert lint_archived_referrers(live, archived, [])
+
+
+# ── #319: every remedy must name a move that clears its finding ──────────
+#
+# A warning whose advice doesn't work is worse than no warning: it costs a
+# round trip, then teaches the reader to skip the lint. Each test below applies
+# the remedy the message names and asserts the finding is gone — and, where the
+# old text named a move that did NOT clear it, that the move is no longer
+# offered.
+
+
+def test_important_but_floating_remedy_clears_it_and_versioning_is_not_offered():
+    """08-25: two elements were "versioned with their answers" as the old text
+    offered, and the warning persisted — the check reads binding/serves only."""
+    row = _row("_authored/q", framing="Guiding question",
+               important=True, binding="unbound", serves=())
+    (msg,) = lint_spine_rows([row])
+    assert "version it with its answer" not in msg
+    # Bind it to the work it serves (set_spine_element sets binding=live too).
+    assert "serves" in msg
+    assert lint_spine_rows([dict(row, serves=["wi-1"], binding="live")]) == []
+    # …or clear the important flag once it has been answered.
+    assert "important flag" in msg
+    assert lint_spine_rows([dict(row, important=False)]) == []
+    # A new version changes neither field — and the message says so.
+    assert lint_spine_rows([dict(row, version_label="v2")])
+    assert "new version" in msg and "does not clear" in msg
+
+
+def test_dead_end_says_what_the_edge_must_point_at_and_the_edge_clears_it():
+    """08-21 slt-5196: an `informs` edge to a DECISION was wired, stayed live,
+    and the warning (correctly — #163 wants the stream reachable from the
+    deliverable) kept firing. The message must say a decision doesn't count."""
+    from cp_engine.spine_lint import lint_lifecycle
+
+    rows = [_lrow("shoot", layer="Activity", framing="Location scout"),
+            _lrow("_authored/decision", layer="Decisions"),
+            _lrow("film", layer="Deliverables")]
+    to_decision = [_edge("informs", "shoot", "_authored/decision")]
+    (msg,) = lint_lifecycle(rows, to_decision)
+    assert "Deliverables layer" in msg
+    assert "decision" in msg and "does not count" in msg
+    # The remedy as written — an edge FROM the activity TO a deliverable.
+    assert lint_lifecycle(rows, to_decision + [_edge("informs", "shoot", "film")]) == []
+
+
+def test_no_deliverables_is_one_direct_finding_not_n_dead_ends():
+    """08-25: four projects had NO Deliverables element and each surfaced as N
+    dead-end activities sharing one cause — and the per-activity remedy (edge
+    to the deliverable) was impossible, since there was none to point at."""
+    from cp_engine.spine_lint import lint_lifecycle
+
+    acts = [_lrow(f"a{i}", layer="Activity", framing=f"Activity {i}") for i in range(4)]
+    out = lint_lifecycle(acts, [])
+    assert len(out) == 1, out
+    assert "no deliverable element" in out[0]
+    assert "4 active activities" in out[0]
+    assert "dead-end activity" not in out[0]
+    # Applying it: add the deliverable card, wire each activity to it → clean.
+    fixed = acts + [_lrow("video", layer="Deliverables")]
+    edges = [_edge("informs", f"a{i}", "video") for i in range(4)]
+    assert lint_lifecycle(fixed, edges) == []
+    # Half-applied (card added, not yet wired) → the ordinary per-activity
+    # findings, which are now satisfiable.
+    half = lint_lifecycle(fixed, [])
+    assert len(half) == 4 and all("dead-end activity" in w for w in half)
+
+
+def test_undistilled_capture_leaves_iterated_sourced_cards_alone():
+    """08-25 slt-5196 `what-winning-means-by-role`: 10.8k chars at v7 with four
+    sources attached — authored analysis. "Distill it" would destroy work."""
+    authored = _crow(framing="What winning means by role", layer="Synthesis",
+                     body="z" * 10_800, version_label="v7",
+                     sources=[{"type": "rag_asset", "id": f"s{i}"} for i in range(4)])
+    assert not any("undistilled" in w for w in lint_curation([authored], today=_TODAY))
+    # A v1 with sources is still flagged — a paste of what it attached.
+    pasted = dict(authored, version_label="v1")
+    assert any("undistilled" in w for w in lint_curation([pasted], today=_TODAY))
+
+
+def test_undistilled_capture_without_a_source_names_a_possible_remedy():
+    """08-25 ibx-5192 / sap-5174: the raw email was never ingested, so "attach
+    the raw text as a source" was impossible and the card was the only copy."""
+    row = _crow(framing="Feedback from Janet + Mehul r3", layer="ClientFeedback",
+                body="y" * 17_000, version_label="v1", sources=[])
+    (msg,) = [w for w in lint_curation([row], today=_TODAY) if "undistilled" in w]
+    assert "only copy" in msg
+    assert "push_to_dropbox" in msg and "add_element_source" in msg
+    # Applying it: the raw text lands as a source, the card is distilled.
+    done = dict(row, body="d" * 2_000, version_label="v2",
+                sources=[{"type": "rag_asset", "id": "raw"}])
+    assert not any("undistilled" in w for w in lint_curation([done], today=_TODAY))
+
+
+def test_unauthored_brief_is_skipped_on_an_initiative():
+    """08-25 mission-control: an internal workstream has no agreement, so a
+    scaffolded SOW there is a warning nothing can satisfy."""
+    sow = _crow(framing="Statement of Work", layer="Agreement", body="- _<fill>_")
+    assert not any("unauthored standing Brief" in w
+                   for w in lint_curation([sow], today=_TODAY, label="initiative"))
+    # A job — and an unresolved label — keep the check.
+    for label in ("job", None):
+        assert any("unauthored standing Brief" in w
+                   for w in lint_curation([sow], today=_TODAY, label=label))
+
+
+class _Q:
+    def __init__(self, table, filters, db):
+        self._t, self._f, self._db = table, dict(filters), db
+
+    def select(self, *_a, **_k):
+        return self
+
+    def eq(self, col, val):
+        return _Q(self._t, {**self._f, col: val}, self._db)
+
+    def in_(self, col, vals):
+        return self
+
+    def limit(self, *_a):
+        return self
+
+    def execute(self):
+        rows = [r for r in self._db.get(self._t, [])
+                if all(r.get(k) == v for k, v in self._f.items()
+                       if k in ("id", "parent_id"))]
+        return type("R", (), {"data": rows})()
+
+
+class _Client:
+    def __init__(self, db):
+        self._db = db
+
+    def table(self, name):
+        return _Q(name, {}, self._db)
+
+
+def _projects_db(**project):
+    base = {"id": "p1", "parent_id": None, "deal_stage": None,
+            "companies": {"kind": "internal"}}
+    base.update(project)
+    return {"projects": [base]}
+
+
+def test_workstream_label_comes_from_the_engines_derive_label():
+    """Derived with `state.derive_label` over the row's shape — not a second
+    spelling of "initiative"."""
+    from cp_engine.spine_lint import _workstream_label
+
+    rows = [{"project_id": "p1"}]
+    assert _workstream_label(_Client(_projects_db()), rows) == "initiative"
+    assert _workstream_label(
+        _Client(_projects_db(deal_stage="Won", parent_id="acct",
+                             companies={"kind": "client"})), rows) == "job"
+    # Unresolvable → None, which keeps every check on.
+    assert _workstream_label(_Client({"projects": []}), rows) is None
+    assert _workstream_label(_Client(_projects_db()), []) is None
+
+
+def test_run_all_lints_skips_the_brief_check_for_an_initiative_end_to_end():
+    """The CLI and the hosted verb share `run_all_lints`; the skip must happen
+    there, or one surface keeps the unsatisfiable warning."""
+    from cp_engine.spine_lint import run_all_lints
+
+    sow = {"est_item_id": "_authored/sow", "framing": "Statement of Work",
+           "layer": "Agreement", "binding": "unbound", "serves": [],
+           "important": False, "body": "- _<fill>_", "sources": [],
+           "status": "live", "archived": False, "project_id": "p1",
+           "version_label": "v1", "version_date": "2026-08-01"}
+
+    def run(db):
+        db = dict(db, spine_substance=[sow], spine_relations=[])
+        return run_all_lints(_Client(db), ["x"])
+
+    assert not any("unauthored standing Brief" in w for w in run(_projects_db()))
+    assert any("unauthored standing Brief" in w for w in run(_projects_db(
+        deal_stage="Won", parent_id="acct", companies={"kind": "client"})))

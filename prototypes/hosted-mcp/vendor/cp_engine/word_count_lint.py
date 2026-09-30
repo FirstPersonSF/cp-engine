@@ -22,9 +22,21 @@ suppresses the manual check that would otherwise catch it. Agents skip the
 duplication audit at `wrap up` because they expect a warning that never
 comes, so files drift past both thresholds unnoticed.
 
+WHAT IS MEASURED (#308): only the hand-authored text. Every engine-managed
+region — anything between `<!-- cp-engine:start X -->` and its end marker —
+is excluded from the threshold, the way `meetings/` is exempt. The warning
+fired on files whose words sat in regions no human may edit: slt-5196 was
+5,398 words with ~350 hand-written, and one heavy ingest week tripled its
+strips. Rotating hand text cannot clear a strip, so a count that includes
+strips gives advice nobody can take. That includes the `exec-summary`
+region: its text is model-authored at wrap up, but it sits inside a
+cp-engine marker, and the marker is the rule — the Exec Summary has its own
+per-field budgets in `exec_summary_lint`, which runs on the same pass.
+
 Findings carry a contributor breakdown beneath the threshold line — three
-buckets (Exec Summary / engine strips / hand-written), then the biggest Exec
-Summary fields, then the biggest entries in the worst field. That exists
+buckets (Exec Summary / engine strips / hand-written) as information, then
+the biggest hand-written sections, then the biggest entries in the worst
+section, since that is where a trim can happen. That exists
 because the bare warning sent a human to guess: three files crossed the
 threshold in three days, three different guesses were made before anyone
 measured, and one guess was written into a CP file as fact and was wrong.
@@ -68,8 +80,22 @@ _EXEC_SUMMARY_REGION = "exec-summary"
 
 # How many contributors to name. Three buckets plus the worst few entries is
 # enough to point at the cause without reprinting the file.
-_TOP_FIELDS = 3
+_TOP_SECTIONS = 3
 _TOP_ENTRIES = 3
+
+
+def hand_authored(text: str) -> str:
+    """`text` with every engine-managed region removed, markers included.
+
+    An unterminated start marker is NOT a region (the pattern needs its end),
+    so a malformed file keeps its words counted rather than hiding them.
+    """
+    return _REGION_RE.sub("", text or "")
+
+
+def hand_authored_words(text: str) -> int:
+    """The number the thresholds compare against (#308)."""
+    return _word_count(hand_authored(text))
 
 
 def _word_count(text: str) -> int:
@@ -120,13 +146,33 @@ def _entry_label(entry: str) -> str:
     return " ".join(words[:4]) + ("…" if len(words) > 4 else "")
 
 
+def _sections(text: str) -> list[tuple[str, str]]:
+    """Split hand-authored text into `## ` sections: (heading, body).
+
+    Text before the first `## ` heading is returned under "(preamble)".
+    """
+    out: list[tuple[str, str]] = []
+    name, lines = "(preamble)", []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            out.append((name, "\n".join(lines)))
+            name, lines = line[3:].strip(), []
+        else:
+            lines.append(line)
+    out.append((name, "\n".join(lines)))
+    return out
+
+
 def contributors(text: str) -> list[str]:
     """Indented lines naming what is actually spending the words.
 
     Three buckets — the Exec Summary, the other engine-managed strips, and
-    hand-written prose — then the biggest Exec Summary fields, then the biggest
-    entries inside the worst field. Returns `[]` when nothing can be parsed, so
-    a malformed file degrades to the bare threshold warning.
+    hand-written prose — then the biggest hand-written sections, then the
+    biggest entries inside the worst one. Only the hand-written bucket is
+    compared against the thresholds (#308); the other two are printed so the
+    reader can see the whole file without mistaking a strip for the problem.
+    Returns `[]` when nothing can be parsed, so a malformed file degrades to
+    the bare threshold warning.
 
     Why this exists: the warning named a problem and left the diagnosis to a
     human. Three files crossed the threshold in three days, three different
@@ -138,49 +184,35 @@ def contributors(text: str) -> list[str]:
         return []
 
     regions = {m.group(1): m.group(2) for m in _REGION_RE.finditer(text)}
-    exec_body = regions.get(_EXEC_SUMMARY_REGION, "")
-    exec_words = _word_count(exec_body)
+    exec_words = _word_count(regions.get(_EXEC_SUMMARY_REGION, ""))
     strip_words = sum(
         _word_count(body)
         for name, body in regions.items()
         if name != _EXEC_SUMMARY_REGION
     )
-    hand_words = max(total - exec_words - strip_words, 0)
+    hand = hand_authored(text)
+    hand_words = _word_count(hand)
 
     def pct(n: int) -> str:
         return f"{n * 100 // total}%"
 
     out = [
-        f"    exec-summary {exec_words:>6,} ({pct(exec_words)})",
-        f"    engine strips{strip_words:>6,} ({pct(strip_words)})",
-        f"    hand-written {hand_words:>6,} ({pct(hand_words)})",
+        f"    exec-summary {exec_words:>6,} ({pct(exec_words)}) — not counted",
+        f"    engine strips{strip_words:>6,} ({pct(strip_words)}) — not counted",
+        f"    hand-written {hand_words:>6,} ({pct(hand_words)}) — counted",
     ]
 
-    if not exec_body.strip():
+    sections = [(n, _word_count(b), b) for n, b in _sections(hand)]
+    sections = [s for s in sections if s[1]]
+    if not sections:
         return out
+    sections.sort(key=lambda s: -s[1])
 
-    # Per-field, worst first. Imported lazily: `exec_summary_lint` is a sibling
-    # pure-text module, but keeping the import here means a future dependency
-    # there can never break the threshold warning.
-    try:
-        from cp_engine.exec_summary_lint import _split_fields
-    except Exception:  # noqa: BLE001 — advisory pass, never break the warning
-        return out
+    named = ", ".join(f"{n} {w:,}" for n, w, _ in sections[:_TOP_SECTIONS])
+    out.append(f"      hand-written sections: {named}")
 
-    fields = [
-        (name, _word_count(body), body)
-        for name, body in _split_fields(exec_body).items()
-    ]
-    fields = [f for f in fields if f[1]]
-    if not fields:
-        return out
-    fields.sort(key=lambda f: -f[1])
-
-    named = ", ".join(f"{n} {w:,}" for n, w, _ in fields[:_TOP_FIELDS])
-    out.append(f"      exec-summary fields: {named}")
-
-    # The worst field, broken down by entry — this is where the trim happens.
-    worst_name, worst_words, worst_body = fields[0]
+    # The worst section, broken down by entry — this is where the trim happens.
+    worst_name, _, worst_body = sections[0]
     entries = [(e, _word_count(e)) for e in _split_entries(worst_body)]
     entries = [e for e in entries if e[1]]
     if len(entries) > 1:
@@ -203,16 +235,23 @@ def lint_word_count(text: str, label: str) -> list[str]:
     `label` prefixes the finding so tenant-wide output stays attributable.
     Pure function: text in, display-ready strings out. Never edits.
     """
-    words = _word_count(text)
+    # Hand-authored words only (#308). Engine regions can't be rotated by a
+    # human, so counting them produced a warning — and a remedy — that no one
+    # could act on; a file whose hand-written share is under budget is silent.
+    words = hand_authored_words(text)
+    total = _word_count(text)
+    whole = f"; {total:,} with engine regions" if total != words else ""
     if words > ROTATE_THRESHOLD_WORDS:
         head = (
-            f"{label}: ⚠ word-count {words:,} words (over {ROTATE_THRESHOLD_WORDS:,}) "
+            f"{label}: ⚠ word-count {words:,} words hand-written "
+            f"(over {ROTATE_THRESHOLD_WORDS:,}{whole}) "
             "— archive rotation due before the next commit; "
             "roll resolved threads into the archive file"
         )
     elif words > AUDIT_THRESHOLD_WORDS:
         head = (
-            f"{label}: ⚠ word-count {words:,} words (over {AUDIT_THRESHOLD_WORDS:,}) "
+            f"{label}: ⚠ word-count {words:,} words hand-written "
+            f"(over {AUDIT_THRESHOLD_WORDS:,}{whole}) "
             "— duplication audit due at next wrap-up; "
             "look for the same thread restated in two sections"
         )
@@ -238,7 +277,7 @@ def lint_word_count(text: str, label: str) -> list[str]:
 def word_count_warnings(root: Path) -> list[str]:
     """Whole-file word-count warnings across the tenant's live CP files.
 
-    Scans every `cp.md` below `root`, skipping `inactive/` dirs, the tenant's
+    Scans every `cp.md` below `root` (sprint files are not measured), skipping `inactive/` dirs, the tenant's
     own top-level files, and anything `is_exempt` rejects. Pure read — never
     edits. Ordered worst-first so the file most over budget leads.
 
@@ -260,5 +299,5 @@ def word_count_warnings(root: Path) -> list[str]:
         except OSError:
             continue
         for warning in lint_word_count(text, str(rel.parent)):
-            found.append((_word_count(text), warning))
+            found.append((hand_authored_words(text), warning))
     return [w for _, w in sorted(found, key=lambda p: -p[0])]
