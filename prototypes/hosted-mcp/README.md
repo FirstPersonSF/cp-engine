@@ -20,6 +20,16 @@ path. Nothing under `src/cp_engine/` was modified.
 
 43 tools (the 36 through spec-v04, + the #159 commitments-lifecycle trio, + the #125 read verb `list_spine_relations`, + the #138-ratchet ports `archive_project_source` / `rename_project_source` (mig-134 guarded fns) / `pull_element_from_project`), **53/53 smoke cases pass** as of the last full run before the #159/#125/#138 additions.
 
+**Two endpoints, one port (#141).** `/mcp` is the full surface below,
+unchanged. `/mcp/read` registers ONLY the read tools (`READ_ONLY_TOOLS` in
+`server.py`, 24 of them, each annotated `readOnlyHint`); it exists for
+second-vendor clients (ChatGPT Business) under Drew's 2026-09-30 read-only
+decision. Enforcement is by registration, not by inspecting the client.
+Every call on either endpoint writes an `mcp_audit_log` row (a fallback row
+when a tool returns early or raises), and `client` records
+`<server version>;endpoint=…;oauth_client=…;app=…;ua=…`. Setup runbook:
+[`docs/chatgpt-readonly-connector.md`](../../docs/chatgpt-readonly-connector.md).
+
 ---
 
 ## Deploy it

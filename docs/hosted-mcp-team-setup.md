@@ -79,6 +79,12 @@ tenant tree itself. Those stay in Claude Code, where diffs and review work —
 the hosted server can read the tree (`read_project_file`) but never writes
 to it.
 
+## ChatGPT (read-only)
+
+ChatGPT Business connects to a separate, read-only endpoint,
+`https://cp.mc-2.1p.is/mcp/read`: same sign-in, same access, no write tools.
+Setup: [`chatgpt-readonly-connector.md`](chatgpt-readonly-connector.md).
+
 ## Troubleshooting
 
 - **Every tool returns 0 rows** → run `whoami` first. If it answers with your
