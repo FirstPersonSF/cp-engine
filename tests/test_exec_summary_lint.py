@@ -146,3 +146,59 @@ def test_unauthored_scaffold_is_silent():
 def test_placeholder_bullets_do_not_count():
     where = tuple("_<seed bullet>_" for _ in range(WHERE_MAX_BULLETS + 3))
     assert lint_exec_summary(_cp_md(status="fine", where=where)) == []
+
+
+# ── #319: remedies that name the real offender; decorated field labels ────
+
+
+def _with_updates(updates: str) -> str:
+    return _COMPLIANT.replace("- 2026-07-25 — built the deck.\n", updates)
+
+
+def test_updates_budget_names_the_over_budget_entry_not_the_oldest():
+    """09-04: the warning said "roll the oldest", but the fat entry was the
+    NEWEST (just authored at wrap up). Rolling the oldest left it firing."""
+    from cp_engine.exec_summary_lint import UPDATES_MAX_WORDS_PER_ENTRY
+
+    fat_newest = "- 2026-09-04 — " + "detail " * (UPDATES_MAX_WORDS_PER_ENTRY + 20)
+    oldest = "- 2026-08-01 — shipped v1."
+    text = _with_updates(f"{fat_newest}\n{oldest}\n")
+    (msg,) = [w for w in lint_exec_summary(text) if "Updates" in w]
+    assert "2026-09-04" in msg
+    assert "oldest" not in msg
+    # Following the old advice (drop the oldest) does NOT clear it…
+    assert any("Updates" in w for w in lint_exec_summary(_with_updates(f"{fat_newest}\n")))
+    # …trimming the NAMED entry does.
+    trimmed = "- 2026-09-04 — shipped the render; detail in the sprint file."
+    assert not any("Updates" in w
+                   for w in lint_exec_summary(_with_updates(f"{trimmed}\n{oldest}\n")))
+
+
+def test_decorated_field_labels_are_recognised():
+    """08-05: `**Next up (…):**` failed the exact-literal regex, so Next up's
+    bullets were counted into Where it stands (9 vs 4) and a false over-budget
+    warning fired."""
+    where = [f"current fact {i}" for i in range(4)]
+    nxt = [f"move {i}" for i in range(5)]
+    plain = _cp_md(status="Fine.", where=where, next_up=nxt)
+    assert lint_exec_summary(plain) == []
+    for decorated in ("**Next up (W40):**", "**Next up — dated:**",
+                      "**🔜 Next up:**", "**Next up**:", "**Next Up:**",
+                      "**Next up 🔜:**"):
+        text = plain.replace("**Next up:**", decorated)
+        assert decorated in text
+        assert lint_exec_summary(text) == [], decorated
+
+
+def test_prose_that_starts_with_a_label_word_is_not_a_field():
+    """Decorations are accepted; free words after the label are not — a line
+    like `**Status quo:** …` inside a field is prose, not a new field."""
+    from cp_engine.exec_summary_lint import _split_fields
+
+    region = ("**Status:** Fine.\n"
+              "**Where it stands:**\n- a\n"
+              "**Status quo:** the old deck still runs\n"
+              "**Updates to the SOW:** none\n")
+    fields = _split_fields(region)
+    assert set(fields) == {"Status", "Where it stands"}
+    assert "Status quo" in fields["Where it stands"]
