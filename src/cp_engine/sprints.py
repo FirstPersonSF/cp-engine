@@ -396,6 +396,10 @@ def _parse_risks(body: str) -> tuple[Risk, ...]:
 # bullets); this regex is for the few prose sections parsed as raw text.
 _HTML_COMMENT_LINE_RE = re.compile(r"^\s*<!--.*-->\s*$")
 
+# Any HTML comment, inline or whole-line. Non-greedy so two comments on one
+# line do not swallow the value between them.
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+
 _ALLOCATION_RE = re.compile(r"\*\*Allocation:\*\*\s*(.+)")
 _PERSON_HOURS_RE = re.compile(r"(?P<name>[A-Za-z][\w\s]*?)\s*·\s*(?P<hours>[\d.]+)h")
 
@@ -407,7 +411,15 @@ def _parse_this_sprint(
     alloc: list[PersonHours] = []
     m = _ALLOCATION_RE.search(section)
     if m:
-        for pm in _PERSON_HOURS_RE.finditer(m.group(1)):
+        # Strip HTML comments before reading person·hours pairs. The scaffold
+        # ships this line WITH a comment (`<!-- Drew · Nh · Tony · Nh -->`),
+        # which teaches authors to annotate in the value position — and a note
+        # such as `<!-- W35 was Marcello · 16h -->` then parsed as a person
+        # named "W35 was Marcello" booked for 16 hours, surfacing two files
+        # away in master-cp.md's roster (#320). A comment is invisible when
+        # rendered, so it is never data.
+        value = _HTML_COMMENT_RE.sub("", m.group(1))
+        for pm in _PERSON_HOURS_RE.finditer(value):
             alloc.append(
                 PersonHours(
                     person_name=pm.group("name").strip(),
@@ -588,6 +600,14 @@ def _parse_stakeholders(body: str) -> tuple[Stakeholder, ...]:
     return tuple(out)
 
 
+# `[YYYY-MM-DD]` or `[YYYY-MM-DD · <note>]` opening a `### Decisions` bullet.
+# Group 1 is the date alone — the optional note (e.g. `sprint planning`) is
+# provenance, not part of the date the aggregators window on.
+_BARE_DATE_DECISION_RE = re.compile(
+    r"\[(\d{4}-\d{2}-\d{2})(?:\s*·[^\]]*)?\]\s*(.*)$"
+)
+
+
 def _parse_decisions(body: str) -> tuple[DecisionEntry, ...]:
     """Parse bracket-formatted decisions from `### Decisions` (v0.8.5 format).
 
@@ -615,13 +635,24 @@ def _parse_decisions(body: str) -> tuple[DecisionEntry, ...]:
         # files — they are in the text, visible to a reader, and invisible to
         # every consumer of this parser (#272).
         stripped = first.lstrip("- ").strip().replace("`", "")
-        if not stripped.startswith("[decision"):
+        # A bare-date marker — `[2026-08-18] …` — is accepted too. The
+        # `### Decisions` header sits directly above these bullets, so the
+        # `decision · ` prefix reads as redundant to a person writing by hand
+        # and gets omitted; five real slt-5196 decisions rendered as "No
+        # structured decisions captured" that way with sync exiting 0 (#320).
+        # Only an ISO date opens the bracket here, so a freeform bullet that
+        # merely starts with a bracket is still left alone.
+        bare = _BARE_DATE_DECISION_RE.match(stripped)
+        if not bare and not stripped.startswith("[decision"):
             continue
         cross = False
         if "[cross-cutting]" in stripped:
             cross = True
             stripped = stripped.replace("[cross-cutting]", "", 1).strip()
-        m = re.match(r"\[decision\s*·\s*([^\]]+)\]\s*(.*)$", stripped)
+        if bare:
+            m = _BARE_DATE_DECISION_RE.match(stripped)
+        else:
+            m = re.match(r"\[decision\s*·\s*([^\]]+)\]\s*(.*)$", stripped)
         if not m:
             continue
         date_s = m.group(1).strip()

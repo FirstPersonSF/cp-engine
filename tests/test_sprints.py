@@ -1431,3 +1431,75 @@ def test_a_risks_wrapped_prose_still_joins(tmp_path):
     (risk,) = parse_sprint_file(p).risks
     assert "re-briefing on strategy" in risk.text
     assert risk.why_it_matters is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #320 — parsers silently dropping or inventing hand-written content
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_bare_date_decision_reaches_recent_decisions_strip() -> None:
+    """A `### Decisions` bullet written `- [2026-08-18] …` — no `decision · `
+    prefix — was dropped by `_parse_decisions`, so five real slt-5196
+    decisions rendered as "No structured decisions captured in the last 4
+    weeks" while sync exited 0 (#320). #272 fixed only the backticked form.
+    Asserted through `aggregate_project_strips`, the path that feeds
+    `recent-decisions-strip`, not just the parser."""
+    from datetime import date as _date
+
+    from cp_engine.aggregators import aggregate_project_strips
+    from cp_engine.sprints import _parse_decisions
+
+    body = """
+## Meeting notes & decisions
+
+### Decisions
+
+- [2026-08-18] Shoot stays on Oct 8–9
+- `[2026-08-19]` Legal reviews releases before casting
+- [2026-08-20 · sprint planning][cross-cutting] Tony owns the narrative pass
+- [decision · 2026-08-21] Prefixed form still parses
+- [not a date] freeform bracket bullet is left alone
+"""
+    decs = _parse_decisions(body)
+    assert [(d.date, d.text, d.cross_cutting) for d in decs] == [
+        ("2026-08-18", "Shoot stays on Oct 8–9", False),
+        ("2026-08-19", "Legal reviews releases before casting", False),
+        ("2026-08-20", "Tony owns the narrative pass", True),
+        ("2026-08-21", "Prefixed form still parses", False),
+    ]
+
+    class _SF:
+        project_code = "slt-5196"
+        week_start = _date(2026, 8, 17)
+        client_inbound = ()
+        decisions = decs
+        client_open_asks = ()
+        stakeholders = ()
+
+    strips = aggregate_project_strips("slt-5196", (_SF(),), _date(2026, 8, 25))
+    assert len(strips.recent_decisions) == 4
+
+
+def test_allocation_html_comment_is_not_a_person() -> None:
+    """An HTML comment in the Allocation slot was parsed as data: the note
+    `<!-- W35 was Marcello · 16h -->` became a person named "W35 was
+    Marcello" booked for 16h in master-cp.md's roster (#320). The scaffold
+    itself ships the slot with a comment, so the comment text here is taken
+    from the real template line and then filled the way an author would."""
+    from cp_engine.sprints import _parse_this_sprint
+
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "src/cp_engine/templates/sprint-cp.md.j2"
+    ).read_text(encoding="utf-8")
+    scaffold_line = next(
+        ln for ln in template.splitlines() if ln.startswith("**Allocation:**")
+    )
+    assert "<!--" in scaffold_line  # the premise: the scaffold teaches it
+    annotated = scaffold_line.replace(
+        "<!--", "Tony · 16h <!-- W35 was Marcello · 16h ·", 1
+    )
+    body = f"## This sprint\n{annotated}\n\n### Deliverables\n1. x\n"
+    alloc, _deliv, _dod = _parse_this_sprint(body)
+    assert alloc == (PersonHours(person_name="Tony", hours=16.0),)

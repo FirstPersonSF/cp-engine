@@ -80,12 +80,21 @@ def ingest_cmd(plan: Path, dry_run: bool, week_iso: str | None) -> None:
 
     if dry_run:
         # Just validate the plan; report what would happen.
-        from cp_engine.ingest import _normalize_verb, _validate_plan
+        from cp_engine.ingest import _normalize_verb, _validate_plan, unknown_verbs
         try:
             _validate_plan(plan_data)
         except IngestPlanError as exc:
             click.echo(f"Plan validation failed: {exc}", err=True)
             sys.exit(1)
+        # Unknown verbs pass validation (#320: one bad step must not kill the
+        # plan) but would be skipped on apply — say so here, and exit 2 below,
+        # so a typo in a hand-written plan is caught before it is applied.
+        skipped = unknown_verbs(plan_data)
+        for entry in skipped:
+            click.echo(
+                f"WARNING: unknown verb {entry} — would be SKIPPED on apply",
+                err=True,
+            )
         projects = plan_data.get("projects") or {}
         themes = plan_data.get("themes") or []
         account_decisions = plan_data.get("account_decisions") or []
@@ -99,8 +108,11 @@ def ingest_cmd(plan: Path, dry_run: bool, week_iso: str | None) -> None:
             },
             "themes_count": len(themes),
             "account_decisions_count": len(account_decisions),
+            "unknown_verbs": skipped,
         }
         click.echo(json.dumps(summary, indent=2))
+        if skipped:
+            sys.exit(2)
         return
 
     try:

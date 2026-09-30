@@ -477,14 +477,13 @@ def test_generate_account_plan_non_mapping_plan_raises(
         )
 
 
-def test_generate_account_plan_invalid_verb_fails_validation(
+def test_generate_account_plan_malformed_plan_fails_validation(
     tmp_path: Path, monkeypatch
 ) -> None:
     bad = (
         "projects:\n"
         "  ggl-5168:\n"
-        "    made_up_verb:\n"
-        "      - text: x\n"
+        "    record-inbound: not-a-list\n"
         "account_summary:\n"
         "  text: summary\n"
     )
@@ -498,6 +497,32 @@ def test_generate_account_plan_invalid_verb_fails_validation(
             active_projects=[make_project("ggl-5168", "Playbooks")],
             week_iso="2026-W20",
         )
+
+
+def test_generate_account_plan_unknown_verb_does_not_kill_the_plan(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """An invented verb used to fail validation and discard the whole account
+    plan (#320). It now passes generation; execute_plan skips that one step
+    and records it as an error, so the valid entries beside it survive."""
+    plan_yaml = (
+        "projects:\n"
+        "  ggl-5168:\n"
+        "    made_up_verb:\n"
+        "      - text: x\n"
+        "account_summary:\n"
+        "  text: summary\n"
+    )
+    _stub_claude(monkeypatch, plan_yaml)
+    out = generate_account_plan(
+        config=make_tenant(tmp_path),
+        code="ggl-5216-google",
+        meeting_id="mtg-1",
+        transcript_text="t",
+        active_projects=[make_project("ggl-5168", "Playbooks")],
+        week_iso="2026-W20",
+    )
+    assert "made_up_verb" in out.plan["projects"]["ggl-5168"]
 
 
 def test_generate_account_plan_truncates_long_transcript(
