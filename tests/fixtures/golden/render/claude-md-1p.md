@@ -308,6 +308,8 @@ During `deepen from transcript`, write meeting notes, decisions, new client
 asks, outbound drafts, and risk updates into the *sprint file's* hand-written
 sections. Engine-managed regions inside the sprint file (`sprint-facts`,
 `where-it-stands`, `carry-forward`) MUST NOT be edited — sync owns them.
+Open items carry forward until closed in the week that owns them; close a
+horizon item with `[done · …]` or `~~strikethrough~~`.
 
 Project `cp.md` still receives durable updates — the **Exec Summary**
 (authored at `wrap up`; run `/cp-wrapup`), plus Project Notes and
