@@ -129,6 +129,31 @@ def open_client_asks(sf: SprintFile) -> list[ClientAsk]:
     return out
 
 
+def open_questions(sf: SprintFile) -> list:
+    """Every open question still unsettled in ``sf`` (#340): this week's own
+    ``### Open questions`` bullets that are open, then the carried ones,
+    de-duplicated — ``open_client_asks``'s rule, so a question answered in
+    this week's own section suppresses its carried copy. Stale ones (past
+    the carry cap) are not listed; ``sf.carry_forward.stale_count(
+    "open_questions")`` names them."""
+    out: list = []
+    seen: set[str] = set()
+    for q in sf.open_questions:
+        key = _bullet_key(q.text)
+        if key in seen:
+            continue
+        seen.add(key)
+        if q.is_open:
+            out.append(q)
+    for q in sf.carry_forward.open_questions:
+        key = _bullet_key(q.text)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(q)
+    return out
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Inbound reconciliation against the live source store
 # ──────────────────────────────────────────────────────────────────────

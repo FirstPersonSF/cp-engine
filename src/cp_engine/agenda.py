@@ -11,6 +11,7 @@ Tony's projects" by giving partners a single doc to read before the meeting.
 Design (locked 2026-05-12 with Drew):
 - Project-grouped, alphabetical (matches master-cp.md's display order).
 - Per-project: Quick Resume excerpt + recent inbound + open asks aged + decisions due
+  + open questions (unsettled, carried until answered — #340)
   + the cross-cutting decisions recorded on its ancestors (account / program
     `cp.md` `## Decisions`) and master-cp.md entries whose `source:` names it.
 - Tenant-wide header: themes/decisions/carry-forward strips from sprint files.
@@ -36,6 +37,7 @@ from cp_engine.aggregators import (
     ProjectStrips,
     aggregate_project_strips,
     aggregate_tenant_strips,
+    open_questions as _open_questions,
 )
 from cp_engine.config import TenantConfig
 from cp_engine.render import (
@@ -48,6 +50,8 @@ from cp_engine.sprints import (
     parse_sprint_file,
     parse_themes_from_week_file,
     sprint_week_dates,
+    stale_rollup_line,
+    week_open_questions,
 )
 from cp_engine.state import (
     DecisionEntry,
@@ -115,6 +119,9 @@ class ProjectAgendaBlock:
     relevant_weekly_decisions: tuple[WeeklyDecision, ...]
     stakeholders: tuple[Stakeholder, ...]
     discussion_prompt: str | None  # set only when a real signal exists
+    # Unsettled questions, own + carried (#340) — listed beside decisions
+    # due. Not an urgency signal: a question has no deadline of its own.
+    open_questions: tuple[dict, ...] = ()
 
     @property
     def has_urgency(self) -> bool:
@@ -134,6 +141,9 @@ class TenantAgendaHeader:
     themes: tuple[str, ...]  # raw text bullets from themes-strip
     cross_cutting_decisions: tuple[dict, ...]
     carry_forward: dict  # {escalated_risks, stale_asks, decisions_due}
+    # Sprint-planning meetings' unsettled decisions, from `_week.md` (#340).
+    open_questions: tuple[dict, ...] = ()
+    open_questions_stale: str | None = None  # the rollup line, when any
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -444,6 +454,7 @@ def build_project_block(
 
     # Decisions due from this week's sprint file Horizon section.
     decisions_due = _extract_decisions_due_for_project(project.code, sprint_files, today)
+    open_qs = _extract_open_questions_for_project(project.code, sprint_files)
 
     # Cross-cutting decisions (ancestors first, then newest first, capped).
     if isinstance(weekly_decisions, CrossCuttingDecisions):
@@ -467,7 +478,35 @@ def build_project_block(
         relevant_weekly_decisions=relevant_capped,
         stakeholders=strips.stakeholders,
         discussion_prompt=prompt,
+        open_questions=open_qs,
     )
+
+
+def _extract_open_questions_for_project(
+    project_code: str, sprint_files: tuple
+) -> tuple[dict, ...]:
+    """Open questions (#340) on this project's most recent sprint file: its
+    own unsettled ones plus every one carried in (``aggregators.open_questions``,
+    the same set the carry-forward region holds)."""
+    relevant = [sf for sf in sprint_files if sf.project_code == project_code]
+    if not relevant:
+        return ()
+    sf = max(relevant, key=lambda s: s.week_start)
+    return tuple(
+        {"text": open_question_text(q), "raised_date": q.raised_date}
+        for q in _open_questions(sf)
+    )
+
+
+def open_question_text(q) -> str:
+    """One line for a list surface: the question plus its continuation, with
+    the cp:hash marker lifted out wherever it sits (it trails the FIRST line,
+    so a joined continuation would strand it mid-text)."""
+    parts = [q.text, *(ln.strip() for ln in (q.note or "").splitlines() if ln.strip())]
+    return " ".join(_ANY_HASH_MARKER_RE.sub("", " ".join(parts)).split())
+
+
+_ANY_HASH_MARKER_RE = re.compile(r"<!--\s*cp:hash=[0-9a-f]+\s*-->")
 
 
 def _extract_decisions_due_for_project(
@@ -538,6 +577,7 @@ def build_tenant_header(
         themes_list.extend(parse_themes_from_week_file(wpath))
 
     tenant_strips = aggregate_tenant_strips(sprint_files, tuple(themes_list), today)
+    week_qs, week_qs_stale = week_open_questions(config.root / "sprints", week_iso)
 
     return TenantAgendaHeader(
         week_iso=week_iso,
@@ -547,6 +587,14 @@ def build_tenant_header(
         themes=tuple(t.text for t in tenant_strips.themes),
         cross_cutting_decisions=tenant_strips.cross_cutting_decisions,
         carry_forward=tenant_strips.carry_forward,
+        open_questions=tuple(
+            {"text": open_question_text(q), "raised_date": q.raised_date,
+             "scope": q.scope or ""}
+            for q in week_qs
+        ),
+        open_questions_stale=(
+            stale_rollup_line(week_qs_stale) if week_qs_stale else None
+        ),
     )
 
 
@@ -608,7 +656,19 @@ def render_agenda_markdown(
         for d in header.cross_cutting_decisions:
             lines.append(f"- [{d['date']} · `{d['project_code']}`] {_strip_hash_marker(d['text'])}")
         lines.append("")
-    if not (header.themes or has_carry or header.cross_cutting_decisions):
+    if header.open_questions or header.open_questions_stale:
+        lines.append(
+            f"**Open questions from sprint planning ({len(header.open_questions)}):**"
+        )
+        for q in header.open_questions:
+            meta = " · ".join(x for x in (q["raised_date"], q["scope"]) if x)
+            prefix = f"[{meta}] " if meta else ""
+            lines.append(f"- {prefix}{_strip_hash_marker(q['text'])}")
+        if header.open_questions_stale:
+            lines.append(header.open_questions_stale)
+        lines.append("")
+    if not (header.themes or has_carry or header.cross_cutting_decisions
+            or header.open_questions or header.open_questions_stale):
         lines.append("_No tenant-wide context surfaced this sprint._")
         lines.append("")
 
@@ -671,6 +731,14 @@ def _render_project_block(block: ProjectAgendaBlock) -> list[str]:
         for d in block.decisions_due:
             target = f" ({d['target_date']})" if d.get("target_date") else ""
             out.append(f"- {d['text']}{target}")
+        out.append("")
+
+    # Open questions — unsettled, carried until answered (#340).
+    if block.open_questions:
+        out.append(f"**Open questions ({len(block.open_questions)}):**")
+        for q in block.open_questions:
+            raised = f"[{q['raised_date']}] " if q.get("raised_date") else ""
+            out.append(f"- {raised}{_strip_hash_marker(q['text'])}")
         out.append("")
 
     # Cross-referenced weekly decisions.

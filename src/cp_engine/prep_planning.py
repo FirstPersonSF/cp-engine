@@ -46,6 +46,7 @@ from cp_engine.agenda import (
     WeeklyDecision,
     filter_active,
     load_cross_cutting_decisions,
+    open_question_text,
     short_iso_date,
     to_datetime,
 )
@@ -62,6 +63,9 @@ from cp_engine.sprints import (
     bullets,
     current_sprint_week_iso,
     parse_bracketed_bullet,
+    parse_sprint_file,
+    stale_rollup_line,
+    week_open_questions,
     section_body,
     sprint_week_dates,
 )
@@ -169,6 +173,10 @@ class ProjectPlanningBlock:
     # project's deliverable STATE at one-line density ("P&P Report · due
     # 2026-08-26 · 1 output accrued"). Empty for initiatives/no-estimate.
     deliverables: tuple[str, ...] = ()
+    # Unsettled questions on the planning week's sprint file, own + carried
+    # (#340): `{"text", "raised_date"}`. Rendered beside the decision_due
+    # flags — the other half of "what is not decided yet".
+    open_questions: tuple[dict, ...] = ()
     # Freshness of the exec summary (parsed from its `· updated <date>`
     # heading stamp): ISO date + age in days at build time. None/None when
     # the region is absent or unstamped. The bundle renderer flags blocks
@@ -235,6 +243,11 @@ class PlanningResult:
     # carry no date at all (kept, but flagged so the rot stays visible).
     cross_cutting_decisions_stale_count: int = 0
     cross_cutting_decisions_undated_count: int = 0
+    # Sprint-planning meetings' unsettled decisions (#340), read from every
+    # `_week.md` still holding one open; the stale rollup line when any are
+    # past the carry cap.
+    week_open_questions: tuple[dict, ...] = ()
+    week_open_questions_stale: str | None = None
     errors: list[str] = field(default_factory=list)
     generated_at: str = ""
 
@@ -1389,8 +1402,10 @@ def build_project_block(
     # Read the sprint body once so urgent-detection's Rule 2 + Rule 4 can
     # parse Decisions due / Dependencies & risks without re-reading the file.
     sprint_file_body: str | None = None
+    open_questions: tuple[dict, ...] = ()
     if sprint_file_path.is_file():
         sprint_file_body = sprint_file_path.read_text(encoding="utf-8")
+        open_questions = _sprint_open_questions(sprint_file_path)
 
     # MC-2 schedule milestones — the SOLE milestone source (day-granular
     # milestones + feedback windows maintained in the Jobs workspace).
@@ -1485,6 +1500,7 @@ def build_project_block(
         urgent=tuple(urgent_list),
         fetch_error=fetch_error,
         deliverables=deliverable_lines,
+        open_questions=open_questions,
         drift=drift,
         slack_digest=slack_digest,
         sweep_synthesis=sweep_synthesis,
@@ -1493,6 +1509,36 @@ def build_project_block(
         exec_summary_placeholder_fields=placeholder_fields,
         exec_summary_partial_refresh=partial,
     )
+
+
+def _sprint_open_questions(sprint_file_path: Path) -> tuple[dict, ...]:
+    """Own + carried open questions of one sprint file (#340) — the
+    ``aggregators.open_questions`` set the agenda lists, so the two surfaces
+    agree. A file the parser cannot read yields none, never an abort."""
+    from cp_engine.aggregators import open_questions as _open_questions
+
+    try:
+        sf = parse_sprint_file(sprint_file_path)
+    except Exception as exc:  # a malformed file must not sink the bundle
+        log.warning("open questions unreadable in %s: %s", sprint_file_path, exc)
+        return ()
+    return tuple(
+        {"text": open_question_text(q), "raised_date": q.raised_date}
+        for q in _open_questions(sf)
+    )
+
+
+def _render_open_questions(block: ProjectPlanningBlock) -> list[str]:
+    """`**Open questions (N):**` — unsettled, carried until answered (#340).
+    Nothing at all when there are none, like drift and deliverables."""
+    if not block.open_questions:
+        return []
+    out = [f"**Open questions ({len(block.open_questions)}):**"]
+    for q in block.open_questions:
+        raised = f"[{q['raised_date']}] " if q.get("raised_date") else ""
+        out.append(f"- {raised}{q['text']}")
+    out.append("")
+    return out
 
 
 def _run_project_sweep(
@@ -1852,7 +1898,9 @@ def _render_cross_cutting(
     binding = result.capacity_binding.get("owners", [])
     decisions = result.cross_cutting_decisions
 
-    if not binding and not decisions:
+    week_qs = result.week_open_questions
+    week_qs_stale = result.week_open_questions_stale
+    if not binding and not decisions and not week_qs and not week_qs_stale:
         out.append("_(no cross-cutting signals this sprint)_")
         return out
 
@@ -1900,6 +1948,18 @@ def _render_cross_cutting(
             elif not d.date:
                 suffix = " _(undated — stamp or resolve at next wrap up)_"
             out.append(f"{i}. {d.text}{suffix}")
+
+    # Sprint-planning meetings' unsettled decisions (#340) — nobody's
+    # workstream owns them, so they sit beside the decisions owed.
+    if week_qs or week_qs_stale:
+        if binding or decisions:
+            out.append("")
+        out.append(f"**Open questions from sprint planning ({len(week_qs)}):**")
+        for q in week_qs:
+            meta = " · ".join(x for x in (q.get("raised_date"), q.get("scope")) if x)
+            out.append(f"- {'[' + meta + '] ' if meta else ''}{q['text']}")
+        if week_qs_stale:
+            out.append(week_qs_stale)
 
     return out
 
@@ -2073,6 +2133,7 @@ def _render_project_block(block: ProjectPlanningBlock) -> list[str]:
     """Render one project's section: urgent → Where → Forward → Commitments."""
     out = _render_block_header(block.project)
     out.extend(_render_urgent(block))
+    out.extend(_render_open_questions(block))
 
     if block.drift:
         out.append("**⚠ Estimate drift:**")
@@ -2167,6 +2228,7 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
     """
     out = _render_block_header(block.project)
     out.extend(_render_urgent(block))
+    out.extend(_render_open_questions(block))
 
     if block.drift:
         out.append("**⚠ Estimate drift:**")
@@ -2446,6 +2508,8 @@ def build_planning_result(
     ) = _load_cross_cutting_decisions(config.root, today=today, projects=projects)
     errors.extend(cross_cutting_errors)
 
+    week_qs, week_qs_stale = week_open_questions(config.root / "sprints", week_iso)
+
     generated_at = tenant_now().strftime("%Y-%m-%d %H:%M")
     return PlanningResult(
         week_iso=week_iso,
@@ -2465,6 +2529,14 @@ def build_planning_result(
         cross_cutting_decisions=cross_cutting_decisions,
         cross_cutting_decisions_stale_count=stale_count,
         cross_cutting_decisions_undated_count=undated_count,
+        week_open_questions=tuple(
+            {"text": open_question_text(q), "raised_date": q.raised_date,
+             "scope": q.scope or ""}
+            for q in week_qs
+        ),
+        week_open_questions_stale=(
+            stale_rollup_line(week_qs_stale) if week_qs_stale else None
+        ),
         errors=errors,
         generated_at=generated_at,
     )

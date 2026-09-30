@@ -315,7 +315,8 @@ meeting): `/cp-prep <code> [<code> ...]`.
 After the meeting, tag the Fathom recording in the dashboard as
 `sprint_planning_scope='1p' | 'fpsf' | 'canonic' | 'storyos-mc'` — the
 auto-ingest webhook handles per-project routing + the tenant-wide
-summary in `sprints/<W##>/_week.md`'s `## Sprint planning summaries`.
+summary in `sprints/<W##>/_week.md`'s `## Sprint planning summaries`
+(unsettled decisions: its `## Open questions`).
 Don't hand-write per-project bullets when auto-ingest is available.
 
 ## Deepening from transcript
@@ -324,8 +325,9 @@ During `deepen from transcript`, write meeting notes, decisions, new client
 asks, outbound drafts, and risk updates into the *sprint file's* hand-written
 sections. Engine-managed regions inside the sprint file (`sprint-facts`,
 `where-it-stands`, `carry-forward`) MUST NOT be edited — sync owns them.
-Open items carry forward until closed in the week that owns them; close a
-horizon item with `[done · …]` or `~~strikethrough~~`.
+Open items carry forward until closed in the week that owns them: a
+horizon item with `[done · …]`, an open question with `[answered · …]`,
+either with `~~strikethrough~~`.
 
 Project `cp.md` still receives durable updates — the **Exec Summary**
 (authored at `wrap up`; run `/cp-wrapup`), plus Project Notes and

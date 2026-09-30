@@ -478,6 +478,25 @@ def execute_plan(
         except Exception as exc:
             result.errors.append(f"account-decision: {exc}")
 
+    # #340: a sprint-planning meeting's unsettled decisions have no node, so
+    # they land in `_week.md`'s `## Open questions` — beside `## Sprint
+    # planning summaries`, same shape. The item's own `week` wins (it is
+    # stamped with the meeting's sprint), then the meeting date's week.
+    for item in plan.get("week_open_questions") or []:
+        try:
+            week = _as_text(item.get("week")) or _week_of(item.get("date")) or week_iso
+            target = _ensure_week_file(tenant_root, week, result)
+            if target is None:
+                continue
+            written = _write_week_open_question(item, target, today=today)
+            if written:
+                if target not in result.files_written:
+                    result.files_written.append(target)
+            else:
+                result.skipped_duplicate += 1
+        except Exception as exc:
+            result.errors.append(f"week-open-question: {exc}")
+
     # Phase D.4 (#305): the account summary is the narrative companion to
     # account_decisions. One paragraph per (node, week) under the NODE's
     # sprint file `## Account summary` section (`code`); a sprint-planning
@@ -587,6 +606,15 @@ def _validate_plan(plan: dict) -> None:
     themes = plan.get("themes")
     if themes is not None and not isinstance(themes, list):
         raise IngestPlanError("plan.themes must be a list of {text, date}")
+
+    week_qs = plan.get("week_open_questions")
+    if week_qs is not None:
+        if not isinstance(week_qs, list) or not all(
+            isinstance(i, dict) for i in week_qs
+        ):
+            raise IngestPlanError(
+                "plan.week_open_questions must be a list of {text, scope, date}"
+            )
 
     # Phase B: account_decisions is tenant-wide, parallel to themes.
     account_decisions = plan.get("account_decisions")
@@ -1879,6 +1907,46 @@ def _write_account_decision(item: dict, target_path: Path) -> bool:
 
 _NODE_SUMMARY_HEADING = "## Account summary"
 _WEEK_SUMMARY_HEADING = "## Sprint planning summaries"
+_WEEK_OPEN_QUESTIONS_HEADING = "## Open questions"
+
+
+def _week_of(raw) -> str | None:
+    """`YYYY-W##` of an ISO date, or None."""
+    try:
+        d = date.fromisoformat(str(raw or "").strip()[:10])
+    except ValueError:
+        return None
+    y, w, _ = d.isocalendar()
+    return f"{y}-W{w:02d}"
+
+
+def _write_week_open_question(
+    item: dict, target_path: Path, *, today: date | None = None
+) -> bool:
+    """#340: a sprint-planning meeting's unsettled decision, under
+    `_week.md`'s hand-written `## Open questions`:
+
+      - [open question · <date> · <SCOPE>] <text> <!-- cp:hash=… -->
+
+    The shape a project sprint file's `### Open questions` uses, plus the
+    scope — `sprints.week_open_questions` reads it back, and it closes the
+    same way (`[answered · …]`, `[resolved · …]`, or struck through)."""
+    text = _sanitize_inline_text(_as_text(item.get("text")))
+    scope = _as_text(item.get("scope"))
+    date_s = _as_text(item.get("date")) or _resolve_today_iso(today)
+    if not text:
+        raise IngestPlanError("week open-question item missing 'text'")
+    if not scope:
+        raise IngestPlanError("week open-question item missing 'scope'")
+    h = _content_hash(f"sprint-planning:{scope}", "record-open-question", text)
+    body = target_path.read_text(encoding="utf-8")
+    if _already_present(body, h):
+        return False
+    bullet = f"- [open question · {date_s} · {scope.upper()}] {text} {_hash_marker(h)}"
+    target_path.write_text(
+        _append_bullet_to_hand_section(body, _WEEK_OPEN_QUESTIONS_HEADING, bullet)
+    )
+    return True
 
 
 def _append_bullet_to_hand_section(body: str, heading: str, bullet: str) -> str:
@@ -2168,6 +2236,7 @@ def plan_week_iso(plan: dict) -> str | None:
         "record-inbound",
         "record-ask",
         "add-decision",
+        "record-open-question",
         "record-risk",
     }
     dates: Counter[date] = Counter()
