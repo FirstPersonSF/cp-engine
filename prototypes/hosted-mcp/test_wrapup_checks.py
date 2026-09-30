@@ -258,14 +258,18 @@ def test_the_hosted_verb_reports_and_does_not_rotate(server):
     """THE BOUNDARY. Rotation is a WRITE — two files in one commit — and this
     server holds no write access by construction.
 
-    A verb that quietly rotated would be the write-deploy-key shortcut arriving
-    through the back door, which #280 argues against on attribution grounds.
+    Rotation now exists (#280 tier 3) as its OWN verb, `rotate_word_count`,
+    delegated upstream under the caller's identity. The reporting verb must
+    stay a read: a check that quietly rotated would make every wrap-up's
+    "just looking" call a commit. It may NAME the rotate verb; it may not call
+    anything that writes.
     """
     import inspect
 
     src = inspect.getsource(server.word_count_check)
     assert "REPORTING ONLY" in src
-    for banned in ("write_text", "_commit_with_message", "rotate"):
+    assert "`rotate_word_count`" in src, "the reporting verb must point at the acting one"
+    for banned in ("write_text", "_commit_with_message", "call_mc2_", "rotate_cp"):
         assert banned not in src, (
             f"word_count_check gained {banned!r} — it must report, not write"
         )
@@ -795,9 +799,11 @@ def test_an_audit_read_failure_degrades_to_silence(_caller):
 
 
 def test_the_steps_exclude_what_a_hosted_session_cannot_do(server):
-    """Rotation and the `weekly-cp.md` decisions sweep need a checkout.
+    """The `weekly-cp.md` decisions sweep needs a checkout, and rotation
+    (`rotate_word_count`, #280) is CONDITIONAL — only owed when
+    `word_count_check` or a `roll_off` report finds something past age.
 
-    Listing a step nobody here can perform would make every hosted wrap-up
+    Listing a step that is not always owed would make every hosted wrap-up
     read as permanently incomplete — a checklist that can never be finished
     is one people stop reading.
     """

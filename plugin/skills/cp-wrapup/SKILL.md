@@ -164,8 +164,10 @@ Authored text counts: hand-written prose plus the Exec Summary (it sits in a
 `cp-engine:start/end` region is excluded. Sprint files are not measured.
 
 `cxp render` warns on both thresholds (warn-only — it never blocks a commit
-and never edits). Acting on the warning is yours: the audit and the
-rotation are manual.
+and never edits). Acting on the warning is yours: the audit is manual; for
+the rotation, `rotate_word_count` (on `cp-hosted`) moves Updates older than
+28 days to `cp-archive-<YYYY-MM>.md` in one commit — pull before your own
+commit, since it lands upstream. Trimming hand-written sections stays manual.
 
 **Exempt:** per-meeting artifacts under any `meetings/` directory (fixed
 per-meeting records — synthesis + verbatim transcript — legitimately long)
@@ -247,9 +249,9 @@ path.
 **`Updates` appends rather than replaces: `updates_append`.** Pass ONE entry —
 the session's delta — and it lands dated (server-side, so it cannot be
 backdated) at the top of the log; the old entries stay. The CLI path also
-rolls off entries older than ~4 weeks. The hosted path never performs that trim —
-the engine only reports entries past age (`roll_off`, under `backend`) — say so to the
-user when it appears; the trim needs a local session.
+rolls off entries older than ~4 weeks; here the verb only REPORTS them
+(`roll_off`, under `backend`). When `roll_off.count` is non-zero, h5's
+`rotate_word_count` performs the trim.
 
 ### h2 — Spine checks
 
@@ -292,9 +294,21 @@ silently.**
 
 **`word_count_check <code>`** — REPORTING ONLY. It tells you a file's
 authored text (hand-written plus the Exec Summary) crossed 2,500 words (duplication audit) or 3,500 (archive
-rotation). It cannot act on
-either: rotation moves text between two files in one commit, which needs a
-checkout. Report the finding and say it needs a local session.
+rotation).
+
+**`rotate_word_count <code>`** acts on it — run it when the check trips or
+h1 reported a non-zero `roll_off`. It moves Updates entries older than 28
+days, verbatim, from `cp.md` to `cp-archive-<YYYY-MM>.md` beside it, in ONE
+commit under your name; the `· updated` stamp does not move. Nothing past
+age is a no-op (`changed: false`, no commit), so it is safe to call. It
+refuses — writing nothing — if the move would lose a single line
+(`refused: true`); report that to the user, do not retry around it.
+
+It never touches hand-written sections. If `over_audit_threshold` or
+`over_rotation_threshold` is still true afterwards, the remaining words are
+Project Notes, Decisions and the like — which of them is resolved is a
+reader's judgement. Name the biggest contributors (`word_count_check`'s
+`contributors`) and hand the trim to the user.
 
 ### h6 — Capture the session
 
@@ -315,7 +329,8 @@ entry is one line in the project's history, the record is the whole session.
 - **Commit and push the tree.** `capture_project_state` and `capture_session`
   commit their own writes upstream; nothing else on this path touches the repo,
   so there is no tree to push.
-- **Word-count rotation** (h5).
+- **Hand-written word-count rotation** (h5) — `rotate_word_count` moves aged
+  Updates only; trimming Project Notes or Decisions is a reader's call.
 - **The account / program `cp.md` cross-cutting decisions sweep** (step 2 of
   the CLI path) — marking an entry `[resolved: …]` is a hand-edit of tenant
   files, and deliberately has no verb (#282): the entries run to thousands of
@@ -323,7 +338,6 @@ entry is one line in the project's history, the record is the whole session.
   makes by reading it. You CAN read them (`read_project_file`) and you CAN
   move a job's decision up a level (`promote_uphill`, `item_kind='decision'`);
   you cannot mark one resolved.
-- **Updates roll-off** (h1) — reported, not performed.
 
 For the decisions sweep: surface the entries you believe are done or expired,
 with the outcome you would have written, and hand them to the user rather

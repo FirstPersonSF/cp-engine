@@ -366,16 +366,16 @@ The ritual is still available; it is a sequence of verbs rather than one skill:
    commitment expires at 14 days; this is where that gets noticed in time.
 4. **`seal_sweep`** — for each shipped deliverable, what fed it. Read it before
    acting; `seal_to_deliverable` is how you act on it.
-5. **`word_count_check`** — reporting only. Rotation moves text between files
-   and needs a checkout.
+5. **`word_count_check`** — reporting only. **`rotate_word_count`** acts on
+   it: Updates older than 28 days move to the archive file, in one commit.
 6. **`capture_session`** — the session record, so the next reader knows this
    happened.
 
-**What a hosted session cannot do:** commit and push, and word-count rotation.
-Both need write access to the tenant, which that server does not hold by
-construction — every write it makes is performed upstream under your own
-identity rather than minted by the server. The Exec Summary write in step 1
-goes through that path and commits for you; the rest is read-only.
+**What a hosted session cannot do:** commit and push the tree, or rotate
+hand-written sections. The server holds no write access by construction —
+every write it makes is performed upstream under your own identity rather
+than minted by the server. Steps 1 and 5 go through that path and commit
+for you; the rest is read-only.
 
 
 ## Restart `cxp mcp` after a release or credential change
