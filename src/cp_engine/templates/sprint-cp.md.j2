@@ -77,7 +77,16 @@ PriorSprint: {{ prior_sprint }}
 {%- for d in subtree_rollup.cross_cutting_decisions %}
 - **`{{ d.project_code }}`** decision · cross-cutting · {{ d.date }} — {{ d.text }}
 {%- endfor %}
-{%- if not subtree_rollup.carry_forward.escalated_risks and not subtree_rollup.carry_forward.stale_asks and not subtree_rollup.carry_forward.decisions_due and not subtree_rollup.cross_cutting_decisions %}
+{%- for q in carry_forward.open_questions %}
+- [open question · {{ q.raised_date }}] {{ q.text }}
+{%- if q.note %}{% for line in q.note.splitlines() %}
+  {{ line }}
+{%- endfor %}{% endif %}
+{%- endfor %}
+{%- for line in open_question_stale_lines %}
+{{ line }}
+{%- endfor %}
+{%- if not subtree_rollup.carry_forward.escalated_risks and not subtree_rollup.carry_forward.stale_asks and not subtree_rollup.carry_forward.decisions_due and not subtree_rollup.cross_cutting_decisions and not carry_forward.open_questions and not open_question_stale_lines %}
 - _Nothing to carry forward across the subtree._
 {%- endif %}
 {%- else %}
@@ -94,10 +103,16 @@ PriorSprint: {{ prior_sprint }}
   {{ line }}
 {%- endfor %}{% endif %}
 {%- endfor %}
+{%- for q in carry_forward.open_questions %}
+- [open question · {{ q.raised_date }}] {{ q.text }}
+{%- if q.note %}{% for line in q.note.splitlines() %}
+  {{ line }}
+{%- endfor %}{% endif %}
+{%- endfor %}
 {%- for line in stale_lines %}
 {{ line }}
 {%- endfor %}
-{%- if not carry_forward.asks and not carry_forward.risks and not carry_forward.horizon and not stale_lines %}
+{%- if not carry_forward.asks and not carry_forward.risks and not carry_forward.horizon and not carry_forward.open_questions and not stale_lines %}
 - _Nothing carried over._
 {%- endif %}
 {%- endif %}

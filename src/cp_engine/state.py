@@ -747,6 +747,34 @@ class HorizonItem:
 
 
 @dataclass(frozen=True)
+class OpenQuestion:
+    """A question a meeting raised and did not settle (#321, #340).
+
+    Written by ``record-open-question`` to the sprint file's
+    ``## Meeting notes & decisions / ### Open questions`` as
+    ``- [open question · YYYY-MM-DD] text`` — beside ``### Decisions``, never
+    in it, so no surface reads a deliberation as settled. A sprint-planning
+    meeting's tenant-wide ones land in ``_week.md``'s ``## Open questions``
+    with the scope as a third bracket part (``scope``).
+
+    ``status`` is ``"open"`` unless the bullet is marked settled — a leading
+    status token in the bracket (``[answered · …]``, ``[resolved · …]``, the
+    horizon set) or the item struck through (``~~…~~``). Only an open one
+    carries forward; see ``sprints._parse_open_question_bullets``.
+    """
+
+    text: str
+    raised_date: str  # ISO date, "" when the bullet names none
+    status: str = "open"
+    note: str | None = None  # indented continuation lines, verbatim
+    scope: str | None = None
+
+    @property
+    def is_open(self) -> bool:
+        return self.status == "open"
+
+
+@dataclass(frozen=True)
 class Outbound:
     """One outbound client message: sent, drafted, or queued."""
 
@@ -822,7 +850,8 @@ class WhereItStands:
 class StaleRollup:
     """Still-open items of one kind too old to carry as bullets (#326, #331).
 
-    ``kind`` is ``"asks"``, ``"risks"`` or ``"horizon"``; ``oldest`` is the
+    ``kind`` is ``"asks"``, ``"risks"``, ``"horizon"`` or
+    ``"open_questions"``; ``oldest`` is the
     ISO date the oldest of them was first raised; ``weeks`` are the sprint
     weeks (oldest first) whose files hold the newest statement of each — the
     place a close has to land. ``weeks`` is empty when the rollup was parsed
@@ -845,6 +874,8 @@ class CarryForward:
     horizon: tuple[HorizonItem, ...]
     # One rollup per kind with still-open items older than the carry cap.
     stale: tuple[StaleRollup, ...] = ()
+    # Open questions still unsettled (#340) — carried like asks and risks.
+    open_questions: tuple[OpenQuestion, ...] = ()
 
     def stale_count(self, kind: str) -> int:
         return sum(s.count for s in self.stale if s.kind == kind)
@@ -922,6 +953,9 @@ class SprintFile:
     # or no bracket-formatted decisions).
     stakeholders: tuple[Stakeholder, ...] = ()
     decisions: tuple[DecisionEntry, ...] = ()
+    # `### Open questions` beside `### Decisions` (#321, #340) — this week's
+    # own bullets, open and settled; carried ones are in `carry_forward`.
+    open_questions: tuple[OpenQuestion, ...] = ()
 
     @property
     def total_allocation_hours(self) -> float:

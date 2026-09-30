@@ -726,14 +726,25 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
             summary_plan["account_summary"] = plan["account_summary"]
         if plan.get("account_decisions"):
             summary_plan["account_decisions"] = plan["account_decisions"]
+        # #340: the meeting's unsettled decisions → `_week.md` `## Open
+        # questions` (they were dropped, counted, before).
+        if plan.get("week_open_questions"):
+            summary_plan["week_open_questions"] = plan["week_open_questions"]
 
-        if "account_summary" in summary_plan or "account_decisions" in summary_plan:
+        if (
+            "account_summary" in summary_plan
+            or "account_decisions" in summary_plan
+            or "week_open_questions" in summary_plan
+        ):
             summary_entry = {
                 "code": f"sprint-planning:{scope}",
                 "plan_summary": {
                     "account_summary": 1 if "account_summary" in summary_plan else 0,
                     "account_decisions": (
                         len(summary_plan.get("account_decisions") or [])
+                    ),
+                    "week_open_questions": (
+                        len(summary_plan.get("week_open_questions") or [])
                     ),
                 },
                 "files_written": [],

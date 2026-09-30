@@ -36,6 +36,9 @@ import re
 from cp_engine.text_similarity import jaccard
 
 OPEN_QUESTION_VERB = "open-questions"
+# Top-level plan key for a sprint-planning meeting's own open questions
+# (#340): `[{text, date, scope, week}]`, written to `_week.md`.
+WEEK_OPEN_QUESTIONS_KEY = "week_open_questions"
 SUPERSEDE_JACCARD = 0.5
 _EARLIER_MAX = 140
 
@@ -140,7 +143,8 @@ def apply_decision_fidelity(plan: dict) -> dict:
 
     # Account-level decisions land on a node's cp.md `## Decisions`. An
     # unsettled one goes to the node's sprint file as an open question; a
-    # sprint-planning scope has no node, so it is dropped (with a count).
+    # sprint-planning scope has no node, so it goes to that week's
+    # `_week.md` `## Open questions` (#340 — it used to be dropped, counted).
     kept_ad: list = []
     for item in plan.get("account_decisions") or []:
         if isinstance(item, dict) and is_deliberation(str(item.get("text") or "")):
@@ -150,6 +154,10 @@ def apply_decision_fidelity(plan: dict) -> dict:
                 q = {k: v for k, v in item.items() if k in ("text", "date")}
                 projects = plan.setdefault("projects", {})
                 projects.setdefault(node, {}).setdefault(OPEN_QUESTION_VERB, []).append(q)
+            elif item.get("scope"):
+                q = {k: v for k, v in item.items()
+                     if k in ("text", "date", "scope", "week")}
+                plan.setdefault(WEEK_OPEN_QUESTIONS_KEY, []).append(q)
             continue
         if isinstance(item, dict):
             _with_earlier(item)

@@ -28,6 +28,7 @@ from .state import (
     InboundUpdate,
     Issue,
     MeetingNotes,
+    OpenQuestion,
     Outbound,
     PersonHours,
     ProjectState,
@@ -92,6 +93,7 @@ def parse_sprint_file(path: Path) -> SprintFile:
         meeting_notes=_parse_meeting_notes(body),
         stakeholders=_parse_stakeholders(body),
         decisions=_parse_decisions(body),
+        open_questions=_parse_open_questions(body),
     )
 
 
@@ -462,7 +464,8 @@ def compute_carry_forward(prior_path: Path) -> CarryForward:
     """Derive the carry-forward block for a new sprint from the prior file.
 
     Asks carry while still `open`, risks while `escalated` or `watching`,
-    horizon items while not marked settled — each however many weeks ago it
+    horizon items and open questions (#340) while not marked settled — each
+    however many weeks ago it
     was raised, up to the age cap. Missing prior file → empty carry-forward.
 
     CARRY UNTIL RESOLVED, NOT FOR ONE WEEK (#326 asks, #331 risks + horizon).
@@ -489,11 +492,16 @@ def compute_carry_forward(prior_path: Path) -> CarryForward:
     horizon, stale_horizon = _split_stale(
         _open_through(files, _HORIZON), cutoff, "horizon"
     )
+    questions, stale_questions = _split_stale(
+        _open_through(files, _OPEN_QUESTIONS), cutoff, "open_questions"
+    )
     stale = tuple(
         replace(s, file_name=prior_path.name)
-        for s in (stale_asks, stale_risks, stale_horizon) if s is not None
+        for s in (stale_asks, stale_risks, stale_horizon, stale_questions)
+        if s is not None
     )
-    return CarryForward(asks=asks, risks=risks, horizon=horizon, stale=stale)
+    return CarryForward(asks=asks, risks=risks, horizon=horizon, stale=stale,
+                        open_questions=questions)
 
 
 def _owning_files(prior_path: Path) -> list[Path]:
@@ -570,6 +578,22 @@ _HORIZON = _CarryKind(
     is_open=lambda h: h.status == "open" and not (
         h.text.startswith("_") and _HTML_COMMENT_RE.sub("", h.text).strip().endswith("_")
     ),
+)
+
+
+# An open question carries until answered, resolved or struck (#340), like
+# an ask; its bracket date is when it was raised.
+_OPEN_QUESTIONS = _CarryKind(
+    read=lambda body: _parse_open_questions(body),
+    is_open=lambda q: q.is_open,
+    raised=lambda q: q.raised_date,
+    with_raised=lambda q, d: replace(q, raised_date=d),
+)
+_WEEK_OPEN_QUESTIONS = _CarryKind(
+    read=lambda body: _parse_week_open_questions(body),
+    is_open=lambda q: q.is_open,
+    raised=lambda q: q.raised_date,
+    with_raised=lambda q, d: replace(q, raised_date=d),
 )
 
 
@@ -679,9 +703,11 @@ def _split_stale(
 # format, so the header count (`render_current_sprint_block`) and the #320
 # hand-edit check can recognise what render wrote.
 _STALE_NOUNS = {"asks": ("ask", "asks"), "risks": ("risk", "risks"),
-                "horizon": ("horizon item", "horizon items")}
+                "horizon": ("horizon item", "horizon items"),
+                "open_questions": ("open question", "open questions")}
 _STALE_LINE_RE = re.compile(
-    r"^-\s+(?P<count>\d+) stale (?P<noun>asks?|risks?|horizon items?) "
+    r"^-\s+(?P<count>\d+) stale "
+    r"(?P<noun>asks?|risks?|horizon items?|open questions?) "
     r"\(oldest (?P<oldest>\d{4}-\d{2}-\d{2})\) — triage in .*$"
 )
 
@@ -769,6 +795,7 @@ def _parse_carry_forward(body: str) -> CarryForward:
     risks: list[Risk] = []
     horizon: list[HorizonItem] = []
     stale: list[StaleRollup] = []
+    questions: list[OpenQuestion] = []
     for first, cont in bullets(region):
         rollup = _parse_stale_line(first)
         if rollup is not None:
@@ -799,6 +826,14 @@ def _parse_carry_forward(body: str) -> CarryForward:
                     raised_date=parts[3] if len(parts) > 3 else "",
                 )
             )
+        elif kind == "open question":
+            questions.append(
+                OpenQuestion(
+                    text=text,
+                    raised_date=parts[1] if len(parts) > 1 else "",
+                    note=cont or None,
+                )
+            )
         elif kind in ("milestone", "decision", "opportunity"):
             horizon.append(
                 HorizonItem(
@@ -808,7 +843,8 @@ def _parse_carry_forward(body: str) -> CarryForward:
                 )
             )
     return CarryForward(asks=tuple(asks), risks=tuple(risks),
-                        horizon=tuple(horizon), stale=tuple(stale))
+                        horizon=tuple(horizon), stale=tuple(stale),
+                        open_questions=tuple(questions))
 
 
 # Meeting-meta line is `_From <source> · <attendees> · <duration>_` where
@@ -935,6 +971,103 @@ def _parse_decisions(body: str) -> tuple[DecisionEntry, ...]:
             continue
         out.append(DecisionEntry(text=text, date=date_s, cross_cutting=cross))
     return tuple(out)
+
+
+# How an open question is marked settled (#340): the horizon tokens (#331)
+# plus the two words a person reaches for when a question stops being one.
+# Either replaces the `open question` token (`[answered · 2026-09-15] …`) or
+# leads it (`[answered · open question · 2026-09-15] …`); striking the item
+# through (`~~…~~`, whole bullet or just its text) settles it too.
+_OPEN_QUESTION_SETTLED = frozenset({"answered", "settled"})  # | _HORIZON_SETTLED
+_OPEN_QUESTION_TOKENS = frozenset({"open question", "open", "question"})
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_STRUCK_BULLET_RE = re.compile(r"^(?P<lead>-\s+)~~(?P<inner>.+?)~~(?P<rest>.*)$")
+
+
+def _parse_open_question_bullets(section: str) -> tuple[OpenQuestion, ...]:
+    """Every bullet of an open-questions section, open and settled.
+
+    A bullet with no bracket is an open question with no date (hand-written);
+    a scaffold placeholder or HTML-comment line is not a bullet at all. The
+    continuation is kept verbatim in ``note`` so a carried question renders
+    whole (the #337 lesson: a carried item that drops its continuation reads
+    as a fragment)."""
+    out: list[OpenQuestion] = []
+    for first, cont in bullets(section):
+        if _is_template_placeholder(first):
+            continue
+        status = "open"
+        struck = _STRUCK_BULLET_RE.match(first)
+        if struck:
+            # `- ~~[open question · d] text~~ <!-- cp:hash=… -->`
+            status = "struck"
+            first = struck.group("lead") + struck.group("inner") + struck.group("rest")
+        parsed = parse_bracketed_bullet(first)
+        raised = ""
+        scope = None
+        if parsed:
+            parts, text = parsed
+            lowered = [p.lower() for p in parts]
+            if lowered and lowered[0] in (_OPEN_QUESTION_SETTLED | _HORIZON_SETTLED):
+                status, parts, lowered = lowered[0], parts[1:], lowered[1:]
+            if lowered and lowered[0] in _OPEN_QUESTION_TOKENS:
+                parts, lowered = parts[1:], lowered[1:]
+            if parts and _ISO_DATE_RE.match(parts[0]):
+                raised, parts = parts[0], parts[1:]
+            if parts and parts[0]:
+                scope = parts[0]
+        else:
+            text = first.lstrip("- ").strip()
+        if not _HTML_COMMENT_RE.sub("", text).strip():
+            continue
+        if _STRUCK_RE.match(text):
+            status = "struck"
+        if status == "struck":
+            status = "resolved"
+        out.append(OpenQuestion(
+            text=text, raised_date=raised, status=status,
+            note=cont or None, scope=scope,
+        ))
+    return tuple(out)
+
+
+def _parse_open_questions(body: str) -> tuple[OpenQuestion, ...]:
+    """`## Meeting notes & decisions / ### Open questions` of a sprint file."""
+    section = section_body(body, "Meeting notes & decisions")
+    return _parse_open_question_bullets(subsection(section, "Open questions"))
+
+
+def _parse_week_open_questions(body: str) -> tuple[OpenQuestion, ...]:
+    """`## Open questions` of a `_week.md` — sprint-planning meetings' own
+    unsettled decisions (#340), which belong to no workstream."""
+    return _parse_open_question_bullets(section_body(body, "Open questions"))
+
+
+def week_open_questions(
+    sprints_root: Path, week_iso: str
+) -> tuple[tuple[OpenQuestion, ...], "StaleRollup | None"]:
+    """Tenant-wide open questions still unsettled as of ``week_iso``: every
+    `_week.md` from that week back, walked the way ``compute_carry_forward``
+    walks a project's files (newest statement decides, same age cap).
+
+    `_week.md` has no carry-forward region, so this is read, not rendered:
+    the agenda and the planning bundle call it, and a question closes where
+    it was written — its own week's `_week.md`."""
+    path = sprints_root / week_iso / "_week.md"
+    files = [f for f in _owning_files(path) if f.exists()]
+    if not files:
+        return (), None
+    cutoff = None
+    if _WEEK_ISO_RE.match(week_iso):
+        cutoff = _iso_week_dates(week_iso)[0] - timedelta(
+            weeks=CARRY_FORWARD_MAX_AGE_WEEKS
+        )
+    live, stale = _split_stale(
+        _open_through(files, _WEEK_OPEN_QUESTIONS), cutoff, "open_questions"
+    )
+    if stale is not None:
+        stale = replace(stale, file_name="_week.md")
+    return live, stale
 
 
 def parse_themes_from_week_file(week_md_path: Path) -> tuple[Theme, ...]:
@@ -1143,6 +1276,13 @@ def render_sprint_scaffold(
         carry_forward=carry_forward,
         # One line per kind of still-open item past the age cap (#326, #331).
         stale_lines=[stale_rollup_line(s) for s in carry_forward.stale],
+        # A parent's carry-forward is its subtree rollup, but its OWN open
+        # questions (#321 routes an account meeting's unsettled decisions to
+        # the node) still carry there, bracketed — they are the node's.
+        open_question_stale_lines=[
+            stale_rollup_line(s) for s in carry_forward.stale
+            if s.kind == "open_questions"
+        ],
         # Deliverable-card lines (canonical-objects: derived from the
         # estimate + linked bars + spine serves — see sync's collector).
         # The engine-managed region shows STATE; hand-written notes below

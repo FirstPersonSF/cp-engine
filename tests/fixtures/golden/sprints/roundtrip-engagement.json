@@ -19,6 +19,7 @@
         "text": "Whether to staff a third on Pebble for Q3"
       }
     ],
+    "open_questions": [],
     "risks": [
       {
         "category": "contract",
@@ -53,6 +54,7 @@
     "duration": null,
     "source": null
   },
+  "open_questions": [],
   "prior_sprint": "2026-W19",
   "project_code": "peb-5100",
   "risks": [],
