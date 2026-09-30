@@ -93,6 +93,46 @@ def run(
     )
 
 
+# pytest's closing line: `==== 812 passed, 3 skipped, 2 warnings in 41.20s ====`
+# with decoration, or bare `812 passed in 41.20s` at `-q`. Anchored on the
+# count-and-outcome shape plus the ` in <secs>s` tail so a test NAMED
+# `test_3_passed` in a progress line cannot match.
+_PYTEST_SUMMARY_RE = re.compile(
+    r"^=*\s*(?P<body>(?:\d+ \w+(?:, )?)+) in [\d.]+s(?: \([^)]*\))?\s*=*\s*$"
+)
+
+
+def parse_pytest_summary(output: str) -> str | None:
+    """The counts from pytest's final summary line (`812 passed, 3 skipped`),
+    or None when the output has none — a run that died before finishing."""
+    for line in reversed(output.splitlines()):
+        m = _PYTEST_SUMMARY_RE.match(line.strip())
+        if m:
+            return m.group("body").rstrip(", ")
+    return None
+
+
+def run_pytest_counted(
+    cmd: list[str], *, env: dict[str, str] | None = None
+) -> tuple[int, str | None]:
+    """Run pytest streaming its output as usual, and return (exit code,
+    summary counts) so the release log states what it saw (#316).
+
+    Exit code is pytest's own — not a pipe's — and the summary is parsed from
+    the same bytes the operator watched scroll past.
+    """
+    proc = subprocess.Popen(
+        cmd, cwd=REPO_ROOT, env=env, text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+    )
+    assert proc.stdout is not None
+    seen: list[str] = []
+    for line in proc.stdout:
+        sys.stdout.write(line)
+        seen.append(line)
+    return proc.wait(), parse_pytest_summary("".join(seen))
+
+
 def read_current_version() -> str:
     doc = tomlkit.parse(PYPROJECT.read_text())
     return str(doc["project"]["version"])
@@ -389,10 +429,21 @@ def main() -> int:
         src = str(REPO_ROOT / "src")
         prior = pytest_env.get("PYTHONPATH")
         pytest_env["PYTHONPATH"] = f"{src}{os.pathsep}{prior}" if prior else src
-        try:
-            run(["uv", "run", "--with", "pytest", "python", "-m", "pytest", "-q"], env=pytest_env)
-        except subprocess.CalledProcessError:
-            raise SystemExit("[release] tests failed; aborting before commit.")
+        code, summary = run_pytest_counted(
+            ["uv", "run", "--with", "pytest", "python", "-m", "pytest", "-q"],
+            env=pytest_env,
+        )
+        if code != 0:
+            raise SystemExit(
+                f"[release] tests failed ({summary or 'no summary line'}); "
+                "aborting before commit."
+            )
+        if summary is None:
+            raise SystemExit(
+                "[release] pytest exited 0 but printed no summary line — cannot "
+                "tell a finished run from a truncated one; aborting (#316)."
+            )
+        print(f"[release] pytest: {summary}")
 
     if not args.skip_build:
         print("[release] building distribution...")
