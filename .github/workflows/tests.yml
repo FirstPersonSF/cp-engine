@@ -40,6 +40,12 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history + tags: two control tests read a RELEASED version
+          # (`git show v0.120.5:…`) to prove the old code had the defect. On
+          # the default depth-1 checkout that tag doesn't exist, and CI was red
+          # from 2026-09-24 to 09-30 across ~15 releases for that reason alone.
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
