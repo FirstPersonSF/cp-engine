@@ -6934,6 +6934,7 @@ def create_commitment(
     owner_email: str | None = None,
     due_date: str | None = None,
     direction: str = "internal",
+    source_meeting_id: str | None = None,
 ) -> dict[str, Any]:
     """Register a dated commitment, under the caller's identity.
 
@@ -6961,6 +6962,14 @@ def create_commitment(
         owner_email: who owes it (an email; stored as `owner_email`).
         due_date: ISO `YYYY-MM-DD`, or omitted if no date was agreed.
         direction: us_to_them | them_to_us | internal.
+        source_meeting_id: the meeting this obligation came out of — the
+                      `meeting_id` `list_project_meetings` returns. Optional.
+                      Stored in the same column auto-ingest fills, so a row
+                      logged by hand mid-session groups with the rows the
+                      webhook later writes for that meeting (#311), and
+                      `resolve_commitments_by_meeting` closes both. Must be a
+                      meeting you can see; an unknown id is REJECTED rather
+                      than stored — a wrong link is worse than none.
     """
     text = (description or "").strip()
     if not text:
@@ -6978,10 +6987,35 @@ def create_commitment(
                 "omit it if no date was agreed"
             }
 
+    meeting_id = (source_meeting_id or "").strip() or None
+    if meeting_id and not _looks_like_uuid(meeting_id):
+        return {
+            "error": f"source_meeting_id {source_meeting_id!r} is not a meeting id "
+            "(a uuid from list_project_meetings); omit it if there is none"
+        }
+
     client = user_client()
     scope = resolve_write_scope(client, project_code)
     if scope is None:
         return {"error": f"no project or initiative resolves for code {project_code!r}"}
+
+    if meeting_id:
+        try:
+            seen = (
+                client.table("fathom_meetings")
+                .select("id")
+                .eq("id", meeting_id)
+                .limit(1)
+                .execute()
+                .data
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"meeting lookup failed: {type(exc).__name__}: {str(exc)[:200]}"}
+        if not seen:
+            return {
+                "error": f"no meeting {meeting_id!r} is visible to you; "
+                "check list_project_meetings, or omit source_meeting_id"
+            }
 
     # #157: resolve the owner email against the entities person roster so
     # the stored row carries the canonical display name (the commitments
@@ -7017,6 +7051,7 @@ def create_commitment(
         # hash — this path does not claim the engine's dedupe semantics.
         "cp_hash": uuid.uuid4().hex[:8],
         "project_id": scope["id"],
+        "source_meeting_id": meeting_id,
     }
 
     try:
@@ -7035,6 +7070,7 @@ def create_commitment(
             "due_date": due_iso,
             "direction": direction,
             "owner_email": row["owner_email"],
+            "source_meeting_id": meeting_id,
         },
         1,
     )
@@ -7049,6 +7085,7 @@ def create_commitment(
         "date_status": created.get("date_status"),
         "status": created.get("status"),
         "direction": created.get("direction"),
+        "source_meeting_id": created.get("source_meeting_id"),
     }
 
 
@@ -10812,6 +10849,7 @@ def _sweep_row_dict(row: Any) -> dict[str, Any]:
         # this is the field that says how close it is.
         "ttl": getattr(row, "ttl", None),
         "undated": due is None,
+        "source_meeting_id": getattr(row, "source_meeting_id", None),
     }
 
 
@@ -11085,9 +11123,14 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
     Args:
         project_code: one project, or "" for every project the caller can see.
         undated_only: only rows with no date — the ones on an expiry clock.
+
+    `likely_duplicates` pairs same-project rows whose descriptions read as
+    one obligation (#311) — typically a row logged by hand mid-session and
+    the row auto-ingest wrote for the same meeting. A flag, not a verdict:
+    resolve the redundant row with `resolve_commitment` if they match.
     """
     client = user_client()
-    from cp_engine.commitments_sweep import sweep
+    from cp_engine.commitments_sweep import likely_duplicates, sweep
 
     code = project_code.strip() or None
     if code:
@@ -11108,6 +11151,21 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
         }
 
     buckets = {k: [_sweep_row_dict(r) for r in v] for k, v in result.items()}
+    duplicates = {
+        k: [
+            {
+                "a": p.a.id,
+                "b": p.b.id,
+                "a_description": p.a.description,
+                "b_description": p.b.description,
+                "similarity": p.jaccard,
+                "same_meeting": p.same_meeting,
+            }
+            for p in likely_duplicates(v)
+        ]
+        for k, v in result.items()
+    }
+    duplicates = {k: v for k, v in duplicates.items() if v}
     # Audited so `wrap_status` can see the step ran; an unaudited step is
     # one it can only ever report as missing. Success only — an error
     # return means the check did not run.
@@ -11122,6 +11180,8 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
         "caller": caller_subject(),
         "buckets": buckets,
         "total": sum(len(v) for v in buckets.values()),
+        "likely_duplicates": duplicates,
+        "likely_duplicate_pairs": sum(len(v) for v in duplicates.values()),
     }
 
 

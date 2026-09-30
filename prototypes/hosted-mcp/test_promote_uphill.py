@@ -248,7 +248,8 @@ def test_decorated_verbs_keep_their_real_parameters(server):
     every write verb unusable from a client."""
     tool = server.mcp_server._tool_manager.get_tool("create_commitment")
     assert list(tool.parameters["properties"]) == [
-        "project_code", "description", "owner_email", "due_date", "direction"
+        "project_code", "description", "owner_email", "due_date", "direction",
+        "source_meeting_id",
     ]
     tool = server.mcp_server._tool_manager.get_tool("pull_element_from_project")
     assert "to_code" in tool.parameters["properties"]

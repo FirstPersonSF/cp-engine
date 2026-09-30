@@ -158,3 +158,136 @@ def test_sweep_scopes_an_internal_workstream_by_project_id(monkeypatch) -> None:
 
     assert ("project_id", "init-uuid") in client.calls
     assert not any(col == "initiative_id" for col, _ in client.calls)
+
+
+# --- #311: likely-duplicate pairs -------------------------------------------
+#
+# Every pair below is a REAL pair from MC-2 (2026-09-30 tuning read), trimmed
+# only where noted. A hand-logged row and the row auto-ingest writes for the
+# same meeting never share text, so the content-hash dedupe cannot see them;
+# the sweep must.
+
+def _rows(*pairs: tuple[str, str, str]) -> list[SweepRow]:
+    """(id, description, source_kind) -> rows in one project group."""
+    return [_row(_c(i, d, source_kind=k), _TODAY) for i, d, k in pairs]
+
+
+def test_paraphrased_rows_for_one_obligation_are_paired() -> None:
+    """The #311 shape: one obligation, two writers, no shared text."""
+    from cp_engine.commitments_sweep import likely_duplicates
+
+    rows = _rows(
+        ("s1", "Written interpretation of Brad's feedback + clarifying questions "
+               "sent to Janet for her email to Jaime/Brad", "session"),
+        ("m1", "Email to Janet + Brad with team's interpretation of Brad's "
+               "feedback and clarifying questions", "meeting_ingest"),
+        ("m2", "Book the Fort Worth studio for the pre-light", "meeting_ingest"),
+    )
+    pairs = likely_duplicates(rows)
+    assert [(p.a.id, p.b.id) for p in pairs] == [("s1", "m1")]
+
+
+def test_short_row_contained_in_a_longer_one_is_paired() -> None:
+    from cp_engine.commitments_sweep import is_likely_duplicate
+
+    assert is_likely_duplicate(
+        "Confirm poster print specs w/ Tony; print posters at FedEx Kinko's",
+        "Confirm poster print specs w/ Tony; print posters + worksheets at FedEx Kinko's",
+    )
+
+
+def test_ingest_annotations_do_not_count_as_shared_content() -> None:
+    """`[confidence: medium]`, `(from X (Co))`, `[off-project? → code]` are
+    provenance the writers append. Two unrelated rows that both carry
+    `[off-project? → ibx-5153-ai-campaign]` paired on it before stripping."""
+    from cp_engine.commitments_sweep import is_likely_duplicate, similarity
+
+    a = ("Review Infoblox AI doc (Final V1) from Slack; extract proof points "
+         "[off-project? → ibx-5153-ai-campaign]")
+    b = ("Collect Infoblox feedback on 1-pager by Sep 21 EOD; compile "
+         "[off-project? → ibx-5153-ai-campaign]")
+    assert not is_likely_duplicate(a, b)
+    jac_with, _, _ = similarity(a + " [confidence: low]", b + " (from Tara Haney (SAP Concur))")
+    jac_bare, _, _ = similarity(a, b)
+    assert jac_with == jac_bare
+
+
+def test_numbered_siblings_are_not_duplicates() -> None:
+    """Revision rounds, invoice tranches and differently-priced projects are
+    separate obligations that read alike — all real false positives before
+    the number rule."""
+    from cp_engine.commitments_sweep import is_likely_duplicate
+
+    assert not is_likely_duplicate("Deck Design r1", "Deck Design r2")
+    assert not is_likely_duplicate("Narrative and Talk Track r2", "Narrative and Talk Track r3")
+    assert not is_likely_duplicate(
+        "Invoice #1 (50%) for SAP 5198 ad videos — ~$212,500",
+        "Invoice #2 (25%) for SAP 5198 ad videos — must land in 2026 tax year [confidence: medium]",
+    )
+    assert not is_likely_duplicate(
+        "Spin up Q4 project: Infoblox platform display-ad campaign (from $40k, ~4–5 wks) "
+        "— Janet-approved 2026-08-07, invoiced. Kickoff expected in a few weeks (not yet dated).",
+        "Spin up Q4 project: AI platform video recut ($30k, ~5–6 wks active) "
+        "— Janet-approved 2026-08-07, invoiced. Kickoff expected in a few weeks (not yet dated).",
+    )
+
+
+def test_a_long_rows_stray_date_does_not_veto() -> None:
+    """A re-logged session row that adds one id or date is still the same row."""
+    from cp_engine.commitments_sweep import is_likely_duplicate
+
+    base = ("Send the second team's Jul 30 workshop breakout recording. The Zoom "
+            "capture covers one table only; the other team's reasoning is missing. "
+            "Needed to confirm whether both teams rejected the Story Essence either/or")
+    assert is_likely_duplicate(base, base.replace("capture covers", "capture (87d0004f) covers"))
+
+
+def test_pairs_carry_the_same_meeting_signal() -> None:
+    from cp_engine.commitments_sweep import likely_duplicates
+
+    a = _row(_c("a", "Revised three-ad round in 'Truth AI depends on' direction, "
+                     "delivered to Janet ahead of Jaime/Brad MLT"), _TODAY)
+    b = _row(_c("b", "Revised round of three ads (refined visual direction on 'truth "
+                     "AI depends on' concept) delivered to Janet / Jaime / Brad ahead of MLT"), _TODAY)
+    a.source_meeting_id = b.source_meeting_id = "m-1"
+    (pair,) = likely_duplicates([a, b])
+    assert pair.same_meeting and 0 < pair.jaccard <= 1
+    b.source_meeting_id = None
+    assert not likely_duplicates([a, b])[0].same_meeting
+
+
+def test_row_reads_source_meeting_id_and_the_sweep_selects_it() -> None:
+    from cp_engine.commitments_sweep import _sweep_columns
+
+    c = _c("a", "x")
+    c["source_meeting_id"] = "m-9"
+    assert _row(c, _TODAY).source_meeting_id == "m-9"
+    assert "source_meeting_id" in _sweep_columns(None)
+
+
+def test_render_shows_the_pairs_and_counts_them() -> None:
+    rows = _rows(
+        ("11111111-aaaa", "Written interpretation of Brad's feedback + clarifying "
+                          "questions sent to Janet for her email to Jaime/Brad", "session"),
+        ("22222222-bbbb", "Email to Janet + Brad with team's interpretation of Brad's "
+                          "feedback and clarifying questions", "meeting_ingest"),
+    )
+    text = render_sweep({"ibx-5153-ai-campaign": rows}, today=_TODAY)
+    assert "≈ 1 likely duplicate pair(s)" in text
+    assert "11111111 ↔ 22222222" in text
+    assert text.rstrip().endswith("· 1 likely duplicate pair(s)")
+
+
+def test_pairing_never_crosses_projects(monkeypatch) -> None:
+    """The sweep groups by project; identical text under two projects is two
+    obligations (a routed copy, a promote_uphill copy) — never a pair."""
+    from cp_engine import commitments_sweep as cs
+
+    same = "Send Janet the migration runbook with the rollback plan attached"
+    a, b = _c("a", same), _c("b", same)
+    b["project_id"] = "p2"
+    monkeypatch.setattr(cs, "_owner_codes", lambda _c: {"p1": "ibx-5153", "p2": "ibx-5192"})
+    groups = cs.sweep(_FakeClient([a, b]), today=_TODAY)
+    assert set(groups) == {"ibx-5153", "ibx-5192"}
+    assert all(not cs.likely_duplicates(rs) for rs in groups.values())
+    assert "0 likely duplicate pair(s)" in render_sweep(groups, today=_TODAY)
