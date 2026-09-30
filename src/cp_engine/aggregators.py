@@ -368,7 +368,8 @@ class ProjectStrips:
     - ``stakeholders`` → ``stakeholders-strip``
 
     ``inbound_overflow`` / ``decisions_overflow`` count the in-window items
-    left out by ``PROJECT_STRIP_CAP`` (the renderer names the remainder).
+    left out by ``INBOUND_STRIP_CAP`` / ``DECISIONS_STRIP_CAP`` (the renderer
+    names the remainder).
     """
 
     inbound: tuple[InboundUpdate, ...]
@@ -380,11 +381,15 @@ class ProjectStrips:
 
 
 # The windowed strips (inbound, recent decisions) list at most this many
-# items, newest first (cp-engine #328). Four weeks of a busy engagement is a
-# lot: slt-5196 carried 68 in-window inbound bullets on 2026-09-29, 55 of them
-# from one week of pre-interviews. 25 keeps the strip a skim — the sprint
-# files hold the rest, and the strip says how many it left out.
-PROJECT_STRIP_CAP = 25
+# items each, newest first (cp-engine #328). Four weeks of a busy engagement
+# is a lot: slt-5196 carried 68 in-window inbound bullets on 2026-09-29, 55 of
+# them from one week of pre-interviews. The sprint files hold the rest, and
+# each strip says how many it left out. The caps differ because the strips
+# read differently: inbound is a feed to skim (25), while each decision is a
+# multi-clause line that has to be read to be useful, so ten is what a reader
+# actually takes in before the strip stops being a summary.
+INBOUND_STRIP_CAP = 25
+DECISIONS_STRIP_CAP = 10
 
 
 def aggregate_project_strips(
@@ -410,7 +415,7 @@ def aggregate_project_strips(
     stakeholders heading makes no time promise. Both windowed strips are
     de-duplicated across weeks by cp:hash (a bullet re-recorded in a later
     week appears once), ordered newest first by bullet date, and capped at
-    ``PROJECT_STRIP_CAP``.
+    ``INBOUND_STRIP_CAP`` and ``DECISIONS_STRIP_CAP`` respectively.
 
     ``live_sources`` reconciles the inbound strip against the source store
     (cp-engine #323, #329; see ``_reconcile_announcements``). A new-source
@@ -495,12 +500,12 @@ def aggregate_project_strips(
     decisions = _newest_first_unique(decision_rows)
 
     return ProjectStrips(
-        inbound=tuple(inbound[:PROJECT_STRIP_CAP]),
-        recent_decisions=tuple(decisions[:PROJECT_STRIP_CAP]),
+        inbound=tuple(inbound[:INBOUND_STRIP_CAP]),
+        recent_decisions=tuple(decisions[:DECISIONS_STRIP_CAP]),
         open_asks=tuple(open_asks),
         stakeholders=tuple(stakeholder_by_name.values()),
-        inbound_overflow=max(0, len(inbound) - PROJECT_STRIP_CAP),
-        decisions_overflow=max(0, len(decisions) - PROJECT_STRIP_CAP),
+        inbound_overflow=max(0, len(inbound) - INBOUND_STRIP_CAP),
+        decisions_overflow=max(0, len(decisions) - DECISIONS_STRIP_CAP),
     )
 
 

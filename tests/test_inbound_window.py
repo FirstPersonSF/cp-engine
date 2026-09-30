@@ -23,11 +23,17 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 
 from cp_engine.aggregators import (
-    PROJECT_STRIP_CAP,
+    DECISIONS_STRIP_CAP,
+    INBOUND_STRIP_CAP,
     LiveSources,
     aggregate_project_strips,
 )
-from cp_engine.ingest import _content_hash, _write_inbound, announce_new_sources
+from cp_engine.ingest import (
+    _content_hash,
+    _write_decision,
+    _write_inbound,
+    announce_new_sources,
+)
 from cp_engine.render import render_project_strip_bodies
 from cp_engine.sprints import current_sprint_week_iso, parse_sprint_file
 
@@ -121,12 +127,32 @@ def test_window_dedupes_across_weeks_newest_first(tmp_path: Path) -> None:
 
 def test_window_caps_and_names_the_remainder(tmp_path: Path) -> None:
     cur = _sprint(tmp_path)
-    for n in range(PROJECT_STRIP_CAP + 3):
+    for n in range(INBOUND_STRIP_CAP + 3):
         _inbound(cur, f"Note {n:02d}", date(2026, 5, 1) + timedelta(days=n % 19))
     strips = aggregate_project_strips(CODE, (parse_sprint_file(cur),), TODAY)
-    assert len(strips.inbound) == PROJECT_STRIP_CAP
+    assert len(strips.inbound) == INBOUND_STRIP_CAP
     assert strips.inbound_overflow == 3
     assert "- _+3 older — see sprint files._" in render_project_strip_bodies(strips)["inbound-strip"]
+
+
+def test_decisions_strip_has_its_own_tighter_cap(tmp_path: Path) -> None:
+    """Decisions cap at ``DECISIONS_STRIP_CAP`` (10), not inbound's 25: a
+    decision is a line to read, not a feed to skim. Written with the real
+    ``add-decision`` writer; the strip keeps the NEWEST ten and names the
+    rest. Twelve decisions — under the inbound cap — must still overflow."""
+    assert DECISIONS_STRIP_CAP < INBOUND_STRIP_CAP
+    cur = _sprint(tmp_path)
+    total = DECISIONS_STRIP_CAP + 2
+    for n in range(total):
+        d = date(2026, 5, 1) + timedelta(days=n)
+        assert _write_decision(CODE, {"text": f"Decision {n:02d}", "date": d.isoformat()},
+                               cur, today=d)
+    strips = aggregate_project_strips(CODE, (parse_sprint_file(cur),), TODAY)
+    assert len(strips.recent_decisions) == DECISIONS_STRIP_CAP
+    assert strips.decisions_overflow == 2
+    assert strips.recent_decisions[0].text.startswith(f"Decision {total - 1:02d}")
+    body = render_project_strip_bodies(strips)["recent-decisions-strip"]
+    assert "- _+2 older — see sprint files._" in body
 
 
 # ──────────────────────────────────────────────────────────────────────
