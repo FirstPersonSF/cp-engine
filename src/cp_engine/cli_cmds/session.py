@@ -17,6 +17,7 @@ from cp_engine.config import ConfigError, load
 
 
 @click.command(name="capture-session")
+@click.argument("code", required=False)
 @click.option(
     "--source-repo",
     type=click.Path(exists=True, file_okay=False, path_type=Path),
@@ -44,7 +45,8 @@ from cp_engine.config import ConfigError, load
     "--user",
     default=None,
     help="Display name for the session author (e.g. \"Drew\"). "
-    "Defaults to `git config user.name`'s first name (#160).",
+    "Defaults to the tenant roster's match for this machine or git "
+    "identity, else `git config user.name`'s first name (#160, #325).",
 )
 @click.option(
     "--cp-tenant",
@@ -54,6 +56,7 @@ from cp_engine.config import ConfigError, load
 @click.option("--no-commit", is_flag=True, help="Don't run git add/commit/push.")
 @click.option("--no-push", is_flag=True, help="Commit but don't push.")
 def capture_session_cmd(
+    code: str | None,
     source_repo: Path | None,
     working_dir: Path | None,
     summary_file: Path,
@@ -64,10 +67,16 @@ def capture_session_cmd(
 ) -> None:
     """Write a session summary back to the cp tree.
 
-    Two modes:
+    Three ways to say where:
 
     \b
-    --source-repo <path>  (default: cwd)
+    <code>  (positional, like exec-lint / spine-lint)
+        Any workstream code (`ggl-5168`, `1pi-9005-mission-control`).
+        Resolved to its working dir in the tenant found from cwd (or
+        --cp-tenant), then captured as --working-dir would.
+
+    \b
+    --source-repo <path>  (default: cwd, when no <code> is given)
         For source-code repos with a .cp-link. Resolves destination via
         the link (self-healing if stale), or falls back to
         <cp-tenant>/exceptions/ for untracked repos.
@@ -86,28 +95,45 @@ def capture_session_cmd(
         capture_session_in_working_dir,
     )
 
-    if source_repo is not None and working_dir is not None:
+    from cp_engine.capture_session import default_session_user, find_tenant_root
+
+    if sum(x is not None for x in (code, source_repo, working_dir)) > 1:
         click.echo(
-            "Error: pass --source-repo or --working-dir, not both.", err=True
+            "Error: pass one of <code>, --source-repo or --working-dir.",
+            err=True,
         )
         sys.exit(2)
 
-    if user is None:
-        # #160 friction: --user was required with no default, costing a trial
-        # run to discover. First name from git config is right for this tenant.
-        import subprocess
+    if code is not None:
+        # #325: every other per-project verb takes the code positionally;
+        # this one made you guess twice. The code names a working dir, so it
+        # is --working-dir with the lookup done for you.
+        from cp_engine.spine import SpineDirNotFound, find_spine_dir
 
+        tenant = find_tenant_root((cp_tenant or Path.cwd()).resolve())
+        if tenant is None:
+            click.echo(
+                f"Error: no cp tenant found from {cp_tenant or Path.cwd()} "
+                "to resolve the code in — cd into the tenant or pass --cp-tenant.",
+                err=True,
+            )
+            sys.exit(2)
         try:
-            full = subprocess.run(
-                ["git", "config", "user.name"],
-                capture_output=True, text=True, check=True,
-            ).stdout.strip()
-        except (subprocess.CalledProcessError, OSError):
-            full = ""
-        user = full.split()[0] if full else ""
+            working_dir = find_spine_dir(tenant, code)
+        except SpineDirNotFound as exc:
+            click.echo(f"Error: {exc}", err=True)
+            sys.exit(2)
+
+    if user is None:
+        # #160 gave --user a default; #325 makes it the tenant's name for
+        # this person rather than whatever git's user.name happens to hold.
+        user = default_session_user(_tenant_for_user(
+            working_dir=working_dir, source_repo=source_repo, cp_tenant=cp_tenant,
+        ))
         if not user:
             click.echo(
-                "Error: --user not given and `git config user.name` is unset.",
+                "Error: --user not given, and neither the tenant roster nor "
+                "`git config user.name` names you.",
                 err=True,
             )
             sys.exit(2)
@@ -170,6 +196,28 @@ def capture_session_cmd(
             click.echo(f"Committed {result.commit_sha} and pushed.")
         else:
             click.echo(f"Committed {result.commit_sha} (push skipped).")
+
+
+def _tenant_for_user(
+    *, working_dir: Path | None, source_repo: Path | None, cp_tenant: Path | None
+) -> Path | None:
+    """The tenant whose roster names the session author: the one the capture
+    will write into, found the cheapest way each mode allows."""
+    from cp_engine.capture_session import find_tenant_root
+
+    if working_dir is not None:
+        return find_tenant_root(working_dir.resolve())
+    if cp_tenant is not None:
+        return find_tenant_root(cp_tenant.resolve())
+    repo = (source_repo or Path.cwd()).resolve()
+    link = repo / ".cp-link"
+    if link.is_file():
+        target = link.read_text(encoding="utf-8").strip()
+        if target:
+            hit = find_tenant_root(Path(target).expanduser())
+            if hit is not None:
+                return hit
+    return find_tenant_root(repo)
 
 
 @click.command(name="project-context")

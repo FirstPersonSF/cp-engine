@@ -533,6 +533,86 @@ def _write_exception(
     return candidate
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  Default session author (#325)
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _git_identity(cwd: Path | None) -> tuple[str, str]:
+    """`(user.name, user.email)` as git resolves them from `cwd`; blanks
+    when git or the key is missing."""
+    out: list[str] = []
+    for key in ("user.name", "user.email"):
+        try:
+            out.append(subprocess.run(
+                ["git", "config", key], cwd=cwd,
+                capture_output=True, text=True, check=True,
+            ).stdout.strip())
+        except (subprocess.CalledProcessError, OSError):
+            out.append("")
+    return out[0], out[1]
+
+
+def _display_name(name: str) -> str:
+    """Roster keys are lowercase first names (`drew`); a session header and
+    commit message read better capitalised. Mixed case is left alone."""
+    return name.title() if name == name.lower() else name
+
+
+def default_session_user(tenant_root: Path | None) -> str | None:
+    """Who is capturing this session, when `--user` isn't given.
+
+    The established filename convention is the author's lowercase FIRST
+    NAME (`…-drew.md`, `…-tony.md`). The old default — the first token of
+    `git config user.name` — breaks it whenever that setting holds a GitHub
+    handle: Drew's is `drewcanon`, and 44 session files went out as
+    `…-drewcanon.md` beside 80 as `…-drew.md`. So the tenant's own roster
+    decides, first match wins:
+
+    1. **This machine.** The one `[local-repos.<user>]` section whose clone
+       paths exist here — the same "which user is this machine" rule
+       `project-context` uses. Skipped when zero or several users match.
+    2. **Git identity against the roster.** The first token of
+       `user.name`, then the local part of `user.email` (and its first
+       `.`/`_`/`-`/`+` piece), matched case-insensitively against `[team]`
+       members and `[local-repos.*]` keys. `drewcanon` misses; the email
+       `drew@…` hits.
+    3. **Legacy.** The first token of `user.name`, so a tenant with no roster
+       behaves exactly as before.
+
+    Returns None only when there is nothing at all to go on.
+    """
+    config = None
+    if tenant_root is not None:
+        from cp_engine.config import ConfigError, load
+
+        try:
+            config = load(tenant_root)
+        except ConfigError:
+            config = None
+
+    if config is not None:
+        here = [
+            user for user, paths in config.local_repos_by_user.items()
+            if any(Path(raw).expanduser().exists() for raw in paths.values())
+        ]
+        if len(here) == 1:
+            return _display_name(here[0])
+
+    name, email = _git_identity(tenant_root)
+    first = name.split()[0] if name else ""
+
+    if config is not None:
+        roster = {m.lower(): m for m in config.team}
+        roster.update({u.lower(): u for u in config.local_repos_by_user})
+        local = email.split("@", 1)[0].lower() if email else ""
+        for candidate in (first.lower(), local, re.split(r"[._+-]", local)[0]):
+            if candidate and candidate in roster:
+                return _display_name(roster[candidate])
+
+    return first or None
+
+
 _USER_SLUG_RE = re.compile(r"[^a-z0-9]+")
 
 
