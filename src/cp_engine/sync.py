@@ -323,6 +323,7 @@ def _sync_tenant_inner(
             p,
             one_line_summary=_derive_summary(config, p),
             summary_stale_days=_derive_summary_stale_days(config, p),
+            summary_partial_refresh_days=_derive_partial_refresh_days(config, p),
             last_activity=_derive_last_activity(config, p),
         )
         for p in projects
@@ -2096,6 +2097,33 @@ def _derive_summary_stale_days(
         exec_summary_updated_on(existing / "cp.md"),
         _latest_spine_activity(existing),
     )
+
+
+def _derive_partial_refresh_days(
+    config: TenantConfig, project: ProjectState
+) -> int | None:
+    """Days the Exec Summary's `· updated` stamp outruns its state fields (#251).
+
+    A Status-only refresh advances the stamp for the whole summary while
+    `Where it stands` / `Next up` / `Blockers` stay as they were. This dates
+    each field by `git blame` (`exec_summary_freshness.partial_refresh`) and
+    returns the lag when every filled state field trails the stamp by 14+
+    days.
+
+    None whenever history cannot answer: no git, an untracked file, or a
+    SHALLOW clone. That is load-bearing for master-cp.md: a sync that cannot
+    date the fields must render exactly what it rendered before this existed,
+    so a shallow run never adds a false marker (blame would date every line
+    to the boundary commit) and never differs from a full run in any way but
+    the marker itself.
+    """
+    from cp_engine.exec_summary_freshness import partial_refresh
+
+    existing = find_working_dir(config.root, project.code, project.mc2_id)
+    if existing is None:
+        return None
+    found = partial_refresh(existing / "cp.md")
+    return found.lag_days if found is not None else None
 
 
 def _derive_last_activity(
