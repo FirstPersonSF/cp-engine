@@ -1340,6 +1340,7 @@ def _refresh_install_record(root: Path) -> list[Path]:
     value is the September finding made visible in data.
     """
     from cp_engine import health
+    from cp_engine.capture_session import default_session_user
 
     local_path = root / health.LOCAL_FILENAME
     if not local_path.exists():
@@ -1354,6 +1355,7 @@ def _refresh_install_record(root: Path) -> list[Path]:
         pin=health.read_pin(root),
         hosted_url=health.read_hosted_url(root),
         installer=existing.get("installer") or "unrecorded",
+        user=default_session_user(root) or existing.get("user"),
     )
     # Unchanged apart from the timestamp → leave the file alone.
     same = {k: v for k, v in record.items() if k != "recorded_at"}

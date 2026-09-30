@@ -574,7 +574,7 @@ def test_inventory_and_report_render_what_is_installed(tmp_path: Path):
     assert "engine     v0.120.5   from git+https://example.test/r" in text
     assert "plugin     v0.120.5   (user)" in text
     assert "hosted     hosted-cp/0.120.5   build abc" in text
-    assert "recorded   2026-09-18T00:00:00Z by agent" in text
+    assert "recorded   2026-09-18T00:00:00Z (agent)" in text
     assert text.rstrip().endswith("(plugin_vs_cli, pin_floor, stale_mcp, install_record, hosted_vs_local).")
 
 
@@ -593,3 +593,26 @@ def test_doctor_brief_never_touches_the_network(monkeypatch):
     monkeypatch.setattr(health, "collect", lambda **kw: [])
     r = CliRunner().invoke(main, ["doctor", "--brief"])
     assert r.exit_code == 0 and r.output == ""
+
+
+def test_doctor_names_the_machine_user_apart_from_the_installer():
+    """`by unrecorded` read as a failed identity lookup: WHO (user) and HOW
+    (installer) are separate fields, rendered separately."""
+    inv = {"install_record": {"recorded_at": "2026-09-30T06:09:16Z", "installer": "unrecorded", "user": "Drew"}}
+    assert "recorded   2026-09-30T06:09:16Z by Drew (unrecorded)" in health.render_inventory(inv)
+    inv = {"install_record": {"recorded_at": "2026-09-30T06:09:16Z", "installer": "unrecorded"}}
+    line = next(ln for ln in health.render_inventory(inv).splitlines() if "recorded" in ln)
+    assert "by unrecorded" not in line and line.endswith("(unrecorded)")
+
+
+def test_sync_refresh_records_the_machine_user(tmp_path: Path, monkeypatch):
+    from cp_engine import capture_session, sync
+
+    local = tmp_path / ".cp-engine.local.toml"
+    health.write_install_record(local, {"recorded_at": "2026-09-18T00:00:00Z", "installer": "unrecorded"})
+    monkeypatch.setattr(capture_session, "default_session_user", lambda root: "Drew")
+    monkeypatch.setattr(health, "default_installed_plugins_path", lambda: tmp_path / "none.json")
+    monkeypatch.setattr(health, "default_receipt_path", lambda: tmp_path / "none-receipt.json")
+    assert sync._refresh_install_record(tmp_path) == [local]
+    rec = health.read_install_record(tmp_path)
+    assert rec["user"] == "Drew" and rec["installer"] == "unrecorded"

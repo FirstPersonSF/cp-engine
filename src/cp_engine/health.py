@@ -586,6 +586,7 @@ def build_install_record(
     pin: str | None,
     hosted_url: str | None,
     installer: str,
+    user: str | None = None,
 ) -> dict:
     """The `[install]` table: what is installed on THIS machine, and who did it.
 
@@ -595,6 +596,11 @@ def build_install_record(
     "human", or "unrecorded" (sync found an install it did not witness and is
     writing the first record of it). The install payload (#296 §4.6) writes
     the first two; sync writes the third.
+
+    `user` is WHO is on this machine — the tenant roster name, resolved the
+    way `capture-session` resolves its author. It is a different question
+    from `installer` (HOW the install happened); before it existed, doctor
+    printed `by unrecorded`, which read as an identity lookup that failed.
     """
     plist = list(plugins)
     primary = next((p for p in plist if p.scope == "user"), plist[0] if plist else None)
@@ -604,6 +610,7 @@ def build_install_record(
     rec: dict = {
         "recorded_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "installer": installer,
+        **({"user": user} if user else {}),
         "cli": {"version": cli_version or "", "source": src or ""},
     }
     if primary:
@@ -924,10 +931,11 @@ def render_inventory(inv: dict) -> str:
     elif tn.get("hosted_url"):
         out.append(f"  hosted     {tn['hosted_url']}   (not checked)")
     rec = inv.get("install_record")
-    out.append(
-        f"  recorded   {rec.get('recorded_at')} by {rec.get('installer')}" if rec
-        else "  recorded   (no install record)"
-    )
+    if rec:
+        who = f" by {rec['user']}" if rec.get("user") else ""
+        out.append(f"  recorded   {rec.get('recorded_at')}{who} ({rec.get('installer')})")
+    else:
+        out.append("  recorded   (no install record)")
     return "\n".join(out)
 
 
