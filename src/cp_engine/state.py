@@ -412,6 +412,13 @@ class ProjectState:
     # same deepening pass; see summary.summary_stale_days.
     summary_stale_days: int | None = None
 
+    # Days the Exec Summary's `· updated` stamp is newer than every filled
+    # state field (Where it stands / Next up / Blockers), dated by git blame
+    # (#251). None when the summary was fully refreshed OR when history is
+    # unavailable (shallow clone, no git) — the second case must render
+    # exactly as before; see sync._derive_partial_refresh_days.
+    summary_partial_refresh_days: int | None = None
+
     # The newest dated decision recorded for this project since the Exec
     # Summary was written, as (text, ISO date) — None when the summary is
     # current or nothing newer exists. Rendered BESIDE the summary, never

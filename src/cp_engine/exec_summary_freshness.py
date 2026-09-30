@@ -26,11 +26,14 @@ its newest line. It needs real history:
 - Outside a git repo, or for an untracked file, this returns None.
 
 None means "cannot tell". Callers fall back to the stamp, which is what
-they did before this module existed. This is also why the check is wired
-only into surfaces that run from a full local checkout (the planning
-bundle, `cxp exec-lint`, `cxp spine-lint`) and NOT into `master-cp.md`:
-a daily shallow CI sync would drop a marker that a local sync added, and
-the index would flap. See #251 for that option and its prerequisite.
+they did before this module existed. It surfaces in the planning bundle,
+`cxp exec-lint`, `cxp spine-lint`, and master-cp.md (`⚠️ _partial refresh_`
+in the project's row, via `sync._derive_partial_refresh_days`). For
+master-cp.md, "cannot tell" renders the row exactly as it rendered before
+the marker existed, so a shallow sync never adds a false marker. It does
+DROP a true one, though: the index only stays steady if every sync that
+writes it has full history, which is why the tenant's sync workflow checks
+out with `fetch-depth: 0` (#251).
 
 THIS READS ONLY. It authors nothing and edits nothing. The engine owns
 read/render and the model owns the prose

@@ -1647,6 +1647,9 @@ def _project_view(
         # None when current/undatable; an int (days) when the hand-written
         # Exec Summary this one-liner comes from trails real activity.
         "summary_stale_days": p.summary_stale_days,
+        # Lag in days when the stamp overstates the state fields (#251);
+        # None when fully refreshed or undatable (renders as before).
+        "summary_partial_refresh_days": p.summary_partial_refresh_days,
         # (text, ISO date) of the newest decision since the summary was
         # written — shown beside a stale summary, never in place of it.
         "latest_signal": p.latest_signal,
