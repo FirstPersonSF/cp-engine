@@ -4,6 +4,58 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.126.0 — 2026-09-30
+
+**Every open issue, one morning: 13 issues across ingest, spine, sources and
+install.** Minor, for a new ingest verb (`record-open-question`), new
+optional config (`[names] aliases`), a new CLI command (`cxp record-install`)
+and a changed sort order. Restart `/mcp`, redeploy the hosted server; the
+webhook deploys from `main`.
+
+*Auto-ingest accuracy.* Named people are checked against the project's
+stakeholder cards: known mis-hearings are rewritten (`[names] aliases` in
+`.cp-engine.toml`), a first name that matches one card takes its surname,
+and a risk or decision naming a client person the transcript never actually
+hears carries `[attribution unverified]` (#312). Deliberations ("leaning
+toward", "still open", a trailing "?") become `### Open questions` instead of
+decisions, and two same-topic decisions from one meeting keep the later
+position (#321). Each Fathom action item goes to the project it names; the
+same item in two projects is written once; a cross-routed item that restates
+an existing bullet becomes an `[update]` line under it (#322).
+
+*Spine.* Distilled bodies are scored against their source (two-word-phrase
+overlap; 0 of 235 real distills flagged, every wrong-source pair caught) and
+carry a "machine-derived" marker until a person edits them; `spine-recover`
+no longer distills from empty source text; `add_spine_version` shows the
+body it is about to supersede (#314). The hosted server now writes
+`card_kind` on every insert, and `add_spine_version` no longer wipes
+`card_kind` / `actor` / `lifetime`; `actor` reaches the spine sweep without a
+ranking weight; sealed elements rank as reference in the Lens; a test fails
+when an engine-owned column has no writer or reader (#315).
+
+*Sources.* Files ingested from an account node's own folders are
+account-scoped and visible to sibling workstreams; confidentiality markings
+in a body set an "auto-detected, unconfirmed" `status_note`; `spine-lint`
+flags a `Source reviewed:` file that was never ingested; a zero-chunk source
+reads as empty, not missing (#324). Preflight's found facts come from bodies,
+not source titles — six checks that were ready on titles alone are not (#336).
+
+*Sprint files.* Carried horizon items keep their continuation lines (#337);
+settled horizon decisions stop counting in the sprint index, agenda,
+master-CP rollup and prep-planning (#338). Estimate rows nobody positioned
+sort last, as in mc-2 (#284).
+
+*Commitments.* `commitments_sweep` flags likely-duplicate pairs (16 of 19
+flags genuine on live data); `create_commitment` takes `source_meeting_id`
+(#311).
+
+*Install.* `docs/install.md` is written for the session doing the install,
+`cxp record-install --installer agent|human` writes the install record, and
+the repo's `CLAUDE.md` and README point a cold session at it (#296, partial).
+The self-describing-repo convention is in
+`docs/conventions/self-describing-repo.md` (#297, partial). `pytest` now
+imports the checkout's own `src`, so a worktree run tests the worktree.
+
 ## v0.125.1 — 2026-09-30
 
 **The sprint week rolls on Wednesday in Pacific, not UTC (#339).** `cxp sync`
