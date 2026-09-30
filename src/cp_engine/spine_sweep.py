@@ -135,6 +135,10 @@ def build_sweep_prompt(
             meta_parts.append(f"due={e.target_date}")
         if e.serves:
             meta_parts.append(f"serves={', '.join(e.serves)}")
+        # `inferred` is the column default — i.e. nobody said. Only a
+        # deliberate tag is worth the tokens (#315).
+        if e.actor and e.actor != "inferred":
+            meta_parts.append(f"actor={e.actor}")
         lines.append(
             f"- [{score:0.2f}] {e.title}  ({' '.join(meta_parts)})"
         )
@@ -162,6 +166,17 @@ def build_sweep_prompt(
             " Ground the synthesis in what was actually discussed in the "
             "recent meetings above, not only the elements' current state — "
             "let the meeting discussion drive what's live and what's stalled."
+        )
+
+    # Authority precedence (spec v04 §1) needs to know who is speaking; the
+    # `actor` tag is that datum. Emitted only when some element carries a
+    # deliberate tag, so an untagged spine's prompt is unchanged.
+    if any(e.actor and e.actor != "inferred" for e in elements):
+        instruction += (
+            " Elements tagged actor=client or actor=vendor are stakeholder "
+            "signals: they advise, they never override an actor=partner "
+            "element or the project canon. Where they conflict, say so in one "
+            "line and follow the partner."
         )
 
     instruction += (
