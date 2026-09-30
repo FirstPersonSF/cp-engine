@@ -1,15 +1,27 @@
 ---
 Project: Context Protocol Engine
-Provenance: Spec v02 + v03 (version distribution) | 2026-05-09
+Provenance: Version 02 | 2026-09-30
 Filename: README.md
 Author: Drew + Tony + Claude
 ---
 
 # Context Protocol Engine (`cp-engine`)
 
-A versioned framework for First Person and Canonic CP corpora. The engine is one installable Python package — spec, sync logic, renderers, CLI, GitHub Action. Each tenant (currently just `cp`; the spec leaves room for `cp-firstpersonsf` and `cp-canonic` to split out later) is a thin GitHub repo that depends on this package and holds its own master CP, weekly CP, project CPs, and tenant config.
+**cp** is First Person and Canonic's shared, current picture of every
+workstream — client jobs, accounts, programs, internal initiatives. The
+**spine** is the memory (in Mission Control), the **tenant** (`FirstPersonSF/cp`)
+is the shared notebook, and the **sync** keeps the notebook current. This repo
+is the engine behind all three.
 
-Framework updates flow one direction: cut a release here, bump the pin in each tenant, every tenant gets the change. Tenants never fork engine code.
+**To install or update cp on a computer:** point a Claude Code session at this
+repo and ask it to install cp. It follows [`docs/install.md`](docs/install.md),
+which is written for the session, verifies its own work with `cxp doctor`, and
+records what it did. On claude.ai or Claude mobile there is nothing to install —
+see [`docs/hosted-mcp-team-setup.md`](docs/hosted-mcp-team-setup.md).
+
+Conventions for anyone building here: [`docs/conventions/`](docs/conventions/).
+Everything below is engine internals for developers, and parts of it predate
+v0.100 — trust `docs/install.md` over this file for anything about installing.
 
 ## Spec
 
@@ -24,6 +36,9 @@ The canonical spec is at [`docs/specs/cp-engine-spec-v02.md`](docs/specs/cp-engi
 cp-engine ships a Claude Code plugin at `/plugin/` so a developer can wrap a session in a source repo (e.g. `mc-2`, `cp-engine`, `storyos`) and have a summary land in the corresponding cp working directory automatically.
 
 ### One-time per-machine setup
+
+> Superseded for installing: follow [`docs/install.md`](docs/install.md). The
+> steps below are kept for the `[local-repos]` / `cxp link-local` detail.
 
 1. Clone the cp tenant (e.g. `cp`) and run `cp init` to populate `.cp-engine.local.toml`.
 2. Add a `[local-repos]` table to that file, mapping each source repo's GitHub name to its local clone path:

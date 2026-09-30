@@ -823,6 +823,45 @@ def doctor_cmd(brief: bool) -> None:
         raise SystemExit(1)
 
 
+@click.command("record-install")
+@click.option(
+    "--installer",
+    type=click.Choice(["agent", "human"]),  # health.INSTALLERS
+    required=True,
+    help="Who performed the install: a Claude session (agent) or a person typing (human).",
+)
+def record_install_cmd(installer: str) -> None:
+    """Write down what is installed on this machine, and who installed it (#296).
+
+    The last step of the install payload (docs/install.md). Writes the
+    `[install]` table in the tenant's `.cp-engine.local.toml` — per-machine,
+    gitignored — creating the file if it does not exist yet. `cxp sync`
+    refreshes the record afterwards but never creates one and never changes
+    `installer`, so this is the only place the answer to "who set this machine
+    up" enters the data. Run it from inside the tenant clone.
+
+    Exit codes: 0 recorded · 2 not inside a tenant.
+    """
+    from cp_engine import health
+    from cp_engine.capture_session import default_session_user
+
+    root = health.find_tenant_root()
+    if root is None:
+        click.echo(
+            "Error: not inside a cp tenant (no .cp-engine.toml here or above). "
+            "cd into the tenant clone and run this again.",
+            err=True,
+        )
+        sys.exit(2)
+    path, record = health.record_install(root, installer, user=default_session_user(root))
+    cli = (record.get("cli") or {}).get("version") or "?"
+    plugin = (record.get("plugin") or {}).get("version") or "none"
+    click.echo(
+        f"[cp] install recorded in {path}: engine v{cli}, plugin v{plugin}, "
+        f"installer={installer}. Verify with: cxp doctor"
+    )
+
+
 @click.command("promote-uphill")
 @click.argument("code")
 @click.option(

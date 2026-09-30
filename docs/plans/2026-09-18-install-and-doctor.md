@@ -354,8 +354,13 @@ healthy. Run on a tenant pinned `~= 0.42`, it must warn.
    `--brief` never fetches. First live run found the hosted server still at
    0.120.2 against a 0.120.5 engine: three releases never `railway up`'d. 4b.1's
    question is answered by evidence — they CAN drift, and now something says so.
-6. Install payload + `mc-2` pointer — the convention issue is **#297**, filed;
-   the payload writes `installer = "agent"|"human"` into the record.
+6. ✅ (in cp-engine) Install payload — `docs/install.md`, conforming to the #297
+   convention (`docs/conventions/self-describing-repo.md`); root `CLAUDE.md` and
+   the README's first screen point a cold session at it; `cxp record-install
+   --installer agent|human` is the record step (creates the file; sync refreshes
+   but never changes `installer`). **Still owed:** the `mc-2` `CLAUDE.md`
+   pointer (text in `docs/install.md` §"Pointer for other repos") — a change in
+   that repo, not this one.
 
 ~~Before step 6: a read-only pass over the thirteen-day window.~~ **Done
 2026-09-18, clean.** The plugin's CLI-path skills were byte-identical between

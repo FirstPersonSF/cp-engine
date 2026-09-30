@@ -1346,14 +1346,8 @@ def _refresh_install_record(root: Path) -> list[Path]:
     if not local_path.exists():
         return []
     existing = health.read_install_record(root) or {}
-    plugins = health.read_installed_plugins(health.default_installed_plugins_path())
-    record = health.build_install_record(
-        cli_version=health.installed_cli_version(),
-        plugins=plugins,
-        receipt_source=health.read_receipt_source(health.default_receipt_path()),
-        tenant_root=root,
-        pin=health.read_pin(root),
-        hosted_url=health.read_hosted_url(root),
+    record = health.current_install_record(
+        root,
         installer=existing.get("installer") or "unrecorded",
         user=default_session_user(root) or existing.get("user"),
     )
