@@ -188,6 +188,9 @@ def test_the_vendor_closure_EXECUTES_with_no_cp_engine_installed(tmp_path) -> No
         "dup = dict(rows[0], version_label='v2', version_date='2026-09-02')\n"
         "kept = PS._one_live_per_element(rows + [dup])\n"
         "assert [r['version_label'] for r in kept] == ['v2'], kept\n"
+        # #344 — the hosted attach verbs import `pick_source` at call time.
+        "_ps = [{'id': 'a', 'title': 'Deck Review'}, {'id': 'b', 'title': 'Deck review'}]\n"
+        "assert PS.pick_source(_ps, 'Deck Review')[0]['id'] == 'a'\n"
         "contributors('word ' * 2600)\n"
         "lint_exec_summary('<!-- cp-engine:start exec-summary -->\\n"
         "**Status:** x\\n<!-- cp-engine:end exec-summary -->')\n"

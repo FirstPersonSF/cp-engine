@@ -14,6 +14,10 @@ THE RULE THIS ENCODES (#113): `spine_substance` stores one row per VERSION and
 the data can carry TWO `status='live'` rows for one element. A read path that
 emits both, or resolves the stale one, turns one dirty row into wrong answers
 everywhere. A drift test asserts each function matches its source.
+
+`pick_source` (#344) is the attach resolver's title/id ladder — pure row
+selection — imported at call time by the hosted `add_element_source` /
+`remove_element_source` so the two surfaces cannot resolve differently.
 """
 
 from __future__ import annotations
@@ -89,3 +93,64 @@ def _one_live_per_element(rows: list[dict]) -> list[dict]:
                 k[0], kept.get("version_label"), dropped.get("version_label"),
             )
     return [best[k] for k in order] + passthrough
+
+
+def pick_source(rows: list[dict], source_title: str) -> tuple[dict | None, dict | None]:
+    """`source_title` -> ONE of `rows` (active rag_assets), or (None, note).
+
+    The attach resolver's ladder (#344), shared by the stdio engine and the
+    hosted `add_element_source` / `remove_element_source` (vendored verbatim).
+    `rows` is the caller's candidate POOL — the workstream's own active assets
+    plus its company's account-scoped ones — so an id outside it never
+    resolves. Rungs, first hit wins:
+
+      0. a rag_asset UUID -> that asset, if it is in the pool. The one
+         unambiguous handle when two titles collide.
+      1. CASE-EXACT title (whitespace-trimmed).
+      2. case-insensitive exact title.
+      3. case-insensitive substring, query ⊆ stored title.
+
+    A rung with ONE match resolves; a rung with SEVERAL is genuine ambiguity
+    and returns the candidates (id + title) WITHOUT falling to a looser rung
+    and without guessing. Before #344 rungs 1 and 2 were one case-insensitive
+    rung, so `IBX 5192 Deck Review` vs `IBX 5192 Deck review` was reported as
+    ambiguous even though the caller typed one of them exactly.
+    """
+    import uuid as _uuid
+
+    want = (source_title or "").strip()
+    if not want:
+        return None, {"note": "source_title is required"}
+    try:
+        as_id = str(_uuid.UUID(want))
+    except (ValueError, AttributeError, TypeError):
+        as_id = None
+    if as_id is not None:
+        hit = [r for r in rows if str(r.get("id") or "").lower() == as_id]
+        if hit:
+            return hit[0], None
+        return None, {"note": f"no active source with id {want!r} on this "
+                              "workstream or its account"}
+
+    def _t(r: dict) -> str:
+        return (r.get("title") or "").strip()
+
+    folded = want.casefold()
+    rungs = (
+        [r for r in rows if _t(r) == want],
+        [r for r in rows if _t(r).casefold() == folded],
+        [r for r in rows if folded in _t(r).casefold()],
+    )
+    for matched in rungs:
+        if len(matched) == 1:
+            return matched[0], None
+        if len(matched) > 1:
+            cands = sorted(({"id": r.get("id"), "title": r.get("title")}
+                            for r in matched),
+                           key=lambda c: (c["title"] or "", str(c["id"])))
+            return None, {
+                "note": f"ambiguous: {want!r} matched {len(matched)} sources "
+                        "— pass one's id as source_title",
+                "candidates": cands[:10],
+            }
+    return None, {"note": f"no active source titled {want!r}"}

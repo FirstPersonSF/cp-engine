@@ -283,6 +283,67 @@ def _title_matches(doc_title: str, row_title: str | None) -> bool:
     return doc_title.lower() in row_title.lower()
 
 
+def pick_source(rows: list[dict], source_title: str) -> tuple[dict | None, dict | None]:
+    """`source_title` -> ONE of `rows` (active rag_assets), or (None, note).
+
+    The attach resolver's ladder (#344), shared by the stdio engine and the
+    hosted `add_element_source` / `remove_element_source` (vendored verbatim).
+    `rows` is the caller's candidate POOL — the workstream's own active assets
+    plus its company's account-scoped ones — so an id outside it never
+    resolves. Rungs, first hit wins:
+
+      0. a rag_asset UUID -> that asset, if it is in the pool. The one
+         unambiguous handle when two titles collide.
+      1. CASE-EXACT title (whitespace-trimmed).
+      2. case-insensitive exact title.
+      3. case-insensitive substring, query ⊆ stored title.
+
+    A rung with ONE match resolves; a rung with SEVERAL is genuine ambiguity
+    and returns the candidates (id + title) WITHOUT falling to a looser rung
+    and without guessing. Before #344 rungs 1 and 2 were one case-insensitive
+    rung, so `IBX 5192 Deck Review` vs `IBX 5192 Deck review` was reported as
+    ambiguous even though the caller typed one of them exactly.
+    """
+    import uuid as _uuid
+
+    want = (source_title or "").strip()
+    if not want:
+        return None, {"note": "source_title is required"}
+    try:
+        as_id = str(_uuid.UUID(want))
+    except (ValueError, AttributeError, TypeError):
+        as_id = None
+    if as_id is not None:
+        hit = [r for r in rows if str(r.get("id") or "").lower() == as_id]
+        if hit:
+            return hit[0], None
+        return None, {"note": f"no active source with id {want!r} on this "
+                              "workstream or its account"}
+
+    def _t(r: dict) -> str:
+        return (r.get("title") or "").strip()
+
+    folded = want.casefold()
+    rungs = (
+        [r for r in rows if _t(r) == want],
+        [r for r in rows if _t(r).casefold() == folded],
+        [r for r in rows if folded in _t(r).casefold()],
+    )
+    for matched in rungs:
+        if len(matched) == 1:
+            return matched[0], None
+        if len(matched) > 1:
+            cands = sorted(({"id": r.get("id"), "title": r.get("title")}
+                            for r in matched),
+                           key=lambda c: (c["title"] or "", str(c["id"])))
+            return None, {
+                "note": f"ambiguous: {want!r} matched {len(matched)} sources "
+                        "— pass one's id as source_title",
+                "candidates": cands[:10],
+            }
+    return None, {"note": f"no active source titled {want!r}"}
+
+
 def pull_source(
     client,
     project_id: str,
@@ -975,9 +1036,12 @@ def modify_element_sources(client, project_id: str, key: str,
     """Attach/detach one ingested source document on a spine element.
 
     Resolves `key` to ONE live element (same discipline as pull_spine) and
-    `source_title` to ONE of the project's active rag_assets (exact title
-    first, else a unique case-insensitive substring — mirroring pull_source's
-    resolution ladder, minus chunk reads). The typed link
+    `source_title` to ONE active rag_asset in the pool of the project's own
+    sources plus (when `company_id` is given) its company's account-scoped
+    ones — by `pick_source`'s ladder (#344): a rag_asset uuid, else a
+    case-exact title, else a case-insensitive exact title, else a unique
+    case-insensitive substring; several matches on one rung is ambiguity and
+    returns the candidates, never a guess. The typed link
     `{"type": "rag_asset", "id", "title"}` is then added to / removed from the
     `sources` array of EVERY version row — sources are an element-level fact,
     like `serves` — deduped by asset id exactly as MC-2's PATCH /substance
@@ -992,18 +1056,15 @@ def modify_element_sources(client, project_id: str, key: str,
     if est_item_id is None:
         return {"note": f"no single live element matching '{key}'"}
 
-    assets = list_sources(client, project_id, company_id or "")
-    exact = [a for a in assets
-             if (a.get("title") or "").lower() == source_title.lower()]
-    matched = exact or [a for a in assets
-                        if _title_matches(source_title, a.get("title"))]
-    if not matched:
-        return {"note": f"no active source titled '{source_title}'"}
-    if len(matched) > 1:
-        titles = sorted(a.get("title") or "" for a in matched)
-        return {"note": f"ambiguous: '{source_title}' matched "
-                        f"{len(matched)} sources: {titles}"}
-    link = _source_link(matched[0])
+    # The pool is the workstream's own active sources PLUS its company's
+    # account-scoped ones (#344): #324 made those listable and readable from
+    # every sibling, so they must be attachable from every sibling too.
+    assets = list_sources(client, project_id, company_id or "",
+                          include_account=bool(company_id))
+    asset, note = pick_source(assets, source_title)
+    if note is not None:
+        return note
+    link = _source_link(asset)
 
     def _attached(entries: list) -> bool:
         return any(isinstance(s, dict) and s.get("type") == "rag_asset"

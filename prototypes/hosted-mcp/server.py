@@ -3049,53 +3049,82 @@ def _resolve_active_asset(
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """`source_title` -> ONE active rag_asset, or (None, structured note).
 
-    Mirrors `modify_element_sources`' ladder: exact (case-insensitive) title
-    first, else `_title_matches` — a case-insensitive CONTAINS where the query
-    must be a substring of the stored title (query ⊆ stored, the engine's
-    direction). Ambiguity returns the candidate titles and NEVER guesses; that
-    discipline is the whole reason these verbs are safe to hand a loose title.
+    The POOL is the workstream's own active assets PLUS its company's
+    ACCOUNT-scoped ones (`rag_assets.scope='account'`, same `company_id`) —
+    the same two arms `list_project_sources` shows (#324). Before #344 only the
+    first arm was read, so an account doc a sibling could list and pull could
+    not be attached to that sibling's elements.
+
+    Resolution is `cp_engine.project_sources.pick_source` (vendored verbatim,
+    so the stdio engine and this server share one ladder): a rag_asset uuid,
+    else a CASE-EXACT title, else a case-insensitive exact title, else a
+    case-insensitive substring (query ⊆ stored). Several matches on one rung is
+    genuine ambiguity: the candidates (id + title) come back and nothing is
+    guessed — that discipline is the whole reason these verbs are safe to hand
+    a loose title.
 
     Superseded assets are dropped the same way `list_project_sources` does (an
     asset with a successor pointing at it), so a stale predecessor cannot be
     attached in place of the document that replaced it.
     """
-    want = (source_title or "").strip()
-    if not want:
+    from cp_engine.project_sources import pick_source
+
+    if not (source_title or "").strip():
         return None, {"note": "source_title is required"}
 
+    cols = "id, title, status, prev_asset_id, scope"
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
+
+    def _take(batch, *, account: bool) -> None:
+        for row in batch or []:
+            if row.get("id") not in seen:
+                seen.add(row["id"])
+                if account:
+                    row = {**row, "scope": "account"}
+                rows.append(row)
+
     for column in _owner_columns(client):
         try:
-            for row in (
+            _take(
                 client.table("rag_assets")
-                .select("id, title, status, prev_asset_id")
+                .select(cols)
                 .eq(column, scope_id)
                 .eq("status", "active")
                 .execute()
-                .data
-                or []
-            ):
-                if row.get("id") not in seen:
-                    seen.add(row["id"])
-                    rows.append(row)
+                .data,
+                account=False,
+            )
         except Exception:  # noqa: BLE001 — a failed read is an empty read, reported below
             continue
 
+    # Arm 2 (#344): the company's account-scoped docs. A failed read leaves
+    # the workstream's own rows resolvable rather than failing the verb — but
+    # it is logged, alerted, and named on a no-match note, so "no active
+    # source" is never reported when the truth is "could not look".
+    account_read_failed = False
+    try:
+        proj = (client.table("projects").select("company_id")
+                .eq("id", scope_id).limit(1).execute().data or [])
+        company_id = proj[0].get("company_id") if proj else None
+        if company_id:
+            _take(
+                client.table("rag_assets").select(cols)
+                .eq("company_id", company_id).eq("scope", "account")
+                .eq("status", "active").execute().data,
+                account=True,
+            )
+    except Exception as exc:  # noqa: BLE001 — see above
+        account_read_failed = True
+        log.warning("_resolve_active_asset: account-scope read failed: %s", exc)
+        observability.capture(exc, area="attach_account_sources")
+
     superseded = {r["prev_asset_id"] for r in rows if r.get("prev_asset_id")}
     rows = [r for r in rows if r.get("id") not in superseded]
-
-    exact = [r for r in rows if (r.get("title") or "").strip().lower() == want.lower()]
-    matched = exact or [r for r in rows if want.lower() in (r.get("title") or "").lower()]
-    if not matched:
-        return None, {"note": f"no active source titled {want!r}"}
-    if len(matched) > 1:
-        titles = sorted((m.get("title") or "") for m in matched)
-        return None, {
-            "note": f"ambiguous: {want!r} matched {len(matched)} sources",
-            "candidates": titles[:10],
-        }
-    return matched[0], None
+    asset, note = pick_source(rows, source_title)
+    if note is not None and account_read_failed:
+        note = {**note, "account_sources_unread": True}
+    return asset, note
 
 
 def resolve_source_element(
@@ -6099,11 +6128,15 @@ def add_element_source(
 
     `key` resolves to ONE LIVE element (exact est_item_id, bare slug, or a
     distinct `framing` substring — the same discipline as `pull_spine_element`);
-    `source_title` resolves to ONE of the project's ACTIVE ingested sources
-    (exact title first, else a unique case-insensitive substring, the query
-    being a substring of the stored title). Ambiguity returns the candidate
-    titles and never guesses — attaching the wrong provenance is worse than
-    attaching none.
+    `source_title` resolves to ONE ACTIVE ingested source from the
+    workstream's own sources plus its company's ACCOUNT-scoped ones (the pool
+    `list_project_sources` shows, #324/#344). It may be a rag_asset id (the
+    `id` from `list_project_sources` — the unambiguous handle when titles
+    collide), else it matches by title: CASE-EXACT first, then
+    case-insensitive exact, then a case-insensitive substring of the stored
+    title. Several matches on one rung is ambiguity: the candidates come back
+    with their ids and nothing is guessed — attaching the wrong provenance is
+    worse than attaching none.
 
     Writes the typed link `{"type": "rag_asset", "id", "title"}` into `sources`
     on EVERY version row, exactly as the stdio verb and MC-2's dashboard do:
@@ -6118,7 +6151,8 @@ def add_element_source(
     Args:
         project_code: engagement, initiative, or standalone-repo code.
         key: the element (est_item_id, bare slug, or unique framing substring).
-        source_title: the ingested source's title (see `list_project_sources`).
+        source_title: the ingested source's title or rag_asset id (see
+            `list_project_sources`).
     """
     client = user_client()
     scope = resolve_write_scope(client, project_code)
@@ -6173,7 +6207,7 @@ def remove_element_source(
     Args:
         project_code: engagement, initiative, or standalone-repo code.
         key: the element (est_item_id, bare slug, or unique framing substring).
-        source_title: the ingested source's title.
+        source_title: the ingested source's title or rag_asset id.
     """
     client = user_client()
     scope = resolve_write_scope(client, project_code)

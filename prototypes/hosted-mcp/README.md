@@ -284,11 +284,13 @@ row back through PostgREST to prove it.
 
 Two resolution asymmetries worth knowing:
 
-- **`source_title` → an ACTIVE rag_asset** — exact title first, else a unique
-  case-insensitive substring where the query is a substring of the stored title
-  (the engine's direction, `query ⊆ stored`). Superseded assets are dropped, as
-  in `list_project_sources`. Ambiguity returns the candidate titles and never
-  guesses.
+- **`source_title` → an ACTIVE rag_asset** — from the workstream's own sources
+  plus its company's account-scoped ones (#344). A rag_asset uuid resolves
+  directly; else a case-exact title, then a case-insensitive exact title, then a
+  unique case-insensitive substring (`query ⊆ stored`) — the shared
+  `cp_engine.project_sources.pick_source` ladder. Superseded assets are dropped,
+  as in `list_project_sources`. Ambiguity on a rung returns the candidates (id +
+  title) and never guesses.
 - **`source_key` → an element that MAY BE RETIRED.** This is the one resolver on
   the server that deliberately does not filter to live/unarchived rows, because
   the provenance case (#104) *is* "fold a now-retired raw card into the synthesis
