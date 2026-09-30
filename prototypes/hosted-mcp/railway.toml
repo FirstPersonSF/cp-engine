@@ -53,6 +53,11 @@
 # Promote:   MC2_API_BASE, MC2_TIMEOUT_SECONDS
 # Identity:  RESOURCE_URL — this server's public /mcp URL, published in
 #            the RFC 9728 protected-resource document.
+# Read-only: READ_RESOURCE_URL (optional; default RESOURCE_URL + "/read") —
+#            the /mcp/read endpoint's RFC 9728 identity (#141).
+#            READ_ONLY_OAUTH_CLIENT_IDS (optional, comma-separated; default
+#            empty = no-op) — OAuth client ids refused on /mcp, e.g. the
+#            ChatGPT connection's. See docs/chatgpt-readonly-connector.md.
 #
 # HOST is set to 0.0.0.0 in the Dockerfile; Railway injects PORT.
 #
