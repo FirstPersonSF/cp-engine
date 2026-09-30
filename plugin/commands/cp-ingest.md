@@ -14,12 +14,12 @@ plan-log artifact regardless of outcome.
 - A path to a transcript file (Fathom export, custom export, or anything
   with the standard `MM:SS - Speaker` line format).
 - `--fathom <meeting-id>` — fetch a single meeting from `fathom_meetings`
-  Supabase via `cp fathom-fetch`, then proceed with the rest of the
+  Supabase via `cxp fathom-fetch`, then proceed with the rest of the
   flow against the staged file.
 - `--account <code>` (Phase B) — a meeting tagged to a PARENT workstream
   (an account node such as `ggl-5216-google`, or a program): list candidate
   `account-status` meetings; user picks ONE; standard flow runs against the
-  node's active subtree (`cp list-active-projects --under <code>`). Per-project
+  node's active subtree (`cxp list-active-projects --under <code>`). Per-project
   plan template emphasizes per-child
   inbound/asks/decisions PLUS account-level decisions, which land on the
   node's `cp.md` `## Decisions` with a `(YYYY-MM-DD, source: account:
@@ -43,7 +43,7 @@ If not, stop and tell the user: "Run /cp-ingest from the cp tenant root
 
 ```bash
 # Only run this branch when invoked with --fathom <meeting-id>.
-FETCH_OUT=$(cp fathom-fetch "<MEETING_ID>")
+FETCH_OUT=$(cxp fathom-fetch "<MEETING_ID>")
 TRANSCRIPT_PATH=$(echo "$FETCH_OUT" | jq -r .path)
 echo "Fetched Fathom meeting → $TRANSCRIPT_PATH"
 echo "$FETCH_OUT" | jq '{title, meeting_date, project_tags, duration_minutes}'
@@ -66,7 +66,7 @@ If invoked with a direct file path (no `--fathom`), set
 # (Phase A.2 classifier output); the matching company comes from
 # project_tags overlap, since fathom_meetings doesn't have a company
 # column directly.
-cp fathom-list --type account-status --limit 20
+cxp fathom-list --type account-status --limit 20
 
 # 2. Surface the candidates to the user with a brief summary per
 # meeting (id, title, date, current project_tags). Ask: which one?
@@ -78,11 +78,11 @@ Once user picks an id:
 
 ```bash
 # Same fetch-and-stage flow as --fathom mode.
-FETCH_OUT=$(cp fathom-fetch "<PICKED_ID>")
+FETCH_OUT=$(cxp fathom-fetch "<PICKED_ID>")
 TRANSCRIPT_PATH=$(echo "$FETCH_OUT" | jq -r .path)
 
 # Pre-load the company's active projects for Claude's classifier in step 3.
-ACCOUNT_PROJECTS=$(cp list-active-projects --company "<COMPANY_CODE>")
+ACCOUNT_PROJECTS=$(cxp list-active-projects --company "<COMPANY_CODE>")
 echo "Active projects for <COMPANY_CODE>:"
 echo "$ACCOUNT_PROJECTS" | jq '.[] | {code, name, owner}'
 ```
@@ -96,9 +96,9 @@ that don't belong to any single project.
 
 ```bash
 # Pass the active project codes via --codes so mentioned_codes lights up.
-ACTIVE_PROJECTS=$(cp list-active-projects --scope all)
+ACTIVE_PROJECTS=$(cxp list-active-projects --scope all)
 CODES=$(echo "$ACTIVE_PROJECTS" | jq -r '[.[].code] | join(",")')
-AUDIT=$(cp parse-transcript "$TRANSCRIPT_PATH" --codes "$CODES")
+AUDIT=$(cxp parse-transcript "$TRANSCRIPT_PATH" --codes "$CODES")
 echo "$AUDIT"
 ```
 

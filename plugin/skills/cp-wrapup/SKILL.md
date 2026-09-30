@@ -74,7 +74,7 @@ wipe the rest:
 This is the durable project-state surface; transient weekly material
 belongs in the sprint file, not the Exec Summary.
 
-Field budgets are warn-only and enforced by `cp exec-lint <code>`
+Field budgets are warn-only and enforced by `cxp exec-lint <code>`
 (Status ≤ 100 words; Where it stands ≤ 5 bullets and ≤ 40 words/bullet;
 Next up ≤ 6 bullets; Blockers ≤ 5 bullets).
 
@@ -96,7 +96,7 @@ belongs to its account or program: `cxp promote-uphill <code> --decision
 
 ## 3 — Sweep the touched projects' open commitments
 
-`cp commitments-sweep <code>` per touched project:
+`cxp commitments-sweep <code>` per touched project:
 
 - resolve what the session completed
 - drop what it made moot
@@ -106,11 +106,11 @@ belongs to its account or program: `cxp promote-uphill <code> --decision
 
 For each project touched:
 
-- **`cp spine-lint <code>`** — WARN-ONLY: important-yet-unbound elements,
+- **`cxp spine-lint <code>`** — WARN-ONLY: important-yet-unbound elements,
   Agreements missing their source (close via `add_element_source` on
   `cp-hosted`), scaffold placeholders in `cp.md`. Surface findings; fix
   only what the user confirms.
-- **`cp seal-sweep <code>`** — for each deliverable that shipped a version,
+- **`cxp seal-sweep <code>`** — for each deliverable that shipped a version,
   what fed it plus the `seal_to_deliverable` call. Absorbing a round's
   inputs keeps the spine distilled. Read its output carefully: `/cp-tools`.
 
@@ -156,7 +156,7 @@ Per bootstrap v2:
 - **>2,500 words** on a CP file → duplication audit on next wrap-up
 - **>3,500 words** → archive rotation
 
-`cp render` warns on both thresholds (warn-only — it never blocks a commit
+`cxp render` warns on both thresholds (warn-only — it never blocks a commit
 and never edits). Acting on the warning is yours: the audit and the
 rotation are manual.
 

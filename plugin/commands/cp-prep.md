@@ -20,7 +20,7 @@ ggl-5168 on the focus list?"), not a pre-rendered inventory. The engine
 supplies the raw material; you do the prioritization.
 
 Replaces the older backward-looking agenda generator. As of cp-engine
-v0.15.0 the engine command is `cp prep-planning`. `cp prep-agenda`
+v0.15.0 the engine command is `cxp prep-planning`. `cxp prep-agenda`
 still works but is deprecated. The `--bundle` synthesis flow supersedes
 the earlier `--out`-renders-the-doc flow.
 
@@ -42,14 +42,14 @@ If not, stop and tell the user: "Run /cp-prep from the cp tenant root
 
 ### 2. Determine the current planning week
 
-`cp prep-planning --summary` emits `week_iso` as JSON — use it as the
+`cxp prep-planning --summary` emits `week_iso` as JSON — use it as the
 authoritative source so this matches MC-2's planning-week rule
 (Mon/Tue → this week, Wed-Sun → next week) without any text-parsing.
 Capture the whole JSON object once into `$SUMMARY` so later steps can
 reuse it without re-shelling out.
 
 ```bash
-SUMMARY=$(cp prep-planning --summary 2>/dev/null)
+SUMMARY=$(cxp prep-planning --summary 2>/dev/null)
 WEEK_ISO=$(echo "$SUMMARY" | jq -r .week_iso 2>/dev/null)
 # Fall back to today's ISO week if --summary fails.
 test -n "$WEEK_ISO" && test "$WEEK_ISO" != "null" || WEEK_ISO=$(date -u +%Y-W%V)
@@ -71,7 +71,7 @@ If invoked with no args:
 ```bash
 mkdir -p "sprints/$WEEK_ISO"
 PLANNING_PATH="sprints/$WEEK_ISO/_planning.md"
-BUNDLE=$(cp prep-planning --bundle)
+BUNDLE=$(cxp prep-planning --bundle)
 ```
 
 If invoked with project codes (e.g. `/cp-prep ggl-5168 ibx-5167`):
@@ -81,7 +81,7 @@ mkdir -p "sprints/$WEEK_ISO"
 # Sanitize args into a comma-separated string.
 CODES=$(echo "$@" | tr ' ' ',')
 PLANNING_PATH="sprints/$WEEK_ISO/_planning-${CODES//,/-}.md"
-BUNDLE=$(cp prep-planning --bundle --projects "$CODES")
+BUNDLE=$(cxp prep-planning --bundle --projects "$CODES")
 ```
 
 The bundle contains, per project: code + name, the **full Exec Summary**
@@ -105,7 +105,7 @@ their shared cp:hash. ClickUp is out of the prep path entirely
 heavy lifting; it just hands you the material instead of pre-formatting
 a doc.
 
-(If you prefer, `cp prep-planning --bundle --out <path>` writes the
+(If you prefer, `cxp prep-planning --bundle --out <path>` writes the
 bundle to a scratch file you can Read; capturing into `$BUNDLE` and
 reading it directly is fine too.)
 
@@ -170,7 +170,7 @@ Because you author this in-session, you can defend and revise it live in
 the meeting ("why is ggl-5168 on the focus list — what's the blocker?").
 
 Note: a sync of an existing tenant may still have an `_agenda.md` from
-prior runs of the older `cp prep-agenda` command, or a `_planning.md`
+prior runs of the older `cxp prep-agenda` command, or a `_planning.md`
 from the pre-`--bundle` engine-rendered flow. `_planning.md` is the
 current source of truth; overwrite it.
 
@@ -182,7 +182,7 @@ the summary scoped to those projects so the metrics line up with the
 generated doc.
 
 ```bash
-test -n "$CODES" && SUMMARY=$(cp prep-planning --summary --projects "$CODES")
+test -n "$CODES" && SUMMARY=$(cxp prep-planning --summary --projects "$CODES")
 echo "$SUMMARY" | jq .
 ```
 
@@ -298,7 +298,7 @@ Meeting action items, milestones, and client asks are tracked as MC-2
 **commitments** (dated, direction-typed, ratification-stated), and the
 bundle already carries each project's open commitments in its Open
 Commitments table — there is no separate task-system lookup step
-anymore. The weekly Slack dates loop (`cp dates-loop`) is the surface
+anymore. The weekly Slack dates loop (`cxp dates-loop`) is the surface
 that chases dates between sprint plannings; `/cp-prep` just reads the
 current state.
 
@@ -352,13 +352,13 @@ in the MC-2 schedule or commitments in MC-2).
 
 ## Failure modes
 
-- **Bare `cp prep-planning` exits non-zero.** Intentional (the deprecated
+- **Bare `cxp prep-planning` exits non-zero.** Intentional (the deprecated
   engine-rendered inventory used to be the default and kept overwriting
   `_planning.md` with the pre-synthesis dump). The supported flows are
   `--bundle` and `--summary` — this skill already uses them. The old dump
   remains available behind `--legacy-render` if someone explicitly wants
   it.
-- **`cp prep-planning` fails with config error.** Run `cp init` if
+- **`cxp prep-planning` fails with config error.** Run `cxp init` if
   `.cp-engine.toml` is missing. Otherwise check the error and resolve.
 - **Forward calendar shows `_(no milestones in the MC-2 schedule …)_`.**
   The calendar's sole source is MC-2's estimator schedule (day-granular

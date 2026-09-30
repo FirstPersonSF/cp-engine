@@ -73,7 +73,7 @@ def prep_agenda_cmd(
 
     click.echo(
         "warning: 'cxp prep-agenda' is deprecated and will be removed in a future "
-        "release. Use 'cp prep-planning' instead.",
+        "release. Use 'cxp prep-planning' instead.",
         err=True,
     )
 

@@ -494,7 +494,7 @@ def write_region_cmd(
     logger = logging.getLogger("cp_engine.cli")
     logger.warning(
         "write-region called directly on %s region %r — routine writes "
-        "should go through `cp ingest`. Using this is fine but visible.",
+        "should go through `cxp ingest`. Using this is fine but visible.",
         file, region,
     )
 

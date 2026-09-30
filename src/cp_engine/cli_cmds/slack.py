@@ -231,7 +231,7 @@ def slack_fetch_cmd(project_code: str, week: str, output_format: str) -> None:
     if not row.channel_ids:
         click.echo(
             f"Project {project_code} has no Slack channels in MC-2 "
-            "(use `cp slack-channels` to see the full map).",
+            "(use `cxp slack-channels` to see the full map).",
             err=True,
         )
         sys.exit(2)

@@ -192,7 +192,7 @@ in a filename.
 - **`effort.total_hours` is 0 with `verified: true`.** The project genuinely
   has no allocation rows. Say so — don't infer hours from meeting time.
 - **`open_commitments` looks empty and you doubt it.** Cross-check with
-  `cp commitments-sweep <code>`. (That verb was blind for every engagement
+  `cxp commitments-sweep <code>`. (That verb was blind for every engagement
   until 2026-08-14 — a wrong empty is a known failure shape here.)
 - **The `.docx` lands at the Dropbox project root.** `push_to_dropbox` was
   called with a bare `dest_name`, or `cxp mcp` is serving stale bytecode —

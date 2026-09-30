@@ -131,7 +131,7 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   (`cp-hosted` connector; cp-engine #143 ported it off stdio) — attach an
   INGESTED source (a rag_asset, resolved like `list_project_sources`) to `key`,
   writing the typed link onto every version. The verb that closes an Agreement's
-  "attach as source" loop, and what `cp spine-lint` points you at. Re-attaching
+  "attach as source" loop, and what `cxp spine-lint` points you at. Re-attaching
   is a no-op. Inverse: `remove_element_source(code, key, source_title)` — also
   hosted. Distinct from `add_element_provenance`, which attaches a spine ELEMENT.
 - `create_spine_relation(code, kind, from_key, to_key, note?)` — **hosted-server
@@ -167,7 +167,7 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   `include_absorbed=true` (retrospective mode). Absorbed ≠ archived — one hop
   behind the deliverable, not gone. Idempotent per pair; one journal step on
   the deliverable.
-- `cp seal-sweep <code> [--all] [--within DAYS]` — **CLI, read-only** (#175) —
+- `cxp seal-sweep <code> [--all] [--within DAYS]` — **CLI, read-only** (#175) —
   the question that makes the verb above get used. For each deliverable that
   shipped a version in the last 14 days, lists the elements that fed it —
   `derives_from` (built from) / `informs` (shaped) / `responds_to` (feedback
@@ -184,7 +184,7 @@ MC-2 `spine_substance`, mirrored to `spine/`). MC-2 is authoritative; read it li
   feed edges, so the sweep can propose nothing there. Wire the edge, re-run.
   Absorbing is a compression event; sealing the wrong element silently drops
   live work out of the default read, which is why nothing here is automatic.
-- `cp stub-sweep <code>` — **CLI, read-only** (#178) — empty Source-material
+- `cxp stub-sweep <code>` — **CLI, read-only** (#178) — empty Source-material
   cards and where their provenance belongs. A card whose body is only the
   ingest's boilerplate (`Ingested document: **X** (doc)`) wraps a rag_asset
   already in its own `sources`. But most carry a `serves` binding — the routing

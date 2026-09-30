@@ -87,7 +87,7 @@ def where_cmd(code: str) -> None:
         client = mc2_db.get_client(config)
     except BackendUnavailable as exc:
         click.echo(
-            f"cp where needs MC-2 (no offline mode — it reads the live "
+            f"cxp where needs MC-2 (no offline mode — it reads the live "
             f"estimate + schedule + substance): {exc}",
             err=True,
         )
@@ -100,7 +100,7 @@ def where_cmd(code: str) -> None:
     substance_by_item, mc_project_id = fetch_substance_status(client, code)
     if mc_project_id is None:
         click.echo(
-            f"No spine substance for '{code}'. `cp where` resolves the project "
+            f"No spine substance for '{code}'. `cxp where` resolves the project "
             f"via its substance rows — frame at least one work item "
             f"(cxp spine-frame) first, or check the dir-slug code.",
             err=True,

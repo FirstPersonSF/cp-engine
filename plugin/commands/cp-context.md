@@ -27,10 +27,10 @@ test -f "$(pwd)/_repo.md" || test -f "$(pwd)/cp.md"
 If neither exists, stop and tell the user `/cp-context` must be run
 from inside a cp working directory (`<scope>/<dir-slug>/`).
 
-### 2. Run `cp project-context`
+### 2. Run `cxp project-context`
 
 ```bash
-cp project-context
+cxp project-context
 ```
 
 If the user has a specific lookback window in mind, pass `--days <N>`
@@ -59,7 +59,7 @@ instead of the default framing. The raw output is yours to interpret.
 
 ### 4. Surface gaps
 
-If `cp project-context` reports `Local clone: (not on this machine)`,
+If `cxp project-context` reports `Local clone: (not on this machine)`,
 that means the local-clone path either isn't configured for any user
 in `[local-repos.<user>]` or the configured paths don't exist on this
 machine. Mention it: "I don't have a local clone of this repo on this
@@ -91,4 +91,4 @@ project in the last 7 days." Don't manufacture insight.
 - **No `_repo.md` or `cp.md` in cwd.** They ran from outside a working
   dir. Tell them to `cd` into a project working dir
   (`<tenant>/<scope>/<dir-slug>/`) first; the step-1 check above
-  catches this before invoking `cp project-context`.
+  catches this before invoking `cxp project-context`.
