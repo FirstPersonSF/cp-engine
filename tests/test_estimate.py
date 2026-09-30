@@ -74,15 +74,46 @@ def test_from_rows_tolerates_null_position_on_phases_and_items():
     assert all(i.position == 0 for i in est.phases[0].items)
 
 
-def test_from_rows_sorts_with_mixed_null_and_real_positions():
-    """A NULL position sorts as 0 — ahead of a real position, not dropped."""
+def test_from_rows_sorts_null_phase_position_last():
+    """A NULL position sorts LAST — after every real position, not dropped (#284).
+
+    mc-2 migration 180: a non-NULL position is a deliberate arrangement, a
+    NULL means nobody arranged the row, and mc-2's `sortPhaseItems` puts NULLs
+    after placed rows (`?? MAX_SAFE_INTEGER`). The previous version of this
+    test asserted the opposite (NULL coerced to 0, sorted FIRST) and so
+    enshrined the divergence it was written alongside."""
     project_row = {"id": "est-1", "mc_project_id": "mc-1", "status": "pending", "on_schedule": True, "name": "E"}
     phases = [
-        {"id": "ph-2", "project_id": "est-1", "name": "Second", "overview": None, "position": 5},
-        {"id": "ph-1", "project_id": "est-1", "name": "First", "overview": None, "position": None},
+        {"id": "ph-1", "project_id": "est-1", "name": "Unplaced", "overview": None, "position": None},
+        {"id": "ph-2", "project_id": "est-1", "name": "Placed 5", "overview": None, "position": 5},
+        {"id": "ph-0", "project_id": "est-1", "name": "Placed 0", "overview": None, "position": 0},
     ]
     est = Estimate.from_rows(project_row, phases, [], [])
-    assert [p.name for p in est.phases] == ["First", "Second"]
+    assert [p.name for p in est.phases] == ["Placed 0", "Placed 5", "Unplaced"]
+
+
+def test_from_rows_sorts_null_item_position_last():
+    """Within a phase, a hand-placed item (position 0 included) precedes an
+    unplaced one (NULL), whatever order the rows arrive in (#284). Position 0
+    is the case that matters: `or 0` made NULL tie with it."""
+    project_row = {"id": "est-1", "mc_project_id": "mc-1", "status": "pending", "on_schedule": True, "name": "E"}
+    phases = [{"id": "ph-0", "project_id": "est-1", "name": "P", "overview": None, "position": 0}]
+    activities = [
+        {"id": "a-null", "phase_id": "ph-0", "name": "Unplaced act", "position": None, "library_item_id": None},
+        {"id": "a-1", "phase_id": "ph-0", "name": "Placed 1", "position": 1, "library_item_id": None},
+    ]
+    deliverables = [
+        {"id": "d-null", "phase_id": "ph-0", "name": "Unplaced del", "position": None, "library_item_id": None},
+        {"id": "d-0", "phase_id": "ph-0", "name": "Placed 0", "position": 0, "library_item_id": None},
+    ]
+    est = Estimate.from_rows(project_row, phases, activities, deliverables)
+    names = [i.name for i in est.phases[0].items]
+    assert names[:2] == ["Placed 0", "Placed 1"]
+    # NULLs keep arrival order among themselves (stable sort): activities
+    # are read before deliverables.
+    assert names[2:] == ["Unplaced act", "Unplaced del"]
+    # The dataclass still carries an int, never None.
+    assert all(isinstance(i.position, int) for i in est.phases[0].items)
 
 
 def test_from_rows_missing_required_key_raises_value_error():
@@ -362,9 +393,10 @@ def test_fetch_schedule_coerces_numeric_and_reads_present_work_item():
     assert "done" in q.columns
 
 
-def test_fetch_schedule_none_position_sorts_as_zero():
+def test_fetch_schedule_none_position_sorts_last_within_week():
     # A row with an explicit NULL position (position: None) alongside a normal
-    # row must not crash sorted() with a TypeError — None is treated as 0.
+    # row must not crash sorted() with a TypeError, and within the same
+    # start_week it sorts AFTER the placed row, as mc-2 does (#284).
     tables = {
         "schedule_items": [
             {"id": "s-nullpos", "project_id": "est-1", "phase_id": "ph-1",
@@ -379,8 +411,8 @@ def test_fetch_schedule_none_position_sorts_as_zero():
     }
     client = _FakeClient(tables)
     items = fetch_schedule(client, "est-1")
-    # Sorts without raising; the None-position row orders as position 0 → first.
-    assert [i.id for i in items] == ["s-nullpos", "s-onepos"]
+    # Sorts without raising; the None-position row orders last.
+    assert [i.id for i in items] == ["s-onepos", "s-nullpos"]
 
 
 # ── Pure schedule-bar ↔ work-item joins (Task 2.3) ────────────────────────
