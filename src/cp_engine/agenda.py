@@ -31,6 +31,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
 
+from cp_engine.clock import tenant_now
 from cp_engine.aggregators import (
     ProjectStrips,
     aggregate_project_strips,
@@ -752,8 +753,7 @@ def build_agenda(
         for p in active_sorted
     )
 
-    from datetime import datetime
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    generated_at = tenant_now().strftime("%Y-%m-%d %H:%M")
     return render_agenda_markdown(header, blocks, generated_at=generated_at)
 
 

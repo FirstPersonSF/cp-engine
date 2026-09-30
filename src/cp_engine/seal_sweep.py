@@ -64,6 +64,8 @@ from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Any, Iterable
 
+from cp_engine.clock import tenant_today
+
 # Edge kinds that count as "this element fed that deliverable".
 FEEDS_KINDS = ("derives_from", "informs", "responds_to")
 
@@ -242,7 +244,7 @@ def build_rounds(
     `all_deliverables=True` drops the recency window, for a first pass over a
     project that has never been swept.
     """
-    today = today or date.today()
+    today = today or tenant_today()
     by_id = {r.get("est_item_id"): r for r in rows if r.get("est_item_id")}
     into, absorbed = _feeds_index(relations)
 

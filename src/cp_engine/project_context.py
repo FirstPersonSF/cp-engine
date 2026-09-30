@@ -20,6 +20,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from cp_engine.clock import tenant_now
 from cp_engine.config import load as load_config
 
 
@@ -109,7 +110,7 @@ def project_context(
             f"{working_dir} is not a cp working dir (no _repo.md or cp.md)."
         )
 
-    when = now or datetime.now()
+    when = now or tenant_now()
     cutoff = when - timedelta(days=days)
 
     repo_name, github_url = _parse_repo_md(repo_md) if repo_md.exists() else (

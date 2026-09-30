@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 
 import git_ops
 import pipeline
 import signatures
 from fastapi import APIRouter, HTTPException, Request
 
+from cp_engine.clock import tenant_now
 from cp_engine import mc2_db
 from cp_engine.ingest import IngestPlanError, execute_plan
 from cp_engine.mc2_db import Tables
@@ -408,7 +408,7 @@ async def auto_ingest_account(request: Request) -> dict:
                 exec_result = execute_plan(
                     single_project_plan,
                     tenant_root=tenant_root,
-                    today=datetime.now().date(),
+                    today=tenant_now().date(),
                     supabase=pipeline._create_supabase_client(),
                     meeting_id=meeting_id,
                 )
@@ -467,7 +467,7 @@ async def auto_ingest_account(request: Request) -> dict:
                 summary_exec = execute_plan(
                     summary_plan,
                     tenant_root=tenant_root,
-                    today=datetime.now().date(),
+                    today=tenant_now().date(),
                     supabase=pipeline._create_supabase_client(),
                     meeting_id=meeting_id,
                 )
@@ -685,7 +685,7 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
                 exec_result = execute_plan(
                     single_project_plan,
                     tenant_root=tenant_root,
-                    today=datetime.now().date(),
+                    today=tenant_now().date(),
                     supabase=pipeline._create_supabase_client(),
                     meeting_id=meeting_id,
                 )
@@ -744,7 +744,7 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
                 summary_exec = execute_plan(
                     summary_plan,
                     tenant_root=tenant_root,
-                    today=datetime.now().date(),
+                    today=tenant_now().date(),
                     supabase=pipeline._create_supabase_client(),
                     meeting_id=meeting_id,
                 )

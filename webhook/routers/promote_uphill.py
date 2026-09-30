@@ -35,13 +35,13 @@ from __future__ import annotations
 import json
 import logging
 import re
-from datetime import date
 
 import git_ops
 import observability
 import signatures
 from fastapi import APIRouter, HTTPException, Request
 
+from cp_engine.clock import tenant_today
 from cp_engine import mc2_db
 
 from .sessions import _SPARSE_PATHS as _CAPTURE_SPARSE_PATHS
@@ -168,7 +168,7 @@ async def promote_uphill(request: Request):
             code=project_code,
             item_ref=item_ref,
             note=note,
-            today=date.today(),
+            today=tenant_today(),
             week_iso=week,
         )
 

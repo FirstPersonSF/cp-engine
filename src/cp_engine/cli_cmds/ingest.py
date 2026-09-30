@@ -8,12 +8,13 @@ monkeypatches of `cp_engine.cli.<helper>` keep working.
 from __future__ import annotations
 
 import sys
-from datetime import datetime
 from pathlib import Path
 
 import click
 
 import cp_engine.cli as _cli
+
+from cp_engine.clock import tenant_now, tenant_today
 
 
 @click.command("ingest")
@@ -75,7 +76,7 @@ def ingest_cmd(plan: Path, dry_run: bool, week_iso: str | None) -> None:
 
     plan_data = yaml.safe_load(plan.read_text(encoding="utf-8"))
     config = _cli._load_config_or_die()
-    today = datetime.now().date()
+    today = tenant_now().date()
     resolved_week = week_iso or plan_week_iso(plan_data) or _calendar_week_iso(today)
 
     if dry_run:
@@ -220,7 +221,7 @@ def ingest_from_transcript_cmd(
 
     try:
         exec_result = execute_plan(
-            result.plan, tenant_root=config.root, today=datetime.now().date()
+            result.plan, tenant_root=config.root, today=tenant_now().date()
         )
     except IngestPlanError as exc:
         click.echo(f"Plan execution failed: {exc}", err=True)
@@ -323,7 +324,7 @@ def rerun_failed_ingests_cmd(
     import json as _json
     from collections import Counter
     from datetime import UTC as _UTC
-    from datetime import date, timedelta
+    from datetime import timedelta
     from datetime import date as _date_cls
     from datetime import datetime as _dt
 
@@ -332,7 +333,7 @@ def rerun_failed_ingests_cmd(
     from cp_engine.plan_from_transcript import PlanGenerationError, generate_plan
 
     config = _cli._load_config_or_die()
-    cutoff = since or (date.today() - timedelta(days=14)).isoformat()
+    cutoff = since or (tenant_today() - timedelta(days=14)).isoformat()
     excluded = {e.strip() for e in exclude if e.strip()}
     skipped_meetings = {m.strip() for m in skip_meeting if m.strip()}
 

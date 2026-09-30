@@ -14,6 +14,8 @@ import click
 
 import cp_engine.cli as _cli
 
+from cp_engine.clock import tenant_today
+
 
 @click.command("workshop-synth")
 @click.argument("code")
@@ -53,7 +55,6 @@ def workshop_synth_cmd(
     """Synthesize a strategy workshop: vision-read each worksheet → per-board
     hypotheses → cross-workshop narrative, with the whole transcript as ambient
     context at every stage. Writes reviewable artifacts to the output dir."""
-    from datetime import date
 
     from cp_engine import workshop_synth
     from cp_engine.spine import find_spine_dir
@@ -99,7 +100,7 @@ def workshop_synth_cmd(
 
     # Resolve output dir.
     if out is None:
-        out = project_dir / "workshop-synthesis" / date.today().isoformat()
+        out = project_dir / "workshop-synthesis" / tenant_today().isoformat()
 
     # Up-front feedback: the vision/LLM calls take minutes and cost money, so
     # show what's being processed before going quiet.

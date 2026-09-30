@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 import click
 
 import cp_engine.cli as _cli
-
+from cp_engine.clock import tenant_now
 
 @click.command("slack-channels")
 @click.option(
@@ -481,7 +481,7 @@ def slack_digest_cmd(
             exec_result = execute_plan(
                 result.plan,
                 tenant_root=config.root,
-                today=datetime.now().date(),
+                today=tenant_now().date(),
                 week_iso=week,
             )
         except IngestPlanError as exc:

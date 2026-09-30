@@ -23,10 +23,10 @@ channel projects render as a single paragraph with no channel label.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
 
 import yaml
 
+from cp_engine.clock import tenant_now
 from cp_engine.config import TenantConfig
 from cp_engine.ingest import IngestPlanError, _validate_plan
 from cp_engine.plan_from_transcript import (
@@ -184,7 +184,7 @@ def _build_slack_prompt(
     channels: list[FetchedChannel],
     team: tuple[str, ...] = (),
 ) -> str:
-    today = datetime.now().date().isoformat()
+    today = tenant_now().date().isoformat()
     if team:
         team_block = (
             "These names are INTERNAL TEAM MEMBERS, not project stakeholders:\n"

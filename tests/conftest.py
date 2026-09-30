@@ -27,11 +27,11 @@ def golden_clock(monkeypatch: pytest.MonkeyPatch) -> None:
     - render.ENGINE_VERSION → GOLDEN_ENGINE_VERSION (sprints.py reads
       the same name via `_render.ENGINE_VERSION`, so this covers both,
       and goldens stop churning on every release bump)
-    - sprints.date → FrozenDate (render_sprint_scaffold calls
-      `date.today()` directly)
+    - sprints.tenant_today → FrozenDate.today (render_sprint_scaffold
+      reads the tenant clock directly, #339)
     """
     monkeypatch.setattr(
         "cp_engine.render._today_iso", lambda: FrozenDate.today().isoformat()
     )
     monkeypatch.setattr("cp_engine.render.ENGINE_VERSION", GOLDEN_ENGINE_VERSION)
-    monkeypatch.setattr("cp_engine.sprints.date", FrozenDate)
+    monkeypatch.setattr("cp_engine.sprints.tenant_today", FrozenDate.today)

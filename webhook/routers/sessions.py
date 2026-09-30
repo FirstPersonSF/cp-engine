@@ -45,6 +45,7 @@ import git_ops
 import observability
 import signatures
 from fastapi import APIRouter, HTTPException, Request
+from cp_engine.clock import tenant_now
 
 log = logging.getLogger("cp-engine-webhook")
 
@@ -192,7 +193,7 @@ async def sessions_capture(request: Request):
         if when.tzinfo is not None:
             when = when.astimezone(timezone.utc).replace(tzinfo=None)
     else:
-        when = datetime.now()
+        when = tenant_now()
     when = when.replace(microsecond=0)
 
     with git_ops._cloned_tenant(sparse_paths=list(_SPARSE_PATHS)) as tenant_root:

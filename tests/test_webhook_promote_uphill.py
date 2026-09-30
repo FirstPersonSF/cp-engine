@@ -133,9 +133,9 @@ def client(tenant: Path, mc2, monkeypatch) -> TestClient:
 
     monkeypatch.setattr(git_ops, "_cloned_tenant", _fake_clone)
     monkeypatch.setattr(git_ops, "_ssh_env", dict)
-    # The route defaults the parent's week to date.today(); pin it to the
+    # The route defaults the parent's week to tenant_today(); pin it to the
     # week the fixtures seed, or these tests break every Monday.
-    monkeypatch.setattr(promote_router, "date", _Today)
+    monkeypatch.setattr(promote_router, "tenant_today", _Today.today)
     tc = TestClient(webhook_main.app)
     tc.fake_clone = _fake_clone
     return tc

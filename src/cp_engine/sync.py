@@ -34,6 +34,7 @@ if TYPE_CHECKING:  # pragma: no cover — typing only
 logger = logging.getLogger(__name__)
 
 from cp_engine.claude_settings import install_into_tenant
+from cp_engine.clock import local_date
 from cp_engine.config import TenantConfig
 # One predicate for every estimator reader (#284): prep announces what sync
 # fails on, and two copies would drift the first time PostgREST's error
@@ -366,7 +367,7 @@ def _sync_tenant_inner(
         last_sync=sync_clock,
         allocations=allocations,
         exceptions_count=exceptions_count,
-        today=sync_clock.date(),
+        today=local_date(sync_clock),
     )
     first_pass_regions = tuple(
         r for r in _MASTER_REGIONS
@@ -562,7 +563,7 @@ def _sync_tenant_inner(
         if cp_path.exists():
             existing_qr = cp_path.read_text()
             migrated = _migrate_quick_resume_to_exec_summary(
-                existing_qr, today=sync_clock.date().isoformat()
+                existing_qr, today=local_date(sync_clock).isoformat()
             )
             if migrated != existing_qr:
                 cp_path.write_text(migrated)
@@ -837,7 +838,7 @@ def _sync_tenant_inner(
                     project.code,
                     announce_path,
                     assets,
-                    today=sync_clock.date(),
+                    today=local_date(sync_clock),
                     # A boundary-week source is still in the window when the
                     # new week's (hash-free) file scaffolds — the prior week's
                     # markers count as already-announced.
@@ -886,7 +887,7 @@ def _sync_tenant_inner(
             parsed_files.append(sf)
             link_path = f"../../sprints/{week_iso}/{project.code}.md"
             block = render_current_sprint_block(
-                sf, link_path=link_path, today=sync_clock.date()
+                sf, link_path=link_path, today=local_date(sync_clock)
             )
             existing = cp_path.read_text()
             seeded = _ensure_current_sprint_markers(existing)
@@ -947,7 +948,7 @@ def _sync_tenant_inner(
                 needs_lineage,
             )
             from cp_engine.sprints import _is_active_for_sprint
-            today_for_strips = sync_clock.date()
+            today_for_strips = local_date(sync_clock)
             parsed_tuple = tuple(parsed_files)
             # Live sources per project, for reconciling the inbound strip's
             # new-source announcements (#323, #329). Reuses the manifest
@@ -1050,7 +1051,7 @@ def _sync_tenant_inner(
                 current_sprint_iso=week_iso,
                 prior_sprint_iso=prior_sprint_week_iso(sync_clock),
                 parsed_sprint_files=tuple(parsed_files),
-                today=sync_clock.date(),
+                today=local_date(sync_clock),
             )
             if (
                 _write_if_changed(
@@ -1197,7 +1198,7 @@ def _strip_window_weeks(now: datetime) -> tuple[str, ...]:
     from cp_engine.aggregators import _PROJECT_RECENCY_DAYS
     from cp_engine.sprints import _planning_monday
 
-    today = now.date() if isinstance(now, datetime) else now
+    today = local_date(now)
     cutoff = today - timedelta(days=_PROJECT_RECENCY_DAYS)
     weeks: list[str] = []
     monday = _planning_monday(now) - timedelta(days=7)
@@ -1233,7 +1234,7 @@ def _prior_completed_week_monday(now: datetime) -> date:
     completed week, never the just-started current one. On Tue 2026-06-09
     (weekday 1) → 2026-06-01.
     """
-    today = now.date()
+    today = local_date(now)
     return today - timedelta(days=today.weekday() + 7)
 
 
@@ -1257,7 +1258,7 @@ def _last_week_monday(now: datetime) -> date:
 
     weekday(): Mon=0, Tue=1, ..., Sun=6
     """
-    today = now.date() if isinstance(now, datetime) else now
+    today = local_date(now)
     if today.weekday() == 0:
         anchor = today
     else:

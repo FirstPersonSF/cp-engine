@@ -14,6 +14,7 @@ from pathlib import Path
 import click
 
 import cp_engine.cli as _cli
+from cp_engine.clock import tenant_today
 from cp_engine import mc2_db
 
 
@@ -37,14 +38,13 @@ def spine_cmd(code: str) -> None:
     MC-2 serves the read, appends a 'Source documents' facet listing the
     project's rag_assets and which distilled elements link them.
     """
-    from datetime import date
 
     from cp_engine.spine import render_source_documents, render_sweep
 
     config = _cli._load_config_or_die()
     elements, project_dir = _cli._load_spine_elements(config, code)
 
-    click.echo(render_sweep(code, elements, today=date.today()))
+    click.echo(render_sweep(code, elements, today=tenant_today()))
 
     # Source-documents facet — best-effort, MC-2-only. project_dir is None
     # exactly when MC-2 served the spine read; we reuse that as the signal that
@@ -76,7 +76,6 @@ def where_cmd(code: str) -> None:
     is NO offline fallback (unlike `cp spine`). If MC-2 is unreachable this
     prints a clear error and exits non-zero.
     """
-    from datetime import date
 
     from cp_engine.estimate import fetch_estimate, fetch_schedule
     from cp_engine.sync import BackendUnavailable
@@ -118,7 +117,7 @@ def where_cmd(code: str) -> None:
     schedule = fetch_schedule(client, estimate.id)
 
     click.echo(
-        build_where_report(estimate, schedule, substance_by_item, today=date.today())
+        build_where_report(estimate, schedule, substance_by_item, today=tenant_today())
     )
 
 
@@ -137,7 +136,6 @@ def spine_stats_cmd(type_filter: str | None, within_days: int) -> None:
     rather than crashing on PGRST205. See `cp_engine/spine_stats.py` for what
     reconstructing them would require.
     """
-    from datetime import date
 
     from cp_engine.spine_stats import (
         ELEMENTS_TABLE_RETIRED,
@@ -173,7 +171,7 @@ def spine_stats_cmd(type_filter: str | None, within_days: int) -> None:
 
     inv = type_inventory(client)
     dist = stage_distribution(client)
-    soon = due_soon(client, today=date.today(), within_days=within_days)
+    soon = due_soon(client, today=tenant_today(), within_days=within_days)
 
     # --type narrows the per-type views (inventory + due-soon). The stage
     # distribution stays global by design (a cross-project health readout).
@@ -319,7 +317,6 @@ def sweep_cmd(code: str, model: str) -> None:
     `spine/Synthesis/<today>-sweep.md` (idempotent per day — re-running
     overwrites). An empty spine writes nothing.
     """
-    from datetime import date
 
     import frontmatter
 
@@ -340,7 +337,7 @@ def sweep_cmd(code: str, model: str) -> None:
     def _llm(prompt: str) -> str:
         return _call_claude(prompt, model=model, api_key=None)
 
-    today = date.today()
+    today = tenant_today()
     try:
         result = run_sweep(
             code, elements, today=today, llm=_llm, tenant_root=config.root
@@ -574,7 +571,6 @@ def snapshot_cmd(ref: str, label: str, reason: str | None) -> None:
     `spine_snapshots` table. An MC-2 failure is logged to stderr but never
     fails the command — the on-disk file is canonical.
     """
-    from datetime import date
 
     from cp_engine.spine import SpineDirNotFound, find_spine_dir
     from cp_engine.spine_snapshot import (
@@ -618,7 +614,7 @@ def snapshot_cmd(ref: str, label: str, reason: str | None) -> None:
         reason=reason,
         commit=commit,
         working_copy_dirty=dirty,
-        created=date.today(),
+        created=tenant_today(),
         project_id=project_id,
     )
 
@@ -808,7 +804,6 @@ def seal_sweep_cmd(
     cheap, not automatic. Run per touched project at `wrap up`, alongside
     spine-lint and the commitments sweep.
     """
-    from datetime import date as _date
 
     from cp_engine.seal_sweep import (
         DEFAULT_SHIPPED_WITHIN_DAYS,
@@ -865,7 +860,7 @@ def seal_sweep_cmd(
     rounds = build_rounds(
         rows,
         relations,
-        today=today.date() if today else _date.today(),
+        today=today.date() if today else tenant_today(),
         within_days=within if within is not None else DEFAULT_SHIPPED_WITHIN_DAYS,
         all_deliverables=all_deliverables,
     )
@@ -1057,7 +1052,6 @@ def close_cmd(code: str, force: bool, overwrite: bool) -> None:
     for parked dirs (the inactive/ location is itself evidence of closure);
     a live dir with MC-2 unreachable needs --force.
     """
-    from datetime import date
 
     from cp_engine import close_out as _close
     from cp_engine.spine import SpineDirNotFound
@@ -1070,7 +1064,7 @@ def close_cmd(code: str, force: bool, overwrite: bool) -> None:
         sys.exit(1)
 
     # ── Same-day re-run guard: never clobber a worked checklist ──────
-    out_path = workdir / f"close-out-{code}-{date.today().isoformat()}.md"
+    out_path = workdir / f"close-out-{code}-{tenant_today().isoformat()}.md"
     if out_path.exists() and not overwrite:
         click.echo(
             f"REFUSING: {out_path} already exists — it may hold checked "
@@ -1158,7 +1152,7 @@ def close_cmd(code: str, force: bool, overwrite: bool) -> None:
             commitments=commitments,
             workdir_root_files=root_files,
         ),
-        today=date.today(),
+        today=tenant_today(),
     )
     out_path.write_text(text, encoding="utf-8")
 
@@ -1215,7 +1209,6 @@ def wrap_cmd(
     Summary can quote the report.
     """
     import json
-    from datetime import date
 
     from cp_engine import close_out as _close
     from cp_engine import wrap_report as _wrap
@@ -1400,7 +1393,7 @@ def wrap_cmd(
         "learning_axes": [{"key": k, "prompt": p} for k, p in _wrap.LEARNING_AXES],
         "human_entry_fields": list(_wrap.HUMAN_ENTRY_FIELDS),
         "not_assessable_from_data": _wrap.unanswerable_fields(b),
-        "generated": date.today().isoformat(),
+        "generated": tenant_today().isoformat(),
     }
 
     # Word output: the FACTS half only. The authored prose comes from

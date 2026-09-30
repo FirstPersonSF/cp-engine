@@ -43,6 +43,7 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+from cp_engine.clock import tenant_today
 from cp_engine.authored_element import (
     authored_est_item_id,
     build_create_rows,
@@ -235,7 +236,7 @@ def leave_promotion_step(
         PROMOTIONS_EST_ITEM_ID,
         promotion_step_title(child_code, text),
         status="done",
-        step_date=(today or date.today()).isoformat(),
+        step_date=(today or tenant_today()).isoformat(),
         note=provenance,
     )
 
@@ -445,7 +446,7 @@ def promote_decision(
 
     sprints_root = tenant_root / "sprints"
     parent_stem = resolve_sprint_code(sprints_root, parent_code, supabase=client)
-    today = today or date.today()
+    today = today or tenant_today()
     week = week_iso or _calendar_week_iso(today)
     text = f"{found.text} (promoted from {child['code']})"
     new_hash = _content_hash(parent_stem, "add-decision", text)

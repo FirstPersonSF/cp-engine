@@ -25,6 +25,7 @@ caught and converted to that note rather than propagated.
 
 from __future__ import annotations
 
+from cp_engine.clock import tenant_today
 from cp_engine.mc2_db import (
     Tables,
     _resolve_project_id,
@@ -872,7 +873,6 @@ def pull_spine_element(project_code: str, key: str) -> dict:
             # (initiatives, pre-estimate deals) or a fetch error just means no
             # block — never break the pull.
             try:
-                from datetime import date as _date
 
                 from cp_engine.agreement_projection import (
                     drift_warnings, render_engagement_block, sow_attach_nudge,
@@ -891,7 +891,7 @@ def pull_spine_element(project_code: str, key: str) -> dict:
                     except Exception:  # noqa: BLE001
                         meetings = []
                     drift = drift_warnings(
-                        est, bars, meetings, today=_date.today(),
+                        est, bars, meetings, today=tenant_today(),
                     )
                     result["body"] = (result.get("body") or "") + "\n\n" + \
                         render_engagement_block(est, bars, drift=drift)

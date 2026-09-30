@@ -41,6 +41,7 @@ from typing import Callable, TypedDict
 
 import httpx
 
+from cp_engine.clock import tenant_now, tenant_today
 from cp_engine.agenda import (
     WeeklyDecision,
     filter_active,
@@ -962,7 +963,7 @@ def _parse_sprint_open_asks(
     of the visible mark the snooze contract asks for (#323).
     """
     if today is None:
-        today = date.today()
+        today = tenant_today()
     if not sprint_file_path.is_file():
         return ()
     body = sprint_file_path.read_text(encoding="utf-8")
@@ -1210,7 +1211,7 @@ def _detect_urgent(
     flags from this project.
     """
     if today is None:
-        today = date.today()
+        today = tenant_today()
     flags: list[dict] = []
 
     # Rule 1 — slip_risk
@@ -2432,7 +2433,7 @@ def build_planning_result(
     ) = _load_cross_cutting_decisions(config.root, today=today, projects=projects)
     errors.extend(cross_cutting_errors)
 
-    generated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
+    generated_at = tenant_now().strftime("%Y-%m-%d %H:%M")
     return PlanningResult(
         week_iso=week_iso,
         week_dates=week_dates_label,

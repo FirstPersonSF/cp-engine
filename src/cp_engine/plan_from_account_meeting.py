@@ -29,12 +29,12 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
 import logging
 from pathlib import Path
 
 import yaml
 
+from cp_engine.clock import tenant_now
 from cp_engine.config import TenantConfig
 from cp_engine.ingest import IngestPlanError, _validate_plan
 from cp_engine.plan_from_transcript import (
@@ -129,7 +129,7 @@ def generate_account_plan(
             f"workstream {code!r} has no active children to route to"
         )
 
-    week = week_iso or current_sprint_week_iso(datetime.now())
+    week = week_iso or current_sprint_week_iso(tenant_now())
 
     transcript = _truncate_transcript(
         transcript_text, context=f"account-plan {code}"
@@ -267,7 +267,7 @@ def _build_account_prompt(
     transcript: str,
     team: tuple[str, ...] = (),
 ) -> str:
-    today = datetime.now().date().isoformat()
+    today = tenant_now().date().isoformat()
     if team:
         team_block = (
             "These names are INTERNAL TEAM MEMBERS, not stakeholders.\n"
@@ -663,7 +663,7 @@ def generate_sprint_planning_plan(
             f"scope {scope!r} has no active projects to route to"
         )
 
-    week = week_iso or current_sprint_week_iso(datetime.now())
+    week = week_iso or current_sprint_week_iso(tenant_now())
     scope_label = _SCOPE_LABEL[scope]
 
     transcript = _truncate_transcript(
@@ -729,7 +729,7 @@ def _build_sprint_planning_prompt(
     transcript: str,
     team: tuple[str, ...] = (),
 ) -> str:
-    today = datetime.now().date().isoformat()
+    today = tenant_now().date().isoformat()
     if team:
         team_block = (
             "These names are INTERNAL TEAM MEMBERS, not stakeholders.\n"

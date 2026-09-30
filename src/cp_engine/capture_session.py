@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
+from cp_engine.clock import tenant_now
 from cp_engine.config import enforce_engine_version_for_tenant
 from cp_engine.link_local import find_cp_working_dir_for_remote
 
@@ -133,7 +134,7 @@ def capture_session(
                 f"{cp_tenant} is not a cp tenant clone (no .cp-engine.toml)."
             )
 
-    when = (when or datetime.now()).replace(microsecond=0)
+    when = (when or tenant_now()).replace(microsecond=0)
     working_dir, is_exception, healed = _resolve_destination(source_repo, cp_tenant)
 
     # Enforce the cp tenant's engine pin BEFORE writing anything. A stale
@@ -229,7 +230,7 @@ def capture_session_in_working_dir(
             f"(no .cp-engine.toml in any ancestor)."
         ) from None
 
-    when = (when or datetime.now()).replace(microsecond=0)
+    when = (when or tenant_now()).replace(microsecond=0)
     enforce_engine_version_for_tenant(cp_tenant_root)
 
     # Content-only mode — the working dir IS where the project's

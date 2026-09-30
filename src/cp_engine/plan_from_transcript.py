@@ -22,11 +22,11 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from datetime import datetime
 from pathlib import Path
 
 import yaml
 
+from cp_engine.clock import tenant_now
 from cp_engine.config import TenantConfig
 from cp_engine.ingest import IngestPlanError, _content_hash, _validate_plan
 from cp_engine.sprints import current_sprint_week_iso
@@ -137,7 +137,7 @@ def generate_plan(
     # _validate_plan here would therefore still pass — we skip it only
     # to avoid the redundant pass on a now-trusted plan.
     if action_items:
-        today_iso = today or datetime.now().strftime("%Y-%m-%d")
+        today_iso = today or tenant_now().strftime("%Y-%m-%d")
         ask_items = _action_items_to_ask_items(
             code=project_code, action_items=action_items, today_iso=today_iso
         )
@@ -193,7 +193,7 @@ def _load_project_context(config: TenantConfig, project_code: str) -> str:
                 text = text[:_MAX_PROJECT_CP_CHARS] + "\n[... cp.md truncated ...]\n"
             parts.append(f"### Project cp.md ({cp_md.relative_to(config.root)})\n\n{text}")
 
-    week_iso = current_sprint_week_iso(datetime.now())
+    week_iso = current_sprint_week_iso(tenant_now())
     sprint_file = config.root / "sprints" / week_iso / f"{project_code}.md"
     if sprint_file.is_file():
         text = sprint_file.read_text(encoding="utf-8")
@@ -436,7 +436,7 @@ def _build_prompt(
     # clock, but a REPLAY of an old meeting must pass that meeting's date —
     # otherwise recovered bullets are stamped with the day the recovery ran
     # and two-week-old asks look brand new. See `cxp rerun-failed-ingests`.
-    today = today or datetime.now().date().isoformat()
+    today = today or tenant_now().date().isoformat()
     if team:
         team_block = (
             "These names are INTERNAL TEAM MEMBERS, not project stakeholders.\n"

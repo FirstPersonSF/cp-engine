@@ -13,6 +13,7 @@ from pathlib import Path
 import click
 
 import cp_engine.cli as _cli
+from cp_engine.clock import tenant_now, tenant_today
 from cp_engine.config import ConfigError, load
 
 
@@ -66,7 +67,7 @@ def prep_agenda_cmd(
     future release.
     """
     import json
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
     from cp_engine.agenda import build_agenda, build_agenda_summary, is_sync_stale
     from cp_engine.sync import _default_backend_factory, sync_tenant
@@ -94,7 +95,7 @@ def prep_agenda_cmd(
 
     # Pull last-week allocations the same way master-cp does, so the agenda's
     # per-project "last sprint hours" line matches what's in master-cp.md.
-    today = datetime.now().date()
+    today = tenant_now().date()
     last_monday = today - timedelta(days=today.weekday() + 7)
     try:
         allocations = backend.read_allocations(config, last_monday.isoformat())
@@ -221,7 +222,7 @@ def prep_planning_cmd(
             err=True,
         )
         sys.exit(2)
-    from datetime import datetime, timedelta
+    from datetime import timedelta
 
     from cp_engine.prep_planning import (
         render_planning_bundle_doc,
@@ -237,7 +238,7 @@ def prep_planning_cmd(
 
     # Pull last-week allocations the same way prep-agenda does so the tenant
     # strip stays consistent with the rest of cp's surfacing.
-    today = datetime.now().date()
+    today = tenant_now().date()
     last_monday = today - timedelta(days=today.weekday() + 7)
     tenant_hours: dict[str, int] = {}
     try:
@@ -256,7 +257,7 @@ def prep_planning_cmd(
     # Uses the same Mon/Tue-vs-Wed-Sun planning-week rule as week_iso.
     from cp_engine.sprints import _planning_monday
 
-    planning_monday = _planning_monday(datetime.now())
+    planning_monday = _planning_monday(tenant_now())
     planned_allocations = None
     try:
         planned_allocations = backend.read_allocations(
@@ -380,7 +381,6 @@ def attention_digest_cmd(post_to_slack: bool, recipient: str, today) -> None:
     digest. Default prints to stdout; `--post-to-slack` DMs the digest
     to each Slack user ID listed in `[attention_digest].recipients`.
     """
-    from datetime import date as _date
 
     from cp_engine.attention_digest import (
         _post_digest_to_recipients,
@@ -396,7 +396,7 @@ def attention_digest_cmd(post_to_slack: bool, recipient: str, today) -> None:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(2)
 
-    today_date = today.date() if today else _date.today()
+    today_date = today.date() if today else tenant_today()
     digest = run_digest(config=config, today=today_date)
     # Cross-project routing proposals (#88): pending rows from MC-2's
     # review gate ride the same digest. Best-effort — the digest must
@@ -507,7 +507,6 @@ def commitments_sweep_cmd(
     (#136) is about to expire are marked. Closing stays a deliberate act
     via resolve_commitment; this just makes the decision cheap.
     """
-    from datetime import date as _date
 
     from cp_engine import mc2_db
     from cp_engine.commitments_sweep import render_sweep, sweep
@@ -521,7 +520,7 @@ def commitments_sweep_cmd(
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1)
 
-    today_d = today.date() if today else _date.today()
+    today_d = today.date() if today else tenant_today()
     client = mc2_db.get_client(config)
     try:
         groups = sweep(
@@ -567,7 +566,6 @@ def dates_loop_cmd(post: bool, window_days: int | None, today) -> None:
     ratification write-backs (posted_count bumps, proposed->agreed after
     two unchanged posts, slipped stamps). Dry run by default.
     """
-    from datetime import date as _date
 
     from cp_engine.dates_loop import run_dates_loop
 
@@ -577,7 +575,7 @@ def dates_loop_cmd(post: bool, window_days: int | None, today) -> None:
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1)
 
-    today_d = today.date() if today else _date.today()
+    today_d = today.date() if today else tenant_today()
     result = run_dates_loop(
         config, today=today_d, post=post, window_days=window_days
     )

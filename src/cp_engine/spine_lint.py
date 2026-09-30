@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import re
 
+from cp_engine.clock import tenant_today
+
 # Mirrors ``sprints._TEMPLATE_PLACEHOLDER_RE`` (the `- _<...>_` scaffold
 # bullet), kept in sync by shape like the open-ask regexes are.
 _PLACEHOLDER_RE = re.compile(r"^\s*-\s+_<[^>]+>_\s*$", re.MULTILINE)
@@ -306,9 +308,8 @@ def lint_curation(rows: list[dict], *, today=None,
     label ("program" wins over "job") would hide that. `None` (lookup failed)
     keeps the check, so an unresolved project is linted as before.
     """
-    from datetime import date as _date
 
-    today = today or _date.today()
+    today = today or tenant_today()
     out: list[str] = []
     for row in rows:
         eid = row.get("est_item_id") or "(unknown)"

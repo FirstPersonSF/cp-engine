@@ -27,6 +27,7 @@ from typing import Mapping
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
+from cp_engine.clock import tenant_now, tenant_today
 from cp_engine import __version__ as ENGINE_VERSION
 from cp_engine.config import TenantConfig
 from cp_engine.state import (
@@ -156,7 +157,7 @@ def _env() -> Environment:
 
 
 def _today_iso() -> str:
-    return date.today().isoformat()
+    return tenant_today().isoformat()
 
 
 def _short(d: datetime | None) -> str | None:
@@ -205,7 +206,7 @@ def render_master_cp(
     def is_holding(p: ProjectState) -> bool:
         return p.status == "Holding"
 
-    ref_date = today or date.today()
+    ref_date = today or tenant_today()
 
     def is_closed_recent(p: ProjectState) -> bool:
         if p.last_touched is None:
@@ -339,7 +340,7 @@ def render_master_cp(
         except ValueError:
             current_week_label = None
 
-    today_or_now = today or date.today()
+    today_or_now = today or tenant_today()
     agenda = (
         _compute_agenda_rollup(parsed_sprint_files, today_or_now)
         if parsed_sprint_files
@@ -898,7 +899,7 @@ def render_exceptions_readme(
     The full README body is regenerated each call. The splicer is applied
     by sync.py to preserve any out-of-region hand-edits.
     """
-    when = now or datetime.now()
+    when = now or tenant_now()
     # Exception filenames parse to naive datetimes; an injected clock may be
     # tz-aware. Normalize to naive so the cutoff comparison stays valid.
     if when.tzinfo is not None:
@@ -1002,7 +1003,7 @@ def count_exceptions_in_window(
     """Return the number of exceptions in the last `days` days. Used by
     master-cp.md to surface a small "Exceptions ({N} this week)" line.
     """
-    when = now or datetime.now()
+    when = now or tenant_now()
     if when.tzinfo is not None:
         when = when.replace(tzinfo=None)
     cutoff = when - timedelta(days=days)

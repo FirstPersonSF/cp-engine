@@ -22,6 +22,7 @@ log = logging.getLogger(__name__)
 
 # Snooze is read through the shared contract (cp_engine.snooze) — the digest is
 # one of the ESCALATION surfaces that omit a snoozed item until its date.
+from cp_engine.clock import tenant_today
 from cp_engine.snooze import (  # noqa: E402 — grouped with its only use
     is_snoozed as _is_snoozed,
     strip_snooze_marker as _strip_snooze_marker,
@@ -711,7 +712,7 @@ def _post_digest_to_recipients(
         )
 
     text_fallback = compose_digest(
-        digest, recipient_name=recipient_name, today=date.today()
+        digest, recipient_name=recipient_name, today=tenant_today()
     )
     blocks = _render_digest_blocks(
         digest,

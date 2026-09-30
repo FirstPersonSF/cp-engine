@@ -10,13 +10,13 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime
 
 import git_ops
 import pipeline
 import signatures
 from fastapi import APIRouter, HTTPException, Request, Response
 
+from cp_engine.clock import tenant_now
 from cp_engine import mc2_db
 from cp_engine.ingest import IngestPlanError, execute_plan
 from cp_engine.mc2_db import Tables
@@ -184,7 +184,7 @@ async def clickup_task_closed(request: Request):
             result = execute_plan(
                 plan,
                 tenant_root=config.root,
-                today=datetime.now().date(),
+                today=tenant_now().date(),
                 supabase=pipeline._create_supabase_client(),
                 meeting_id=None,
             )

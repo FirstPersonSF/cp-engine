@@ -15,6 +15,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Mapping
 
+from cp_engine.clock import local_date, tenant_today
 from . import render as _render
 from .render import MarkerMissing, splice_managed_region
 from .state import (
@@ -1122,7 +1123,7 @@ def render_sprint_scaffold(
         ),
         subtree_rollup=subtree_rollup,
         engine_version=_render.ENGINE_VERSION,
-        today=date.today().isoformat(),
+        today=tenant_today().isoformat(),
         week_iso=week_iso,
         week_label=week_label,
         week_dates=week_dates,
@@ -1196,7 +1197,7 @@ def render_current_sprint_block(
     from .aggregators import open_client_asks
 
     if today is None:
-        today = date.today()
+        today = tenant_today()
 
     def _snooze_split(items):
         """Pair each item with its in-force snooze date; live items first."""
@@ -1920,7 +1921,7 @@ def _monday_of(now: datetime) -> date:
     """The Monday of the calendar week containing ``now``. Pure utility —
     does NOT apply the planning-week roll. Use ``_planning_monday`` for
     the sprint-week anchor."""
-    today = now.date() if isinstance(now, datetime) else now
+    today = local_date(now)
     return today - timedelta(days=today.weekday())
 
 
@@ -1929,9 +1930,11 @@ def _planning_monday(now: datetime) -> date:
 
     Mon/Tue → this week's Monday. Wed-Sun → next week's Monday. Mirrors
     MC-2's `planningWeekMonday()` so cp and MC-2 agree on which sprint
-    label refers to the planning target.
+    label refers to the planning target. The weekday is read in the
+    TENANT's timezone (#339): an aware UTC clock at 00:30Z Wednesday is
+    still Tuesday in Pacific, and still this week.
     """
-    today = now.date() if isinstance(now, datetime) else now
+    today = local_date(now)
     weekday = today.weekday()  # 0=Mon, 1=Tue, ..., 6=Sun
     is_late_in_week = weekday >= 2  # Wed or later
     this_monday = today - timedelta(days=weekday)

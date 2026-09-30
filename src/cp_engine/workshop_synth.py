@@ -34,12 +34,12 @@ from __future__ import annotations
 import io
 import os
 import tempfile
-from datetime import date
 from pathlib import Path
 from typing import Callable
 
 from visual_document_capture import FAITHFUL_CAPTURE, capture_page
 
+from cp_engine.clock import tenant_today
 from cp_engine.plan_from_transcript import PlanGenerationError
 
 # Model pinned codebase-wide (do NOT bump).
@@ -312,7 +312,7 @@ def _artifact_stem(pdf_stem: str, label: str) -> str:
 def _header(kind: str, code_or_subject: str) -> str:
     return (
         f"<!-- generated-by: cp workshop-synth ({kind}) -->\n"
-        f"<!-- workshop: {code_or_subject} · {date.today().isoformat()} -->\n\n"
+        f"<!-- workshop: {code_or_subject} · {tenant_today().isoformat()} -->\n\n"
     )
 
 

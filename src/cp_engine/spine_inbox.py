@@ -25,10 +25,10 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, replace
-from datetime import date
 from pathlib import Path
 from typing import Callable
 
+from cp_engine.clock import tenant_today
 from cp_engine.authored_element import (
     authored_est_item_id,
     build_create_rows,
@@ -382,7 +382,7 @@ def promote_card(
     alone under ``_authored/`` would never sync) and raises ValueError without
     one.
     """
-    today_iso = today if isinstance(today, str) else (today or date.today()).isoformat()
+    today_iso = today if isinstance(today, str) else (today or tenant_today()).isoformat()
     spine_root = project_dir / "spine"
 
     # Route by binding key, not by slug: find any existing file bound to this id.

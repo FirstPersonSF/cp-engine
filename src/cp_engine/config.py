@@ -19,11 +19,13 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from packaging.version import InvalidVersion, Version
 
 from cp_engine import __version__ as ENGINE_VERSION
+from cp_engine.clock import DEFAULT_TIMEZONE, set_tenant_timezone
 
 logger = logging.getLogger(__name__)
 
@@ -225,6 +227,9 @@ class TenantConfig:
     # Weekly Slack dates loop. Tenants opt in via `[dates_loop]` in
     # `.cp-engine.toml`; absent block yields defaults (no partners rollup).
     dates_loop: DatesLoopConfig = field(default_factory=DatesLoopConfig)
+    # `[tenant].timezone` (#339): the zone sprint weeks and "today" are
+    # read in. Timestamps stay UTC. `load` hands it to `cp_engine.clock`.
+    timezone: str = DEFAULT_TIMEZONE
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -273,6 +278,8 @@ def load(tenant_root: Path) -> TenantConfig:
         kwargs["team"] = committed["team"]
     kwargs["attention_digest"] = committed["attention_digest"]
     kwargs["dates_loop"] = committed["dates_loop"]
+    kwargs["timezone"] = committed["timezone"]
+    set_tenant_timezone(committed["timezone"])
     return TenantConfig(**kwargs)
 
 
@@ -309,6 +316,19 @@ def _normalize_committed(data: dict, source: Path) -> dict:
     # display is optional — fall back to a title-cased name. Worst case is a
     # slightly ugly heading in master-cp.md, trivially overridable.
     display = tenant.get("display") or name.replace("-", " ").title()
+
+    # Optional timezone (#339). Validated here so a typo fails at load,
+    # not as a silent UTC fallback somewhere downstream.
+    tz_name = tenant.get("timezone", DEFAULT_TIMEZONE)
+    try:
+        if not isinstance(tz_name, str) or not tz_name:
+            raise ZoneInfoNotFoundError(tz_name)
+        ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, ValueError) as exc:
+        raise CommittedConfigInvalid(
+            f"{source}: [tenant].timezone must be an IANA zone name "
+            f"like \"America/Los_Angeles\" (got: {tz_name!r})"
+        ) from exc
 
     engine = data.get("engine")
     if engine is None or not isinstance(engine, dict):
@@ -457,6 +477,7 @@ def _normalize_committed(data: dict, source: Path) -> dict:
     return {
         "name": name,
         "display": display,
+        "timezone": tz_name,
         "engine_version_constraint": engine_version,
         "sync": sync,
         "projects": projects,

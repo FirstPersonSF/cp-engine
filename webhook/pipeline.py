@@ -22,6 +22,7 @@ from commitments_propose import propose_commitments
 from fastapi import HTTPException
 from meeting_artifact import write_meeting_artifacts
 
+from cp_engine.clock import tenant_now
 from cp_engine import mc2_db
 from cp_engine.config import TenantConfig
 from cp_engine.ingest import IngestPlanError, execute_plan
@@ -197,7 +198,7 @@ def _append_retrospective(
             entry_md,
             code=code,
             project=code,
-            today=datetime.now().date(),
+            today=tenant_now().date(),
         )
         return "appended" if wrote else "duplicate"
     except SpineDirNotFound as exc:
@@ -337,7 +338,7 @@ def _ingest_one_project(
         exec_result = execute_plan(
             gen.plan,
             tenant_root=config.root,
-            today=datetime.now().date(),
+            today=tenant_now().date(),
             supabase=_create_supabase_client(),
             meeting_id=meeting_id,
         )

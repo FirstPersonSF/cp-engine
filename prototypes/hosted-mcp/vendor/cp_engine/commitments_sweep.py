@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from typing import Any
 
+from cp_engine.clock import tenant_today
 from cp_engine.dates_loop import _EXPIRE_AFTER_DAYS, _ttl_bucket
 from cp_engine import mc2_db
 from cp_engine.mc2_db import Tables
@@ -98,7 +99,7 @@ def sweep(
 
     ``code=None`` sweeps tenant-wide. Filters compose (AND).
     """
-    today = today or date.today()
+    today = today or tenant_today()
 
     query = (
         client.table(Tables.COMMITMENTS)

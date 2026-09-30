@@ -28,6 +28,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from cp_engine.clock import tenant_today
 from cp_engine.state import INACTIVE_DIR_NAME
 from cp_engine.status import is_active_status
 
@@ -332,7 +333,7 @@ def build_close_checklist(
     inputs: CloseChecklistInputs, today: date | None = None
 ) -> str:
     """Render the close-out checklist markdown (the whole working file)."""
-    today = today or date.today()
+    today = today or tenant_today()
     code = inputs.code
     lines: list[str] = [
         "---",

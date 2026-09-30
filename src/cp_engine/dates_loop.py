@@ -26,6 +26,7 @@ from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
+from cp_engine.clock import tenant_today
 from cp_engine import mc2_db
 from cp_engine.config import TenantConfig
 from cp_engine.mc2_db import Tables
@@ -367,7 +368,7 @@ def run_dates_loop(
     from cp_engine import slack as slack_mod
 
     result = DatesLoopResult()
-    today = today or date.today()
+    today = today or tenant_today()
     window_days = window_days or config.dates_loop.window_days
 
     client = mc2_db.get_client(config)

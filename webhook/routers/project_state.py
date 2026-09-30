@@ -45,7 +45,6 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
 
 import git_ops
 import observability
@@ -53,6 +52,7 @@ import signatures
 from fastapi import APIRouter, HTTPException, Request
 
 from .sessions import _SPARSE_PATHS, _resolve_working_dir
+from cp_engine.clock import tenant_today
 
 log = logging.getLogger("cp-engine-webhook")
 
@@ -172,7 +172,7 @@ async def project_state_capture(request: Request):
             roll_off = None
             if updates_append:
                 appended = append_update_entry(
-                    text, updates_append, today=date.today()
+                    text, updates_append, today=tenant_today()
                 )
                 text, changed_updates = appended
                 # #294: the roll-off is REPORTED, never performed. Nothing
@@ -184,7 +184,7 @@ async def project_state_capture(request: Request):
                     "dates": [d.isoformat() for d in appended.roll_off.dates],
                 }
             merged, changed = merge_exec_summary_fields(
-                text, cleaned, today=date.today()
+                text, cleaned, today=tenant_today()
             )
             if changed_updates and "Updates" not in changed:
                 changed = changed + ("Updates",)
@@ -223,7 +223,7 @@ async def project_state_capture(request: Request):
 
             def reapply() -> bool:
                 latest, changed_again = append_update_entry(
-                    cp_md.read_text(), updates_append, today=date.today()
+                    cp_md.read_text(), updates_append, today=tenant_today()
                 )
                 if changed_again:
                     cp_md.write_text(latest)

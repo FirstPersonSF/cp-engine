@@ -41,6 +41,8 @@ _VERBATIM = (
     # container that fails to start, not a verb that fails to run.
     "mcp_strict.py",
     "project_status.py",
+    # Imported by the three sweeps above (#339): the tenant clock.
+    "clock.py",
 )
 
 

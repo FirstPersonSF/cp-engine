@@ -12,7 +12,7 @@ import asyncio
 import json
 import logging
 import os
-from datetime import UTC, date
+from datetime import UTC
 
 import git_ops
 import observability
@@ -20,6 +20,7 @@ import pipeline
 import signatures
 from fastapi import APIRouter, HTTPException, Request
 
+from cp_engine.clock import tenant_today
 from cp_engine.ingest import execute_plan
 
 log = logging.getLogger("cp-engine-webhook")
@@ -138,7 +139,7 @@ async def _handle_block_action(payload: dict) -> dict:
     if verb in ("snooze-ask-7d", "snooze-risk-7d"):
         from datetime import timedelta
         underlying_verb = verb.replace("-7d", "")
-        extras["until"] = (date.today() + timedelta(days=7)).isoformat()
+        extras["until"] = (tenant_today() + timedelta(days=7)).isoformat()
         verb = underlying_verb
 
     # Dispatch the slow path (clone + plan + push + Slack update) to a
@@ -306,7 +307,7 @@ def _run_plan_for_one_item(
         result = execute_plan(
             plan,
             tenant_root=tenant_root,
-            today=date.today(),
+            today=tenant_today(),
             # The digest embedded the week it was rendered for; route the
             # close/resolve/snooze to THAT week's sprint file. None (old
             # 3-part buttons) → execute_plan defaults to the current week.
@@ -498,7 +499,7 @@ def _run_xproject_action(*, verb: str, target_code: str, cp_hash: str) -> dict:
         result = execute_plan(
             plan,
             tenant_root=tenant_root,
-            today=date.today(),
+            today=tenant_today(),
             supabase=client,
             meeting_id=proposal.get("meeting_id"),
         )
@@ -580,7 +581,7 @@ def _open_snooze_modal(
     'snooze-risk'. Packed into private_metadata so _handle_view_submission
     can route the submission to the right plan.
     """
-    from datetime import date, timedelta
+    from datetime import timedelta
 
     from slack_sdk import WebClient
 
@@ -608,7 +609,7 @@ def _open_snooze_modal(
             "element": {
                 "type": "datepicker",
                 "action_id": "until_date",
-                "initial_date": (date.today() + timedelta(days=7)).isoformat(),
+                "initial_date": (tenant_today() + timedelta(days=7)).isoformat(),
             },
         }],
     })

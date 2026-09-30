@@ -22,6 +22,7 @@ See cp/docs/plans/2026-05-12-tier-1-design.md for full design.
 
 from __future__ import annotations
 
+from cp_engine.clock import tenant_now, tenant_today
 from cp_engine.aggregators import ASSET_MARKER_FMT
 from cp_engine.mc2_db import Tables
 import hashlib
@@ -1403,7 +1404,7 @@ def _write_resolve_risk(
     )
 
     def _flip(m: re.Match) -> str:
-        today_str = (today or date.today()).isoformat()
+        today_str = (today or tenant_today()).isoformat()
         line = m.group("prefix") + "resolved" + m.group("rest")
         line += f" <!-- cp:resolved-at={today_str} -->"
         if closed_by:
@@ -2040,7 +2041,7 @@ def _proposal_already_present(client, cp_ask_hash: str) -> bool:
 
 
 def _today_iso() -> str:
-    return datetime.now().date().isoformat()
+    return tenant_now().date().isoformat()
 
 
 def _calendar_week_iso(today: date) -> str:

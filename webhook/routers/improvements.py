@@ -18,13 +18,13 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import date
 
 from fastapi import APIRouter, HTTPException, Request
 
 import git_ops
 import observability
 import signatures
+from cp_engine.clock import tenant_today
 
 log = logging.getLogger(__name__)
 
@@ -82,7 +82,7 @@ async def append_improvement(request: Request):
 
         try:
             updated, changed = append_entry(
-                path.read_text(), area, observation, today=date.today()
+                path.read_text(), area, observation, today=tenant_today()
             )
         except ImprovementsError as exc:
             # Caller error — correctable by rewording, so 400 rather than 500.
@@ -91,7 +91,7 @@ async def append_improvement(request: Request):
         # The entry is BUILT, not read back off the file's last line: since
         # #293 it lands under `## Open`, mid-file, so the last line is the
         # newest entry under `## Resolved` — someone else's, from weeks ago.
-        entry = format_entry(area, observation, today=date.today())
+        entry = format_entry(area, observation, today=tenant_today())
 
         if not changed:
             # Already logged. Reporting ok with no commit is the honest answer:
@@ -117,7 +117,7 @@ async def append_improvement(request: Request):
             # winner's tip is safe; `changed=False` here means the winner
             # already logged the identical observation.
             latest, changed_again = append_entry(
-                path.read_text(), area, observation, today=date.today()
+                path.read_text(), area, observation, today=tenant_today()
             )
             if changed_again:
                 path.write_text(latest)

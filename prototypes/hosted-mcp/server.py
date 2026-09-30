@@ -113,6 +113,9 @@ _vendor = Path(__file__).resolve().parent / "vendor"
 if _vendor.is_dir() and str(_vendor) not in sys.path:
     sys.path.append(str(_vendor))
 
+# Dates in the tenant's timezone, not the container's UTC clock (#339).
+from cp_engine.clock import tenant_today  # noqa: E402
+
 # [cid:...] is the per-message correlation id (observability.py). "-" outside
 # a message context (startup, the debounced tree refresh).
 logging.basicConfig(
@@ -3808,7 +3811,7 @@ def promote_to_canon(
                 scope["id"],
                 brief_eid,
                 f"Canon: promoted {framing}"[:120],
-                step_date=date.today().isoformat(),
+                step_date=tenant_today().isoformat(),
             )
         except Exception as exc:  # noqa: BLE001 — journaling is non-fatal
             out["step"] = {"error": f"auto-step failed: {type(exc).__name__}: {str(exc)[:300]}"}
@@ -3928,7 +3931,7 @@ def seal_to_deliverable(
                 scope["id"],
                 deliv_eid,
                 f"Sealed {len(sealed)} element(s) on delivery",
-                step_date=date.today().isoformat(),
+                step_date=tenant_today().isoformat(),
             )
         except Exception as exc:  # noqa: BLE001 — journaling is non-fatal
             out["step"] = {"error": f"auto-step failed: {type(exc).__name__}: {str(exc)[:300]}"}
@@ -4570,7 +4573,7 @@ def _journal_rename(
                 scope["id"],
                 est_item_id,
                 f"Renamed: “{prior_framing}” → “{new_clean}”",
-                date.today().isoformat(),
+                tenant_today().isoformat(),
             ),
             "prior_framing": prior_framing,
         }
@@ -7901,7 +7904,7 @@ def extract_exec_summary(cp_md: Path) -> tuple[str | None, str | None]:
 
 def current_sprint_week(today: date | None = None) -> str:
     """Today's ISO sprint-dir name, `YYYY-W##`."""
-    d = today or date.today()
+    d = today or tenant_today()
     iso = d.isocalendar()
     return f"{iso[0]}-W{iso[1]:02d}"
 
@@ -8853,7 +8856,7 @@ def wrap_bundle(project_code: str, tail_days: int = 14) -> dict[str, Any]:
         "learning_axes": [{"key": k, "prompt": p} for k, p in WRAP_LEARNING_AXES],
         "human_entry_fields": list(WRAP_HUMAN_ENTRY_FIELDS),
         "not_assessable_from_data": not_assessable,
-        "generated": date.today().isoformat(),
+        "generated": tenant_today().isoformat(),
     }
     # Hosted-only additions, appended AFTER the CLI's key set so a consumer
     # diffing the two sees additions rather than a changed shape.
@@ -10030,7 +10033,7 @@ def promote_uphill(
                         "position": position,
                         "title": _promotion_step_title(level["code"], row.get("description") or ""),
                         "status": "done",
-                        "step_date": date.today().isoformat(),
+                        "step_date": tenant_today().isoformat(),
                         "note": provenance,
                     }
                 )
