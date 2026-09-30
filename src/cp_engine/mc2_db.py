@@ -222,6 +222,13 @@ RAG_ASSET_LIST_COLUMNS = (
 RAG_ASSET_REFETCH_COLUMNS = (
     "id, title, source_provider, source_file_id, source_path, url"
 )
+# Lineage shape: just enough to walk the supersede chains (`prev_asset_id`
+# for same-title re-ingests, `supersedes_asset_id` across titles) from a
+# retired asset to its live descendant — the inbound strip's renamed-vs-gone
+# check (cp-engine #329). Every status, so no status column needed.
+RAG_ASSET_LINEAGE_COLUMNS = (
+    "id, project_id, title, prev_asset_id, supersedes_asset_id"
+)
 
 # estimator schema shapes.
 # `is_default` was dropped by mc-2 migration 183 (#284) — a filter or select

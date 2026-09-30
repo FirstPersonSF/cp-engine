@@ -460,6 +460,9 @@ inbound-strip===START===
 {% for ib in project_strips.inbound %}
 - [{{ ib.date }} · {{ ib.who }}] {{ ib.text }}
 {%- endfor %}
+{%- if project_strips.inbound_overflow %}
+- _+{{ project_strips.inbound_overflow }} older — see sprint files._
+{%- endif %}
 {%- else %}
 - _No inbound captured in the last 4 weeks._
 {%- endif %}
@@ -470,6 +473,9 @@ recent-decisions-strip===START===
 {% for dec in project_strips.recent_decisions %}
 - [{{ dec.date }}{% if dec.cross_cutting %} · cross-cutting{% endif %}] {{ dec.text }}
 {%- endfor %}
+{%- if project_strips.decisions_overflow %}
+- _+{{ project_strips.decisions_overflow }} older — see sprint files._
+{%- endif %}
 {%- else %}
 - _No structured decisions captured in the last 4 weeks._
 {%- endif %}

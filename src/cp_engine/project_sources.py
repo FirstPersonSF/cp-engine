@@ -64,6 +64,30 @@ def drop_superseded_assets(rows: list[dict]) -> list[dict]:
     return [r for r in rows if r.get("id") not in predecessor_ids]
 
 
+def fetch_asset_lineage(client, project_ids: list[str]) -> dict[str, list[dict]]:
+    """Every `rag_assets` row of ``project_ids`` — ANY status — as
+    ``{project_id: [{id, title, prev_asset_id, supersedes_asset_id}]}``.
+
+    One batched query for the whole sync (cp-engine #329): the inbound strip
+    walks these chains from an announcement's retired asset to a live
+    descendant, to tell a source that was replaced (keep, under its current
+    title) from one that is gone (drop). Scalar columns only — never `meta`,
+    never `*`. The caller treats a raise as "no lineage this run".
+    """
+    if not project_ids:
+        return {}
+    resp = (
+        client.table(Tables.RAG_ASSETS)
+        .select(mc2_db.RAG_ASSET_LINEAGE_COLUMNS)
+        .in_("project_id", list(project_ids))
+        .execute()
+    )
+    out: dict[str, list[dict]] = {}
+    for row in getattr(resp, "data", None) or []:
+        out.setdefault(str(row.get("project_id")), []).append(row)
+    return out
+
+
 def list_sources(
     client,
     project_id: str,

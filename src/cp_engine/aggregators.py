@@ -74,10 +74,7 @@ _HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 def _ask_key(ask: ClientAsk) -> str:
     """Identity for de-duplicating an ask across a file's two regions: its
     cp:hash when it has one, else its visible text."""
-    m = _HASH_RE.search(ask.text)
-    if m:
-        return m.group(1)
-    return " ".join(_HTML_COMMENT_RE.sub(" ", ask.text).split()).lower()
+    return _bullet_key(ask.text)
 
 
 def open_client_asks(sf: SprintFile) -> list[ClientAsk]:
@@ -134,6 +131,11 @@ _ANNOUNCEMENT_RE = re.compile(
     r"^\*\*New source ingested:\*\* (?P<title>.+) \([^()]*\)"
     r"(?: — \*\*\d+ reviewer comments inside\*\*)? — full text via"
 )
+# Announcements written since cp-engine #329 also carry the asset's id, AFTER
+# the cp:hash marker and outside the hashed text — so the id never changed a
+# hash and pre-#329 bullets (title only) stay byte-identical and idempotent.
+ASSET_MARKER_FMT = "<!-- cp:asset={} -->"
+_ASSET_MARKER_RE = re.compile(r"<!-- cp:asset=([\w-]+) -->")
 
 
 def announced_source_title(ib: InboundUpdate) -> str | None:
@@ -153,6 +155,197 @@ def normalize_source_title(title: str | None) -> str:
     return " ".join((title or "").split())
 
 
+def announced_asset_id(ib: InboundUpdate) -> str | None:
+    """The asset id a (post-#329) announcement carries, or ``None``."""
+    m = _ASSET_MARKER_RE.search(ib.text)
+    return m.group(1) if m else None
+
+
+@dataclass(frozen=True)
+class LiveSources:
+    """What the source store says is live for one project, for reconciling
+    the inbound strip's new-source announcements (#323, #329).
+
+    - ``by_id``: live asset id → its CURRENT title. Every field here comes
+      from the manifest pass's ``list_sources`` result — no extra query.
+    - ``lineage``: optional ``rag_assets`` rows of ANY status for the
+      project — ``{id, title, prev_asset_id, supersedes_asset_id}`` — from
+      ``project_sources.fetch_asset_lineage``, the one batched query sync
+      makes only when some announcement matches neither a live id nor a
+      live title. Empty = no lineage this run (not needed, or the query
+      failed): an unresolved announcement then drops, exactly as in #323.
+    """
+
+    by_id: Mapping[str, str]
+    lineage: tuple[dict, ...] = ()
+
+    @classmethod
+    def from_assets(cls, assets: list) -> "LiveSources":
+        return cls(by_id={
+            str(a.get("id")): a.get("title") or ""
+            for a in assets if isinstance(a, dict) and a.get("id")
+        })
+
+    @property
+    def titles(self) -> frozenset[str]:
+        return frozenset(normalize_source_title(t) for t in self.by_id.values())
+
+    def with_lineage(self, rows: list) -> "LiveSources":
+        return LiveSources(by_id=self.by_id, lineage=tuple(
+            r for r in rows if isinstance(r, dict) and r.get("id")
+        ))
+
+
+def _resolves_directly(ib: InboundUpdate, live: LiveSources, titles: frozenset[str]) -> bool:
+    """True when an announcement matches a live asset without lineage: its
+    carried id is live, or its title is. Non-announcements are always True."""
+    title = announced_source_title(ib)
+    if title is None:
+        return True
+    asset_id = announced_asset_id(ib)
+    if asset_id is not None and asset_id in live.by_id:
+        return True
+    return normalize_source_title(title) in titles
+
+
+def needs_lineage(
+    sprint_files: tuple[SprintFile, ...], live: LiveSources
+) -> bool:
+    """Whether any announcement in ``sprint_files`` needs the supersede chain
+    to decide renamed-vs-gone — sync's gate for the one lineage query."""
+    titles = live.titles
+    return any(
+        not _resolves_directly(ib, live, titles)
+        for sf in sprint_files for ib in sf.client_inbound
+    )
+
+
+def _live_descendant(
+    start_ids: list[str], live: LiveSources
+) -> str | None:
+    """Walk ``prev_asset_id`` / ``supersedes_asset_id`` forward from
+    ``start_ids`` to the first LIVE asset, or ``None`` when no live
+    descendant exists (the source is gone). Both pointers live on the NEWER
+    row and name the older one; a visited set bounds a malformed cycle."""
+    children: dict[str, list[str]] = {}
+    for row in live.lineage:
+        for parent in (row.get("prev_asset_id"), row.get("supersedes_asset_id")):
+            if parent:
+                children.setdefault(str(parent), []).append(str(row["id"]))
+    frontier = list(start_ids)
+    seen: set[str] = set()
+    while frontier:
+        aid = frontier.pop(0)
+        if aid in seen:
+            continue
+        seen.add(aid)
+        if aid in live.by_id:
+            return aid
+        frontier.extend(children.get(aid, ()))
+    return None
+
+
+def _reconcile_announcements(
+    inbound: list[InboundUpdate], live: LiveSources
+) -> list[InboundUpdate]:
+    """Keep an announcement while its source is still live, under whatever
+    title it now carries; drop it when no live asset answers it (#323, #329).
+
+    Resolution order, cheapest first:
+      1. the carried asset id is live → keep. A source renamed in place
+         (``rename_project_source`` updates ``rag_assets.title`` on the same
+         row) is found here, and the bullet shows its current title;
+      2. the announced title is live → keep (the #323 rule; also covers a
+         same-title re-ingest, whose ``prev_asset_id`` chain keeps the title);
+      3. the id, or any retired row bearing the title, has a live descendant
+         in ``live.lineage`` → keep under the descendant's title — UNLESS that
+         descendant is announced elsewhere in the strip, which already
+         represents the source (showing both would list one document twice);
+      4. otherwise → gone; drop.
+
+    A pre-#329 bullet carries no id, and ``rename_project_source`` records no
+    title history, so a legacy bullet for a source renamed IN PLACE cannot be
+    told from a deleted one and still drops. It ages out of the 28-day window
+    within four weeks; every announcement written since carries the id.
+    """
+    titles = live.titles
+    # Which live assets the strip already announces — by id or by title.
+    announced_live: set[str] = set()
+    title_to_live = {normalize_source_title(t): aid for aid, t in live.by_id.items()}
+    for ib in inbound:
+        if announced_source_title(ib) is None:
+            continue
+        aid = announced_asset_id(ib)
+        if aid in live.by_id:
+            announced_live.add(aid)
+        hit = title_to_live.get(normalize_source_title(announced_source_title(ib)))
+        if hit:
+            announced_live.add(hit)
+
+    out: list[InboundUpdate] = []
+    for ib in inbound:
+        title = announced_source_title(ib)
+        if title is None:
+            out.append(ib)
+            continue
+        aid = announced_asset_id(ib)
+        if aid is not None and aid in live.by_id:
+            out.append(_retitled(ib, title, live.by_id[aid]))
+            continue
+        if normalize_source_title(title) in titles:
+            out.append(ib)
+            continue
+        if not live.lineage:
+            continue  # no chain to consult: not live = gone (#323)
+        norm = normalize_source_title(title)
+        starts = ([aid] if aid else []) + [
+            str(r["id"]) for r in live.lineage
+            if normalize_source_title(r.get("title")) == norm
+            and str(r["id"]) not in live.by_id
+        ]
+        heir = _live_descendant(starts, live)
+        if heir is None or heir in announced_live:
+            continue
+        announced_live.add(heir)
+        out.append(_retitled(ib, title, live.by_id[heir]))
+    return out
+
+
+def _retitled(ib: InboundUpdate, old: str, current: str) -> InboundUpdate:
+    """``ib`` naming its source's current title when that title changed."""
+    if not current or normalize_source_title(current) == normalize_source_title(old):
+        return ib
+    head = f"**New source ingested:** {old}"
+    text = ib.text.strip()
+    if not text.startswith(head):
+        return ib
+    new_head = f"**New source ingested:** {current} (renamed from “{old}”)"
+    return InboundUpdate(date=ib.date, who=ib.who, text=new_head + text[len(head):])
+
+
+def _bullet_key(text: str) -> str:
+    """Identity for de-duplicating a bullet seen in more than one sprint
+    file: its cp:hash when it has one, else its visible text."""
+    m = _HASH_RE.search(text)
+    if m:
+        return m.group(1)
+    return " ".join(_HTML_COMMENT_RE.sub(" ", text).split()).lower()
+
+
+def _newest_first_unique(rows: list[tuple[date, int, object, str]]) -> list:
+    """Order ``(date, recency, item, key)`` rows newest first and drop repeat
+    keys, keeping the newest copy. ``recency`` breaks same-day ties: a later
+    sprint week, then a later position in its file, is newer."""
+    rows = sorted(rows, key=lambda r: (r[0], r[1]), reverse=True)
+    out, seen = [], set()
+    for _d, _r, item, key in rows:
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
 # ──────────────────────────────────────────────────────────────────────
 #  Project strips (project cp.md regions)
 # ──────────────────────────────────────────────────────────────────────
@@ -167,12 +360,25 @@ class ProjectStrips:
     - ``recent_decisions`` → ``recent-decisions-strip``
     - ``open_asks`` → ``open-asks-strip``
     - ``stakeholders`` → ``stakeholders-strip``
+
+    ``inbound_overflow`` / ``decisions_overflow`` count the in-window items
+    left out by ``PROJECT_STRIP_CAP`` (the renderer names the remainder).
     """
 
     inbound: tuple[InboundUpdate, ...]
     recent_decisions: tuple[DecisionEntry, ...]
     open_asks: tuple[dict, ...]  # {text, asked_date, who, aged_days, snoozed_until}
     stakeholders: tuple[Stakeholder, ...]
+    inbound_overflow: int = 0
+    decisions_overflow: int = 0
+
+
+# The windowed strips (inbound, recent decisions) list at most this many
+# items, newest first (cp-engine #328). Four weeks of a busy engagement is a
+# lot: slt-5196 carried 68 in-window inbound bullets on 2026-09-29, 55 of them
+# from one week of pre-interviews. 25 keeps the strip a skim — the sprint
+# files hold the rest, and the strip says how many it left out.
+PROJECT_STRIP_CAP = 25
 
 
 def aggregate_project_strips(
@@ -180,63 +386,80 @@ def aggregate_project_strips(
     sprint_files: tuple[SprintFile, ...],
     today: date,
     live_source_titles: "frozenset[str] | None" = None,
+    *,
+    window_files: tuple[SprintFile, ...] = (),
+    live_sources: "LiveSources | None" = None,
 ) -> ProjectStrips:
     """Aggregate per-project content from this project's sprint files.
 
-    Only sprint files matching ``project_code`` contribute. Order: newest
-    first by ``week_start`` (so a project's most recent sprint is first).
+    Only sprint files matching ``project_code`` contribute.
 
-    ``live_source_titles`` reconciles the inbound strip against the source
-    store (cp-engine #323). A new-source announcement is an EVENT — "this
-    was ingested" — written once into the sprint file, and the strip kept
-    listing it after the source was archived, superseded or deleted
-    ("COPY ME" template copies, "- Copy" dupes). When the caller passes the
-    project's live titles (normalized with ``normalize_source_title``), an
-    announcement naming a title outside that set is left out of the strip;
-    the sprint file still records it. ``None`` means "the store wasn't
-    reachable this run" and keeps every announcement — an unreachable
-    MC-2 must never blank the strip. Hand-written and meeting inbound are
-    never filtered.
+    ``window_files`` are the project's EARLIER sprint weeks inside the
+    28-day window (cp-engine #328). They feed only the two strips whose
+    heading promises "last 4 weeks" — inbound and recent decisions. Sync
+    used to hand this function the current week alone, so a strip headed
+    "last 4 weeks" showed one week. Open asks and stakeholders are NOT
+    widened: the current week's carry-forward already holds every ask still
+    open (an older week's copy may since have been answered), and the
+    stakeholders heading makes no time promise. Both windowed strips are
+    de-duplicated across weeks by cp:hash (a bullet re-recorded in a later
+    week appears once), ordered newest first by bullet date, and capped at
+    ``PROJECT_STRIP_CAP``.
+
+    ``live_sources`` reconciles the inbound strip against the source store
+    (cp-engine #323, #329; see ``_reconcile_announcements``). A new-source
+    announcement is an EVENT — "this was ingested" — written once into the
+    sprint file, and the strip kept listing it after the source was
+    archived, superseded or deleted ("COPY ME" template copies, "- Copy"
+    dupes). An announcement whose source no longer resolves to a live asset
+    is left out of the strip; the sprint file still records it. ``None``
+    means "the store wasn't reachable this run" and keeps every
+    announcement — an unreachable MC-2 must never blank the strip.
+    Hand-written and meeting inbound are never filtered.
+    ``live_source_titles`` is the #323 spelling: a bare set of normalized
+    live titles, reconciled by title alone.
 
     Open asks come from ``open_client_asks`` (own + carried, de-duplicated),
     and each carries ``snoozed_until`` — the in-force snooze date or
     ``None`` — so the renderer can mark it (see ``cp_engine.snooze``).
     """
+    if live_sources is None and live_source_titles is not None:
+        live_sources = LiveSources(by_id={t: t for t in live_source_titles})
     relevant = sorted(
         (sf for sf in sprint_files if sf.project_code == project_code),
         key=lambda s: s.week_start,
         reverse=True,
     )
+    windowed = sorted(
+        {id(sf): sf for sf in (*relevant, *window_files)
+         if sf.project_code == project_code}.values(),
+        key=lambda s: s.week_start,
+        reverse=True,
+    )
     cutoff = today - timedelta(days=_PROJECT_RECENCY_DAYS)
 
-    inbound: list[InboundUpdate] = []
-    recent_decisions: list[DecisionEntry] = []
+    inbound_rows: list[tuple] = []
+    decision_rows: list[tuple] = []
     open_asks: list[dict] = []
     stakeholder_by_name: dict[str, Stakeholder] = {}
 
-    for sf in relevant:
+    for week_rank, sf in enumerate(reversed(windowed)):
         # Inbound: filter by date within window. Parser may emit empty `date`
         # for malformed brackets; skip those rather than guess.
-        for ib in sf.client_inbound:
+        for pos, ib in enumerate(sf.client_inbound):
             d = _parse_iso_date(ib.date)
             if d is None or d < cutoff:
                 continue
-            if live_source_titles is not None:
-                title = announced_source_title(ib)
-                if (
-                    title is not None
-                    and normalize_source_title(title) not in live_source_titles
-                ):
-                    continue  # source no longer live in MC-2
-            inbound.append(ib)
+            inbound_rows.append((d, (week_rank, pos), ib, _bullet_key(ib.text)))
 
         # Recent decisions (bracket-formatted, v0.8.5+).
-        for dec in sf.decisions:
+        for pos, dec in enumerate(sf.decisions):
             d = _parse_iso_date(dec.date)
             if d is None or d < cutoff:
                 continue
-            recent_decisions.append(dec)
+            decision_rows.append((d, (week_rank, pos), dec, _bullet_key(dec.text)))
 
+    for sf in relevant:
         # Open asks: keep all open asks regardless of age; the rendered
         # surface highlights stale ones via aged_days. Same set the
         # current-sprint strip counts — own AND carried (#323).
@@ -260,11 +483,18 @@ def aggregate_project_strips(
             if sh.name not in stakeholder_by_name:
                 stakeholder_by_name[sh.name] = sh
 
+    inbound = _newest_first_unique(inbound_rows)
+    if live_sources is not None:
+        inbound = _reconcile_announcements(inbound, live_sources)
+    decisions = _newest_first_unique(decision_rows)
+
     return ProjectStrips(
-        inbound=tuple(inbound),
-        recent_decisions=tuple(recent_decisions),
+        inbound=tuple(inbound[:PROJECT_STRIP_CAP]),
+        recent_decisions=tuple(decisions[:PROJECT_STRIP_CAP]),
         open_asks=tuple(open_asks),
         stakeholders=tuple(stakeholder_by_name.values()),
+        inbound_overflow=max(0, len(inbound) - PROJECT_STRIP_CAP),
+        decisions_overflow=max(0, len(decisions) - PROJECT_STRIP_CAP),
     )
 
 
