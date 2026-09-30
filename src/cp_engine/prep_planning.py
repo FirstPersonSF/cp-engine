@@ -57,12 +57,12 @@ from cp_engine.render import (
     slice_exec_summary_region,
 )
 from cp_engine.sprints import (
+    _parse_horizon,
     bullets,
     current_sprint_week_iso,
     parse_bracketed_bullet,
     section_body,
     sprint_week_dates,
-    subsection,
 )
 from cp_engine.state import (
     ProjectState,
@@ -1101,24 +1101,17 @@ def _parse_decisions_due_from_body(body: str) -> tuple[dict, ...]:
     they don't surface as spurious ``decision_due`` urgency flags — the
     placeholder text ``[by W##]`` would otherwise trip
     ``_is_decision_horizon_urgent``'s ISO-week substring match.
+
+    Reads through ``sprints._parse_horizon`` so a settled item (`[done · …]`
+    or struck through) drops out here exactly as it does from carry-forward
+    (#338) — this parser had its own copy of the bracket rule and took the
+    status token for the target date.
     """
-    horizon_section = section_body(body, "Horizon")
-    decisions_sub = subsection(horizon_section, "Decisions due")
-    out: list[dict] = []
-    for first, _cont in bullets(decisions_sub):
-        if _is_template_placeholder(first):
-            continue
-        parsed = parse_bracketed_bullet(first)
-        if parsed:
-            parts, text = parsed
-            target = parts[0] if parts else ""
-            out.append({"text": text, "target_date": target})
-        else:
-            # Plain bullet without bracket meta: treat as urgent (no date).
-            text = first.lstrip("- ").strip()
-            if text:
-                out.append({"text": text, "target_date": ""})
-    return tuple(out)
+    return tuple(
+        {"text": h.text, "target_date": h.target_date or ""}
+        for h in _parse_horizon(body)
+        if h.bucket == "decision" and h.is_open and h.text
+    )
 
 
 def _parse_risks_from_body(body: str) -> tuple[dict, ...]:

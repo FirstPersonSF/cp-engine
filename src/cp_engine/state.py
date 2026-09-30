@@ -730,6 +730,13 @@ class HorizonItem:
     # open item carries forward (#331); see ``sprints._parse_horizon``.
     status: str = "open"
 
+    @property
+    def is_open(self) -> bool:
+        """Not settled. Every consumer that counts or lists horizon items
+        filters on this, so a `[done · …]` or struck item stops counting
+        everywhere at once (#338), not only in carry-forward."""
+        return self.status == "open"
+
 
 @dataclass(frozen=True)
 class Outbound:

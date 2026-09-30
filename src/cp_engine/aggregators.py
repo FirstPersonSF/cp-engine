@@ -672,7 +672,7 @@ def _carry_forward_rollup(
                 )
 
         for h in sf.horizon:
-            if h.bucket != "decision":
+            if h.bucket != "decision" or not h.is_open:
                 continue
             target_week = _parse_week_target(h.target_date)
             # Non-week targets (empty, "TBD", literal dates) → over-surface

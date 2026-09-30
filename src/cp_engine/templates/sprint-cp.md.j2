@@ -90,6 +90,9 @@ PriorSprint: {{ prior_sprint }}
 {%- endfor %}
 {%- for h in carry_forward.horizon %}
 - [{{ h.bucket }}{% if h.target_date %} · {{ h.target_date }}{% endif %}] {{ h.text }}
+{%- if h.note %}{% for line in h.note.splitlines() %}
+  {{ line }}
+{%- endfor %}{% endif %}
 {%- endfor %}
 {%- for line in stale_lines %}
 {{ line }}

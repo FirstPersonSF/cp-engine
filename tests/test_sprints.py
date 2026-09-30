@@ -1944,6 +1944,25 @@ def test_horizon_item_carries_until_marked_done(tmp_path) -> None:
     assert "production budget" not in region
 
 
+def test_carried_horizon_item_keeps_its_continuation_lines(tmp_path) -> None:
+    """#337: a carried horizon item rendered only its first line — the
+    tenant showed 'Forty / thirty-five /' and nothing after it."""
+    w37 = _week(tmp_path, "2026-W37", None)
+    _horizon(
+        w37,
+        "- The 100-line wall is reusable. Forty / thirty-five /\n"
+        "  twenty-five across the three territories —\n"
+        "  a hedge against the copy-volume problem.",
+        "Opportunities",
+    )
+    w38 = _week(tmp_path, "2026-W38", "2026-W37")
+    region = _region(w38)
+    assert (
+        "Forty / thirty-five /\n  twenty-five across the three territories —\n"
+        "  a hedge against the copy-volume problem." in region
+    )
+
+
 def test_old_risks_and_horizon_items_roll_up_like_asks(tmp_path) -> None:
     """The age cap applies to every carried kind, one rollup line per kind. A
     horizon item states no raised date (its bracket is a target), so it ages

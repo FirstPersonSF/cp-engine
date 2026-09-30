@@ -485,7 +485,7 @@ def _extract_decisions_due_for_project(
     sf = max(relevant, key=lambda s: s.week_start)
     out: list[dict] = []
     for h in sf.horizon:
-        if h.bucket == "decision":
+        if h.bucket == "decision" and h.is_open:
             out.append({"text": h.text, "target_date": h.target_date or ""})
     return tuple(out)
 

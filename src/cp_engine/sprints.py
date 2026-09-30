@@ -1284,7 +1284,7 @@ def render_sprint_index(
             " · ".join(f"{p.person_name} {int(p.hours)}h" for p in sf.allocation)
             or "—"
         )
-        decisions = sum(1 for h in sf.horizon if h.bucket == "decision")
+        decisions = sum(1 for h in sf.horizon if h.bucket == "decision" and h.is_open)
         # Same definition as the cp.md strip — carry-forward risks included,
         # so the two surfaces can't disagree about what "active" means.
         active_risks = len(_active_risks(sf))
