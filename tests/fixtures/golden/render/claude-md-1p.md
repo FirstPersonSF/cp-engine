@@ -341,11 +341,10 @@ a command that does not exist.
 The ritual is still available; it is a sequence of verbs rather than one skill:
 
 1. **`capture_project_state`** — the Exec Summary. **Pass every field you mean
-   to be current**, not just `status`: `objective`, `where_it_stands`,
-   `next_up`, `blockers`. Omitted fields are left exactly as they were, which
-   is deliberate — but a Status-only refresh advances the `· updated` stamp
-   while the rest goes stale, and the staleness check reads that stamp. That is
-   worse than not refreshing at all.
+   to be current**, not just `status`: omitted fields keep their text, but the
+   `· updated` stamp still advances — a stale summary made to look fresh. On
+   a summary stamped 14+ days ago a partial call is refused; pass the omitted
+   fields, or list those you read and found true in `still_current`.
 2. **`spine_lint`** — important-yet-unbound elements, dead-end activities,
    stale canon, archived-but-referenced documents, Exec Summary field budgets.
 3. **`commitments_sweep`** — what is owed, both directions. An UNDATED

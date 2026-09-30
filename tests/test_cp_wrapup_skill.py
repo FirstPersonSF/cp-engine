@@ -125,6 +125,7 @@ def test_every_hosted_verb_it_names_is_registered(hosted_half: str, hosted_tools
     not_verbs = {
         "where_it_stands", "next_up", "project_code", "cp_engine",
         "weekly_cp", "all_deliverables", "undated_only",
+        "updates_append", "still_current", "stale_fields", "roll_off",
     }
     unknown = {c for c in cited - not_verbs if c not in hosted_tools}
     assert not unknown, (
@@ -150,14 +151,14 @@ def test_the_bulleted_fields_it_warns_about_are_the_real_ones(hosted_half: str) 
         assert field in hosted_half, f"hosted path omits {field!r}"
 
 
-def test_it_does_not_promise_an_updates_field_that_does_not_exist(hosted_half: str) -> None:
-    """THE GAP, ASSERTED. The CLI path appends one dated Update per session;
-    the hosted verb takes no `updates` argument, so that history does not
-    advance from a hosted session.
+def test_the_updates_field_it_describes_is_the_real_one(hosted_half: str) -> None:
+    """`Updates` is writable from hosted via `updates_append` (#281).
 
-    The skill must SAY so rather than carry a step nobody can run. If the verb
-    ever grows the parameter, this fails and the prose gets rewritten — which
-    is the point.
+    The first version of this test asserted the verb had no parameter named
+    `updates` — and kept passing after #281 shipped `updates_append`, while the
+    skill went on telling hosted sessions the Updates log could not advance.
+    It enshrined the gap it was written to retire. So bind the prose to the
+    parameter the verb actually has, and forbid the stale caveat.
     """
     tree = ast.parse(_SERVER.read_text(encoding="utf-8"))
     fn = next(
@@ -165,11 +166,27 @@ def test_it_does_not_promise_an_updates_field_that_does_not_exist(hosted_half: s
         if isinstance(n, ast.FunctionDef) and n.name == "capture_project_state"
     )
     params = {a.arg for a in fn.args.args}
-    assert "updates" not in params, (
-        "capture_project_state now takes `updates` — the hosted path's "
-        "'no hosted equivalent' caveat is stale and must be rewritten"
+    assert "updates_append" in params, (
+        "capture_project_state lost `updates_append` — rewrite h1's Updates prose"
     )
-    assert "no hosted equivalent" in hosted_half
+    assert "`updates_append`" in hosted_half
+    assert "no hosted equivalent" not in hosted_half, (
+        "the hosted path still claims Updates cannot advance"
+    )
+
+
+def test_it_names_the_stale_summary_guard_and_its_escape(hosted_half: str) -> None:
+    """A partial refresh of a 14+-day-old summary is refused (#280). A hosted
+    session that does not know `still_current` exists can only answer the
+    refusal by rewriting every field — or by giving up — so the escape must be
+    in the prose, and must be the parameter the verb really takes."""
+    tree = ast.parse(_SERVER.read_text(encoding="utf-8"))
+    fn = next(
+        n for n in tree.body
+        if isinstance(n, ast.FunctionDef) and n.name == "capture_project_state"
+    )
+    assert "still_current" in {a.arg for a in fn.args.args}
+    assert "`still_current`" in hosted_half and "14" in hosted_half
 
 
 def test_the_hosted_path_never_tells_the_model_to_shell_out(hosted_half: str) -> None:
@@ -201,8 +218,13 @@ def test_it_states_what_the_hosted_path_cannot_do(hosted_half: str) -> None:
     # above (h5 explains rotation; h1 explains commits), so searching the whole
     # hosted half passes even with the section emptied out.
     section = hosted_half[hosted_half.index(marker):]
-    for owed in ("rotation", "cross-cutting decisions sweep", "improvements.md", "Commit and push"):
+    for owed in ("rotation", "cross-cutting decisions sweep", "Commit and push"):
         assert owed in section, f"cannot-do list omits {owed}"
+    # The improvements sweep USED to be on this list; `log_improvement` (#282)
+    # made it runnable. Listing it as impossible would hand the user a step the
+    # session could have done — so it must be named, with its verb, as doable.
+    assert "`log_improvement" in section
+    assert "- **The improvements sweep" not in section
 
 
 def test_commit_step_resolves_by_region_and_runs_merge_check(skill: str) -> None:

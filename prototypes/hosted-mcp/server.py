@@ -679,7 +679,9 @@ mcp_server = MCPServer(
         "every field you mean to be current, not just `status`: omitted fields "
         "are left as they were, so a status-only refresh advances the "
         "`\u00b7 updated` stamp while the rest goes stale, and the staleness "
-        "check reads that stamp.\n\n"
+        "check reads that stamp. On a summary already stamped 14+ days ago "
+        "a partial call is refused, naming the omitted fields — pass them, or "
+        "name the ones you read and found still true in `still_current`.\n\n"
         "EVERY CAPTURE NAMES ITS LEVEL. A write lands on the workstream you "
         "name in `project_code` — default to the deepest one in focus — and "
         "the response echoes `level: {code, label, parent}`. Nothing infers "
@@ -9717,6 +9719,89 @@ def _is_placeholder(value: Any) -> bool:
     return norm in _PLACEHOLDER_VALUES or norm.startswith("lorem ipsum")
 
 
+# The five fields `capture_project_state` replaces, by parameter name. `Updates`
+# appends, so it is never "left stale" by omission.
+_EXEC_GUARDED_FIELDS: tuple[str, ...] = (
+    "status", "objective", "where_it_stands", "next_up", "blockers",
+)
+
+# Mirrors `prep_planning._EXEC_SUMMARY_STALE_DAYS` and its stamp regex (this
+# server does not import prep_planning): a summary the planning bundle already
+# calls STALE is the one a partial refresh must not quietly re-stamp.
+_EXEC_STALE_GUARD_DAYS = 14
+_EXEC_STAMP_RE = re.compile(
+    r"^##\s+Exec Summary\s*·\s*updated\s+(?P<date>\d{4}-\d{2}-\d{2})",
+    re.MULTILINE,
+)
+
+
+def _current_exec_stamp(project_code: str) -> date | None:
+    """The `· updated` date on this project's Exec Summary in the tree clone,
+    or None when it cannot be read (no tree, not a member, no dir, unstamped).
+    None means the staleness guard steps aside — it is a guard on a known-old
+    summary, never a gate that a tree outage could turn into a write outage."""
+    try:
+        usable, _ = tree_available()
+        if not usable:
+            return None
+        allowed, _ = caller_is_team_member()
+        if not allowed:
+            return None
+        project_dir = find_project_dir(tree_root(), project_code)
+        if project_dir is None:
+            return None
+        text, _ = extract_exec_summary(project_dir / "cp.md")
+        m = _EXEC_STAMP_RE.search(text or "")
+        return date.fromisoformat(m.group("date")) if m else None
+    except Exception:  # noqa: BLE001 — fail open; the guard is advisory-strength
+        return None
+
+
+def _stale_omitted_exec_fields(
+    project_code: str, passed: set[str], still_current: list[str] | None,
+) -> dict[str, Any] | None:
+    """The refusal for a partial refresh of an already-stale summary, or None.
+
+    A field nobody passed has not changed since the current stamp, so its age
+    is AT LEAST the stamp's age. When that is past the planning threshold, the
+    write would advance the stamp over content known to be that old (#280).
+    """
+    confirmed = set(still_current or [])
+    unknown = sorted(confirmed - set(_EXEC_GUARDED_FIELDS))
+    if unknown:
+        return {
+            "ok": False,
+            "error": (
+                f"`still_current` names {unknown}, which are not Exec Summary "
+                f"fields — use {list(_EXEC_GUARDED_FIELDS)}"
+            ),
+        }
+    omitted = [f for f in _EXEC_GUARDED_FIELDS if f not in passed and f not in confirmed]
+    if not omitted:
+        return None
+    stamp = _current_exec_stamp(project_code)
+    if stamp is None:
+        return None
+    age = (tenant_today() - stamp).days
+    if age < _EXEC_STALE_GUARD_DAYS:
+        return None
+    return {
+        "ok": False,
+        "stale_fields": omitted,
+        "stamp": stamp.isoformat(),
+        "stamp_age_days": age,
+        "error": (
+            f"refused before writing: this Exec Summary was last updated "
+            f"{stamp.isoformat()} ({age} days ago), and you omitted "
+            f"{', '.join(omitted)}. Those fields are at least that old, and this "
+            "write would move the `· updated` stamp over them — the summary "
+            "would read as fresh while they stay stale. Read `get_project_state`, "
+            "then pass each field's current text, or list the ones that still "
+            "hold in `still_current`."
+        ),
+    }
+
+
 def _placeholder_exec_field(**fields: Any) -> dict[str, Any] | None:
     """The refusal for the first placeholder among `capture_project_state`'s
     fields, naming it (a bullet by index), or None when every value is real.
@@ -9749,6 +9834,7 @@ def capture_project_state(
     next_up: list[str] | None = None,
     blockers: list[str] | None = None,
     updates_append: str | None = None,
+    still_current: list[str] | None = None,
 ) -> dict[str, Any]:
     """Update this project's Exec Summary — the durable answer to "where does this stand".
 
@@ -9808,6 +9894,23 @@ def capture_project_state(
     first bullet onto the label; it is now split, but a list is the shape that
     says what you mean.
 
+        still_current: names of fields you OMITTED on purpose because you
+                  read them and they are still true (e.g. `["objective"]`).
+                  Only consulted by the staleness guard below.
+
+    STALE-SUMMARY GUARD (#280). When the summary's `· updated` stamp is already
+    older than 14 days — the threshold sprint planning flags as STALE — a call
+    that omits any of `status`, `objective`, `where_it_stands`, `next_up`,
+    `blockers` is REFUSED before anything is sent, naming the omitted fields.
+    Nothing has touched them since that stamp, so they are at least that old,
+    and this write would advance the stamp over them: the summary would look
+    fresh to every staleness check while most of it is weeks out of date (the
+    ggl-5136 Status-only refresh that motivated this). Either pass the field's
+    current text, or list it in `still_current` to confirm you read it and it
+    holds. A summary stamped inside 14 days is never refused, so the common
+    one-field edit on a live summary is unaffected. The guard reads the tree
+    clone; when the tree is unreachable it steps aside rather than block.
+
     Returns `{ok, backend: {changed: [...], commit, cp_md_path}}`, where
     `changed` names the fields that actually moved — empty when your content
     already matched. Never raises.
@@ -9854,6 +9957,17 @@ def capture_project_state(
                 "— an empty call would report success while writing nothing"
             ),
         }
+
+    passed = {
+        name for name, value in (
+            ("status", status), ("objective", objective),
+            ("where_it_stands", where_it_stands), ("next_up", next_up),
+            ("blockers", blockers),
+        ) if value is not None
+    }
+    stale = _stale_omitted_exec_fields(project_code, passed, still_current)
+    if stale is not None:
+        return stale
 
     result = call_mc2_capture_project_state(project_code, fields, entry)
     audit(

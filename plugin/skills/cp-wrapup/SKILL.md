@@ -217,8 +217,8 @@ existing bullets — a partial rewrite silently drops the ones you did not
 resend, which is why you read before you write.
 
 **Pass every field you mean to be current, not just `status`.** The verb takes
-`status`, `objective`, `where_it_stands`, `next_up` and `blockers` — five of the
-six; `Updates` is the exception, below. Omitted fields
+`status`, `objective`, `where_it_stands`, `next_up` and `blockers` — the five
+it replaces — plus `updates_append` for the sixth, below. Omitted fields
 are left exactly as they are — deliberate, because most real rewrites touch one
 field and a whole-region write would make the common case the destructive one.
 But the failure it enables is the one worth naming: a Status-only refresh
@@ -230,6 +230,13 @@ refreshing at all**, because it converts "obviously old" into "looks current."
 > sat above a `Next up` listing three July deadlines and naming a collaborator
 > the Status line said had left.
 
+**On a summary already stamped 14+ days ago, a partial refresh is refused.**
+The verb names the fields you omitted (`stale_fields`) and writes nothing:
+nobody has touched them since that stamp, so they are at least that old.
+Pass each one's current text, or — having read it and found it still true —
+name it in `still_current`. Never list a field there you did not read; that
+is the Status-only refresh again with an extra step.
+
 Re-sending a field's existing value is a no-op — it neither commits nor moves
 the stamp — so a retry after a timeout is safe.
 
@@ -237,11 +244,12 @@ the stamp — so a retry after a timeout is safe.
 and lands under your own identity; there is no separate commit step on this
 path.
 
-**One field has no hosted equivalent: `Updates`.** The CLI path appends one
-dated Update per session and rolls off entries older than ~4 weeks; the verb
-takes no `updates` argument, so that history does not advance from a hosted
-session. Put the session's delta in `capture_session` (h6) instead, and say so
-if the user is relying on the Updates log.
+**`Updates` appends rather than replaces: `updates_append`.** Pass ONE entry —
+the session's delta — and it lands dated (server-side, so it cannot be
+backdated) at the top of the log; the old entries stay. The CLI path also
+rolls off entries older than ~4 weeks. The hosted path never performs that trim —
+the engine only reports entries past age (`roll_off`, under `backend`) — say so to the
+user when it appears; the trim needs a local session.
 
 ### h2 — Spine checks
 
@@ -299,7 +307,8 @@ why, what you left open. Not a diff — the commits carry that. **You cannot set
 the author**; the name on the file is derived from your token, which is the
 whole of its provenance value.
 
-This is also where the session's delta goes, given h1's `Updates` gap.
+The session record and the h1 `updates_append` entry are different reads: the
+entry is one line in the project's history, the record is the whole session.
 
 ### What the hosted path cannot do
 
@@ -308,12 +317,21 @@ This is also where the session's delta goes, given h1's `Updates` gap.
   so there is no tree to push.
 - **Word-count rotation** (h5).
 - **The account / program `cp.md` cross-cutting decisions sweep** (step 2 of
-  the CLI path) — it is a hand-edit of tenant files with no verb behind it.
-  (`promote_uphill` for a COMMITMENT is served here; a decision is not.)
-- **The improvements sweep** (step 8) — `improvements.md` is a tenant file.
+  the CLI path) — marking an entry `[resolved: …]` is a hand-edit of tenant
+  files, and deliberately has no verb (#282): the entries run to thousands of
+  characters with nested markers, so resolving one is a judgement a human
+  makes by reading it. You CAN read them (`read_project_file`) and you CAN
+  move a job's decision up a level (`promote_uphill`, `item_kind='decision'`);
+  you cannot mark one resolved.
+- **Updates roll-off** (h1) — reported, not performed.
 
-For the last two: surface what you would have written and hand it to the user,
-rather than skipping it silently. A step nobody knows was skipped is the same
+For the decisions sweep: surface the entries you believe are done or expired,
+with the outcome you would have written, and hand them to the user rather
+than skipping it silently.
+
+**The improvements sweep (CLI step 8) IS runnable here:** `log_improvement
+<area> <observation>` appends one entry, and a duplicate is a no-op. Sweep
+the session for friction nobody logged and log it. A step nobody knows was skipped is the same
 failure as a stamp nobody knows is stale.
 
 **None of this is a permission problem to route around.** The server holds the
