@@ -140,14 +140,19 @@ def _env() -> Environment:
     Uses importlib.resources so it works in both editable installs (`pip
     install -e .`) and in installed wheels.
     """
+    from cp_engine.snooze import strip_snooze_marker
+
     templates_path = resources.files("cp_engine") / "templates"
-    return Environment(
+    env = Environment(
         loader=FileSystemLoader(str(templates_path)),
         autoescape=select_autoescape(disabled_extensions=("md", "j2")),
         keep_trailing_newline=True,
         trim_blocks=False,
         lstrip_blocks=False,
     )
+    # project-cp.md.j2's open-asks-strip mirrors _PROJECT_STRIPS_TEMPLATE.
+    env.filters["unsnooze"] = strip_snooze_marker
+    return env
 
 
 def _today_iso() -> str:
@@ -424,8 +429,15 @@ def _render_strip_template(template_str: str, **context) -> dict[str, str]:
     filename-based selection, and the default would HTML-escape apostrophes
     and ampersands in the output — wrong for markdown).
     """
-    from jinja2 import Template
-    template = Template(template_str, autoescape=False, keep_trailing_newline=True)
+    from jinja2 import Environment
+
+    from cp_engine.snooze import strip_snooze_marker
+
+    env = Environment(autoescape=False, keep_trailing_newline=True)
+    # A snoozed item is re-rendered with its marker lifted into a visible
+    # `(snoozed until …)` label — the summary-strip rule in cp_engine.snooze.
+    env.filters["unsnooze"] = strip_snooze_marker
+    template = env.from_string(template_str)
     rendered = template.render(**context)
     bodies: dict[str, str] = {}
     for chunk in rendered.split("===END==="):
@@ -465,8 +477,11 @@ recent-decisions-strip===START===
 open-asks-strip===START===
 ## Open client asks (auto-aggregated from sprint files)
 {% if project_strips and project_strips.open_asks %}
-{% for ask in project_strips.open_asks %}
+{% for ask in project_strips.open_asks if not ask.snoozed_until %}
 - [{{ ask.asked_date }}{% if ask.who %} · {{ ask.who }}{% endif %}{% if ask.aged_days is not none and ask.aged_days > 7 %} · **{{ ask.aged_days }}d stale**{% endif %}] {{ ask.text }}
+{%- endfor %}
+{%- for ask in project_strips.open_asks if ask.snoozed_until %}
+- [{{ ask.asked_date }}{% if ask.who %} · {{ ask.who }}{% endif %}] {{ ask.text | unsnooze }} (snoozed until {{ ask.snoozed_until.isoformat() }})
 {%- endfor %}
 {%- else %}
 - _No open asks._

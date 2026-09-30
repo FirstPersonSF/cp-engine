@@ -49,6 +49,7 @@ from cp_engine.agenda import (
     to_datetime,
 )
 from cp_engine.config import TenantConfig
+from cp_engine.snooze import active_snooze, is_snoozed, strip_snooze_marker
 from cp_engine.render import (
     exec_summary_is_authored,
     exec_summary_placeholder_fields as _placeholder_fields,
@@ -109,6 +110,10 @@ class SprintAsk(TypedDict):
     asked: str  # ISO date
     by: str  # ISO date, "" if no due-date
     hash: str
+    # In-force snooze date (ISO) or "" — see cp_engine.snooze. The planning
+    # doc's urgent flags OMIT a snoozed ask; its Open commitments table
+    # MARKS it. The marker itself is lifted out of `text`.
+    snoozed_until: str
 
 
 class CapacityBindingOwner(TypedDict, total=False):
@@ -942,13 +947,22 @@ _SPRINT_OPEN_ASK_RE = re.compile(
 )
 
 
-def _parse_sprint_open_asks(sprint_file_path: Path) -> tuple[SprintAsk, ...]:
+def _parse_sprint_open_asks(
+    sprint_file_path: Path, today: date | None = None
+) -> tuple[SprintAsk, ...]:
     """Read a project's current sprint file and return its open asks.
 
     Returns () when the file doesn't exist. The bridging period (before all
     asks live in ClickUp) puts these into the Open Commitments table flagged
     "(sprint file)" so reviewers know to promote them.
+
+    ``snoozed_until`` is filled when a snooze marker is in force on ``today``
+    (default: the real today), and the marker is removed from ``text`` —
+    a table cell that carried it would render an invisible comment instead
+    of the visible mark the snooze contract asks for (#323).
     """
+    if today is None:
+        today = date.today()
     if not sprint_file_path.is_file():
         return ()
     body = sprint_file_path.read_text(encoding="utf-8")
@@ -958,13 +972,15 @@ def _parse_sprint_open_asks(sprint_file_path: Path) -> tuple[SprintAsk, ...]:
         # Strip the trailing hash marker should it leak past the non-greedy
         # capture (defensive — the regex's lookahead handles the common case).
         text = re.sub(r"\s*<!--\s*cp:hash=[0-9a-f]+\s*-->\s*$", "", text).strip()
+        until = active_snooze(text, today)
         out.append(
             SprintAsk(
-                text=text,
+                text=strip_snooze_marker(text),
                 who=m.group("who").strip(),
                 asked=m.group("asked"),
                 by=m.group("by") or "",
                 hash=m.group("hash"),
+                snoozed_until=until.isoformat() if until else "",
             )
         )
     return tuple(out)
@@ -1039,6 +1055,8 @@ def _check_dep_stale(
         return None
     needle = dep.lower()
     for ask in sprint_asks:
+        if ask.get("snoozed_until"):
+            continue  # an escalation — omitted while snoozed (cp_engine.snooze)
         text = (ask.get("text") or "").lower()
         if needle not in text:
             continue
@@ -1244,8 +1262,11 @@ def _detect_urgent(
                     }
                 )
 
-    # Rule 3 — past_due_ask
+    # Rule 3 — past_due_ask. Rules 3 and 4 are escalations, so a snoozed ask
+    # or risk is omitted until its date (the contract in cp_engine.snooze).
     for ask in sprint_asks:
+        if ask.get("snoozed_until"):
+            continue
         by = ask.get("by") or ""
         if not by:
             continue
@@ -1269,10 +1290,12 @@ def _detect_urgent(
     if sprint_file_body:
         for r in _parse_risks_from_body(sprint_file_body):
             if (r.get("severity") or "").lower() == "escalated":
+                if is_snoozed(r.get("text"), today):
+                    continue
                 flags.append(
                     {
                         "type": "escalated_risk",
-                        "text": r.get("text") or "(no text)",
+                        "text": strip_snooze_marker(r.get("text") or "") or "(no text)",
                         "severity": "alert",
                     }
                 )
@@ -1360,7 +1383,7 @@ def build_project_block(
     sprint_file_path = (
         config.root / "sprints" / week_iso / f"{project.code}.md"
     )
-    sprint_asks = _parse_sprint_open_asks(sprint_file_path)
+    sprint_asks = _parse_sprint_open_asks(sprint_file_path, today)
     # Read the sprint body once so urgent-detection's Rule 2 + Rule 4 can
     # parse Decisions due / Dependencies & risks without re-reading the file.
     sprint_file_body: str | None = None
@@ -1976,10 +1999,15 @@ def _render_commitments_table(block: ProjectPlanningBlock) -> list[str]:
         rows.append((who, ca.get("deliverable") or "(untitled)", "us", date_str))
     for sa in block.sprint_open_asks:
         date_str = short_iso_date(sa["by"]) if sa.get("by") else "—"
+        # An inventory: a snoozed ask is still owed, so it stays — marked.
+        snoozed = (
+            f" (snoozed until {sa['snoozed_until']})"
+            if sa.get("snoozed_until") else ""
+        )
         rows.append(
             (
                 sa.get("who") or "—",
-                f"{sa.get('text')} _(sprint file)_",
+                f"{sa.get('text')} _(sprint file)_{snoozed}",
                 "us",
                 date_str,
             )

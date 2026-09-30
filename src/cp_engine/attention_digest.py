@@ -20,14 +20,12 @@ from typing import Iterable
 log = logging.getLogger(__name__)
 
 
-_SNOOZE_MARKER_RE = re.compile(
-    r"\s*<!--\s*cp:snoozed-until=(?P<until>\d{4}-\d{2}-\d{2})\s*-->\s*"
+# Snooze is read through the shared contract (cp_engine.snooze) — the digest is
+# one of the ESCALATION surfaces that omit a snoozed item until its date.
+from cp_engine.snooze import (  # noqa: E402 — grouped with its only use
+    is_snoozed as _is_snoozed,
+    strip_snooze_marker as _strip_snooze_marker,
 )
-
-
-def _strip_snooze_marker(s: str) -> str:
-    """Remove any cp:snoozed-until=... HTML comment from a string."""
-    return _SNOOZE_MARKER_RE.sub(" ", s).strip()
 
 
 # Bullet shape (real production, see ingest._write_ask):
@@ -84,11 +82,8 @@ def _find_past_due_asks(
         code = path.stem
         body = path.read_text(encoding="utf-8")
         for m in _OPEN_ASK_RE.finditer(body):
-            snooze_match = _SNOOZE_MARKER_RE.search(m.group(0))
-            if snooze_match:
-                snooze_until = date.fromisoformat(snooze_match.group("until"))
-                if snooze_until > today:
-                    continue  # still snoozed
+            if _is_snoozed(m.group(0), today):
+                continue  # still snoozed
             asked = date.fromisoformat(m.group("asked"))
             by_str = m.group("by")
             text = _strip_snooze_marker(m.group("text"))
@@ -165,11 +160,8 @@ def _find_escalated_risks(
         for m in _RISK_RE.finditer(body):
             if m.group("sev") != "escalated":
                 continue
-            snooze_match = _SNOOZE_MARKER_RE.search(m.group(0))
-            if snooze_match:
-                snooze_until = date.fromisoformat(snooze_match.group("until"))
-                if snooze_until > today:
-                    continue  # still snoozed
+            if _is_snoozed(m.group(0), today):
+                continue  # still snoozed
             raised = date.fromisoformat(m.group("raised"))
             if raised < cutoff:
                 continue
