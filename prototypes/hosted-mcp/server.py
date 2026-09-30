@@ -2547,39 +2547,83 @@ def resolve_write_scope(client, project_code: str) -> dict[str, Any] | None:
         not the short code the caller typed (`ibx-5153`). Writing the short form
         would create a SECOND project_code for the same project — exactly the
         slug drift already recorded against this corpus. So the canonical
-        `project_code` is read back off the project's existing spine rows, and
-        only falls back to the caller's string when the project has no spine
-        rows yet (a genuinely new project, where the caller's code IS the
-        first one written and there is nothing to drift from).
+        `project_code` is read back off the project's existing spine rows —
+        see `canonical_project_code` for the full order, including the
+        project with no spine rows yet.
     """
     pid = resolve_project_id(client, project_code)
     if pid is None:
         return None
-    kind = "project"
-    scope_id = pid
+    return {
+        "id": pid,
+        "kind": "project",
+        "project_code": canonical_project_code(client, pid, project_code),
+    }
 
-    # Canonical dir-slug from existing spine rows for this uuid, if any.
-    canonical = project_code
+
+def canonical_project_code(client, project_id: str, fallback: str) -> str:
+    """The cp-tree dir-slug for a resolved project uuid — never the caller's
+    short form when anything better is knowable.
+
+    Order:
+
+      1. The project's own `spine_substance.project_code` — the spelling every
+         existing row already carries, so a new row cannot disagree with them.
+      2. `projects.full_job_name` slugified (`SLT 5196 Brand Campaign 26` ->
+         `slt-5196-brand-campaign-26`) — the same rule the engine uses to name
+         the project's directory, so a project with NO spine rows yet still
+         gets its first row under the canonical code instead of defining the
+         spelling from whatever the caller typed.
+      3. The caller's string, only when neither exists.
+
+    #309 is why this reads the way it does. Through 0.124.4 step 1 ordered by
+    `spine_substance.created_at` — a column that table does not have. PostgREST
+    rejected the query, a bare `except: pass` swallowed the rejection, and
+    EVERY hosted write fell through to the caller's short code: the
+    canonicalisation the docstrings promised had never run once since it
+    shipped (2026-08-03). `slt-5196` forked a second project_code that way.
+    So the order key is a column the table has (`version_date`, the date the
+    version was authored), and a failed lookup is reported to alerting rather
+    than swallowed — a resolver that quietly stops resolving is exactly the
+    defect to never ship twice.
+    """
     try:
-        existing = (
+        rows = (
             client.table("spine_substance")
             .select("project_code")
-            .eq("project_id", scope_id)
-            # Deterministic pick: newest row's spelling. Unordered limit(1)
-            # was a coin-flip on a drifted project (pre-mig-129); the store
-            # is uniform now, but never leave the pick to physical order.
-            .order("created_at", desc=True)
+            .eq("project_id", project_id)
+            # Deterministic pick: the newest version's spelling. Unordered
+            # limit(1) was a coin-flip on a drifted project (pre-mig-129).
+            .order("version_date", desc=True)
             .limit(1)
             .execute()
             .data
             or []
         )
-        if existing and existing[0].get("project_code"):
-            canonical = existing[0]["project_code"]
-    except Exception:  # noqa: BLE001 — a resolver nicety, never a hard failure
-        pass
+        if rows and rows[0].get("project_code"):
+            return rows[0]["project_code"]
+    except Exception as exc:  # noqa: BLE001 — fall through to step 2, loudly
+        log.warning("canonical_project_code: spine lookup failed: %s", exc)
+        observability.capture(exc, area="canonical_project_code")
 
-    return {"id": scope_id, "kind": kind, "project_code": canonical}
+    try:
+        rows = (
+            client.table("projects")
+            .select("full_job_name")
+            .eq("id", project_id)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        slug = _slug_full_job_name(rows[0].get("full_job_name")) if rows else ""
+        if slug:
+            return slug
+    except Exception as exc:  # noqa: BLE001 — the caller's code is the last resort
+        log.warning("canonical_project_code: projects lookup failed: %s", exc)
+        observability.capture(exc, area="canonical_project_code")
+
+    return fallback
 
 
 _ELEMENT_RESOLVE_COLUMNS = (

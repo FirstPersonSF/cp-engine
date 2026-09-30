@@ -1089,24 +1089,45 @@ def canonical_spine_code(client, project_id: str, fallback: str) -> str:
     `spine_substance` rows (uniform dir-slug since mig 129 + the sync
     healers). Writers that receive a caller-supplied code (webhook inbox
     promote, relations propose) MUST write this spelling, not the caller's —
-    short-code writes are how 45 drifted edges accumulated. Falls back to
-    the caller's code for a project with no spine rows yet (its first write
-    DEFINES the spelling — pass the dir-slug).
+    short-code writes are how 45 drifted edges accumulated. A project with
+    no spine rows yet gets the slugified `projects.full_job_name` (the rule
+    that names its directory); the caller's code is the last resort.
+
+    #309: this ordered by `spine_substance.created_at`, a column that table
+    does not have, and swallowed PostgREST's rejection — so it returned the
+    caller's fallback on every call since it shipped. The order key is now a
+    real column and a failed lookup is printed, not swallowed.
     """
     try:
         rows = (
             client.table(Tables.SPINE_SUBSTANCE)
             .select("project_code")
             .eq("project_id", project_id)
-            .order("created_at", desc=True)
+            .order("version_date", desc=True)
             .limit(1)
             .execute()
             .data
         ) or []
         if rows and rows[0].get("project_code"):
             return rows[0]["project_code"]
-    except Exception:  # noqa: BLE001 — canonicalization must never block a write
-        pass
+    except Exception as exc:  # noqa: BLE001 — canonicalization must never block a write
+        print(f"[warn] canonical_spine_code: spine lookup failed: {exc}", file=sys.stderr)
+    try:
+        from cp_engine.state import slug_full_job_name
+
+        rows = (
+            client.table(Tables.PROJECTS)
+            .select("full_job_name")
+            .eq("id", project_id)
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+        slug = slug_full_job_name(rows[0].get("full_job_name")) if rows else ""
+        if slug:
+            return slug
+    except Exception as exc:  # noqa: BLE001 — see above
+        print(f"[warn] canonical_spine_code: projects lookup failed: {exc}", file=sys.stderr)
     return fallback
 
 
