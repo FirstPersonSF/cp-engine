@@ -59,6 +59,8 @@ class GeneratedPlan:
     # Name checks (#312): counts from `attribution.check_plan_attribution`
     # — {aliased, resolved, hedged, stakeholders_dropped}.
     attribution: dict | None = None
+    # Decision fidelity (#321): {demoted, collapsed, revised}.
+    fidelity: dict | None = None
 
 
 def apply_attribution_checks(plan: dict, *, config, transcript: str) -> dict:
@@ -195,6 +197,12 @@ def generate_plan(
             proj = plan.setdefault("projects", {}).setdefault(project_code, {})
             proj.setdefault("record-ask", []).extend(ask_items)
 
+    # Decision fidelity (#321): a deliberation is an open question, not a
+    # decision; a restated decision keeps its LAST value, marked revised.
+    from cp_engine.ingest_fidelity import apply_decision_fidelity
+
+    fidelity = apply_decision_fidelity(plan)
+
     # Person-name checks (#312): aliases, surname resolution against the
     # stakeholder cards, and a hedge on risk/decision bullets that name
     # someone the transcript never heard. Before the cross-project pass so
@@ -218,6 +226,7 @@ def generate_plan(
         model=model,
         cross_project=tuple(cross_project),
         attribution=attribution,
+        fidelity=fidelity,
     )
 
 
@@ -388,6 +397,7 @@ _XPROJECT_VERBS = {
     "asks", "ask", "record-ask",
     "decisions", "decision", "add-decision",
     "risks", "risk", "record-risk",
+    "open-questions",
 }
 
 # Canonical shorthand family stored on proposals (and used to build the
@@ -398,6 +408,7 @@ _XPROJECT_VERB_FAMILY = {
     "decisions": "decisions", "decision": "decisions",
     "add-decision": "decisions",
     "risks": "risks", "risk": "risks", "record-risk": "risks",
+    "open-questions": "open-questions",
 }
 
 
@@ -564,10 +575,14 @@ projects:
         who: "<who we're asking>"
         by: "YYYY-MM-DD"          # optional deadline
         date: "YYYY-MM-DD"        # when we asked; defaults to today
-    decisions:
+    decisions:                    # SETTLED only — the meeting's final position
       - text: "..."
         date: "YYYY-MM-DD"
         cross_cutting: false      # true → also surfaces in master-cp's decisions strip
+        earlier_position: "..."   # optional — only when the meeting reversed itself
+    open_questions:               # raised, weighed, NOT settled
+      - text: "..."
+        date: "YYYY-MM-DD"
     risks:
       - text: "..."
         severity: "watching"      # or "escalated", "dependency"
@@ -655,6 +670,13 @@ projects:
    A line that addresses the labelled speaker by their own name ("Morgan,
    can you show it to me?" under the label Morgan) was said by someone
    else. Spell people as the project context spells them.
+11. **Decisions are the meeting's FINAL position; prefer under-claiming.**
+   Read the whole transcript before writing a decision: if a topic is
+   revisited and the position changes, record only where it ENDED and put
+   the first position in `earlier_position`. Never emit two decisions on
+   one topic. Options weighed, floated or "leaning toward" — anything
+   nobody actually chose — go in `open_questions`, not `decisions`. When
+   unsure whether something was decided, it was not.
 
 # Output format
 
@@ -715,10 +737,14 @@ projects:
         who: "<who we're asking>"
         by: "YYYY-MM-DD"          # optional deadline
         date: "YYYY-MM-DD"        # when we asked; defaults to today
-    decisions:
+    decisions:                    # SETTLED only — the meeting's final position
       - text: "..."
         date: "YYYY-MM-DD"
         cross_cutting: false      # true → also surfaces in master-cp's decisions strip
+        earlier_position: "..."   # optional — only when the meeting reversed itself
+    open_questions:               # raised, weighed, NOT settled
+      - text: "..."
+        date: "YYYY-MM-DD"
     risks:
       - text: "..."
         severity: "watching"      # or "escalated", "dependency"
@@ -794,6 +820,13 @@ projects:
     A line that addresses the labelled speaker by their own name ("Morgan,
     can you show it to me?" under the label Morgan) was said by someone
     else. Spell people as the project context spells them.
+13. **Decisions are the meeting's FINAL position; prefer under-claiming.**
+    Read the whole transcript before writing a decision: if a topic is
+    revisited and the position changes, record only where it ENDED and put
+    the first position in `earlier_position`. Never emit two decisions on
+    one topic. Options weighed, floated or "leaning toward" — anything
+    nobody actually chose — go in `open_questions`, not `decisions`. When
+    unsure whether something was decided, it was not.
 
 # Output format
 

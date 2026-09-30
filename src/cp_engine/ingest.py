@@ -198,6 +198,7 @@ _SUPPORTED_VERBS = (
     "record-ask",          # → sprint file's ### Open asks
     "close-ask",           # → flips an existing [open ...] to [closed ...]
     "add-decision",        # → sprint file's ### Decisions under ## Meeting notes & decisions
+    "record-open-question",  # → sprint file's ### Open questions under ## Meeting notes & decisions (#321)
     "record-risk",         # → sprint file's ## Dependencies & risks
     "resolve-risk",        # → flips an existing [escalated|watching ...] risk to [resolved ...]
     "snooze-ask",          # → appends cp:snoozed-until=YYYY-MM-DD on an ask bullet, matched by hash
@@ -638,6 +639,12 @@ def _normalize_verb(verb: str) -> str:
         "ask": "record-ask",
         "decisions": "add-decision",
         "decision": "add-decision",
+        # #321: a deliberation is not a decision.
+        "open-questions": "record-open-question",
+        "open_questions": "record-open-question",
+        "open-question": "record-open-question",
+        "open_question": "record-open-question",
+        "questions": "record-open-question",
         "risks": "record-risk",
         "risk": "record-risk",
         "resolve_risk": "resolve-risk",
@@ -674,6 +681,7 @@ def _execute_step(
         "record-ask": _write_ask,
         "close-ask": _write_close_ask,
         "add-decision": _write_decision,
+        "record-open-question": _write_open_question,
         "record-risk": _write_risk,
         "resolve-risk": _write_resolve_risk,
         "snooze-ask": lambda code, item, sprint_path, **kw: _write_snooze(
@@ -1327,6 +1335,29 @@ def _write_decision(
     bullet = f"- [decision · {date_s}]{cross_marker} {text} {_hash_marker(h)}"
     new = _append_bullet_to_subsection(
         body, "Meeting notes & decisions", "Decisions", bullet
+    )
+    sprint_path.write_text(new)
+    return True
+
+
+def _write_open_question(
+    code: str, item: dict, sprint_path: Path, *, today: date | None = None, **_
+) -> bool:
+    """A question the meeting raised and did not settle (#321) — beside
+    `### Decisions`, never in it, so agendas and sprint prep do not read a
+    deliberation as a commitment. Hand-written territory: the section is
+    outside every cp-engine marker."""
+    text = _sanitize_inline_text(item.get("text") or "")
+    date_s = _as_text(item.get("date")) or _resolve_today_iso(today)
+    if not text:
+        raise IngestPlanError("open-question item missing 'text'")
+    h = _content_hash(code, "record-open-question", text)
+    body = sprint_path.read_text(encoding="utf-8")
+    if _already_present(body, h):
+        return False
+    bullet = f"- [open question · {date_s}] {text} {_hash_marker(h)}"
+    new = _append_bullet_to_subsection(
+        body, "Meeting notes & decisions", "Open questions", bullet
     )
     sprint_path.write_text(new)
     return True

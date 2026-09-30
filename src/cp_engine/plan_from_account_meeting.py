@@ -176,7 +176,10 @@ def generate_account_plan(
     except IngestPlanError as exc:
         raise AccountPlanError(f"plan failed validation: {exc}") from exc
 
-    # Person-name checks per child block (#312).
+    # Decision fidelity (#321), then person-name checks per child (#312).
+    from cp_engine.ingest_fidelity import apply_decision_fidelity
+
+    apply_decision_fidelity(plan)
     apply_attribution_checks(plan, config=config, transcript=transcript)
 
     project_codes = tuple(p.code for p in active_projects)
@@ -352,10 +355,14 @@ projects:                     # one entry per project that has content
         who: "<who we're asking>"
         by: "YYYY-MM-DD"
         date: "YYYY-MM-DD"
-    decisions:
+    decisions:                # SETTLED only — the meeting's final position
       - text: "..."
         date: "YYYY-MM-DD"
         cross_cutting: false
+        earlier_position: "..." # optional — only when the meeting reversed itself
+    open_questions:           # raised, weighed, NOT settled
+      - text: "..."
+        date: "YYYY-MM-DD"
     risks:
       - text: "..."
         severity: "watching"   # or "escalated", "dependency"
@@ -438,6 +445,13 @@ account_decisions:            # OPTIONAL — tenant-wide decisions
     A line that addresses the labelled speaker by their own name ("Morgan,
     can you show it to me?" under the label Morgan) was said by someone
     else. Spell people as the project context spells them.
+12. **Decisions are the meeting's FINAL position; prefer under-claiming.**
+    Read the whole transcript before writing a decision: if a topic is
+    revisited and the position changes, record only where it ENDED and put
+    the first position in `earlier_position`. Never emit two decisions on
+    one topic. Options weighed, floated or "leaning toward" — anything
+    nobody actually chose — go in `open_questions`, not `decisions`. When
+    unsure whether something was decided, it was not.
 
 # Output format
 
@@ -720,7 +734,10 @@ def generate_sprint_planning_plan(
     except IngestPlanError as exc:
         raise AccountPlanError(f"plan failed validation: {exc}") from exc
 
-    # Person-name checks per child block (#312).
+    # Decision fidelity (#321), then person-name checks per child (#312).
+    from cp_engine.ingest_fidelity import apply_decision_fidelity
+
+    apply_decision_fidelity(plan)
     apply_attribution_checks(plan, config=config, transcript=transcript)
 
     project_codes = tuple(p.code for p in active_projects)
@@ -823,10 +840,14 @@ projects:                     # one entry per project that has content
         who: "<who we're asking>"
         by: "YYYY-MM-DD"
         date: "YYYY-MM-DD"
-    decisions:
+    decisions:                # SETTLED only — the meeting's final position
       - text: "..."
         date: "YYYY-MM-DD"
         cross_cutting: false
+        earlier_position: "..." # optional — only when the meeting reversed itself
+    open_questions:           # raised, weighed, NOT settled
+      - text: "..."
+        date: "YYYY-MM-DD"
     risks:
       - text: "..."
         severity: "watching"
@@ -905,6 +926,13 @@ account_decisions:            # OPTIONAL — tenant-wide decisions
     A line that addresses the labelled speaker by their own name ("Morgan,
     can you show it to me?" under the label Morgan) was said by someone
     else. Spell people as the project context spells them.
+12. **Decisions are the meeting's FINAL position; prefer under-claiming.**
+    Read the whole transcript before writing a decision: if a topic is
+    revisited and the position changes, record only where it ENDED and put
+    the first position in `earlier_position`. Never emit two decisions on
+    one topic. Options weighed, floated or "leaning toward" — anything
+    nobody actually chose — go in `open_questions`, not `decisions`. When
+    unsure whether something was decided, it was not.
 
 # Output format
 
