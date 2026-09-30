@@ -50,6 +50,7 @@ from cp_engine.agenda import (
     to_datetime,
 )
 from cp_engine.config import TenantConfig
+from cp_engine.exec_summary_freshness import PartialRefresh, partial_refresh
 from cp_engine.snooze import active_snooze, is_snoozed, strip_snooze_marker
 from cp_engine.render import (
     exec_summary_is_authored,
@@ -178,6 +179,12 @@ class ProjectPlanningBlock:
     # means the region is only PARTIALLY authored, so its `· updated` stamp
     # overstates how much state is really there.
     exec_summary_placeholder_fields: tuple[str, ...] = ()
+    # The stamp is newer than the state fields (#251): Where it stands /
+    # Next up / Blockers last changed well before `· updated`, so a
+    # one-field refresh is making the whole summary read as current. From
+    # git blame (`exec_summary_freshness`); None when the history cannot
+    # tell (shallow clone, no git) as well as when the summary is whole.
+    exec_summary_partial_refresh: "PartialRefresh | None" = None
     # Estimate-drift warnings (cp-engine #65): undone estimate items past due
     # with no done-mark, or whose linked meeting's actual date diverges from
     # the estimated date — the same lines the Agreement projection appends to
@@ -1463,6 +1470,9 @@ def build_project_block(
     # A region can pass the authored-check on ONE real field while the rest
     # stay scaffold; the stamp would then render it FRESH (#190).
     placeholder_fields = _placeholder_fields(exec_summary or "")
+    # ...and it can pass on a real Status over state fields that stopped
+    # moving months earlier; the stamp reads fresh either way (#251).
+    partial = partial_refresh(cp_md_path) if exec_summary else None
 
     return ProjectPlanningBlock(
         project=project,
@@ -1480,6 +1490,7 @@ def build_project_block(
         exec_summary_updated=updated,
         exec_summary_age_days=age_days,
         exec_summary_placeholder_fields=placeholder_fields,
+        exec_summary_partial_refresh=partial,
     )
 
 
@@ -2182,6 +2193,15 @@ def _render_bundle_project_block(block: ProjectPlanningBlock) -> list[str]:
             line += (
                 f" ⚠ **PARTIAL — still scaffold: {missing}. The stamp is"
                 " fresher than the content; confirm these fields verbally.**"
+            )
+        # The same overstatement over AUTHORED fields: a one-field refresh
+        # moved the stamp, the state beneath it did not (#251).
+        partial = block.exec_summary_partial_refresh
+        if partial is not None:
+            state_age = age + partial.lag_days
+            line += (
+                f" ⚠ **PARTIAL REFRESH — {partial.describe()}. That state"
+                f" is {state_age}d old, not {age}d; confirm it verbally.**"
             )
         out.append(line)
     elif block.exec_summary:

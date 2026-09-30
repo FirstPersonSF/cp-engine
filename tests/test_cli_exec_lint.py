@@ -41,7 +41,7 @@ def test_exec_lint_warns_on_fat_status_but_exits_zero(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     result = CliRunner().invoke(main, ["exec-lint", "ibx-5153"])
     assert result.exit_code == 0, result.output
-    assert "1 exec-summary budget warning(s)" in result.output
+    assert "1 exec-summary warning(s)" in result.output
     assert "700 words" in result.output and "budget 100" in result.output
 
 
