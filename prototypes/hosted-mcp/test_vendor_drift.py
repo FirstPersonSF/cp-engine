@@ -46,6 +46,10 @@ _VERBATIM = (
     # Imported by pull_spine_element / add_spine_version (#314): the
     # machine-derived marker and the prior-version preview.
     "distill_fidelity.py",
+    # Called by set_spine_element when `serves` changes (#174): the
+    # routing-time feeds proposal, and the #270 date guard it shares.
+    "feeds_propose.py",
+    "stub_sweep.py",
 )
 
 
@@ -193,6 +197,15 @@ def test_the_vendor_closure_EXECUTES_with_no_cp_engine_installed(tmp_path) -> No
         "assert exec_summary_is_authored("
         "'- 2026-09-01 — migrated from Quick Resume\\n') is False\n"
         "build_rounds(rows, [])\n"
+        # #174: the routing-time proposal runs its lazy imports (seal_sweep,
+        # card_class, stub_sweep) only inside the loop — so give it a pair.
+        "from cp_engine.feeds_propose import propose_feeds\n"
+        "_fp = [dict(rows[0], est_item_id='src', layer='Source material',\n"
+        "  placement='context', serves=['dlv'], sources=[{'id': 'a1'}]),\n"
+        "  dict(rows[0], est_item_id='dlv', layer='Deliverables',\n"
+        "  card_kind='deliverable', version_date='2026-09-05')]\n"
+        "_p, _s = propose_feeds(_fp, [], source_dates={'a1': '2026-09-02'})\n"
+        "assert [(x.from_item_id, x.to_item_id) for x in _p] == [('src', 'dlv')], _p\n"
         # The no-row branch of the owner resolver is where it logs (#287:
         # the shim defined `logger`, the function called `log`).
         "assert C.resolve_commitment_owner(_C([]), 'ggl-9999') is None\n"

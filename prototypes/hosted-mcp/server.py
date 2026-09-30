@@ -4919,7 +4919,10 @@ def set_spine_element(
             step carrying both the old and new title, since the old one is
             otherwise gone the moment the write lands; only the disk-mirror
             filename keeps the pre-rename slug.
-        serves: work-item ids to bind to; `[]` unbinds. ON A STAKEHOLDER this
+        serves: work-item ids to bind to; `[]` unbinds. Routing to a
+            deliverable's slot, or to an activity that feeds one, PROPOSES an
+            `informs` edge to that deliverable (#174) — returned under
+            `feeds_proposed`, awaiting a human confirm; never active. ON A STAKEHOLDER this
             means something different — the projects/work this person is
             RELEVANT to (#179 step 4) — so `binding` stays 'unbound' rather
             than claiming a person is live work. Account scope makes a dossier
@@ -5097,6 +5100,14 @@ def set_spine_element(
     if serves is not None:
         out["serves"] = row.get("serves")
         out["binding"] = row.get("binding")
+        # #174: routing is the moment a human says where this belongs. When
+        # that work item leads to a deliverable, PROPOSE the feeds edge — a
+        # `status='proposed'` row for the Suggestions inbox, never an active
+        # one. Non-fatal like the other post-write side effects: the routing
+        # has already committed.
+        out["feeds_proposed"] = _propose_feeds_on_route(
+            client, scope, est_item_id, serves=list(serves)
+        )
     if actor is not None:
         out["actor"] = row.get("actor")
     if superseded_count:
@@ -5105,6 +5116,43 @@ def set_spine_element(
             "layer/framing/serves — the hosted UPDATE policy is live-rows-only."
         )
     return out
+
+
+def _propose_feeds_on_route(
+    client, scope: dict, est_item_id: str, *, serves: list[str]
+) -> dict[str, Any]:
+    """Propose `informs` edges the new routing implies (#174). NEVER raises.
+
+    Shares `cp_engine.feeds_propose.propose_on_route` with mc-2's routing
+    endpoint, so every routing surface proposes by one rule: routed to a
+    deliverable's slot, or to an activity with an active edge to one, and not
+    newer than the work it was routed to (#270). Writes go under the caller's
+    identity — the INSERT policy requires `created_by` to be their email.
+    """
+    if not serves:
+        return {"proposed": [], "note": "unrouted — nothing to propose"}
+    email = caller_email()
+    if not email:
+        return {
+            "proposed": [],
+            "note": "no email claim on the token; spine_relations attributes "
+            "every row to one, so no proposal was written",
+        }
+    try:
+        from cp_engine.feeds_propose import propose_on_route
+
+        return propose_on_route(
+            client,
+            project_id=scope["id"],
+            project_code=scope["project_code"],
+            est_item_ids=[est_item_id],
+            created_by=email,
+        )
+    except Exception as exc:  # noqa: BLE001 — the routing already committed
+        return {
+            "proposed": [],
+            "error": f"feeds proposal failed: {type(exc).__name__}: {str(exc)[:300]}",
+        }
 
 
 def _match_open_commitment(
