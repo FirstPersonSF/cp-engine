@@ -235,6 +235,25 @@ def test_the_hosted_verb_measures_what_the_finding_measures(server, monkeypatch)
     assert out["words"] == 303 and out["total_words"] > 4_000
 
 
+def test_the_hosted_verb_counts_the_exec_summary(server, monkeypatch):
+    """#308, Drew's call: the Exec Summary is authored at wrap up and COUNTED,
+    though it sits inside a cp-engine marker. The verb's `words` and flags must
+    include it, or the hosted surface would clear a file the CLI flags."""
+    exec_region = ("<!-- cp-engine:start exec-summary -->\n" + "e " * 2_600
+                   + "\n<!-- cp-engine:end exec-summary -->\n")
+    text = exec_region + "## Current Work\n" + "h " * 10
+    monkeypatch.setattr(server, "caller_is_team_member", lambda: (True, None))
+    monkeypatch.setattr(server, "_find_cp_md_text", lambda code: text)
+    monkeypatch.setattr(server, "audit", lambda *a, **k: None)
+    monkeypatch.setattr(server, "user_client", lambda: None)
+    monkeypatch.setattr(server, "caller_subject", lambda: "t")
+    fn = getattr(server.word_count_check, "fn", server.word_count_check)
+    out = fn("x")
+    assert out["words"] == 2_613
+    assert out["over_audit_threshold"] is True
+    assert out["findings"] and "2,613 words authored" in out["findings"][0]
+
+
 def test_the_hosted_verb_reports_and_does_not_rotate(server):
     """THE BOUNDARY. Rotation is a WRITE — two files in one commit — and this
     server holds no write access by construction.

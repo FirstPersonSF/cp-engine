@@ -82,6 +82,21 @@ _FIELD_RE = re.compile(
 )
 _CANONICAL_LABEL = {l.lower(): l for l in _FIELD_LABELS}
 
+
+def field_label(line: str) -> tuple[str, str] | None:
+    """`(canonical label, inline value)` if `line` is an Exec Summary field
+    line, else None. `line` is ONE line, already stripped of indentation.
+
+    THE ONE READER of field identity: `exec_summary_merge` parses with this
+    too. When only the lint accepted decorated labels, the merge read
+    `**Next up (W40):**` as an unknown field, so a write to `Next up` landed
+    nowhere while the lint counted the old bullets (#319).
+    """
+    m = _FIELD_RE.match(line)
+    if m is None or "\n" in line:
+        return None
+    return _CANONICAL_LABEL[m.group("label").lower()], m.group("inline")
+
 # Scaffold placeholder value (`_<...>_`) — an unauthored field, not a finding.
 _PLACEHOLDER_RE = re.compile(r"_<[^>]+>_")
 

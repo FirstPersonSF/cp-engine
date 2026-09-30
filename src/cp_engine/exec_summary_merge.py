@@ -34,6 +34,7 @@ import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+from cp_engine.exec_summary_lint import field_label
 from cp_engine.render import (
     EXEC_SUMMARY_AUTHORED_FIELDS,
     EXEC_SUMMARY_END,
@@ -45,10 +46,13 @@ from cp_engine.render import (
 
 logger = logging.getLogger(__name__)
 
-# `**Label:** inline value` — the field's own line. Mirrors the reader in
-# `render.exec_summary_placeholder_fields`; a value that trips one trips the
-# other, which is what keeps writer and reader agreeing about field identity.
-_FIELD_RE = re.compile(r"^\*\*(?P<label>[^*]+?):\*\*\s*(?P<value>.*)$")
+# A field's own line is recognised by `exec_summary_lint.field_label` — the
+# same reader the budget lint uses, so writer and lint agree about field
+# identity (#319). It accepts the decorated forms humans write
+# (`**Next up (W40):**`, `**🔜 Next up:**`, `**Next up**:`, any case) and
+# returns the canonical label; it rejects prose that merely starts with a
+# label word (`**Status quo:**`). A decorated label is re-emitted canonical
+# when its field is rewritten.
 
 # The heading immediately above the region, carrying the freshness stamp that
 # `summary.exec_summary_updated_on` reads. A merge that changed a field but
@@ -129,10 +133,10 @@ def _apply_fields(
 
     for raw in region.splitlines():
         stripped = raw.strip()
-        m = _FIELD_RE.match(stripped)
+        m = field_label(stripped)
 
         if m is not None:
-            label = m.group("label").strip()
+            label = m[0]
             skipping_bullets_for = None
             if label in fields:
                 value = fields[label]
@@ -212,13 +216,16 @@ def _existing_field_block(region: str, label: str) -> list[str]:
     collecting = False
     for raw in region.splitlines():
         stripped = raw.strip()
-        m = _FIELD_RE.match(stripped)
+        m = field_label(stripped)
         if m is not None:
             if collecting:
                 break
-            if m.group("label").strip() == label:
+            if m[0] == label:
                 collecting = True
-                block.append(stripped)
+                # In `_render_field`'s canonical shape, so a decoration alone
+                # (`**Next up (W40):**`) is not mistaken for a changed value.
+                inline = m[1].strip()
+                block.append(f"**{label}:** {inline}" if inline else f"**{label}:**")
             continue
         if collecting:
             if stripped.startswith("- "):
@@ -357,10 +364,10 @@ def _updates_block(lines: list[str]) -> tuple[int | None, int]:
     for i, raw in enumerate(lines):
         if raw[:1].isspace():
             continue
-        m = _FIELD_RE.match(raw.strip())
+        m = field_label(raw.strip())
         if m is None:
             continue
-        label = m.group("label").strip()
+        label = m[0]
         if start is None:
             if label == "Updates":
                 start = i
@@ -527,8 +534,8 @@ def append_update_entry(
     # Drop the scaffold seed(s) — the placeholder bullet and a placeholder
     # inline value on the field line. Real content is left exactly as found.
     drop = {e.index for e in entries if e.is_placeholder}
-    m = _FIELD_RE.match(field_line.strip())
-    if m is not None and "_<" in m.group("value"):
+    m = field_label(field_line.strip())
+    if m is not None and "_<" in m[1]:
         indent = field_line[: len(field_line) - len(field_line.lstrip())]
         field_line = f"{indent}**Updates:**{eol}"
 

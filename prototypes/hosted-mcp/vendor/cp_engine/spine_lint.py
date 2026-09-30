@@ -291,15 +291,19 @@ REFERENCE_TITLE_MIN_CHARS = 18
 
 
 def lint_curation(rows: list[dict], *, today=None,
-                  label: str | None = None) -> list[str]:
+                  has_agreement: bool | None = None) -> list[str]:
     """Curation drift over live rows (#112 P3, #158 gaps 2–4). Pure, warn-only.
 
     Needs the SPINE_LINT_COLUMNS shape plus `version_date`.
 
-    `label` is the workstream's derived label (`state.derive_label`:
-    account / program / job / initiative). An `initiative` skips the standing
-    Brief/SOW check — it has no agreement, so there is no signed SOW to author
-    and the warning could never be satisfied (#319). `None` (label unknown)
+    `has_agreement` is whether the workstream carries an agreement — the same
+    `deal_stage IS NOT NULL` signal `state.derive_label` is fed. The standing
+    Brief/SOW check runs only when it does: an initiative has no agreement, an
+    account never carries one (v0.124.3), and neither does a program that is
+    only a grouping — there is no signed SOW to author and the warning could
+    never be satisfied (#319). It is keyed on the agreement, not the label,
+    because a program that carries its OWN agreement still owes a SOW, and its
+    label ("program" wins over "job") would hide that. `None` (lookup failed)
     keeps the check, so an unresolved project is linted as before.
     """
     from datetime import date as _date
@@ -312,11 +316,12 @@ def lint_curation(rows: list[dict], *, today=None,
         body = row.get("body") or ""
         layer = row.get("layer")
 
-        # #112 P3 — standing Brief still the scaffold. Not on an initiative
-        # (#319): mission-control carried a permanent, unsatisfiable warning
-        # for a scaffolded SOW on internal work with no client and no
-        # agreement, and each reader re-investigated it.
-        if (label != "initiative"
+        # #112 P3 — standing Brief still the scaffold. Only where there is an
+        # agreement (#319): mission-control carried a permanent, unsatisfiable
+        # warning for a scaffolded SOW on internal work with no client and no
+        # agreement, and each reader re-investigated it. Accounts and
+        # agreement-less programs are the same shape.
+        if (has_agreement is not False
                 and (_norm_layer(layer) == "brief"
                 or _STANDING_BRIEF_RE.search(row.get("framing") or ""))
                 and (len(body) < BRIEF_MIN_CHARS or _PLACEHOLDER_RE.search(body))):
@@ -583,17 +588,16 @@ def lint_partial_archive(all_rows: list[dict]) -> list[str]:
 # ──────────────────────────────────────────────────────────────────────
 
 
-def _workstream_label(client, rows: list[dict]) -> str | None:
-    """The project's derived label, from the `project_id` its rows carry.
+def _workstream_has_agreement(client, rows: list[dict]) -> bool | None:
+    """Whether the project its rows carry has an agreement.
 
-    Uses the engine's one rule (`state.derive_label`) over the same shape
-    `sync_mc2.workstream_rows_to_states` feeds it — parent, agreement
-    (`deal_stage IS NOT NULL`), company kind, has-children — rather than a
-    second spelling of "initiative". Best-effort: any failure returns None,
-    and None keeps every check on (#319).
+    The same signal `sync_mc2.workstream_rows_to_states` feeds
+    `state.derive_label` as `has_agreement` — `deal_stage IS NOT NULL` — read
+    rather than re-derived, so the lint and the label cannot disagree about
+    what an agreement is. Best-effort: any failure returns None, and None
+    keeps every check on (#319).
     """
     from cp_engine import mc2_db
-    from cp_engine.state import derive_label
 
     try:
         project_ids = {r.get("project_id") for r in rows if r.get("project_id")}
@@ -602,7 +606,7 @@ def _workstream_label(client, rows: list[dict]) -> str | None:
         (pid,) = project_ids
         found = (
             client.table(mc2_db.Tables.PROJECTS)
-            .select("id, parent_id, deal_stage, companies(kind)")
+            .select("id, deal_stage")
             .eq("id", pid)
             .limit(1)
             .execute()
@@ -610,24 +614,7 @@ def _workstream_label(client, rows: list[dict]) -> str | None:
         ) or []
         if not found or found[0].get("id") != pid:
             return None
-        project = found[0]
-        children = (
-            client.table(mc2_db.Tables.PROJECTS)
-            .select("id")
-            .eq("parent_id", pid)
-            .limit(1)
-            .execute()
-            .data
-        ) or []
-        company = project.get("companies") or {}
-        if not isinstance(company, dict):
-            company = {}
-        return derive_label(
-            company_kind=company.get("kind") or "client",
-            parent_code=project.get("parent_id"),
-            has_agreement=project.get("deal_stage") is not None,
-            has_children=bool(children),
-        )
+        return found[0].get("deal_stage") is not None
     except Exception:  # noqa: BLE001 — advisory pass, never fail the lint
         return None
 
@@ -697,7 +684,8 @@ def run_all_lints(
         pass
 
     warnings.extend(
-        lint_curation(rows, today=today, label=_workstream_label(client, rows))
+        lint_curation(rows, today=today,
+                      has_agreement=_workstream_has_agreement(client, rows))
     )
 
     try:

@@ -11018,10 +11018,11 @@ def word_count_check(project_code: str) -> dict[str, Any]:
 
     Two thresholds, per the tenant's own rule: **>2,500 words** means a
     duplication audit is due at the next wrap-up; **>3,500** forces archive
-    rotation before the file grows further. Only HAND-WRITTEN text counts
-    (#308): every `cp-engine:start/end` region — the strips and the Exec
-    Summary — is excluded, since no rotation can clear a strip. `words` is the
-    measured hand-written count; `total_words` is the whole file.
+    rotation before the file grows further. Only AUTHORED text counts (#308):
+    hand-written prose plus the Exec Summary, which is written at wrap up and
+    can be trimmed. Every other `cp-engine:start/end` region is excluded, since
+    no rotation can clear a strip. `words` is the measured authored count;
+    `total_words` is the whole file.
 
     REPORTING ONLY. Rotation moves text between files — the cp.md and the
     sprint file that receives the rolled-off entries — and this server holds no
@@ -11057,14 +11058,14 @@ def word_count_check(project_code: str) -> dict[str, Any]:
 
     from cp_engine.word_count_lint import (
         contributors,
-        hand_authored_words,
+        counted_words,
         lint_word_count,
     )
 
     findings = lint_word_count(text, f"{project_code}/cp.md")
     # The SAME measured number the finding compares (#308) — a raw split here
     # would report "over threshold" on a file whose finding list is empty.
-    words = hand_authored_words(text)
+    words = counted_words(text)
     # Audited so `wrap_status` can see the step ran. This verb needs no client
     # of its own — it reads the tree, gated on team membership — so one is
     # built here purely for the audit row. NO try/except: `audit` is already

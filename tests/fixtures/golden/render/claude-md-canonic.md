@@ -364,11 +364,12 @@ identity rather than minted by the server. The Exec Summary write in step 1
 goes through that path and commits for you; the rest is read-only.
 
 
-## After a cp-engine release: restart `cxp mcp`
+## Restart `cxp mcp` after a release or credential change
 
-`cxp mcp` outlives a release and keeps serving old bytecode after
-`cxp sync` upgrades the CLI. If a spine tool ignores a shipped fix,
-restart the MCP connection (`/mcp`) before assuming it's broken.
+MCP servers keep what they loaded at startup: old bytecode after `cxp sync`
+upgrades the CLI, old credentials after a rotation or `.env`/1Password
+change. If a tool ignores a shipped fix or 401s after re-authenticating,
+restart the connection (`/mcp`) before assuming it's broken.
 
 ## Spec
 

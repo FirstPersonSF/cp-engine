@@ -348,7 +348,7 @@ Renderers populate the anchor block on file creation. Project field uses the ful
 Per bootstrap v2:
 - >2,500 words → duplication audit on next wrap-up
 - >3,500 words → archive rotation before commit
-- only hand-written text is counted: engine-managed `cp-engine:start/end` regions (strips and the Exec Summary) are excluded (#308)
+- only authored text is counted: hand-written prose plus the Exec Summary; the other engine-managed `cp-engine:start/end` regions (the strips) are excluded (#308)
 - archive files land in the tenant's `archive/` directory, three-digit sequence (`ggl-5168-001.md`, `ggl-5168-002.md`)
 
 The engine implements both checks; `cp render` and `wrap up` enforce them.

@@ -588,16 +588,16 @@ def test_undistilled_capture_without_a_source_names_a_possible_remedy():
     assert not any("undistilled" in w for w in lint_curation([done], today=_TODAY))
 
 
-def test_unauthored_brief_is_skipped_on_an_initiative():
+def test_unauthored_brief_runs_only_where_there_is_an_agreement():
     """08-25 mission-control: an internal workstream has no agreement, so a
-    scaffolded SOW there is a warning nothing can satisfy."""
+    scaffolded SOW there is a warning nothing can satisfy. Keyed on the
+    agreement itself; an unresolved lookup (None) keeps the check."""
     sow = _crow(framing="Statement of Work", layer="Agreement", body="- _<fill>_")
     assert not any("unauthored standing Brief" in w
-                   for w in lint_curation([sow], today=_TODAY, label="initiative"))
-    # A job — and an unresolved label — keep the check.
-    for label in ("job", None):
+                   for w in lint_curation([sow], today=_TODAY, has_agreement=False))
+    for has in (True, None):
         assert any("unauthored standing Brief" in w
-                   for w in lint_curation([sow], today=_TODAY, label=label))
+                   for w in lint_curation([sow], today=_TODAY, has_agreement=has))
 
 
 class _Q:
@@ -638,36 +638,80 @@ def _projects_db(**project):
     return {"projects": [base]}
 
 
-def test_workstream_label_comes_from_the_engines_derive_label():
-    """Derived with `state.derive_label` over the row's shape — not a second
-    spelling of "initiative"."""
-    from cp_engine.spine_lint import _workstream_label
+def test_agreement_comes_from_the_signal_derive_label_is_fed():
+    """`deal_stage IS NOT NULL` — the `has_agreement` that
+    `sync_mc2.workstream_rows_to_states` passes `state.derive_label` — not a
+    second definition of an agreement."""
+    from cp_engine.spine_lint import _workstream_has_agreement
 
     rows = [{"project_id": "p1"}]
-    assert _workstream_label(_Client(_projects_db()), rows) == "initiative"
-    assert _workstream_label(
-        _Client(_projects_db(deal_stage="Won", parent_id="acct",
-                             companies={"kind": "client"})), rows) == "job"
+    assert _workstream_has_agreement(_Client(_projects_db()), rows) is False
+    assert _workstream_has_agreement(
+        _Client(_projects_db(deal_stage="Won")), rows) is True
     # Unresolvable → None, which keeps every check on.
-    assert _workstream_label(_Client({"projects": []}), rows) is None
-    assert _workstream_label(_Client(_projects_db()), []) is None
+    assert _workstream_has_agreement(_Client({"projects": []}), rows) is None
+    assert _workstream_has_agreement(_Client(_projects_db()), []) is None
 
 
-def test_run_all_lints_skips_the_brief_check_for_an_initiative_end_to_end():
-    """The CLI and the hosted verb share `run_all_lints`; the skip must happen
-    there, or one surface keeps the unsatisfiable warning."""
+_SOW = {"est_item_id": "_authored/sow", "framing": "Statement of Work",
+        "layer": "Agreement", "binding": "unbound", "serves": [],
+        "important": False, "body": "- _<fill>_", "sources": [],
+        "status": "live", "archived": False, "project_id": "p1",
+        "version_label": "v1", "version_date": "2026-08-01"}
+
+
+def _brief_warned(db) -> bool:
+    """Run the whole shared pass (CLI and hosted both call `run_all_lints`)."""
     from cp_engine.spine_lint import run_all_lints
 
-    sow = {"est_item_id": "_authored/sow", "framing": "Statement of Work",
-           "layer": "Agreement", "binding": "unbound", "serves": [],
-           "important": False, "body": "- _<fill>_", "sources": [],
-           "status": "live", "archived": False, "project_id": "p1",
-           "version_label": "v1", "version_date": "2026-08-01"}
+    db = dict(db, spine_substance=[_SOW], spine_relations=[])
+    return any("unauthored standing Brief" in w
+               for w in run_all_lints(_Client(db), ["x"]))
 
-    def run(db):
-        db = dict(db, spine_substance=[sow], spine_relations=[])
-        return run_all_lints(_Client(db), ["x"])
 
-    assert not any("unauthored standing Brief" in w for w in run(_projects_db()))
-    assert any("unauthored standing Brief" in w for w in run(_projects_db(
-        deal_stage="Won", parent_id="acct", companies={"kind": "client"})))
+def _with_child(db):
+    """Give p1 a child row, so `derive_label` would call it a program."""
+    db["projects"].append({"id": "c1", "parent_id": "p1", "deal_stage": "Won",
+                           "companies": {"kind": "client"}})
+    return db
+
+
+def _label(db):
+    from cp_engine.state import derive_label
+
+    p = db["projects"][0]
+    return derive_label(company_kind=p["companies"]["kind"],
+                        parent_code=p["parent_id"],
+                        has_agreement=p["deal_stage"] is not None,
+                        has_children=len(db["projects"]) > 1)
+
+
+def test_a_program_that_carries_its_own_agreement_still_gets_the_brief_check():
+    """Drew's call on #319: key on the agreement, not on the label. "program"
+    wins over "job" in `derive_label`, so a label-keyed skip hid the SOW
+    warning on a program with its own envelope — a SOW it genuinely owes."""
+    db = _with_child(_projects_db(deal_stage="Won", parent_id="acct",
+                                  companies={"kind": "client"}))
+    assert _label(db) == "program"
+    assert _brief_warned(db)
+
+
+def test_the_brief_check_is_skipped_wherever_there_is_no_agreement():
+    """Account, agreement-less program, initiative: nothing to author against."""
+    account = _projects_db(companies={"kind": "client"})
+    program = _with_child(_projects_db(parent_id="acct",
+                                       companies={"kind": "client"}))
+    initiative = _projects_db()
+    for db, label in ((account, "account"), (program, "program"),
+                      (initiative, "initiative")):
+        assert _label(db) == label
+        assert not _brief_warned(db), label
+
+
+def test_a_job_and_a_failed_lookup_keep_the_brief_check():
+    job = _projects_db(deal_stage="Won", parent_id="acct",
+                       companies={"kind": "client"})
+    assert _label(job) == "job"
+    assert _brief_warned(job)
+    # No project row resolves: unknown, so the check stays on.
+    assert _brief_warned({"projects": []})
