@@ -564,6 +564,27 @@ def resolve_company_id(client, project_id: str) -> str | None:
     return rows[0].get("company_id") if rows else None
 
 
+def _with_project_status(
+    result: dict[str, Any], client, project_id: str | None, code: str | None
+) -> dict[str, Any]:
+    """Annotate a project-scoped read with the project's MC-2 status (#279).
+
+    `projects.mc_status = 'Archived'` is a project lifecycle state, independent
+    of any element's `archived` flag, and until this no verb read it: an
+    archived project's spine answered exactly like a live one. The result
+    gains `project_status`, plus `archived: true` and a one-line
+    `project_note` when the work is Closed or Archived. Nothing is hidden —
+    archived work is legitimately readable, and reversible.
+
+    One primary-key read; fail-soft (a failed lookup adds nothing). The
+    wording is `cp_engine.project_status`, vendored and shared with the stdio
+    server so the two cannot say it differently.
+    """
+    from cp_engine.project_status import annotate_project
+
+    return annotate_project(result, client, project_id, code)
+
+
 def read_spine_rows(client, project_id: str, columns: str) -> list[dict[str, Any]]:
     """Live spine rows visible from a project — BOTH arms of the scope ladder.
 
@@ -1237,7 +1258,7 @@ def list_spine_elements(
          "tier": tier},
         len(elements),
     )
-    return {
+    return _with_project_status({
         "project_code": project_code,
         "project_id": project_id,
         "caller": caller_subject(),
@@ -1266,7 +1287,7 @@ def list_spine_elements(
             else {}
         ),
         **({"note": TEAM_EMPTY_HINT} if not elements else {}),
-    }
+    }, client, project_id, project_code)
 
 
 @mcp_server.tool()
@@ -1451,7 +1472,10 @@ def pull_spine_element(
         {"element_id": element_id, "project_code": project_code},
         1,
     )
-    return {
+    # The status is the element's HOME project's (`row.project_id`), not the
+    # optional scope's: an account element reached from a live sibling still
+    # belongs to the project it was written on (#279).
+    return _with_project_status({
         "element_id": element_id,
         "caller": caller_subject(),
         "slug": row.get("est_item_id"),
@@ -1472,7 +1496,7 @@ def pull_spine_element(
         "sources": row.get("sources"),
         "body": row.get("body"),
         "versions_visible": len(rows),
-    }
+    }, client, row.get("project_id"), row.get("project_code"))
 
 
 @mcp_server.tool()
@@ -1538,7 +1562,7 @@ def list_commitments(project_code: str, status: str = "open") -> dict[str, Any]:
         result["note"] = TEAM_EMPTY_HINT
     if errors:
         result["errors"] = errors
-    return result
+    return _with_project_status(result, client, project_id, project_code)
 
 
 @mcp_server.tool()
@@ -1797,7 +1821,7 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
     sources.sort(key=lambda s: str(s.get("created_at") or ""), reverse=True)
 
     audit(client, "list_project_sources", {"project_code": project_code}, len(sources))
-    return {
+    return _with_project_status({
         "project_code": project_code,
         "project_id": project_id,
         "caller": caller_subject(),
@@ -1805,7 +1829,7 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
         "superseded_hidden": len(superseded),
         "sources": sources,
         **({"note": TEAM_EMPTY_HINT} if not sources else {}),
-    }
+    }, client, project_id, project_code)
 
 
 def _resolve_source_asset(
@@ -2199,6 +2223,41 @@ def list_project_meetings(project_code: str) -> dict[str, Any]:
     }
 
 
+def _hit_project_statuses(
+    client, spine: list[dict[str, Any]], rows: list[dict[str, Any]]
+) -> tuple[dict[str, str | None], dict[str, str | None]]:
+    """`({spine_row_id: status}, {asset_id: status})` for search hits, in at
+    most three reads (spine homes, asset homes, statuses). Fail-soft: any
+    failure yields empty maps and the search is reported unannotated, as it
+    was before #279 — never as an error."""
+    from cp_engine.project_status import fetch_statuses
+
+    spine_ids = sorted({str(r["id"]) for r in spine if r.get("id")})
+    asset_ids = sorted({str(r["asset_id"]) for r in rows if r.get("asset_id")})
+    try:
+        spine_home = {
+            str(r["id"]): r.get("project_id")
+            for r in (
+                client.table("spine_substance").select("id, project_id")
+                .in_("id", spine_ids).execute().data or []
+            )
+        } if spine_ids else {}
+        asset_home = {
+            str(r["id"]): r.get("project_id")
+            for r in (
+                client.table("rag_assets").select("id, project_id")
+                .in_("id", asset_ids).execute().data or []
+            )
+        } if asset_ids else {}
+    except Exception:  # noqa: BLE001 — see docstring
+        return {}, {}
+    statuses = fetch_statuses(client, [*spine_home.values(), *asset_home.values()])
+    return (
+        {k: statuses.get(str(v)) for k, v in spine_home.items() if v},
+        {k: statuses.get(str(v)) for k, v in asset_home.items() if v},
+    )
+
+
 @mcp_server.tool()
 def semantic_search(
     query: str, project_code: str | None = None, limit: int = 10
@@ -2365,6 +2424,14 @@ def semantic_search(
     # rag_assets read this used to need is gone.
     titles = {r.get("asset_id"): r.get("title") for r in rows if r.get("asset_id")}
 
+    # Which hits come from FINISHED work (#279). Search is where an archived
+    # project's polished brief outcompetes the live one on presentation, and
+    # neither RPC returns the home project's status — so it is read here and
+    # each Closed/Archived hit says so. Annotated, never dropped or demoted.
+    from cp_engine.project_status import FINISHED_STATUSES, hit_fields
+
+    spine_status, asset_status = _hit_project_statuses(client, spine, rows)
+
     results = [
         {
             "chunk_id": r.get("chunk_id"),
@@ -2372,9 +2439,13 @@ def semantic_search(
             "title": titles.get(r.get("asset_id")),
             "similarity": r.get("similarity"),
             "text": (r.get("text") or "")[:2000],
+            **hit_fields(asset_status.get(str(r.get("asset_id")))),
         }
         for r in rows
     ]
+    finished_hits = sum(1 for r in results if "project_status" in r) + sum(
+        1 for row in spine if spine_status.get(str(row.get("id"))) in FINISHED_STATUSES
+    )
 
     audit(
         client,
@@ -2382,7 +2453,7 @@ def semantic_search(
         {"query": query, "project_code": project_code, "limit": limit},
         len(results),
     )
-    return {
+    response = {
         "query_len": len(query),
         "project_code": project_code,
         "project_id": project_id,
@@ -2411,6 +2482,7 @@ def semantic_search(
                 # Enough to answer from; the full element is one
                 # `pull_spine_element` away.
                 "body": (row.get("body") or "")[:2000],
+                **hit_fields(spine_status.get(str(row.get("id")))),
             }
             for row in spine
         ],
@@ -2431,7 +2503,18 @@ def semantic_search(
         "query_expanded": expanded != query,
         "count": len(results),
         "results": results,
+        **(
+            {
+                "finished_project_hits": finished_hits,
+                "note_on_finished": "hits marked `project_status` come from "
+                "Closed or Archived projects — finished work, shown as-is; "
+                "weigh them as history, not current direction",
+            }
+            if finished_hits
+            else {}
+        ),
     }
+    return _with_project_status(response, client, project_id, project_code)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -7907,7 +7990,14 @@ def get_project_state(project_code: str) -> dict[str, Any]:
         {"project_code": project_code, "week": week},
         1 if exec_summary else 0,
     )
-    return {
+    # The tree read resolves no MC-2 id, so this is the one verb that resolves
+    # just for the status (#279). A frozen cp.md next to live DB verbs is
+    # exactly where "is this still current?" needs answering. Fail-soft.
+    try:
+        status_project_id = resolve_project_id(client, project_code)
+    except Exception:  # noqa: BLE001 — an annotation never fails the read
+        status_project_id = None
+    return _with_project_status({
         "project_code": project_code,
         "available": True,
         "caller": caller_subject(),
@@ -7925,7 +8015,7 @@ def get_project_state(project_code: str) -> dict[str, Any]:
         "sprint_file": str(sprint_path.relative_to(root)) if sprint_path else None,
         "sprint_text": sprint_text,
         **({"sprint_note": sprint_note} if sprint_note else {}),
-    }
+    }, client, status_project_id, project_code)
 
 
 @mcp_server.tool()

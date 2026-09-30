@@ -37,6 +37,7 @@ _VERBATIM = (
     "card_class.py",
     "exec_summary_lint.py",
     "codes.py",
+    "project_status.py",
 )
 
 
@@ -134,6 +135,9 @@ def test_the_vendor_closure_EXECUTES_with_no_cp_engine_installed(tmp_path) -> No
         # `cp_engine.state` inside a best-effort try — a missing module there
         # would silently re-enable the Brief check on initiatives (#319).
         "from cp_engine.state import derive_label\n"
+        # The module the #279 status signal needs (shared with the stdio server).
+        "from cp_engine.project_status import annotate, fetch_statuses\n"
+        "assert annotate({}, 'Archived')['archived'] is True\n"
         "rows = [{'est_item_id': '_authored/x', 'framing': 'X', 'status': 'live',\n"
         "  'layer': 'Brief', 'binding': 'unbound', 'important': True,\n"
         "  'version_label': 'v1', 'project_id': 'p1', 'version_date': '2026-09-01',\n"
@@ -158,6 +162,10 @@ def test_the_vendor_closure_EXECUTES_with_no_cp_engine_installed(tmp_path) -> No
         "    def schema(s, name): return s\n"
         "from cp_engine.spine_lint import run_all_lints\n"
         "run_all_lints(_C(rows), ['x'], cp_md_text='## Exec Summary\\n')\n"
+        # A real read through the vendored `mc2_db.Tables` — a failed import
+        # there degrades to `{}` silently, so the positive answer is the check.
+        "assert fetch_statuses(_C([{'id': 'p', 'mc_status': 'Archived'}]), ['p'])"
+        " == {'p': 'Archived'}\n"
         "list(lint_spine_rows(rows))\n"
         "list(lint_curation(rows, today=None))\n"
         # TWO live rows for one element: the duplicate branch of
