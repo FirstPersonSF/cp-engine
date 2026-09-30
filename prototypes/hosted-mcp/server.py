@@ -70,7 +70,7 @@ from mcp.server.auth.provider import AccessToken, TokenVerifier
 from mcp.server.auth.settings import AuthSettings
 from mcp.server.mcpserver import MCPServer
 from starlette.responses import JSONResponse
-from pydantic import AnyHttpUrl, ConfigDict
+from pydantic import AnyHttpUrl
 from supabase import create_client
 from supabase.lib.client_options import SyncClientOptions
 
@@ -562,6 +562,27 @@ def resolve_company_id(client, project_id: str) -> str | None:
         or []
     )
     return rows[0].get("company_id") if rows else None
+
+
+def _with_project_status(
+    result: dict[str, Any], client, project_id: str | None, code: str | None
+) -> dict[str, Any]:
+    """Annotate a project-scoped read with the project's MC-2 status (#279).
+
+    `projects.mc_status = 'Archived'` is a project lifecycle state, independent
+    of any element's `archived` flag, and until this no verb read it: an
+    archived project's spine answered exactly like a live one. The result
+    gains `project_status`, plus `archived: true` and a one-line
+    `project_note` when the work is Closed or Archived. Nothing is hidden —
+    archived work is legitimately readable, and reversible.
+
+    One primary-key read; fail-soft (a failed lookup adds nothing). The
+    wording is `cp_engine.project_status`, vendored and shared with the stdio
+    server so the two cannot say it differently.
+    """
+    from cp_engine.project_status import annotate_project
+
+    return annotate_project(result, client, project_id, code)
 
 
 def read_spine_rows(client, project_id: str, columns: str) -> list[dict[str, Any]]:
@@ -1237,7 +1258,7 @@ def list_spine_elements(
          "tier": tier},
         len(elements),
     )
-    return {
+    return _with_project_status({
         "project_code": project_code,
         "project_id": project_id,
         "caller": caller_subject(),
@@ -1266,7 +1287,7 @@ def list_spine_elements(
             else {}
         ),
         **({"note": TEAM_EMPTY_HINT} if not elements else {}),
-    }
+    }, client, project_id, project_code)
 
 
 @mcp_server.tool()
@@ -1451,7 +1472,10 @@ def pull_spine_element(
         {"element_id": element_id, "project_code": project_code},
         1,
     )
-    return {
+    # The status is the element's HOME project's (`row.project_id`), not the
+    # optional scope's: an account element reached from a live sibling still
+    # belongs to the project it was written on (#279).
+    return _with_project_status({
         "element_id": element_id,
         "caller": caller_subject(),
         "slug": row.get("est_item_id"),
@@ -1472,7 +1496,7 @@ def pull_spine_element(
         "sources": row.get("sources"),
         "body": row.get("body"),
         "versions_visible": len(rows),
-    }
+    }, client, row.get("project_id"), row.get("project_code"))
 
 
 @mcp_server.tool()
@@ -1538,7 +1562,7 @@ def list_commitments(project_code: str, status: str = "open") -> dict[str, Any]:
         result["note"] = TEAM_EMPTY_HINT
     if errors:
         result["errors"] = errors
-    return result
+    return _with_project_status(result, client, project_id, project_code)
 
 
 @mcp_server.tool()
@@ -1797,7 +1821,7 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
     sources.sort(key=lambda s: str(s.get("created_at") or ""), reverse=True)
 
     audit(client, "list_project_sources", {"project_code": project_code}, len(sources))
-    return {
+    return _with_project_status({
         "project_code": project_code,
         "project_id": project_id,
         "caller": caller_subject(),
@@ -1805,7 +1829,7 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
         "superseded_hidden": len(superseded),
         "sources": sources,
         **({"note": TEAM_EMPTY_HINT} if not sources else {}),
-    }
+    }, client, project_id, project_code)
 
 
 def _resolve_source_asset(
@@ -2199,6 +2223,41 @@ def list_project_meetings(project_code: str) -> dict[str, Any]:
     }
 
 
+def _hit_project_statuses(
+    client, spine: list[dict[str, Any]], rows: list[dict[str, Any]]
+) -> tuple[dict[str, str | None], dict[str, str | None]]:
+    """`({spine_row_id: status}, {asset_id: status})` for search hits, in at
+    most three reads (spine homes, asset homes, statuses). Fail-soft: any
+    failure yields empty maps and the search is reported unannotated, as it
+    was before #279 — never as an error."""
+    from cp_engine.project_status import fetch_statuses
+
+    spine_ids = sorted({str(r["id"]) for r in spine if r.get("id")})
+    asset_ids = sorted({str(r["asset_id"]) for r in rows if r.get("asset_id")})
+    try:
+        spine_home = {
+            str(r["id"]): r.get("project_id")
+            for r in (
+                client.table("spine_substance").select("id, project_id")
+                .in_("id", spine_ids).execute().data or []
+            )
+        } if spine_ids else {}
+        asset_home = {
+            str(r["id"]): r.get("project_id")
+            for r in (
+                client.table("rag_assets").select("id, project_id")
+                .in_("id", asset_ids).execute().data or []
+            )
+        } if asset_ids else {}
+    except Exception:  # noqa: BLE001 — see docstring
+        return {}, {}
+    statuses = fetch_statuses(client, [*spine_home.values(), *asset_home.values()])
+    return (
+        {k: statuses.get(str(v)) for k, v in spine_home.items() if v},
+        {k: statuses.get(str(v)) for k, v in asset_home.items() if v},
+    )
+
+
 @mcp_server.tool()
 def semantic_search(
     query: str, project_code: str | None = None, limit: int = 10
@@ -2365,6 +2424,14 @@ def semantic_search(
     # rag_assets read this used to need is gone.
     titles = {r.get("asset_id"): r.get("title") for r in rows if r.get("asset_id")}
 
+    # Which hits come from FINISHED work (#279). Search is where an archived
+    # project's polished brief outcompetes the live one on presentation, and
+    # neither RPC returns the home project's status — so it is read here and
+    # each Closed/Archived hit says so. Annotated, never dropped or demoted.
+    from cp_engine.project_status import FINISHED_STATUSES, hit_fields
+
+    spine_status, asset_status = _hit_project_statuses(client, spine, rows)
+
     results = [
         {
             "chunk_id": r.get("chunk_id"),
@@ -2372,9 +2439,13 @@ def semantic_search(
             "title": titles.get(r.get("asset_id")),
             "similarity": r.get("similarity"),
             "text": (r.get("text") or "")[:2000],
+            **hit_fields(asset_status.get(str(r.get("asset_id")))),
         }
         for r in rows
     ]
+    finished_hits = sum(1 for r in results if "project_status" in r) + sum(
+        1 for row in spine if spine_status.get(str(row.get("id"))) in FINISHED_STATUSES
+    )
 
     audit(
         client,
@@ -2382,7 +2453,7 @@ def semantic_search(
         {"query": query, "project_code": project_code, "limit": limit},
         len(results),
     )
-    return {
+    response = {
         "query_len": len(query),
         "project_code": project_code,
         "project_id": project_id,
@@ -2411,6 +2482,7 @@ def semantic_search(
                 # Enough to answer from; the full element is one
                 # `pull_spine_element` away.
                 "body": (row.get("body") or "")[:2000],
+                **hit_fields(spine_status.get(str(row.get("id")))),
             }
             for row in spine
         ],
@@ -2431,7 +2503,18 @@ def semantic_search(
         "query_expanded": expanded != query,
         "count": len(results),
         "results": results,
+        **(
+            {
+                "finished_project_hits": finished_hits,
+                "note_on_finished": "hits marked `project_status` come from "
+                "Closed or Archived projects — finished work, shown as-is; "
+                "weigh them as history, not current direction",
+            }
+            if finished_hits
+            else {}
+        ),
     }
+    return _with_project_status(response, client, project_id, project_code)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -7130,10 +7213,11 @@ def create_spine_element(
 @_names_its_level
 def add_spine_version(
     project_code: str,
-    element_id: str,
-    body: str,
+    element_id: str | None = None,
+    body: str = "",
     version_note: str | None = None,
     step_title: str | None = None,
+    key: str | None = None,
 ) -> dict[str, Any]:
     """Add a new version to an existing authored spine element (cp-engine #142).
 
@@ -7170,13 +7254,20 @@ def add_spine_version(
         project_code: engagement, initiative, or standalone-repo code.
         element_id: the element's est_item_id (`_authored/<slug>`), bare slug,
             or a distinct framing substring — same keys the read path takes.
-        body: the new version's full body (markdown).
+        body: the new version's full body (markdown). Required.
         version_note: optional "what changed" line, stored on the new version.
         step_title: optional title for the auto-journal step — give it the
             real move's words ("Built Mehul's cube framing into the arc")
             instead of the derived "Updated <framing> (vN)" (#145 parity
             with the engine verb).
+        key: alias for `element_id` — the name every other element verb uses
+             (#318). Pass one; both is fine only when they agree.
     """
+    # Resolved before anything else: two different identifiers is a refusal,
+    # never a silent pick, whatever else is wrong with the call.
+    element_ref, err = _element_key(key, element_id)
+    if err is not None:
+        return err
     if not (body or "").strip():
         return {"error": "body is required"}
 
@@ -7191,9 +7282,7 @@ def add_spine_version(
 
     # Resolve the element within the project by UUID scope; accept the same
     # key forms the read path does (est_item_id, bare slug, framing substring).
-    key = (element_id or "").strip()
-    if not key:
-        return {"error": "element_id is required"}
+    key = element_ref
 
     est_item_id, versions, err = resolve_element_versions(client, scope["id"], key)
     if err is not None:
@@ -7907,7 +7996,14 @@ def get_project_state(project_code: str) -> dict[str, Any]:
         {"project_code": project_code, "week": week},
         1 if exec_summary else 0,
     )
-    return {
+    # The tree read resolves no MC-2 id, so this is the one verb that resolves
+    # just for the status (#279). A frozen cp.md next to live DB verbs is
+    # exactly where "is this still current?" needs answering. Fail-soft.
+    try:
+        status_project_id = resolve_project_id(client, project_code)
+    except Exception:  # noqa: BLE001 — an annotation never fails the read
+        status_project_id = None
+    return _with_project_status({
         "project_code": project_code,
         "available": True,
         "caller": caller_subject(),
@@ -7925,7 +8021,7 @@ def get_project_state(project_code: str) -> dict[str, Any]:
         "sprint_file": str(sprint_path.relative_to(root)) if sprint_path else None,
         "sprint_text": sprint_text,
         **({"sprint_note": sprint_note} if sprint_note else {}),
-    }
+    }, client, status_project_id, project_code)
 
 
 @mcp_server.tool()
@@ -9340,6 +9436,55 @@ def capture_session(
     return result
 
 
+# Values that are never Exec Summary content (improvements.md 2026-09-15): a
+# `capture_project_state` probe wrote the literal `probe` over Mission
+# Control's Status paragraph, and the next render carried it into
+# `master-cp.md` beside eleven real statuses. The write path worked perfectly;
+# that was the problem — there is no sandbox, so the value that proves the path
+# works is the value that destroys the field.
+#
+# WHOLE-VALUE matches only, after trimming case, whitespace and wrapping
+# punctuation. Deliberately NOT a length or word-count rule: Status is "one
+# phrase" by design, and "Shipped", "On hold", "Paused" are real one- and
+# two-word Statuses a length floor would refuse. `none` / `n/a` are absent on
+# purpose too — "None" is an honest Blockers bullet — and so is `testing`,
+# which is a real phase ("Testing" = in user testing).
+_PLACEHOLDER_VALUES = frozenset({
+    "probe", "test", "test test", "todo", "to do", "tbd",
+    "tbc", "x", "xx", "xxx", "placeholder", "dummy", "foo", "bar", "foobar",
+    "asdf", "lorem ipsum",
+})
+
+
+def _is_placeholder(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    norm = " ".join(value.strip().strip("\"'`*_.!?:;()[]<>{}-").lower().split())
+    return norm in _PLACEHOLDER_VALUES or norm.startswith("lorem ipsum")
+
+
+def _placeholder_exec_field(**fields: Any) -> dict[str, Any] | None:
+    """The refusal for the first placeholder among `capture_project_state`'s
+    fields, naming it (a bullet by index), or None when every value is real.
+    `None` (field omitted) and `[]` (clear the field) are never placeholders."""
+    for name, value in fields.items():
+        items = value if isinstance(value, list) else [value]
+        for i, item in enumerate(items):
+            if _is_placeholder(item):
+                where = f"{name}[{i}]" if isinstance(value, list) else name
+                return {
+                    "ok": False,
+                    "error": (
+                        f"`{where}` is a placeholder ({item!r}), not Exec Summary "
+                        "content — refused before writing. This verb writes the "
+                        "real summary (there is no sandbox); pass the field's "
+                        "actual text, or omit it to leave it unchanged."
+                    ),
+                    "field": name,
+                }
+    return None
+
+
 @mcp_server.tool()
 @_names_its_level
 def capture_project_state(
@@ -9412,7 +9557,20 @@ def capture_project_state(
     Returns `{ok, backend: {changed: [...], commit, cp_md_path}}`, where
     `changed` names the fields that actually moved — empty when your content
     already matched. Never raises.
+
+    A placeholder value (`probe`, `test`, `todo`, `tbd`, `x`, `lorem ipsum`...)
+    is refused, naming the field: this verb has no sandbox, so a smoke test
+    writes a real Exec Summary. Real short phrases ("On hold", "Shipped")
+    pass — the guard matches whole placeholder values, not length.
     """
+    # Before any read or write: a probe must not even resolve a project.
+    placeholder = _placeholder_exec_field(
+        status=status, objective=objective, where_it_stands=where_it_stands,
+        next_up=next_up, blockers=blockers, updates_append=updates_append,
+    )
+    if placeholder is not None:
+        return placeholder
+
     client = user_client()
     scope = resolve_write_scope(client, project_code)
     if scope is None:
@@ -11108,31 +11266,12 @@ def word_count_check(project_code: str) -> dict[str, Any]:
 # test suite exercises exactly what the server serves.
 
 
-def _forbid_unknown_arguments(server) -> int:
-    """Make every registered tool reject undeclared arguments; returns the
-    count. Reaches the SDK's `_tool_manager` — private, but pinned
-    (`mcp>=2.0,<3`) and exercised end-to-end by `test_tool_signatures.py`,
-    which calls a tool through `call_tool` with a stray argument."""
-    count = 0
-    for tool in server._tool_manager.list_tools():
-        base = tool.fn_metadata.arg_model
-        if base.model_config.get("extra") == "forbid":
-            continue
-        strict = type(
-            base.__name__,
-            (base,),
-            {
-                "__module__": base.__module__,
-                "model_config": ConfigDict(**{**base.model_config, "extra": "forbid"}),
-            },
-        )
-        tool.fn_metadata.arg_model = strict
-        tool.parameters = strict.model_json_schema(by_alias=True)
-        count += 1
-    return count
+# The mechanism lives in `cp_engine.mcp_strict` (vendored verbatim) so the
+# stdio `cxp mcp` server refuses the same way — one implementation, not two
+# that drift. Imported here, at the end, because the swap must see every tool.
+from cp_engine.mcp_strict import forbid_unknown_arguments  # noqa: E402
 
-
-_forbid_unknown_arguments(mcp_server)
+forbid_unknown_arguments(mcp_server)
 
 if __name__ == "__main__":
     main()

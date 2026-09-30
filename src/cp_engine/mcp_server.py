@@ -220,6 +220,21 @@ def _resolve(project_code: str):
 # server (see mc2_db for the full note).
 
 
+def _with_project_status(result, client, project_id, project_code):
+    """Annotate a project-scoped read with the project's MC-2 status (#279).
+
+    One primary-key read of `projects.mc_status`; fail-soft. A dict result
+    gains `project_status` (plus `archived` / `project_note` for finished
+    work); a list result gains one leading note row only when the project is
+    Closed or Archived, so a live project's list keeps its exact shape. The
+    wording lives in `cp_engine.project_status`, shared with the hosted
+    server. Archived data is never hidden — see that module for why.
+    """
+    from cp_engine.project_status import annotate_project
+
+    return annotate_project(result, client, project_id, project_code)
+
+
 def _resolve_any_client():
     """An MC-2 client for reads that are not scoped to a project.
 
@@ -474,7 +489,7 @@ def list_project_sources(project_code: str) -> list[dict]:
         if resolved is None:
             return [{"note": f"code '{project_code}' resolved to no project"}]
         client, pid, cid = resolved
-        return list_sources(client, pid, cid)
+        return _with_project_status(list_sources(client, pid, cid), client, pid, project_code)
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,
         # actionable error note instead of propagating a protocol error.
@@ -798,9 +813,10 @@ def list_spine_elements(project_code: str, layer: str = "",
             # masquerade as a genuinely empty spine (the v0.39.0 false-negative).
             return [{"note": f"code '{project_code}' resolved to no project"}]
         client, pid, cid = resolved
-        return list_spine(client, pid, cid, layer=layer or None,
+        rows = list_spine(client, pid, cid, layer=layer or None,
                           scope=scope or None, binding=binding or None,
                           compact=compact, tier=tier or None)
+        return _with_project_status(rows, client, pid, project_code)
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,
         # actionable error note instead of propagating a protocol error.
@@ -872,7 +888,7 @@ def pull_spine_element(project_code: str, key: str) -> dict:
                         result["attach_nudge"] = nudge
             except Exception:  # noqa: BLE001 — projection is best-effort
                 pass
-        return result
+        return _with_project_status(result, client, pid, project_code)
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,
         # actionable error note instead of propagating a protocol error.
@@ -1234,7 +1250,10 @@ def list_commitments(project_code: str, status: str = "open") -> list[dict]:
         if scope is None:
             return [{"note": f"code {project_code!r} resolved to no engagement "
                              "or initiative"}]
-        return cm.list_commitments(client, scope, status=status)
+        return _with_project_status(
+            cm.list_commitments(client, scope, status=status),
+            client, scope["id"], project_code,
+        )
     except Exception as exc:  # noqa: BLE001
         return [{"error": f"failed to list commitments for {project_code!r}: {exc}"}]
 
@@ -1309,6 +1328,19 @@ def promote_uphill(
 # across the CLI, this server and the hosted server's copy.
 promote_uphill.__doc__ = (promote_uphill.__doc__ or "").replace("<LEVEL_RULE>", LEVEL_RULE)
 promote_uphill = _tool(promote_uphill)
+
+
+# ── Unknown arguments are an error, not a no-op (#318 parity) ─────────────
+#
+# The SDK's argument model drops an undeclared argument by default, so a
+# caller who passed a hosted-only name here (`include_absorbed=` on
+# `list_spine_elements`, a catalog's stale spelling) got the default applied
+# and a plausible, wrong answer. The hosted server refuses since #318; this is
+# the same mechanism, shared rather than copied. Must run AFTER the last tool
+# registers — a tool added below this line would stay lenient.
+from cp_engine.mcp_strict import forbid_unknown_arguments  # noqa: E402
+
+forbid_unknown_arguments(mcp)
 
 
 

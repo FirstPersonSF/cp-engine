@@ -234,3 +234,88 @@ def test_set_spine_element_takes_element_id(server, monkeypatch):
     monkeypatch.setattr(server, "resolve_element_versions", fake_resolve)
     server.set_spine_element("slt-5196", element_id="_authored/brief", important=True)
     assert seen == ["_authored/brief"]
+
+
+# ── stdio parity: `cxp mcp` refuses unknown arguments too ─────────────
+
+
+def test_every_stdio_tool_advertises_that_it_takes_no_extra_arguments():
+    """Derived from the stdio server's own registry, so a tool added later
+    is covered without anyone remembering to list it."""
+    from cp_engine import mcp_server as stdio
+
+    tools = stdio.mcp._tool_manager.list_tools()
+    assert tools, "the stdio registry is empty — this test would pass vacuously"
+    loose = [t.name for t in tools if t.parameters.get("additionalProperties") is not False]
+    assert not loose, f"stdio tools whose schema allows undeclared arguments: {loose}"
+
+
+def test_a_stray_argument_to_a_stdio_tool_fails_naming_it(monkeypatch):
+    """`include_absorbed` is a HOSTED `list_spine_elements` argument. Passed
+    to the stdio verb it used to vanish and the unfiltered default applied;
+    now it fails the call, naming the argument, and the body never runs."""
+    from cp_engine import mcp_server as stdio
+
+    ran = []
+    monkeypatch.setattr(stdio, "_resolve", lambda code: ran.append(code))
+    with pytest.raises(Exception) as exc:
+        asyncio.run(stdio.mcp.call_tool("list_spine_elements", {
+            "project_code": "ibx-5153", "include_absorbed": True,
+        }))
+    assert "include_absorbed" in str(exc.value)
+    assert "Extra inputs are not permitted" in str(exc.value)
+    assert not ran
+
+
+def test_a_declared_stdio_argument_still_passes(monkeypatch):
+    """The control on the control: strictness must not refuse real names."""
+    from cp_engine import mcp_server as stdio
+
+    monkeypatch.setattr(stdio, "_resolve", lambda code: None)
+    asyncio.run(stdio.mcp.call_tool("list_spine_elements", {
+        "project_code": "ibx-5153", "tier": "working", "compact": True,
+    }))
+
+
+# ── add_spine_version takes `key` too ─────────────────────────────────
+
+
+@pytest.fixture
+def version_seen(server, monkeypatch):
+    """Stops `add_spine_version` right after element resolution, recording
+    the identifier that reached it."""
+    seen = []
+    monkeypatch.setattr(server, "user_client", lambda: object())
+    monkeypatch.setattr(server, "caller_subject", lambda: "u")
+    monkeypatch.setattr(server, "resolve_write_scope",
+                        lambda c, code: {"id": "p", "kind": "project", "project_code": code})
+
+    def fake_resolve(_client, _pid, key):
+        seen.append(key)
+        return None, [], None
+
+    monkeypatch.setattr(server, "resolve_element_versions", fake_resolve)
+    return seen
+
+
+@pytest.mark.parametrize("arg", ["key", "element_id"])
+def test_add_spine_version_takes_either_name(server, version_seen, arg):
+    server.add_spine_version("slt-5196", body="v2 text", **{arg: "_authored/brief"})
+    assert version_seen == ["_authored/brief"]
+
+
+def test_add_spine_version_keeps_element_id_first_positionally(server, version_seen):
+    """Existing positional callers — `(code, element_id, body)` — keep working."""
+    server.add_spine_version("slt-5196", "_authored/brief", "v2 text")
+    assert version_seen == ["_authored/brief"]
+
+
+def test_add_spine_version_refuses_two_different_identifiers(server, version_seen):
+    out = server.add_spine_version("slt-5196", element_id="_authored/a",
+                                   body="v2", key="_authored/b")
+    assert "aliases" in out["error"] and not version_seen
+
+
+def test_add_spine_version_still_requires_a_body(server, version_seen):
+    """`body` gained a default only so `key` could follow it; empty is refused."""
+    assert server.add_spine_version("slt-5196", key="_authored/brief")["error"] == "body is required"
