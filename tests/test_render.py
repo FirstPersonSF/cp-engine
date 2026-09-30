@@ -404,6 +404,17 @@ def test_claude_md_word_count_budget() -> None:
         )
 
 
+def test_claude_md_restart_note_covers_credentials() -> None:
+    """2026-09-01: the Railway MCP kept 401ing after Drew re-ran `railway
+    login` — the process held the token it captured at startup, and `/mcp`
+    cleared it. The restart note said "after a release" only, so a stale
+    CREDENTIAL read as a broken login. The note must name both causes."""
+    out = render_claude_md(make_tenant(name="1p"))
+    section = out.split("## Restart `cxp mcp`", 1)[1].split("\n## ", 1)[0]
+    assert "credential" in section and "bytecode" in section
+    assert "`/mcp`" in section
+
+
 def test_cp_tools_command_carries_the_verb_catalog() -> None:
     """The catalog moved (not vanished): the /cp-tools plugin command holds
     all five numbered stores and their verbs."""
