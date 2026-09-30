@@ -665,6 +665,46 @@ def write_install_record(local_path: Path, record: dict) -> Path:
     return local_path
 
 
+#: Who can be named as having done an install. "unrecorded" is not here on
+#: purpose: it is what `cxp sync` writes about an install it did not witness,
+#: and an installer claiming it would erase the one fact the field exists for.
+INSTALLERS = ("agent", "human")
+
+
+def current_install_record(root: Path, *, installer: str, user: str | None = None) -> dict:
+    """The `[install]` table for THIS machine as it stands now.
+
+    One gatherer for both writers — `cxp record-install` (the install
+    payload's last step, #296 §4.6) and `cxp sync`'s refresh — so the two
+    cannot describe the same machine differently.
+    """
+    return build_install_record(
+        cli_version=installed_cli_version(),
+        plugins=read_installed_plugins(default_installed_plugins_path()),
+        receipt_source=read_receipt_source(default_receipt_path()),
+        tenant_root=root,
+        pin=read_pin(root),
+        hosted_url=read_hosted_url(root),
+        installer=installer,
+        user=user,
+    )
+
+
+def record_install(root: Path, installer: str, *, user: str | None = None) -> tuple[Path, dict]:
+    """Write the install record an install payload owes (#296 §4.5, §4.6).
+
+    Unlike sync's refresh this CREATES `.cp-engine.local.toml` when absent:
+    the install payload runs once, on a machine that has just been set up,
+    and is the one writer that witnessed the install. Raises ValueError for
+    an installer outside `INSTALLERS`.
+    """
+    if installer not in INSTALLERS:
+        raise ValueError(f"installer must be one of {', '.join(INSTALLERS)}; got {installer!r}")
+    record = current_install_record(root, installer=installer, user=user)
+    path = write_install_record(root / LOCAL_FILENAME, record)
+    return path, record
+
+
 def install_record(
     record: dict | None, cli_version: str | None, plugins: Iterable[PluginInstall]
 ) -> Finding | None:

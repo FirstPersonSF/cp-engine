@@ -616,3 +616,69 @@ def test_sync_refresh_records_the_machine_user(tmp_path: Path, monkeypatch):
     assert sync._refresh_install_record(tmp_path) == [local]
     rec = health.read_install_record(tmp_path)
     assert rec["user"] == "Drew" and rec["installer"] == "unrecorded"
+
+
+# ── record-install (#296 §4.6: the payload's record step) ────────────────
+
+
+def _tenant_for_record(tmp_path: Path, monkeypatch) -> Path:
+    from cp_engine import capture_session
+
+    root = tmp_path / "tenant"
+    root.mkdir()
+    (root / ".cp-engine.toml").write_text('[engine]\nversion = "~= 0.125"\n')
+    (root / ".mcp.json").write_text(json.dumps({"mcpServers": {"cp-hosted": {"url": "https://h.test/mcp"}}}))
+    env = _fake_env(tmp_path, "0.125.1")
+    monkeypatch.setattr(health, "default_installed_plugins_path", lambda: env["installed_plugins_path"])
+    monkeypatch.setattr(health, "default_receipt_path", lambda: env["receipt_path"])
+    monkeypatch.setattr(health, "installed_cli_version", lambda: "0.125.1")
+    monkeypatch.setattr(capture_session, "default_session_user", lambda root: "Tony")
+    return root
+
+
+def test_record_install_creates_the_record_the_payload_owes(tmp_path: Path, monkeypatch):
+    """CONTROL: before this, nothing but sync wrote `[install]`, sync never
+    creates the file, and so an agent-driven install could never record
+    `installer = "agent"` — the one fact the September finding needed. On the
+    unfixed tree the command does not exist and this fails."""
+    from cp_engine.cli import main
+
+    root = _tenant_for_record(tmp_path, monkeypatch)
+    monkeypatch.chdir(root)
+    assert not (root / ".cp-engine.local.toml").exists()
+    r = CliRunner().invoke(main, ["record-install", "--installer", "agent"])
+    assert r.exit_code == 0, r.output
+    rec = health.read_install_record(root)
+    assert rec["installer"] == "agent" and rec["user"] == "Tony"
+    assert rec["cli"]["version"] == "0.125.1"
+    assert rec["tenant"]["pin"] == "~= 0.125" and rec["hosted"]["url"] == "https://h.test/mcp"
+    # And the doctor then reads the install as recorded: no install_record finding.
+    plugins = health.read_installed_plugins(health.default_installed_plugins_path())
+    assert health.install_record(rec, "0.125.1", plugins) is None
+
+
+def test_sync_refresh_keeps_the_payloads_installer(tmp_path: Path, monkeypatch):
+    """Sync refreshes versions but must never rewrite WHO installed."""
+    from cp_engine import sync
+
+    root = _tenant_for_record(tmp_path, monkeypatch)
+    health.record_install(root, "agent")
+    monkeypatch.setattr(health, "installed_cli_version", lambda: "0.125.2")
+    sync._refresh_install_record(root)
+    rec = health.read_install_record(root)
+    assert rec["installer"] == "agent" and rec["cli"]["version"] == "0.125.2"
+
+
+def test_record_install_refuses_unrecorded_and_outside_a_tenant(tmp_path: Path, monkeypatch):
+    from cp_engine.cli import main
+
+    root = _tenant_for_record(tmp_path, monkeypatch)
+    with pytest.raises(ValueError):
+        health.record_install(root, "unrecorded")
+    r = CliRunner().invoke(main, ["record-install", "--installer", "unrecorded"])
+    assert r.exit_code == 2  # click rejects the choice
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    r = CliRunner().invoke(main, ["record-install", "--installer", "human"])
+    assert r.exit_code == 2 and "not inside a cp tenant" in r.output
