@@ -28,6 +28,17 @@ class _Query:
         self.payload = payload
         return self
 
+    def delete(self):
+        self.deleting = True
+        return self
+
+    def ilike(self, col, pattern):
+        # Exact, case-insensitive: the callers escape LIKE metacharacters so
+        # the pattern is a literal title (#57), never a glob.
+        lit = pattern.replace("\\%", "%").replace("\\_", "_").replace("\\\\", "\\")
+        self.filters.append(lambda r, c=col: (r.get(c) or "").lower() == lit.lower())
+        return self
+
     def eq(self, col, val):
         self.filters.append(lambda r, c=col, v=val: r.get(c) == v)
         return self
@@ -56,6 +67,10 @@ class _Query:
     def execute(self):
         rows = [r for r in self.db.tables.get(self.name, [])
                 if all(f(r) for f in self.filters)]
+        if getattr(self, "deleting", False):
+            keep = [r for r in self.db.tables.get(self.name, []) if r not in rows]
+            self.db.tables[self.name] = keep
+            return SimpleNamespace(data=[dict(r) for r in rows])
         if self.payload is not None:
             for r in rows:
                 r.update(self.payload)

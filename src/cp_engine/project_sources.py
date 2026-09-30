@@ -1840,9 +1840,35 @@ def _persist_description(client, asset_id: str, summary: str) -> None:
     if not asset_id or not summary:
         return
     try:
+        # Fingerprint what the SUMMARISER wrote into `meta` (#341), so a
+        # re-ingest can tell this generated description from a hand-written
+        # one — the column alone cannot, and only a hand-written one is carried
+        # forward to the new row. `meta` is merged (read-modify-write), never
+        # clobbered: the pipeline keeps ingest bookkeeping there.
+        from cp_engine.source_curation import (
+            GENERATED_SHA_KEY,
+            description_fingerprint,
+        )
+
+        rows = (
+            client.table(Tables.RAG_ASSETS)
+            .select("id, meta")
+            .eq("id", asset_id)
+            .execute()
+        ).data or []
+        meta = rows[0].get("meta") if rows else None
+        meta = meta if isinstance(meta, dict) else {}
         (
             client.table(Tables.RAG_ASSETS)
-            .update({"description": summary})
+            .update(
+                {
+                    "description": summary,
+                    "meta": {
+                        **meta,
+                        GENERATED_SHA_KEY: description_fingerprint(summary),
+                    },
+                }
+            )
             .eq("id", asset_id)
             .execute()
         )
