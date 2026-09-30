@@ -4,6 +4,25 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.126.4 — 2026-09-30
+
+**Read-only endpoint for ChatGPT (#141).** The hosted server now also serves
+`/mcp/read`: the 24 read tools only (each annotated `readOnlyHint`), so no
+writer exists there. Every tool is classified read-only or main-only; the
+server refuses to start on an unclassified tool, and a test derives the
+writer set from the code (through helpers) and fails if any read tool can
+reach one. `/mcp` is unchanged. Optional `READ_ONLY_OAUTH_CLIENT_IDS` refuses
+named OAuth clients on `/mcp`. Setup runbook for ChatGPT Business:
+`docs/chatgpt-readonly-connector.md`. Governance: tenant decision #85.
+
+*Every call is audited.* Previously 61 of 64 tools wrote no `mcp_audit_log`
+row on error or early-return paths, and four tools never audited. Every
+registered tool is now wrapped; a coverage test calls each one. The `client`
+column records endpoint, OAuth client id (from the verified token), the
+client's self-reported name/version and user-agent.
+
+*Instructions state the real write surface* — 40 tools, not 21.
+
 ## v0.126.3 — 2026-09-30
 
 **Hosted sessions can rotate a CP (#280 tier 3).** New hosted verb
