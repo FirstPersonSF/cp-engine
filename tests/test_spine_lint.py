@@ -600,6 +600,25 @@ def test_unauthored_brief_is_skipped_on_an_initiative():
                    for w in lint_curation([sow], today=_TODAY, label=label))
 
 
+def test_unauthored_brief_runs_on_jobs_only():
+    """Since v0.124.3 an account never carries an agreement, and a program is
+    a grouping whose jobs hold the SOWs — the same unsatisfiable warning the
+    initiative skip removed. The labels come from `state.WorkstreamLabel`, so
+    a new label is covered (and skipped) without editing this list."""
+    from typing import get_args
+
+    from cp_engine.state import WorkstreamLabel
+
+    labels = set(get_args(WorkstreamLabel))
+    assert {"account", "program", "job", "initiative"} <= labels
+    sow = _crow(framing="Statement of Work", layer="Agreement", body="- _<fill>_")
+    for label in labels - {"job"}:
+        assert not any("unauthored standing Brief" in w
+                       for w in lint_curation([sow], today=_TODAY, label=label)), label
+    assert any("unauthored standing Brief" in w
+               for w in lint_curation([sow], today=_TODAY, label="job"))
+
+
 class _Q:
     def __init__(self, table, filters, db):
         self._t, self._f, self._db = table, dict(filters), db
@@ -671,3 +690,6 @@ def test_run_all_lints_skips_the_brief_check_for_an_initiative_end_to_end():
     assert not any("unauthored standing Brief" in w for w in run(_projects_db()))
     assert any("unauthored standing Brief" in w for w in run(_projects_db(
         deal_stage="Won", parent_id="acct", companies={"kind": "client"})))
+    # An account (parentless, client, no agreement) is skipped end to end too.
+    assert not any("unauthored standing Brief" in w for w in run(_projects_db(
+        companies={"kind": "client"})))

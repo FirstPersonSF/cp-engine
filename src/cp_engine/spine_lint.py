@@ -297,10 +297,12 @@ def lint_curation(rows: list[dict], *, today=None,
     Needs the SPINE_LINT_COLUMNS shape plus `version_date`.
 
     `label` is the workstream's derived label (`state.derive_label`:
-    account / program / job / initiative). An `initiative` skips the standing
-    Brief/SOW check — it has no agreement, so there is no signed SOW to author
-    and the warning could never be satisfied (#319). `None` (label unknown)
-    keeps the check, so an unresolved project is linted as before.
+    account / program / job / initiative). Only a `job` runs the standing
+    Brief/SOW check. An initiative has no agreement, an account never carries
+    one (v0.124.3), and a program is a grouping whose jobs hold the SOWs — on
+    any of them there is no signed SOW to author and the warning could never
+    be satisfied (#319). `None` (label unknown) keeps the check, so an
+    unresolved project is linted as before.
     """
     from datetime import date as _date
 
@@ -312,11 +314,12 @@ def lint_curation(rows: list[dict], *, today=None,
         body = row.get("body") or ""
         layer = row.get("layer")
 
-        # #112 P3 — standing Brief still the scaffold. Not on an initiative
-        # (#319): mission-control carried a permanent, unsatisfiable warning
-        # for a scaffolded SOW on internal work with no client and no
-        # agreement, and each reader re-investigated it.
-        if (label != "initiative"
+        # #112 P3 — standing Brief still the scaffold. Jobs only (#319):
+        # mission-control carried a permanent, unsatisfiable warning for a
+        # scaffolded SOW on internal work with no client and no agreement, and
+        # each reader re-investigated it. Accounts and programs are the same
+        # shape — no envelope of their own to author against.
+        if (label in (None, "job")
                 and (_norm_layer(layer) == "brief"
                 or _STANDING_BRIEF_RE.search(row.get("framing") or ""))
                 and (len(body) < BRIEF_MIN_CHARS or _PLACEHOLDER_RE.search(body))):
