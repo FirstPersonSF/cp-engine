@@ -174,6 +174,20 @@ def _try_load_dropbox_creds() -> None:
         pass
 
 
+def _try_load_drive_creds() -> None:
+    """Best-effort export of GOOGLE_* Drive creds (#324) — the Drive twin of
+    `_try_load_dropbox_creds`, with the same never-fail-the-caller contract.
+    Without it a Drive-hosted original could not be fetched from a local
+    session, which is the only read left when a source has zero chunks."""
+    try:
+        from cp_engine import mc2_db as _mc2
+        from cp_engine.config import load as load_config
+
+        _mc2.load_drive_creds(load_config(_tenant_root()))
+    except Exception:  # noqa: BLE001 - see docstring: never fail the caller
+        pass
+
+
 def _resolve(project_code: str):
     """Resolve a project CODE to `(client, project_id, company_id)`.
 
@@ -487,7 +501,15 @@ def list_project_sources(project_code: str) -> list[dict]:
       these.** Honour it before quoting a source in client work.
 
     Absence of either field means nobody has recorded one — not that the
-    document is current or safe to quote.
+    document is current or safe to quote. Ingest now writes a
+    `status_note` itself when a document's body carries a confidentiality
+    marking (CONFIDENTIAL, under NDA, EMBARGOED, …) — worded "auto-detected
+    … unconfirmed" (#324).
+
+    Also listed (#324): the company's ACCOUNT-scoped docs, marked
+    `scope: "account"` — filed under the account node and readable from
+    every workstream of the company. An entry with `empty: True` /
+    `chunk_count: 0` EXISTS but has no readable text; fetch the original.
     """
     from cp_engine.project_sources import list_sources
 
@@ -496,7 +518,10 @@ def list_project_sources(project_code: str) -> list[dict]:
         if resolved is None:
             return [{"note": f"code '{project_code}' resolved to no project"}]
         client, pid, cid = resolved
-        return _with_project_status(list_sources(client, pid, cid), client, pid, project_code)
+        return _with_project_status(
+            list_sources(client, pid, cid, include_account=True),
+            client, pid, project_code,
+        )
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,
         # actionable error note instead of propagating a protocol error.
@@ -514,6 +539,10 @@ def pull_project_source(
     the read cannot prove completeness (#298). Reviewer comments on Office
     files are ingested into the document's tail (a `## Comments` block), so
     read to the end. With `query` the chunks are the top-50 by relevance.
+
+    A document that exists but holds zero chunks comes back `empty: True`
+    with `chunk_count: 0` and a note — distinct from "no source named …",
+    which now means the title is genuinely not in the store (#324).
     """
     from cp_engine.config import load as load_config
     from cp_engine.project_sources import pull_source
@@ -561,14 +590,16 @@ def fetch_project_source(project_code: str, doc_title: str) -> dict:
         resolved = _resolve(project_code)
         if resolved is None:
             return {"error": f"project {project_code!r} not found"}
-        client, pid, _cid = resolved
-        # A Dropbox-hosted source downloads through the DropboxConnector (#111).
-        # No-ops for Drive-hosted sources and when no mc-2 clone is configured.
+        client, pid, cid = resolved
+        # A Dropbox-hosted source downloads through the DropboxConnector (#111),
+        # a Drive-hosted one through the Drive connector (#324). Both no-op
+        # when no mc-2 clone is configured.
         _try_load_dropbox_creds()
+        _try_load_drive_creds()
         # TODO: cp-fetch-* temp dirs accumulate (never cleaned up); a periodic
         # sweep of stale cp-fetch-* dirs would reclaim the space. Left as-is.
         dest = tempfile.mkdtemp(prefix="cp-fetch-")
-        return fetch_source(client, pid, doc_title, dest)
+        return fetch_source(client, pid, doc_title, dest, company_id=cid)
     except Exception as exc:  # noqa: BLE001
         # An MCP tool must never throw to the client: return a structured,
         # actionable error note instead of propagating a protocol error.
@@ -603,14 +634,15 @@ def compare_project_sources(project_code: str, doc_a: str, doc_b: str) -> dict:
         resolved = _resolve(project_code)
         if resolved is None:
             return {"error": f"project {project_code!r} not found"}
-        client, pid, _cid = resolved
+        client, pid, cid = resolved
         _try_load_dropbox_creds()
+        _try_load_drive_creds()
 
         def _local(doc: str, side: str) -> str | dict:
             if _Path(doc).is_file():
                 return doc
             dest = tempfile.mkdtemp(prefix="cp-fetch-")
-            fetched = fetch_source(client, pid, doc, dest)
+            fetched = fetch_source(client, pid, doc, dest, company_id=cid)
             if fetched.get("error"):
                 return {"error": f"{side}: {fetched['error']}"}
             return fetched["local_path"]

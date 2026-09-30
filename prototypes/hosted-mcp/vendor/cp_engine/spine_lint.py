@@ -620,12 +620,103 @@ def _workstream_has_agreement(client, rows: list[dict]) -> bool | None:
         return None
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  Dangling `Source reviewed:` references (#324 part c)
+# ──────────────────────────────────────────────────────────────────────
+#
+# A derived doc's header names the file it was written against —
+# **Source reviewed:** `Infoblox_Truth_AI_Depends_On_ECD_Creative_Room.md`
+# (ibx-5153, 2026-08-28). That reads as provenance; when the file never
+# reached the source store it is a dangling pointer, and the review quietly
+# outlives the only copy of what it compressed. For two weeks nothing said so.
+
+_SOURCE_REVIEWED_RE = re.compile(
+    r"^[\s>*_-]*sources?[ _-]+reviewed[*_]*\s*:[*_]*\s*(?P<rest>.+?)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+_BACKTICK_RE = re.compile(r"`([^`]+)`")
+# A bare (un-backticked) reference counts only when it LOOKS like a file —
+# a prose value ("the Q3 deck, from memory") makes no claim to resolve.
+_FILE_TOKEN_RE = re.compile(r"[^\s,;()`]+(?:\s[^\s,;()`]+)*\.[A-Za-z0-9]{2,5}")
+_KNOWN_EXT_RE = re.compile(
+    r"\.(?:md|markdown|txt|pdf|docx?|pptx?|xlsx?|csv|key|pages|numbers|rtf|"
+    r"png|jpe?g|gif|mp4|mov|m4a|mp3|html?|json|vtt|srt)$",
+    re.IGNORECASE,
+)
+
+
+def extract_source_reviewed(text: str) -> list[str]:
+    """Every file a doc says it reviewed, from its `Source(s) reviewed:`
+    lines — backticked names, else file-shaped tokens. Order kept, deduped."""
+    refs: list[str] = []
+    for m in _SOURCE_REVIEWED_RE.finditer(text or ""):
+        rest = m.group("rest")
+        found = _BACKTICK_RE.findall(rest) or _FILE_TOKEN_RE.findall(rest)
+        for ref in found:
+            ref = ref.strip()
+            if ref and ref not in refs:
+                refs.append(ref)
+    return refs
+
+
+def _norm_source_name(name: str) -> str:
+    """Compare a referenced filename with an ingested title: basename,
+    case-folded, known extensions stripped (ingest keeps `x.pptx.pdf`,
+    Drive-native titles carry none), separators collapsed."""
+    base = name.replace("\\", "/").rsplit("/", 1)[-1].strip().lower()
+    while True:
+        stripped = _KNOWN_EXT_RE.sub("", base)
+        if stripped == base:
+            break
+        base = stripped
+    return re.sub(r"[\s_\-]+", " ", base).strip()
+
+
+def lint_source_reviewed(
+    docs: dict[str, str],
+    source_titles,
+    local_files=(),
+) -> list[str]:
+    """Warn for each `Source reviewed:` reference that resolves to nothing.
+
+    `docs` maps a doc's display path to its text. `source_titles` is every
+    title the source store has held for this workstream (any status —
+    `project_sources.ingested_source_titles`). `local_files` are file names
+    present in the workstream's own directory, which also resolve: a file
+    in the tree is reachable even though it is not in the store.
+
+    Match is on the normalised name only (`_norm_source_name`) — the file
+    a doc NAMES against the file the store HOLDS; nothing is inferred from
+    either one's contents.
+    """
+    known = {_norm_source_name(t) for t in source_titles if t}
+    known |= {_norm_source_name(f) for f in local_files if f}
+    out: list[str] = []
+    for path in sorted(docs):
+        for ref in extract_source_reviewed(docs[path]):
+            norm = _norm_source_name(ref)
+            # A bare reference can carry leading prose ("the ECD deck.pdf");
+            # it resolves when a known name is its trailing words.
+            if norm in known or any(k and norm.endswith(" " + k) for k in known):
+                continue
+            out.append(
+                f"`{path}` names Source reviewed `{ref}`, which was never "
+                "ingested (not in the source store or this workstream's "
+                "directory) — the review may be outliving its only source; "
+                "ingest the file, or record where it lives"
+            )
+    return out
+
+
 def run_all_lints(
     client,
     codes: list[str],
     *,
     cp_md_text: str | None = None,
     today=None,
+    workstream_docs: dict[str, str] | None = None,
+    local_files=(),
+    source_titles=None,
 ) -> list[str]:
     """Every spine-lint check for one project, as a flat list of warnings.
 
@@ -648,6 +739,13 @@ def run_all_lints(
     `cp_md_text` enables the scaffold-placeholder check. Omitted (the hosted
     case, until a caller reads the file) it is skipped rather than guessed at.
 
+    `workstream_docs` (`{relpath: text}` of the workstream directory's own
+    markdown — the caller reads it; this module touches no filesystem) +
+    `source_titles` enable the dangling `Source reviewed:` check (#324);
+    `local_files` are the directory's file names, which also resolve (see
+    `lint_source_reviewed`). Either omitted, the check is skipped. It does not depend on the spine,
+    so it runs even for a workstream with no live spine rows.
+
     Returns warnings in the CLI's order so the two surfaces read the same.
     """
     from cp_engine import mc2_db
@@ -663,8 +761,13 @@ def run_all_lints(
     ) or []
     # One live row per element (#113) — a double-live element warns once.
     rows = _one_live_per_element([r for r in all_rows if not r.get("archived")])
+    source_warnings: list[str] = []
+    if workstream_docs is not None and source_titles is not None:
+        source_warnings = lint_source_reviewed(
+            workstream_docs, source_titles, local_files
+        )
     if not rows:
-        return []
+        return source_warnings
 
     warnings: list[str] = list(lint_spine_rows(rows))
 
@@ -712,4 +815,5 @@ def run_all_lints(
         from cp_engine.exec_summary_lint import lint_exec_summary
 
         warnings.extend(lint_exec_summary(cp_md_text))
+    warnings.extend(source_warnings)
     return warnings

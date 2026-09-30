@@ -734,7 +734,7 @@ def spine_lint_cmd(code: str) -> None:
     can't be read at all).
     """
     from cp_engine.exec_summary_lint import lint_exec_summary
-    from cp_engine.spine import SpineDirNotFound, find_spine_dir
+    from cp_engine.spine import SpineDirNotFound, find_spine_dir, workstream_docs
     from cp_engine.spine_lint import lint_cp_placeholders, lint_spine_rows
     from cp_engine.sync import BackendUnavailable
 
@@ -780,7 +780,30 @@ def spine_lint_cmd(code: str) -> None:
     except (SpineDirNotFound, OSError):
         pass
 
-    warnings = run_all_lints(client, codes, cp_md_text=cp_md_text)
+    # Dangling `Source reviewed:` references (#324): the workstream's docs
+    # against every title its source store has held. Skipped (not guessed)
+    # when the directory or the MC-2 row cannot be found.
+    source_titles = None
+    if spine_dir is not None and mc2_id:
+        try:
+            from cp_engine.project_sources import ingested_source_titles
+
+            proj = (
+                client.table(mc2_db.Tables.PROJECTS).select("company_id")
+                .eq("id", mc2_id).limit(1).execute().data
+            ) or []
+            source_titles = ingested_source_titles(
+                client, mc2_id, (proj[0].get("company_id") if proj else None)
+            )
+        except Exception as exc:  # noqa: BLE001 — advisory; say it was skipped
+            click.echo(f"  (Source reviewed check skipped: {exc})", err=True)
+
+    ws_docs, ws_files = (
+        workstream_docs(spine_dir) if spine_dir is not None else (None, set())
+    )
+    warnings = run_all_lints(client, codes, cp_md_text=cp_md_text,
+                             workstream_docs=ws_docs, local_files=ws_files,
+                             source_titles=source_titles)
 
 
     if warnings:

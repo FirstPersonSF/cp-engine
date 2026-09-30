@@ -728,3 +728,40 @@ def render_source_documents(assets, elements) -> str:
     if remaining > 0:
         lines.append(f"  …and {remaining} more")
     return "\n".join(lines)
+
+
+def workstream_docs(ws_dir) -> tuple[dict[str, str], set[str]]:
+    """The markdown docs that belong to ONE workstream directory, and the
+    names of every file in it.
+
+    Child workstreams nest inside their parent's directory, so the walk
+    stops at any subdirectory holding its own `cp.md` — a child's review
+    is checked against the CHILD's store, never the parent's. Unreadable
+    files are skipped. Returns `({relpath: text}, {file names})`.
+    """
+    root = Path(ws_dir)
+    docs: dict[str, str] = {}
+    names: set[str] = set()
+    if not root.is_dir():
+        return docs, names
+    stack = [root]
+    while stack:
+        d = stack.pop()
+        try:
+            entries = sorted(d.iterdir())
+        except OSError:
+            continue
+        for e in entries:
+            if e.name.startswith("."):
+                continue
+            if e.is_dir():
+                if not (e / "cp.md").is_file():
+                    stack.append(e)
+                continue
+            names.add(e.name)
+            if e.suffix.lower() == ".md":
+                try:
+                    docs[str(e.relative_to(root))] = e.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError):
+                    continue
+    return docs, names

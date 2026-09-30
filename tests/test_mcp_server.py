@@ -23,8 +23,10 @@ def test_list_project_sources_delegates(monkeypatch):
 
     captured = {}
 
-    def fake_list_sources(client, project_id, company_id):
+    def fake_list_sources(client, project_id, company_id, include_account=False):
         captured["args"] = (client, project_id, company_id)
+        # The MCP list names the company's account-scoped docs too (#324).
+        captured["include_account"] = include_account
         return [{"id": "a1", "title": "Doc One", "source_type": "gdoc"}]
 
     monkeypatch.setattr(
@@ -34,6 +36,7 @@ def test_list_project_sources_delegates(monkeypatch):
     out = srv.list_project_sources("IBX-5153")
 
     assert captured["args"] == (fake_client, "pid", "cid")
+    assert captured["include_account"] is True
     assert out == [{"id": "a1", "title": "Doc One", "source_type": "gdoc"}]
 
 
@@ -117,7 +120,7 @@ def test_list_project_sources_pure_fn_raises_returns_error(monkeypatch):
     """A raising pure fn (RPC error) is caught and returned as a structured error."""
     monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
 
-    def boom(client, project_id, company_id):
+    def boom(client, project_id, company_id, include_account=False):
         raise RuntimeError("rpc failed")
 
     monkeypatch.setattr("cp_engine.project_sources.list_sources", boom)
@@ -1073,7 +1076,7 @@ def test_fetch_project_source_loads_dropbox_creds(monkeypatch, tmp_path):
         lambda: creds_loaded.setdefault("called", True),
     )
 
-    def fake_fetch(client, pid, doc_title, dest):
+    def fake_fetch(client, pid, doc_title, dest, company_id=None):
         assert creds_loaded.get("called") is True
         return {"local_path": str(tmp_path / "deck.pptx"), "title": doc_title}
 
@@ -1184,7 +1187,7 @@ def test_matched_versions_leave_success_results_untouched(monkeypatch):
     monkeypatch.setattr(srv, "_installed_version", lambda: None)
     monkeypatch.setattr(
         "cp_engine.project_sources.list_sources",
-        lambda client, pid, cid: [{"id": "a1", "title": "Doc"}],
+        lambda client, pid, cid, include_account=False: [{"id": "a1", "title": "Doc"}],
     )
 
     out = srv.list_project_sources("IBX-5153")
