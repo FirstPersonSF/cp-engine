@@ -4,6 +4,57 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.125.0 — 2026-09-29
+
+**The improvements-log sweep: 23 issues, four rounds.** Minor, because
+both MCP servers now **reject unknown arguments** instead of silently
+dropping them (#318) — a caller that relied on an ignored argument will now
+get an error naming it. Restart `/mcp` and redeploy the hosted server.
+
+*Writes that went to the wrong place.* Hosted spine writes resolved the
+project code by sorting on a column that does not exist, swallowed the
+error, and fell back to the caller's short code — every hosted write since
+2026-08-03, plus `promote_uphill`'s and inbox-promote's drift guard (#309).
+Shipped skills and commands invoked `cp` (`/bin/cp`) instead of `cxp`,
+including runnable bash blocks (#317). The wrap-up merge step now resolves
+conflicts by region and runs `cxp merge-check`; `cxp sync` warns when the
+clone is behind upstream (#310).
+
+*Silent loss.* Bare-date decisions, commented Allocation lines and hand edits
+inside `carry-forward` no longer vanish (render warns); one unknown ingest
+verb skips its step instead of rejecting the plan (#320). Open asks, risks
+and horizon items carry forward until resolved, not one week (#326, #331) —
+items first raised within six weeks carry in full, older ones collapse to one
+"N stale … — triage in <week>" line per kind; horizon items close with
+`[done · …]` or strikethrough.
+
+*Strips that said the wrong thing.* "Open client asks (0)" over a non-empty
+list; inbound listing deleted sources; snooze honoured by the digest but not
+the strips — now one written contract (#323). Inbound and decisions strips
+read the four weeks their heading promises, capped at 25 and 10 (#328);
+renamed sources keep their bullet via an asset id on new announcements
+(#329).
+
+*Lints and counts.* Seven lint remedies corrected; the Brief/SOW check runs
+wherever there is an agreement (#319). Word count measures authored text —
+hand-written plus the Exec Summary — and excludes engine strips (#308).
+Decorated Exec Summary labels are read the same way by lint, merge and
+render (#319, #327, #333).
+
+*Reads.* MCP reads say when a project is Archived/Closed (#279); stdio
+gains `include_absorbed` and `canon` markers and both servers count hidden
+elements the same way (#330, #334, #335); hosted `list_spine_elements`
+accepts `compact`; `/cp-tools` signatures are tested against both
+registries (#318). Preflight's spine titles now actually load, and feed only
+the shape and funding gates (#332). Hosted writes warn when a workstream is
+not yet in the tree (#313) and refuse placeholder values like `probe`.
+
+*CLI.* `capture-session <code>`, a `--user` default matching the tenant's
+first-name convention, and render/lint/sync skip `.claude/worktrees/`
+(#325). pytest's summary line is back and `release.py` reports the pass
+count (#316). `/cp-prep` announces a dropped estimate column instead of
+silently losing figures (#284, still open until mc-2 migration 183 runs).
+
 ## v0.124.4 — 2026-09-29
 
 **Same-titled meetings on one day keep their own transcripts.** Patch
