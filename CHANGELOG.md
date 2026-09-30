@@ -4,6 +4,38 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.126.2 — 2026-09-30
+
+**Open questions carry until answered (#340).** `### Open questions` bullets
+(the #321 class) are parsed, carry forward like asks/risks/horizon (6-week
+cap, stale rollup, full continuation), close with `[answered · …]`,
+`[settled · …]` or strikethrough, and appear in the agenda and planning
+bundle. A parent's own open questions carry too. Unsettled decisions from
+sprint-planning meetings now land in `sprints/<W##>/_week.md` under
+`## Open questions` instead of being dropped.
+
+**`master-cp.md` marks a partial refresh (#251).** An Exec Summary whose stamp
+is newer than every field under it shows `⚠️ _partial refresh_`. It needs a
+full-history checkout (the tenant's `sync.yml` now uses `fetch-depth: 0`);
+on a shallow clone the row renders exactly as before.
+
+*Attach resolves what it should (#344).* `add_element_source` /
+`remove_element_source` accept an asset id, prefer a case-exact title, and
+resolve the company's account-scoped sources. Genuine ambiguity still refuses;
+the reply now lists `{id, title}` candidates.
+
+*Re-ingest keeps curation (#341).* A hand-written `status_note` — and a
+description known to be hand-written — carries onto the new row; auto-detected
+confidentiality notes are re-derived, never carried over a human note.
+
+*Lens "serves" resolves on live data (#342).* Links are matched by
+`est_item_id`, and a link counts as active when it points at open work (an
+approved-estimate item not marked done, or a live unsealed card) — 119 of 163
+live links, from 0.
+
+*Version bumps keep `actor` / `lifetime` / `card_kind` (#343)* — spine-authoring
+pinned to 811781e.
+
 ## v0.126.1 — 2026-09-30
 
 **Fix: Wednesday's planning bundle labelled last week.** `agenda.to_datetime`
