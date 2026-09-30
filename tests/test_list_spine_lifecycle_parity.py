@@ -137,9 +137,11 @@ def _stdio_view(rows):
     note = notes[0] if notes else {}
     return {
         "ids": {r["est_item_id"] for r in elements},
+        "canon": {r["est_item_id"] for r in elements if r.get("canon")},
         "absorbed_by": {r["est_item_id"]: r["absorbed_by"]
                         for r in elements if "absorbed_by" in r},
         "absorbed_hidden": note.get("absorbed_hidden", 0),
+        "canon_size": note.get("canon_size", 0),
     }
 
 
@@ -147,9 +149,11 @@ def _hosted_view(out):
     elements = out["elements"]
     return {
         "ids": {e["slug"] for e in elements},
+        "canon": {e["slug"] for e in elements if e.get("canon")},
         "absorbed_by": {e["slug"]: e["absorbed_by"]
                         for e in elements if "absorbed_by" in e},
         "absorbed_hidden": out.get("absorbed_hidden", 0),
+        "canon_size": out.get("canon_size", 0),
     }
 
 
@@ -169,3 +173,6 @@ def test_both_servers_give_the_same_lifecycle_answer(servers, tier,
         "ibx-5192", tier=tier, compact=compact, include_absorbed=include_absorbed))
     assert s == h
     assert s["absorbed_hidden"] == (0 if include_absorbed else _EXPECTED_HIDDEN[tier])
+    assert s["canon_size"] == 1
+    if tier != "stubs":
+        assert s["canon"] == {"_authored/canon-decision"}

@@ -813,9 +813,12 @@ def list_spine_elements(project_code: str, layer: str = "",
 
     Lifecycle-aware, like the hosted verb: an element sealed into a shipped
     deliverable (an active `absorbed_by` edge) is HISTORICAL and hidden by
-    default, with a trailing note row carrying `absorbed_hidden`. Pass
+    default, with a trailing note row carrying `absorbed_hidden` — how many
+    of the rows your filters asked for were hidden. Pass
     `include_absorbed=true` (retrospective mode) to list them, each annotated
-    `absorbed_by` with the deliverable that absorbed it.
+    `absorbed_by` with the deliverable that absorbed it. Canon members (an
+    active `canon_of` edge to the standing brief) carry `canon: true`, and
+    the note row carries `canon_size`.
     """
     from cp_engine.project_sources import list_spine
 
