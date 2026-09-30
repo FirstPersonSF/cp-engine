@@ -4,6 +4,22 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.125.1 — 2026-09-30
+
+**The sprint week rolls on Wednesday in Pacific, not UTC (#339).** `cxp sync`
+read the week from a UTC clock, so next week's sprint files appeared at 17:00
+Pacific every Tuesday; the webhook and hosted server run on Railway, where
+"today" was a UTC date too. For about seven hours a week cp and MC-2
+disagreed on the current sprint. Dates and week labels now come from the
+tenant's timezone — new optional `[tenant].timezone` in `.cp-engine.toml`,
+default `America/Los_Angeles`, validated at load. Timestamps stay UTC.
+Redeploy the webhook and the hosted server.
+
+**`cxp doctor` names the machine user.** The install record read
+`by unrecorded`, which looked like a failed identity lookup; that field is
+*how* the install happened (agent / human / unrecorded). The record now
+carries `user` as well, and doctor prints `by Drew (unrecorded)`.
+
 ## v0.125.0 — 2026-09-29
 
 **The improvements-log sweep: 23 issues, four rounds.** Minor, because
