@@ -163,7 +163,7 @@ SPINE_LIST_COLUMNS = (
 SPINE_PULL_COLUMNS = (
     "est_item_id, framing, layer, binding, status, serves, sources, "
     "version_label, version_date, body, important, note, archived, scope, "
-    "company_id, project_id"
+    "company_id, project_id, origin, field_states, review_flags"
 )
 SPINE_RESOLVE_COLUMNS = (
     "id, est_item_id, framing, status, important, note, rel_path, archived, "

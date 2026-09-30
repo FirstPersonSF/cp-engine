@@ -874,7 +874,12 @@ SPINE_LIST_COLUMNS = (
 # `spine_substance.actor` (mig 126) — who is speaking, for the v04
 # authority-precedence ordering (#146). Tag deliberately; default 'inferred'.
 _ACTORS = frozenset({"partner", "client", "vendor", "inferred"})
-SPINE_PULL_COLUMNS = SPINE_LIST_COLUMNS + ", body, sources, note, project_code, rel_path"
+# `origin`/`field_states`/`review_flags` carry the #314 machine-derived marker
+# and distill-fidelity flags (SELECT-granted to authenticated; read only here).
+SPINE_PULL_COLUMNS = (
+    SPINE_LIST_COLUMNS + ", body, sources, note, project_code, rel_path, "
+    "origin, field_states, review_flags"
+)
 COMMITMENT_COLUMNS = (
     "id, description, owner_email, owner_name, direction, due_date, "
     "date_status, status, source_kind, source_meeting_id, created_at, updated_at"
@@ -1511,7 +1516,24 @@ def pull_spine_element(
         "sources": row.get("sources"),
         "body": row.get("body"),
         "versions_visible": len(rows),
+        **_provenance_fields(row),
     }, client, row.get("project_id"), row.get("project_code"))
+
+
+def _provenance_fields(row: dict[str, Any]) -> dict[str, Any]:
+    """#314 — `provenance: "machine-derived, unverified"` while a distiller's
+    body stands unconfirmed, plus any distill-fidelity flags. Absent keys on a
+    person's body, so a clean pull reads exactly as before."""
+    from cp_engine.distill_fidelity import fidelity_flags_of, provenance_of
+
+    out: dict[str, Any] = {}
+    prov = provenance_of(row)
+    if prov:
+        out["provenance"] = prov
+    flags = fidelity_flags_of(row)
+    if flags:
+        out["fidelity_flags"] = flags
+    return out
 
 
 @mcp_server.tool()
@@ -7265,6 +7287,12 @@ def add_spine_version(
     surfaces under `step` in the return, never as a tool `{error}` — a journal
     miss must never fail the version write that triggered it.
 
+    Returns `prior` — the version this call superseded: its label, first
+    lines, size, and `provenance: "machine-derived, unverified"` / fidelity
+    flags when a distiller wrote it and no human confirmed it, with a
+    `warning` in that case (#314). Read it: a supersede is the one moment a
+    bad version can still be seen before it becomes history.
+
     Args:
         project_code: engagement, initiative, or standalone-repo code.
         element_id: the element's est_item_id (`_authored/<slug>`), bare slug,
@@ -7314,6 +7342,10 @@ def add_spine_version(
     next_n = (max(nums) + 1) if nums else 1
     # Carry the row's OWN canonical code, not the caller's form (slug drift).
     row_code = base.get("project_code") or scope["project_code"]
+
+    # What this supersede is about to hide (#314). Read BEFORE the write so
+    # the answer describes the version that was live when the caller decided.
+    prior = _prior_version_preview(client, base)
 
     now = datetime.now(timezone.utc)
     new_id = f"{row_code}/{est_item_id}/v{next_n}"
@@ -7372,7 +7404,18 @@ def add_spine_version(
         "caller": subject,
         "version_note": version_note,
         "body_chars": len(body),
+        # The body this version just superseded — its first lines, so a bad
+        # prior version is SEEN on the way out, never buried unread (#314).
+        "prior": prior,
     }
+    if prior.get("provenance") or prior.get("fidelity_flags"):
+        result["warning"] = (
+            f"superseded {prior.get('version_label')}, a "
+            f"{prior.get('provenance') or 'distill-fidelity-flagged'} body "
+            "no human confirmed — if the new version was built FROM it, "
+            "check its claims against the source; if it replaces a bad "
+            "distill, say so in version_note."
+        )
     # Auto-journal the move as a review-gated step. Title priority mirrors the
     # engine verb (#145 parity): explicit step_title > version_note > derived
     # "Updated <framing> (v<N>)".
@@ -7390,6 +7433,47 @@ def add_spine_version(
     except Exception as exc:  # noqa: BLE001 — journaling is non-fatal
         result["step"] = {"error": f"auto-step failed: {type(exc).__name__}: {str(exc)[:300]}"}
     return result
+
+
+def _prior_version_preview(client, base: dict[str, Any]) -> dict[str, Any]:
+    """The live version a supersede is about to demote, in brief (#314): its
+    label, first lines, size, and — when a distiller wrote it and no human
+    confirmed it — the machine-derived marker and any fidelity flags.
+
+    One row, four columns, by primary key; the resolve select stays lean for
+    the other verbs that share it. Never raises: a failed preview is reported
+    in the preview, and never blocks the version write.
+    """
+    from cp_engine.distill_fidelity import (
+        body_head, fidelity_flags_of, provenance_of,
+    )
+
+    out: dict[str, Any] = {"version_label": base.get("version_label")}
+    try:
+        rows = (
+            client.table("spine_substance")
+            .select("id, body, origin, field_states, review_flags")
+            .eq("id", base.get("id"))
+            .limit(1)
+            .execute()
+            .data
+        ) or []
+    except Exception as exc:  # noqa: BLE001 — a preview never fails the write
+        out["error"] = f"prior read failed: {type(exc).__name__}"
+        return out
+    if not rows:
+        return out
+    row = rows[0]
+    body = row.get("body") or ""
+    out["head"] = body_head(body)
+    out["body_chars"] = len(body)
+    prov = provenance_of(row)
+    if prov:
+        out["provenance"] = prov
+    flags = fidelity_flags_of(row)
+    if flags:
+        out["fidelity_flags"] = flags
+    return out
 
 
 @mcp_server.tool()

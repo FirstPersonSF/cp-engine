@@ -36,6 +36,7 @@ from cp_engine.authored_element import (
     slugify,
 )
 from cp_engine.authored_mirror import write_authored_element
+from cp_engine.distill_fidelity import assess, mark_machine_derived
 from cp_engine.mc2_db import Tables
 from cp_engine.substance import (
     SubstanceVersion,
@@ -226,6 +227,15 @@ def build_inbox_card_from_transcript(
     raw = distiller(prompt, model=model, api_key=api_key)
     obj = _parse_distiller_json(raw)
     distillation = str(obj.get("distillation") or "").strip()
+    # #314 — the card is the raw material every later promote is judged
+    # against, so a card that is not drawn from its transcript must be said
+    # out loud here (the webhook log carries print, not logger — see
+    # project_cp_engine_print_vs_logger). The card itself is a react-to
+    # draft; the human reads it before framing.
+    card_fidelity = assess(distillation, transcript)
+    if card_fidelity["low"]:
+        print(f"distill-fidelity: inbox card for {project_code} meeting "
+              f"{source_ref} — {card_fidelity['reason']}")
     matched_id, matched_kind = _match_item(obj.get("matched_item_name"), estimate)
     guessed_type = matched_kind or "source"
 
@@ -340,6 +350,7 @@ def promote_card(
     phase: str | None = None,
     today=None,
     flip_card: bool = True,
+    on_fidelity: Callable[[dict], None] | None = None,
 ) -> Path:
     """Frame + promote a proposed card into a directed-distilled live version.
 
@@ -381,6 +392,16 @@ def promote_card(
     path requires ``client`` (authored elements are MC-2-owned rows; a file
     alone under ``_authored/`` would never sync) and raises ValueError without
     one.
+
+    FIDELITY (#314): the distilled body is scored against the card's raw
+    material (`distill_fidelity.assess`) and the result handed to
+    ``on_fidelity`` BEFORE anything is written — the CLI prints it, the
+    webhook records it on the mirrored row. The body is always written
+    machine-derived: a new authored element carries the explicit
+    ``field_states.body`` marker (plus the fidelity flag when low); a
+    versioned substance file syncs up as ``origin='distilled'``, which
+    `distill_fidelity.provenance_of` reads as machine-derived until a human
+    confirms the body.
     """
     today_iso = today if isinstance(today, str) else (today or tenant_today()).isoformat()
     spine_root = project_dir / "spine"
@@ -417,6 +438,9 @@ def promote_card(
         api_key=None,
     ).strip()
     sources_tuple = tuple(str(s) for s in (sources or []))
+    fidelity = assess(body, card.raw_distillation)
+    if on_fidelity is not None:
+        on_fidelity(fidelity)
 
     if target.exists():
         existing = parse_substance(target)
@@ -436,6 +460,7 @@ def promote_card(
                 client=client,
                 flip_card=flip_card,
                 today_iso=today_iso,
+                fidelity=fidelity,
             )
         # Next label from the MAX of disk and DB (#121): the DB is the
         # superset — an authored version lands there first, and a disk-only
@@ -539,6 +564,7 @@ def _promote_as_new_serving_element(
     client,
     flip_card: bool,
     today_iso: str,
+    fidelity: dict | None = None,
 ) -> Path:
     """Create a NEW authored element serving ``work_item_est_id`` (issue #44).
 
@@ -598,6 +624,9 @@ def _promote_as_new_serving_element(
     for r in rows:
         r["est_item_id"] = est_id
         r["id"] = f"{code}/{est_id}/{r['version_label']}"
+        # The body is a distiller's, not a person's (#314).
+        mark_machine_derived(r, fidelity, source_label=card.source_ref,
+                             now_iso=today_iso)
 
     client.table(_SUBSTANCE_TABLE).upsert(rows, on_conflict="id").execute()
     path = write_authored_element(

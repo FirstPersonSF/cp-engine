@@ -43,6 +43,9 @@ _VERBATIM = (
     "project_status.py",
     # Imported by the three sweeps above (#339): the tenant clock.
     "clock.py",
+    # Imported by pull_spine_element / add_spine_version (#314): the
+    # machine-derived marker and the prior-version preview.
+    "distill_fidelity.py",
 )
 
 

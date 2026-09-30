@@ -16,6 +16,7 @@ import os
 from pathlib import Path
 
 from cp_engine.authored_element import build_create_rows, slugify
+from cp_engine.distill_fidelity import assess, mark_machine_derived
 from cp_engine.spine import SpineElement, load_spine
 from cp_engine.mc2_db import Tables
 
@@ -195,14 +196,30 @@ def recover(*, client, project_id, company_id, project_dir, canonical_code,
     actions: list[RecoveryAction] = []
     bodies: list[str] = []
     effective_modes: list[str] = []
+    fidelities: list[dict | None] = []
     for el in elements:
         action = plan_element(el, assets)
+        fidelity = None
         if action.mode == "redistill" and can_redistill:
-            asset_text = pull_text(action.source_basename)
+            asset_text = pull_text(action.source_basename) or ""
+            if not asset_text.strip():
+                # #314 — the Carol v1 shape. A distiller handed NO source text
+                # still returns fluent prose; it just isn't drawn from anything.
+                # Never call it: keep the verbatim body and say why.
+                body = el.body
+                effective_modes.append("carry")
+                fidelity = {"score": None, "low": True,
+                            "reason": "empty source text — not distilled, "
+                                      "verbatim body kept"}
+                actions.append(action)
+                bodies.append(body)
+                fidelities.append(fidelity)
+                continue
             redistilled = redistill_body(action, asset_text=asset_text, distiller=distiller)
             if redistilled.strip():
                 body = redistilled
                 effective_modes.append("redistill")
+                fidelity = assess(redistilled, asset_text)
             else:
                 # Empty/whitespace re-distill output would EMPTY the element — its
                 # verbatim `el.body` is the only copy. Never empty an element: fall
@@ -218,12 +235,24 @@ def recover(*, client, project_id, company_id, project_dir, canonical_code,
             effective_modes.append("carry")
         actions.append(action)
         bodies.append(body)
+        fidelities.append(fidelity)
 
     # 3. Build authored rows (collision-safe) under the CANONICAL code.
     rows = recovered_rows(
         actions, project_id=project_id, project_code=canonical_code,
         bodies=bodies, now_iso=now_iso,
     )
+
+    # 3b. #314 — a re-distilled body is MACHINE-WRITTEN: mark it so every
+    #     reader sees "machine-derived, unverified" until a human confirms or
+    #     edits the body, and raise the fidelity flag when its phrases are not
+    #     the source's. Carried (verbatim) bodies are the human's own, unmarked.
+    now = now_iso
+    for action, mode, row, fidelity in zip(
+            actions, effective_modes, rows, fidelities, strict=True):
+        if mode == "redistill":
+            mark_machine_derived(row, fidelity, source_label=action.source_basename,
+                                 now_iso=now)
 
     # 4. Report — one entry per element, aligned with rows (1 row per element).
     #    `needs_rebind`: Deliverables-layer elements and any element with
@@ -240,8 +269,12 @@ def recover(*, client, project_id, company_id, project_dir, canonical_code,
             "body_len": len(body),
             "est_item_id": row["est_item_id"],
             "needs_rebind": action.layer == "Deliverables" or bool(action.serves),
+            "fidelity": None if fid is None else fid.get("score"),
+            "fidelity_low": bool(fid and fid.get("low")),
+            "fidelity_reason": None if fid is None else fid.get("reason"),
         }
-        for action, mode, body, row in zip(actions, effective_modes, bodies, rows)
+        for action, mode, body, row, fid in zip(
+            actions, effective_modes, bodies, rows, fidelities, strict=True)
     ]
 
     # 5. Apply boundary — the ONLY write. Dry-run returns before this.
