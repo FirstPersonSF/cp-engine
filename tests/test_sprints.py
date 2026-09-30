@@ -1431,3 +1431,182 @@ def test_a_risks_wrapped_prose_still_joins(tmp_path):
     (risk,) = parse_sprint_file(p).risks
     assert "re-briefing on strategy" in risk.text
     assert risk.why_it_matters is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #320 — parsers silently dropping or inventing hand-written content
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_bare_date_decision_reaches_recent_decisions_strip() -> None:
+    """A `### Decisions` bullet written `- [2026-08-18] …` — no `decision · `
+    prefix — was dropped by `_parse_decisions`, so five real slt-5196
+    decisions rendered as "No structured decisions captured in the last 4
+    weeks" while sync exited 0 (#320). #272 fixed only the backticked form.
+    Asserted through `aggregate_project_strips`, the path that feeds
+    `recent-decisions-strip`, not just the parser."""
+    from datetime import date as _date
+
+    from cp_engine.aggregators import aggregate_project_strips
+    from cp_engine.sprints import _parse_decisions
+
+    body = """
+## Meeting notes & decisions
+
+### Decisions
+
+- [2026-08-18] Shoot stays on Oct 8–9
+- `[2026-08-19]` Legal reviews releases before casting
+- [2026-08-20 · sprint planning][cross-cutting] Tony owns the narrative pass
+- [decision · 2026-08-21] Prefixed form still parses
+- [not a date] freeform bracket bullet is left alone
+"""
+    decs = _parse_decisions(body)
+    assert [(d.date, d.text, d.cross_cutting) for d in decs] == [
+        ("2026-08-18", "Shoot stays on Oct 8–9", False),
+        ("2026-08-19", "Legal reviews releases before casting", False),
+        ("2026-08-20", "Tony owns the narrative pass", True),
+        ("2026-08-21", "Prefixed form still parses", False),
+    ]
+
+    class _SF:
+        project_code = "slt-5196"
+        week_start = _date(2026, 8, 17)
+        client_inbound = ()
+        decisions = decs
+        client_open_asks = ()
+        stakeholders = ()
+
+    strips = aggregate_project_strips("slt-5196", (_SF(),), _date(2026, 8, 25))
+    assert len(strips.recent_decisions) == 4
+
+
+def test_allocation_html_comment_is_not_a_person() -> None:
+    """An HTML comment in the Allocation slot was parsed as data: the note
+    `<!-- W35 was Marcello · 16h -->` became a person named "W35 was
+    Marcello" booked for 16h in master-cp.md's roster (#320). The scaffold
+    itself ships the slot with a comment, so the comment text here is taken
+    from the real template line and then filled the way an author would."""
+    from cp_engine.sprints import _parse_this_sprint
+
+    template = (
+        Path(__file__).resolve().parents[1]
+        / "src/cp_engine/templates/sprint-cp.md.j2"
+    ).read_text(encoding="utf-8")
+    scaffold_line = next(
+        ln for ln in template.splitlines() if ln.startswith("**Allocation:**")
+    )
+    assert "<!--" in scaffold_line  # the premise: the scaffold teaches it
+    annotated = scaffold_line.replace(
+        "<!--", "Tony · 16h <!-- W35 was Marcello · 16h ·", 1
+    )
+    body = f"## This sprint\n{annotated}\n\n### Deliverables\n1. x\n"
+    alloc, _deliv, _dod = _parse_this_sprint(body)
+    assert alloc == (PersonHours(person_name="Tony", hours=16.0),)
+
+
+def _cf_kwargs(tmp_path, week_iso, prior):
+    return dict(
+        project=_fixture_project(),
+        sprint_root=tmp_path / "sprints",
+        week_iso=week_iso, week_label="W", week_start="2026-05-11",
+        week_end="2026-05-17", prior_sprint=prior, last_sprint_hours_line=None,
+        sessions_this_week=0, last_session_date=None, last_session_who=None,
+        last_session_summary=None, recent_commits=(), open_issues=(),
+    )
+
+
+def _cf_setup(tmp_path):
+    """A prior week (W19) with one open ask and one escalated risk written in
+    its hand-written sections, and a current week (W20) rendered from it."""
+    from cp_engine.sprints import ensure_sprint_file
+
+    prior = ensure_sprint_file(**_cf_kwargs(tmp_path, "2026-W19", None))
+    body = prior.read_text()
+    body = body.replace(
+        "### Open asks\n",
+        "### Open asks\n- [open · 2026-05-05 · Rena] Approve the Round 3 pop-up copy\n",
+        1,
+    ).replace(
+        "## Dependencies & risks\n",
+        "## Dependencies & risks\n\n- [escalated · budget · 2026-05-06] Fee "
+        "increase not yet signed off\n",
+        1,
+    )
+    prior.write_text(body)
+    cur = ensure_sprint_file(**_cf_kwargs(tmp_path, "2026-W20", "2026-W19"))
+    assert "Approve the Round 3 pop-up copy" in cur.read_text()  # premise
+    return prior, cur
+
+
+def test_render_warns_when_hand_edit_inside_carry_forward_is_discarded(
+    tmp_path, caplog
+) -> None:
+    """A fact written by hand between the `carry-forward` markers was silently
+    discarded by the next render (#320; tenant commit fda0b4c8 lost Morgan
+    Wright's PTO milestone and an annotation on a standing ask this way).
+    Render must still discard it — the region is derived — but must SAY so,
+    naming the file, the region and the line, and point at the owning week."""
+    import logging
+
+    from cp_engine.sprints import ensure_sprint_file
+
+    _prior, cur = _cf_setup(tmp_path)
+    rendered = cur.read_text()
+    end = "<!-- cp-engine:end carry-forward -->"
+    cur.write_text(rendered.replace(
+        end, "- [milestone · 2026-09-08] Morgan on PTO 09-08 → 09-17\n" + end, 1
+    ))
+    with caplog.at_level(logging.WARNING, logger="cp_engine"):
+        ensure_sprint_file(**_cf_kwargs(tmp_path, "2026-W20", "2026-W19"))
+    assert cur.read_text() == rendered  # warn only: what render writes is unchanged
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(msgs) == 1, msgs
+    assert "sprints/2026-W20/peb.md" in msgs[0]
+    assert "carry-forward" in msgs[0]
+    assert "Morgan on PTO" in msgs[0]
+    assert "sprints/2026-W19/peb.md" in msgs[0]
+
+
+def test_render_warns_on_hand_annotation_of_a_carried_row(tmp_path, caplog) -> None:
+    """Annotating an existing carried row is a hand edit too — its cp:hash
+    and bracket still match the source, so the check is on the item TEXT."""
+    import logging
+
+    from cp_engine.sprints import ensure_sprint_file
+
+    _prior, cur = _cf_setup(tmp_path)
+    cur.write_text(cur.read_text().replace(
+        "Approve the Round 3 pop-up copy",
+        "Approve the Round 3 pop-up copy — **now urgent, Rena out Friday**", 1,
+    ))
+    with caplog.at_level(logging.WARNING, logger="cp_engine"):
+        ensure_sprint_file(**_cf_kwargs(tmp_path, "2026-W20", "2026-W19"))
+    msgs = [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING]
+    assert len(msgs) == 1 and "now urgent" in msgs[0], msgs
+
+
+def test_render_is_quiet_when_carry_forward_changes_from_data_drift(
+    tmp_path, caplog
+) -> None:
+    """The region changes on ordinary renders — an ask closed or a risk
+    resolved in the owning week drops out. That is data drift, not a hand
+    edit, and a warning here would train the reader to ignore the real one."""
+    import logging
+
+    from cp_engine.sprints import ensure_sprint_file
+
+    prior, cur = _cf_setup(tmp_path)
+    before = cur.read_text()
+    prior.write_text(
+        prior.read_text()
+        .replace("[open · 2026-05-05", "[closed · 2026-05-05", 1)
+        .replace("[escalated · budget", "[resolved · budget", 1)
+    )
+    with caplog.at_level(logging.WARNING, logger="cp_engine"):
+        ensure_sprint_file(**_cf_kwargs(tmp_path, "2026-W20", "2026-W19"))
+        ensure_sprint_file(**_cf_kwargs(tmp_path, "2026-W20", "2026-W19"))
+    after = cur.read_text()
+    assert after != before  # premise: the region really did change
+    assert "Approve the Round 3 pop-up copy" not in after
+    assert [r for r in caplog.records if r.levelno >= logging.WARNING] == []

@@ -176,6 +176,25 @@ GitHub issues. Never delete entries.
 Commit the entire `sprints/<YYYY-W##>/` directory alongside the master
 roll-up and each touched project's `cp.md`. Then push.
 
+The auto-ingest webhook pushes to the same remote while you work, so the
+push usually needs a merge first: `git fetch`, then `git merge origin/main`
+(not a rebase — `--ours`/`--theirs` swap meaning mid-rebase). `cxp sync`
+warns when the clone is behind its upstream; heed it.
+
+**Resolve by region, not by file.** Conflicts **inside** `cp-engine:start` /
+`cp-engine:end` markers resolve as ours — sync regenerates them. **Inspect
+everything else.** Never loop `git checkout --ours` over conflicted files: a
+sprint file is hand-written outside its marked regions, and that is where
+auto-ingest writes its `cp:hash` bullets. A blanket `--ours` on 2026-08-25
+deleted a whole meeting's 20 bullets, and the file still looked right.
+
+**After any merge, run `cxp merge-check` before committing the
+resolution.** It checks that every `cp:hash` on the remote side survives in
+the working tree. Mid-merge the default `--ref MERGE_HEAD` is right; once
+the merge is committed, pass `--ref origin/main`. Exit 0 means nothing was
+lost. Exit 1 lists each missing bullet with its file: restore it from the
+ref, then run it again. Push only on exit 0.
+
 ---
 
 ## The hosted path

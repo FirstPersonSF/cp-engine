@@ -115,3 +115,77 @@ def test_reordered_content_is_not_a_loss(repo):
     lost, _ = check_merge(repo, ref="remote-side")
 
     assert lost == []
+
+
+# ──────────────────────────────────────────────────────────────────────
+#  #310 — sync on a clone behind its upstream
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _behind_clone(tmp: Path) -> Path:
+    """A clone one commit behind origin/main after a fetch — the 2026-09-22
+    shape: the webhook pushed, the session fetched (or not) but never merged."""
+    origin = tmp / "origin.git"
+    _git(tmp, "init", "-q", "--bare", "-b", "main", str(origin))
+    a, b = tmp / "a", tmp / "b"
+    for d in (a, b):
+        _git(tmp, "clone", "-q", str(origin), str(d))
+        _git(d, "config", "user.email", "t@example.com")
+        _git(d, "config", "user.name", "T")
+    (a / "x.md").write_text("one\n")
+    _git(a, "add", "-A"); _git(a, "commit", "-qm", "one"); _git(a, "push", "-q", "origin", "HEAD:main")
+    _git(b, "pull", "-q", "origin", "main")
+    _git(b, "branch", "-q", "--set-upstream-to=origin/main")
+    (a / "x.md").write_text("two <!-- cp:hash=deadbeef -->\n")
+    _git(a, "commit", "-qam", "[auto-ingest] webhook"); _git(a, "push", "-q", "origin", "HEAD:main")
+    _git(b, "fetch", "-q")
+    return b
+
+
+def test_commits_behind_upstream_counts_the_webhook_commit(tmp_path):
+    """`cxp sync` must be able to see that the clone is behind (#310); the
+    count comes from git itself against the remote-tracking ref."""
+    from cp_engine.merge_check import commits_behind_upstream
+
+    b = _behind_clone(tmp_path)
+    assert commits_behind_upstream(b) == ("origin/main", 1)
+    _git(b, "merge", "-q", "--ff-only", "origin/main")
+    assert commits_behind_upstream(b) == ("origin/main", 0)
+
+
+def test_commits_behind_upstream_is_none_without_an_upstream(repo):
+    """No upstream is not a warning — there is nothing to be behind."""
+    from cp_engine.merge_check import commits_behind_upstream
+
+    _seed(repo, "x\n")
+    assert commits_behind_upstream(repo) is None
+
+
+def test_sync_warns_loudly_when_the_clone_is_behind(tmp_path):
+    """A sync one fetch behind rendered sprint files without the webhook's
+    newest bullets, and the rebase after it dropped 18 of them (2026-09-22,
+    #310). The CLI must say so before it renders — warn, not refuse."""
+    from unittest.mock import patch
+
+    from click.testing import CliRunner
+
+    from cp_engine.cli_cmds.core import sync
+    from cp_engine.sync import SyncResult
+
+    b = _behind_clone(tmp_path)
+
+    class _Cfg:
+        root = b
+
+    result = SyncResult(
+        projects_seen=1, files_written=(), files_deactivated=(), no_op=True
+    )
+    with (
+        patch("cp_engine.cli_cmds.core.load", return_value=_Cfg()),
+        patch("cp_engine.cli_cmds.core.sync_tenant", return_value=result) as st,
+    ):
+        res = CliRunner().invoke(sync, [])
+    assert res.exit_code == 0, res.output
+    assert st.called  # warned, did not refuse
+    assert "1 commit behind origin/main" in res.output
+    assert "cxp merge-check" in res.output

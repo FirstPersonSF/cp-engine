@@ -368,6 +368,20 @@ def execute_plan(
                     normalized, code,
                 )
                 continue
+            # Unknown verb: skip THIS step, keep the rest of the plan, and
+            # say so where it cannot be missed (#320). `_validate_plan` let it
+            # through on purpose; the error entry is the loud half of that
+            # bargain — the CLI exits 2 on any error, the webhook records a
+            # failed run — so a typo in a hand-written plan still surfaces.
+            if normalized not in _SUPPORTED_VERBS:
+                n = len(items) if isinstance(items, list) else 1
+                msg = (
+                    f"{code}/{verb}: unknown verb {verb!r} — skipped {n} "
+                    f"item(s); expected one of {sorted(_SUPPORTED_VERBS)}"
+                )
+                logger.warning("ingest: %s", msg)
+                result.errors.append(msg)
+                continue
             # Commitment verbs write rows into Supabase, not files.
             # Skip silently if no client supplied — MC-2 writes must
             # never break the primary file path.
@@ -479,6 +493,29 @@ def execute_plan(
 # ──────────────────────────────────────────────────────────────────────
 
 
+def unknown_verbs(plan: dict) -> list[str]:
+    """`<code>/<verb>` for every project verb the engine does not know.
+
+    `_validate_plan` no longer rejects these (#320) — execute_plan skips them
+    and records an error — so a caller that validates WITHOUT executing (the
+    CLI's `--dry-run`) uses this to report them rather than calling a plan
+    with a typo'd verb clean.
+    """
+    out: list[str] = []
+    projects = plan.get("projects") if isinstance(plan, dict) else None
+    if not isinstance(projects, dict):
+        return out
+    for code, entries in projects.items():
+        if not isinstance(entries, dict):
+            continue
+        for verb in entries:
+            normalized = _normalize_verb(verb)
+            if normalized in _RETIRED_VERBS or normalized in _SUPPORTED_VERBS:
+                continue
+            out.append(f"{code}/{verb}")
+    return out
+
+
 def _validate_plan(plan: dict) -> None:
     if not isinstance(plan, dict):
         raise IngestPlanError("plan must be a mapping at top level")
@@ -502,11 +539,18 @@ def _validate_plan(plan: dict) -> None:
                 # treat them as "unknown". Accept any payload shape.
                 if normalized in _RETIRED_VERBS:
                     continue
+                # An unknown verb is NOT a validation failure (#320). A plan
+                # is a list of independent writes, not a transaction: when the
+                # model invented `inbound_cross` (07-20 ibx-5192, 07-27
+                # sap-5174) the raise here killed every valid entry alongside
+                # the one bad one. The strictness was never a deliberate typo
+                # guard — it dates from the first cut of the verb table
+                # (v0.8.6) — and the loudness it provided is kept a different
+                # way: execute_plan skips the step and records it in
+                # `result.errors`, which the CLI turns into exit 2 and the
+                # webhook into a non-success run row. Skipped, never silent.
                 if normalized not in _SUPPORTED_VERBS:
-                    raise IngestPlanError(
-                        f"plan.projects[{code!r}]: unknown verb {verb!r}; "
-                        f"expected one of {sorted(_SUPPORTED_VERBS)}"
-                    )
+                    continue
                 if not isinstance(items, list):
                     raise IngestPlanError(
                         f"plan.projects[{code!r}][{verb!r}] must be a list of items"

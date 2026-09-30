@@ -12,7 +12,7 @@ from pathlib import Path
 
 import click
 
-from cp_engine.merge_check import check_merge
+from cp_engine.merge_check import check_merge, commits_behind_upstream
 from cp_engine.config import CommittedConfigMissing, ConfigError, load
 from cp_engine.init import InitAborted, run_init
 from cp_engine.sync import SyncError, sync_tenant
@@ -47,6 +47,12 @@ def sync() -> None:
     except ConfigError as exc:
         click.echo(f"Error: {exc}", err=True)
         sys.exit(2)
+
+    # A clone behind its upstream renders without the webhook's newest
+    # bullets, and the merge after it is where they get dropped (#310).
+    # Warn, don't refuse: there is no precedent for sync refusing, and a
+    # deliberate offline sync is legitimate. `cxp render` runs this too.
+    _warn_if_behind_upstream(config.root)
 
     try:
         result = sync_tenant(config)
@@ -101,6 +107,27 @@ def sync() -> None:
         click.echo(f"  wrote    {path.relative_to(config.root)}")
     for path in result.files_deactivated:
         click.echo(f"  deactivated {path.relative_to(config.root)}")
+
+
+def _warn_if_behind_upstream(root: Path) -> None:
+    """Print a loud stderr warning when the tenant clone is behind its
+    upstream (as of the last fetch). Never raises; never fetches."""
+    try:
+        lag = commits_behind_upstream(root)
+    except Exception:  # noqa: BLE001 — advisory, never fail a sync
+        return
+    if not lag or lag[1] <= 0:
+        return
+    upstream, behind = lag
+    click.echo(
+        f"⚠ WARNING: this clone is {behind} commit{'s' if behind != 1 else ''} "
+        f"behind {upstream} (as of your last fetch). Syncing now renders "
+        "without the auto-ingest webhook's newest bullets, and the merge "
+        "afterwards is where they get dropped. Pull first "
+        "(`git pull --no-rebase`), then sync; after any conflicted merge run "
+        "`cxp merge-check`.",
+        err=True,
+    )
 
 
 @click.command()

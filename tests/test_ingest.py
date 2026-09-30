@@ -131,12 +131,28 @@ def test_validate_plan_accepts_minimal_valid_plan(tmp_path: Path) -> None:
     _validate_plan(plan)
 
 
-def test_validate_plan_rejects_unknown_verbs(tmp_path: Path) -> None:
-    from cp_engine.ingest import _validate_plan
-    plan = {"projects": {"ggl-5168": {"random-verb": [{"text": "x"}]}}}
-    with pytest.raises(IngestPlanError) as exc:
-        _validate_plan(plan)
-    assert "unknown verb" in str(exc.value)
+def test_unknown_verb_skips_that_step_and_keeps_the_rest(tmp_path: Path) -> None:
+    """One invented verb used to reject the WHOLE plan (#320): the model
+    emitted `inbound_cross` on 07-20 ibx-5192 and 07-27 sap-5174 and every
+    valid entry beside it died too. Now the unknown step is skipped, the rest
+    is written, and the skip is recorded in `result.errors` — the loud half,
+    which the CLI turns into exit 2 and the webhook into a failed run."""
+    from cp_engine.ingest import _validate_plan, unknown_verbs
+
+    tenant = _make_tenant(tmp_path)
+    plan = {"projects": {"ggl-5168": {
+        "inbound_cross": [{"text": "invented"}],
+        "asks": [{"text": "Approve Round 3", "who": "Rena", "date": "2026-05-12"}],
+    }}}
+    _validate_plan(plan)  # no raise
+    assert unknown_verbs(plan) == ["ggl-5168/inbound_cross"]
+    result = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    body = (tenant / "sprints" / "2026-W20" / "ggl-5168.md").read_text()
+    assert "Approve Round 3" in body
+    assert "invented" not in body
+    assert len(result.errors) == 1
+    assert "unknown verb 'inbound_cross'" in result.errors[0]
+    assert "skipped 1 item(s)" in result.errors[0]
 
 
 def test_validate_plan_rejects_non_mapping_top_level() -> None:
@@ -1782,12 +1798,37 @@ def test_set_client_ask_task_validates() -> None:
     _validate_plan(plan)  # no raise
 
 
-def test_unknown_verb_still_rejected() -> None:
-    """Adding new verbs must not weaken the unknown-verb gate."""
-    from cp_engine.ingest import _validate_plan
+def test_unknown_verb_still_reported() -> None:
+    """Adding new verbs must not weaken the unknown-verb gate — it now
+    reports rather than rejects (#320), so assert it still reports."""
+    from cp_engine.ingest import unknown_verbs
     plan = {"projects": {"ggl-5168": {"set-imaginary-thing": [{"text": "x"}]}}}
-    with pytest.raises(IngestPlanError, match="unknown verb"):
-        _validate_plan(plan)
+    assert unknown_verbs(plan) == ["ggl-5168/set-imaginary-thing"]
+
+
+def test_cli_dry_run_flags_unknown_verb_and_exits_nonzero(tmp_path: Path, monkeypatch) -> None:
+    """`cxp ingest --dry-run` validates without executing, so it cannot rely
+    on execute_plan's error entry: without its own check a hand-written plan
+    with a typo'd verb would dry-run clean and then silently lose that step
+    on apply (#320)."""
+    from click.testing import CliRunner
+
+    from cp_engine import cli as _cli
+    from cp_engine.cli_cmds.ingest import ingest_cmd
+
+    tenant = _make_tenant(tmp_path)
+    plan = tmp_path / "plan.yaml"
+    plan.write_text(
+        "projects:\n  ggl-5168:\n    askz:\n      - {text: typo verb}\n"
+    )
+
+    class _Cfg:
+        root = tenant
+
+    monkeypatch.setattr(_cli, "_load_config_or_die", lambda: _Cfg())
+    res = CliRunner().invoke(ingest_cmd, ["--plan", str(plan), "--dry-run"])
+    assert res.exit_code == 2, res.output
+    assert "ggl-5168/askz" in res.output
 
 
 def test_set_milestone_inserts_row(tmp_path: Path) -> None:
