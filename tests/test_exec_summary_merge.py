@@ -246,3 +246,69 @@ class TestMultilineStringBecomesBullets:
             _cp(FULL), {"Blockers": ["one", "two"]}, today=TODAY
         )
         assert "**Blockers:**\n- one\n- two" in out
+
+
+# ── #319: decorated field labels — one reader shared with exec-lint ──────
+
+
+# The forms `test_exec_summary_lint::test_decorated_field_labels_are_recognised`
+# pins for the lint; each is also asserted through the shared `field_label`,
+# so the merge and the lint cannot come to disagree about one of them.
+_DECORATED_NEXT_UP = (
+    "**Next up (W40):**",
+    "**Next up — dated:**",
+    "**🔜 Next up:**",
+    "**Next up**:",
+    "**next up:**",
+)
+
+
+@pytest.mark.parametrize("decorated", _DECORATED_NEXT_UP)
+def test_a_decorated_label_is_merged_onto_its_field(decorated):
+    """Exec-lint accepted `**Next up (W40):**` after round 1, but the merge's
+    own parser read it as an unknown field "Next up (W40)": a write to
+    `Next up` matched no line, changed nothing, and reported no change — the
+    old bullets stayed while the caller believed they were replaced."""
+    from cp_engine.exec_summary_lint import field_label
+
+    assert field_label(decorated + " x") == ("Next up", "x")
+    body = FULL.replace(
+        "**Next up:** Medium-effort integrations.\n",
+        f"{decorated}\n- Old step one.\n- Old step two.\n",
+    )
+    out, changed = merge_exec_summary_fields(
+        _cp(body), {"Next up": ["Regional migrations."]}, today=TODAY
+    )
+    assert changed == ("Next up",)
+    assert "**Next up:**\n- Regional migrations." in out
+    assert "Old step" not in out
+    assert decorated not in out  # re-emitted canonical, not duplicated
+    # Neighbours untouched.
+    assert "**Blockers:** None." in out
+    assert "- Louise joins next week." in out
+
+
+def test_a_decoration_alone_is_not_a_change():
+    """Same bullets under a decorated label: nothing to write, no stamp bump."""
+    body = FULL.replace("**Next up:** Medium-effort integrations.\n",
+                        "**Next up (W40):**\n- Regional migrations.\n")
+    text = _cp(body)
+    out, changed = merge_exec_summary_fields(
+        text, {"Next up": ["Regional migrations."]}, today=TODAY
+    )
+    assert changed == ()
+    assert out == text
+
+
+def test_prose_starting_with_a_label_word_is_not_a_field():
+    """`**Status quo:**` inside Where it stands is prose. Merging Status must
+    not rewrite it, and merging Where it stands must not stop at it early
+    and leave the real Status untouched either."""
+    body = FULL.replace("- Louise joins next week.\n",
+                        "- Louise joins next week.\n**Status quo:** old deck runs\n")
+    out, changed = merge_exec_summary_fields(
+        _cp(body), {"Status": "New status."}, today=TODAY
+    )
+    assert changed == ("Status",)
+    assert "**Status:** New status." in out
+    assert "**Status quo:** old deck runs" in out
