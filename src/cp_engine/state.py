@@ -725,6 +725,10 @@ class HorizonItem:
     bucket: str      # "milestone" | "decision" | "opportunity"
     target_date: str | None = None
     note: str | None = None
+    # "open" unless the bullet is marked settled — a leading status token in
+    # its bracket (`[done · by W31]`) or struck through (`~~…~~`). Only an
+    # open item carries forward (#331); see ``sprints._parse_horizon``.
+    status: str = "open"
 
 
 @dataclass(frozen=True)
@@ -800,12 +804,35 @@ class WhereItStands:
 
 
 @dataclass(frozen=True)
+class StaleRollup:
+    """Still-open items of one kind too old to carry as bullets (#326, #331).
+
+    ``kind`` is ``"asks"``, ``"risks"`` or ``"horizon"``; ``oldest`` is the
+    ISO date the oldest of them was first raised; ``weeks`` are the sprint
+    weeks (oldest first) whose files hold the newest statement of each — the
+    place a close has to land. ``weeks`` is empty when the rollup was parsed
+    back from a rendered region rather than computed.
+    """
+
+    kind: str
+    count: int
+    oldest: str
+    weeks: tuple[str, ...] = ()
+    file_name: str = ""
+
+
+@dataclass(frozen=True)
 class CarryForward:
     """Open items rolled forward from the prior sprint."""
 
     asks: tuple[ClientAsk, ...]
     risks: tuple[Risk, ...]
     horizon: tuple[HorizonItem, ...]
+    # One rollup per kind with still-open items older than the carry cap.
+    stale: tuple[StaleRollup, ...] = ()
+
+    def stale_count(self, kind: str) -> int:
+        return sum(s.count for s in self.stale if s.kind == kind)
 
 
 @dataclass(frozen=True)

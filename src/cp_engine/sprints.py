@@ -35,6 +35,7 @@ from .state import (
     SprintFacts,
     SprintFile,
     Stakeholder,
+    StaleRollup,
     Theme,
     WhereItStands,
     children_of,
@@ -448,33 +449,55 @@ def _parse_this_sprint(
     return tuple(alloc), tuple(deliverables), dod
 
 
+# Carried items first raised more than this many weeks before the sprint they
+# would carry into are summarised, not listed (#326 follow-up, #331). Carrying
+# until resolved brought back 724 asks nobody had closed since May; listing
+# them all buries the ones still worth chasing. Six weeks is a sprint-planning
+# horizon: anything older is a triage job, and the rollup line says where.
+CARRY_FORWARD_MAX_AGE_WEEKS = 6
+
+
 def compute_carry_forward(prior_path: Path) -> CarryForward:
     """Derive the carry-forward block for a new sprint from the prior file.
 
-    Asks roll forward while still `open` — however many weeks ago they were
-    raised; risks only when `escalated` or `watching`; all horizon items roll
-    forward (they remain unresolved by nature). Missing prior file → empty
-    carry-forward.
+    Asks carry while still `open`, risks while `escalated` or `watching`,
+    horizon items while not marked settled — each however many weeks ago it
+    was raised, up to the age cap. Missing prior file → empty carry-forward.
 
-    ASKS CARRY UNTIL RESOLVED, NOT FOR ONE WEEK (#326). This read only the
-    prior week's own ``### Open asks``, so an ask raised in W37 was carried
-    into W38 and then vanished from W39: W38 had carried it, not owned it,
-    and what a week carried was never read. Nothing resolved it and nothing
-    warned — the week an ask becomes most worth chasing is the week it
-    disappeared. See :func:`_open_asks_through` for how the full set is read.
+    CARRY UNTIL RESOLVED, NOT FOR ONE WEEK (#326 asks, #331 risks + horizon).
+    This read only the prior week's own sections, so an item raised in W37
+    was carried into W38 and then vanished from W39: W38 had carried it, not
+    owned it, and what a week carried was never read. Nothing resolved it and
+    nothing warned — the week an item becomes most worth chasing is the week
+    it disappeared. See :func:`_open_through` for how the full set is read.
+
+    AGE CAP. An item first raised more than ``CARRY_FORWARD_MAX_AGE_WEEKS``
+    before the sprint being rendered does not carry as a bullet; each kind's
+    too-old items collapse to ONE :class:`StaleRollup` line naming the count,
+    the oldest first-raised date and the week file(s) to triage them in.
+    They are still open and still resolvable where they live: closing one in
+    its owning week drops it from the count on the next render, because the
+    count is recomputed from those files like everything else here.
     """
     if not prior_path.exists():
         return CarryForward(asks=(), risks=(), horizon=())
-    prior = parse_sprint_file(prior_path)
-    asks = _open_asks_through(prior_path)
-    risks = tuple(r for r in prior.risks if r.severity in ("escalated", "watching"))
-    horizon = tuple(prior.horizon)
-    return CarryForward(asks=asks, risks=risks, horizon=horizon)
+    files = _owning_files(prior_path)
+    cutoff = _carry_cutoff(prior_path)
+    asks, stale_asks = _split_stale(_open_through(files, _ASKS), cutoff, "asks")
+    risks, stale_risks = _split_stale(_open_through(files, _RISKS), cutoff, "risks")
+    horizon, stale_horizon = _split_stale(
+        _open_through(files, _HORIZON), cutoff, "horizon"
+    )
+    stale = tuple(
+        replace(s, file_name=prior_path.name)
+        for s in (stale_asks, stale_risks, stale_horizon) if s is not None
+    )
+    return CarryForward(asks=asks, risks=risks, horizon=horizon, stale=stale)
 
 
-def _ask_owning_files(prior_path: Path) -> list[Path]:
+def _owning_files(prior_path: Path) -> list[Path]:
     """The project's sprint files from ``prior_path``'s week back to the
-    first, newest first — every file an ask carried into the next week can
+    first, newest first — every file an item carried into the next week can
     have been raised in.
 
     Only week directories (``YYYY-W##``) are walked, and only when
@@ -494,74 +517,200 @@ def _ask_owning_files(prior_path: Path) -> list[Path]:
     return [d / prior_path.name for d in weeks if (d / prior_path.name).exists()]
 
 
-def _open_asks_through(prior_path: Path) -> tuple[ClientAsk, ...]:
-    """Every ask still open as of ``prior_path``'s week: the prior week's own
-    open asks plus everything that week itself carries, recursively.
+def _carry_cutoff(prior_path: Path) -> date | None:
+    """The oldest first-raised date that still carries in full into the week
+    after ``prior_path``'s. ``None`` (no cap) when the prior file sits outside
+    a week directory and so names no sprint to measure from."""
+    week = prior_path.parent.name
+    if not _WEEK_ISO_RE.match(week):
+        return None
+    current_monday = _iso_week_dates(week)[0] + timedelta(days=7)
+    return current_monday - timedelta(weeks=CARRY_FORWARD_MAX_AGE_WEEKS)
+
+
+def _iso_day(s: str | None) -> date | None:
+    try:
+        return date.fromisoformat((s or "").strip()[:10])
+    except ValueError:
+        return None
+
+
+class _CarryKind:
+    """How one kind of carried item is read, judged open and dated — the only
+    things asks, risks and horizon items differ in. The walk that decides
+    what carries is shared (:func:`_open_through`), so all three follow ONE
+    rule for identity, newest-statement status and first-raised date."""
+
+    def __init__(self, read, is_open, raised=None, with_raised=None):
+        self.read = read                # body -> items in that week's own section
+        self.is_open = is_open          # item -> bool
+        self.raised = raised            # item -> its stated first-raised date str
+        self.with_raised = with_raised  # (item, date str) -> item
+
+
+_ASKS = _CarryKind(
+    read=lambda body: _parse_client_section(body)[1],
+    is_open=lambda a: a.status == "open",
+    raised=lambda a: a.asked_date,
+    with_raised=lambda a, d: replace(a, asked_date=d),
+)
+_RISKS = _CarryKind(
+    read=_parse_risks,
+    is_open=lambda r: r.severity in ("escalated", "watching"),
+    raised=lambda r: r.raised_date,
+    with_raised=lambda r, d: replace(r, raised_date=d),
+)
+# A horizon item states no raised date — its bracket is a TARGET date — so it
+# ages from the earliest week that holds it. An all-italic bullet
+# (`_None this sprint._`) is a section placeholder, not an item: carried, it
+# would repeat "nothing here" for six weeks.
+_HORIZON = _CarryKind(
+    read=lambda body: _parse_horizon(body),
+    is_open=lambda h: h.status == "open" and not (
+        h.text.startswith("_") and _HTML_COMMENT_RE.sub("", h.text).strip().endswith("_")
+    ),
+)
+
+
+def _open_through(files: list[Path], kind: _CarryKind) -> list[tuple]:
+    """Every item of ``kind`` still open as of the newest of ``files``: the
+    prior week's own open items plus everything that week itself carries,
+    recursively. Returns ``(item, first_raised, owning_week)`` triples, where
+    ``first_raised`` is a date (or ``None``) and ``owning_week`` names the
+    week whose file holds the item's newest statement.
 
     WHY THE OWNING FILES AND NOT THE PRIOR WEEK'S ``carry-forward`` REGION.
     "What the prior week carried" is written down in that week's region — but
     as a projection frozen at its last render. Only the current week is
-    re-rendered, so once a week is past its region never changes again: an ask
-    closed at its origin (``_origin_sprint_path`` sends every close there)
-    would stay open in the stale projection and be carried forever. So the
-    recursion is evaluated from the files that OWN asks: walk the project's
-    sprint files newest to oldest, reading each week's hand-written
-    ``### Open asks``. That is exactly the set the regions would hold if every
-    past week were re-rendered today.
+    re-rendered, so once a week is past its region never changes again: an
+    item closed at its origin (``_origin_sprint_path`` sends every close and
+    resolve there) would stay open in the stale projection and be carried
+    forever. So the recursion is evaluated from the files that OWN items:
+    walk the project's sprint files newest to oldest, reading each week's
+    hand-written section. That is exactly the set the regions would hold if
+    every past week were re-rendered today.
 
-    Identity is ``cp:hash`` (visible text when an ask has none), the same key
+    Identity is ``cp:hash`` (visible text when an item has none), the same key
     ``aggregators.open_client_asks`` de-duplicates on. The NEWEST statement of
-    an ask decides its status — a later week restating it as ``closed`` (or
-    ``answered``, ``dropped``, anything but ``open``) resolves it, and the
-    older open copies are not resurrected. A snoozed ask is still ``open``
-    (see ``snooze``) and carries, marker and all.
+    an item decides its status — a later week restating an ask as ``closed``,
+    a risk as ``resolved``, a horizon item as ``done`` resolves it, and the
+    older open copies are not resurrected. A snoozed item is still open (see
+    ``snooze``) and carries, marker and all.
 
-    AGE STAYS LEGIBLE. The carried ask keeps the newest statement's wording
-    but the EARLIEST ``asked_date`` among its open statements — the date it
-    was first raised — so a three-week-old ask reads as three weeks old in
-    the `[ask · <date>]` bracket and in every stale-ask surface that ages
-    from it, rather than looking freshly asked.
+    AGE STAYS LEGIBLE. The carried item keeps the newest statement's wording
+    but the EARLIEST stated raised date among its open statements (an ask's
+    ``asked_date``, a risk's ``raised_date``) — so a three-week-old ask reads
+    as three weeks old in its bracket and in every surface that ages from it,
+    rather than looking freshly asked. With no stated date, the item is as
+    old as the earliest week that holds it open.
     """
-    from .aggregators import _ask_key  # aggregators imports sprints' siblings
+    from .aggregators import _bullet_key  # aggregators imports sprints' siblings
 
     order: list[str] = []
-    newest: dict[str, ClientAsk] = {}
+    newest: dict[str, object] = {}
+    owning_week: dict[str, str] = {}
     first_raised: dict[str, str] = {}
+    first_week: dict[str, str] = {}
     settled: set[str] = set()
-    for path in _ask_owning_files(prior_path):
+    for path in files:
         try:
             body = path.read_text(encoding="utf-8")
         except OSError:
             continue
-        _, asks, _ = _parse_client_section(body)
-        for ask in asks:
-            key = _ask_key(ask)
+        week = path.parent.name
+        for item in kind.read(body):
+            key = _bullet_key(item.text)
             if key in settled:
                 continue
             if key not in newest:
-                if ask.status != "open":
-                    # The newest word on this ask resolves it.
+                if not kind.is_open(item):
+                    # The newest word on this item resolves it.
                     settled.add(key)
                     continue
                 order.append(key)
-                newest[key] = ask
-            elif ask.status != "open":
-                # An older resolution of an ask reopened later: the open
+                newest[key] = item
+                owning_week[key] = week
+            elif not kind.is_open(item):
+                # An older resolution of an item reopened later: the open
                 # chain stops here, and earlier dates are a prior life.
                 settled.add(key)
                 continue
-            if ask.asked_date and (
-                key not in first_raised or ask.asked_date < first_raised[key]
-            ):
-                first_raised[key] = ask.asked_date
-    out: list[ClientAsk] = []
+            first_week[key] = week
+            stated = kind.raised(item) if kind.raised else ""
+            if stated and (key not in first_raised or stated < first_raised[key]):
+                first_raised[key] = stated
+    out: list[tuple] = []
     for key in order:
-        ask = newest[key]
-        raised = first_raised.get(key) or ask.asked_date
-        if raised != ask.asked_date:
-            ask = replace(ask, asked_date=raised)
-        out.append(ask)
-    return tuple(out)
+        item = newest[key]
+        stated = first_raised.get(key)
+        if kind.with_raised and stated and stated != kind.raised(item):
+            item = kind.with_raised(item, stated)
+        raised = _iso_day(stated)
+        if raised is None and _WEEK_ISO_RE.match(first_week[key]):
+            raised = _iso_week_dates(first_week[key])[0]
+        out.append((item, raised, owning_week[key]))
+    return out
+
+
+def _split_stale(
+    carried: list[tuple], cutoff: date | None, kind: str
+) -> tuple[tuple, "StaleRollup | None"]:
+    """Split ``_open_through``'s triples at the age cap: items first raised
+    on or after ``cutoff`` carry in full; older ones become one rollup. An
+    item with no date at all carries (there is nothing to age it by)."""
+    keep, old = [], []
+    for item, raised, week in carried:
+        if cutoff is not None and raised is not None and raised < cutoff:
+            old.append((raised, week))
+        else:
+            keep.append(item)
+    if not old:
+        return tuple(keep), None
+    return tuple(keep), StaleRollup(
+        kind=kind,
+        count=len(old),
+        oldest=min(r for r, _ in old).isoformat(),
+        weeks=tuple(sorted({w for _, w in old})),
+    )
+
+
+# The rollup line, rendered and parsed back by the two helpers below — one
+# format, so the header count (`render_current_sprint_block`) and the #320
+# hand-edit check can recognise what render wrote.
+_STALE_NOUNS = {"asks": ("ask", "asks"), "risks": ("risk", "risks"),
+                "horizon": ("horizon item", "horizon items")}
+_STALE_LINE_RE = re.compile(
+    r"^-\s+(?P<count>\d+) stale (?P<noun>asks?|risks?|horizon items?) "
+    r"\(oldest (?P<oldest>\d{4}-\d{2}-\d{2})\) — triage in .*$"
+)
+
+
+def stale_rollup_line(s: StaleRollup) -> str:
+    """``- 12 stale asks (oldest 2026-05-12) — triage in [2026-W20](../2026-W20/x.md) and 5 other weeks``.
+
+    The link is relative to the sprint file the region is rendered into
+    (``sprints/<week>/<file>``), so it opens the OLDEST week that holds one;
+    the rest are counted rather than listed, keeping the region one line per
+    kind however far the backlog reaches."""
+    noun = _STALE_NOUNS[s.kind][0 if s.count == 1 else 1]
+    head = f"- {s.count} stale {noun} (oldest {s.oldest}) — triage in "
+    if not s.weeks:
+        return head + "earlier sprint files"
+    first = s.weeks[0]
+    link = f"[{first}](../{first}/{s.file_name})" if s.file_name else first
+    rest = len(s.weeks) - 1
+    if rest:
+        return head + f"{link} and {rest} other week{'s' if rest != 1 else ''}"
+    return head + link
+
+
+def _parse_stale_line(line: str) -> StaleRollup | None:
+    m = _STALE_LINE_RE.match(line.strip())
+    if not m:
+        return None
+    noun = m.group("noun")
+    kind = next(k for k, forms in _STALE_NOUNS.items() if noun in forms)
+    return StaleRollup(kind=kind, count=int(m.group("count")), oldest=m.group("oldest"))
 
 
 def _active_risks(sf) -> list["Risk"]:
@@ -577,16 +726,29 @@ def _active_risks(sf) -> list["Risk"]:
     Live case that surfaced it — storyos rendered "Active risks (0)" while
     carrying seven, one of them escalated.
 
-    Deduped on (severity, category, text) so a risk present in both regions
-    (carried forward AND restated by hand this week) is counted once. The
-    live section wins, since a hand-restated risk may carry updated wording.
+    Deduped on cp:hash (visible text when a risk has none) — the identity
+    ``compute_carry_forward`` carries risks by (#331) — so a risk present in
+    both regions (carried forward AND restated by hand this week) is counted
+    once, even when the restatement changed its severity. The live section
+    wins, since a hand-restated risk may carry updated wording; and a
+    restatement that RESOLVES it suppresses the carried copy, the rule
+    ``aggregators.open_client_asks`` applies to asks.
     """
-    active = [r for r in sf.risks if r.severity in ("escalated", "watching")]
-    seen = {(r.severity, r.category, r.text.strip()) for r in active}
+    from .aggregators import _bullet_key
+
+    active: list[Risk] = []
+    seen: set[str] = set()
+    for r in sf.risks:
+        key = _bullet_key(r.text)
+        if key in seen:
+            continue
+        seen.add(key)
+        if r.severity in ("escalated", "watching"):
+            active.append(r)
     for r in sf.carry_forward.risks:
         if r.severity not in ("escalated", "watching"):
             continue
-        key = (r.severity, r.category, r.text.strip())
+        key = _bullet_key(r.text)
         if key in seen:
             continue
         seen.add(key)
@@ -605,7 +767,12 @@ def _parse_carry_forward(body: str) -> CarryForward:
     asks: list[ClientAsk] = []
     risks: list[Risk] = []
     horizon: list[HorizonItem] = []
+    stale: list[StaleRollup] = []
     for first, cont in bullets(region):
+        rollup = _parse_stale_line(first)
+        if rollup is not None:
+            stale.append(rollup)
+            continue
         parsed = parse_bracketed_bullet(first)
         if not parsed:
             continue
@@ -639,7 +806,8 @@ def _parse_carry_forward(body: str) -> CarryForward:
                     target_date=parts[1] if len(parts) > 1 else None,
                 )
             )
-    return CarryForward(asks=tuple(asks), risks=tuple(risks), horizon=tuple(horizon))
+    return CarryForward(asks=tuple(asks), risks=tuple(risks),
+                        horizon=tuple(horizon), stale=tuple(stale))
 
 
 # Meeting-meta line is `_From <source> · <attendees> · <duration>_` where
@@ -821,28 +989,39 @@ def _parse_horizon(body: str) -> tuple[HorizonItem, ...]:
             if _is_template_placeholder(first):
                 continue
             parsed = parse_bracketed_bullet(first)
+            status = "open"
             if parsed:
                 parts, text = parsed
+                if parts and parts[0].lower() in _HORIZON_SETTLED:
+                    status, parts = parts[0].lower(), parts[1:]
                 target = parts[0] if parts else None
-                out.append(
-                    HorizonItem(
-                        text=text,
-                        bucket=bucket,
-                        target_date=target,
-                        note=cont or None,
-                    )
-                )
             else:
                 text = first.lstrip("- ").strip()
-                out.append(
-                    HorizonItem(
-                        text=text,
-                        bucket=bucket,
-                        target_date=None,
-                        note=cont or None,
-                    )
+                target = None
+            if _STRUCK_RE.match(text):
+                status = "done"
+            out.append(
+                HorizonItem(
+                    text=text,
+                    bucket=bucket,
+                    target_date=target,
+                    note=cont or None,
+                    status=status,
                 )
+            )
     return tuple(out)
+
+
+# How a horizon item is marked settled (#331). Horizon bullets had no status
+# at all — they carried one week "because they remain unresolved by nature",
+# so nothing needed to close them. Carrying until resolved does, and the two
+# conventions a person reaches for are both honoured: a leading status token
+# in the bracket (`[done · by W31]`, the ask/risk shape) or the whole item
+# struck through (`~~…~~`). Whatever follows the token is the target date.
+_HORIZON_SETTLED = frozenset({
+    "done", "resolved", "closed", "dropped", "decided", "cancelled", "passed",
+})
+_STRUCK_RE = re.compile(r"^~~.+~~(?:\s*<!--.*-->)*\s*$")
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -961,6 +1140,8 @@ def render_sprint_scaffold(
         recent_commits=recent_commits,
         open_issues=open_issues,
         carry_forward=carry_forward,
+        # One line per kind of still-open item past the age cap (#326, #331).
+        stale_lines=[stale_rollup_line(s) for s in carry_forward.stale],
         # Deliverable-card lines (canonical-objects: derived from the
         # estimate + linked bars + spine serves — see sync's collector).
         # The engine-managed region shows STATE; hand-written notes below
@@ -1001,6 +1182,13 @@ def render_current_sprint_block(
     ``(snoozed until <date>)``, and is previewed only after every live item.
     The header names how many are snoozed.
 
+    Stale (#326 age cap): asks and risks first raised more than
+    ``CARRY_FORWARD_MAX_AGE_WEEKS`` ago are still open but no longer carried
+    as bullets — the carry-forward region rolls them up into one line. They
+    are left out of the count and the preview (which list only what is live)
+    and named separately in the header, ``(8 · 12 stale)``, the same way a
+    snooze is, so the backlog stays visible without drowning the live list.
+
     `link_path` is passed in by the caller (rather than derived from
     `sf.project_code` + `sf.week_iso`) so the dashboard can compute it
     relative to its own location once and pass it through here.
@@ -1018,8 +1206,9 @@ def render_current_sprint_block(
             (snoozed if until else live).append((it, until))
         return live + snoozed, len(snoozed)
 
-    def _count(total: int, snoozed: int) -> str:
-        return f"{total} · {snoozed} snoozed" if snoozed else f"{total}"
+    def _count(total: int, snoozed: int, stale: int = 0) -> str:
+        out = f"{total} · {snoozed} snoozed" if snoozed else f"{total}"
+        return f"{out} · {stale} stale" if stale else out
 
     def _shown(text: str, until, suffix: str = "") -> str:
         if until is None:
@@ -1028,6 +1217,7 @@ def render_current_sprint_block(
 
     all_asks = open_client_asks(sf)
     asks, asks_snoozed = _snooze_split(all_asks)
+    cf = sf.carry_forward
     active = _active_risks(sf)
     risks, risks_snoozed = _snooze_split(active)
 
@@ -1044,12 +1234,16 @@ def render_current_sprint_block(
         f"## Current sprint — [W{week_label} ({dates})]({link_path})",
         "",
         f"**Allocation:** {alloc or '—'}",
-        f"**Open client asks** ({_count(len(all_asks), asks_snoozed)}):",
+        f"**Open client asks** "
+        f"({_count(len(all_asks), asks_snoozed, cf.stale_count('asks'))}):",
     ]
     for a, until in asks[:3]:
         lines.append(f"- {_shown(a.text, until, f' (asked {a.asked_date})')}")
     lines.append("")
-    lines.append(f"**Active risks** ({_count(len(active), risks_snoozed)}):")
+    lines.append(
+        f"**Active risks** "
+        f"({_count(len(active), risks_snoozed, cf.stale_count('risks'))}):"
+    )
     for r, until in risks[:3]:
         lines.append(f"- {_shown(r.text, until)}")
     lines.append("")
@@ -1245,9 +1439,10 @@ def ensure_sprint_file(
 # asks the question that actually matters: **is there a line in the region
 # whose content exists nowhere the engine could have derived it from?** Every
 # legitimate carry-forward row is copied from a sprint file — the prior week's
-# or, for an ask still open, any earlier week of the project (the normal path,
-# #326), or a child's in the current week (a parent's subtree rollup) — so its item text is still findable there even after its status
-# flips. A hand-typed row, or a hand annotation on a row, is not. Content that
+# or, for an item still open, any earlier week of the project (the normal
+# path, #326/#331), or a child's in the current week (a parent's subtree
+# rollup) — so its item text is still findable there even after its status
+# flips. The one computed row, the stale rollup line, is recognised by shape. A hand-typed row, or a hand annotation on a row, is not. Content that
 # also exists elsewhere is not being lost, so staying quiet about it is right.
 #
 # KNOWN LIMIT, stated rather than hidden: if an item's text is itself edited in
@@ -1283,7 +1478,8 @@ def _discarded_hand_lines(
     """Lines of `old_inner` a splice of `new_inner` would lose outright.
 
     A line survives the check if the new render carries it verbatim, if it is
-    template structure (a heading, an `_italic_` placeholder, a blank), or if
+    template structure (a heading, an `_italic_` placeholder, a blank, the
+    stale rollup line), or if
     its item text is found in any of `corpus_texts` — the sprint files the
     region is derived from. `corpus_texts` is an iterable consumed lazily, so a
     region that matches its new render reads no other file at all.
@@ -1293,6 +1489,10 @@ def _discarded_hand_lines(
     for ln in old_inner.splitlines():
         s = ln.strip()
         if not s or s in new_lines or s.startswith("#"):
+            continue
+        # The stale rollup line (#326) is computed, not copied: its count
+        # moves whenever an old item closes, and no sprint file holds it.
+        if _STALE_LINE_RE.match(s):
             continue
         text = _cf_item_text(s)
         if not text or (text.startswith("_") and text.endswith("_")):
@@ -1349,18 +1549,18 @@ def _warn_on_discarded_carry_forward(
                     yield f.read_text(encoding="utf-8")
                 except OSError:
                     continue
-        # Every earlier week of this project (#326): an ask carries from the
-        # week it was raised in, not only from last week, so a row whose
+        # Every earlier week of this project (#326, #331): an item carries
+        # from the week it was raised in, not only from last week, so a row whose
         # owning file is three weeks back is derived, not hand-typed.
         if prior_sprint:
             prior_file = sprint_root / prior_sprint / out.name
-            for f in _ask_owning_files(prior_file)[1:]:
+            for f in _owning_files(prior_file)[1:]:
                 try:
                     yield f.read_text(encoding="utf-8")
                 except OSError:
                     continue
 
-    lost =_discarded_hand_lines(old_inner, new_inner, corpus())
+    lost = _discarded_hand_lines(old_inner, new_inner, corpus())
     if not lost:
         return
     owner = f"sprints/{prior_sprint}/{out.name}" if prior_sprint else "the owning week's sprint file"

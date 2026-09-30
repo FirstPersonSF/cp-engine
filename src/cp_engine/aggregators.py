@@ -103,6 +103,12 @@ def open_client_asks(sf: SprintFile) -> list[ClientAsk]:
     copy, the same newest-statement-wins rule ``compute_carry_forward``
     applies across earlier weeks — otherwise the count would say open while
     next week's carry-forward had already let it go.
+
+    Stale asks (first raised more than ``CARRY_FORWARD_MAX_AGE_WEEKS`` ago)
+    are NOT in this list: carry-forward rolls them into one summary line
+    rather than carrying them as bullets, so every surface built on this
+    function counts live asks only. The current-sprint header names the
+    stale count separately (``sf.carry_forward.stale_count("asks")``).
     """
     out: list[ClientAsk] = []
     seen: set[str] = set()
