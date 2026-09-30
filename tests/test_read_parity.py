@@ -47,10 +47,12 @@ DUAL_READ_CONTRACT: dict[str, tuple[list[str], list[str]]] = {
         ["project_code"],
     ),
     "list_spine_elements": (
-        # stdio: orientation filters; hosted: lifecycle awareness. `tier` is
-        # the one facet deliberately mirrored on both (#158 gap 5).
+        # stdio: orientation filters; hosted: lifecycle awareness. `tier` and
+        # `compact` are mirrored on both (#158 gap 5; `compact` because the
+        # legend-copywriting skill calls `tier="working", compact=true` and
+        # hosted strictness (#318) would otherwise reject it).
         ["project_code", "layer", "scope", "binding", "compact", "tier"],
-        ["project_code", "include_absorbed", "tier"],
+        ["project_code", "include_absorbed", "tier", "compact"],
     ),
     "pull_project_source": (
         # Divergent by design history: stdio resolves by title within a code

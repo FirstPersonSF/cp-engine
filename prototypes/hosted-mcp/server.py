@@ -1131,9 +1131,16 @@ def embed_query(text: str) -> list[float]:
     return result.embeddings[0]
 
 
+# Fields `list_spine_elements(compact=true)` drops: the per-row detail a
+# caller orienting on a big spine does not need (the stdio verb trims the same
+# way). Everything else — identity, layer, binding, and the markers — stays.
+_COMPACT_DROPPED = frozenset({"status", "version_date", "synced_at", "actor"})
+
+
 @mcp_server.tool()
 def list_spine_elements(
-    project_code: str, include_absorbed: bool = False, tier: str = ""
+    project_code: str, include_absorbed: bool = False, tier: str = "",
+    compact: bool = False,
 ) -> dict[str, Any]:
     """List live spine elements for a project, under the caller's identity.
 
@@ -1148,11 +1155,17 @@ def list_spine_elements(
     per-doc source stubs so orientation reads the authored working set;
     "stubs" shows only them; ""/"all" shows everything.
 
+    `compact=true` trims each row to the orientation fields — slug, framing,
+    layer, binding, important, version_label, plus the scope/canon/
+    absorbed_by markers — dropping status, dates and actor. Same flag as the
+    stdio `cxp mcp` verb, so `tier="working", compact=true` works on both.
+
     Args:
         project_code: engagement, initiative, or standalone-repo code
                       (e.g. "ibx-5153", "mission-control").
         include_absorbed: retrospective mode — include sealed elements.
         tier: "" | "all" | "working" | "authored" | "stubs".
+        compact: trimmed rows for orientation on a big spine.
     """
     client = user_client()
     project_id = resolve_project_id(client, project_code)
@@ -1255,9 +1268,14 @@ def list_spine_elements(
         client,
         "list_spine_elements",
         {"project_code": project_code, "include_absorbed": include_absorbed,
-         "tier": tier},
+         "tier": tier, "compact": compact},
         len(elements),
     )
+    if compact:
+        elements = [
+            {k: v for k, v in e.items() if k not in _COMPACT_DROPPED}
+            for e in elements
+        ]
     return _with_project_status({
         "project_code": project_code,
         "project_id": project_id,
