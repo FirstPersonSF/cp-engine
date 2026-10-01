@@ -548,7 +548,9 @@ class HealthReport:
 
     def to_dict(self) -> dict:
         return {"when": self.when.isoformat(), "ok": self.ok,
-                "checks": [{"label": c.label, "ok": c.ok, "text": c.text, **c.detail}
+                # Detail first: a detail key named like a field ("ok", the ingest
+                # run count) must never overwrite the check's own status.
+                "checks": [{**c.detail, "label": c.label, "ok": c.ok, "text": c.text}
                            for c in self.checks]}
 
 

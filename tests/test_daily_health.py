@@ -445,3 +445,18 @@ def test_sync_unreadable_ledger_is_named_in_the_fallback_error(tmp_path: Path):
     c = dh.check_sync(_gh({"sync.yml": RuntimeError("404")}), "o/r", NOW, tmp_path,
                       _Client({"webhook_runs": RuntimeError("JWT expired")}))
     assert c.detail["source"] == "git" and "JWT expired" in c.detail["error"]
+
+
+def test_json_status_is_not_overwritten_by_detail_keys():
+    """The ingest check's detail carries an "ok" RUN COUNT; merged after the
+    status it turned `"ok": true` into `"ok": 1` in --json output."""
+    import json as _json
+
+    import cp_engine.daily_health as dh
+
+    report = dh.HealthReport(when=dh.tenant_now(), checks=[
+        dh.Check("Ingest 24h", True, "1 ok · 0 partial · 0 failed", {"ok": 1, "partial": 0}),
+    ])
+    row = _json.loads(_json.dumps(report.to_dict()))["checks"][0]
+    assert row["ok"] is True
+    assert row["partial"] == 0
