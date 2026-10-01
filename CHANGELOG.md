@@ -4,6 +4,41 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.128.0 — 2026-10-01
+
+**Architecture plan, steps 0–3** (cp Architecture Review, 2026-09-30). Minor:
+the hosted server's deploy changes, a new `cxp health` command, and a new
+`webhook_runs` table (webhook migration 04, applied). Redeploy the hosted server
+with `prototypes/hosted-mcp/deploy.sh` — a bare `railway up` now fails loudly.
+
+*Step 0 — CI is a gate.* CI runs on full history (it was red 09-24→09-30 on a
+shallow clone), product-date tests use the tenant clock (CI failed 5pm–midnight
+Pacific), `release.py` refuses unless the newest green CI commit is an ancestor
+of HEAD with only the changelog changed since, and a surface-ceiling test fails
+if hosted tools, `cxp` commands or tables grow without a deliberate edit.
+
+*Step 1 — the hosted server installs the engine.* `vendor/` (21 files, ~5,000
+lines) and its drift test are gone; the hosted image installs cp-engine from the
+same commit. Hosted now uses the engine's sprint week (it said W40 while the
+engine said W41), code resolution (short codes work on every upstream write,
+#345), Exec Summary parsing and eight more rules. `/health` reports the deployed
+commit. The webhook image no longer keeps the GitHub token in `/root/.gitconfig`.
+
+*Step 2 — one machine writer.* Webhook clone-edit-commit-push runs under a
+per-tenant lock. Every engine-managed region carries a fingerprint; an edit the
+engine didn't make is saved to `exceptions/region-edits/` with a loud warning
+(render/sync) or reverted-and-saved in the same commit (webhook), instead of
+vanishing. (Tenant workflows: shared push-with-rebase script, rebase-or-fail.)
+
+*Step 3 — fail loudly.* ~80 swallowed errors in the engine and webhook now
+surface in what the caller gets or fail; a database error no longer reads as
+"not found". Every webhook POST writes a `webhook_runs` row on every path (13
+of 17 routes wrote nothing). Two routes hard-coded "success" on a failed plan
+(the #194 shape) — fixed. Auto-ingest side-step failures land in
+`auto_ingest_runs.warnings`. New `cxp health [--post] [--channel ID]`: one daily
+line — sync, ingest, webhook, hosted, CI, unbound spine, stale summaries, and
+whether the copies agree.
+
 ## v0.127.0 — 2026-09-30
 
 **Machine-drafted Exec Summaries (#251).** New `cxp draft-summaries
