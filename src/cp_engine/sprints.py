@@ -17,6 +17,7 @@ from typing import Mapping
 
 from cp_engine.clock import local_date, tenant_today
 from . import render as _render
+from .region_guard import stamp_all
 from .render import MarkerMissing, splice_managed_region
 from .state import (
     CarryForward,
@@ -1526,7 +1527,7 @@ def ensure_sprint_file(
     )
 
     if not out.exists():
-        out.write_text(new_body)
+        out.write_text(stamp_all(new_body))
         return out
 
     # Preserve hand-written regions: re-splice engine regions only.
@@ -1541,12 +1542,25 @@ def ensure_sprint_file(
         except ValueError:
             continue
         if region == "carry-forward":
+            # Stamped regions are judged by their digest inside the splice
+            # (region_guard); this content heuristic covers a carry-forward
+            # last written before digests existed.
             _warn_on_discarded_carry_forward(
                 out, existing, new_inner, sprint_root=sprint_root,
                 week_iso=week_iso, prior_sprint=prior_sprint,
             )
+        hint = None
+        if region == "carry-forward":
+            owner = (f"sprints/{prior_sprint}/{out.name}" if prior_sprint
+                     else "the owning week's sprint file")
+            hint = (f"The region is rebuilt from the prior week: re-add them in "
+                    f"the owning week's file ({owner}), or this file outside "
+                    f"the markers.")
         try:
-            spliced = splice_managed_region(spliced, region, new_inner)
+            spliced = splice_managed_region(
+                spliced, region, new_inner, source=out, writer="cxp render",
+                guard_hint=hint,
+            )
         except MarkerMissing:
             continue
     # Only write when the spliced result differs from what's on disk —
@@ -1662,10 +1676,14 @@ def _warn_on_discarded_carry_forward(
     writes is unchanged. `logger.warning` is the channel on purpose — sync's
     `_WarningCounter` carries it onto the outcome line (#197/#212), which is
     the only place `cxp sync`/`cxp render` output reaches the user."""
-    try:
-        old_inner = _extract_region(existing, "carry-forward").strip()
-    except ValueError:
+    from cp_engine import region_guard
+
+    raw_inner = region_guard.regions(existing).get("carry-forward")
+    if raw_inner is None:
         return
+    if region_guard.stamp_of(raw_inner) is not None:
+        return  # digest-judged in splice_managed_region — one warning, not two
+    old_inner = raw_inner.strip()
     if old_inner == new_inner:
         return
 
@@ -1705,16 +1723,14 @@ def _warn_on_discarded_carry_forward(
     if not lost:
         return
     owner = f"sprints/{prior_sprint}/{out.name}" if prior_sprint else "the owning week's sprint file"
-    try:
-        rel = out.relative_to(sprint_root.parent)
-    except ValueError:
-        rel = out
-    logger.warning(
-        "%s: %d hand-written line(s) inside the engine-managed `carry-forward` "
-        "region were discarded by this render (the region is rebuilt from the "
-        "prior week). Re-add them in hand-written territory — the owning "
-        "week's file (%s), or this file outside the markers. First: %s",
-        rel, len(lost), owner, lost[0][:160],
+    # Architecture plan step 2: warn AND preserve, through the same quarantine
+    # the digest guard uses — one warning naming the file, region, line and
+    # owning week; the lines themselves land in exceptions/region-edits/.
+    region_guard.report(
+        source=out, region="carry-forward", discarded="\n".join(lost),
+        replacement=new_inner, writer="cxp render",
+        hint=(f"The region is rebuilt from the prior week: re-add them in the "
+              f"owning week's file ({owner}), or this file outside the markers."),
     )
 
 
@@ -1884,7 +1900,7 @@ def scaffold_from_prior(
 
     target_path = sprints_root / target_week_iso / f"{project_code}.md"
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    target_path.write_text(new_body)
+    target_path.write_text(stamp_all(new_body))
     return target_path
 
 

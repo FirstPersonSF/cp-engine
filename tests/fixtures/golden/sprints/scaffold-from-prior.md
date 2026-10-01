@@ -21,6 +21,7 @@ PriorSprint: 2026-W19
 | Last sprint hours | — |
 | Sessions this week | 0 |
 | Open issues | 0 |
+<!-- cp-engine:digest fa55c0278cde -->
 <!-- cp-engine:end sprint-facts -->
 
 <!-- cp-engine:start where-it-stands -->
@@ -36,6 +37,7 @@ _No recent session captured._
 
 **Open tracked issues**
 - _None._
+<!-- cp-engine:digest 0f4bc50b4619 -->
 <!-- cp-engine:end where-it-stands -->
 
 <!-- cp-engine:start carry-forward -->
@@ -45,6 +47,7 @@ _No recent session captured._
 - [milestone · 2026-05-22] Contract target sign date
 - [decision · by W21] Whether to staff a third on Pebble for Q3
 - [opportunity] Stage discovery for Pebble's sister brand
+<!-- cp-engine:digest ff05f45614c7 -->
 <!-- cp-engine:end carry-forward -->
 
 ## Client communication
@@ -76,6 +79,7 @@ _No recent session captured._
 
 <!-- cp-engine:start deliverable-cards -->
 _(no deliverables in the estimate yet)_
+<!-- cp-engine:digest e68c55df6e35 -->
 <!-- cp-engine:end deliverable-cards -->
 
 <!-- 1. <top deliverable> -->

@@ -529,7 +529,9 @@ def write_region_cmd(
     )
 
     existing = file.read_text(encoding="utf-8")
-    updated = splice_managed_region(existing, region, new_body)
+    updated = splice_managed_region(
+        existing, region, new_body, source=file, writer="cxp write-region"
+    )
     if updated != existing:
         file.write_text(updated)
         click.echo(f"wrote {file}")

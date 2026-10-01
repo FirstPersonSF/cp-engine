@@ -40,6 +40,7 @@ from cp_engine.config import TenantConfig
 # fails on, and two copies would drift the first time PostgREST's error
 # shape does.
 from cp_engine.estimate_scope import is_schema_drift as _is_schema_drift
+from cp_engine.region_guard import stamp_all
 from cp_engine.render import (
     EXEC_SUMMARY_END,
     EXEC_SUMMARY_MIGRATION_SUFFIX,
@@ -539,7 +540,7 @@ def _sync_tenant_inner(
                 config, project, tracked_issues=(), by_code=by_code,
                 envelope_flags=envelope_flags,
             )
-            cp_path.write_text(body)
+            cp_path.write_text(stamp_all(body))
             files_written.append(cp_path)
 
         # MC-id stamp backfill (uuid-anchored dir location). NEW scaffolds
@@ -893,7 +894,9 @@ def _sync_tenant_inner(
             )
             existing = cp_path.read_text()
             seeded = _ensure_current_sprint_markers(existing)
-            new_body = splice_managed_region(seeded, "current-sprint", block)
+            new_body = splice_managed_region(
+                seeded, "current-sprint", block, source=cp_path, writer="cxp sync"
+            )
             if new_body != existing:
                 cp_path.write_text(new_body)
                 if cp_path not in files_written:
@@ -934,7 +937,7 @@ def _sync_tenant_inner(
                     week_label=f"W{week_label}",
                     week_dates=week_dates_str,
                 )
-                week_path.write_text(week_body)
+                week_path.write_text(stamp_all(week_body))
                 files_written.append(week_path)
 
         # Phase 1.2 (v0.8.5) — project cp.md strip regions. For each active
@@ -1025,7 +1028,9 @@ def _sync_tenant_inner(
                 new_body = seeded
                 for region, body in bodies.items():
                     try:
-                        new_body = splice_managed_region(new_body, region, body)
+                        new_body = splice_managed_region(
+                            new_body, region, body, source=cp_path, writer="cxp sync"
+                        )
                     except Exception as exc:
                         logger.warning(
                             "Skipping %s splice for %s: %s",
@@ -1290,6 +1295,9 @@ def _would_change(
     cosmetic-only diffs and refreshing the provenance header) the same way.
     Backs `cp status` (bug #9).
     """
+    from cp_engine.region_guard import stamp_all
+
+    new_full_body = stamp_all(new_full_body)
     if not path.exists():
         return True
     if not splice_regions:
@@ -1409,6 +1417,11 @@ def _write_if_changed(
     performs no write — used by `cp status` (bug #9). Returns True iff the
     file changed (or would change, under dry_run).
     """
+    from cp_engine.region_guard import stamp_all
+
+    # Architecture plan step 2: a body written whole carries the same region
+    # digests a splice would write, so the next splice is a no-op.
+    new_full_body = stamp_all(new_full_body)
     if dry_run:
         return _would_change(
             path, new_full_body,
@@ -1464,7 +1477,8 @@ def _write_if_changed(
             merged = existing
             for region in splice_regions:
                 merged = splice_managed_region(
-                    merged, region, _extract_region(new_full_body, region)
+                    merged, region, _extract_region(new_full_body, region),
+                    source=path, writer="cxp sync",
                 )
             # Bug #10: the anchor `Provenance:` header lives outside every
             # engine-managed region, so the region splice above never touches
@@ -1479,7 +1493,9 @@ def _write_if_changed(
                 "lost — back up before re-running sync if that's a concern.",
                 path, exc,
             )
-            if existing == new_full_body:
+            # `new_full_body` is digest-stamped; a corrupt-marker file that
+            # already matches it in content is still a no-op.
+            if existing == new_full_body or stamp_all(existing) == new_full_body:
                 return False
             path.write_text(new_full_body)
             return True
@@ -2667,7 +2683,9 @@ def _extract_region(full_body: str, region: str) -> str:
     end_marker = f"<!-- cp-engine:end {region} -->"
     start_idx = full_body.index(start_marker) + len(start_marker)
     end_idx = full_body.index(end_marker)
-    return full_body[start_idx:end_idx].strip("\n")
+    from cp_engine.region_guard import strip_digest
+
+    return strip_digest(full_body[start_idx:end_idx]).strip("\n")
 
 
 def _default_backend_factory(name: str) -> Backend:
