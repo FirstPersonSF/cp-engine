@@ -4,6 +4,13 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.128.1 — 2026-10-01
+
+*`cxp health` reads the tenant's own Actions with the job's token.* In CI the
+Sync line read "unreadable — 404": `GH_PAT` can read cp-engine's runs but not the
+tenant's. The health workflow's own token (`GITHUB_REPO_TOKEN`) now reads the
+repo the job runs in; `GH_PAT` reads cp-engine.
+
 ## v0.128.0 — 2026-10-01
 
 **Architecture plan, steps 0–3** (cp Architecture Review, 2026-09-30). Minor:
