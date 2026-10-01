@@ -1,9 +1,9 @@
 """The hosted `wrap_bundle` fold must not drift from the engine's (#184).
 
-`prototypes/hosted-mcp/server.py` deliberately does NOT import cp_engine — it
-copies row shapes. That convention keeps the prototype standalone, and it also
-means a fix on one side can silently miss the other. These tests load the
-hosted module by AST and check its copied fold against the real one.
+Since architecture plan step 1 the hosted meetings fold IS the engine's
+(`wrap_report.summarize_meetings`, serialized); the effort fold is still a
+copy (tie order differs — see server.py). These tests drive the real hosted
+module against the engine.
 
 The tail-window rule is the specific thing at risk: anchoring on `today`
 instead of the last meeting reports a 0% tail share for a project that was
@@ -25,57 +25,24 @@ _HOSTED = (
 
 @pytest.fixture(scope="module")
 def hosted_fold():
-    """Exec ONLY the copied fold functions, not the whole server module.
+    """The real hosted module's fold functions (architecture plan step 1:
+    the server imports cp_engine, so there is no AST slice to lift)."""
+    import importlib.util
+    import os
 
-    The server imports MCP/Supabase machinery that has no business being a
-    test dependency, so we lift the pure functions out by AST instead.
-    """
-    tree = ast.parse(_HOSTED.read_text(encoding="utf-8"))
-    wanted = {
-        "_wrap_as_date", "wrap_summarize_meetings", "wrap_summarize_effort",
+    pytest.importorskip("jwt")
+    pytest.importorskip("mcp")
+    os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
+    os.environ.setdefault("SUPABASE_ANON_KEY", "anon-key-for-tests")
+    spec = importlib.util.spec_from_file_location("hosted_mcp_server_wrap", _HOSTED)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return {
+        "_wrap_as_date": module._wrap_as_date,
+        "wrap_summarize_meetings": module.wrap_summarize_meetings,
+        "wrap_summarize_effort": module.wrap_summarize_effort,
+        "module": module,
     }
-    # The fold reads module-level constants (WRAP_EFFORT_NOTE et al), so
-    # lift those assignments too — otherwise exec raises NameError.
-    picked = [
-        n for n in tree.body
-        if (isinstance(n, ast.FunctionDef) and n.name in wanted)
-        or (
-            # Both plain and ANNOTATED assignments — the constants are a
-            # mix of `X = ...` and `X: tuple[...] = ...`.
-            isinstance(n, ast.Assign)
-            and any(
-                isinstance(t, ast.Name) and t.id.startswith("WRAP_")
-                for t in n.targets
-            )
-        )
-        or (
-            isinstance(n, ast.AnnAssign)
-            and isinstance(n.target, ast.Name)
-            and n.target.id.startswith("WRAP_")
-        )
-    ]
-    got = {n.name for n in picked if isinstance(n, ast.FunctionDef)}
-    assert got == wanted, (
-        f"hosted server is missing fold functions: {wanted - got}"
-    )
-    # Constants first, then functions: exec order matters, and the AST
-    # slice does not preserve module ordering across the two node types.
-    consts = [n for n in picked if not isinstance(n, ast.FunctionDef)]
-    funcs = [n for n in picked if isinstance(n, ast.FunctionDef)]
-    ns: dict = {
-        "datetime": dt.datetime, "date": dt.date, "timedelta": dt.timedelta,
-        "Counter": __import__("collections").Counter, "Any": object,
-    }
-    exec(  # noqa: S102 — executing our own source, by design
-        compile(
-            ast.Module(body=consts + funcs, type_ignores=[]),
-            str(_HOSTED), "exec",
-        ),
-        ns,   # ONE namespace: the fold reads its constants as globals, so
-              # globals and locals must be the same dict.
-        ns,
-    )
-    return ns
 
 
 def _mtg(day: str, minutes: int) -> dict:
@@ -92,6 +59,29 @@ def test_hosted_tail_window_anchors_on_last_meeting(hosted_fold) -> None:
         "the closing burst must count even when the run happens later"
     )
     assert out["tail_share"] > 0.8
+
+
+def test_hosted_meetings_fold_is_the_engines(hosted_fold) -> None:
+    """Every key of the payload, including heaviest_days and first/last."""
+    from cp_engine.wrap_report import summarize_meetings
+
+    rows = [_mtg("2026-06-25", 68), _mtg("2026-08-06", 310), _mtg("2026-08-06", 40),
+            {"meeting_date": None, "duration_minutes": 30}]
+    engine = summarize_meetings(rows, tail_days=14)
+    host = hosted_fold["wrap_summarize_meetings"](rows, tail_days=14)
+    assert host["first"] == engine.first.isoformat()
+    assert host["last"] == engine.last.isoformat()
+    assert host["heaviest_days"] == [
+        {"date": d, "meetings": c, "minutes": m} for d, c, m in engine.heaviest_days
+    ]
+    from cp_engine import wrap_report
+
+    assert hosted_fold["_wrap_as_date"] is wrap_report._as_date
+    assert hosted_fold["module"]._engine_wrap_report is wrap_report
+    empty = hosted_fold["wrap_summarize_meetings"]([], tail_days=14)
+    assert empty == {"count": 0, "total_hours": 0.0, "first": None, "last": None,
+                     "tail_days": 14, "tail_share": 0.0, "tail_hours": 0.0,
+                     "head_hours": 0.0, "heaviest_days": []}
 
 
 def test_hosted_fold_matches_the_engine(hosted_fold) -> None:
@@ -137,6 +127,12 @@ def test_hosted_never_reaches_for_today_in_the_fold() -> None:
     A future edit that "fixes" the window by using today would pass the
     shape tests above only if it also happened to be run on the right day.
     """
+    import inspect
+
+    from cp_engine import wrap_report
+
+    src = inspect.getsource(wrap_report.summarize_meetings)
+    assert "date.today()" not in src.split('"""')[-1]
     src = _HOSTED.read_text(encoding="utf-8")
     start = src.index("def wrap_summarize_meetings")
     end = src.index("def wrap_summarize_effort")

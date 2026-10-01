@@ -116,6 +116,7 @@ from cp_engine import promote_uphill as _engine_promote_uphill  # noqa: E402
 from cp_engine.promote_uphill import level_for as _engine_level_for  # noqa: E402
 from cp_engine.state import slug_full_job_name as _engine_slug_full_job_name  # noqa: E402
 # Exec Summary region, markers, stamp and stale threshold (step 1c).
+from cp_engine import wrap_report as _engine_wrap_report  # noqa: E402
 from cp_engine import exec_summary_draft as _engine_exec_summary_draft  # noqa: E402
 from cp_engine import render as _engine_render  # noqa: E402
 # The one "which sprint week" rule (architecture plan step 1a).
@@ -8844,16 +8845,13 @@ def skill(name: str) -> str:
 #  Wrap bundle — the close-out retro's raw material (#184, hosted port)
 # ──────────────────────────────────────────────────────────────────────
 #
-# A faithful copy of `cp_engine.wrap_report`'s fold logic and the payload
-# `cp wrap <code> --bundle` prints. COPIED, not imported, on the same rule the
-# rest of this prototype follows: hosted-mcp never imports cp_engine, so that
-# the server can be deployed without the engine package and so that no import
-# can smuggle in a cached service-role client (`mc2_db.get_client`).
-#
-# The duplication is the known cost. The mitigation is that both halves are
-# pure functions over row dicts with a test suite on the engine side
-# (`tests/test_wrap_report.py`) — if this copy drifts, it drifts visibly in the
-# tail-share number, which is the one figure the report is built around.
+# The payload `cp wrap <code> --bundle` prints. The meetings fold and the date
+# parser are `cp_engine.wrap_report`'s (architecture plan step 1c). The effort
+# fold is still a copy: it breaks ties alphabetically where the engine's
+# `Counter.most_common()` keeps insertion order, so converting it would
+# reorder equal-hours people in this verb's output — left for a decision.
+# Nothing here calls `mc2_db.get_client` (the service-role client); every
+# read runs on the caller's RLS client.
 
 # Fields the model MUST NOT invent. Each ships as a labelled placeholder so a
 # human sees a prompt rather than an omission.
@@ -8899,105 +8897,33 @@ _WRAP_SPINE_COLUMNS = (
 _WRAP_VERSION_NUM_RE = re.compile(r"\s*v?(\d+)", re.IGNORECASE)
 
 
-def _wrap_as_date(value: Any) -> date | None:
-    """Parse a date or ISO-ish timestamp defensively. None on anything else.
-
-    Mirrors `wrap_report._as_date`. Defensive because PostgREST hands back
-    `date` columns as bare strings and `timestamptz` columns with a time and a
-    zone suffix — and because ONE malformed row must not fail a wrap bundle.
-    """
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    text = str(value or "").strip()
-    if not text:
-        return None
-    try:
-        return date.fromisoformat(text[:10])
-    except ValueError:
-        return None
+# `wrap_report._as_date`: PostgREST hands back `date` columns as bare
+# strings and `timestamptz` with a time and zone; one malformed row must not
+# fail a bundle (architecture plan step 1c, inventory H10).
+_wrap_as_date = _engine_wrap_report._as_date
 
 
 def wrap_summarize_meetings(rows: list[dict], tail_days: int = 14) -> dict[str, Any]:
-    """Fold `fathom_meetings` rows into the bundle's `meetings` block.
+    """`fathom_meetings` rows → the bundle's `meetings` block.
 
-    The DISTRIBUTION is the point, not the total. On ibx-5192, 66% of all
-    meeting time landed in the final two weeks of a 7.6-week engagement — the
-    signature of decisions being made at the end instead of the beginning, and
-    invisible in a headline count.
-
-    THE TRAP, and the reason this function exists rather than a one-line
-    comprehension: the tail window ALWAYS closes on the LAST MEETING, never on
-    today. A wrap run weeks after delivery must describe the engagement, not the
-    silence since — anchoring on `today` slides the window past every meeting
-    and reports a 0% tail share for a project that was in fact entirely
-    back-loaded. `tests/test_wrap_report.py::
-    test_tail_window_anchors_on_the_last_meeting_not_today` pins this on the
-    engine side; `tests/test_hosted_wrap_bundle.py` pins it on THIS copy —
-    both a parity check against the engine and a source-level guard. Do not
-    "fix" it by reaching for `date.today()`.
-
-    Tolerates missing/malformed dates and durations — a wrap report must not
-    fail because one meeting row is odd.
+    The fold IS `cp_engine.wrap_report.summarize_meetings` (architecture plan
+    step 1c): the tail window closes on the LAST MEETING, never on today — a
+    wrap run weeks after delivery must describe the engagement, not the
+    silence since. This only serializes it into the payload shape
+    `cxp wrap --bundle` prints (hours, not minutes).
     """
-    dated: list[tuple[date, int]] = []
-    for r in rows:
-        day = _wrap_as_date(r.get("meeting_date"))
-        if day is None:
-            continue
-        try:
-            minutes = int(r.get("duration_minutes") or 0)
-        except (TypeError, ValueError):
-            minutes = 0
-        dated.append((day, max(0, minutes)))
-
-    if not dated:
-        return {
-            "count": 0,
-            "total_hours": 0.0,
-            "first": None,
-            "last": None,
-            "tail_days": tail_days,
-            "tail_share": 0.0,
-            "tail_hours": 0.0,
-            "head_hours": 0.0,
-            "heaviest_days": [],
-        }
-
-    dated.sort()
-    first, last = dated[0][0], dated[-1][0]
-    cutoff = last - timedelta(days=tail_days)  # anchored on `last`, never today
-
-    per_day_minutes: dict[str, int] = {}
-    per_day_count: dict[str, int] = {}
-    tail = head = 0
-    for day, minutes in dated:
-        key = day.isoformat()
-        per_day_minutes[key] = per_day_minutes.get(key, 0) + minutes
-        per_day_count[key] = per_day_count.get(key, 0) + 1
-        if day > cutoff:
-            tail += minutes
-        else:
-            head += minutes
-
-    heaviest = sorted(
-        ((d, per_day_count[d], m) for d, m in per_day_minutes.items()),
-        key=lambda t: (-t[2], t[0]),
-    )[:5]
-
-    total_minutes = sum(m for _, m in dated)
+    m = _engine_wrap_report.summarize_meetings(rows, tail_days=tail_days)
     return {
-        "count": len(dated),
-        "total_hours": round(total_minutes / 60.0, 1),
-        "first": first.isoformat(),
-        "last": last.isoformat(),
-        "tail_days": tail_days,
-        "tail_share": round((tail / total_minutes) if total_minutes else 0.0, 3),
-        "tail_hours": round(tail / 60.0, 1),
-        "head_hours": round(head / 60.0, 1),
+        "count": m.count,
+        "total_hours": m.total_hours,
+        "first": m.first.isoformat() if m.first else None,
+        "last": m.last.isoformat() if m.last else None,
+        "tail_days": m.tail_days,
+        "tail_share": round(m.tail_share, 3),
+        "tail_hours": round(m.tail_minutes / 60.0, 1),
+        "head_hours": round(m.head_minutes / 60.0, 1),
         "heaviest_days": [
-            {"date": d, "meetings": c, "minutes": m} for d, c, m in heaviest
+            {"date": d, "meetings": c, "minutes": mins} for d, c, mins in m.heaviest_days
         ],
     }
 
