@@ -26,7 +26,6 @@ def project_dir(tmp_path, monkeypatch) -> Path:
     pdir = tmp_path / "clients" / "slt-5196"
     pdir.mkdir(parents=True)
     monkeypatch.setattr(meeting_artifact, "_find_project_dir", lambda root, code: pdir)
-    monkeypatch.setattr(meeting_artifact, "_call_claude_synthesis", lambda t: None)
     return pdir
 
 

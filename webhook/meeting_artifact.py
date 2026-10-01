@@ -3,18 +3,19 @@
 Every tagged meeting produces, in each affected project's working dir, a
 `meetings/` subdir holding two files:
 
-    <project-dir>/meetings/<YYYY-MM-DD>-<slug>.md     synthesis + summary
+    <project-dir>/meetings/<YYYY-MM-DD>-<slug>.md     summary + action items
     <project-dir>/meetings/<YYYY-MM-DD>-<slug>.txt    raw transcript
 
-The `.md` is layered: a Claude "Deeper notes" synthesis first (the
-read-this layer), then Fathom's verbatim summary as a baseline, then a
-plain reference list of the meeting's action items (no checkboxes —
-ClickUp owns task state), then a link to the sibling `.txt`.
+The `.md` carries Fathom's verbatim summary, a plain reference list of the
+meeting's action items (no checkboxes — commitments own task state), then a
+link to the sibling `.txt`. No model call: the Claude "Deeper notes"
+synthesis that used to head the file was retired in architecture step 5a —
+nothing read it but a person opening the file, and it was a second Anthropic
+call on every ingest. Files written before then keep their section.
 
-Runs inline in the auto-ingest webhook after the sprint-file plan. The
-synthesis is a SEPARATE Claude call from plan generation so a synthesis
-failure can't break the plan and vice versa. Best-effort: failures are
-logged and swallowed — a missing artifact must not break auto-ingest.
+Runs inline in the auto-ingest webhook after the sprint-file plan.
+Best-effort: failures are logged and swallowed — a missing artifact must not
+break auto-ingest.
 
 Design: cp/docs/plans/2026-05-21-deeper-transcripts-design.md
 """
@@ -22,52 +23,12 @@ Design: cp/docs/plans/2026-05-21-deeper-transcripts-design.md
 from __future__ import annotations
 
 import logging
-import os
 import re
 from pathlib import Path
 
 from cp_engine.plan_from_transcript import _find_project_dir
 
 log = logging.getLogger("cp-engine-webhook")
-
-_SYNTHESIS_MODEL = "claude-opus-4-7"
-_SYNTHESIS_MAX_TOKENS = 8192
-
-_SYNTHESIS_PROMPT = """\
-You are writing the "Deeper notes" section of a meeting record for a \
-creative agency's project-tracking system. You are given the full raw \
-transcript of a client or team meeting.
-
-Fathom (an automated note-taker) already produced a generic summary of \
-this meeting, which is stored separately. Your job is NOT to restate that \
-summary — it is to go deeper. Surface what a generic summarizer misses.
-
-Write concise markdown. Do NOT use a level-1 (`#`) or level-2 (`##`) \
-heading anywhere — those are reserved for the surrounding document. Use \
-level-3 (`###`) headings for your subsections, so they nest correctly \
-under the "Deeper notes" section that wraps your output.
-
-Cover, only where the transcript actually supports it, using these \
-`###` subsections:
-
-- `### Decisions` — what was decided, and critically the *rationale*: \
-  why this choice over the alternatives.
-- `### Open questions` — things raised but left unresolved; what still \
-  needs an answer and from whom.
-- `### Risk / friction signals` — hesitation, scope creep, blockers, \
-  timeline pressure, client dissatisfaction, or anything that could \
-  become a problem. Be specific about the signal.
-- `### Notable positions` — on any contested point, who held which \
-  view. Only where it genuinely matters who said what.
-
-Be substantive but tight. Omit a subsection entirely if the transcript \
-gives you nothing real for it — do not pad. If the meeting was thin, a \
-short note is correct.
-
---- TRANSCRIPT ---
-{transcript}
---- END TRANSCRIPT ---
-"""
 
 
 def _slugify(title: str) -> str:
@@ -97,36 +58,6 @@ def _resolve_base(meetings_dir: Path, base: str, meeting_id: str) -> str:
     return f"{base}-{meeting_id[:8]}"
 
 
-def _call_claude_synthesis(transcript: str) -> str | None:
-    """Run the Deeper-notes synthesis call. Returns markdown, or None on failure."""
-    try:
-        from anthropic import Anthropic
-    except ImportError:
-        log.warning("meeting-artifact: anthropic package not installed")
-        return None
-    key = os.environ.get("ANTHROPIC_API_KEY")
-    if not key:
-        log.warning("meeting-artifact: ANTHROPIC_API_KEY not set")
-        return None
-
-    prompt = _SYNTHESIS_PROMPT.format(transcript=transcript)
-    try:
-        client = Anthropic(api_key=key)
-        response = client.messages.create(
-            model=_SYNTHESIS_MODEL,
-            max_tokens=_SYNTHESIS_MAX_TOKENS,
-            messages=[{"role": "user", "content": prompt}],
-        )
-    except Exception as exc:  # noqa: BLE001 — synthesis is best-effort
-        log.warning("meeting-artifact: synthesis Claude call failed: %s", exc)
-        return None
-
-    if not response.content:
-        return None
-    text = getattr(response.content[0], "text", None)
-    return text.strip() if text else None
-
-
 def _render_action_items(action_items: list) -> str:
     """A plain reference list — no checkboxes. ClickUp owns task state."""
     lines: list[str] = []
@@ -154,7 +85,6 @@ def _build_markdown(
     recording_url: str | None,
     participants: list,
     duration_minutes: int | None,
-    synthesis: str | None,
     fathom_summary: str | None,
     action_items: list,
     txt_filename: str,
@@ -171,7 +101,6 @@ def _build_markdown(
     participants_str = ", ".join(names) if names else "—"
     duration_str = f"{duration_minutes} min" if duration_minutes else "—"
 
-    synthesis_body = synthesis or "_Synthesis unavailable for this meeting._"
     summary_body = (fathom_summary or "").strip() or "_No Fathom summary available._"
 
     # meeting_id in frontmatter is the stable key — a re-tag can
@@ -188,8 +117,6 @@ def _build_markdown(
         f"**Meeting:** {recording_url or '—'}\n"
         f"**Participants:** {participants_str}\n"
         f"**Duration:** {duration_str}\n\n"
-        f"## Deeper notes\n\n"
-        f"{synthesis_body}\n\n"
         f"## Fathom summary\n\n"
         f"{summary_body}\n\n"
         f"## Action items\n\n"
@@ -231,11 +158,6 @@ def write_meeting_artifacts(
 
         base = f"{meeting_date}-{_slugify(title)}"
 
-        # One Claude synthesis call, shared across all project copies.
-        synthesis = _call_claude_synthesis(transcript_text)
-        if synthesis is None and errors is not None and transcript_text:
-            errors.append("deeper-notes synthesis unavailable (artifact written without it)")
-
         for code in project_codes:
             project_dir = _find_project_dir(tenant_root, code)
             if project_dir is None:
@@ -256,7 +178,6 @@ def write_meeting_artifacts(
                 or meeting.get("fathom_url"),
                 participants=meeting.get("participants") or [],
                 duration_minutes=meeting.get("duration_minutes"),
-                synthesis=synthesis,
                 fathom_summary=meeting.get("summary"),
                 action_items=meeting.get("action_items") or [],
                 txt_filename=txt_filename,

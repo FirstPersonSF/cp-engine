@@ -346,7 +346,6 @@ def _run(tmp: Path, mp: pytest.MonkeyPatch) -> SimpleNamespace:
     # two callers in one ingest: the plan (YAML) and the spine-inbox
     # distillation (JSON). Each gets its own realistic answer.
     import main as webhook_main  # the webhook app; its modules resolve below
-    import meeting_artifact
 
     from cp_engine import plan_from_transcript
 
@@ -377,8 +376,6 @@ def _run(tmp: Path, mp: pytest.MonkeyPatch) -> SimpleNamespace:
         return real_generate(**kw)
 
     mp.setattr(pipeline, "generate_plan", generate_plan)
-    mp.setattr(meeting_artifact, "_call_claude_synthesis",
-               lambda transcript: "## Deeper notes\n\n- Launch date locked to Oct 15.")
 
     # ── the tenant: a bare remote, seeded by REAL syncs for W39 then W40 ──
     remote = tmp / "cp.git"

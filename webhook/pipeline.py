@@ -887,7 +887,7 @@ def _perform_auto_ingest(
             if isinstance(commitments_summary, dict) and commitments_summary.get("error"):
                 warnings.append(f"commitments proposal failed: {commitments_summary['error']}")
 
-            # Per-meeting artifacts — synthesis + transcript into each
+            # Per-meeting artifacts — Fathom summary + transcript into each
             # project's meetings/ dir. Runs after the per-project bullet
             # commits so their `git add -A` doesn't sweep these in. Reuses
             # the meeting row already fetched above; passes it via
