@@ -119,6 +119,7 @@ from cp_engine.state import slug_full_job_name as _engine_slug_full_job_name  # 
 from cp_engine import project_sources as _engine_project_sources  # noqa: E402
 from cp_engine import authored_element as _engine_authored_element  # noqa: E402
 from cp_engine import mc2_db as _engine_mc2_db  # noqa: E402
+from cp_engine import spine as _engine_spine  # noqa: E402
 from cp_engine import spine_steps as _engine_spine_steps  # noqa: E402
 from cp_engine.commitments import _valid_due_date as _engine_valid_due_date  # noqa: E402
 from cp_engine import wrap_report as _engine_wrap_report  # noqa: E402
@@ -2186,26 +2187,11 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
     }, client, project_id, project_code)
 
 
-def _asset_ids_with_chunks(client, asset_ids, *, batch: int = 50,
-                           page: int = 1000) -> set[str]:
-    """Which of `asset_ids` have at least one chunk — the hosted twin of
-    `cp_engine.mc2_db.asset_ids_with_chunks` (#324; the vendored mc2_db is
-    constants-only). Reads `asset_id` only, paged at max-rows so a long
-    document never reads as empty. Raises on a read error."""
-    ids = [a for a in dict.fromkeys(asset_ids) if a]
-    have: set[str] = set()
-    for i in range(0, len(ids), batch):
-        part = ids[i:i + batch]
-        start = 0
-        while True:
-            rows = (client.table("asset_chunks").select("asset_id")
-                    .in_("asset_id", part).order("id")
-                    .range(start, start + page - 1).execute().data or [])
-            have.update(str(r["asset_id"]) for r in rows if r.get("asset_id"))
-            if len(rows) < page or have.issuperset(part):
-                break
-            start += page
-    return have
+# Which of `asset_ids` have at least one chunk (#324 "exists but empty") —
+# the engine's `mc2_db.asset_ids_with_chunks` (architecture plan step 1c):
+# reads `asset_id` only, paged at max-rows so a long document never reads as
+# empty, and raises on a read error.
+_asset_ids_with_chunks = _engine_mc2_db.asset_ids_with_chunks
 
 
 def _resolve_source_asset(
@@ -11412,35 +11398,10 @@ def _find_workstream_dir(project_code: str):
     return None
 
 
-def _workstream_docs(ws_dir) -> tuple[dict[str, str], set[str]]:
-    """`({relpath: text}, {file names})` for ONE workstream directory —
-    the hosted twin of `cp_engine.spine.workstream_docs` (not vendored: the
-    lint modules stay filesystem-free). Stops at any subdirectory with its
-    own `cp.md`, so a child workstream's docs never lint against the
-    parent's store."""
-    docs: dict[str, str] = {}
-    names: set[str] = set()
-    stack = [ws_dir]
-    while stack:
-        d = stack.pop()
-        try:
-            entries = sorted(d.iterdir())
-        except OSError:
-            continue
-        for e in entries:
-            if e.name.startswith("."):
-                continue
-            if e.is_dir():
-                if not (e / "cp.md").is_file():
-                    stack.append(e)
-                continue
-            names.add(e.name)
-            if e.suffix.lower() == ".md":
-                try:
-                    docs[str(e.relative_to(ws_dir))] = e.read_text(encoding="utf-8")
-                except (OSError, UnicodeDecodeError):
-                    continue
-    return docs, names
+# `({relpath: text}, {file names})` for ONE workstream directory, stopping at
+# any subdirectory with its own `cp.md` — the engine's
+# `spine.workstream_docs` (architecture plan step 1c).
+_workstream_docs = _engine_spine.workstream_docs
 
 
 def _ingested_source_titles(client, project_id: str) -> set[str] | None:
@@ -11448,24 +11409,15 @@ def _ingested_source_titles(client, project_id: str) -> set[str] | None:
     its company's account-scoped titles, under the caller's identity — the
     hosted twin of `project_sources.ingested_source_titles` (#324). None
     when the read fails, so the check is skipped rather than every reference
-    reported as dangling."""
+    reported as dangling.
+
+    The title set is `project_sources.ingested_source_titles` (architecture
+    plan step 1c); this resolves the company and keeps the None-on-failure."""
     try:
-        titles: set[str] = set()
-        for column in _owner_columns(client):
-            for r in (client.table("rag_assets").select("title")
-                      .eq(column, project_id).execute().data or []):
-                if r.get("title"):
-                    titles.add(r["title"])
         proj = (client.table("projects").select("company_id")
                 .eq("id", project_id).limit(1).execute().data or [])
         company_id = proj[0].get("company_id") if proj else None
-        if company_id:
-            for r in (client.table("rag_assets").select("title")
-                      .eq("company_id", company_id).eq("scope", "account")
-                      .execute().data or []):
-                if r.get("title"):
-                    titles.add(r["title"])
-        return titles
+        return _engine_project_sources.ingested_source_titles(client, project_id, company_id)
     except Exception:  # noqa: BLE001 — see docstring
         return None
 

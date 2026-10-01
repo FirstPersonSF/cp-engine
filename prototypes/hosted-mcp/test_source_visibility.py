@@ -186,3 +186,21 @@ def test_listing_hides_superseded_and_archived_by_the_engine_rule(server, db, mo
     assert "Brief v1.docx" not in titles and "Gone.docx" not in titles
     assert out["superseded_hidden"] == 1
     assert calls, "the listing did not use the engine's supersede rule"
+
+
+def test_the_324_source_store_helpers_are_the_engines(server, db, tmp_path):
+    """Architecture plan step 1c: the chunk check, the workstream doc walk and
+    the ingested-title set are the engine's, not hosted twins."""
+    from cp_engine import mc2_db, project_sources, spine
+
+    assert server._asset_ids_with_chunks is mc2_db.asset_ids_with_chunks
+    assert server._workstream_docs is spine.workstream_docs
+    titles = server._ingested_source_titles(db, "p-job")
+    assert titles == project_sources.ingested_source_titles(db, "p-job", "co-1")
+    assert "Company Deck.pdf" in titles and "Other Company.pdf" not in titles
+
+    class Boom:
+        def table(self, _name):
+            raise RuntimeError("no")
+
+    assert server._ingested_source_titles(Boom(), "p-job") is None
