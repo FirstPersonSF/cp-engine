@@ -361,8 +361,8 @@ The ritual is still available; it is a sequence of verbs rather than one skill:
 2. **`spine_lint`** — important-yet-unbound elements, dead-end activities,
    stale canon, archived-but-referenced documents, Exec Summary field budgets.
 3. **`commitments_sweep`** — what is owed, both directions. An UNDATED
-   commitment is flagged stale at 14 days and nothing closes it for you; this
-   is where it gets dated or dropped.
+   meeting-ingest commitment expires at 14 days (the daily sync closes it);
+   this is where it gets dated or dropped first.
 4. **`seal_sweep`** — for each shipped deliverable, what fed it. Read it before
    acting; `seal_to_deliverable` is how you act on it.
 5. **`word_count_check`** — reporting only. **`rotate_word_count`** acts on

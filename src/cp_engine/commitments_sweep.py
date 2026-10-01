@@ -9,9 +9,9 @@ act via ``resolve_commitment`` — the sweep makes the *decision* cheap,
 not automatic.
 
 Pairs with the wrap-up ritual (#134) and the 14-day TTL (#136): undated
-meeting-ingest rows past it are flagged. The TTL is advisory since the
-weekly dates loop (its only enforcer) was retired in step 5a — nothing
-closes a row on its own; the sweep is where it gets dated or dropped.
+meeting-ingest rows past it are flagged here and closed as `expired` by the
+daily sync (`expire_stale_commitments`); the sweep is where a row gets dated
+before that happens.
 
 #311: likely-duplicate pairs. A commitment logged by hand mid-session and the
 row auto-ingest later writes for the same meeting never share text, so the
@@ -37,8 +37,8 @@ from cp_engine.mc2_db import Tables
 # PROPOSAL, not an agreed obligation, and structurally invisible to
 # 'slipped' (which needs a past due date). Rows still undated + 'proposed'
 # after _EXPIRE_AFTER_DAYS are flagged 'expire', a week earlier 'warn'.
-# Moved here from the retired dates loop (step 5a), which used to close
-# them; the flag is now advisory. Only source_kind='meeting_ingest' —
+# Moved here from the retired dates loop (step 5a); the daily sync closes
+# 'expire' rows (`expire_stale_commitments`). Only source_kind='meeting_ingest' —
 # session, manual, and migration rows were human-authored on purpose.
 _EXPIRE_AFTER_DAYS = 14
 _EXPIRE_WARN_AFTER_DAYS = 7
@@ -67,6 +67,47 @@ def _ttl_bucket(c: dict, today: date) -> str | None:
     if age >= _EXPIRE_WARN_AFTER_DAYS:
         return "warn"
     return None
+
+
+_EXPIRE_COLUMNS = "id, due_date, source_kind, date_status, created_at"
+
+
+def expire_stale_commitments(client: Any, today: date | None = None) -> int:
+    """Close undated meeting-ingest rows past the 14-day TTL as `expired`.
+
+    The rule is `_ttl_bucket`'s, unchanged from the dates loop (#136): only
+    `source_kind='meeting_ingest'`, no `due_date`, `date_status` still
+    `proposed`, created 14+ days ago. A dated row, an agreed one, or one a
+    person wrote is never touched. Run by the daily sync before it renders
+    the `open-asks` regions, so an expired ask leaves the sprint file the same
+    run. Each update re-checks `status=open` and `due_date is null`, so a row
+    dated between the read and the write survives. Returns the number closed;
+    a read or write failure raises, so the sync reports it instead of quietly
+    leaving the TTL unenforced (the dates loop's cron was off for two months
+    before anyone noticed).
+    """
+    today = today or tenant_today()
+    rows = (
+        client.table(Tables.COMMITMENTS)
+        .select(_EXPIRE_COLUMNS)
+        .eq("status", "open")
+        .eq("source_kind", "meeting_ingest")
+        .is_("due_date", "null")
+        .execute()
+        .data
+    ) or []
+    due = [r["id"] for r in rows if _ttl_bucket(r, today) == "expire"]
+    now = datetime.now().astimezone().isoformat()
+    for cid in due:
+        (
+            client.table(Tables.COMMITMENTS)
+            .update({"status": "expired", "updated_at": now})
+            .eq("id", cid)
+            .eq("status", "open")
+            .is_("due_date", "null")
+            .execute()
+        )
+    return len(due)
 
 
 def _sweep_columns(client: Any) -> str:
@@ -320,7 +361,7 @@ def render_sweep(groups: dict[str, list[SweepRow]], *, today: date) -> str:
                 head = f"    due {r.due_date.isoformat()} [{r.date_status}]"
             head += f"  [{r.source_kind}]  {r.owner}"
             if r.ttl == "expire":
-                head += f"  ← past the {_EXPIRE_AFTER_DAYS}d TTL — date it or drop it"
+                head += f"  ← past the {_EXPIRE_AFTER_DAYS}d TTL — expires at the next daily sync unless dated"
             elif r.ttl == "warn":
                 head += f"  ← reaches the {_EXPIRE_AFTER_DAYS}d TTL soon unless dated"
             out.append(head)

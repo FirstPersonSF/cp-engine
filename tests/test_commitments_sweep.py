@@ -61,7 +61,7 @@ def test_render_sweep_shapes() -> None:
     assert "[meeting_ingest]  Marcello Grande" in text
     assert "SLIPPED · due 2026-08-04 (2d ago)" in text
     assert "due 2026-08-20 [agreed]" in text
-    assert "past the 14d TTL — date it or drop it" in text
+    assert "past the 14d TTL — expires at the next daily sync unless dated" in text
     assert "3 open across 1 project(s)" in text
     assert "1 stale" in text
 

@@ -154,6 +154,10 @@ def _project_row(pid, number, full, name, *, parent=None, deal_stage=None, **kw)
             "code": None, **kw}
 
 
+STALE_ID = "00000000-0000-0000-0000-00000000057a"
+STALE_ASK = "Send the stale signage proofs"
+
+
 def _mc2() -> FakeClient:
     client = FakeClient(
         companies=[{"id": CO_ID, **_COMPANY}],
@@ -177,7 +181,17 @@ def _mc2() -> FakeClient:
             "project_tags": [SHORT], "project_id": None, "summary_embedded_at": None,
             "meeting_type": "client",
         }],
-        commitments=[], spine_substance=[], spine_steps=[],
+        commitments=[{
+            # An undated meeting-ingest ask 20 days old: past the 14-day TTL
+            # (#136), so the first sync must close it before rendering.
+            "id": STALE_ID, "description": STALE_ASK, "owner_email": None,
+            "owner_name": "Drew Fiero", "direction": "internal", "due_date": None,
+            "date_status": "proposed", "status": "open",
+            "source_kind": "meeting_ingest", "source_meeting_id": None,
+            "cp_hash": "5ta1e000", "project_id": JOB_ID,
+            "created_at": "2026-09-10T17:00:00+00:00",
+            "updated_at": "2026-09-10T17:00:00+00:00",
+        }], spine_substance=[], spine_steps=[],
         auto_ingest_runs=[], webhook_runs=[],
     )
     client.rpcs["is_team_member"] = lambda _p: True
@@ -572,6 +586,16 @@ def test_ask_renders_in_the_open_asks_region_after_sync(world):
     assert sprint.count(ASK) == 1
     # And what the hosted reader sees.
     assert ASK in _region(world.hosted.sprint_file["text"], "open-asks")
+
+
+def test_sync_expires_the_stale_undated_ask_before_rendering(world):
+    """The 14-day TTL on undated meeting-ingest asks is enforced by the daily
+    sync (step 5a retired the dates loop that used to): the row is closed as
+    `expired` and never reaches the `open-asks` region."""
+    (row,) = [r for r in world.commitments_after_sync1 if r["id"] == STALE_ID]
+    assert row["status"] == "expired", row
+    sprint = _show(world.remote, f"sprints/{WEEK}/{FULL}.md")
+    assert STALE_ASK not in sprint
 
 
 def test_list_commitments_returns_the_ask(world):

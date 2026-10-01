@@ -111,7 +111,7 @@ who]` bullet under `### Open asks` that the next sync imports.
 
 - resolve what the session completed
 - drop what it made moot
-- question undated rows ≥2 weeks old — nothing else will (the `ttl` flag only marks them)
+- question undated rows ≥1 week old — the daily sync expires undated meeting-ingest rows at 14 days (`ttl` = `warn` / `expire`)
 - read the `≈ likely duplicate` pairs: when both rows are one obligation
   (typically your hand-logged row and the one auto-ingest wrote for the same
   meeting), resolve the redundant one
@@ -281,8 +281,8 @@ rolls off entries older than ~4 weeks; here the verb only REPORTS them
 **`commitments_sweep <code>`** per touched project — the ask sweep too, since
 asks live in MC-2 and the sprint file only renders them. Resolve what the
 session completed (`resolve_commitment`), drop what it made moot, and question undated
-rows ≥2 weeks old. An undated commitment is flagged stale at 14 days (the `ttl`
-field) and nothing closes it automatically — date it or drop it here. The likely-duplicate pairs name
+rows ≥2 weeks old. An undated meeting-ingest commitment expires at 14 days — the
+daily sync closes it (`ttl` = `expire`; `warn` from day 7) — so date it or drop it here. The likely-duplicate pairs name
 rows that read as one obligation — resolve the redundant row when they match.
 
 ### h4 — Canon agreement check

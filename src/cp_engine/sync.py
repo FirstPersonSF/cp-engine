@@ -789,6 +789,24 @@ def _sync_tenant_inner(
             if isinstance(backend, SpineClientProvider)
             else None
         )
+        if mc2_client is not None:
+            # The 14-day TTL on undated meeting-ingest asks (#136), enforced
+            # here since the dates loop was retired (step 5a). Before the
+            # render, so an expired ask leaves `open-asks` this same run.
+            from cp_engine.commitments_sweep import expire_stale_commitments
+
+            try:
+                n_expired = expire_stale_commitments(
+                    mc2_client, today=local_date(sync_clock)
+                )
+            except Exception as exc:  # noqa: BLE001 — loud, not fatal
+                logger.warning("commitment expiry failed: %s: %s",
+                               type(exc).__name__, exc)
+                print(f"[cp] commitment expiry FAILED: {type(exc).__name__}: {exc}")
+            else:
+                if n_expired:
+                    print(f"[cp] expired {n_expired} undated meeting-ingest "
+                          f"commitment(s) past the 14-day TTL")
         sprint_hook = _SprintRegionHook(
             mc2_client, config.root / "sprints", stakeholder_pass,
             week_iso=current_sprint_week_iso(sync_clock),
