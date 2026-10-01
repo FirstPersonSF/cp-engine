@@ -104,8 +104,17 @@ def github_get(path: str) -> Any:
     """GET api.github.com<path>. Token from GH_TOKEN/GITHUB_TOKEN/GH_PAT; falls
     back to the `gh` CLI (a local dry run). Raises on failure — callers
     render the failure, they never hide it."""
-    token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-             or os.environ.get("GH_PAT"))
+    # The workflow's own token (`GITHUB_REPO_TOKEN: ${{ github.token }}`) can
+    # read this repo's Actions but no other; GH_PAT reads cp-engine but not
+    # necessarily the tenant (it 404'd on the tenant's sync runs). Use the
+    # repo's own token for the repo the job runs in, GH_PAT elsewhere.
+    own_repo = os.environ.get("GITHUB_REPOSITORY")
+    own_token = os.environ.get("GITHUB_REPO_TOKEN")
+    if own_repo and own_token and path.startswith(f"/repos/{own_repo}/"):
+        token = own_token
+    else:
+        token = (os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
+                 or os.environ.get("GH_PAT"))
     if token:
         req = urllib.request.Request(
             f"https://api.github.com{path}",

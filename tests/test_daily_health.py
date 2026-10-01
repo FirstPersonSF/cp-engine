@@ -232,3 +232,28 @@ def test_post_destination_precedence(monkeypatch):
     monkeypatch.delenv("CP_HEALTH_CHANNEL")
     dh.post(report, config=None, client=object())
     assert sent.pop("ch") == "CPARTNERS"
+
+
+def test_github_get_uses_the_repos_own_token_for_its_own_repo(monkeypatch):
+    """The tenant's sync runs 404'd with GH_PAT; the job's own token reads them."""
+    import cp_engine.daily_health as dh
+
+    seen = []
+
+    class _Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b"{}"
+
+    def fake_urlopen(req, timeout=0):
+        seen.append((req.full_url, req.headers["Authorization"]))
+        return _Resp()
+
+    monkeypatch.setattr(dh.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setenv("GITHUB_REPOSITORY", "FirstPersonSF/cp")
+    monkeypatch.setenv("GITHUB_REPO_TOKEN", "own")
+    monkeypatch.setenv("GH_TOKEN", "pat")
+    dh.github_get("/repos/FirstPersonSF/cp/actions/workflows/sync.yml/runs")
+    dh.github_get("/repos/FirstPersonSF/cp-engine/actions/workflows/tests.yml/runs")
+    assert seen[0][1] == "Bearer own"
+    assert seen[1][1] == "Bearer pat"
