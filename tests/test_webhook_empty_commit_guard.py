@@ -114,3 +114,57 @@ class TestTheDelegatingWrappers:
             version_label="v2", rel_path="spine/x.md",
         )
         assert sha == _head(repo)
+
+
+class TestUnchangedMeetingArtifacts:
+    """A re-ingest of the same meeting with the same tags rewrites its artifact
+    pair byte for byte, so nothing is staged and `_commit_meeting_artifacts`
+    "bails quietly". The step-3 caller read that bail as a FAILURE and put
+    "N artifact file(s) written but the commit/push failed" on the run row —
+    a clean re-run reported as degraded. Found by the step-6 end-to-end test
+    (tests/test_e2e_meeting_to_hosted_read.py) on a second full pass.
+
+    CONTROL: the first test FAILS on the pre-fix code (the summary carries
+    the false "commit/push failed" error); the second passes on both — a real
+    failure must stay loud."""
+
+    @pytest.fixture
+    def committed_artifact(self, repo: Path) -> Path:
+        md = repo / "meetings" / "2026-09-30-check-in.md"
+        md.parent.mkdir()
+        md.write_text("synthesis\n")
+        _git("add", "-A", cwd=repo)
+        _git("commit", "-m", "first ingest", cwd=repo)
+        _git("push", "origin", "main", cwd=repo)
+        return md
+
+    def _generate(self, repo: Path, monkeypatch, md: Path) -> dict:
+        import pipeline
+
+        monkeypatch.setattr(pipeline, "write_meeting_artifacts", lambda **kw: [md])
+        return pipeline._generate_meeting_artifacts(
+            tenant_root=repo, meeting_id="m1", transcript_text="t",
+            project_codes=["ggl-5168"], meeting={"id": "m1"},
+        )
+
+    def test_unchanged_artifacts_are_not_a_failed_commit(
+        self, repo: Path, monkeypatch, committed_artifact: Path
+    ):
+        before = _head(repo)
+        summary = self._generate(repo, monkeypatch, committed_artifact)
+        assert "error" not in summary, summary
+        assert summary["commit_sha"] is None
+        assert _head(repo) == before
+
+    def test_a_real_push_failure_is_still_reported(
+        self, repo: Path, monkeypatch, committed_artifact: Path
+    ):
+        committed_artifact.write_text("a changed synthesis\n")
+
+        def no_push(*_a, **_k):
+            raise subprocess.CalledProcessError(1, ["git", "push"])
+
+        monkeypatch.setattr(git_ops, "_push_with_retry", no_push)
+        summary = self._generate(repo, monkeypatch, committed_artifact)
+        assert "commit/push failed" in summary.get("error", ""), summary
+        assert summary["commit_sha"] is None

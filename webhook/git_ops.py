@@ -814,6 +814,10 @@ def _commit_and_push_promote(
     return _commit_with_message_and_push(tenant_root, message)
 
 
+#: `_commit_meeting_artifacts`' "nothing to commit" — distinct from None (failed).
+ARTIFACTS_UNCHANGED = ""
+
+
 def _commit_meeting_artifacts(
     *, tenant_root: Path, meeting_id: str, artifact_paths: list[Path]
 ) -> str | None:
@@ -825,6 +829,11 @@ def _commit_meeting_artifacts(
 
     Best-effort: returns None on failure rather than raising — a failed
     artifact commit must not break the auto-ingest contract.
+
+    Returns ``ARTIFACTS_UNCHANGED`` (``""``) when there is nothing to commit —
+    already swept in, or a re-ingest that rewrote the pair byte for byte. That
+    is NOT a failure, and the caller must be able to tell the two apart: both
+    used to be None, so a clean re-run was reported as "commit/push failed".
     """
     if not artifact_paths:
         return None
@@ -834,12 +843,12 @@ def _commit_meeting_artifacts(
         subprocess.run(["git", "add", *rels], cwd=tenant_root, check=True)
 
         # If the sprint-file commit already swept these in via `git add
-        # -A`, there's nothing staged here — bail quietly.
+        # -A`, or a re-ingest wrote identical files, nothing is staged.
         staged = subprocess.run(
             ["git", "diff", "--cached", "--quiet"], cwd=tenant_root, env=env
         )
         if staged.returncode == 0:
-            return None
+            return ARTIFACTS_UNCHANGED
 
         message = (
             f"[auto-ingest] meeting artifacts: meeting {meeting_id[:8]}\n\n"

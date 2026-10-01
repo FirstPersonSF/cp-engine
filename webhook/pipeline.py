@@ -1036,7 +1036,8 @@ def _generate_meeting_artifacts(
                 meeting_id=meeting_id,
                 artifact_paths=paths,
             )
-            summary["commit_sha"] = sha
+            # "" = nothing to commit (identical re-write) — not a failure.
+            summary["commit_sha"] = sha or None
             if sha is None:
                 # git_ops swallows the commit/push failure and returns None;
                 # the files were written to a clone that is about to be
