@@ -115,6 +115,9 @@ from cp_engine.mc2_db import (  # noqa: E402
 from cp_engine import promote_uphill as _engine_promote_uphill  # noqa: E402
 from cp_engine.promote_uphill import level_for as _engine_level_for  # noqa: E402
 from cp_engine.state import slug_full_job_name as _engine_slug_full_job_name  # noqa: E402
+# Exec Summary region, markers, stamp and stale threshold (step 1c).
+from cp_engine import exec_summary_draft as _engine_exec_summary_draft  # noqa: E402
+from cp_engine import render as _engine_render  # noqa: E402
 # The one "which sprint week" rule (architecture plan step 1a).
 from cp_engine.sprints import current_sprint_week_iso as _engine_sprint_week_iso  # noqa: E402
 # The card-kind READER (card_class.py). The write-time stamp below is
@@ -8115,8 +8118,9 @@ def add_spine_document(
 _TREE_LOCK = threading.Lock()
 _TREE_STATE: dict[str, Any] = {"root": None, "last_pull": 0.0}
 
-_EXEC_START = "<!-- cp-engine:start exec-summary -->"
-_EXEC_END = "<!-- cp-engine:end exec-summary -->"
+# The engine's region markers (architecture plan step 1c).
+_EXEC_START = _engine_render.EXEC_SUMMARY_START
+_EXEC_END = _engine_render.EXEC_SUMMARY_END
 _SPRINT_DIR_RE = re.compile(r"^\d{4}-W\d{2}$")
 
 
@@ -8398,19 +8402,20 @@ def find_project_dir(root: Path, project_code: str) -> Path | None:
 
 
 def extract_exec_summary(cp_md: Path) -> tuple[str | None, str | None]:
-    """(exec_summary_text, note) from a cp.md's engine-managed markers."""
+    """(exec_summary_text, note) from a cp.md's engine-managed markers —
+    `cp_engine.render.slice_exec_summary_region`, trimmed of surrounding
+    whitespace as this verb always returned it."""
     try:
         text = cp_md.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         return None, f"could not read {cp_md.name}: {exc}"
-    start = text.find(_EXEC_START)
-    end = text.find(_EXEC_END, start + 1) if start >= 0 else -1
-    if start < 0 or end < 0:
+    region = _engine_render.slice_exec_summary_region(text)
+    if region is None:
         return None, (
             "no exec-summary markers in cp.md — the region is scaffolded by "
             "`cp sync`, so an unsynced project legitimately has none"
         )
-    return text[start + len(_EXEC_START) : end].strip(), None
+    return region.strip(), None
 
 
 def current_sprint_week(today: date | datetime | None = None) -> str:
@@ -10084,14 +10089,11 @@ _EXEC_GUARDED_FIELDS: tuple[str, ...] = (
     "status", "objective", "where_it_stands", "next_up", "blockers",
 )
 
-# Mirrors `prep_planning._EXEC_SUMMARY_STALE_DAYS` and its stamp regex (this
-# server does not import prep_planning): a summary the planning bundle already
-# calls STALE is the one a partial refresh must not quietly re-stamp.
-_EXEC_STALE_GUARD_DAYS = 14
-_EXEC_STAMP_RE = re.compile(
-    r"^##\s+Exec Summary\s*·\s*updated\s+(?P<date>\d{4}-\d{2}-\d{2})",
-    re.MULTILINE,
-)
+# The engine's stale threshold for an Exec Summary stamp, and its comparison
+# (stale at >= 14 days): `exec_summary_draft.STALE_AFTER_DAYS`, the scope rule
+# of the weekly drafter. A summary that rule already calls stale is the one a
+# partial refresh must not quietly re-stamp (architecture plan step 1c).
+_EXEC_STALE_GUARD_DAYS = _engine_exec_summary_draft.STALE_AFTER_DAYS
 
 
 def _current_exec_stamp(project_code: str) -> date | None:
@@ -10110,8 +10112,7 @@ def _current_exec_stamp(project_code: str) -> date | None:
         if project_dir is None:
             return None
         text, _ = extract_exec_summary(project_dir / "cp.md")
-        m = _EXEC_STAMP_RE.search(text or "")
-        return date.fromisoformat(m.group("date")) if m else None
+        return _engine_exec_summary_draft.stamp_date(text or "")
     except Exception:  # noqa: BLE001 — fail open; the guard is advisory-strength
         return None
 
