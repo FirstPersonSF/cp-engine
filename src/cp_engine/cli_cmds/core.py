@@ -996,3 +996,54 @@ def promote_uphill_cmd(
                 click.echo(f"  step: position {step.get('position')} on {step.get('est_item_id')}")
     sys.exit(1 if result.get("error") else 0)
 
+
+@click.command("health")
+@click.option("--post", "do_post", is_flag=True,
+              help="Post the line to the partners' Slack channel (default: print only).")
+@click.option("--json", "as_json", is_flag=True, help="Machine-readable output.")
+@click.option("--scheduled", "scheduled", default=None, metavar="CRON",
+              help="The cron expression that fired this run; skip unless it is "
+                   "the slot that lands at 05:xx tenant time.")
+def health_cmd(do_post: bool, as_json: bool, scheduled: str | None) -> None:
+    """The daily health line: sync, ingest, webhook, hosted, CI, spine, summaries.
+
+    Architecture plan step 3. Read-only everywhere; prints to stdout unless
+    --post. Exits 1 when any check needs a look, so a workflow run goes red
+    on a bad day instead of reading green.
+    """
+    import json as _json
+
+    from cp_engine import daily_health
+    from cp_engine.mc2_db import get_client
+
+    root: Path | None = Path.cwd()
+    config = None
+    try:
+        config = load(root)
+    except (CommittedConfigMissing, ConfigError) as exc:
+        click.echo(f"(no tenant config here — tree checks unreadable: {exc})", err=True)
+        root = None
+    if scheduled:
+        from cp_engine.clock import tenant_now, tenant_timezone
+
+        now = tenant_now().replace(tzinfo=tenant_timezone())
+        if not daily_health.is_morning_slot(scheduled, now):
+            click.echo(f"not the morning slot ({scheduled!r}); the other slot posts today.")
+            sys.exit(0)
+    client = get_client(config, required=False)
+    report = daily_health.gather(tenant_root=root, client=client)
+    if as_json:
+        click.echo(_json.dumps(report.to_dict(), indent=2))
+    else:
+        click.echo(report.render())
+    if do_post:
+        if config is None:
+            click.echo("Error: --post needs the tenant config (run from the tenant root).", err=True)
+            sys.exit(2)
+        try:
+            ts = daily_health.post(report, config=config, client=client)
+        except Exception as exc:  # noqa: BLE001 — a post that failed must fail the run
+            click.echo(f"Error: health line NOT posted: {exc}", err=True)
+            sys.exit(2)
+        click.echo(f"posted (ts={ts})", err=True)
+    sys.exit(0 if report.ok else 1)
