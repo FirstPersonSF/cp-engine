@@ -117,6 +117,7 @@ from cp_engine.promote_uphill import level_for as _engine_level_for  # noqa: E40
 from cp_engine.state import slug_full_job_name as _engine_slug_full_job_name  # noqa: E402
 # Exec Summary region, markers, stamp and stale threshold (step 1c).
 from cp_engine import project_sources as _engine_project_sources  # noqa: E402
+from cp_engine import spine_steps as _engine_spine_steps  # noqa: E402
 from cp_engine import wrap_report as _engine_wrap_report  # noqa: E402
 from cp_engine import exec_summary_draft as _engine_exec_summary_draft  # noqa: E402
 from cp_engine import render as _engine_render  # noqa: E402
@@ -3497,23 +3498,28 @@ def _modify_element_sources(
 #  Spine steps — the shared write helpers (#143 batch 1)
 # ──────────────────────────────────────────────────────────────────────
 #
-# Copied, not imported, from `cp_engine.spine_steps` — the vocabularies and
-# row fields below are that module's, verbatim:
+# The vocabulary and read shape are `cp_engine.spine_steps`'s own (architecture
+# plan step 1c, inventory H12). The row semantics below follow that module:
 #
-#   STEP_STATUSES = ("done", "active", "upcoming")   NOTE_MAX = 8000
 #   add_step      -> source/review LEFT UNSET (the table's defaults stand for a
 #                    live human step: engine writes neither column)
 #   propose_step  -> source='auto', review='proposed'
 #   upsert_auto_step -> source='auto', review='proposed', status='done'
+#
+# The verbs themselves are NOT yet the engine's: hosted receives an already-
+# resolved est_item_id, reports a 0-row retitle (the UPDATE policy refusing a
+# row a human confirmed concurrently) instead of claiming `updated: True`, and
+# returns no `steps` list. Which behaviour wins is a decision; see the
+# architecture-plan step 1 report.
 #
 # The one hosted-specific constraint is the UPDATE policy: an authenticated
 # caller may update ONLY rows that are BOTH source='auto' AND review='proposed'.
 # That is exactly the guardrail `upsert_auto_step` already enforces in code, so
 # the engine semantics and the RLS policy agree rather than fight.
 
-STEP_STATUSES = ("done", "active", "upcoming")
-STEP_NOTE_MAX = 8000
-_STEP_SELECT = "id, est_item_id, position, title, status, step_date, note, source, review"
+STEP_STATUSES = _engine_spine_steps.STEP_STATUSES
+STEP_NOTE_MAX = _engine_spine_steps.NOTE_MAX
+_STEP_SELECT = _engine_spine_steps._STEP_SELECT
 
 
 def read_steps(client, project_id: str, est_item_id: str) -> list[dict[str, Any]]:
@@ -3539,8 +3545,8 @@ def upsert_auto_step(
 ) -> dict[str, Any]:
     """Auto-journal a content-write as a step, ONE per (element, day).
 
-    Mirrors `cp_engine.spine_steps.upsert_auto_step` exactly, including the part
-    that matters most — the collapse key IGNORES title. A second version bump of
+    Follows `cp_engine.spine_steps.upsert_auto_step`, including the part that
+    matters most — the collapse key IGNORES title. A second version bump of
     the same element on the same day RETITLES the day's existing proposed
     auto-step rather than stacking a near-identical row.
 
