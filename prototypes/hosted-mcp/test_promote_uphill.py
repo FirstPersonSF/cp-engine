@@ -229,7 +229,7 @@ def test_read_verbs_do_not_claim_a_level():
     tree = ast.parse(SRC)
     tools = _tools(tree)
     for name in ("list_commitments", "list_spine_elements", "get_project_state",
-                 "spine_lint", "wrap_status"):
+                 "list_worksets", "spine_lint", "wrap_status"):
         assert not _has_level_decorator(tools[name]), name
 
 

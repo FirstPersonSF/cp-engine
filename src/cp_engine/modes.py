@@ -7,8 +7,9 @@ session, gated by the generated CLAUDE.md.
 
 `weekly-cp.md` is not a surface any more (#305, plan D8): the weekly
 review loads `master-cp.md` plus every ACCOUNT and PROGRAM `cp.md` — the
-files that carry the hand-written cross-cutting decisions. (The worksets
-mode was retired in architecture step 5a.)
+files that carry the hand-written cross-cutting decisions — and the
+worksets mode CLAUDE.md documents is a hosted-server contract, not a
+file set, so it has no entry here.
 
 The engine's responsibility is template-rendering CLAUDE.md so that
 the rules below are encoded into instructions Claude reads.

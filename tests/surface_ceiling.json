@@ -1,11 +1,12 @@
 {
   "_why": "Architecture plan step 0 (2026-09-30): the surface may shrink but not grow without a deliberate edit here. 64 hosted tools, 68 cxp commands and 36 tables carried the usage in which ~a quarter to a third did 90% of the work. Raising a number is a decision: say why in the commit.",
-  "hosted_tools": 55,
+  "hosted_tools": 58,
   "cxp_commands": 53,
   "mc2_tables": 34,
   "_raised": [
     "2026-09-30: cxp_commands 68→69 for `cxp health` (step 3, daily health line); mc2_tables 36→37 for `webhook_runs` (step 3, a run record on every webhook path).",
-    "2026-10-01: hosted_tools 64→71 for step 5b — the stdio server (17 tools) was retired and the seven verbs only it carried (fetch_project_source, compare_project_sources, pull_document_comments, push_to_dropbox, preflight, list_vendors, list_rfp_respondents) moved to hosted. Net MCP surface across both servers fell 81→71; cxp_commands fell 69→68 (`cxp mcp`) without a ceiling change."
+    "2026-10-01: hosted_tools 64→71 for step 5b — the stdio server (17 tools) was retired and the seven verbs only it carried (fetch_project_source, compare_project_sources, pull_document_comments, push_to_dropbox, preflight, list_vendors, list_rfp_respondents) moved to hosted. Net MCP surface across both servers fell 81→71; cxp_commands fell 69→68 (`cxp mcp`) without a ceiling change.",
+    "2026-10-01: hosted_tools 55→58 — worksets kept (Drew: an idea not yet executed); open_workset, list_worksets, describe_workset restored."
   ],
   "_frozen_until": "2026-11-01",
   "_lowered": [
