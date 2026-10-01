@@ -28,7 +28,7 @@ from cp_engine.config import TenantConfig
 from cp_engine.ingest import IngestPlanError, execute_plan
 from cp_engine.mc2_db import Tables
 from cp_engine.plan_from_transcript import PlanGenerationError, generate_plan
-from cp_engine.retrospective import append_entry, build_entry
+from cp_engine.retrospective import append_entry, build_entry, history_path
 from cp_engine.spine import SpineDirNotFound, find_spine_dir
 
 log = logging.getLogger("cp-engine-webhook")
@@ -186,14 +186,8 @@ def _append_retrospective(
             transcript_link=None,
             meeting_id=meeting_id or None,
         )
-        history_path = (
-            find_spine_dir(config.root, code)
-            / "spine"
-            / "Retrospective"
-            / "meeting-history.md"
-        )
         wrote = append_entry(
-            history_path,
+            history_path(find_spine_dir(config.root, code)),
             meeting_id,
             entry_md,
             code=code,

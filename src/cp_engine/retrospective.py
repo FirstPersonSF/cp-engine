@@ -7,9 +7,19 @@ Fathom `summary` is embedded WHOLE (anti-compression) — structured pointers
 narrative summary.
 
 `build_entry` is a pure renderer for one entry. `append_entry` does the file
-IO: it creates the per-project `spine/Retrospective/meeting-history.md` element
-with parseable frontmatter on first call, then appends idempotently keyed on
-the meeting id (re-ingesting the same meeting is a no-op).
+IO: it creates the per-project history file with parseable frontmatter on
+first call, then appends idempotently keyed on the meeting id (re-ingesting the
+same meeting is a no-op).
+
+WHERE IT LIVES (architecture step 4c, 2026-10-01). The history is an ordinary
+hand-owned tenant file at ``<workstream dir>/meeting-history.md``. It used to
+sit at ``spine/Retrospective/meeting-history.md``, but ``spine/`` is now a
+view generated from MC-2 on every sync, and the history has no MC-2 copy (its
+table was dropped in mig 072): left there, the first render would quarantine
+and delete ~390k words. ``history_path`` is the ONE resolver every reader and
+writer uses. Until the one-time move (``scripts/move_meeting_history.py``) has
+run for a workstream, it returns the legacy file when only that exists, so an
+append never forks one history into two files.
 """
 
 from __future__ import annotations
@@ -17,6 +27,34 @@ from __future__ import annotations
 from datetime import date
 from pathlib import Path
 from typing import Sequence
+
+#: The history file's home, relative to the workstream dir.
+HISTORY_FILENAME = "meeting-history.md"
+#: Where it lived before step 4c (inside the generated ``spine/`` view).
+LEGACY_RELPATH = Path("spine") / "Retrospective" / HISTORY_FILENAME
+
+
+def history_path(project_dir: Path) -> Path:
+    """The workstream's meeting-history file — the path to read AND append.
+
+    ``<project_dir>/meeting-history.md``, except while a workstream still has
+    only the legacy ``spine/Retrospective/meeting-history.md`` (the move script
+    has not run): then the legacy file, so writes keep landing on the one
+    history that exists rather than starting a second."""
+    new = project_dir / HISTORY_FILENAME
+    legacy = project_dir / LEGACY_RELPATH
+    if not new.exists() and legacy.exists():
+        return legacy
+    return new
+
+
+def read_history(project_dir: Path) -> str | None:
+    """The history file's text, or None when the workstream has none."""
+    path = history_path(project_dir)
+    try:
+        return path.read_text(encoding="utf-8")
+    except OSError:
+        return None
 
 
 def _meeting_marker(meeting_id: str) -> str:

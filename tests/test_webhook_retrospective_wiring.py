@@ -1,7 +1,7 @@
 """Tests for the Retrospective append wiring (spine-inversion Part B).
 
 Every tagged Fathom meeting should leave a dated entry in the project's
-`spine/Retrospective/meeting-history.md`, embedding the WHOLE Fathom
+`meeting-history.md` (the workstream root since step 4c), embedding the WHOLE Fathom
 summary (anti-compression). The append is best-effort and MUST NOT break
 auto-ingest: a missing/empty summary, an unresolvable project dir, or any
 other failure degrades to "no retrospective entry written" rather than a
@@ -74,7 +74,7 @@ def test_append_retrospective_writes_whole_summary(tmp_path: Path) -> None:
         plan={"projects": {code: {}}},
     )
 
-    history = proj / "spine" / "Retrospective" / "meeting-history.md"
+    history = proj / "meeting-history.md"
     assert history.exists(), "retrospective history file was not created"
     text = history.read_text()
     assert summary in text, "the WHOLE Fathom summary must be embedded"
@@ -106,7 +106,7 @@ def test_append_retrospective_skips_when_summary_empty(tmp_path: Path) -> None:
         plan=None,
     )
 
-    history = proj / "spine" / "Retrospective" / "meeting-history.md"
+    history = proj / "meeting-history.md"
     assert not history.exists(), "no file should be written when summary is empty"
     assert status == "skipped"
 
@@ -145,7 +145,7 @@ def test_append_retrospective_is_idempotent_on_meeting_id(tmp_path: Path) -> Non
     assert first == "appended"
     assert second == "duplicate"
 
-    history = proj / "spine" / "Retrospective" / "meeting-history.md"
+    history = proj / "meeting-history.md"
     assert history.read_text().count("A real summary.") == 1
 
 

@@ -55,8 +55,9 @@ forces anything, and the template wording is corrected to match (see #204).
 Exemption: per-meeting artifacts under any `meetings/` directory are
 explicitly exempt per `CLAUDE.md` — a fixed per-meeting record (synthesis +
 verbatim transcript) is legitimately long and must not be audited or
-rotated. `spine/Retrospective/meeting-history.md` is exempt for the same
-reason: it is an append-only meeting ledger, not a CP surface. Without these
+rotated. `meeting-history.md` (each workstream's root since step 4c; under
+`spine/Retrospective/` before the move) is exempt for the same reason: it is
+an append-only meeting ledger, not a CP surface. Without these
 the lint would fire constantly on files no one should trim.
 """
 

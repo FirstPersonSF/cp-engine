@@ -68,6 +68,15 @@ def recent_meeting_summaries(
     retro = next((e for e in elements if e.layer == "Retrospective"), None)
     if retro is None or not retro.body:
         return []
+    return recent_meeting_entries(retro.body, limit=limit)
+
+
+def recent_meeting_entries(text: str, *, limit: int = _MEETING_LIMIT) -> list[str]:
+    """Up to ``limit`` newest entries of a meeting-history body (frontmatter
+    already stripped or not — lines before the first entry header are
+    ignored either way). The parser behind `recent_meeting_summaries`."""
+    if not text:
+        return []
 
     # Split ONLY on true entry headers `### <YYYY-MM-DD> · …` (build_entry's
     # format). A bare `### ` test would also split on H3s inside an embedded
@@ -76,7 +85,7 @@ def recent_meeting_summaries(
     # from summary sub-headers.
     entries: list[str] = []
     current: list[str] | None = None
-    for line in retro.body.splitlines():
+    for line in text.splitlines():
         if _ENTRY_HEADER_RE.match(line):
             if current is not None:
                 entries.append("\n".join(current))
@@ -300,6 +309,28 @@ def _hydrate_retrospective_body(elements, tenant_root):
     return tuple(out) if changed else elements
 
 
+def _history_meetings(code: str, tenant_root) -> list[str] | None:
+    """Recent entries from the workstream's meeting-history file
+    (`retrospective.history_path` — ``<workstream>/meeting-history.md`` since
+    step 4c, the legacy ``spine/Retrospective/`` file before the move). None
+    when there is no tenant root, no resolvable dir or no history file, so the
+    caller falls back to a Retrospective element's body."""
+    if tenant_root is None:
+        return None
+    from pathlib import Path
+
+    from cp_engine.retrospective import read_history
+    from cp_engine.spine import SpineDirNotFound, find_spine_dir
+
+    try:
+        text = read_history(find_spine_dir(Path(tenant_root), code))
+    except SpineDirNotFound:
+        return None
+    if not text:
+        return None
+    return recent_meeting_entries(text)
+
+
 def run_sweep(
     code: str,
     elements: tuple[SpineElement, ...],
@@ -314,9 +345,10 @@ def run_sweep(
     The `llm` is injected (`Callable[[str], str]`) so this is testable without a
     live model: the CLI wraps the real call, tests pass a fake.
 
-    `tenant_root`, when given, hydrates the Retrospective element's body from
-    disk (MC-2-loaded elements have empty bodies) so recent meeting summaries
-    reach the prompt. Omitted in pure tests that build bodies directly.
+    `tenant_root`, when given, reads recent meeting summaries from the
+    workstream's meeting-history file (`retrospective.history_path`); failing
+    that, it hydrates a Retrospective element's body from disk (MC-2-loaded
+    elements have empty bodies). Omitted in pure tests that build bodies directly.
 
     Empty spines skip the LLM entirely (don't pay for nothing) — design B: an
     empty project would otherwise burn a call asking the model to synthesize a
@@ -328,8 +360,10 @@ def run_sweep(
             synthesis_text="(no spine elements to sweep)",
             ranked_table=table,
         )
-    elements = _hydrate_retrospective_body(elements, tenant_root)
-    meetings = recent_meeting_summaries(elements)
+    meetings = _history_meetings(code, tenant_root)
+    if meetings is None:
+        elements = _hydrate_retrospective_body(elements, tenant_root)
+        meetings = recent_meeting_summaries(elements)
     prompt = build_sweep_prompt(
         code, elements, today=today, meeting_summaries=meetings
     )
