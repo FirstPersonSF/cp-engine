@@ -1,8 +1,12 @@
 # Stakeholder card format
 
-The exact on-disk contract for a spine stakeholder card, plus a worked example.
+The shape of a spine stakeholder card, plus a worked example. The card is an
+MC-2 element written with `create_spine_element` (`layer="Stakeholders"`,
+`slug=<slug>`) and versioned with `add_spine_version`. The file below is what
+sync RENDERS from it at `spine/_authored/<slug>.md` — read it, never write it:
+`spine/` is generated, and a hand edit there is quarantined and overwritten.
 
-## Frontmatter
+## Rendered frontmatter
 
 ```yaml
 ---
@@ -125,7 +129,7 @@ Where a claim is inferred rather than sourced, mark it in the prose:
 
 ## Versioning
 
-A material change adds a block; it does not overwrite:
+A material change adds a version; it does not overwrite. Rendered, it reads:
 
 ```
 ## v2 — YYYY-MM-DD · live
@@ -137,5 +141,6 @@ _Updated <date> — <what changed and why>._
 <full revised body>
 ```
 
-Then change the v1 header to `· superseded` and append a step to the
-frontmatter `steps:` list with the next `position`.
+You do not write this block. `add_spine_version` adds it and demotes v1 to
+`· superseded`; `propose_spine_step` adds the step. The next sync renders
+both into the file.

@@ -302,6 +302,10 @@ markers is human territory — auto-ingest appends bullets to known
 hand-written sections (`## Decisions`, `## Account summary`, `## Sprint
 planning summaries`) and never inside a marker.
 
+`spine/` is generated from MC-2: never edit it — a hand edit is
+quarantined (`exceptions/region-edits/`), then overwritten. A workstream's
+`meeting-history.md` is hand-owned.
+
 Deliberations land in the sprint file's `### Open questions`, beside
 `### Decisions`.
 
@@ -312,8 +316,7 @@ sprint planning", "prep sprint planning agenda", or similar), run
 `/cp-prep`. The engine emits a
 **bundle** (`cxp prep-planning --bundle`) — every active project's full
 Exec Summary plus deterministic metrics — and **you synthesize**
-`sprints/<W##>/_planning.md` from it in-session (you author the doc, so
-you can defend and revise it live in the meeting). The command itself
+`sprints/<W##>/_planning.md` from it in-session. The command itself
 carries the full six-section contract and the every-active-project-
 appears-exactly-once invariant. Ad-hoc scoped prep (e.g. one client
 meeting): `/cp-prep <code> [<code> ...]`.

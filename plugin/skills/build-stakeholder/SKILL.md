@@ -1,6 +1,6 @@
 ---
 name: build-stakeholder
-description: Build a cp stakeholder dossier card for a person on an engagement or initiative — reading their LinkedIn through the user's signed-in Chrome (the reliable path; WebFetch and curl are blocked with HTTP 999), plus a mine of the tenant's own transcripts and spine. Use when the user says "create a stakeholder for X", "build a stakeholder card", "add X as a stakeholder", or supplies a LinkedIn URL for someone on a project. Writes to the project spine's Stakeholders layer via propose_spine_step, and never invents biographical fact.
+description: Build a cp stakeholder dossier card for a person on an engagement or initiative — reading their LinkedIn through the user's signed-in Chrome (the reliable path; WebFetch and curl are blocked with HTTP 999), plus a mine of the tenant's own transcripts and spine. Use when the user says "create a stakeholder for X", "build a stakeholder card", "add X as a stakeholder", or supplies a LinkedIn URL for someone on a project. Writes the card to MC-2's Stakeholders layer via create_spine_element (+ a propose_spine_step step) — never as a file in spine/, which is generated — and never invents biographical fact.
 ---
 
 # Build a stakeholder card
@@ -170,13 +170,17 @@ matters.
 
 ## Step 4 — Land it in the spine
 
-Stakeholder cards are `layer: Stakeholders`, `placement: context`,
-`binding: unbound`, `est_item_kind: context`.
+Stakeholder cards are `layer: Stakeholders` elements in MC-2. **Write them
+through MC-2, never as a file.** `spine/` is generated from MC-2 on every sync:
+a card written straight into `spine/_authored/` never reaches MC-2, and the
+next sync quarantines it to `exceptions/region-edits/` and removes it.
 
-**Propose, do not write directly.** Per the tenant's activity-record rule, use
-`propose_spine_step` so the card carries a step. For a working-directory
-authored card, write the file into `<project-dir>/spine/_authored/<slug>.md`
-and hand-propose the step.
+1. `create_spine_element(project_code, framing="<Name> — <role descriptor>",
+   body=<the dossier>, layer="Stakeholders", slug="<slug>")` — `cp-hosted`.
+2. `propose_spine_step(project_code, "_authored/<slug>", "Created <Name> — <role
+   descriptor>")` — the activity-record rule: the card carries a step.
+
+The card's file appears at `spine/_authored/<slug>.md` on the next sync.
 
 Slug format: `<first>-<last>-<role-descriptor>`, lowercase, hyphenated —
 `morgan-wright-salesloft-customer-liaison`. The descriptor is what they are
@@ -189,9 +193,13 @@ sourced and which are inferred.
 
 ## Refreshing an existing card
 
-If a card already exists, **do not overwrite it.** Read it first. If the update
-is material — a role change, a shift in what they own, a watch item that
-resolved or turned real — add a `## v2` block per the format reference and mark
-v1 `superseded`. Version headers use `live` / `superseded` only.
+If a card already exists, **do not overwrite it.** Read it first
+(`pull_spine_element`). If the update is material — a role change, a shift in
+what they own, a watch item that resolved or turned real — add a version:
+`add_spine_version(project_code, element_id="_authored/<slug>", body=<full
+revised body>, version_note=<what changed>)`. The prior version is demoted to
+`superseded` for you.
 
-If the update is minor, edit in place and say you did.
+If the update is minor, it is still a version (a body has no in-place edit
+in MC-2); say it was minor in `version_note`. A title change alone is
+`set_spine_element(..., framing=...)`. Never edit the card's file.

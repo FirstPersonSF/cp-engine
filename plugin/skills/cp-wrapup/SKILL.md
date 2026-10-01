@@ -175,7 +175,7 @@ commit, since it lands upstream. Trimming hand-written sections stays manual.
 
 **Exempt:** per-meeting artifacts under any `meetings/` directory (fixed
 per-meeting records — synthesis + verbatim transcript — legitimately long)
-and `spine/Retrospective/meeting-history.md`; do not audit or rotate them.
+and each workstream's `meeting-history.md`; do not audit or rotate them.
 
 ## 8 — Improvements sweep
 
