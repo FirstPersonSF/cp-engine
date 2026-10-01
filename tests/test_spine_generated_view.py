@@ -1,13 +1,14 @@
 """Architecture step 4c: MC-2 owns every spine element; ``spine/`` is a
 generated, guarded view.
 
-The four CONTROL tests at the top were run against the pre-4c engine
+The CONTROL tests at the top were run against the pre-4c engine
 (origin/main b872445) and FAIL there — see each docstring for how:
 
 * a hand edit in ``spine/`` no longer reaches MC-2, and is quarantined;
 * meeting-history writes land at ``<workstream>/meeting-history.md``;
-* a hand-written card file imports into MC-2 exactly once;
-* a snapshot is keyed by the workstream's full code.
+* a hand-written card file imports into MC-2 exactly once.
+
+(A fourth, the snapshot-index key, went with the snapshot index in step 5a.)
 
 The rest pin the guard's other branches.
 """
@@ -185,30 +186,6 @@ def test_control_hand_written_card_imports_once(tmp_path):
 
 
 # ── CONTROL 4 ────────────────────────────────────────────────────────────────
-
-
-def test_control_snapshot_keyed_by_full_code(tmp_path):
-    """The one snapshot on disk was frozen under the short code; pre-4c its
-    index row id was `ibx-5153/…` while MC-2 keys it `ibx-5153-ai-campaign/…`
-    (the id assertion fails there)."""
-    from cp_engine.spine_sync import sync_spine_snapshots
-
-    full = "ibx-5153-ai-campaign"
-    proj = tmp_path / "1p" / "infoblox" / full
-    snap = proj / "spine" / "Deliverables" / "foundation-pp-doc.snapshots"
-    snap.mkdir(parents=True)
-    (snap / "2026-06-13-before-6-17-workshop.md").write_text(
-        "---\nid: ibx-5153/deliverable/foundation-pp-doc\n"
-        "snapshot:\n  of: ibx-5153/deliverable/foundation-pp-doc\n"
-        "  label: before 6-17 workshop\n  created: '2026-06-13'\n---\nbody\n"
-    )
-    client = FakeClient(spine_snapshots=[])
-    sync_spine_snapshots(client, project_code=full, project_dir=proj,
-                         tenant_root=tmp_path, project_id="pid")
-    (row,) = client.store["spine_snapshots"]
-    assert row["id"] == f"{full}/deliverable/foundation-pp-doc@2026-06-13-before-6-17-workshop"
-    assert row["deliverable_id"] == f"{full}/deliverable/foundation-pp-doc"
-    assert row["project_code"] == full
 
 
 # ── the guard's other branches ───────────────────────────────────────────────

@@ -86,7 +86,6 @@ class Tables:
     SPINE_SUBSTANCE = "spine_substance"
     SPINE_CONTEXT = "spine_context"
     SPINE_ELEMENTS = "spine_elements"
-    SPINE_SNAPSHOTS = "spine_snapshots"
     SPINE_INBOX = "spine_inbox"
     SPINE_PROMOTE_RUNS = "spine_promote_runs"
     SPINE_RELATIONS = "spine_relations"  # typed element->element edges (mig 117)
@@ -859,7 +858,6 @@ def _install_connection_retry(client) -> None:
         )
 
 
-
 _client_cache: dict[tuple[str, str], "Client"] = {}
 
 # ── Client-construction instrumentation (diagnostic; off unless asked) ──
@@ -1132,16 +1130,6 @@ def update_element_review_flags(
     client.table(Tables.SPINE_SUBSTANCE).update(
         {"review_flags": review_flags}
     ).eq("id", element_id).execute()
-
-
-def upsert_spine_snapshot(client: "Client", row: dict) -> None:
-    """Upsert one ``spine_snapshots`` index row (conflict key: ``id``).
-
-    Caller: ``cli_cmds.spine.snapshot_cmd`` (`cp snapshot`). Best-effort at
-    the callsite — the on-disk frozen file is canonical; this row is only
-    the MC-2 index entry.
-    """
-    client.table(Tables.SPINE_SNAPSHOTS).upsert(row, on_conflict="id").execute()
 
 
 # ──────────────────────────────────────────────────────────────────────

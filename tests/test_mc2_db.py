@@ -288,7 +288,7 @@ def test_registry_covers_known_tables() -> None:
         "clickup_task_proposals",
         "commitments", "app_config",
         "spine_substance", "spine_context", "spine_elements",
-        "spine_snapshots", "spine_inbox", "spine_promote_runs",
+        "spine_inbox", "spine_promote_runs",
         "spine_relations", "spine_steps",
         # The master prompt (mig 139) — judgment priors sent as `system=`.
         # Read via the cp_prompt_resolve RPC; written only through the

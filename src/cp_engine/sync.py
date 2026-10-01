@@ -675,7 +675,6 @@ def _sync_tenant_inner(
         if project.mc2_id:
             from cp_engine.estimate import fetch_estimate
             from cp_engine.spine_substance_sync import sync_spine_substance
-            from cp_engine.spine_sync import sync_spine_snapshots
 
             # The raw-client handoff is an opt-in capability (SpineClientProvider),
             # not part of the core Backend protocol (arch-phase-4, #34). A backend
@@ -692,26 +691,13 @@ def _sync_tenant_inner(
             # was dropped (mc-2 migration 072). Calling it logged a PGRST205
             # "table not found" warning on every project of every sync. The
             # substance + context mirror below is its replacement.
-            try:
-                sync_spine_snapshots(
-                    client,
-                    project_code=project.code,
-                    project_dir=project_dir,
-                    tenant_root=config.root,
-                    project_id=project.mc2_id,
-                )
-            except Exception as exc:  # noqa: BLE001 — best-effort snapshot mirror
-                logger.warning(
-                    "spine-snapshot mirror skipped for %s: %s",
-                    project.code, exc, exc_info=True,
-                )
             # Render the generated `spine/` view from MC-2 (step 4c: MC-2 owns
             # every element; nothing on disk is pushed up — a hand edit is
             # quarantined to exceptions/region-edits/ and overwritten). The
             # estimate is fetched once to reconcile distilled bindings in MC-2;
             # estimate=None leaves bindings as stored. The disk→MC-2
             # `spine_context` push went with the substance push (0 files, 0
-            # rows on 2026-10-01). Best-effort like the snapshot index.
+            # rows on 2026-10-01). Best-effort.
             try:
                 estimate = _fetch_estimate_or_none(client, project)
                 sync_spine_substance(

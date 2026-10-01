@@ -25,7 +25,8 @@ a manifest, ``.generated.json``, mapping every file the engine wrote to the
   as the slt-5196 Morgan Wright dossier would otherwise vanish).
 
 Exempt, never generated and never reaped: frozen snapshots (``*.snapshots/``,
-write-once by ``cxp spine snapshot``; MC-2 indexes them but holds no body), and
+write-once files from the retired ``cxp snapshot`` — the verb and its MC-2
+index went in step 5a, the one file on disk stays as hand-owned history), and
 the legacy ``Retrospective/meeting-history.md`` until
 ``scripts/archive/move_meeting_history.py`` moves it to the workstream root.
 """

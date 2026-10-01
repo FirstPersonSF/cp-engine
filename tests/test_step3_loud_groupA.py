@@ -141,21 +141,6 @@ def test_feeds_sweep_reports_lookup_failure_not_no_project(monkeypatch, tmp_path
     assert "PGRST timeout" in result.stderr
 
 
-def test_snapshots_listing_names_malformed_snapshot(monkeypatch, tmp_path):
-    from tests.test_cli_snapshot import _snap_dir, _tenant_with_deliverable
-
-    _tenant_with_deliverable(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    sd = _snap_dir(tmp_path)
-    sd.mkdir(parents=True)
-    (sd / "2026-06-01-broken.md").write_text(
-        "---\nsnapshot: [unclosed\n---\nbody\n", encoding="utf-8"
-    )
-    result = CliRunner().invoke(main, ["snapshots", "ibx-5153/deliverable/pos"])
-    assert result.exit_code == 0, result.output
-    assert "2026-06-01-broken.md" in result.stderr
-
-
 # ── mcp_server.py ───────────────────────────────────────────────────────
 
 

@@ -8,7 +8,7 @@ only in ``framing``, MC-2 newer and human-confirmed in every case, and disk
 held nothing MC-2 lacked. So the direction is now one-way, MC-2 → disk:
 
 * ``sync_spine_substance`` heals stale ``project_code`` spellings (all origins,
-  snapshots, relations), reconciles each distilled element's ``binding``
+  relations), reconciles each distilled element's ``binding``
   against the live estimate IN MC-2, then renders the project's whole
   ``spine/`` and its account's ``_stakeholders/`` through `spine_mirror`
   (generated, guarded: a hand edit is quarantined, then overwritten).
@@ -163,7 +163,7 @@ _RELATIONS_TABLE = Tables.SPINE_RELATIONS
 def _rehome_relation_codes(client, *, project_id, project_code):
     """Re-home spine_relations rows whose project_code drifted (2026-08-03).
 
-    The missing sibling of the substance/snapshot healers: substance
+    The missing sibling of the substance healer: substance
     self-healed every sync while relations accumulated short-code edges
     (45 found across 3 projects, invisible to dir-slug-scoped readers —
     mc-2 migration 129 cleaned the backlog; this keeps it clean). Edges
@@ -181,40 +181,6 @@ def _rehome_relation_codes(client, *, project_id, project_code):
         ).eq("id", r["id"]).execute()
         n += 1
     return n
-
-
-_SNAPSHOT_TABLE = Tables.SPINE_SNAPSHOTS
-
-
-def _rehome_snapshot_codes(client, *, project_id, project_code):
-    """Re-home spine_snapshots rows whose project_code drifted: rewrite the code
-    prefix in id + deliverable_id, and project_code. A rename, not a delete.
-    Returns count. Keyed on project_id (added in mig 078)."""
-    rows = (client.table(_SNAPSHOT_TABLE)
-        .select("id, deliverable_id, project_code")
-        .eq("project_id", project_id).execute().data) or []
-    n = 0
-    for r in rows:
-        if r.get("project_code") == project_code:
-            continue
-        old_id = r["id"]
-        new_id = f"{project_code}/{old_id.split('/',1)[1]}" if "/" in old_id else old_id
-        old_dlv = r.get("deliverable_id") or ""
-        new_dlv = f"{project_code}/{old_dlv.split('/',1)[1]}" if "/" in old_dlv else old_dlv
-        if new_id == old_id:
-            continue
-        exists = client.table(_SNAPSHOT_TABLE).select("id").eq("id", new_id).execute().data
-        if exists:
-            logger.warning("spine snapshot re-home collision; dropping stale %s (kept %s)", old_id, new_id)
-            client.table(_SNAPSHOT_TABLE).delete().eq("id", old_id).execute()
-            n += 1
-            continue
-        client.table(_SNAPSHOT_TABLE).update(
-            {"id": new_id, "deliverable_id": new_dlv, "project_code": project_code}
-        ).eq("id", old_id).execute()
-        n += 1
-    return n
-
 
 
 def reconcile_bindings_in_mc2(client, *, project_id: str, estimate,
@@ -279,7 +245,7 @@ def sync_spine_substance(
     rendered under ``spine/``.
 
     1. Heal stale ``project_code`` spellings (substance of every origin,
-       snapshots, relations) on the stable ``project_id`` key.
+       relations) on the stable ``project_id`` key.
     2. Reconcile distilled bindings against ``estimate`` (in MC-2).
     3. Render ``spine/`` (`render_project_spine`) — a READ failure raises
        before any file is touched; a single element that cannot render is
@@ -293,9 +259,6 @@ def sync_spine_substance(
     reaches no one."""
     del malformed_out  # no disk parse any more (step 4c)
     _rehome_substance_codes(client, project_id=project_id, project_code=project_code)
-    # Snapshots are CLI-written and code-prefixed too; re-home them on the same
-    # project_id key so a code change doesn't strand them (mig 078).
-    _rehome_snapshot_codes(client, project_id=project_id, project_code=project_code)
     # Relations too — the healer that was missing while 45 short-code edges
     # accumulated (mig 129 cleaned the backlog; this keeps it clean).
     _rehome_relation_codes(client, project_id=project_id, project_code=project_code)
