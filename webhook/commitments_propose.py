@@ -1,6 +1,6 @@
 """Stage A — propose commitments from a meeting's Fathom action items.
 
-Successor to ``clickup_propose.py`` (commitments consolidation, cp-engine
+Successor to the deleted ``clickup_propose.py`` (commitments consolidation, cp-engine
 #38): action items now land as ``proposed`` rows in MC-2's
 ``public.commitments`` instead of ``clickup_task_proposals``. The review
 gate survives as the ``date_status='proposed'`` state, ratified (or not)
@@ -316,10 +316,10 @@ def propose_commitments(
                 client,
                 owner=owner,
                 description=stored_description,
-                # Step 4a: the one recipe, on the CANONICAL code. The old
-                # recipe hashed whatever code the meeting was tagged with
-                # (usually the short form) while the sprint bullet hashed
-                # the full one, so the two copies never matched.
+                # Step 4a: the one recipe, keyed on `<co>-<number>` whatever
+                # spelling the meeting was tagged with. The old recipe hashed
+                # the tag verbatim (usually the short form) while the sprint
+                # bullet hashed the full slug, so the copies never matched.
                 cp_hash=ask_hash(owner.get("canonical_code") or owner["code"], description),
                 legacy_hashes=(_content_hash(owner["code"], "record-ask", description),),
                 source_kind="meeting_ingest",

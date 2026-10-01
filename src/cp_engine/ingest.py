@@ -1155,8 +1155,8 @@ def _write_ask(
     if not text:
         raise IngestPlanError("ask item missing 'text'")
     # Step 4a: the one ask recipe (cp_engine.asks.ask_hash), keyed on the
-    # sprint stem — the canonical full code — so this bullet, the webhook's
-    # commitment and a hosted create_commitment all agree on its identity.
+    # rename-stable `<co>-<number>` of the sprint stem, so this bullet, the
+    # webhook's commitment and a hosted create_commitment agree on identity.
     from cp_engine.asks import ask_hash
 
     h = ask_hash(code, text)
@@ -2235,7 +2235,7 @@ def _owner_column(project: dict) -> dict:
     """Return the owner column for a clickup_task_proposals row.
 
     One owner column since #301 (mc-2 mig 192 folded the second one):
-    ``project_id``. Mirrors ``webhook/clickup_propose._build_proposal_row``.
+    ``project_id``.
     """
     return {"project_id": project["id"]}
 
@@ -2370,8 +2370,8 @@ def _proposal_already_present(client, cp_ask_hash: str) -> bool:
     Rejected rows are intentionally excluded — a rejected proposal that
     re-appears on a rerun should be re-proposed (the reviewer may have
     rejected the first iteration as malformed and want the LLM's revised
-    version). This matches the rejected-row semantic in
-    ``webhook/clickup_propose._existing_descriptions``.
+    version). (The webhook's ``clickup_propose`` once shared this rule; it
+    was deleted in step 4a, dead since the commitments consolidation.)
 
     Best-effort: any unexpected query error falls back to False (insert
     proceeds). The webhook's auto-ingest contract is that ClickUp routing

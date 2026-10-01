@@ -378,6 +378,9 @@ def test_recipe_ignores_markers_case_whitespace_and_annotations():
     assert a == ask_hash(CODE, "  send the  deck to Janet <!-- cp:hash=deadbeef -->")
     assert a == ask_hash(CODE, "Send the deck to Janet [owner unresolved: Speaker 2]")
     assert a != ask_hash("ibx-5153-ai-campaign", "Send the deck to Janet")
+    # Any spelling of the code keys the same: the short form is the key.
+    assert a == ask_hash(SHORT, "Send the deck to Janet")
+    assert a == ask_hash("SLT 5196 Brand Campaign 26", "Send the deck to Janet")
     assert a != ask_hash(CODE, "Send the deck to Janet", occurrence=1)
 
 
@@ -434,3 +437,123 @@ def test_an_ask_closed_in_a_later_week_is_not_imported_from_its_older_copy(tmp_p
     _render(tmp_path, "2026-W40", "2026-W39")
     _sync(client, tmp_path, "2026-W40")
     assert client.commitments == []
+
+
+# ── 2026-10-01 amendments (Drew): short-code key, reconcile policy, prep ──
+
+
+def test_short_code_hash_survives_a_rename(tmp_path):
+    """The hash keys on `<co>-<number>`: the same ask in a renamed
+    workstream's sprint file keeps its identity. Control: on the full-slug
+    recipe the two bullets hashed differently."""
+    before = tmp_path / "a.md"
+    after = tmp_path / "b.md"
+    for p in (before, after):
+        p.write_text("## Client communication\n### Open asks\n")
+    item = {"text": "Send the CAB agenda to David Schloss", "who": "Morgan", "date": "2026-09-28"}
+    _write_ask("slt-5196-brand-campaign-26", dict(item), before)
+    _write_ask("slt-5196-brand-campaign-2026", dict(item), after)
+    h = lambda p: re.search(r"cp:hash=([0-9a-f]{8})", p.read_text()).group(1)  # noqa: E731
+    assert h(before) == h(after)
+
+
+def _reconcile_tenant(tmp_path: Path) -> tuple[Path, "FakeMC2"]:
+    """Three workstreams — Open, Holding, Closed — each with one recent
+    unmatched ask, plus an Open-workstream ask that restates an existing
+    commitment in other words."""
+    import json
+
+    ws = {
+        "slt-5196-brand-campaign-26": (PID, "Open", 5196),
+        "slt-5197-holding-job": ("p-hold", "Holding", 5197),
+        "slt-5198-closed-job": ("p-closed", "Closed", 5198),
+    }
+    (tmp_path / ".cp-engine").mkdir()
+    (tmp_path / ".cp-engine/paths.json").write_text(json.dumps({"workstreams": {
+        code: {"mc2_id": pid, "status": st, "path": code} for code, (pid, st, _n) in ws.items()
+    }}))
+    week = tmp_path / "sprints" / "2026-W40"
+    week.mkdir(parents=True)
+    for code in ws:
+        asks = f"- [open · 2026-09-28 · Leah Ward] Confirm the venue for {code}\n"
+        if code.startswith("slt-5196"):
+            asks += ("- [open · 2026-09-28 · Morgan Wright] Send the CAB meeting "
+                     "agenda over to David Schloss this week\n")
+        (week / f"{code}.md").write_text(
+            "## Client communication\n### Open asks\n" + asks + "### Inbound\n")
+    client = FakeMC2([_row("Send CAB agenda to David Schloss")])
+    client.store["projects"] = [
+        {"id": pid, "number": n, "full_job_name": code.upper().replace("-", " "),
+         "mc_status": st, "company_id": "co-1"} for code, (pid, st, n) in ws.items()
+    ]
+    client.store["companies"] = [{"id": "co-1", "name": "Salesloft"}]
+    return tmp_path, client
+
+
+def _reconcile(tmp_path):
+    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    sys.path.insert(0, str(scripts))
+    try:
+        import reconcile_sprint_asks as rec
+    finally:
+        sys.path.remove(str(scripts))
+    tenant, client = _reconcile_tenant(tmp_path)
+    actions, imports, _ = rec.reconcile(tenant, client, TODAY)
+    return actions, imports, client
+
+
+def test_reconcile_imports_holding_open_and_closed_expired(tmp_path):
+    _actions, imports, _client = _reconcile(tmp_path)
+    by_ws = {r["description"].rsplit(" ", 1)[-1]: r["status"] for r in imports
+             if r["description"].startswith("Confirm the venue")}
+    assert by_ws == {
+        "slt-5196-brand-campaign-26": "open",
+        "slt-5197-holding-job": "open",      # paused, not over
+        "slt-5198-closed-job": "expired",    # nobody chases a closed job
+    }
+
+
+def test_reconcile_skips_a_likely_duplicate_and_names_its_twin(tmp_path):
+    actions, imports, client = _reconcile(tmp_path)
+    twin = client.commitments[0]
+    assert not any("CAB meeting agenda" in r["description"] for r in imports)
+    (skip,) = [a for a in actions if a["action"] == "skip_likely_duplicate"]
+    assert skip["commitment_id"] == twin["id"]
+    assert skip["matched_text"] == "Send CAB agenda to David Schloss"
+
+
+def test_prep_says_asks_are_unreadable_when_the_mc2_read_fails(tmp_path):
+    """Step 3 + 4a: a failed commitments read is shown, and the sprint
+    file's rendered asks are the fallback — not skipped as if MC-2 had
+    answered. Control: the pre-amendment prep printed `(none)` silently."""
+    from datetime import datetime
+
+    from cp_engine import SyncConfig, TenantConfig
+    from cp_engine.prep_planning import build_planning_result, render_planning_bundle
+    from cp_engine.sprints import current_sprint_week_iso
+
+    class _NoCommitments(FakeMC2):
+        def table(self, name):
+            if name == "commitments":
+                raise RuntimeError("db down")
+            return super().table(name)
+
+    config = TenantConfig(
+        name="t", display="T", engine_version_constraint="~= 0.1",
+        sync=SyncConfig(backend="mc-2", cron="0 * * * *", mc_2_supabase_project_ref="ref"),
+        projects=(), root=tmp_path,
+    )
+    week = current_sprint_week_iso(datetime(2026, 9, 30))
+    path = _render(tmp_path, week, None)
+    body = path.read_text().replace(
+        "- _Not yet rendered from MC-2._",
+        "- [open · 2026-09-22 · Morgan Wright] Book travel for the nine "
+        "participants <!-- cp:hash=b00c7a1e -->",
+    )
+    path.write_text(body)
+    result = build_planning_result(config, (_project(),), today=date(2026, 9, 30),
+                                   supabase_client=_NoCommitments())
+    out = render_planning_bundle(result)
+    assert "⚠️ asks unreadable" in out
+    assert any("asks unreadable" in e for e in result.errors)
+    assert "Book travel for the nine participants" in out

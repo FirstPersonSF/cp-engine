@@ -186,7 +186,7 @@ def test_action_items_to_ask_items_emits_one_record_ask_per_item():
     assert items[0]["who"] == "Drew"
     assert items[0]["date"] == "2026-05-27"
     # Hash matches the ingest recipe exactly — guards against recipe drift
-    # that would break the ClickUp ↔ cp round-trip (_write_ask, clickup_propose,
+    # that would break the ClickUp ↔ cp round-trip (_write_ask, commitments_propose,
     # ClickUp-close webhook all rely on this exact hash).
     expected_hash_0 = _ask_hash("ggl-5168", "Confirm ISCI code with Jennifer")
     assert items[0]["hash"] == expected_hash_0

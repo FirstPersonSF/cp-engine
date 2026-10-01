@@ -315,8 +315,8 @@ A sprint file's `### Open asks` is RENDERED from this store at sync (the
 `open-asks` region); a bullet typed under it is imported here on the next
 sync, matched first against every status so a closed ask never comes back.
 Closing an ask means resolving its commitment — never editing the file. One
-hash recipe everywhere: `cp_engine.asks.ask_hash(<canonical full code>,
-<normalized text>)`:
+hash recipe everywhere: `cp_engine.asks.ask_hash(<co>-<number>,
+<normalized text>)` — the short code, so a rename keeps every hash:
 - `create_commitment(project_code, description, owner_email?, due_date?, direction?, source_meeting_id?)` — **hosted-server verb** (`cp-hosted` connector; cp-engine #138 ratcheted it off stdio) —
   register a session-agreed commitment as a PROPOSAL (`source_kind='session'`,
   review-gate parity with auto-ingest — nothing is auto-confirmed).

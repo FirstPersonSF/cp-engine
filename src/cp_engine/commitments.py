@@ -14,7 +14,7 @@ The review-gate concept survives as state: every row lands with
 past-due open rows.
 
 Idempotency: callers pass ``cp_hash`` from the one ask recipe,
-``cp_engine.asks.ask_hash`` (canonical full code + normalized text — the
+``cp_engine.asks.ask_hash`` (``<co>-<number>`` + normalized text — the
 same identity a sprint-file ask carries); a pre-check plus the
 partial unique index on ``commitments.cp_hash`` make re-ingest a no-op.
 Dropped rows count as duplicates on purpose — a dropped commitment that

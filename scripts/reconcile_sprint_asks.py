@@ -13,8 +13,13 @@ files and decides, per ask, using the policy Drew decided on 2026-10-01:
   in MC-2 simply stops rendering. No write.
 - **import-open** — no match, first raised within the last 6 weeks: a new
   ``open`` commitment, ``source_kind='sprint_import'``.
-- **import-expired** — no match, first raised more than 6 weeks ago: a new
-  ``expired`` commitment, so the record exists and nothing chases it.
+- **import-expired** — no match, first raised more than 6 weeks ago, OR on a
+  Closed/Archived workstream: a new ``expired`` commitment, so the record
+  exists and nothing chases it. (A Holding workstream's recent asks import
+  ``open`` — paused is not over.)
+- **skip_likely_duplicate** — no match, but ≥0.6 word overlap with an
+  existing commitment of the workstream: probably the same ask in other
+  words. NOT imported; the CSV names the commitment and its text for a human.
 
 Each ask is read at its OWNING week and de-duplicated across carry-forward
 (``sprints._open_through``, the engine's own walk). Owner: the first name in
@@ -51,6 +56,7 @@ from cp_engine.asks import (  # noqa: E402
     OPEN,
     build_import_row,
     canonical_code,
+    likely_duplicate,
     match_ask,
     normalize_ask_text,
 )
@@ -140,9 +146,11 @@ def reconcile(tenant: Path, client, today: date) -> tuple[list[dict], list[dict]
         status = entry.get("status") or proj.get("mc_status")
         active = status in ACTIVE
         pool = rows_by_project[proj["id"]]
+        existing = list(pool)  # real commitments only — the duplicate check's pool
         for a in asks:
             m = match_ask(a["text"], code=code, rows=pool, bullet_hash=a["hash"])
-            base = {"stem": stem, "code": code, "active": active, **_cols(a)}
+            base = {"stem": stem, "code": code, "active": active, "ws_status": status,
+                    **_cols(a)}
             if m:
                 matched_ids.add(m.row["id"])
                 flip = ""
@@ -157,10 +165,19 @@ def reconcile(tenant: Path, client, today: date) -> tuple[list[dict], list[dict]
             if not a["open"]:
                 actions.append({**base, "action": "closed-in-file-no-row"})
                 continue
+            dup = likely_duplicate(a["text"], existing)
+            if dup is not None:
+                actions.append({**base, "action": "skip_likely_duplicate",
+                                "commitment_id": dup[0]["id"],
+                                "mc2_status": dup[0].get("status"),
+                                "overlap": f"{dup[1]:.2f}",
+                                "matched_text": " ".join((dup[0].get("description") or "").split())[:300]})
+                continue
             row = build_import_row(
                 text=a["text"], code=code, project_id=proj["id"], who=a["who"],
                 by=a["by"], asked_date=a["raised"], today=today, client=client,
                 company_name=company_name.get(proj.get("company_id")),
+                workstream_status=status,
             )
             if any(i["cp_hash"] == row["cp_hash"] for i in imports):
                 actions.append({**base, "action": "duplicate-of-import", "new_hash": row["cp_hash"]})
@@ -203,8 +220,9 @@ def summarize(actions: list[dict], imports: list[dict]) -> str:
         acts = [a for a in actions if a["action"] == f"import-{status}"]
         if not rows:
             continue
-        lines.append(f"import-{status}: {len(rows)} rows"
-                     f" (active workstreams {sum(1 for a in acts if a['active'])})")
+        ws = collections.Counter(a.get("ws_status") or "?" for a in acts)
+        lines.append(f"import-{status}: {len(rows)} rows (by workstream status: "
+                     + ", ".join(f"{k}={v}" for k, v in ws.most_common()) + ")")
         lines.append(f"  missing due_date: {sum(1 for r in rows if not r.get('due_date'))}")
         lines.append(f"  owner email resolved: {sum(1 for r in rows if r.get('owner_email'))}"
                      f" · name only: {sum(1 for r in rows if r.get('owner_name') and not r.get('owner_email'))}"
@@ -233,10 +251,10 @@ def main(argv: list[str] | None = None) -> int:
     today = args.today or tenant_today()
     client = mc2_client(args.tenant)
     actions, imports, notes = reconcile(args.tenant, client, today)
-    fields = ["action", "stem", "code", "active", "file_status", "file_open", "owning_week",
+    fields = ["action", "stem", "code", "active", "ws_status", "file_status", "file_open", "owning_week",
               "raised", "who", "by", "bullet_hash", "method", "commitment_id", "mc2_status",
               "status_flip", "new_hash", "owner_name", "owner_email", "due_date", "direction",
-              "text"]
+              "overlap", "matched_text", "text"]
     with args.out.open("w", newline="") as fh:
         w = csv.DictWriter(fh, fieldnames=fields, extrasaction="ignore")
         w.writeheader()

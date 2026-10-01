@@ -393,7 +393,7 @@ async def auto_ingest_account(request: Request) -> dict:
         # passes them to _ingest_one_project). The action_items JSONB on
         # fathom_meetings has no per-project attribution, so for an
         # account meeting covering N projects we can't route a given item
-        # to the right one. See clickup_propose.py:148-151 for the same
+        # to the right one. See commitments_propose.propose_commitments for the same
         # constraint downstream. If we ever change this, decide first how
         # to handle the routing.
         for code, entries in projects_block.items():
@@ -685,7 +685,7 @@ async def auto_ingest_sprint_planning(request: Request) -> dict:
         # passes them to _ingest_one_project). The action_items JSONB on
         # fathom_meetings has no per-project attribution, so for a
         # sprint-planning meeting covering N projects we can't route a
-        # given item to the right one. See clickup_propose.py:148-151 for
+        # given item to the right one. See commitments_propose.propose_commitments for
         # the same constraint downstream. If we ever change this, decide
         # first how to handle the routing.
         for code, entries in projects_block.items():

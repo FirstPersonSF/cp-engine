@@ -7356,7 +7356,7 @@ def _commitment_hash_for(
 ) -> tuple[str, dict[str, Any] | None]:
     """`(cp_hash, open_duplicate)` for a new commitment on `scope`.
 
-    The engine's recipe over the canonical full code. An OPEN row already
+    The engine's recipe (keyed on `<co>-<number>`). An OPEN row already
     holding that hash (or a salted repeat of it) is returned as the duplicate;
     a CLOSED one moves the new row to the next salted occurrence.
     """
@@ -7405,7 +7405,7 @@ def create_commitment(
     an undated row, which downstream flags as "needs a date".
 
     `cp_hash` is the ENGINE's one ask recipe (`cp_engine.asks.ask_hash`:
-    canonical full code + normalized text, step 4a), so a commitment logged
+    rename-stable `<co>-<number>` + normalized text, step 4a), so a commitment logged
     here and the same ask arriving from a meeting or a sprint-file bullet are
     one row, not two. This used to be a random hash: the server could not
     import the engine, and re-implementing the recipe here would have

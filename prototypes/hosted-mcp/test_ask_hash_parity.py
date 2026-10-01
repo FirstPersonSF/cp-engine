@@ -28,6 +28,11 @@ def test_hosted_and_engine_hashes_agree(server, wired, tmp_path):
     bullet = re.search(r"cp:hash=([0-9a-f]{8})", sprint.read_text()).group(1)
 
     assert row["cp_hash"] == bullet
+    # Keyed on the rename-stable short form (`ggl-5136`), whatever spelling
+    # the caller or the sprint stem used.
+    from cp_engine.asks import ask_hash
+
+    assert row["cp_hash"] == ask_hash("ggl-5136", "Send Janet the recut")
 
 
 def test_recreating_an_open_ask_returns_it_instead_of_a_second_row(server, wired):

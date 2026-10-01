@@ -16,13 +16,15 @@ asks that were already closed.
 
 THE ONE HASH RECIPE (:func:`ask_hash`). Identity across writers — engine
 ingest, the meeting webhook, the hosted server, a hand-typed bullet — is
-``sha256("<canonical code>|ask|<normalized text>")[:8]``. Two things made the
+``sha256("<co>-<number>|ask|<normalized text>")[:8]``. Two things made the
 old recipe drift: meeting-ingest hashed the SHORT code (``slt-5196``) while
 sprint bullets hashed the FULL one (``slt-5196-brand-campaign-26``), and the
 verb differed per writer (``record-ask`` / ``set-milestone`` /
 ``set-client-ask-task``). Only 114 of 431 real pairs shared a hash. Now the
-code is always the canonical full code — ``slug(projects.full_job_name)``,
-resolved by :func:`resolve_canonical_code` — and the text is normalized
+key is always the SHORT form (:func:`hash_key`: any spelling of a code →
+``<co>-<number>``, via ``codes.parse_code``) — rename-stable, because a
+workstream's company and job number never change while its name slug does
+(decided 2026-10-01) — and the text is normalized
 (:func:`normalize_ask_text`) so whitespace, case, a trailing period and the
 display-only annotations (``[owner unresolved: …]``) cannot split one ask
 into two.
@@ -105,17 +107,31 @@ def normalize_ask_text(text: str | None) -> str:
     return t.rstrip(" .;:,")
 
 
+def hash_key(code: str | None) -> str:
+    """The rename-stable part of an ask's identity: ``<co>-<number>``.
+
+    Any spelling resolves — ``slt-5196-brand-campaign-26``, ``slt-5196``,
+    ``SLT 5196 Brand Campaign 26``, ``SLT-5196`` all give ``slt-5196`` — so
+    a renamed workstream keeps every ask's hash. A string that is not a
+    workstream code is lower-cased as given."""
+    from cp_engine.codes import parse_code
+
+    parsed = parse_code(code)
+    return parsed.short if parsed else (code or "").strip().lower()
+
+
 def ask_hash(code: str, text: str, *, occurrence: int = 0) -> str:
     """THE cp_hash recipe for an ask / commitment — every writer calls this.
 
-    ``code`` must be the canonical FULL workstream code
-    (``slt-5196-brand-campaign-26``); resolve a short code first with
+    ``code`` is any spelling of the workstream code; it is reduced to the
+    rename-stable short form by :func:`hash_key`. A spelling that does not
+    parse (no job number) should be resolved first with
     :func:`resolve_canonical_code`. ``occurrence`` > 0 salts the hash for a
     deliberate repeat of an ask whose first life is closed (see the hosted
     ``create_commitment``): the unsalted hash keeps pointing at the closed
     row, so a re-ingest of the original meeting still cannot resurrect it.
     """
-    key = f"{(code or '').strip().lower()}|ask|{normalize_ask_text(text)}"
+    key = f"{hash_key(code)}|ask|{normalize_ask_text(text)}"
     if occurrence:
         key += f"|#{occurrence}"
     return hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
@@ -136,11 +152,11 @@ def resolve_canonical_code(
 ) -> str:
     """Any spelling of a workstream code → its canonical full code.
 
-    With a client, MC-2 decides (``projects.full_job_name`` by id, else by
-    job number), so a short code (``slt-5196``) and the directory slug hash
-    the same. Without one — or when MC-2 has no row — the code is returned
-    lower-cased as given, which is already canonical for every caller that
-    holds a sprint-file stem.
+    Only needed for a spelling with no job number in it (a stale spine
+    ``project_code``): :func:`ask_hash` reduces anything that parses to
+    ``<co>-<number>`` itself. With a client, MC-2 decides
+    (``projects.full_job_name`` by id, else by job number); without one —
+    or when MC-2 has no row — the code is returned lower-cased as given.
     """
     given = (code or "").strip().lower()
     if client is None:
@@ -334,14 +350,45 @@ def asked_created_at(asked_date: str | None) -> str | None:
     return datetime(d.year, d.month, d.day, 12, tzinfo=timezone.utc).isoformat()
 
 
-def import_status(asked_date: str | None, today: date) -> str:
-    """``open`` when raised within the 6-week cap, else ``expired``. An
-    undated ask is treated as current (there is nothing to age it by)."""
+#: Workstream statuses whose asks import as ``expired`` whatever their age:
+#: nobody will chase an ask on a closed job. ``Holding`` is paused, not over,
+#: so its recent asks import ``open`` (decided 2026-10-01).
+EXPIRED_WORKSTREAM_STATUSES = frozenset({"Closed", "Archived"})
+
+
+def import_status(
+    asked_date: str | None, today: date, workstream_status: str | None = None
+) -> str:
+    """``open`` when raised within the 6-week cap, else ``expired``; always
+    ``expired`` on a Closed/Archived workstream. An undated ask is treated
+    as current (there is nothing to age it by)."""
+    if workstream_status in EXPIRED_WORKSTREAM_STATUSES:
+        return "expired"
     try:
         d = date.fromisoformat((asked_date or "").strip()[:10])
     except ValueError:
         return OPEN
     return OPEN if (today - d).days <= IMPORT_OPEN_MAX_AGE_DAYS else "expired"
+
+
+#: Word overlap at which an unmatched ask probably restates an existing
+#: commitment in other words. Below an exact match, so it is never merged
+#: automatically — the import is skipped and the pair reported for a human
+#: (decided 2026-10-01: the 7 such asks found that day were not imported).
+LIKELY_DUPLICATE_JACCARD = 0.6
+
+
+def likely_duplicate(text: str, rows: Iterable[dict]) -> tuple[dict, float] | None:
+    """The existing commitment ``text`` most probably restates (any status,
+    one workstream's ``rows``), with its overlap, or None below the bar."""
+    from cp_engine.text_similarity import jaccard
+
+    best: tuple[dict, float] | None = None
+    for r in rows:
+        score = jaccard(text or "", r.get("description") or "")
+        if score >= LIKELY_DUPLICATE_JACCARD and (best is None or score > best[1]):
+            best = (r, score)
+    return best
 
 
 def build_import_row(
@@ -356,6 +403,7 @@ def build_import_row(
     client: Any = None,
     company_name: str | None = None,
     status: str | None = None,
+    workstream_status: str | None = None,
     warnings: list | None = None,
 ) -> dict:
     """One ``commitments`` row for a sprint-file ask that matched nothing.
@@ -384,7 +432,7 @@ def build_import_row(
         "owner_name": owner_name,
         "due_date": _valid_due_date(by),
         "date_status": "proposed",
-        "status": status or import_status(asked_date, today),
+        "status": status or import_status(asked_date, today, workstream_status),
         "source_kind": SPRINT_IMPORT,
         "cp_hash": ask_hash(code, clean),
         "project_id": project_id,

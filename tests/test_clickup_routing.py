@@ -124,14 +124,5 @@ def test_wrappers_delegate():
     assert _resolve_proposal_project(
         _client(project_rows=[row], binding_rows=BINDINGS), "ggl-5136",
     ) is not None
-
-    import importlib.util
-    from pathlib import Path
-    spec = importlib.util.spec_from_file_location(
-        "clickup_propose", Path(__file__).resolve().parents[1] / "webhook" / "clickup_propose.py",
-    )
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    # webhook wrapper: absent key = disabled
-    assert mod._resolve_project(_client(project_rows=[row]), "ggl-5136") is None
-    assert mod._resolve_project(_client(project_rows=[ROW]), "ggl-5136") is not None
+    # The webhook's twin wrapper (`webhook/clickup_propose`) was deleted in
+    # step 4a: nothing called it since the commitments consolidation (#38).

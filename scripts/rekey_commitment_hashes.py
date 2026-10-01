@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Re-key every MC-2 commitment to the one ask hash recipe (step 4a).
 
-``cp_engine.asks.ask_hash(canonical full code, normalized description)`` is
+``cp_engine.asks.ask_hash(<co>-<number>, normalized description)`` is
 now the only recipe. Rows written before it carry one of four others —
 ``record-ask`` over the SHORT code (the webhook), ``set-milestone`` /
 ``set-client-ask-task`` over the full code, a random uuid slice (the hosted
@@ -37,7 +37,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from cp_engine.asks import ask_hash, canonical_code  # noqa: E402
+from cp_engine.asks import ask_hash, canonical_code, hash_key  # noqa: E402
 
 COLUMNS = ("id, description, status, source_kind, cp_hash, project_id, "
            "created_at")
@@ -64,7 +64,10 @@ def fetch_all(client, table: str, columns: str) -> list[dict]:
 def plan_rekey(projects: list[dict], rows: list[dict]) -> list[dict]:
     """One action per row: ``keep`` | ``rekey`` | ``rekey-salted`` |
     ``assign`` (row had no hash) | ``skip-promoted`` | ``skip-no-project``."""
-    code_of = {p["id"]: canonical_code(p.get("full_job_name")) for p in projects}
+    # The rename-stable key (`<co>-<number>`) the recipe hashes on.
+    code_of = {
+        p["id"]: hash_key(canonical_code(p.get("full_job_name"))) for p in projects
+    }
     groups: dict[tuple, list[dict]] = collections.defaultdict(list)
     actions: list[dict] = []
     for r in rows:

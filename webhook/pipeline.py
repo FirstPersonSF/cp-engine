@@ -66,8 +66,8 @@ def _create_supabase_client():
     Returns None when env vars are missing OR the supabase package isn't
     importable. Callers MUST treat None as "ClickUp routing degraded" and
     keep going — the primary sprint-file ingest contract is that we never
-    break it on best-effort Supabase work (see clickup_propose._supabase_client
-    for the original of this pattern; this helper exists so every
+    break it on best-effort Supabase work (the deleted clickup_propose module
+    was the original of this pattern; this helper exists so every
     `execute_plan(...)` callsite can thread a real client through to the
     v0.15 ``set-milestone`` / ``set-client-ask-task`` verbs instead of
     falling into ingest.py's "no client → silent skip" branch, which is
