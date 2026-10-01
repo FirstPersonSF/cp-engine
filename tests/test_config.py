@@ -661,3 +661,12 @@ def test_attention_digest_recipients_rejects_non_string_entries(tmp_path: Path) 
     with pytest.raises(CommittedConfigInvalid) as excinfo:
         load(tmp_path)
     assert "recipients" in str(excinfo.value)
+
+
+def test_a_retired_dates_loop_block_still_loads(tmp_path: Path) -> None:
+    """The weekly dates loop was retired in step 5a; a tenant toml that still
+    carries `[dates_loop]` (the live tenant does) must load, not raise."""
+    write_committed(tmp_path, projects=[], extra="[dates_loop]\nwindow_days = 14\n")
+    write_local(tmp_path, {})
+    cfg = load(tmp_path)
+    assert not hasattr(cfg, "dates_loop")

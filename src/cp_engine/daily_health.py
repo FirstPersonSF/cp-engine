@@ -31,6 +31,7 @@ states; `gather()` wires the real ones. Read-only everywhere.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import subprocess
@@ -43,6 +44,8 @@ from typing import Any
 
 from cp_engine.clock import tenant_now, tenant_timezone
 from cp_engine.mc2_db import Tables
+
+log = logging.getLogger(__name__)
 
 OK = "✅"
 WARN = "⚠️"
@@ -602,15 +605,53 @@ def gather(
     return HealthReport(when=now, checks=checks)
 
 
+# MC-2 app_config key holding the partners' channel id (the retired dates
+# loop's rollup destination; the health line posts there). Channel
+# configuration lives in MC-2 (one home), not in .cp-engine.toml — same
+# principle as the per-project channel map.
+_PARTNERS_CHANNEL_KEY = "dates_loop_partners_channel"
+
+
+def _partners_channel(client: Any, errors: list | None = None) -> str | None:
+    """The tenant-wide rollup channel id from MC-2 app_config, or None.
+
+    The jsonb value is accepted as either a bare string ("C0…") or an
+    object with a "channel" key. Absent/blank → the rollup is skipped
+    (per-project posts still go out). A FAILED lookup also skips the rollup,
+    but appends to ``errors`` (step 3) — "not configured" and "could not
+    read the config" must not look the same in the run summary."""
+    try:
+        rows = (
+            client.table(Tables.APP_CONFIG)
+            .select("key, value")
+            .eq("key", _PARTNERS_CHANNEL_KEY)
+            .execute()
+            .data
+            or []
+        )
+    except Exception as exc:  # noqa: BLE001 — rollup is optional
+        log.warning("partners-channel lookup failed: %s", exc)
+        if errors is not None:
+            errors.append(
+                f"partners-channel lookup failed — rollup NOT posted: {exc}"
+            )
+        return None
+    if not rows:
+        return None
+    value = rows[0].get("value")
+    if isinstance(value, dict):
+        value = value.get("channel")
+    return value if isinstance(value, str) and value else None
+
+
 def post(report: HealthReport, *, config, client, channel: str | None = None) -> str:
-    """Post the health line, with the dates loop's bot token
+    """Post the health line, with the Slack bot token
     (`slack.load_slack_token`). Destination, first set wins: `channel`
     (`cxp health --channel`), env `CP_HEALTH_CHANNEL`, then the partners'
     channel (MC-2 app_config `dates_loop_partners_channel`). Raises when no
     destination is set or the post fails: a health line that silently didn't
     post is the thing it exists to prevent."""
     from cp_engine import slack as slack_mod
-    from cp_engine.dates_loop import _partners_channel
 
     errors: list[str] = []
     channel = channel or os.environ.get("CP_HEALTH_CHANNEL") or None

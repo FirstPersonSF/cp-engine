@@ -301,9 +301,7 @@ Meeting action items, milestones, and client asks are tracked as MC-2
 **commitments** (dated, direction-typed, ratification-stated), and the
 bundle already carries each project's open commitments in its Open
 Commitments table — there is no separate task-system lookup step
-anymore. The weekly Slack dates loop (`cxp dates-loop`) is the surface
-that chases dates between sprint plannings; `/cp-prep` just reads the
-current state.
+anymore. `/cp-prep` just reads the current state.
 
 ### 6. Don't commit
 

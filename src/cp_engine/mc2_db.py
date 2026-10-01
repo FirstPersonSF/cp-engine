@@ -1285,7 +1285,7 @@ def owner_columns(client) -> str:
     """The owner column an owner-scoped table carries, as a select fragment.
 
     Always ``"project_id"`` (#301). Kept as a function so the column lists
-    that embed it (`commitments_sweep`, `dates_loop`, `asset_dedupe`, the
+    that embed it (`commitments_sweep`, the
     bindings read, the webhook) keep one spelling; `client` is unused.
     """
     return OWNER_COLUMN

@@ -93,8 +93,9 @@ def test_a_rejected_request_writes_a_run_row(ledger, monkeypatch):
 
 
 def test_a_failed_request_writes_a_failed_row(ledger, monkeypatch):
-    """/dates-loop raising inside its worker → 500 AND a failed row with the error."""
-    import routers.dates_loop as dl
+    """A route raising inside its tenant clone → 500 AND a failed row with the
+    error. (Was /dates-loop until that route was retired in step 5a.)"""
+    import routers.improvements as dl
 
     monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
 
@@ -104,9 +105,9 @@ def test_a_failed_request_writes_a_failed_row(ledger, monkeypatch):
         yield  # pragma: no cover
 
     monkeypatch.setattr(dl.git_ops, "_cloned_tenant", boom)
-    body = json.dumps({}).encode()
+    body = json.dumps({"user": "drew", "area": "x", "observation": "y"}).encode()
     resp = TestClient(webhook_main.app, raise_server_exceptions=False).post(
-        "/dates-loop", content=body,
+        "/api/improvements/append", content=body,
         headers={"x-webhook-signature": _signed(body)},
     )
     assert resp.status_code >= 500

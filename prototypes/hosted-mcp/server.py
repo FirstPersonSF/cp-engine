@@ -11008,8 +11008,9 @@ def _sweep_row_dict(row: Any) -> dict[str, Any]:
         "due_date": due.isoformat() if due else None,
         "date_status": getattr(row, "date_status", ""),
         "age_days": getattr(row, "age_days", 0),
-        # 'warn' | 'expire' | None — an UNDATED row expires at 14 days, and
-        # this is the field that says how close it is.
+        # 'warn' | 'expire' | None — an UNDATED row goes stale at 14 days
+        # (advisory: nothing auto-closes it since the dates loop's retirement),
+        # and this is the field that says how close it is.
         "ttl": getattr(row, "ttl", None),
         "undated": due is None,
         "source_meeting_id": getattr(row, "source_meeting_id", None),
@@ -11050,7 +11051,7 @@ def _round_dict(rnd: Any) -> dict[str, Any]:
 _WRAP_STEPS: tuple[tuple[str, str], ...] = (
     ("capture_project_state", "the Exec Summary — pass every field you mean to be current"),
     ("spine_lint", "spine health: unbound elements, dead ends, stale canon"),
-    ("commitments_sweep", "what is owed, both directions; undated rows expire at 14d"),
+    ("commitments_sweep", "what is owed, both directions; undated rows go stale at 14d"),
     ("seal_sweep", "what fed each shipped deliverable"),
     ("word_count_check", "the 2,500 / 3,500-word thresholds (reporting only)"),
     ("capture_session", "the session record — also CLOSES the window"),
@@ -11294,9 +11295,9 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
     """Open commitments, with the staleness verdicts the wrap-up ritual reads.
 
     The same sweep as `cxp commitments-sweep`. Two-way by design: what we owe
-    them and what they owe us. An UNDATED commitment expires at 14 days unless
-    somebody dates it — the sweep is where that gets noticed while it still can
-    be acted on.
+    them and what they owe us. An UNDATED commitment is flagged stale at 14
+    days and nothing closes it automatically — the sweep is where it gets
+    dated or dropped.
 
     Args:
         project_code: one project, or "" for every project the caller can see.

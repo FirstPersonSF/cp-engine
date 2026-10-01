@@ -223,11 +223,11 @@ def test_element_rows_read_failure_raises():
         _element_rows(_Client(fail={"spine_substance"}), "p1", "_authored/x")
 
 
-# ── dates_loop / propose passes / tag resolve ────────────────────────────────
+# ── partners channel / tag resolve ────────────────────────────────
 
 
 def test_partners_channel_lookup_failure_reaches_result_errors():
-    from cp_engine.dates_loop import _partners_channel
+    from cp_engine.daily_health import _partners_channel
 
     errors: list[str] = []
     assert _partners_channel(_Client(fail={"app_config"}), errors) is None
