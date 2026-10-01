@@ -4,6 +4,28 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.129.0 — 2026-10-01
+
+**Architecture plan step 4: one owner per concept** (asks and spine; stakeholders
+follow). Minor: where two kinds of data are edited changes.
+
+*Asks live in MC-2 (4a).* Sprint-file asks are rendered from the `commitments`
+table into an engine-managed `open-asks` region; a hand-typed ask is moved into
+MC-2 at the next sync (matched against every status — never duplicated, never
+lost); closing an ask resolves its commitment (`close-ask` now does, and finds
+carried asks in their owning week). One ask-hash recipe, keyed on the short
+rename-stable `<co>-<number>` code, for every writer — engine, webhook and the
+hosted server (whose hash was random). Migrated 2026-10-01: 1,034 commitments
+re-keyed; 155 recent sprint asks imported open, 547 older ones as expired; 372
+sprint asks that MC-2 had already closed stop rendering as open. Prep shows
+"⚠️ asks unreadable" instead of an empty list when MC-2 can't be read.
+
+*`spine/` is a generated view of MC-2 (4c).* Sync renders `spine/` from MC-2 and
+never pushes disk to MC-2; a hand edit there is quarantined to
+`exceptions/region-edits/` and overwritten. Meeting-history timelines move to
+`<workstream>/meeting-history.md`, hand-owned. Hand-written cards were imported
+to MC-2; build-stakeholder writes through MC-2.
+
 ## v0.128.3 — 2026-10-01
 
 *`cxp health --json` reports each check's real status.* The ingest check's detail
