@@ -233,9 +233,14 @@ def summarize(actions: list[dict], imports: list[dict]) -> str:
 
 
 def apply(client, imports: list[dict]) -> int:
-    for i in range(0, len(imports), 100):
-        client.table("commitments").insert(imports[i:i + 100]).execute()
-    return len(imports)
+    # `direction` is NOT NULL with default 'internal'. A bulk insert sends
+    # every key for every row (a missing key becomes null, not the default),
+    # so an ask whose direction couldn't be inferred carries the column's own
+    # default explicitly. Found on the first --apply (23502), 2026-10-01.
+    rows = [{**r, "direction": r.get("direction") or "internal"} for r in imports]
+    for i in range(0, len(rows), 100):
+        client.table("commitments").insert(rows[i:i + 100]).execute()
+    return len(rows)
 
 
 def main(argv: list[str] | None = None) -> int:
