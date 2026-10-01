@@ -72,8 +72,9 @@ Probed 2026-10-01 from the webhook service's env (HTTP status only):
 
 - **CI line** works from Railway as-is: `github_get` falls back to `GH_PAT`.
 - **Sync line** cannot read the tenant's Actions. It falls back to the newest
-  `[cp-sync]` commit in the clone and says so:
-  `✅ Sync · 05:08 commit via git (Actions: … 404 …)`. That is a weaker claim
+  `[cp-sync]` commit in the clone and says so: `✅ Sync · 05:08 · via git`
+  (the Actions 404 goes to the logs and the run row's `check_errors`, never
+  the Slack line — labels are 1–3 words). That is a weaker claim
   than a run conclusion (sync commits only when the render changed, and a
   failed run leaves no commit), which is why it names its source. Older than
   26h → ⚠️; no sync commit in the 3-day clone → ⚠️ `unreadable`.

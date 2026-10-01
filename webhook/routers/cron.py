@@ -144,9 +144,16 @@ def _job_health(payload: dict) -> tuple[int, dict]:
             client = mc2_db.get_client(config, required=False)
             report = daily_health.gather(tenant_root=root, client=client)
             lines = report.render()
+            # What the line leaves out (UI rule 1): logs + body + run row.
+            check_errors = report.errors()
+            for label, error in check_errors.items():
+                log.info("cron health: %s: %s", label, error)
+            if check_errors:
+                detail["check_errors"] = check_errors
             if dry_run:
                 return 200, {"ok": True, "status": "dry_run", "slot": slot,
-                             "day": day, "report_ok": report.ok, "lines": lines}
+                             "day": day, "report_ok": report.ok, "lines": lines,
+                             "check_errors": check_errors}
             try:
                 ts = daily_health.post(report, config=config, client=client)
             except Exception as exc:  # noqa: BLE001 — a post that failed fails the run
@@ -159,6 +166,7 @@ def _job_health(payload: dict) -> tuple[int, dict]:
 
     body = {"ok": True, "status": "posted", "slot": slot, "day": day,
             "posted_ts": ts, "report_ok": report.ok, "lines": lines,
+            "check_errors": check_errors,
             "run_detail": {**detail, "outcome": "posted", "posted_ts": ts}}
     if warnings:
         body["warnings"] = warnings

@@ -1041,6 +1041,10 @@ def health_cmd(do_post: bool, as_json: bool, scheduled: str | None, channel: str
         click.echo(_json.dumps(report.to_dict(), indent=2))
     else:
         click.echo(report.render())
+        # The line carries no error text (UI rule 1); the reasons go to the
+        # log, so a red run still says WHY without reading --json.
+        for label, error in report.errors().items():
+            click.echo(f"  {label}: {error}", err=True)
     if do_post:
         if config is None:
             click.echo("Error: --post needs the tenant config (run from the tenant root).", err=True)

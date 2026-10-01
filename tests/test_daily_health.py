@@ -63,7 +63,8 @@ def test_sync_ok_and_failed_and_unreadable():
                                           "updated_at": _iso(NOW)}}), "o/r", NOW)
     assert not bad.ok and "failure" in bad.text
     gone = dh.check_sync(_gh({"sync.yml": RuntimeError("401 Bad credentials")}), "o/r", NOW)
-    assert not gone.ok and "unreadable" in gone.text and "401" in gone.text
+    assert not gone.ok and gone.text == "unreadable"
+    assert "401" in gone.detail["error"] and "401" not in gone.render()
 
 
 def test_a_stale_successful_sync_is_not_ok():
@@ -83,8 +84,10 @@ def test_ingest_counts_partial_from_errors_and_warnings_and_names_the_last_error
     ]})
     c = dh.check_ingest(client, NOW)
     assert not c.ok
-    assert c.detail == {"ok": 1, "partial": 2, "failed": 1, "noop": 1}
-    assert "sprint file missing" in c.text
+    assert c.detail == {"ok": 1, "partial": 2, "failed": 1, "noop": 1,
+                        "error": "ggl-5168: sprint file missing"}
+    assert "sprint file missing" not in c.text  # the line carries counts only
+    assert c.text == "1 ok · 1 no-op · 2 partial · 1 failed"
 
 
 def test_ingest_reads_the_pre_migration_warnings_fold():
@@ -97,7 +100,7 @@ def test_ingest_reads_the_pre_migration_warnings_fold():
 
 def test_ingest_unreadable_is_a_warning_not_zero():
     c = dh.check_ingest(_Client({"auto_ingest_runs": RuntimeError("JWT expired")}), NOW)
-    assert not c.ok and "JWT expired" in c.text
+    assert not c.ok and c.text == "unreadable" and "JWT expired" in c.detail["error"]
     assert not dh.check_ingest(None, NOW).ok
 
 
@@ -122,7 +125,8 @@ def test_webhook_counts_failures_across_tables():
     })
     c = dh.check_webhook(client, NOW)
     assert c.detail["failed"] == 2 and c.detail["partial"] == 1
-    assert "/api/sessions/capture: push failed" in c.text
+    assert "/api/sessions/capture: push failed" in c.detail["error"]
+    assert c.text == "2 failed · 1 partial"
 
 
 def test_unbound_flags_only_floating():
@@ -151,7 +155,8 @@ def test_hosted_down_and_deps_broken():
     c = dh.check_hosted({"status": "healthy", "server_version": "hosted-cp/0.127.0",
                          "tool_count": 64, "read_endpoint": {"tool_count": 24},
                          "deps_ok": False, "deps": "spine_steps: ImportError"})
-    assert not c.ok and "deps" in c.text
+    assert not c.ok and c.text.endswith("· deps failing")
+    assert "ImportError" in c.detail["error"] and "ImportError" not in c.text
     good = dh.check_hosted({"status": "healthy", "server_version": "hosted-cp/0.127.0",
                             "tool_count": 64, "read_endpoint": {"tool_count": 24}, "deps_ok": True})
     assert good.ok and good.text == "0.127.0 · 64 tools · 24 read"
@@ -286,20 +291,22 @@ def test_sync_falls_back_to_the_newest_cp_sync_commit_and_says_so(tmp_path: Path
     c = dh.check_sync(_gh({"sync.yml": RuntimeError("HTTP Error 404: Not Found")}),
                       "FirstPersonSF/cp", NOW, tmp_path)
     assert c.ok, c.text
-    assert c.text.startswith("05:08 commit via git") and "404" in c.text
+    assert c.text == "05:08 · via git"
+    assert "404" in c.detail["error"]  # the Actions reason: --json / logs, not Slack
     assert c.detail["source"] == "git"
 
 
 def test_sync_git_fallback_with_an_old_commit_is_not_ok(tmp_path: Path):
     _git_repo_with_commits(tmp_path, [("[cp-sync] old", NOW - timedelta(hours=40))])
     c = dh.check_sync(_gh({"sync.yml": RuntimeError("404")}), "o/r", NOW, tmp_path)
-    assert not c.ok and "40h old" in c.text and "via git" in c.text
+    assert not c.ok and c.text.endswith("· via git · 40h old")
 
 
 def test_sync_with_neither_source_readable_is_a_warning(tmp_path: Path):
     _git_repo_with_commits(tmp_path, [("[auto-ingest] x", NOW)])
     c = dh.check_sync(_gh({"sync.yml": RuntimeError("404")}), "o/r", NOW, tmp_path)
-    assert not c.ok and "unreadable" in c.text and "no [cp-sync] commit" in c.text
+    assert not c.ok and c.text == "unreadable"
+    assert "no [cp-sync] commit" in c.detail["error"] and "404" in c.detail["error"]
 
 
 def test_sync_prefers_actions_when_readable(tmp_path: Path):
@@ -307,3 +314,89 @@ def test_sync_prefers_actions_when_readable(tmp_path: Path):
     c = dh.check_sync(_gh({"sync.yml": {"conclusion": "failure", "updated_at": _iso(NOW)}}),
                       "o/r", NOW, tmp_path)
     assert not c.ok and c.detail["source"] == "actions"  # a git commit never masks a red run
+
+
+# ── The line carries no error text (house UI rule 1) ──────────────────────
+
+_LEAK = "HTTPError: HTTP Error 404: Not Found while reading the thing"
+
+
+def _failing_report(tmp_path: Path) -> dh.HealthReport:
+    """Every check in a failure mode whose source hands back a long error."""
+    def gh_boom(_):
+        raise RuntimeError(_LEAK)
+
+    _git_repo_with_commits(tmp_path, [("[cp-sync] x", NOW - timedelta(hours=40))])
+    leak_client = _Client({
+        "auto_ingest_runs": [{"status": "failed", "errors": [_LEAK]}],
+        "webhook_runs": [{"route": "/api/x", "status": "failed", "error": _LEAK}],
+        "spine_promote_runs": RuntimeError(_LEAK),
+        "asset_ingest_runs": [],
+        "spine_substance": RuntimeError(_LEAK),
+    })
+    checks = [
+        dh.check_sync(gh_boom, "o/r", NOW, tmp_path),
+        dh.check_sync(gh_boom, "o/r", NOW, None),
+        dh.check_ingest(leak_client, NOW),
+        dh.check_ingest(_Client({"auto_ingest_runs": RuntimeError(_LEAK)}), NOW),
+        dh.check_ingest(None, NOW),
+        dh.check_webhook(leak_client, NOW),
+        dh.check_webhook(None, NOW),
+        dh.check_hosted(None, _LEAK),
+        dh.check_hosted({"status": "healthy", "server_version": "h/0.1", "tool_count": 1,
+                         "deps_ok": False, "deps": _LEAK}),
+        dh.check_hosted({"status": _LEAK, "server_version": "h/0.1", "tool_count": 1}),
+        dh.check_ci(gh_boom, NOW),
+        dh.check_unbound(leak_client),
+        dh.check_unbound(None),
+        dh.check_stale_summaries(None),
+        dh.check_copies(None, "0.1", "2026-W40"),
+        dh.check_copies({"server_version": "h/0.1"}, "0.1", "2026-W40"),
+    ]
+    return dh.HealthReport(when=NOW, checks=checks)
+
+
+def test_no_line_carries_error_text_and_every_segment_is_three_words_or_fewer(tmp_path):
+    rep = _failing_report(tmp_path)
+    text = rep.render()
+    assert "404" not in text and "HTTPError" not in text and "Not Found" not in text
+    for check in rep.checks:
+        for seg in check.text.split(" · "):
+            assert len(seg.split()) <= 3, f"{check.label}: {seg!r} (in {check.text!r})"
+
+
+def test_the_error_the_line_leaves_out_is_kept_in_detail_and_json(tmp_path):
+    rep = _failing_report(tmp_path)
+    assert all(_LEAK in c.detail.get("error", "") for c in rep.checks
+               if c.label in ("CI main", "Hosted") and not c.detail.get("version"))
+    errors = rep.errors()
+    assert "404" in errors["Sync"] and "404" in errors["CI main"]
+    assert any(_LEAK in e for e in errors.values())
+    as_json = rep.to_dict()["checks"]
+    assert any(_LEAK in (c.get("error") or "") for c in as_json)
+
+
+@pytest.mark.parametrize("make,expected", [
+    (lambda t: dh.check_ci(lambda _: (_ for _ in ()).throw(RuntimeError("x")), NOW),
+     "⚠️ CI main · unreadable"),
+    (lambda t: dh.check_ingest(None, NOW), "⚠️ Ingest 24h · no client"),
+    (lambda t: dh.check_stale_summaries(None), "⚠️ Stale summaries · no checkout"),
+    (lambda t: dh.check_hosted(None, "URLError: timed out"), "⚠️ Hosted · unreachable"),
+])
+def test_unreadable_lines_render_a_short_reason(tmp_path, make, expected):
+    assert make(tmp_path).render() == expected
+
+
+def test_cli_prints_the_errors_the_line_leaves_out_to_stderr(monkeypatch, tmp_path):
+    from click.testing import CliRunner
+
+    from cp_engine.cli import main
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(dh, "gather", lambda **kw: dh.HealthReport(
+        when=NOW, checks=[dh.Check("Sync", True, "05:08 · via git",
+                                   {"error": "Actions: HTTPError: 404"})]))
+    monkeypatch.setattr("cp_engine.mc2_db.get_client", lambda *a, **k: None)
+    res = CliRunner().invoke(main, ["health"])
+    assert "✅ Sync · 05:08 · via git" in res.stdout and "404" not in res.stdout
+    assert "Sync: Actions: HTTPError: 404" in res.stderr

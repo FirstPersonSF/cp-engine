@@ -10,12 +10,19 @@ terse enough to read in five seconds.
 SHAPE. One line per check, label 1–3 words, numbers, ✅/⚠️:
 
     ✅ Sync · 06:12 ok
-    ⚠️ Ingest 24h · 4 ok · 1 partial · 1 failed — "ggl-5168: sprint file…"
+    ⚠️ Ingest 24h · 4 ok · 1 partial · 1 failed
+
+THE LINE CARRIES NO ERROR TEXT (house UI rule 1: labels and segments are 1–3
+words, never sentences). Every segment after the label is a number, a time,
+or a word or three. The error behind a ⚠️ — the exception, the last failed
+run's message — goes in ``Check.detail["error"]``: `cxp health --json`, the
+cron route's response + run row (``check_errors``) and the logs carry it; the
+Slack line never does.
 
 Every check is a function returning a `Check`. A check that cannot read its
-source does NOT disappear and does NOT read healthy: it renders ⚠️ with the
-reason ("unreadable: …"). A health report that goes quiet when its inputs
-break is the defect class it exists to catch.
+source does NOT disappear and does NOT read healthy: it renders ⚠️ with a
+short reason (``⚠️ CI main · unreadable``). A health report that goes quiet
+when its inputs break is the defect class it exists to catch.
 
 Inputs are injected (`client`, `fetch_json`, `github`) so tests pin the exact
 states; `gather()` wires the real ones. Read-only everywhere.
@@ -46,7 +53,7 @@ ENGINE_CI_WORKFLOW = "tests.yml"
 TENANT_SYNC_WORKFLOW = "sync.yml"
 DEFAULT_TENANT_REPO = "FirstPersonSF/cp"
 
-_ERR_CHARS = 90
+_ERR_CHARS = 300  # detail["error"] only — never the rendered line
 
 # Not in `mc2_db.Tables` yet: the hosted server vendors that class verbatim
 # and the drift test pins it. Move it there when step 1 (hosted imports the
@@ -70,9 +77,17 @@ def _clip(text: Any, n: int = _ERR_CHARS) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
-def _unreadable(label: str, exc: BaseException | str) -> Check:
-    why = exc if isinstance(exc, str) else f"{type(exc).__name__}: {exc}"
-    return Check(label, False, f"unreadable — {_clip(why)}")
+def _why(exc: BaseException | str) -> str:
+    return _clip(exc if isinstance(exc, str) else f"{type(exc).__name__}: {exc}")
+
+
+def _unreadable(label: str, exc: BaseException | str, short: str = "unreadable",
+                **detail) -> Check:
+    """⚠️ with a ≤3-word reason on the line; the full reason in detail."""
+    return Check(label, False, short, {**detail, "error": _why(exc)})
+
+
+_NO_CLIENT = "no MC-2 client (SUPABASE_URL / key unset)"
 
 
 def _local(ts: str | None) -> datetime | None:
@@ -179,22 +194,22 @@ def check_sync(github: GitHubGet, tenant_repo: str, now: datetime,
     try:
         run = _latest_run(github, tenant_repo, TENANT_SYNC_WORKFLOW)
     except Exception as exc:  # noqa: BLE001 — rendered as ⚠️, never hidden
-        why = _clip(f"{type(exc).__name__}: {exc}", 40)
+        actions_err = f"Actions: {_why(exc)}"
         when, sha = last_sync_commit(tenant_root)
         if tenant_root is None:
-            return _unreadable(label, exc)
+            return _unreadable(label, actions_err, source="none")
         if when is None:
-            return Check(label, False,
-                         f"unreadable — Actions: {why}; "
-                         f"no {SYNC_COMMIT_PREFIX} commit in checkout",
-                         {"source": "none"})
+            return _unreadable(
+                label, f"{actions_err}; no {SYNC_COMMIT_PREFIX} commit in checkout",
+                source="none")
         age_h = (now - when).total_seconds() / 3600
-        text = f"{_hhmm(when, now)} commit via git (Actions: {why})"
+        text = f"{_hhmm(when, now)} · via git"
         if age_h > 26:
             text += f" · {int(age_h)}h old"
-        return Check(label, age_h <= 26, text, {"source": "git", "sha": sha})
+        return Check(label, age_h <= 26, text,
+                     {"source": "git", "sha": sha, "error": actions_err})
     if run is None:
-        return Check(label, False, "no runs found", {"source": "actions"})
+        return Check(label, False, "no runs", {"source": "actions"})
     when = _local(run.get("updated_at") or run.get("created_at"))
     concl = run.get("conclusion") or run.get("status") or "?"
     age_h = (now - when).total_seconds() / 3600 if when else None
@@ -214,7 +229,7 @@ def check_ci(github: GitHubGet, now: datetime) -> Check:
     except Exception as exc:  # noqa: BLE001
         return _unreadable(label, exc)
     if run is None:
-        return Check(label, False, "no runs found")
+        return Check(label, False, "no runs")
     concl = run.get("conclusion") or run.get("status") or "?"
     when = _local(run.get("updated_at") or run.get("created_at"))
     text = f"{'green' if concl == 'success' else concl} ({_hhmm(when, now)})"
@@ -236,7 +251,7 @@ def check_ingest(client, now: datetime) -> Check:
     ``plan_summary._warnings`` fold)."""
     label = "Ingest 24h"
     if client is None:
-        return _unreadable(label, "no MC-2 client (SUPABASE_URL / key unset)")
+        return _unreadable(label, _NO_CLIENT, "no client")
     since = _since(now)
     try:
         try:
@@ -276,10 +291,10 @@ def check_ingest(client, now: datetime) -> Check:
     text = " · ".join(parts)
     if not rows:
         text = "0 runs"
+    detail = {"ok": ok, "partial": partial, "failed": failed, "noop": noop}
     if last_err:
-        text += f' — "{_clip(last_err, 70)}"'
-    return Check(label, failed == 0 and partial == 0, text,
-                 {"ok": ok, "partial": partial, "failed": failed, "noop": noop})
+        detail["error"] = _clip(last_err)
+    return Check(label, failed == 0 and partial == 0, text, detail)
 
 
 def check_webhook(client, now: datetime) -> Check:
@@ -291,11 +306,12 @@ def check_webhook(client, now: datetime) -> Check:
     writing their ledger rows into an ERROR log."""
     label = "Webhook 24h"
     if client is None:
-        return _unreadable(label, "no MC-2 client (SUPABASE_URL / key unset)")
+        return _unreadable(label, _NO_CLIENT, "no client")
     since = _since(now)
     failed = partial = rejected = 0
     last_err = None
     notes: list[str] = []
+    errors: list[str] = []
     try:
         rows = (client.table(WEBHOOK_RUNS)
                 .select("route, status, error, created_at")
@@ -312,15 +328,17 @@ def check_webhook(client, now: datetime) -> Check:
         msg = str(exc)
         notes.append("ledger missing" if ("webhook_runs" in msg and (
             "does not exist" in msg or "42P01" in msg or "PGRST205" in msg))
-            else f"ledger unreadable ({_clip(msg, 40)})")
-    for table, col in ((Tables.SPINE_PROMOTE_RUNS, "started_at"),
-                       (Tables.ASSET_INGEST_RUNS, "started_at")):
+            else "ledger unreadable")
+        errors.append(f"{WEBHOOK_RUNS}: {_why(exc)}")
+    for table, col, short in ((Tables.SPINE_PROMOTE_RUNS, "started_at", "promote runs"),
+                              (Tables.ASSET_INGEST_RUNS, "started_at", "asset runs")):
         try:
             rows = (client.table(table).select(f"status, error, {col}")
                     .gte(col, since).eq("status", "failed")
                     .order(col, desc=True).limit(200).execute().data) or []
         except Exception as exc:  # noqa: BLE001
-            notes.append(f"{table} unreadable ({_clip(exc, 40)})")
+            notes.append(f"{short} unreadable")
+            errors.append(f"{table}: {_why(exc)}")
             continue
         failed += len(rows)
         if rows and last_err is None:
@@ -329,10 +347,12 @@ def check_webhook(client, now: datetime) -> Check:
     if rejected:
         parts.append(f"{rejected} rejected")
     text = " · ".join(parts + notes)
+    detail = {"failed": failed, "partial": partial, "rejected": rejected}
     if last_err:
-        text += f' — "{_clip(last_err, 70)}"'
-    return Check(label, failed == 0 and partial == 0 and not notes, text,
-                 {"failed": failed, "partial": partial, "rejected": rejected})
+        errors.insert(0, _clip(last_err))
+    if errors:
+        detail["error"] = "; ".join(errors)
+    return Check(label, failed == 0 and partial == 0 and not notes, text, detail)
 
 
 def check_unbound(client) -> Check:
@@ -340,7 +360,7 @@ def check_unbound(client) -> Check:
     (the `spine_lint` finding: important, unbound, serves nothing)."""
     label = "Spine unbound"
     if client is None:
-        return _unreadable(label, "no MC-2 client (SUPABASE_URL / key unset)")
+        return _unreadable(label, _NO_CLIENT, "no client")
     try:
         rows = (client.table(Tables.SPINE_SUBSTANCE)
                 .select("project_id, est_item_id, important, serves")
@@ -370,7 +390,7 @@ def check_stale_summaries(tenant_root: Path | None) -> Check:
     them into master-cp.md (sync owns the computation; this only counts)."""
     label = "Stale summaries"
     if tenant_root is None:
-        return _unreadable(label, "no tenant checkout")
+        return _unreadable(label, "no tenant checkout", "no checkout")
     try:
         text = (tenant_root / "master-cp.md").read_text(encoding="utf-8")
     except OSError as exc:
@@ -397,7 +417,7 @@ def fetch_json(url: str, timeout: float = 10.0) -> dict:
 def check_hosted(health: dict | None, error: str | None = None) -> Check:
     label = "Hosted"
     if health is None:
-        return _unreadable(label, error or "no response")
+        return _unreadable(label, error or "no response", "unreachable")
     version = str(health.get("server_version") or "?").rsplit("/", 1)[-1]
     tools = health.get("tool_count")
     read = (health.get("read_endpoint") or {}).get("tool_count")
@@ -405,11 +425,17 @@ def check_hosted(health: dict | None, error: str | None = None) -> Check:
     text = f"{version} · {tools} tools"
     if read is not None:
         text += f" · {read} read"
+    detail = {"version": version}
     if health.get("deps_ok") is False:
-        text += f" · deps: {_clip(health.get('deps'), 40)}"
+        text += " · deps failing"
+        detail["error"] = f"deps: {_clip(health.get('deps'))}"
     elif health.get("status") != "healthy":
-        text += f" · {health.get('status')}"
-    return Check(label, ok, text, {"version": version})
+        status = str(health.get("status") or "?")
+        # One word on the line; anything longer is a sentence → detail.
+        text += f" · {status}" if len(status.split()) == 1 and len(status) <= 20 \
+            else " · unhealthy"
+        detail["error"] = f"status: {_clip(status)}"
+    return Check(label, ok, text, detail)
 
 
 def check_copies(health: dict | None, engine_version: str, engine_week: str) -> Check:
@@ -428,7 +454,7 @@ def check_copies(health: dict | None, engine_version: str, engine_week: str) -> 
         disagreements.append(f"week {hw}≠{engine_week}")
     if disagreements:
         return Check(label, False, " · ".join(disagreements))
-    week = f"week {engine_week}" + ("" if hw else " (hosted n/a)")
+    week = engine_week + ("" if hw else " (hosted n/a)")  # ≤ 3 words
     return Check(label, True, f"agree · {hv} · {week}")
 
 
@@ -471,6 +497,11 @@ class HealthReport:
         head = (f"*cp health* · {self.when.strftime('%a %m-%d %H:%M')} · "
                 + ("all clear" if not bad else f"{bad} need a look"))
         return "\n".join([head, *(c.render() for c in self.checks)])
+
+    def errors(self) -> dict[str, str]:
+        """{label: error} for every check carrying one — what the line leaves
+        out. Logs, `--json` and the cron run row carry it; Slack does not."""
+        return {c.label: c.detail["error"] for c in self.checks if c.detail.get("error")}
 
     def to_dict(self) -> dict:
         return {"when": self.when.isoformat(), "ok": self.ok,

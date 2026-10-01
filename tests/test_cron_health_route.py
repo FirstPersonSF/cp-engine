@@ -200,3 +200,14 @@ def test_dry_run_renders_and_never_posts_or_marks_the_day(env):
     assert resp.json()["status"] == "dry_run" and "Sync" in resp.json()["lines"]
     assert env.posts == []
     assert _post({"slot": "23 12 * * *"}).json()["status"] == "posted"
+
+
+def test_check_errors_reach_the_run_row_and_body_not_the_line(env):
+    env.mp.setattr(daily_health, "gather", lambda **kw: daily_health.HealthReport(
+        when=PDT_MORNING, checks=[daily_health.Check(
+            "Sync", True, "05:08 · via git", {"error": "Actions: HTTPError: 404"})]))
+    resp = _post({"slot": "23 12 * * *"})
+    assert resp.json()["status"] == "posted"
+    assert "404" not in env.posts[0] and "✅ Sync · 05:08 · via git" in env.posts[0]
+    assert resp.json()["check_errors"] == {"Sync": "Actions: HTTPError: 404"}
+    assert env.ledger.runs()[-1]["detail"]["check_errors"] == {"Sync": "Actions: HTTPError: 404"}
