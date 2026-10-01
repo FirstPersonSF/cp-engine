@@ -27,7 +27,7 @@ a manifest, ``.generated.json``, mapping every file the engine wrote to the
 Exempt, never generated and never reaped: frozen snapshots (``*.snapshots/``,
 write-once by ``cxp spine snapshot``; MC-2 indexes them but holds no body), and
 the legacy ``Retrospective/meeting-history.md`` until
-``scripts/move_meeting_history.py`` moves it to the workstream root.
+``scripts/archive/move_meeting_history.py`` moves it to the workstream root.
 """
 
 from __future__ import annotations

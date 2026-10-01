@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "backfill_source_coords.py"
+_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "archive" / "backfill_source_coords.py"
 
 
 def _load_script():

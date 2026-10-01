@@ -23,7 +23,7 @@ row whose new hash equals another row's OLD hash cannot trip the unique
 index mid-run.
 
 Usage:
-    python scripts/rekey_commitment_hashes.py [--tenant ~/Documents/Python/cp]
+    python scripts/archive/rekey_commitment_hashes.py [--tenant ~/Documents/Python/cp]
         [--out rekey.csv] [--apply]
 """
 
@@ -35,7 +35,7 @@ import csv
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from cp_engine.asks import ask_hash, canonical_code, hash_key  # noqa: E402
 

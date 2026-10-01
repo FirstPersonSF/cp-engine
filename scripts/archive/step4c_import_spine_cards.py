@@ -25,8 +25,8 @@ DRY RUN BY DEFAULT: reads production MC-2 (explicit columns only) and the
 tree, prints the plan, writes nothing. ``--apply`` performs 1–4 and commits
 the tenant (no push).
 
-    python scripts/step4c_import_spine_cards.py --tenant ~/Documents/Python/cp
-    python scripts/step4c_import_spine_cards.py --tenant ... --apply
+    python scripts/archive/step4c_import_spine_cards.py --tenant ~/Documents/Python/cp
+    python scripts/archive/step4c_import_spine_cards.py --tenant ... --apply
 """
 
 from __future__ import annotations
@@ -38,7 +38,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from cp_engine import mc2_db  # noqa: E402
 from cp_engine.config import load as load_config  # noqa: E402

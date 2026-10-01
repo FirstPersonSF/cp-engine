@@ -49,7 +49,7 @@ from pathlib import Path
 # the package's src/ and this scripts/ dir (for the sibling import) on
 # the path regardless of cwd.
 _HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_HERE.parent / "src"))
+sys.path.insert(0, str(_HERE.parents[1] / "src"))
 sys.path.insert(0, str(_HERE))
 
 # Reuse Task 4's map builder + row loading.

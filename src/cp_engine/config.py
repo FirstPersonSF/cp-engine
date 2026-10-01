@@ -227,7 +227,7 @@ class TenantConfig:
     # Step 4b rollout gate: `[stakeholders] retire_markdown = true` lets sync
     # import the hand-written cp.md `## Stakeholders` / sprint
     # `### Stakeholders` entries onto spine cards and remove the sections.
-    # Off until the one-time migration (scripts/step4b_migrate_stakeholders.py
+    # Off until the one-time migration (scripts/archive/step4b_migrate_stakeholders.py
     # --apply) has run, so the import never meets an un-canonicalized
     # spelling first. Cards are the store either way.
     retire_stakeholder_markdown: bool = False

@@ -23,9 +23,9 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-# Allow running as a plain script (`python scripts/full_job_name_id_map.py`)
+# Allow running as a plain script (`python scripts/archive/full_job_name_id_map.py`)
 # without an editable install: add the package's src/ to the path.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from cp_engine.sync_mc2 import _engagement_canonical_id  # noqa: E402
 

@@ -20,7 +20,7 @@ before that, every person they hold gets a home:
   (``cp_engine.stakeholders``). Idempotent: a re-run resolves every person
   to the card the first run created.
 
-``scripts/step4b_migrate_stakeholders.py`` is the operator entry point (dry
+``scripts/archive/step4b_migrate_stakeholders.py`` is the operator entry point (dry
 run by default).
 """
 

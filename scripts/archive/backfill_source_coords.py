@@ -35,9 +35,9 @@ import sys
 from collections import Counter
 from pathlib import Path
 
-# Allow running as a plain script (`python scripts/backfill_source_coords.py`)
+# Allow running as a plain script (`python scripts/archive/backfill_source_coords.py`)
 # without an editable install: add the package's src/ to the path.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from cp_engine.source_backfill import parse_source_coords_from_file_path  # noqa: E402
 

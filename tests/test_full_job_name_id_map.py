@@ -1,4 +1,4 @@
-from scripts.full_job_name_id_map import build_id_map
+from scripts.archive.full_job_name_id_map import build_id_map
 
 
 def test_build_id_map_old_to_new():

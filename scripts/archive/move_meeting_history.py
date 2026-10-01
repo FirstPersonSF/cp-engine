@@ -16,8 +16,8 @@ DRY RUN BY DEFAULT: lists each move and refuses any whose destination exists.
 ``--apply`` does the ``git mv``s, removes the emptied ``Retrospective/`` dirs
 and commits the tenant (no push).
 
-    python scripts/move_meeting_history.py --tenant ~/Documents/Python/cp
-    python scripts/move_meeting_history.py --tenant ... --apply
+    python scripts/archive/move_meeting_history.py --tenant ~/Documents/Python/cp
+    python scripts/archive/move_meeting_history.py --tenant ... --apply
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from cp_engine.retrospective import HISTORY_FILENAME, LEGACY_RELPATH  # noqa: E402
 

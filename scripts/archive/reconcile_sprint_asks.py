@@ -34,7 +34,7 @@ inserts the imports. Run the re-key script (``rekey_commitment_hashes.py``)
 first; this one matches on the NEW recipe in memory either way.
 
 Usage:
-    python scripts/reconcile_sprint_asks.py [--tenant ~/Documents/Python/cp]
+    python scripts/archive/reconcile_sprint_asks.py [--tenant ~/Documents/Python/cp]
         [--out reconcile.csv] [--today YYYY-MM-DD] [--apply]
 """
 
@@ -49,7 +49,7 @@ import sys
 from datetime import date
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from cp_engine.asks import (  # noqa: E402
     COMMITMENT_COLUMNS,

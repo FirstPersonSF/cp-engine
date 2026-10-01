@@ -17,7 +17,7 @@ sit at ``spine/Retrospective/meeting-history.md``, but ``spine/`` is now a
 view generated from MC-2 on every sync, and the history has no MC-2 copy (its
 table was dropped in mig 072): left there, the first render would quarantine
 and delete ~390k words. ``history_path`` is the ONE resolver every reader and
-writer uses. Until the one-time move (``scripts/move_meeting_history.py``) has
+writer uses. Until the one-time move (``scripts/archive/move_meeting_history.py``) has
 run for a workstream, it returns the legacy file when only that exists, so an
 append never forks one history into two files.
 """

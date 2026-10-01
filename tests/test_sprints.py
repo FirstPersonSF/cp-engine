@@ -1720,7 +1720,7 @@ def test_old_asks_do_not_roll_up_either(tmp_path) -> None:
     """The #326 age-cap rollup line existed for asks nobody closed since May.
     With asks in MC-2 nothing ask-shaped carries, so no stale-ask line renders;
     an old open ask is imported as `expired` by the reconcile script instead
-    (scripts/reconcile_sprint_asks.py)."""
+    (scripts/archive/reconcile_sprint_asks.py)."""
     from cp_engine.sprints import parse_sprint_file
 
     _week(tmp_path, "2026-W30", None, own_asks=_ask("2026-07-20", "Old logo question", "a0000001"))

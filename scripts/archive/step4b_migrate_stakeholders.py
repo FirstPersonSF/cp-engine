@@ -15,9 +15,9 @@ to a path you name, outside the tenant). ``--apply`` writes MC-2 cards; it
 does not touch the tree — the next ``cxp sync`` renders the cards and retires
 the sections (its import then matches every person to the card this run made).
 
-    python scripts/step4b_migrate_stakeholders.py --tenant ~/Documents/Python/cp
-    python scripts/step4b_migrate_stakeholders.py --tenant ... --all --out plan.json
-    python scripts/step4b_migrate_stakeholders.py --tenant ... --apply
+    python scripts/archive/step4b_migrate_stakeholders.py --tenant ~/Documents/Python/cp
+    python scripts/archive/step4b_migrate_stakeholders.py --tenant ... --all --out plan.json
+    python scripts/archive/step4b_migrate_stakeholders.py --tenant ... --apply
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ from collections import Counter
 from datetime import date
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
 
 from cp_engine import mc2_db  # noqa: E402
 from cp_engine import stakeholders as sh  # noqa: E402

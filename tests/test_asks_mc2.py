@@ -491,7 +491,7 @@ def _reconcile_tenant(tmp_path: Path) -> tuple[Path, "FakeMC2"]:
 
 
 def _reconcile(tmp_path):
-    scripts = Path(__file__).resolve().parents[1] / "scripts"
+    scripts = Path(__file__).resolve().parents[1] / "scripts" / "archive"
     sys.path.insert(0, str(scripts))
     try:
         import reconcile_sprint_asks as rec
