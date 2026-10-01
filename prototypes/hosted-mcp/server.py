@@ -104,7 +104,9 @@ _obs_spec.loader.exec_module(observability)
 # In the test suite `pythonpath = ["src"]` makes the checkout's own engine the
 # one imported.
 # Dates in the tenant's timezone, not the container's UTC clock (#339).
-from cp_engine.clock import tenant_today  # noqa: E402
+from cp_engine.clock import tenant_now, tenant_today  # noqa: E402
+# The one "which sprint week" rule (architecture plan step 1a).
+from cp_engine.sprints import current_sprint_week_iso as _engine_sprint_week_iso  # noqa: E402
 # The card-kind READER (card_class.py). The write-time stamp below is
 # derived from it, so a hosted stamp cannot contradict what classify() reads.
 from cp_engine.card_class import classify as _classify_card  # noqa: E402
@@ -8545,11 +8547,17 @@ def extract_exec_summary(cp_md: Path) -> tuple[str | None, str | None]:
     return text[start + len(_EXEC_START) : end].strip(), None
 
 
-def current_sprint_week(today: date | None = None) -> str:
-    """Today's ISO sprint-dir name, `YYYY-W##`."""
-    d = today or tenant_today()
-    iso = d.isocalendar()
-    return f"{iso[0]}-W{iso[1]:02d}"
+def current_sprint_week(today: date | datetime | None = None) -> str:
+    """The currently-planned sprint's dir name, `YYYY-W##` — the ENGINE's rule.
+
+    `cp_engine.sprints.current_sprint_week_iso`: Mon/Tue are this week,
+    Wed–Sun roll forward to next week, read on the tenant clock (#339) — the
+    same rule as MC-2's `planningWeekMonday()` and every sprint dir `cxp sync`
+    creates. This used to be a plain calendar `isocalendar()`, which on a
+    Wednesday named LAST week (2026-09-30: hosted W40, engine and tree W41;
+    architecture plan step 1a).
+    """
+    return _engine_sprint_week_iso(today if today is not None else tenant_now())
 
 
 def find_sprint_file(root: Path, dir_slug: str, code: str) -> tuple[Path | None, str, str | None]:
@@ -8595,8 +8603,10 @@ def get_project_state(project_code: str) -> dict[str, Any]:
     Returns the `## Exec Summary` region of the project's `cp.md` (the
     engine-scaffolded, model-authored region between the `cp-engine:start
     exec-summary` / `:end` markers — the durable project-state surface) plus the
-    CURRENT sprint file's full text. If this ISO week has no sprint file, the
-    most recent week that does is returned instead and `sprint_note` says so.
+    CURRENT sprint file's full text — the currently-planned sprint week, which
+    rolls forward on Wednesday (the engine's rule). If that week has no sprint
+    file, the most recent week that does is returned instead and `sprint_note`
+    says so.
 
     Served from a shallow clone of TENANT_REPO, pulled on read with a debounce.
     With no TENANT_REPO configured the tool still EXISTS and returns a clean
