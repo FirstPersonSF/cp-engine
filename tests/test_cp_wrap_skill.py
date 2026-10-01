@@ -42,7 +42,7 @@ def test_every_cp_verb_it_names_is_real(skill: str) -> None:
     guess. Checked against the live click group, not a hardcoded list."""
     from cp_engine.cli import main
 
-    named = {"wrap", "close", "commitments-sweep"}
+    named = {"wrap", "commitments-sweep"}
     registered = set(main.commands)
     missing = named - registered
     assert not missing, f"/cp-wrap names non-existent verbs: {missing}"
@@ -127,10 +127,11 @@ def test_it_names_the_known_commitments_blindness(skill: str) -> None:
     assert "blind" in skill.lower()
 
 
-def test_it_distinguishes_itself_from_cp_close(skill: str) -> None:
-    """Two close-out verbs that look alike will be used interchangeably
-    unless the difference is stated up front."""
-    assert "This is not `cxp close`" in skill
+def test_it_distinguishes_itself_from_close_out_hygiene(skill: str) -> None:
+    """The learning artifact and the close-out hygiene look alike and will be
+    used interchangeably unless the difference is stated up front (`cxp close`
+    itself was retired in step 5a)."""
+    assert "This is not the close-out hygiene" in skill
     assert "FIRST" in skill  # ordering: wrap before close
 
 

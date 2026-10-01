@@ -279,82 +279,9 @@ def test_ingest_assets_scope_internal_is_noop(monkeypatch):
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_promote_cmd_reports_result(monkeypatch):
-    _stub_client(monkeypatch)
-
-    monkeypatch.setattr(asset_ingest, "promote_asset", lambda client, aid: True)
-    result = CliRunner().invoke(main, ["promote-asset", "abc-123"])
-    assert result.exit_code == 0
-    assert "Promoted" in result.output
-    assert "abc-123" in result.output
-
-    monkeypatch.setattr(asset_ingest, "promote_asset", lambda client, aid: False)
-    result = CliRunner().invoke(main, ["promote-asset", "abc-123"])
-    assert result.exit_code == 0
-    assert "already account" in result.output.lower()
-
-
-def test_demote_cmd_reports_result(monkeypatch):
-    _stub_client(monkeypatch)
-
-    monkeypatch.setattr(asset_ingest, "demote_asset", lambda client, aid: True)
-    result = CliRunner().invoke(main, ["demote-asset", "abc-123"])
-    assert result.exit_code == 0
-    assert "Demoted" in result.output
-
-    monkeypatch.setattr(asset_ingest, "demote_asset", lambda client, aid: False)
-    result = CliRunner().invoke(main, ["demote-asset", "abc-123"])
-    assert result.exit_code == 0
-    assert "not account" in result.output.lower()
-
-
 # ──────────────────────────────────────────────────────────────────────
 #  list-promotable
 # ──────────────────────────────────────────────────────────────────────
-
-
-def test_list_promotable_cmd_empty(monkeypatch):
-    _stub_client(monkeypatch)
-
-    monkeypatch.setattr(
-        asset_ingest,
-        "resolve_project_folders",
-        lambda client, code: _folders(project_id="pid-1"),
-    )
-    monkeypatch.setattr(asset_ingest, "list_promotable", lambda client, pid: [])
-
-    result = CliRunner().invoke(main, ["list-promotable", "ibx-5153"])
-    assert result.exit_code == 0, result.output
-    assert "(no promotable assets)" in result.output
-
-
-def test_list_promotable_cmd_table(monkeypatch):
-    _stub_client(monkeypatch)
-
-    monkeypatch.setattr(
-        asset_ingest,
-        "resolve_project_folders",
-        lambda client, code: _folders(project_id="pid-1"),
-    )
-    monkeypatch.setattr(
-        asset_ingest,
-        "list_promotable",
-        lambda client, pid: [
-            {
-                "id": "a1",
-                "title": "Strategy Deck",
-                "url": None,
-                "classifier_decision": "promote",
-                "meta": {},
-            }
-        ],
-    )
-
-    result = CliRunner().invoke(main, ["list-promotable", "ibx-5153"])
-    assert result.exit_code == 0, result.output
-    assert "a1" in result.output
-    assert "Strategy Deck" in result.output
-    assert "promote" in result.output
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -376,23 +303,6 @@ def test_archive_cmd_reports_count(monkeypatch):
     assert result.exit_code == 0, result.output
     assert "3" in result.output
     assert "ibx-5153" in result.output
-
-
-def test_unarchive_cmd_reports_count(monkeypatch):
-    _stub_client(monkeypatch)
-
-    monkeypatch.setattr(
-        asset_ingest,
-        "resolve_project_folders",
-        lambda client, code: _folders(project_id="pid-1"),
-    )
-    monkeypatch.setattr(
-        asset_ingest, "unarchive_project_assets", lambda client, pid: 5
-    )
-
-    result = CliRunner().invoke(main, ["unarchive-project-assets", "ibx-5153"])
-    assert result.exit_code == 0, result.output
-    assert "5" in result.output
 
 
 def test_resolve_miss_exits_nonzero(monkeypatch):

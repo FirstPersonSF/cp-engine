@@ -11,10 +11,10 @@ durable record of what the work taught the firm. The engine emits a
 synthesize** the report against a fixed nine-section contract, then render
 it as a Word document a human will actually read.
 
-**This is not `cxp close`.** `cxp close` is the internal hygiene ritual —
-spine tidying, stub retires, terminal Exec Summary. `/cp-wrap` produces the
-artifact you read a year later before pitching the same client again. Run
-`/cp-wrap` FIRST, so the close-out's terminal Exec Summary can quote it.
+**This is not the close-out hygiene** — spine tidying, stub retires, the
+terminal Exec Summary. `/cp-wrap` produces the artifact you read a year later
+before pitching the same client again. Run `/cp-wrap` FIRST, so the terminal
+Exec Summary can quote it.
 
 **Arguments:**
 - `/cp-wrap <code>` → wrap report for that engagement or initiative.
@@ -200,7 +200,7 @@ in a filename.
 
 ## What this command doesn't do
 
-- Doesn't run the close-out ritual — that's `cxp close`, and it comes after.
+- Doesn't do the close-out hygiene (spine tidying, terminal Exec Summary) — that comes after.
 - Doesn't mutate the spine beyond the one retrospective element.
 - Doesn't resolve commitments or archive anything.
 - Doesn't decide whether the project was a success. It assembles the

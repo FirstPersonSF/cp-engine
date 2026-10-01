@@ -1,4 +1,4 @@
-"""Parsing/inspection verbs: parse-sprint, parse-transcript, list-active-projects.
+"""Parsing/inspection verbs: parse-transcript, list-active-projects.
 
 Split from cli.py (arch-phase-4, #33). Shared helpers stay in
 cp_engine.cli and are called via the module attribute so test
@@ -12,30 +12,6 @@ from pathlib import Path
 import click
 
 import cp_engine.cli as _cli
-
-
-@click.command("parse-sprint")
-@click.argument("path", type=click.Path(exists=True, dir_okay=False, path_type=Path))
-@click.option("--json", "as_json", is_flag=True, help="Emit JSON to stdout.")
-def parse_sprint_cmd(path: Path, as_json: bool) -> None:
-    """Parse a sprint file and emit its structured representation.
-
-    Without `--json`, prints a one-line summary. With `--json`, emits the
-    full `SprintFile` as JSON — useful for piping into `jq` or another
-    consumer that wants to introspect a sprint's parsed state.
-    """
-    from cp_engine.sprints import parse_sprint_file, sprint_file_to_dict
-
-    sf = parse_sprint_file(path)
-    if as_json:
-        import json
-
-        click.echo(json.dumps(sprint_file_to_dict(sf), default=str, indent=2))
-    else:
-        click.echo(
-            f"{sf.project_code} · {sf.week_iso} · "
-            f"{len(sf.client_open_asks)} asks · {len(sf.risks)} risks"
-        )
 
 
 @click.command("parse-transcript")

@@ -298,26 +298,6 @@ def test_partners_channel_lookup_failure_reaches_result_errors():
     assert errors and "rollup NOT posted" in errors[0]
 
 
-def test_sort_and_route_batch_failures_are_counted():
-    from cp_engine import route_propose, sort_propose
-
-    def boom(_prompt):
-        raise TypeError("bad call signature")
-
-    errs: list[str] = []
-    assert sort_propose.propose(
-        [{"id": "r1", "project_code": "x", "text": "t"}], llm=boom, errors=errs
-    ) == []
-    assert errs and "bad call signature" in errs[0]
-
-    errs2: list[str] = []
-    assert route_propose.propose(
-        [{"id": "r1", "text": "t"}], [{"id": "s1", "label": "S"}],
-        project_id="p1", call=boom, errors=errs2,
-    ) == []
-    assert errs2 and "bad call signature" in errs2[0]
-
-
 def test_tag_resolve_says_when_the_index_was_unreadable():
     from cp_engine.tag_resolve import resolve_tags
 
