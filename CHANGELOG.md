@@ -4,6 +4,38 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.0 — 2026-10-01
+
+**Architecture plan step 5: the retire list, and cp-hosted is the only MCP
+server.** Minor: tools, commands and a server go away.
+
+*One server (5b).* The local stdio server (`cxp mcp`, `cp-sources`) is retired.
+Its seven verbs with no hosted twin moved to cp-hosted: `fetch_project_source`,
+`compare_project_sources`, `pull_document_comments`, `push_to_dropbox` (`/mcp`
+only, team members only — the server's first write credential), `preflight`,
+`list_vendors`, `list_rfp_respondents`; the six reads are on `/mcp/read` too.
+Files travel as base64 or a temporary Dropbox link, never a local path. The
+inbound-frameworks store and its three tools are gone. `cxp sync` and the
+SessionStart hook replace a `cp-sources` entry in `.mcp.json` with `cp-hosted`.
+
+*Retired (5a).* Hosted tools with no use (the step editors, `record_round`,
+`wrap_bundle`, `pull_element_from_project`, `demote_stakeholder` —
+`set_element_account_scope` covers it — and others) and the notes store
+(`create_note`). CLI: `close`, `route-queue`, `spine-frame`, `parse-sprint`,
+`ingest-from-transcript`, `meetings-backfill`, the asset promote/demote/list/
+unarchive/dedupe commands, `dates-loop`, `weekly-sort`, `snapshot(s)` and `mcp`.
+Slash commands `/cp-summarize`, `/cp-context`, `/cp-ingest`. One-shot scripts
+moved to `scripts/archive/`. The webhook no longer writes "Deeper notes" into
+meeting files or proposes spine-inbox cards (two Anthropic calls fewer per
+meeting). Worksets are kept.
+
+*Undated commitments.* The dates loop was the only thing that expired them, and
+its cron has been off since 07-27; the 14-day flag in `commitments_sweep` is now
+advisory and the docs say so.
+
+*Surface ceiling* lowered to 58 hosted tools, 53 cxp commands, 34 tables, frozen
+until 2026-11-01.
+
 ## v0.130.1 — 2026-10-01
 
 **Architecture plan steps 6 and 7.** Patch: no tenant-visible change.
