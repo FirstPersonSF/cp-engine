@@ -4,6 +4,30 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.130.1 — 2026-10-01
+
+**Architecture plan steps 6 and 7.** Patch: no tenant-visible change.
+
+*One end-to-end test (step 6).* `tests/test_e2e_meeting_to_hosted_read.py` drives
+a Fathom meeting through the real webhook, a real tenant git repo, `sync_tenant`
+and the hosted read tools, with MC-2, Anthropic and the clock faked and the
+network blocked. It asserts the sprint week (#339), short-code targeting (#345),
+one commitment per ask (4a), name aliasing onto a card (4b), hand-written
+sections surviving sync (#263), an untouched Exec Summary, a `webhook_runs` row
+per POST, and an idempotent second sync. Each guarded fix was broken on purpose
+and the test failed.
+
+*The webhook no longer reports an unchanged meeting re-ingest as a failed
+commit.* Re-tagging a meeting rewrote identical artifacts; "nothing to commit"
+was returned as the failure value, so `auto_ingest_runs` and `cxp health`
+showed a clean re-run as degraded. Now `ARTIFACTS_UNCHANGED`.
+
+*release.py does the whole release (step 7).* After the push it runs
+`scripts/post_release.py`: local install, every installed plugin scope, hosted
+deploy, webhook version check, tenant pins (minor bumps), and mc-2's DEV pin,
+each verified and resumable (`--resume-post`, `--only`, `--skip`). A failed
+release restores every bumped file (#346). See `docs/releasing.md`.
+
 ## v0.130.0 — 2026-10-01
 
 **Architecture plan step 4b: stakeholders are spine cards in MC-2.** Minor: where
