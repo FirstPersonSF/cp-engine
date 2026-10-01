@@ -2,5 +2,5 @@
 
 | Project | Allocation | Asks | Risks | Decisions due | Sprint file |
 |---|---|---|---|---|---|
-| `peb-5100` | — | 1 | 1 | 0 | [→](peb-5100.md) |
+| `peb-5100` | — | 0 | 1 | 0 | [→](peb-5100.md) |
 | `ggl-5300-go-safety` | — | 0 | 0 | 0 | [→](ggl-5300-go-safety.md) |

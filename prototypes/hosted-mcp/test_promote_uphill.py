@@ -373,7 +373,8 @@ def test_commitment_copy_lands_on_the_parent_with_the_original_untouched(server,
     assert copy["source_kind"] == "promoted"
     assert copy["status"] == "open" and copy["date_status"] == "proposed"
     assert copy["work_item_kind"] == "deliverable"
-    assert copy["cp_hash"] == server._promoted_hash("abcd1234", PROGRAM) == out["cp_hash"]
+    # Keyed on the original row id (step 4a: re-keying cp_hash must not break it).
+    assert copy["cp_hash"] == server._promoted_hash("c-orig", PROGRAM) == out["cp_hash"]
     assert out["commitment_id"] == copy["id"]
 
 

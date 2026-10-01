@@ -226,7 +226,8 @@ def test_commitment_copy_lands_on_the_parent(tenant, client):
     assert copy["source_kind"] == "promoted"
     assert copy["work_item_kind"] == "deliverable"
     assert copy["description"] == "Send Janet the migration runbook"
-    assert copy["cp_hash"] == pu.promoted_hash("abcd1234", PROGRAM) == out["cp_hash"]
+    # Keyed on the original row id (step 4a: re-keying cp_hash must not break it).
+    assert copy["cp_hash"] == pu.promoted_hash("c-orig", PROGRAM) == out["cp_hash"]
     assert copy["cp_hash"] != "abcd1234"
 
 

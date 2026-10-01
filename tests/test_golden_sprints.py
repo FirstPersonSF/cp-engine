@@ -290,8 +290,7 @@ def test_golden_scaffold_from_prior(golden_clock, tmp_path: Path) -> None:
     # And the output must round-trip: carry-forward reflects the prior file.
     sf = parse_sprint_file(result)
     assert sf.prior_sprint == "2026-W19"
-    assert len(sf.carry_forward.asks) == 1
-    assert sf.carry_forward.asks[0].who == "Maria"
+    assert sf.carry_forward.asks == ()  # step 4a: asks live in MC-2, never carried
 
 
 # ──────────────────────────────────────────────────────────────────────

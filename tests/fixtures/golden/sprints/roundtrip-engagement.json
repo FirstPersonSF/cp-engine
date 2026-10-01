@@ -1,15 +1,7 @@
 {
   "allocation": [],
   "carry_forward": {
-    "asks": [
-      {
-        "asked_date": "2026-05-04",
-        "by": null,
-        "status": "open",
-        "text": "Volume forecast from ops team",
-        "who": "Maria"
-      }
-    ],
+    "asks": [],
     "horizon": [
       {
         "bucket": "decision",

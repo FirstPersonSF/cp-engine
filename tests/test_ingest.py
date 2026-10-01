@@ -2037,8 +2037,12 @@ def test_set_milestone_inserts_cp_ask_hash(tmp_path: Path) -> None:
     )
     assert result.errors == [], result.errors
     row = _last_insert_row(sb)
-    expected = _content_hash("ggl-5168", "set-milestone", "Pop-up final to Rena")
-    assert row["cp_hash"] == expected
+    # Step 4a: the one ask recipe over the stored description; the
+    # `[confidence: …]` annotation is display-only and not part of identity.
+    from cp_engine.asks import ask_hash
+
+    assert row["description"].startswith("Pop-up final to Rena")
+    assert row["cp_hash"] == ask_hash("ggl-5168", "Pop-up final to Rena")
 
 
 def test_set_milestone_dedupes_existing_pending(tmp_path: Path) -> None:
@@ -2097,10 +2101,9 @@ def test_set_client_ask_task_inserts_cp_ask_hash(tmp_path: Path) -> None:
     )
     assert result.errors == [], result.errors
     row = _last_insert_row(sb)
-    expected = _content_hash(
-        "ggl-5168", "set-client-ask-task", "Round 3 pop-up feedback"
-    )
-    assert row["cp_hash"] == expected
+    from cp_engine.asks import ask_hash
+
+    assert row["cp_hash"] == ask_hash("ggl-5168", row["description"])
 
 
 def test_set_client_ask_task_dedupes_existing_pending(tmp_path: Path) -> None:

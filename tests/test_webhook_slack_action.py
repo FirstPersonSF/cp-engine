@@ -379,6 +379,9 @@ def test_run_plan_for_one_item_dispatches_close_ask_with_hash(monkeypatch, tmp_p
             return _date(2026, 5, 12)
 
     monkeypatch.setattr(slack_router, "tenant_today", _FrozenDate.today)
+    # No MC-2 here: close-ask would otherwise reach whatever client an
+    # earlier test left configured (step 4a resolves the commitment).
+    monkeypatch.setattr(slack_router.pipeline, "_create_supabase_client", lambda: None)
 
     result = _run_plan_for_one_item(
         verb="close-ask", code="ggl-5168", cp_hash=ask_hash, closed_by="slack",
@@ -829,6 +832,9 @@ def test_run_plan_for_one_item_closes_ask_in_digest_week_not_today(monkeypatch, 
             return _date(2026, 7, 8)  # ISO week 28
 
     monkeypatch.setattr(slack_router, "tenant_today", _FrozenDate.today)
+    # No MC-2 here: close-ask would otherwise reach whatever client an
+    # earlier test left configured (step 4a resolves the commitment).
+    monkeypatch.setattr(slack_router.pipeline, "_create_supabase_client", lambda: None)
 
     result = _run_plan_for_one_item(
         verb="close-ask", code="storyos", cp_hash=ask_hash,
@@ -872,6 +878,9 @@ def test_run_plan_for_one_item_defaults_current_week_when_no_week_iso(monkeypatc
             return _date(2026, 5, 12)  # ISO week 20
 
     monkeypatch.setattr(slack_router, "tenant_today", _FrozenDate.today)
+    # No MC-2 here: close-ask would otherwise reach whatever client an
+    # earlier test left configured (step 4a resolves the commitment).
+    monkeypatch.setattr(slack_router.pipeline, "_create_supabase_client", lambda: None)
 
     result = _run_plan_for_one_item(
         verb="close-ask", code="ggl-5168", cp_hash=ask_hash,

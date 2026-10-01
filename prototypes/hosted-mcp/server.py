@@ -45,6 +45,7 @@ Run:
 from __future__ import annotations
 
 import functools
+import hashlib
 import importlib.util
 import inspect
 import json
@@ -122,6 +123,8 @@ from cp_engine import mc2_db as _engine_mc2_db  # noqa: E402
 from cp_engine import spine as _engine_spine  # noqa: E402
 from cp_engine import spine_steps as _engine_spine_steps  # noqa: E402
 from cp_engine.commitments import _valid_due_date as _engine_valid_due_date  # noqa: E402
+from cp_engine.asks import ask_hash as _engine_ask_hash  # noqa: E402
+from cp_engine.asks import resolve_canonical_code as _engine_resolve_canonical_code  # noqa: E402
 from cp_engine import wrap_report as _engine_wrap_report  # noqa: E402
 from cp_engine import exec_summary_draft as _engine_exec_summary_draft  # noqa: E402
 from cp_engine import render as _engine_render  # noqa: E402
@@ -5553,8 +5556,9 @@ def _routed_copy_row(
     route fixes) and a `[routed from <source-code>]` provenance marker is
     appended. Owner, direction, due date, ratification state, and the source
     meeting linkage all survive — the row keeps its history; only its home
-    changes. `cp_hash` follows the hosted create_commitment semantics
-    (unique-per-call, not the engine's content hash).
+    changes. `cp_hash` is the engine's ask recipe over the TARGET's
+    canonical code, salted (`occurrence`) when the target already holds that
+    ask — a route never collides with, or silently merges into, a row there.
     """
     clean = _OFF_PROJECT_ANNOTATION_RE.sub("", row.get("description") or "").strip()
     copy: dict[str, Any] = {
@@ -5567,10 +5571,19 @@ def _routed_copy_row(
         "status": "open",
         "source_kind": row.get("source_kind") or "session",
         "source_meeting_id": row.get("source_meeting_id"),
-        "cp_hash": uuid.uuid4().hex[:8],
+        "cp_hash": _routed_hash(clean, target_scope, row),
         "project_id": target_scope["id"],
     }
     return copy
+
+
+def _routed_hash(clean: str, target_scope: dict[str, Any], row: dict[str, Any]) -> str:
+    """The engine recipe over the target code; the row id salts it so two
+    routes of look-alike rows cannot collide on the unique index. Pure (no
+    reads) because `_routed_copy_row` is."""
+    code = (target_scope.get("project_code") or "").lower()
+    salt = int(hashlib.sha256(str(row.get("id") or clean).encode()).hexdigest()[:6], 16) % 997 + 1
+    return _engine_ask_hash(code, clean, occurrence=salt)
 
 
 def _resolve_commitment_batch(
@@ -7338,6 +7351,36 @@ def create_note(
     }
 
 
+def _commitment_hash_for(
+    client, scope: dict[str, Any], project_code: str, text: str
+) -> tuple[str, dict[str, Any] | None]:
+    """`(cp_hash, open_duplicate)` for a new commitment on `scope`.
+
+    The engine's recipe (keyed on `<co>-<number>`). An OPEN row already
+    holding that hash (or a salted repeat of it) is returned as the duplicate;
+    a CLOSED one moves the new row to the next salted occurrence.
+    """
+    code = _engine_resolve_canonical_code(
+        scope.get("project_code") or project_code, client=client, project_id=scope["id"],
+    )
+    for occurrence in range(0, 50):
+        h = _engine_ask_hash(code, text, occurrence=occurrence)
+        seen = (
+            client.table("commitments")
+            .select("id, status, cp_hash")
+            .eq("cp_hash", h)
+            .limit(1)
+            .execute()
+            .data
+            or []
+        )
+        if not seen:
+            return h, None
+        if seen[0].get("status") == "open":
+            return h, seen[0]
+    raise RuntimeError("50 closed repeats of one ask; resolve by hand")
+
+
 @mcp_server.tool()
 @_names_its_level
 def create_commitment(
@@ -7361,11 +7404,19 @@ def create_commitment(
     REJECTED rather than dropped or guessed — an invented deadline is worse than
     an undated row, which downstream flags as "needs a date".
 
-    Unlike `cp mcp`'s verb this does NOT dedupe on a content hash: `cp_hash`
-    dedupe reads existing rows to decide, and re-implementing that check here
-    would diverge from the engine's hash derivation. A `cp_hash` is written
-    (uuid-derived, unique) so the column is populated and the partial unique
-    index is satisfied, but re-creating identical text WILL create a second row.
+    `cp_hash` is the ENGINE's one ask recipe (`cp_engine.asks.ask_hash`:
+    rename-stable `<co>-<number>` + normalized text, step 4a), so a commitment logged
+    here and the same ask arriving from a meeting or a sprint-file bullet are
+    one row, not two. This used to be a random hash: the server could not
+    import the engine, and re-implementing the recipe here would have
+    diverged. It imports the engine now, so the reason is gone.
+
+    Deliberate repeats still work. Re-creating text whose commitment is OPEN
+    returns that row (`duplicate_of`) instead of inserting a second copy.
+    Re-creating text whose commitment is CLOSED (done, dropped, expired) is a
+    new life of the same ask: it is inserted under a salted hash
+    (`occurrence=n`), so the closed row keeps the unsalted one and a
+    re-ingest of the original meeting still cannot resurrect it.
 
     Args:
         project_code: engagement or initiative code (standalone repos can't own
@@ -7450,6 +7501,20 @@ def create_commitment(
         except Exception:  # noqa: BLE001 — enrichment only
             pass
 
+    try:
+        cp_hash, duplicate = _commitment_hash_for(client, scope, project_code, text)
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"commitment lookup failed: {type(exc).__name__}: {str(exc)[:200]}"}
+    if duplicate is not None:
+        audit(client, "create_commitment", {"project_code": project_code, "description": text}, 0)
+        return {
+            "commitment_id": duplicate.get("id"),
+            "duplicate_of": duplicate.get("id"),
+            "project_code": project_code,
+            "status": duplicate.get("status"),
+            "note": "this ask is already an open commitment; nothing was inserted",
+        }
+
     row: dict[str, Any] = {
         "description": text,
         "owner_email": email_norm,
@@ -7459,9 +7524,8 @@ def create_commitment(
         "date_status": "proposed",
         "status": "open",
         "source_kind": "session",
-        # See the docstring: a unique-per-call hash, NOT the engine's content
-        # hash — this path does not claim the engine's dedupe semantics.
-        "cp_hash": uuid.uuid4().hex[:8],
+        # The engine's one ask recipe (see the docstring).
+        "cp_hash": cp_hash,
         "project_id": scope["id"],
         "source_meeting_id": meeting_id,
     }
@@ -10509,7 +10573,11 @@ def promote_uphill(
             )
         }
 
-    new_hash = _promoted_hash(row.get("cp_hash") or row["id"], parent_code)
+    # Keyed on the ROW id, not its cp_hash (step 4a): the re-key script
+    # rewrites cp_hash to the one ask recipe, and an id never changes, so
+    # promoting the same row twice still collides. (No promoted rows
+    # existed when this changed, 2026-10-01 — nothing to migrate.)
+    new_hash = _promoted_hash(row["id"], parent_code)
     base: dict[str, Any] = {
         "ok": True,
         "item_kind": "commitment",

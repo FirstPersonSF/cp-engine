@@ -13,8 +13,9 @@ The review-gate concept survives as state: every row lands with
 (proposed → agreed after two unchanged posts) and stamps ``slipped`` on
 past-due open rows.
 
-Idempotency: callers pass ``cp_hash`` (the same 8-char content-hash recipe
-as sprint-file asks, ``ingest._content_hash``); a pre-check plus the
+Idempotency: callers pass ``cp_hash`` from the one ask recipe,
+``cp_engine.asks.ask_hash`` (``<co>-<number>`` + normalized text — the
+same identity a sprint-file ask carries); a pre-check plus the
 partial unique index on ``commitments.cp_hash`` make re-ingest a no-op.
 Dropped rows count as duplicates on purpose — a dropped commitment that
 re-appears in a re-ingested meeting must not resurrect.
@@ -81,7 +82,7 @@ def resolve_commitment_owner(client: Any, code: str) -> dict | None:
         return None
     resp = (
         client.table(Tables.PROJECTS)
-        .select("id, number")
+        .select("id, number, full_job_name")
         .eq("number", number)
         .execute()
     )
@@ -89,7 +90,16 @@ def resolve_commitment_owner(client: Any, code: str) -> dict | None:
     if not rows:
         log.info("commitments: no project row for code=%s", code)
         return None
-    return {"id": rows[0]["id"], "code": code, "kind": "project"}
+    from cp_engine.asks import canonical_code
+
+    # `canonical_code` is what the one ask hash recipe keys on (step 4a):
+    # `code` is whatever the caller typed — often the short form.
+    return {
+        "id": rows[0]["id"],
+        "code": code,
+        "kind": "project",
+        "canonical_code": canonical_code(rows[0].get("full_job_name")) or code.lower(),
+    }
 
 
 def commitment_already_present(client: Any, cp_hash: str) -> bool:
@@ -276,8 +286,14 @@ def write_commitment(
     spine_element_id: str | None = None,
     source_meeting_id: str | None = None,
     warnings: list | None = None,
+    legacy_hashes: tuple[str, ...] = (),
 ) -> str:
     """Insert one commitment row; returns ``"inserted"`` or ``"duplicate"``.
+
+    ``legacy_hashes`` are the same item's hashes under a recipe retired
+    by step 4a (short code, per-verb tags). A row still carrying one is the
+    same commitment until the re-key script has run, so it counts as a
+    duplicate too — a re-ingest across the cutover must not double a row.
 
     ``warnings`` (optional out-list) collects the degrades that did not stop
     the insert — today, owner canonicalization that could not run.
@@ -287,7 +303,7 @@ def write_commitment(
     already be ISO (or None);
     use :func:`_valid_due_date` at the call site for free-text dates.
     """
-    if commitment_already_present(client, cp_hash):
+    if any(commitment_already_present(client, h) for h in (cp_hash, *legacy_hashes) if h):
         log.info(
             "commitments: hash=%s already present; skipping (%s)",
             cp_hash, owner["code"],

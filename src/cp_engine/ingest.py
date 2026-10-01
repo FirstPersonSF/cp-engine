@@ -259,9 +259,12 @@ class IngestPlanResult:
     # (which flips the CLI exit / the webhook run to failed) so a
     # deliberately file-only ingest still succeeds, but never silently.
     warnings: list[str] = field(default_factory=list)
+    # Step 4a: MC-2 commitment ids a close-ask resolved (the ask's truth).
+    commitments_resolved: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
+            "commitments_resolved": self.commitments_resolved,
             "files_written": [str(p) for p in self.files_written],
             "skipped_duplicate": self.skipped_duplicate,
             "errors": self.errors,
@@ -447,6 +450,29 @@ def execute_plan(
                         note = f"{code}/{verb}: {w}"
                         if note not in result.warnings:
                             result.warnings.append(note)
+                continue
+            if normalized == "close-ask":
+                # Step 4a: closing an ask resolves its MC-2 commitment.
+                for item in items:
+                    try:
+                        outcome = _close_ask(code, item, sprint_path, supabase=supabase)
+                    except Exception as exc:
+                        result.errors.append(f"{code}/{verb}: {exc}")
+                        continue
+                    result.errors.extend(f"{code}/{verb}: {e}" for e in outcome.errors)
+                    result.warnings.extend(f"{code}/{verb}: {w}" for w in outcome.warnings)
+                    if outcome.resolved_id:
+                        result.commitments_resolved.append(outcome.resolved_id)
+                    for p in outcome.paths:
+                        if p not in result.files_written:
+                            result.files_written.append(p)
+                    if not outcome.resolved_id and not outcome.paths:
+                        result.skipped_duplicate += 1
+                    if supabase is None:
+                        result.warnings.append(
+                            f"{code}/{verb}: commitment NOT resolved — no MC-2 "
+                            "client (asks live in MC-2); only the file was edited"
+                        )
                 continue
             for item in items:
                 try:
@@ -1128,7 +1154,12 @@ def _write_ask(
     status = _as_text(item.get("status")) or _as_text("open")
     if not text:
         raise IngestPlanError("ask item missing 'text'")
-    h = _content_hash(code, "record-ask", text)
+    # Step 4a: the one ask recipe (cp_engine.asks.ask_hash), keyed on the
+    # rename-stable `<co>-<number>` of the sprint stem, so this bullet, the
+    # webhook's commitment and a hosted create_commitment agree on identity.
+    from cp_engine.asks import ask_hash
+
+    h = ask_hash(code, text)
     body = sprint_path.read_text(encoding="utf-8")
     if _already_present(body, h):
         return False
@@ -1324,30 +1355,50 @@ def _log_unmatched_hash(
     )
 
 
+def _asks_region_span(body: str) -> tuple[int, int] | None:
+    """(start, end) of the ``open-asks`` region (markers included), or None.
+    That region is a VIEW of MC-2 (step 4a): a file writer never flips a
+    bullet inside it — closing means resolving the commitment."""
+    from cp_engine.asks import _REGION_END, _REGION_START
+
+    a = body.find(_REGION_START)
+    b = body.find(_REGION_END)
+    if a < 0 or b < a:
+        return None
+    return a, b + len(_REGION_END)
+
+
 def _write_close_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
-    """Flip an existing `[open ...]` ask to `[closed ...]`.
+    """Flip an `[open ...]` ask bullet to `[closed ...]` in the file that
+    OWNS it — the legacy, file-side half of close-ask.
 
-    Match strategy:
-      - If `hash` is provided, match the open bullet by its `cp:hash=<h>`
-        marker. Used by v0.14's Slack-action handler, which only has the
-        hash from the button payload (no text to substring-match against).
-      - Otherwise, fall back to substring match on `text` (or `match`).
-        Backward-compat with the v0.12 ClickUp pipeline + hand-written
-        close-ask plans, which pass `text` from a Supabase lookup.
+    Since step 4a an ask's truth is its MC-2 commitment; :func:`_close_ask`
+    resolves that first and calls this only to keep a hand-written bullet
+    from contradicting it. Two defects fixed here (both measured 2026-10-01):
 
-    Returns True if a flip happened; False if no match found OR the ask
-    was already closed (idempotent).
+      - it now REDIRECTS to the owning week (``_origin_sprint_path``), like
+        resolve-risk and snooze already did. A Slack click on a carried ask
+        targeted the projection, wrote nothing the next render kept, and
+        reported success (#219's shape, never applied to asks);
+      - its pattern now matches the carried ``[ask · …]`` shape as well as
+        ``[open · …]``, so a hash found only in that shape is not silently
+        unmatchable.
 
-    Optional `closed_by` field (e.g. "clickup", "slack") appends a
-    trailing `<!-- cp:closed-by=<source> -->` audit marker — used by
-    Task 1.7's ClickUp-close webhook and v0.14's Slack-action handler to
-    distinguish automated closes from human-run close-ask plans.
+    Bullets inside the ``open-asks`` region are never flipped here: that
+    region renders from MC-2.
+
+    Match strategy: ``hash`` (Slack / ClickUp buttons) by its
+    ``cp:hash=<h>`` marker; otherwise a substring of ``text`` / ``match``.
+    Optional ``closed_by`` appends ``<!-- cp:closed-by=<source> -->``.
+
+    Returns True if a flip happened; False if no match / already closed.
     """
     target_hash = _as_text(item.get("hash")) or _as_text("")
     closed_by = _as_text(item.get("closed_by")) or _as_text("")
     if target_hash:
+        sprint_path = _origin_sprint_path(sprint_path, target_hash)
         open_bullet_re = re.compile(
-            r"^(?P<prefix>- `?\[)open(?P<rest>[^\]]*\][^\n]*?cp:hash="
+            r"^(?P<prefix>- `?\[)(?:open|ask)(?P<rest>[^\]]*\][^\n]*?cp:hash="
             + re.escape(target_hash) + r"[^\n]*)$",
             re.MULTILINE,
         )
@@ -1355,20 +1406,26 @@ def _write_close_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
         match_text = _as_text(item.get("text") or item.get("match")) or _as_text("")
         if not match_text:
             raise IngestPlanError("close-ask item missing 'hash' or 'text'/'match'")
-        # Find the first bullet under Open asks containing match_text, with status open.
         open_bullet_re = re.compile(
-            r"^(?P<prefix>- `?\[)open(?P<rest>[^\]]*\][^\n]*"
+            r"^(?P<prefix>- `?\[)(?:open|ask)(?P<rest>[^\]]*\][^\n]*"
             + re.escape(match_text)
             + r"[^\n]*)$",
             re.MULTILINE,
         )
-    body = sprint_path.read_text(encoding="utf-8")
+    try:
+        body = sprint_path.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    span = _asks_region_span(body)
+    head, region, tail = (
+        (body[:span[0]], body[span[0]:span[1]], body[span[1]:]) if span
+        else (body, "", "")
+    )
+    outside = head + tail
 
-    # Only the hash-matched path carries the one-bullet-per-hash invariant;
-    # the legacy text-match path has no hash to be ambiguous about.
     if target_hash and _log_duplicate_hash(
         verb="close-ask", code=code, target_hash=target_hash,
-        body=body, sprint_path=sprint_path,
+        body=outside, sprint_path=sprint_path,
     ):
         return False
 
@@ -1378,19 +1435,111 @@ def _write_close_ask(code: str, item: dict, sprint_path: Path, **_) -> bool:
             line += f" <!-- cp:closed-by={closed_by} -->"
         return line
 
-    new_body, n = open_bullet_re.subn(_flip, body, count=1)
+    head, n = open_bullet_re.subn(_flip, head, count=1)
     if n == 0:
-        # Hash-matched closes get the same present-but-unparseable check as
-        # resolve-risk. Text-matched closes (the legacy ClickUp/hand-written
-        # path) have no hash to look for, so there is nothing to distinguish.
-        if target_hash:
+        tail, n = open_bullet_re.subn(_flip, tail, count=1)
+    if n == 0:
+        if target_hash and f"cp:hash={target_hash}" not in region:
             _log_unmatched_hash(
                 verb="close-ask", code=code, target_hash=target_hash,
-                body=body, sprint_path=sprint_path, settled=("closed",),
+                body=outside, sprint_path=sprint_path, settled=("closed",),
             )
         return False
-    sprint_path.write_text(new_body)
+    sprint_path.write_text(head + region + tail)
     return True
+
+
+@dataclass
+class _CloseAskOutcome:
+    resolved_id: str | None = None   # the MC-2 commitment closed by this call
+    already_closed: bool = False     # MC-2 had it closed before this call
+    paths: list = field(default_factory=list)  # files changed
+    errors: list = field(default_factory=list)  # MC-2 half that did not land
+    warnings: list = field(default_factory=list)  # nothing in MC-2 to resolve
+
+
+def _drop_from_asks_region(sprint_path: Path, cp_hash: str) -> bool:
+    """Remove the rendered line for ``cp_hash`` from the ``open-asks`` region
+    right away (an ENGINE write, so the region is re-stamped), instead of
+    leaving a closed ask on display until the next sync re-renders it."""
+    from cp_engine.asks import ASKS_REGION, EMPTY_REGION_LINE
+    from cp_engine.region_guard import strip_digest
+    from cp_engine.render import splice_managed_region
+    from cp_engine.sync import _extract_region
+
+    try:
+        body = sprint_path.read_text(encoding="utf-8")
+        inner = _extract_region(body, ASKS_REGION)
+    except (OSError, ValueError):
+        return False
+    lines = strip_digest(inner).splitlines()
+    kept = [ln for ln in lines if f"cp:hash={cp_hash}" not in ln]
+    if len(kept) == len(lines):
+        return False
+    new_inner = "\n".join(ln for ln in kept if ln.strip()) or EMPTY_REGION_LINE
+    sprint_path.write_text(splice_managed_region(body, ASKS_REGION, new_inner))
+    return True
+
+
+def _close_ask(
+    code: str, item: dict, sprint_path: Path, *, supabase: Any = None,
+) -> _CloseAskOutcome:
+    """close-ask, step 4a: resolve the COMMITMENT, then tidy the files.
+
+    With an MC-2 client the commitment is found by hash (its own, or the one
+    recipe over its text for a row not yet re-keyed) or by text, and set to
+    ``done``. Then the rendered line leaves the ``open-asks`` region and any
+    hand-written ``[open`` bullet in the owning week is flipped, so no file
+    contradicts MC-2. Without a client only the file half runs — the caller
+    reports that the commitment was NOT resolved.
+    """
+    from cp_engine import commitments as _commitments
+    from cp_engine.asks import find_commitment
+
+    out = _CloseAskOutcome()
+    target_hash = _as_text(item.get("hash")) or _as_text("")
+    text = _as_text(item.get("text") or item.get("match")) or _as_text("")
+    if not target_hash and not text:
+        raise IngestPlanError("close-ask item missing 'hash' or 'text'/'match'")
+    if supabase is not None:
+        row = None
+        try:
+            owner = _commitments.resolve_commitment_owner(supabase, code)
+            if owner is None:
+                out.warnings.append(f"close-ask {code}: project not found in MC-2")
+            else:
+                row = find_commitment(
+                    supabase, project_id=owner["id"],
+                    code=owner.get("canonical_code") or code,
+                    cp_hash=target_hash or None, text=text or None,
+                )
+                if row is None:
+                    out.warnings.append(
+                        f"close-ask {code}: no commitment matches "
+                        f"{target_hash or text!r} — nothing resolved in MC-2"
+                    )
+                elif row.get("status") == "open":
+                    _commitments.close_commitment(supabase, row["id"], "done")
+                    out.resolved_id = row["id"]
+                else:
+                    out.already_closed = True
+        except Exception as exc:  # noqa: BLE001 — loud, but the file half still runs
+            out.errors.append(
+                f"close-ask {code}: MC-2 resolve failed "
+                f"({type(exc).__name__}: {exc}) — the commitment is still open"
+            )
+            row = None
+        if row is not None:
+            for h in {target_hash, row.get("cp_hash")} - {"", None}:
+                if _drop_from_asks_region(sprint_path, h) and sprint_path not in out.paths:
+                    out.paths.append(sprint_path)
+    if _write_close_ask(code, item, sprint_path):
+        owner_path = (
+            _origin_sprint_path(sprint_path, target_hash) if target_hash else sprint_path
+        )
+        if owner_path not in out.paths:
+            out.paths.append(owner_path)
+    return out
 
 
 def _write_decision(
@@ -1438,6 +1587,13 @@ def _write_cross_routed_update(
         return False
     match = find_near_duplicate(body, text)
     if match is None:
+        return None
+    span = _asks_region_span(body)
+    if span and match in body[span[0]:span[1]]:
+        # The near-duplicate is an ask rendered from MC-2 (step 4a); an
+        # update line inside that region would be discarded by the next
+        # render. Write the item normally — the commitments sweep pairs it
+        # with the existing row as a likely duplicate.
         return None
     date_s = _as_text(item.get("date")) or _resolve_today_iso(today)
     label = {"asks": "ask", "risks": "risk", "decisions": "decision",
@@ -1639,7 +1795,21 @@ def _write_snooze(
         count=1,
     )
 
-    sprint_path.write_text(body.replace(old_line, new_line, 1))
+    new_body = body.replace(old_line, new_line, 1)
+    span = _asks_region_span(body)
+    if span and span[0] <= m.start() < span[1]:
+        # A snooze on an ask rendered from MC-2 (step 4a): this IS an engine
+        # write, so re-stamp the region — otherwise the next render would
+        # read the marker as a foreign edit. `sync_sprint_asks` carries the
+        # marker across re-renders by hash.
+        from cp_engine.asks import ASKS_REGION
+        from cp_engine.render import splice_managed_region
+        from cp_engine.sync import _extract_region
+
+        new_body = splice_managed_region(
+            new_body, ASKS_REGION, _extract_region(new_body, ASKS_REGION)
+        )
+    sprint_path.write_text(new_body)
     return True
 
 
@@ -2065,7 +2235,7 @@ def _owner_column(project: dict) -> dict:
     """Return the owner column for a clickup_task_proposals row.
 
     One owner column since #301 (mc-2 mig 192 folded the second one):
-    ``project_id``. Mirrors ``webhook/clickup_propose._build_proposal_row``.
+    ``project_id``.
     """
     return {"project_id": project["id"]}
 
@@ -2093,6 +2263,7 @@ def _write_milestone(
     below "high").
     """
     from cp_engine import commitments as _commitments
+    from cp_engine.asks import ask_hash
 
     deliverable = _as_text(item.get("deliverable")) or _as_text("")
     date_str = _as_text(item.get("date")) or _as_text("")
@@ -2125,7 +2296,8 @@ def _write_milestone(
         supabase,
         owner=resolved,
         description=description,
-        cp_hash=_content_hash(code, "set-milestone", deliverable),
+        cp_hash=ask_hash(resolved.get("canonical_code") or code, description),
+        legacy_hashes=(_content_hash(code, "set-milestone", deliverable),),
         source_kind="meeting_ingest",
         direction=_commitments.US_TO_THEM,
         owner_name=owner,
@@ -2154,6 +2326,7 @@ def _write_client_ask_task(
     "set-client-ask-task", what) — same recipe as the old proposal path.
     """
     from cp_engine import commitments as _commitments
+    from cp_engine.asks import ask_hash
 
     what = _as_text(item.get("what")) or _as_text("")
     from_party = _as_text(item.get("from_party")) or _as_text("")
@@ -2180,7 +2353,8 @@ def _write_client_ask_task(
         supabase,
         owner=resolved,
         description=description,
-        cp_hash=_content_hash(code, "set-client-ask-task", what),
+        cp_hash=ask_hash(resolved.get("canonical_code") or code, description),
+        legacy_hashes=(_content_hash(code, "set-client-ask-task", what),),
         source_kind="meeting_ingest",
         direction=_commitments.US_TO_THEM,
         due_date=due_date,
@@ -2196,8 +2370,8 @@ def _proposal_already_present(client, cp_ask_hash: str) -> bool:
     Rejected rows are intentionally excluded — a rejected proposal that
     re-appears on a rerun should be re-proposed (the reviewer may have
     rejected the first iteration as malformed and want the LLM's revised
-    version). This matches the rejected-row semantic in
-    ``webhook/clickup_propose._existing_descriptions``.
+    version). (The webhook's ``clickup_propose`` once shared this rule; it
+    was deleted in step 4a, dead since the commitments consolidation.)
 
     Best-effort: any unexpected query error falls back to False (insert
     proceeds). The webhook's auto-ingest contract is that ClickUp routing

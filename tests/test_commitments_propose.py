@@ -311,8 +311,11 @@ def test_cp_hash_computed_on_clean_description(monkeypatch):
 
     (row,) = written
     assert row["description"] != "Add Scorecard link to Mission Control dashboard"
-    assert row["cp_hash"] == _content_hash(
-        "ibx-5192", "record-ask", "Add Scorecard link to Mission Control dashboard"
+    # Step 4a: the one ask recipe, keyed on the canonical code.
+    from cp_engine.asks import ask_hash
+
+    assert row["cp_hash"] == ask_hash(
+        "ibx-5192", "Add Scorecard link to Mission Control dashboard"
     )
 
 

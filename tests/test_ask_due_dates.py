@@ -49,15 +49,16 @@ def test_who_and_by_helper_is_order_tolerant():
     assert _ask_who_and_by([]) == (None, None)
 
 
-def test_carry_forward_preserves_by(tmp_path):
+def test_asks_do_not_carry_their_by_lives_in_mc2(tmp_path):
+    """Step 4a: asks never carry. The `· by` date survives as the
+    commitment's `due_date` and renders back in the `open-asks` region
+    (tests/test_asks_mc2.py), not through carry-forward."""
     from cp_engine.sprints import compute_carry_forward
 
     p = _sprint(tmp_path,
                 "- [open · 2026-07-11 · Janet · by 2026-07-30] schedule Jen\n"
                 "- [answered · 2026-07-11 · Bo · by 2026-07-20] old one")
-    cf = compute_carry_forward(p)
-    assert len(cf.asks) == 1  # only open asks roll
-    assert cf.asks[0].by == "2026-07-30"
+    assert compute_carry_forward(p).asks == ()
 
 
 def test_carry_forward_region_parses_by(tmp_path):

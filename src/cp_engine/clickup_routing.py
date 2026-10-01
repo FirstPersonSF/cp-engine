@@ -2,7 +2,7 @@
 
 Until arch-phase-2 (2026-07-03) this logic existed twice with "KEEP IN SYNC"
 comments — ``cp_engine.ingest._resolve_proposal_project`` and
-``webhook/clickup_propose._resolve_project`` — and had already diverged on
+``webhook/clickup_propose._resolve_project`` (deleted in step 4a) — and had already diverged on
 error handling and absent-``enable_clickup`` semantics. Both are now thin
 wrappers over :func:`resolve_clickup_project`.
 

@@ -439,7 +439,15 @@ def attention_digest_cmd(post_to_slack: bool, recipient: str, today) -> None:
         sys.exit(2)
 
     today_date = today.date() if today else tenant_today()
-    digest = run_digest(config=config, today=today_date)
+    # Asks live in MC-2 (step 4a): hand the digest a client so it reads the
+    # commitments table; it falls back to the sprint files without one.
+    from cp_engine import mc2_db
+
+    try:
+        digest_client = mc2_db.get_client(config, required=False)
+    except Exception:  # noqa: BLE001 — the digest still runs from the files
+        digest_client = None
+    digest = run_digest(config=config, today=today_date, client=digest_client)
     # Cross-project routing proposals (#88): pending rows from MC-2's
     # review gate ride the same digest. Best-effort — the digest must
     # still send when MC-2 is unreachable.

@@ -163,6 +163,10 @@ class ProjectPlanningBlock:
     # shims — rendered in the Open Commitments table alongside schedule
     # milestones and them→us client-asks.
     our_commitments: tuple[Milestone, ...] = ()
+    # Step 4a/step 3: set when MC-2's commitments read FAILED — asks live
+    # there, so the block must say they are unreadable rather than render
+    # an empty (or stale) list as the truth.
+    asks_error: str | None = None
     # Optional whole-project sweep synthesis (Project Spine slice 3, Phase B).
     # None on the default fast path — only populated when ``cp prep-planning
     # --sweep`` injects a ``sweep_llm`` and the project has a backfilled spine.
@@ -979,7 +983,7 @@ _SPRINT_OPEN_ASK_RE = re.compile(
 
 
 def _parse_sprint_open_asks(
-    sprint_file_path: Path, today: date | None = None
+    sprint_file_path: Path, today: date | None = None, *, skip_mc2_region: bool = False
 ) -> tuple[SprintAsk, ...]:
     """Read a project's current sprint file and return its open asks.
 
@@ -997,6 +1001,15 @@ def _parse_sprint_open_asks(
     if not sprint_file_path.is_file():
         return ()
     body = sprint_file_path.read_text(encoding="utf-8")
+    if skip_mc2_region:
+        # The `open-asks` region is a rendering of MC-2 (step 4a). A caller
+        # that read MC-2 itself must not also count the possibly-stale copy:
+        # an ask resolved since the last sync would come back "(sprint file)".
+        from cp_engine.asks import _REGION_END, _REGION_START
+
+        a, b = body.find(_REGION_START), body.find(_REGION_END)
+        if 0 <= a < b:
+            body = body[:a] + body[b + len(_REGION_END):]
     out: list[SprintAsk] = []
     for m in _SPRINT_OPEN_ASK_RE.finditer(body):
         text = m.group("text").strip()
@@ -1403,11 +1416,37 @@ def build_project_block(
         except OSError as exc:
             log.warning("cp.md read failed for %s: %s", project.code, exc)
 
-    # Sprint-file open asks (bridging period — not yet in commitments).
+    # MC-2 commitments (mig 097) — where asks live (step 4a). Read FIRST and
+    # strictly: a failed read must say so (step 3), never pass as "no asks".
+    asks_error: str | None = None
+    commitment_rows: tuple[dict, ...] = ()
+    if supabase_client is not None:
+        try:
+            commitment_rows = _fetch_project_commitments(
+                supabase_client, project, strict=True
+            )
+        except Exception as exc:  # noqa: BLE001 — surfaced, not swallowed
+            asks_error = (
+                f"MC-2 commitments read failed ({type(exc).__name__}: {exc}); "
+                "asks shown are the sprint file's last rendering"
+            )
+            # Captured by the bundle loop into `result.errors` (step 3).
+            log.warning(
+                "asks unreadable — commitments fetch failed for %s: %s",
+                project.code, asks_error,
+            )
+
+    # Sprint-file open asks. With MC-2 read, the file contributes only
+    # hand-typed asks the next sync has yet to import — its rendered
+    # `open-asks` region is skipped. Without MC-2 (no client, or the read
+    # failed) the region is the best record left, flagged as such.
     sprint_file_path = (
         config.root / "sprints" / week_iso / f"{project.code}.md"
     )
-    sprint_asks = _parse_sprint_open_asks(sprint_file_path, today)
+    sprint_asks = _parse_sprint_open_asks(
+        sprint_file_path, today,
+        skip_mc2_region=supabase_client is not None and asks_error is None,
+    )
     # Read the sprint body once so urgent-detection's Rule 2 + Rule 4 can
     # parse Decisions due / Dependencies & risks without re-reading the file.
     sprint_file_body: str | None = None
@@ -1421,9 +1460,8 @@ def build_project_block(
     milestones = _fetch_mc2_schedule_milestones(supabase_client, project)
     fetch_error: str | None = None if milestones else "no_schedule_milestones"
 
-    # MC-2 commitments (mig 097): them→us rows are the client-asks;
-    # us→them/internal rows join the Open Commitments table.
-    commitment_rows = _fetch_project_commitments(supabase_client, project)
+    # them→us rows are the client-asks; us→them/internal rows join the Open
+    # Commitments table.
     client_asks = tuple(
         _commitment_as_milestone(c)
         for c in commitment_rows
@@ -1434,8 +1472,8 @@ def build_project_block(
         for c in commitment_rows
         if c.get("direction") != "them_to_us"
     )
-    # Bridging-period dedupe: a sprint-file ask and a commitment created
-    # from the same meeting share the record-ask cp_hash recipe — drop the
+    # Dedupe: a not-yet-imported sprint bullet and a commitment written from
+    # the same meeting share the one ask recipe (`asks.ask_hash`) — drop the
     # sprint copy so the Open Commitments table doesn't render it twice.
     commitment_hashes = {
         c["cp_hash"] for c in commitment_rows if c.get("cp_hash")
@@ -1508,6 +1546,7 @@ def build_project_block(
         sprint_open_asks=sprint_asks,
         urgent=tuple(urgent_list),
         fetch_error=fetch_error,
+        asks_error=asks_error,
         deliverables=deliverable_lines,
         open_questions=open_questions,
         drift=drift,
@@ -2052,6 +2091,9 @@ def _render_commitments_table(block: ProjectPlanningBlock) -> list[str]:
     All cell values flow through ``_md_table_cell`` so literal `|` or
     newline in a ClickUp task name doesn't corrupt the rendered table row.
     """
+    warn: list[str] = []
+    if block.asks_error:
+        warn = [f"**⚠️ asks unreadable** — {block.asks_error}", ""]
     rows: list[tuple[str, str, str, str]] = []  # (Who, Owes what, To, By)
     for m in block.milestones:
         date_str = short_iso_date(m.get("date")) or "—"
@@ -2095,8 +2137,8 @@ def _render_commitments_table(block: ProjectPlanningBlock) -> list[str]:
             )
         )
     if not rows:
-        return ["**Open commitments:** _(none)_"]
-    out = [
+        return warn + ["**Open commitments:** _(none)_"]
+    out = warn + [
         "**Open commitments:**",
         "| Who | Owes what | To | By |",
         "|---|---|---|---|",

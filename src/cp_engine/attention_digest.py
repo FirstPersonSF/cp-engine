@@ -176,12 +176,78 @@ def _find_escalated_risks(
     return out
 
 
+def _past_due_from_mc2(
+    *,
+    client,
+    tenant_root,
+    sprint_files: list,
+    today: date,
+    no_by_threshold_days: int = 7,
+) -> tuple[list[PastDueAsk], set[str]]:
+    """Past-due asks read from MC-2 itself (step 4a): asks live in the
+    ``commitments`` table, so the digest asks the owner instead of the
+    sprint file's last rendering of it — a commitment resolved since the last
+    sync is not chased. Same past-due rule as :func:`_find_past_due_asks`;
+    snooze markers (display state, no MC-2 column) are read from the file's
+    rendered line by hash.
+
+    Returns ``(asks, codes_covered)``. A code with no ``mc2_id`` in
+    ``.cp-engine/paths.json``, or whose read fails, is NOT covered and the
+    caller falls back to the file for it."""
+    from cp_engine.asks import (
+        OPEN,
+        _local_day,
+        fetch_project_commitments,
+        row_hash,
+    )
+    from cp_engine.state import load_paths_index
+
+    index = load_paths_index(tenant_root)
+    out: list[PastDueAsk] = []
+    covered: set[str] = set()
+    for path in sprint_files:
+        code = path.stem
+        entry = index.get(code)
+        if entry is None or not entry.mc2_id:
+            continue
+        try:
+            rows = fetch_project_commitments(client, entry.mc2_id)
+        except Exception as exc:  # noqa: BLE001 — fall back to the file
+            log.warning("attention-digest: MC-2 read failed for %s: %s", code, exc)
+            continue
+        covered.add(code)
+        body = path.read_text(encoding="utf-8")
+        for r in rows:
+            if r.get("status") != OPEN:
+                continue
+            h = row_hash(r, code)
+            line = next((ln for ln in body.splitlines() if f"cp:hash={h}" in ln), "")
+            if line and _is_snoozed(line, today):
+                continue
+            try:
+                asked = date.fromisoformat(_local_day(r.get("created_at")))
+            except ValueError:
+                continue
+            by = date.fromisoformat(str(r["due_date"])[:10]) if r.get("due_date") else None
+            who = (r.get("owner_name") or r.get("owner_email") or "unassigned").strip()
+            text = " ".join((r.get("description") or "").split())
+            if by is not None:
+                if by < today:
+                    out.append(PastDueAsk(code=code, text=text, who=who, asked=asked,
+                                          by=by, days_past=(today - by).days, hash=h))
+            elif (today - asked).days >= no_by_threshold_days:
+                out.append(PastDueAsk(code=code, text=text, who=who, asked=asked,
+                                      by=None, days_past=(today - asked).days, hash=h))
+    return out, covered
+
+
 def attention_digest(
     *,
     config,
     today: date,
     past_due_threshold_days: int = 7,
     escalated_window_days: int = 7,
+    client=None,
 ) -> dict:
     """Run all three classifiers against the current sprint dir.
 
@@ -226,11 +292,21 @@ def attention_digest(
     sprint_files = sorted(sprint_dir.glob("*.md"))
     # Exclude tenant-level scaffolding files; only per-project sprint files matter.
     sprint_files = [p for p in sprint_files if not p.name.startswith("_")]
+    # Step 4a: with an MC-2 client, asks come from the commitments table;
+    # the sprint-file scan covers only workstreams MC-2 could not answer for.
+    past_due: list[PastDueAsk] = []
+    covered: set[str] = set()
+    if client is not None:
+        past_due, covered = _past_due_from_mc2(
+            client=client, tenant_root=config.root, sprint_files=sprint_files,
+            today=today, no_by_threshold_days=past_due_threshold_days,
+        )
+    past_due += _find_past_due_asks(
+        sprint_files=[p for p in sprint_files if p.stem not in covered],
+        today=today, no_by_threshold_days=past_due_threshold_days,
+    )
     return {
-        "past_due": _find_past_due_asks(
-            sprint_files=sprint_files, today=today,
-            no_by_threshold_days=past_due_threshold_days,
-        ),
+        "past_due": past_due,
         "escalated": _find_escalated_risks(
             sprint_files=sprint_files, today=today,
             window_days=escalated_window_days,

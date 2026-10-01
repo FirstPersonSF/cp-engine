@@ -88,7 +88,7 @@ def _asks(block: dict) -> list[str]:
 
 
 def test_action_items_follow_the_project_they_name(tmp_path, monkeypatch):
-    from cp_engine.ingest import _content_hash
+    from cp_engine.asks import ask_hash as _ask_hash
 
     projects = _gen(tmp_path, monkeypatch, PLAN_BOTH_BLOCKS, code=SAP)
     sap, slt = _asks(projects[SAP]), _asks(projects[SLT])
@@ -100,7 +100,7 @@ def test_action_items_follow_the_project_they_name(tmp_path, monkeypatch):
     # Moved items carry the TARGET's hash, so _write_ask's dedupe and the
     # ClickUp round trip still recognise them.
     moved = next(a for a in projects[SLT]["record-ask"] if a["text"].startswith("Email Morgan"))
-    assert moved["hash"] == _content_hash(SLT, "record-ask", moved["text"])
+    assert moved["hash"] == _ask_hash(SLT, moved["text"])
 
 
 def test_co_tagged_meeting_writes_each_action_item_exactly_once(tmp_path, monkeypatch):

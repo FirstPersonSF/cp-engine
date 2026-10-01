@@ -1,6 +1,6 @@
 """Stage A — propose commitments from a meeting's Fathom action items.
 
-Successor to ``clickup_propose.py`` (commitments consolidation, cp-engine
+Successor to the deleted ``clickup_propose.py`` (commitments consolidation, cp-engine
 #38): action items now land as ``proposed`` rows in MC-2's
 ``public.commitments`` instead of ``clickup_task_proposals``. The review
 gate survives as the ``date_status='proposed'`` state, ratified (or not)
@@ -37,6 +37,7 @@ import logging
 import re
 
 from cp_engine import mc2_db
+from cp_engine.asks import ask_hash
 from cp_engine.commitments import resolve_commitment_owner, write_commitment
 from cp_engine.ingest import _content_hash
 from cp_engine.mc2_db import Tables
@@ -228,7 +229,7 @@ def propose_commitments(
     diarization-label owners are resolved against the meeting's
     ``participants`` (see module docstring).
 
-    The ``cp_hash`` recipe is ``_content_hash(code, "record-ask",
+    The ``cp_hash`` recipe is ``asks.ask_hash(canonical_code,
     description)`` — EXACTLY the sprint-file ask recipe, computed on the
     CLEAN description (annotations excluded), so a commitment and its
     sprint-file bullet share an identity and re-ingest of the same
@@ -315,7 +316,12 @@ def propose_commitments(
                 client,
                 owner=owner,
                 description=stored_description,
-                cp_hash=_content_hash(owner["code"], "record-ask", description),
+                # Step 4a: the one recipe, keyed on `<co>-<number>` whatever
+                # spelling the meeting was tagged with. The old recipe hashed
+                # the tag verbatim (usually the short form) while the sprint
+                # bullet hashed the full slug, so the copies never matched.
+                cp_hash=ask_hash(owner.get("canonical_code") or owner["code"], description),
+                legacy_hashes=(_content_hash(owner["code"], "record-ask", description),),
                 source_kind="meeting_ingest",
                 owner_email=owner_email,
                 owner_name=owner_name,

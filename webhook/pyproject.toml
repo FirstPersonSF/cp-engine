@@ -28,7 +28,6 @@ build-backend = "hatchling.build"
 # This package is deploy-only; we never publish a wheel.
 packages = [
     "main.py",
-    "clickup_propose.py",
     "meeting_artifact.py",
     "observability.py",
     "signatures.py",
