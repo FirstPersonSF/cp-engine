@@ -48,6 +48,14 @@ class FakeTable:
         self._filters.append((col, val))
         return self
 
+    def in_(self, col, vals):
+        self._filters.append((col, ("__in__", tuple(vals))))
+        return self
+
+    def range(self, lo, hi):
+        self._range = (lo, hi)
+        return self
+
     def limit(self, n):
         self._limit = n
         return self
@@ -56,7 +64,13 @@ class FakeTable:
         return self
 
     def _matches(self, row):
-        return all(row.get(c) == v for c, v in self._filters)
+        for c, v in self._filters:
+            if isinstance(v, tuple) and v[:1] == ("__in__",):
+                if row.get(c) not in v[1]:
+                    return False
+            elif row.get(c) != v:
+                return False
+        return True
 
     def execute(self):
         op, payload = self._op
@@ -66,6 +80,8 @@ class FakeTable:
         self.client.calls.append((op, self.name, list(self._filters)))
         if op == "select":
             hits = [dict(r) for r in rows if self._matches(r)]
+            lo, hi = getattr(self, "_range", (0, None))
+            hits = hits[lo: None if hi is None else hi + 1]
             return _R(hits[: self._limit] if self._limit is not None else hits)
         if op == "insert":
             for r in payload:

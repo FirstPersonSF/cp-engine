@@ -144,7 +144,29 @@ on the person's name catches material the greps miss.
 Match the house format exactly — see `references/card-format.md` for the
 frontmatter contract, the slug convention, and a worked example.
 
-The body is prose in **bolded-lead paragraphs**, not a bulleted profile:
+The body OPENS with the **details block** — the card's structured facts,
+which the strip, attribution and ingest dedupe read (format defined once in
+`cp_engine.stakeholders`; leave out a field you do not have, never write a
+placeholder):
+
+```
+<!-- cp:stakeholder -->
+- **Name:** <First Last, the spelling their email / LinkedIn uses>
+- **Role:** <title or function, one line>
+- **Company:** <organisation>
+- **Email:** <address, when sourced>
+- **Side:** client | internal | external
+- **Aliases:** <other spellings seen in transcripts, comma-separated>
+<!-- /cp:stakeholder -->
+```
+
+`Side` is `client` for the client's people, `external` for anyone else
+outside First Person (vendors, interviewees from other companies). First
+Person staff and contractors get no card. `Aliases` is how a mis-heard name
+("Rena Lanham", "Mahul") resolves to this card.
+
+After the block, the body is prose in **bolded-lead paragraphs**, not a
+bulleted profile:
 
 ```
 **Role:** <what they do and what that means for us — one paragraph>
@@ -201,5 +223,6 @@ revised body>, version_note=<what changed>)`. The prior version is demoted to
 `superseded` for you.
 
 If the update is minor, it is still a version (a body has no in-place edit
-in MC-2); say it was minor in `version_note`. A title change alone is
+in MC-2); say it was minor in `version_note`. A card without a details block
+gets one on its next version — keep the block first in the body. A title change alone is
 `set_spine_element(..., framing=...)`. Never edit the card's file.

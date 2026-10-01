@@ -192,7 +192,7 @@ def test_agenda_lists_open_questions_beside_decisions_due(tmp_path):
         project=_fixture_project(), quick_resume_excerpt=None, last_touched=None,
         last_sprint_hours=None, recent_inbound=(), open_asks_aged=(),
         decisions_due=({"text": "Renew for Q3", "target_date": "by W40"},),
-        relevant_weekly_decisions=(), stakeholders=(), discussion_prompt=None,
+        relevant_weekly_decisions=(), discussion_prompt=None,
         open_questions=qs,
     )
     out = "\n".join(agenda._render_project_block(block))

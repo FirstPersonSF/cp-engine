@@ -63,8 +63,8 @@ _No active sprint file._
 <!-- cp-engine:end open-asks-strip -->
 
 <!-- cp-engine:start stakeholders-strip -->
-## Stakeholders (auto-aggregated from sprint files)
-- _No stakeholders captured yet._
+## Stakeholders (from spine cards)
+- _No stakeholder cards yet._
 <!-- cp-engine:end stakeholders-strip -->
 
 <!-- cp-engine:start exec-summary -->
@@ -106,10 +106,6 @@ _<per bootstrap v2 — pointers only, never raw research dumps>_
 ## Project Notes
 
 _<durable conventions specific to this project that any AI assistant should know>_
-
-## Stakeholders
-
-_<key contacts on the client side and internal owners>_
 
 ## Archive Index
 

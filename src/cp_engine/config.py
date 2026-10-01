@@ -224,6 +224,13 @@ class TenantConfig:
     name_aliases: Mapping[str, str] = field(
         default_factory=lambda: MappingProxyType({})
     )
+    # Step 4b rollout gate: `[stakeholders] retire_markdown = true` lets sync
+    # import the hand-written cp.md `## Stakeholders` / sprint
+    # `### Stakeholders` entries onto spine cards and remove the sections.
+    # Off until the one-time migration (scripts/step4b_migrate_stakeholders.py
+    # --apply) has run, so the import never meets an un-canonicalized
+    # spelling first. Cards are the store either way.
+    retire_stakeholder_markdown: bool = False
     # Lever 2 — daily attention digest configuration. Tenants opt in via
     # `[attention_digest]` in `.cp-engine.toml`; absent block yields the
     # default-constructed dataclass (no recipients = no Slack post).
@@ -284,6 +291,7 @@ def load(tenant_root: Path) -> TenantConfig:
         kwargs["team"] = committed["team"]
     if committed["name_aliases"]:
         kwargs["name_aliases"] = MappingProxyType(dict(committed["name_aliases"]))
+    kwargs["retire_stakeholder_markdown"] = committed["retire_stakeholder_markdown"]
     kwargs["attention_digest"] = committed["attention_digest"]
     kwargs["dates_loop"] = committed["dates_loop"]
     kwargs["timezone"] = committed["timezone"]
@@ -489,6 +497,17 @@ def _normalize_committed(data: dict, source: Path) -> dict:
             )
         name_aliases = dict(aliases_raw)
 
+    # Optional [stakeholders] table (step 4b): retire_markdown = true|false.
+    retire_md = False
+    stake_raw = data.get("stakeholders")
+    if stake_raw is not None:
+        flag = stake_raw.get("retire_markdown", False) if isinstance(stake_raw, dict) else None
+        if not isinstance(flag, bool):
+            raise CommittedConfigInvalid(
+                f"{source}: [stakeholders].retire_markdown must be true or false"
+            )
+        retire_md = flag
+
     # Optional [attention_digest] table (Lever 2). Absent block → defaults.
     attention_digest = _parse_attention_digest(
         data.get("attention_digest") or {}, source
@@ -508,6 +527,7 @@ def _normalize_committed(data: dict, source: Path) -> dict:
         "risk_categories": risk_categories,
         "team": team,
         "name_aliases": name_aliases,
+        "retire_stakeholder_markdown": retire_md,
         "attention_digest": attention_digest,
         "dates_loop": dates_loop,
     }

@@ -204,7 +204,7 @@ _SUPPORTED_VERBS = (
     "resolve-risk",        # → flips an existing [escalated|watching ...] risk to [resolved ...]
     "snooze-ask",          # → appends cp:snoozed-until=YYYY-MM-DD on an ask bullet, matched by hash
     "snooze-risk",         # → appends cp:snoozed-until=YYYY-MM-DD on a risk bullet, matched by hash
-    "record-stakeholder",  # → sprint file's ### Stakeholders under ## Client communication
+    "record-stakeholder",  # → a spine Stakeholders card in MC-2 (step 4b), never a bullet
     "record-theme",        # → sprints/<W##>/_week.md's ## Themes
     "record-slack-digest", # → sprint file's ### Slack digest under ## Client communication
     # NOTE: the Quick Resume scalar verbs (current_work / next_up /
@@ -261,10 +261,13 @@ class IngestPlanResult:
     warnings: list[str] = field(default_factory=list)
     # Step 4a: MC-2 commitment ids a close-ask resolved (the ask's truth).
     commitments_resolved: list[str] = field(default_factory=list)
+    # Step 4b: stakeholder cards written (`created|updated <code>/<eid>`).
+    stakeholder_cards: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
             "commitments_resolved": self.commitments_resolved,
+            "stakeholder_cards": self.stakeholder_cards,
             "files_written": [str(p) for p in self.files_written],
             "skipped_duplicate": self.skipped_duplicate,
             "errors": self.errors,
@@ -450,6 +453,16 @@ def execute_plan(
                         note = f"{code}/{verb}: {w}"
                         if note not in result.warnings:
                             result.warnings.append(note)
+                continue
+            if normalized == "record-stakeholder":
+                # Step 4b: a person is a spine Stakeholders card in MC-2 —
+                # created, or a matched card's details filled. No sprint
+                # bullet: the `### Stakeholders` subsection is retired.
+                _write_stakeholder_cards(
+                    code, items if isinstance(items, list) else [items],
+                    tenant_root=tenant_root, supabase=supabase, today=today,
+                    result=result, verb=verb,
+                )
                 continue
             if normalized == "close-ask":
                 # Step 4a: closing an ask resolves its MC-2 commitment.
@@ -790,7 +803,6 @@ def _execute_step(
         "snooze-risk": lambda code, item, sprint_path, **kw: _write_snooze(
             code, item, sprint_path, bullet_kind="risk", **kw
         ),
-        "record-stakeholder": _write_stakeholder,
         "record-slack-digest": _write_slack_digest,
     }.get(normalized)
     if handler is None:
@@ -1813,27 +1825,88 @@ def _write_snooze(
     return True
 
 
-def _write_stakeholder(code: str, item: dict, sprint_path: Path, **_) -> bool:
-    name = _sanitize_inline_text(item.get("name") or "")
-    role = _sanitize_inline_text(item.get("role") or "")
-    context = _sanitize_inline_text(item.get("context") or "")
-    if not name:
-        raise IngestPlanError("stakeholder item missing 'name'")
-    h = _content_hash(code, "record-stakeholder", name)  # dedupe by name
-    body = sprint_path.read_text(encoding="utf-8")
-    if _already_present(body, h):
-        return False
-    parts = [name]
-    if role:
-        parts.append(role)
-    if context:
-        parts.append(context)
-    bullet = f"- [{' · '.join(parts)}] {_hash_marker(h)}"
-    new = _append_bullet_to_subsection(
-        body, _communication_section(body), "Stakeholders", bullet
-    )
-    sprint_path.write_text(new)
-    return True
+def _write_stakeholder_cards(
+    code: str,
+    items: list,
+    *,
+    tenant_root: Path,
+    supabase: Any,
+    today: date,
+    result: "IngestPlanResult",
+    verb: str = "stakeholders",
+) -> None:
+    """Step 4b: each `stakeholders` item becomes a spine Stakeholders card
+    (``cp_engine.stakeholders.ensure_card``) — never a sprint bullet.
+
+    A person already on a card (exact name, an alias, or a unique first
+    name) gets that card's blanks filled instead of a twin. Internal team
+    members and non-people are skipped. No MC-2 client → nothing is written
+    and a warning says so (the item is not parked in the sprint file: that
+    store is retired)."""
+    from cp_engine import stakeholders as sh
+    from cp_engine.state import load_paths_index
+
+    items = [i for i in items if isinstance(i, dict)]
+    if not items:
+        return
+    if supabase is None:
+        result.warnings.append(
+            f"{code}/{verb}: {len(items)} item(s) NOT written — no MC-2 client "
+            "(stakeholders live on spine cards)"
+        )
+        return
+    entry = load_paths_index(tenant_root).get(code)
+    if entry is None or not entry.mc2_id:
+        result.errors.append(
+            f"{code}/{verb}: no MC-2 id for {code} in .cp-engine/paths.json — "
+            f"{len(items)} stakeholder(s) NOT written"
+        )
+        return
+    try:
+        from cp_engine.config import load as _load_config
+
+        cfg = _load_config(tenant_root)
+        team, aliases = cfg.team, dict(cfg.name_aliases or {})
+    except Exception:  # noqa: BLE001 — a bare test tenant has no config
+        team, aliases = (), {}
+    try:
+        cards = sh.cards_for(tenant_root, code, client=supabase)
+        internal = sh.internal_names_from_mc2(supabase)
+        company = sh.company_name_for(supabase, entry.mc2_id)
+    except Exception as exc:  # noqa: BLE001 — a read failure must not mint twins
+        result.errors.append(f"{code}/{verb}: card read failed, nothing written: {exc}")
+        return
+    roster = sh.Roster.build(team, internal)
+    for item in items:
+        name = _sanitize_inline_text(item.get("name") or "")
+        if not name:
+            result.errors.append(f"{code}/{verb}: stakeholder item missing 'name'")
+            continue
+        mention = sh.Mention(
+            name=name,
+            role=_sanitize_inline_text(item.get("role") or ""),
+            context=_sanitize_inline_text(item.get("context") or ""),
+            email=_sanitize_inline_text(item.get("email") or ""),
+            source=f"meeting ingest {today.isoformat()}",
+            code=code,
+        )
+        item_company = _sanitize_inline_text(item.get("company") or "") or company
+        try:
+            write = sh.ensure_card(
+                supabase, mention, cards=cards, project_id=entry.mc2_id,
+                project_code=code, roster=roster, today=today,
+                company=item_company, aliases=aliases,
+                provenance="from a meeting ingest",
+            )
+        except Exception as exc:  # noqa: BLE001 — one person never blocks the rest
+            result.errors.append(f"{code}/{verb}: {name}: {exc}")
+            continue
+        if write.action in ("created", "updated"):
+            result.stakeholder_cards.append(
+                f"{write.action} {write.project_code}/{write.est_item_id}"
+            )
+        else:
+            result.skipped_duplicate += 1
 
 
 def _write_slack_digest(code: str, item: dict, sprint_path: Path, **_) -> bool:

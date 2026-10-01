@@ -31,12 +31,15 @@ returns it:
    bullets carry authority downstream, so they are held to the stricter
    rule (issue ask 3).
 
-"Known people" are the project's stakeholder cards (spine Stakeholders
-layer, mirrored on disk as ``spine/**/*.md`` with ``layer: Stakeholders``,
-the name leading the ``framing:`` line), the project's and its ancestors'
-cards, the sprint file's ``### Stakeholders`` bullets, plus the speaker
-labels themselves. Internal team members (`[team] members`) are never
-hedged and never used to correct a surname.
+"Known people" are the stakeholder cards that apply to the project (spine
+Stakeholders layer — its own and its ancestors' cards plus the company's
+account-scope cards; see ``cp_engine.stakeholders``): each card's name (the
+details block's ``Name``, else the name leading ``framing``) and its
+``Aliases``, plus the speaker labels themselves. A card's multi-word alias is
+also a rewrite ("Rena Lanham" → "Rina Lanham"), like a tenant alias. Step 4b
+retired the sprint file's ``### Stakeholders`` bullets as a source: cards are
+the one store. Internal team members (`[team] members`) are never hedged and
+never used to correct a surname.
 """
 
 from __future__ import annotations
@@ -52,8 +55,6 @@ HEDGE = "[attribution unverified]"
 # `_segments_to_text` and Fathom's own export both produce it).
 _SPEAKER_RE = re.compile(r"^\s*\d{1,2}:\d{2}(?::\d{2})?\s+-\s+(?P<name>[^\n]+?)\s*$", re.MULTILINE)
 
-_FRAMING_RE = re.compile(r"^framing:\s*(?P<v>.+?)\s*$", re.MULTILINE)
-_LAYER_RE = re.compile(r"^layer:\s*Stakeholders\s*$", re.MULTILINE)
 _NAME_WORD_RE = re.compile(r"^[A-Z][A-Za-z'À-ſ.-]*$")
 # A framing that names an organisation rather than a person.
 _NOT_A_PERSON_RE = re.compile(
@@ -80,6 +81,8 @@ class Person:
 class KnownPeople:
     people: list[Person] = field(default_factory=list)
     team_firsts: frozenset[str] = frozenset()
+    #: Multi-word card aliases → the card's name (applied like tenant aliases).
+    aliases: dict[str, str] = field(default_factory=dict)
 
     def add(self, name: str) -> None:
         name = " ".join(name.split())
@@ -134,54 +137,11 @@ def self_addressing_labels(transcript: str) -> set[str]:
 
 
 def name_from_framing(framing: str) -> str | None:
-    """`Morgan Wright — Salesloft (…)` → `Morgan Wright`;
-    `Participant — Ryan Person (Sovos, …)` → `Ryan Person`. None when the
-    framing names a group or an organisation (`Triptych — sub-vendor
-    profile`, `Google EHS cast — …`, `Key stakeholders`)."""
-    v = framing.strip().strip("'\"")
-    v = re.sub(r"^Participant\s*[—–-]\s*", "", v)
-    head = re.split(r"\s+[—–-]\s*|[—–]|\s-|,|\(|;|:|\s{2,}", v, maxsplit=1)[0].strip()
-    words = head.split()
-    if not words or len(words) > _NAME_WORDS_MAX:
-        return None
-    if not all(_NAME_WORD_RE.match(w) for w in words):
-        return None
-    if _NOT_A_PERSON_RE.search(v) and len(words) == 1:
-        return None
-    return head
+    """`Morgan Wright — Salesloft (…)` → `Morgan Wright`. The one definition
+    lives in ``cp_engine.stakeholders``; re-exported for callers here."""
+    from cp_engine.stakeholders import name_from_framing as _nff
 
-
-def _card_names(spine_dir: Path) -> list[str]:
-    out: list[str] = []
-    if not spine_dir.is_dir():
-        return out
-    for path in sorted(spine_dir.rglob("*.md")):
-        try:
-            head = path.read_text(encoding="utf-8")[:4000]
-        except OSError:
-            continue
-        if not _LAYER_RE.search(head):
-            continue
-        m = _FRAMING_RE.search(head)
-        if not m:
-            continue
-        name = name_from_framing(m.group("v"))
-        if name:
-            out.append(name)
-    return out
-
-
-def _sprint_stakeholder_names(sprint_text: str) -> list[str]:
-    from cp_engine.sprints import bullets, parse_bracketed_bullet, subsection
-
-    out: list[str] = []
-    for first, _ in bullets(subsection(sprint_text, "Stakeholders")):
-        parsed = parse_bracketed_bullet(first)
-        if parsed and parsed[0]:
-            name = parsed[0][0]
-            if name and all(_NAME_WORD_RE.match(w) for w in name.split()[:_NAME_WORDS_MAX]):
-                out.append(name)
-    return out
+    return _nff(framing)
 
 
 def load_known_people(
@@ -190,29 +150,35 @@ def load_known_people(
     project_dir: Path | None,
     team: Iterable[str] = (),
     transcript: str = "",
-    sprint_text: str = "",
+    code: str | None = None,
+    client=None,
+    cards=None,
 ) -> KnownPeople:
-    """Everyone this project already knows by name: the project's (and its
-    ancestors') stakeholder cards, the sprint file's stakeholders, and the
-    meeting's own speaker labels."""
+    """Everyone this project already knows by name: the stakeholder cards
+    that apply to it (MC-2 when ``client`` is given, else the generated view
+    on disk — ``spine/`` and ``_stakeholders/`` up the ancestor chain) and
+    the meeting's own speaker labels. ``cards`` short-circuits the read."""
+    from cp_engine import stakeholders as sh
+
     known = KnownPeople(
         team_firsts=frozenset(t.strip().split()[0].lower() for t in team if t.strip())
     )
-    if project_dir is not None:
-        # The project and each ancestor up to (not including) the tenant
-        # root: an account's cards name people every child meeting meets.
-        root = tenant_root.resolve() if tenant_root else None
-        d = project_dir.resolve()
-        for _ in range(8):
-            if root is not None and d == root:
-                break
-            for name in _card_names(d / "spine"):
-                known.add(name)
-            if root is None or d.parent == d:
-                break
-            d = d.parent
-    for name in _sprint_stakeholder_names(sprint_text or ""):
+    if cards is None:
+        if client is not None and tenant_root is not None and code:
+            cards = sh.cards_for(Path(tenant_root), code, client=client,
+                                 project_dir=project_dir)
+        else:
+            cards = sh.cards_from_view(tenant_root, project_dir)
+    for card in cards:
+        if not card.is_person or card.side == "internal":
+            continue
+        name = card.name
+        if not all(_NAME_WORD_RE.match(w) for w in name.split()):
+            continue
         known.add(name)
+        for alias in card.aliases:
+            if len(alias.split()) >= 2 and alias.lower() != name.lower():
+                known.aliases.setdefault(alias, name)
     for label in speaker_labels(transcript):
         if all(_NAME_WORD_RE.match(w) for w in label.split()):
             known.add(label)
@@ -339,7 +305,7 @@ def check_plan_attribution(
     def _clean(value, known):
         if not isinstance(value, str) or not value:
             return value
-        aliased = apply_aliases(value, aliases)
+        aliased = apply_aliases(value, {**known.aliases, **aliases})
         if aliased != value:
             summary["aliased"] += 1
         resolved = resolve_surnames(aliased, known)

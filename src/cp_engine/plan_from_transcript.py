@@ -143,25 +143,21 @@ def apply_attribution_checks(plan: dict, *, config, transcript: str) -> dict:
     from cp_engine.attribution import check_plan_attribution, load_known_people
 
     tenant_root = getattr(config, "root", None)
-    week_iso = current_sprint_week_iso(tenant_now())
     cache: dict = {}
 
     def known_for(code: str):
+        # Step 4b: known people are the stakeholder cards (the generated
+        # view on disk — plan time holds no MC-2 client), never the sprint
+        # file's retired `### Stakeholders` bullets.
         if code not in cache:
             project_dir = (
                 _find_project_dir(tenant_root, code) if tenant_root else None
             )
-            sprint_text = ""
-            if tenant_root is not None:
-                sprint = Path(tenant_root) / "sprints" / week_iso / f"{code}.md"
-                if sprint.is_file():
-                    sprint_text = sprint.read_text(encoding="utf-8")
             cache[code] = load_known_people(
                 tenant_root=tenant_root,
                 project_dir=project_dir,
                 team=getattr(config, "team", ()) or (),
                 transcript=transcript,
-                sprint_text=sprint_text,
             )
         return cache[code]
 
@@ -364,6 +360,14 @@ def _load_project_context(config: TenantConfig, project_code: str) -> str:
             "this would be the first ingest of the sprint.)"
         )
 
+    known = _known_stakeholders_block(config, project_dir)
+    if known:
+        parts.append(
+            "### Known stakeholders (spine cards)\n\n"
+            "Every person below already has a card. Never emit them under\n"
+            "`stakeholders`, under any spelling.\n\n" + known
+        )
+
     account_decisions = _load_recent_account_decisions(config.root, code=project_code)
     if account_decisions:
         parts.append(
@@ -376,6 +380,29 @@ def _load_project_context(config: TenantConfig, project_code: str) -> str:
         )
 
     return "\n\n".join(parts)
+
+
+def _known_stakeholders_block(config: TenantConfig, project_dir: Path | None) -> str:
+    """One line per person card that applies to this project (step 4b: the
+    cards are the stakeholder store — the cp.md and sprint lists are
+    retired), with the card's aliases so a variant spelling is recognised.
+    Read from the generated view on disk; "" when there are none."""
+    from cp_engine.stakeholders import cards_from_view
+
+    try:
+        cards = cards_from_view(config.root, project_dir)
+    except Exception:  # noqa: BLE001 — context is best-effort
+        return ""
+    lines: list[str] = []
+    seen: set[str] = set()
+    for c in cards:
+        if not c.is_person or c.name.lower() in seen:
+            continue
+        seen.add(c.name.lower())
+        also = f" (also: {', '.join(c.aliases)})" if c.aliases else ""
+        role = f" — {c.role}" if c.role else ""
+        lines.append(f"- {c.name}{also}{role}"[:200])
+    return "\n".join(lines)
 
 
 def _load_recent_account_decisions(
@@ -695,9 +722,10 @@ projects:
         severity: "watching"      # or "escalated", "dependency"
         category: "schedule"      # or contract, scope, technical, etc.
         date: "YYYY-MM-DD"
-    stakeholders:                 # only NEW stakeholders not already in cp.md
+    stakeholders:                 # only NEW people — not under Known stakeholders
       - name: "<name>"
         role: "<role>"            # optional
+        company: "<their organisation>"  # optional
         context: "<one-line context>"  # optional
 
     # Forward-looking sprint-planning verbs (v0.15+). These propose
@@ -736,7 +764,7 @@ projects:
    close-ask in a different flow.
 5. **Stakeholders only when genuinely new and EXTERNAL.** Internal team
    members from the "Internal team" list above must never appear here.
-   Also skip people already named in cp.md or the sprint file. Add a
+   Also skip anyone under "Known stakeholders", in any spelling. Add a
    stakeholder only when it's a client-side or vendor-side person not
    yet known to the system.
 6. **Date fields:** use the meeting date if known (parse from transcript

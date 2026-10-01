@@ -495,13 +495,13 @@ open-asks-strip===START===
 {%- endif %}
 ===END===
 stakeholders-strip===START===
-## Stakeholders (auto-aggregated from sprint files)
+## Stakeholders (from spine cards)
 {% if project_strips and project_strips.stakeholders %}
 {% for sh in project_strips.stakeholders %}
-- **{{ sh.name }}**{% if sh.role %} — {{ sh.role }}{% endif %}{% if sh.context %} · _{{ sh.context }}_{% endif %}
+- **{{ sh.name }}**{% if sh.role %} — {{ sh.role }}{% endif %}{% if sh.company %} · {{ sh.company }}{% endif %}{% if sh.email %} · {{ sh.email }}{% endif %}{% if sh.via %} · _{{ sh.via }}_{% endif %}
 {%- endfor %}
 {%- else %}
-- _No stakeholders captured yet._
+- _No stakeholder cards yet._
 {%- endif %}
 ===END===
 """

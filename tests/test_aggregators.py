@@ -118,20 +118,20 @@ def test_project_strips_open_asks_includes_aged_days_and_filters_closed() -> Non
     assert strips.open_asks[0]["who"] == "Rena"
 
 
-def test_project_strips_dedupes_stakeholders_by_name_keeping_most_recent() -> None:
+def test_project_strips_never_read_sprint_stakeholders() -> None:
+    """Step 4b superseded the dedupe-by-name sprint aggregation: the strip's
+    rows come from spine cards (handed in by the caller), and a sprint
+    file's retired `### Stakeholders` bullets never reach it."""
     new_sprint = _make_sprint(
         "p1", week_start="2026-05-11",
         stakeholders=(Stakeholder(name="Rena", role="Director", context="updated"),),
     )
-    old_sprint = _make_sprint(
-        "p1", week_start="2026-05-04",
-        stakeholders=(Stakeholder(name="Rena", role="PM", context="old"),),
-    )
-    strips = aggregate_project_strips("p1", (old_sprint, new_sprint), date(2026, 5, 12))
-    assert len(strips.stakeholders) == 1
-    # newest sprint wins (most-recent role + context)
-    assert strips.stakeholders[0].role == "Director"
-    assert strips.stakeholders[0].context == "updated"
+    strips = aggregate_project_strips("p1", (new_sprint,), date(2026, 5, 12))
+    assert strips.stakeholders == ()
+    rows = ("card row",)
+    strips = aggregate_project_strips("p1", (new_sprint,), date(2026, 5, 12),
+                                      stakeholders=rows)
+    assert strips.stakeholders == rows
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -69,9 +69,6 @@ Reconciled §4.2 redlines with Sam.
 ### Slack digest
 <!-- <weekly summary of the workstream's Slack channel — `[YYYY-W## · Slack]` prefix; one bullet per week, written by the Sunday cron> -->
 
-### Stakeholders
-<!-- <person and role — `[name · role · context]` prefix; e.g. `[Rena Ramos · Director · primary client decision-maker]`> -->
-
 ## Dependencies & risks
 
 <!-- <risk — `[severity · category · date]` prefix> -->

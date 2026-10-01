@@ -62,9 +62,20 @@ owns casting — the slug records the second thing:
 
 ## Body shape
 
-Prose in bolded-lead paragraphs. Open with the provenance line.
+The details block first (parsed by `cp_engine.stakeholders.parse_details`;
+every field optional, unknown fields kept), then prose in bolded-lead
+paragraphs opening with the provenance line.
 
 ```markdown
+<!-- cp:stakeholder -->
+- **Name:** <First Last>
+- **Role:** <title or function>
+- **Company:** <organisation>
+- **Email:** <address>
+- **Side:** client | internal | external
+- **Aliases:** <variant spellings, comma-separated>
+<!-- /cp:stakeholder -->
+
 _Stakeholder dossier, v1 — from <source>, <date>._
 
 **Role:** ...

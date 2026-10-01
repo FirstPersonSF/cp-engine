@@ -455,6 +455,11 @@ def _sync_tenant_inner(
     manifest_project_ids: dict[str, str] = {}
     lineage_client = None
 
+    # Step 4b: stakeholders live on spine cards — one pass object holds the
+    # cards (read once from MC-2), the internal roster and the tenant aliases
+    # for the cp.md import, the sprint-file import and the strip.
+    stakeholder_pass = _StakeholderPass(config, by_code, today=local_date(sync_clock))
+
     # Every workstream gets a working dir (#301): `is_internal` used to skip
     # MC-2's pseudo-projects, and the internal workstreams now ARE rows
     # carrying that flag.
@@ -750,6 +755,13 @@ def _sync_tenant_inner(
                     "sources manifest skipped for %s: %s",
                     project.code, exc, exc_info=True,
                 )
+            # Step 4b: the hand-written cp.md `## Stakeholders` section is
+            # retired — its people are imported onto spine cards, its text
+            # quarantined, the section removed (kept whole if any import
+            # fails).
+            for path in stakeholder_pass.retire_cpmd(client, project, cp_path):
+                if path not in files_written:
+                    files_written.append(path)
 
     # No separate account-dir pass any more (#303): the account CP is the
     # account NODE's cp.md, rendered from the one template inside the loop
@@ -780,6 +792,22 @@ def _sync_tenant_inner(
         # "Active"). Pre-filtering here would strip FPSF + Canonic repos,
         # which is what v0.8.0 did wrong — see _is_active_for_sprint.
         active_for_sprints = tuple(projects)
+        # The MC-2-owned sprint regions render INSIDE the children-first loop
+        # (#347): asks live in MC-2 (step 4a) — import hand-typed asks, then
+        # render the `open-asks` region from the workstream's commitments —
+        # and the retired `### Stakeholders` subsection is imported onto
+        # cards and removed (step 4b). A parent's rollup then reads its
+        # children's fresh regions, so one sync is complete and idempotent.
+        mc2_client = (
+            backend.spine_client()
+            if isinstance(backend, SpineClientProvider)
+            else None
+        )
+        sprint_hook = _SprintRegionHook(
+            mc2_client, config.root / "sprints", stakeholder_pass,
+            week_iso=current_sprint_week_iso(sync_clock),
+            today=local_date(sync_clock),
+        )
         sprint_paths = ensure_sprint_files_for_active_projects(
             active_projects=active_for_sprints,
             sprint_root=config.root / "sprints",
@@ -800,25 +828,10 @@ def _sync_tenant_inner(
                 allocations,
                 sprint_start=_monday_of(sync_clock),
             ),
+            after_each=sprint_hook,
         )
         files_written.extend(sprint_paths)
-
-        # Asks live in MC-2 (step 4a): import hand-typed asks, then render
-        # each current sprint file's `open-asks` region from the workstream's
-        # open commitments. Runs before the current-sprint / strip / agenda
-        # passes below parse the files, so every surface counts MC-2's set.
-        asks_client = (
-            backend.spine_client()
-            if isinstance(backend, SpineClientProvider)
-            else None
-        )
-        for path in _sync_asks_from_mc2(
-            asks_client, config.root / "sprints", projects,
-            week_iso=current_sprint_week_iso(sync_clock),
-            today=local_date(sync_clock),
-        ):
-            if path not in files_written:
-                files_written.append(path)
+        sprint_hook.report()
 
         # New-source announcements (#153) — every asset ingested in the last
         # two weeks gets one `### Inbound` bullet in the project's CURRENT
@@ -1014,11 +1027,13 @@ def _sync_tenant_inner(
                         "inbound-strip lineage lookup skipped: %s", exc,
                         exc_info=True,
                     )
+            stakeholder_pass.refresh(mc2_client)
             for project, cp_path in strip_projects:
                 strips = aggregate_project_strips(
                     project.code, parsed_tuple, today_for_strips,
                     window_files=window_files.get(project.code, ()),
                     live_sources=live_sources.get(project.code),
+                    stakeholders=stakeholder_pass.strip_rows(project, cp_path),
                 )
                 bodies = render_project_strip_bodies(strips)
                 existing = cp_path.read_text()
@@ -1133,6 +1148,38 @@ def _sync_tenant_inner(
     )
 
 
+def _sync_asks_for_project(client, sprint_root: Path, project, *,
+                           week_iso: str, today: date) -> list[Path]:
+    """Step 4a for ONE workstream: its current sprint file's ``open-asks``
+    region from MC-2 (``cp_engine.asks.sync_sprint_asks``)."""
+    from cp_engine.asks import sync_sprint_asks
+    from cp_engine.sprints import _carry_cutoff, _iso_week_dates, _owning_files
+
+    path = sprint_root / week_iso / f"{project.code}.md"
+    prior = _owning_files(path)[1:]
+    cutoff = _carry_cutoff(prior[0]) if prior else None
+    earlier = [
+        f for f in prior
+        if cutoff is None or _iso_week_dates(f.parent.name)[0] >= cutoff
+    ]
+    try:
+        res = sync_sprint_asks(
+            client, sprint_path=path, code=project.code,
+            project_id=project.mc2_id, today=today,
+            earlier_files=earlier, company_name=project.company_name,
+        )
+    except Exception as exc:  # noqa: BLE001 — one project never blocks sync
+        logger.warning("asks: %s skipped: %s: %s",
+                       project.code, type(exc).__name__, exc)
+        return []
+    for err in res.errors:
+        logger.warning("asks %s: %s", project.code, err)
+    if res.imported:
+        logger.info("asks %s: imported %d into MC-2",
+                    project.code, len(res.imported))
+    return [path] if res.changed else []
+
+
 def _sync_asks_from_mc2(
     client,
     sprint_root: Path,
@@ -1141,20 +1188,14 @@ def _sync_asks_from_mc2(
     week_iso: str,
     today: date,
 ) -> list[Path]:
-    """Step 4a: each active workstream's current sprint file gets its
-    ``open-asks`` region from MC-2 (``cp_engine.asks.sync_sprint_asks``).
+    """Step 4a over a project list (sync itself now runs
+    ``_sync_asks_for_project`` per file inside the children-first loop, #347).
 
     No client → nothing is rendered or imported, and a warning says so: the
     region keeps its last rendering rather than being blanked, and any
     hand-typed ask waits in place for the next sync that reaches MC-2.
     """
-    from cp_engine.asks import sync_sprint_asks
-    from cp_engine.sprints import (
-        _carry_cutoff,
-        _iso_week_dates,
-        _is_active_for_sprint,
-        _owning_files,
-    )
+    from cp_engine.sprints import _is_active_for_sprint
 
     targets = [
         p for p in projects
@@ -1172,31 +1213,150 @@ def _sync_asks_from_mc2(
         return []
     written: list[Path] = []
     for project in targets:
-        path = sprint_root / week_iso / f"{project.code}.md"
-        prior = _owning_files(path)[1:]
-        cutoff = _carry_cutoff(prior[0]) if prior else None
-        earlier = [
-            f for f in prior
-            if cutoff is None or _iso_week_dates(f.parent.name)[0] >= cutoff
-        ]
-        try:
-            res = sync_sprint_asks(
-                client, sprint_path=path, code=project.code,
-                project_id=project.mc2_id, today=today,
-                earlier_files=earlier, company_name=project.company_name,
-            )
-        except Exception as exc:  # noqa: BLE001 — one project never blocks sync
-            logger.warning("asks: %s skipped: %s: %s",
-                           project.code, type(exc).__name__, exc)
-            continue
-        for err in res.errors:
-            logger.warning("asks %s: %s", project.code, err)
-        if res.imported:
-            logger.info("asks %s: imported %d into MC-2",
-                        project.code, len(res.imported))
-        if res.changed:
-            written.append(path)
+        written.extend(_sync_asks_for_project(
+            client, sprint_root, project, week_iso=week_iso, today=today))
     return written
+
+
+class _SprintRegionHook:
+    """``ensure_sprint_files_for_active_projects``'s ``after_each``: the
+    MC-2-owned regions of one sprint file, rendered while the children-first
+    walk is at that node (#347)."""
+
+    def __init__(self, client, sprint_root: Path, stakeholder_pass, *,
+                 week_iso: str, today: date) -> None:
+        self.client, self.sprint_root = client, sprint_root
+        self.stakeholders = stakeholder_pass
+        self.week_iso, self.today = week_iso, today
+        self.skipped_no_client = 0
+
+    def __call__(self, project, sprint_path: Path) -> list[Path]:
+        if not project.mc2_id or sprint_path.parent.name != self.week_iso:
+            return []
+        if self.client is None:
+            self.skipped_no_client += 1
+            return []
+        out: list[Path] = []
+        out += self.stakeholders.retire_sprint(self.client, project, sprint_path,
+                                               week=self.week_iso)
+        out += _sync_asks_for_project(self.client, self.sprint_root, project,
+                                      week_iso=self.week_iso, today=self.today)
+        return out
+
+    def report(self) -> None:
+        if self.skipped_no_client:
+            logger.warning(
+                "asks: MC-2 unreachable — %d sprint file(s) keep their last "
+                "rendered open asks; hand-typed asks and stakeholders wait for "
+                "the next sync", self.skipped_no_client,
+            )
+
+
+class _StakeholderPass:
+    """Step 4b inside sync: stakeholders live on spine cards in MC-2.
+
+    Reads every live Stakeholders card ONCE (tenant-wide, explicit columns),
+    plus MC-2's staff/freelancer names for the internal roster, the first
+    time a client is in hand. A read failure disables the import for this
+    sync (the sections stay, loudly) — it must never be read as "nobody is
+    known" and mint duplicates."""
+
+    def __init__(self, config, by_code, *, today: date) -> None:
+        self.config, self.by_code, self.today = config, by_code, today
+        self.cards: list | None = None
+        self.companies: dict = {}
+        self.roster = None
+        self.failed = False
+
+    def _load(self, client) -> bool:
+        from cp_engine import stakeholders as sh
+
+        if self.failed or client is None:
+            return False
+        if self.cards is not None:
+            return True
+        try:
+            self.cards = sh.fetch_cards(client)
+            self.companies = sh.project_companies(client)
+            internal = sh.internal_names_from_mc2(client)
+        except Exception as exc:  # noqa: BLE001
+            self.failed = True
+            logger.warning(
+                "stakeholders: card read failed — cp.md and sprint stakeholder "
+                "sections are left in place this sync: %s: %s",
+                type(exc).__name__, exc,
+            )
+            return False
+        self.roster = sh.Roster.build(self.config.team, internal)
+        return True
+
+    def _scoped(self, project) -> list:
+        from cp_engine import stakeholders as sh
+
+        chain = sh.workstream_chain(self.by_code, project.code)
+        return sh.select_for_workstream(
+            self.cards or [], chain_ids=chain,
+            company_id=self.companies.get(str(project.mc2_id)),
+        )
+
+    def _retire(self, client, project, path: Path, kind: str, week: str = "") -> list[Path]:
+        from cp_engine import stakeholders as sh
+
+        if not getattr(self.config, "retire_stakeholder_markdown", False):
+            return []  # rollout gate: off until the step-4b migration has run
+        if not project.mc2_id or not path.is_file():
+            return []
+        body = path.read_text(encoding="utf-8")
+        span = (sh.cpmd_section_span(body) if kind == "cpmd"
+                else sh.sprint_subsection_span(body))
+        if span is None or not self._load(client):
+            return []
+        scoped = self._scoped(project)
+        before = len(scoped)
+        res = sh.retire_markdown_store(
+            client, path=path, kind=kind, code=project.code,
+            project_id=project.mc2_id, cards=scoped, roster=self.roster,
+            today=self.today, company=project.company_name or "",
+            aliases=dict(self.config.name_aliases or {}), week=week,
+            tenant_root=self.config.root,
+        )
+        self.cards.extend(scoped[before:])
+        return [path] if res.removed else []
+
+    def retire_cpmd(self, client, project, cp_path: Path) -> list[Path]:
+        return self._retire(client, project, cp_path, "cpmd")
+
+    def retire_sprint(self, client, project, sprint_path: Path, *, week: str) -> list[Path]:
+        return self._retire(client, project, sprint_path, "sprint", week=week)
+
+    def refresh(self, client) -> None:
+        """Re-read the cards before the strips render (an import may have
+        versioned some); keeps the old set if the re-read fails."""
+        from cp_engine import stakeholders as sh
+
+        if client is None or self.failed:
+            return
+        if self.cards is None:
+            self._load(client)
+            return
+        try:
+            self.cards = sh.fetch_cards(client)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("stakeholders: card re-read failed; the strip uses "
+                           "the cards read earlier this sync: %s", exc)
+
+    def strip_rows(self, project, cp_path: Path) -> tuple:
+        """The ``stakeholders-strip`` rows for one workstream: from MC-2's
+        cards when they were read this sync, else from the generated view on
+        disk (``spine/`` + ``_stakeholders/``, rendered from MC-2)."""
+        from cp_engine import stakeholders as sh
+
+        if self.cards is not None:
+            cards = self._scoped(project)
+        else:
+            cards = sh.cards_from_view(self.config.root, cp_path.parent)
+        codes = {p.mc2_id: p.code for p in self.by_code.values() if p.mc2_id}
+        return sh.strip_entries(cards, own_project_id=project.mc2_id, chain_codes=codes)
 
 
 def _refresh_all_last_session_lines(root: Path) -> list[Path]:

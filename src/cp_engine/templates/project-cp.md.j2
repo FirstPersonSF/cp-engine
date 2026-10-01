@@ -123,14 +123,14 @@ Author: cp-engine (initial scaffold)
 <!-- cp-engine:end open-asks-strip -->
 
 <!-- cp-engine:start stakeholders-strip -->
-## Stakeholders (auto-aggregated from sprint files)
+## Stakeholders (from spine cards)
 
 {%- if project_strips and project_strips.stakeholders %}
 {% for sh in project_strips.stakeholders %}
-- **{{ sh.name }}**{% if sh.role %} — {{ sh.role }}{% endif %}{% if sh.context %} · _{{ sh.context }}_{% endif %}
+- **{{ sh.name }}**{% if sh.role %} — {{ sh.role }}{% endif %}{% if sh.company %} · {{ sh.company }}{% endif %}{% if sh.email %} · {{ sh.email }}{% endif %}{% if sh.via %} · _{{ sh.via }}_{% endif %}
 {%- endfor %}
 {%- else %}
-- _No stakeholders captured yet._
+- _No stakeholder cards yet._
 {%- endif %}
 <!-- cp-engine:end stakeholders-strip -->
 
@@ -173,17 +173,11 @@ _<per bootstrap v2 — pointers only, never raw research dumps>_
 ## Project Notes
 
 _<durable conventions specific to this project that any AI assistant should know>_
-
-{% if project.company_kind == "client" -%}
-## Stakeholders
-
-_<key contacts on the client side and internal owners>_
-{%- else -%}
+{% if project.company_kind != "client" %}
 ## Team
 
 _<who's contributing to this workstream, plus internal stakeholders if any>_
-{%- endif %}
-
+{% endif %}
 ## Archive Index
 
 _<links to archived content, if any>_

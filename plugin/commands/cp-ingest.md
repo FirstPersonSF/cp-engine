@@ -136,7 +136,9 @@ For each, draft the entries that should land in the sprint file:
 - **Open asks** — what we still need from the client (or each other).
 - **Decisions** — concrete decisions made (flag cross-cutting ones).
 - **Risks** — newly surfaced or escalated risks.
-- **Stakeholders** — new people mentioned with roles + context.
+- **Stakeholders** — new people mentioned with roles + context. Each becomes
+  a spine Stakeholders card in MC-2 (never a sprint bullet); a person already
+  on a card, under any spelling, is skipped.
 
 For tenant-wide content:
 - **Themes** — high-level threads spanning multiple projects.
@@ -310,7 +312,8 @@ prefix.
   account or program.
 - Stakeholders are captured opportunistically — every new client-side
   person mentioned with a role gets one entry, even if no other content
-  about them is in the transcript.
+  about them is in the transcript. Execution writes a card (or fills a
+  matched card's details block); it needs an MC-2 client.
 - The plan is saved to `_ingest-log/` regardless of success or failure.
   Audit trail trumps cleanup.
 

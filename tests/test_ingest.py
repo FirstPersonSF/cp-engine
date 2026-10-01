@@ -2278,11 +2278,13 @@ def test_ingest_sanitizes_multiline_stakeholder(tmp_path: Path) -> None:
             }
         }
     }
-    execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
+    # Step 4b: a stakeholder is a spine card in MC-2, never a sprint bullet
+    # (the card path, sanitisation included, is tests/test_stakeholders_4b.py).
+    # Without an MC-2 client nothing lands, and a warning says so.
+    res = execute_plan(plan, tenant_root=tenant, today=date(2026, 5, 12))
     body = _read_sprint_body(tenant)
-    assert "Rena Lee" in body
-    assert "VP marketing" in body
-    assert "owns the brief" in body
+    assert "Rena" not in body
+    assert any("stakeholders live on spine cards" in w for w in res.warnings)
 
 
 def test_ingest_sanitizes_multiline_slack_digest(tmp_path: Path) -> None:

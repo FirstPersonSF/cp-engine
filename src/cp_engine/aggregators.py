@@ -47,7 +47,6 @@ from cp_engine.state import (
     ProjectState,
     Risk,
     SprintFile,
-    Stakeholder,
     Theme,
     descendants_of,
 )
@@ -406,7 +405,10 @@ class ProjectStrips:
     inbound: tuple[InboundUpdate, ...]
     recent_decisions: tuple[DecisionEntry, ...]
     open_asks: tuple[dict, ...]  # {text, asked_date, who, aged_days, snoozed_until}
-    stakeholders: tuple[Stakeholder, ...]
+    # Step 4b: rows of the spine Stakeholders cards that apply to the
+    # project (``cp_engine.stakeholders.StripEntry``), handed in by the
+    # caller — never aggregated from sprint files any more.
+    stakeholders: tuple = ()
     inbound_overflow: int = 0
     decisions_overflow: int = 0
 
@@ -431,6 +433,7 @@ def aggregate_project_strips(
     *,
     window_files: tuple[SprintFile, ...] = (),
     live_sources: "LiveSources | None" = None,
+    stakeholders: tuple = (),
 ) -> ProjectStrips:
     """Aggregate per-project content from this project's sprint files.
 
@@ -461,6 +464,10 @@ def aggregate_project_strips(
     ``live_source_titles`` is the #323 spelling: a bare set of normalized
     live titles, reconciled by title alone.
 
+    ``stakeholders`` are the strip rows built from the project's spine
+    Stakeholders cards (step 4b) and pass through untouched; the sprint
+    file's ``### Stakeholders`` subsection is retired and never read here.
+
     Open asks come from ``open_client_asks`` (own + carried, de-duplicated),
     and each carries ``snoozed_until`` — the in-force snooze date or
     ``None`` — so the renderer can mark it (see ``cp_engine.snooze``).
@@ -483,7 +490,6 @@ def aggregate_project_strips(
     inbound_rows: list[tuple] = []
     decision_rows: list[tuple] = []
     open_asks: list[dict] = []
-    stakeholder_by_name: dict[str, Stakeholder] = {}
 
     for week_rank, sf in enumerate(reversed(windowed)):
         # Inbound: filter by date within window. Parser may emit empty `date`
@@ -518,12 +524,6 @@ def aggregate_project_strips(
                 }
             )
 
-        # Stakeholders: dedupe by name across all sprints. Most-recent
-        # mention wins for role + context (since we iterate newest first
-        # and only insert when the name is new).
-        for sh in sf.stakeholders:
-            if sh.name not in stakeholder_by_name:
-                stakeholder_by_name[sh.name] = sh
 
     inbound = _newest_first_unique(inbound_rows)
     if live_sources is not None:
@@ -534,7 +534,7 @@ def aggregate_project_strips(
         inbound=tuple(inbound[:INBOUND_STRIP_CAP]),
         recent_decisions=tuple(decisions[:DECISIONS_STRIP_CAP]),
         open_asks=tuple(open_asks),
-        stakeholders=tuple(stakeholder_by_name.values()),
+        stakeholders=tuple(stakeholders),
         inbound_overflow=max(0, len(inbound) - INBOUND_STRIP_CAP),
         decisions_overflow=max(0, len(decisions) - DECISIONS_STRIP_CAP),
     )

@@ -20,10 +20,10 @@
 - [2026-05-12 · cross-cutting] All Google invoices route through Brandon.
 
 ===== stakeholders-strip =====
-## Stakeholders (auto-aggregated from sprint files)
+## Stakeholders (from spine cards)
 
 
-- **Maria Mraz** — Director · _primary decision-maker_
+- **Maria Mraz** — Director
 - **Sam Ito**
 
 ### empty
@@ -44,6 +44,6 @@
 - _No structured decisions captured in the last 4 weeks._
 
 ===== stakeholders-strip =====
-## Stakeholders (auto-aggregated from sprint files)
+## Stakeholders (from spine cards)
 
-- _No stakeholders captured yet._
+- _No stakeholder cards yet._

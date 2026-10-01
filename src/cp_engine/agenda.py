@@ -57,7 +57,6 @@ from cp_engine.state import (
     DecisionEntry,
     InboundUpdate,
     ProjectState,
-    Stakeholder,
     resolve_project_dir,
     dir_slug,
     scope_for,
@@ -117,7 +116,6 @@ class ProjectAgendaBlock:
     open_asks_aged: tuple[dict, ...]  # only those aged > 7 days
     decisions_due: tuple[dict, ...]  # parsed from sprint file's Horizon
     relevant_weekly_decisions: tuple[WeeklyDecision, ...]
-    stakeholders: tuple[Stakeholder, ...]
     discussion_prompt: str | None  # set only when a real signal exists
     # Unsettled questions, own + carried (#340) — listed beside decisions
     # due. Not an urgency signal: a question has no deadline of its own.
@@ -476,7 +474,6 @@ def build_project_block(
         open_asks_aged=aged_asks,
         decisions_due=decisions_due,
         relevant_weekly_decisions=relevant_capped,
-        stakeholders=strips.stakeholders,
         discussion_prompt=prompt,
         open_questions=open_qs,
     )

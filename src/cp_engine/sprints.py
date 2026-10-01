@@ -13,7 +13,7 @@ import re
 from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
-from typing import Mapping
+from typing import Callable, Iterable, Mapping
 
 from cp_engine.clock import local_date, tenant_today
 from . import render as _render
@@ -2215,8 +2215,17 @@ def ensure_sprint_files_for_active_projects(
     now: datetime,
     per_project_data: dict,
     by_code: "Mapping[str, ProjectState] | None" = None,
+    after_each: "Callable[[ProjectState, Path], Iterable[Path]] | None" = None,
 ) -> list[Path]:
     """Write a sprint file for each active project in the iterable.
+
+    ``after_each(project, sprint_path)`` runs right after each file is
+    ensured and BEFORE the next (shallower) node is processed — sync renders
+    the MC-2-owned regions there (step 4a's ``open-asks``, step 4b's
+    stakeholder retirement). A parent's rollup reads its children's files, so
+    anything rendered into a child after this loop reached the parent one
+    sync late (#347); inside the loop the walk is post-order and one sync is
+    complete. Paths it returns count as written.
 
     `active_projects` is a candidate list — projects outside the canonical
     active subset (Deal/Open, per `is_active_status` in `status.py`) are
@@ -2283,4 +2292,8 @@ def ensure_sprint_files_for_active_projects(
         after = sprint_path.stat().st_mtime_ns if sprint_path.exists() else None
         if after is not None and after != before:
             out.append(sprint_path)
+        if after_each is not None and sprint_path.exists():
+            for path in after_each(project, sprint_path) or ():
+                if path not in out:
+                    out.append(path)
     return out

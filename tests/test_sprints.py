@@ -1127,7 +1127,7 @@ _ENGAGEMENT_SECTION_HEADERS = (
     "### Open asks",
     "### Inbound",
     "### Slack digest",
-    "### Stakeholders",
+    # `### Stakeholders` retired (step 4b): people live on spine cards.
     "## Dependencies & risks",
     "## This sprint",
     "### Deliverables",

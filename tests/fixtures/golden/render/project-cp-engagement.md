@@ -78,9 +78,9 @@ _See [sprint file](../../sprints/2026-W20/ggl-5168.md) for full plan, horizon, a
 <!-- cp-engine:end open-asks-strip -->
 
 <!-- cp-engine:start stakeholders-strip -->
-## Stakeholders (auto-aggregated from sprint files)
+## Stakeholders (from spine cards)
 
-- **Maria Mraz** — Director · _primary decision-maker_
+- **Maria Mraz** — Director
 <!-- cp-engine:end stakeholders-strip -->
 
 <!-- cp-engine:start exec-summary -->
@@ -122,10 +122,6 @@ _<per bootstrap v2 — pointers only, never raw research dumps>_
 ## Project Notes
 
 _<durable conventions specific to this project that any AI assistant should know>_
-
-## Stakeholders
-
-_<key contacts on the client side and internal owners>_
 
 ## Archive Index
 
