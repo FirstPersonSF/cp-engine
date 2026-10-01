@@ -17,14 +17,25 @@
 # ── HOW TO DEPLOY ──────────────────────────────────────────────────────
 #
 # THIS SERVICE HAS NO GITHUB CONNECTION (`repo: None`). Pushing to
-# cp-engine `main` deploys NOTHING. Deploys are local-source uploads, run
-# from THIS directory:
+# cp-engine `main` deploys NOTHING. Deploys are local-source uploads, and
+# since architecture plan step 1 they are ONE command, from anywhere in the
+# checkout:
 #
-#   cd prototypes/hosted-mcp
-#   railway up --detach -m "<what changed>" \
-#     --project     9d463e04-7f42-455b-884a-c7718dc6f6f2 \
-#     --environment 6db33527-d0f9-4a3d-98a6-65b27385afa6 \
-#     --service     42ca79bc-c416-45cd-93ce-77ecee3c6179
+#   prototypes/hosted-mcp/deploy.sh -m "<what changed>"
+#
+# The image installs cp-engine from the same commit as server.py, so the
+# build context is a REPO-ROOT-shaped staging dir: `deploy.sh` extracts
+# exactly the Dockerfile's COPY sources from `git archive HEAD`, writes
+# BUILD_COMMIT, puts a copy of this file at the staging root (Railway reads
+# railway.toml from the upload root; `dockerfilePath` below is relative to
+# it) and runs `railway up <stage> --path-as-root` with the IDs above. It
+# refuses a dirty working tree in the deployed paths (`--allow-dirty`
+# overrides). `deploy.sh --build-local` builds the same context with Docker
+# instead of deploying.
+#
+# A bare `railway up` from this directory NO LONGER WORKS: the upload has no
+# `src/`, and the Dockerfile's `COPY src` fails the build — loudly, before
+# anything is replaced.
 #
 # `railway up` returning only means the build was QUEUED. Poll until the
 # newest deployment is terminal before believing it shipped:
@@ -32,12 +43,15 @@
 #   railway deployment list --service hosted-mcp --json
 #
 # `railway redeploy` re-runs the LAST UPLOADED SOURCE. After a code change
-# that is the old code — use `railway up`, not redeploy.
+# that is the old code — use deploy.sh, not redeploy.
 #
-# Build context is this directory (the Dockerfile does a bare
-# `COPY requirements.txt .`), which is why `railway up` is run from here
-# and not from the repo root. Contrast webhook/railway.toml, which builds
-# from the repo root and must say so explicitly.
+# ── BUILD ARG ──────────────────────────────────────────────────────────
+#
+# gh_token (service VARIABLE, lowercase) — read-only GitHub token with
+#   Contents:read on FirstPersonSF/1p-component-library. cp-engine's deps
+#   are private git+https refs; Railway passes service variables to the
+#   Docker build as ARGs. Same contract as webhook/railway.toml. Without it
+#   the build fails at `pip install ./cp-engine`.
 #
 # ── ENV (set on the service, not here) ─────────────────────────────────
 #
@@ -73,7 +87,7 @@
 
 [build]
 builder = "DOCKERFILE"
-dockerfilePath = "Dockerfile"
+dockerfilePath = "prototypes/hosted-mcp/Dockerfile"
 
 [deploy]
 # No healthcheckPath: every route is auth-gated, so an unauthenticated

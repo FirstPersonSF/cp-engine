@@ -94,28 +94,18 @@ observability = importlib.util.module_from_spec(_obs_spec)
 sys.modules["hosted_mcp_observability"] = observability
 _obs_spec.loader.exec_module(observability)
 
-# ── `cp_engine` for the container ─────────────────────────────────────
+# ── `cp_engine` is an installed package ───────────────────────────────
 #
-# The four wrap-up verbs (#280) import `cp_engine.<module>` at CALL time, and
-# the Dockerfile ships `server.py` + `observability.py` only. So in production
-# those imports raised ModuleNotFoundError while every local test passed: the
-# suite runs inside the cp-engine repo, where the real package is importable.
-# Three of the four verbs were dead on arrival for the hosted teammates they
-# were built for (#283) — the same shape as the `__main__`-guard defect, where
-# the one condition that mattered was the one nothing exercised.
-#
-# `vendor/` carries the closure those verbs need. APPENDED, never prepended:
-# where the real `cp_engine` is installed it must win, so local runs and the
-# test suite exercise the SOURCE modules and the vendored copies are only ever
-# the container's fallback. Prepending would silently test the copies instead,
-# which is how a vendored tree drifts without anyone noticing.
-_vendor = Path(__file__).resolve().parent / "vendor"
-if _vendor.is_dir() and str(_vendor) not in sys.path:
-    sys.path.append(str(_vendor))
-
+# The image `pip install`s cp-engine from the same commit as this file
+# (Dockerfile, architecture plan step 1), the way the webhook does. Until then
+# a hand-vendored `vendor/cp_engine` closure stood in for it, guarded by a
+# drift test (#283, #287, #295); both are gone. Rules this file used to copy
+# are imported from the engine instead, so there is one implementation to fix.
+# In the test suite `pythonpath = ["src"]` makes the checkout's own engine the
+# one imported.
 # Dates in the tenant's timezone, not the container's UTC clock (#339).
 from cp_engine.clock import tenant_today  # noqa: E402
-# The card-kind READER, vendored (card_class.py). The write-time stamp below is
+# The card-kind READER (card_class.py). The write-time stamp below is
 # derived from it, so a hosted stamp cannot contradict what classify() reads.
 from cp_engine.card_class import classify as _classify_card  # noqa: E402
 
@@ -11404,15 +11394,42 @@ def build_fingerprint() -> str:
     here = Path(__file__).resolve().parent
     digest = hashlib.sha256()
     paths = [here / "server.py", here / "observability.py"]
-    vendor = here / "vendor"
-    if vendor.is_dir():
-        paths += sorted(vendor.rglob("*.py"))
+    # The engine is part of the deployment now (architecture plan step 1):
+    # hash the INSTALLED package, not the repo's `src/`, so the answer is
+    # what this process imports. Read off `sys.modules` rather than imported
+    # here — liveness must not depend on an import succeeding.
+    engine = sys.modules.get("cp_engine")
+    engine_file = getattr(engine, "__file__", None)
+    if engine_file:
+        paths += sorted(Path(engine_file).resolve().parent.rglob("*.py"))
     for path in paths:
         try:
             digest.update(path.read_bytes())
         except OSError:
             digest.update(b"<unreadable>")
     return digest.hexdigest()[:12]
+
+
+_BUILD_COMMIT_FILE = Path(__file__).resolve().parent / "BUILD_COMMIT"
+
+
+def build_commit() -> str:
+    """The commit this container was built from, or "unknown".
+
+    Railway injects `RAILWAY_GIT_COMMIT_SHA` only for GitHub-triggered builds;
+    this service deploys by `deploy.sh`, which stages `git archive HEAD` and
+    writes that commit to `BUILD_COMMIT` beside this file (a `-dirty` suffix
+    when `--allow-dirty` staged the working tree). Neither present — a local
+    run, a plain `docker build` — is an explicit "unknown", never a guess.
+    """
+    sha = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
+    if sha:
+        return sha[:12]
+    try:
+        text = _BUILD_COMMIT_FILE.read_text(encoding="utf-8").strip()
+    except OSError:
+        text = ""
+    return text or "unknown"
 
 
 @mcp_server.custom_route("/health", methods=["GET"])
@@ -11432,10 +11449,10 @@ async def health(_request):
     The webhook solved this in 2026-08 for the same reason and its docstring
     says so. This mirrors it deliberately.
 
-    **`commit` is usually "unknown" here, and that is honest rather than
-    broken.** Railway injects `RAILWAY_GIT_COMMIT_SHA` only for
-    GitHub-triggered deploys, and this service deploys by `railway up` from a
-    CLI — so there is no commit to report.
+    **`commit` comes from `BUILD_COMMIT`** (see `build_commit()`): Railway
+    injects `RAILWAY_GIT_COMMIT_SHA` only for GitHub-triggered deploys, and
+    this service deploys by `deploy.sh`, which records the staged commit. The
+    engine is installed from that same commit, so it pins both.
 
     **`tool_count` answers "is it deployed", NOT "does it work" (#285).** It
     counts `list_tools()`, which proves a function object was registered at
@@ -11451,19 +11468,20 @@ async def health(_request):
         this file makes, plus the two module constants read while a query is
         built. `status` degrades to `"degraded"` when any fails. No caller
         identity needed: every #283 failure was import- or construction-time.
-      * **`build`** — a hash of `server.py`, `observability.py` and `vendor/`.
+      * **`build`** — a hash of `server.py`, `observability.py` and the
+        installed `cp_engine` package.
         `commit` is "unknown" on a `railway up` deploy (Railway injects the SHA
         only for GitHub-triggered builds), so this answers what a commit could
         not: whether the container holds what the repo holds. Two deploys were
         spent on a "stale tarball" theory for want of it.
 
-    **The container DOES ship cp_engine now** — `vendor/` carries the closure
-    the wrap-up verbs need (#283). An earlier version of this docstring said it
-    deliberately did not, which was true when written and is why the four verbs
-    were added without anyone noticing they broke the convention.
+    **The container installs cp_engine as a package** (architecture plan
+    step 1), from the same commit as this file. Before that a vendored closure
+    carried the modules the wrap-up verbs needed (#283), and before THAT the
+    container had none, which is why the four verbs broke on arrival.
     """
     tools = await mcp_server.list_tools()
-    commit = os.environ.get("RAILWAY_GIT_COMMIT_SHA", "")
+    commit = build_commit()
     deps_ok, deps = dependency_probe()
     return JSONResponse(
         {
@@ -11483,8 +11501,8 @@ async def health(_request):
             # one names what broke.
             "deps": [d for d in deps if not d["ok"]] or "all ok",
             "build": build_fingerprint(),
-            # Empty on a `railway up` deploy — see the docstring.
-            "commit": commit[:12] if commit else "unknown",
+            # BUILD_COMMIT from deploy.sh; "unknown" when absent.
+            "commit": commit,
             "deployment_id": os.environ.get("RAILWAY_DEPLOYMENT_ID") or "unknown",
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }

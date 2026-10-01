@@ -66,16 +66,30 @@ async def test_capture_project_state_is_counted(server):
 
 @pytest.mark.anyio
 async def test_commit_is_unknown_rather_than_wrong(server, monkeypatch):
-    """A `railway up` deploy injects no commit — say so, never guess.
+    """No injected SHA and no BUILD_COMMIT file — say so, never guess.
 
     Better an explicit unknown than a value that looks authoritative and is
     stale, which is the failure this endpoint exists to prevent.
     """
     monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
+    monkeypatch.setattr(server, "_BUILD_COMMIT_FILE", Path("/nonexistent/BUILD_COMMIT"))
     import json
 
     body = json.loads((await server.health(None)).body)
     assert body["commit"] == "unknown"
+
+
+@pytest.mark.anyio
+async def test_commit_comes_from_the_staged_build_commit(server, monkeypatch, tmp_path):
+    """deploy.sh writes the staged commit to BUILD_COMMIT; /health reports it,
+    because the engine was installed from that same commit."""
+    monkeypatch.delenv("RAILWAY_GIT_COMMIT_SHA", raising=False)
+    (tmp_path / "BUILD_COMMIT").write_text("abc123def456\n", encoding="utf-8")
+    monkeypatch.setattr(server, "_BUILD_COMMIT_FILE", tmp_path / "BUILD_COMMIT")
+    import json
+
+    body = json.loads((await server.health(None)).body)
+    assert body["commit"] == "abc123def456"
 
 
 @pytest.fixture
@@ -85,16 +99,13 @@ def anyio_backend():
 
 @pytest.mark.anyio
 async def test_health_does_not_need_cp_engine(server, monkeypatch):
-    """The container has no cp-engine. Neither may this endpoint.
+    """Liveness must not depend on cp_engine importing.
 
-    The Dockerfile COPYs `server.py` and `observability.py` and installs six
-    packages; cp-engine is not one of them, by design (the module docstring
-    says this prototype does not import it). An endpoint that reaches for it
-    500s in production while passing locally -- which is exactly what happened
-    on 2026-09-15.
-
-    Blocking the import is the point: a test that merely calls health() in a
-    venv where cp_engine is importable cannot see the bug.
+    The image installs cp-engine now (architecture plan step 1), but a broken
+    install is exactly when /health is needed: it must answer, not 500. On
+    2026-09-15 an endpoint that reached for cp_engine 500'd in production
+    while passing locally. Blocking the import is the point — a test that
+    merely calls health() where cp_engine is importable cannot see the bug.
     """
     import sys
 
