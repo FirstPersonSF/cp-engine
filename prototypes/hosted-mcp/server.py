@@ -10453,41 +10453,17 @@ def record_round(
 #  promote_uphill (#304) — the explicit move up the tree
 # ──────────────────────────────────────────────────────────────────────
 
-# Mirrors `cp_engine.promote_uphill` (constants + hash) — copied, not
-# imported; tests/test_promote_uphill.py pins the hash and the est_item_id.
-_PROMOTIONS_LABEL = "Promoted uphill"
-_PROMOTIONS_EST_ITEM_ID = "_authored/promoted-uphill"
-_PROMOTIONS_BODY = (
-    "Items promoted from child workstreams by `promote_uphill` / "
-    "`cxp promote-uphill`. Each promotion is one step on this element's "
-    "trail, naming the child it came from. The level of a capture is never "
-    "inferred from its content — a promotion is always someone's explicit "
-    "call, and this is where those calls are recorded."
-)
-_SOURCE_KIND_PROMOTED = "promoted"
-_TITLE_EXCERPT_CHARS = 80
-_COMMITMENT_COPY_COLUMNS = (
-    "id, project_id, status, cp_hash, description, owner_email, owner_name, "
-    "direction, due_date, work_item_id, work_item_kind, spine_element_id, "
-    "source_meeting_id"
-)
-
-
-def _promoted_hash(original: str, parent_code: str) -> str:
-    """The copy's `cp_hash`: the ORIGINAL's identity plus the parent code, so
-    the same item promoted twice collides and the same text on two children
-    does not. Byte-identical to `cp_engine.promote_uphill.promoted_hash`."""
-    import hashlib
-
-    raw = f"promote-uphill|{original}|{parent_code}".encode()
-    return hashlib.sha256(raw).hexdigest()[:8]
-
-
-def _promotion_step_title(child_code: str, text: str) -> str:
-    excerpt = " ".join((text or "").split())
-    if len(excerpt) > _TITLE_EXCERPT_CHARS:
-        excerpt = excerpt[:_TITLE_EXCERPT_CHARS].rstrip() + "…"
-    return f"Promoted from {child_code}: {excerpt}"
+# The engine's promotion constants, hash and step title (architecture plan
+# step 1c, inventory H20) — the same item promoted from the CLI and from here
+# must collide on one `cp_hash` and leave one trail shape.
+_PROMOTIONS_LABEL = _engine_promote_uphill.PROMOTIONS_LABEL
+_PROMOTIONS_EST_ITEM_ID = _engine_promote_uphill.PROMOTIONS_EST_ITEM_ID
+_PROMOTIONS_BODY = _engine_promote_uphill.PROMOTIONS_BODY
+_SOURCE_KIND_PROMOTED = _engine_promote_uphill.SOURCE_KIND_PROMOTED
+_TITLE_EXCERPT_CHARS = _engine_promote_uphill.TITLE_EXCERPT_CHARS
+_COMMITMENT_COPY_COLUMNS = _engine_promote_uphill.COMMITMENT_COPY_COLUMNS
+_promoted_hash = _engine_promote_uphill.promoted_hash
+_promotion_step_title = _engine_promote_uphill.promotion_step_title
 
 
 def _ensure_promotions_element(

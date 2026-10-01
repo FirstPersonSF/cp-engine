@@ -594,3 +594,15 @@ def test_decision_week_is_forwarded_to_mc2(server, wired, monkeypatch):
     box = _fake_httpx(server, monkeypatch, 200, BACKEND_OK)
     server.promote_uphill(CHILD, "decision", "abcd1234", week="   ")
     assert "week" not in box["payload"]
+
+
+def test_promotion_rules_are_the_engines_not_copies(server):
+    """Architecture plan step 1c (H20): the hash, title and trail constants are
+    the engine's objects, so a change to one cannot leave the other behind."""
+    from cp_engine import promote_uphill as pu
+
+    assert server._promoted_hash is pu.promoted_hash
+    assert server._promotion_step_title is pu.promotion_step_title
+    for name in ("PROMOTIONS_LABEL", "PROMOTIONS_EST_ITEM_ID", "PROMOTIONS_BODY",
+                 "SOURCE_KIND_PROMOTED", "TITLE_EXCERPT_CHARS", "COMMITMENT_COPY_COLUMNS"):
+        assert getattr(server, f"_{name}") is getattr(pu, name), name
