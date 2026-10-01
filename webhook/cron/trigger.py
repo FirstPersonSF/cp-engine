@@ -5,8 +5,8 @@ Standard library only — the image is python:3.11-slim plus this file.
 
 WHICH SLOT FIRED. Railway's cron gives the process no schedule context, so
 the trigger derives it: ``CRON_SCHEDULE`` repeats the service's schedule
-(``"23 12,13 * * *"``) and the slot is the most recent scheduled time at or
-before now. Railway fires "within a few minutes"; a fire more than
+(``"23 12,13 * * *"``, or ``"17 12,13 * * 1"`` for a weekly job) and the slot
+is the most recent scheduled time at or before now. Railway fires "within a few minutes"; a fire more than
 ``CRON_MAX_LAG_MIN`` (default 45, under the 60-minute slot spacing) after its
 slot cannot be attributed safely and exits nonzero instead of guessing — a
 wrong guess would skip the day's post (or move it an hour). ``CRON_SLOT``
@@ -22,7 +22,9 @@ ENV.
     CRON_DRY_RUN         optional "1": the webhook renders, never posts
     CRON_TIMEOUT_SEC     optional, default 240
 
-EXIT. 0 on any 2xx (posted / skipped / duplicate / dry_run); 1 on a non-2xx
+EXIT. 0 on any 2xx (posted / skipped / duplicate / dry_run / running, and
+202 accepted — a long job runs in the webhook's background and records its
+own outcome row); 1 on a non-2xx
 response or a network error; 2 on bad configuration or an unattributable fire.
 Railway marks a nonzero exit as a failed run, which is the point.
 """
@@ -56,32 +58,58 @@ def _ints(field: str, lo: int, hi: int) -> list[int]:
     return vals
 
 
-def parse_schedule(schedule: str) -> list[tuple[int, int]]:
-    """``"23 12,13 * * *"`` → ``[(12, 23), (13, 23)]`` (hour, minute). Daily
-    schedules only: the slot is what the health gate reads, and it is daily."""
+def _dow(field: str) -> frozenset[int] | None:
+    """Cron day-of-week field → {0..6} (0 = Sunday; 7 also means Sunday), or
+    None for ``*``."""
+    if field == "*":
+        return None
+    return frozenset(v % 7 for v in _ints(field, 0, 7))
+
+
+def parse_schedule(schedule: str) -> tuple[list[tuple[int, int]], frozenset[int] | None]:
+    """``"23 12,13 * * *"`` → ``([(12, 23), (13, 23)], None)``;
+    ``"17 12,13 * * 1"`` → ``([(12, 17), (13, 17)], {1})`` — (hour, minute)
+    pairs and the cron weekdays (0 = Sunday), None meaning every day.
+
+    Integers-and-commas minute/hour fields, any day-of-month/month ``*``. The
+    weekday field is what a weekly job (draft-summaries, Mondays) needs; ranges
+    and steps stay unsupported — a schedule the trigger cannot read exactly
+    fails loudly rather than being guessed at."""
     parts = schedule.split()
-    if len(parts) != 5 or parts[2:] != ["*", "*", "*"]:
-        raise ConfigError(f"CRON_SCHEDULE must be daily 'M H[,H] * * *', got {schedule!r}")
+    if len(parts) != 5 or parts[2:4] != ["*", "*"]:
+        raise ConfigError(
+            f"CRON_SCHEDULE must be 'M H[,H] * * *' or 'M H[,H] * * D[,D]', got {schedule!r}")
     minutes = _ints(parts[0], 0, 59)
     hours = _ints(parts[1], 0, 23)
-    return sorted((h, m) for h in hours for m in minutes)
+    return sorted((h, m) for h in hours for m in minutes), _dow(parts[4])
+
+
+def _cron_weekday(d) -> int:
+    """Python's Monday=0 → cron's Sunday=0."""
+    return (d.weekday() + 1) % 7
 
 
 def derive_slot(schedule: str, now: datetime, max_lag: timedelta) -> str:
-    """The single-slot cron expression (``"23 12 * * *"``) for the fire at
-    `now` (UTC). Raises ConfigError when no slot is within ``max_lag``."""
+    """The single-slot cron expression for the fire at `now` (UTC):
+    ``"23 12 * * *"`` for a daily schedule, ``"17 12 * * 1"`` for a weekly one
+    (the weekday the slot fell on). Raises ConfigError when no slot is within
+    ``max_lag``."""
     now = now.astimezone(UTC)
+    times, weekdays = parse_schedule(schedule)
     best = None
     for day in (now.date() - timedelta(days=1), now.date()):
-        for h, m in parse_schedule(schedule):
+        if weekdays is not None and _cron_weekday(day) not in weekdays:
+            continue
+        for h, m in times:
             at = datetime(day.year, day.month, day.day, h, m, tzinfo=UTC)
             if at <= now + EARLY_TOLERANCE and (best is None or at > best):
                 best = at
     if best is None or now - best > max_lag:
         raise ConfigError(
-            f"fired at {now:%H:%M}Z, no slot of {schedule!r} within "
+            f"fired at {now:%a %H:%M}Z, no slot of {schedule!r} within "
             f"{int(max_lag.total_seconds() // 60)} min — not guessing")
-    return f"{best.minute} {best.hour} * * *"
+    dow = "*" if weekdays is None else str(_cron_weekday(best.date()))
+    return f"{best.minute} {best.hour} * * {dow}"
 
 
 def sign(secret: str, body: bytes, ts: str) -> str:

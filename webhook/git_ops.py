@@ -219,6 +219,74 @@ def _read_only_clone(*, since_days: int = 3):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# The identity the tenant workflows commit as (`git config user.name/email` in
+# sync.yml and draft-summaries.yml). Jobs that move off GitHub Actions to the
+# Railway cron commit as the same bot, so the tenant's history stays uniform.
+BOT_IDENTITY = ("cp-engine-bot", "cp-engine-bot@users.noreply.github.com")
+
+
+def _identity_env(identity: tuple[str, str] | None) -> dict:
+    """Author AND committer env for `identity`. Env, not just `git config`:
+    the webhook service sets GIT_AUTHOR_NAME/EMAIL, and git's env beats its
+    config — a config-only override would still author as the webhook."""
+    if identity is None:
+        return {}
+    name, email = identity
+    return {"GIT_AUTHOR_NAME": name, "GIT_AUTHOR_EMAIL": email,
+            "GIT_COMMITTER_NAME": name, "GIT_COMMITTER_EMAIL": email}
+
+
+@contextmanager
+def _writer_lock():
+    """The per-tenant writer lock on its own, for a job that clones without it
+    (`_full_history_clone`) and takes it only around commit + push."""
+    repo_url = os.environ.get("CP_TENANT_REPO_URL")
+    if not repo_url:
+        raise HTTPException(status_code=500, detail="CP_TENANT_REPO_URL not configured")
+    with _tenant_write_lock(repo_url) as held:
+        yield held
+
+
+@contextmanager
+def _full_history_clone(*, identity: tuple[str, str] | None = None):
+    """Full-history, full-blob clone WITHOUT the writer lock, for the cron's
+    long tenant writers (sync, draft-summaries). Yields the checkout path;
+    always cleans up.
+
+    - FULL HISTORY: partial-refresh detection dates each Exec Summary field
+      with `git blame` (`exec_summary_freshness`), which a `--depth=10` clone
+      answers wrongly — the workflows use `fetch-depth: 0` for this reason.
+      Blobs too: blame over a blob-less clone faults in every revision one
+      fetch at a time. The tenant is ~35 MB packed (2026-10).
+    - NO LOCK HERE: a sync takes minutes, and the lock is taken synchronously
+      on the event-loop thread by most routes — holding it for the whole run
+      would freeze every delivery behind it. The caller takes `_writer_lock()`
+      around commit + push only; a commit landed meanwhile is rebased onto,
+      and a conflict fails loudly (`_push_with_retry`), exactly as the
+      workflows' push-with-rebase.sh does.
+    """
+    repo_url = os.environ.get("CP_TENANT_REPO_URL")
+    if not repo_url:
+        raise HTTPException(status_code=500, detail="CP_TENANT_REPO_URL not configured")
+    tmp = Path(tempfile.mkdtemp(prefix="cp-webhook-full-"))
+    dest = tmp / "cp"
+    try:
+        env = _ssh_env()
+        out = subprocess.run(["git", "clone", "--no-tags", repo_url, str(dest)],
+                             env=env, capture_output=True, text=True)
+        if out.returncode != 0:
+            # git's own message (auth, network) — never the key itself.
+            raise RuntimeError(f"tenant clone failed: {out.stderr.strip()[-300:]}")
+        name, email = identity or (
+            os.environ.get("GIT_AUTHOR_NAME", "cp-engine-webhook"),
+            os.environ.get("GIT_AUTHOR_EMAIL", "webhook@firstperson.is"))
+        subprocess.run(["git", "config", "user.name", name], cwd=dest, check=True)
+        subprocess.run(["git", "config", "user.email", email], cwd=dest, check=True)
+        yield dest
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def _ssh_env() -> dict:
     """Build a subprocess env that uses GIT_SSH_KEY for the clone/push."""
     env = os.environ.copy()
@@ -563,6 +631,8 @@ def _commit_with_message_and_push(
     message: str,
     *,
     reapply: Callable[[], bool] | None = None,
+    identity: tuple[str, str] | None = None,
+    guard_regions: bool = True,
 ) -> str | None:
     """Stage all, commit with `message`, branch-rename, push, return HEAD SHA.
 
@@ -594,12 +664,20 @@ def _commit_with_message_and_push(
     sessions, project-state, email).
 
     Callers must treat `None` as success-with-nothing-to-do, not as failure.
+
+    ``identity`` (name, email) commits — and re-commits on a rebase — as that
+    author and committer (`BOT_IDENTITY` for the cron's tenant writers).
+
+    ``guard_regions=False`` is for the RENDERER only (the cron sync): the
+    guard exists to stop a non-renderer writing inside a managed region, and
+    sync is the writer the regions belong to. Sync quarantines foreign edits
+    itself before it splices (`region_guard`), as `cxp sync` does in CI.
     """
-    env = _ssh_env()
+    env = {**_ssh_env(), **_identity_env(identity)}
 
     # Architecture plan step 2: never commit a foreign edit inside a managed
     # region (reverted + preserved; may leave only the quarantine file).
-    findings = _guard_managed_regions(tenant_root)
+    findings = _guard_managed_regions(tenant_root) if guard_regions else []
     if findings:
         message = message.rstrip("\n") + "\n" + _region_guard_trailer(findings)
 
@@ -643,7 +721,8 @@ def _commit_with_message_and_push(
             # race gone the other way.
             if not reapply():
                 return False
-            _guard_managed_regions(tenant_root)
+            if guard_regions:
+                _guard_managed_regions(tenant_root)
             _stage_all(tenant_root)
             subprocess.run(
                 ["git", "commit", "-m", message],

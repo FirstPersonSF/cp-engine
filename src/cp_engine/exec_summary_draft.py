@@ -830,10 +830,53 @@ def draft_summaries(
     return results
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  The scheduled run (`cxp draft-summaries` and the cron route share it)
+# ──────────────────────────────────────────────────────────────────────
+
+#: The scheduled run's window: Monday, before this tenant-local hour.
+PLANNING_MORNING_BEFORE_HOUR = 10
+
+
+def is_planning_morning(now) -> bool:
+    """`--planning-morning-only`: Monday before 10:00 TENANT time. `now` is a
+    tenant wall-clock datetime (naive, or aware in the tenant zone)."""
+    return now.weekday() == 0 and now.hour < PLANNING_MORNING_BEFORE_HOUR
+
+
+def run_drafts(config, *, now, codes: tuple[str, ...] = (), model: str | None = None,
+               apply: bool, llm: Callable[[str, str], str] | None = None) -> list[DraftResult]:
+    """One draft run over the tenant at `config.root` — the body of
+    `cxp draft-summaries`, callable from the webhook's cron route."""
+    from cp_engine.prep_planning import _make_supabase_client
+    from cp_engine.sprints import current_sprint_week_iso
+    from cp_engine.sync import _default_backend_factory
+
+    backend = _default_backend_factory(config.sync.backend)
+    projects = backend.read_projects(config)
+    return draft_summaries(
+        config,
+        tuple(projects),
+        today=now.date(),
+        current_week=current_sprint_week_iso(now),
+        llm=llm or anthropic_llm(model),
+        codes=codes,
+        supabase_client=_make_supabase_client(config),
+        apply=apply,
+    )
+
+
+def all_attempts_errored(results: list[DraftResult]) -> bool:
+    """The run failed (transport / credentials), not the check: drafting was
+    attempted and every attempt errored. A rejection is the check working."""
+    attempted = [r for r in results if r.outcome != "skipped"]
+    return bool(attempted) and all(r.outcome == "error" for r in attempted)
+
+
 __all__ = [
     "DEFAULT_MODEL", "DRAFTED_FIELDS", "DRAFTED_MARKER", "DraftError", "DraftResult",
-    "Sources", "anthropic_llm", "build_prompt", "check_draft", "draft_one",
-    "draft_summaries", "gather_sources", "hand_written_sprint_text", "is_drafted",
+    "Sources", "all_attempts_errored", "anthropic_llm", "build_prompt", "check_draft",
+    "draft_one", "draft_summaries", "gather_sources", "is_planning_morning", "run_drafts", "hand_written_sprint_text", "is_drafted",
     "mark_drafted", "parse_draft", "scope_reason",
     "unsupported_specifics",
 ]

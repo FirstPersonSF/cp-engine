@@ -721,31 +721,19 @@ def draft_summaries_cmd(
     """
     import json
 
-    from cp_engine.exec_summary_draft import anthropic_llm, draft_summaries
-    from cp_engine.prep_planning import _make_supabase_client
-    from cp_engine.sprints import current_sprint_week_iso
-    from cp_engine.sync import _default_backend_factory
+    from cp_engine.exec_summary_draft import (
+        all_attempts_errored,
+        is_planning_morning,
+        run_drafts,
+    )
 
     now = tenant_now()
-    if planning_morning_only and not (now.weekday() == 0 and now.hour < 10):
+    if planning_morning_only and not is_planning_morning(now):
         click.echo(f"Not Monday morning tenant time ({now:%a %H:%M}) — nothing to do.")
         return
 
     config = _cli._load_config_or_die()
-    backend = _default_backend_factory(config.sync.backend)
-    projects = backend.read_projects(config)
-    supabase_client = _make_supabase_client(config)
-
-    results = draft_summaries(
-        config,
-        tuple(projects),
-        today=now.date(),
-        current_week=current_sprint_week_iso(now),
-        llm=anthropic_llm(model),
-        codes=codes,
-        supabase_client=supabase_client,
-        apply=not dry_run,
-    )
+    results = run_drafts(config, now=now, codes=codes, model=model, apply=not dry_run)
 
     for r in results:
         click.echo(f"--- {r.code} [{r.reason}] {r.outcome}"
@@ -778,6 +766,5 @@ def draft_summaries_cmd(
     # Exit non-zero only when drafting was attempted and every attempt
     # errored (a transport or credential failure) — a rejection is the
     # check doing its job, not a failure of the run.
-    attempted = [r for r in results if r.outcome != "skipped"]
-    if attempted and all(r.outcome == "error" for r in attempted):
+    if all_attempts_errored(results):
         sys.exit(1)
