@@ -277,12 +277,14 @@ def test_note_status_write_failure_is_reported(monkeypatch):
 # ── spine_inbox: never pick a version label from a partial read ──────────────
 
 
-def test_db_max_version_read_failure_raises():
-    from cp_engine.spine_inbox import _db_max_version
+def test_element_rows_read_failure_raises():
+    # Step 4c: promote reads the element's versions from MC-2 alone (the
+    # disk file is a rendered view), so a failed read must raise, not
+    # degrade to "no versions" and re-mint v1 over an existing version.
+    from cp_engine.spine_inbox import _element_rows
 
     with pytest.raises(RuntimeError, match="refusing to pick a version label"):
-        _db_max_version(_Client(fail={"spine_substance"}), "ggl-5168", "_authored/x")
-    assert _db_max_version(None, "ggl-5168", "_authored/x") is None
+        _element_rows(_Client(fail={"spine_substance"}), "p1", "_authored/x")
 
 
 # ── dates_loop / propose passes / tag resolve ────────────────────────────────

@@ -17,44 +17,12 @@ def _tenant(tmp_path: Path) -> None:
     )
 
 
-class _FakeTable:
-    def __init__(self, store, name):
-        self.store, self.name = store, name
-        self._op = None
-        self._filter = None
+def _FakeClient(store):
+    from tests._spine_fake import FakeClient
 
-    def select(self, cols):
-        assert "*" not in cols
-        self._op = ("select",)
-        return self
-
-    def update(self, values):
-        self._op = ("update", values)
-        return self
-
-    def eq(self, col, val):
-        self._filter = (col, val)
-        return self
-
-    def execute(self):
-        rows = self.store.setdefault(self.name, [])
-        if self._op[0] == "select":
-            col, val = self._filter
-            return type("R", (), {"data": [r for r in rows if r.get(col) == val]})()
-        if self._op[0] == "update":
-            col, val = self._filter
-            for r in rows:
-                if r.get(col) == val:
-                    r.update(self._op[1])
-            return type("R", (), {"data": []})()
-
-
-class _FakeClient:
-    def __init__(self, store):
-        self.store = store
-
-    def table(self, name):
-        return _FakeTable(self.store, name)
+    client = FakeClient()
+    client.store = store            # share the dict the test inspects
+    return client
 
 
 def test_spine_frame_promotes_and_prints_path(tmp_path, monkeypatch):

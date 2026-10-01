@@ -603,13 +603,13 @@ def test_promote_estimate_unreachable_degrades(monkeypatch, client, tmp_path):
 # -------------------------------------------------- C1/C2: push-failure ordering
 
 
-def test_promote_push_failure_records_failed_and_never_flips(
+def test_promote_push_failure_records_failed_but_version_is_already_durable(
     monkeypatch, client, tmp_path
 ):
     """If the commit/push fails, the run row records FAILED (with the error
-    string) AND the card is NEVER flipped to 'promoted' — the core C1
-    guarantee (no silent data loss). The throwaway clone is discarded (exit
-    ran), but the card stays proposed/framed so the human can safely retry.
+    string). Step 4c: the version landed in MC-2 BEFORE the push (MC-2 owns
+    the spine; the push only carries the rendered view), so the card IS
+    flipped — a retry would mint a duplicate version, not recover a lost one.
     """
     rec = _wire_happy(monkeypatch, tmp_path)
 
@@ -626,9 +626,8 @@ def test_promote_push_failure_records_failed_and_never_flips(
     assert patch["status"] == "failed"
     assert "git push rejected" in patch["error"]
     assert "finished_at" in patch
-    # The card was NOT flipped — the runner never reached the post-push flip.
     flips = [u for u in rec["db_updates"] if u["table"] == "spine_inbox"]
-    assert flips == []
+    assert [f["update"] for f in flips] == [{"status": "promoted"}]
     # Clone cleanup ran on the failure path too.
     assert rec["clone_exits"] == 1
 
@@ -667,11 +666,13 @@ def test_promote_real_round_trip(monkeypatch, client, tmp_path):
     """
     from cp_engine.spine_inbox import promote_card
     from cp_engine.substance import parse_substance
+    from tests._spine_fake import FakeClient
 
     monkeypatch.setenv("WEBHOOK_HMAC_SECRET", "test-secret")
 
     project_dir = tmp_path / "1p" / "infoblox" / "ibx-5153"
     card = _card()
+    mc2 = FakeClient(spine_substance=[], spine_steps=[], spine_inbox=[])
 
     path = promote_card(
         card,
@@ -682,7 +683,8 @@ def test_promote_real_round_trip(monkeypatch, client, tmp_path):
         sources=["mtg-1"],
         distiller=lambda prompt, model, api_key=None: "Distilled body text.",
         model="claude-opus-4-7",
-        client=None,  # no flip — matches the endpoint's C1 contract
+        client=mc2,
+        flip_card=False,  # matches the endpoint (it flips best-effort itself)
         name="Messaging system",
         phase="Phase 0",
     )
@@ -698,16 +700,18 @@ def test_promote_real_round_trip(monkeypatch, client, tmp_path):
     assert parsed.layer == "Deliverables"
 
 
-def test_promote_backfills_layer_on_existing_unstamped_file(tmp_path):
-    """A file promoted before layer stamping existed has no `layer` in its
-    frontmatter. Promoting into it again (the add_version path) stamps the
-    layer from the card's kind instead of leaving it NULL forever.
+def test_promote_backfills_layer_on_existing_unstamped_element(tmp_path):
+    """An element promoted before layer stamping existed has a NULL `layer` in
+    MC-2. Promoting into it again stamps the layer from the card's kind on the
+    new version (and so in the rendered file) instead of leaving it NULL.
     """
     from cp_engine.spine_inbox import promote_card
     from cp_engine.substance import parse_substance
+    from tests._spine_fake import FakeClient
 
     project_dir = tmp_path / "1p" / "infoblox" / "ibx-5153"
     card = _card()
+    mc2 = FakeClient(spine_substance=[], spine_steps=[], spine_inbox=[])
 
     common = dict(
         est_item_id="a7",
@@ -716,20 +720,15 @@ def test_promote_backfills_layer_on_existing_unstamped_file(tmp_path):
         sources=["mtg-1"],
         distiller=lambda prompt, model, api_key=None: "Distilled body text.",
         model="claude-opus-4-7",
-        client=None,
+        client=mc2,
         name="Kickoff workshop",
         phase="Phase 1",
     )
 
-    path = promote_card(card, framing="first framing", **common)
-    # Simulate a pre-stamping file: strip the layer line from the frontmatter.
-    stripped = "\n".join(
-        line for line in path.read_text().splitlines() if not line.startswith("layer:")
-    )
-    path.write_text(stripped + "\n")
-    assert parse_substance(path).layer is None
-
-    promote_card(card, framing="second framing", **common)
+    promote_card(card, framing="first framing", **common)
+    for r in mc2.store["spine_substance"]:
+        r["layer"] = None            # a pre-stamping element
+    path = promote_card(card, framing="second framing", **common)
     parsed = parse_substance(path)
     assert parsed.layer == "Activity"
     assert parsed.live_version().label == "v2"

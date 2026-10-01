@@ -669,10 +669,7 @@ def _sync_tenant_inner(
         # NOT best-effort.
         if project.mc2_id:
             from cp_engine.estimate import fetch_estimate
-            from cp_engine.spine_substance_sync import (
-                sync_spine_context,
-                sync_spine_substance,
-            )
+            from cp_engine.spine_substance_sync import sync_spine_substance
             from cp_engine.spine_sync import sync_spine_snapshots
 
             # The raw-client handoff is an opt-in capability (SpineClientProvider),
@@ -703,12 +700,13 @@ def _sync_tenant_inner(
                     "spine-snapshot mirror skipped for %s: %s",
                     project.code, exc, exc_info=True,
                 )
-            # Substance + context mirror (Phase 2). Fetch the live estimate
-            # once per project to bind substance versions; if the estimator
-            # schema is unreachable, pass estimate=None so substance still
-            # mirrors as `unbound` rather than failing the whole sync. A
-            # genuinely missing estimate (returns None) flows through the same
-            # unbound path. Best-effort like the element/snapshot mirrors.
+            # Render the generated `spine/` view from MC-2 (step 4c: MC-2 owns
+            # every element; nothing on disk is pushed up — a hand edit is
+            # quarantined to exceptions/region-edits/ and overwritten). The
+            # estimate is fetched once to reconcile distilled bindings in MC-2;
+            # estimate=None leaves bindings as stored. The disk→MC-2
+            # `spine_context` push went with the substance push (0 files, 0
+            # rows on 2026-10-01). Best-effort like the snapshot index.
             try:
                 estimate = _fetch_estimate_or_none(client, project)
                 sync_spine_substance(
@@ -724,19 +722,6 @@ def _sync_tenant_inner(
                     raise  # schema drift is tenant-wide, not this project's
                 logger.warning(
                     "spine-substance mirror skipped for %s: %s",
-                    project.code, exc, exc_info=True,
-                )
-            try:
-                sync_spine_context(
-                    client,
-                    project_id=project.mc2_id,
-                    project_code=project.code,
-                    project_dir=project_dir,
-                    now=sync_clock,
-                )
-            except Exception as exc:  # noqa: BLE001 — best-effort context mirror
-                logger.warning(
-                    "spine-context mirror skipped for %s: %s",
                     project.code, exc, exc_info=True,
                 )
             # Regenerate the project's `_sources.md` manifest from its ingested
@@ -2216,18 +2201,27 @@ def _derive_latest_signal(
 
 
 def _latest_spine_activity(project_dir: Path) -> date | None:
-    """Newest mtime under the project's `spine/`, or None when it has none.
+    """Newest mtime under the project's `spine/` or of its meeting history,
+    or None when it has neither.
 
     Filesystem mtime is the right clock here despite being a proxy: sync writes
     these files, so a file that changed is work that arrived, and the check is
     "has anything happened since the summary was written" — not an audit trail.
     """
+    from cp_engine.retrospective import history_path
+
     spine = project_dir / "spine"
-    if not spine.is_dir():
+    # The meeting history left spine/ in step 4c but is still the busiest
+    # signal of "work arrived" (every tagged meeting appends to it).
+    history = history_path(project_dir)
+    files = list(spine.rglob("*.md")) if spine.is_dir() else []
+    if history.is_file():
+        files.append(history)
+    if not files:
         return None
     try:
         newest = max(
-            (f.stat().st_mtime for f in spine.rglob("*.md") if f.is_file()),
+            (f.stat().st_mtime for f in files if f.is_file()),
             default=None,
         )
     except OSError:

@@ -78,7 +78,8 @@ def build_snapshot(
 
 
 def row_from_frozen(
-    path: Path, *, tenant_root: Path, project_id: str | None = None
+    path: Path, *, tenant_root: Path, project_id: str | None = None,
+    project_code: str | None = None,
 ) -> dict | None:
     """Build a spine_snapshots row from a frozen snapshot file's frontmatter.
 
@@ -88,7 +89,14 @@ def row_from_frozen(
 
     `project_id` is the stable MC-2 uuid (not stored in the frozen frontmatter);
     the sync resolves it once per project and threads it in so every mirrored
-    row carries the code-rehome key (mig 078)."""
+    row carries the code-rehome key (mig 078).
+
+    `project_code`, when given, is the workstream's canonical (full) code and
+    REPLACES the first segment of the frozen `snapshot.of`. A snapshot frozen
+    under the short code (`ibx-5153/deliverable/...`, the one on disk on
+    2026-10-01) otherwise produced a second, short-keyed id every sync for a
+    snapshot MC-2 already holds under the full code — the frozen file is
+    write-once, so the key is fixed here rather than in the file."""
     try:
         meta = frontmatter.load(str(path)).metadata
     except yaml.YAMLError:
@@ -97,6 +105,9 @@ def row_from_frozen(
     if not isinstance(snap, dict):
         return None
     deliverable_id = str(snap.get("of", ""))
+    if project_code and deliverable_id:
+        rest = deliverable_id.split("/", 1)[1] if "/" in deliverable_id else ""
+        deliverable_id = f"{project_code}/{rest}" if rest else project_code
     created = str(snap.get("created", ""))
     stem = path.stem
     try:

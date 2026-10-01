@@ -165,20 +165,6 @@ def derive_placement(est_item_id: str) -> str:
     return "context" if str(est_item_id).startswith(AUTHORED_KEY_PREFIX) else "item"
 
 
-def is_skipped_spine_dir(parts: tuple[str, ...]) -> bool:
-    """True if a ``spine/<...>`` path should NOT be read as a work-item substance
-    file: project context (``_context/``), generated authored mirrors
-    (``_authored/``, DB-owned, never read back), and frozen snapshots.
-
-    Shared by both disk readers (`spine_substance_sync._load_substance_items` and
-    `spine_inbox._iter_substance_files`) so their skip scoping can't drift —
-    an authored mirror file flowing into either reader would let DB-owned rows be
-    re-read disk→DB (substance sync) or be promoted as a real candidate (inbox)."""
-    return parts[0] in ("_context", "_authored") or any(
-        p.endswith(".snapshots") for p in parts
-    )
-
-
 def _parse_version_section(section: str, path: Path) -> SubstanceVersion:
     """Parse one `## v<N> …` section (header line + framing/sources + body)."""
     lines = section.splitlines()

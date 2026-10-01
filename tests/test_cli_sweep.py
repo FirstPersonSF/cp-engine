@@ -1,6 +1,5 @@
 from pathlib import Path
 
-import frontmatter
 from click.testing import CliRunner
 
 from cp_engine.cli import main
@@ -27,6 +26,8 @@ def _tenant_with_ibx(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     proj = tmp_path / "1p" / "infoblox" / "ibx-5153-ai-campaign"
+    proj.mkdir(parents=True, exist_ok=True)
+    (proj / "cp.md").write_text("---\nMC-id: pid-1\n---\n", encoding="utf-8")
     spine = proj / "spine"
     _write(
         spine / "Deliverables" / "pos.md",
@@ -60,21 +61,36 @@ def _empty_tenant(tmp_path: Path) -> Path:
 
 
 def _syn_dir(tmp_path: Path) -> Path:
+    """Where a sweep's rendered file lands (step 4c: an authored element)."""
     return (
         tmp_path
         / "1p"
         / "infoblox"
         / "ibx-5153-ai-campaign"
         / "spine"
-        / "Synthesis"
+        / "_authored"
     )
 
 
-def test_sweep_writes_synthesis_element(tmp_path, monkeypatch) -> None:
-    from datetime import date
+def _fake_mc2(monkeypatch, *, serve_reads=False):
+    """MC-2 for the WRITE (step 4c: the readout lands in MC-2 first). Reads
+    keep the disk fallback unless `serve_reads` — the fixture's element is a
+    legacy disk file."""
+    from tests._spine_fake import FakeClient
 
+    client = FakeClient(spine_substance=[], spine_steps=[])
+    monkeypatch.setattr("cp_engine.mc2_db.get_client", lambda config=None, **kw: client)
+    if not serve_reads:
+        def _unreadable(c, code):
+            raise RuntimeError("read path not under test")
+        monkeypatch.setattr("cp_engine.spine.load_spine_from_mc2", _unreadable)
+    return client
+
+
+def test_sweep_writes_synthesis_element(tmp_path, monkeypatch) -> None:
     _tenant_with_ibx(tmp_path)
     monkeypatch.chdir(tmp_path)
+    mc2 = _fake_mc2(monkeypatch)
 
     def fake(prompt, *, model, api_key=None):
         return FAKE_SYNTHESIS
@@ -85,23 +101,26 @@ def test_sweep_writes_synthesis_element(tmp_path, monkeypatch) -> None:
     assert result.exit_code == 0, result.output
 
     today = tenant_today().isoformat()
-    fname = f"{today}-sweep.md"
-    matches = list(_syn_dir(tmp_path).glob("*-sweep.md"))
-    assert len(matches) == 1, list(_syn_dir(tmp_path).iterdir())
-    f = matches[0]
-    assert f.name == fname
-
-    post = frontmatter.loads(f.read_text())
-    assert "The whole project, swept into one readout." in post.content
-    assert post.metadata["layer"] == "Synthesis"
-    assert post.metadata["type"] == "sweep"
-    assert post.metadata["status"] == "active"
-    assert post.metadata["id"] == f"ibx-5153/synthesis/{today}-sweep"
-    assert post.metadata["last_touched"] == today
+    # MC-2 first: one authored Synthesis element, today's.
+    (row,) = mc2.store["spine_substance"]
+    assert row["id"] == f"ibx-5153-ai-campaign/_authored/{today}-sweep/v1"
+    assert row["project_id"] == "pid-1"
+    assert row["layer"] == "Synthesis"
+    assert row["origin"] == "authored"
+    assert "The whole project, swept into one readout." in row["body"]
     # The sweep readout serves the active deliverable(s) so it scores hot on the
     # next Lens pass (the fixture's pos.md is an active, non-final deliverable).
-    assert post.metadata["serves"] == ["ibx-5153/deliverable/pos"]
-    assert post.metadata["project"] == "ibx-5153"
+    assert row["serves"] == ["ibx-5153/deliverable/pos"]
+
+    # …then rendered from those rows into the generated view.
+    (f,) = list(_syn_dir(tmp_path).glob("*-sweep.md"))
+    assert f.name == f"{today}-sweep.md"
+    from cp_engine.substance import parse_substance
+
+    item = parse_substance(f)
+    assert item.layer == "Synthesis"
+    assert "swept into one readout" in item.live_version().body
+    assert not (tmp_path / "1p/infoblox/ibx-5153-ai-campaign/spine/Synthesis").exists()
 
     # Ranked table echoed to stdout.
     assert "Positioning narrative" in result.output
@@ -110,6 +129,7 @@ def test_sweep_writes_synthesis_element(tmp_path, monkeypatch) -> None:
 def test_sweep_idempotent_same_day_overwrites(tmp_path, monkeypatch) -> None:
     _tenant_with_ibx(tmp_path)
     monkeypatch.chdir(tmp_path)
+    mc2 = _fake_mc2(monkeypatch)
 
     def fake(prompt, *, model, api_key=None):
         return FAKE_SYNTHESIS
@@ -121,8 +141,22 @@ def test_sweep_idempotent_same_day_overwrites(tmp_path, monkeypatch) -> None:
     r2 = CliRunner().invoke(main, ["sweep", "ibx-5153"])
     assert r2.exit_code == 0, r2.output
 
+    assert len(mc2.store["spine_substance"]) == 1
     matches = list(_syn_dir(tmp_path).glob("*-sweep.md"))
     assert len(matches) == 1, [p.name for p in matches]
+
+
+def test_sweep_without_mc2_writes_nothing(tmp_path, monkeypatch) -> None:
+    """Step 4c: there is no disk-only write left — spine/ is rendered from
+    MC-2, so a readout MC-2 cannot take is reported, not dropped in spine/."""
+    _tenant_with_ibx(tmp_path)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("cp_engine.plan_from_transcript._call_claude",
+                        lambda prompt, *, model, api_key=None: FAKE_SYNTHESIS)
+    result = CliRunner().invoke(main, ["sweep", "ibx-5153"])
+    assert result.exit_code == 1
+    assert "NOT written" in result.output
+    assert not _syn_dir(tmp_path).exists()
 
 
 def test_sweep_llm_failure_helpful_message(tmp_path, monkeypatch) -> None:
@@ -146,17 +180,15 @@ def test_sweep_llm_failure_helpful_message(tmp_path, monkeypatch) -> None:
 
 def test_sweep_mc2_path_reresolves_and_writes(tmp_path, monkeypatch) -> None:
     """When elements come from MC-2, _load_spine_elements returns project_dir=None;
-    sweep_cmd must re-resolve the dir on disk before writing. This covers the
-    `project_dir is None` re-resolve branch the disk-fallback tests never hit."""
-    from datetime import date
+    sweep_cmd must re-resolve the dir on disk before rendering."""
     from pathlib import Path
 
     from cp_engine.spine import SpineElement
 
     _tenant_with_ibx(tmp_path)  # gives a real on-disk project dir (cp.md + spine)
     monkeypatch.chdir(tmp_path)
+    mc2 = _fake_mc2(monkeypatch, serve_reads=True)
 
-    # Simulate the MC-2 path: non-empty elements, project_dir=None.
     el = SpineElement(
         id="ibx-5153/deliverable/pos",
         project="ibx-5153",
@@ -168,28 +200,20 @@ def test_sweep_mc2_path_reresolves_and_writes(tmp_path, monkeypatch) -> None:
         body="From MC-2.",
         stage="revised",
     )
-
-    def fake_load(config, code):
-        return (el,), None
-
-    monkeypatch.setattr("cp_engine.cli._load_spine_elements", fake_load)
-
-    def fake(prompt, *, model, api_key=None):
-        return FAKE_SYNTHESIS
-
-    monkeypatch.setattr("cp_engine.plan_from_transcript._call_claude", fake)
+    monkeypatch.setattr("cp_engine.cli._load_spine_elements",
+                        lambda config, code: ((el,), None))
+    monkeypatch.setattr("cp_engine.plan_from_transcript._call_claude",
+                        lambda prompt, *, model, api_key=None: FAKE_SYNTHESIS)
 
     result = CliRunner().invoke(main, ["sweep", "ibx-5153"])
     assert result.exit_code == 0, result.output
 
     today = tenant_today().isoformat()
-    matches = list(_syn_dir(tmp_path).glob("*-sweep.md"))
-    assert len(matches) == 1, list(_syn_dir(tmp_path).iterdir())
-    assert matches[0].name == f"{today}-sweep.md"
-
-    post = frontmatter.loads(matches[0].read_text())
-    assert post.metadata["layer"] == "Synthesis"
-    assert post.metadata["serves"] == ["ibx-5153/deliverable/pos"]
+    (f,) = list(_syn_dir(tmp_path).glob("*-sweep.md"))
+    assert f.name == f"{today}-sweep.md"
+    (row,) = mc2.store["spine_substance"]
+    assert row["layer"] == "Synthesis"
+    assert row["serves"] == ["ibx-5153/deliverable/pos"]
 
 
 def test_sweep_empty_spine_writes_nothing(tmp_path, monkeypatch) -> None:

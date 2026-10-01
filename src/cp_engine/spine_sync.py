@@ -186,7 +186,14 @@ def sync_spine_snapshots(
     Scans every spine/<Layer>/*.snapshots/*.md, upserts a row per snapshot
     file, reaps rows whose file vanished (scoped per-project). Returns count
     upserted. `project_id` (the stable MC-2 uuid) is stamped onto each mirrored
-    row so code-rehome can key on it (mig 078)."""
+    row so code-rehome can key on it (mig 078).
+
+    The one disk→MC-2 spine write left after step 4c, and deliberately so: a
+    snapshot is a WRITE-ONCE frozen file whose body exists only on disk
+    (`spine_snapshots` is an index, no content column), so the generated-view
+    render exempts `*.snapshots/` and this keeps the index current. Every id
+    is keyed by `project_code` (the workstream's full code), never the frozen
+    file's own spelling."""
     from cp_engine.spine_snapshot import row_from_frozen
 
     rows = []
@@ -195,7 +202,8 @@ def sync_spine_snapshots(
         for snap_dir in sorted(spine_root.glob("*/*.snapshots")):
             for md in sorted(snap_dir.glob("*.md")):
                 row = row_from_frozen(
-                    md, tenant_root=tenant_root, project_id=project_id
+                    md, tenant_root=tenant_root, project_id=project_id,
+                    project_code=project_code,
                 )
                 if row is not None:
                     rows.append(row)

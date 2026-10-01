@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
 
@@ -35,16 +35,11 @@ from cp_engine.authored_element import (
     canon_layer,
     slugify,
 )
-from cp_engine.authored_mirror import write_authored_element
 from cp_engine.distill_fidelity import assess, mark_machine_derived
 from cp_engine.mc2_db import Tables
 from cp_engine.substance import (
     SubstanceVersion,
     WorkItemSubstance,
-    add_version,
-    is_skipped_spine_dir,
-    parse_substance,
-    render_substance,
     version_number,
 )
 
@@ -308,21 +303,6 @@ def _slugify(text: str) -> str:
     return s or "item"
 
 
-def _iter_substance_files(spine_root: Path):
-    """Yield every substance ``.md`` under ``spine/<phase>/`` (skips ``_context``,
-    ``_authored``, and ``*.snapshots`` dirs), same scoping as the Phase-2 mirror
-    via the shared `is_skipped_spine_dir` predicate. ``_authored/`` files are a
-    generated DB→disk mirror of MC-2-owned rows and must NEVER be treated as a
-    real disk substance candidate (e.g. by the promote path)."""
-    if not spine_root.is_dir():
-        return
-    for md in sorted(spine_root.glob("*/*.md")):
-        parts = md.relative_to(spine_root).parts
-        if is_skipped_spine_dir(parts):
-            continue
-        yield md
-
-
 def _target_path(spine_root: Path, *, phase, name, est_item_id) -> Path:
     """The substance file path for an item: ``spine/<phase-slug>/<item-slug>.md``.
 
@@ -351,100 +331,54 @@ def promote_card(
     today=None,
     flip_card: bool = True,
     on_fidelity: Callable[[dict], None] | None = None,
+    writer: str = "cxp spine-frame",
 ) -> Path:
     """Frame + promote a proposed card into a directed-distilled live version.
 
     Runs a DIRECTED distillation: the prompt carries the human ``framing`` brief
     + the card's raw material and asks for a faithful distillation UNDER that
-    framing. The result becomes a new ``live`` `SubstanceVersion` (v1 if the
-    item has no file yet, else next v-number with the prior live demoted to
-    ``superseded`` via `add_version`). Writes the substance markdown at
-    ``spine/<phase-slug>/<item-slug>.md`` with frontmatter binding
-    ``est_item_id``/``est_item_kind``/``phase``. If ``client`` is given AND
-    ``flip_card`` is true, the card's ``spine_inbox`` status flips to
-    ``promoted`` (the webhook passes ``flip_card=False`` to defer the flip
-    until after a successful git push). Returns the written Path.
+    framing. The result becomes a new ``live`` version of the work item's
+    distilled element: v1 if MC-2 holds none, else the next label after the
+    highest MC-2 holds (any origin — #121), the prior live distilled version
+    demoted to ``superseded``. If ``client`` is given AND ``flip_card`` is
+    true, the card's ``spine_inbox`` status flips to ``promoted``. Returns the
+    rendered file's Path.
 
-    TARGETING (one substance file per ``est_item_id`` within a project): the
-    binding key is ``est_item_id``, not the slug-derived path. So we FIRST scan
-    for an existing substance file already bound to ``est_item_id`` and, if one
-    exists, target *that file* — regardless of what slug the card's name would
-    derive. Only when NO file binds the id yet do we derive a fresh
-    ``_target_path`` and create v1. If MORE THAN ONE existing file binds the
-    same id (a pre-existing corrupt state), raise ValueError — that's the only
-    genuinely-ambiguous case left.
+    MC-2 FIRST (architecture step 4c). The version row is written to
+    ``spine_substance`` (origin='distilled') and only then is the file under
+    ``spine/`` rendered from MC-2 — the file is a generated view, never the
+    source a later sync pushes up (that push is gone). So ``client`` is
+    required. The element's existing rows decide its file path (``rel_path``),
+    phase, binding and layer; a first version takes
+    ``spine/<phase-slug>/<item-slug>.md``.
 
     CREATE-DON'T-VERSION on source divergence (issue #44): versioning semantics
     (v_{n+1} supersedes v_n) are only correct when the new body is an UPDATE OF
-    THE SAME ARTIFACT. When the targeted file already exists and BOTH its live
-    version's ``sources`` and the incoming ``sources`` are non-empty but
-    DIFFERENT sets, this promotion is a *different artifact serving the same
-    work item* (e.g. a second interview distilled against a container item like
-    "1:1 stakeholder interviews") — appending a version would silently
-    supersede, and thereby hide, the prior artifact. Instead we create a NEW
-    authored element (``est_item_id = _authored/<slugified framing>``, slug
-    collisions suffixed ``-2``, ``-3``, …) with ``serves=[est_item_id]`` binding
-    it to the work item, upsert its v1-live rows into ``spine_substance``
-    (origin='authored', exactly what the shared create path emits), and mirror
-    it to ``spine/_authored/<slug>.md``. The bound work-item card is left
-    untouched. Same-source re-promotes (a true re-distill) and promotes where
-    either side has no sources keep versioning exactly as before. The create
-    path requires ``client`` (authored elements are MC-2-owned rows; a file
-    alone under ``_authored/`` would never sync) and raises ValueError without
-    one.
+    THE SAME ARTIFACT. When the element's live version's ``sources`` and the
+    incoming ``sources`` are both non-empty but DIFFERENT sets, this promotion
+    is a *different artifact serving the same work item* — appending a version
+    would silently supersede, and thereby hide, the prior artifact. Instead a
+    NEW authored element (``_authored/<slugified framing>``, collisions
+    suffixed ``-2``, ``-3``, …) is created with ``serves=[est_item_id]``.
 
     FIDELITY (#314): the distilled body is scored against the card's raw
     material (`distill_fidelity.assess`) and the result handed to
-    ``on_fidelity`` BEFORE anything is written — the CLI prints it, the
-    webhook records it on the mirrored row. The body is always written
-    machine-derived: a new authored element carries the explicit
-    ``field_states.body`` marker (plus the fidelity flag when low); a
-    versioned substance file syncs up as ``origin='distilled'``, which
-    `distill_fidelity.provenance_of` reads as machine-derived until a human
-    confirms the body.
+    ``on_fidelity`` BEFORE anything is written. A versioned body is written
+    ``origin='distilled'``, which `distill_fidelity.provenance_of` reads as
+    machine-derived until a human confirms it.
     """
-    today_iso = today if isinstance(today, str) else (today or tenant_today()).isoformat()
-    spine_root = project_dir / "spine"
-
-    # Route by binding key, not by slug: find any existing file bound to this id.
-    bound = []
-    for md in _iter_substance_files(spine_root):
-        try:
-            other = parse_substance(md)
-        except Exception as exc:
-            # A file we cannot parse may still BIND this id — skipping it
-            # would let the promote create a second file for the same item
-            # (the invariant check below would never see the first). Refuse
-            # when its raw text names the id; otherwise it is unrelated.
-            try:
-                raw = md.read_text(encoding="utf-8")
-            except OSError:
-                raw = ""
-            if est_item_id and est_item_id in raw:
-                raise ValueError(
-                    f"substance file {md} mentions est_item_id {est_item_id!r} "
-                    f"but does not parse ({exc}); refusing to promote into a "
-                    "binding that cannot be checked — fix the file first."
-                ) from exc
-            continue
-        if other.est_item_id == est_item_id:
-            bound.append(md)
-
-    db_max = _db_max_version(client, card.project_code, est_item_id)
-
-    if len(bound) > 1:
+    if client is None:
         raise ValueError(
-            f"est_item_id {est_item_id!r} is bound by {len(bound)} substance "
-            f"files ({', '.join(str(p) for p in bound)}); the one-file-per-item "
-            f"invariant is already violated on disk. Refusing to promote into an "
-            f"ambiguous binding — reconcile the duplicate files first."
+            "promote_card writes the new version to MC-2 first (step 4c: MC-2 "
+            "owns the spine; spine/ is rendered from it) — pass client=..."
         )
+    today_iso = today if isinstance(today, str) else (today or tenant_today()).isoformat()
 
-    target = (
-        bound[0]
-        if bound
-        else _target_path(spine_root, phase=phase, name=name, est_item_id=est_item_id)
-    )
+    existing = _element_rows(client, card.project_id, est_item_id)
+    nums = [version_number(r.get("version_label")) for r in existing]
+    db_max = max([n for n in nums if n >= 0], default=0)
+    distilled = [r for r in existing if r.get("origin") != "authored"]
+    live = next((r for r in distilled if r.get("status") == "live"), None)
 
     body = distiller(
         _FRAME_PROMPT.format(framing=framing, raw=card.raw_distillation),
@@ -456,90 +390,102 @@ def promote_card(
     if on_fidelity is not None:
         on_fidelity(fidelity)
 
-    if target.exists():
-        existing = parse_substance(target)
-        prior_sources = set(existing.live_version().sources)
-        incoming_sources = set(sources_tuple)
-        if prior_sources and incoming_sources and prior_sources != incoming_sources:
-            # A different artifact serving the same work item (issue #44):
-            # create a new authored element instead of superseding the card.
-            return _promote_as_new_serving_element(
-                card,
-                framing=framing,
-                work_item_est_id=est_item_id,
-                kind=kind,
-                body=body,
-                sources=sources_tuple,
-                project_dir=project_dir,
-                client=client,
-                flip_card=flip_card,
-                today_iso=today_iso,
-                fidelity=fidelity,
-            )
-        # Next label from the MAX of disk and DB (#121): the DB is the
-        # superset — an authored version lands there first, and a disk-only
-        # computation can mint an EQUAL label whose id collides with the
-        # authored row (the #115 shield only catches strict-less-than, so
-        # disk-wins reconcile would clobber the authored content).
-        n_disk = max(int(v.label[1:]) for v in existing.versions)
-        n = max(n_disk, db_max or 0) + 1
-        version = SubstanceVersion(
-            label=f"v{n}", date=today_iso, status="live",
-            framing=framing, sources=sources_tuple, body=body,
+    prior_sources = {str(s) for s in ((live or {}).get("sources") or [])}
+    incoming_sources = set(sources_tuple)
+    if prior_sources and incoming_sources and prior_sources != incoming_sources:
+        # A different artifact serving the same work item (issue #44):
+        # create a new authored element instead of superseding the card.
+        return _promote_as_new_serving_element(
+            card,
+            framing=framing,
+            work_item_est_id=est_item_id,
+            kind=kind,
+            body=body,
+            sources=sources_tuple,
+            project_dir=project_dir,
+            client=client,
+            flip_card=flip_card,
+            today_iso=today_iso,
+            fidelity=fidelity,
         )
-        item = add_version(existing, version)
-        # add_version preserves the existing item's binding/phase/extra; only
-        # versions change. (phase/kind stay as the file already declared them.)
-        # One repair: files promoted before layer stamping existed carry no
-        # layer (mirrors to a NULL row the UI can't file) — stamp on re-promote.
-        if item.layer is None:
-            item = replace(item, layer=canon_layer(kind))
+
+    from cp_engine.mc2_db import canonical_spine_code
+    from cp_engine.spine_mirror import distilled_path
+    from cp_engine.spine_substance_sync import substance_to_rows
+
+    code = canonical_spine_code(client, card.project_id, card.project_code)
+    base = live or (max(distilled, key=lambda r: version_number(r.get("version_label")))
+                    if distilled else None)
+    if base is not None:
+        target = distilled_path(project_dir, base)
+        item_kind = base.get("est_item_kind") or kind
+        item_phase = base.get("phase")
+        binding = base.get("binding") or "live"
+        # Rows promoted before layer stamping existed carry no layer (a NULL
+        # row the UI can't file) — stamp on re-promote.
+        layer = base.get("layer") or canon_layer(kind)
+        placement = base.get("placement") or "item"
+        serves = tuple(base.get("serves") or ())
+        archived = bool(base.get("archived", False))
     else:
-        # No disk file, but MC-2 may already hold versions for this element
-        # (authored rows sync file-ward later) — creating "v1" over a DB v1
-        # is the same id collision (#121). Continue the DB sequence.
-        version = SubstanceVersion(
-            label=f"v{(db_max or 0) + 1}", date=today_iso, status="live",
-            framing=framing, sources=sources_tuple, body=body,
-        )
-        item = WorkItemSubstance(
-            est_item_id=est_item_id, est_item_kind=kind, phase=phase,
-            binding="live", layer=canon_layer(kind),
-            versions=(version,), path=target,
-        )
+        target = _target_path(project_dir / "spine", phase=phase, name=name,
+                              est_item_id=est_item_id)
+        item_kind, item_phase, binding = kind, phase, "live"
+        layer, placement, serves, archived = canon_layer(kind), "item", (), False
 
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(render_substance(item))
+    version = SubstanceVersion(
+        label=f"v{db_max + 1}", date=today_iso, status="live",
+        framing=framing, sources=sources_tuple, body=body,
+    )
+    item = WorkItemSubstance(
+        est_item_id=est_item_id, est_item_kind=item_kind, phase=item_phase,
+        binding=binding, layer=layer, placement=placement, serves=serves,
+        archived=archived, versions=(version,), path=target,
+    )
+    row = substance_to_rows(
+        item, project_id=card.project_id, project_code=code,
+        rel_path=str(target.relative_to(project_dir)),
+    )[0]
+    row["origin"] = "distilled"
+    row["field_states"] = {}
+    row["review_flags"] = []
+    # New live row first, THEN demote: a failure between the two leaves two
+    # live versions (loud — the render refuses it) rather than none.
+    client.table(_SUBSTANCE_TABLE).upsert([row], on_conflict="id").execute()
+    for r in distilled:
+        if r.get("status") == "live" and r.get("id") != row["id"]:
+            client.table(_SUBSTANCE_TABLE).update({"status": "superseded"}).eq(
+                "id", r["id"]
+            ).execute()
 
-    if client is not None and flip_card:
+    path = _render_element_file(client, card.project_id, est_item_id,
+                                project_dir=project_dir, writer=writer,
+                                origin="distilled")
+
+    if flip_card:
         client.table(_INBOX_TABLE).update({"status": "promoted"}).eq(
             "id", card.id
         ).execute()
 
-    return target
+    return path
 
 
-def _db_max_version(client, project_code: str, est_item_id: str) -> int | None:
-    """Highest version number MC-2 holds for this element, or None.
+_ELEMENT_COLUMNS = (
+    "id, version_label, status, origin, sources, est_item_kind, phase, "
+    "binding, layer, placement, serves, archived, rel_path"
+)
 
-    The #121 fix's data source: authored versions land in `spine_substance`
-    first and the disk file learns of them later (or never), so the next
-    distill label must come from max(disk, DB). None on no client or no
-    rows — callers fall back to disk alone, which is the pre-#121 behavior
-    and correct when the element has no DB rows.
 
-    A FAILED read raises (step 3). It used to return None, so an
-    unreachable DB or a revoked grant silently reverted to disk-only
-    labelling — and the promote then upserted a version label MC-2 already
-    holds, overwriting that version (the #121 defect, reintroduced silently).
-    """
-    if client is None:
-        return None
+def _element_rows(client, project_id: str, est_item_id: str) -> list[dict]:
+    """Every MC-2 row of one element (all origins), by the stable project_id.
+
+    A FAILED read raises: picking a version label without MC-2's answer is
+    how a promote overwrites a version MC-2 already holds (#121)."""
     try:
-        rows = (
+        return (
             client.table(Tables.SPINE_SUBSTANCE)
-            .select("version_label")
-            .eq("project_code", project_code)
+            .select(_ELEMENT_COLUMNS)
+            .eq("project_id", project_id)
             .eq("est_item_id", est_item_id)
             .execute()
             .data
@@ -547,13 +493,50 @@ def _db_max_version(client, project_code: str, est_item_id: str) -> int | None:
         )
     except Exception as exc:  # noqa: BLE001 — re-raised with context
         raise RuntimeError(
-            f"could not read MC-2 versions for {project_code}/{est_item_id} "
-            f"({type(exc).__name__}: {exc}); refusing to pick a version label "
-            "from disk alone (it may collide with a DB-only version)"
+            f"could not read MC-2 versions for {project_id}/{est_item_id} "
+            f"({type(exc).__name__}: {exc}); refusing to pick a version label"
         ) from exc
-    nums = [version_number(r.get("version_label")) for r in rows]
-    nums = [n for n in nums if n >= 0]
-    return max(nums) if nums else None
+
+
+def _render_element_file(client, project_id: str, est_item_id: str, *,
+                         project_dir: Path, writer: str, origin: str) -> Path:
+    """Render ONE element's file from its MC-2 rows through the generated-view
+    guard (a hand edit in the file is quarantined before it is replaced), and
+    record it in the directory's manifest. Returns the path."""
+    from cp_engine.authored_mirror import render_element
+    from cp_engine.spine_mirror import RENDER_SELECT, MirrorDir, element_path
+
+    rows = (
+        client.table(Tables.SPINE_SUBSTANCE)
+        .select(RENDER_SELECT)
+        .eq("project_id", project_id)
+        .eq("est_item_id", est_item_id)
+        .execute()
+        .data
+        or []
+    )
+    rows = [r for r in rows
+            if (r.get("origin") == "authored") == (origin == "authored")]
+    if not rows:
+        raise RuntimeError(f"no MC-2 rows for {est_item_id} after the write")
+    steps = (
+        client.table(Tables.SPINE_STEPS)
+        .select("est_item_id, position, title, status, step_date, note")
+        .eq("project_id", project_id)
+        .eq("est_item_id", est_item_id)
+        .execute()
+        .data
+        or []
+    )
+    path = element_path(project_dir, rows)
+    text = render_element(
+        est_item_id=est_item_id, rows=rows, steps=steps,
+        kind="context" if origin == "authored" else None, path=path,
+    )
+    mirror = MirrorDir(project_dir / "spine", writer=writer)
+    mirror.write(path, text)
+    mirror.save()
+    return path
 
 
 def _authored_slug_taken(client, card: InboxCard, spine_root: Path, slug: str) -> bool:
@@ -600,13 +583,11 @@ def _promote_as_new_serving_element(
     emits: binding='live' (serves non-empty), placement='context', layer from
     ``kind``, origin='authored', v1 live.
 
-    Rows go to ``spine_substance`` FIRST (authored elements are MC-2-owned; the
-    disk file is only a generated mirror), then the mirror file is written at
-    ``spine/_authored/<slug>.md`` via `write_authored_element` — byte-identical
-    to what `sync_spine_substance`'s authored reverse-mirror regenerates, so
-    the file never fights sync: the disk→DB readers skip ``_authored/``, the
-    reap skips origin='authored', and the reverse-mirror rewrites this same
-    path. Returns the written mirror Path (live version is v1).
+    Rows go to ``spine_substance`` FIRST (MC-2 owns every element; the disk
+    file is only a generated view), then the file is rendered at
+    ``spine/_authored/<slug>.md`` through the `spine_mirror` guard —
+    byte-identical to what sync's render regenerates. Returns the rendered
+    Path (live version is v1).
     """
     if client is None:
         raise ValueError(
@@ -652,10 +633,14 @@ def _promote_as_new_serving_element(
                              now_iso=today_iso)
 
     client.table(_SUBSTANCE_TABLE).upsert(rows, on_conflict="id").execute()
-    path = write_authored_element(
-        project_dir, project_code=card.project_code,
-        est_item_id=est_id, rows=rows,
-    )
+    from cp_engine.authored_mirror import render_element
+    from cp_engine.spine_mirror import MirrorDir
+
+    path = project_dir / "spine" / "_authored" / f"{slug}.md"
+    mirror = MirrorDir(project_dir / "spine", writer="cxp spine-frame")
+    mirror.write(path, render_element(est_item_id=est_id, rows=rows,
+                                      kind="context", path=path))
+    mirror.save()
 
     if flip_card:
         client.table(_INBOX_TABLE).update({"status": "promoted"}).eq(

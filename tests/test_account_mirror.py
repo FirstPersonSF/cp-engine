@@ -55,14 +55,25 @@ def test_account_rows_mirror_under_account_dir(tmp_path):
 
 
 def test_stale_project_side_mirror_is_removed(tmp_path):
+    """Step 4c: the pre-promotion copy under the project's spine/_authored/ is
+    reaped by the project's own render (account rows are not rendered
+    there), within the same sync that writes the account copy."""
+    from cp_engine.spine_substance_sync import sync_spine_substance
+    from tests._spine_fake import FakeClient, substance_row
+
     project_dir = tmp_path / "1p" / "sap-concur" / "sap-5174-vision"
     stale = project_dir / "spine" / "_authored" / "fred.md"
     stale.parent.mkdir(parents=True)
     stale.write_text("pre-promotion mirror")
-    client = _Client("cid", [_row("_authored/fred")])
-    _mirror_account_elements(client, project_id="pid", project_code="sap-5174",
-                             project_dir=project_dir)
+    client = FakeClient(
+        spine_substance=[substance_row("sap-5174", "_authored/fred", project_id="pid",
+                                       scope="account", company_id="cid")],
+        projects=[{"id": "pid", "company_id": "cid"}],
+    )
+    sync_spine_substance(client, project_id="pid", project_code="sap-5174",
+                         project_dir=project_dir)
     assert not stale.exists()
+    assert (project_dir.parent / "_stakeholders" / "fred.md").is_file()
 
 
 def test_archived_account_element_is_skipped(tmp_path):
@@ -197,13 +208,22 @@ def test_failed_element_keeps_its_existing_file(tmp_path):
 
 
 def test_failed_element_keeps_its_project_side_copy(tmp_path):
-    """The project-side file is only removed once the account write SUCCEEDS —
-    otherwise a failure leaves the element with no file on either side."""
+    """The project-side file is only reaped when the account render can
+    produce the element — otherwise a failure leaves it with no file on
+    either side."""
+    from cp_engine.spine_substance_sync import sync_spine_substance
+    from tests._spine_fake import FakeClient, substance_row
+
     project_dir = tmp_path / "1p" / "infoblox" / "ibx-5192"
     stale = project_dir / "spine" / "_authored" / "bbb-broken.md"
     stale.parent.mkdir(parents=True)
     stale.write_text("pre-promotion mirror")
-    rows = [_row("_authored/bbb-broken", version="v1", status="superseded")]
-    _mirror_account_elements(_Client("cid", rows), project_id="pid",
-                             project_code="ibx-5192", project_dir=project_dir)
+    client = FakeClient(
+        spine_substance=[substance_row("ibx-5192", "_authored/bbb-broken",
+                                       project_id="pid", status="superseded",
+                                       scope="account", company_id="cid")],
+        projects=[{"id": "pid", "company_id": "cid"}],
+    )
+    sync_spine_substance(client, project_id="pid", project_code="ibx-5192",
+                         project_dir=project_dir)
     assert stale.is_file(), "project-side copy dropped despite the account write failing"

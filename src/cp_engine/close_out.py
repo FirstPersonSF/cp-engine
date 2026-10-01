@@ -98,11 +98,10 @@ def load_mirror_elements(
     and is effectively blind on modern projects, so this reader parses the
     substance files directly with `parse_substance`.
 
-    Unlike `spine_substance_sync._load_substance_items`, ``_authored/`` is
-    INCLUDED here: that reader's exclusion exists because its output flows
-    disk→DB, which must never happen for DB-owned rows. This function's
-    output only ever renders into a checklist — a pure read — so reading the
-    authored mirror is safe and necessary.
+    ``_authored/`` is INCLUDED: every file under ``spine/`` is a view
+    rendered from MC-2 (step 4c), and this output only ever renders into a
+    checklist — a pure read — so reading the authored mirror is safe and
+    necessary.
 
     Legacy capitalized-layer element files (pre-substance projects) are still
     picked up via `load_spine`, deduped by key. Malformed files are skipped
@@ -122,7 +121,7 @@ def load_mirror_elements(
         for md in sorted(spine_root.glob("*/*.md")):
             parts = md.relative_to(spine_root).parts
             # Skip project context and frozen snapshots — but NOT _authored/
-            # (see docstring), which is why is_skipped_spine_dir isn't used.
+            # (see docstring).
             if parts[0] == "_context" or any(
                 p.endswith(".snapshots") for p in parts
             ):

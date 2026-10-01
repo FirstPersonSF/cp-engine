@@ -285,20 +285,14 @@ def _frame_promote_in_tree(
     project_dir = find_spine_dir(config.root, card.project_code)
     src = list(sources) or [card.source_ref]
 
-    # Directed re-distillation + markdown write (source of truth). Let any
+    # Directed re-distillation → MC-2 version row → rendered file. Let any
     # failure raise — a failed promote must be visible (the run row flips to
-    # 'failed' so the UI can show an error), and nothing was pushed yet.
+    # 'failed' so the UI can show an error).
     #
-    # flip_card=False means promote_card does NOT flip the card to
-    # 'promoted' here. The flip is deferred until AFTER a successful push
-    # (below): the git push is the real commit point. If the push fails,
-    # the throwaway clone (and its only copy of the markdown) is discarded
-    # — but the card stays proposed/framed so the human can retry the
-    # click. No data loss. The client IS passed: when the promote's sources
-    # diverge from the bound card's (issue #44), promote_card creates a new
-    # AUTHORED element, whose rows are MC-2-owned and written directly —
-    # for that path the DB row, not the push, is the durable copy (the
-    # authored reverse-mirror regenerates the file on any later sync).
+    # Step 4c: the MC-2 write IS the commit point (MC-2 owns the spine; the
+    # file is a view any later sync re-renders). So the card flips as soon
+    # as that write lands (best-effort, just below) — if the push then fails,
+    # the version is already durable and a retry would only mint a duplicate.
     fidelity: dict = {}
     path = promote_card(
         card,
@@ -314,7 +308,27 @@ def _frame_promote_in_tree(
         name=name,
         phase=phase,
         on_fidelity=fidelity.update,
+        writer="webhook",
     )
+
+    # The version is in MC-2: flip the card to 'promoted' now. Best-effort —
+    # if THIS fails the durable work is already done; worst case the card
+    # shows un-promoted and a retry re-distills a duplicate version (benign,
+    # far better than losing the write). Logged loudly; the run is STILL
+    # recorded done, with card_flipped=false (mirrors the `mirrored` field).
+    card_flipped = True
+    try:
+        client.table(_INBOX_TABLE).update({"status": "promoted"}).eq(
+            "id", card.id
+        ).execute()
+    except Exception as exc:  # noqa: BLE001 — the version already landed
+        log.error(
+            "spine-promote: card flip to 'promoted' FAILED for %s after the "
+            "version landed in MC-2 — card shows un-promoted and a retry will "
+            "re-distill a duplicate version: %s", card.id, exc,
+        )
+        observability.capture(exc, area="spine_promote_card_flip")
+        card_flipped = False
 
     # Did the issue-#44 create path fire? promote_card's create-don't-version
     # branch mirrors the new authored element at spine/_authored/<slug>.md;
@@ -326,11 +340,10 @@ def _frame_promote_in_tree(
     version_label = parse_substance(path).live_version().label
     rel_path = str(path.relative_to(tenant_root))
 
-    # Mirror the new version into spine_substance so the UI sees it
-    # immediately (idempotent reconcile of ALL of this project's substance,
-    # exactly like `cxp sync`). Best-effort: a mirror failure must NOT lose
-    # the click — the markdown + git push still land and the next sync
-    # reconciles. So we record mirrored=false and keep going.
+    # Re-render the project's whole generated spine/ view from MC-2 (exactly
+    # what `cxp sync` does), so the push carries every file the version
+    # touched. Best-effort: the version is already in MC-2, so a render
+    # failure records mirrored=false and the next sync converges.
     mirrored = True
     mirror_skipped: list[dict] = []
     mirror_warnings: list[str] = []
@@ -343,6 +356,7 @@ def _frame_promote_in_tree(
             estimate=estimate,
             malformed_out=mirror_skipped,
             warnings_out=mirror_warnings,
+            writer="webhook",
         )
     except Exception as exc:  # noqa: BLE001 — never lose a successful write
         log.warning(
@@ -366,8 +380,8 @@ def _frame_promote_in_tree(
             area="spine_substance_skip",
         )
 
-    # #314 — a versioned (disk) promote syncs up with review_flags=[]; record
-    # a LOW fidelity score on the mirrored row so the review surface lists it.
+    # #314 — a versioned promote lands with review_flags=[]; record a LOW
+    # fidelity score on that row so the review surface lists it.
     # (The create path already stamped its own row.) Sync keeps it: flags are
     # merged per (field, source) and no other producer owns this source.
     # Best-effort — the durable write must never fail on its own warning.
@@ -414,9 +428,9 @@ def _frame_promote_in_tree(
         log.warning("spine-promote: LOW distill fidelity for card=%s: %s",
                     card.id, fidelity.get("reason"))
 
-    # The push IS the commit point — succeeding here means the version is
-    # durably in the repo. Any failure raises before the card flips (the run
-    # records 'failed'), so the human can safely retry the click (no data loss).
+    # The push carries the rendered view. A failure raises (the run records
+    # 'failed'); the version itself is already durable in MC-2 and the next
+    # sync renders it.
     commit_sha = git_ops._commit_and_push_promote(
         tenant_root=tenant_root,
         project_code=card.project_code,
@@ -424,26 +438,6 @@ def _frame_promote_in_tree(
         rel_path=rel_path,
     )
 
-    # NOW that the push succeeded, flip the card to 'promoted' — the last,
-    # cheapest, most-likely-to-succeed step. If THIS fails the durable work is
-    # already done (version is in the repo); worst case the card shows
-    # un-promoted and a retry re-distills a duplicate version (benign, and far
-    # better than losing the write). So we log loudly but the run is STILL
-    # recorded done, with card_flipped=false (mirrors the `mirrored` field).
-    card_flipped = True
-    try:
-        client.table(_INBOX_TABLE).update({"status": "promoted"}).eq(
-            "id", card.id
-        ).execute()
-    except Exception as exc:  # noqa: BLE001 — push already landed; never fail here
-        log.error(
-            "spine-promote: card flip to 'promoted' FAILED for %s after a "
-            "successful push (%s) — version is durable in the repo; card shows "
-            "un-promoted and a retry will re-distill a duplicate version: %s",
-            card.id, (commit_sha or "no-op")[:8], exc,
-        )
-        observability.capture(exc, area="spine_promote_card_flip")
-        card_flipped = False
 
     log.info(
         "spine-promote: card=%s item=%s %s -> %s (mirrored=%s flipped=%s new=%s)",

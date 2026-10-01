@@ -11,6 +11,8 @@ client material into the repo.
 """
 from pathlib import Path
 
+import pytest
+
 from cp_engine import distill_fidelity as df
 from cp_engine.spine_recover import recover
 
@@ -249,53 +251,6 @@ def test_recover_leaves_carried_bodies_unmarked(tmp_path):
 # ---- promote: the frame/promote distiller ---------------------------------
 
 
-class _PT:
-    def __init__(self, store, name):
-        self.store, self.name, self.f, self.op, self.lim = store, name, [], None, None
-
-    def select(self, cols):
-        self.op = ("select", cols)
-        return self
-
-    def update(self, v):
-        self.op = ("update", v)
-        return self
-
-    def upsert(self, rows, on_conflict=None):
-        self.op = ("upsert", list(rows))
-        return self
-
-    def eq(self, c, v):
-        self.f.append((c, v))
-        return self
-
-    def limit(self, n):
-        self.lim = n
-        return self
-
-    def execute(self):
-        kind, payload = self.op
-        rows = self.store.setdefault(self.name, [])
-        hit = [r for r in rows if all(r.get(c) == v for c, v in self.f)]
-        if kind == "upsert":
-            rows.extend(dict(r) for r in payload)
-            hit = []
-        elif kind == "update":
-            for r in hit:
-                r.update(payload)
-            hit = []
-        return type("R", (), {"data": hit[: self.lim] if self.lim else hit})()
-
-
-class _PC:
-    def __init__(self):
-        self.store = {"spine_inbox": [], "spine_substance": [],
-                      "projects": [], "companies": []}
-
-    def table(self, name):
-        return _PT(self.store, name)
-
-
 def _card():
     from cp_engine.spine_inbox import proposed_card
     return proposed_card(project_id="u1", project_code="ibx-5153",
@@ -309,12 +264,16 @@ def _distiller(body):
 
 def test_promote_reports_fidelity_before_writing(tmp_path):
     from cp_engine.spine_inbox import promote_card
+    from tests._spine_fake import FakeClient
     seen = {}
-    promote_card(_card(), framing="the DNS story", est_item_id="d1",
-                 kind="deliverable", project_dir=tmp_path, sources=["mtg-42"],
-                 distiller=_distiller(FABRICATED), model="m",
-                 today="2026-06-20", on_fidelity=seen.update)
-    assert seen["low"] is True
+    client = FakeClient(spine_substance=[], spine_steps=[], spine_inbox=[])
+    client.fail["upsert"] = {"spine_substance"}     # the write never lands…
+    with pytest.raises(RuntimeError):
+        promote_card(_card(), framing="the DNS story", est_item_id="d1",
+                     kind="deliverable", project_dir=tmp_path, sources=["mtg-42"],
+                     distiller=_distiller(FABRICATED), model="m", client=client,
+                     today="2026-06-20", on_fidelity=seen.update)
+    assert seen["low"] is True                       # …the score was already out
 
 
 def test_promote_create_path_stamps_the_authored_row(tmp_path, monkeypatch):
@@ -324,15 +283,16 @@ def test_promote_create_path_stamps_the_authored_row(tmp_path, monkeypatch):
     from cp_engine.spine_inbox import promote_card
     monkeypatch.setattr(mc2_db, "canonical_spine_code",
                         lambda client, pid, fallback: fallback)
+    from tests._spine_fake import FakeClient
+    client = FakeClient(spine_substance=[], spine_steps=[], spine_inbox=[])
     promote_card(_card(), framing="Planning", est_item_id="d1", kind="activity",
-                 project_dir=tmp_path, sources=["mtg-1"],
+                 project_dir=tmp_path, sources=["mtg-1"], client=client,
                  distiller=_distiller(FAITHFUL), model="m", today="2026-06-20")
-    client = _PC()
     promote_card(_card(), framing="Interview with Paul Wu", est_item_id="d1",
                  kind="activity", project_dir=tmp_path, sources=["mtg-2"],
                  distiller=_distiller(FABRICATED), model="m", client=client,
                  today="2026-07-09")
-    (row,) = client.store["spine_substance"]
+    (row,) = [r for r in client.store["spine_substance"] if r["origin"] == "authored"]
     assert row["field_states"]["body"] == df.MACHINE_DERIVED
     assert df.fidelity_flags_of(row)
 

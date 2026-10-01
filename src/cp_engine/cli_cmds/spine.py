@@ -348,12 +348,11 @@ def sweep_cmd(code: str, model: str) -> None:
     """Sweep a project's whole spine → write a Synthesis-layer readout.
 
     Loads the spine (MC-2 canonical, disk fallback — same as `cp spine`), runs
-    the LLM synthesis, and writes it as a `Synthesis`-layer element at
-    `spine/Synthesis/<today>-sweep.md` (idempotent per day — re-running
-    overwrites). An empty spine writes nothing.
+    the LLM synthesis, and writes it to MC-2 as an authored `Synthesis`
+    element `_authored/<today>-sweep` (idempotent per day — re-running
+    overwrites), rendered to `spine/_authored/<today>-sweep.md`. An empty
+    spine writes nothing.
     """
-
-    import frontmatter
 
     from cp_engine.spine import SpineDirNotFound, find_spine_dir
     from cp_engine.spine_sweep import run_sweep
@@ -392,31 +391,48 @@ def sweep_cmd(code: str, model: str) -> None:
         except SpineDirNotFound as exc:
             click.echo(str(exc), err=True)
             sys.exit(1)
-    syn_dir = project_dir / "spine" / "Synthesis"
-    syn_dir.mkdir(parents=True, exist_ok=True)
-    fname = f"{today.isoformat()}-sweep.md"
-    el_id = f"{code}/synthesis/{today.isoformat()}-sweep"
-    # The sweep readout is ABOUT the active work, so it serves the active
-    # deliverables — this makes the fresh element score hot on the next Lens
-    # pass via _serves_active_term (rather than scoring cold with serves=[]).
+    # Step 4c: spine/ is rendered from MC-2, so the readout is written to
+    # MC-2 as an authored Synthesis element FIRST and its file rendered from
+    # those rows — a file dropped into spine/ by hand (what this did before)
+    # would be quarantined and removed by the next sync. One element per day:
+    # a same-day re-run overwrites v1.
+    from cp_engine.authored_element import build_create_rows
     from cp_engine.spine import active_deliverable_ids
+    from cp_engine.spine_inbox import _render_element_file
+    from cp_engine.sync import _read_mc_id
 
+    # The readout is ABOUT the active work, so it serves the active
+    # deliverables — the fresh element scores hot on the next Lens pass via
+    # _serves_active_term (rather than scoring cold with serves=[]).
     serves = sorted(active_deliverable_ids(elements))
-    post = frontmatter.Post(
-        result.synthesis_text,
-        id=el_id,
-        project=code,
-        layer="Synthesis",
-        type="sweep",
-        title=f"Whole-project sweep — {today.isoformat()}",
-        status="active",
-        last_touched=today.isoformat(),
-        serves=serves,
+    try:
+        client = mc2_db.get_client(config)
+    except Exception as exc:  # noqa: BLE001 — nowhere to write the readout
+        click.echo(result.ranked_table)
+        click.echo(f"\nSynthesis NOT written — MC-2 unavailable: {exc}", err=True)
+        sys.exit(1)
+    project_id = _read_mc_id(project_dir / "cp.md") or mc2_db._resolve_project_id(
+        client, code)
+    if not project_id:
+        click.echo(f"Synthesis NOT written — no MC-2 project for {code}.", err=True)
+        sys.exit(1)
+    est_item_id = f"_authored/{today.isoformat()}-sweep"
+    rows = build_create_rows(
+        project_id=project_id, project_code=project_dir.name,
+        label=f"Whole-project sweep — {today.isoformat()}", type_="Synthesis",
+        body=result.synthesis_text, serves=serves, now_iso=today.isoformat(),
     )
-    (syn_dir / fname).write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
+    for r in rows:
+        r["est_item_id"] = est_item_id
+        r["id"] = f"{project_dir.name}/{est_item_id}/{r['version_label']}"
+    client.table(mc2_db.Tables.SPINE_SUBSTANCE).upsert(rows, on_conflict="id").execute()
+    path = _render_element_file(client, project_id, est_item_id,
+                                project_dir=project_dir, writer="cxp sweep",
+                                origin="authored")
 
     click.echo(result.ranked_table)
-    click.echo(f"\nSynthesis written: spine/Synthesis/{fname}")
+    click.echo(f"\nSynthesis written: {est_item_id} (MC-2) → "
+               f"{path.relative_to(project_dir)}")
 
     # Best-effort: record proposed drift as review_flags on each element's MC-2
     # row (the human confirms later in the UI). Advisory only — an MC-2 failure
