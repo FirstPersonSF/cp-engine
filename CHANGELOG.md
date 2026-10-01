@@ -4,6 +4,17 @@ All notable changes to `cp-engine` are recorded here. The package follows [semve
 
 Tenants pin to a minor version (`engine = "~= 0.1"`). Patch updates flow automatically; minor bumps require explicit upgrade; major bumps require migration notes.
 
+## v0.131.1 — 2026-10-01
+
+**Undated commitments expire again.** The daily sync closes undated
+meeting-ingest commitments 14+ days old as `expired` (#136), before it renders
+the `open-asks` regions, so an expired ask leaves the sprint file in the same
+run. The rule is the dates loop's, unchanged: `source_kind='meeting_ingest'`, no
+due date, `date_status='proposed'`. Rows a person wrote, dated rows and agreed
+rows are never touched. The loop's cron had been off since 07-27, so nothing
+had expired for two months. A failed expiry prints a line and logs a warning
+rather than passing silently.
+
 ## v0.131.0 — 2026-10-01
 
 **Architecture plan step 5: the retire list, and cp-hosted is the only MCP
