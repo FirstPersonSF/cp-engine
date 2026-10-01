@@ -66,7 +66,9 @@ def _slice_region(text: str, name: str) -> str | None:
     end = text.find(end_marker, start)
     if end == -1:
         return None
-    return text[start + len(start_marker):end].strip("\n")
+    from cp_engine.region_guard import strip_digest
+
+    return strip_digest(text[start + len(start_marker):end]).strip("\n")
 
 
 def facts_section(cp_md_text: str | None) -> str:

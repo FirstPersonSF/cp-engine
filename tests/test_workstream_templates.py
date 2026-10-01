@@ -256,9 +256,14 @@ def test_migrate_regions_then_splice_round_trips_hand_text() -> None:
     for r in _ORDER:
         assert has_region(out, r)
     out = splice_managed_region(out, "alpha", "A")
+    # The spliced region carries the engine's digest (architecture plan
+    # step 2); the inserted template blocks and the hand text are untouched.
+    from cp_engine.region_guard import digest
+
     assert out == (
         "# Title\n\n"
-        "<!-- cp-engine:start alpha -->\nA\n<!-- cp-engine:end alpha -->\n\n"
+        "<!-- cp-engine:start alpha -->\nA\n"
+        f"<!-- cp-engine:digest {digest('A')} -->\n<!-- cp-engine:end alpha -->\n\n"
         "<!-- cp-engine:start beta -->\nB\n<!-- cp-engine:end beta -->\n\n"
         "<!-- cp-engine:start gamma -->\nG\n<!-- cp-engine:end gamma -->\n\n"
         "## Hand\n\nsacred\n"

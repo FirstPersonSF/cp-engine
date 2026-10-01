@@ -1198,7 +1198,15 @@ def exec_summary_placeholder_fields(region: str) -> tuple[str, ...]:
     return tuple(f for f in EXEC_SUMMARY_AUTHORED_FIELDS if f in seen and f not in filled)
 
 
-def splice_managed_region(file_contents: str, region: str, new_body: str) -> str:
+def splice_managed_region(
+    file_contents: str,
+    region: str,
+    new_body: str,
+    *,
+    source: "Path | str | None" = None,
+    writer: str = "cxp render",
+    guard_hint: str | None = None,
+) -> str:
     """Replace the body between
     `<!-- cp-engine:start <region> -->` and the matching end marker.
 
@@ -1216,9 +1224,23 @@ def splice_managed_region(file_contents: str, region: str, new_body: str) -> str
         new_body: replacement content. Should NOT include the marker
             lines themselves; they're preserved by the splicer.
 
+        source: the file being spliced. Pass it from every call that WRITES
+            the result: when the region on disk holds text the engine did not
+            write (its digest no longer matches — see region_guard), that text
+            is quarantined under ``exceptions/region-edits/`` and a warning
+            names it before it is replaced. Dry comparisons leave it None.
+        writer: who is rendering, for the quarantine record.
+        guard_hint: appended to that warning (e.g. where the text belongs).
+
+    Every guarded (non-authored) region is written with the engine's digest
+    as its last inner line (architecture plan step 2); ``exec-summary`` is
+    authored and is spliced exactly as given.
+
     Returns:
         The spliced file body. Caller writes to disk.
     """
+    from cp_engine import region_guard
+
     start_marker = f"<!-- cp-engine:start {region} -->"
     end_marker = f"<!-- cp-engine:end {region} -->"
 
@@ -1257,7 +1279,20 @@ def splice_managed_region(file_contents: str, region: str, new_body: str) -> str
     # empty after stripping, just emit a single newline between markers
     # (matches what a Jinja template with an empty `{% if %}` block produces
     # on full-write, so splice and full-write agree byte-for-byte).
-    body = new_body.strip("\n")
+    if region_guard.is_guarded(region):
+        current = file_contents[start_pos + len(start_marker) : end_pos]
+        if (
+            source is not None
+            and region_guard.provenance(current) == "foreign"
+            and region_guard.digest(current) != region_guard.digest(new_body)
+        ):
+            region_guard.report(
+                source=source, region=region, discarded=current,
+                replacement=new_body, writer=writer, hint=guard_hint,
+            )
+        body = region_guard.stamp(new_body)
+    else:
+        body = new_body.strip("\n")
     if body:
         return f"{before}\n{body}\n{after}"
     return f"{before}\n{after}"

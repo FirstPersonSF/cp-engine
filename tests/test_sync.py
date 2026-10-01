@@ -1832,9 +1832,12 @@ def test_write_if_changed_falls_back_to_full_rewrite_on_duplicated_marker(
 
     assert changed is True
     # Full-rewrite fallback: the new body fully replaces the old (the
-    # duplicated marker is gone).
+    # duplicated marker is gone). Written digest-stamped, as every engine
+    # write of a guarded region is (architecture plan step 2).
+    from cp_engine.region_guard import stamp_all
+
     final = target.read_text()
-    assert final == new_body
+    assert final == stamp_all(new_body)
     assert "fresh banner" in final
     assert "old banner one" not in final
     assert "old banner two" not in final

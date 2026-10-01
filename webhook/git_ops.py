@@ -8,12 +8,14 @@ names (patching `main.<name>` re-exports has no effect on behavior).
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 import random
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
@@ -27,9 +29,89 @@ import cp_engine
 log = logging.getLogger("cp-engine-webhook")
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  One writer at a time per tenant (architecture plan step 2)
+# ──────────────────────────────────────────────────────────────────────
+#
+# THE RACE. Every route clones the tenant, edits, commits and pushes on its
+# own. Two deliveries that overlap (a batch of meetings tagged at once, a
+# Slack click during an ingest) each clone the SAME tip, edit the same sprint
+# file, and race to push. The loser's `pull --rebase` succeeds only when the
+# edits touched different lines; two bullets appended under one heading
+# conflict, and the loser's request fails (or, for append routes, re-does its
+# write via #290). Git kept it from being corrupt; it did not keep it from
+# being lost to a 5xx.
+#
+# THE LOCK. `_cloned_tenant` holds a per-tenant lock across the whole
+# clone → edit → commit → push, so in-process writers run one after another
+# and each clones the previous one's pushed tip. Writers OUTSIDE this process
+# (CI workflows, people, local cxp) still race, and that race is still
+# rebase-or-fail in `_push_with_retry`.
+#
+# WHY NOT A PLAIN LOCK. Routes run both on the event-loop thread (sync code
+# in `async def`) and in `asyncio.to_thread` workers; two routes also hold a
+# clone open across an `await`. A coroutine waiting on a lock held by another
+# coroutine of the SAME loop thread would block the loop forever (the holder
+# can never resume). So: a thread that already holds the lock — which on the
+# loop thread means "another coroutine of this loop holds it" — proceeds
+# WITHOUT it (logged), falling back to the rebase-or-fail push. Every other
+# wait is bounded by `CP_TENANT_LOCK_TIMEOUT_SEC` and ends in a loud 503.
+#
+# SCOPE. In-process only: correct for the single uvicorn process the
+# Dockerfile starts. More than one replica or `--workers N` needs a lock
+# outside the process (a Postgres advisory lock is the natural one).
+
+_TENANT_LOCK_TIMEOUT_SEC = float(os.environ.get("CP_TENANT_LOCK_TIMEOUT_SEC", "600"))
+_tenant_locks: dict[str, threading.Lock] = {}
+_tenant_lock_holder: dict[str, int] = {}
+_tenant_locks_guard = threading.Lock()
+
+
+def _on_event_loop_thread() -> bool:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+@contextmanager
+def _tenant_write_lock(repo_url: str):
+    """Hold the per-tenant writer lock; yields True if held, False if this
+    call had to proceed without it (see the note above)."""
+    with _tenant_locks_guard:
+        lock = _tenant_locks.setdefault(repo_url, threading.Lock())
+    me = threading.get_ident()
+    if _tenant_lock_holder.get(repo_url) == me:
+        log.warning(
+            "tenant write lock already held by this thread (%s); proceeding "
+            "unlocked — push stays rebase-or-fail",
+            "another coroutine on the event loop" if _on_event_loop_thread() else "re-entrant clone",
+        )
+        yield False
+        return
+    if not lock.acquire(timeout=_TENANT_LOCK_TIMEOUT_SEC):
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"tenant write lock busy for {_TENANT_LOCK_TIMEOUT_SEC:.0f}s — "
+                "another write to the tenant is still running; retry"
+            ),
+        )
+    _tenant_lock_holder[repo_url] = me
+    try:
+        yield True
+    finally:
+        _tenant_lock_holder.pop(repo_url, None)
+        lock.release()
+
+
 @contextmanager
 def _cloned_tenant(sparse_paths: list[str] | None = None):
     """Clone cp tenant into temp dir; yield path; always clean up.
+
+    Holds the per-tenant writer lock for the whole clone → edit → commit →
+    push (architecture plan step 2; see `_tenant_write_lock`).
 
     ``sparse_paths``: when given, the clone is a partial + sparse checkout —
     ``--depth=10 --filter=blob:none --sparse`` followed by ``git
@@ -47,6 +129,13 @@ def _cloned_tenant(sparse_paths: list[str] | None = None):
     if not repo_url:
         raise HTTPException(status_code=500, detail="CP_TENANT_REPO_URL not configured")
 
+    with _tenant_write_lock(repo_url):
+        with _clone_into_tmp(repo_url, sparse_paths) as root:
+            yield root
+
+
+@contextmanager
+def _clone_into_tmp(repo_url: str, sparse_paths: list[str] | None):
     tmp = Path(tempfile.mkdtemp(prefix="cp-webhook-"))
     try:
         env = _ssh_env()
@@ -116,6 +205,10 @@ _NON_FAST_FORWARD_MARKERS = (
     "non-fast-forward",
     "(non-fast-forward)",
     "fetch first",
+    # Two pushes landing at the same instant: the server's ref update loses
+    # the compare-and-swap ("cannot lock ref ... is at X but expected Y").
+    # Same race, same recovery (architecture plan step 2).
+    "cannot lock ref",
 )
 
 # Backoff between push attempts (#181). Retries used to fire back-to-back,
@@ -320,6 +413,105 @@ def _reset_to_origin_tip(tenant_root: Path, target_branch: str, env: dict) -> bo
     return True
 
 
+# ──────────────────────────────────────────────────────────────────────
+#  Managed-region guard at the webhook (architecture plan step 2)
+# ──────────────────────────────────────────────────────────────────────
+#
+# The webhook commits what its routes wrote. A route that writes INSIDE an
+# engine-managed region without rendering it (#263: the account-summary
+# append landed inside a marker and sync ate 39 summaries across 18 runs)
+# used to be committed as-is and silently destroyed by the next render. Now,
+# before every commit, each region the commit would change is checked: the
+# engine's own splices carry a matching digest (cp_engine.region_guard); any
+# other change is reverted to HEAD's content, the text is preserved under
+# exceptions/region-edits/ (committed in the same commit), and a warning +
+# Sentry event name it. `exec-summary` is authored and exempt.
+
+
+def _replace_region_inner(text: str, region: str, inner: str) -> str:
+    start = f"<!-- cp-engine:start {region} -->"
+    end = f"<!-- cp-engine:end {region} -->"
+    s = text.find(start)
+    e = text.find(end, s + len(start)) if s >= 0 else -1
+    if s < 0 or e < 0:
+        return text
+    return text[: s + len(start)] + inner + text[e:]
+
+
+def _guard_managed_regions(tenant_root: Path) -> list[str]:
+    """Revert + preserve foreign edits inside managed regions in the clone's
+    working tree. Returns ``["<path>#<region> -> <quarantine>", ...]``.
+    Never raises: a guard failure must not cost the route its write."""
+    from cp_engine import region_guard
+
+    findings: list[str] = []
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--name-only", "HEAD", "--", "*.md"],
+            cwd=tenant_root, capture_output=True, text=True,
+        )
+        for rel in [ln for ln in diff.stdout.splitlines() if ln.strip()]:
+            path = tenant_root / rel
+            if not path.is_file():
+                continue
+            head = subprocess.run(
+                ["git", "show", f"HEAD:{rel}"],
+                cwd=tenant_root, capture_output=True, text=True,
+            )
+            if head.returncode != 0:
+                continue
+            before = region_guard.regions(head.stdout)
+            if not before:
+                continue
+            text = path.read_text(encoding="utf-8")
+            new_text = text
+            for name, inner in region_guard.regions(text).items():
+                if not region_guard.is_guarded(name) or name not in before:
+                    continue
+                if inner == before[name] or region_guard.provenance(inner) == "engine":
+                    continue
+                edit = region_guard.report(
+                    source=path, region=name, discarded=inner,
+                    replacement=before[name], writer="cp-engine-webhook",
+                    hint="Reverted to the committed region before this commit.",
+                )
+                new_text = _replace_region_inner(new_text, name, before[name])
+                findings.append(f"{rel}#{name} -> {edit.quarantined or 'NOT PRESERVED'}")
+            if new_text != text:
+                path.write_text(new_text, encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001 — guard must never break the write
+        log.warning("region guard failed open: %s", exc, exc_info=True)
+        observability.capture(exc, area="region_guard")
+        return findings
+    if findings:
+        log.warning("region guard reverted %d foreign region edit(s): %s",
+                    len(findings), "; ".join(findings))
+        observability.capture(
+            RuntimeError(f"foreign managed-region edit(s) reverted: {'; '.join(findings)}"),
+            area="region_guard",
+        )
+    return findings
+
+
+def _stage_all(tenant_root: Path) -> None:
+    """``git add -A`` plus the quarantine dir, which a sparse clone may not
+    have checked out (``add -A`` skips paths outside the sparse cone)."""
+    from cp_engine.region_guard import QUARANTINE_DIR
+
+    # In a sparse clone a new file outside the cone makes plain `add -A`
+    # exit 1 ("paths outside of your sparse-checkout definition"); `--sparse`
+    # lets it stage the quarantine. Only used when one was written, so an
+    # ordinary commit stages exactly what it always did.
+    cmd = ["git", "add", "-A"]
+    if (tenant_root / QUARANTINE_DIR).is_dir():
+        cmd.append("--sparse")
+    subprocess.run(cmd, cwd=tenant_root, check=True)
+
+
+def _region_guard_trailer(findings: list[str]) -> str:
+    return "".join(f"Region-Guard-Reverted: {f}\n" for f in findings)
+
+
 def _commit_with_message_and_push(
     tenant_root: Path,
     message: str,
@@ -359,6 +551,12 @@ def _commit_with_message_and_push(
     """
     env = _ssh_env()
 
+    # Architecture plan step 2: never commit a foreign edit inside a managed
+    # region (reverted + preserved; may leave only the quarantine file).
+    findings = _guard_managed_regions(tenant_root)
+    if findings:
+        message = message.rstrip("\n") + "\n" + _region_guard_trailer(findings)
+
     # Short-circuit BEFORE `git add`, so a clean tree costs one cheap status
     # call rather than a staged-then-failed commit.
     status = subprocess.run(
@@ -372,7 +570,7 @@ def _commit_with_message_and_push(
         log.info("nothing to commit (clean tree); skipping: %s", message.splitlines()[0])
         return None
 
-    subprocess.run(["git", "add", "-A"], cwd=tenant_root, check=True)
+    _stage_all(tenant_root)
     subprocess.run(
         ["git", "commit", "-m", message],
         cwd=tenant_root,
@@ -399,7 +597,8 @@ def _commit_with_message_and_push(
             # race gone the other way.
             if not reapply():
                 return False
-            subprocess.run(["git", "add", "-A"], cwd=tenant_root, check=True)
+            _guard_managed_regions(tenant_root)
+            _stage_all(tenant_root)
             subprocess.run(
                 ["git", "commit", "-m", message],
                 cwd=tenant_root,
@@ -551,6 +750,7 @@ def _commit_clickup_close(
     or None if the working tree was clean (e.g., execute_plan already
     flipped the bullet on a previous webhook run)."""
     env = _ssh_env()
+    findings = _guard_managed_regions(tenant_root)
 
     # Short-circuit if execute_plan made no on-disk change. Without this,
     # `git commit` would fail with "nothing to commit" and 500 the request.
@@ -567,11 +767,12 @@ def _commit_clickup_close(
         )
         return None
 
-    subprocess.run(["git", "add", "-A"], cwd=tenant_root, check=True)
+    _stage_all(tenant_root)
     message = (
         f"[clickup-close] {code}: hash {cp_hash}\n\n"
         f"Generated by cp-engine-webhook v{cp_engine.__version__}.\n"
         f"{_correlation_trailer()}"
+        f"{_region_guard_trailer(findings)}"
     )
     subprocess.run(
         ["git", "commit", "-m", message],
