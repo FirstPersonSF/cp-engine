@@ -117,7 +117,9 @@ from cp_engine.promote_uphill import level_for as _engine_level_for  # noqa: E40
 from cp_engine.state import slug_full_job_name as _engine_slug_full_job_name  # noqa: E402
 # Exec Summary region, markers, stamp and stale threshold (step 1c).
 from cp_engine import project_sources as _engine_project_sources  # noqa: E402
+from cp_engine import mc2_db as _engine_mc2_db  # noqa: E402
 from cp_engine import spine_steps as _engine_spine_steps  # noqa: E402
+from cp_engine.commitments import _valid_due_date as _engine_valid_due_date  # noqa: E402
 from cp_engine import wrap_report as _engine_wrap_report  # noqa: E402
 from cp_engine import exec_summary_draft as _engine_exec_summary_draft  # noqa: E402
 from cp_engine import render as _engine_render  # noqa: E402
@@ -399,11 +401,11 @@ _slug_full_job_name = _engine_slug_full_job_name
 
 
 # One owner column on every owner-scoped table since mc-2 mig 192 /
-# cp-engine #301 (`project_id`). Kept as a function so the six read loops
-# keep one spelling; `client` is unused.
+# cp-engine #301 (`project_id`) — the engine's `mc2_db.owner_columns`, as a
+# tuple so the read loops keep one spelling (architecture plan step 1c, H23).
 def _owner_columns(client) -> tuple[str, ...]:
-    """Mirrors `cp_engine.mc2_db.owner_columns` (always `project_id`)."""
-    return ("project_id",)
+    """`(mc2_db.owner_columns(client),)` — always `("project_id",)`."""
+    return (_engine_mc2_db.owner_columns(client),)
 
 
 def _looks_like_uuid(value: str) -> bool:
@@ -3036,18 +3038,17 @@ def slugify(text: str) -> str:
 
 
 def valid_due_date(raw: str | None) -> str | None:
-    """ISO `YYYY-MM-DD` or None. Mirrors `cp_engine.commitments._valid_due_date`.
+    """ISO `YYYY-MM-DD` or None — `cp_engine.commitments._valid_due_date`
+    (architecture plan step 1c, H14), applied to `str(raw)` so a non-string
+    argument is parsed rather than raising.
 
     Only a real ISO date belongs in `due_date`; a caller's free-text date is
     rejected loudly rather than guessed at, because an invented deadline is
     worse than an undated row (which downstream flags as "needs a date").
     """
-    if not raw or not str(raw).strip():
+    if raw is None:
         return None
-    try:
-        return date.fromisoformat(str(raw).strip()).isoformat()
-    except ValueError:
-        return None
+    return _engine_valid_due_date(str(raw))
 
 
 def resolve_write_scope(client, project_code: str) -> dict[str, Any] | None:
