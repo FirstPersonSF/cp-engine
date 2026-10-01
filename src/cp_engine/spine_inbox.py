@@ -182,7 +182,7 @@ def promote_card(
     today=None,
     flip_card: bool = True,
     on_fidelity: Callable[[dict], None] | None = None,
-    writer: str = "cxp spine-frame",
+    writer: str = "spine-inbox promote",
 ) -> Path:
     """Frame + promote a proposed card into a directed-distilled live version.
 
@@ -488,7 +488,7 @@ def _promote_as_new_serving_element(
     from cp_engine.spine_mirror import MirrorDir
 
     path = project_dir / "spine" / "_authored" / f"{slug}.md"
-    mirror = MirrorDir(project_dir / "spine", writer="cxp spine-frame")
+    mirror = MirrorDir(project_dir / "spine", writer="spine-inbox promote")
     mirror.write(path, render_element(est_item_id=est_id, rows=rows,
                                       kind="context", path=path))
     mirror.save()
