@@ -72,11 +72,15 @@ COPY src ./cp-engine/src
 # might clone the private cloud-storage transitive ref. It does not persist
 # across RUN layers, so both the cp-engine install AND the webhook install set
 # it. Token via ARG (Railway exposes service vars as build ARGs); never ENV'd.
+# Each RUN deletes /root/.gitconfig before it ends (even on failure), so the
+# rewrite holding the token never persists into an image layer or the running
+# container. Until 2026-09-30 it did: the file was written and never removed.
 ARG gh_token
 RUN sh -c 'if [ -n "$gh_token" ]; then \
              git config --global url."https://${gh_token}@github.com/".insteadOf "https://github.com/"; \
            fi && \
-           pip install --no-cache-dir ./cp-engine'
+           pip install --no-cache-dir ./cp-engine; rc=$?; \
+           rm -f /root/.gitconfig; exit $rc'
 
 # Install the webhook itself. Re-applies the token rewrite because pip
 # re-resolves webhook's deps, which include cp-engine's private git+https
@@ -86,7 +90,8 @@ COPY webhook ./webhook
 RUN sh -c 'if [ -n "$gh_token" ]; then \
              git config --global url."https://${gh_token}@github.com/".insteadOf "https://github.com/"; \
            fi && \
-           pip install --no-cache-dir ./webhook'
+           pip install --no-cache-dir ./webhook; rc=$?; \
+           rm -f /root/.gitconfig; exit $rc'
 
 # Railway injects $PORT at runtime — must use shell form (or sh -c) so
 # the variable expands. Exec form treats the literal string "$PORT" as
