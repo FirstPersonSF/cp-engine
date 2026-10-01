@@ -1161,7 +1161,7 @@ def upsert_spine_snapshot(client: "Client", row: dict) -> None:
 # broke Supabase-only code that never used MCP. See the v0.80.1 webhook
 # ModuleNotFoundError. ``mcp_server`` now re-exports both for its own use.
 
-def canonical_spine_code(client, project_id: str, fallback: str) -> str:
+def canonical_spine_code(client, project_id: str, fallback: str, *, on_error=None) -> str:
     """The canonical spine `project_code` for a project — read off its own
     `spine_substance` rows (uniform dir-slug since mig 129 + the sync
     healers). Writers that receive a caller-supplied code (webhook inbox
@@ -1174,7 +1174,18 @@ def canonical_spine_code(client, project_id: str, fallback: str) -> str:
     does not have, and swallowed PostgREST's rejection — so it returned the
     caller's fallback on every call since it shipped. The order key is now a
     real column and a failed lookup is printed, not swallowed.
+
+    `on_error(stage, exc)`, when given, is called on each failed lookup in
+    place of the stderr print — the hosted server routes it to its log and
+    alerting (`stage` is "spine" or "projects").
     """
+
+    def _report(stage: str, exc: Exception) -> None:
+        if on_error is not None:
+            on_error(stage, exc)
+        else:
+            print(f"[warn] canonical_spine_code: {stage} lookup failed: {exc}", file=sys.stderr)
+
     try:
         rows = (
             client.table(Tables.SPINE_SUBSTANCE)
@@ -1188,7 +1199,7 @@ def canonical_spine_code(client, project_id: str, fallback: str) -> str:
         if rows and rows[0].get("project_code"):
             return rows[0]["project_code"]
     except Exception as exc:  # noqa: BLE001 — canonicalization must never block a write
-        print(f"[warn] canonical_spine_code: spine lookup failed: {exc}", file=sys.stderr)
+        _report("spine", exc)
     try:
         from cp_engine.state import slug_full_job_name
 
@@ -1204,7 +1215,7 @@ def canonical_spine_code(client, project_id: str, fallback: str) -> str:
         if slug:
             return slug
     except Exception as exc:  # noqa: BLE001 — see above
-        print(f"[warn] canonical_spine_code: projects lookup failed: {exc}", file=sys.stderr)
+        _report("projects", exc)
     return fallback
 
 

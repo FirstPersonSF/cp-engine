@@ -105,6 +105,16 @@ _obs_spec.loader.exec_module(observability)
 # one imported.
 # Dates in the tenant's timezone, not the container's UTC clock (#339).
 from cp_engine.clock import tenant_now, tenant_today  # noqa: E402
+# One resolver per rule (architecture plan step 1b): workstream codes,
+# working dirs and project ids come from the engine, not hosted copies.
+from cp_engine import state as _engine_state  # noqa: E402
+from cp_engine.mc2_db import (  # noqa: E402
+    _resolve_project_id as _engine_resolve_project_id,
+    canonical_spine_code as _engine_canonical_spine_code,
+)
+from cp_engine import promote_uphill as _engine_promote_uphill  # noqa: E402
+from cp_engine.promote_uphill import level_for as _engine_level_for  # noqa: E402
+from cp_engine.state import slug_full_job_name as _engine_slug_full_job_name  # noqa: E402
 # The one "which sprint week" rule (architecture plan step 1a).
 from cp_engine.sprints import current_sprint_week_iso as _engine_sprint_week_iso  # noqa: E402
 # The card-kind READER (card_class.py). The write-time stamp below is
@@ -377,21 +387,9 @@ def user_client():
     return client
 
 
-_SLUG_NON_ALPHANUM = re.compile(r"[^a-z0-9]+")
-
-
-def _slug_full_job_name(full_job_name: str | None) -> str:
-    """Slugify MC-2's `full_job_name` into the canonical on-disk project id.
-
-    "SAP 5198 2027 Ad Videos" -> "sap-5198-2027-ad-videos". Mirrors
-    `cp_engine.state.slug_full_job_name`; kept local because this prototype
-    deliberately does not import cp_engine (same convention as the spine
-    authoring constants below). Keep in sync with that function.
-    """
-    if not full_job_name:
-        return ""
-    return _SLUG_NON_ALPHANUM.sub("-", full_job_name.lower()).strip("-")
-
+# "SAP 5198 2027 Ad Videos" -> "sap-5198-2027-ad-videos": the engine's one
+# slug rule for the canonical on-disk project id (architecture plan step 1b).
+_slug_full_job_name = _engine_slug_full_job_name
 
 
 # One owner column on every owner-scoped table since mc-2 mig 192 /
@@ -419,8 +417,8 @@ def _looks_like_uuid(value: str) -> bool:
 def resolve_project_id(client, project_code: str) -> str | None:
     """`<code>` -> a uuid usable as `spine_substance.project_id`.
 
-    A trimmed stand-in for `cp_engine.mc2_db._resolve_project_id`, in the order
-    that actually resolves against live data:
+    `cp_engine.mc2_db._resolve_project_id` behind a hosted fast path, in the
+    order that actually resolves against live data:
 
       1. (retired with #301 — internal workstreams are `projects` rows and
          resolve like any other; mig 192 kept their uuids.)
@@ -460,11 +458,7 @@ def resolve_project_id(client, project_code: str) -> str | None:
     # 0. A bare UUID is unambiguous — try it as a project id. Guarded by a
     #    parse so a malformed code never reaches the DB as a uuid filter.
     if _looks_like_uuid(project_code):
-        rows = (
-            client.table("projects").select("id").eq("id", project_code).limit(1).execute().data
-            or []
-        )
-        return rows[0]["id"] if rows else None
+        return _engine_resolve_project_id(client, project_code)
 
     # Exact dir-slug, then the `<prefix>-<number>` short form as a prefix match.
     for query in (
@@ -481,66 +475,11 @@ def resolve_project_id(client, project_code: str) -> str | None:
         if rows and rows[0].get("project_id"):
             return rows[0]["project_id"]
 
-    rows = (
-        client.table("projects").select("id").eq("code", project_code).limit(1).execute().data
-        or []
-    )
-    if rows:
-        return rows[0]["id"]
-
-    # 4. Raw `full_job_name` (the display form, "SAP 5198 2027 Ad Videos").
-    rows = (
-        client.table("projects")
-        .select("id")
-        .eq("full_job_name", project_code)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    if rows:
-        return rows[0]["id"]
-
-    # 5. The canonical on-disk dir-slug, reversed out of `full_job_name`. The
-    #    number sits in the MIDDLE of this slug, so branch 6 can't see it.
-    #    Scope the scan by company prefix so it stays cheap, then slugify in
-    #    Python (no slugify in SQL).
-    prefix = project_code.split("-", 1)[0]
-    if prefix:
-        candidates = (
-            client.table("projects")
-            .select("id, full_job_name")
-            .ilike("code", f"{prefix}-%")
-            .execute()
-            .data
-            or []
-        )
-        for row in candidates:
-            if _slug_full_job_name(row.get("full_job_name")) == project_code:
-                return row["id"]
-
-    # 6. Legacy `<companyprefix>-<number>` via the companies/number join.
-    #    `companies.code` is stored UPPERCASE while the working-dir prefix is
-    #    lowercase, so match case-insensitively.
-    head, sep, tail = project_code.rpartition("-")
-    if not sep or not tail.isdigit():
-        return None
-    companies = (
-        client.table("companies").select("id").ilike("code", head).limit(1).execute().data or []
-    )
-    if not companies:
-        return None
-    rows = (
-        client.table("projects")
-        .select("id")
-        .eq("company_id", companies[0]["id"])
-        .eq("number", int(tail))
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    return rows[0]["id"] if rows else None
+    # Branches 3-6 ARE the engine's resolver (architecture plan step 1b):
+    # `projects.code`, raw `full_job_name`, the slugified `full_job_name`
+    # dir-slug, then `<company>-<number>`. One implementation; the spine
+    # lookups above are a hosted fast path in front of it, never a substitute.
+    return _engine_resolve_project_id(client, project_code)
 
 
 def resolve_company_id(client, project_id: str) -> str | None:
@@ -1028,20 +967,10 @@ mcp_server.tool = _audited_tool_decorator  # type: ignore[method-assign]
 # decides it "sounds account-level" — moving an item up the tree is
 # `promote_uphill`, an explicit verb that leaves a step. The parent comes
 # from the engine's committed path index (`.cp-engine/paths.json`, #302),
-# read off the tree clone; this server does not import cp_engine, so the
-# reader is mirrored here (`_indexed_project_dir` reads the same file).
+# read off the tree clone by the engine's own `promote_uphill.level_for`.
 
-# Mirrors `cp_engine.promote_uphill.LEVEL_RULE` — one spelling across the
-# CLI, the stdio server and this one (tests/test_promote_uphill.py pins it).
-_LEVEL_RULE = (
-    "LEVEL: writes land on the named workstream (`project_code`), and the "
-    "response echoes `level: {code, label, parent}` so you can see where it "
-    "landed. Default to the deepest workstream in focus (mode 2's loaded "
-    "project). To record something at the account or program level, name "
-    "THAT code — or call `promote_uphill` afterwards, which copies the item "
-    "to the parent and leaves a step. The level is never inferred from "
-    "content."
-)
+# One spelling across the CLI, the stdio server and this one: the engine's.
+_LEVEL_RULE = _engine_promote_uphill.LEVEL_RULE
 
 
 def _paths_index() -> tuple[dict[str, dict[str, Any]], str | None]:
@@ -1092,33 +1021,43 @@ def _not_in_tree_warning(code: str) -> str:
 
 
 def _level_for(project_code: str) -> dict[str, Any]:
-    """`{code, label, parent, indexed}` for a code. Exact key first, then the
-    `<code>-` prefix form (`ibx-5153` → `ibx-5153-ai-campaign`) when unique.
-    Mirrors `cp_engine.promote_uphill.level_for`, plus one hosted-only field:
+    """`{code, label, parent, indexed}` for a code — `cp_engine.promote_uphill
+    .level_for` over the tree clone (exact key, then the unique `<code>-`
+    prefix: `ibx-5153` → `ibx-5153-ai-campaign`), plus one hosted-only field:
     an unindexed level carries `warning` saying WHY (#313). The CLI reads its
     own checkout, where "not in the tree" is a local `cxp sync` away; here the
     clone trails a push, and a bare `label: null` was the only signal."""
-    rows, reason = _paths_index()
     wanted = (project_code or "").strip()
-    entry = rows.get(wanted)
-    if entry is None and wanted:
-        lowered = wanted.lower()
-        hits = [(k, v) for k, v in rows.items() if k.lower().startswith(lowered + "-")]
-        if len(hits) == 1:
-            wanted, entry = hits[0]
-    if not isinstance(entry, dict):
-        return {
-            "code": wanted, "label": None, "parent": None, "indexed": False,
-            "warning": (
-                f"level unknown: {reason}" if reason else _not_in_tree_warning(wanted)
-            ),
-        }
+    rows, reason = _paths_index()
+    if reason is None:
+        level = _engine_level_for(tree_root(), wanted)
+        if level["indexed"]:
+            return level
     return {
-        "code": wanted,
-        "label": entry.get("label"),
-        "parent": entry.get("parent"),
-        "indexed": True,
+        "code": wanted, "label": None, "parent": None, "indexed": False,
+        "warning": (
+            f"level unknown: {reason}" if reason else _not_in_tree_warning(wanted)
+        ),
     }
+
+
+def upstream_code(project_code: str, scope: dict[str, Any] | None = None) -> str:
+    """The FULL workstream code to forward to mc-2 → webhook (#345).
+
+    The webhook finds the working dir by full code only, so forwarding the
+    caller's short form (`ggl-5188`) 404'd with "no working dir for code"
+    while the same response's `level` had already resolved it to
+    `ggl-5188-calendar-maintenance`. Order: the tree index's code (what the
+    webhook's own lookup reads), then the DB-side canonical code from
+    `resolve_write_scope` (the slugified `full_job_name`, which names the
+    dir), then the caller's string.
+    """
+    level = _level_for(project_code)
+    if level.get("indexed"):
+        return level["code"]
+    if scope and scope.get("project_code"):
+        return scope["project_code"]
+    return (project_code or "").strip()
 
 
 def _names_its_level(fn=None, *, param: str = "project_code"):
@@ -3157,43 +3096,13 @@ def canonical_project_code(client, project_id: str, fallback: str) -> str:
     than swallowed — a resolver that quietly stops resolving is exactly the
     defect to never ship twice.
     """
-    try:
-        rows = (
-            client.table("spine_substance")
-            .select("project_code")
-            .eq("project_id", project_id)
-            # Deterministic pick: the newest version's spelling. Unordered
-            # limit(1) was a coin-flip on a drifted project (pre-mig-129).
-            .order("version_date", desc=True)
-            .limit(1)
-            .execute()
-            .data
-            or []
-        )
-        if rows and rows[0].get("project_code"):
-            return rows[0]["project_code"]
-    except Exception as exc:  # noqa: BLE001 — fall through to step 2, loudly
-        log.warning("canonical_project_code: spine lookup failed: %s", exc)
+    def _alert(stage: str, exc: Exception) -> None:
+        log.warning("canonical_project_code: %s lookup failed: %s", stage, exc)
         observability.capture(exc, area="canonical_project_code")
 
-    try:
-        rows = (
-            client.table("projects")
-            .select("full_job_name")
-            .eq("id", project_id)
-            .limit(1)
-            .execute()
-            .data
-            or []
-        )
-        slug = _slug_full_job_name(rows[0].get("full_job_name")) if rows else ""
-        if slug:
-            return slug
-    except Exception as exc:  # noqa: BLE001 — the caller's code is the last resort
-        log.warning("canonical_project_code: projects lookup failed: %s", exc)
-        observability.capture(exc, area="canonical_project_code")
-
-    return fallback
+    # The engine's rule (architecture plan step 1b); failures go to this
+    # server's log and alerting instead of stderr.
+    return _engine_canonical_spine_code(client, project_id, fallback, on_error=_alert)
 
 
 _ELEMENT_RESOLVE_COLUMNS = (
@@ -8443,92 +8352,49 @@ def tree_provenance() -> dict[str, Any]:
     return prov
 
 
-# The engine's committed path index (cp-engine #302, `state.PATHS_INDEX_REL`).
-# Mirrored here rather than imported: this server does not import cp_engine.
-_PATHS_INDEX_REL = ".cp-engine/paths.json"
-_PATHS_INDEX_VERSION = 1
-_SCOPE_DIRS = ("1p", "firstpersonsf", "canonic")
-
-
-def _indexed_project_dir(root: Path, code: str) -> Path | None:
-    """`.cp-engine/paths.json`'s answer for `code`, when it names a dir that
-    exists and carries a cp.md. None on any miss — the walk then decides."""
-    try:
-        doc = json.loads((root / _PATHS_INDEX_REL).read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return None
-    if not isinstance(doc, dict) or doc.get("version") != _PATHS_INDEX_VERSION:
-        return None
-    rows = doc.get("workstreams")
-    entry = rows.get(code) if isinstance(rows, dict) else None
-    if not isinstance(entry, dict) or not isinstance(entry.get("path"), str):
-        return None
-    candidate = root / entry["path"]
-    return candidate if (candidate / "cp.md").is_file() else None
-
-
-def _iter_workstream_dirs(parent: Path):
-    """Breadth-first walk of working-dir candidates under `parent` — the
-    mirror of `cp_engine.state.iter_workstream_dirs`. Every direct child is
-    a candidate and is descended into; deeper dirs are descended into only
-    when they carry a `cp.md` (a program, an account), so a job's own
-    `spine/`, `meetings/`, `sessions/` are never walked. `inactive/` bins,
-    dot-dirs and `_`-prefixed engine dirs are skipped."""
-    from collections import deque
-
-    if not parent.is_dir():
-        return
-    queue = deque([(parent, 0)])
-    while queue:
-        current, depth = queue.popleft()
-        try:
-            children = sorted(c for c in current.iterdir() if c.is_dir())
-        except OSError:
-            continue
-        for child in children:
-            name = child.name
-            if name == "inactive" or name.startswith((".", "_")):
-                continue
-            yield child
-            if depth == 0 or (child / "cp.md").is_file():
-                queue.append((child, depth + 1))
+# The engine's committed path index (cp-engine #302) and the scope roots
+# every resolver walks — the engine's constants, not copies.
+_PATHS_INDEX_REL = _engine_state.PATHS_INDEX_REL
+_PATHS_INDEX_VERSION = _engine_state.PATHS_INDEX_VERSION
+_SCOPE_DIRS = _engine_state.SCOPE_DIRS
 
 
 def find_project_dir(root: Path, project_code: str) -> Path | None:
-    """Locate a project's working dir in the tree.
+    """Locate a project's working dir in the tree — the ENGINE's resolvers.
 
-    The real layout is a TREE, not a flat `<scope>/<code>/`: an account node
-    is `1p/google/`, its jobs sit under it, a program under an account holds
-    its own jobs (`1p/google/ggl-5xxx-go-safety/ggl-5136-…/`), internal
-    workstreams sit directly under their scope. So this reads the engine's
-    committed path index first (cp-engine #302) and falls back to a
-    recursive walk of the scope roots, bounded by the tree's shape rather
-    than a hard-coded depth.
+    The layout is a TREE (an account's jobs under it, a program's jobs under
+    the program), so this asks the engine (architecture plan step 1b):
 
-    Match order is EXACT before PREFIX: `ibx-5153-ai-campaign` must not be
-    reachable-by-accident when a caller asks for something that exactly exists,
-    and a prefix match requires the `<code>-` boundary so `ggl-517` cannot claim
-    `ggl-5177`. `inactive/` subtrees are skipped — an inactive project is not
-    the project's current state.
+      1. `promote_uphill.level_for` turns the caller's spelling into the
+         indexed code — exact key, else the unique `<code>-` prefix
+         (`ggl-5188` → `ggl-5188-calendar-maintenance`), the same rule every
+         level echo uses;
+      2. `state.indexed_dir` — `.cp-engine/paths.json`'s answer, when the dir
+         exists;
+      3. `state.match_dir_by_name` under each scope root — an exact dir name
+         before a `<code>-` prefix (`ggl-517` cannot claim `ggl-5177`),
+         shallowest first. `inactive/` bins are skipped.
+
+    Hosted keeps two guards on top: the code is lower-cased (callers type
+    `GGL-5136`) and a hit must carry a `cp.md` — every tree read here starts
+    from one.
     """
     code = project_code.strip().lower()
-    indexed = _indexed_project_dir(root, code)
-    if indexed is not None:
-        return indexed
-    exact: Path | None = None
-    prefix: list[Path] = []
+    if not code:
+        return None
+    indexed_code = _engine_level_for(root, code)["code"]
+    hit = _engine_state.indexed_dir(root, indexed_code)
+    if hit is not None and (hit / "cp.md").is_file():
+        return hit
+    prefix_hit: Path | None = None
     for scope in _SCOPE_DIRS:
-        for candidate in _iter_workstream_dirs(root / scope):
-            name = candidate.name.lower()
-            if not (candidate / "cp.md").is_file():
-                continue
-            if name == code:
-                exact = exact or candidate
-            elif name.startswith(f"{code}-"):
-                prefix.append(candidate)
-    if exact:
-        return exact
-    return sorted(prefix)[0] if prefix else None
+        candidate = _engine_state.match_dir_by_name(root / scope, code)
+        if candidate is None or not (candidate / "cp.md").is_file():
+            continue
+        if candidate.name.lower() == code:
+            return candidate
+        prefix_hit = prefix_hit or candidate
+    return prefix_hit
 
 
 def extract_exec_summary(cp_md: Path) -> tuple[str | None, str | None]:
@@ -10174,7 +10040,8 @@ def capture_session(
             ),
         }
 
-    result = call_mc2_capture_session(project_code, summary, when)
+    # #345: forward the resolved FULL code; the webhook matches no short form.
+    result = call_mc2_capture_session(upstream_code(project_code, scope), summary, when)
     audit(
         client,
         "capture_session",
@@ -10461,7 +10328,8 @@ def capture_project_state(
     if stale is not None:
         return stale
 
-    result = call_mc2_capture_project_state(project_code, fields, entry)
+    # #345: forward the resolved FULL code; the webhook matches no short form.
+    result = call_mc2_capture_project_state(upstream_code(project_code, scope), fields, entry)
     audit(
         client,
         "capture_project_state",
@@ -10731,7 +10599,10 @@ def promote_uphill(
         # The file write happens upstream (mc-2 → webhook, the caller's own
         # token); the level echo is the CHILD's until the backend says where
         # the copy landed, and the backend's own `level` (the parent) wins.
-        out = call_mc2_promote_uphill(project_code, ref, note, (week or "").strip() or None)
+        # #345: forward the resolved FULL code; the webhook matches no short form.
+        out = call_mc2_promote_uphill(
+            upstream_code(project_code), ref, note, (week or "").strip() or None
+        )
         if not out.get("ok"):
             return {**out, "item_kind": "decision", "item_ref": ref,
                     "level": _level_for(project_code)}
@@ -12310,7 +12181,8 @@ def rotate_word_count(project_code: str) -> dict[str, Any]:
     if scope is None:
         return {"error": f"no project or initiative resolves for code {project_code!r}"}
 
-    result = call_mc2_rotate_word_count(project_code)
+    # #345: forward the resolved FULL code; the webhook matches no short form.
+    result = call_mc2_rotate_word_count(upstream_code(project_code, scope))
     backend = result.get("backend") if isinstance(result.get("backend"), dict) else {}
     audit(
         client,

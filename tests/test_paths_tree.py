@@ -525,27 +525,20 @@ def test_webhook_resolver_reads_index_then_walks_depth3(tmp_path: Path) -> None:
 
 
 def test_hosted_find_project_dir_reads_index_then_walks_depth3(tmp_path: Path) -> None:
+    """The hosted resolver IS the engine's (architecture plan step 1b): load
+    the real server module and drive its `find_project_dir`."""
     import importlib.util
+    import os
 
+    pytest.importorskip("jwt")
+    pytest.importorskip("mcp")
     server_path = Path(__file__).resolve().parents[1] / "prototypes/hosted-mcp/server.py"
-    src = server_path.read_text(encoding="utf-8")
-    # Load only the resolver trio — the module's import-time surface needs
-    # the hosted runtime; the functions under test are pure filesystem code.
-    import ast
-
-    tree = ast.parse(src)
-    wanted = {"_indexed_project_dir", "_iter_workstream_dirs", "find_project_dir"}
-    consts = {"_PATHS_INDEX_REL", "_PATHS_INDEX_VERSION", "_SCOPE_DIRS"}
-    nodes = [
-        n for n in tree.body
-        if (isinstance(n, ast.FunctionDef) and n.name in wanted)
-        or (isinstance(n, ast.Assign) and isinstance(n.targets[0], ast.Name)
-            and n.targets[0].id in consts)
-    ]
-    assert len(nodes) == len(wanted) + len(consts)
-    ns: dict = {"Path": Path, "json": json}
-    exec(compile(ast.Module(body=nodes, type_ignores=[]), str(server_path), "exec"), ns)
-    find_project_dir = ns["find_project_dir"]
+    os.environ.setdefault("SUPABASE_URL", "https://example.supabase.co")
+    os.environ.setdefault("SUPABASE_ANON_KEY", "anon-key-for-tests")
+    spec = importlib.util.spec_from_file_location("hosted_mcp_server_paths", server_path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    find_project_dir = module.find_project_dir
 
     deep = _make_tree(tmp_path)
     assert find_project_dir(tmp_path, "ggl-5136-go-safety-website") == deep
