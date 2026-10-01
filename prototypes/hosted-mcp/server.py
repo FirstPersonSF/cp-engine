@@ -2135,12 +2135,16 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
     except Exception:  # noqa: BLE001 — the project's own rows still list
         pass
 
+    # The supersede rule is the engine's (`project_sources.drop_superseded_assets`,
+    # architecture plan step 1c, H4): a row with a successor in this set is
+    # hidden. `superseded_hidden` keeps reporting the predecessor-id count.
     superseded = {r["prev_asset_id"] for r in rows if r.get("prev_asset_id")}
+    rows = [r for r in _engine_project_sources.drop_superseded_assets(rows)
+            if r.get("status") != "archived"]
     # "Exists but empty" (#324): a zero-chunk asset is flagged, never
     # mistaken for a readable source. The check fails OPEN — when it cannot
     # run, nothing is flagged (we never call a document empty on a failed read).
-    listed = [r.get("id") for r in rows
-              if r.get("id") not in superseded and r.get("status") != "archived"]
+    listed = [r.get("id") for r in rows]
     try:
         have_chunks = _asset_ids_with_chunks(client, listed)
         empty_ids = {a for a in listed if a and str(a) not in have_chunks}
@@ -2166,7 +2170,6 @@ def list_project_sources(project_code: str) -> dict[str, Any]:
             **({"comment_count": _comment_count(r)} if _comment_count(r) else {}),
         }
         for r in rows
-        if r.get("id") not in superseded and r.get("status") != "archived"
     ]
     sources.sort(key=lambda s: str(s.get("created_at") or ""), reverse=True)
 
@@ -3357,8 +3360,7 @@ def _resolve_active_asset(
         log.warning("_resolve_active_asset: account-scope read failed: %s", exc)
         observability.capture(exc, area="attach_account_sources")
 
-    superseded = {r["prev_asset_id"] for r in rows if r.get("prev_asset_id")}
-    rows = [r for r in rows if r.get("id") not in superseded]
+    rows = _engine_project_sources.drop_superseded_assets(rows)
     asset, note = pick_source(rows, source_title)
     if note is not None and account_read_failed:
         note = {**note, "account_sources_unread": True}
