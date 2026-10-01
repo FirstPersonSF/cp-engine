@@ -254,6 +254,7 @@ def propose(
     project_id: str | None = None,
     model: str | None = None,
     call=None,
+    errors: list | None = None,
 ) -> list[ProposedRoute]:
     """Run the pre-pass over one project's items. Returns proposals; writes nothing.
 
@@ -262,6 +263,10 @@ def propose(
     injected for testing; by default it goes through `plan_from_transcript`'s
     `_call_claude`, which resolves the master prompt as `system=` for this
     project.
+
+    ``errors`` (optional out-list, step 3): one entry per failed batch. The
+    WARNING log below is silent outside `cxp sync`; the out-list is what a
+    caller can count and print.
     """
     if not items:
         return []
@@ -293,6 +298,11 @@ def propose(
             log.warning(
                 "route batch failed (%s: %s)", type(exc).__name__, exc
             )
+            if errors is not None:
+                errors.append(
+                    f"route batch of {len(batch)} failed "
+                    f"({type(exc).__name__}: {exc})"
+                )
             continue
         out.extend(parse_response(text, batch, valid))
     return out

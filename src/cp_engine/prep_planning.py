@@ -52,6 +52,7 @@ from cp_engine.agenda import (
 )
 from cp_engine.config import TenantConfig
 from cp_engine.exec_summary_freshness import PartialRefresh, partial_refresh
+from cp_engine.loud import captured_warnings, print_warnings
 from cp_engine.snooze import active_snooze, is_snoozed, strip_snooze_marker
 from cp_engine.render import (
     exec_summary_is_authored,
@@ -750,13 +751,19 @@ def _fetch_drift_warnings(
         return ()
 
 
-def _fetch_project_commitments(supabase_client, project) -> tuple[dict, ...]:
+def _fetch_project_commitments(
+    supabase_client, project, *, strict: bool = False
+) -> tuple[dict, ...]:
     """Open MC-2 commitments for one project/initiative (mig 097).
 
     The commitments table replaced ClickUp task proposals as the store for
     due-dated work (commitments consolidation, cp-engine #38): them→us rows
     are the client-asks source; us→them/internal rows join the Open
     Commitments table. Best-effort: any failure logs and returns ().
+
+    ``strict=True`` re-raises instead (step 3, fail loudly): a caller that
+    WRITES from these rows (``draft-summaries``) must not draft from an
+    empty set that is really a failed read.
     """
     if supabase_client is None:
         return ()
@@ -782,6 +789,8 @@ def _fetch_project_commitments(supabase_client, project) -> tuple[dict, ...]:
         )
         return tuple(rows)
     except Exception as exc:  # noqa: BLE001 — degrade to sprint-file asks
+        if strict:
+            raise
         log.warning("commitments fetch failed for %s: %s", project.code, exc)
         return ()
 
@@ -1585,7 +1594,14 @@ def _run_project_sweep(
         if client is not None:
             try:
                 elements = load_spine_from_mc2(client, project.code)
-            except Exception:  # noqa: BLE001 — read error → disk fallback
+            except Exception as exc:  # noqa: BLE001 — read error → disk fallback
+                # Fall back, but say so: the sweep then synthesizes from the
+                # (lagging) disk mirror, which is not what MC-2 holds (step 3).
+                log.warning(
+                    "MC-2 spine read failed for %s (%s: %s); sweeping the "
+                    "on-disk mirror instead", project.code,
+                    type(exc).__name__, exc,
+                )
                 elements = ()
         if not elements:
             try:
@@ -2188,6 +2204,17 @@ def _render_account_section(
     return out
 
 
+def _render_errors(result: "PlanningResult") -> list[str]:
+    """The read failures behind this run, so a missing section reads as a
+    FAILED read, not an empty one (step 3). Nothing when there were none."""
+    if not result.errors:
+        return []
+    lines = [f"**⚠ Read failures ({len(result.errors)}) — sections below may be incomplete:**"]
+    lines.extend(f"- {e}" for e in result.errors)
+    lines.append("")
+    return lines
+
+
 def render_planning_doc_markdown(result: PlanningResult) -> str:
     """Render the final markdown document."""
     lines: list[str] = []
@@ -2201,6 +2228,7 @@ def render_planning_doc_markdown(result: PlanningResult) -> str:
         f"{result.estimated_minutes} min target_"
     )
     lines.append("")
+    lines.extend(_render_errors(result))
     lines.extend(_render_cross_cutting(result))
     lines.append("")
     lines.append("---")
@@ -2334,6 +2362,7 @@ def render_planning_bundle(result: PlanningResult) -> str:
         "summaries + deterministic metrics. Not a finished doc._"
     )
     lines.append("")
+    lines.extend(_render_errors(result))
     # Tenant-level deterministic metrics (capacity binding, cross-cutting
     # decisions, tenant hours) — reuse the cross-cutting renderer verbatim.
     lines.extend(_render_cross_cutting(result))
@@ -2448,20 +2477,42 @@ def build_planning_result(
     fetched = 0
     errored = 0
     total = 0
-    for p in active_sorted:
-        block = build_project_block(
-            p,
-            config=config,
-            supabase_client=supabase_client,
-            today=today,
-            week_iso=week_iso,
-            sweep_llm=sweep_llm,
+    if supabase_client is None and active_sorted:
+        # Step 3 (fail loudly): no MC-2 client means every block below renders
+        # without schedule milestones, commitments, drift or deliverable cards
+        # — and, before this line, said nothing about why.
+        errors.append(
+            "MC-2 client unavailable (no Supabase creds resolved) — schedule "
+            "milestones, commitments, drift and deliverable cards are missing "
+            "for every project"
         )
+    for p in active_sorted:
+        # The per-project fetchers degrade to () and only `log.warning` —
+        # silent outside `cxp sync` (no handler). Collect what they log for
+        # this block and carry it on the result, so a failed read is never
+        # presented as an empty one (step 3).
+        with captured_warnings() as collector:
+            block = build_project_block(
+                p,
+                config=config,
+                supabase_client=supabase_client,
+                today=today,
+                week_iso=week_iso,
+                sweep_llm=sweep_llm,
+            )
         total += len(block.milestones) + len(block.client_asks)
-        # "no_schedule_milestones" is a legitimate empty-state, not a
-        # failure — the schedule fetch is best-effort and degrades to ()
-        # internally, so every block counts as fetched.
-        fetched += 1
+        if collector.count:
+            errored += 1
+            errors.extend(f"{p.code}: {m}" for m in collector.messages)
+            if collector.count > len(collector.messages):
+                errors.append(
+                    f"{p.code}: … and "
+                    f"{collector.count - len(collector.messages)} more warnings"
+                )
+        else:
+            # "no_schedule_milestones" is a legitimate empty-state, not a
+            # failure; a block whose fetchers logged nothing counts as fetched.
+            fetched += 1
         blocks.append(block)
 
     blocks_by_account = _group_by_account(tuple(blocks))
@@ -2571,6 +2622,7 @@ def render_planning_doc(
         sweep_llm=sweep_llm,
         planned_allocations=planned_allocations,
     )
+    print_warnings(result.errors, label="prep-planning read failures")
     return render_planning_doc_markdown(result)
 
 
@@ -2633,4 +2685,5 @@ def render_planning_bundle_doc(
         supabase_client=supabase_client,
         planned_allocations=planned_allocations,
     )
+    print_warnings(result.errors, label="prep-planning read failures")
     return render_planning_bundle(result)

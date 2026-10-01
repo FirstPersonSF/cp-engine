@@ -234,6 +234,9 @@ def canon_section(members: list[dict] | None, note: str | None) -> str:
         gist = canon_gist(m.get("body"))
         if gist:
             lines.append(f"  {gist}")
+    if note:
+        # Members AND a note: a partial read (fetch_canon_members, step 3).
+        lines.append(f"_⚠ {note}_")
     return "\n".join(lines)
 
 
@@ -401,6 +404,7 @@ def fetch_canon_members(
 
     titles: dict[str, str] = {}
     bodies: dict[str, str] = {}
+    note: str | None = None
     try:
         for r in (
             client.table(mc2_db.Tables.SPINE_SUBSTANCE)
@@ -414,8 +418,14 @@ def fetch_canon_members(
         ):
             titles[r["est_item_id"]] = r.get("framing")
             bodies[r["est_item_id"]] = r.get("body")
-    except Exception:  # noqa: BLE001 — titles are a nicety, ids suffice
-        pass
+    except Exception as exc:  # noqa: BLE001 — ids still render
+        # Not a nicety: the BODY carries the gist, the load-bearing half of a
+        # canon line. Members render by id, and the note says the gists are
+        # missing — a partial read must not look complete (step 3).
+        note = (
+            f"Canon member bodies unreadable ({type(exc).__name__}: {exc}) — "
+            "listed by id only; gists missing."
+        )
     return (
         [
             {
@@ -425,7 +435,7 @@ def fetch_canon_members(
             }
             for m in member_ids
         ],
-        None,
+        note,
     )
 
 

@@ -45,6 +45,9 @@ class MigrateFlatResult:
     removed_projects_dirs: tuple[Path, ...]    # empty `<scope>/projects/` parents removed
     rewrote_cp_links: tuple[Path, ...]         # source-repo .cp-link files rewritten
     no_op: bool
+    # Step 3 (fail loudly): why a .cp-link rewrite did not happen, for the CLI
+    # to print. Empty when every link was handled.
+    warnings: tuple[str, ...] = ()
 
 
 def _git(args: list[str], *, cwd: Path) -> str:
@@ -84,7 +87,9 @@ def _git_mv(src: Path, dst: Path, *, cwd: Path) -> None:
     _git(["mv", str(src_rel), str(dst_rel)], cwd=cwd)
 
 
-def _rewrite_cp_links(tenant_root: Path) -> list[Path]:
+def _rewrite_cp_links(
+    tenant_root: Path, warnings: list[str] | None = None
+) -> list[Path]:
     """Rewrite each linked source-repo's `.cp-link` to point at the new
     working dir. Returns the list of files rewritten.
 
@@ -102,7 +107,13 @@ def _rewrite_cp_links(tenant_root: Path) -> list[Path]:
         from cp_engine.config import load
 
         config = load(tenant_root)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — soft-fail, but report it
+        if warnings is not None:
+            warnings.append(
+                f".cp-link files NOT rewritten — config failed to load "
+                f"({type(exc).__name__}: {exc}); linked source repos still "
+                f"point at the old paths"
+            )
         return []
 
     rewrote: list[Path] = []
@@ -192,12 +203,14 @@ def migrate_projects_flat(tenant_root: Path) -> MigrateFlatResult:
     # walks the *current* tree, which is now post-migration, so the paths
     # it returns are the v0.7 paths we want to write.
     rewrote: list[Path] = []
+    link_warnings: list[str] = []
     if moved:
-        rewrote = _rewrite_cp_links(tenant_root)
+        rewrote = _rewrite_cp_links(tenant_root, link_warnings)
 
     return MigrateFlatResult(
         moved_dirs=tuple(moved),
         removed_projects_dirs=tuple(removed_projects_dirs),
         rewrote_cp_links=tuple(rewrote),
         no_op=not (moved or removed_projects_dirs or rewrote),
+        warnings=tuple(link_warnings),
     )

@@ -28,6 +28,27 @@ def _spine_mc2_client(config):
     return mc2_db.get_client(config, required=False)
 
 
+def _resolve_project_id_loud(client, code: str, *, consequence: str) -> str | None:
+    """`mc2_db._resolve_project_id`, degrading to None on a FAILED lookup —
+    but saying so (step 3).
+
+    `_resolve_project_id` already returns None for "nothing matches"; an
+    exception is a network/schema failure. Swallowing it silently made the
+    caller query only the short-code spelling (missing a drifted project's
+    dir-slug rows, #151) or report "no project resolves" for a project that
+    exists — partial or false answers that looked complete.
+    """
+    try:
+        return mc2_db._resolve_project_id(client, code)
+    except Exception as exc:  # noqa: BLE001 — degrade, but loudly
+        click.echo(
+            f"(WARNING: project-id lookup for '{code}' failed — {consequence}: "
+            f"{type(exc).__name__}: {exc})",
+            err=True,
+        )
+        return None
+
+
 @click.command("spine")
 @click.argument("code")
 def spine_cmd(code: str) -> None:
@@ -706,8 +727,11 @@ def snapshots_cmd(ref: str) -> None:
     for md in snap_dir.glob("*.md"):
         try:
             meta = frontmatter.load(str(md)).metadata.get("snapshot", {})
-        except yaml.YAMLError:
-            continue  # skip malformed snapshot files
+        except yaml.YAMLError as exc:
+            # Skip it, but a malformed snapshot is still a snapshot — the
+            # count below must not quietly under-report.
+            click.echo(f"  (skipped malformed snapshot {md.name}: {exc})", err=True)
+            continue
         if isinstance(meta, dict):
             snaps.append((str(meta.get("created", "")), meta, md.name))
     snaps.sort(key=lambda s: (s[0], s[2]), reverse=True)  # newest first
@@ -751,10 +775,10 @@ def spine_lint_cmd(code: str) -> None:
     # spine may be keyed under — short code AND dir-slug. Drifted projects
     # carry live rows under both (the ibx-5153 case), so this is a set,
     # not a translation.
-    try:
-        mc2_id = mc2_db._resolve_project_id(client, code)
-    except Exception:  # noqa: BLE001 — resolution is best-effort; lint survives
-        mc2_id = None
+    mc2_id = _resolve_project_id_loud(
+        client, code,
+        consequence="dir-slug rows and the Source-reviewed check may be missed",
+    )
     try:
         spine_dir = find_spine_dir(config.root, code, mc2_id=mc2_id)
     except SpineDirNotFound:
@@ -776,8 +800,11 @@ def spine_lint_cmd(code: str) -> None:
         cp_md = (spine_dir or find_spine_dir(config.root, code)) / "cp.md"
         if cp_md.is_file():
             cp_md_text = cp_md.read_text(encoding="utf-8")
-    except (SpineDirNotFound, OSError):
-        pass
+    except (SpineDirNotFound, OSError) as exc:
+        # The lint still runs on the spine, but "clean" must not imply the
+        # cp.md checks (placeholders, Exec Summary budgets) passed.
+        click.echo(f"  (cp.md checks skipped — cp.md not readable: {exc})",
+                   err=True)
 
     # Dangling `Source reviewed:` references (#324): the workstream's docs
     # against every title its source store has held. Skipped (not guessed)
@@ -878,10 +905,9 @@ def seal_sweep_cmd(
 
     # Same dual-spelling resolution as spine-lint (#151): a drifted project
     # carries live rows under both the short code and the dir slug.
-    try:
-        mc2_id = mc2_db._resolve_project_id(client, code)
-    except Exception:  # noqa: BLE001 — resolution is best-effort
-        mc2_id = None
+    mc2_id = _resolve_project_id_loud(
+        client, code, consequence="rows under the dir-slug spelling may be missed",
+    )
     try:
         spine_dir = find_spine_dir(config.root, code, mc2_id=mc2_id)
     except SpineDirNotFound:
@@ -959,10 +985,9 @@ def stub_sweep_cmd(code: str, verify_target: str | None = None) -> None:
         click.echo(f"cxp stub-sweep needs MC-2: {exc}", err=True)
         sys.exit(1)
 
-    try:
-        mc2_id = mc2_db._resolve_project_id(client, code)
-    except Exception:  # noqa: BLE001 — resolution is best-effort
-        mc2_id = None
+    mc2_id = _resolve_project_id_loud(
+        client, code, consequence="rows under the dir-slug spelling may be missed",
+    )
     try:
         spine_dir = find_spine_dir(config.root, code, mc2_id=mc2_id)
     except SpineDirNotFound:
@@ -1075,10 +1100,9 @@ def feeds_sweep_cmd(code: str) -> None:
     except BackendUnavailable as exc:
         click.echo(f"cxp feeds-sweep needs MC-2: {exc}", err=True)
         sys.exit(1)
-    try:
-        project_id = mc2_db._resolve_project_id(client, code)
-    except Exception:  # noqa: BLE001 — resolution is best-effort
-        project_id = None
+    project_id = _resolve_project_id_loud(
+        client, code, consequence="cannot sweep",
+    )
     if not project_id:
         click.echo(f"No project resolves for '{code}'.", err=True)
         sys.exit(1)
@@ -1236,7 +1260,11 @@ def close_cmd(code: str, force: bool, overwrite: bool) -> None:
         # spine/_authored/ (where nearly all authored elements live) +
         # legacy capitalized layer dirs. NOT legacy-only load_spine, which
         # is blind on modern projects.
-        elements = _close.load_mirror_elements(workdir)
+        skipped_files: list[str] = []
+        elements = _close.load_mirror_elements(workdir, skipped_files)
+        from cp_engine.loud import print_warnings
+
+        print_warnings(skipped_files, label="unparseable spine files skipped")
 
     # ── Commitments (live only — no offline fallback) ────────────────
     commitments = None
@@ -1676,6 +1704,10 @@ def weekly_sort_cmd(code: str | None, do_apply: bool,
     except Exception as exc:  # noqa: BLE001
         click.echo(f"Error: {exc}", err=True)
         sys.exit(1)
+
+    from cp_engine.loud import print_warnings
+
+    print_warnings(list(getattr(queue, "warnings", ()) or ()), label="weekly-sort warnings")
 
     if not queue.total:
         click.echo("Nothing to sort — everything carries a lifetime.")

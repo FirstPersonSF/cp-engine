@@ -104,6 +104,9 @@ class SortQueue:
     needs_judgement: list[Proposal] = field(default_factory=list)
     inbox: list[dict] = field(default_factory=list)
     work_excluded: int = 0
+    # Failures the run degraded past (step 3) — e.g. proposals computed but
+    # not persisted. The CLI must print these; a log line alone is silent.
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def total(self) -> int:
@@ -218,7 +221,9 @@ def attach_proposals(
     items = [r for r in rows if r["id"] in wanted]
     by_id = {p.row_id: p for p in queue.needs_judgement}
 
-    proposals = propose(items, llm=llm)
+    propose_errors: list[str] = []
+    proposals = propose(items, llm=llm, errors=propose_errors)
+    queue.warnings.extend(propose_errors)  # failed batches, not "unsure" (step 3)
 
     # Persist BEFORE filtering `unsure` out of the terminal display. Knowing
     # which items the model declined is a signal about the priors — the master
@@ -230,7 +235,7 @@ def attach_proposals(
                 client,
                 items,
                 proposals,
-                prompt_version=active_prompt_version(client),
+                prompt_version=active_prompt_version(client, queue.warnings),
                 model=model,
             )
         except Exception as exc:  # noqa: BLE001 — a failed write must not lose the run
@@ -238,6 +243,10 @@ def attach_proposals(
                 "proposals computed but not persisted (%s: %s)",
                 type(exc).__name__,
                 exc,
+            )
+            queue.warnings.append(
+                f"proposals computed but NOT persisted — the UI will not see "
+                f"them ({type(exc).__name__}: {exc})"
             )
 
     filled = 0

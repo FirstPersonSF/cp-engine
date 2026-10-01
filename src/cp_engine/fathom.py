@@ -377,7 +377,17 @@ def load_state(tenant_root: Path) -> FathomStateFile:
         return FathomStateFile()
     try:
         data = json.loads(state_path.read_text()).get("fathom") or {}
-    except (json.JSONDecodeError, OSError):
+    except (json.JSONDecodeError, OSError) as exc:
+        # Starting from empty state re-polls every meeting; the CLI (the only
+        # caller) must say why, or a corrupt file reads as a first run.
+        import sys
+
+        print(
+            f"WARNING: fathom state file {state_path} unreadable ({exc}); "
+            "starting from empty state — previously processed meetings will "
+            "be re-polled",
+            file=sys.stderr,
+        )
         return FathomStateFile()
     return FathomStateFile(
         last_polled_at=data.get("last_polled_at"),

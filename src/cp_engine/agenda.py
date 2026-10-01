@@ -608,8 +608,11 @@ def render_agenda_markdown(
     project_blocks: tuple[ProjectAgendaBlock, ...],
     *,
     generated_at: str,
+    unreadable: tuple[str, ...] = (),
 ) -> str:
-    """Render the full agenda as markdown."""
+    """Render the full agenda as markdown. ``unreadable`` names sprint files
+    that failed to parse — rendered up top so a missing week reads as a
+    failed read, not a quiet one (step 3)."""
     lines: list[str] = []
 
     # H1 + one-line meta.
@@ -622,6 +625,13 @@ def render_agenda_markdown(
         f"est. {header.estimated_minutes} min @ 3min/project_"
     )
     lines.append("")
+    if unreadable:
+        lines.append(
+            f"**⚠ Unreadable sprint files ({len(unreadable)}) — their "
+            "projects' sprint content is missing below:**"
+        )
+        lines.extend(f"- {u}" for u in unreadable)
+        lines.append("")
 
     # Tenant-wide context.
     lines.append("## Tenant-wide context")
@@ -795,7 +805,8 @@ def build_agenda(
     # Load all sprint files for the current week (drives strips + aggregator).
     week_iso = current_sprint_week_iso(to_datetime(today))
     sprint_dir = config.root / "sprints" / week_iso
-    sprint_files = _load_sprint_files(sprint_dir)
+    unreadable: list[str] = []
+    sprint_files = _load_sprint_files(sprint_dir, unreadable)
 
     # Read the cross-cutting decisions once (ancestors + master-cp, #305).
     weekly_decisions = load_cross_cutting_decisions(config.root, projects)
@@ -822,7 +833,9 @@ def build_agenda(
     )
 
     generated_at = tenant_now().strftime("%Y-%m-%d %H:%M")
-    return render_agenda_markdown(header, blocks, generated_at=generated_at)
+    return render_agenda_markdown(
+        header, blocks, generated_at=generated_at, unreadable=tuple(unreadable)
+    )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -837,8 +850,12 @@ def filter_active(projects: tuple[ProjectState, ...]):
             yield p
 
 
-def _load_sprint_files(sprint_dir: Path) -> tuple:
-    """Parse every <code>.md sprint file in sprint_dir. Skips on parse error."""
+def _load_sprint_files(sprint_dir: Path, skipped: list | None = None) -> tuple:
+    """Parse every <code>.md sprint file in sprint_dir. Skips on parse error.
+
+    ``skipped`` (step 3): when given, each unreadable file appends one note,
+    so the agenda can SAY a project's sprint content is missing rather than
+    render it as an empty week (`logger.warning` is silent outside sync)."""
     if not sprint_dir.is_dir():
         return ()
     out = []
@@ -856,6 +873,8 @@ def _load_sprint_files(sprint_dir: Path) -> tuple:
             out.append(parse_sprint_file(path))
         except (ValueError, OSError) as exc:
             logger.warning("Skipping sprint file %s: %s", path, exc)
+            if skipped is not None:
+                skipped.append(f"{path.name}: {type(exc).__name__}: {exc}")
     return tuple(out)
 
 
@@ -930,6 +949,9 @@ class AgendaSummary:
     discussion_prompt_count: int  # discussion_prompt is not None
 
     workload_by_owner: list[dict]  # [{owner_normalized, owner_display_strings, count, codes}]
+    # Sprint files that failed to parse (step 3) — their content is absent
+    # from every count above.
+    unreadable_sprint_files: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -949,6 +971,7 @@ class AgendaSummary:
                 "discussion_prompts": self.discussion_prompt_count,
             },
             "workload_by_owner": self.workload_by_owner,
+            "unreadable_sprint_files": self.unreadable_sprint_files,
         }
 
 
@@ -973,7 +996,8 @@ def build_agenda_summary(
 
     week_iso = current_sprint_week_iso(to_datetime(today))
     sprint_dir = config.root / "sprints" / week_iso
-    sprint_files = _load_sprint_files(sprint_dir)
+    unreadable: list[str] = []
+    sprint_files = _load_sprint_files(sprint_dir, unreadable)
 
     weekly_decisions = load_cross_cutting_decisions(config.root, projects)
 
@@ -1025,6 +1049,7 @@ def build_agenda_summary(
         urgency_flagged_count=sum(1 for b in blocks if b.has_urgency),
         discussion_prompt_count=sum(1 for b in blocks if b.discussion_prompt),
         workload_by_owner=workload,
+        unreadable_sprint_files=unreadable,
     )
 
 

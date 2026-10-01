@@ -370,6 +370,7 @@ def sync_spine_substance(
     estimate=None,
     now: datetime | None = None,
     malformed_out: list[dict] | None = None,
+    warnings_out: list[str] | None = None,
 ) -> int:
     """Reconcile `spine_substance` rows for one project to match disk.
 
@@ -388,6 +389,11 @@ def sync_spine_substance(
     errors append to ``malformed_out`` (when given) for the caller to report,
     and their existing rows are SHIELDED from the reap — a file that fails to
     parse is present-but-broken, not vanished.
+
+    The DB→disk reverse-mirrors are best-effort: each skip is logged (counted
+    under `cxp sync`) AND, step 3, appended to ``warnings_out`` when given —
+    the webhook's promote route calls this outside sync, where a log record
+    alone reaches no one.
 
     Recovery: a mid-mirror DB error may leave partial state (some reaps/upserts
     done), but the next ``cp sync`` reconverges because every row is derived from
@@ -626,6 +632,10 @@ def sync_spine_substance(
         except Exception as exc:  # noqa: BLE001 — steps table may not exist yet
             logger.warning("step reverse-mirror fetch skipped for %s: %s",
                            project_code, exc)
+            if warnings_out is not None:
+                warnings_out.append(
+                    f"steps not mirrored into authored elements: {exc}"
+                )
         for est_item_id, group in groups.items():
             slug = (est_item_id.split("/", 1)[1]
                     if "/" in est_item_id else est_item_id)
@@ -652,11 +662,17 @@ def sync_spine_substance(
                     "authored element mirror skipped for %s / %s: %s",
                     project_code, est_item_id, exc,
                 )
+                if warnings_out is not None:
+                    warnings_out.append(
+                        f"authored element mirror skipped for {est_item_id}: {exc}"
+                    )
     except Exception as exc:  # noqa: BLE001 — best-effort authored reverse-mirror
         logger.warning(
             "authored reverse-mirror skipped for %s: %s",
             project_code, exc, exc_info=True,
         )
+        if warnings_out is not None:
+            warnings_out.append(f"authored reverse-mirror skipped: {exc}")
 
     # Account mirror (DB→disk): the COMPANY's account-scoped elements land in
     # `<account-dir>/_stakeholders/<slug>.md` (the account dir is the working
@@ -668,17 +684,21 @@ def sync_spine_substance(
     try:
         _mirror_account_elements(client, project_id=project_id,
                                  project_code=project_code,
-                                 project_dir=project_dir)
+                                 project_dir=project_dir,
+                                 warnings_out=warnings_out)
     except Exception as exc:  # noqa: BLE001 — best-effort account mirror
         logger.warning(
             "account mirror skipped for %s: %s", project_code, exc, exc_info=True,
         )
+        if warnings_out is not None:
+            warnings_out.append(f"account mirror skipped: {exc}")
 
     return len(rows)
 
 
 def _mirror_account_elements(client, *, project_id: str, project_code: str,
-                             project_dir: Path) -> int:
+                             project_dir: Path,
+                             warnings_out: list[str] | None = None) -> int:
     """Mirror the project's company account-scoped authored elements to
     `<account-dir>/_stakeholders/`. Returns how many elements were written."""
     proj = (
@@ -739,6 +759,10 @@ def _mirror_account_elements(client, *, project_id: str, project_code: str,
                 "account element mirror skipped for %s / %s: %s",
                 project_code, est_item_id, exc,
             )
+            if warnings_out is not None:
+                warnings_out.append(
+                    f"account element mirror skipped for {est_item_id}: {exc}"
+                )
             continue
         written += 1
         # Pre-promotion mirror file under this project's spine/_authored/ is

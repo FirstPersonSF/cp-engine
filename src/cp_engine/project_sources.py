@@ -95,8 +95,13 @@ def list_sources(
     summaries: dict[str, str] | None = None,
     *,
     include_account: bool = False,
+    warnings: list | None = None,
 ) -> list[dict]:
     """List a project's active source documents, newest first.
+
+    ``warnings`` (optional out-list, step 3): annotation checks that could not
+    run — today the zero-chunk check, whose failure leaves EMPTY documents
+    unflagged. The listing itself still lists.
 
     By default the project's OWN `rag_assets` rows. `include_account=True`
     also lists the company's ACCOUNT-scoped docs (#324) — the ones filed
@@ -158,7 +163,7 @@ def list_sources(
             rows = sorted(rows + extra,
                           key=lambda r: str(r.get("created_at") or ""),
                           reverse=True)
-    empty_ids = _zero_chunk_ids(client, [r.get("id") for r in rows])
+    empty_ids = _zero_chunk_ids(client, [r.get("id") for r in rows], warnings)
     out: list[dict] = []
     for raw in rows:
         row = RagAssetRow.from_row(raw)
@@ -193,7 +198,7 @@ def list_sources(
     return out
 
 
-def _zero_chunk_ids(client, asset_ids: list) -> set:
+def _zero_chunk_ids(client, asset_ids: list, warnings: list | None = None) -> set:
     """Ids among `asset_ids` with NO chunks; empty set when the check fails.
 
     Fail-open on purpose: the listing must still list, and "we could not
@@ -204,7 +209,12 @@ def _zero_chunk_ids(client, asset_ids: list) -> set:
         return set()
     try:
         have = mc2_db.asset_ids_with_chunks(client, ids)
-    except Exception:  # noqa: BLE001 — see docstring
+    except Exception as exc:  # noqa: BLE001 — see docstring
+        if warnings is not None:
+            warnings.append(
+                "zero-chunk check failed — empty documents are NOT flagged in "
+                f"this listing ({type(exc).__name__}: {exc})"
+            )
         return set()
     return {a for a in ids if str(a) not in have}
 
@@ -1188,8 +1198,13 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
                layer: str | None = None, scope: str | None = None,
                binding: str | None = None, compact: bool = False,
                tier: str | None = None,
-               include_absorbed: bool | None = None) -> list[dict]:
+               include_absorbed: bool | None = None,
+               warnings: list | None = None) -> list[dict]:
     """List a project's LIVE spine elements (index, not bodies).
+
+    ``warnings`` (optional out-list, step 3): facets that could not be read —
+    today the estimate done-map, whose failure makes every `done` None
+    because it is UNKNOWN, which otherwise reads as "nothing bound".
 
     Returns `[{est_item_id, framing, layer, binding, status, serves_count,
     body_len, important, note, done, scope, version_label, version_date}]`
@@ -1288,7 +1303,7 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
     # every element. Never let a `done` lookup break the listing.
     try:
         done_map = fetch_project_done_map(client, project_id)
-    except Exception:  # noqa: BLE001 — done is best-effort; never break the listing
+    except Exception as exc:  # noqa: BLE001 — done is best-effort; never break the listing
         logger.warning(
             "list_spine: done-map fetch failed for project_id=%s; "
             "degrading `done` to None for all elements",
@@ -1296,6 +1311,15 @@ def list_spine(client, project_id: str, company_id: str | None = None, *,
             exc_info=True,
         )
         done_map = {}
+        # `done: None` on every row is otherwise indistinguishable from "no
+        # work items bound". Carried in the out-list, not as a note row or a
+        # per-row key, so the row shape callers index stays unchanged.
+        done_error = f"{type(exc).__name__}: {exc}"
+        if warnings is not None:
+            warnings.append(
+                "estimate done-map unreadable — `done` is UNKNOWN (None) on "
+                f"every element, not 'nothing bound' ({done_error})"
+            )
     out: list[dict] = []
     for row in rows:
         serves = row.get("serves") or []
@@ -1423,9 +1447,10 @@ def pull_spine(client, project_id: str, key: str,
         # Best-effort: if the estimator schema is unreachable the fetch may
         # raise, so we fail-soft to an empty map (→ derive_done returns None).
         # Never let a `done` lookup break the pull.
+        done_error: str | None = None
         try:
             done_map = fetch_project_done_map(client, project_id)
-        except Exception:  # noqa: BLE001 — done is best-effort; never break the pull
+        except Exception as exc:  # noqa: BLE001 — done is best-effort; never break the pull
             logger.warning(
                 "pull_spine: done-map fetch failed for project_id=%s; "
                 "degrading `done` to None",
@@ -1433,7 +1458,11 @@ def pull_spine(client, project_id: str, key: str,
                 exc_info=True,
             )
             done_map = {}
+            done_error = f"{type(exc).__name__}: {exc}"
         result["done"] = derive_done(row.get("est_item_id"), done_map)
+        if done_error is not None:
+            # `done: None` here means UNKNOWN, not "no work bound" — say so.
+            result["done_error"] = done_error
         return result
     if reason == "no-match":
         return {
@@ -1740,41 +1769,42 @@ def push_to_dropbox(
 def _drive_comments(file_id: str) -> list[dict]:
     """Read a Drive file's comments via the Drive API (comments.list). Works for
     Google Docs (whose comments exist ONLY here, not in any export) AND for
-    Office files stored in Drive. Returns the normalized comment shape; never
-    raises — a Drive/auth failure returns []."""
-    try:
-        from cloud_storage.google_drive_connector import GoogleDriveConnector
+    Office files stored in Drive. Returns the normalized comment shape.
 
-        conn = GoogleDriveConnector(service_account_file=None)
-        conn._authenticate()
-        fields = ("comments(author/displayName,content,quotedFileContent/value,"
-                  "createdTime,resolved,replies(author/displayName,content,createdTime))")
-        out: list[dict] = []
-        page = None
-        while True:
-            resp = conn.service.comments().list(
-                fileId=file_id, fields=f"nextPageToken,{fields}",
-                pageToken=page, includeDeleted=False,
-            ).execute()
-            for c in resp.get("comments", []):
-                out.append({
-                    "author": (c.get("author") or {}).get("displayName") or "Unknown",
-                    "date": c.get("createdTime"),
-                    "anchored_text": (c.get("quotedFileContent") or {}).get("value"),
-                    "comment": c.get("content") or "",
-                    "resolved": c.get("resolved", False),
-                    "replies": [
-                        {"author": (r.get("author") or {}).get("displayName") or "Unknown",
-                         "date": r.get("createdTime"), "comment": r.get("content") or ""}
-                        for r in c.get("replies", [])
-                    ],
-                })
-            page = resp.get("nextPageToken")
-            if not page:
-                break
-        return out
-    except Exception:  # noqa: BLE001 — MCP boundary
-        return []
+    RAISES on a Drive/auth failure (step 3, #298 shape): it used to return
+    [], which `pull_document_comments` reported as `comment_count: 0` — an
+    unreadable comment thread presented as a clean one. The MCP boundary
+    (`pull_document_comments`) turns the raise into a structured error."""
+    from cloud_storage.google_drive_connector import GoogleDriveConnector
+
+    conn = GoogleDriveConnector(service_account_file=None)
+    conn._authenticate()
+    fields = ("comments(author/displayName,content,quotedFileContent/value,"
+              "createdTime,resolved,replies(author/displayName,content,createdTime))")
+    out: list[dict] = []
+    page = None
+    while True:
+        resp = conn.service.comments().list(
+            fileId=file_id, fields=f"nextPageToken,{fields}",
+            pageToken=page, includeDeleted=False,
+        ).execute()
+        for c in resp.get("comments", []):
+            out.append({
+                "author": (c.get("author") or {}).get("displayName") or "Unknown",
+                "date": c.get("createdTime"),
+                "anchored_text": (c.get("quotedFileContent") or {}).get("value"),
+                "comment": c.get("content") or "",
+                "resolved": c.get("resolved", False),
+                "replies": [
+                    {"author": (r.get("author") or {}).get("displayName") or "Unknown",
+                     "date": r.get("createdTime"), "comment": r.get("content") or ""}
+                    for r in c.get("replies", [])
+                ],
+            })
+        page = resp.get("nextPageToken")
+        if not page:
+            break
+    return out
 
 
 def pull_document_comments(client, project_id: str, doc_title: str,
@@ -1818,7 +1848,14 @@ def pull_document_comments(client, project_id: str, doc_title: str,
     # Drive path — the only one that reaches Google Docs comments, and works
     # without downloading a binary.
     if provider == "drive" and file_id:
-        comments = _drive_comments(file_id)
+        try:
+            comments = _drive_comments(file_id)
+        except Exception as exc:  # noqa: BLE001 — MCP boundary, never raise
+            return {"error": (
+                f"could not read Drive comments for {title!r} "
+                f"({type(exc).__name__}: {exc}) — the comment count is "
+                "UNKNOWN, not zero"
+            )}
         return {"title": title, "provider": "drive",
                 "comment_count": len(comments), "comments": comments}
 
@@ -1833,7 +1870,21 @@ def pull_document_comments(client, project_id: str, doc_title: str,
         local = download_file(file_ref, Path(dest_dir))
     except Exception as exc:  # noqa: BLE001
         return {"error": f"download failed: {exc}"}
-    comments = extract_comments(str(local))
+    from cp_engine.doc_comments import supports_comments
+
+    if not supports_comments(str(local)):
+        return {"note": (
+            f"{title!r} is a {Path(str(local)).suffix or 'extensionless'} file; "
+            "comment extraction reads .docx/.pptx/.xlsx only — comments, if "
+            "any, were NOT read"
+        )}
+    read_errors: list[str] = []
+    comments = extract_comments(str(local), errors=read_errors)
+    if read_errors:
+        return {"error": (
+            f"could not read comments from {title!r} ({read_errors[0]}) — "
+            "the comment count is UNKNOWN, not zero"
+        )}
     return {"title": title, "provider": provider,
             "comment_count": len(comments), "comments": comments}
 

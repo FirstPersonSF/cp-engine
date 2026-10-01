@@ -175,10 +175,20 @@ _DISPATCH = {
 }
 
 
-def extract_comments(file_path: str) -> list[dict]:
+def supports_comments(file_path: str) -> bool:
+    """True when `extract_comments` can read this file type at all."""
+    return Path(file_path).suffix.lower() in _DISPATCH
+
+
+def extract_comments(file_path: str, errors: list | None = None) -> list[dict]:
     """Extract reviewer comments from an Office file by extension. Returns a
     normalized list (possibly empty); never raises. Unsupported extensions and
-    unreadable/comment-less files both return []."""
+    unreadable/comment-less files both return [].
+
+    ``errors`` (optional out-list, step 3): an UNREADABLE file appends its
+    failure here, so a caller can tell "no comments" from "could not read the
+    comments" (#298 — a partial read is worse than a miss). Use
+    `supports_comments` to tell an unsupported type apart."""
     ext = Path(file_path).suffix.lower()
     fn = _DISPATCH.get(ext)
     if fn is None:
@@ -186,7 +196,9 @@ def extract_comments(file_path: str) -> list[dict]:
     try:
         with zipfile.ZipFile(file_path) as zf:
             return fn(zf)
-    except Exception:  # noqa: BLE001 — MCP boundary: a bad file is [], not a crash
+    except Exception as exc:  # noqa: BLE001 — MCP boundary: a bad file is [], not a crash
+        if errors is not None:
+            errors.append(f"{type(exc).__name__}: {exc}")
         return []
 
 

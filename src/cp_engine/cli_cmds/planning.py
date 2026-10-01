@@ -17,6 +17,42 @@ from cp_engine.clock import tenant_now, tenant_today
 from cp_engine.config import ConfigError, load
 
 
+def _surface_logged_warnings(fn):
+    """Print every cp_engine WARNING+ logged while the command ran (step 3).
+
+    The planning/digest helpers degrade per project to `logger.warning`, and
+    outside `cxp sync` no handler is installed — so a prep doc missing three
+    projects' milestones printed exactly like a complete one. This collects
+    those records for the command's duration and renders them to stderr when
+    it finishes (including on SystemExit). Output and exit code are otherwise
+    unchanged. Applied directly above `def`, under the click decorators.
+    """
+    import functools
+
+    from cp_engine.loud import captured_warnings, print_warnings
+
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with captured_warnings() as collected:
+            try:
+                return fn(*args, **kwargs)
+            finally:
+                print_warnings(
+                    collected.messages, count=collected.count,
+                    label="warning(s) during this command — output may be incomplete",
+                )
+
+    return wrapper
+
+
+def _alloc_read_failed(which: str, exc: Exception) -> None:
+    click.echo(
+        f"(WARNING: {which} allocations read failed — hours shown as absent, "
+        f"not zero: {type(exc).__name__}: {exc})",
+        err=True,
+    )
+
+
 @click.command("prep-agenda")
 @click.option(
     "--projects",
@@ -44,6 +80,7 @@ from cp_engine.config import ConfigError, load
     "By default, prep-agenda auto-runs `cxp sync` if master-cp's last sync "
     "is more than 10 minutes old, so the agenda never shows stale data.",
 )
+@_surface_logged_warnings
 def prep_agenda_cmd(
     project_filter: str, out: Path | None, summary: bool, no_sync: bool
 ) -> None:
@@ -99,7 +136,8 @@ def prep_agenda_cmd(
     last_monday = today - timedelta(days=today.weekday() + 7)
     try:
         allocations = backend.read_allocations(config, last_monday.isoformat())
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — degrade, but say so
+        _alloc_read_failed("last-week", exc)
         allocations = None
 
     last_sprint_hours_by_project: dict[str, str] = {}
@@ -187,6 +225,7 @@ def prep_agenda_cmd(
     show_default=True,
     help="LLM model for the --sweep synthesis.",
 )
+@_surface_logged_warnings
 def prep_planning_cmd(
     project_filter: str,
     out: Path | None,
@@ -243,7 +282,8 @@ def prep_planning_cmd(
     tenant_hours: dict[str, int] = {}
     try:
         allocations = backend.read_allocations(config, last_monday.isoformat())
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — degrade, but say so
+        _alloc_read_failed("last-week", exc)
         allocations = None
     if allocations is not None:
         rollup = getattr(allocations, "rollup", ()) or ()
@@ -263,7 +303,8 @@ def prep_planning_cmd(
         planned_allocations = backend.read_allocations(
             config, planning_monday.isoformat()
         )
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 — degrade, but say so
+        _alloc_read_failed("planning-week", exc)
         planned_allocations = None
 
     # MC-2 Supabase client (schedule milestones + commitments). Silent
@@ -373,6 +414,7 @@ def prep_planning_cmd(
     default=None,
     help="Override today's date (YYYY-MM-DD). Useful for testing.",
 )
+@_surface_logged_warnings
 def attention_digest_cmd(post_to_slack: bool, recipient: str, today) -> None:
     """Print today's attention digest (past-due asks, escalated risks).
 

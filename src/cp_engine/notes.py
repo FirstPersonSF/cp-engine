@@ -58,10 +58,16 @@ def _resolve_entity(client, who: str) -> Optional[dict]:
 
 def _deliver_dm(client, config, *, recipient: dict, author_name: str,
                 project_label: str, project_id: str,
-                body: str) -> tuple[str, Optional[str]]:
+                body: str,
+                errors: list | None = None) -> tuple[str, Optional[str]]:
     """Send the note as a Slack DM. Returns (status, ts) where status is
     'sent' | 'failed' | 'skipped'. Never raises — the note already exists
-    in-app; delivery is best-effort, mirroring the endpoint."""
+    in-app; delivery is best-effort, mirroring the endpoint.
+
+    'skipped' means there is nothing to deliver TO (no Slack configured, no
+    email, no Slack user for the email). A Slack API error is 'failed', never
+    'skipped' (step 3; cf. #227 — "bot not in channel" read as a quiet
+    week), and its reason is appended to ``errors`` when given."""
     from cp_engine import slack as slack_mod
 
     # Resolve the recipient's Slack user id (cache on the entity if we look it
@@ -81,8 +87,21 @@ def _deliver_dm(client, config, *, recipient: dict, author_name: str,
         try:
             resp = web.users_lookupByEmail(email=email)
             sid = (resp.get("user") or {}).get("id") if resp.get("ok") else None
-        except Exception:  # noqa: BLE001
-            sid = None
+        except Exception as exc:  # noqa: BLE001
+            # `users_not_found` is a real "nobody to DM" answer; anything else
+            # (auth, missing scope, network) is a delivery FAILURE.
+            code = None
+            try:
+                code = exc.response.get("error")  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001 — diagnostics only
+                code = None
+            if code == "users_not_found":
+                return "skipped", None
+            if errors is not None:
+                errors.append(
+                    f"Slack user lookup failed: {code or type(exc).__name__}: {exc}"
+                )
+            return "failed", None
         if not sid:
             return "skipped", None
         try:  # cache for next time; a failure here isn't fatal
@@ -95,7 +114,9 @@ def _deliver_dm(client, config, *, recipient: dict, author_name: str,
     try:
         ts = slack_mod.post_dm(web, user_id=sid, text=fallback, blocks=blocks)
         return "sent", ts
-    except Exception:  # noqa: BLE001 — DM failure is recorded, not raised
+    except Exception as exc:  # noqa: BLE001 — DM failure is recorded, not raised
+        if errors is not None:
+            errors.append(f"Slack DM failed: {exc}")
         return "failed", None
 
 
@@ -142,19 +163,27 @@ def write_note(client, config, *, project_code: str, project_id: str,
     if not result.data:
         raise RuntimeError("failed to insert note row")
 
+    delivery_errors: list[str] = []
     delivery, slack_ts = _deliver_dm(
         client, config, recipient=recipient_row,
         author_name=author_row.get("name") or "A partner",
         project_label=project_code, project_id=project_id, body=text,
+        errors=delivery_errors,
     )
     # Record what the DM did, mirroring the endpoint (visible, not silent).
     patch: dict[str, Any] = {"slack_delivery": delivery}
     if slack_ts:
         patch["slack_ts"] = slack_ts
+    warnings: list[str] = []
     try:
         client.table(Tables.NOTES).update(patch).eq("id", row["id"]).execute()
-    except Exception:  # noqa: BLE001 — status write is best-effort
-        pass
+    except Exception as exc:  # noqa: BLE001 — status write is best-effort
+        # The row still says 'pending' while this result says otherwise; the
+        # caller must know the two disagree.
+        warnings.append(
+            f"delivery status not recorded on the note row (it still reads "
+            f"'pending'): {type(exc).__name__}: {exc}"
+        )
 
     return {
         "note_id": row["id"],
@@ -162,4 +191,6 @@ def write_note(client, config, *, project_code: str, project_id: str,
         "author": author_row.get("name") or author_row.get("email"),
         "slack_delivery": delivery,
         **({"slack_ts": slack_ts} if slack_ts else {}),
+        **({"slack_error": delivery_errors[0]} if delivery_errors else {}),
+        **({"warnings": warnings} if warnings else {}),
     }

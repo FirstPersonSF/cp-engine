@@ -253,6 +253,12 @@ class IngestPlanResult:
     # #322: copies dropped because the same item was already routed to
     # another project in this plan (`<code>/<family>: <text>`).
     cross_target_duplicates: list[str] = field(default_factory=list)
+    # Step 3 (fail loudly): degrades that did NOT fail the step but changed
+    # what landed — commitment items skipped for want of an MC-2 client,
+    # owner canonicalization that could not run. Kept apart from `errors`
+    # (which flips the CLI exit / the webhook run to failed) so a
+    # deliberately file-only ingest still succeeds, but never silently.
+    warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict:
         return {
@@ -260,6 +266,7 @@ class IngestPlanResult:
             "skipped_duplicate": self.skipped_duplicate,
             "errors": self.errors,
             "cross_target_duplicates": self.cross_target_duplicates,
+            "warnings": self.warnings,
         }
 
 
@@ -351,22 +358,29 @@ def execute_plan(
             # from the most recent prior sprint file rather than dropping
             # the plan. Falls back to logging the error when no prior
             # exists (first-ever-ingest only).
+            from cp_engine.loud import captured_warnings
             from cp_engine.sprints import scaffold_from_prior
 
-            scaffolded = scaffold_from_prior(
-                tenant_root=tenant_root,
-                project_code=code,
-                target_week_iso=week_iso,
-                supabase=supabase,
-            )
+            # Step 3: a scaffold that failed because an MC-2 read failed
+            # must not read as "no prior file" — carry the cause.
+            with captured_warnings() as scaffold_warns:
+                scaffolded = scaffold_from_prior(
+                    tenant_root=tenant_root,
+                    project_code=code,
+                    target_week_iso=week_iso,
+                    supabase=supabase,
+                )
             if scaffolded is None:
                 seen_as = (
                     f"{plan_code}" if plan_code == code
                     else f"{plan_code} -> {code}"
                 )
+                cause = (f" — {'; '.join(scaffold_warns.messages)}"
+                         if scaffold_warns.messages else "")
                 result.errors.append(
                     f"sprint file missing for {seen_as} (week {week_iso}) "
                     f"and no prior sprint file to scaffold from: {sprint_path}"
+                    f"{cause}"
                 )
                 continue
             logger.info(
@@ -408,19 +422,31 @@ def execute_plan(
                         "ingest: skipping %s for %s — no Supabase client supplied",
                         normalized, code,
                     )
+                    n = len(items) if isinstance(items, list) else 1
+                    if n:
+                        result.warnings.append(
+                            f"{code}/{verb}: {n} item(s) NOT written — no MC-2 "
+                            "client (commitments live in MC-2)"
+                        )
                     continue
                 handler = {
                     "set-milestone": _write_milestone,
                     "set-client-ask-task": _write_client_ask_task,
                 }[normalized]
                 for item in items:
+                    item_warnings: list[str] = []
                     try:
                         handler(
                             code, item,
                             supabase=supabase, meeting_id=meeting_id,
+                            warnings=item_warnings,
                         )
                     except Exception as exc:
                         result.errors.append(f"{code}/{verb}: {exc}")
+                    for w in item_warnings:
+                        note = f"{code}/{verb}: {w}"
+                        if note not in result.warnings:
+                            result.warnings.append(note)
                 continue
             for item in items:
                 try:
@@ -2050,6 +2076,7 @@ def _write_milestone(
     *,
     supabase: Any,
     meeting_id: str | None = None,
+    warnings: list | None = None,
 ) -> None:
     """Insert a ``proposed`` milestone commitment (direction us→them —
     a dated deliverable we owe).
@@ -2104,6 +2131,7 @@ def _write_milestone(
         owner_name=owner,
         due_date=due_date,
         source_meeting_id=item.get("source_meeting_id") or meeting_id,
+        warnings=warnings,
     )
 
 
@@ -2113,6 +2141,7 @@ def _write_client_ask_task(
     *,
     supabase: Any,
     meeting_id: str | None = None,
+    warnings: list | None = None,
 ) -> None:
     """Insert a ``proposed`` client-ask commitment (direction us→them —
     the client asked us for something, so we owe the response).
@@ -2156,6 +2185,7 @@ def _write_client_ask_task(
         direction=_commitments.US_TO_THEM,
         due_date=due_date,
         source_meeting_id=item.get("source_meeting_id") or meeting_id,
+        warnings=warnings,
     )
 
 

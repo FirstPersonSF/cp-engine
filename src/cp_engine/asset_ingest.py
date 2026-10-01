@@ -390,11 +390,22 @@ def _junk_reason(name: str, existing_titles) -> str | None:
     return None
 
 
+class _UnreadTitles(set):
+    """An EMPTY title set that records why it is empty: the read failed."""
+
+    def __init__(self, error: str) -> None:
+        super().__init__()
+        self.error = error
+
+
 def _existing_source_titles(client, owner_col: str, owner_val: str) -> set[str]:
     """Lowercased active source titles for the junk filter's dup check.
 
     Best-effort: an unreachable read returns empty (dup-marker files then
-    ingest rather than silently vanish — fail open, never fail silent)."""
+    ingest rather than silently vanish — fail open, never fail silent). The
+    empty set is an `_UnreadTitles` carrying ``.error`` so the run can say the
+    duplicate-name check did not run (step 3, fail loudly) — the signature is
+    unchanged so existing fakes keep working."""
     try:
         rows = (
             client.table(Tables.RAG_ASSETS)
@@ -405,8 +416,8 @@ def _existing_source_titles(client, owner_col: str, owner_val: str) -> set[str]:
             .data
             or []
         )
-    except Exception:  # noqa: BLE001
-        return set()
+    except Exception as exc:  # noqa: BLE001 — fail open, but say so
+        return _UnreadTitles(f"{type(exc).__name__}: {exc}")
     return {(r.get("title") or "").strip().lower() for r in rows}
 
 
@@ -1095,7 +1106,12 @@ def _stable_dir_for(tmp_root: Path, file_ref: FileRef) -> Path:
     return tmp_root / safe_id
 
 
-def _source_url(file_ref: FileRef, drive_connector=None, dropbox_connector=None) -> str | None:
+def _source_url(
+    file_ref: FileRef,
+    drive_connector=None,
+    dropbox_connector=None,
+    failures: list | None = None,
+) -> str | None:
     """Return a durable, human-clickable web link for a source file, or None.
 
     - Drive: a `/file/d/<id>/view` link built from the file id — no API call.
@@ -1111,6 +1127,11 @@ def _source_url(file_ref: FileRef, drive_connector=None, dropbox_connector=None)
 
     The pipeline stores this verbatim as `rag_assets.url` and builds citation
     deep-links from it, so a missing url is strictly safer than a wrong one.
+
+    A RAISING lookup (the connector refusing to mint a team-only link, auth,
+    network) is appended to ``failures`` as ``(file_name, message)`` when the
+    caller passes one, so a run whose links all failed does not read as a run
+    whose sources simply have none (step 3, fail loudly).
     """
     try:
         if file_ref.source == "drive":
@@ -1140,8 +1161,12 @@ def _source_url(file_ref: FileRef, drive_connector=None, dropbox_connector=None)
                 return None
             return dropbox_connector.get_shareable_link(file_ref.path, team_only=True)
         return None
-    except Exception:
-        # Never let a link lookup abort ingest of the file.
+    except Exception as exc:  # noqa: BLE001 — never abort ingest over a link
+        # Never let a link lookup abort ingest of the file — but record it.
+        if failures is not None:
+            failures.append(
+                (file_ref.name, f"source-link lookup failed: {type(exc).__name__}: {exc}")
+            )
         return None
 
 
@@ -1325,10 +1350,26 @@ def ingest_project_assets(
     run_root.mkdir(parents=True, exist_ok=True)
 
     _titles_cache: list[set[str] | None] = [None]
+    # Pre-check query failures (dedup / ingest-cache skip-check). Each degrades
+    # to "ingest normally" per file; collected here and folded into ONE
+    # source_note per check at the end of the run, so the caller (CLI, the
+    # webhook's run row) sees that the check did not run — stderr alone
+    # reaches neither the run row nor the mc-2 button.
+    _check_errors: dict[str, list[str]] = {"dedup": [], "cache": []}
 
     def _junk_titles() -> set[str]:
         if _titles_cache[0] is None:
-            _titles_cache[0] = _existing_source_titles(client, owner_col, owner_val)
+            titles = _existing_source_titles(client, owner_col, owner_val)
+            err = getattr(titles, "error", None)
+            if err:
+                result.source_notes.append({
+                    "source": "junk-filter",
+                    "note": (
+                        "existing-titles read failed — duplicate-name files "
+                        f"were NOT screened this run ({err})"
+                    ),
+                })
+            _titles_cache[0] = titles
         return _titles_cache[0]
 
     for file_ref in files:
@@ -1354,7 +1395,7 @@ def ingest_project_assets(
         # run. `use_cache=False` (CLI --no-cache) forces a full re-scan.
         # Keyed on the run's owner pair so initiative-owned rows hit too.
         if use_cache and _unchanged_since_last_ingest(
-            client, owner_val, file_ref, owner_col
+            client, owner_val, file_ref, owner_col, errors=_check_errors["cache"]
         ):
             result.skipped_unchanged += 1
             continue
@@ -1387,7 +1428,8 @@ def ingest_project_assets(
             try:
                 file_hash = _content_hash(local)
                 if _existing_dup_at_other_path(
-                    client, owner_val, file_hash, file_path, owner_col
+                    client, owner_val, file_hash, file_path, owner_col,
+                    errors=_check_errors["dedup"],
                 ):
                     result.deduped += 1
                     continue
@@ -1408,7 +1450,10 @@ def ingest_project_assets(
                 ingest_result = pipeline.ingest_file(
                     file_path,
                     title=file_ref.name,
-                    url=_source_url(file_ref, drive_connector, dropbox_connector),
+                    url=_source_url(
+                        file_ref, drive_connector, dropbox_connector,
+                        failures=result.failures,
+                    ),
                 )
 
                 action = getattr(ingest_result, "action", "failed")
@@ -1500,6 +1545,18 @@ def ingest_project_assets(
             # happened (success, skip, or failure).
             shutil.rmtree(file_dir, ignore_errors=True)
 
+    for check, label in (("dedup", "dedup pre-check"),
+                         ("cache", "ingest-cache skip-check")):
+        errs = _check_errors[check]
+        if errs:
+            result.source_notes.append({
+                "source": check,
+                "note": (
+                    f"{label} query failed for {len(errs)} file(s); those "
+                    f"files were ingested without it (first: {errs[0]})"
+                ),
+            })
+
     if result.skipped_shortcuts > 0:
         # Surface the skip so the row + button UI show why these files produced
         # nothing — without polluting the `failed`/`skipped` counts.
@@ -1537,6 +1594,7 @@ def _existing_dup_at_other_path(
     file_hash: str,
     current_path: str,
     owner_col: str = "project_id",
+    errors: list | None = None,
 ) -> bool:
     """True if this project already has an ACTIVE asset with `file_hash` at a
     DIFFERENT `file_path` than `current_path`.
@@ -1578,6 +1636,8 @@ def _existing_dup_at_other_path(
             "ingesting without it",
             file=sys.stderr,
         )
+        if errors is not None:
+            errors.append(f"{type(exc).__name__}: {exc}")
         return False
     return any(r.get("file_path") != current_path for r in rows)
 
@@ -1693,7 +1753,11 @@ def _supersede_same_title(
 
 
 def _unchanged_since_last_ingest(
-    client, project_id: str, file_ref, owner_col: str = "project_id"
+    client,
+    project_id: str,
+    file_ref,
+    owner_col: str = "project_id",
+    errors: list | None = None,
 ) -> bool:
     """True iff an active rag_asset for this (provider, file) already carries a
     meta.change_token equal to the freshly-listed token → unchanged → safe to
@@ -1733,6 +1797,8 @@ def _unchanged_since_last_ingest(
             f"{file_ref.id} ({exc}); ingesting without it",
             file=sys.stderr,
         )
+        if errors is not None:
+            errors.append(f"{file_ref.id}: {type(exc).__name__}: {exc}")
         return False
 
 

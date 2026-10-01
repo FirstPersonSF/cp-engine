@@ -157,6 +157,7 @@ def run(
     from cp_engine.route_propose import persist, propose as run_pass
 
     written = 0
+    errors: list[str] = []
     by_project: dict[str, list[dict]] = {}
     for r in rows:
         pid = r.get("project_id")
@@ -170,12 +171,17 @@ def run(
             # no valid answer and persisting a run of `unsure`.
             log.debug("no estimate slots for project %s — skipped", pid)
             continue
-        proposals = run_pass(items, slots, project_id=pid, model=model)
+        proposals = run_pass(items, slots, project_id=pid, model=model, errors=errors)
         written += persist(
             client,
             items,
             proposals,
-            prompt_version=active_prompt_version(client),
+            prompt_version=active_prompt_version(client, errors),
             model=model,
         )
+    # Step 3: the only caller is `cxp route-queue`; a failed batch printed
+    # here is the difference between "the model was unsure" and "it never ran".
+    from cp_engine.loud import print_warnings
+
+    print_warnings(errors, label="route-queue errors")
     return queue, written

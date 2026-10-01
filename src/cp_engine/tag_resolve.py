@@ -41,7 +41,7 @@ def parse_tag(tag: Any) -> dict | None:
     }
 
 
-def resolve_tags(client: Any, tags: list) -> list[dict]:
+def resolve_tags(client: Any, tags: list, errors: list | None = None) -> list[dict]:
     """Resolve display tags to canonical codes, DB-verified against MC-2.
 
     ``client`` is a Supabase client (or None — pure-parse mode). Returns one
@@ -51,8 +51,12 @@ def resolve_tags(client: Any, tags: list) -> list[dict]:
     since #301) and ``matched`` says whether the code was verified against
     a live MC-2 row (False = parse-only fallback, the historical fathom
     behavior).
+
+    ``errors`` (optional out-list, step 3): set when the MC-2 index could not
+    be read, so "every tag unmatched because MC-2 errored" is not the same
+    answer as "every tag unmatched because none is a live project".
     """
-    codes_by_number = _load_indexes(client)
+    codes_by_number = _load_indexes(client, errors)
 
     out: list[dict] = []
     for tag in tags:
@@ -71,7 +75,7 @@ def resolve_tags(client: Any, tags: list) -> list[dict]:
     return out
 
 
-def _load_indexes(client: Any) -> dict[int, str]:
+def _load_indexes(client: Any, errors: list | None = None) -> dict[int, str]:
     """Load ``{number: "<company>-<number>"}`` from MC-2.
 
     Best-effort: any failure returns an empty index, degrading resolve_tags
@@ -92,7 +96,12 @@ def _load_indexes(client: Any) -> dict[int, str]:
             if number is None or not company:
                 continue
             codes_by_number[int(number)] = f"{company.lower()}-{number}"
-    except Exception:  # noqa: BLE001 — degrade to parse-only, never block dispatch
+    except Exception as exc:  # noqa: BLE001 — degrade to parse-only, never block dispatch
         codes_by_number = {}
+        if errors is not None:
+            errors.append(
+                "MC-2 project index unreadable — every tag is parse-only "
+                f"(matched=False) ({type(exc).__name__}: {exc})"
+            )
 
     return codes_by_number

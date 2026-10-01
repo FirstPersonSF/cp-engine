@@ -969,7 +969,9 @@ def render_inventory(inv: dict) -> str:
     if hosted:
         out.append(f"  hosted     {hosted.get('server_version') or '?'}   build {hosted.get('build') or '?'}")
     elif tn.get("hosted_url"):
-        out.append(f"  hosted     {tn['hosted_url']}   (not checked)")
+        # Full doctor DOES fetch; a None here is "unreachable" as often as
+        # "not checked" — don't claim the benign reading (step 3).
+        out.append(f"  hosted     {tn['hosted_url']}   (not checked or unreachable)")
     rec = inv.get("install_record")
     if rec:
         who = f" by {rec['user']}" if rec.get("user") else ""

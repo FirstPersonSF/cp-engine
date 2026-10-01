@@ -98,6 +98,9 @@ class GeneratedAccountPlan:
     meeting_id: str
     project_codes: tuple[str, ...]
     model: str
+    # Name-check outcome (#312), as `GeneratedPlan.attribution` carries it for
+    # single-workstream plans; includes `error` when the pass could not run.
+    attribution: dict | None = None
 
 
 def generate_account_plan(
@@ -180,7 +183,9 @@ def generate_account_plan(
     from cp_engine.ingest_fidelity import apply_decision_fidelity
 
     apply_decision_fidelity(plan)
-    apply_attribution_checks(plan, config=config, transcript=transcript)
+    attribution = apply_attribution_checks(
+        plan, config=config, transcript=transcript
+    )
 
     project_codes = tuple(p.code for p in active_projects)
     return GeneratedAccountPlan(
@@ -190,6 +195,7 @@ def generate_account_plan(
         meeting_id=meeting_id,
         project_codes=project_codes,
         model=model,
+        attribution=attribution,
     )
 
 
@@ -740,7 +746,9 @@ def generate_sprint_planning_plan(
     from cp_engine.ingest_fidelity import apply_decision_fidelity
 
     apply_decision_fidelity(plan)
-    apply_attribution_checks(plan, config=config, transcript=transcript)
+    attribution = apply_attribution_checks(
+        plan, config=config, transcript=transcript
+    )
 
     project_codes = tuple(p.code for p in active_projects)
     return GeneratedAccountPlan(
@@ -750,6 +758,7 @@ def generate_sprint_planning_plan(
         meeting_id=meeting_id,
         project_codes=project_codes,
         model=model,
+        attribution=attribution,
     )
 
 
