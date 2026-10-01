@@ -1,4 +1,4 @@
-"""Fathom meeting verbs: fathom-list, fathom-fetch, fathom-auto-poll, meetings-backfill.
+"""Fathom meeting verbs: fathom-list, fathom-fetch, fathom-auto-poll.
 
 Split from cli.py (arch-phase-4, #33). Shared helpers stay in
 cp_engine.cli and are called via the module attribute so test
@@ -7,7 +7,6 @@ monkeypatches of `cp_engine.cli.<helper>` keep working.
 
 from __future__ import annotations
 
-import sys
 
 import click
 
@@ -30,7 +29,7 @@ import cp_engine.cli as _cli
         "work-session", "1-1", "untagged",
     ]),
     default=None,
-    help="Filter by meeting_type (Phase B). Used by /cp-ingest --account to "
+    help="Filter by meeting_type (Phase B). Used by the account-ingest flow to "
     "pull just account-status meetings. Default: no filter.",
 )
 def fathom_list_cmd(since_iso: str | None, limit: int, meeting_type: str | None) -> None:
@@ -66,7 +65,7 @@ def fathom_fetch_cmd(meeting_id: str, needs_review: bool) -> None:
     tenant root. Pass `--needs-review` to stage to needs-review/ instead.
 
     Output is JSON: `{path, meeting_id, title, project_tags, ...}`.
-    Hand the path to /cp-ingest to deepen.
+    Turn the staged transcript into a plan for `cxp ingest` to deepen.
     """
     import json
 
@@ -179,59 +178,5 @@ def fathom_auto_poll_cmd(limit: int, dry_run: bool) -> None:
 # ──────────────────────────────────────────────────────────────────────
 #  Slack weekly-digest commands
 # ──────────────────────────────────────────────────────────────────────
-
-
-@click.command(name="meetings-backfill")
-@click.argument("code", required=False)
-@click.option("--all", "all_", is_flag=True,
-              help="Backfill every tagged meeting across all projects.")
-def meetings_backfill_cmd(code: str | None, all_: bool) -> None:
-    """Link + embed already-tagged Fathom meetings into the project/RAG world.
-
-    `cp meetings-backfill ibx-5167` backfills one project's tagged meetings;
-    `cp meetings-backfill --all` backfills every tagged meeting. Exactly one of
-    CODE or --all is required. These meetings already exist as rows in MC-2 (no
-    Fathom API call) — this runs `link_meeting` over them, embedding each
-    meeting's SUMMARY. Exits non-zero if any row failed, so cron/CI notices.
-    """
-    from cp_engine import meetings as meetings_mod
-    from cp_engine import sync_mc2
-
-    if bool(code) == bool(all_):
-        click.echo(
-            "Error: pass exactly one of CODE or --all (got both or neither).",
-            err=True,
-        )
-        sys.exit(2)
-
-    config = _cli._load_config_or_die()
-    # SUPABASE_* for the MC-2 client; OPENAI/VOYAGE for the embed pipeline
-    # (without _load_ingest_creds the embed's OpenAI/Voyage client gets None —
-    # the v0.40.2 fix).
-    url, key = sync_mc2._load_supabase_creds(config)
-    sync_mc2._load_ingest_creds(config)
-
-    client = _cli.build_mc2_client()
-    summary = meetings_mod.backfill_meetings(
-        client, code=code or None, supabase_url=url, supabase_key=key
-    )
-
-    click.echo(
-        f"meetings-backfill: total={summary['total']} "
-        f"linked={summary['linked']} skipped={summary['skipped']} "
-        f"failed={summary['failed']}"
-    )
-    unresolved = summary.get("unresolved") or []
-    if unresolved:
-        click.echo(f"  unresolved ({len(unresolved)}):", err=True)
-        for item in unresolved:
-            click.echo(f"    - {item}", err=True)
-    failures = summary.get("failures") or []
-    if failures:
-        click.echo(f"  failures ({len(failures)}):", err=True)
-        for rid, reason in failures:
-            click.echo(f"    - {rid}: {reason}", err=True)
-    if summary["failed"]:
-        sys.exit(1)
 
 

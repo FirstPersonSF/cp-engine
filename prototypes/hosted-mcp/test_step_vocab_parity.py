@@ -29,12 +29,12 @@ def test_step_vocabulary_is_the_engines(server):
     assert server._STEP_SELECT is spine_steps._STEP_SELECT
 
 
-def test_add_spine_step_rejects_what_the_engine_rejects(server):
+def test_propose_spine_step_rejects_what_the_engine_rejects(server):
     """Behaviour through the verb: an out-of-vocabulary status and an over-long
     note are refused with the engine's limits, before any client is built."""
     from cp_engine import spine_steps
 
-    out = server.add_spine_step("ggl-5188", "k", "title", status="blocked")
+    out = server.propose_spine_step("ggl-5188", "k", "title", status="blocked")
     assert out == {"error": f"status must be one of {list(spine_steps.STEP_STATUSES)}"}
-    out = server.add_spine_step("ggl-5188", "k", "title", note="x" * (spine_steps.NOTE_MAX + 1))
+    out = server.propose_spine_step("ggl-5188", "k", "title", note="x" * (spine_steps.NOTE_MAX + 1))
     assert out == {"error": f"note exceeds {spine_steps.NOTE_MAX} characters"}

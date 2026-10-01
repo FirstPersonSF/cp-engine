@@ -14,9 +14,6 @@ _WEBHOOK = Path(__file__).resolve().parent.parent / "webhook"
 if str(_WEBHOOK) not in sys.path:
     sys.path.insert(0, str(_WEBHOOK))
 
-from cp_engine import mcp_server as srv
-
-
 def test_missing_sprint_file_error_names_the_mc2_cause(tmp_path, monkeypatch):
     """A scaffold that failed on an MC-2 read must say so, not just
     'no prior sprint file' (the #194 error text hid exactly this)."""
@@ -35,20 +32,6 @@ def test_missing_sprint_file_error_names_the_mc2_cause(tmp_path, monkeypatch):
         {"text": "note", "date": "2026-09-30", "who": "Rena"}]}}}
     res = ingest.execute_plan(plan, tenant_root=tmp_path, today=date(2026, 9, 30))
     assert any("sprint file missing" in e and "JWT expired" in e for e in res.errors), res.errors
-
-
-def test_list_spine_elements_carries_degraded_read_warnings(monkeypatch):
-    monkeypatch.setattr(srv, "_resolve", lambda code: (object(), "pid", "cid"))
-    monkeypatch.setattr(srv, "_installed_version", lambda: None, raising=False)
-
-    def fake_list_spine(client, pid, cid, *, warnings=None, **kw):
-        warnings.append("done-map unreadable: APIError")
-        return [{"est_item_id": "a"}]
-
-    monkeypatch.setattr("cp_engine.project_sources.list_spine", fake_list_spine)
-    monkeypatch.setattr(srv, "_with_project_status", lambda rows, *a: rows)
-    out = srv.list_spine_elements("sap-5171")
-    assert {"warning": "done-map unreadable: APIError"} in out
 
 
 def test_resolve_tags_route_returns_index_errors(monkeypatch):

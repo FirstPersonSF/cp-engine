@@ -93,9 +93,8 @@ def parse_version(v: str | None) -> Version | None:
 def installed_cli_version() -> str | None:
     """The cp-engine version this interpreter is running.
 
-    `importlib.metadata` first — the same read `mcp_server.py` uses for its
-    on-disk check (#150), so the two cannot disagree about what is installed —
-    then `__version__` as the fallback for a source checkout with no dist.
+    `importlib.metadata` first, then `__version__` as the fallback for a
+    source checkout with no dist.
     """
     try:
         import importlib.metadata as md
@@ -503,31 +502,21 @@ def is_cxp_mcp(command: str) -> bool:
     return False
 
 
-def stale_mcp(procs: Iterable[Proc], install_mtime: float | None) -> Finding | None:
-    """`cxp mcp` processes started before cp was last installed.
+def stale_mcp(procs: Iterable[Proc], install_mtime: float | None = None) -> Finding | None:
+    """`cxp mcp` processes still running — the RETIRED local server.
 
-    Reproduced on both audited machines. A `cxp mcp` server keeps serving the
-    bytecode it started with; after a reinstall it answers tool calls from old
-    code, normally, with nothing to say so. Start time before the receipt's
-    mtime is the read-only, no-round-trip signal.
-
-    WHAT THIS IS NOT. `mcp_server.py` (#150) compares the server's frozen
-    `__version__` to the on-disk version from INSIDE tool results — a
-    version-string check that fires only after something is already being
-    asked. This is a timestamp check, and the two answer different questions:
-    a same-version `--force --reinstall` rewrites the receipt and fires HERE
-    (the server is, literally, older than the install) but not there; an
-    in-place edit of a directory install fires there but not here. The
-    relation that holds, and that a test asserts: whenever mcp_server would
-    warn because a reinstall changed the version, the receipt was rewritten,
-    so this fires too. The remedy is the same and harmless either way.
+    The stdio server (`cp-sources`) was retired in architecture plan step 5b;
+    `cp-hosted` is the only cp MCP server and `cxp` no longer has an `mcp`
+    command. So ANY running `cxp mcp` process was started by a pre-retirement
+    install and serves that install's frozen code — a second, stale answer to
+    verbs the hosted server now owns. Before the retirement this check
+    compared start time with the install receipt's mtime; that distinction
+    is gone, and `install_mtime` is accepted only so callers keep their shape.
 
     Never kills. A running server belongs to a live session, possibly someone
     else's. It names the PIDs and the restart.
     """
-    if install_mtime is None:
-        return None
-    stale = [p for p in procs if is_cxp_mcp(p.command) and p.started < install_mtime]
+    stale = [p for p in procs if is_cxp_mcp(p.command)]
     if not stale:
         return None
     pids = ", ".join(str(p.pid) for p in sorted(stale, key=lambda p: p.started))
@@ -536,10 +525,13 @@ def stale_mcp(procs: Iterable[Proc], install_mtime: float | None) -> Finding | N
         severity=SEV_STALE_MCP,
         code="stale_mcp",
         summary=(
-            f"{n} cp tool server{'s' if n != 1 else ''} started before cp was "
-            "last installed and may answer with old code."
+            f"{n} retired local cp tool server{'s' if n != 1 else ''} (`cxp mcp`) "
+            f"{'are' if n != 1 else 'is'} still running and may answer with old code."
         ),
-        remedy="Run /mcp to restart them.",
+        remedy=(
+            "Run /mcp to reconnect: cp-hosted is the only cp server now "
+            "(`cxp sync` drops the old cp-sources entry from .mcp.json)."
+        ),
         detail=f"pid {pids}",
         extra={"pids": [p.pid for p in stale]},
     )
@@ -785,13 +777,12 @@ def fetch_hosted_health(url: str, timeout: float = 5.0) -> dict | None:
 def hosted_vs_local(hosted_version: str | None, cli_version: str | None, hosted_build: str | None = None) -> Finding | None:
     """Is the hosted MCP server on the same engine as this machine?
 
-    Both servers expose the same verbs (`list_spine_elements`,
-    `pull_project_source`, ...) at independently-deployed versions: the CLI
-    ships by release, the hosted server by a manual `railway up`. So one
-    session can hold two implementations of one operation with nothing saying
-    which answered. This is the §1 failure shape one layer over, and it is the
-    check the plan's 4b.1 asked for. Low severity: the fix is a deploy, not
-    something the person at the keyboard can do — but they should know.
+    The hosted server is the only cp MCP server (step 5b), but this machine's
+    `cxp` still runs the same engine for sync, render and capture, and the
+    two ship independently: the CLI by release, the hosted server by
+    `deploy.sh`. A mismatch means a verb and the CLI step beside it can apply
+    different rules. Low severity: the fix is a deploy, not something the
+    person at the keyboard can do — but they should know.
     """
     hv = plain_version(hosted_version)
     cv = plain_version(cli_version)
@@ -802,11 +793,11 @@ def hosted_vs_local(hosted_version: str | None, cli_version: str | None, hosted_
         severity=SEV_HOSTED_VS_LOCAL,
         code="hosted_vs_local",
         summary=(
-            f"The hosted cp server is {who} the engine on this machine; the "
-            "same verb can answer differently depending on which one is asked."
+            f"The hosted cp server is {who} the engine on this machine; its "
+            "verbs and this machine's cxp can apply different rules."
         ),
         remedy=(
-            "Redeploy the hosted server (railway up from prototypes/hosted-mcp)"
+            "Redeploy the hosted server (prototypes/hosted-mcp/deploy.sh)"
             if hv < cv else "Update this machine (say \"update cp-engine\")"
         ) + " so they match.",
         detail=f"hosted v{hosted_version}" + (f" build {hosted_build}" if hosted_build else "") + f", engine v{cli_version}",

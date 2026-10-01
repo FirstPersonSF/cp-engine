@@ -1,4 +1,4 @@
-"""Tests for scripts/migrate_full_job_name_ids.py — the one-time tree
+"""Tests for scripts/archive/migrate_full_job_name_ids.py — the one-time tree
 migration that renames sprint files (and any genuinely-differing working
 dirs) from the legacy `<company>-<number>` id to the full_job_name slug.
 
@@ -20,8 +20,8 @@ from pathlib import Path
 
 import pytest
 
-# Load the script module by path (it lives under scripts/, not the package).
-_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "migrate_full_job_name_ids.py"
+# Load the script module by path (it lives under scripts/archive/, not the package).
+_SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "archive" / "migrate_full_job_name_ids.py"
 _spec = importlib.util.spec_from_file_location("migrate_full_job_name_ids", _SCRIPT)
 mig = importlib.util.module_from_spec(_spec)
 sys.modules["migrate_full_job_name_ids"] = mig

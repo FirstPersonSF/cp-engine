@@ -1,8 +1,7 @@
 """Every hosted INSERT into `spine_substance` stamps `card_kind` (#315).
 
-WHAT BROKE. `card_kind` (mc-2 mig 140) is read by `card_class.classify`,
-`route_queue.needs_home` and `weekly_sort`; the last two read NULL as "not
-work". The cxp write paths began stamping it in #246, but the hosted server
+WHAT BROKE. `card_kind` (mc-2 mig 140) is read by `card_class.classify`, which reads
+NULL as "not work" (as the retired `route_queue` / `weekly_sort` did). The cxp write paths began stamping it in #246, but the hosted server
 builds its INSERT rows by hand and none of them carried the column. Measured
 live 2026-09-30: 29 of the 38 live NULL-kind rows carried an `author_id` — the
 hosted create path's signature. `add_spine_version` was worse: it rebuilt the
@@ -111,7 +110,7 @@ def test_every_spine_substance_insert_site_stamps_card_kind():
     missing = sorted(f.name for f in sites if not _writes_card_kind(f))
     assert not missing, (
         f"{missing} INSERT into spine_substance without writing card_kind. "
-        "NULL reads as 'not work' to route_queue and weekly_sort; route the row "
+        "NULL reads as 'not work' to card_class.classify; route the row "
         "through _stamp_card_kind (#315)."
     )
 

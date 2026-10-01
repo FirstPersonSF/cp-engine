@@ -531,8 +531,6 @@ def _fetch_pending_cross_project() -> list[dict]:
         return []
 
 
-
-
 @click.command("commitments-sweep")
 @click.argument("code", required=False)
 @click.option("--all", "sweep_all", is_flag=True, help="Tenant-wide, grouped by project.")
@@ -553,8 +551,8 @@ def commitments_sweep_cmd(
 
     One project (CODE) or tenant-wide (--all). Rows group by project and
     sort oldest-first with age, date status, source, and owner — the
-    fields that drive a keep/close decision. Rows the dates-loop TTL
-    (#136) is about to expire are marked. Closing stays a deliberate act
+    fields that drive a keep/close decision. Undated rows at or near
+    the 14-day TTL (#136) are flagged. Closing stays a deliberate act
     via resolve_commitment; this just makes the decision cheap.
     """
 
@@ -585,104 +583,6 @@ def commitments_sweep_cmd(
         click.echo(f"Error: {exc}", err=True)
         raise SystemExit(1)
     click.echo(render_sweep(groups, today=today_d))
-
-
-@click.command("dates-loop")
-@click.option(
-    "--post",
-    is_flag=True,
-    help="Actually post to Slack and apply ratification write-backs. "
-    "Default is a dry run: render everything, send nothing, change nothing.",
-)
-@click.option(
-    "--window-days",
-    type=int,
-    default=None,
-    help="Forward window in days (default: [dates_loop].window_days, 14).",
-)
-@click.option(
-    "--today",
-    type=click.DateTime(formats=["%Y-%m-%d"]),
-    default=None,
-    help="Override today's date (YYYY-MM-DD). Useful for testing.",
-)
-def dates_loop_cmd(post: bool, window_days: int | None, today) -> None:
-    """Weekly Slack dates loop — what's coming due, per project channel.
-
-    Renders one post per active project/initiative with open commitments
-    or schedule milestones inside the window (due this week / next N days
-    / needs a date / slipped), plus a tenant-wide partners rollup. With
-    --post, sends each to its mapped Slack channel(s) and applies the
-    ratification write-backs (posted_count bumps, proposed->agreed after
-    two unchanged posts, slipped stamps). Dry run by default.
-    """
-
-    from cp_engine.dates_loop import run_dates_loop
-
-    try:
-        config = load(Path.cwd())
-    except ConfigError as exc:
-        click.echo(f"Error: {exc}", err=True)
-        raise SystemExit(1)
-
-    today_d = today.date() if today else tenant_today()
-    result = run_dates_loop(
-        config, today=today_d, post=post, window_days=window_days
-    )
-
-    for cpost in result.posts:
-        sent = " [POSTED]" if cpost.posted else ""
-        click.echo(f"--- {cpost.code} -> {', '.join(cpost.channel_ids)}{sent}")
-        click.echo(cpost.text)
-        click.echo("")
-    if result.partners_text:
-        dest = result.partners_channel or (
-            "(no partners channel — set app_config key "
-            "'dates_loop_partners_channel' in MC-2)"
-        )
-        sent = " [POSTED]" if result.partners_posted else ""
-        click.echo(f"--- partners rollup -> {dest}{sent}")
-        click.echo(result.partners_text)
-        click.echo("")
-    if result.skipped_no_channel:
-        click.echo(
-            "skipped (content but no Slack channel / slack disabled): "
-            + ", ".join(result.skipped_no_channel)
-        )
-    if post:
-        click.echo(
-            f"ratification: {result.posted_count_bumped} bumped · "
-            f"{result.agreed_promoted} promoted to agreed · "
-            f"{result.slipped_stamped} stamped slipped"
-        )
-        if result.expired_stamped or result.expire_warned:
-            click.echo(
-                f"ttl (#136): {result.expired_stamped} expired · "
-                f"{result.expire_warned} in the warn window"
-            )
-    if result.errors:
-        for err in result.errors:
-            click.echo(f"error: {err}", err=True)
-        # Partial success is SUCCESS with loud errors (cp-engine #85): a
-        # failed partners rollup after delivered per-project posts must not
-        # fail the run — a rerun would double-post the delivered messages
-        # and double-bump their ratification counters. Exit 1 only when
-        # post mode delivered NOTHING.
-        any_delivered = (
-            any(p.posted for p in result.posts) or result.partners_posted
-        )
-        if post and not any_delivered:
-            raise SystemExit(1)
-        delivered = sum(1 for p in result.posts if p.posted) + (
-            1 if result.partners_posted else 0
-        )
-        click.echo(
-            f"partial success: {delivered} post(s) delivered, "
-            f"{len(result.errors)} failed — see errors above.",
-            err=True,
-        )
-    if not result.posts and not result.partners_text:
-        click.echo("Nothing due in the window — no posts to send.")
 
 
 @click.command("draft-summaries")

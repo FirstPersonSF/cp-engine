@@ -1,4 +1,4 @@
-"""The one-time step-4b migration (``scripts/step4b_migrate_stakeholders.py``,
+"""The one-time step-4b migration (``scripts/archive/step4b_migrate_stakeholders.py``,
 ``cp_engine.stakeholder_import``): markdown-only people become spine cards,
 confirmed spelling variants collapse onto one card, internal people and
 non-people are skipped, and a re-run never mints a twin."""

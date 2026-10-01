@@ -6,7 +6,6 @@ import pytest
 
 from cp_engine.spine_inbox import (
     InboxCard,
-    card_to_row,
     proposed_card,
     row_to_card,
 )
@@ -58,29 +57,6 @@ def test_inbox_card_is_frozen():
     )
     with pytest.raises(Exception):
         card.status = "promoted"  # type: ignore[misc]
-
-
-def test_card_to_row_round_trip():
-    card = proposed_card(
-        project_id="u1",
-        project_code="ibx-5153",
-        source_ref="mtg-42",
-        raw_distillation="raw first pass",
-        guessed_est_item_id="d1",
-        guessed_type="deliverable",
-    )
-    row = card_to_row(card)
-    assert row["id"] == "ibx-5153/inbox/mtg-42"
-    assert row["project_id"] == "u1"
-    assert row["project_code"] == "ibx-5153"
-    assert row["source_ref"] == "mtg-42"
-    assert row["raw_distillation"] == "raw first pass"
-    assert row["guessed_est_item_id"] == "d1"
-    assert row["guessed_type"] == "deliverable"
-    assert row["status"] == "proposed"
-    assert row["framing"] is None
-    back = row_to_card(row)
-    assert back == card
 
 
 def test_row_to_card_tolerates_extra_columns():

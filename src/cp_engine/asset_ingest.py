@@ -731,7 +731,7 @@ def _dropbox_connector():
     """Construct a `DropboxConnector` with DROPBOX_* creds ensured first (#154).
 
     The connector self-configures from `os.getenv`, which works on Railway/cron
-    (env preset) and under `cp mcp` (#111 loads creds per-verb) but NOT from a
+    (env preset) but NOT from a
     bare-terminal CLI run — the .env auto-load exports only SUPABASE_*, so the
     same ingest that succeeds everywhere else fails locally with "No Dropbox
     credentials found". Best-effort fill DROPBOX_* from the mc-2 clone's .env
@@ -2167,48 +2167,6 @@ def list_project_files_annotated(
     }
 
 
-def promote_asset(client, asset_id: str) -> bool:
-    """Promote a project-scoped asset to account scope (human curation).
-
-    `UPDATE rag_assets SET scope='account', promoted_at=now()
-     WHERE id=<asset_id> AND scope='project'`.
-
-    The `scope='project'` filter makes this idempotent and atomic: promoting an
-    already-account asset (or a missing id) matches 0 rows — a clean no-op.
-    The asset's company_id was set at ingest, so promotion only flips the scope.
-
-    Returns True if a row was promoted, False on the already-account/not-found
-    no-op.
-    """
-    resp = (
-        client.table(Tables.RAG_ASSETS)
-        .update({"scope": "account", "promoted_at": _utc_now_iso()})
-        .eq("id", asset_id)
-        .eq("scope", "project")
-        .execute()
-    )
-    return _affected_count(resp) > 0
-
-
-def demote_asset(client, asset_id: str) -> bool:
-    """Reverse a promotion: account scope back to project, clearing promoted_at.
-
-    `UPDATE rag_assets SET scope='project', promoted_at=NULL
-     WHERE id=<asset_id> AND scope='account'`.
-
-    Returns True if a row was demoted, False on the no-op (already project /
-    not found).
-    """
-    resp = (
-        client.table(Tables.RAG_ASSETS)
-        .update({"scope": "project", "promoted_at": None})
-        .eq("id", asset_id)
-        .eq("scope", "account")
-        .execute()
-    )
-    return _affected_count(resp) > 0
-
-
 def archive_project_assets(client, project_id: str) -> int:
     """Archive a project's un-promoted assets on project close.
 
@@ -2229,60 +2187,6 @@ def archive_project_assets(client, project_id: str) -> int:
         .execute()
     )
     return _affected_count(resp)
-
-
-def unarchive_project_assets(client, project_id: str) -> int:
-    """Restore a project's archived assets back to project scope (recovery).
-
-    `UPDATE rag_assets SET scope='project', archived_at=NULL
-     WHERE project_id=<project_id> AND scope='archived'`.
-
-    Returns the count of assets restored.
-    """
-    resp = (
-        client.table(Tables.RAG_ASSETS)
-        .update({"scope": "project", "archived_at": None})
-        .eq("project_id", project_id)
-        .eq("scope", "archived")
-        .execute()
-    )
-    return _affected_count(resp)
-
-
-def list_promotable(client, project_id: str) -> list[dict]:
-    """The review-gate surface: project-scoped active assets a human can promote.
-
-    `SELECT id, title, url, meta FROM rag_assets
-     WHERE scope='project' AND status='active' AND project_id=<project_id>`.
-
-    Returns each row shaped for a human decision: id, title, url, and the
-    classifier's decision lifted out of `meta` (stored as
-    `meta->>'classifier_decision'`). `meta` is carried through too in case the
-    caller wants more context.
-    """
-    resp = (
-        client.table(Tables.RAG_ASSETS)
-        .select(_PROMOTABLE_COLUMNS)
-        .eq("scope", "project")
-        .eq("status", "active")
-        .eq("project_id", project_id)
-        .execute()
-    )
-    rows = getattr(resp, "data", None) or []
-    out: list[dict] = []
-    for row in rows:
-        meta = row.get("meta") or {}
-        classifier = meta.get("classifier_decision") if isinstance(meta, dict) else None
-        out.append(
-            {
-                "id": row.get("id"),
-                "title": row.get("title"),
-                "url": row.get("url"),
-                "classifier_decision": classifier,
-                "meta": row.get("meta"),
-            }
-        )
-    return out
 
 
 # ──────────────────────────────────────────────────────────────────────

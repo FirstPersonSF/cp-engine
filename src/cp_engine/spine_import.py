@@ -19,7 +19,7 @@ and gives each a home:
 Also recovers cards from the region-edit quarantine, in case a render ran
 before the import (the quarantine keeps the removed file verbatim).
 
-``scripts/step4c_import_spine_cards.py`` is the operator entry point (dry run
+``scripts/archive/step4c_import_spine_cards.py`` is the operator entry point (dry run
 by default).
 """
 

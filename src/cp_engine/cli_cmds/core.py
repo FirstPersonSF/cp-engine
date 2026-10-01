@@ -566,16 +566,6 @@ def write_region_cmd(
         click.echo("no change")
 
 
-@click.command("mcp")
-def mcp_cmd() -> None:
-    """Run the local stdio MCP server exposing this tenant's project sources."""
-    from cp_engine.mcp_server import run_stdio
-
-    run_stdio()
-
-
-
-
 @click.command("priors")
 @click.option("--code", default=None, help="Resolve for one project/initiative code.")
 @click.option("--publish", "publish_path", type=click.Path(exists=True, dir_okay=False),
@@ -824,7 +814,8 @@ def doctor_cmd(brief: bool) -> None:
     """Is this cp install consistent with itself? (#296)
 
     Reads every registered plugin install, the installed engine version, the
-    uv receipt, and running `cxp mcp` processes, and reports what disagrees.
+    uv receipt, and any retired `cxp mcp` server still running, and reports
+    what disagrees.
     Read-only; never installs, never kills. All check logic lives in
     `cp_engine.health` — this is its CLI face.
 

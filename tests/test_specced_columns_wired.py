@@ -44,9 +44,8 @@ _ROOT = Path(__file__).resolve().parents[1]
 # spine_substance columns the engine owns — each needs a writer AND a reader
 # here. `why` is the spec that made it load-bearing.
 ENGINE_OWNED: dict[str, str] = {
-    "card_kind": "mig 140/185 — card_class.classify; route_queue; weekly_sort",
+    "card_kind": "mig 140/185 — card_class.classify",
     "actor": "mig 126 — spec v04 §1 authority precedence",
-    "lifetime": "mig 140 — weekly_sort / route_propose",
     "placement": "mig 070 — structural item/context split",
     "origin": "mig 074 — write-path provenance",
     "important": "element-level importance flag",
@@ -64,6 +63,13 @@ OWNED_ELSEWHERE: dict[str, str] = {
     "agreement_id": (
         "mc-2 mig 159 — written by mc-2 backend/src/routers/agreements.py, "
         "read by backend/src/lib/spine_outline.py + SowAgreementPanel.tsx"
+    ),
+    # The engine's writer and reader (weekly-sort / route-queue) were retired
+    # in step 5a; mc-2's spine editor still sets it and its Sort tab reads it.
+    "lifetime": (
+        "mc-2 mig 140 — written by backend/src/routers/spine_curation.py "
+        "(element PATCH `lifetime`), read by backend/src/lib/spine_outline.py "
+        "into the Sort tab's queue"
     ),
 }
 

@@ -115,22 +115,21 @@ A separate per-machine map at `.cp-engine.local.toml` under `[local-repos]`
 Conversely, when the working directory is a tracked source repo rather than a cp
 working dir, look for `.cp-link` at the repo root. It contains the absolute path
 of the corresponding cp working dir — `cd` there to read the project's `cp.md`,
-session history, and decisions. The `/cp-summarize` slash command writes a
-session summary back to the cp working dir at the end of a development session.
+session history, and decisions.
 
-## MC-2 storage: sources + spine (the `cp-sources` MCP server)
+## MC-2 storage: sources + spine (the `cp-hosted` MCP server)
 
 **MC-2 (Supabase) is the source of truth; reach it LIVE through the
-`cp-sources` MCP server** (`cxp mcp` per `.mcp.json`). The on-disk mirrors
-(`_sources.md`, `spine/`) lag — prefer the MCP tools; never screenshots.
-Every tool takes a `<code>` first (any workstream code). Five stores: **1 — RAG source store** (ingested Drive/Dropbox
+`cp-hosted` MCP server** (per `.mcp.json`; the only cp server). It cannot
+see your disk: files travel in results, out via `push_to_dropbox`. The
+on-disk mirrors (`_sources.md`, `spine/`) lag — prefer the MCP tools; never screenshots.
+Every tool takes a `<code>` first (any workstream code). Three stores: **1 — RAG source store** (ingested Drive/Dropbox
 docs); **2 — Spine** (the distilled-memory index: elements, versions,
-relations, provenance); **3 — Inbound frameworks** (INTERNAL-only);
-**4 — Commitments** (dated obligations); **5 — Notes** (partner pings).
+relations, provenance); **3 — Commitments** (dated obligations).
 
 **Full verb catalog: run `/cp-tools`** before any spine-authoring, source,
-framework, commitment, or notes work — per-verb signatures and usage
-discipline live there, not here.
+or commitment work — per-verb signatures and usage discipline live
+there, not here.
 
 ## Authority precedence (enforced)
 
@@ -180,28 +179,6 @@ files that carry the cross-cutting decisions){% if has_sprint %} + `canonic/spri
 NOT loaded: job and initiative `cp.md` files — `also load <code>` opens one
 Triggered by: `run weekly review`.
 
-### Mode {{ 5 if has_sprint else 4 }} — Workset ("tunnel")
-Loaded: one named workset's resolved live spine elements, and nothing else
-NOT loaded: `master-cp.md`, the project `cp.md`, sprint files, the source store
-Triggered by: `open workset <code>:<name>` → `open_workset` on `cp-hosted`.
-
-A workset is a **declared** subset of a project's spine for one kind of job —
-someone decided these elements are the foundation, and that decision is
-inspectable and shareable. Use it when the job matches a tunnel that exists;
-`list_worksets <code>` says which do.
-
-**Why it is a mode and not a shortcut:** a mature engagement carries far more
-context than any job needs, and the excess is not merely expensive. A
-superseded doc has the same grabbing power as the approved brief, so a
-well-written stale frame wins on presentation. That is an authority problem,
-not a volume one — better retrieval makes it worse, not better.
-
-**The walls are visible on purpose.** `open_workset` reports `excluded_count`
-and the note's deliberately-out section; `describe_workset` names what is
-excluded, by layer. If what you need is outside: **say so, name it, then
-reach.** Reaching out is not a failure — reaching out *silently* is, because
-it hides a boundary that wants redrawing.
-
 ## Mode-switching
 
 **Replace.** These phrases switch the active mode entirely:
@@ -210,12 +187,6 @@ it hides a boundary that wants redrawing.
 - `switch to sprint` → mode 3
 {%- endif %}
 - `run weekly review` → mode {{ 4 if has_sprint else 3 }}
-- `open workset <code>:<name>` → mode {{ 5 if has_sprint else 4 }}
-
-A workset **replaces** rather than layers: it is a claim about what should be
-in the room, and layering it onto a loaded project defeats the point. From
-inside a workset, `also load <code>` is an explicit door-opening — take it,
-and say that you did.
 
 **Additive.** These phrases layer context onto the current mode:
 - `also load <code>` → adds that project's `cp.md`
@@ -251,9 +222,6 @@ about.
 | `check status sprint` | 3 | Read `canonic/sprint-cp.md`; summarize without editing. |
 {%- endif %}
 | `run weekly review` | {{ 4 if has_sprint else 3 }} | Begin live pass of partners'-review workflow. |
-| `open workset <code>:<name>` | replace → {{ 5 if has_sprint else 4 }} | Load only that tunnel's live elements (`open_workset`). |
-| `list worksets <code>` | any | Which tunnels exist on this project, and what each is for. |
-| `describe workset <code>:<name>` | any | What is in a tunnel and — the half that matters — what it excludes. |
 | `also load <code>` | additive | Layer that project's `cp.md` onto the current mode. |
 | `switch to <code>` | replace → 2 | Discard previous mode; load that project's `cp.md`. |
 | `deepen from transcript` | (during weekly review) | Begin deepening pass. |
@@ -368,7 +336,8 @@ The ritual is still available; it is a sequence of verbs rather than one skill:
 2. **`spine_lint`** — important-yet-unbound elements, dead-end activities,
    stale canon, archived-but-referenced documents, Exec Summary field budgets.
 3. **`commitments_sweep`** — what is owed, both directions. An UNDATED
-   commitment expires at 14 days; this is where that gets noticed in time.
+   commitment is flagged stale at 14 days and nothing closes it for you; this
+   is where it gets dated or dropped.
 4. **`seal_sweep`** — for each shipped deliverable, what fed it. Read it before
    acting; `seal_to_deliverable` is how you act on it.
 5. **`word_count_check`** — reporting only. **`rotate_word_count`** acts on
@@ -383,12 +352,12 @@ than minted by the server. Steps 1 and 5 go through that path and commit
 for you; the rest is read-only.
 
 
-## Restart `cxp mcp` after a release or credential change
+## Reconnect `cp-hosted` after a deploy or credential change
 
-MCP servers keep what they loaded at startup: old bytecode after `cxp sync`
-upgrades the CLI, old credentials after a rotation or `.env`/1Password
-change. If a tool ignores a shipped fix or 401s after re-authenticating,
-restart the connection (`/mcp`) before assuming it's broken.
+A connection keeps what it loaded at startup: the tool list from before a
+hosted deploy, an old credential. If a tool ignores a shipped fix, a verb
+is missing, or calls 401 after re-authenticating, reconnect (`/mcp`)
+before assuming it's broken.
 
 ## Spec
 

@@ -253,31 +253,6 @@ def test_canon_members_partial_read_carries_a_note():
 
 
 # ──────────────────────────────────────────────────────────────────────
-#  weekly_sort — proposals not persisted reaches the queue
-# ──────────────────────────────────────────────────────────────────────
-
-
-def test_weekly_sort_unpersisted_proposals_reach_queue_warnings(monkeypatch):
-    from cp_engine import sort_propose, weekly_sort
-
-    monkeypatch.setattr(sort_propose, "propose", lambda items, llm, errors=None: [])
-    monkeypatch.setattr(sort_propose, "active_prompt_version", lambda c, errors=None: "v1")
-
-    def _raise(*_a, **_k):
-        raise RuntimeError("insert denied")
-
-    monkeypatch.setattr(sort_propose, "persist", _raise)
-    queue = weekly_sort.SortQueue(needs_judgement=[weekly_sort.Proposal(
-        row_id="r1", project_code="p", framing="f", layer=None,
-        proposed=None, why="",
-    )])
-    weekly_sort.attach_proposals(
-        queue, [{"id": "r1", "project_code": "p"}], llm=lambda p: "", client=object()
-    )
-    assert queue.warnings and "NOT persisted" in queue.warnings[0]
-
-
-# ──────────────────────────────────────────────────────────────────────
 #  agenda — an unreadable sprint file is named, not rendered as empty
 # ──────────────────────────────────────────────────────────────────────
 
@@ -306,22 +281,6 @@ def test_agenda_names_unreadable_sprint_files(tmp_path, monkeypatch):
 # ──────────────────────────────────────────────────────────────────────
 #  close_out — unparseable spine files are counted for the checklist
 # ──────────────────────────────────────────────────────────────────────
-
-
-def test_close_out_mirror_reports_unparseable_files(tmp_path, monkeypatch):
-    from cp_engine import close_out, substance
-
-    (tmp_path / "spine" / "_authored").mkdir(parents=True)
-    (tmp_path / "spine" / "_authored" / "brief.md").write_text("junk", encoding="utf-8")
-
-    def _raise(_p):
-        raise ValueError("no frontmatter")
-
-    monkeypatch.setattr(substance, "parse_substance", _raise)
-    skipped: list[str] = []
-    out = close_out.load_mirror_elements(tmp_path, skipped)
-    assert out == []
-    assert skipped and "brief.md" in skipped[0]
 
 
 # ──────────────────────────────────────────────────────────────────────

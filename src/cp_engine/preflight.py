@@ -912,3 +912,64 @@ def collect_sprint_texts(
         except OSError:
             continue
     return out
+
+
+def read_tree_context(
+    tenant_root: Path, project_code: str, warnings=None, *, weeks: int = 3
+) -> tuple[str | None, list[tuple[str, str]]]:
+    """`(cp_md_text, sprint_texts)` for a project, read off a tenant tree.
+
+    The working dir comes from the engine's own resolver (`find_spine_dir`,
+    paths index first). Sprint files are looked up under the dir's slug, then
+    under the code as given. A cp.md that EXISTS but cannot be read is noted
+    in `warnings` (a `loud.Warnings` or anything with `.add(what, exc)`):
+    without that note every cp.md field reads "missing" and the caller is told
+    the project is unauthored, not unreadable.
+    """
+    from cp_engine.spine import SpineDirNotFound, find_spine_dir
+
+    cp_md_text = None
+    resolved_code = project_code
+    try:
+        working_dir = find_spine_dir(tenant_root, project_code)
+        resolved_code = working_dir.name
+        cp_md = working_dir / "cp.md"
+        if cp_md.is_file():
+            cp_md_text = cp_md.read_text(encoding="utf-8")
+    except SpineDirNotFound:
+        pass
+    except OSError as exc:
+        if warnings is not None:
+            warnings.add("cp.md read", exc)
+
+    sprint_texts = collect_sprint_texts(tenant_root, resolved_code, weeks=weeks)
+    if not sprint_texts and resolved_code != project_code:
+        sprint_texts = collect_sprint_texts(tenant_root, project_code, weeks=weeks)
+    return cp_md_text, sprint_texts
+
+
+def read_mc2_titles(client, project_id: str, company_id: str | None) -> tuple[list[str], list[str]]:
+    """`(spine_titles, source_titles)` — the MC-2 context preflight scores.
+
+    A spine row's title is its `framing` (spine_substance has no `title`
+    column; reading `title` returned nothing for every row, so preflight never
+    saw the spine at all — #332). Rows without an `est_item_id` are note rows,
+    not elements. Raises on a read error: the context is optional, but the
+    caller must SAY it failed, because scope found only in the spine then
+    reads as "missing".
+    """
+    from cp_engine.project_sources import list_sources, list_spine
+
+    spine_titles: list[str] = []
+    source_titles: list[str] = []
+    for row in list_spine(client, project_id, company_id, compact=True) or []:
+        if not isinstance(row, dict) or not row.get("est_item_id"):
+            continue
+        title = row.get("framing")
+        if title:
+            spine_titles.append(str(title))
+    for row in list_sources(client, project_id, company_id) or []:
+        title = row.get("title") if isinstance(row, dict) else None
+        if title:
+            source_titles.append(str(title))
+    return spine_titles, source_titles

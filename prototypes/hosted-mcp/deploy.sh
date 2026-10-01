@@ -49,7 +49,7 @@ cd "$root"
 paths=(pyproject.toml README.md src
        prototypes/hosted-mcp/Dockerfile prototypes/hosted-mcp/railway.toml
        prototypes/hosted-mcp/requirements.txt prototypes/hosted-mcp/server.py
-       prototypes/hosted-mcp/observability.py)
+       prototypes/hosted-mcp/observability.py prototypes/hosted-mcp/ported_tools.py)
 
 commit="$(git rev-parse --short=12 HEAD)"
 dirty="$(git status --porcelain -- "${paths[@]}")"

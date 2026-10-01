@@ -61,9 +61,9 @@ separate update commands, which is why this page exists.
 
 | Part | What it gives the person | Installed with |
 |---|---|---|
-| **Engine** (`cxp` command) | The session's local tools: sync, render, capture, the local `cp-sources` server | `uv tool install` from a release tag |
+| **Engine** (`cxp` command) | The session's local tools: sync, render, capture | `uv tool install` from a release tag |
 | **Plugin** | The slash commands and skills (`/cp-wrapup`, `/cp-prep`, …) and the start-up check | `claude plugin` from the `cp-engine` marketplace |
-| **Hosted connector** (`cp-hosted`) | Live spine reads and writes under the person's own login | Already listed in the tenant's `.mcp.json`; needs a one-time sign-in |
+| **Hosted connector** (`cp-hosted`) | Every cp MCP tool — sources, spine, commitments — under the person's own login | Written into the tenant's `.mcp.json` by `cxp sync`; needs a one-time sign-in |
 | **Tenant clone** | The notebook itself | `git clone` |
 
 ## 4. Install
@@ -229,8 +229,10 @@ it disappears with the tenant folder.
   fast-forwards at session start.
 - **The start-up check is the signal.** Silence means healthy. A `[cp] …` line
   means act on it this session.
-- **After any upgrade, restart.** Running `cxp mcp` servers keep old code until
-  Claude Code restarts; `cxp doctor` names any that are stale.
+- **After any upgrade, restart.** There is no local MCP server any more
+  (`cp-hosted` is the only one), but a session started before an upgrade
+  still holds the old CLI's view; restart Claude Code. `cxp doctor` names any
+  retired local server process still running from before.
 
 ## Pointer for other repos
 

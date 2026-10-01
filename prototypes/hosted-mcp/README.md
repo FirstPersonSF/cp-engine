@@ -18,7 +18,7 @@ path. Nothing under `src/cp_engine/` was modified.
   `TENANT_REPO`. **RLS cannot scope a git clone**, so both are gated on
   `public.is_team_member()` instead — see [Tree](#tree-read-only--cp-engine-138-review-finding-1).
 
-43 tools (the 36 through spec-v04, + the #159 commitments-lifecycle trio, + the #125 read verb `list_spine_relations`, + the #138-ratchet ports `archive_project_source` / `rename_project_source` (mig-134 guarded fns) / `pull_element_from_project`), **53/53 smoke cases pass** as of the last full run before the #159/#125/#138 additions.
+48 tools since architecture step 5a (2026-10-01) retired 16 with no recorded use: the step editors (`add_/set_/reorder_/remove_spine_step`), `remove_element_provenance`, `demote_stakeholder` (use `set_element_account_scope(account=false)`), `promote_spine_transcript`, `pull_element_from_project`, `record_round`, `resolve_commitments_by_meeting`, `archive_project_source`, `wrap_bundle`, `create_note` and the three workset verbs. `tests/surface_ceiling.json` holds the count.
 
 **Two endpoints, one port (#141).** `/mcp` is the full surface below,
 unchanged. `/mcp/read` registers ONLY the read tools (`READ_ONLY_TOOLS` in
@@ -91,7 +91,7 @@ shell's environment too.
 | `GIT_SSH_KEY` | for an ssh remote | — | Read-only deploy key material. Required when `TENANT_REPO` is an ssh remote; **optional when it is a local path**, because a local clone needs no ssh at all. |
 | `TREE_PULL_DEBOUNCE_SECONDS` | no | `60` | Skip `git pull` if the last one was this recent. |
 | `TREE_MAX_FILE_BYTES` | no | `204800` | `read_project_file` size cap (200 KiB). |
-| `MC2_API_BASE` | for promotion | `https://api-production-a247.up.railway.app` | mc-2's backend, where `promote_spine_transcript` delegates. Already set on the deployment. Absent/blank, the verb still exists and returns a clean `promotion unavailable: MC2_API_BASE not configured`. |
+| `MC2_API_BASE` | for promotion | `https://api-production-a247.up.railway.app` | mc-2's backend, where `set_spine_element`'s important-flip transcript promotion delegates. Already set on the deployment. Absent/blank, the flip still succeeds and reports a clean `promotion unavailable: MC2_API_BASE not configured`. |
 | `MC2_TIMEOUT_SECONDS` | no | `120` | Promote is webhook-proxied inside mc-2, so it is slower than a DB write. Must not be tighter than mc-2's own timeout, or a still-succeeding promotion gets reported as a timeout. |
 
 #### On `OPENAI_API_KEY` vs `VOYAGE_API_KEY`
@@ -148,7 +148,6 @@ only**, and write an audit row on success.
 
 | Tool | Target | Notes |
 |---|---|---|
-| `create_note(project_code, body, title?, recipient_email?)` | `notes` | Via the entities email-bridge; policy enforces author = caller's own entity. |
 | `create_commitment(project_code, description, owner_email?, due_date?)` | `commitments` | ISO-validated due date. |
 | `create_spine_element(project_code, framing, body, ...)` | `spine_substance` | Version-1 row, `_authored/` convention, author stamped. |
 | `add_spine_version(project_code, element_id, body, version_note?)` | `spine_substance` | New vN+1 row (insert), then live→superseded on the prior row via the #142 guarded function. |
@@ -161,9 +160,6 @@ only**, and write an audit row on success.
 |---|---|---|
 | `set_spine_element(project_code, key, important?, note?, layer?, framing?, serves?)` | `spine_substance` | Partial update of the **live row only**. An `important` false→true flip fires the delegated promotion non-fatally (batch 5). |
 | `resolve_commitment(project_code, key, outcome='done')` | `commitments` | `done`\|`dropped`; ambiguous key returns candidates, never guesses. |
-| `set_spine_step(project_code, key, step_id, title?, status?, step_date?, note?)` | `spine_steps` | Partial update; scoped by (id, project_id, est_item_id). |
-| `reorder_spine_step(project_code, key, order)` | `spine_steps` | `order` is the FULL step_id list; renumbers 1..N. |
-| `remove_spine_step(project_code, key, step_id)` | `spine_steps` | Deletes, then densifies positions to 1..N. |
 
 **Sources + provenance (cp-engine #143 batch 3):**
 
@@ -172,7 +168,6 @@ only**, and write an audit row on success.
 | `add_element_source(project_code, key, source_title)` | `spine_substance.sources` | Attaches `{type: rag_asset, id, title}` to **every version**. |
 | `remove_element_source(project_code, key, source_title)` | `spine_substance.sources` | Inverse; detaching an unattached link is a note, not an error. |
 | `add_element_provenance(project_code, key, source_key)` | `spine_substance.sources` | Attaches `{type: spine_element, id, title, retired}`. Source **may be retired**. |
-| `remove_element_provenance(project_code, key, source_key)` | `spine_substance.sources` | Inverse. |
 
 **Retire + account scope (cp-engine #143 batch 4):**
 
@@ -182,14 +177,12 @@ only**, and write an audit row on success.
 | `retire_spine_elements(project_code, keys)` | same | Batch form (#105). **Per-key results; a bad key does not abort the batch.** |
 | `retire_spine_relation(project_code, kind, from_key, to_key)` | `spine_relations` | Direct filtered DELETE. Resolution **tolerates a dead endpoint** — an unresolvable key is used verbatim as an est_item_id. |
 | `promote_stakeholder(project_code, key)` | `spine_substance` | → `scope='account'` + `company_id`. Engagements only. Non-Stakeholders layer ⇒ `warning`, promotion still applies. |
-| `demote_stakeholder(project_code, key)` | `spine_substance` | Inverse: `scope='project'`, `company_id` cleared, back to the provenance project. |
 | `set_element_account_scope(project_code, key, account=True)` | `spine_substance` | Type-agnostic generalization; **delegates** to the two above, minus the layer warning. |
 
 **Transcript promotion (cp-engine #143 batch 5):**
 
 | Tool | Target | Notes |
 |---|---|---|
-| `promote_spine_transcript(project_code, key)` | mc-2 `POST /api/meetings/{recording_id}/promote-transcript` | **Delegated, not ported.** `key` accepts a recording_id, a meeting uuid, or a spine element key; the return names which matched via `resolved_via`. |
 | `set_spine_element(..., important=True)` | same, fired non-fatally | Closes the batch-2 gap: a genuine `important` false→true flip now fires the delegated promotion and reports it under `promotion`. |
 
 #### Why batch 5 delegates instead of porting

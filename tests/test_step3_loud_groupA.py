@@ -141,81 +141,6 @@ def test_feeds_sweep_reports_lookup_failure_not_no_project(monkeypatch, tmp_path
     assert "PGRST timeout" in result.stderr
 
 
-def test_snapshots_listing_names_malformed_snapshot(monkeypatch, tmp_path):
-    from tests.test_cli_snapshot import _snap_dir, _tenant_with_deliverable
-
-    _tenant_with_deliverable(tmp_path)
-    monkeypatch.chdir(tmp_path)
-    sd = _snap_dir(tmp_path)
-    sd.mkdir(parents=True)
-    (sd / "2026-06-01-broken.md").write_text(
-        "---\nsnapshot: [unclosed\n---\nbody\n", encoding="utf-8"
-    )
-    result = CliRunner().invoke(main, ["snapshots", "ibx-5153/deliverable/pos"])
-    assert result.exit_code == 0, result.output
-    assert "2026-06-01-broken.md" in result.stderr
-
-
-# ── mcp_server.py ───────────────────────────────────────────────────────
-
-
-def test_mcp_preflight_carries_mc2_context_failure(monkeypatch, tmp_path):
-    import cp_engine.config as config_mod
-    import cp_engine.mcp_server as srv
-
-    monkeypatch.setattr(srv, "_tenant_root", lambda: tmp_path)
-    monkeypatch.setattr(config_mod, "load", lambda root: SimpleNamespace(root=tmp_path))
-
-    def boom(code):
-        raise RuntimeError("MC-2 unreachable")
-
-    monkeypatch.setattr(srv, "_resolve", boom)
-    out = srv.preflight("sap-5198", "rfp")
-    assert "error" not in out, out
-    assert any("MC-2 unreachable" in w for w in out.get("warnings", [])), out
-
-
-def _agreement_pull(monkeypatch):
-    import cp_engine.mcp_server as m
-
-    monkeypatch.setattr(m, "_resolve", lambda code: (object(), "pid", "cid"))
-    monkeypatch.setattr(
-        "cp_engine.project_sources.pull_spine",
-        lambda c, pid, key, cid=None: {
-            "est_item_id": "_authored/sow", "layer": "Agreement",
-            "body": "human terms", "sources": ["s1"]},
-    )
-    monkeypatch.setattr(m, "_with_project_status", lambda r, *a: r)
-    return m
-
-
-def test_mcp_agreement_projection_failure_is_flagged(monkeypatch):
-    m = _agreement_pull(monkeypatch)
-
-    def boom(c, pid):
-        raise RuntimeError("estimator 500")
-
-    monkeypatch.setattr("cp_engine.estimate.fetch_estimate", boom)
-    res = m.pull_spine_element("p", "sow")
-    assert res["body"] == "human terms"
-    assert res["derived_block"] is False
-    assert any("estimator 500" in w for w in res["warnings"]), res
-
-
-def test_mcp_agreement_meetings_failure_is_flagged(monkeypatch):
-    from tests.test_agreement_projection import _estimate
-
-    m = _agreement_pull(monkeypatch)
-    monkeypatch.setattr("cp_engine.estimate.fetch_estimate", lambda c, pid: _estimate())
-    monkeypatch.setattr("cp_engine.estimate.fetch_schedule", lambda c, ids: [])
-
-    def boom(c, pid):
-        raise RuntimeError("meetings 503")
-
-    monkeypatch.setattr("cp_engine.project_sources.list_project_meetings", boom)
-    res = m.pull_spine_element("p", "sow")
-    assert res["derived_block"] is True
-    assert any("meetings 503" in w for w in res["warnings"]), res
 
 
 # ── claude_settings.py (surfaces through sync's warning counter) ────────
@@ -261,14 +186,14 @@ def _load_hook():
 def test_hook_notes_unreadable_mcp_json(tmp_path, capsys):
     hook = _load_hook()
     (tmp_path / ".mcp.json").write_text("{not json", encoding="utf-8")
-    hook._repair_mcp_command(tmp_path)
+    hook._repair_mcp_config(tmp_path)
     assert ".mcp.json" in capsys.readouterr().err
 
 
 def test_hook_notes_failed_repair_write(tmp_path, capsys, monkeypatch):
     hook = _load_hook()
     p = tmp_path / ".mcp.json"
-    p.write_text(json.dumps({"mcpServers": {"cp-sources": {"command": "cp"}}}))
+    p.write_text(json.dumps({"mcpServers": {"cp-sources": {"command": "cxp", "args": ["mcp"]}}}))
     real_write = Path.write_text
 
     def ro(self, *a, **k):
@@ -277,9 +202,35 @@ def test_hook_notes_failed_repair_write(tmp_path, capsys, monkeypatch):
         return real_write(self, *a, **k)
 
     monkeypatch.setattr(Path, "write_text", ro)
-    hook._repair_mcp_command(tmp_path)
+    hook._repair_mcp_config(tmp_path)
     err = capsys.readouterr().err
     assert "FAILED to repair" in err and "read-only" in err
+
+
+def test_hook_moves_a_pre_retirement_tenant_onto_cp_hosted(tmp_path, capsys):
+    """Step 5b: a tenant last synced with the stdio server registered gets
+    cp-hosted instead, at session start, without a sync."""
+    hook = _load_hook()
+    p = tmp_path / ".mcp.json"
+    p.write_text(json.dumps({"mcpServers": {
+        "cp-sources": {"command": "cxp", "args": ["mcp"]},
+        "miro": {"type": "http", "url": "https://mcp.miro.com/"}}}))
+    hook._repair_mcp_config(tmp_path)
+    data = json.loads(p.read_text())
+    assert data["mcpServers"] == {
+        "miro": {"type": "http", "url": "https://mcp.miro.com/"},
+        "cp-hosted": {"type": "http", "url": "https://cp.mc-2.1p.is/mcp"}}
+    assert "/mcp" in capsys.readouterr().err
+
+
+def test_hook_leaves_a_hand_registered_cp_sources_and_an_existing_cp_hosted(tmp_path):
+    hook = _load_hook()
+    p = tmp_path / ".mcp.json"
+    before = {"mcpServers": {"cp-sources": {"command": "node", "args": ["x.js"]},
+                             "cp-hosted": {"type": "http", "url": "http://localhost:8788/mcp"}}}
+    p.write_text(json.dumps(before))
+    hook._repair_mcp_config(tmp_path)
+    assert json.loads(p.read_text()) == before
 
 
 # ── migrate_flat.py ─────────────────────────────────────────────────────

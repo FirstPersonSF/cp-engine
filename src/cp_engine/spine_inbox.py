@@ -10,6 +10,11 @@ framing becomes a new live `SubstanceVersion` bound to an estimate work item.
 This is the "human directs / LLM distills / human confirms" loop. The card is
 the react-to draft; the framed promotion is the distilled spine memory.
 
+STEP 5A: the webhook no longer WRITES cards (128 sat unframed). What remains
+is the read + promote half, because mc-2's inbox UI still promotes existing
+cards through the webhook's ``/api/spine/promote``;
+``scripts/step5_reject_inbox_cards.py`` dismisses the ``proposed`` backlog.
+
 Live table ``public.spine_inbox`` (migration 064):
   id text pk = ``<project_code>/inbox/<source_ref>``
   project_id uuid, project_code text, source_ref text,
@@ -22,7 +27,6 @@ GLOBAL RULE: never ``.select("*")`` — always explicit columns.
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -104,21 +108,6 @@ def load_card(client, card_id: str) -> InboxCard | None:
     return row_to_card(rows[0]) if rows else None
 
 
-def card_to_row(card: InboxCard) -> dict:
-    """Map a card to a ``spine_inbox`` row (created_at/updated_at left to the DB)."""
-    return {
-        "id": card.id,
-        "project_id": card.project_id,
-        "project_code": card.project_code,
-        "source_ref": card.source_ref,
-        "raw_distillation": card.raw_distillation,
-        "guessed_est_item_id": card.guessed_est_item_id,
-        "guessed_type": card.guessed_type,
-        "status": card.status,
-        "framing": card.framing,
-    }
-
-
 def row_to_card(row: dict) -> InboxCard:
     """Map a ``spine_inbox`` row to an InboxCard (extra columns are ignored)."""
     return InboxCard(
@@ -137,146 +126,8 @@ def row_to_card(row: dict) -> InboxCard:
 # ---- Task 3.2: build a proposed card from a transcript ----------------------
 
 
-_PROPOSE_PROMPT = """\
-You are distilling a project meeting into a faithful first-pass record for a
-human to react to. Do NOT interpret, editorialize, or impose a framing yet —
-just capture what was actually said and decided, densely and accurately.
-
-You are also given a list of the project's estimate work items. Pick the ONE
-whose name best matches what this meeting was primarily about, or null if none
-clearly fit.
-
-Estimate work items (name — kind):
-{item_list}
-
-Respond with ONLY a JSON object, no fences, no prose:
-{{"distillation": "<a faithful 150-350 word distillation of the meeting>",
-  "matched_item_name": "<exact name from the list above, or null>"}}
-
-# Transcript
-{transcript}
-"""
-
-
 def _normalize(name: str) -> str:
     return re.sub(r"\s+", " ", name or "").strip().lower()
-
-
-def _match_item(matched_name, estimate):
-    """Resolve an LLM-picked item name to its (id, kind), or (None, None).
-
-    Case-insensitive, whitespace-collapsed exact match against the estimate's
-    item names — a coarse heuristic, intentional. Returns the first match.
-    """
-    if estimate is None or not matched_name:
-        return None, None
-    target = _normalize(str(matched_name))
-    if not target:
-        return None, None
-    for it in estimate.all_items():
-        if _normalize(it.name) == target:
-            return it.id, it.kind
-    return None, None
-
-
-def _parse_distiller_json(raw: str) -> dict:
-    """Parse the distiller's JSON, tolerating an accidental ```json fence."""
-    text = raw.strip()
-    m = re.search(r"```(?:json)?\s*\n?(.*?)\n?```", text, re.DOTALL)
-    if m:
-        text = m.group(1).strip()
-    obj = json.loads(text)
-    if not isinstance(obj, dict):
-        raise ValueError("distiller did not return a JSON object")
-    return obj
-
-
-def build_inbox_card_from_transcript(
-    client,
-    *,
-    project_id: str,
-    project_code: str,
-    source_ref: str,
-    transcript: str,
-    estimate=None,
-    distiller: Callable[..., str],
-    model: str,
-    api_key: str | None = None,
-) -> InboxCard:
-    """Distill a transcript into a *proposed* ``spine_inbox`` card and upsert it.
-
-    ONE LLM call (cost discipline): a raw-faithful first-pass distillation plus
-    a best-guess estimate work item picked from the project's estimate item
-    names. The matched name is resolved to ``guessed_est_item_id``; the type
-    guess defaults to the matched item's kind, or ``"source"`` when nothing
-    matched (a coarse guess the human refines at frame time).
-
-    Writes ONLY to ``spine_inbox`` — never spine_substance. Returns the card.
-    """
-    items = estimate.all_items() if estimate is not None else ()
-    item_list = (
-        "\n".join(f"- {it.name} — {it.kind}" for it in items) or "(none)"
-    )
-    prompt = _PROPOSE_PROMPT.format(item_list=item_list, transcript=transcript)
-
-    raw = distiller(prompt, model=model, api_key=api_key)
-    obj = _parse_distiller_json(raw)
-    distillation = str(obj.get("distillation") or "").strip()
-    # #314 — the card is the raw material every later promote is judged
-    # against, so a card that is not drawn from its transcript must be said
-    # out loud here (the webhook log carries print, not logger — see
-    # project_cp_engine_print_vs_logger). The card itself is a react-to
-    # draft; the human reads it before framing.
-    card_fidelity = assess(distillation, transcript)
-    if card_fidelity["low"]:
-        print(f"distill-fidelity: inbox card for {project_code} meeting "
-              f"{source_ref} — {card_fidelity['reason']}")
-    matched_id, matched_kind = _match_item(obj.get("matched_item_name"), estimate)
-    guessed_type = matched_kind or "source"
-
-    card = proposed_card(
-        project_id=project_id,
-        project_code=project_code,
-        source_ref=source_ref,
-        raw_distillation=distillation,
-        guessed_est_item_id=matched_id,
-        guessed_type=guessed_type,
-    )
-    client.table(_INBOX_TABLE).upsert(
-        [card_to_row(card)], on_conflict="id"
-    ).execute()
-    # A meeting re-homed to THIS project must not keep offering itself for
-    # framing under its old job — retire the actionable cards it left behind.
-    # (Card ids embed the project, so re-ingest alone never touches them.)
-    retire_stale_cards(client, source_ref=source_ref, keep_project_id=project_id)
-    return card
-
-
-def retire_stale_cards(client, *, source_ref: str, keep_project_id: str) -> int:
-    """Dismiss actionable (proposed|framed) cards for ``source_ref`` in every
-    project EXCEPT ``keep_project_id``.
-
-    The re-route path: a meeting tagged to the wrong job leaves a card in that
-    job's Frame & promote inbox; when it re-ingests under the right job, the
-    stale cards auto-dismiss. Promoted cards are untouched — a human confirmed
-    that substance, so retiring it is a human call (dismiss it in the UI).
-    Returns the number of cards dismissed.
-    """
-    rows = (
-        client.table(_INBOX_TABLE)
-        .select("id, project_id, status")
-        .eq("source_ref", source_ref)
-        .neq("project_id", keep_project_id)
-        .in_("status", ["proposed", "framed"])
-        .execute()
-        .data
-        or []
-    )
-    for r in rows:
-        client.table(_INBOX_TABLE).update({"status": "dismissed"}).eq(
-            "id", r["id"]
-        ).execute()
-    return len(rows)
 
 
 # ---- Task 3.3: frame + promote (directed re-distill → version) --------------
@@ -331,7 +182,7 @@ def promote_card(
     today=None,
     flip_card: bool = True,
     on_fidelity: Callable[[dict], None] | None = None,
-    writer: str = "cxp spine-frame",
+    writer: str = "spine-inbox promote",
 ) -> Path:
     """Frame + promote a proposed card into a directed-distilled live version.
 
@@ -637,7 +488,7 @@ def _promote_as_new_serving_element(
     from cp_engine.spine_mirror import MirrorDir
 
     path = project_dir / "spine" / "_authored" / f"{slug}.md"
-    mirror = MirrorDir(project_dir / "spine", writer="cxp spine-frame")
+    mirror = MirrorDir(project_dir / "spine", writer="spine-inbox promote")
     mirror.write(path, render_element(est_item_id=est_id, rows=rows,
                                       kind="context", path=path))
     mirror.save()

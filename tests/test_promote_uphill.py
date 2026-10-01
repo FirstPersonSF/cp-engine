@@ -458,28 +458,6 @@ def test_cli_requires_exactly_one_item_flag(tenant, monkeypatch):
     assert both.exit_code == 2 and neither.exit_code == 2
 
 
-# ── stdio MCP verb ────────────────────────────────────────────────────
-
-
-def test_stdio_verb_is_registered_with_the_level_rule():
-    from cp_engine import mcp_server
-
-    tool = mcp_server.mcp._tool_manager.get_tool("promote_uphill")
-    assert tool is not None
-    assert list(tool.parameters["properties"]) == ["project_code", "item_kind", "item_ref", "note"]
-    assert "never inferred from content" in tool.description
-    assert "<LEVEL_RULE>" not in tool.description
-
-
-def test_stdio_verb_delegates_to_the_module(tenant, client, monkeypatch):
-    from cp_engine import mcp_server
-
-    monkeypatch.setattr(mcp_server, "_tenant_root", lambda: tenant)
-    monkeypatch.setattr("cp_engine.mc2_db.get_client", lambda *a, **k: client)
-    out = mcp_server.promote_uphill(CHILD, "commitment", "c-orig")
-    assert out["promoted"] and out["level"]["code"] == PROGRAM, out
-
-
 # ── hosted parity ─────────────────────────────────────────────────────
 #
 # Since architecture plan step 1 the hosted server imports these from the

@@ -210,70 +210,6 @@ def test_list_spine_reports_an_unreadable_done_map(monkeypatch):
     assert warnings and "no estimator" in warnings[0]
 
 
-# ── notes: an API error is "failed", and the row/result disagreement shows ───
-
-
-def test_slack_lookup_error_is_failed_not_skipped(monkeypatch):
-    from cp_engine import notes
-    from cp_engine import slack as slack_mod
-
-    class _Web:
-        def __init__(self, token=None):
-            pass
-
-        def users_lookupByEmail(self, email):
-            raise RuntimeError("missing_scope users:read.email")
-
-    fake_sdk = types.ModuleType("slack_sdk")
-    fake_sdk.WebClient = _Web
-    monkeypatch.setitem(sys.modules, "slack_sdk", fake_sdk)
-    monkeypatch.setattr(slack_mod, "load_slack_token", lambda config: "xoxb")
-    errors: list[str] = []
-    status, ts = notes._deliver_dm(
-        _Client(), None, recipient={"id": "e1", "email": "m@x.is"},
-        author_name="Drew", project_label="ggl-5168", project_id="p1",
-        body="hi", errors=errors,
-    )
-    assert status == "failed"
-    assert errors and "missing_scope" in errors[0]
-
-
-def test_note_status_write_failure_is_reported(monkeypatch):
-    from cp_engine import notes
-
-    class _NotesClient(_Client):
-        def table(self, name):
-            q = super().table(name)
-            if name == "notes":
-                class _Q(_Query):
-                    op = None
-
-                    def insert(self, row):
-                        self.op, self.row = "insert", row
-                        return self
-
-                    def update(self, patch):
-                        self.op = "update"
-                        return self
-
-                    def execute(self):
-                        if self.op == "insert":
-                            return types.SimpleNamespace(data=[self.row])
-                        raise _Boom("notes update denied")
-
-                return _Q(name, self.rows, self.fail)
-            return q
-
-    monkeypatch.setattr(notes, "_resolve_entity",
-                        lambda c, who: {"id": who, "name": who, "email": who})
-    monkeypatch.setattr(notes, "_deliver_dm", lambda *a, **k: ("sent", "123.4"))
-    out = notes.write_note(_NotesClient(), None, project_code="ggl-5168",
-                           project_id="p1", recipient="marcello", body="hi",
-                           author="drew")
-    assert out["slack_delivery"] == "sent"
-    assert out.get("warnings") and "pending" in out["warnings"][0]
-
-
 # ── spine_inbox: never pick a version label from a partial read ──────────────
 
 
@@ -287,35 +223,15 @@ def test_element_rows_read_failure_raises():
         _element_rows(_Client(fail={"spine_substance"}), "p1", "_authored/x")
 
 
-# ── dates_loop / propose passes / tag resolve ────────────────────────────────
+# ── partners channel / tag resolve ────────────────────────────────
 
 
 def test_partners_channel_lookup_failure_reaches_result_errors():
-    from cp_engine.dates_loop import _partners_channel
+    from cp_engine.daily_health import _partners_channel
 
     errors: list[str] = []
     assert _partners_channel(_Client(fail={"app_config"}), errors) is None
     assert errors and "rollup NOT posted" in errors[0]
-
-
-def test_sort_and_route_batch_failures_are_counted():
-    from cp_engine import route_propose, sort_propose
-
-    def boom(_prompt):
-        raise TypeError("bad call signature")
-
-    errs: list[str] = []
-    assert sort_propose.propose(
-        [{"id": "r1", "project_code": "x", "text": "t"}], llm=boom, errors=errs
-    ) == []
-    assert errs and "bad call signature" in errs[0]
-
-    errs2: list[str] = []
-    assert route_propose.propose(
-        [{"id": "r1", "text": "t"}], [{"id": "s1", "label": "S"}],
-        project_id="p1", call=boom, errors=errs2,
-    ) == []
-    assert errs2 and "bad call signature" in errs2[0]
 
 
 def test_tag_resolve_says_when_the_index_was_unreadable():

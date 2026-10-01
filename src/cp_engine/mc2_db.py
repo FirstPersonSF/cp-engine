@@ -56,7 +56,6 @@ class Tables:
     ENTITIES = "entities"  # people (partners/recipients); note author + recipient
     GITHUB_ORGS = "github_orgs"  # embedded-join only today (see *_COLUMNS)
     SPRINT_ALLOCATIONS = "sprint_allocations"
-    NOTES = "notes"  # partner pings (in-app unread + Slack DM, mig 116)
 
     # public — meetings + ingest
     FATHOM_MEETINGS = "fathom_meetings"
@@ -87,16 +86,10 @@ class Tables:
     SPINE_SUBSTANCE = "spine_substance"
     SPINE_CONTEXT = "spine_context"
     SPINE_ELEMENTS = "spine_elements"
-    SPINE_SNAPSHOTS = "spine_snapshots"
     SPINE_INBOX = "spine_inbox"
     SPINE_PROMOTE_RUNS = "spine_promote_runs"
     SPINE_RELATIONS = "spine_relations"  # typed element->element edges (mig 117)
     SPINE_STEPS = "spine_steps"  # ordered progress trail inside an element (mig 119)
-    # Weekly-sort pre-pass output (mig 142). One ACTIVE proposal per substance
-    # row; a re-run supersedes rather than overwrites, so a prompt edit that
-    # changes an answer is visible. Never writes spine_substance.lifetime — a
-    # human confirming does that.
-    SPINE_SORT_PROPOSALS = "spine_sort_proposals"
 
     # estimator schema
     EST_PROJECTS = "projects"
@@ -865,7 +858,6 @@ def _install_connection_retry(client) -> None:
         )
 
 
-
 _client_cache: dict[tuple[str, str], "Client"] = {}
 
 # ── Client-construction instrumentation (diagnostic; off unless asked) ──
@@ -1140,16 +1132,6 @@ def update_element_review_flags(
     ).eq("id", element_id).execute()
 
 
-def upsert_spine_snapshot(client: "Client", row: dict) -> None:
-    """Upsert one ``spine_snapshots`` index row (conflict key: ``id``).
-
-    Caller: ``cli_cmds.spine.snapshot_cmd`` (`cp snapshot`). Best-effort at
-    the callsite — the on-disk frozen file is canonical; this row is only
-    the MC-2 index entry.
-    """
-    client.table(Tables.SPINE_SNAPSHOTS).upsert(row, on_conflict="id").execute()
-
-
 # ──────────────────────────────────────────────────────────────────────
 #  Project id resolution
 # ──────────────────────────────────────────────────────────────────────
@@ -1160,7 +1142,7 @@ def upsert_spine_snapshot(client: "Client", row: dict) -> None:
 # meeting-link and spine-promote paths included) had to import an MCP
 # server just to resolve an id, so a missing/renamed ``mcp.server.fastmcp``
 # broke Supabase-only code that never used MCP. See the v0.80.1 webhook
-# ModuleNotFoundError. ``mcp_server`` now re-exports both for its own use.
+# ModuleNotFoundError. (The stdio ``mcp_server`` was retired in step 5b.)
 
 def canonical_spine_code(
     client,
@@ -1291,7 +1273,7 @@ def owner_columns(client) -> str:
     """The owner column an owner-scoped table carries, as a select fragment.
 
     Always ``"project_id"`` (#301). Kept as a function so the column lists
-    that embed it (`commitments_sweep`, `dates_loop`, `asset_dedupe`, the
+    that embed it (`commitments_sweep`, the
     bindings read, the webhook) keep one spelling; `client` is unused.
     """
     return OWNER_COLUMN

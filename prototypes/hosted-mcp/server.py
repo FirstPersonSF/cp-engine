@@ -20,8 +20,8 @@ stdio-local with a service key in the environment; hosted-cp cannot.
 
 0.0.3 adds two work packages on top of that read surface:
 
-  A. **Narrow, insert-only writes** (#139). `create_note`, `create_commitment`,
-     and `create_spine_element` INSERT under the caller's identity, stamping
+  A. **Narrow, insert-only writes** (#139). `create_commitment` and
+     `create_spine_element` INSERT under the caller's identity, stamping
      `author_id = auth.uid()` where the INSERT policy demands it. There are
      deliberately NO authenticated UPDATE policies on `spine_substance`, so
      nothing here updates an existing spine row — `add_spine_version` is
@@ -125,7 +125,6 @@ from cp_engine import spine_steps as _engine_spine_steps  # noqa: E402
 from cp_engine.commitments import _valid_due_date as _engine_valid_due_date  # noqa: E402
 from cp_engine.asks import ask_hash as _engine_ask_hash  # noqa: E402
 from cp_engine.asks import resolve_canonical_code as _engine_resolve_canonical_code  # noqa: E402
-from cp_engine import wrap_report as _engine_wrap_report  # noqa: E402
 from cp_engine import exec_summary_draft as _engine_exec_summary_draft  # noqa: E402
 from cp_engine import render as _engine_render  # noqa: E402
 # The one "which sprint week" rule (architecture plan step 1a).
@@ -613,14 +612,16 @@ mcp_server = MCPServer(
         "sequence for a session like this one, which has no `cxp` and no file "
         "editing. Read `master-cp.md` for the project index; get each "
         "project's path from there rather than constructing it.\n\n"
-        "MOST TOOLS READ; 40 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
-        "`add_*`, `remove_*`, `reorder_*`, `promote_*`, `retire_*`, `resolve_*`, "
+        "MOST TOOLS READ; 29 OF THEM WRITE. The writers are the `create_*`, `set_*`, "
+        "`add_*`, `remove_*`, `promote_*`, `retire_*`, `resolve_*`, "
         "`route_*`, `rotate_*`, `seal_to_*` and `capture_*` verbs, plus "
-        "`log_improvement` — a name that sounds like a mutation is one (a "
-        "read-only endpoint, `/mcp/read`, carries none of them). Every write is "
-        "delegated upstream under YOUR identity; the server holds no write "
-        "key, which is why authorship is real and why nothing here can be "
-        "undone by the server on your behalf. When refreshing an Exec "
+        "`log_improvement` and `push_to_dropbox` — a name that sounds like a "
+        "mutation is one (a read-only endpoint, `/mcp/read`, carries none of "
+        "them). Every tenant write is delegated upstream under YOUR identity; "
+        "the server holds no MC-2 write key, which is why authorship is real "
+        "and why nothing here can be undone by the server on your behalf. The "
+        "one exception is `push_to_dropbox`, which writes into Dropbox with "
+        "the service's own credentials (team members only). When refreshing an Exec "
         "Summary with `capture_project_state`, pass "
         "every field you mean to be current, not just `status`: omitted fields "
         "are left as they were, so a status-only refresh advances the "
@@ -1122,7 +1123,6 @@ def _names_its_level(fn=None, *, param: str = "project_code"):
     return decorate(fn) if fn is not None else decorate
 
 
-
 # `spine_substance` has NO `updated_at` column (verified against the live
 # schema). The freshness signals it does carry are `synced_at` (last mirror
 # write), `version_date`, and `confirmed_at`; `synced_at` is the closest
@@ -1446,8 +1446,8 @@ def list_spine_elements(
 
     `compact=true` trims each row to the orientation fields — slug, framing,
     layer, binding, important, version_label, plus the scope/canon/
-    absorbed_by markers — dropping status, dates and actor. Same flag as the
-    stdio `cxp mcp` verb, so `tier="working", compact=true` works on both.
+    absorbed_by markers — dropping status, dates and actor. Prefer
+    `tier="working", compact=true` as the first call on a big spine.
 
     Args:
         project_code: engagement, initiative, or standalone-repo code
@@ -2239,51 +2239,6 @@ def _resolve_source_asset(
 
 @mcp_server.tool()
 @_names_its_level
-def archive_project_source(project_code: str, doc_title_or_id: str) -> dict[str, Any]:
-    """Archive one ingested source doc — the RAG-store cleanup verb (#126),
-    hosted port under the caller's identity.
-
-    Soft delete: status active → 'archived' via the mig-134 guarded function
-    (`rag_assets` deliberately has no authenticated UPDATE — the function can
-    do exactly this one move). The row, chunks, and spine provenance survive;
-    the doc leaves every active read, and the ingest dedup guard respects
-    archived rows so an unchanged file is NOT re-ingested. `doc_title_or_id`
-    is an asset uuid or EXACT title; an ambiguous title returns candidates.
-    For same-title DISTINCT docs use `rename_project_source` instead.
-    """
-    client = user_client()
-    project_id = resolve_project_id(client, project_code)
-    if project_id is None:
-        return {"error": f"no project or initiative resolves for code {project_code!r}"}
-    resolved = _resolve_source_asset(client, project_id, doc_title_or_id)
-    if resolved is None:
-        return {"error": f"no active source matching '{doc_title_or_id}' for this project"}
-    if "candidates" in resolved:
-        return {
-            "note": f"'{doc_title_or_id}' matches "
-            f"{len(resolved['candidates'])} active sources — pass an id",
-            **resolved,
-        }
-    try:
-        affected = client.rpc(
-            "rag_asset_archive", {"p_asset_id": resolved["id"]}
-        ).execute().data
-    except Exception as exc:  # noqa: BLE001
-        audit(client, "archive_project_source",
-              {"project_code": project_code, "key": doc_title_or_id}, 0)
-        return {"error": f"archive failed: {type(exc).__name__}: {str(exc)[:300]}"}
-    audit(client, "archive_project_source",
-          {"project_code": project_code, "key": doc_title_or_id}, int(affected or 0))
-    return {
-        "archived": bool(affected),
-        "id": resolved["id"],
-        "title": resolved["title"],
-        "caller": caller_subject(),
-    }
-
-
-@mcp_server.tool()
-@_names_its_level
 def set_source_status(
     project_code: str,
     doc_title_or_id: str,
@@ -2378,7 +2333,7 @@ def rename_project_source(
     under one title) — retitle instead of archiving real content. Readers
     resolve by title, so the new title is live immediately. Writes through
     the mig-134 guarded function (title is the ONLY column it can touch).
-    `doc_title_or_id` resolves like `archive_project_source`.
+    `doc_title_or_id` is a uuid or an EXACT title.
     """
     new_title = (new_title or "").strip()
     if not new_title:
@@ -2927,12 +2882,6 @@ _LAYER_ALIASES = _engine_authored_element.LAYER_ALIASES
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
 
-# Canonical uuid shape. Used by `resolve_recording_id` (#143 batch 5) to tell a
-# `fathom_meetings.id` (uuid) apart from a `recording_id` (bigint) — two ids on
-# ONE table, only one of which addresses mc-2's promote endpoint.
-_UUID_RE = re.compile(
-    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
-)
 
 # `commitments.direction` — mirrors the mc-2 CHECK constraint.
 _DIRECTIONS = {"us_to_them", "them_to_us", "internal"}
@@ -3861,7 +3810,7 @@ def _stamp_card_kind(row: dict[str, Any]) -> str | None:
     none of them wrote the column: measured 2026-09-30, 29 of the 38 live rows
     with a NULL `card_kind` carried an `author_id` — the hosted create path's
     signature — all written after the cxp side began stamping (#246). NULL
-    reads as "not work" to `route_queue` and `weekly_sort`.
+    reads as "not work" to `card_class.classify`.
 
     Same rule as `spine_authoring.authored_element.card_kind_for` on the cxp
     side: stamp only what STRUCTURE decides. Placement is structural (item =
@@ -4370,100 +4319,6 @@ def seal_to_deliverable(
 
 @mcp_server.tool()
 @_names_its_level
-def add_spine_step(
-    project_code: str,
-    key: str,
-    title: str,
-    status: str = "upcoming",
-    step_date: str | None = None,
-    note: str | None = None,
-) -> dict[str, Any]:
-    """Append an ordered STEP to a spine element's progress trail (#119).
-
-    A step is a lightweight marker of one move toward finishing the element
-    (drafted -> ratified -> rewriting -> booked) — NOT a version, source, or
-    body. `key` resolves to ONE live element (est_item_id exact, or a unique
-    framing substring — same discipline as `pull_spine_element`). The step is
-    appended at the end (position = max+1 within this (project, element)).
-
-    This writes a LIVE HUMAN step: `source` and `review` are left UNSET so the
-    table's own defaults stand, exactly as `cp_engine.spine_steps.add_step`
-    writes it. Use `propose_spine_step` instead when YOU are recording progress
-    you just made — that one lands review-gated.
-
-    `status` ∈ done|active|upcoming (default upcoming); `step_date` is free-form
-    ('7/16', optional); `note` is a sentence or two (optional, ≤8000 chars). A
-    step NEVER completes the work-item on the schedule — that stays
-    human-confirmed.
-
-    Args:
-        project_code: engagement, initiative, or standalone-repo code.
-        key: the parent element (est_item_id or unique framing substring).
-        title: terse past/present-tense label for the move.
-        status: done | active | upcoming.
-        step_date: optional free-form date.
-        note: optional annotation (≤8000 chars).
-    """
-    if not (title and title.strip()):
-        return {"error": "title is required to add a step"}
-    if status not in STEP_STATUSES:
-        return {"error": f"status must be one of {list(STEP_STATUSES)}"}
-    if note is not None and len(note) > STEP_NOTE_MAX:
-        return {"error": f"note exceeds {STEP_NOTE_MAX} characters"}
-
-    client = user_client()
-    scope = resolve_write_scope(client, project_code)
-    if scope is None:
-        return {"error": f"no project or initiative resolves for code {project_code!r}"}
-
-    est_item_id, err = resolve_live_element_id(client, scope["id"], key)
-    if err is not None:
-        return err
-    if est_item_id is None:
-        return {"error": f"no live element matching {key!r}"}
-
-    audit_args = {
-        "project_code": project_code,
-        "key": key,
-        "status": status,
-        "step_date": step_date,
-        "title": title,
-    }
-    existing = read_steps(client, scope["id"], est_item_id)
-    position = next_step_position(existing)
-    try:
-        result = (
-            client.table("spine_steps")
-            .insert(
-                {
-                    "project_id": scope["id"],
-                    "est_item_id": est_item_id,
-                    "position": position,
-                    "title": title.strip(),
-                    "status": status,
-                    "step_date": step_date,
-                    "note": note,
-                }
-            )
-            .execute()
-        )
-    except Exception as exc:  # noqa: BLE001
-        audit(client, "add_spine_step", audit_args, 0)
-        return {"error": f"step insert failed: {type(exc).__name__}: {str(exc)[:400]}"}
-
-    created = (result.data or [{}])[0]
-    audit(client, "add_spine_step", audit_args, 1)
-    return {
-        "est_item_id": est_item_id,
-        "step_id": created.get("id"),
-        "position": position,
-        "caller": caller_subject(),
-        "steps": read_steps(client, scope["id"], est_item_id),
-    }
-
-
-@mcp_server.tool()
-@_names_its_level
 def propose_spine_step(
     project_code: str,
     key: str,
@@ -4476,9 +4331,8 @@ def propose_spine_step(
 
     Author a step as work moves DURING a session — but it lands PROPOSED, not
     live (`source='auto'`, `review='proposed'`): a human confirms or dismisses it
-    on the spine trail. Use this (not `add_spine_step`, which writes a live human
-    step) when YOU are recording progress you just made, e.g. at the end of a
-    content/synthesis session on an engagement.
+    on the spine trail. Use this when YOU are recording progress you just
+    made, e.g. at the end of a content/synthesis session on an engagement.
 
     Contract (design 2026-07-21 §2): one MOVE = one step (not one edit); bind to
     exactly ONE element (`key` resolves like `pull_spine_element` — skip rather
@@ -4642,104 +4496,17 @@ def propose_spine_step(
 #   2. **The id shape.** `fathom_meetings` has BOTH a uuid `id` and a bigint
 #      `recording_id`. `list_project_meetings` returns the UUID as `meeting_id`;
 #      the mc-2 endpoint takes the BIGINT. Handing it the uuid is the known
-#      call-id-vs-recording-id gotcha, and `resolve_recording_id` below exists
-#      precisely so a caller can pass either and land on the right one.
+#      call-id-vs-recording-id gotcha; `_recording_id_for_element` below
+#      bridges an element to the bigint. (The standalone
+#      `promote_spine_transcript` verb, which took either id, was retired in
+#      architecture step 5a; the promotion now runs only on `set_spine_element`'s
+#      important flip.)
 
 
 def _meeting_scope_filter(query, scope: dict[str, Any]):
     """Constrain a `fathom_meetings` query to one workstream (`project_id`,
     the one owner column since #301)."""
     return query.eq("project_id", scope["id"])
-
-
-def resolve_recording_id(
-    client, scope: dict[str, Any], key: str
-) -> tuple[int | None, dict[str, Any] | None, dict[str, Any] | None]:
-    """`key` -> (recording_id, meeting_row, error/note).
-
-    Mirrors the ENGINE VERB'S KEY SEMANTICS as closely as a delegating server
-    can, accepting three forms and reporting which one matched:
-
-      1. **A bare recording_id** (all digits) — the mc-2 endpoint's native key.
-         Accepted directly, but still verified to EXIST and to belong to this
-         project, so a typo'd id cannot promote another project's meeting.
-      2. **A meeting uuid** (`fathom_meetings.id`) — what `list_project_meetings`
-         hands back as `meeting_id`. This is the gotcha branch: it looks like a
-         valid id and is NOT the one the endpoint wants, so it is TRANSLATED
-         here rather than forwarded and 404'd upstream.
-      3. **A spine element key** (est_item_id / bare slug / framing substring) —
-         the engine verb's own key form. The element is resolved with the SAME
-         `resolve_element_versions` discipline every other verb uses, then
-         bridged to a meeting (see `_recording_id_for_element`).
-
-    Returns `(None, None, {...})` with a structured note/error on any miss —
-    never a guess, and never a raw exception.
-    """
-    key = (key or "").strip()
-    if not key:
-        return None, None, {"error": "a key is required (element, meeting id, or recording id)"}
-
-    # ── Form 1: a bare recording_id. Verified against THIS project's meetings. ──
-    if key.isdigit():
-        rid = int(key)
-        rows = (
-            _meeting_scope_filter(
-                client.table("fathom_meetings").select(
-                    "id, recording_id, title, meeting_date, transcript_promoted_at"
-                ),
-                scope,
-            )
-            .eq("recording_id", rid)
-            .limit(1)
-            .execute()
-            .data
-            or []
-        )
-        if not rows:
-            return None, None, {
-                "note": f"no meeting with recording_id {rid} belongs to "
-                f"{scope.get('project_code')!r}. A recording_id from another "
-                "project is refused rather than promoted."
-            }
-        return rid, rows[0], None
-
-    # ── Form 2: a meeting uuid — translate, don't forward. ──
-    if _UUID_RE.match(key):
-        rows = (
-            _meeting_scope_filter(
-                client.table("fathom_meetings").select(
-                    "id, recording_id, title, meeting_date, transcript_promoted_at"
-                ),
-                scope,
-            )
-            .eq("id", key)
-            .limit(1)
-            .execute()
-            .data
-            or []
-        )
-        if rows:
-            rid = rows[0].get("recording_id")
-            if not rid:
-                return None, rows[0], {
-                    "note": f"meeting {key} has no recording_id — it cannot be "
-                    "promoted (the mc-2 endpoint is keyed on the Fathom recording)."
-                }
-            return int(rid), rows[0], None
-        # Fall through: a uuid can also be a spine element's id, so a miss here
-        # is not yet a failure.
-
-    # ── Form 3: a spine element key. ──
-    est_item_id, versions, err = resolve_element_versions(client, scope["id"], key)
-    if err is not None:
-        return None, None, err
-    if est_item_id is None:
-        return None, None, {
-            "note": f"no meeting or live element matching {key!r} in "
-            f"{scope.get('project_code')!r}"
-        }
-    live = next((v for v in versions if v.get("status") == "live"), None) or versions[0]
-    return _recording_id_for_element(client, scope, est_item_id, live)
 
 
 def _recording_id_for_element(
@@ -4982,92 +4749,6 @@ def _promotion_on_important_flip(
         return {"fired": False, "skipped": f"promotion error: {type(exc).__name__}: {exc}"}
 
 
-@mcp_server.tool()
-@_names_its_level
-def promote_spine_transcript(project_code: str, key: str) -> dict[str, Any]:
-    """Promote a meeting's transcript into the RAG store, so it is retrievable.
-
-    The hosted counterpart of the stdio verb (#143 batch 5). It DELEGATES to
-    mc-2's `POST /api/meetings/{recording_id}/promote-transcript` carrying YOUR
-    token, so the promotion runs under your identity — this server holds no
-    service key and runs no ingest pipeline of its own.
-
-    `key` accepts three forms and tells you which one matched (`resolved_via`):
-    a **recording_id** (the Fathom bigint — the endpoint's native key), a
-    **meeting id** (the uuid `list_project_meetings` returns, translated here so
-    the uuid-vs-bigint mix-up cannot reach the endpoint), or a **spine element
-    key** (est_item_id / slug / unique framing substring), which is bridged to a
-    meeting through the element's own cited Fathom source.
-
-    TWO DIFFERENCES from the stdio verb worth knowing before relying on this:
-
-    1. **It promotes a MEETING, not a tenant file.** The engine verb embeds the
-       file at the element's `rel_path` (landing a `spine-promote` asset); this
-       one promotes the Fathom transcript behind the meeting (landing a
-       `fathom` asset). For most spine elements `rel_path` is a spine markdown
-       file with no recording behind it at all — those return a clean note
-       saying so rather than promoting the wrong thing.
-    2. **Idempotency is mc-2's, not ours.** Re-promoting is safe (the upstream
-       path is keyed on the recording and updates in place), and the return
-       reports `already_promoted` when the meeting was already stamped, so a
-       no-op is never mistaken for fresh work.
-
-    Returns `{recording_id, resolved_via, meeting, promotion: {ok, ...}}`, or a
-    structured `{note}`/`{error}` when nothing resolves. Never raises.
-
-    Args:
-        project_code: engagement, initiative, or standalone-repo code.
-        key: a recording_id, a meeting id, or a spine element key.
-    """
-    client = user_client()
-    scope = resolve_write_scope(client, project_code)
-    if scope is None:
-        return {"error": f"no project or initiative resolves for code {project_code!r}"}
-
-    recording_id, meeting, problem = resolve_recording_id(client, scope, key)
-    if problem is not None:
-        audit(client, "promote_spine_transcript", {"project_code": project_code, "key": key}, 0)
-        return problem
-
-    resolved_via = (
-        "recording_id" if key.strip().isdigit()
-        else "meeting_id" if (meeting and str(meeting.get("id")) == key.strip())
-        else "element"
-    )
-    already = bool((meeting or {}).get("transcript_promoted_at"))
-
-    audit_args = {
-        "project_code": project_code,
-        "key": key,
-        "recording_id": recording_id,
-        "resolved_via": resolved_via,
-    }
-
-    promotion = call_mc2_promote(recording_id)
-    audit(client, "promote_spine_transcript", audit_args, 1 if promotion.get("ok") else 0)
-
-    out: dict[str, Any] = {
-        "project_code": scope.get("project_code"),
-        "recording_id": recording_id,
-        "resolved_via": resolved_via,
-        "caller": caller_subject(),
-        "promotion": promotion,
-    }
-    if meeting:
-        out["meeting"] = {
-            "meeting_id": meeting.get("id"),
-            "title": meeting.get("title"),
-            "meeting_date": meeting.get("meeting_date"),
-        }
-    if already:
-        out["already_promoted"] = True
-        out["note"] = (
-            "this meeting was already stamped transcript_promoted_at before this "
-            "call; re-promotion updates the existing asset in place."
-        )
-    return out
-
-
 # WHERE THE COLUMN BOUNDARY ACTUALLY LIVES (verified live 2026-08-02, and NOT
 # what the batch-2 brief assumed). The migration's per-column grant
 # `UPDATE(important, note, layer, framing, serves)` is real but INERT: the
@@ -5126,7 +4807,7 @@ def set_spine_element(
        only the live row moves. For an element with history, its superseded rows
        keep the OLD layer/framing/serves. The return says so explicitly
        (`versions_updated` / `superseded_untouched`) rather than implying a
-       whole-element move. Use the stdio verb when the whole history must move.
+       whole-element move. There is no MCP verb that moves the whole history.
 
     2. **TRANSCRIPT PROMOTION IS DELEGATED, AND USUALLY SKIPS.** Like the engine
        verb, a genuine `important` false->true transition fires a transcript
@@ -5137,7 +4818,7 @@ def set_spine_element(
        Fathom recording behind the element (see `promote_spine_transcript`).
        An element that cites no Fathom source — which is MOST of them — gets
        `promotion: {fired: false, skipped: ...}` with the reason, not a failure.
-       Use the stdio verb when the tenant FILE is what must be embedded.
+       No MCP verb embeds the tenant FILE (the retired stdio verb did).
 
     Args:
         project_code: engagement, initiative, or standalone-repo code.
@@ -5535,18 +5216,6 @@ def resolve_commitment(
 _OFF_PROJECT_ANNOTATION_RE = re.compile(r"\s*\[off-project\?\s*→\s*[^\]]+\]")
 
 
-def _partition_off_project(
-    rows: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Split rows into (clean, off_project_flagged) by the #114 annotation."""
-    flagged = [
-        r for r in rows
-        if _OFF_PROJECT_ANNOTATION_RE.search(r.get("description") or "")
-    ]
-    flagged_ids = {r.get("id") for r in flagged}
-    return [r for r in rows if r.get("id") not in flagged_ids], flagged
-
-
 def _routed_copy_row(
     row: dict[str, Any], source_code: str, target_scope: dict[str, Any]
 ) -> dict[str, Any]:
@@ -5675,145 +5344,6 @@ def resolve_commitments(
         "resolved": resolved,
         "results": results,
         "remaining_open": len(remaining),
-        "project_code": scope["project_code"],
-        "caller": caller_subject(),
-    }
-
-
-@mcp_server.tool()
-@_names_its_level
-def resolve_commitments_by_meeting(
-    project_code: str,
-    meeting_ids: list[str],
-    outcome: str = "done",
-    except_keys: list[str] | None = None,
-    dry_run: bool = False,
-    include_off_project: bool = False,
-) -> dict[str, Any]:
-    """Close every OPEN commitment proposed by the named meetings (#159) —
-    the delivery-event sweep.
-
-    A build sprint's commitments are meeting-scoped tasks, and the delivery
-    is the natural resolution event for all of them at once: "everything
-    proposed from these three working sessions shipped Thursday night." This
-    verb turns that sentence into one call instead of one call per row.
-
-    `meeting_ids` are `source_meeting_id` values (list_commitments returns
-    them). Rows whose source meeting is not in the list are untouched — rows
-    with NO source meeting (manual/session rows) are never swept by this verb.
-
-    `except_keys` protects still-live rows inside a swept meeting (id or
-    distinct description substring). An except_key that matches nothing or
-    ambiguously is a HARD error and nothing is written — an exclusion that
-    silently failed would resolve exactly the row the caller meant to keep.
-
-    Rows carrying the ingest's `[off-project? → <code>]` annotation are
-    SKIPPED by default and reported under `off_project_skipped` — a delivery
-    sweep must not close the very rows that belong to another project; route
-    them first (`route_commitment`) or pass `include_off_project=true` to
-    sweep them anyway.
-
-    ALWAYS preview first: `dry_run=true` returns the would-resolve rows
-    grouped by meeting, writes nothing, and is the confirm surface — show the
-    groups, get a yes, then run with `dry_run=false`.
-
-    Returns {groups: {meeting_id: [...]}, would_resolve|resolved: int,
-    excepted: [...], results?: [...]}.
-
-    Args:
-        project_code: engagement or initiative code.
-        meeting_ids: source_meeting_id values whose open rows should close.
-        outcome: done | dropped — applied to every swept row.
-        except_keys: rows inside the swept meetings to leave open.
-        dry_run: True → report the sweep without writing (default False).
-    """
-    if outcome not in ("done", "dropped"):
-        return {"error": "outcome must be 'done' or 'dropped'"}
-    if not meeting_ids:
-        return {"error": "at least one meeting_id is required"}
-
-    client = user_client()
-    scope = resolve_write_scope(client, project_code)
-    if scope is None:
-        return {"error": f"no project or initiative resolves for code {project_code!r}"}
-
-    open_rows = _fetch_open_commitments(client, scope)
-    wanted = set(meeting_ids)
-    candidates = [r for r in open_rows if r.get("source_meeting_id") in wanted]
-
-    # Exclusions resolve against the CANDIDATES (not all open rows): an
-    # except_key exists to protect a row the sweep would otherwise take.
-    excepted: list[dict[str, Any]] = []
-    for ek in except_keys or []:
-        row, match_err = _match_open_commitment(candidates, ek)
-        if match_err is not None:
-            return {
-                "error": f"except_key {ek!r} did not resolve to one swept row — "
-                "nothing was written. Fix the exclusion and re-run.",
-                "detail": match_err,
-            }
-        excepted.append({"id": row["id"], "description": row.get("description")})
-        candidates = [r for r in candidates if r.get("id") != row["id"]]
-
-    off_project_skipped: list[dict[str, Any]] = []
-    if not include_off_project:
-        candidates, flagged = _partition_off_project(candidates)
-        off_project_skipped = [
-            {"id": r.get("id"), "description": r.get("description")} for r in flagged
-        ]
-
-    groups: dict[str, list[dict[str, Any]]] = {}
-    for r in candidates:
-        groups.setdefault(r["source_meeting_id"], []).append(
-            {
-                "id": r.get("id"),
-                "description": r.get("description"),
-                "owner_name": r.get("owner_name"),
-            }
-        )
-
-    if dry_run:
-        return {
-            "dry_run": True,
-            "would_resolve": len(candidates),
-            "groups": groups,
-            "excepted": excepted,
-            "off_project_skipped": off_project_skipped,
-            "meetings_with_no_open_rows": sorted(wanted - set(groups)),
-        }
-
-    results: list[dict[str, Any]] = []
-    resolved = 0
-    for row in candidates:
-        try:
-            closed = _close_commitment_row(client, row, outcome)
-        except Exception as exc:  # noqa: BLE001 — one bad row must not abort the sweep
-            results.append({"id": row.get("id"), "error": f"{type(exc).__name__}: {str(exc)[:200]}"})
-            continue
-        if "error" in closed:
-            results.append({"id": row.get("id"), **closed})
-            continue
-        resolved += 1
-        results.append(closed)
-
-    audit(
-        client,
-        "resolve_commitments_by_meeting",
-        {
-            "project_code": project_code,
-            "meetings_count": len(meeting_ids),
-            "outcome": outcome,
-            "excepted_count": len(excepted),
-        },
-        resolved,
-    )
-    return {
-        "resolved": resolved,
-        "groups": groups,
-        "excepted": excepted,
-        "off_project_skipped": off_project_skipped,
-        "results": results,
-        "meetings_with_no_open_rows": sorted(wanted - set(groups)),
         "project_code": scope["project_code"],
         "caller": caller_subject(),
     }
@@ -5998,316 +5528,6 @@ def route_commitment(
         "target_code": target["project_code"],
         "target_commitment_id": new_row.get("id"),
         "caller": caller_subject(),
-    }
-
-
-@mcp_server.tool()
-@_names_its_level
-def set_spine_step(
-    project_code: str,
-    key: str,
-    step_id: str,
-    title: str | None = None,
-    status: str | None = None,
-    step_date: str | None = None,
-    note: str | None = None,
-) -> dict[str, Any]:
-    """Update one step on a spine element's trail (#119, hosted port).
-
-    Advance a step (`status` ∈ done|active|upcoming) or edit its title/
-    step_date/note. `key` resolves the parent element; `step_id` picks the step.
-    Only the fields you pass change (None = untouched — this verb never nulls a
-    field), matching the partial-update discipline of `set_spine_element`. The
-    common move is advancing a step to `done` as the work lands.
-
-    The UPDATE is scoped by (id, project_id, est_item_id) exactly as
-    `cp_engine.spine_steps.set_step` does, so a stray `step_id` can never reach
-    another element's trail even if the id is valid elsewhere.
-
-    Args:
-        project_code: engagement, initiative, or standalone-repo code.
-        key: the parent element (est_item_id or unique framing substring).
-        step_id: the step to update.
-        title: new title (non-blank).
-        status: done | active | upcoming.
-        step_date: free-form date ('7/16').
-        note: annotation (≤8000 chars).
-    """
-    if status is not None and status not in STEP_STATUSES:
-        return {"error": f"status must be one of {list(STEP_STATUSES)}"}
-    if note is not None and len(note) > STEP_NOTE_MAX:
-        return {"error": f"note exceeds {STEP_NOTE_MAX} characters"}
-
-    patch: dict[str, Any] = {}
-    if title is not None:
-        if not title.strip():
-            return {"error": "title cannot be blank"}
-        patch["title"] = title.strip()
-    if status is not None:
-        patch["status"] = status
-    if step_date is not None:
-        patch["step_date"] = step_date
-    if note is not None:
-        patch["note"] = note
-    if not patch:
-        return {"note": "nothing to update (pass title/status/step_date/note)"}
-
-    client = user_client()
-    scope = resolve_write_scope(client, project_code)
-    if scope is None:
-        return {"error": f"no project or initiative resolves for code {project_code!r}"}
-
-    est_item_id, err = resolve_live_element_id(client, scope["id"], key)
-    if err is not None:
-        return err
-    if est_item_id is None:
-        return {"error": f"no live element matching {key!r}"}
-
-    audit_args = {
-        "project_code": project_code,
-        "key": key,
-        "step_id": step_id,
-        "status": status,
-        "step_date": step_date,
-        "title": title,
-        "note": note,
-    }
-    try:
-        result = (
-            client.table("spine_steps")
-            .update(patch)
-            .eq("id", step_id)
-            .eq("project_id", scope["id"])
-            .eq("est_item_id", est_item_id)
-            .execute()
-        )
-    except Exception as exc:  # noqa: BLE001
-        audit(client, "set_spine_step", audit_args, 0)
-        return {"error": f"step update failed: {type(exc).__name__}: {str(exc)[:400]}"}
-
-    updated = result.data or []
-    if not updated:
-        audit(client, "set_spine_step", audit_args, 0)
-        return {
-            "error": f"0 rows updated — step {step_id!r} is not on element "
-            f"{est_item_id!r} in this project (or the caller is not a team member).",
-            "est_item_id": est_item_id,
-        }
-
-    audit(client, "set_spine_step", audit_args, len(updated))
-    return {
-        "est_item_id": est_item_id,
-        "step_id": step_id,
-        "caller": caller_subject(),
-        "steps": read_steps(client, scope["id"], est_item_id),
-    }
-
-
-@mcp_server.tool()
-@_names_its_level
-def reorder_spine_step(
-    project_code: str, key: str, order: list[str]
-) -> dict[str, Any]:
-    """Reorder a spine element's steps (#119, hosted port).
-
-    `order` is the FULL list of the element's step_ids in the desired order;
-    positions are renumbered 1..N to match. `key` resolves the parent element.
-
-    The set is validated BEFORE anything is written: `order` must match the
-    element's current step ids EXACTLY — no extras, no omissions, no duplicates.
-    The engine helper renumbers whatever it is handed, which on a partial list
-    silently leaves the omitted steps at stale positions (two steps sharing a
-    position, or a gap). Hosted, a partial or foreign list is rejected with the
-    difference spelled out, because a half-renumbered trail is worse than an
-    unchanged one and there is no transaction here to roll back.
-
-    Args:
-        project_code: engagement, initiative, or standalone-repo code.
-        key: the parent element (est_item_id or unique framing substring).
-        order: the complete list of this element's step_ids, in the new order.
-    """
-    if not order:
-        return {"error": "order (the full list of step_ids) is required"}
-
-    client = user_client()
-    scope = resolve_write_scope(client, project_code)
-    if scope is None:
-        return {"error": f"no project or initiative resolves for code {project_code!r}"}
-
-    est_item_id, err = resolve_live_element_id(client, scope["id"], key)
-    if err is not None:
-        return err
-    if est_item_id is None:
-        return {"error": f"no live element matching {key!r}"}
-
-    existing = read_steps(client, scope["id"], est_item_id)
-    current_ids = [s["id"] for s in existing]
-    if len(set(order)) != len(order):
-        return {"error": "order contains duplicate step_ids"}
-    if set(order) != set(current_ids):
-        return {
-            "error": "order must list this element's steps EXACTLY once each — "
-            "a partial reorder would leave the omitted steps at stale positions",
-            "missing": sorted(set(current_ids) - set(order)),
-            "unknown": sorted(set(order) - set(current_ids)),
-            "expected_count": len(current_ids),
-        }
-
-    audit_args = {
-        "project_code": project_code,
-        "key": key,
-        "order_len": len(order),
-    }
-    renumbered = 0
-    refused: list[str] = []
-    try:
-        for pos, sid in enumerate(order, start=1):
-            # COUNT MATCHED ROWS, NOT ITERATIONS. The spine_steps UPDATE policy
-            # (see the comment above STEP_STATUSES) matches only rows that are
-            # BOTH source='auto' AND review='proposed' — so every human-authored
-            # step and every confirmed auto-step is immune to UPDATE, and its
-            # renumber is a 0-row 200, not an error. Counting loop passes would
-            # report a full reorder while leaving exactly the partial state this
-            # verb refuses on input two blocks up.
-            result = (
-                client.table("spine_steps")
-                .update({"position": pos})
-                .eq("id", sid)
-                .eq("project_id", scope["id"])
-                .eq("est_item_id", est_item_id)
-                .execute()
-            )
-            if result.data:
-                renumbered += 1
-            else:
-                refused.append(sid)
-    except Exception as exc:  # noqa: BLE001
-        audit(client, "reorder_spine_step", audit_args, renumbered)
-        return {
-            "error": f"reorder failed after {renumbered}/{len(order)} steps: "
-            f"{type(exc).__name__}: {str(exc)[:300]}",
-            "steps": read_steps(client, scope["id"], est_item_id),
-        }
-
-    audit(client, "reorder_spine_step", audit_args, renumbered)
-    return {
-        "est_item_id": est_item_id,
-        "reordered": renumbered,
-        **(
-            {
-                "refused": refused,
-                "warning": f"{len(refused)} of {len(order)} step(s) did not "
-                "renumber — the spine_steps UPDATE policy matches only rows "
-                "that are source='auto' AND review='proposed', so human-authored "
-                "and confirmed steps are immune. The trail is now PARTIALLY "
-                "reordered; read `steps` for the true positions.",
-            }
-            if refused
-            else {}
-        ),
-        "caller": caller_subject(),
-        "steps": read_steps(client, scope["id"], est_item_id),
-    }
-
-
-@mcp_server.tool()
-@_names_its_level
-def remove_spine_step(
-    project_code: str, key: str, step_id: str
-) -> dict[str, Any]:
-    """Delete one step from a spine element's trail (#119, hosted port).
-
-    `key` resolves the parent element; `step_id` picks the step. Remaining steps
-    densify to stay 1..N contiguous, exactly as
-    `cp_engine.spine_steps.remove_step` does. The DELETE is scoped by
-    (id, project_id, est_item_id) so a stray id cannot reach another element.
-
-    `spine_steps` is the ONLY table on this server with an authenticated DELETE
-    policy (`is_team_member()`), and it is deliberately narrow: a step is a
-    lightweight progress marker, not a versioned record, so removing a
-    mis-authored one is a correction rather than a loss of history. Nothing else
-    here deletes — spine versions and commitments are superseded or resolved.
-
-    Args:
-        project_code: engagement, initiative, or standalone-repo code.
-        key: the parent element (est_item_id or unique framing substring).
-        step_id: the step to delete.
-    """
-    client = user_client()
-    scope = resolve_write_scope(client, project_code)
-    if scope is None:
-        return {"error": f"no project or initiative resolves for code {project_code!r}"}
-
-    est_item_id, err = resolve_live_element_id(client, scope["id"], key)
-    if err is not None:
-        return err
-    if est_item_id is None:
-        return {"error": f"no live element matching {key!r}"}
-
-    audit_args = {"project_code": project_code, "key": key, "step_id": step_id}
-    try:
-        deleted = (
-            client.table("spine_steps")
-            .delete()
-            .eq("id", step_id)
-            .eq("project_id", scope["id"])
-            .eq("est_item_id", est_item_id)
-            .execute()
-            .data
-            or []
-        )
-    except Exception as exc:  # noqa: BLE001
-        audit(client, "remove_spine_step", audit_args, 0)
-        return {"error": f"step delete failed: {type(exc).__name__}: {str(exc)[:400]}"}
-
-    if not deleted:
-        audit(client, "remove_spine_step", audit_args, 0)
-        return {
-            "error": f"0 rows deleted — step {step_id!r} is not on element "
-            f"{est_item_id!r} in this project (or the caller is not a team member).",
-            "est_item_id": est_item_id,
-        }
-
-    # Densify: renumber the survivors to a contiguous 1..N.
-    #
-    # Verified per row, same reason as `reorder_spine_step`: the UPDATE policy
-    # matches only source='auto' AND review='proposed', so a trail containing
-    # human steps below the deleted one keeps its gaps and the docstring's
-    # "remaining steps densify to stay 1..N contiguous" quietly stops being
-    # true. Also scoped by project_id/est_item_id like every other step write —
-    # ids come from a scoped read so it was safe, but the inconsistency was not
-    # worth keeping.
-    densify_refused: list[str] = []
-    for pos, step in enumerate(read_steps(client, scope["id"], est_item_id), start=1):
-        if step.get("position") != pos:
-            moved = (
-                client.table("spine_steps")
-                .update({"position": pos})
-                .eq("id", step["id"])
-                .eq("project_id", scope["id"])
-                .eq("est_item_id", est_item_id)
-                .execute()
-            )
-            if not moved.data:
-                densify_refused.append(step["id"])
-
-    audit(client, "remove_spine_step", audit_args, len(deleted))
-    return {
-        "est_item_id": est_item_id,
-        "removed": step_id,
-        **(
-            {
-                "densify_refused": densify_refused,
-                "warning": f"{len(densify_refused)} surviving step(s) would not "
-                "renumber (UPDATE policy matches only source='auto' AND "
-                "review='proposed'), so positions are NOT contiguous 1..N; "
-                "read `steps` for the true positions.",
-            }
-            if densify_refused
-            else {}
-        ),
-        "caller": caller_subject(),
-        "steps": read_steps(client, scope["id"], est_item_id),
     }
 
 
@@ -6532,66 +5752,6 @@ def add_element_provenance(
     )
 
 
-@mcp_server.tool()
-@_names_its_level
-def remove_element_provenance(
-    project_code: str, key: str, source_key: str
-) -> dict[str, Any]:
-    """Detach a spine-element provenance link from a spine element (#104).
-
-    The inverse of `add_element_provenance`: resolves the target (live) and the
-    source (which may be retired) the same way, then removes the matching
-    `{"type": "spine_element", ...}` link BY ELEMENT ID from every version's
-    `sources`. Detaching one that is not attached returns a structured note, not
-    an error.
-
-    Args:
-        project_code: engagement, initiative, or standalone-repo code.
-        key: the TARGET element — must be live.
-        source_key: the provenance element to detach; MAY be retired.
-    """
-    client = user_client()
-    scope = resolve_write_scope(client, project_code)
-    if scope is None:
-        return {"error": f"no project or initiative resolves for code {project_code!r}"}
-
-    est_item_id, versions, err = resolve_element_versions(client, scope["id"], key)
-    if err is not None:
-        return err
-    if est_item_id is None:
-        return {"note": f"no single live element matching {key!r}"}
-    if _live_row(versions) is None:
-        return {"error": f"element {est_item_id!r} has no live version"}
-
-    src = resolve_source_element(client, scope["id"], source_key)
-    if src is None:
-        return {"note": f"no single element matching source {source_key!r}"}
-    src_eid = src.get("est_item_id")
-
-    entry = {
-        "type": "spine_element",
-        "id": src_eid,
-        "title": src.get("framing") or src_eid,
-        "retired": bool(src.get("archived")),
-    }
-    return _modify_element_sources(
-        client,
-        project_code,
-        key,
-        entry,
-        add=False,
-        tool="remove_element_provenance",
-        audit_args={
-            "project_code": project_code,
-            "key": key,
-            "source_key": source_key,
-        },
-        scope=scope,
-        est_item_id=est_item_id,
-        versions=versions,
-    )
-
-
 # ──────────────────────────────────────────────────────────────────────
 #  Retire + account scope — the guarded-function verbs (#143 batch 4)
 # ──────────────────────────────────────────────────────────────────────
@@ -6748,7 +5908,6 @@ def retire_spine_element(project_code: str, key: str) -> dict[str, Any]:
         result["project_code"] = scope["project_code"]
         result["caller"] = caller_subject()
     return result
-
 
 
 def _keys_carrying_edges(
@@ -7200,41 +6359,13 @@ def promote_stakeholder(project_code: str, key: str) -> dict[str, Any]:
 
 @mcp_server.tool()
 @_names_its_level
-def demote_stakeholder(project_code: str, key: str) -> dict[str, Any]:
-    """Remove an element from ACCOUNT scope — the inverse of promote_stakeholder.
-
-    The element returns to its PROVENANCE project (`scope='project'`,
-    `company_id` cleared). `project_id` was never changed by promotion, so there
-    is exactly one home for it to land in. It disappears from sibling projects'
-    spines and from the account roster; NOTHING is deleted, and re-promoting
-    restores account visibility. Every version moves together.
-
-    `key` resolves the account element from ANY of the company's projects.
-    Demoting something that is not account-scoped is a structured note, not an
-    error — the guarded function touches account-scoped rows only, so that case
-    moves zero rows by design.
-
-    Returns {est_item_id, scope, returned_to_project_id, versions_moved}, or a
-    structured {note}/{error}.
-
-    Args:
-        project_code: an engagement of the company the element is scoped to.
-        key: the element to demote (est_item_id or unique framing substring).
-    """
-    client = user_client()
-    return _set_account_scope(
-        client, project_code, key, account=False, tool="demote_stakeholder"
-    )
-
-
-@mcp_server.tool()
-@_names_its_level
 def set_element_account_scope(
     project_code: str, key: str, account: bool = True
 ) -> dict[str, Any]:
     """Tag ANY spine element account-level (or return it to project scope).
 
-    The type-agnostic generalization of `promote_stakeholder`/`demote_stakeholder`:
+    The type-agnostic generalization of `promote_stakeholder` (and, with
+    `account=false`, the way back):
     use it to make a synthesis, a source, a decision — any element, not just a
     stakeholder — readable from EVERY project of the same company
     (`account=True`), or to pull it back to its home project (`account=False`).
@@ -7255,100 +6386,6 @@ def set_element_account_scope(
     client = user_client()
     tool = "set_element_account_scope"
     return _set_account_scope(client, project_code, key, account=account, tool=tool)
-
-
-@mcp_server.tool()
-@_names_its_level
-def create_note(
-    project_code: str,
-    body: str,
-    title: str | None = None,
-    recipient_email: str | None = None,
-) -> dict[str, Any]:
-    """Create a partner Note against a project, under the caller's identity.
-
-    INSERT-only into `public.notes`. The Notes feature's identity model is the
-    `entities` registry (author_id and recipient_id are FK->entities), and the
-    caller is bridged to their own entity row BY EMAIL — the same bridge the
-    mc-2 backend's `_acting_entity` uses. The INSERT policy enforces
-    `author_id = caller_entity_id()` (a definer helper doing that email
-    lookup), so self-attribution is Postgres-enforced without repointing the
-    feature's FKs. Decided with Drew 2026-08-02.
-
-    `recipient_email` addresses the note to another entity (partner ping);
-    omitted, the note is a self-note (recipient = the author's own entity).
-    Slack delivery is NOT triggered from here (`slack_delivery='skipped'`) —
-    the hosted path records; the mc-2 backend owns DM side effects.
-
-    There is NO `title` column on `notes`; `title`, when given, is prepended
-    to the body as a markdown H3 — the body is markdown and renders in-app.
-    """
-    text = (body or "").strip()
-    if not text:
-        return {"error": "body is required"}
-    if title and title.strip():
-        text = f"### {title.strip()}\n\n{text}"
-
-    client = user_client()
-    subject = caller_subject()
-    if not subject:
-        return {"error": "no authenticated caller in context"}
-
-    scope = resolve_write_scope(client, project_code)
-    if scope is None:
-        return {"error": f"no project or initiative resolves for code {project_code!r}"}
-
-    try:
-        entity_id = (client.rpc("caller_entity_id").execute().data) or None
-    except Exception as exc:  # noqa: BLE001
-        return {"error": f"entity lookup failed: {type(exc).__name__}: {str(exc)[:200]}"}
-    if not entity_id:
-        return {
-            "error": "no entities row matches your login email — the Notes "
-            "feature identifies people via the entities registry. Ask a "
-            "partner to add you (mc-2 → entities) and retry."
-        }
-
-    recipient_id = entity_id
-    if recipient_email and recipient_email.strip():
-        found = (
-            client.table("entities")
-            .select("id, name")
-            .ilike("email", recipient_email.strip())
-            .limit(1)
-            .execute()
-        )
-        if not found.data:
-            return {"error": f"no entities row with email {recipient_email!r}"}
-        recipient_id = found.data[0]["id"]
-
-    row = {
-        "id": str(uuid.uuid4()),
-        "project_code": project_code,
-        "author_id": entity_id,
-        "recipient_id": recipient_id,
-        "body": text,
-        "status": "unread",
-        "slack_delivery": "skipped",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    try:
-        result = client.table("notes").insert(row).execute()
-    except Exception as exc:  # noqa: BLE001
-        message = str(exc)
-        audit(client, "create_note", {"project_code": project_code, "body": text}, 0)
-        return {"error": f"insert failed: {type(exc).__name__}: {message[:400]}"}
-
-    created = (result.data or [{}])[0]
-    audit(client, "create_note", {"project_code": project_code, "body": text}, 1)
-    return {
-        "note_id": created.get("id", row["id"]),
-        "project_code": project_code,
-        "caller": subject,
-        "status": created.get("status", "unread"),
-        "body_chars": len(text),
-        "created_at": created.get("created_at"),
-    }
 
 
 def _commitment_hash_for(
@@ -7429,8 +6466,7 @@ def create_commitment(
                       `meeting_id` `list_project_meetings` returns. Optional.
                       Stored in the same column auto-ingest fills, so a row
                       logged by hand mid-session groups with the rows the
-                      webhook later writes for that meeting (#311), and
-                      `resolve_commitments_by_meeting` closes both. Must be a
+                      webhook later writes for that meeting (#311). Must be a
                       meeting you can see; an unknown id is REJECTED rather
                       than stored — a wrong link is worse than none.
     """
@@ -7976,78 +7012,6 @@ def _prior_version_preview(client, base: dict[str, Any]) -> dict[str, Any]:
     if flags:
         out["fidelity_flags"] = flags
     return out
-
-
-@mcp_server.tool()
-@_names_its_level(param="to_code")
-def pull_element_from_project(
-    from_code: str, to_code: str, key: str, type: str = "synthesis",
-    account: bool = False,
-) -> dict[str, Any]:
-    """Copy a spine element FROM another project INTO this one, with lineage
-    — the hosted port of the stdio verb (#138 ratchet), caller-attributed.
-
-    Resolves `key` to ONE live element in `from_code` (est_item_id or a
-    distinct framing substring), then authors a COPY of its body as a new
-    element in `to_code`. The copy's body head carries a legible origin line
-    (`Pulled from <from_code> · <est_item_id>`); cross-project lineage lives
-    IN the element (edges are within-project). `type` sets the copy's layer
-    (default `synthesis` — a cross-project pull is usually re-synthesis).
-    With `account=true` the copy is account-tagged immediately, readable
-    from every sibling project. Does NOT move the original.
-    """
-    client = user_client()
-    from_id = resolve_project_id(client, from_code)
-    if from_id is None:
-        return {"error": f"source project {from_code!r} not found"}
-    eid, err = resolve_live_element_id(client, from_id, key)
-    if err is not None:
-        return err
-    if eid is None:
-        return {"note": f"no single live element matching {key!r} in {from_code!r}"}
-    rows = (
-        client.table("spine_substance")
-        .select("est_item_id, framing, body, status")
-        .eq("project_id", from_id)
-        .eq("est_item_id", eid)
-        .eq("status", "live")
-        .execute()
-        .data
-        or []
-    )
-    if not rows:
-        return {"error": f"element {eid!r} in {from_code!r} has no live row"}
-    src = rows[0]
-    body = src.get("body") or ""
-    if not body.strip():
-        return {"error": f"source element {eid!r} in {from_code!r} has an "
-                         "empty body — nothing to pull"}
-    origin_framing = src.get("framing") or eid
-    origin_line = f"> _Pulled from **{from_code}** · `{eid}` ({origin_framing})_"
-    label = f"{origin_framing} (from {from_code})"
-
-    created = create_spine_element(
-        to_code, label, f"{origin_line}\n\n{body}", layer=type
-    )
-    if created.get("error"):
-        return created
-
-    account_scoped = False
-    if account:
-        promoted = set_element_account_scope(to_code, created["element_id"], True)
-        account_scoped = promoted.get("scope") == "account"
-
-    audit(client, "pull_element_from_project",
-          {"from_code": from_code, "to_code": to_code, "key": key,
-           "account": account}, 1)
-    return {
-        "element_id": created["element_id"],
-        "version_label": created.get("version_label"),
-        "origin": {"project": from_code, "est_item_id": eid,
-                   "framing": origin_framing},
-        "account_scoped": account_scoped,
-        "caller": caller_subject(),
-    }
 
 
 @mcp_server.tool()
@@ -8867,545 +7831,6 @@ def skill(name: str) -> str:
         "Its reference documents are available with "
         f"`load_skill({name!r}, reference=<file>)`.\n\n" + result["text"]
     )
-
-
-# ──────────────────────────────────────────────────────────────────────
-#  Wrap bundle — the close-out retro's raw material (#184, hosted port)
-# ──────────────────────────────────────────────────────────────────────
-#
-# The payload `cp wrap <code> --bundle` prints. The meetings fold and the date
-# parser are `cp_engine.wrap_report`'s (architecture plan step 1c). The effort
-# fold is still a copy: it breaks ties alphabetically where the engine's
-# `Counter.most_common()` keeps insertion order, so converting it would
-# reorder equal-hours people in this verb's output — left for a decision.
-# Nothing here calls `mc2_db.get_client` (the service-role client); every
-# read runs on the caller's RLS client.
-
-# Fields the model MUST NOT invent. Each ships as a labelled placeholder so a
-# human sees a prompt rather than an omission.
-WRAP_HUMAN_ENTRY_FIELDS: tuple[str, ...] = (
-    "Actual profitability %",
-    "Work-page candidate (Yes/No)",
-    "OK to post publicly (Yes/No)",
-    "Project rating (1-5)",
-    "Non-royalty-free content / talent / music licensing",
-    "Link to final client-held artifact",
-)
-
-# The learning axes, in the order the report renders them. Four, not one — the
-# client axis is the one with no home in cp today and the one that compounds
-# across engagements.
-WRAP_LEARNING_AXES: tuple[tuple[str, str], ...] = (
-    ("project", "What we learned about the project — what worked, what was "
-                "challenging, key decisions, how the work evolved"),
-    ("client", "What we learned about the client — communication style, "
-               "decision-making, feedback patterns, who could actually end a "
-               "round"),
-    ("vendors", "What we learned about freelancers/vendors — who performed, "
-                "delivery reliability, what to change next time"),
-    ("scope_budget", "What we learned about scope & budget — was the original "
-                     "scope realistic, what changed, what would we price "
-                     "differently"),
-)
-
-WRAP_EFFORT_NOTE = (
-    "ALLOCATED hours from sprint_allocations — MC-2's planning "
-    "record, NOT timesheet actuals. Say so in the report; "
-    "presenting an allocation as an actual overstates precision."
-)
-
-_WRAP_PROJECT_COLUMNS = (
-    "id, code, name, number, mc_status, start_date, budget, "
-    "target_profit_pct, account_manager"
-)
-_WRAP_SPINE_COLUMNS = (
-    "id, est_item_id, framing, layer, status, version_label, "
-    "version_date, body, serves, scope, archived, project_id"
-)
-
-
-# `wrap_report._as_date`: PostgREST hands back `date` columns as bare
-# strings and `timestamptz` with a time and zone; one malformed row must not
-# fail a bundle (architecture plan step 1c, inventory H10).
-_wrap_as_date = _engine_wrap_report._as_date
-
-
-def wrap_summarize_meetings(rows: list[dict], tail_days: int = 14) -> dict[str, Any]:
-    """`fathom_meetings` rows → the bundle's `meetings` block.
-
-    The fold IS `cp_engine.wrap_report.summarize_meetings` (architecture plan
-    step 1c): the tail window closes on the LAST MEETING, never on today — a
-    wrap run weeks after delivery must describe the engagement, not the
-    silence since. This only serializes it into the payload shape
-    `cxp wrap --bundle` prints (hours, not minutes).
-    """
-    m = _engine_wrap_report.summarize_meetings(rows, tail_days=tail_days)
-    return {
-        "count": m.count,
-        "total_hours": m.total_hours,
-        "first": m.first.isoformat() if m.first else None,
-        "last": m.last.isoformat() if m.last else None,
-        "tail_days": m.tail_days,
-        "tail_share": round(m.tail_share, 3),
-        "tail_hours": round(m.tail_minutes / 60.0, 1),
-        "head_hours": round(m.head_minutes / 60.0, 1),
-        "heaviest_days": [
-            {"date": d, "meetings": c, "minutes": mins} for d, c, mins in m.heaviest_days
-        ],
-    }
-
-
-def wrap_summarize_effort(
-    rows: list[dict], names: dict[str, str] | None = None
-) -> dict[str, Any]:
-    """Fold `sprint_allocations` rows into per-person hours.
-
-    NOTE the honesty constraint carried in `WRAP_EFFORT_NOTE`: these are
-    ALLOCATED hours, which is what MC-2 records. They are not timesheet
-    actuals, and presenting an allocation as an actual is the kind of quiet
-    overstatement that makes a margin number worse than no number.
-
-    `verified` is True here because this function only ever sees rows that were
-    successfully READ. The False case is set by the caller when the read itself
-    failed — the distinction that keeps a permission error from rendering as
-    "this project used no hours". Same None-vs-empty discipline as commitments.
-    """
-    names = names or {}
-    by: dict[str, float] = {}
-    weeks: set[str] = set()
-    total = 0.0
-    for r in rows:
-        try:
-            hours = float(r.get("hours") or 0)
-        except (TypeError, ValueError):
-            continue
-        who = names.get(str(r.get("entity_id")), "unattributed")
-        by[who] = by.get(who, 0.0) + hours
-        total += hours
-        if r.get("week_start"):
-            weeks.add(str(r["week_start"])[:10])
-    return {
-        "verified": True,
-        "note": WRAP_EFFORT_NOTE,
-        "total_hours": round(total, 1),
-        "weeks": len(weeks),
-        "by_person": [
-            {"name": n, "hours": round(h, 1)}
-            for n, h in sorted(by.items(), key=lambda kv: (-kv[1], kv[0]))
-        ],
-    }
-
-
-# The #113 defense — collapse duplicate live rows to ONE per element, the
-# highest version (numeric label, then date) — is the engine's single read-path
-# rule, `project_sources._one_live_per_element` (architecture plan step 1c,
-# inventory H11). It logs each collapsed row as dirty data.
-_wrap_one_live_per_element = _engine_project_sources._one_live_per_element
-
-
-def _wrap_feedback_artifacts(project_code: str) -> tuple[list[str], str | None]:
-    """(filenames, note) for `<workdir>/feedback-on-deck/*.md` in the tenant tree.
-
-    The CLI reads this off the local tenant checkout. Hosted has the same tree
-    via the shallow clone that backs `get_project_state`, so this is a real
-    read, not a stub — but it is the ONE part of the bundle that can be
-    unavailable independently of MC-2 (no TENANT_REPO configured, a caller who
-    is not a team member, a clone failure). In every one of those cases it
-    returns `[]` PLUS a note naming the reason, never a bare empty list: an
-    empty feedback list and an unreadable tree read identically in the report
-    otherwise, and "no client feedback was captured" is a very different retro
-    finding from "we could not look".
-    """
-    usable, reason = tree_available()
-    if not usable:
-        return [], f"feedback_artifacts not read: {reason}"
-    allowed, denial = caller_is_team_member()
-    if not allowed:
-        return [], f"feedback_artifacts not read: {denial}"
-    try:
-        root = tree_root()
-    except Exception as exc:  # noqa: BLE001 — degrade; the DB half still stands
-        return [], f"feedback_artifacts not read: tree clone failed: {type(exc).__name__}"
-    project_dir = find_project_dir(root, project_code)
-    if project_dir is None:
-        return [], (
-            f"feedback_artifacts not read: no working dir in the tree for "
-            f"{project_code!r} (a closed project may be parked under inactive/, "
-            "which find_project_dir skips by design)"
-        )
-    deck = project_dir / "feedback-on-deck"
-    if not deck.is_dir():
-        return [], None  # genuinely absent — a real, informative empty
-    try:
-        return sorted(p.name for p in deck.glob("*.md")), None
-    except OSError as exc:
-        return [], f"feedback_artifacts not read: {exc}"
-
-
-@mcp_server.tool()
-def wrap_bundle(project_code: str, tail_days: int = 14) -> dict[str, Any]:
-    """Deterministic raw material for a close-out wrap report, under the caller's identity.
-
-    The hosted port of `cp wrap <code> --bundle` (#184) — same payload, same
-    keys. Gathers the facts a hand-written retro forgets to look up: duration,
-    budget, RECORDED HOURS by person, meeting cadence and WHERE it fell in the
-    timeline, deliverables, open commitments — so the model can synthesize the
-    report against a fixed section contract without inventing a single number.
-
-    The motivating failure: ibx-5192's retro was written by hand and concluded
-    "actual hours: not captured". `sprint_allocations` held 192.5 hours across
-    four people the whole time.
-
-    FACTS ONLY. This tool writes no prose and mutates nothing. The report is
-    authored in-session so its author can defend and revise it live — the same
-    split as `cp prep-planning --bundle`.
-
-    DEGRADATION IS THE DESIGN, not an afterthought. Every read is wrapped
-    individually and a failure NEVER renders as a zero:
-
-      * `effort.verified` goes False (and `total_hours` stays 0) when the
-        allocation read fails. A False here means "we could not look", and the
-        report must say so rather than report a project that used no hours.
-        `sprint_allocations_read_authenticated` grants SELECT to `authenticated`
-        with USING(true), so a failure here is an outage or a schema change,
-        not the normal case.
-      * `spine_verified` goes False when the spine read fails, so an empty
-        `deliverables` list can be told apart from an unread one.
-      * `open_commitments` is None (not `[]`) when the code owns no commitments
-        scope or the read failed — the same None-vs-empty discipline.
-      * `errors` lists what degraded, so nothing fails silently.
-
-    Args:
-        project_code: engagement, initiative, or standalone-repo code
-                      (e.g. "ibx-5192", "mission-control").
-        tail_days: width of the closing window used for the meeting tail-share
-                   signal. The window closes on the LAST MEETING, never on
-                   today — see `wrap_summarize_meetings`.
-    """
-    client = user_client()
-    errors: list[str] = []
-
-    try:
-        tail_days = max(1, int(tail_days))
-    except (TypeError, ValueError):
-        tail_days = 14
-
-    project_id = resolve_project_id(client, project_code)
-    if project_id is None:
-        audit(client, "wrap_bundle", {"project_code": project_code}, 0)
-        return {
-            "code": project_code,
-            "error": f"no project or initiative resolves for code {project_code!r}",
-        }
-
-    # ── Project facts ────────────────────────────────────────────────
-    # Keyed on the resolved uuid rather than the CLI's code-then-number
-    # fallback: `resolve_project_id` already did that disambiguation (three
-    # distinct strings name one project), so re-deriving it here would be a
-    # second, differently-wrong resolver. An INITIATIVE code resolves to an
-    # `initiatives.id`, which matches no `projects` row — that is expected, and
-    # leaves the commercial fields (budget, target_profit_pct) empty rather
-    # than mis-attributed. Initiatives have no client budget to report.
-    row: dict[str, Any] = {}
-    try:
-        rows = (
-            client.table("projects")
-            .select(_WRAP_PROJECT_COLUMNS)
-            .eq("id", project_id)
-            .limit(1)
-            .execute()
-            .data
-        ) or []
-        row = rows[0] if rows else {}
-    except Exception as exc:  # noqa: BLE001 — degrade loudly, keep going
-        errors.append(f"project row read failed: {type(exc).__name__}: {exc}")
-
-    # ── Meetings ─────────────────────────────────────────────────────
-    # One owner column (`project_id`, #301). A failed read is RECORDED rather
-    # than swallowed: a retro that reads an unread meeting list as "no
-    # meetings" is a materially wrong finding, so that case is named.
-    meeting_rows: list[dict[str, Any]] = []
-    seen: set[Any] = set()
-    meeting_failures: list[str] = []
-    for column in _owner_columns(client):
-        try:
-            for r in (
-                client.table("fathom_meetings")
-                .select("id, meeting_date, title, duration_minutes")
-                .eq(column, project_id)
-                .execute()
-                .data
-                or []
-            ):
-                if r.get("id") not in seen:
-                    seen.add(r.get("id"))
-                    meeting_rows.append(r)
-        except Exception as exc:  # noqa: BLE001 — a failed read is an empty read, reported below
-            meeting_failures.append(f"{column}: {type(exc).__name__}: {exc}")
-    if meeting_failures:
-        errors.append(
-            "meeting read failed — the zero meeting count below is unread, "
-            "not empty: " + "; ".join(meeting_failures)
-        )
-    meetings = wrap_summarize_meetings(meeting_rows, tail_days=tail_days)
-
-    # ── Effort (ALLOCATED hours, NOT timesheet actuals) ───────────────
-    effort: dict[str, Any] = {
-        "verified": False,
-        "note": WRAP_EFFORT_NOTE,
-        "total_hours": 0.0,
-        "weeks": 0,
-        "by_person": [],
-    }
-    try:
-        arows = (
-            client.table("sprint_allocations")
-            .select("entity_id, hours, week_start")
-            .eq("project_id", project_id)
-            .execute()
-            .data
-        ) or []
-        # `entities` is fetched WHOLE (it is a small people table) and used only
-        # as an id→name map, matching the CLI. A failure to name people must not
-        # lose the hours, so the name lookup is its own try.
-        names: dict[str, str] = {}
-        try:
-            for e in (
-                client.table("entities").select("id, name").execute().data or []
-            ):
-                names[str(e["id"])] = e.get("name") or "unattributed"
-        except Exception as exc:  # noqa: BLE001
-            errors.append(
-                f"entity name read failed (hours kept, attributed to "
-                f"'unattributed'): {type(exc).__name__}: {exc}"
-            )
-        effort = wrap_summarize_effort(arows, names)
-    except Exception as exc:  # noqa: BLE001 — verified stays False. See docstring.
-        errors.append(f"allocation read failed: {type(exc).__name__}: {exc}")
-
-    # ── Spine: deliverables ──────────────────────────────────────────
-    # The CLI filters `spine_substance` on `project_code` (the DIR-SLUG). Here
-    # the resolved uuid is authoritative and always present, so this filters on
-    # `project_id` — equivalent for the project arm and immune to the dir-slug
-    # drift that `resolve_project_id` documents. Account-scoped elements
-    # promoted OUT of this project still carry its project_id as provenance and
-    # so still appear, which matches the CLI's project_code filter.
-    deliverables: list[str] = []
-    spine_verified = True
-    try:
-        srows = (
-            client.table("spine_substance")
-            .select(_WRAP_SPINE_COLUMNS)
-            .eq("project_id", project_id)
-            .eq("status", "live")
-            .execute()
-            .data
-        ) or []
-        live = _wrap_one_live_per_element([r for r in srows if not r.get("archived")])
-        deliverables = [
-            str(r.get("framing") or r.get("est_item_id") or r.get("id") or "")
-            for r in live
-            if (r.get("layer") or "") == "Deliverables"
-        ]
-    except Exception as exc:  # noqa: BLE001
-        errors.append(f"spine read failed: {type(exc).__name__}: {exc}")
-        spine_verified = False
-
-    # ── Open commitments ─────────────────────────────────────────────
-    # None (not []) when nothing could be read: a standalone repo owns no
-    # commitments scope at all, and "no open commitments" is a finding while
-    # "could not read commitments" is not.
-    open_commitments: list[dict[str, Any]] | None = None
-    commit_rows: list[dict[str, Any]] = []
-    commit_seen: set[Any] = set()
-    commit_failures: list[str] = []
-    for column in _owner_columns(client):
-        try:
-            for r in (
-                client.table("commitments")
-                .select(COMMITMENT_COLUMNS)
-                .eq(column, project_id)
-                .eq("status", "open")
-                .order("due_date", nullsfirst=False)
-                .execute()
-                .data
-                or []
-            ):
-                if r.get("id") not in commit_seen:
-                    commit_seen.add(r.get("id"))
-                    commit_rows.append(r)
-        except Exception as exc:  # noqa: BLE001
-            commit_failures.append(f"{column}: {type(exc).__name__}: {exc}")
-    if commit_failures:
-        # The read failed: leave `open_commitments` as None so the report
-        # cannot read the absence as "nothing outstanding".
-        errors.append("commitments read failed: " + "; ".join(commit_failures))
-    else:
-        open_commitments = commit_rows
-
-    # ── Feedback artifacts (tenant tree, not MC-2) ────────────────────
-    feedback, feedback_note = _wrap_feedback_artifacts(project_code)
-    if feedback_note:
-        errors.append(feedback_note)
-
-    # ── Derived ──────────────────────────────────────────────────────
-    start_date = _wrap_as_date(row.get("start_date"))
-    end_iso = meetings["last"]
-    duration_days: int | None = None
-    if start_date is not None and end_iso:
-        duration_days = (date.fromisoformat(end_iso) - start_date).days
-    duration_weeks = None if duration_days is None else round(duration_days / 7.0, 1)
-
-    budget = float(row["budget"]) if row.get("budget") else None
-    total_hours = float(effort.get("total_hours") or 0)
-    budget_per_hour = (
-        round(budget / total_hours, 2) if (budget and total_hours) else None
-    )
-
-    # Which human-entry fields this bundle genuinely cannot frame. Naming the
-    # gap IS the feature: ibx-5192's hand-written retro silently omitted
-    # licensing, work-page candidacy and per-person vendor assessment, and
-    # nobody noticed until the template was applied afterwards.
-    not_assessable = list(WRAP_HUMAN_ENTRY_FIELDS)
-    if budget and total_hours:
-        not_assessable = [
-            f for f in not_assessable if not f.startswith("Actual profitability")
-        ]
-
-    payload: dict[str, Any] = {
-        "code": project_code,
-        "name": str(row.get("name") or ""),
-        "status": str(row.get("mc_status") or ""),
-        "account_manager": str(row.get("account_manager") or ""),
-        "start_date": start_date.isoformat() if start_date else None,
-        "duration_days": duration_days,
-        "duration_weeks": duration_weeks,
-        "budget": budget,
-        "target_profit_pct": (
-            float(row["target_profit_pct"]) if row.get("target_profit_pct") else None
-        ),
-        "effort": effort,
-        "budget_per_hour": budget_per_hour,
-        "meetings": meetings,
-        "deliverables": deliverables,
-        "feedback_artifacts": feedback,
-        "open_commitments": open_commitments,
-        "spine_verified": spine_verified,
-        "learning_axes": [{"key": k, "prompt": p} for k, p in WRAP_LEARNING_AXES],
-        "human_entry_fields": list(WRAP_HUMAN_ENTRY_FIELDS),
-        "not_assessable_from_data": not_assessable,
-        "generated": tenant_today().isoformat(),
-    }
-    # Hosted-only additions, appended AFTER the CLI's key set so a consumer
-    # diffing the two sees additions rather than a changed shape.
-    payload["project_id"] = project_id
-    payload["caller"] = caller_subject()
-    if errors:
-        payload["errors"] = errors
-
-    audit(
-        client,
-        "wrap_bundle",
-        {"project_code": project_code, "tail_days": tail_days},
-        meetings["count"],
-    )
-    return payload
-
-
-def _derive_workset_members(
-    client, project_id: str, rule: dict[str, Any] | None
-) -> tuple[list[str], str | None]:
-    """Evaluate a workset's derived-membership rule against the LIVE spine.
-
-    Returns (element_ids, error). A derived workset maintains itself; a
-    hand-listed one needs a curator and goes stale — so this is the half that
-    should carry most of a mature tunnel's membership.
-
-    THE CLAUSES ARE OR'd, NOT AND'd, and that is the whole design. The pilot's
-    stored rule read as one conjunction (`layers` AND `important` AND
-    `recency`) and selected THREE of the five elements the job actually
-    needed. Each clause names a different reason an element belongs in the
-    room, and an element qualifying for any one of them qualifies:
-
-      * `important`  — {"layers": [...], "important": true}
-                       what someone flagged as must-not-miss, within layers.
-      * `recency`    — {"recency": {"layers": [...], "days": N}}
-                       Step 0 made structural: the newest client direction,
-                       which is the clause that catches a redirect before it
-                       has been flagged by anyone.
-      * `canon`      — {"canon": true}
-                       active `canon_of` edges: what the project has ratified.
-      * `pinned_to`  — {"pinned_to": "<element-id>"}
-                       everything bound to one canon element.
-
-    An empty or unrecognized rule returns ([], None) — NOT an error, and NOT
-    a silent full-spine read. A rule that selects nothing must leave the
-    hand-listed members standing rather than widening the tunnel.
-    """
-    if not isinstance(rule, dict) or not rule:
-        return [], None
-
-    found: set[str] = set()
-    try:
-        # Base read once; the clauses are cheap set operations over it. A live
-        # spine is ~100 rows, so this is one query rather than four.
-        rows = (
-            client.table("spine_substance")
-            .select("est_item_id, layer, important, version_date")
-            .eq("project_id", project_id)
-            .eq("status", "live")
-            .execute()
-            .data
-            or []
-        )
-
-        if rule.get("important") is True:
-            layers = set(rule.get("layers") or [])
-            for r in rows:
-                if r.get("important") is True and (not layers or r.get("layer") in layers):
-                    found.add(r["est_item_id"])
-
-        rec = rule.get("recency")
-        if isinstance(rec, dict) and rec.get("days"):
-            cutoff = (
-                datetime.now(timezone.utc).date() - timedelta(days=int(rec["days"]))
-            ).isoformat()
-            layers = set(rec.get("layers") or [])
-            for r in rows:
-                # `version_date` is a Postgres `date`; PostgREST serializes it
-                # as an ISO "YYYY-MM-DD" string, so a lexical >= IS a date
-                # comparison — but only for that exact shape. Anything else
-                # (null, a timestamp, a hand-typed "7/16") must be SKIPPED
-                # rather than compared, or a malformed value silently drops an
-                # element out of the tunnel.
-                vd = str(r.get("version_date") or "")[:10]
-                if len(vd) != 10 or vd[4] != "-" or vd[7] != "-":
-                    continue
-                if vd >= cutoff and (not layers or r.get("layer") in layers):
-                    found.add(r["est_item_id"])
-
-        if rule.get("canon") is True or rule.get("pinned_to"):
-            q = (
-                client.table("spine_relations")
-                .select("from_item_id, to_item_id, kind")
-                .eq("project_id", project_id)
-                .eq("status", "active")
-            )
-            edges = q.execute().data or []
-            for e in edges:
-                if rule.get("canon") is True and e.get("kind") == "canon_of":
-                    found.add(e["from_item_id"])
-                if rule.get("pinned_to") and e.get("to_item_id") == rule["pinned_to"]:
-                    found.add(e["from_item_id"])
-    except Exception as exc:  # noqa: BLE001 — degrade to hand-listed, but SAY SO
-        # Never silently narrow a tunnel: a caller acting on a partial scope
-        # believing it complete is the failure this object exists to prevent.
-        err = f"{type(exc).__name__}: {exc}"
-        log.warning("workset rule evaluation failed: %s", err)
-        observability.capture(exc, area="workset_rule")
-        return [], err
-
-    return sorted(found), None
 
 
 def call_mc2_set_commitment_date(
@@ -10286,83 +8711,6 @@ def capture_project_state(
     return result
 
 
-@mcp_server.tool()
-@_names_its_level
-def record_round(
-    project_code: str,
-    element_id: str,
-    body: str,
-    killed: list[dict[str, str]] | None = None,
-    round_note: str | None = None,
-) -> dict[str, Any]:
-    """Record one PASS of an ideation round as a new version, kills included.
-
-    Ideas already iterate in the spine — five concepts became three directions
-    (now v4, canon) became a castable character world (v2). What the spine did
-    NOT hold is **why the rejects were rejected**. A version bump keeps the
-    survivor and silently loses the reasoning, so the next round re-proposes
-    what the last one already killed, and nobody remembers that it was tried.
-
-    This is `add_spine_version` with the kill list made first-class. The
-    survivor goes in the body as usual; each killed idea is appended under a
-    `## Killed this round` section with the reason it died — so a later reader
-    (or a later model) can see the shape of the search, not just its result.
-
-    `killed` is a list of {"idea": "...", "why": "..."} — BOTH required per
-    entry. An idea without a reason is not a kill, it is an omission, and it
-    teaches the next round nothing.
-
-    WHAT THIS DELIBERATELY DOES NOT DO: judge. It records what a human decided.
-    A round where the model picks the survivor and writes its own reasoning in
-    is a model talking to itself across sessions — which is worse than no
-    record, because it reads exactly like a human decision.
-
-    Args:
-        project_code: engagement, initiative, or standalone-repo code.
-        element_id: the element this round advances (an existing live element).
-        body: the pass's surviving content — what carries forward.
-        killed: [{"idea": ..., "why": ...}] — what died and why.
-        round_note: one line on what this pass was trying to do.
-    """
-    kills = killed or []
-    bad = [k for k in kills if not (k.get("idea") or "").strip() or not (k.get("why") or "").strip()]
-    if bad:
-        return {
-            "error": "every killed entry needs BOTH `idea` and `why` — an idea "
-                     "without a reason is an omission, not a kill, and it "
-                     "teaches the next round nothing.",
-            "incomplete": bad,
-        }
-
-    composed = body.rstrip()
-    if kills:
-        lines = [f"- **{k['idea'].strip()}** — {k['why'].strip()}" for k in kills]
-        composed += (
-            "\n\n## Killed this round\n\n"
-            "_Recorded so the next pass does not re-propose what this one "
-            "already rejected._\n\n" + "\n".join(lines) + "\n"
-        )
-
-    result = add_spine_version(
-        project_code=project_code,
-        element_id=element_id,
-        body=composed,
-        version_note=round_note,
-        step_title=(f"Ideation round: {round_note}" if round_note else "Ideation round"),
-    )
-    if isinstance(result, dict) and result.get("error"):
-        return result
-    return {
-        **(result if isinstance(result, dict) else {"result": result}),
-        "killed_recorded": len(kills),
-        "note_on_round": (
-            "the survivor carries forward as the new live version; the kills "
-            "are in its body under 'Killed this round'. Read them before the "
-            "next pass."
-        ),
-    }
-
-
 # ──────────────────────────────────────────────────────────────────────
 #  promote_uphill (#304) — the explicit move up the tree
 # ──────────────────────────────────────────────────────────────────────
@@ -10669,308 +9017,6 @@ def promote_uphill(
         "already": False,
         "commitment_id": created.get("id"),
         "step": step,
-    }
-
-
-@mcp_server.tool()
-def list_worksets(project_code: str) -> dict[str, Any]:
-    """What tunnels exist on this project, and what each is for.
-
-    The cheap orientation call: run it before `open_workset` when you do not
-    already know a tunnel's name, or to check whether the job in front of you
-    already has one drawn.
-
-    A project with NO worksets is reported plainly rather than as an empty
-    list — "nobody has drawn a tunnel here yet" is a different fact from
-    "this project has no context", and the two must not read alike.
-    """
-    client = user_client()
-    project_id = resolve_project_id(client, project_code)
-    if project_id is None:
-        return {"error": f"no project or initiative resolves for code {project_code!r}"}
-
-    rows = (
-        client.table("worksets")
-        .select("name, members, rule, note, note_author, note_dated, updated_at")
-        .eq("project_id", project_id)
-        .order("name")
-        .execute()
-        .data
-        or []
-    )
-    audit(client, "list_worksets", {"project_code": project_code}, len(rows))
-    return {
-        "project_code": project_code,
-        "caller": caller_subject(),
-        "count": len(rows),
-        "worksets": [
-            {
-                "name": r["name"],
-                "pinned": len(r.get("members") or []),
-                "derived": bool(r.get("rule")),
-                # First paragraph only — the full note comes with `open_workset`.
-                "for": (r.get("note") or "").split("\n\n")[0] or None,
-                "drawn_by": r.get("note_author"),
-                "drawn": r.get("note_dated"),
-            }
-            for r in rows
-        ],
-        **({"note": "no worksets drawn on this project yet — open the full "
-                    "spine, or draw one if this job will recur"}
-           if not rows else {}),
-    }
-
-
-@mcp_server.tool()
-def describe_workset(project_code: str, name: str) -> dict[str, Any]:
-    """What is in a tunnel, and — the half that matters — what it EXCLUDES.
-
-    Membership and reasoning WITHOUT the element bodies. Use it to audit a
-    boundary before trusting it, or to answer "why isn't X in here?" without
-    paying for the full open.
-
-    THE EXCLUSION LIST IS THE POINT. A badly-drawn workset confidently omits
-    what you needed, and the confidence is what stops you noticing — so this
-    names, by layer, what the tunnel is leaving out. If something in
-    `excluded_by_layer` looks like it should be inside, the boundary is
-    wrong and that is a finding, not an inconvenience.
-    """
-    client = user_client()
-    project_id = resolve_project_id(client, project_code)
-    if project_id is None:
-        return {"error": f"no project or initiative resolves for code {project_code!r}"}
-
-    rows = (
-        client.table("worksets")
-        .select("name, members, rule, note, note_author, note_dated")
-        .eq("project_id", project_id)
-        .eq("name", name)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    if not rows:
-        return {"error": f"no workset named {name!r} on {project_code}"}
-
-    ws = rows[0]
-    pinned = list(ws.get("members") or [])
-    derived, rule_error = _derive_workset_members(client, project_id, ws.get("rule"))
-    inside = set(pinned) | set(derived)
-
-    live = (
-        client.table("spine_substance")
-        .select("est_item_id, layer, framing, important")
-        .eq("project_id", project_id)
-        .eq("status", "live")
-        .execute()
-        .data
-        or []
-    )
-    excluded: dict[str, list[str]] = {}
-    for r in live:
-        if r["est_item_id"] in inside:
-            continue
-        excluded.setdefault(r.get("layer") or "(no layer)", []).append(
-            r.get("framing") or r["est_item_id"]
-        )
-
-    audit(client, "describe_workset", {"project_code": project_code, "name": name}, len(inside))
-    return {
-        "project_code": project_code,
-        "workset": ws["name"],
-        "caller": caller_subject(),
-        "note": ws.get("note"),
-        **({"drawn_by": ws["note_author"]} if ws.get("note_author") else {}),
-        **({"drawn": ws["note_dated"]} if ws.get("note_dated") else {}),
-        "inside": {
-            "count": len(inside),
-            "pinned": sorted(pinned),
-            "derived": sorted(m for m in derived if m not in pinned),
-            "rule": ws.get("rule"),
-        },
-        "excluded_by_layer": {k: sorted(v) for k, v in sorted(excluded.items())},
-        "excluded_count": sum(len(v) for v in excluded.values()),
-        **({"rule_error": rule_error} if rule_error else {}),
-    }
-
-
-@mcp_server.tool()
-def open_workset(project_code: str, name: str) -> dict[str, Any]:
-    """Open a project's WORKSET ("tunnel") — a declared subset of its spine.
-
-    Returns the workset's members resolved to their CURRENT LIVE versions, plus
-    the note saying what the tunnel is for and what it deliberately excludes.
-    Read this INSTEAD of listing the whole project's spine when the job is one
-    the tunnel was drawn for.
-
-    WHY THIS EXISTS (cp-engine #223 / mc-2 #323). A mature engagement carries
-    far more context than any single job needs, and the excess is not merely
-    expensive — a superseded doc has the same grabbing power as the approved
-    brief, so a model reads plausibly and picks wrong. Documented on ibx-5153
-    (2026-08-26): a copywriting dry run drafted to a strategic frame the client
-    had withdrawn from two days earlier, because the July architecture element
-    gave no hint it had been overtaken. Better retrieval would not have helped;
-    the problem is authority, not volume.
-
-    MEMBERSHIP IS PINNED, CONTENT IS NOT. The stored members are spine element
-    IDs, never document references, and every read resolves to whatever version
-    is `live` right now. That is what keeps a tunnel fresh with no maintenance —
-    a document-pointed workset would rot at the first supersession and its
-    confident boundaries would then HIDE the update.
-
-    THE WALLS ARE THE POINT, AND SO IS SEEING THEM. `excluded_count` and the
-    note's deliberately-out section are not decoration: a badly-drawn workset
-    confidently omits what you needed, and the confidence is what stops you
-    noticing. If what you need is outside, say so and reach for the full spine
-    — that is an event worth witnessing, not a failure.
-
-    Step 1: hand-listed membership only. `rule` is stored but NOT evaluated
-    yet (Step 2); it is reported so you can see what the tunnel intends to
-    become.
-
-    Args:
-        project_code: engagement, initiative, or standalone-repo code.
-        name: the workset's name, e.g. "copywriting".
-    """
-    client = user_client()
-    project_id = resolve_project_id(client, project_code)
-    if project_id is None:
-        return {"error": f"no project or initiative resolves for code {project_code!r}"}
-
-    rows = (
-        client.table("worksets")
-        .select("id, name, members, rule, note, note_author, note_dated, "
-                "created_at, updated_at")
-        .eq("project_id", project_id)
-        .eq("name", name)
-        .limit(1)
-        .execute()
-        .data
-        or []
-    )
-    if not rows:
-        available = [
-            r["name"]
-            for r in (
-                client.table("worksets")
-                .select("name")
-                .eq("project_id", project_id)
-                .execute()
-                .data
-                or []
-            )
-        ]
-        return {
-            "error": f"no workset named {name!r} on {project_code}",
-            "available": available,
-            "note": TEAM_EMPTY_HINT if not available else None,
-        }
-
-    ws = rows[0]
-    members: list[str] = list(ws.get("members") or [])
-    derived, rule_error = _derive_workset_members(client, project_id, ws.get("rule"))
-    # UNION, not either/or. The pilot (2026-08-27) settled this: no single
-    # marker picks the standing elements — of the three the copywriting tunnel
-    # needs, one is canon and two are neither canon nor important. A rule alone
-    # would have silently dropped `Inputs & Briefing` and the messaging
-    # architecture, which is the badly-drawn-workset failure arriving through
-    # the rule instead of the list. So the rule carries the self-maintaining
-    # part (what is important, recent, or canon RIGHT NOW) and `members` pins
-    # the standing exceptions a predicate cannot express.
-    rule_only = [m for m in derived if m not in members]
-    members = members + rule_only
-
-    # Resolve to LIVE versions. A member whose element is retired or superseded
-    # out of existence is reported as missing rather than silently dropped —
-    # a tunnel quietly losing a wall is the failure this whole object exists
-    # to prevent.
-    resolved: list[dict[str, Any]] = []
-    if members:
-        resolved = (
-            client.table("spine_substance")
-            .select("est_item_id, layer, framing, body, important, version_label, "
-                    "version_date, binding, note")
-            .eq("project_id", project_id)
-            .eq("status", "live")
-            .in_("est_item_id", members)
-            .execute()
-            .data
-            or []
-        )
-    found = {r["est_item_id"] for r in resolved}
-    missing = [m for m in members if m not in found]
-
-    # How much of the project this tunnel is NOT showing. Stated so the
-    # boundary is inspectable at a glance.
-    total_live = (
-        client.table("spine_substance")
-        .select("est_item_id", count="exact")
-        .eq("project_id", project_id)
-        .eq("status", "live")
-        .execute()
-    )
-    total = total_live.count or 0
-
-    audit(client, "open_workset", {"project_code": project_code, "name": name}, len(resolved))
-    return {
-        "project_code": project_code,
-        "workset": ws["name"],
-        "caller": caller_subject(),
-        "note": ws.get("note"),
-        # WHO drew this boundary and WHEN. The note is directive by design;
-        # attribution is what lets a reader weigh it instead of absorbing it,
-        # and the date is what makes "drawn against a situation that has since
-        # moved" a checkable claim rather than a worry.
-        **({"note_author": ws["note_author"]} if ws.get("note_author") else {}),
-        **({"note_dated": ws["note_dated"]} if ws.get("note_dated") else {}),
-        "count": len(resolved),
-        "excluded_count": max(total - len(resolved), 0),
-        "elements": resolved,
-        **({"missing_members": missing,
-            "warning": "member(s) listed on this workset have no live element — "
-                       "the tunnel has lost a wall; check whether they were "
-                       "retired or superseded before relying on this scope."}
-           if missing else {}),
-        **({"rule": ws["rule"],
-            "derived_count": len(rule_only),
-            "pinned_count": len(members) - len(rule_only),
-            "note_on_rule": "membership is the UNION of the rule's live "
-                            "selection and the hand-pinned members — the rule "
-                            "maintains itself, the pins carry what a predicate "
-                            "cannot express."}
-           if ws.get("rule") else {}),
-        **({"rule_error": rule_error,
-            "warning": "the derived half of this workset could not be "
-                       "evaluated — you are seeing the hand-pinned members "
-                       "ONLY, and the scope is narrower than it should be."}
-           if rule_error else {}),
-        # THE ESCAPE HATCH, stated in the payload rather than left to
-        # etiquette. A closed tunnel with no visible door is the cage the
-        # design warns against, and a reader who silently reaches outside
-        # defeats the boundary without anyone learning the boundary was
-        # wrong. Naming the door — and what to say when you use it — makes
-        # the reach an event, which is what makes a mis-drawn workset
-        # diagnosable after the fact.
-        "if_you_need_something_outside": (
-            "Say so explicitly, name what you needed and why, THEN reach — "
-            "`describe_workset` shows what this tunnel excludes and "
-            "`list_spine_elements` opens the full project. Reaching out is "
-            "not a failure; reaching out SILENTLY is, because it hides a "
-            "boundary that wants redrawing."
-        ),
-        # A required section, per the pilot: the single most useful line in
-        # the payload was the one naming a field the whole PROJECT lacks, not
-        # just the tunnel. Knowing the gap was a project fact rather than a
-        # tunnel artifact is what turned a likely fabrication into a
-        # placeholder. A note without it is a note that has not been finished.
-        **({"note_gap_warning": "this workset's note does not declare what it "
-                                "KNOWS IS MISSING. Add a 'NOT IN HERE AND YOU "
-                                "WILL NEED IT' section — naming a gap the whole "
-                                "project has is what stops a reader inventing "
-                                "it under drafting momentum."}
-           if ws.get("note") and "NOT IN HERE" not in (ws.get("note") or "")
-           else {}),
     }
 
 
@@ -11336,22 +9382,17 @@ def main() -> None:
         else tree_reason,
     )
     log.info(
-        "writes (insert): create_note, create_commitment, create_spine_element, "
+        "writes (insert): create_commitment, create_spine_element, "
         "add_spine_version (+auto-step), add_spine_document, "
-        "create_spine_relation, add_spine_step, propose_spine_step"
+        "create_spine_relation, propose_spine_step"
     )
     log.info(
-        "writes (update/delete, #143 batch 2): set_spine_element, "
-        "resolve_commitment, set_spine_step, reorder_spine_step, remove_spine_step"
+        "writes (update, #143 batch 2): set_spine_element, resolve_commitment"
     )
     log.info(
         "writes (sources/provenance, #143 batch 3, via the guarded "
         "spine_element_modify_source fn): add_element_source, "
-        "remove_element_source, add_element_provenance, remove_element_provenance"
-    )
-    log.info(
-        "reads (bundles, #184): wrap_bundle — MC-2 facts + tenant-tree "
-        "feedback artifacts, degrading per-source rather than as zeros"
+        "remove_element_source, add_element_provenance"
     )
     log.info(
         "audit log: mcp_audit_log as client=%s;endpoint=...;oauth_client=...;app=...",
@@ -11502,8 +9543,9 @@ def _sweep_row_dict(row: Any) -> dict[str, Any]:
         "due_date": due.isoformat() if due else None,
         "date_status": getattr(row, "date_status", ""),
         "age_days": getattr(row, "age_days", 0),
-        # 'warn' | 'expire' | None — an UNDATED row expires at 14 days, and
-        # this is the field that says how close it is.
+        # 'warn' | 'expire' | None — an UNDATED row goes stale at 14 days
+        # (advisory: nothing auto-closes it since the dates loop's retirement),
+        # and this is the field that says how close it is.
         "ttl": getattr(row, "ttl", None),
         "undated": due is None,
         "source_meeting_id": getattr(row, "source_meeting_id", None),
@@ -11544,7 +9586,7 @@ def _round_dict(rnd: Any) -> dict[str, Any]:
 _WRAP_STEPS: tuple[tuple[str, str], ...] = (
     ("capture_project_state", "the Exec Summary — pass every field you mean to be current"),
     ("spine_lint", "spine health: unbound elements, dead ends, stale canon"),
-    ("commitments_sweep", "what is owed, both directions; undated rows expire at 14d"),
+    ("commitments_sweep", "what is owed, both directions; undated rows go stale at 14d"),
     ("seal_sweep", "what fed each shipped deliverable"),
     ("word_count_check", "the 2,500 / 3,500-word thresholds (reporting only)"),
     ("capture_session", "the session record — also CLOSES the window"),
@@ -11788,9 +9830,9 @@ def commitments_sweep(project_code: str = "", undated_only: bool = False) -> dic
     """Open commitments, with the staleness verdicts the wrap-up ritual reads.
 
     The same sweep as `cxp commitments-sweep`. Two-way by design: what we owe
-    them and what they owe us. An UNDATED commitment expires at 14 days unless
-    somebody dates it — the sweep is where that gets noticed while it still can
-    be acted on.
+    them and what they owe us. An UNDATED commitment is flagged stale at 14
+    days and nothing closes it automatically — the sweep is where it gets
+    dated or dropped.
 
     Args:
         project_code: one project, or "" for every project the caller can see.
@@ -12075,9 +10117,36 @@ def rotate_word_count(project_code: str) -> dict[str, Any]:
 # test suite exercises exactly what the server serves.
 
 
-# The mechanism lives in `cp_engine.mcp_strict` (imported) so the
-# stdio `cxp mcp` server refuses the same way — one implementation, not two
-# that drift. Imported here, at the end, because the swap must see every tool.
+# ── Verbs ported from the retired stdio server (step 5b) ──────────────
+# `ported_tools.py` holds them (fetch/compare/comments/push, preflight, the
+# vendor registry). Loaded BY PATH for the same reason as observability.py,
+# and registered HERE — before the strict-arguments swap and before
+# `/mcp/read` is populated — so they get both, like every verb above.
+_ported_spec = importlib.util.spec_from_file_location(
+    "hosted_mcp_ported_tools", Path(__file__).resolve().parent / "ported_tools.py",
+)
+ported_tools = importlib.util.module_from_spec(_ported_spec)
+sys.modules["hosted_mcp_ported_tools"] = ported_tools
+_ported_spec.loader.exec_module(ported_tools)
+
+
+class _ServerView:
+    """This module's namespace, read LIVE — so a test's monkeypatch of
+    `server.user_client` reaches the ported verbs too. Not `sys.modules
+    [__name__]`: a test that loads this file by spec never registers it."""
+
+    def __getattr__(self, name: str):
+        try:
+            return globals()[name]
+        except KeyError:
+            raise AttributeError(name) from None
+
+
+ported_tools.register(_ServerView())
+
+# The mechanism lives in `cp_engine.mcp_strict` (imported) — one
+# implementation, not a hosted copy. Imported here, at the end, because the
+# swap must see every tool.
 from cp_engine.mcp_strict import forbid_unknown_arguments  # noqa: E402
 
 forbid_unknown_arguments(mcp_server)
@@ -12128,59 +10197,52 @@ READ_ONLY_TOOLS: dict[str, str] = {
     "read_project_file": "reads the tenant-tree clone",
     "list_skills": "reads .claude/skills on the tree clone",
     "load_skill": "reads .claude/skills on the tree clone",
-    "wrap_bundle": "SELECTs + tree reads, assembled; writes nothing",
-    "list_worksets": "reads workset notes",
-    "describe_workset": "reads one workset's definition",
-    "open_workset": "resolves a workset's live elements (SELECT)",
     "wrap_status": "SELECTs mcp_audit_log/sessions for the wrap window",
     "spine_lint": "pure lint over SELECTed rows",
     "commitments_sweep": "pure sweep over SELECTed rows",
     "seal_sweep": "pure sweep over SELECTed rows (reporting; sealing is seal_to_deliverable)",
     "word_count_check": "reporting only; rotation is rotate_word_count",
+    # ── ported from the retired stdio server (step 5b, ported_tools.py) ──
+    "fetch_project_source": "SELECT rag_assets + downloads the original (team-gated)",
+    "compare_project_sources": "two fetches + a local text diff; writes nothing",
+    "pull_document_comments": "SELECT rag_assets + reads the file's comments (team-gated)",
+    "preflight": "tree reads + SELECT spine/sources; pure report",
+    "list_vendors": "SELECT vendors (team-gated: its policy admits any authenticated user)",
+    "list_rfp_respondents": "SELECT rfp_respondents + vendors (team-gated)",
 }
 
 # name -> what it writes (the reason it is NOT on `/mcp/read`).
 MAIN_ONLY_TOOLS: dict[str, str] = {
-    "archive_project_source": "rpc rag_asset_archive",
     "set_source_status": "rpc rag_asset_set_status",
     "rename_project_source": "rpc rag_asset_rename",
     "create_spine_relation": "INSERT spine_relations",
     "promote_to_canon": "INSERT/DELETE spine_relations, spine_steps",
     "seal_to_deliverable": "INSERT spine_relations/substance/steps",
-    "add_spine_step": "INSERT spine_steps",
     "propose_spine_step": "INSERT spine_steps",
-    "promote_spine_transcript": "POST mc-2 promote (RAG ingest)",
     "set_spine_element": "UPDATE spine_substance (+ delegated promote)",
     "resolve_commitment": "UPDATE commitments",
     "resolve_commitments": "UPDATE commitments",
-    "resolve_commitments_by_meeting": "UPDATE commitments",
     "set_commitment_date": "PATCH mc-2 commitment",
     "route_commitment": "INSERT/UPDATE commitments",
-    "set_spine_step": "UPDATE spine_steps",
-    "reorder_spine_step": "UPDATE spine_steps",
-    "remove_spine_step": "DELETE spine_steps",
     "add_element_source": "rpc spine_element_modify_source",
     "remove_element_source": "rpc spine_element_modify_source",
     "add_element_provenance": "rpc spine_element_modify_source",
-    "remove_element_provenance": "rpc spine_element_modify_source",
     "retire_spine_element": "rpc spine_retire_element",
     "retire_spine_elements": "rpc spine_retire_element",
     "retire_spine_relation": "DELETE spine_relations",
     "promote_stakeholder": "rpc spine_set_element_scope",
-    "demote_stakeholder": "rpc spine_set_element_scope",
     "set_element_account_scope": "rpc spine_set_element_scope",
-    "create_note": "INSERT notes",
     "create_commitment": "INSERT commitments",
     "create_spine_element": "INSERT spine_substance",
     "add_spine_version": "INSERT spine_substance + rpc spine_supersede_prior_versions",
-    "pull_element_from_project": "INSERT spine_substance",
     "add_spine_document": "INSERT spine_substance",
     "log_improvement": "POST mc-2 -> improvements.md commit",
     "capture_session": "POST mc-2 -> sessions/ commit",
     "capture_project_state": "POST mc-2 -> cp.md Exec Summary commit",
-    "record_round": "INSERT spine_substance/steps",
     "promote_uphill": "INSERT commitments/spine + POST mc-2",
     "rotate_word_count": "POST mc-2 -> tenant rotation commit",
+    # ported (step 5b): the one writer, with the service's Dropbox credentials
+    "push_to_dropbox": "Dropbox upload / upload link (service credentials)",
 }
 
 READ_INSTRUCTIONS = (

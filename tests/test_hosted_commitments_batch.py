@@ -179,15 +179,6 @@ def test_commitment_columns_include_source_meeting_id(srv):
 
 # ── #159 part 3: off-project partition + routed-copy construction ───────
 
-def test_partition_off_project_splits_on_annotation(srv):
-    rows = [
-        _row("aaa", "ship the deck"),
-        _row("bbb", "Move GGL 5179 to Holding [off-project? → mission-control]"),
-    ]
-    clean, flagged = srv._partition_off_project(rows)
-    assert [r["id"] for r in clean] == ["aaa"]
-    assert [r["id"] for r in flagged] == ["bbb"]
-
 
 def test_routed_copy_strips_annotation_adds_provenance(srv):
     row = {

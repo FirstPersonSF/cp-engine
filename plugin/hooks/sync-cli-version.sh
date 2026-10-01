@@ -13,7 +13,7 @@
 # prunes it defensively (see "Stale `cp` shim" below).
 #
 # Policy decisions (per docs/specs/cp-engine-spec-v03-version-distribution.md):
-# - Print errors but never block session start. The next /cp-summarize
+# - Print errors but never block session start. The next cxp call
 #   will fail loud with EngineVersionMismatch, which is the existing
 #   safety net for tenant-vs-CLI skew.
 # - Never auto-install "latest". Always pin to the version in plugin.json,
@@ -235,9 +235,9 @@ if uv tool install --force \
     cp-engine >/dev/null 2>&1; then
     echo "[cp-engine] cxp CLI updated to v${PLUGIN_VERSION}."
 else
-    # Don't block the session — the next /cp-summarize will fail loud
+    # Don't block the session — the next cxp call will fail loud
     # with EngineVersionMismatch and tell the user what to fix.
-    echo "[cp-engine] auto-install of cxp v${PLUGIN_VERSION} failed (offline? auth?). The next /cp-summarize will fail with EngineVersionMismatch — re-run this manually:" >&2
+    echo "[cp-engine] auto-install of cxp v${PLUGIN_VERSION} failed (offline? auth?). The next cxp call will fail with EngineVersionMismatch — re-run this manually:" >&2
     echo "[cp-engine]   uv tool install --force --from 'git+${REPO_URL}@v${PLUGIN_VERSION}' cp-engine" >&2
 fi
 

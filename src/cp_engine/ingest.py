@@ -24,7 +24,6 @@ from __future__ import annotations
 
 from cp_engine.clock import tenant_now, tenant_today
 from cp_engine.aggregators import ASSET_MARKER_FMT
-from cp_engine.mc2_db import Tables
 import copy
 import hashlib
 import json
@@ -2285,9 +2284,9 @@ def _write_account_summary(item: dict, target_path: Path) -> bool:
 # (or drop) what lands here. Commitments consolidation, cp-engine #38;
 # design: cp/docs/plans/2026-07-07-commitments-consolidation-design.md.
 #
-# The pre-consolidation helpers below (_resolve_proposal_project,
-# _owner_column, _proposal_already_present) are parked with the rest of
-# the ClickUp proposal path and removed in the decommission tail.
+# `_resolve_proposal_project` is the last pre-consolidation helper (prep
+# planning still resolves through it); the ClickUp proposal dedupe went in
+# step 5a.
 
 
 def _resolve_proposal_project(client, code: str) -> dict | None:
@@ -2302,15 +2301,6 @@ def _resolve_proposal_project(client, code: str) -> dict | None:
     from cp_engine.clickup_routing import resolve_clickup_project
 
     return resolve_clickup_project(client, code, missing_enable_clickup_ok=True)
-
-
-def _owner_column(project: dict) -> dict:
-    """Return the owner column for a clickup_task_proposals row.
-
-    One owner column since #301 (mc-2 mig 192 folded the second one):
-    ``project_id``.
-    """
-    return {"project_id": project["id"]}
 
 
 def _write_milestone(
@@ -2434,39 +2424,6 @@ def _write_client_ask_task(
         source_meeting_id=item.get("source_meeting_id") or meeting_id,
         warnings=warnings,
     )
-
-
-def _proposal_already_present(client, cp_ask_hash: str) -> bool:
-    """Return True if a clickup_task_proposals row with this cp_ask_hash
-    is already in ``pending`` or ``approved`` status.
-
-    Rejected rows are intentionally excluded — a rejected proposal that
-    re-appears on a rerun should be re-proposed (the reviewer may have
-    rejected the first iteration as malformed and want the LLM's revised
-    version). (The webhook's ``clickup_propose`` once shared this rule; it
-    was deleted in step 4a, dead since the commitments consolidation.)
-
-    Best-effort: any unexpected query error falls back to False (insert
-    proceeds). The webhook's auto-ingest contract is that ClickUp routing
-    never breaks the primary file path; the cost of a duplicate
-    proposal row is much smaller than the cost of silently dropping a
-    real milestone.
-    """
-    try:
-        resp = (
-            client.table(Tables.CLICKUP_TASK_PROPOSALS)
-            .select("id, status")
-            .eq("cp_ask_hash", cp_ask_hash)
-            .in_("status", ["pending", "approved"])
-            .execute()
-        )
-        return bool(resp.data)
-    except Exception as exc:  # noqa: BLE001 — never block primary ingest
-        logger.warning(
-            "proposal dedupe lookup failed for hash=%s: %s; allowing insert",
-            cp_ask_hash, exc,
-        )
-        return False
 
 
 # ──────────────────────────────────────────────────────────────────────

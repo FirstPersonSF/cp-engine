@@ -184,7 +184,6 @@ def health() -> dict:
 # side effects (there should be none) can't race the log configuration.
 from routers import assets as _assets_router  # noqa: E402
 from routers import cron as _cron_router  # noqa: E402
-from routers import dates_loop as _dates_loop_router  # noqa: E402
 from routers import email as _email_router  # noqa: E402
 from routers import ingest as _ingest_router  # noqa: E402
 from routers import integrations as _integrations_router  # noqa: E402
@@ -201,7 +200,6 @@ app.include_router(_integrations_router.router)
 app.include_router(_ingest_router.router)
 app.include_router(_spine_router.router)
 app.include_router(_assets_router.router)
-app.include_router(_dates_loop_router.router)
 app.include_router(_meetings_router.router)
 app.include_router(_slack_router.router)
 app.include_router(_email_router.router)
@@ -234,7 +232,6 @@ from git_ops import (  # noqa: E402,F401
 from pipeline import (  # noqa: E402,F401
     DEFAULT_MODEL,
     _action_item_texts,
-    _append_inbox_card,
     _append_retrospective,
     _background_tasks,
     _create_supabase_client,

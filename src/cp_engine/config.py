@@ -160,18 +160,6 @@ class AttentionDigestConfig:
 
 
 @dataclass(frozen=True)
-class DatesLoopConfig:
-    """Weekly Slack dates loop configuration (commitments consolidation).
-
-    The partners-rollup channel id lives in MC-2 (``app_config`` key
-    ``dates_loop_partners_channel``) — mc-2 is the one home for channel
-    configuration, same as the per-project channel map. Only the window
-    default lives here.
-    """
-    window_days: int = 14
-
-
-@dataclass(frozen=True)
 class TenantConfig:
     """Merged view of a tenant's committed + local configuration.
 
@@ -227,7 +215,7 @@ class TenantConfig:
     # Step 4b rollout gate: `[stakeholders] retire_markdown = true` lets sync
     # import the hand-written cp.md `## Stakeholders` / sprint
     # `### Stakeholders` entries onto spine cards and remove the sections.
-    # Off until the one-time migration (scripts/step4b_migrate_stakeholders.py
+    # Off until the one-time migration (scripts/archive/step4b_migrate_stakeholders.py
     # --apply) has run, so the import never meets an un-canonicalized
     # spelling first. Cards are the store either way.
     retire_stakeholder_markdown: bool = False
@@ -237,9 +225,6 @@ class TenantConfig:
     attention_digest: AttentionDigestConfig = field(
         default_factory=AttentionDigestConfig
     )
-    # Weekly Slack dates loop. Tenants opt in via `[dates_loop]` in
-    # `.cp-engine.toml`; absent block yields defaults (no partners rollup).
-    dates_loop: DatesLoopConfig = field(default_factory=DatesLoopConfig)
     # `[tenant].timezone` (#339): the zone sprint weeks and "today" are
     # read in. Timestamps stay UTC. `load` hands it to `cp_engine.clock`.
     timezone: str = DEFAULT_TIMEZONE
@@ -293,7 +278,6 @@ def load(tenant_root: Path) -> TenantConfig:
         kwargs["name_aliases"] = MappingProxyType(dict(committed["name_aliases"]))
     kwargs["retire_stakeholder_markdown"] = committed["retire_stakeholder_markdown"]
     kwargs["attention_digest"] = committed["attention_digest"]
-    kwargs["dates_loop"] = committed["dates_loop"]
     kwargs["timezone"] = committed["timezone"]
     set_tenant_timezone(committed["timezone"])
     return TenantConfig(**kwargs)
@@ -513,8 +497,9 @@ def _normalize_committed(data: dict, source: Path) -> dict:
         data.get("attention_digest") or {}, source
     )
 
-    # Optional [dates_loop] table. Absent block → defaults.
-    dates_loop = _parse_dates_loop(data.get("dates_loop") or {}, source)
+    # A `[dates_loop]` table is ignored: the weekly dates loop was retired in
+    # architecture step 5a, and a tenant toml that still carries the block
+    # must keep loading.
 
     return {
         "name": name,
@@ -529,22 +514,7 @@ def _normalize_committed(data: dict, source: Path) -> dict:
         "name_aliases": name_aliases,
         "retire_stakeholder_markdown": retire_md,
         "attention_digest": attention_digest,
-        "dates_loop": dates_loop,
     }
-
-
-def _parse_dates_loop(raw: dict, source: Path) -> DatesLoopConfig:
-    """Parse the optional [dates_loop] block from .cp-engine.toml."""
-    if not raw:
-        return DatesLoopConfig()
-
-    window_days = raw.get("window_days", 14)
-    if isinstance(window_days, bool) or not isinstance(window_days, int) or window_days < 1:
-        raise CommittedConfigInvalid(
-            f"{source}: [dates_loop].window_days must be a positive integer"
-        )
-
-    return DatesLoopConfig(window_days=window_days)
 
 
 def _parse_attention_digest(raw: dict, source: Path) -> AttentionDigestConfig:

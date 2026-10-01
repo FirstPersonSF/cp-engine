@@ -43,6 +43,9 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 SERVER_PY = Path(__file__).resolve().parent / "server.py"
+# Verbs ported from the retired stdio server (step 5b) live beside it and are
+# registered from it; they are derived exactly like server.py's own.
+PORTED_PY = Path(__file__).resolve().parent / "ported_tools.py"
 
 # RPCs that only read. Every other `client.rpc(name)` is a writer.
 READ_RPCS = {
@@ -51,6 +54,10 @@ READ_RPCS = {
 }
 TABLE_MUTATIONS = {"insert", "update", "upsert", "delete"}
 HTTP_WRITES = {"post", "put", "patch", "delete"}
+# Writes that leave through a storage SDK rather than PostgREST or httpx: the
+# engine's Dropbox upload, the connector's, and a minted upload link (whose
+# holder can write without asking again).
+EXTERNAL_WRITES = {"push_to_dropbox", "upload_file", "files_get_temporary_upload_link"}
 
 
 @pytest.fixture(scope="module")
@@ -80,17 +87,23 @@ def _derive_writers() -> dict[str, set[str]]:
     function a body names, except `audit` — whose one INSERT, into
     `mcp_audit_log`, is the thing every tool must do.
     """
-    tree = ast.parse(SERVER_PY.read_text(encoding="utf-8"))
     funcs: dict[str, ast.AST] = {}
     tools: list[str] = []
-    for node in tree.body:
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            funcs[node.name] = node
-            for dec in node.decorator_list:
-                target = dec.func if isinstance(dec, ast.Call) else dec
-                if (isinstance(target, ast.Attribute) and target.attr == "tool"
-                        and getattr(target.value, "id", None) == "mcp_server"):
-                    tools.append(node.name)
+    for path in (SERVER_PY, PORTED_PY):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                assert node.name not in funcs or path is SERVER_PY, (
+                    f"{path.name} redefines {node.name}; the derivation keys by name"
+                )
+                funcs[node.name] = node
+                for dec in node.decorator_list:
+                    target = dec.func if isinstance(dec, ast.Call) else dec
+                    if (isinstance(target, ast.Attribute) and target.attr == "tool"
+                            and getattr(target.value, "id", None) == "mcp_server"):
+                        tools.append(node.name)
+                    if isinstance(target, ast.Name) and target.id == "hosted_tool":
+                        tools.append(node.name)
 
     direct: dict[str, tuple[set[str], set[str]]] = {}
     for name, fn in funcs.items():
@@ -99,6 +112,10 @@ def _derive_writers() -> dict[str, set[str]]:
         for n in ast.walk(fn):
             if isinstance(n, ast.Name) and n.id in funcs and n.id != name:
                 refs.add(n.id)
+            # ported_tools.py reaches server helpers as `_srv.<name>`.
+            if (isinstance(n, ast.Attribute) and getattr(n.value, "id", None) == "_srv"
+                    and n.attr in funcs and n.attr != name):
+                refs.add(n.attr)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute):
                 attr, recv = n.func.attr, n.func.value
                 if (attr in TABLE_MUTATIONS and isinstance(recv, ast.Call)
@@ -114,6 +131,8 @@ def _derive_writers() -> dict[str, set[str]]:
                         prims.add(f"rpc:{rpc}")
                 if attr in HTTP_WRITES and getattr(recv, "id", None) == "httpx":
                     prims.add(f"http_{attr}")
+                if attr in EXTERNAL_WRITES:
+                    prims.add(f"external:{attr}")
         direct[name] = (prims, refs)
 
     def closure(start: str) -> set[str]:
@@ -135,12 +154,19 @@ def test_detector_sees_known_writers_and_known_readers():
     """The detector's own control: if it could not see a write, every test
     below would pass vacuously."""
     derived = _derive_writers()
-    assert "insert:notes" in derived["create_note"]
+    assert "insert:commitments" in derived["create_commitment"]
     assert "rpc:spine_retire_element" in derived["retire_spine_element"]
     assert "http_post" in derived["capture_project_state"]
     assert "http_patch" in derived["set_commitment_date"]
     assert derived["list_spine_elements"] == set()
     assert derived["semantic_search"] == set()
+    # The ported module is derived too (step 5b): its writer is seen, and its
+    # reads — which reach server helpers through `_srv.` — are not mistaken
+    # for writers.
+    assert "external:push_to_dropbox" in derived["push_to_dropbox"]
+    assert "external:files_get_temporary_upload_link" in derived["push_to_dropbox"]
+    assert derived["fetch_project_source"] == set()
+    assert derived["preflight"] == set()
 
 
 def test_no_read_endpoint_tool_can_reach_a_write(server):
@@ -207,8 +233,8 @@ def test_read_endpoint_tools_reject_unknown_arguments(server):
 def test_a_write_verb_is_unknown_on_the_read_endpoint(server):
     with pytest.raises(Exception) as err:
         asyncio.run(server.read_server.call_tool(
-            "create_note", {"project_code": "x", "body": "y"}))
-    assert "create_note" in str(err.value)
+            "create_commitment", {"project_code": "x", "description": "y"}))
+    assert "create_commitment" in str(err.value)
 
 
 def test_main_endpoint_surface_is_unchanged(server):
@@ -393,11 +419,12 @@ def test_every_tool_call_writes_an_audit_row(server, harness, endpoint):
 def test_a_tool_that_audits_itself_writes_one_row_not_two(server, harness):
     """The fallback fires only when the tool did not audit."""
     monkey_rows_before = len(_audit_rows(harness))
-    tool = server.mcp_server._tool_manager.get_tool("wrap_bundle")
-    # wrap_bundle audits on its own success path; with the recording client
-    # its project lookup misses, so what matters is the COUNT, not the path.
-    _call(server.mcp_server, "wrap_bundle", _dummy_args(tool))
+    tool = server.mcp_server._tool_manager.get_tool("commitments_sweep")
+    # commitments_sweep audits on its own path (wrap_bundle did, until step 5a
+    # retired it): exactly one row, and its own rather than the fallback.
+    _call(server.mcp_server, "commitments_sweep", _dummy_args(tool))
     assert len(_audit_rows(harness)) - monkey_rows_before == 1
+    assert "fallback" not in json.dumps(_audit_rows(harness)[-1])
 
 
 def test_fallback_row_records_the_outcome_never_the_message(server, harness):
@@ -532,7 +559,7 @@ def test_read_path_serves_only_read_tools_over_http(server, http):
     assert {t["name"] for t in read} == set(server.READ_ONLY_TOOLS)
     assert {t["name"] for t in main} == set(server.READ_ONLY_TOOLS) | set(server.MAIN_ONLY_TOOLS)
     resp = _rpc(client, "/mcp/read", "tools/call",
-                {"name": "create_note", "arguments": {"project_code": "x", "body": "y"}})
+                {"name": "create_commitment", "arguments": {"project_code": "x", "description": "y"}})
     body = resp.json()
     assert "error" in body or body["result"].get("isError"), body
 

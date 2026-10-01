@@ -229,7 +229,7 @@ def test_read_verbs_do_not_claim_a_level():
     tree = ast.parse(SRC)
     tools = _tools(tree)
     for name in ("list_commitments", "list_spine_elements", "get_project_state",
-                 "list_worksets", "spine_lint", "wrap_status"):
+                 "spine_lint", "wrap_status"):
         assert not _has_level_decorator(tools[name]), name
 
 
@@ -251,8 +251,8 @@ def test_decorated_verbs_keep_their_real_parameters(server):
         "project_code", "description", "owner_email", "due_date", "direction",
         "source_meeting_id",
     ]
-    tool = server.mcp_server._tool_manager.get_tool("pull_element_from_project")
-    assert "to_code" in tool.parameters["properties"]
+    tool = server.mcp_server._tool_manager.get_tool("propose_spine_step")
+    assert "title" in tool.parameters["properties"]
 
 
 def test_the_instructions_state_the_rule(server):
@@ -337,9 +337,7 @@ def test_an_error_result_carries_no_level(server, wired):
     assert "error" in out and "level" not in out
 
 
-def test_the_echo_covers_a_note_and_a_step(server, wired, monkeypatch):
-    note = server.create_note(CHILD, "ping")
-    assert note["note_id"] and note["level"]["parent"] == PROGRAM
+def test_the_echo_covers_a_step(server, wired, monkeypatch):
     monkeypatch.setattr(server, "resolve_live_element_id",
                         lambda c, pid, key: ("_authored/x", None))
     step = server.propose_spine_step(CHILD, "_authored/x", "Ratified the pillars")

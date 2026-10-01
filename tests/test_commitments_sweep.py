@@ -61,7 +61,7 @@ def test_render_sweep_shapes() -> None:
     assert "[meeting_ingest]  Marcello Grande" in text
     assert "SLIPPED · due 2026-08-04 (2d ago)" in text
     assert "due 2026-08-20 [agreed]" in text
-    assert "past TTL, expires next dates loop" in text
+    assert "past the 14d TTL — date it or drop it" in text
     assert "3 open across 1 project(s)" in text
     assert "1 stale" in text
 
@@ -291,3 +291,44 @@ def test_pairing_never_crosses_projects(monkeypatch) -> None:
     assert set(groups) == {"ibx-5153", "ibx-5192"}
     assert all(not cs.likely_duplicates(rs) for rs in groups.values())
     assert "0 likely duplicate pair(s)" in render_sweep(groups, today=_TODAY)
+
+
+# ── the 14-day TTL flag (moved from the retired dates loop, step 5a) ──
+
+_TTL_TODAY = date(2026, 7, 6)
+
+
+def _ingest_c(id: str, desc: str, created: str, **kw) -> dict:
+    c = {
+        "id": id, "description": desc, "due_date": None, "status": "open",
+        "date_status": kw.get("date_status", "proposed"),
+        "source_kind": "meeting_ingest",
+        "created_at": created + "T12:00:00+00:00",
+    }
+    return c
+
+
+def test_ttl_bucket_eligibility() -> None:
+    from cp_engine.commitments_sweep import _ttl_bucket
+
+    # 14+ days undated meeting-ingest proposed → expire.
+    assert _ttl_bucket(_ingest_c("a", "old", "2026-06-20"), _TTL_TODAY) == "expire"
+    # 7–13 days → warn.
+    assert _ttl_bucket(_ingest_c("b", "warm", "2026-06-28"), _TTL_TODAY) == "warn"
+    # Fresh → None.
+    assert _ttl_bucket(_ingest_c("c", "new", "2026-07-05"), _TTL_TODAY) is None
+    # A due date cancels the TTL.
+    dated = _ingest_c("d", "dated", "2026-06-01")
+    dated["due_date"] = "2026-08-01"
+    assert _ttl_bucket(dated, _TTL_TODAY) is None
+    # A ratified/changed date_status cancels it.
+    agreed = _ingest_c("e", "agreed", "2026-06-01", date_status="agreed")
+    assert _ttl_bucket(agreed, _TTL_TODAY) is None
+    # Human-authored rows are exempt regardless of age.
+    session = _ingest_c("f", "session row", "2026-06-01")
+    session["source_kind"] = "session"
+    assert _ttl_bucket(session, _TTL_TODAY) is None
+    # Unparseable created_at → never expire.
+    broken = _ingest_c("g", "broken", "2026-06-01")
+    broken["created_at"] = "not-a-date"
+    assert _ttl_bucket(broken, _TTL_TODAY) is None

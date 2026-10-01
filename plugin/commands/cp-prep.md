@@ -301,9 +301,7 @@ Meeting action items, milestones, and client asks are tracked as MC-2
 **commitments** (dated, direction-typed, ratification-stated), and the
 bundle already carries each project's open commitments in its Open
 Commitments table — there is no separate task-system lookup step
-anymore. The weekly Slack dates loop (`cxp dates-loop`) is the surface
-that chases dates between sprint plannings; `/cp-prep` just reads the
-current state.
+anymore. `/cp-prep` just reads the current state.
 
 ### 6. Don't commit
 
@@ -317,7 +315,7 @@ churn distracting). Default: don't auto-commit. Tell the user:
 ### 7. Re-running
 
 `/cp-prep` is idempotent — re-running overwrites `_planning.md` in place
-with fresh state. Safe to re-run after a `cxp sync`, after a `/cp-ingest`,
+with fresh state. Safe to re-run after a `cxp sync`, after a meeting auto-ingest,
 or anytime new content lands (including after adding/closing milestones
 in the MC-2 schedule or commitments in MC-2).
 
@@ -372,7 +370,7 @@ in the MC-2 schedule or commitments in MC-2).
   schedule items can't resolve to dates).
 - **Planning doc is mostly empty.** Likely a fresh tenant or a sprint
   with no recent ingest activity. The structure is right; data flows
-  in as `/cp-ingest` runs against transcripts.
+  in as tagged meetings auto-ingest.
 - **Exec Summary not yet authored.** A project's Exec Summary region in
   its cp.md still has only template placeholders (`_<...>_`) — the model
   hasn't authored it at a wrap up yet, or the region was just migrated
@@ -391,7 +389,7 @@ in the MC-2 schedule or commitments in MC-2).
   deterministic metrics.
 - Doesn't write to MC-2 commitments — pure read. (Nothing in the prep
   path touches ClickUp at all anymore.)
-- Doesn't ingest transcripts (that's `/cp-ingest`).
+- Doesn't ingest transcripts (that's the auto-ingest webhook).
 - Doesn't update master-cp.md or any workstream's `cp.md` (those have
-  their own paths via `cxp sync` and `/cp-ingest` respectively).
+  their own paths via `cxp sync` and auto-ingest respectively).
 - Doesn't auto-commit.

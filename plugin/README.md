@@ -24,7 +24,7 @@ Since v0.6, the plugin's `SessionStart` hook auto-installs the matching
 drift. So a fresh install pulls both halves; subsequent `/plugin update`
 runs propagate to the CLI automatically. The hook is fast on the happy
 path (~50ms version check) and never blocks session start on failure —
-if the install fails, the next `/cp-summarize` raises a loud
+if the install fails, the next `cxp` call raises a loud
 `EngineVersionMismatch` with the manual recovery command.
 
 ## Prerequisites
@@ -49,27 +49,3 @@ Example `[local-repos]`:
 
 ## Commands
 
-### /cp-summarize
-
-Run from inside any linked source repo. Drafts a session summary, writes
-it to the corresponding cp working dir's `sessions/` directory, updates
-that project's `cp.md` "Last session:" line, then commits and pushes
-the cp clone.
-
-If the current repo isn't tracked in the cp tenant, the summary lands
-in `<cp-tenant>/exceptions/` and surfaces in the engine-managed
-exceptions README on next sync.
-
-Since v0.5.1, capture-session auto-rebases on push rejection (e.g. when
-a `[cp-sync]` cron commit lands between captures) and retries once.
-
-### /cp-context
-
-Run from inside a cp working dir. Prints a 7-day timeline merging git
-commits from the linked source repo's local clone with session captures
-from the working dir's `sessions/` directory. Useful for "what's been
-happening on this project?" without manually grepping logs.
-
-`--days N` overrides the window; `--user <name>` picks a specific
-`[local-repos.<user>]` entry when more than one teammate has the repo
-mapped.

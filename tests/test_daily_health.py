@@ -221,12 +221,12 @@ def test_exactly_one_morning_slot_per_day(when, expected):
 def test_post_destination_precedence(monkeypatch):
     """--channel beats CP_HEALTH_CHANNEL beats the partners' channel."""
     import cp_engine.daily_health as dh
-    from cp_engine import dates_loop, slack
+    from cp_engine import slack
 
     sent = {}
     monkeypatch.setattr(slack, "load_slack_token", lambda config: "xoxb-test")
     monkeypatch.setattr(slack, "post_channel", lambda web, channel_id, text: sent.setdefault("ch", channel_id) or "ts")
-    monkeypatch.setattr(dates_loop, "_partners_channel", lambda client, errors: "CPARTNERS")
+    monkeypatch.setattr(dh, "_partners_channel", lambda client, errors: "CPARTNERS")
     report = dh.HealthReport(when=dh.tenant_now(), checks=[])
 
     monkeypatch.setenv("CP_HEALTH_CHANNEL", "DENV")
@@ -460,3 +460,52 @@ def test_json_status_is_not_overwritten_by_detail_keys():
     row = _json.loads(_json.dumps(report.to_dict()))["checks"][0]
     assert row["ok"] is True
     assert row["partial"] == 0
+
+
+# ── moved from the retired dates loop's tests (step 5a) ──
+
+
+def test_partners_channel_from_app_config() -> None:
+    from cp_engine.daily_health import _partners_channel
+
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    chain = client.table.return_value.select.return_value.eq.return_value
+    # Bare-string value
+    chain.execute.return_value.data = [
+        {"key": "dates_loop_partners_channel", "value": "C0PARTNERS"}
+    ]
+    assert _partners_channel(client) == "C0PARTNERS"
+    # Object value
+    chain.execute.return_value.data = [
+        {"key": "dates_loop_partners_channel", "value": {"channel": "C0X"}}
+    ]
+    assert _partners_channel(client) == "C0X"
+    # Absent key → None (rollup skipped)
+    chain.execute.return_value.data = []
+    assert _partners_channel(client) is None
+    # Lookup failure → None, never raises
+    chain.execute.side_effect = RuntimeError("boom")
+    assert _partners_channel(client) is None
+
+
+def test_post_channel_surfaces_slack_error_code() -> None:
+    """SlackApiError's str() is generic; the actionable code lives in
+    exc.response and must reach the SlackError message (the first live
+    dates-loop failure was undiagnosable without it)."""
+    import pytest
+
+    from cp_engine import slack as slack_mod
+
+    class FakeApiError(Exception):
+        def __init__(self):
+            super().__init__("The request to the Slack API failed.")
+            self.response = {"ok": False, "error": "channel_not_found"}
+
+    class FakeClient:
+        def chat_postMessage(self, **kwargs):
+            raise FakeApiError()
+
+    with pytest.raises(slack_mod.SlackError, match=r"\[slack error: channel_not_found\]"):
+        slack_mod.post_channel(FakeClient(), channel_id="C123", text="hi")

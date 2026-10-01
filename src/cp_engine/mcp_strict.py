@@ -12,9 +12,10 @@ with `extra="forbid"` and the advertised schema is regenerated from it. A
 misnamed argument now fails the call with pydantic's "Extra inputs are not
 permitted" naming the argument, and the schema tells a client before it tries.
 
-Shared by the hosted server and the stdio `cxp mcp` server (vendored verbatim
-under `prototypes/hosted-mcp/vendor/`), so both refuse the same way. Call it
-AFTER the last `@tool` registration: a tool registered later stays lenient.
+Imported by the hosted server for both of its registries (`/mcp` and
+`/mcp/read`); the stdio `cxp mcp` server that also used it was retired in
+step 5b. Call it AFTER the last `@tool` registration: a tool registered later
+stays lenient.
 """
 
 from __future__ import annotations

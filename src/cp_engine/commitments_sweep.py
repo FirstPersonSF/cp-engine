@@ -8,9 +8,10 @@ drive a keep/close decision. Resolution stays a deliberate human/agent
 act via ``resolve_commitment`` — the sweep makes the *decision* cheap,
 not automatic.
 
-Pairs with the wrap-up ritual (#134) and the dates-loop TTL (#136): rows
-the TTL will expire are marked so the sweep shows what's about to close
-on its own.
+Pairs with the wrap-up ritual (#134) and the 14-day TTL (#136): undated
+meeting-ingest rows past it are flagged. The TTL is advisory since the
+weekly dates loop (its only enforcer) was retired in step 5a — nothing
+closes a row on its own; the sweep is where it gets dated or dropped.
 
 #311: likely-duplicate pairs. A commitment logged by hand mid-session and the
 row auto-ingest later writes for the same meeting never share text, so the
@@ -28,9 +29,45 @@ from datetime import date, datetime
 from typing import Any
 
 from cp_engine.clock import tenant_today
-from cp_engine.dates_loop import _EXPIRE_AFTER_DAYS, _ttl_bucket
 from cp_engine import mc2_db
 from cp_engine.mc2_db import Tables
+
+# TTL for undated auto-ingested commitments (#136). A transcript rarely
+# states a date, so meeting-ingest rows land undated — an UNCONFIRMED
+# PROPOSAL, not an agreed obligation, and structurally invisible to
+# 'slipped' (which needs a past due date). Rows still undated + 'proposed'
+# after _EXPIRE_AFTER_DAYS are flagged 'expire', a week earlier 'warn'.
+# Moved here from the retired dates loop (step 5a), which used to close
+# them; the flag is now advisory. Only source_kind='meeting_ingest' —
+# session, manual, and migration rows were human-authored on purpose.
+_EXPIRE_AFTER_DAYS = 14
+_EXPIRE_WARN_AFTER_DAYS = 7
+
+
+def _ttl_bucket(c: dict, today: date) -> str | None:
+    """'expire' | 'warn' | None for one open commitment row.
+
+    Age counts from created_at. warn = would expire by the next weekly
+    run; expire = past the TTL now.
+    """
+    if (
+        c.get("due_date")
+        or c.get("source_kind") != "meeting_ingest"
+        or (c.get("date_status") or "proposed") != "proposed"
+    ):
+        return None
+    raw = c.get("created_at") or ""
+    try:
+        created = datetime.fromisoformat(raw.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
+    age = (today - created).days
+    if age >= _EXPIRE_AFTER_DAYS:
+        return "expire"
+    if age >= _EXPIRE_WARN_AFTER_DAYS:
+        return "warn"
+    return None
+
 
 def _sweep_columns(client: Any) -> str:
     """Owner columns are schema-dependent (see `mc2_db.owner_columns`)."""
@@ -52,7 +89,7 @@ class SweepRow:
     due_date: date | None
     date_status: str
     age_days: int
-    ttl: str | None  # 'warn' | 'expire' | None (dates-loop TTL, #136)
+    ttl: str | None  # 'warn' | 'expire' | None (14-day TTL, #136)
     source_meeting_id: str | None = None
 
     @property
@@ -283,9 +320,9 @@ def render_sweep(groups: dict[str, list[SweepRow]], *, today: date) -> str:
                 head = f"    due {r.due_date.isoformat()} [{r.date_status}]"
             head += f"  [{r.source_kind}]  {r.owner}"
             if r.ttl == "expire":
-                head += "  ← past TTL, expires next dates loop"
+                head += f"  ← past the {_EXPIRE_AFTER_DAYS}d TTL — date it or drop it"
             elif r.ttl == "warn":
-                head += f"  ← expires at {_EXPIRE_AFTER_DAYS}d unless dated"
+                head += f"  ← reaches the {_EXPIRE_AFTER_DAYS}d TTL soon unless dated"
             out.append(head)
             out.append(f"    {r.description}")
         dups = likely_duplicates(rows)

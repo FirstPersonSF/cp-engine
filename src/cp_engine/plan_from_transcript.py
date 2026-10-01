@@ -1,8 +1,7 @@
 """Generate a `cp ingest` plan from a meeting transcript via Claude.
 
-This is the engine half of Phase C (auto-ingest). The CLI command
-`cp ingest-from-transcript` and the eventual cp-engine-webhook service
-both call into `generate_plan()`.
+This is the engine half of Phase C (auto-ingest): the cp-engine-webhook
+service calls into `generate_plan()`.
 
 Design constraints:
 - The plan Claude returns MUST pass `cp_engine.ingest._validate_plan`.

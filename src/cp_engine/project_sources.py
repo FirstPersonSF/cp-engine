@@ -1702,6 +1702,32 @@ def _dropbox_folder_path(connector, folder_id: str) -> str:
     return path.rstrip("/")
 
 
+def dropbox_destination(
+    connector, folder_id: str, name: str, dest_path: str | None = None
+) -> str | dict:
+    """The literal Dropbox path `name` lands at, or a structured `{error}`.
+
+    `dest_path` (an ABSOLUTE folder) wins outright — the caller is
+    round-tripping a source back to where it came from. Otherwise the
+    project's stored `mc_dropbox_folder_id` is resolved to its path. Shared by
+    `push_to_dropbox` and the hosted upload-link path, so both write to the
+    same place for the same arguments. Never raises.
+    """
+    if dest_path:
+        if not dest_path.startswith("/"):
+            return {
+                "error": f"dest_path must be an absolute Dropbox path "
+                f"starting with '/', got {dest_path!r}"
+            }
+        folder_path = dest_path.rstrip("/")
+    else:
+        try:
+            folder_path = _dropbox_folder_path(connector, folder_id)
+        except Exception as exc:  # noqa: BLE001 — MCP boundary, never raise
+            return {"error": f"could not resolve Dropbox folder: {exc}"}
+    return f"{folder_path}/{name}"
+
+
 def push_to_dropbox(
     connector, folder_id: str, local_path, dest_name: str | None = None,
     overwrite: bool = False, dest_path: str | None = None,
@@ -1729,22 +1755,9 @@ def push_to_dropbox(
         return {"error": f"not a file: {local_path}"}
 
     name = dest_name or src.name
-    if dest_path:
-        # Caller named the folder outright (round-tripping a source back to
-        # where it came from) — trust it and skip the project-root lookup.
-        if not dest_path.startswith("/"):
-            return {
-                "error": f"dest_path must be an absolute Dropbox path "
-                f"starting with '/', got {dest_path!r}"
-            }
-        folder_path = dest_path.rstrip("/")
-    else:
-        try:
-            folder_path = _dropbox_folder_path(connector, folder_id)
-        except Exception as exc:  # noqa: BLE001 — MCP boundary, never raise
-            return {"error": f"could not resolve Dropbox folder: {exc}"}
-
-    dropbox_path = f"{folder_path}/{name}"
+    dropbox_path = dropbox_destination(connector, folder_id, name, dest_path)
+    if isinstance(dropbox_path, dict):
+        return dropbox_path
     try:
         meta = connector.upload_file(str(src), dropbox_path, overwrite=overwrite)
     except Exception as exc:  # noqa: BLE001 — MCP tool boundary, never raise
